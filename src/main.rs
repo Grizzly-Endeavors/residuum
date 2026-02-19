@@ -6,8 +6,9 @@
 use ironclaw::agent::Agent;
 use ironclaw::channels::AgentResponse;
 use ironclaw::channels::cli::CliChannel;
-use ironclaw::config::{Config, ProviderKind};
+use ironclaw::config::{Config, ModelSpec, ProviderKind};
 use ironclaw::error::IronclawError;
+use ironclaw::memory::observer::{Observer, ObserverConfig};
 use ironclaw::models::anthropic::AnthropicClient;
 use ironclaw::models::ollama::OllamaClient;
 use ironclaw::models::openai::OpenAiClient;
@@ -71,8 +72,17 @@ async fn run() -> Result<(), IronclawError> {
         .map_err(|e| IronclawError::Config(format!("failed to build HTTP client: {e}")))?;
 
     // Build model provider
-    let provider: Box<dyn ModelProvider> = build_provider(&cfg, http)?;
+    let provider = build_provider_from_spec(
+        &cfg.model,
+        &cfg.provider_url,
+        cfg.api_key.as_deref(),
+        cfg.max_tokens,
+        http.clone(),
+    )?;
     tracing::info!(model = provider.model_name(), "model provider ready");
+
+    // Build observer
+    let observer = build_observer(&cfg, http)?;
 
     // Build tool registry
     let mut tools = ToolRegistry::new();
@@ -107,24 +117,71 @@ async fn run() -> Result<(), IronclawError> {
             }
         }
 
+        // Run observer if threshold is met
+        if observer.should_observe(agent.session()) {
+            match observer.observe(agent.session_mut(), &layout).await {
+                Ok(episode) => {
+                    tracing::info!(
+                        episode_id = %episode.id,
+                        "observer extracted episode"
+                    );
+                }
+                Err(e) => {
+                    eprintln!("warning: observer failed: {e}");
+                }
+            }
+        }
+
         println!();
     }
 
     Ok(())
 }
 
-/// Build the appropriate model provider based on config.
+/// Build the observer, using a dedicated model if configured or the main model.
+///
+/// # Errors
+/// Returns `IronclawError::Config` if the observer provider cannot be built.
+fn build_observer(cfg: &Config, http: SharedHttpClient) -> Result<Observer, IronclawError> {
+    let mem = &cfg.memory;
+
+    let observer_spec = mem.observer_model.as_ref().unwrap_or(&cfg.model);
+    let observer_url = mem
+        .observer_provider_url
+        .as_deref()
+        .unwrap_or(&cfg.provider_url);
+    let observer_key = mem.observer_api_key.as_deref().or(cfg.api_key.as_deref());
+
+    let provider = build_provider_from_spec(
+        observer_spec,
+        observer_url,
+        observer_key,
+        cfg.max_tokens,
+        http,
+    )?;
+
+    let config = ObserverConfig {
+        threshold_tokens: mem.observer_threshold_tokens,
+    };
+
+    Ok(Observer::new(provider, config))
+}
+
+/// Build a model provider from explicit parameters.
 ///
 /// # Errors
 /// Returns `IronclawError::Config` if the API key is missing for providers
 /// that require it.
-fn build_provider(
-    cfg: &Config,
+fn build_provider_from_spec(
+    spec: &ModelSpec,
+    url: &str,
+    api_key: Option<&str>,
+    max_tokens: u32,
     http: SharedHttpClient,
 ) -> Result<Box<dyn ModelProvider>, IronclawError> {
-    match cfg.model.kind {
+    match spec.kind {
         ProviderKind::Anthropic => {
-            let api_key = cfg.api_key.as_ref().ok_or_else(|| {
+            let key = api_key.ok_or_else(|| {
                 IronclawError::Config(
                     "anthropic requires an API key (set ANTHROPIC_API_KEY or api_key in config)"
                         .to_string(),
@@ -133,30 +190,30 @@ fn build_provider(
 
             Ok(Box::new(AnthropicClient::new(
                 http,
-                &cfg.provider_url,
-                api_key,
-                &cfg.model.model,
-                cfg.max_tokens,
+                url,
+                key,
+                &spec.model,
+                max_tokens,
             )))
         }
         ProviderKind::Ollama => Ok(Box::new(OllamaClient::with_http_client(
             http,
-            &cfg.provider_url,
-            &cfg.model.model,
+            url,
+            &spec.model,
         ))),
         ProviderKind::OpenAi => {
-            if let Some(api_key) = &cfg.api_key {
+            if let Some(key) = api_key {
                 Ok(Box::new(OpenAiClient::with_http_client_and_api_key(
                     http,
-                    &cfg.provider_url,
-                    &cfg.model.model,
-                    api_key,
+                    url,
+                    &spec.model,
+                    key,
                 )))
             } else {
                 Ok(Box::new(OpenAiClient::with_http_client(
                     http,
-                    &cfg.provider_url,
-                    &cfg.model.model,
+                    url,
+                    &spec.model,
                 )))
             }
         }

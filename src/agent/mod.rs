@@ -134,6 +134,17 @@ impl Agent {
             "agent exceeded maximum tool iterations ({MAX_TOOL_ITERATIONS})"
         )))
     }
+
+    /// Get a reference to the session.
+    #[must_use]
+    pub fn session(&self) -> &Session {
+        &self.session
+    }
+
+    /// Get a mutable reference to the session.
+    pub fn session_mut(&mut self) -> &mut Session {
+        &mut self.session
+    }
 }
 
 /// Log token usage from a model response at info level.
