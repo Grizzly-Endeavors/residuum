@@ -1,10 +1,13 @@
 //! Tool system for agent-invoked operations.
 
+pub mod cron;
 pub mod daily_log;
 mod exec;
 pub mod memory_search;
 mod read;
 mod write;
+
+use std::sync::Arc;
 
 use async_trait::async_trait;
 use serde_json::Value;
@@ -135,6 +138,24 @@ impl ToolRegistry {
         index: std::sync::Arc<crate::memory::search::MemoryIndex>,
     ) {
         self.register(Box::new(memory_search::MemorySearchTool::new(index)));
+    }
+
+    /// Register cron management tools (`cron_add`, `cron_list`, `cron_update`, `cron_remove`).
+    pub fn register_cron_tools(
+        &mut self,
+        store: std::sync::Arc<tokio::sync::Mutex<crate::cron::store::CronStore>>,
+        notify: std::sync::Arc<tokio::sync::Notify>,
+    ) {
+        self.register(Box::new(cron::CronAddTool::new(
+            Arc::clone(&store),
+            Arc::clone(&notify),
+        )));
+        self.register(Box::new(cron::CronListTool::new(Arc::clone(&store))));
+        self.register(Box::new(cron::CronUpdateTool::new(
+            Arc::clone(&store),
+            Arc::clone(&notify),
+        )));
+        self.register(Box::new(cron::CronRemoveTool::new(store, notify)));
     }
 }
 

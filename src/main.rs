@@ -1,14 +1,16 @@
 //! `IronClaw`: personal AI agent gateway.
 //!
 //! Entrypoint that wires up configuration, workspace, model provider,
-//! tools, and the interactive REPL loop.
+//! tools, and the interactive async event loop.
 
 use std::sync::Arc;
 
 use ironclaw::agent::Agent;
 use ironclaw::channels::AgentResponse;
-use ironclaw::channels::cli::CliChannel;
+use ironclaw::channels::cli::{CliDisplay, CliReader};
 use ironclaw::config::{Config, ModelSpec, ProviderKind};
+use ironclaw::cron::executor::execute_due_jobs;
+use ironclaw::cron::store::CronStore;
 use ironclaw::error::IronclawError;
 use ironclaw::memory::log_store::load_observation_log;
 use ironclaw::memory::observer::{Observer, ObserverConfig};
@@ -21,6 +23,8 @@ use ironclaw::models::anthropic::AnthropicClient;
 use ironclaw::models::ollama::OllamaClient;
 use ironclaw::models::openai::OpenAiClient;
 use ironclaw::models::{CompletionOptions, HttpClientConfig, ModelProvider, SharedHttpClient};
+use ironclaw::pulse::executor::execute_pulse;
+use ironclaw::pulse::scheduler::PulseScheduler;
 use ironclaw::tools::ToolRegistry;
 use ironclaw::workspace::bootstrap::ensure_workspace;
 use ironclaw::workspace::identity::IdentityFiles;
@@ -34,6 +38,10 @@ async fn main() {
     }
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "main entrypoint wires up all subsystems; splitting would obscure the startup sequence"
+)]
 async fn run() -> Result<(), IronclawError> {
     // Init tracing
     tracing_subscriber::fmt()
@@ -67,10 +75,7 @@ async fn run() -> Result<(), IronclawError> {
             cfg.workspace_dir.display()
         ))
     })?;
-    tracing::info!(
-        workspace = %cfg.workspace_dir.display(),
-        "changed to workspace directory"
-    );
+    tracing::info!(workspace = %cfg.workspace_dir.display(), "changed to workspace directory");
 
     // Load identity files
     let identity = IdentityFiles::load(&layout).await?;
@@ -99,11 +104,18 @@ async fn run() -> Result<(), IronclawError> {
         Err(e) => eprintln!("warning: failed to rebuild search index: {e}"),
     }
 
+    // Build cron store and notify
+    let cron_store = Arc::new(tokio::sync::Mutex::new(
+        CronStore::load(layout.cron_jobs_json()).await?,
+    ));
+    let cron_notify = Arc::new(tokio::sync::Notify::new());
+
     // Build tool registry
     let mut tools = ToolRegistry::new();
     tools.register_defaults();
     tools.register_memory_tools(&layout);
     tools.register_search_tool(Arc::clone(&search_index));
+    tools.register_cron_tools(Arc::clone(&cron_store), Arc::clone(&cron_notify));
 
     // Build completion options
     let options = CompletionOptions {
@@ -112,47 +124,136 @@ async fn run() -> Result<(), IronclawError> {
 
     // Build agent
     let mut agent = Agent::new(provider, tools, identity, options);
-
-    // Load observations into agent context
     agent.reload_observations(&layout).await?;
 
-    // Build CLI channel
-    let mut cli = CliChannel::new("ironclaw")?;
+    // Build CLI display (readline runs in a blocking thread)
+    let cli_display = CliDisplay::new("ironclaw");
+
+    // Spawn readline thread
+    let (input_tx, mut input_rx) = tokio::sync::mpsc::channel::<String>(1);
+    tokio::task::spawn_blocking(move || match CliReader::new() {
+        Ok(reader) => reader.run(input_tx),
+        Err(e) => eprintln!("error initializing readline: {e}"),
+    });
+
+    // Pulse scheduler (in-memory, reset on restart)
+    let mut pulse_scheduler = PulseScheduler::new();
+    let pulse_enabled = cfg.pulse.enabled;
+
+    // Timer intervals
+    let mut pulse_tick = tokio::time::interval(tokio::time::Duration::from_secs(60));
+    let mut cron_tick = tokio::time::interval(tokio::time::Duration::from_secs(30));
+
+    // Skip first pulse tick (fires immediately on start; pulses fire on first miss)
+    pulse_tick.tick().await;
 
     println!("IronClaw ready. Type :q or Ctrl+D to exit.\n");
 
-    // REPL loop
     loop {
-        let Some(msg) = cli.read_message()? else {
-            println!("\nGoodbye!");
-            break;
-        };
+        tokio::select! {
+            // ── User input ──────────────────────────────────────────────────
+            msg = input_rx.recv() => {
+                let Some(content) = msg else {
+                    println!("\nGoodbye!");
+                    break;
+                };
 
-        // Track message count before processing so we can extract new messages
-        let before = agent.message_count();
+                let before = agent.message_count();
 
-        match agent.process_message(&msg.content, &cli).await {
-            Ok(response) => {
-                cli.show_response(&AgentResponse { content: response });
+                match agent.process_message(&content, &cli_display).await {
+                    Ok(response) => {
+                        cli_display.show_response(&AgentResponse { content: response });
+                    }
+                    Err(e) => {
+                        eprintln!("error: {e}");
+                    }
+                }
+
+                let new_messages: Vec<_> = agent.messages_since(before).to_vec();
+                run_memory_pipeline(
+                    &new_messages,
+                    &observer,
+                    &reflector,
+                    &search_index,
+                    &layout,
+                    &mut agent,
+                )
+                .await;
+
+                println!();
             }
-            Err(e) => {
-                eprintln!("error: {e}");
+
+            // ── Pulse timer ─────────────────────────────────────────────────
+            _ = pulse_tick.tick(), if pulse_enabled => {
+                let now = chrono::Utc::now();
+                let due = pulse_scheduler.due_pulses(now, &layout.heartbeat_yml());
+
+                for pulse in &due {
+                    match execute_pulse(pulse, &agent, &layout.alerts_md()).await {
+                        Ok(result) => {
+                            run_memory_pipeline(
+                                &result.messages,
+                                &observer,
+                                &reflector,
+                                &search_index,
+                                &layout,
+                                &mut agent,
+                            )
+                            .await;
+                        }
+                        Err(e) => {
+                            eprintln!("warning: pulse '{}' failed: {e}", pulse.name);
+                        }
+                    }
+                }
+            }
+
+            // ── Cron timer ──────────────────────────────────────────────────
+            _ = cron_tick.tick(), if cfg.cron.enabled => {
+                let now = chrono::Utc::now();
+                let mut store = cron_store.lock().await;
+                match execute_due_jobs(&mut store, &mut agent, now).await {
+                    Ok(messages) if !messages.is_empty() => {
+                        run_memory_pipeline(
+                            &messages,
+                            &observer,
+                            &reflector,
+                            &search_index,
+                            &layout,
+                            &mut agent,
+                        )
+                        .await;
+                    }
+                    Ok(_) => {}
+                    Err(e) => {
+                        eprintln!("warning: cron execution failed: {e}");
+                    }
+                }
+            }
+
+            // ── Cron notify (tool mutation wakeup) ──────────────────────────
+            () = cron_notify.notified(), if cfg.cron.enabled => {
+                let now = chrono::Utc::now();
+                let mut store = cron_store.lock().await;
+                match execute_due_jobs(&mut store, &mut agent, now).await {
+                    Ok(messages) if !messages.is_empty() => {
+                        run_memory_pipeline(
+                            &messages,
+                            &observer,
+                            &reflector,
+                            &search_index,
+                            &layout,
+                            &mut agent,
+                        )
+                        .await;
+                    }
+                    Ok(_) => {}
+                    Err(e) => {
+                        eprintln!("warning: cron execution failed: {e}");
+                    }
+                }
             }
         }
-
-        // Persist new messages and run memory pipeline
-        let new_messages: Vec<_> = agent.messages_since(before).to_vec();
-        run_memory_pipeline(
-            &new_messages,
-            &observer,
-            &reflector,
-            &search_index,
-            &layout,
-            &mut agent,
-        )
-        .await;
-
-        println!();
     }
 
     Ok(())
@@ -167,13 +268,15 @@ async fn run_memory_pipeline(
     layout: &WorkspaceLayout,
     agent: &mut Agent,
 ) {
-    // Append new messages to recent_messages.json
+    if new_messages.is_empty() {
+        return;
+    }
+
     if let Err(e) = append_recent_messages(&layout.recent_messages_json(), new_messages).await {
         eprintln!("warning: failed to persist recent messages: {e}");
         return;
     }
 
-    // Load recent messages and check observer threshold
     let recent = match load_recent_messages(&layout.recent_messages_json()).await {
         Ok(msgs) => msgs,
         Err(e) => {
@@ -194,7 +297,6 @@ async fn run_memory_pipeline(
                 eprintln!("warning: failed to clear recent messages: {e}");
             }
 
-            // Index the new episode file
             let ep_path =
                 ironclaw::memory::episode_store::episode_path(&layout.episodes_dir(), &episode);
             if let Ok(content) = tokio::fs::read_to_string(&ep_path).await

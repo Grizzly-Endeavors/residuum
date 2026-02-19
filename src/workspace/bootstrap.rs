@@ -35,6 +35,47 @@ const DEFAULT_MEMORY: &str = "\
 Persistent notes across sessions. The agent can update this file.
 ";
 
+/// Default content for HEARTBEAT.yml when creating a new workspace.
+const DEFAULT_HEARTBEAT: &str = "\
+# HEARTBEAT.yml — Pulse monitoring configuration
+#
+# Define ambient checks the agent performs on a schedule.
+# The agent runs these checks in the background and alerts you to findings.
+#
+# Example:
+#
+# pulses:
+#   - name: email_check
+#     enabled: true
+#     schedule: \"30m\"
+#     active_hours: \"08:00-18:00\"
+#     tasks:
+#       - name: check_inbox
+#         prompt: \"Check my email for urgent messages. Report anything requiring action.\"
+#         alert: high
+#
+# schedule: duration string — \"30m\", \"2h\", \"24h\"
+# active_hours: optional time window — \"HH:MM-HH:MM\" (UTC)
+# alert: high | medium | low
+
+pulses: []
+";
+
+/// Default content for Alerts.md when creating a new workspace.
+const DEFAULT_ALERTS: &str = "\
+# Alerts.md — Alert delivery behavior
+
+This file is injected into the agent's prompt when running pulse checks.
+Use it to customize how the agent reports findings.
+
+## Guidelines
+
+- If you find nothing noteworthy, respond with exactly: HEARTBEAT_OK
+- For high-priority findings, be specific and actionable
+- Keep reports concise — one paragraph per finding
+- Include timestamps when relevant
+";
+
 /// Ensure the workspace directory structure exists with default identity files.
 ///
 /// This is idempotent: existing files and directories are not modified.
@@ -55,6 +96,8 @@ pub async fn ensure_workspace(layout: &WorkspaceLayout) -> Result<(), IronclawEr
     write_if_missing(&layout.agents_md(), DEFAULT_AGENTS).await?;
     write_if_missing(&layout.user_md(), DEFAULT_USER).await?;
     write_if_missing(&layout.memory_md(), DEFAULT_MEMORY).await?;
+    write_if_missing(&layout.heartbeat_yml(), DEFAULT_HEARTBEAT).await?;
+    write_if_missing(&layout.alerts_md(), DEFAULT_ALERTS).await?;
 
     tracing::info!(
         workspace = %layout.root().display(),
@@ -101,6 +144,11 @@ mod tests {
         assert!(layout.agents_md().exists(), "AGENTS.md should exist");
         assert!(layout.user_md().exists(), "USER.md should exist");
         assert!(layout.memory_md().exists(), "MEMORY.md should exist");
+        assert!(
+            layout.heartbeat_yml().exists(),
+            "HEARTBEAT.yml should exist"
+        );
+        assert!(layout.alerts_md().exists(), "Alerts.md should exist");
     }
 
     #[tokio::test]

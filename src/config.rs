@@ -49,6 +49,54 @@ pub struct Config {
     pub max_tokens: u32,
     /// Memory subsystem configuration.
     pub memory: MemoryConfig,
+    /// Pulse (ambient monitoring) configuration.
+    pub pulse: PulseConfig,
+    /// Cron (scheduled tasks) configuration.
+    pub cron: CronConfig,
+}
+
+/// Validated pulse subsystem configuration.
+#[derive(Debug, Clone)]
+pub struct PulseConfig {
+    /// Whether the pulse system is enabled.
+    pub enabled: bool,
+}
+
+impl Default for PulseConfig {
+    fn default() -> Self {
+        Self { enabled: true }
+    }
+}
+
+impl PulseConfig {
+    /// Build from the raw TOML section.
+    fn from_file(section: Option<&PulseConfigFile>) -> Self {
+        Self {
+            enabled: section.and_then(|s| s.enabled).unwrap_or(true),
+        }
+    }
+}
+
+/// Validated cron subsystem configuration.
+#[derive(Debug, Clone)]
+pub struct CronConfig {
+    /// Whether the cron system is enabled.
+    pub enabled: bool,
+}
+
+impl Default for CronConfig {
+    fn default() -> Self {
+        Self { enabled: true }
+    }
+}
+
+impl CronConfig {
+    /// Build from the raw TOML section.
+    fn from_file(section: Option<&CronConfigFile>) -> Self {
+        Self {
+            enabled: section.and_then(|s| s.enabled).unwrap_or(true),
+        }
+    }
 }
 
 /// Validated memory subsystem configuration.
@@ -187,6 +235,8 @@ impl Config {
             .unwrap_or(DEFAULT_MAX_TOKENS);
 
         let memory = MemoryConfig::from_file_and_env(file.and_then(|f| f.memory.as_ref()));
+        let pulse = PulseConfig::from_file(file.and_then(|f| f.pulse.as_ref()));
+        let cron = CronConfig::from_file(file.and_then(|f| f.cron.as_ref()));
 
         Ok(Self {
             model,
@@ -196,6 +246,8 @@ impl Config {
             timeout_secs,
             max_tokens,
             memory,
+            pulse,
+            cron,
         })
     }
 }
@@ -301,6 +353,24 @@ struct ConfigFile {
     max_tokens: Option<u32>,
     /// Memory subsystem configuration.
     memory: Option<MemoryConfigFile>,
+    /// Pulse subsystem configuration.
+    pulse: Option<PulseConfigFile>,
+    /// Cron subsystem configuration.
+    cron: Option<CronConfigFile>,
+}
+
+/// Raw TOML `[pulse]` section.
+#[derive(Debug, Deserialize)]
+struct PulseConfigFile {
+    /// Whether the pulse system is enabled.
+    enabled: Option<bool>,
+}
+
+/// Raw TOML `[cron]` section.
+#[derive(Debug, Deserialize)]
+struct CronConfigFile {
+    /// Whether the cron system is enabled.
+    enabled: Option<bool>,
 }
 
 /// Raw TOML `[memory]` section.

@@ -3,7 +3,7 @@
 pub mod context;
 pub mod session;
 
-use crate::channels::cli::CliChannel;
+use crate::channels::TurnDisplay;
 use crate::error::IronclawError;
 use crate::models::{CompletionOptions, Message, ModelProvider, ModelResponse, Role};
 use crate::tools::ToolRegistry;
@@ -15,6 +15,16 @@ use self::session::Session;
 /// Maximum number of tool-call iterations before the agent stops.
 const MAX_TOOL_ITERATIONS: usize = 50;
 
+/// Result of a background system turn (pulse or cron).
+pub struct SystemTurnResult {
+    /// The assistant's final text response.
+    pub response: String,
+    /// All messages from the ephemeral session (user prompt + assistant response + tool calls).
+    ///
+    /// Feed these into `run_memory_pipeline()` so background turns contribute to memory.
+    pub messages: Vec<Message>,
+}
+
 /// The agent runtime that processes user messages through the model.
 pub struct Agent {
     provider: Box<dyn ModelProvider>,
@@ -23,6 +33,8 @@ pub struct Agent {
     session: Session,
     options: CompletionOptions,
     observations: Option<String>,
+    /// System event texts queued from cron jobs; injected at the start of the next user turn.
+    pending_system_events: Vec<String>,
 }
 
 impl Agent {
@@ -41,6 +53,7 @@ impl Agent {
             session: Session::new(),
             options,
             observations: None,
+            pending_system_events: Vec::new(),
         }
     }
 
@@ -73,9 +86,18 @@ impl Agent {
         Ok(())
     }
 
+    /// Queue a system event to be injected at the start of the next user turn.
+    ///
+    /// Used by the cron executor for `SessionTarget::Main` jobs.
+    pub fn queue_system_event(&mut self, text: String) {
+        self.pending_system_events.push(text);
+    }
+
     /// Process a user message through the model, executing tool calls as needed.
     ///
-    /// Returns the final text response from the model after all tool iterations.
+    /// Any queued system events are prepended to the user message so the agent
+    /// sees pending alerts in context. Returns the final text response from the
+    /// model after all tool iterations.
     ///
     /// # Errors
     /// Returns `IronclawError` if the model call fails or tool execution errors
@@ -83,92 +105,72 @@ impl Agent {
     pub async fn process_message(
         &mut self,
         user_input: &str,
-        cli: &CliChannel,
+        display: &dyn TurnDisplay,
     ) -> Result<String, IronclawError> {
-        // Push user message to session
+        // Build effective input: prepend any pending system events
+        let effective_input = if self.pending_system_events.is_empty() {
+            user_input.to_string()
+        } else {
+            let events: Vec<String> = self.pending_system_events.drain(..).collect();
+            let events_text = events.join("\n\n");
+            format!("[System Alerts — please review]\n\n{events_text}\n\n---\n\n{user_input}")
+        };
+
         self.session.push(Message {
             role: Role::User,
-            content: user_input.to_string(),
+            content: effective_input,
             tool_calls: None,
             tool_call_id: None,
         });
 
-        let tool_definitions = self.tools.definitions();
+        execute_turn(
+            &*self.provider,
+            &self.tools,
+            &self.identity,
+            &self.options,
+            self.observations.as_deref(),
+            &mut self.session,
+            display,
+        )
+        .await
+    }
 
-        for iteration in 0..MAX_TOOL_ITERATIONS {
-            // Assemble full message list: system prompt + session history
-            let messages = assemble_system_prompt(
-                &self.identity,
-                &self.tools,
-                &self.session,
-                self.observations.as_deref(),
-            );
+    /// Run an ephemeral agent turn for background pulse or cron tasks.
+    ///
+    /// Creates a temporary session that is not added to the main conversation.
+    /// Returns both the response text and the ephemeral messages so the caller
+    /// can feed them into `run_memory_pipeline()`.
+    ///
+    /// # Errors
+    /// Returns `IronclawError` if the model call fails.
+    pub async fn run_system_turn(
+        &self,
+        prompt: &str,
+        display: &dyn TurnDisplay,
+    ) -> Result<SystemTurnResult, IronclawError> {
+        let mut session = Session::new();
+        session.push(Message {
+            role: Role::User,
+            content: prompt.to_string(),
+            tool_calls: None,
+            tool_call_id: None,
+        });
 
-            // Call the model
-            let response = self
-                .provider
-                .complete(&messages, &tool_definitions, &self.options)
-                .await
-                .map_err(IronclawError::Model)?;
+        let response = execute_turn(
+            &*self.provider,
+            &self.tools,
+            &self.identity,
+            &self.options,
+            self.observations.as_deref(),
+            &mut session,
+            display,
+        )
+        .await?;
 
-            if response.is_complete() || response.tool_calls.is_empty() {
-                // Final text response
-                self.session.push(Message {
-                    role: Role::Assistant,
-                    content: response.content.clone(),
-                    tool_calls: None,
-                    tool_call_id: None,
-                });
-
-                log_usage(&response);
-                return Ok(response.content);
-            }
-
-            // Tool call loop
-            tracing::info!(
-                iteration,
-                tool_count = response.tool_calls.len(),
-                "processing tool calls"
-            );
-
-            // Push assistant message with tool calls
-            self.session.push(Message {
-                role: Role::Assistant,
-                content: response.content.clone(),
-                tool_calls: Some(response.tool_calls.clone()),
-                tool_call_id: None,
-            });
-
-            // Execute each tool call and push results
-            for tool_call in &response.tool_calls {
-                cli.show_tool_call(&tool_call.name, &tool_call.arguments);
-
-                let result = self
-                    .tools
-                    .execute(&tool_call.name, tool_call.arguments.clone())
-                    .await;
-
-                let (output, is_error) = match result {
-                    Ok(r) => (r.output, r.is_error),
-                    Err(e) => (e.to_string(), true),
-                };
-
-                cli.show_tool_result(&tool_call.name, &output, is_error);
-
-                self.session.push(Message {
-                    role: Role::Tool,
-                    content: output,
-                    tool_calls: None,
-                    tool_call_id: Some(tool_call.id.clone()),
-                });
-            }
-
-            log_usage(&response);
-        }
-
-        Err(IronclawError::Other(anyhow::anyhow!(
-            "agent exceeded maximum tool iterations ({MAX_TOOL_ITERATIONS})"
-        )))
+        Ok(SystemTurnResult {
+            response,
+            messages: session.messages().to_vec(),
+        })
     }
 
     /// Get the current session message count.
@@ -182,6 +184,84 @@ impl Agent {
     pub fn messages_since(&self, idx: usize) -> &[Message] {
         self.session.messages_since(idx)
     }
+}
+
+/// Execute the tool loop against the given session.
+///
+/// Calls the provider repeatedly until it returns a text response (no tool calls),
+/// executing any requested tools in between. Updates `session` in place.
+async fn execute_turn(
+    provider: &dyn ModelProvider,
+    tools: &ToolRegistry,
+    identity: &IdentityFiles,
+    options: &CompletionOptions,
+    observations: Option<&str>,
+    session: &mut Session,
+    display: &dyn TurnDisplay,
+) -> Result<String, IronclawError> {
+    let tool_definitions = tools.definitions();
+
+    for iteration in 0..MAX_TOOL_ITERATIONS {
+        let messages = assemble_system_prompt(identity, tools, session, observations);
+
+        let response = provider
+            .complete(&messages, &tool_definitions, options)
+            .await
+            .map_err(IronclawError::Model)?;
+
+        if response.is_complete() || response.tool_calls.is_empty() {
+            session.push(Message {
+                role: Role::Assistant,
+                content: response.content.clone(),
+                tool_calls: None,
+                tool_call_id: None,
+            });
+
+            log_usage(&response);
+            return Ok(response.content);
+        }
+
+        tracing::info!(
+            iteration,
+            tool_count = response.tool_calls.len(),
+            "processing tool calls"
+        );
+
+        session.push(Message {
+            role: Role::Assistant,
+            content: response.content.clone(),
+            tool_calls: Some(response.tool_calls.clone()),
+            tool_call_id: None,
+        });
+
+        for tool_call in &response.tool_calls {
+            display.show_tool_call(&tool_call.name, &tool_call.arguments);
+
+            let result = tools
+                .execute(&tool_call.name, tool_call.arguments.clone())
+                .await;
+
+            let (output, is_error) = match result {
+                Ok(r) => (r.output, r.is_error),
+                Err(e) => (e.to_string(), true),
+            };
+
+            display.show_tool_result(&tool_call.name, &output, is_error);
+
+            session.push(Message {
+                role: Role::Tool,
+                content: output,
+                tool_calls: None,
+                tool_call_id: Some(tool_call.id.clone()),
+            });
+        }
+
+        log_usage(&response);
+    }
+
+    Err(IronclawError::Other(anyhow::anyhow!(
+        "agent exceeded maximum tool iterations ({MAX_TOOL_ITERATIONS})"
+    )))
 }
 
 /// Log token usage from a model response at info level.
@@ -199,6 +279,7 @@ fn log_usage(response: &ModelResponse) {
 #[expect(clippy::unwrap_used, reason = "test code uses unwrap for clarity")]
 mod tests {
     use super::*;
+    use crate::channels::null::NullDisplay;
     use crate::models::{ModelError, ToolCall, ToolDefinition};
     use async_trait::async_trait;
     use std::sync::Arc;
@@ -239,10 +320,6 @@ mod tests {
         }
     }
 
-    fn make_cli() -> CliChannel {
-        CliChannel::new("test-agent").unwrap()
-    }
-
     #[tokio::test]
     async fn single_text_response() {
         let provider =
@@ -255,8 +332,8 @@ mod tests {
             CompletionOptions::default(),
         );
 
-        let cli = make_cli();
-        let result = agent.process_message("hi", &cli).await.unwrap();
+        let display = NullDisplay;
+        let result = agent.process_message("hi", &display).await.unwrap();
         assert_eq!(result, "hello there", "should return model text");
     }
 
@@ -266,7 +343,6 @@ mod tests {
         registry.register_defaults();
 
         let provider = MockProvider::new(vec![
-            // First response: tool call
             ModelResponse::new(
                 String::new(),
                 vec![ToolCall {
@@ -275,7 +351,6 @@ mod tests {
                     arguments: serde_json::json!({"command": "echo test"}),
                 }],
             ),
-            // Second response: text (after seeing tool result)
             ModelResponse::new("the result was: test".to_string(), vec![]),
         ]);
 
@@ -286,8 +361,11 @@ mod tests {
             CompletionOptions::default(),
         );
 
-        let cli = make_cli();
-        let result = agent.process_message("run echo test", &cli).await.unwrap();
+        let display = NullDisplay;
+        let result = agent
+            .process_message("run echo test", &display)
+            .await
+            .unwrap();
         assert_eq!(
             result, "the result was: test",
             "should return final text after tool loop"
@@ -296,7 +374,6 @@ mod tests {
 
     #[tokio::test]
     async fn max_iterations_guard() {
-        // Provider always returns tool calls, never text
         let responses: Vec<ModelResponse> = (0..=MAX_TOOL_ITERATIONS)
             .map(|i| {
                 ModelResponse::new(
@@ -321,8 +398,59 @@ mod tests {
             CompletionOptions::default(),
         );
 
-        let cli = make_cli();
-        let result = agent.process_message("loop forever", &cli).await;
+        let display = NullDisplay;
+        let result = agent.process_message("loop forever", &display).await;
         assert!(result.is_err(), "should error after max iterations");
+    }
+
+    #[tokio::test]
+    async fn run_system_turn_ephemeral() {
+        let provider =
+            MockProvider::new(vec![ModelResponse::new("HEARTBEAT_OK".to_string(), vec![])]);
+
+        let agent = Agent::new(
+            Box::new(provider),
+            ToolRegistry::new(),
+            IdentityFiles::default(),
+            CompletionOptions::default(),
+        );
+
+        let display = NullDisplay;
+        let result = agent
+            .run_system_turn("check status", &display)
+            .await
+            .unwrap();
+        assert_eq!(result.response, "HEARTBEAT_OK", "response should match");
+        assert!(
+            !result.messages.is_empty(),
+            "should have ephemeral messages"
+        );
+        assert_eq!(agent.message_count(), 0, "main session should be untouched");
+    }
+
+    #[tokio::test]
+    async fn pending_system_events_prepended() {
+        let provider =
+            MockProvider::new(vec![ModelResponse::new("acknowledged".to_string(), vec![])]);
+
+        let mut agent = Agent::new(
+            Box::new(provider),
+            ToolRegistry::new(),
+            IdentityFiles::default(),
+            CompletionOptions::default(),
+        );
+
+        agent.queue_system_event("email arrived from boss".to_string());
+        let display = NullDisplay;
+        agent.process_message("what's up?", &display).await.unwrap();
+
+        // Queue should be drained
+        let msgs = agent.messages_since(0);
+        assert_eq!(msgs.len(), 2, "should have user + assistant messages");
+        assert!(
+            msgs.first()
+                .is_some_and(|m| m.content.contains("email arrived from boss")),
+            "system event should be in user message"
+        );
     }
 }

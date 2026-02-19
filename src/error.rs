@@ -30,6 +30,10 @@ pub enum IronclawError {
     #[error("channel error: {0}")]
     Channel(String),
 
+    /// Scheduling error (pulse or cron)
+    #[error("scheduling error: {0}")]
+    Scheduling(String),
+
     /// Catch-all for other errors
     #[error(transparent)]
     Other(#[from] anyhow::Error),

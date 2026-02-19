@@ -949,7 +949,7 @@ Ordered by "what gets you a usable agent fastest":
 
 **Milestone: You can talk to your agent via CLI.**
 
-### Phase 2: Memory & continuity
+### Phase 2: Memory & continuity (COMPLETE)
 8. `memory/observer` — Tier 1 compression.
 9. `memory/daily_log` — Daily log writing for explicit notes.
 10. `memory/reflector` — Tier 2 compression.

@@ -123,6 +123,24 @@ impl WorkspaceLayout {
         self.root.join("hooks")
     }
 
+    /// Path to HEARTBEAT.yml -- pulse monitoring configuration.
+    #[must_use]
+    pub fn heartbeat_yml(&self) -> PathBuf {
+        self.root.join("HEARTBEAT.yml")
+    }
+
+    /// Path to Alerts.md -- alert delivery behavior instructions.
+    #[must_use]
+    pub fn alerts_md(&self) -> PathBuf {
+        self.root.join("Alerts.md")
+    }
+
+    /// Path to cron/jobs.json -- persisted scheduled jobs.
+    #[must_use]
+    pub fn cron_jobs_json(&self) -> PathBuf {
+        self.root.join("cron/jobs.json")
+    }
+
     /// All directories that should exist in a bootstrapped workspace.
     #[must_use]
     pub fn required_dirs(&self) -> Vec<PathBuf> {
@@ -168,6 +186,26 @@ mod tests {
             layout.memory_dir(),
             PathBuf::from("/tmp/ws/memory"),
             "memory_dir path"
+        );
+    }
+
+    #[test]
+    fn layout_pulse_cron_paths() {
+        let layout = WorkspaceLayout::new("/tmp/ws");
+        assert_eq!(
+            layout.heartbeat_yml(),
+            PathBuf::from("/tmp/ws/HEARTBEAT.yml"),
+            "heartbeat_yml path"
+        );
+        assert_eq!(
+            layout.alerts_md(),
+            PathBuf::from("/tmp/ws/Alerts.md"),
+            "alerts_md path"
+        );
+        assert_eq!(
+            layout.cron_jobs_json(),
+            PathBuf::from("/tmp/ws/cron/jobs.json"),
+            "cron_jobs_json path"
         );
     }
 

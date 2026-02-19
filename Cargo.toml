@@ -5,7 +5,7 @@ edition = "2024"
 
 [dependencies]
 # Async runtime
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "fs", "signal", "io-std", "io-util"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "fs", "signal", "io-std", "io-util", "sync", "time"] }
 
 # HTTP client
 reqwest = { version = "0.13", features = ["json"] }
@@ -27,6 +27,8 @@ dotenvy = "0.15"
 shellexpand = "3"
 chrono = { version = "0.4", features = ["serde"] }
 tantivy = "0.22"
+serde_yml = "0.0"
+cron = "0.12"
 
 # Logging
 tracing = "0.1"
