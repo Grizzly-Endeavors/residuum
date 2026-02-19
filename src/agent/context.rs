@@ -9,15 +9,16 @@ use super::session::Session;
 
 /// Assemble the full message list for a model call.
 ///
-/// Creates a system message from identity files and tool listings,
-/// then appends the session history.
+/// Creates a system message from identity files, tool listings, and
+/// observation log content, then appends the session history.
 #[must_use]
 pub fn assemble_system_prompt(
     identity: &IdentityFiles,
     tools: &ToolRegistry,
     session: &Session,
+    observations: Option<&str>,
 ) -> Vec<Message> {
-    let system_content = build_system_content(identity, tools);
+    let system_content = build_system_content(identity, tools, observations);
 
     let mut messages = Vec::with_capacity(1 + session.messages().len());
 
@@ -42,7 +43,12 @@ pub fn assemble_system_prompt(
 /// 4. Available tool names listing
 /// 5. USER.md content
 /// 6. MEMORY.md content
-fn build_system_content(identity: &IdentityFiles, tools: &ToolRegistry) -> String {
+/// 7. Observation log (if present)
+fn build_system_content(
+    identity: &IdentityFiles,
+    tools: &ToolRegistry,
+    observations: Option<&str>,
+) -> String {
     let mut parts = Vec::new();
 
     if let Some(soul) = &identity.soul {
@@ -72,6 +78,12 @@ fn build_system_content(identity: &IdentityFiles, tools: &ToolRegistry) -> Strin
         parts.push(memory.clone());
     }
 
+    if let Some(obs) = observations
+        && !obs.is_empty()
+    {
+        parts.push(format!("## Observation Log\n\n{obs}"));
+    }
+
     parts.join("\n\n")
 }
 
@@ -85,7 +97,7 @@ mod tests {
         let tools = ToolRegistry::new();
         let session = Session::new();
 
-        let messages = assemble_system_prompt(&identity, &tools, &session);
+        let messages = assemble_system_prompt(&identity, &tools, &session, None);
         assert_eq!(messages.len(), 1, "should have system message only");
         assert_eq!(
             messages.first().map(|m| &m.role),
@@ -106,7 +118,7 @@ mod tests {
             tool_call_id: None,
         });
 
-        let messages = assemble_system_prompt(&identity, &tools, &session);
+        let messages = assemble_system_prompt(&identity, &tools, &session, None);
         assert_eq!(messages.len(), 2, "should have system + user message");
     }
 
@@ -119,7 +131,7 @@ mod tests {
         };
         let tools = ToolRegistry::new();
 
-        let content = build_system_content(&identity, &tools);
+        let content = build_system_content(&identity, &tools, None);
         assert!(
             content.contains("test agent"),
             "should include soul content"
@@ -136,12 +148,54 @@ mod tests {
         let mut tools = ToolRegistry::new();
         tools.register_defaults();
 
-        let content = build_system_content(&identity, &tools);
+        let content = build_system_content(&identity, &tools, None);
         assert!(content.contains("read_file"), "should list read_file tool");
         assert!(
             content.contains("write_file"),
             "should list write_file tool"
         );
         assert!(content.contains("exec"), "should list exec tool");
+    }
+
+    #[test]
+    fn system_content_includes_observations() {
+        let identity = IdentityFiles::default();
+        let tools = ToolRegistry::new();
+
+        let observations = "episode ep-001: user prefers concise output";
+        let content = build_system_content(&identity, &tools, Some(observations));
+
+        assert!(
+            content.contains("## Observation Log"),
+            "should have observation log header"
+        );
+        assert!(
+            content.contains("user prefers concise output"),
+            "should include observation content"
+        );
+    }
+
+    #[test]
+    fn system_content_skips_empty_observations() {
+        let identity = IdentityFiles::default();
+        let tools = ToolRegistry::new();
+
+        let content = build_system_content(&identity, &tools, Some(""));
+        assert!(
+            !content.contains("Observation Log"),
+            "empty observations should be skipped"
+        );
+    }
+
+    #[test]
+    fn system_content_skips_none_observations() {
+        let identity = IdentityFiles::default();
+        let tools = ToolRegistry::new();
+
+        let content = build_system_content(&identity, &tools, None);
+        assert!(
+            !content.contains("Observation Log"),
+            "None observations should be skipped"
+        );
     }
 }

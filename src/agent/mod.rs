@@ -22,6 +22,7 @@ pub struct Agent {
     identity: IdentityFiles,
     session: Session,
     options: CompletionOptions,
+    observations: Option<String>,
 }
 
 impl Agent {
@@ -39,7 +40,37 @@ impl Agent {
             identity,
             session: Session::new(),
             options,
+            observations: None,
         }
+    }
+
+    /// Reload observations from the observation log file.
+    ///
+    /// # Errors
+    /// Returns an error if the file exists but cannot be read.
+    pub async fn reload_observations(
+        &mut self,
+        layout: &crate::workspace::layout::WorkspaceLayout,
+    ) -> Result<(), IronclawError> {
+        let path = layout.observations_json();
+        match tokio::fs::read_to_string(&path).await {
+            Ok(content) if !content.trim().is_empty() => {
+                self.observations = Some(content);
+            }
+            Ok(_) => {
+                self.observations = None;
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                self.observations = None;
+            }
+            Err(e) => {
+                return Err(IronclawError::Memory(format!(
+                    "failed to read observations at {}: {e}",
+                    path.display()
+                )));
+            }
+        }
+        Ok(())
     }
 
     /// Process a user message through the model, executing tool calls as needed.
@@ -66,7 +97,12 @@ impl Agent {
 
         for iteration in 0..MAX_TOOL_ITERATIONS {
             // Assemble full message list: system prompt + session history
-            let messages = assemble_system_prompt(&self.identity, &self.tools, &self.session);
+            let messages = assemble_system_prompt(
+                &self.identity,
+                &self.tools,
+                &self.session,
+                self.observations.as_deref(),
+            );
 
             // Call the model
             let response = self

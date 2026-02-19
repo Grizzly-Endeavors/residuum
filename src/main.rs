@@ -96,6 +96,9 @@ async fn run() -> Result<(), IronclawError> {
     // Build agent
     let mut agent = Agent::new(provider, tools, identity, options);
 
+    // Load observations into agent context
+    agent.reload_observations(&layout).await?;
+
     // Build CLI channel
     let mut cli = CliChannel::new("ironclaw")?;
 
@@ -125,6 +128,10 @@ async fn run() -> Result<(), IronclawError> {
                         episode_id = %episode.id,
                         "observer extracted episode"
                     );
+                    // Reload observations so next turn sees the new episode
+                    if let Err(e) = agent.reload_observations(&layout).await {
+                        eprintln!("warning: failed to reload observations: {e}");
+                    }
                 }
                 Err(e) => {
                     eprintln!("warning: observer failed: {e}");
