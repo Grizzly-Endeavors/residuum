@@ -4,6 +4,38 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+# Async runtime
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "fs", "signal", "io-std", "io-util"] }
+
+# HTTP client
+reqwest = { version = "0.13", features = ["json"] }
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+
+# Error handling
+anyhow = "1"
+thiserror = "2"
+
+# Utilities
+async-trait = "0.1"
+rand = "0.8"
+dirs = "5"
+dotenvy = "0.15"
+shellexpand = "3"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# CLI
+rustyline = "15"
+
+[dev-dependencies]
+tempfile = "3"
+wiremock = "0.6"
 
 # Lint configuration
 #

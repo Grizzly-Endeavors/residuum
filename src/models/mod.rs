@@ -1,0 +1,254 @@
+//! Model provider abstraction and shared LLM types.
+
+pub mod anthropic;
+mod http;
+pub mod ollama;
+pub mod openai;
+pub mod retry;
+
+pub use http::{HttpClientConfig, SharedHttpClient};
+pub use retry::{RetryConfig, with_retry};
+
+use async_trait::async_trait;
+use serde::{Deserialize, Serialize};
+use thiserror::Error;
+
+/// Errors from model provider operations.
+#[derive(Error, Debug)]
+pub enum ModelError {
+    /// HTTP request failed (network, DNS, TLS)
+    #[error("HTTP request failed: {0}")]
+    Request(#[from] reqwest::Error),
+
+    /// Response could not be parsed
+    #[error("failed to parse response: {0}")]
+    Parse(String),
+
+    /// API returned an error status
+    #[error("API error: {0}")]
+    Api(String),
+
+    /// Request timed out
+    #[error("request timed out after {0} seconds")]
+    Timeout(u64),
+}
+
+impl ModelError {
+    /// Whether this error is likely to succeed on retry.
+    ///
+    /// - Request/Timeout: transient network failures
+    /// - Parse: permanent -- malformed response won't improve
+    /// - Api: retryable only when the message indicates rate-limiting or overload
+    #[must_use]
+    pub fn is_retryable(&self) -> bool {
+        match self {
+            Self::Request(_) | Self::Timeout(_) => true,
+            Self::Parse(_) => false,
+            Self::Api(msg) => {
+                let lower = msg.to_lowercase();
+                lower.contains("rate")
+                    || lower.contains("limit")
+                    || lower.contains("overload")
+                    || lower.contains("capacity")
+                    || lower.contains("429")
+                    || lower.contains("503")
+                    || lower.contains("502")
+            }
+        }
+    }
+}
+
+/// A message in the conversation.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Message {
+    /// The role of the message sender.
+    pub role: Role,
+    /// The text content of the message.
+    pub content: String,
+    /// Tool calls requested by the assistant.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_calls: Option<Vec<ToolCall>>,
+    /// The ID of the tool call this message is a result for.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_call_id: Option<String>,
+}
+
+/// The role of a message participant.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Role {
+    /// System instruction message.
+    System,
+    /// User input message.
+    User,
+    /// Assistant response message.
+    Assistant,
+    /// Tool result message.
+    Tool,
+}
+
+/// A tool call requested by the model.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ToolCall {
+    /// Unique identifier for this tool call.
+    pub id: String,
+    /// Name of the tool to invoke.
+    pub name: String,
+    /// Arguments as a JSON value.
+    pub arguments: serde_json::Value,
+}
+
+/// Definition of an available tool sent to the model.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ToolDefinition {
+    /// The tool name.
+    pub name: String,
+    /// Human-readable description of what the tool does.
+    pub description: String,
+    /// JSON Schema describing the tool's parameters.
+    pub parameters: serde_json::Value,
+}
+
+/// Token usage information from a model response.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Usage {
+    /// Number of input/prompt tokens consumed.
+    pub input_tokens: u32,
+    /// Number of output/completion tokens generated.
+    pub output_tokens: u32,
+}
+
+/// Response from a model provider.
+#[derive(Debug, Clone)]
+pub struct ModelResponse {
+    /// The assistant's text response (may be empty if only tool calls).
+    pub content: String,
+    /// Tool calls the assistant wants to make.
+    pub tool_calls: Vec<ToolCall>,
+    /// Token usage information, if the provider reports it.
+    pub usage: Option<Usage>,
+}
+
+impl ModelResponse {
+    /// Create a new model response.
+    #[must_use]
+    pub fn new(content: String, tool_calls: Vec<ToolCall>) -> Self {
+        Self {
+            content,
+            tool_calls,
+            usage: None,
+        }
+    }
+
+    /// Whether this response represents a complete turn (text, no tool calls).
+    #[must_use]
+    pub fn is_complete(&self) -> bool {
+        self.tool_calls.is_empty() && !self.content.is_empty()
+    }
+}
+
+/// Options for model completion requests.
+#[derive(Debug, Clone, Default)]
+pub struct CompletionOptions {
+    /// Maximum tokens to generate.
+    pub max_tokens: Option<u32>,
+}
+
+/// Trait for model provider implementations.
+#[async_trait]
+pub trait ModelProvider: Send + Sync {
+    /// Send a conversation to the model and get a response.
+    ///
+    /// # Errors
+    /// Returns `ModelError` if the request fails, times out, or the response is malformed.
+    async fn complete(
+        &self,
+        messages: &[Message],
+        tools: &[ToolDefinition],
+        options: &CompletionOptions,
+    ) -> Result<ModelResponse, ModelError>;
+
+    /// Get the model identifier.
+    fn model_name(&self) -> &str;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn model_error_display_parse() {
+        let err = ModelError::Parse("bad json".to_string());
+        assert_eq!(
+            err.to_string(),
+            "failed to parse response: bad json",
+            "parse error should include context"
+        );
+    }
+
+    #[test]
+    fn model_error_display_timeout() {
+        let err = ModelError::Timeout(60);
+        assert_eq!(
+            err.to_string(),
+            "request timed out after 60 seconds",
+            "timeout should show duration"
+        );
+    }
+
+    #[test]
+    fn model_error_is_retryable_transient() {
+        assert!(
+            ModelError::Timeout(60).is_retryable(),
+            "timeout should be retryable"
+        );
+
+        assert!(
+            ModelError::Api("rate limit exceeded".to_string()).is_retryable(),
+            "rate limit should be retryable"
+        );
+
+        assert!(
+            ModelError::Api("Error 429: too many requests".to_string()).is_retryable(),
+            "429 should be retryable"
+        );
+    }
+
+    #[test]
+    fn model_error_is_retryable_permanent() {
+        assert!(
+            !ModelError::Parse("invalid json".to_string()).is_retryable(),
+            "parse error should not be retryable"
+        );
+
+        assert!(
+            !ModelError::Api("invalid api key".to_string()).is_retryable(),
+            "auth error should not be retryable"
+        );
+    }
+
+    #[test]
+    fn model_response_is_complete() {
+        let complete = ModelResponse::new("hello".to_string(), vec![]);
+        assert!(complete.is_complete(), "text-only response is complete");
+
+        let with_tools = ModelResponse::new(
+            String::new(),
+            vec![ToolCall {
+                id: "1".to_string(),
+                name: "test".to_string(),
+                arguments: serde_json::Value::Null,
+            }],
+        );
+        assert!(
+            !with_tools.is_complete(),
+            "response with tool calls is not complete"
+        );
+
+        let empty = ModelResponse::new(String::new(), vec![]);
+        assert!(
+            !empty.is_complete(),
+            "empty response with no tools is not complete"
+        );
+    }
+}

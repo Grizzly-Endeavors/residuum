@@ -88,3 +88,4 @@ The orchestrating agent is responsible for running `cargo fmt`, `cargo clippy`, 
 - Testing is a first class operation, NEVER skip test implementation.
 - Commits should be made frequently, especially for large multi-phase tasks.
 - All changes must be pushed before giving the user a completion summary.
+- Use git commands directly without -C unless there is an explicit reason the command requires it.

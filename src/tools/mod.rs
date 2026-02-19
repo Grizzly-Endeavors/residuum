@@ -1,0 +1,172 @@
+//! Tool system for agent-invoked operations.
+
+mod exec;
+mod read;
+mod write;
+
+use async_trait::async_trait;
+use serde_json::Value;
+use thiserror::Error;
+
+use crate::models::ToolDefinition;
+
+/// Errors from tool execution.
+#[derive(Error, Debug)]
+pub enum ToolError {
+    /// The requested tool was not found in the registry.
+    #[error("unknown tool: {0}")]
+    NotFound(String),
+
+    /// Tool execution failed.
+    #[error("tool execution failed: {0}")]
+    Execution(String),
+
+    /// Invalid arguments provided to the tool.
+    #[error("invalid arguments: {0}")]
+    InvalidArguments(String),
+}
+
+/// Result of a tool execution.
+#[derive(Debug, Clone)]
+pub struct ToolResult {
+    /// The output text from the tool.
+    pub output: String,
+    /// Whether the tool execution encountered an error.
+    pub is_error: bool,
+}
+
+impl ToolResult {
+    /// Create a successful tool result.
+    #[must_use]
+    pub fn success(output: impl Into<String>) -> Self {
+        Self {
+            output: output.into(),
+            is_error: false,
+        }
+    }
+
+    /// Create an error tool result.
+    #[must_use]
+    pub fn error(output: impl Into<String>) -> Self {
+        Self {
+            output: output.into(),
+            is_error: true,
+        }
+    }
+}
+
+/// Trait for tool implementations that the agent can invoke.
+#[async_trait]
+pub trait Tool: Send + Sync {
+    /// The unique name of this tool.
+    fn name(&self) -> &str;
+
+    /// The tool definition sent to the model.
+    fn definition(&self) -> ToolDefinition;
+
+    /// Execute the tool with the given arguments.
+    ///
+    /// # Errors
+    /// Returns `ToolError` if the arguments are invalid or execution fails.
+    async fn execute(&self, arguments: Value) -> Result<ToolResult, ToolError>;
+}
+
+/// Registry of available tools.
+pub struct ToolRegistry {
+    tools: Vec<Box<dyn Tool>>,
+}
+
+impl Default for ToolRegistry {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl ToolRegistry {
+    /// Create a new empty tool registry.
+    #[must_use]
+    pub fn new() -> Self {
+        Self { tools: Vec::new() }
+    }
+
+    /// Register a tool in the registry.
+    pub fn register(&mut self, tool: Box<dyn Tool>) {
+        self.tools.push(tool);
+    }
+
+    /// Get all tool definitions for sending to the model.
+    #[must_use]
+    pub fn definitions(&self) -> Vec<ToolDefinition> {
+        self.tools.iter().map(|t| t.definition()).collect()
+    }
+
+    /// Execute a tool by name with the given arguments.
+    ///
+    /// # Errors
+    /// Returns `ToolError::NotFound` if no tool with the given name exists,
+    /// or propagates execution errors from the tool.
+    pub async fn execute(&self, name: &str, arguments: Value) -> Result<ToolResult, ToolError> {
+        let tool = self
+            .tools
+            .iter()
+            .find(|t| t.name() == name)
+            .ok_or_else(|| ToolError::NotFound(name.to_string()))?;
+
+        tool.execute(arguments).await
+    }
+
+    /// Register the default set of tools (read, write, exec).
+    pub fn register_defaults(&mut self) {
+        self.register(Box::new(read::ReadTool));
+        self.register(Box::new(write::WriteTool));
+        self.register(Box::new(exec::ExecTool));
+    }
+}
+
+#[cfg(test)]
+#[expect(clippy::unwrap_used, reason = "test code uses unwrap for clarity")]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tool_result_success() {
+        let result = ToolResult::success("output");
+        assert!(!result.is_error, "success result should not be error");
+        assert_eq!(result.output, "output", "output should match");
+    }
+
+    #[test]
+    fn tool_result_error() {
+        let result = ToolResult::error("failed");
+        assert!(result.is_error, "error result should be error");
+        assert_eq!(result.output, "failed", "output should match");
+    }
+
+    #[tokio::test]
+    async fn registry_not_found() {
+        let registry = ToolRegistry::new();
+        let result = registry.execute("nonexistent", Value::Null).await;
+        assert!(result.is_err(), "should error on unknown tool");
+        assert!(
+            matches!(result.unwrap_err(), ToolError::NotFound(_)),
+            "should be NotFound"
+        );
+    }
+
+    #[test]
+    fn registry_definitions_empty() {
+        let registry = ToolRegistry::new();
+        assert!(
+            registry.definitions().is_empty(),
+            "empty registry should have no definitions"
+        );
+    }
+
+    #[test]
+    fn registry_with_defaults() {
+        let mut registry = ToolRegistry::new();
+        registry.register_defaults();
+        let defs = registry.definitions();
+        assert_eq!(defs.len(), 3, "should have read, write, exec tools");
+    }
+}
