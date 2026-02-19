@@ -22,6 +22,10 @@ pub enum IronclawError {
     #[error(transparent)]
     Tool(#[from] ToolError),
 
+    /// Memory subsystem error
+    #[error("memory error: {0}")]
+    Memory(String),
+
     /// CLI channel error
     #[error("channel error: {0}")]
     Channel(String),

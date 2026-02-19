@@ -63,6 +63,12 @@ impl WorkspaceLayout {
         self.root.join("memory/episodes")
     }
 
+    /// Path to the observation log file.
+    #[must_use]
+    pub fn observations_json(&self) -> PathBuf {
+        self.root.join("memory/observations.json")
+    }
+
     /// Path to the skills directory.
     #[must_use]
     pub fn skills_dir(&self) -> PathBuf {
