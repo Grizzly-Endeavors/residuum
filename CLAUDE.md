@@ -1,5 +1,13 @@
 # Ironclaw
 
+This project is a derivative of OpenClaw, and coopts much of its architecture. You can review it's code at ~/Projects/openclaw
+
+**Important docs:**
+./design-philosophy.md
+./ironclaw-design.md
+./para-context-design.md
+./personal-agent-design.md
+
 ## Commit Requirements, Linting, and Formatting
 
 ### Git Hooks

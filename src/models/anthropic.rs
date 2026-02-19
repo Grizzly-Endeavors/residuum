@@ -220,13 +220,24 @@ impl ModelProvider for AnthropicClient {
         );
 
         let timeout_secs = self.http.timeout_secs();
-        let response = self
+        let mut req_builder = self
             .http
             .client()
             .post(self.endpoint())
-            .header("x-api-key", &self.api_key)
             .header("anthropic-version", ANTHROPIC_VERSION)
-            .header("content-type", "application/json")
+            .header("content-type", "application/json");
+
+        // OAuth tokens (sk-ant-oat01-*) use Bearer auth + beta header;
+        // standard API keys use x-api-key
+        if self.api_key.starts_with("sk-ant-oat01-") {
+            req_builder = req_builder
+                .header("Authorization", format!("Bearer {}", self.api_key))
+                .header("anthropic-beta", "oauth-2025-04-20");
+        } else {
+            req_builder = req_builder.header("x-api-key", &self.api_key);
+        }
+
+        let response = req_builder
             .json(&request)
             .send()
             .await

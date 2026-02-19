@@ -938,7 +938,7 @@ Things deliberately scoped out of the initial implementation:
 
 Ordered by "what gets you a usable agent fastest":
 
-### Phase 1: Core loop
+### Phase 1: Core loop (COMPLETE)
 1. Shared types — Message types, config types, error handling (crate-root modules).
 2. `workspace` — Layout conventions, identity file loading, bootstrap.
 3. `models` — Anthropic + Ollama providers (use existing connectors).
