@@ -1,0 +1,52 @@
+#!/usr/bin/env bash
+# Commit message validation hook
+# Enforces conventional commit format
+
+set -e
+
+COMMIT_MSG_FILE=$1
+COMMIT_MSG=$(cat "$COMMIT_MSG_FILE")
+
+# Colors
+RED='\033[0;31m'
+YELLOW='\033[0;33m'
+NC='\033[0m'
+
+# Skip merge commits
+if echo "$COMMIT_MSG" | grep -qE '^Merge '; then
+    exit 0
+fi
+
+# Check minimum length (excluding Co-Authored-By lines)
+MSG_BODY=$(echo "$COMMIT_MSG" | grep -v "^Co-Authored-By:" | head -1)
+if [ ${#MSG_BODY} -lt 10 ]; then
+    echo -e "${RED}ERROR: Commit message too short.${NC}"
+    echo "First line must be at least 10 characters."
+    exit 1
+fi
+
+# Check first line isn't too long
+FIRST_LINE=$(echo "$COMMIT_MSG" | head -1)
+if [ ${#FIRST_LINE} -gt 72 ]; then
+    echo -e "${YELLOW}WARNING: First line is ${#FIRST_LINE} characters (recommended max: 72).${NC}"
+fi
+
+# Check for imperative mood (basic check - starts with capital, no trailing period)
+if echo "$FIRST_LINE" | grep -qE '\.$'; then
+    echo -e "${YELLOW}NOTE: Commit message should not end with a period.${NC}"
+fi
+
+# Conventional commit prefixes (optional but encouraged)
+VALID_PREFIXES="feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert"
+if ! echo "$FIRST_LINE" | grep -qiE "^($VALID_PREFIXES)(\(.+\))?:|^[A-Z]"; then
+    echo -e "${YELLOW}TIP: Consider using conventional commit format:${NC}"
+    echo "  feat: add new feature"
+    echo "  fix: fix a bug"
+    echo "  docs: documentation changes"
+    echo "  refactor: code refactoring"
+    echo "  test: add or update tests"
+    echo "  ci: CI/CD changes"
+    echo "  chore: maintenance tasks"
+fi
+
+exit 0

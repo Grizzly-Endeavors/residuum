@@ -4,3 +4,81 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+
+# Lint configuration
+#
+# These rules are intentionally strict. This project is primarily developed
+# and maintained by AI coding agents, and agents will take every shortcut
+# that isn't explicitly denied. Warnings get ignored; only hard errors
+# change behavior. The strictness here is a substitute for the discipline
+# a human developer would bring naturally.
+#
+# Human contributors: the pre-commit hooks enforce everything, so you'll
+# know immediately if something needs fixing.
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+# Pedantic baseline. Kept at warn (not deny) because new clippy versions
+# add lints to this group — deny would break builds on toolchain upgrades
+# with no code changes. Individual lints below override where needed.
+pedantic = { level = "warn", priority = -1 }
+
+# --- Error handling: no shortcuts, no silent failures ---
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+get_unwrap = "deny"
+map_err_ignore = "deny"
+let_underscore_must_use = "deny"
+
+# --- Panic prevention beyond unwrap/expect ---
+indexing_slicing = "deny"
+string_slice = "deny"
+
+# --- Prevent incomplete/debug code from shipping ---
+todo = "deny"
+unimplemented = "deny"
+dbg_macro = "deny"
+
+# --- Controlled exit points (only main.rs may call process::exit) ---
+exit = "deny"
+
+# --- Documentation and API discipline ---
+missing_errors_doc = "deny"
+missing_panics_doc = "deny"
+must_use_candidate = "deny"
+
+# --- Assertion quality ---
+missing_assert_message = "deny"
+
+# --- Lint suppression hygiene ---
+# Every #[allow] must use #[expect] instead (warns when suppression is stale)
+allow_attributes = "deny"
+# Every suppression must explain why
+allow_attributes_without_reason = "deny"
+
+# --- Code quality enforcement ---
+format_push_string = "deny"
+redundant_type_annotations = "deny"
+needless_raw_strings = "deny"
+error_impl_error = "deny"
+tests_outside_test_module = "deny"
+empty_structs_with_brackets = "deny"
+rest_pat_in_fully_bound_structs = "deny"
+verbose_file_reads = "deny"
+clone_on_ref_ptr = "deny"
+multiple_inherent_impl = "deny"
+same_name_method = "deny"
+unseparated_literal_suffix = "deny"
+if_then_some_else_none = "deny"
+shadow_unrelated = "deny"
+wildcard_enum_match_arm = "deny"
+
+# --- Antipatterns ---
+rc_buffer = "deny"
+rc_mutex = "deny"
+
+# --- Keep relaxed (stylistic) ---
+module_name_repetitions = "allow"

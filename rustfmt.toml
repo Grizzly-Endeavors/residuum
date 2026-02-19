@@ -1,0 +1,15 @@
+# Rust formatting configuration
+# Run: cargo fmt
+
+edition = "2024"
+max_width = 100
+tab_spaces = 4
+newline_style = "Unix"
+
+# These options require nightly; uncomment if using nightly rustfmt:
+# imports_granularity = "Module"
+# group_imports = "StdExternalCrate"
+# reorder_imports = true
+
+use_field_init_shorthand = true
+use_try_shorthand = true
