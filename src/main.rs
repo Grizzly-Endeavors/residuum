@@ -87,6 +87,7 @@ async fn run() -> Result<(), IronclawError> {
     // Build tool registry
     let mut tools = ToolRegistry::new();
     tools.register_defaults();
+    tools.register_memory_tools(&layout);
 
     // Build completion options
     let options = CompletionOptions {

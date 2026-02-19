@@ -1,5 +1,6 @@
 //! Tool system for agent-invoked operations.
 
+pub mod daily_log;
 mod exec;
 mod read;
 mod write;
@@ -120,6 +121,11 @@ impl ToolRegistry {
         self.register(Box::new(read::ReadTool));
         self.register(Box::new(write::WriteTool));
         self.register(Box::new(exec::ExecTool));
+    }
+
+    /// Register memory-related tools (`daily_log`).
+    pub fn register_memory_tools(&mut self, layout: &crate::workspace::layout::WorkspaceLayout) {
+        self.register(Box::new(daily_log::DailyLogTool::new(layout.memory_dir())));
     }
 }
 
