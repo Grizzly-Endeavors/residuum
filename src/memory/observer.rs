@@ -1,11 +1,10 @@
-//! Observer: compresses unobserved messages into structured episodes via LLM.
+//! Observer: compresses recent messages into structured episodes via LLM.
 //!
-//! Fires synchronously after the agent completes a turn when the unobserved
-//! message token count exceeds the configured threshold.
+//! Fires synchronously after the agent completes a turn when the accumulated
+//! recent message token count exceeds the configured threshold.
 
 use chrono::Local;
 
-use crate::agent::session::Session;
 use crate::error::IronclawError;
 use crate::memory::episode_store::write_episode_transcript;
 use crate::memory::log_store::{append_episode, load_observation_log, next_episode_id};
@@ -20,7 +19,7 @@ const DEFAULT_THRESHOLD_TOKENS: usize = 30_000;
 /// Observer configuration.
 #[derive(Debug, Clone)]
 pub struct ObserverConfig {
-    /// Minimum estimated unobserved tokens before observation triggers.
+    /// Minimum estimated tokens in recent messages before observation triggers.
     pub threshold_tokens: usize,
 }
 
@@ -32,7 +31,7 @@ impl Default for ObserverConfig {
     }
 }
 
-/// The observer extracts structured episodes from unobserved conversation.
+/// The observer extracts structured episodes from recent messages.
 pub struct Observer {
     provider: Box<dyn ModelProvider>,
     config: ObserverConfig,
@@ -45,26 +44,28 @@ impl Observer {
         Self { provider, config }
     }
 
-    /// Check whether the observer should fire based on unobserved token count.
+    /// Check whether the observer should fire based on recent message token count.
     #[must_use]
-    pub fn should_observe(&self, session: &Session) -> bool {
-        let tokens = estimate_message_tokens(session.unobserved_messages());
+    pub fn should_observe(&self, recent_messages: &[Message]) -> bool {
+        let tokens = estimate_message_tokens(recent_messages);
         tokens >= self.config.threshold_tokens
     }
 
-    /// Extract an episode from unobserved messages, persist it, and mark observed.
+    /// Extract an episode from recent messages and persist it.
+    ///
+    /// The caller is responsible for clearing the recent messages file
+    /// after this succeeds.
     ///
     /// # Errors
     /// Returns an error if the LLM call fails or file persistence fails.
     pub async fn observe(
         &self,
-        session: &mut Session,
+        recent_messages: &[Message],
         layout: &WorkspaceLayout,
     ) -> Result<Episode, IronclawError> {
-        let unobserved = session.unobserved_messages();
-        if unobserved.is_empty() {
+        if recent_messages.is_empty() {
             return Err(IronclawError::Memory(
-                "no unobserved messages to extract from".to_string(),
+                "no recent messages to extract from".to_string(),
             ));
         }
 
@@ -73,7 +74,7 @@ impl Observer {
         let episode_id = next_episode_id(&log);
 
         // Build extraction prompt
-        let extraction_messages = build_extraction_prompt(unobserved);
+        let extraction_messages = build_extraction_prompt(recent_messages);
 
         // Call the model
         let response = self
@@ -86,13 +87,10 @@ impl Observer {
         let episode = parse_episode_response(&response, &episode_id)?;
 
         // Persist transcript
-        write_episode_transcript(&layout.episodes_dir(), &episode, unobserved).await?;
+        write_episode_transcript(&layout.episodes_dir(), &episode, recent_messages).await?;
 
         // Append to observation log
         append_episode(&layout.observations_json(), episode.clone()).await?;
-
-        // Mark session as observed
-        session.mark_observed();
 
         tracing::info!(
             episode_id = %episode.id,
@@ -270,9 +268,9 @@ mod tests {
         ]
     }"#;
 
-    fn push_messages(session: &mut Session, count: usize) {
-        for i in 0..count {
-            session.push(Message {
+    fn make_messages(count: usize) -> Vec<Message> {
+        (0..count)
+            .map(|i| Message {
                 role: Role::User,
                 content: format!(
                     "message {i} with enough content to contribute to token count - {}",
@@ -280,8 +278,8 @@ mod tests {
                 ),
                 tool_calls: None,
                 tool_call_id: None,
-            });
-        }
+            })
+            .collect()
     }
 
     #[test]
@@ -343,11 +341,10 @@ mod tests {
                 threshold_tokens: 1000,
             },
         );
-        let mut session = Session::new();
-        push_messages(&mut session, 2);
+        let messages = make_messages(2);
 
         assert!(
-            !observer.should_observe(&session),
+            !observer.should_observe(&messages),
             "should not observe below threshold"
         );
     }
@@ -360,21 +357,19 @@ mod tests {
                 threshold_tokens: 10,
             },
         );
-        let mut session = Session::new();
-        push_messages(&mut session, 5);
+        let messages = make_messages(5);
 
         assert!(
-            observer.should_observe(&session),
+            observer.should_observe(&messages),
             "should observe above threshold"
         );
     }
 
     #[tokio::test]
-    async fn observe_creates_episode_and_marks_observed() {
+    async fn observe_creates_episode() {
         let dir = tempfile::tempdir().unwrap();
         let layout = WorkspaceLayout::new(dir.path());
 
-        // Create required directories
         tokio::fs::create_dir_all(layout.episodes_dir())
             .await
             .unwrap();
@@ -389,19 +384,11 @@ mod tests {
             },
         );
 
-        let mut session = Session::new();
-        push_messages(&mut session, 5);
-
-        let episode = observer.observe(&mut session, &layout).await.unwrap();
+        let messages = make_messages(5);
+        let episode = observer.observe(&messages, &layout).await.unwrap();
 
         assert_eq!(episode.id, "ep-001", "first episode should be ep-001");
-        assert_eq!(
-            session.unobserved_count(),
-            0,
-            "all messages should be marked observed"
-        );
 
-        // Verify files were created
         let transcript_path = layout.episodes_dir().join("ep-001.md");
         assert!(transcript_path.exists(), "transcript file should exist");
 

@@ -69,6 +69,12 @@ impl WorkspaceLayout {
         self.root.join("memory/observations.json")
     }
 
+    /// Path to the recent (unobserved) messages file.
+    #[must_use]
+    pub fn recent_messages_json(&self) -> PathBuf {
+        self.root.join("memory/recent_messages.json")
+    }
+
     /// Path to the tantivy search index directory.
     #[must_use]
     pub fn search_index_dir(&self) -> PathBuf {

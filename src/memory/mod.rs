@@ -7,6 +7,7 @@ pub mod daily_log;
 pub mod episode_store;
 pub mod log_store;
 pub mod observer;
+pub mod recent_store;
 pub mod reflector;
 pub mod search;
 pub mod tokens;

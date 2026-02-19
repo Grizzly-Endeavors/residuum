@@ -171,15 +171,16 @@ impl Agent {
         )))
     }
 
-    /// Get a reference to the session.
+    /// Get the current session message count.
     #[must_use]
-    pub fn session(&self) -> &Session {
-        &self.session
+    pub fn message_count(&self) -> usize {
+        self.session.len()
     }
 
-    /// Get a mutable reference to the session.
-    pub fn session_mut(&mut self) -> &mut Session {
-        &mut self.session
+    /// Get messages added to the session since the given index.
+    #[must_use]
+    pub fn messages_since(&self, idx: usize) -> &[Message] {
+        self.session.messages_since(idx)
     }
 }
 

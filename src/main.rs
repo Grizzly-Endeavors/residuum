@@ -3,6 +3,8 @@
 //! Entrypoint that wires up configuration, workspace, model provider,
 //! tools, and the interactive REPL loop.
 
+use std::sync::Arc;
+
 use ironclaw::agent::Agent;
 use ironclaw::channels::AgentResponse;
 use ironclaw::channels::cli::CliChannel;
@@ -10,9 +12,10 @@ use ironclaw::config::{Config, ModelSpec, ProviderKind};
 use ironclaw::error::IronclawError;
 use ironclaw::memory::log_store::load_observation_log;
 use ironclaw::memory::observer::{Observer, ObserverConfig};
+use ironclaw::memory::recent_store::{
+    append_recent_messages, clear_recent_messages, load_recent_messages,
+};
 use ironclaw::memory::reflector::{Reflector, ReflectorConfig};
-use std::sync::Arc;
-
 use ironclaw::memory::search::create_shared_index;
 use ironclaw::models::anthropic::AnthropicClient;
 use ironclaw::models::ollama::OllamaClient;
@@ -125,6 +128,9 @@ async fn run() -> Result<(), IronclawError> {
             break;
         };
 
+        // Track message count before processing so we can extract new messages
+        let before = agent.message_count();
+
         match agent.process_message(&msg.content, &cli).await {
             Ok(response) => {
                 cli.show_response(&AgentResponse { content: response });
@@ -134,42 +140,78 @@ async fn run() -> Result<(), IronclawError> {
             }
         }
 
-        // Run observer if threshold is met
-        if observer.should_observe(agent.session()) {
-            match observer.observe(agent.session_mut(), &layout).await {
-                Ok(episode) => {
-                    tracing::info!(
-                        episode_id = %episode.id,
-                        "observer extracted episode"
-                    );
-
-                    // Index the new episode file
-                    let episode_path = layout.episodes_dir().join(format!("{}.md", episode.id));
-                    if let Ok(content) = tokio::fs::read_to_string(&episode_path).await
-                        && let Err(e) =
-                            search_index.index_file(&episode_path.to_string_lossy(), &content)
-                    {
-                        eprintln!("warning: failed to index episode: {e}");
-                    }
-
-                    // Check if reflector should fire
-                    run_reflector_if_needed(&reflector, &layout).await;
-
-                    // Reload observations so next turn sees updates
-                    if let Err(e) = agent.reload_observations(&layout).await {
-                        eprintln!("warning: failed to reload observations: {e}");
-                    }
-                }
-                Err(e) => {
-                    eprintln!("warning: observer failed: {e}");
-                }
-            }
-        }
+        // Persist new messages and run memory pipeline
+        let new_messages: Vec<_> = agent.messages_since(before).to_vec();
+        run_memory_pipeline(
+            &new_messages,
+            &observer,
+            &reflector,
+            &search_index,
+            &layout,
+            &mut agent,
+        )
+        .await;
 
         println!();
     }
 
     Ok(())
+}
+
+/// Persist new messages and run the observer/reflector/search pipeline.
+async fn run_memory_pipeline(
+    new_messages: &[ironclaw::models::Message],
+    observer: &Observer,
+    reflector: &Reflector,
+    search_index: &ironclaw::memory::search::MemoryIndex,
+    layout: &WorkspaceLayout,
+    agent: &mut Agent,
+) {
+    // Append new messages to recent_messages.json
+    if let Err(e) = append_recent_messages(&layout.recent_messages_json(), new_messages).await {
+        eprintln!("warning: failed to persist recent messages: {e}");
+        return;
+    }
+
+    // Load recent messages and check observer threshold
+    let recent = match load_recent_messages(&layout.recent_messages_json()).await {
+        Ok(msgs) => msgs,
+        Err(e) => {
+            eprintln!("warning: failed to load recent messages: {e}");
+            return;
+        }
+    };
+
+    if !observer.should_observe(&recent) {
+        return;
+    }
+
+    match observer.observe(&recent, layout).await {
+        Ok(episode) => {
+            tracing::info!(episode_id = %episode.id, "observer extracted episode");
+
+            if let Err(e) = clear_recent_messages(&layout.recent_messages_json()).await {
+                eprintln!("warning: failed to clear recent messages: {e}");
+            }
+
+            // Index the new episode file
+            let episode_path = layout.episodes_dir().join(format!("{}.md", episode.id));
+            if let Ok(content) = tokio::fs::read_to_string(&episode_path).await
+                && let Err(e) = search_index.index_file(&episode_path.to_string_lossy(), &content)
+            {
+                eprintln!("warning: failed to index episode: {e}");
+            }
+
+            run_reflector_if_needed(reflector, layout).await;
+
+            if let Err(e) = agent.reload_observations(layout).await {
+                eprintln!("warning: failed to reload observations: {e}");
+            }
+        }
+        Err(e) => {
+            eprintln!("warning: observer failed: {e}");
+        }
+    }
 }
 
 /// Build observer and reflector, sharing the same provider configuration.

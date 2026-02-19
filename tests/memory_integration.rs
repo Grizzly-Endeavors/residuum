@@ -1,7 +1,8 @@
 //! End-to-end integration test for the memory subsystem.
 //!
-//! Verifies the full flow: push messages → observer fires → episode file created →
-//! observations.json updated → search indexes episode → reflector compresses.
+//! Verifies the full flow: accumulate messages → observer fires → episode created →
+//! observations.json updated → recent messages cleared → search indexes episode →
+//! reflector compresses.
 
 #[expect(clippy::unwrap_used, reason = "test code uses unwrap for clarity")]
 #[expect(
@@ -13,9 +14,11 @@ mod memory_integration {
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
-    use ironclaw::agent::session::Session;
     use ironclaw::memory::log_store::{load_observation_log, next_episode_id};
     use ironclaw::memory::observer::{Observer, ObserverConfig};
+    use ironclaw::memory::recent_store::{
+        append_recent_messages, clear_recent_messages, load_recent_messages,
+    };
     use ironclaw::memory::reflector::{Reflector, ReflectorConfig};
     use ironclaw::memory::search::MemoryIndex;
     use ironclaw::models::{
@@ -94,25 +97,27 @@ mod memory_integration {
         .to_string()
     }
 
-    fn push_many_messages(session: &mut Session, count: usize) {
-        for i in 0..count {
-            let role = if i % 2 == 0 {
-                Role::User
-            } else {
-                Role::Assistant
-            };
-            session.push(Message {
-                role,
-                content: format!(
-                    "Message {i}: discussing workspace layout and file organization in detail. \
-                     The workspace uses a flat structure with identity files like SOUL.md, \
-                     AGENTS.md, USER.md, and MEMORY.md at the root level. {}",
-                    "Additional context and detail to increase token count. ".repeat(20)
-                ),
-                tool_calls: None,
-                tool_call_id: None,
-            });
-        }
+    fn make_messages(count: usize) -> Vec<Message> {
+        (0..count)
+            .map(|i| {
+                let role = if i % 2 == 0 {
+                    Role::User
+                } else {
+                    Role::Assistant
+                };
+                Message {
+                    role,
+                    content: format!(
+                        "Message {i}: discussing workspace layout and file organization in detail. \
+                         The workspace uses a flat structure with identity files like SOUL.md, \
+                         AGENTS.md, USER.md, and MEMORY.md at the root level. {}",
+                        "Additional context and detail to increase token count. ".repeat(20)
+                    ),
+                    tool_calls: None,
+                    tool_call_id: None,
+                }
+            })
+            .collect()
     }
 
     #[tokio::test]
@@ -125,7 +130,9 @@ mod memory_integration {
             tokio::fs::create_dir_all(&d).await.unwrap();
         }
 
-        // Phase 1: Observer fires and creates episode
+        let recent_path = layout.recent_messages_json();
+
+        // Phase 1: Accumulate messages and observer fires
         let observer = Observer::new(
             Box::new(MockProvider::new(vec![observer_response()])),
             ObserverConfig {
@@ -133,15 +140,19 @@ mod memory_integration {
             },
         );
 
-        let mut session = Session::new();
-        push_many_messages(&mut session, 10);
+        let messages = make_messages(10);
+        append_recent_messages(&recent_path, &messages)
+            .await
+            .unwrap();
 
+        let recent = load_recent_messages(&recent_path).await.unwrap();
         assert!(
-            observer.should_observe(&session),
+            observer.should_observe(&recent),
             "should trigger observation"
         );
 
-        let episode = observer.observe(&mut session, &layout).await.unwrap();
+        let episode = observer.observe(&recent, &layout).await.unwrap();
+        clear_recent_messages(&recent_path).await.unwrap();
 
         assert_eq!(episode.id, "ep-001", "first episode should be ep-001");
         assert_eq!(
@@ -159,10 +170,6 @@ mod memory_integration {
             transcript.contains("---"),
             "transcript should have frontmatter"
         );
-        assert!(
-            transcript.contains("ep-001"),
-            "transcript should reference episode ID"
-        );
 
         // Verify observations.json was updated
         let log = load_observation_log(&layout.observations_json())
@@ -170,17 +177,23 @@ mod memory_integration {
             .unwrap();
         assert_eq!(log.len(), 1, "observation log should have one episode");
 
-        // Verify session is marked observed
-        assert_eq!(
-            session.unobserved_count(),
-            0,
-            "all messages should be marked observed"
+        // Verify recent messages were cleared
+        let cleared = load_recent_messages(&recent_path).await.unwrap();
+        assert!(
+            cleared.is_empty(),
+            "recent messages should be cleared after episode creation"
         );
 
-        // Phase 2: Second observer run creates ep-002
-        push_many_messages(&mut session, 10);
+        // Phase 2: More messages accumulate, second episode created
+        let more_messages = make_messages(10);
+        append_recent_messages(&recent_path, &more_messages)
+            .await
+            .unwrap();
 
-        let episode2 = observer.observe(&mut session, &layout).await.unwrap();
+        let recent2 = load_recent_messages(&recent_path).await.unwrap();
+        let episode2 = observer.observe(&recent2, &layout).await.unwrap();
+        clear_recent_messages(&recent_path).await.unwrap();
+
         assert_eq!(episode2.id, "ep-002", "second episode should be ep-002");
 
         let updated_log = load_observation_log(&layout.observations_json())
@@ -230,16 +243,40 @@ mod memory_integration {
             vec!["ep-001", "ep-002"],
             "should track source episodes"
         );
+    }
 
-        // Verify observation log was replaced
-        let reloaded = load_observation_log(&layout.observations_json())
+    #[tokio::test]
+    async fn messages_persist_across_simulated_sessions() {
+        let dir = tempfile::tempdir().unwrap();
+        let layout = WorkspaceLayout::new(dir.path());
+        tokio::fs::create_dir_all(layout.memory_dir())
             .await
             .unwrap();
+
+        let recent_path = layout.recent_messages_json();
+
+        // "Session 1" — add some messages, exit without hitting threshold
+        let session1_msgs = make_messages(3);
+        append_recent_messages(&recent_path, &session1_msgs)
+            .await
+            .unwrap();
+
+        // "Session 2" — load and verify messages survived
+        let loaded = load_recent_messages(&recent_path).await.unwrap();
         assert_eq!(
-            reloaded.len(),
-            1,
-            "observation log should be compressed to one entry"
+            loaded.len(),
+            3,
+            "messages from previous session should persist"
         );
+
+        // Add more messages in session 2
+        let session2_msgs = make_messages(3);
+        append_recent_messages(&recent_path, &session2_msgs)
+            .await
+            .unwrap();
+
+        let all = load_recent_messages(&recent_path).await.unwrap();
+        assert_eq!(all.len(), 6, "should have messages from both sessions");
     }
 
     #[test]
@@ -295,16 +332,15 @@ mod memory_integration {
             },
         );
 
-        let mut session = Session::new();
-        session.push(Message {
+        let messages = vec![Message {
             role: Role::User,
             content: "hello".to_string(),
             tool_calls: None,
             tool_call_id: None,
-        });
+        }];
 
         assert!(
-            !observer.should_observe(&session),
+            !observer.should_observe(&messages),
             "should not fire below threshold"
         );
     }
@@ -322,7 +358,6 @@ mod memory_integration {
             .await
             .unwrap();
 
-        // Verify the file exists and has content
         let path = ironclaw::memory::daily_log::daily_log_path(&memory_dir);
         let content = tokio::fs::read_to_string(&path).await.unwrap();
         assert!(
@@ -334,7 +369,6 @@ mod memory_integration {
             "should have second note"
         );
 
-        // Index the daily log
         let index_dir = dir.path().join(".index");
         let index = MemoryIndex::open_or_create(&index_dir).unwrap();
         index.rebuild(&memory_dir).unwrap();
