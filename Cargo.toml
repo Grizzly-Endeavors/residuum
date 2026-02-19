@@ -25,6 +25,7 @@ rand = "0.8"
 dirs = "5"
 dotenvy = "0.15"
 shellexpand = "3"
+chrono = { version = "0.4", features = ["serde"] }
 
 # Logging
 tracing = "0.1"
