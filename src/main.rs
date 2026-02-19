@@ -51,6 +51,18 @@ async fn run() -> Result<(), IronclawError> {
     let layout = WorkspaceLayout::new(&cfg.workspace_dir);
     ensure_workspace(&layout).await?;
 
+    // Change to workspace directory
+    std::env::set_current_dir(&cfg.workspace_dir).map_err(|e| {
+        IronclawError::Config(format!(
+            "failed to change to workspace directory {}: {e}",
+            cfg.workspace_dir.display()
+        ))
+    })?;
+    tracing::info!(
+        workspace = %cfg.workspace_dir.display(),
+        "changed to workspace directory"
+    );
+
     // Load identity files
     let identity = IdentityFiles::load(&layout).await?;
 
