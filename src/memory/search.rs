@@ -411,11 +411,11 @@ mod tests {
     fn rebuild_indexes_files() {
         let dir = tempfile::tempdir().unwrap();
         let memory_dir = dir.path().join("memory");
-        let month_dir = memory_dir.join("episodes/2026-02");
-        std::fs::create_dir_all(&month_dir).unwrap();
+        let day_dir = memory_dir.join("episodes/2026-02/19");
+        std::fs::create_dir_all(&day_dir).unwrap();
 
         std::fs::write(
-            month_dir.join("ep-001.md"),
+            day_dir.join("ep-001.md"),
             "---\nid: ep-001\n---\nworkspace layout discussion",
         )
         .unwrap();

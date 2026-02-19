@@ -161,10 +161,10 @@ mod memory_integration {
         );
         assert_eq!(episode.observations.len(), 3, "should have 3 observations");
 
-        // Verify transcript file was created in month subdir
+        // Verify transcript file was created in date subdir
         let transcript_path = layout.episodes_dir().join(format!(
             "{}/{}.md",
-            episode.date.format("%Y-%m"),
+            episode.date.format("%Y-%m/%d"),
             episode.id
         ));
         assert!(transcript_path.exists(), "transcript file should exist");
