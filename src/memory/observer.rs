@@ -389,7 +389,8 @@ mod tests {
 
         assert_eq!(episode.id, "ep-001", "first episode should be ep-001");
 
-        let transcript_path = layout.episodes_dir().join("ep-001.md");
+        let transcript_path =
+            crate::memory::episode_store::episode_path(&layout.episodes_dir(), &episode);
         assert!(transcript_path.exists(), "transcript file should exist");
 
         let log = load_observation_log(&layout.observations_json())

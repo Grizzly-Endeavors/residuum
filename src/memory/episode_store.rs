@@ -1,7 +1,7 @@
 //! Episode transcript file persistence.
 //!
 //! Writes episode transcripts as markdown files with hand-written YAML
-//! frontmatter to `memory/episodes/<id>.md`.
+//! frontmatter to `memory/episodes/YYYY-MM/<id>.md`.
 
 use std::path::Path;
 
@@ -11,8 +11,9 @@ use crate::models::Message;
 
 /// Write an episode transcript file to the episodes directory.
 ///
-/// Creates `{episodes_dir}/{episode.id}.md` with YAML frontmatter
-/// followed by the formatted conversation transcript.
+/// Creates `{episodes_dir}/{YYYY-MM}/{episode.id}.md` with YAML frontmatter
+/// followed by the formatted conversation transcript. Creates the month
+/// subdirectory if it doesn't exist.
 ///
 /// # Errors
 /// Returns an error if the file cannot be written.
@@ -21,8 +22,16 @@ pub async fn write_episode_transcript(
     episode: &Episode,
     messages: &[Message],
 ) -> Result<(), IronclawError> {
+    let month_dir = episodes_dir.join(episode.date.format("%Y-%m").to_string());
+    tokio::fs::create_dir_all(&month_dir).await.map_err(|e| {
+        IronclawError::Memory(format!(
+            "failed to create episode directory at {}: {e}",
+            month_dir.display()
+        ))
+    })?;
+
     let filename = format!("{}.md", episode.id);
-    let path = episodes_dir.join(&filename);
+    let path = month_dir.join(&filename);
 
     let frontmatter = format_frontmatter(episode);
     let transcript = format_transcript(messages);
@@ -34,6 +43,14 @@ pub async fn write_episode_transcript(
             path.display()
         ))
     })
+}
+
+/// Get the path where an episode transcript would be written.
+#[must_use]
+pub fn episode_path(episodes_dir: &Path, episode: &Episode) -> std::path::PathBuf {
+    episodes_dir
+        .join(episode.date.format("%Y-%m").to_string())
+        .join(format!("{}.md", episode.id))
 }
 
 /// Format YAML frontmatter for an episode.
@@ -210,7 +227,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn write_transcript_creates_file() {
+    async fn write_transcript_creates_file_in_month_dir() {
         let dir = tempfile::tempdir().unwrap();
         let episode = sample_episode();
         let messages = vec![Message {
@@ -224,11 +241,25 @@ mod tests {
             .await
             .unwrap();
 
-        let path = dir.path().join("ep-001.md");
-        assert!(path.exists(), "transcript file should be created");
+        let path = dir.path().join("2026-02/ep-001.md");
+        assert!(
+            path.exists(),
+            "transcript file should be created in month subdir"
+        );
 
         let contents = tokio::fs::read_to_string(&path).await.unwrap();
         assert!(contents.starts_with("---"), "should start with frontmatter");
         assert!(contents.contains("hello"), "should contain message content");
+    }
+
+    #[test]
+    fn episode_path_includes_month() {
+        let episode = sample_episode();
+        let path = episode_path(std::path::Path::new("/ws/episodes"), &episode);
+        assert_eq!(
+            path,
+            std::path::PathBuf::from("/ws/episodes/2026-02/ep-001.md"),
+            "path should include YYYY-MM subdirectory"
+        );
     }
 }

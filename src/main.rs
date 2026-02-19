@@ -195,9 +195,10 @@ async fn run_memory_pipeline(
             }
 
             // Index the new episode file
-            let episode_path = layout.episodes_dir().join(format!("{}.md", episode.id));
-            if let Ok(content) = tokio::fs::read_to_string(&episode_path).await
-                && let Err(e) = search_index.index_file(&episode_path.to_string_lossy(), &content)
+            let ep_path =
+                ironclaw::memory::episode_store::episode_path(&layout.episodes_dir(), &episode);
+            if let Ok(content) = tokio::fs::read_to_string(&ep_path).await
+                && let Err(e) = search_index.index_file(&ep_path.to_string_lossy(), &content)
             {
                 eprintln!("warning: failed to index episode: {e}");
             }

@@ -217,7 +217,7 @@ impl MemoryIndex {
             .map_err(|e| IronclawError::Memory(format!("failed to create index writer: {e}")))
     }
 
-    /// Index all `.md` files in a directory.
+    /// Recursively index all `.md` files in a directory tree.
     fn index_directory(
         &self,
         writer: &mut IndexWriter,
@@ -234,7 +234,10 @@ impl MemoryIndex {
             })?;
             let path = entry.path();
 
-            if path.extension().is_some_and(|ext| ext == "md")
+            // Recurse into subdirectories (e.g. YYYY-MM month dirs)
+            if path.is_dir() {
+                count += self.index_directory(writer, &path)?;
+            } else if path.extension().is_some_and(|ext| ext == "md")
                 && let Ok(content) = std::fs::read_to_string(&path)
             {
                 let path_str = path.to_string_lossy();
@@ -408,11 +411,11 @@ mod tests {
     fn rebuild_indexes_files() {
         let dir = tempfile::tempdir().unwrap();
         let memory_dir = dir.path().join("memory");
-        let episodes_dir = memory_dir.join("episodes");
-        std::fs::create_dir_all(&episodes_dir).unwrap();
+        let month_dir = memory_dir.join("episodes/2026-02");
+        std::fs::create_dir_all(&month_dir).unwrap();
 
         std::fs::write(
-            episodes_dir.join("ep-001.md"),
+            month_dir.join("ep-001.md"),
             "---\nid: ep-001\n---\nworkspace layout discussion",
         )
         .unwrap();

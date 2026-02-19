@@ -161,8 +161,12 @@ mod memory_integration {
         );
         assert_eq!(episode.observations.len(), 3, "should have 3 observations");
 
-        // Verify transcript file was created
-        let transcript_path = layout.episodes_dir().join("ep-001.md");
+        // Verify transcript file was created in month subdir
+        let transcript_path = layout.episodes_dir().join(format!(
+            "{}/{}.md",
+            episode.date.format("%Y-%m"),
+            episode.id
+        ));
         assert!(transcript_path.exists(), "transcript file should exist");
 
         let transcript = tokio::fs::read_to_string(&transcript_path).await.unwrap();
