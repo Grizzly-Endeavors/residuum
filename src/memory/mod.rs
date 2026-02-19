@@ -5,5 +5,6 @@
 
 pub mod episode_store;
 pub mod log_store;
+pub mod observer;
 pub mod tokens;
 pub mod types;
