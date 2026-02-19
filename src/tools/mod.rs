@@ -2,6 +2,7 @@
 
 pub mod daily_log;
 mod exec;
+pub mod memory_search;
 mod read;
 mod write;
 
@@ -126,6 +127,14 @@ impl ToolRegistry {
     /// Register memory-related tools (`daily_log`).
     pub fn register_memory_tools(&mut self, layout: &crate::workspace::layout::WorkspaceLayout) {
         self.register(Box::new(daily_log::DailyLogTool::new(layout.memory_dir())));
+    }
+
+    /// Register the `memory_search` tool with a shared index.
+    pub fn register_search_tool(
+        &mut self,
+        index: std::sync::Arc<crate::memory::search::MemoryIndex>,
+    ) {
+        self.register(Box::new(memory_search::MemorySearchTool::new(index)));
     }
 }
 

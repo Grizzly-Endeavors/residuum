@@ -11,6 +11,9 @@ use ironclaw::error::IronclawError;
 use ironclaw::memory::log_store::load_observation_log;
 use ironclaw::memory::observer::{Observer, ObserverConfig};
 use ironclaw::memory::reflector::{Reflector, ReflectorConfig};
+use std::sync::Arc;
+
+use ironclaw::memory::search::create_shared_index;
 use ironclaw::models::anthropic::AnthropicClient;
 use ironclaw::models::ollama::OllamaClient;
 use ironclaw::models::openai::OpenAiClient;
@@ -86,10 +89,18 @@ async fn run() -> Result<(), IronclawError> {
     // Build observer and reflector
     let (observer, reflector) = build_memory_components(&cfg, http)?;
 
+    // Build search index
+    let search_index = create_shared_index(&layout.search_index_dir())?;
+    match search_index.rebuild(&layout.memory_dir()) {
+        Ok(count) => tracing::info!(indexed = count, "search index rebuilt"),
+        Err(e) => eprintln!("warning: failed to rebuild search index: {e}"),
+    }
+
     // Build tool registry
     let mut tools = ToolRegistry::new();
     tools.register_defaults();
     tools.register_memory_tools(&layout);
+    tools.register_search_tool(Arc::clone(&search_index));
 
     // Build completion options
     let options = CompletionOptions {
@@ -131,6 +142,15 @@ async fn run() -> Result<(), IronclawError> {
                         episode_id = %episode.id,
                         "observer extracted episode"
                     );
+
+                    // Index the new episode file
+                    let episode_path = layout.episodes_dir().join(format!("{}.md", episode.id));
+                    if let Ok(content) = tokio::fs::read_to_string(&episode_path).await
+                        && let Err(e) =
+                            search_index.index_file(&episode_path.to_string_lossy(), &content)
+                    {
+                        eprintln!("warning: failed to index episode: {e}");
+                    }
 
                     // Check if reflector should fire
                     run_reflector_if_needed(&reflector, &layout).await;

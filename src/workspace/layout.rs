@@ -69,6 +69,12 @@ impl WorkspaceLayout {
         self.root.join("memory/observations.json")
     }
 
+    /// Path to the tantivy search index directory.
+    #[must_use]
+    pub fn search_index_dir(&self) -> PathBuf {
+        self.root.join("memory/.index")
+    }
+
     /// Path to the skills directory.
     #[must_use]
     pub fn skills_dir(&self) -> PathBuf {
@@ -118,6 +124,7 @@ impl WorkspaceLayout {
             self.root.clone(),
             self.memory_dir(),
             self.episodes_dir(),
+            self.search_index_dir(),
             self.skills_dir(),
             self.para_projects_dir(),
             self.para_areas_dir(),
@@ -162,7 +169,7 @@ mod tests {
     fn required_dirs_count() {
         let layout = WorkspaceLayout::new("/tmp/ws");
         let dirs = layout.required_dirs();
-        assert_eq!(dirs.len(), 10, "should have all required directories");
+        assert_eq!(dirs.len(), 11, "should have all required directories");
         assert!(
             dirs.contains(&PathBuf::from("/tmp/ws")),
             "root should be included"

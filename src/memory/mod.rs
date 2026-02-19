@@ -8,5 +8,6 @@ pub mod episode_store;
 pub mod log_store;
 pub mod observer;
 pub mod reflector;
+pub mod search;
 pub mod tokens;
 pub mod types;

@@ -26,6 +26,7 @@ dirs = "5"
 dotenvy = "0.15"
 shellexpand = "3"
 chrono = { version = "0.4", features = ["serde"] }
+tantivy = "0.22"
 
 # Logging
 tracing = "0.1"
