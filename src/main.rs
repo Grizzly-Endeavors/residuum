@@ -8,7 +8,9 @@ use ironclaw::channels::AgentResponse;
 use ironclaw::channels::cli::CliChannel;
 use ironclaw::config::{Config, ModelSpec, ProviderKind};
 use ironclaw::error::IronclawError;
+use ironclaw::memory::log_store::load_observation_log;
 use ironclaw::memory::observer::{Observer, ObserverConfig};
+use ironclaw::memory::reflector::{Reflector, ReflectorConfig};
 use ironclaw::models::anthropic::AnthropicClient;
 use ironclaw::models::ollama::OllamaClient;
 use ironclaw::models::openai::OpenAiClient;
@@ -81,8 +83,8 @@ async fn run() -> Result<(), IronclawError> {
     )?;
     tracing::info!(model = provider.model_name(), "model provider ready");
 
-    // Build observer
-    let observer = build_observer(&cfg, http)?;
+    // Build observer and reflector
+    let (observer, reflector) = build_memory_components(&cfg, http)?;
 
     // Build tool registry
     let mut tools = ToolRegistry::new();
@@ -129,7 +131,11 @@ async fn run() -> Result<(), IronclawError> {
                         episode_id = %episode.id,
                         "observer extracted episode"
                     );
-                    // Reload observations so next turn sees the new episode
+
+                    // Check if reflector should fire
+                    run_reflector_if_needed(&reflector, &layout).await;
+
+                    // Reload observations so next turn sees updates
                     if let Err(e) = agent.reload_observations(&layout).await {
                         eprintln!("warning: failed to reload observations: {e}");
                     }
@@ -146,33 +152,66 @@ async fn run() -> Result<(), IronclawError> {
     Ok(())
 }
 
-/// Build the observer, using a dedicated model if configured or the main model.
+/// Build observer and reflector, sharing the same provider configuration.
 ///
 /// # Errors
-/// Returns `IronclawError::Config` if the observer provider cannot be built.
-fn build_observer(cfg: &Config, http: SharedHttpClient) -> Result<Observer, IronclawError> {
+/// Returns `IronclawError::Config` if the provider cannot be built.
+fn build_memory_components(
+    cfg: &Config,
+    http: SharedHttpClient,
+) -> Result<(Observer, Reflector), IronclawError> {
     let mem = &cfg.memory;
 
-    let observer_spec = mem.observer_model.as_ref().unwrap_or(&cfg.model);
-    let observer_url = mem
+    let spec = mem.observer_model.as_ref().unwrap_or(&cfg.model);
+    let url = mem
         .observer_provider_url
         .as_deref()
         .unwrap_or(&cfg.provider_url);
-    let observer_key = mem.observer_api_key.as_deref().or(cfg.api_key.as_deref());
+    let key = mem.observer_api_key.as_deref().or(cfg.api_key.as_deref());
 
-    let provider = build_provider_from_spec(
-        observer_spec,
-        observer_url,
-        observer_key,
-        cfg.max_tokens,
-        http,
-    )?;
+    let observer_provider = build_provider_from_spec(spec, url, key, cfg.max_tokens, http.clone())?;
+    let reflector_provider = build_provider_from_spec(spec, url, key, cfg.max_tokens, http)?;
 
-    let config = ObserverConfig {
-        threshold_tokens: mem.observer_threshold_tokens,
+    let observer = Observer::new(
+        observer_provider,
+        ObserverConfig {
+            threshold_tokens: mem.observer_threshold_tokens,
+        },
+    );
+
+    let reflector = Reflector::new(
+        reflector_provider,
+        ReflectorConfig {
+            threshold_tokens: mem.reflector_threshold_tokens,
+        },
+    );
+
+    Ok((observer, reflector))
+}
+
+/// Run the reflector if the observation log exceeds the threshold.
+async fn run_reflector_if_needed(reflector: &Reflector, layout: &WorkspaceLayout) {
+    let log = match load_observation_log(&layout.observations_json()).await {
+        Ok(log) => log,
+        Err(e) => {
+            eprintln!("warning: failed to load observation log for reflection: {e}");
+            return;
+        }
     };
 
-    Ok(Observer::new(provider, config))
+    if reflector.should_reflect(&log) {
+        match reflector.reflect(layout).await {
+            Ok(compressed) => {
+                tracing::info!(
+                    episodes = compressed.len(),
+                    "reflector compressed observation log"
+                );
+            }
+            Err(e) => {
+                eprintln!("warning: reflector failed: {e}");
+            }
+        }
+    }
 }
 
 /// Build a model provider from explicit parameters.
