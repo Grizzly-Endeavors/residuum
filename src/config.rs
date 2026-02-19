@@ -26,6 +26,12 @@ const DEFAULT_TIMEOUT_SECS: u64 = 120;
 /// Default max tokens for model responses.
 const DEFAULT_MAX_TOKENS: u32 = 8192;
 
+/// Default observer token threshold before firing.
+const DEFAULT_OBSERVER_THRESHOLD: usize = 30_000;
+
+/// Default reflector token threshold before compressing.
+const DEFAULT_REFLECTOR_THRESHOLD: usize = 40_000;
+
 /// Validated runtime configuration.
 #[derive(Debug, Clone)]
 pub struct Config {
@@ -41,6 +47,67 @@ pub struct Config {
     pub timeout_secs: u64,
     /// Maximum tokens for model responses.
     pub max_tokens: u32,
+    /// Memory subsystem configuration.
+    pub memory: MemoryConfig,
+}
+
+/// Validated memory subsystem configuration.
+#[derive(Debug, Clone)]
+pub struct MemoryConfig {
+    /// Model spec for the observer (None = use main model).
+    pub observer_model: Option<ModelSpec>,
+    /// Base URL for the observer's provider (None = use main provider URL).
+    pub observer_provider_url: Option<String>,
+    /// API key for the observer's provider (None = use main API key).
+    pub observer_api_key: Option<String>,
+    /// Token threshold before the observer fires.
+    pub observer_threshold_tokens: usize,
+    /// Token threshold before the reflector compresses.
+    pub reflector_threshold_tokens: usize,
+}
+
+impl Default for MemoryConfig {
+    fn default() -> Self {
+        Self {
+            observer_model: None,
+            observer_provider_url: None,
+            observer_api_key: None,
+            observer_threshold_tokens: DEFAULT_OBSERVER_THRESHOLD,
+            reflector_threshold_tokens: DEFAULT_REFLECTOR_THRESHOLD,
+        }
+    }
+}
+
+impl MemoryConfig {
+    /// Build from the raw TOML section and environment variables.
+    fn from_file_and_env(section: Option<&MemoryConfigFile>) -> Self {
+        let observer_model = std::env::var("IRONCLAW_OBSERVER_MODEL")
+            .ok()
+            .or_else(|| section.and_then(|s| s.observer_model.clone()))
+            .and_then(|s| ModelSpec::from_str(&s).ok());
+
+        let observer_provider_url = section.and_then(|s| s.observer_provider_url.clone());
+
+        let observer_api_key = std::env::var("IRONCLAW_OBSERVER_API_KEY")
+            .ok()
+            .or_else(|| section.and_then(|s| s.observer_api_key.clone()));
+
+        let observer_threshold_tokens = section
+            .and_then(|s| s.observer_threshold_tokens)
+            .unwrap_or(DEFAULT_OBSERVER_THRESHOLD);
+
+        let reflector_threshold_tokens = section
+            .and_then(|s| s.reflector_threshold_tokens)
+            .unwrap_or(DEFAULT_REFLECTOR_THRESHOLD);
+
+        Self {
+            observer_model,
+            observer_provider_url,
+            observer_api_key,
+            observer_threshold_tokens,
+            reflector_threshold_tokens,
+        }
+    }
 }
 
 impl Config {
@@ -119,6 +186,8 @@ impl Config {
             .and_then(|f| f.max_tokens)
             .unwrap_or(DEFAULT_MAX_TOKENS);
 
+        let memory = MemoryConfig::from_file_and_env(file.and_then(|f| f.memory.as_ref()));
+
         Ok(Self {
             model,
             provider_url,
@@ -126,6 +195,7 @@ impl Config {
             workspace_dir,
             timeout_secs,
             max_tokens,
+            memory,
         })
     }
 }
@@ -229,6 +299,23 @@ struct ConfigFile {
     timeout_secs: Option<u64>,
     /// Maximum tokens for model responses.
     max_tokens: Option<u32>,
+    /// Memory subsystem configuration.
+    memory: Option<MemoryConfigFile>,
+}
+
+/// Raw TOML `[memory]` section.
+#[derive(Debug, Deserialize)]
+struct MemoryConfigFile {
+    /// Model for the observer in `"provider/model"` format.
+    observer_model: Option<String>,
+    /// Base URL for the observer's provider.
+    observer_provider_url: Option<String>,
+    /// API key for the observer's provider.
+    observer_api_key: Option<String>,
+    /// Token threshold before the observer fires.
+    observer_threshold_tokens: Option<usize>,
+    /// Token threshold before the reflector compresses.
+    reflector_threshold_tokens: Option<usize>,
 }
 
 /// Get the provider-specific API key from environment variables.
@@ -399,6 +486,100 @@ max_tokens = 4096
         assert!(
             file.timeout_secs.is_none(),
             "empty toml should have no timeout"
+        );
+    }
+
+    #[test]
+    fn config_toml_with_memory_section() {
+        let toml_str = r#"
+model = "anthropic/claude-sonnet-4-5"
+api_key = "sk-test"
+
+[memory]
+observer_model = "anthropic/claude-haiku-3-5"
+observer_threshold_tokens = 20000
+reflector_threshold_tokens = 50000
+"#;
+        let file: ConfigFile = toml::from_str(toml_str).unwrap();
+        let mem = file.memory.as_ref();
+        assert!(mem.is_some(), "memory section should parse");
+
+        let mem = mem.unwrap();
+        assert_eq!(
+            mem.observer_model.as_deref(),
+            Some("anthropic/claude-haiku-3-5"),
+            "observer model should parse"
+        );
+        assert_eq!(
+            mem.observer_threshold_tokens,
+            Some(20000),
+            "observer threshold should parse"
+        );
+        assert_eq!(
+            mem.reflector_threshold_tokens,
+            Some(50000),
+            "reflector threshold should parse"
+        );
+    }
+
+    #[test]
+    fn memory_config_defaults_when_absent() {
+        let cfg = MemoryConfig::from_file_and_env(None);
+        assert!(
+            cfg.observer_model.is_none(),
+            "default observer model should be None"
+        );
+        assert_eq!(
+            cfg.observer_threshold_tokens, DEFAULT_OBSERVER_THRESHOLD,
+            "default observer threshold"
+        );
+        assert_eq!(
+            cfg.reflector_threshold_tokens, DEFAULT_REFLECTOR_THRESHOLD,
+            "default reflector threshold"
+        );
+    }
+
+    #[test]
+    fn memory_config_from_file() {
+        let section = MemoryConfigFile {
+            observer_model: Some("anthropic/claude-haiku-3-5".to_string()),
+            observer_provider_url: None,
+            observer_api_key: Some("sk-observer".to_string()),
+            observer_threshold_tokens: Some(15000),
+            reflector_threshold_tokens: Some(45000),
+        };
+        let cfg = MemoryConfig::from_file_and_env(Some(&section));
+
+        assert!(cfg.observer_model.is_some(), "observer model should be set");
+        assert_eq!(
+            cfg.observer_model.as_ref().map(|m| m.model.as_str()),
+            Some("claude-haiku-3-5"),
+            "observer model name should match"
+        );
+        assert_eq!(
+            cfg.observer_api_key.as_deref(),
+            Some("sk-observer"),
+            "observer api key should match"
+        );
+        assert_eq!(
+            cfg.observer_threshold_tokens, 15000,
+            "observer threshold should match"
+        );
+        assert_eq!(
+            cfg.reflector_threshold_tokens, 45000,
+            "reflector threshold should match"
+        );
+    }
+
+    #[test]
+    fn config_toml_without_memory_section() {
+        let toml_str = r#"
+model = "anthropic/claude-sonnet-4-5"
+"#;
+        let file: ConfigFile = toml::from_str(toml_str).unwrap();
+        assert!(
+            file.memory.is_none(),
+            "missing memory section should be None"
         );
     }
 }
