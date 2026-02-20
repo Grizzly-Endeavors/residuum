@@ -85,8 +85,15 @@ impl Reflector {
         // Parse the compressed log
         let compressed = parse_reflection_response(&response.content, &source_ids)?;
 
+        // Backup observation log before replacement
+        let obs_path = layout.observations_json();
+        let backup_path = obs_path.with_extension("json.bak");
+        if let Err(e) = tokio::fs::copy(&obs_path, &backup_path).await {
+            tracing::warn!(error = %e, "failed to create observation log backup before reflection");
+        }
+
         // Replace the observation log
-        save_observation_log(&layout.observations_json(), &compressed).await?;
+        save_observation_log(&obs_path, &compressed).await?;
 
         tracing::info!(
             original_episodes = log.len(),
@@ -139,6 +146,12 @@ fn parse_reflection_response(
             "failed to parse reflector response as JSON: {e}\nresponse: {trimmed}"
         ))
     })?;
+
+    if log.is_empty() {
+        return Err(IronclawError::Memory(
+            "reflector returned empty episodes, refusing to replace observation log".into(),
+        ));
+    }
 
     // Ensure all reflected episodes have source_episodes if not set by the model
     for episode in &mut log.episodes {
@@ -351,5 +364,93 @@ mod tests {
 
         let result = reflector.reflect(&layout).await.unwrap();
         assert!(result.is_empty(), "empty log should return empty");
+    }
+
+    #[test]
+    fn parse_reflection_rejects_empty_episodes() {
+        let empty_response = r#"{"episodes": []}"#;
+        let source_ids = vec!["ep-001".to_string()];
+        let result = parse_reflection_response(empty_response, &source_ids);
+        assert!(result.is_err(), "empty episodes should be rejected");
+        assert!(
+            result.unwrap_err().to_string().contains("empty episodes"),
+            "error should mention empty episodes"
+        );
+    }
+
+    #[tokio::test]
+    async fn reflect_creates_backup() {
+        let dir = tempfile::tempdir().unwrap();
+        let layout = WorkspaceLayout::new(dir.path());
+
+        tokio::fs::create_dir_all(layout.memory_dir())
+            .await
+            .unwrap();
+
+        let mut initial_log = ObservationLog::new();
+        initial_log.push(sample_episode("ep-001", "ironclaw/workspace"));
+        initial_log.push(sample_episode("ep-002", "ironclaw/workspace"));
+        save_observation_log(&layout.observations_json(), &initial_log)
+            .await
+            .unwrap();
+
+        let original_content = tokio::fs::read_to_string(&layout.observations_json())
+            .await
+            .unwrap();
+
+        let reflector = Reflector::new(
+            Box::new(MockReflectorProvider::new(COMPRESSED_RESPONSE)),
+            ReflectorConfig {
+                threshold_tokens: 10,
+            },
+        );
+
+        reflector.reflect(&layout).await.unwrap();
+
+        let backup_path = layout.observations_json().with_extension("json.bak");
+        assert!(backup_path.exists(), "backup file should exist");
+
+        let backup_content = tokio::fs::read_to_string(&backup_path).await.unwrap();
+        assert_eq!(
+            backup_content, original_content,
+            "backup should contain original log"
+        );
+    }
+
+    #[tokio::test]
+    async fn reflect_rejects_empty_llm_response() {
+        let dir = tempfile::tempdir().unwrap();
+        let layout = WorkspaceLayout::new(dir.path());
+
+        tokio::fs::create_dir_all(layout.memory_dir())
+            .await
+            .unwrap();
+
+        let mut initial_log = ObservationLog::new();
+        initial_log.push(sample_episode("ep-001", "test"));
+        save_observation_log(&layout.observations_json(), &initial_log)
+            .await
+            .unwrap();
+
+        let empty_episodes = r#"{"episodes": []}"#;
+        let reflector = Reflector::new(
+            Box::new(MockReflectorProvider::new(empty_episodes)),
+            ReflectorConfig {
+                threshold_tokens: 10,
+            },
+        );
+
+        let result = reflector.reflect(&layout).await;
+        assert!(result.is_err(), "empty LLM response should error");
+
+        // Original log should be preserved
+        let preserved = load_observation_log(&layout.observations_json())
+            .await
+            .unwrap();
+        assert_eq!(
+            preserved.len(),
+            1,
+            "original observation log should be preserved"
+        );
     }
 }
