@@ -136,6 +136,16 @@ pub async fn run_gateway(cfg: Config) -> Result<(), IronclawError> {
     let mut agent = Agent::new(provider, tools, identity, options);
     agent.reload_observations(&layout).await?;
 
+    // Restore unobserved messages from previous session
+    let recent = load_recent_messages(&layout.recent_messages_json()).await?;
+    if !recent.is_empty() {
+        tracing::info!(
+            count = recent.len(),
+            "restoring recent messages from previous session"
+        );
+        agent.restore_messages(recent);
+    }
+
     // Channels
     let (inbound_tx, mut inbound_rx) = mpsc::channel::<InboundMessage>(32);
     let (broadcast_tx, _broadcast_rx) = broadcast::channel::<ServerMessage>(256);

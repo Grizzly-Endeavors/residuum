@@ -86,6 +86,16 @@ impl Agent {
         Ok(())
     }
 
+    /// Restore persisted messages into the session.
+    ///
+    /// Used at startup to reload unobserved messages from `recent_messages.json`
+    /// so the agent retains context from the previous session.
+    pub fn restore_messages(&mut self, messages: Vec<Message>) {
+        for msg in messages {
+            self.session.push(msg);
+        }
+    }
+
     /// Queue a system event to be injected at the start of the next user turn.
     ///
     /// Used by the cron executor for `Delivery::UserVisible` jobs.
