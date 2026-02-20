@@ -45,6 +45,11 @@ impl Session {
         self.messages.len()
     }
 
+    /// Remove all messages from the session.
+    pub fn clear(&mut self) {
+        self.messages.clear();
+    }
+
     /// Check if the session is empty.
     #[must_use]
     pub fn is_empty(&self) -> bool {

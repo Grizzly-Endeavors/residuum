@@ -476,6 +476,7 @@ pub(crate) async fn run_memory_pipeline(
             if let Err(e) = clear_recent_messages(&layout.recent_messages_json()).await {
                 eprintln!("warning: failed to clear recent messages: {e}");
             }
+            agent.clear_session();
 
             let ep_path =
                 crate::memory::episode_store::episode_path(&layout.episodes_dir(), &episode);

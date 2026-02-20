@@ -96,6 +96,14 @@ impl Agent {
         }
     }
 
+    /// Clear all messages from the session history.
+    ///
+    /// Called after the observer fires so observed messages don't linger
+    /// in both the session and the observation log.
+    pub fn clear_session(&mut self) {
+        self.session.clear();
+    }
+
     /// Queue a system event to be injected at the start of the next user turn.
     ///
     /// Used by the cron executor for `Delivery::UserVisible` jobs.
