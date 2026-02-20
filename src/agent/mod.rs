@@ -199,10 +199,17 @@ async fn execute_turn(
             .await
             .map_err(IronclawError::Model)?;
 
-        if response.is_complete() || response.tool_calls.is_empty() {
+        if response.tool_calls.is_empty() {
             session.push(Message::assistant(response.content.clone(), None));
-
             log_usage(&response);
+
+            if response.content.is_empty() {
+                tracing::warn!("model returned empty response with no tool calls");
+                return Err(IronclawError::Other(anyhow::anyhow!(
+                    "model returned empty response with no tool calls"
+                )));
+            }
+
             return Ok(response.content);
         }
 
@@ -429,6 +436,28 @@ mod tests {
             msgs.first()
                 .is_some_and(|m| m.content.contains("email arrived from boss")),
             "system event should be in user message"
+        );
+    }
+
+    #[tokio::test]
+    async fn empty_response_returns_error() {
+        let provider = MockProvider::new(vec![ModelResponse::new(String::new(), vec![])]);
+
+        let mut agent = Agent::new(
+            Box::new(provider),
+            ToolRegistry::new(),
+            IdentityFiles::default(),
+            CompletionOptions::default(),
+        );
+
+        let display = NullDisplay;
+        let result = agent.process_message("hello", &display).await;
+        assert!(result.is_err(), "empty response should return error");
+
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("empty response"),
+            "error should mention empty response, got: {err_msg}"
         );
     }
 }
