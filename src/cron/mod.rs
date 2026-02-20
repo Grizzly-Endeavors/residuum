@@ -8,9 +8,9 @@
 //! - `Every`: repeat on a fixed interval anchored to an epoch
 //! - `Cron`: standard cron expression (UTC only in Phase 3)
 //!
-//! Each job has a `SessionTarget`:
-//! - `Main`: queue the payload for injection at the next user turn
-//! - `Isolated`: run an independent agent turn (contributes to memory)
+//! Each job has a `Delivery` mode:
+//! - `UserVisible`: print to CLI and queue for the next user turn
+//! - `Background`: run silently, feeding results to the memory pipeline
 
 pub mod executor;
 pub mod scheduler;

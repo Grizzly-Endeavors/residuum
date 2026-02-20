@@ -8,16 +8,15 @@ use crate::error::IronclawError;
 
 use super::scheduler::compute_next_run_with_backoff;
 use super::store::CronStore;
-use super::types::{CronJob, CronPayload, RunStatus, SessionTarget};
+use super::types::{CronJob, CronPayload, Delivery, RunStatus};
 
 /// Execute all due cron jobs.
 ///
-/// For each due job:
-/// - `SystemEvent + Main`: queues the event text on the agent
-/// - `AgentTurn + Isolated`: runs `agent.run_system_turn` and returns messages
-///
-/// Returns messages from isolated agent turns for the memory pipeline.
-/// Main-session system events are queued directly on the agent.
+/// The delivery × payload matrix:
+/// - `SystemEvent + UserVisible`: print to CLI, queue for next user turn (enters memory via user turn)
+/// - `SystemEvent + Background`: return a synthetic user message for the memory pipeline
+/// - `AgentTurn + UserVisible`: run ephemeral turn, print response, queue as system event, return messages
+/// - `AgentTurn + Background`: run ephemeral turn, return messages for memory pipeline
 ///
 /// # Errors
 /// Returns `IronclawError` if a store save fails. Individual job failures are
@@ -103,25 +102,46 @@ async fn run_job(
     job: &CronJob,
     agent: &mut Agent,
 ) -> (RunStatus, Option<String>, Vec<crate::models::Message>) {
-    match (&job.payload, job.session_target) {
-        (CronPayload::SystemEvent { text }, SessionTarget::Main) => {
-            // Announce to CLI
+    match (&job.payload, job.delivery) {
+        (CronPayload::SystemEvent { text }, Delivery::UserVisible) => {
             println!("\n[cron: {}] {}\n", job.name, text);
             agent.queue_system_event(text.clone());
             (RunStatus::Ok, None, Vec::new())
         }
 
-        (CronPayload::SystemEvent { text }, SessionTarget::Isolated) => {
-            // Isolated system event: just log it
-            tracing::info!(job = %job.name, "isolated system event: {}", text);
-            (RunStatus::Ok, None, Vec::new())
+        (CronPayload::SystemEvent { text }, Delivery::Background) => {
+            tracing::info!(job = %job.name, "background system event: {}", text);
+            let msg = crate::models::Message {
+                role: crate::models::Role::User,
+                content: format!("[cron: {}] {}", job.name, text),
+                tool_calls: None,
+                tool_call_id: None,
+            };
+            (RunStatus::Ok, None, vec![msg])
         }
 
-        (CronPayload::AgentTurn { message }, _) => {
+        (CronPayload::AgentTurn { message }, Delivery::UserVisible) => {
             let display = NullDisplay;
             match agent.run_system_turn(message, &display).await {
                 Ok(result) => {
-                    tracing::info!(job = %job.name, "agent turn completed");
+                    tracing::info!(job = %job.name, "user-visible agent turn completed");
+                    println!("\n[cron: {}] {}\n", job.name, result.response);
+                    agent.queue_system_event(result.response);
+                    (RunStatus::Ok, None, result.messages)
+                }
+                Err(e) => {
+                    eprintln!("warning: cron job '{}' agent turn failed: {e}", job.name);
+                    tracing::warn!(job = %job.name, error = %e, "agent turn failed");
+                    (RunStatus::Error, Some(e.to_string()), Vec::new())
+                }
+            }
+        }
+
+        (CronPayload::AgentTurn { message }, Delivery::Background) => {
+            let display = NullDisplay;
+            match agent.run_system_turn(message, &display).await {
+                Ok(result) => {
+                    tracing::info!(job = %job.name, "background agent turn completed");
                     (RunStatus::Ok, None, result.messages)
                 }
                 Err(e) => {

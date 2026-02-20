@@ -144,7 +144,7 @@ mod tests {
     use super::*;
     use chrono::TimeZone;
 
-    use crate::cron::types::{CronJobState, CronPayload, CronSchedule, SessionTarget};
+    use crate::cron::types::{CronJobState, CronPayload, CronSchedule, Delivery};
 
     fn base_job(schedule: CronSchedule) -> CronJob {
         let now = Utc.with_ymd_and_hms(2026, 2, 19, 12, 0, 0).unwrap();
@@ -157,7 +157,7 @@ mod tests {
             created_at: now,
             updated_at: now,
             schedule,
-            session_target: SessionTarget::Main,
+            delivery: Delivery::UserVisible,
             payload: CronPayload::SystemEvent {
                 text: "test".to_string(),
             },

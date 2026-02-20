@@ -88,7 +88,7 @@ impl Agent {
 
     /// Queue a system event to be injected at the start of the next user turn.
     ///
-    /// Used by the cron executor for `SessionTarget::Main` jobs.
+    /// Used by the cron executor for `Delivery::UserVisible` jobs.
     pub fn queue_system_event(&mut self, text: String) {
         self.pending_system_events.push(text);
     }

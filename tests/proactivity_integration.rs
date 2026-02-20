@@ -235,9 +235,7 @@ mod proactivity_integration {
     #[tokio::test]
     async fn cron_store_round_trip() {
         use ironclaw::cron::store::CronStore;
-        use ironclaw::cron::types::{
-            CronJob, CronJobState, CronPayload, CronSchedule, SessionTarget,
-        };
+        use ironclaw::cron::types::{CronJob, CronJobState, CronPayload, CronSchedule, Delivery};
 
         let dir = tempdir().unwrap();
         let path = dir.path().join("jobs.json");
@@ -255,7 +253,7 @@ mod proactivity_integration {
                 every_ms: 3_600_000,
                 anchor_ms: 0,
             },
-            session_target: SessionTarget::Isolated,
+            delivery: Delivery::Background,
             payload: CronPayload::AgentTurn {
                 message: "Run a check.".to_string(),
             },
@@ -290,9 +288,7 @@ mod proactivity_integration {
     async fn cron_executor_system_event_queues_on_agent() {
         use ironclaw::cron::executor::execute_due_jobs;
         use ironclaw::cron::store::CronStore;
-        use ironclaw::cron::types::{
-            CronJob, CronJobState, CronPayload, CronSchedule, SessionTarget,
-        };
+        use ironclaw::cron::types::{CronJob, CronJobState, CronPayload, CronSchedule, Delivery};
 
         let dir = tempdir().unwrap();
         let path = dir.path().join("jobs.json");
@@ -309,7 +305,7 @@ mod proactivity_integration {
             created_at: now,
             updated_at: now,
             schedule: CronSchedule::At { at: past },
-            session_target: SessionTarget::Main,
+            delivery: Delivery::UserVisible,
             payload: CronPayload::SystemEvent {
                 text: "system alert text".to_string(),
             },
@@ -340,9 +336,7 @@ mod proactivity_integration {
     async fn cron_executor_agent_turn_returns_messages() {
         use ironclaw::cron::executor::execute_due_jobs;
         use ironclaw::cron::store::CronStore;
-        use ironclaw::cron::types::{
-            CronJob, CronJobState, CronPayload, CronSchedule, SessionTarget,
-        };
+        use ironclaw::cron::types::{CronJob, CronJobState, CronPayload, CronSchedule, Delivery};
 
         let dir = tempdir().unwrap();
         let path = dir.path().join("jobs.json");
@@ -359,7 +353,7 @@ mod proactivity_integration {
             created_at: now,
             updated_at: now,
             schedule: CronSchedule::At { at: past },
-            session_target: SessionTarget::Isolated,
+            delivery: Delivery::Background,
             payload: CronPayload::AgentTurn {
                 message: "Do a background check.".to_string(),
             },
@@ -383,6 +377,106 @@ mod proactivity_integration {
         );
         // Main agent session should be untouched
         assert_eq!(agent.message_count(), 0, "main session should be untouched");
+    }
+
+    // ── Cron delivery × payload matrix tests ───────────────────────────────
+
+    #[tokio::test]
+    async fn cron_executor_system_event_background_returns_messages() {
+        use ironclaw::cron::executor::execute_due_jobs;
+        use ironclaw::cron::store::CronStore;
+        use ironclaw::cron::types::{CronJob, CronJobState, CronPayload, CronSchedule, Delivery};
+
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("jobs.json");
+
+        let now = chrono::Utc::now();
+        let past = now - chrono::Duration::seconds(10);
+
+        let job = CronJob {
+            id: "cron-bg-evt01".to_string(),
+            name: "bg event".to_string(),
+            description: None,
+            enabled: true,
+            delete_after_run: false,
+            created_at: now,
+            updated_at: now,
+            schedule: CronSchedule::At { at: past },
+            delivery: Delivery::Background,
+            payload: CronPayload::SystemEvent {
+                text: "background alert".to_string(),
+            },
+            state: CronJobState {
+                next_run_at: Some(past),
+                ..CronJobState::default()
+            },
+        };
+
+        let mut store = CronStore::load(&path).await.unwrap();
+        store.add_job(job);
+
+        let mut agent = make_agent(vec![]);
+
+        let messages = execute_due_jobs(&mut store, &mut agent, now).await.unwrap();
+
+        assert!(
+            !messages.is_empty(),
+            "background system event should return messages for memory pipeline"
+        );
+        assert!(
+            messages
+                .first()
+                .unwrap()
+                .content
+                .contains("background alert"),
+            "synthetic message should contain event text"
+        );
+        assert_eq!(agent.message_count(), 0, "main session should be untouched");
+    }
+
+    #[tokio::test]
+    async fn cron_executor_agent_turn_user_visible_returns_messages() {
+        use ironclaw::cron::executor::execute_due_jobs;
+        use ironclaw::cron::store::CronStore;
+        use ironclaw::cron::types::{CronJob, CronJobState, CronPayload, CronSchedule, Delivery};
+
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("jobs.json");
+
+        let now = chrono::Utc::now();
+        let past = now - chrono::Duration::seconds(10);
+
+        let job = CronJob {
+            id: "cron-vis-agt1".to_string(),
+            name: "visible agent".to_string(),
+            description: None,
+            enabled: true,
+            delete_after_run: false,
+            created_at: now,
+            updated_at: now,
+            schedule: CronSchedule::At { at: past },
+            delivery: Delivery::UserVisible,
+            payload: CronPayload::AgentTurn {
+                message: "Do a visible check.".to_string(),
+            },
+            state: CronJobState {
+                next_run_at: Some(past),
+                ..CronJobState::default()
+            },
+        };
+
+        let mut store = CronStore::load(&path).await.unwrap();
+        store.add_job(job);
+
+        let mut agent = make_agent(vec!["Visible check done.".to_string()]);
+
+        let messages = execute_due_jobs(&mut store, &mut agent, now).await.unwrap();
+
+        // UserVisible agent turn should return ephemeral messages for memory
+        assert!(
+            !messages.is_empty(),
+            "user-visible agent turn should return messages"
+        );
     }
 
     // ── run_system_turn tests ────────────────────────────────────────────────

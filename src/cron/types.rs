@@ -22,8 +22,8 @@ pub struct CronJob {
     pub updated_at: DateTime<Utc>,
     /// When and how often to run.
     pub schedule: CronSchedule,
-    /// Whether to run in the main session or an isolated turn.
-    pub session_target: SessionTarget,
+    /// How the job's output is delivered: visible to the user or in the background.
+    pub delivery: Delivery,
     /// What the job delivers when it fires.
     pub payload: CronPayload,
     /// Runtime state (next run, last run, errors).
@@ -55,14 +55,16 @@ pub enum CronSchedule {
     },
 }
 
-/// Where the job's output is delivered.
+/// How a job's output is delivered.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-pub enum SessionTarget {
-    /// Inject into the main user session at the next user turn.
-    Main,
-    /// Run as an isolated agent turn (does not affect main session).
-    Isolated,
+pub enum Delivery {
+    /// Print to CLI and queue for the next user turn (user sees it).
+    #[serde(alias = "main")]
+    UserVisible,
+    /// Run silently in the background (feeds memory pipeline only).
+    #[serde(alias = "isolated")]
+    Background,
 }
 
 /// What a job does when it fires.
@@ -125,7 +127,7 @@ mod tests {
             created_at: now,
             updated_at: now,
             schedule: CronSchedule::At { at: now },
-            session_target: SessionTarget::Main,
+            delivery: Delivery::UserVisible,
             payload: CronPayload::SystemEvent {
                 text: "hello".to_string(),
             },
@@ -174,13 +176,32 @@ mod tests {
     }
 
     #[test]
-    fn session_target_serializes() {
-        let json = serde_json::to_string(&SessionTarget::Main).unwrap();
-        assert_eq!(json, "\"main\"", "main should serialize as 'main'");
-        let json2 = serde_json::to_string(&SessionTarget::Isolated).unwrap();
+    fn delivery_serializes() {
+        let json = serde_json::to_string(&Delivery::UserVisible).unwrap();
         assert_eq!(
-            json2, "\"isolated\"",
-            "isolated should serialize as 'isolated'"
+            json, "\"user_visible\"",
+            "user_visible should serialize as 'user_visible'"
+        );
+        let json2 = serde_json::to_string(&Delivery::Background).unwrap();
+        assert_eq!(
+            json2, "\"background\"",
+            "background should serialize as 'background'"
+        );
+    }
+
+    #[test]
+    fn delivery_legacy_aliases_deserialize() {
+        let main: Delivery = serde_json::from_str("\"main\"").unwrap();
+        assert_eq!(
+            main,
+            Delivery::UserVisible,
+            "'main' should deserialize to UserVisible"
+        );
+        let isolated: Delivery = serde_json::from_str("\"isolated\"").unwrap();
+        assert_eq!(
+            isolated,
+            Delivery::Background,
+            "'isolated' should deserialize to Background"
         );
     }
 

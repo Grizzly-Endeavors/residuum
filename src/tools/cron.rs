@@ -9,9 +9,7 @@ use tokio::sync::{Mutex, Notify};
 
 use crate::cron::executor::initialize_next_run;
 use crate::cron::store::CronStore;
-use crate::cron::types::{
-    CronJob, CronJobState, CronPayload, CronSchedule, RunStatus, SessionTarget,
-};
+use crate::cron::types::{CronJob, CronJobState, CronPayload, CronSchedule, Delivery, RunStatus};
 use crate::models::ToolDefinition;
 
 use super::{Tool, ToolError, ToolResult};
@@ -79,10 +77,10 @@ impl Tool for CronAddTool {
                             }
                         ]
                     },
-                    "session_target": {
+                    "delivery": {
                         "type": "string",
-                        "enum": ["main", "isolated"],
-                        "description": "'main' injects into next user turn; 'isolated' runs a separate agent turn"
+                        "enum": ["user_visible", "background"],
+                        "description": "'user_visible' prints to CLI and queues for next user turn; 'background' runs silently for memory"
                     },
                     "payload": {
                         "type": "object",
@@ -117,7 +115,7 @@ impl Tool for CronAddTool {
                         "description": "Delete the job after it runs once (useful for one-shots)"
                     }
                 },
-                "required": ["name", "schedule", "session_target", "payload"]
+                "required": ["name", "schedule", "delivery", "payload"]
             }),
         }
     }
@@ -130,7 +128,7 @@ impl Tool for CronAddTool {
             .to_string();
 
         let schedule = parse_schedule(&arguments)?;
-        let session_target = parse_session_target(&arguments)?;
+        let delivery = parse_delivery(&arguments)?;
         let payload = parse_payload(&arguments)?;
 
         let description = arguments
@@ -158,7 +156,7 @@ impl Tool for CronAddTool {
             created_at: now,
             updated_at: now,
             schedule,
-            session_target,
+            delivery,
             payload,
             state: CronJobState::default(),
         };
@@ -309,7 +307,7 @@ impl Tool for CronUpdateTool {
                     "enabled": {"type": "boolean"},
                     "delete_after_run": {"type": "boolean"},
                     "schedule": {"type": "object", "description": "New schedule (replaces old)"},
-                    "session_target": {"type": "string", "enum": ["main", "isolated"]},
+                    "delivery": {"type": "string", "enum": ["user_visible", "background"]},
                     "payload": {"type": "object", "description": "New payload (replaces old)"}
                 },
                 "required": ["id"]
@@ -352,8 +350,8 @@ impl Tool for CronUpdateTool {
                     ToolError::Execution(format!("failed to compute next run: {e}"))
                 })?;
             }
-            if arguments.get("session_target").is_some() {
-                job.session_target = parse_session_target(&arguments)?;
+            if arguments.get("delivery").is_some() {
+                job.delivery = parse_delivery(&arguments)?;
             }
             if arguments.get("payload").is_some() {
                 job.payload = parse_payload(&arguments)?;
@@ -490,17 +488,17 @@ fn parse_schedule(args: &Value) -> Result<CronSchedule, ToolError> {
     }
 }
 
-fn parse_session_target(args: &Value) -> Result<SessionTarget, ToolError> {
-    let target = args
-        .get("session_target")
+fn parse_delivery(args: &Value) -> Result<Delivery, ToolError> {
+    let value = args
+        .get("delivery")
         .and_then(|v| v.as_str())
-        .ok_or_else(|| ToolError::InvalidArguments("session_target is required".to_string()))?;
+        .ok_or_else(|| ToolError::InvalidArguments("delivery is required".to_string()))?;
 
-    match target {
-        "main" => Ok(SessionTarget::Main),
-        "isolated" => Ok(SessionTarget::Isolated),
+    match value {
+        "user_visible" => Ok(Delivery::UserVisible),
+        "background" => Ok(Delivery::Background),
         other => Err(ToolError::InvalidArguments(format!(
-            "unknown session_target '{other}': expected 'main' or 'isolated'"
+            "unknown delivery '{other}': expected 'user_visible' or 'background'"
         ))),
     }
 }
@@ -554,7 +552,7 @@ mod tests {
     fn parse_schedule_at_valid() {
         let args = serde_json::json!({
             "schedule": {"type": "at", "at": "2026-02-19T12:00:00Z"},
-            "session_target": "main",
+            "delivery": "user_visible",
             "payload": {"type": "system_event", "text": "hi"}
         });
         let sched = parse_schedule(&args).unwrap();
@@ -604,22 +602,22 @@ mod tests {
     }
 
     #[test]
-    fn parse_session_target_main() {
-        let args = serde_json::json!({"session_target": "main"});
+    fn parse_delivery_user_visible() {
+        let args = serde_json::json!({"delivery": "user_visible"});
         assert_eq!(
-            parse_session_target(&args).unwrap(),
-            SessionTarget::Main,
-            "should parse main"
+            parse_delivery(&args).unwrap(),
+            Delivery::UserVisible,
+            "should parse user_visible"
         );
     }
 
     #[test]
-    fn parse_session_target_isolated() {
-        let args = serde_json::json!({"session_target": "isolated"});
+    fn parse_delivery_background() {
+        let args = serde_json::json!({"delivery": "background"});
         assert_eq!(
-            parse_session_target(&args).unwrap(),
-            SessionTarget::Isolated,
-            "should parse isolated"
+            parse_delivery(&args).unwrap(),
+            Delivery::Background,
+            "should parse background"
         );
     }
 
