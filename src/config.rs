@@ -27,13 +27,13 @@ const DEFAULT_TIMEOUT_SECS: u64 = 120;
 const DEFAULT_MAX_TOKENS: u32 = 8192;
 
 /// Default observer token threshold before firing.
-const DEFAULT_OBSERVER_THRESHOLD: usize = 30_000;
+pub(crate) const DEFAULT_OBSERVER_THRESHOLD: usize = 30_000;
 
 /// Default reflector token threshold before compressing.
-const DEFAULT_REFLECTOR_THRESHOLD: usize = 40_000;
+pub(crate) const DEFAULT_REFLECTOR_THRESHOLD: usize = 40_000;
 
 /// Validated runtime configuration.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct Config {
     /// Which model to use (parsed from `"provider/model"` format).
     pub model: ModelSpec,
@@ -53,6 +53,22 @@ pub struct Config {
     pub pulse: PulseConfig,
     /// Cron (scheduled tasks) configuration.
     pub cron: CronConfig,
+}
+
+impl fmt::Debug for Config {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Config")
+            .field("model", &self.model)
+            .field("provider_url", &self.provider_url)
+            .field("api_key", &self.api_key.as_ref().map(|_| "[REDACTED]"))
+            .field("workspace_dir", &self.workspace_dir)
+            .field("timeout_secs", &self.timeout_secs)
+            .field("max_tokens", &self.max_tokens)
+            .field("memory", &self.memory)
+            .field("pulse", &self.pulse)
+            .field("cron", &self.cron)
+            .finish()
+    }
 }
 
 /// Validated pulse subsystem configuration.
@@ -100,7 +116,7 @@ impl CronConfig {
 }
 
 /// Validated memory subsystem configuration.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct MemoryConfig {
     /// Model spec for the observer (None = use main model).
     pub observer_model: Option<ModelSpec>,
@@ -112,6 +128,24 @@ pub struct MemoryConfig {
     pub observer_threshold_tokens: usize,
     /// Token threshold before the reflector compresses.
     pub reflector_threshold_tokens: usize,
+}
+
+impl fmt::Debug for MemoryConfig {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("MemoryConfig")
+            .field("observer_model", &self.observer_model)
+            .field("observer_provider_url", &self.observer_provider_url)
+            .field(
+                "observer_api_key",
+                &self.observer_api_key.as_ref().map(|_| "[REDACTED]"),
+            )
+            .field("observer_threshold_tokens", &self.observer_threshold_tokens)
+            .field(
+                "reflector_threshold_tokens",
+                &self.reflector_threshold_tokens,
+            )
+            .finish()
+    }
 }
 
 impl Default for MemoryConfig {
@@ -129,10 +163,17 @@ impl Default for MemoryConfig {
 impl MemoryConfig {
     /// Build from the raw TOML section and environment variables.
     fn from_file_and_env(section: Option<&MemoryConfigFile>) -> Self {
-        let observer_model = std::env::var("IRONCLAW_OBSERVER_MODEL")
+        let observer_model_str = std::env::var("IRONCLAW_OBSERVER_MODEL")
             .ok()
-            .or_else(|| section.and_then(|s| s.observer_model.clone()))
-            .and_then(|s| ModelSpec::from_str(&s).ok());
+            .or_else(|| section.and_then(|s| s.observer_model.clone()));
+
+        let observer_model = observer_model_str.and_then(|s| match ModelSpec::from_str(&s) {
+            Ok(spec) => Some(spec),
+            Err(e) => {
+                tracing::warn!(value = %s, error = %e, "invalid observer model spec, falling back to main model");
+                None
+            }
+        });
 
         let observer_provider_url = section.and_then(|s| s.observer_provider_url.clone());
 

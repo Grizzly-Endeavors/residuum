@@ -87,6 +87,30 @@ pub enum Role {
     Tool,
 }
 
+impl Role {
+    /// Lowercase string label for this role (e.g. `"system"`, `"user"`).
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::System => "system",
+            Self::User => "user",
+            Self::Assistant => "assistant",
+            Self::Tool => "tool",
+        }
+    }
+
+    /// Bold-markdown label for display in transcripts.
+    #[must_use]
+    pub fn as_display_str(self) -> &'static str {
+        match self {
+            Self::System => "**System**",
+            Self::User => "**User**",
+            Self::Assistant => "**Assistant**",
+            Self::Tool => "**Tool**",
+        }
+    }
+}
+
 /// A tool call requested by the model.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolCall {

@@ -12,6 +12,9 @@ use tantivy::{Index, IndexReader, IndexWriter, ReloadPolicy, TantivyDocument};
 
 use crate::error::IronclawError;
 
+/// Memory budget for the tantivy index writer (50 MB).
+const WRITER_MEMORY_BUDGET_BYTES: usize = 50_000_000;
+
 /// A search result from the memory index.
 #[derive(Debug, Clone)]
 pub struct SearchResult {
@@ -213,7 +216,7 @@ impl MemoryIndex {
     /// Create an index writer with a reasonable memory budget.
     fn writer(&self) -> Result<IndexWriter, IronclawError> {
         self.index
-            .writer(50_000_000)
+            .writer(WRITER_MEMORY_BUDGET_BYTES)
             .map_err(|e| IronclawError::Memory(format!("failed to create index writer: {e}")))
     }
 
@@ -237,21 +240,26 @@ impl MemoryIndex {
             // Recurse into subdirectories (e.g. YYYY-MM month dirs)
             if path.is_dir() {
                 count += self.index_directory(writer, &path)?;
-            } else if path.extension().is_some_and(|ext| ext == "md")
-                && let Ok(content) = std::fs::read_to_string(&path)
-            {
-                let path_str = path.to_string_lossy();
-                let date = extract_date_from_path(&path_str);
-                add_document(
-                    writer,
-                    self.path_field,
-                    self.content_field,
-                    self.date_field,
-                    &path_str,
-                    &content,
-                    &date,
-                )?;
-                count += 1;
+            } else if path.extension().is_some_and(|ext| ext == "md") {
+                match std::fs::read_to_string(&path) {
+                    Ok(file_content) => {
+                        let path_str = path.to_string_lossy();
+                        let date = extract_date_from_path(&path_str);
+                        add_document(
+                            writer,
+                            self.path_field,
+                            self.content_field,
+                            self.date_field,
+                            &path_str,
+                            &file_content,
+                            &date,
+                        )?;
+                        count += 1;
+                    }
+                    Err(e) => {
+                        eprintln!("warning: skipping unreadable file {}: {e}", path.display());
+                    }
+                }
             }
         }
 
@@ -278,21 +286,29 @@ impl MemoryIndex {
             if path.is_file() && path.extension().is_some_and(|ext| ext == "md") {
                 let filename = path.file_stem().map(|s| s.to_string_lossy().to_string());
                 // Only index files that look like date-named daily logs
-                if filename.as_ref().is_some_and(|n| is_date_filename(n))
-                    && let Ok(content) = std::fs::read_to_string(&path)
-                {
-                    let path_str = path.to_string_lossy();
-                    let date = filename.unwrap_or_default();
-                    add_document(
-                        writer,
-                        self.path_field,
-                        self.content_field,
-                        self.date_field,
-                        &path_str,
-                        &content,
-                        &date,
-                    )?;
-                    count += 1;
+                if filename.as_ref().is_some_and(|n| is_date_filename(n)) {
+                    match std::fs::read_to_string(&path) {
+                        Ok(file_content) => {
+                            let path_str = path.to_string_lossy();
+                            let date = filename.unwrap_or_default();
+                            add_document(
+                                writer,
+                                self.path_field,
+                                self.content_field,
+                                self.date_field,
+                                &path_str,
+                                &file_content,
+                                &date,
+                            )?;
+                            count += 1;
+                        }
+                        Err(e) => {
+                            eprintln!(
+                                "warning: skipping unreadable daily log {}: {e}",
+                                path.display()
+                            );
+                        }
+                    }
                 }
             }
         }

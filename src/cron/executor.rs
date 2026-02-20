@@ -73,7 +73,9 @@ pub async fn execute_due_jobs(
         match compute_next_run_with_backoff(job_mut, now) {
             Ok(next) => job_mut.state.next_run_at = next,
             Err(e) => {
-                tracing::warn!(job = %job_id, error = %e, "failed to compute next_run_at");
+                eprintln!("warning: cron job '{job_id}' schedule is invalid, disabling: {e}");
+                tracing::warn!(job = %job_id, error = %e, "failed to compute next_run_at, disabling job");
+                job_mut.enabled = false;
             }
         }
 
@@ -123,6 +125,7 @@ async fn run_job(
                     (RunStatus::Ok, None, result.messages)
                 }
                 Err(e) => {
+                    eprintln!("warning: cron job '{}' agent turn failed: {e}", job.name);
                     tracing::warn!(job = %job.name, error = %e, "agent turn failed");
                     (RunStatus::Error, Some(e.to_string()), Vec::new())
                 }

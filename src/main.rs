@@ -52,8 +52,12 @@ async fn run() -> Result<(), IronclawError> {
         .with_target(false)
         .init();
 
-    // Load .env (ignore if missing)
-    drop(dotenvy::dotenv());
+    // Load .env (ignore if missing, warn on parse errors)
+    if let Err(e) = dotenvy::dotenv()
+        && !e.not_found()
+    {
+        tracing::warn!(error = %e, "failed to parse .env file");
+    }
 
     // Load config
     let cfg = Config::load()?;
@@ -210,48 +214,16 @@ async fn run() -> Result<(), IronclawError> {
 
             // ── Cron timer ──────────────────────────────────────────────────
             _ = cron_tick.tick(), if cfg.cron.enabled => {
-                let now = chrono::Utc::now();
-                let mut store = cron_store.lock().await;
-                match execute_due_jobs(&mut store, &mut agent, now).await {
-                    Ok(messages) if !messages.is_empty() => {
-                        run_memory_pipeline(
-                            &messages,
-                            &observer,
-                            &reflector,
-                            &search_index,
-                            &layout,
-                            &mut agent,
-                        )
-                        .await;
-                    }
-                    Ok(_) => {}
-                    Err(e) => {
-                        eprintln!("warning: cron execution failed: {e}");
-                    }
-                }
+                run_due_cron_jobs(
+                    &cron_store, &mut agent, &observer, &reflector, &search_index, &layout,
+                ).await;
             }
 
             // ── Cron notify (tool mutation wakeup) ──────────────────────────
             () = cron_notify.notified(), if cfg.cron.enabled => {
-                let now = chrono::Utc::now();
-                let mut store = cron_store.lock().await;
-                match execute_due_jobs(&mut store, &mut agent, now).await {
-                    Ok(messages) if !messages.is_empty() => {
-                        run_memory_pipeline(
-                            &messages,
-                            &observer,
-                            &reflector,
-                            &search_index,
-                            &layout,
-                            &mut agent,
-                        )
-                        .await;
-                    }
-                    Ok(_) => {}
-                    Err(e) => {
-                        eprintln!("warning: cron execution failed: {e}");
-                    }
-                }
+                run_due_cron_jobs(
+                    &cron_store, &mut agent, &observer, &reflector, &search_index, &layout,
+                ).await;
             }
         }
     }
@@ -299,10 +271,19 @@ async fn run_memory_pipeline(
 
             let ep_path =
                 ironclaw::memory::episode_store::episode_path(&layout.episodes_dir(), &episode);
-            if let Ok(content) = tokio::fs::read_to_string(&ep_path).await
-                && let Err(e) = search_index.index_file(&ep_path.to_string_lossy(), &content)
-            {
-                eprintln!("warning: failed to index episode: {e}");
+            match tokio::fs::read_to_string(&ep_path).await {
+                Ok(ep_content) => {
+                    if let Err(e) = search_index.index_file(&ep_path.to_string_lossy(), &ep_content)
+                    {
+                        eprintln!("warning: failed to index episode: {e}");
+                    }
+                }
+                Err(e) => {
+                    eprintln!(
+                        "warning: failed to read episode file {}: {e}",
+                        ep_path.display()
+                    );
+                }
             }
 
             run_reflector_if_needed(reflector, layout).await;
@@ -313,6 +294,28 @@ async fn run_memory_pipeline(
         }
         Err(e) => {
             eprintln!("warning: observer failed: {e}");
+        }
+    }
+}
+
+/// Execute due cron jobs and run the memory pipeline for any resulting messages.
+async fn run_due_cron_jobs(
+    cron_store: &Arc<tokio::sync::Mutex<CronStore>>,
+    agent: &mut Agent,
+    observer: &Observer,
+    reflector: &Reflector,
+    search_index: &ironclaw::memory::search::MemoryIndex,
+    layout: &WorkspaceLayout,
+) {
+    let now = chrono::Utc::now();
+    let mut store = cron_store.lock().await;
+    match execute_due_jobs(&mut store, agent, now).await {
+        Ok(messages) if !messages.is_empty() => {
+            run_memory_pipeline(&messages, observer, reflector, search_index, layout, agent).await;
+        }
+        Ok(_) => {}
+        Err(e) => {
+            eprintln!("warning: cron execution failed: {e}");
         }
     }
 }

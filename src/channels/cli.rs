@@ -4,7 +4,7 @@ use rustyline::DefaultEditor;
 use rustyline::error::ReadlineError;
 use serde_json::Value;
 
-use super::{AgentResponse, TurnDisplay, UserMessage};
+use super::{AgentResponse, TurnDisplay};
 use crate::error::IronclawError;
 
 /// Reads user input interactively using rustyline.
@@ -104,78 +104,5 @@ impl TurnDisplay for CliDisplay {
             };
             eprintln!("[tool: {name}] {preview}");
         }
-    }
-}
-
-/// Legacy combined channel; kept for tests that create both reader and display together.
-///
-/// For new code use `CliReader` + `CliDisplay` separately.
-pub struct CliChannel {
-    reader: CliReader,
-    display: CliDisplay,
-}
-
-impl CliChannel {
-    /// Create a new CLI channel with the given agent name for display.
-    ///
-    /// # Errors
-    /// Returns `IronclawError::Channel` if the readline editor cannot be initialized.
-    pub fn new(agent_name: impl Into<String>) -> Result<Self, IronclawError> {
-        Ok(Self {
-            reader: CliReader::new()?,
-            display: CliDisplay::new(agent_name),
-        })
-    }
-
-    /// Read a message from the user (synchronous, for tests).
-    ///
-    /// Returns `None` on EOF (Ctrl+D) or exit commands (`:q`, `:quit`).
-    /// Ctrl+C cancels the current input and prompts again.
-    ///
-    /// # Errors
-    /// Returns `IronclawError::Channel` on unexpected readline errors.
-    pub fn read_message(&mut self) -> Result<Option<UserMessage>, IronclawError> {
-        loop {
-            match self.reader.editor.readline("you> ") {
-                Ok(line) => {
-                    let trimmed = line.trim();
-                    if trimmed.is_empty() {
-                        continue;
-                    }
-                    if trimmed == ":q" || trimmed == ":quit" {
-                        return Ok(None);
-                    }
-                    return Ok(Some(UserMessage {
-                        content: trimmed.to_string(),
-                    }));
-                }
-                Err(ReadlineError::Eof) => return Ok(None),
-                Err(ReadlineError::Interrupted) => {}
-                Err(e) => {
-                    return Err(IronclawError::Channel(format!("readline error: {e}")));
-                }
-            }
-        }
-    }
-
-    /// Display an agent response to the user.
-    pub fn show_response(&self, response: &AgentResponse) {
-        self.display.show_response(response);
-    }
-
-    /// Get a reference to the display component.
-    #[must_use]
-    pub fn display(&self) -> &CliDisplay {
-        &self.display
-    }
-}
-
-impl TurnDisplay for CliChannel {
-    fn show_tool_call(&self, name: &str, args: &serde_json::Value) {
-        self.display.show_tool_call(name, args);
-    }
-
-    fn show_tool_result(&self, name: &str, output: &str, is_error: bool) {
-        self.display.show_tool_result(name, output, is_error);
     }
 }

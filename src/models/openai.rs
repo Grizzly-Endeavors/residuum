@@ -8,8 +8,7 @@ use serde::{Deserialize, Serialize};
 
 use super::http::{HttpClientConfig, SharedHttpClient, map_request_error, warn_if_insecure_remote};
 use super::{
-    CompletionOptions, Message, ModelError, ModelProvider, ModelResponse, Role, ToolCall,
-    ToolDefinition,
+    CompletionOptions, Message, ModelError, ModelProvider, ModelResponse, ToolCall, ToolDefinition,
 };
 
 /// OpenAI-compatible API client.
@@ -191,25 +190,20 @@ impl ModelProvider for OpenAiClient {
             .into_iter()
             .map(|tc| {
                 // OpenAI returns arguments as a JSON string, need to parse it
-                let arguments = match serde_json::from_str(&tc.function.arguments) {
-                    Ok(args) => args,
-                    Err(e) => {
-                        tracing::warn!(
-                            tool = %tc.function.name,
-                            raw_arguments = %tc.function.arguments,
-                            error = %e,
-                            "failed to parse tool arguments, using empty object"
-                        );
-                        serde_json::Value::Object(serde_json::Map::new())
-                    }
-                };
-                ToolCall {
+                let arguments: serde_json::Value = serde_json::from_str(&tc.function.arguments)
+                    .map_err(|e| {
+                        ModelError::Parse(format!(
+                            "failed to parse tool arguments for '{}': {e} (raw: {})",
+                            tc.function.name, tc.function.arguments
+                        ))
+                    })?;
+                Ok(ToolCall {
                     id: tc.id,
                     name: tc.function.name,
                     arguments,
-                }
+                })
             })
-            .collect();
+            .collect::<Result<Vec<_>, ModelError>>()?;
 
         Ok(ModelResponse::new(content, tool_calls))
     }
@@ -244,15 +238,8 @@ struct OpenAiMessage {
 
 impl From<&Message> for OpenAiMessage {
     fn from(msg: &Message) -> Self {
-        let role = match msg.role {
-            Role::System => "system",
-            Role::User => "user",
-            Role::Assistant => "assistant",
-            Role::Tool => "tool",
-        };
-
         Self {
-            role: role.to_string(),
+            role: msg.role.as_str().to_string(),
             content: (!msg.content.is_empty()).then(|| msg.content.clone()),
             tool_calls: msg.tool_calls.as_ref().map(|calls| {
                 calls
@@ -329,7 +316,7 @@ struct OpenAiError {
 #[expect(clippy::unwrap_used, reason = "test code uses unwrap for clarity")]
 mod tests {
     use super::*;
-    use crate::models::CompletionOptions;
+    use crate::models::{CompletionOptions, Role};
     use wiremock::matchers::{header, method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -682,7 +669,7 @@ mod tests {
     async fn malformed_tool_arguments() {
         let mock_server = MockServer::start().await;
 
-        // Return malformed JSON in arguments -- should fall back to empty object
+        // Return malformed JSON in arguments -- should return a parse error
         Mock::given(method("POST"))
             .and(path("/chat/completions"))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
@@ -705,21 +692,19 @@ mod tests {
             .await;
 
         let client = OpenAiClient::new(mock_server.uri(), "gpt-4", 60).unwrap();
-        let response = client
+        let result = client
             .complete(&[], &[], &CompletionOptions::default())
-            .await
-            .unwrap();
+            .await;
 
-        // Should still succeed with empty arguments object
-        assert_eq!(
-            response.tool_calls.len(),
-            1,
-            "should have one tool call despite bad args"
+        assert!(result.is_err(), "malformed tool arguments should error");
+        let err = result.unwrap_err();
+        assert!(
+            matches!(err, ModelError::Parse(_)),
+            "should be a Parse error variant"
         );
-        assert_eq!(
-            response.tool_calls.first().map(|t| &t.arguments),
-            Some(&serde_json::json!({})),
-            "malformed args should fall back to empty object"
+        assert!(
+            err.to_string().contains("test"),
+            "error should mention the tool name"
         );
     }
 

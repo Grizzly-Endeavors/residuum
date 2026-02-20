@@ -83,43 +83,43 @@ impl WorkspaceLayout {
 
     /// Path to the skills directory.
     #[must_use]
-    pub fn skills_dir(&self) -> PathBuf {
+    pub(crate) fn skills_dir(&self) -> PathBuf {
         self.root.join("skills")
     }
 
     /// Path to the PARA projects directory.
     #[must_use]
-    pub fn para_projects_dir(&self) -> PathBuf {
+    pub(crate) fn para_projects_dir(&self) -> PathBuf {
         self.root.join("para/projects")
     }
 
     /// Path to the PARA areas directory.
     #[must_use]
-    pub fn para_areas_dir(&self) -> PathBuf {
+    pub(crate) fn para_areas_dir(&self) -> PathBuf {
         self.root.join("para/areas")
     }
 
     /// Path to the PARA resources directory.
     #[must_use]
-    pub fn para_resources_dir(&self) -> PathBuf {
+    pub(crate) fn para_resources_dir(&self) -> PathBuf {
         self.root.join("para/resources")
     }
 
     /// Path to the PARA archive directory.
     #[must_use]
-    pub fn para_archive_dir(&self) -> PathBuf {
+    pub(crate) fn para_archive_dir(&self) -> PathBuf {
         self.root.join("para/archive")
     }
 
     /// Path to the cron directory for scheduled tasks.
     #[must_use]
-    pub fn cron_dir(&self) -> PathBuf {
+    pub(crate) fn cron_dir(&self) -> PathBuf {
         self.root.join("cron")
     }
 
     /// Path to the hooks directory.
     #[must_use]
-    pub fn hooks_dir(&self) -> PathBuf {
+    pub(crate) fn hooks_dir(&self) -> PathBuf {
         self.root.join("hooks")
     }
 

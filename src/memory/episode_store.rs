@@ -78,12 +78,7 @@ pub fn format_transcript(messages: &[Message]) -> String {
 
 /// Format a single message as a markdown block.
 fn format_single_message(msg: &Message) -> String {
-    let role_label = match msg.role {
-        crate::models::Role::System => "**System**",
-        crate::models::Role::User => "**User**",
-        crate::models::Role::Assistant => "**Assistant**",
-        crate::models::Role::Tool => "**Tool**",
-    };
+    let role_label = msg.role.as_display_str();
 
     let header = match &msg.tool_call_id {
         Some(id) => format!("{role_label} (call: {id})\n"),

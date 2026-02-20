@@ -12,3 +12,13 @@ pub mod reflector;
 pub mod search;
 pub mod tokens;
 pub mod types;
+
+/// Strip markdown code fences (```` ```json ... ``` ````) from LLM responses.
+///
+/// Returns the inner content trimmed, or the original string if no fences found.
+pub(crate) fn strip_code_fences(s: &str) -> &str {
+    s.strip_prefix("```json")
+        .or_else(|| s.strip_prefix("```"))
+        .and_then(|inner| inner.strip_suffix("```"))
+        .map_or(s, str::trim)
+}

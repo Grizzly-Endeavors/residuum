@@ -64,7 +64,7 @@ impl ToolResult {
 #[async_trait]
 pub trait Tool: Send + Sync {
     /// The unique name of this tool.
-    fn name(&self) -> &str;
+    fn name(&self) -> &'static str;
 
     /// The tool definition sent to the model.
     fn definition(&self) -> ToolDefinition;

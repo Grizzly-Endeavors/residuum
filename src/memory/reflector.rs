@@ -3,15 +3,13 @@
 //! Sends the full observation log to an LLM which reorganizes and merges
 //! episodes while preserving chronology and context tags.
 
+use crate::config::DEFAULT_REFLECTOR_THRESHOLD;
 use crate::error::IronclawError;
 use crate::memory::log_store::{load_observation_log, save_observation_log};
 use crate::memory::tokens::estimate_tokens;
 use crate::memory::types::ObservationLog;
 use crate::models::{CompletionOptions, Message, ModelProvider, Role};
 use crate::workspace::layout::WorkspaceLayout;
-
-/// Default token threshold before the reflector fires.
-const DEFAULT_REFLECTOR_THRESHOLD: usize = 40_000;
 
 /// Reflector configuration.
 #[derive(Debug, Clone)]
@@ -44,7 +42,13 @@ impl Reflector {
     /// Check whether the observation log exceeds the reflection threshold.
     #[must_use]
     pub fn should_reflect(&self, log: &ObservationLog) -> bool {
-        let serialized = serde_json::to_string(log).unwrap_or_default();
+        let serialized = match serde_json::to_string(log) {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::warn!(error = %e, "failed to serialize observation log for threshold check");
+                return false;
+            }
+        };
         estimate_tokens(&serialized) >= self.config.threshold_tokens
     }
 
@@ -136,13 +140,7 @@ fn parse_reflection_response(
     source_ids: &[String],
 ) -> Result<ObservationLog, IronclawError> {
     let trimmed = content.trim();
-
-    // Strip markdown code fences if present
-    let json_str = trimmed
-        .strip_prefix("```json")
-        .or_else(|| trimmed.strip_prefix("```"))
-        .and_then(|s| s.strip_suffix("```"))
-        .map_or(trimmed, str::trim);
+    let json_str = crate::memory::strip_code_fences(trimmed);
 
     // Try parsing as ObservationLog directly
     let mut log: ObservationLog = serde_json::from_str(json_str).map_err(|e| {

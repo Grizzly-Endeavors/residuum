@@ -88,9 +88,9 @@ impl Tool for ExecTool {
                     result_text.push_str(&stderr);
                 }
 
-                // Truncate if too large
+                // Truncate if too large (use floor_char_boundary to avoid panic on multi-byte)
                 if result_text.len() > MAX_OUTPUT_BYTES {
-                    result_text.truncate(MAX_OUTPUT_BYTES);
+                    result_text.truncate(result_text.floor_char_boundary(MAX_OUTPUT_BYTES));
                     result_text.push_str("\n... (output truncated)");
                 }
 

@@ -5,8 +5,7 @@ use serde::{Deserialize, Serialize};
 
 use super::http::{HttpClientConfig, SharedHttpClient, map_request_error, warn_if_insecure_remote};
 use super::{
-    CompletionOptions, Message, ModelError, ModelProvider, ModelResponse, Role, ToolCall,
-    ToolDefinition,
+    CompletionOptions, Message, ModelError, ModelProvider, ModelResponse, ToolCall, ToolDefinition,
 };
 
 /// Ollama API client implementing the [`ModelProvider`] trait.
@@ -159,15 +158,8 @@ struct OllamaMessage {
 
 impl From<&Message> for OllamaMessage {
     fn from(msg: &Message) -> Self {
-        let role = match msg.role {
-            Role::System => "system",
-            Role::User => "user",
-            Role::Assistant => "assistant",
-            Role::Tool => "tool",
-        };
-
         Self {
-            role: role.to_string(),
+            role: msg.role.as_str().to_string(),
             content: (!msg.content.is_empty()).then(|| msg.content.clone()),
             tool_calls: msg.tool_calls.as_ref().map(|calls| {
                 calls
@@ -228,12 +220,12 @@ struct OllamaErrorResponse {
 #[expect(clippy::unwrap_used, reason = "test code uses unwrap for clarity")]
 mod tests {
     use super::*;
-    use crate::models::CompletionOptions;
+    use crate::models::{CompletionOptions, Role};
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     #[test]
-    fn test_message_conversion() {
+    fn message_conversion() {
         let msg = Message {
             role: Role::User,
             content: "Hello".to_string(),
@@ -251,7 +243,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_complete_success() {
+    async fn complete_success() {
         let mock_server = MockServer::start().await;
 
         Mock::given(method("POST"))
@@ -289,7 +281,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_complete_api_error() {
+    async fn complete_api_error() {
         let mock_server = MockServer::start().await;
 
         Mock::given(method("POST"))
@@ -315,7 +307,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_complete_with_tool_calls() {
+    async fn complete_with_tool_calls() {
         let mock_server = MockServer::start().await;
 
         Mock::given(method("POST"))
@@ -365,7 +357,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_complete_server_error() {
+    async fn complete_server_error() {
         let mock_server = MockServer::start().await;
 
         Mock::given(method("POST"))
@@ -389,7 +381,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_complete_malformed_response() {
+    async fn complete_malformed_response() {
         let mock_server = MockServer::start().await;
 
         Mock::given(method("POST"))
@@ -407,7 +399,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_complete_timeout() {
+    async fn complete_timeout() {
         let mock_server = MockServer::start().await;
 
         Mock::given(method("POST"))

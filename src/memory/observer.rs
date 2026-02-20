@@ -5,6 +5,7 @@
 
 use chrono::Local;
 
+use crate::config::DEFAULT_OBSERVER_THRESHOLD;
 use crate::error::IronclawError;
 use crate::memory::episode_store::write_episode_transcript;
 use crate::memory::log_store::{append_episode, load_observation_log, next_episode_id};
@@ -12,9 +13,6 @@ use crate::memory::tokens::estimate_message_tokens;
 use crate::memory::types::Episode;
 use crate::models::{CompletionOptions, Message, ModelProvider, ModelResponse, Role};
 use crate::workspace::layout::WorkspaceLayout;
-
-/// Default token threshold before the observer fires.
-const DEFAULT_THRESHOLD_TOKENS: usize = 30_000;
 
 /// Observer configuration.
 #[derive(Debug, Clone)]
@@ -26,7 +24,7 @@ pub struct ObserverConfig {
 impl Default for ObserverConfig {
     fn default() -> Self {
         Self {
-            threshold_tokens: DEFAULT_THRESHOLD_TOKENS,
+            threshold_tokens: DEFAULT_OBSERVER_THRESHOLD,
         }
     }
 }
@@ -106,15 +104,7 @@ impl Observer {
 fn build_extraction_prompt(messages: &[Message]) -> Vec<Message> {
     let transcript = messages
         .iter()
-        .map(|m| {
-            let role = match m.role {
-                Role::System => "system",
-                Role::User => "user",
-                Role::Assistant => "assistant",
-                Role::Tool => "tool",
-            };
-            format!("[{role}]: {}", m.content)
-        })
+        .map(|m| format!("[{}]: {}", m.role.as_str(), m.content))
         .collect::<Vec<_>>()
         .join("\n\n");
 
@@ -165,12 +155,7 @@ fn parse_episode_response(
 ) -> Result<Episode, IronclawError> {
     let content = response.content.trim();
 
-    // Strip markdown code fences if present
-    let json_str = content
-        .strip_prefix("```json")
-        .or_else(|| content.strip_prefix("```"))
-        .and_then(|s| s.strip_suffix("```"))
-        .map_or(content, str::trim);
+    let json_str = crate::memory::strip_code_fences(content);
 
     let value: serde_json::Value = serde_json::from_str(json_str).map_err(|e| {
         IronclawError::Memory(format!(
@@ -190,7 +175,7 @@ fn parse_episode_response(
         .unwrap_or("unknown")
         .to_string();
 
-    let topic = value
+    let ctx = value
         .get("context")
         .and_then(serde_json::Value::as_str)
         .unwrap_or("general")
@@ -207,12 +192,18 @@ fn parse_episode_response(
         })
         .unwrap_or_default();
 
+    if observations.is_empty() {
+        return Err(IronclawError::Memory(
+            "observer returned empty observations array".to_string(),
+        ));
+    }
+
     Ok(Episode {
         id: episode_id.to_string(),
         date: Local::now().date_naive(),
         start,
         end,
-        context: topic,
+        context: ctx,
         observations,
         source_episodes: vec![],
     })
@@ -331,6 +322,14 @@ mod tests {
         let response = ModelResponse::new("not json at all".to_string(), vec![]);
         let result = parse_episode_response(&response, "ep-004");
         assert!(result.is_err(), "invalid JSON should error");
+    }
+
+    #[test]
+    fn parse_episode_empty_observations_errors() {
+        let empty_obs = r#"{"start": "s", "end": "e", "context": "c", "observations": []}"#;
+        let response = ModelResponse::new(empty_obs.to_string(), vec![]);
+        let result = parse_episode_response(&response, "ep-005");
+        assert!(result.is_err(), "empty observations should error");
     }
 
     #[test]
