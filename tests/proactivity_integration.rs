@@ -323,12 +323,18 @@ mod proactivity_integration {
         // Initially no pending events
         assert_eq!(agent.message_count(), 0, "no messages initially");
 
-        let messages = execute_due_jobs(&mut store, &mut agent, now).await.unwrap();
+        let result = execute_due_jobs(&mut store, &mut agent, now).await.unwrap();
 
         // SystemEvent+Main produces no ephemeral messages (just queues on agent)
         assert!(
-            messages.is_empty(),
+            result.messages.is_empty(),
             "system event should produce no ephemeral messages"
+        );
+        // But produces a notification for display
+        assert_eq!(
+            result.notifications.len(),
+            1,
+            "should produce one notification"
         );
     }
 
@@ -368,11 +374,11 @@ mod proactivity_integration {
 
         let mut agent = make_agent(vec!["Background check complete.".to_string()]);
 
-        let messages = execute_due_jobs(&mut store, &mut agent, now).await.unwrap();
+        let result = execute_due_jobs(&mut store, &mut agent, now).await.unwrap();
 
         // AgentTurn+Isolated returns ephemeral messages for memory pipeline
         assert!(
-            !messages.is_empty(),
+            !result.messages.is_empty(),
             "agent turn should produce ephemeral messages"
         );
         // Main agent session should be untouched
@@ -417,14 +423,15 @@ mod proactivity_integration {
 
         let mut agent = make_agent(vec![]);
 
-        let messages = execute_due_jobs(&mut store, &mut agent, now).await.unwrap();
+        let result = execute_due_jobs(&mut store, &mut agent, now).await.unwrap();
 
         assert!(
-            !messages.is_empty(),
+            !result.messages.is_empty(),
             "background system event should return messages for memory pipeline"
         );
         assert!(
-            messages
+            result
+                .messages
                 .first()
                 .unwrap()
                 .content
@@ -470,12 +477,18 @@ mod proactivity_integration {
 
         let mut agent = make_agent(vec!["Visible check done.".to_string()]);
 
-        let messages = execute_due_jobs(&mut store, &mut agent, now).await.unwrap();
+        let result = execute_due_jobs(&mut store, &mut agent, now).await.unwrap();
 
         // UserVisible agent turn should return ephemeral messages for memory
         assert!(
-            !messages.is_empty(),
+            !result.messages.is_empty(),
             "user-visible agent turn should return messages"
+        );
+        // Also produces a notification for display
+        assert_eq!(
+            result.notifications.len(),
+            1,
+            "should produce one notification"
         );
     }
 

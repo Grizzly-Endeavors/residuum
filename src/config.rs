@@ -23,6 +23,12 @@ const DEFAULT_OPENAI_URL: &str = "https://api.openai.com/v1";
 /// Default request timeout in seconds.
 const DEFAULT_TIMEOUT_SECS: u64 = 120;
 
+/// Default gateway bind address.
+const DEFAULT_GATEWAY_BIND: &str = "127.0.0.1";
+
+/// Default gateway port.
+const DEFAULT_GATEWAY_PORT: u16 = 7700;
+
 /// Default max tokens for model responses.
 const DEFAULT_MAX_TOKENS: u32 = 8192;
 
@@ -53,6 +59,8 @@ pub struct Config {
     pub pulse: PulseConfig,
     /// Cron (scheduled tasks) configuration.
     pub cron: CronConfig,
+    /// WebSocket gateway configuration.
+    pub gateway: GatewayConfig,
 }
 
 impl fmt::Debug for Config {
@@ -67,6 +75,7 @@ impl fmt::Debug for Config {
             .field("memory", &self.memory)
             .field("pulse", &self.pulse)
             .field("cron", &self.cron)
+            .field("gateway", &self.gateway)
             .finish()
     }
 }
@@ -112,6 +121,48 @@ impl CronConfig {
         Self {
             enabled: section.and_then(|s| s.enabled).unwrap_or(true),
         }
+    }
+}
+
+/// Validated gateway configuration.
+#[derive(Debug, Clone)]
+pub struct GatewayConfig {
+    /// Address to bind the WebSocket server to.
+    pub bind: String,
+    /// Port for the WebSocket server.
+    pub port: u16,
+}
+
+impl Default for GatewayConfig {
+    fn default() -> Self {
+        Self {
+            bind: DEFAULT_GATEWAY_BIND.to_string(),
+            port: DEFAULT_GATEWAY_PORT,
+        }
+    }
+}
+
+impl GatewayConfig {
+    /// Build from the raw TOML section and environment variables.
+    fn from_file_and_env(section: Option<&GatewayConfigFile>) -> Self {
+        let bind = std::env::var("IRONCLAW_GATEWAY_BIND")
+            .ok()
+            .or_else(|| section.and_then(|s| s.bind.clone()))
+            .unwrap_or_else(|| DEFAULT_GATEWAY_BIND.to_string());
+
+        let port = std::env::var("IRONCLAW_GATEWAY_PORT")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .or_else(|| section.and_then(|s| s.port))
+            .unwrap_or(DEFAULT_GATEWAY_PORT);
+
+        Self { bind, port }
+    }
+
+    /// The full socket address string (e.g. `"127.0.0.1:7700"`).
+    #[must_use]
+    pub fn addr(&self) -> String {
+        format!("{}:{}", self.bind, self.port)
     }
 }
 
@@ -278,6 +329,7 @@ impl Config {
         let memory = MemoryConfig::from_file_and_env(file.and_then(|f| f.memory.as_ref()));
         let pulse = PulseConfig::from_file(file.and_then(|f| f.pulse.as_ref()));
         let cron = CronConfig::from_file(file.and_then(|f| f.cron.as_ref()));
+        let gateway = GatewayConfig::from_file_and_env(file.and_then(|f| f.gateway.as_ref()));
 
         Ok(Self {
             model,
@@ -289,6 +341,7 @@ impl Config {
             memory,
             pulse,
             cron,
+            gateway,
         })
     }
 }
@@ -398,6 +451,8 @@ struct ConfigFile {
     pulse: Option<PulseConfigFile>,
     /// Cron subsystem configuration.
     cron: Option<CronConfigFile>,
+    /// Gateway configuration.
+    gateway: Option<GatewayConfigFile>,
 }
 
 /// Raw TOML `[pulse]` section.
@@ -412,6 +467,15 @@ struct PulseConfigFile {
 struct CronConfigFile {
     /// Whether the cron system is enabled.
     enabled: Option<bool>,
+}
+
+/// Raw TOML `[gateway]` section.
+#[derive(Debug, Deserialize)]
+struct GatewayConfigFile {
+    /// Address to bind the WebSocket server to.
+    bind: Option<String>,
+    /// Port for the WebSocket server.
+    port: Option<u16>,
 }
 
 /// Raw TOML `[memory]` section.

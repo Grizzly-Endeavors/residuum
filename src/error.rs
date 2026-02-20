@@ -34,6 +34,10 @@ pub enum IronclawError {
     #[error("scheduling error: {0}")]
     Scheduling(String),
 
+    /// WebSocket gateway error
+    #[error("gateway error: {0}")]
+    Gateway(String),
+
     /// Catch-all for other errors
     #[error(transparent)]
     Other(#[from] anyhow::Error),

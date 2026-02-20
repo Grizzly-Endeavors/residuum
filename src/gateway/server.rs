@@ -1,0 +1,611 @@
+//! WebSocket gateway server and main event loop.
+//!
+//! Accepts WebSocket connections from multiple clients and routes messages
+//! through a single agent instance. All clients see responses and system
+//! events; tool events are only forwarded to clients with verbose mode on.
+
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+
+use axum::extract::State;
+use axum::extract::ws::{Message as WsMessage, WebSocket};
+use axum::response::IntoResponse;
+use axum::routing::get;
+use futures_util::{SinkExt, StreamExt};
+use tokio::sync::{broadcast, mpsc};
+
+use crate::agent::Agent;
+use crate::config::{Config, ModelSpec, ProviderKind};
+use crate::cron::executor::execute_due_jobs;
+use crate::cron::store::CronStore;
+use crate::error::IronclawError;
+use crate::memory::log_store::load_observation_log;
+use crate::memory::observer::{Observer, ObserverConfig};
+use crate::memory::recent_store::{
+    append_recent_messages, clear_recent_messages, load_recent_messages,
+};
+use crate::memory::reflector::{Reflector, ReflectorConfig};
+use crate::memory::search::create_shared_index;
+use crate::models::anthropic::AnthropicClient;
+use crate::models::ollama::OllamaClient;
+use crate::models::openai::OpenAiClient;
+use crate::models::{CompletionOptions, HttpClientConfig, ModelProvider, SharedHttpClient};
+use crate::pulse::executor::execute_pulse;
+use crate::pulse::scheduler::PulseScheduler;
+use crate::pulse::types::AlertLevel;
+use crate::tools::ToolRegistry;
+use crate::workspace::bootstrap::ensure_workspace;
+use crate::workspace::identity::IdentityFiles;
+use crate::workspace::layout::WorkspaceLayout;
+
+use super::display::BroadcastDisplay;
+use super::protocol::{ClientMessage, ServerMessage};
+
+/// An inbound message from a WebSocket client.
+struct InboundMessage {
+    /// Client-generated correlation ID.
+    id: String,
+    /// The user message content.
+    content: String,
+}
+
+/// Shared state for the axum WebSocket server.
+#[derive(Clone)]
+struct GatewayState {
+    inbound_tx: mpsc::Sender<InboundMessage>,
+    broadcast_tx: broadcast::Sender<ServerMessage>,
+}
+
+/// Start the WebSocket gateway server and run the main event loop.
+///
+/// This is the primary entrypoint for `ironclaw serve`. It:
+/// 1. Bootstraps the workspace, model provider, tools, memory, cron, and pulse
+/// 2. Spawns the axum WebSocket server
+/// 3. Enters the main `tokio::select!` loop processing inbound messages,
+///    pulse ticks, and cron ticks
+///
+/// # Errors
+///
+/// Returns `IronclawError` if initialization fails (config, workspace, provider,
+/// search index, cron store) or if the WebSocket server cannot bind.
+#[expect(
+    clippy::too_many_lines,
+    reason = "gateway entrypoint wires up all subsystems; splitting would obscure the startup sequence"
+)]
+pub async fn run_gateway(cfg: Config) -> Result<(), IronclawError> {
+    // Ensure workspace
+    let layout = WorkspaceLayout::new(&cfg.workspace_dir);
+    ensure_workspace(&layout).await?;
+
+    // Change to workspace directory
+    std::env::set_current_dir(&cfg.workspace_dir).map_err(|e| {
+        IronclawError::Config(format!(
+            "failed to change to workspace directory {}: {e}",
+            cfg.workspace_dir.display()
+        ))
+    })?;
+    tracing::info!(workspace = %cfg.workspace_dir.display(), "changed to workspace directory");
+
+    // Load identity files
+    let identity = IdentityFiles::load(&layout).await?;
+
+    // Build shared HTTP client
+    let http = SharedHttpClient::new(&HttpClientConfig::with_timeout(cfg.timeout_secs))
+        .map_err(|e| IronclawError::Config(format!("failed to build HTTP client: {e}")))?;
+
+    // Build model provider
+    let provider = build_provider_from_spec(
+        &cfg.model,
+        &cfg.provider_url,
+        cfg.api_key.as_deref(),
+        cfg.max_tokens,
+        http.clone(),
+    )?;
+    tracing::info!(model = provider.model_name(), "model provider ready");
+
+    // Build observer and reflector
+    let (observer, reflector) = build_memory_components(&cfg, http)?;
+
+    // Build search index
+    let search_index = create_shared_index(&layout.search_index_dir())?;
+    match search_index.rebuild(&layout.memory_dir()) {
+        Ok(count) => tracing::info!(indexed = count, "search index rebuilt"),
+        Err(e) => eprintln!("warning: failed to rebuild search index: {e}"),
+    }
+
+    // Build cron store and notify
+    let cron_store = Arc::new(tokio::sync::Mutex::new(
+        CronStore::load(layout.cron_jobs_json()).await?,
+    ));
+    let cron_notify = Arc::new(tokio::sync::Notify::new());
+
+    // Build tool registry
+    let mut tools = ToolRegistry::new();
+    tools.register_defaults();
+    tools.register_memory_tools(&layout);
+    tools.register_search_tool(Arc::clone(&search_index));
+    tools.register_cron_tools(Arc::clone(&cron_store), Arc::clone(&cron_notify));
+
+    // Build completion options
+    let options = CompletionOptions {
+        max_tokens: Some(cfg.max_tokens),
+    };
+
+    // Build agent
+    let mut agent = Agent::new(provider, tools, identity, options);
+    agent.reload_observations(&layout).await?;
+
+    // Channels
+    let (inbound_tx, mut inbound_rx) = mpsc::channel::<InboundMessage>(32);
+    let (broadcast_tx, _broadcast_rx) = broadcast::channel::<ServerMessage>(256);
+
+    let broadcast_display = BroadcastDisplay::new(broadcast_tx.clone());
+
+    // Build axum app
+    let state = GatewayState {
+        inbound_tx,
+        broadcast_tx: broadcast_tx.clone(),
+    };
+
+    let app = axum::Router::new()
+        .route("/ws", get(ws_handler))
+        .with_state(state);
+
+    let addr = cfg.gateway.addr();
+    let listener = tokio::net::TcpListener::bind(&addr)
+        .await
+        .map_err(|e| IronclawError::Gateway(format!("failed to bind to {addr}: {e}")))?;
+    tracing::info!(addr = %addr, "gateway listening");
+
+    // Spawn the HTTP server
+    tokio::spawn(async move {
+        if let Err(e) = axum::serve(listener, app).await {
+            tracing::error!(error = %e, "gateway server error");
+        }
+    });
+
+    // Pulse scheduler
+    let mut pulse_scheduler = PulseScheduler::new();
+    let pulse_enabled = cfg.pulse.enabled;
+
+    // Timer intervals
+    let mut pulse_tick = tokio::time::interval(tokio::time::Duration::from_secs(60));
+    let mut cron_tick = tokio::time::interval(tokio::time::Duration::from_secs(30));
+
+    // Skip first pulse tick
+    pulse_tick.tick().await;
+
+    tracing::info!("gateway ready, entering main loop");
+
+    loop {
+        tokio::select! {
+            // ── Inbound WebSocket messages ────────────────────────────────
+            msg = inbound_rx.recv() => {
+                let Some(inbound) = msg else {
+                    tracing::info!("inbound channel closed, shutting down");
+                    break;
+                };
+
+                let reply_id = inbound.id.clone();
+
+                // Notify clients that we're processing this message
+                if broadcast_tx.send(ServerMessage::TurnStarted {
+                    reply_to: reply_id.clone(),
+                }).is_err() {
+                    tracing::trace!("no broadcast receivers for turn_started");
+                }
+
+                let before = agent.message_count();
+
+                match agent.process_message(&inbound.content, &broadcast_display).await {
+                    Ok(response_text) => {
+                        if broadcast_tx.send(ServerMessage::Response {
+                            reply_to: reply_id,
+                            content: response_text,
+                        }).is_err() {
+                            tracing::trace!("no broadcast receivers for response");
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!(error = %e, "agent processing error");
+                        if broadcast_tx.send(ServerMessage::Error {
+                            reply_to: Some(reply_id),
+                            message: e.to_string(),
+                        }).is_err() {
+                            tracing::trace!("no broadcast receivers for error");
+                        }
+                    }
+                }
+
+                let new_messages: Vec<_> = agent.messages_since(before).to_vec();
+                run_memory_pipeline(
+                    &new_messages,
+                    &observer,
+                    &reflector,
+                    &search_index,
+                    &layout,
+                    &mut agent,
+                )
+                .await;
+            }
+
+            // ── Pulse timer ───────────────────────────────────────────────
+            _ = pulse_tick.tick(), if pulse_enabled => {
+                let now = chrono::Utc::now();
+                let due = pulse_scheduler.due_pulses(now, &layout.heartbeat_yml());
+
+                for pulse in &due {
+                    match execute_pulse(pulse, &agent, &layout.alerts_md()).await {
+                        Ok(result) => {
+                            if !result.is_heartbeat_ok
+                                && !matches!(result.alert_level, AlertLevel::Low)
+                            {
+                                let prefix = match result.alert_level {
+                                    AlertLevel::High => format!("⚠ ALERT [{}]", result.pulse_name),
+                                    AlertLevel::Medium | AlertLevel::Low => {
+                                        format!("pulse: {}", result.pulse_name)
+                                    }
+                                };
+                                if broadcast_tx.send(ServerMessage::SystemEvent {
+                                    source: prefix,
+                                    content: result.response.clone(),
+                                }).is_err() {
+                                    tracing::trace!("no broadcast receivers for pulse event");
+                                }
+                            }
+                            run_memory_pipeline(
+                                &result.messages,
+                                &observer,
+                                &reflector,
+                                &search_index,
+                                &layout,
+                                &mut agent,
+                            )
+                            .await;
+                        }
+                        Err(e) => {
+                            tracing::warn!(pulse = %pulse.name, error = %e, "pulse failed");
+                        }
+                    }
+                }
+            }
+
+            // ── Cron timer ────────────────────────────────────────────────
+            _ = cron_tick.tick(), if cfg.cron.enabled => {
+                run_due_cron_jobs_gateway(
+                    &cron_store, &mut agent, &observer, &reflector,
+                    &search_index, &layout, &broadcast_tx,
+                ).await;
+            }
+
+            // ── Cron notify (tool mutation wakeup) ────────────────────────
+            () = cron_notify.notified(), if cfg.cron.enabled => {
+                run_due_cron_jobs_gateway(
+                    &cron_store, &mut agent, &observer, &reflector,
+                    &search_index, &layout, &broadcast_tx,
+                ).await;
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/// Axum handler that upgrades an HTTP request to a WebSocket connection.
+async fn ws_handler(
+    ws: axum::extract::WebSocketUpgrade,
+    State(state): State<GatewayState>,
+) -> impl IntoResponse {
+    ws.on_upgrade(|socket| handle_connection(socket, state))
+}
+
+/// Handle a single WebSocket connection.
+///
+/// Splits the socket into read/write halves. A forwarding task reads from the
+/// broadcast channel and sends events to the client (filtering tool events
+/// based on the per-connection verbose flag). The read loop processes incoming
+/// client messages.
+async fn handle_connection(socket: WebSocket, state: GatewayState) {
+    let (mut ws_tx, mut ws_rx) = socket.split();
+    let verbose = Arc::new(AtomicBool::new(false));
+    let verbose_fwd = Arc::clone(&verbose);
+
+    let mut broadcast_rx = state.broadcast_tx.subscribe();
+
+    // Forwarding task: broadcast → WebSocket client
+    let fwd_handle = tokio::spawn(async move {
+        while let Ok(msg) = broadcast_rx.recv().await {
+            // Filter tool events for non-verbose clients
+            if msg.is_verbose_only() && !verbose_fwd.load(Ordering::Relaxed) {
+                continue;
+            }
+
+            let Ok(json) = serde_json::to_string(&msg) else {
+                tracing::warn!("failed to serialize server message");
+                continue;
+            };
+
+            if ws_tx.send(WsMessage::text(json)).await.is_err() {
+                break; // client disconnected
+            }
+        }
+    });
+
+    // Read loop: WebSocket client → inbound channel
+    while let Some(frame) = ws_rx.next().await {
+        let raw = match frame {
+            Ok(WsMessage::Text(txt)) => txt,
+            Ok(WsMessage::Close(_)) => break,
+            Ok(_) => continue, // ignore binary, ping, pong
+            Err(e) => {
+                tracing::debug!(error = %e, "websocket read error");
+                break;
+            }
+        };
+
+        let client_msg: ClientMessage = match serde_json::from_str(&raw) {
+            Ok(m) => m,
+            Err(e) => {
+                let err_msg = ServerMessage::Error {
+                    reply_to: None,
+                    message: format!("malformed message: {e}"),
+                };
+                // Send directly to this client, not broadcast
+                if state.broadcast_tx.send(err_msg).is_err() {
+                    tracing::trace!("no broadcast receivers for error");
+                }
+                continue;
+            }
+        };
+
+        match client_msg {
+            ClientMessage::SendMessage { id, content } => {
+                let inbound = InboundMessage { id, content };
+                if state.inbound_tx.send(inbound).await.is_err() {
+                    tracing::warn!("inbound channel closed, dropping message");
+                    break;
+                }
+            }
+            ClientMessage::SetVerbose { enabled } => {
+                verbose.store(enabled, Ordering::Relaxed);
+                tracing::debug!(enabled, "client set verbose mode");
+            }
+            ClientMessage::Ping => {
+                // Send pong through broadcast (all clients will filter; only this
+                // one would care, but pong is cheap and non-verbose)
+                if state.broadcast_tx.send(ServerMessage::Pong).is_err() {
+                    tracing::trace!("no broadcast receivers for pong");
+                }
+            }
+        }
+    }
+
+    // Clean up: abort forwarding task when client disconnects
+    fwd_handle.abort();
+    tracing::debug!("client disconnected");
+}
+
+/// Execute due cron jobs, broadcast notifications, and run the memory pipeline.
+async fn run_due_cron_jobs_gateway(
+    cron_store: &Arc<tokio::sync::Mutex<CronStore>>,
+    agent: &mut Agent,
+    observer: &Observer,
+    reflector: &Reflector,
+    search_index: &crate::memory::search::MemoryIndex,
+    layout: &WorkspaceLayout,
+    broadcast_tx: &broadcast::Sender<ServerMessage>,
+) {
+    let now = chrono::Utc::now();
+    let mut store = cron_store.lock().await;
+    match execute_due_jobs(&mut store, agent, now).await {
+        Ok(result) => {
+            for notif in &result.notifications {
+                if broadcast_tx
+                    .send(ServerMessage::SystemEvent {
+                        source: format!("cron: {}", notif.job_name),
+                        content: notif.text.clone(),
+                    })
+                    .is_err()
+                {
+                    tracing::trace!("no broadcast receivers for cron notification");
+                }
+            }
+            if !result.messages.is_empty() {
+                run_memory_pipeline(
+                    &result.messages,
+                    observer,
+                    reflector,
+                    search_index,
+                    layout,
+                    agent,
+                )
+                .await;
+            }
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "cron execution failed");
+        }
+    }
+}
+
+/// Persist new messages and run the observer/reflector/search pipeline.
+pub(crate) async fn run_memory_pipeline(
+    new_messages: &[crate::models::Message],
+    observer: &Observer,
+    reflector: &Reflector,
+    search_index: &crate::memory::search::MemoryIndex,
+    layout: &WorkspaceLayout,
+    agent: &mut Agent,
+) {
+    if new_messages.is_empty() {
+        return;
+    }
+
+    if let Err(e) = append_recent_messages(&layout.recent_messages_json(), new_messages).await {
+        eprintln!("warning: failed to persist recent messages: {e}");
+        return;
+    }
+
+    let recent = match load_recent_messages(&layout.recent_messages_json()).await {
+        Ok(msgs) => msgs,
+        Err(e) => {
+            eprintln!("warning: failed to load recent messages: {e}");
+            return;
+        }
+    };
+
+    if !observer.should_observe(&recent) {
+        return;
+    }
+
+    match observer.observe(&recent, layout).await {
+        Ok(episode) => {
+            tracing::info!(episode_id = %episode.id, "observer extracted episode");
+
+            if let Err(e) = clear_recent_messages(&layout.recent_messages_json()).await {
+                eprintln!("warning: failed to clear recent messages: {e}");
+            }
+
+            let ep_path =
+                crate::memory::episode_store::episode_path(&layout.episodes_dir(), &episode);
+            match tokio::fs::read_to_string(&ep_path).await {
+                Ok(ep_content) => {
+                    if let Err(e) = search_index.index_file(&ep_path.to_string_lossy(), &ep_content)
+                    {
+                        eprintln!("warning: failed to index episode: {e}");
+                    }
+                }
+                Err(e) => {
+                    eprintln!(
+                        "warning: failed to read episode file {}: {e}",
+                        ep_path.display()
+                    );
+                }
+            }
+
+            run_reflector_if_needed(reflector, layout).await;
+
+            if let Err(e) = agent.reload_observations(layout).await {
+                eprintln!("warning: failed to reload observations: {e}");
+            }
+        }
+        Err(e) => {
+            eprintln!("warning: observer failed: {e}");
+        }
+    }
+}
+
+/// Run the reflector if the observation log exceeds the threshold.
+async fn run_reflector_if_needed(reflector: &Reflector, layout: &WorkspaceLayout) {
+    let log = match load_observation_log(&layout.observations_json()).await {
+        Ok(log) => log,
+        Err(e) => {
+            eprintln!("warning: failed to load observation log for reflection: {e}");
+            return;
+        }
+    };
+
+    if reflector.should_reflect(&log) {
+        match reflector.reflect(layout).await {
+            Ok(compressed) => {
+                tracing::info!(
+                    episodes = compressed.len(),
+                    "reflector compressed observation log"
+                );
+            }
+            Err(e) => {
+                eprintln!("warning: reflector failed: {e}");
+            }
+        }
+    }
+}
+
+/// Build observer and reflector, sharing the same provider configuration.
+///
+/// # Errors
+/// Returns `IronclawError::Config` if the provider cannot be built.
+pub(crate) fn build_memory_components(
+    cfg: &Config,
+    http: SharedHttpClient,
+) -> Result<(Observer, Reflector), IronclawError> {
+    let mem = &cfg.memory;
+
+    let spec = mem.observer_model.as_ref().unwrap_or(&cfg.model);
+    let url = mem
+        .observer_provider_url
+        .as_deref()
+        .unwrap_or(&cfg.provider_url);
+    let key = mem.observer_api_key.as_deref().or(cfg.api_key.as_deref());
+
+    let observer_provider = build_provider_from_spec(spec, url, key, cfg.max_tokens, http.clone())?;
+    let reflector_provider = build_provider_from_spec(spec, url, key, cfg.max_tokens, http)?;
+
+    let observer = Observer::new(
+        observer_provider,
+        ObserverConfig {
+            threshold_tokens: mem.observer_threshold_tokens,
+        },
+    );
+
+    let reflector = Reflector::new(
+        reflector_provider,
+        ReflectorConfig {
+            threshold_tokens: mem.reflector_threshold_tokens,
+        },
+    );
+
+    Ok((observer, reflector))
+}
+
+/// Build a model provider from explicit parameters.
+///
+/// # Errors
+/// Returns `IronclawError::Config` if the API key is missing for providers
+/// that require it.
+pub(crate) fn build_provider_from_spec(
+    spec: &ModelSpec,
+    url: &str,
+    api_key: Option<&str>,
+    max_tokens: u32,
+    http: SharedHttpClient,
+) -> Result<Box<dyn ModelProvider>, IronclawError> {
+    match spec.kind {
+        ProviderKind::Anthropic => {
+            let key = api_key.ok_or_else(|| {
+                IronclawError::Config(
+                    "anthropic requires an API key (set ANTHROPIC_API_KEY or api_key in config)"
+                        .to_string(),
+                )
+            })?;
+
+            Ok(Box::new(AnthropicClient::new(
+                http,
+                url,
+                key,
+                &spec.model,
+                max_tokens,
+            )))
+        }
+        ProviderKind::Ollama => Ok(Box::new(OllamaClient::with_http_client(
+            http,
+            url,
+            &spec.model,
+        ))),
+        ProviderKind::OpenAi => {
+            if let Some(key) = api_key {
+                Ok(Box::new(OpenAiClient::with_http_client_and_api_key(
+                    http,
+                    url,
+                    &spec.model,
+                    key,
+                )))
+            } else {
+                Ok(Box::new(OpenAiClient::with_http_client(
+                    http,
+                    url,
+                    &spec.model,
+                )))
+            }
+        }
+    }
+}

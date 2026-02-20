@@ -3,6 +3,7 @@ pub mod channels;
 pub mod config;
 pub mod cron;
 pub mod error;
+pub mod gateway;
 pub mod memory;
 pub mod models;
 pub mod pulse;

@@ -18,6 +18,8 @@ pub struct PulseResult {
     pub messages: Vec<Message>,
     /// True if the response contains the `HEARTBEAT_OK` sentinel.
     pub is_heartbeat_ok: bool,
+    /// The highest alert level across pulse tasks (meaningful only when `!is_heartbeat_ok`).
+    pub alert_level: AlertLevel,
 }
 
 /// Execute a pulse check using the given agent.
@@ -64,37 +66,27 @@ pub async fn execute_pulse(
 
     let is_heartbeat_ok = result.response.contains("HEARTBEAT_OK");
 
+    // Compute the highest alert level across tasks
+    let alert_level =
+        pulse
+            .tasks
+            .iter()
+            .fold(AlertLevel::Low, |acc, task| match (acc, task.alert) {
+                (AlertLevel::High | AlertLevel::Medium | AlertLevel::Low, AlertLevel::High)
+                | (AlertLevel::High, AlertLevel::Medium | AlertLevel::Low) => AlertLevel::High,
+                (AlertLevel::Medium | AlertLevel::Low, AlertLevel::Medium)
+                | (AlertLevel::Medium, AlertLevel::Low) => AlertLevel::Medium,
+                (AlertLevel::Low, AlertLevel::Low) => AlertLevel::Low,
+            });
+
     if is_heartbeat_ok {
         tracing::info!(pulse = %pulse.name, "pulse check: HEARTBEAT_OK");
-    } else {
-        // Deliver alert based on the highest alert level across tasks
-        let max_level =
-            pulse
-                .tasks
-                .iter()
-                .fold(AlertLevel::Low, |acc, task| match (acc, task.alert) {
-                    (AlertLevel::High | AlertLevel::Medium | AlertLevel::Low, AlertLevel::High)
-                    | (AlertLevel::High, AlertLevel::Medium | AlertLevel::Low) => AlertLevel::High,
-                    (AlertLevel::Medium | AlertLevel::Low, AlertLevel::Medium)
-                    | (AlertLevel::Medium, AlertLevel::Low) => AlertLevel::Medium,
-                    (AlertLevel::Low, AlertLevel::Low) => AlertLevel::Low,
-                });
-
-        match max_level {
-            AlertLevel::High => {
-                println!("\n⚠ ALERT [{}] {}\n", pulse.name, result.response);
-            }
-            AlertLevel::Medium => {
-                println!("\n[pulse: {}] {}\n", pulse.name, result.response);
-            }
-            AlertLevel::Low => {
-                tracing::info!(
-                    pulse = %pulse.name,
-                    response = %result.response,
-                    "pulse finding"
-                );
-            }
-        }
+    } else if matches!(alert_level, AlertLevel::Low) {
+        tracing::info!(
+            pulse = %pulse.name,
+            response = %result.response,
+            "pulse finding"
+        );
     }
 
     Ok(PulseResult {
@@ -102,5 +94,6 @@ pub async fn execute_pulse(
         response: result.response,
         messages: result.messages,
         is_heartbeat_ok,
+        alert_level,
     })
 }
