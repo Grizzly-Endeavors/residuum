@@ -42,7 +42,7 @@ impl CliReader {
                     if trimmed.is_empty() {
                         continue;
                     }
-                    if trimmed == ":q" || trimmed == ":quit" {
+                    if matches!(trimmed.as_str(), ":q" | ":quit" | "/quit" | "/exit" | "/q") {
                         return;
                     }
                     if tx.blocking_send(trimmed).is_err() {

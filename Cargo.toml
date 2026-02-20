@@ -36,6 +36,8 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 # CLI
 rustyline = "15"
+owo-colors = { version = "4", features = ["supports-colors"] }
+termimad = "0.30"
 
 # WebSocket gateway
 axum = { version = "0.8", features = ["ws"] }

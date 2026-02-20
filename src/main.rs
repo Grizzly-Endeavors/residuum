@@ -4,6 +4,8 @@
 //! - `serve` (default): starts the WebSocket gateway server
 //! - `connect [url]`: connects a CLI client to a running gateway
 
+use ironclaw::cli::CliClient;
+use ironclaw::cli::commands::{CommandAction, SlashCommand};
 use ironclaw::config::Config;
 use ironclaw::error::IronclawError;
 use ironclaw::gateway::protocol::{ClientMessage, ServerMessage};
@@ -77,19 +79,14 @@ async fn run_connect(url: &str, verbose: bool) -> Result<(), IronclawError> {
         .await
         .map_err(|e| IronclawError::Gateway(format!("failed to connect to {url}: {e}")))?;
 
-    eprintln!("connected to {url}");
+    let mut client = CliClient::new(url, verbose);
+    client.print_banner();
 
     let (mut ws_tx, mut ws_rx) = ws_stream.split();
 
     // Send verbose preference if requested
     if verbose {
-        let msg = ClientMessage::SetVerbose { enabled: true };
-        let json = serde_json::to_string(&msg)
-            .map_err(|e| IronclawError::Gateway(format!("failed to serialize set_verbose: {e}")))?;
-        ws_tx
-            .send(TungsteniteMessage::text(json))
-            .await
-            .map_err(|e| IronclawError::Gateway(format!("failed to send set_verbose: {e}")))?;
+        send_client_message(&mut ws_tx, &ClientMessage::SetVerbose { enabled: true }).await?;
     }
 
     // Spawn readline thread
@@ -100,15 +97,36 @@ async fn run_connect(url: &str, verbose: bool) -> Result<(), IronclawError> {
     });
 
     let mut msg_counter: u64 = 0;
+    let mut indicator_tick = tokio::time::interval(std::time::Duration::from_millis(300));
 
     loop {
         tokio::select! {
-            // User input → send to gateway
+            // User input → check for commands, then send to gateway
             input = input_rx.recv() => {
                 let Some(line) = input else {
                     eprintln!("\nGoodbye!");
                     break;
                 };
+
+                // Check for slash commands
+                if let Some(cmd) = SlashCommand::parse(&line) {
+                    match client.handle_command(&cmd) {
+                        CommandAction::ToggleVerbose => {
+                            let new_verbose = !client.verbose();
+                            client.set_verbose(new_verbose);
+                            let label = if new_verbose { "on" } else { "off" };
+                            eprintln!("verbose mode: {label}");
+                            send_client_message(
+                                &mut ws_tx,
+                                &ClientMessage::SetVerbose { enabled: new_verbose },
+                            ).await?;
+                        }
+                        CommandAction::Quit => break,
+                        CommandAction::PrintOutput(text) => eprintln!("{text}"),
+                        CommandAction::None => {}
+                    }
+                    continue;
+                }
 
                 msg_counter = msg_counter.wrapping_add(1);
                 let client_msg = ClientMessage::SendMessage {
@@ -145,9 +163,14 @@ async fn run_connect(url: &str, verbose: bool) -> Result<(), IronclawError> {
                 };
 
                 match serde_json::from_str::<ServerMessage>(&raw) {
-                    Ok(server_msg) => display_server_message(&server_msg),
+                    Ok(server_msg) => client.display(&server_msg),
                     Err(e) => eprintln!("warning: failed to parse server message: {e}"),
                 }
+            }
+
+            // Indicator animation tick
+            _ = indicator_tick.tick(), if client.indicator.is_active() => {
+                client.indicator.tick();
             }
         }
     }
@@ -155,43 +178,26 @@ async fn run_connect(url: &str, verbose: bool) -> Result<(), IronclawError> {
     Ok(())
 }
 
-/// Display a server message in the CLI.
-fn display_server_message(msg: &ServerMessage) {
-    match msg {
-        ServerMessage::TurnStarted { .. } | ServerMessage::Pong => {
-            // No-op — TurnStarted is informational, Pong is keepalive
-        }
-        ServerMessage::ToolCall { name, arguments } => {
-            eprintln!("[tool: {name}] {arguments}");
-        }
-        ServerMessage::ToolResult {
-            name,
-            output,
-            is_error,
-        } => {
-            if *is_error {
-                eprintln!("[tool: {name} ERROR] {output}");
-            } else {
-                let preview = if output.len() > 200 {
-                    format!(
-                        "{}... ({} bytes)",
-                        output.get(..200).unwrap_or(output),
-                        output.len()
-                    )
-                } else {
-                    output.clone()
-                };
-                eprintln!("[tool: {name}] {preview}");
-            }
-        }
-        ServerMessage::Response { content, .. } => {
-            println!("ironclaw: {content}");
-        }
-        ServerMessage::SystemEvent { source, content } => {
-            println!("\n[{source}] {content}\n");
-        }
-        ServerMessage::Error { message, .. } => {
-            eprintln!("error: {message}");
-        }
-    }
+/// Serialize and send a `ClientMessage` over the WebSocket.
+///
+/// # Errors
+///
+/// Returns `IronclawError::Gateway` on serialization or send failure.
+async fn send_client_message<S>(ws_tx: &mut S, msg: &ClientMessage) -> Result<(), IronclawError>
+where
+    S: futures_util::Sink<
+            tokio_tungstenite::tungstenite::Message,
+            Error = tokio_tungstenite::tungstenite::Error,
+        > + Unpin,
+{
+    use futures_util::SinkExt;
+    use tokio_tungstenite::tungstenite::Message as TungsteniteMessage;
+
+    let json = serde_json::to_string(msg)
+        .map_err(|e| IronclawError::Gateway(format!("failed to serialize message: {e}")))?;
+    ws_tx
+        .send(TungsteniteMessage::text(json))
+        .await
+        .map_err(|e| IronclawError::Gateway(format!("failed to send message: {e}")))?;
+    Ok(())
 }

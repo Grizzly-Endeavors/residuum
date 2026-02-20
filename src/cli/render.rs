@@ -1,0 +1,92 @@
+//! Markdown rendering for agent responses using termimad.
+
+/// Renders markdown text for terminal display.
+pub struct MarkdownRenderer {
+    skin: termimad::MadSkin,
+}
+
+impl MarkdownRenderer {
+    /// Create a new renderer.
+    ///
+    /// When `color_enabled` is true, applies styled headings, bold, code blocks, etc.
+    /// When false, uses a plain skin with no ANSI codes.
+    #[must_use]
+    pub fn new(color_enabled: bool) -> Self {
+        let skin = if color_enabled {
+            Self::styled_skin()
+        } else {
+            termimad::MadSkin::no_style()
+        };
+        Self { skin }
+    }
+
+    /// Render markdown content to a styled terminal string.
+    #[must_use]
+    pub fn render(&self, content: &str) -> String {
+        let width = terminal_width();
+        self.skin.text(content, Some(width)).to_string()
+    }
+
+    fn styled_skin() -> termimad::MadSkin {
+        use termimad::crossterm::style::Color;
+
+        let mut skin = termimad::MadSkin::default();
+        skin.bold.set_fg(Color::White);
+        skin.italic.set_fg(Color::Cyan);
+        skin.inline_code.set_fg(Color::Green);
+        skin.code_block.set_fg(Color::Green);
+        // Headings in cyan bold
+        skin.headers[0].set_fg(Color::Cyan);
+        skin.headers[1].set_fg(Color::Cyan);
+        skin
+    }
+}
+
+fn terminal_width() -> usize {
+    termimad::terminal_size().0 as usize
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn render_plain_text_passthrough() {
+        let renderer = MarkdownRenderer::new(false);
+        let output = renderer.render("hello world");
+        assert!(
+            output.contains("hello world"),
+            "plain renderer should preserve text content"
+        );
+    }
+
+    #[test]
+    fn render_with_bold() {
+        let renderer = MarkdownRenderer::new(false);
+        let output = renderer.render("this is **bold** text");
+        assert!(
+            output.contains("bold"),
+            "rendered output should contain bold word"
+        );
+    }
+
+    #[test]
+    fn render_colored_returns_non_empty() {
+        let renderer = MarkdownRenderer::new(true);
+        let output = renderer.render("# heading\n\nsome text");
+        assert!(
+            !output.is_empty(),
+            "colored render should return non-empty string"
+        );
+    }
+
+    #[test]
+    fn render_code_block() {
+        let renderer = MarkdownRenderer::new(false);
+        let output = renderer.render("```\nlet x = 1;\n```");
+        assert!(
+            output.contains("let x = 1"),
+            "code block content should be preserved"
+        );
+    }
+}
