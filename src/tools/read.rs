@@ -3,14 +3,32 @@
 use async_trait::async_trait;
 use serde_json::Value;
 
+use super::file_tracker::SharedFileTracker;
+use super::line_hash::line_hash;
 use super::{Tool, ToolError, ToolResult};
 use crate::models::ToolDefinition;
 
-/// Maximum file size to read (100KB).
-const MAX_READ_BYTES: u64 = 100 * 1024;
+/// Hard cap on file size (10 MB safety net).
+const MAX_READ_BYTES: u64 = 10 * 1024 * 1024;
 
-/// Tool that reads file contents.
-pub struct ReadTool;
+/// Default maximum lines returned when no explicit offset/limit is given.
+const DEFAULT_MAX_LINES: usize = 2000;
+
+/// Maximum characters per output line before truncation.
+const MAX_CHARS_PER_LINE: usize = 2000;
+
+/// Tool that reads file contents with hash-tagged line numbers.
+pub struct ReadTool {
+    tracker: SharedFileTracker,
+}
+
+impl ReadTool {
+    /// Create a new `ReadTool` with shared file tracker.
+    #[must_use]
+    pub fn new(tracker: SharedFileTracker) -> Self {
+        Self { tracker }
+    }
+}
 
 #[async_trait]
 impl Tool for ReadTool {
@@ -21,8 +39,10 @@ impl Tool for ReadTool {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: "read_file".to_string(),
-            description: "Read the contents of a file. Supports optional offset and limit \
-                          parameters for reading specific line ranges."
+            description: "Read the contents of a file. Each output line is tagged with a \
+                          content hash (e.g. `1:f1\\thello`) for use with edit_file. \
+                          By default returns the first 2000 lines; use offset/limit for larger files. \
+                          Lines longer than 2000 characters are truncated."
                 .to_string(),
             parameters: serde_json::json!({
                 "type": "object",
@@ -37,7 +57,7 @@ impl Tool for ReadTool {
                     },
                     "limit": {
                         "type": "integer",
-                        "description": "Maximum number of lines to read (default: all)"
+                        "description": "Maximum number of lines to read (default: 2000)"
                     }
                 },
                 "required": ["path"]
@@ -54,8 +74,7 @@ impl Tool for ReadTool {
             })?;
 
         let offset = arguments.get("offset").and_then(Value::as_u64).unwrap_or(0);
-
-        let limit = arguments.get("limit").and_then(Value::as_u64);
+        let explicit_limit = arguments.get("limit").and_then(Value::as_u64);
 
         let metadata = match tokio::fs::metadata(path).await {
             Ok(m) => m,
@@ -69,36 +88,88 @@ impl Tool for ReadTool {
             )));
         }
 
-        let contents = match tokio::fs::read_to_string(path).await {
+        let file_contents = match tokio::fs::read_to_string(path).await {
             Ok(c) => c,
             Err(e) => return Ok(ToolResult::error(format!("failed to read {path}: {e}"))),
         };
 
-        let lines: Vec<&str> = contents.lines().collect();
+        let lines: Vec<&str> = file_contents.lines().collect();
+        let total_lines = lines.len();
 
         #[expect(
             clippy::cast_possible_truncation,
             reason = "offset from JSON u64 capped by line count"
         )]
-        let start = (offset as usize).min(lines.len());
-        let end = limit.map_or(lines.len(), |l| {
-            #[expect(
-                clippy::cast_possible_truncation,
-                reason = "limit from JSON u64 capped by line count"
-            )]
-            let l_usize = l as usize;
-            (start + l_usize).min(lines.len())
-        });
+        let start = (offset as usize).min(total_lines);
+
+        // Apply default limit only when no explicit limit/offset given
+        let effective_limit = explicit_limit.map_or_else(
+            || {
+                if offset == 0 {
+                    DEFAULT_MAX_LINES
+                } else {
+                    total_lines
+                }
+            },
+            |l| {
+                #[expect(
+                    clippy::cast_possible_truncation,
+                    reason = "limit from JSON u64 capped by line count"
+                )]
+                let l_usize = l as usize;
+                l_usize
+            },
+        );
+        let end = (start + effective_limit).min(total_lines);
+        let line_limit_applied = end < total_lines && explicit_limit.is_none() && offset == 0;
+
+        let mut truncated_count: usize = 0;
 
         let selected: Vec<String> = lines
             .get(start..end)
             .unwrap_or_default()
             .iter()
             .enumerate()
-            .map(|(i, line)| format!("{:>4}\t{line}", start + i + 1))
+            .map(|(i, line)| {
+                let hash = line_hash(line);
+                let line_num = start + i + 1;
+
+                // Truncate long lines (UTF-8 safe)
+                if line.len() > MAX_CHARS_PER_LINE {
+                    truncated_count += 1;
+                    let boundary = line.floor_char_boundary(MAX_CHARS_PER_LINE);
+                    let truncated = line.get(..boundary).unwrap_or_default();
+                    format!("{line_num:>4}:{hash}\t{truncated} ... (truncated)")
+                } else {
+                    format!("{line_num:>4}:{hash}\t{line}")
+                }
+            })
             .collect();
 
-        Ok(ToolResult::success(selected.join("\n")))
+        // Build warnings header
+        let mut warnings: Vec<String> = Vec::new();
+        if line_limit_applied {
+            warnings.push(format!(
+                "warning: file has {total_lines} lines, showing first {DEFAULT_MAX_LINES}; \
+                 use offset/limit or exec with grep to find specific content"
+            ));
+        }
+        if truncated_count > 0 {
+            warnings.push(format!(
+                "warning: {truncated_count} line(s) exceeded {MAX_CHARS_PER_LINE} characters and were truncated"
+            ));
+        }
+
+        // Record read in tracker
+        self.tracker.lock().await.record_read(path);
+
+        let body = selected.join("\n");
+        if warnings.is_empty() {
+            Ok(ToolResult::success(body))
+        } else {
+            let header = warnings.join("\n");
+            Ok(ToolResult::success(format!("{header}\n\n{body}")))
+        }
     }
 }
 
@@ -106,6 +177,11 @@ impl Tool for ReadTool {
 #[expect(clippy::unwrap_used, reason = "test code uses unwrap for clarity")]
 mod tests {
     use super::*;
+    use crate::tools::file_tracker::FileTracker;
+
+    fn make_tool() -> ReadTool {
+        ReadTool::new(FileTracker::new_shared())
+    }
 
     #[tokio::test]
     async fn read_file_success() {
@@ -115,7 +191,7 @@ mod tests {
             .await
             .unwrap();
 
-        let tool = ReadTool;
+        let tool = make_tool();
         let result = tool
             .execute(serde_json::json!({ "path": file_path.to_str().unwrap() }))
             .await
@@ -140,7 +216,7 @@ mod tests {
             .await
             .unwrap();
 
-        let tool = ReadTool;
+        let tool = make_tool();
         let result = tool
             .execute(serde_json::json!({
                 "path": file_path.to_str().unwrap(),
@@ -168,7 +244,7 @@ mod tests {
 
     #[tokio::test]
     async fn read_file_not_found() {
-        let tool = ReadTool;
+        let tool = make_tool();
         let result = tool
             .execute(serde_json::json!({ "path": "/nonexistent/file.txt" }))
             .await
@@ -179,16 +255,155 @@ mod tests {
 
     #[tokio::test]
     async fn read_file_missing_path() {
-        let tool = ReadTool;
+        let tool = make_tool();
         let result = tool.execute(serde_json::json!({})).await;
         assert!(result.is_err(), "missing path should return ToolError");
     }
 
     #[test]
     fn read_tool_definition() {
-        let tool = ReadTool;
+        let tool = make_tool();
         assert_eq!(tool.name(), "read_file", "tool name should match");
         let def = tool.definition();
         assert_eq!(def.name, "read_file", "definition name should match");
+    }
+
+    #[tokio::test]
+    async fn output_includes_hash_tags() {
+        let dir = tempfile::tempdir().unwrap();
+        let file_path = dir.path().join("hash_test.txt");
+        tokio::fs::write(&file_path, "hello\nworld\n")
+            .await
+            .unwrap();
+
+        let tool = make_tool();
+        let result = tool
+            .execute(serde_json::json!({ "path": file_path.to_str().unwrap() }))
+            .await
+            .unwrap();
+
+        // Each line should have format "   N:xx\tcontent"
+        for output_line in result.output.lines() {
+            assert!(
+                output_line.contains(':'),
+                "output line should contain hash separator: {output_line}"
+            );
+            assert!(
+                output_line.contains('\t'),
+                "output line should contain tab: {output_line}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn default_line_limit_caps_at_2000() {
+        use std::fmt::Write;
+        let dir = tempfile::tempdir().unwrap();
+        let file_path = dir.path().join("big.txt");
+        let mut big_content = String::new();
+        for i in 1..=3000 {
+            _ = writeln!(big_content, "line {i}");
+        }
+        tokio::fs::write(&file_path, &big_content).await.unwrap();
+
+        let tool = make_tool();
+        let result = tool
+            .execute(serde_json::json!({ "path": file_path.to_str().unwrap() }))
+            .await
+            .unwrap();
+
+        assert!(!result.is_error, "read should succeed");
+        assert!(
+            result.output.contains("warning: file has 3000 lines"),
+            "should warn about line limit"
+        );
+        // Count actual content lines (skip warning lines)
+        let content_lines: Vec<&str> = result.output.lines().filter(|l| l.contains('\t')).collect();
+        assert_eq!(
+            content_lines.len(),
+            2000,
+            "should return exactly 2000 content lines"
+        );
+    }
+
+    #[tokio::test]
+    async fn explicit_limit_can_exceed_default() {
+        use std::fmt::Write;
+        let dir = tempfile::tempdir().unwrap();
+        let file_path = dir.path().join("big2.txt");
+        let mut big_content = String::new();
+        for i in 1..=2500 {
+            _ = writeln!(big_content, "line {i}");
+        }
+        tokio::fs::write(&file_path, &big_content).await.unwrap();
+
+        let tool = make_tool();
+        let result = tool
+            .execute(serde_json::json!({
+                "path": file_path.to_str().unwrap(),
+                "limit": 2500
+            }))
+            .await
+            .unwrap();
+
+        assert!(!result.is_error, "read should succeed");
+        assert!(
+            !result.output.contains("warning:"),
+            "no warning when explicit limit is used"
+        );
+        let content_lines: Vec<&str> = result.output.lines().filter(|l| l.contains('\t')).collect();
+        assert_eq!(
+            content_lines.len(),
+            2500,
+            "should return all 2500 lines with explicit limit"
+        );
+    }
+
+    #[tokio::test]
+    async fn line_char_truncation_and_warning() {
+        let dir = tempfile::tempdir().unwrap();
+        let file_path = dir.path().join("wide.txt");
+        let long_line = "x".repeat(3000);
+        let short_line = "short";
+        let file_content = format!("{long_line}\n{short_line}\n");
+        tokio::fs::write(&file_path, &file_content).await.unwrap();
+
+        let tool = make_tool();
+        let result = tool
+            .execute(serde_json::json!({ "path": file_path.to_str().unwrap() }))
+            .await
+            .unwrap();
+
+        assert!(!result.is_error, "read should succeed");
+        assert!(
+            result.output.contains("1 line(s) exceeded 2000 characters"),
+            "should warn about truncated lines"
+        );
+        assert!(
+            result.output.contains("(truncated)"),
+            "truncated lines should be marked"
+        );
+    }
+
+    #[tokio::test]
+    async fn tracker_records_path_after_read() {
+        let dir = tempfile::tempdir().unwrap();
+        let file_path = dir.path().join("track.txt");
+        tokio::fs::write(&file_path, "content").await.unwrap();
+
+        let tracker = FileTracker::new_shared();
+        let tool = ReadTool::new(std::sync::Arc::clone(&tracker));
+
+        tool.execute(serde_json::json!({ "path": file_path.to_str().unwrap() }))
+            .await
+            .unwrap();
+
+        assert!(
+            tracker
+                .lock()
+                .await
+                .has_been_read(file_path.to_str().unwrap()),
+            "tracker should record the read path"
+        );
     }
 }

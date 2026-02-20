@@ -121,7 +121,8 @@ pub async fn run_gateway(cfg: Config) -> Result<(), IronclawError> {
 
     // Build tool registry
     let mut tools = ToolRegistry::new();
-    tools.register_defaults();
+    let file_tracker = crate::tools::FileTracker::new_shared();
+    tools.register_defaults(file_tracker);
     tools.register_memory_tools(&layout);
     tools.register_search_tool(Arc::clone(&search_index));
     tools.register_cron_tools(Arc::clone(&cron_store), Arc::clone(&cron_notify));

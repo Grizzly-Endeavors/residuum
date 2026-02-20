@@ -269,6 +269,7 @@ mod tests {
     use super::*;
     use crate::channels::null::NullDisplay;
     use crate::models::{ModelError, ToolCall, ToolDefinition};
+    use crate::tools::FileTracker;
     use async_trait::async_trait;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -331,7 +332,7 @@ mod tests {
     #[tokio::test]
     async fn tool_loop_then_text() {
         let mut registry = ToolRegistry::new();
-        registry.register_defaults();
+        registry.register_defaults(FileTracker::new_shared());
 
         let provider = MockProvider::new(vec![
             ModelResponse::new(
@@ -379,7 +380,7 @@ mod tests {
             .collect();
 
         let mut registry = ToolRegistry::new();
-        registry.register_defaults();
+        registry.register_defaults(FileTracker::new_shared());
 
         let provider = MockProvider::new(responses);
         let mut agent = Agent::new(

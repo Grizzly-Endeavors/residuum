@@ -2,10 +2,15 @@
 
 pub mod cron;
 pub mod daily_log;
+mod edit;
 mod exec;
+pub(crate) mod file_tracker;
+mod line_hash;
 pub mod memory_search;
 mod read;
 mod write;
+
+pub use file_tracker::{FileTracker, SharedFileTracker};
 
 use std::sync::Arc;
 
@@ -122,10 +127,11 @@ impl ToolRegistry {
         tool.execute(arguments).await
     }
 
-    /// Register the default set of tools (read, write, exec).
-    pub fn register_defaults(&mut self) {
-        self.register(Box::new(read::ReadTool));
-        self.register(Box::new(write::WriteTool));
+    /// Register the default set of tools (read, write, edit, exec).
+    pub fn register_defaults(&mut self, tracker: SharedFileTracker) {
+        self.register(Box::new(read::ReadTool::new(Arc::clone(&tracker))));
+        self.register(Box::new(write::WriteTool::new(Arc::clone(&tracker))));
+        self.register(Box::new(edit::EditTool::new(tracker)));
         self.register(Box::new(exec::ExecTool));
     }
 
@@ -203,8 +209,8 @@ mod tests {
     #[test]
     fn registry_with_defaults() {
         let mut registry = ToolRegistry::new();
-        registry.register_defaults();
+        registry.register_defaults(FileTracker::new_shared());
         let defs = registry.definitions();
-        assert_eq!(defs.len(), 3, "should have read, write, exec tools");
+        assert_eq!(defs.len(), 4, "should have read, write, edit, exec tools");
     }
 }

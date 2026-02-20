@@ -136,7 +136,7 @@ mod tests {
     fn system_content_includes_tool_listing() {
         let identity = IdentityFiles::default();
         let mut tools = ToolRegistry::new();
-        tools.register_defaults();
+        tools.register_defaults(crate::tools::FileTracker::new_shared());
 
         let content = build_system_content(&identity, &tools, None);
         assert!(content.contains("read_file"), "should list read_file tool");
@@ -144,6 +144,7 @@ mod tests {
             content.contains("write_file"),
             "should list write_file tool"
         );
+        assert!(content.contains("edit_file"), "should list edit_file tool");
         assert!(content.contains("exec"), "should list exec tool");
     }
 
