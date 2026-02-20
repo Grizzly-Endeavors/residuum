@@ -316,18 +316,13 @@ struct OpenAiError {
 #[expect(clippy::unwrap_used, reason = "test code uses unwrap for clarity")]
 mod tests {
     use super::*;
-    use crate::models::{CompletionOptions, Role};
+    use crate::models::CompletionOptions;
     use wiremock::matchers::{header, method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     #[test]
     fn message_conversion_user() {
-        let msg = Message {
-            role: Role::User,
-            content: "Hello".to_string(),
-            tool_calls: None,
-            tool_call_id: None,
-        };
+        let msg = Message::user("Hello");
 
         let openai_msg: OpenAiMessage = (&msg).into();
         assert_eq!(openai_msg.role, "user", "role should map to user");
@@ -344,16 +339,14 @@ mod tests {
 
     #[test]
     fn message_conversion_assistant_with_tool_calls() {
-        let msg = Message {
-            role: Role::Assistant,
-            content: String::new(),
-            tool_calls: Some(vec![ToolCall {
+        let msg = Message::assistant(
+            "",
+            Some(vec![ToolCall {
                 id: "call_123".to_string(),
                 name: "bash".to_string(),
                 arguments: serde_json::json!({"command": "ls"}),
             }]),
-            tool_call_id: None,
-        };
+        );
 
         let openai_msg: OpenAiMessage = (&msg).into();
         assert_eq!(openai_msg.role, "assistant", "role should map to assistant");
@@ -383,12 +376,7 @@ mod tests {
 
     #[test]
     fn message_conversion_tool() {
-        let msg = Message {
-            role: Role::Tool,
-            content: "result output".to_string(),
-            tool_calls: None,
-            tool_call_id: Some("call_123".to_string()),
-        };
+        let msg = Message::tool("result output", "call_123");
 
         let openai_msg: OpenAiMessage = (&msg).into();
         assert_eq!(openai_msg.role, "tool", "role should map to tool");
@@ -422,12 +410,7 @@ mod tests {
             .await;
 
         let client = OpenAiClient::new(mock_server.uri(), "gpt-4", 60).unwrap();
-        let messages = vec![Message {
-            role: Role::User,
-            content: "Hello".to_string(),
-            tool_calls: None,
-            tool_call_id: None,
-        }];
+        let messages = vec![Message::user("Hello")];
 
         let response = client
             .complete(&messages, &[], &CompletionOptions::default())
@@ -461,12 +444,7 @@ mod tests {
 
         let client =
             OpenAiClient::with_api_key(mock_server.uri(), "gpt-4", "sk-test-key", 60).unwrap();
-        let messages = vec![Message {
-            role: Role::User,
-            content: "Hello".to_string(),
-            tool_calls: None,
-            tool_call_id: None,
-        }];
+        let messages = vec![Message::user("Hello")];
 
         let response = client
             .complete(&messages, &[], &CompletionOptions::default())
@@ -504,12 +482,7 @@ mod tests {
             .await;
 
         let client = OpenAiClient::new(mock_server.uri(), "gpt-4", 60).unwrap();
-        let messages = vec![Message {
-            role: Role::User,
-            content: "List files".to_string(),
-            tool_calls: None,
-            tool_call_id: None,
-        }];
+        let messages = vec![Message::user("List files")];
 
         let response = client
             .complete(&messages, &[], &CompletionOptions::default())

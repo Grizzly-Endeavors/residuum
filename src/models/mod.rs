@@ -73,6 +73,52 @@ pub struct Message {
     pub tool_call_id: Option<String>,
 }
 
+impl Message {
+    /// Create a user message.
+    #[must_use]
+    pub fn user(content: impl Into<String>) -> Self {
+        Self {
+            role: Role::User,
+            content: content.into(),
+            tool_calls: None,
+            tool_call_id: None,
+        }
+    }
+
+    /// Create a system message.
+    #[must_use]
+    pub fn system(content: impl Into<String>) -> Self {
+        Self {
+            role: Role::System,
+            content: content.into(),
+            tool_calls: None,
+            tool_call_id: None,
+        }
+    }
+
+    /// Create an assistant message with optional tool calls.
+    #[must_use]
+    pub fn assistant(content: impl Into<String>, tool_calls: Option<Vec<ToolCall>>) -> Self {
+        Self {
+            role: Role::Assistant,
+            content: content.into(),
+            tool_calls,
+            tool_call_id: None,
+        }
+    }
+
+    /// Create a tool result message.
+    #[must_use]
+    pub fn tool(content: impl Into<String>, tool_call_id: impl Into<String>) -> Self {
+        Self {
+            role: Role::Tool,
+            content: content.into(),
+            tool_calls: None,
+            tool_call_id: Some(tool_call_id.into()),
+        }
+    }
+}
+
 /// The role of a message participant.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -274,5 +320,61 @@ mod tests {
             !empty.is_complete(),
             "empty response with no tools is not complete"
         );
+    }
+
+    #[test]
+    fn message_user_constructor() {
+        let msg = Message::user("hello");
+        assert_eq!(msg.role, Role::User, "role should be User");
+        assert_eq!(msg.content, "hello", "content should match");
+        assert!(msg.tool_calls.is_none(), "tool_calls should be None");
+        assert!(msg.tool_call_id.is_none(), "tool_call_id should be None");
+    }
+
+    #[test]
+    fn message_system_constructor() {
+        let msg = Message::system("you are a test agent");
+        assert_eq!(msg.role, Role::System, "role should be System");
+        assert_eq!(msg.content, "you are a test agent", "content should match");
+    }
+
+    #[test]
+    fn message_assistant_constructor() {
+        let msg = Message::assistant("response text", None);
+        assert_eq!(msg.role, Role::Assistant, "role should be Assistant");
+        assert_eq!(msg.content, "response text", "content should match");
+        assert!(msg.tool_calls.is_none(), "tool_calls should be None");
+
+        let with_tools = Message::assistant(
+            "thinking",
+            Some(vec![ToolCall {
+                id: "c1".to_string(),
+                name: "exec".to_string(),
+                arguments: serde_json::Value::Null,
+            }]),
+        );
+        assert!(
+            with_tools.tool_calls.is_some(),
+            "tool_calls should be present"
+        );
+    }
+
+    #[test]
+    fn message_tool_constructor() {
+        let msg = Message::tool("output", "call_1");
+        assert_eq!(msg.role, Role::Tool, "role should be Tool");
+        assert_eq!(msg.content, "output", "content should match");
+        assert_eq!(
+            msg.tool_call_id,
+            Some("call_1".to_string()),
+            "tool_call_id should be set"
+        );
+    }
+
+    #[test]
+    fn message_constructors_accept_owned_string() {
+        let owned = String::from("owned content");
+        let msg = Message::user(owned);
+        assert_eq!(msg.content, "owned content", "should accept String");
     }
 }

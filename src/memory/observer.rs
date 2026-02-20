@@ -11,7 +11,7 @@ use crate::memory::episode_store::write_episode_transcript;
 use crate::memory::log_store::{append_episode, load_observation_log, next_episode_id};
 use crate::memory::tokens::estimate_message_tokens;
 use crate::memory::types::Episode;
-use crate::models::{CompletionOptions, Message, ModelProvider, ModelResponse, Role};
+use crate::models::{CompletionOptions, Message, ModelProvider, ModelResponse};
 use crate::workspace::layout::WorkspaceLayout;
 
 /// Observer configuration.
@@ -108,21 +108,12 @@ fn build_extraction_prompt(messages: &[Message]) -> Vec<Message> {
         .collect::<Vec<_>>()
         .join("\n\n");
 
-    let system = Message {
-        role: Role::System,
-        content: EXTRACTION_SYSTEM_PROMPT.to_string(),
-        tool_calls: None,
-        tool_call_id: None,
-    };
-
-    let user = Message {
-        role: Role::User,
-        content: format!("Extract observations from this conversation segment:\n\n{transcript}"),
-        tool_calls: None,
-        tool_call_id: None,
-    };
-
-    vec![system, user]
+    vec![
+        Message::system(EXTRACTION_SYSTEM_PROMPT),
+        Message::user(format!(
+            "Extract observations from this conversation segment:\n\n{transcript}"
+        )),
+    ]
 }
 
 /// System prompt instructing the model to extract structured episode data.
@@ -213,7 +204,7 @@ fn parse_episode_response(
 #[expect(clippy::unwrap_used, reason = "test code uses unwrap for clarity")]
 mod tests {
     use super::*;
-    use crate::models::{ModelError, ModelResponse, ToolDefinition};
+    use crate::models::{ModelError, ModelResponse, Role, ToolDefinition};
     use async_trait::async_trait;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -261,14 +252,11 @@ mod tests {
 
     fn make_messages(count: usize) -> Vec<Message> {
         (0..count)
-            .map(|i| Message {
-                role: Role::User,
-                content: format!(
+            .map(|i| {
+                Message::user(format!(
                     "message {i} with enough content to contribute to token count - {}",
                     "a".repeat(100)
-                ),
-                tool_calls: None,
-                tool_call_id: None,
+                ))
             })
             .collect()
     }
@@ -400,12 +388,7 @@ mod tests {
 
     #[test]
     fn extraction_prompt_includes_messages() {
-        let messages = vec![Message {
-            role: Role::User,
-            content: "test content".to_string(),
-            tool_calls: None,
-            tool_call_id: None,
-        }];
+        let messages = vec![Message::user("test content")];
 
         let prompt = build_extraction_prompt(&messages);
         assert_eq!(prompt.len(), 2, "should have system + user message");

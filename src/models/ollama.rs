@@ -220,18 +220,13 @@ struct OllamaErrorResponse {
 #[expect(clippy::unwrap_used, reason = "test code uses unwrap for clarity")]
 mod tests {
     use super::*;
-    use crate::models::{CompletionOptions, Role};
+    use crate::models::CompletionOptions;
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     #[test]
     fn message_conversion() {
-        let msg = Message {
-            role: Role::User,
-            content: "Hello".to_string(),
-            tool_calls: None,
-            tool_call_id: None,
-        };
+        let msg = Message::user("Hello");
 
         let ollama_msg: OllamaMessage = (&msg).into();
         assert_eq!(ollama_msg.role, "user", "role should be user");
@@ -258,12 +253,7 @@ mod tests {
             .await;
 
         let client = OllamaClient::new(mock_server.uri(), "test-model", 60).unwrap();
-        let messages = vec![Message {
-            role: Role::User,
-            content: "Hello".to_string(),
-            tool_calls: None,
-            tool_call_id: None,
-        }];
+        let messages = vec![Message::user("Hello")];
 
         let response = client
             .complete(&messages, &[], &CompletionOptions::default())
@@ -328,12 +318,7 @@ mod tests {
             .await;
 
         let client = OllamaClient::new(mock_server.uri(), "test-model", 60).unwrap();
-        let messages = vec![Message {
-            role: Role::User,
-            content: "List files".to_string(),
-            tool_calls: None,
-            tool_call_id: None,
-        }];
+        let messages = vec![Message::user("List files")];
 
         let response = client
             .complete(&messages, &[], &CompletionOptions::default())

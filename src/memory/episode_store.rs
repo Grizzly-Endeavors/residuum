@@ -111,7 +111,7 @@ fn format_single_message(msg: &Message) -> String {
 #[expect(clippy::unwrap_used, reason = "test code uses unwrap for clarity")]
 mod tests {
     use super::*;
-    use crate::models::{Role, ToolCall};
+    use crate::models::ToolCall;
     use chrono::NaiveDate;
 
     fn sample_episode() -> Episode {
@@ -149,18 +149,8 @@ mod tests {
     #[test]
     fn transcript_basic_messages() {
         let messages = vec![
-            Message {
-                role: Role::User,
-                content: "what is 2+2?".to_string(),
-                tool_calls: None,
-                tool_call_id: None,
-            },
-            Message {
-                role: Role::Assistant,
-                content: "2+2 equals 4.".to_string(),
-                tool_calls: None,
-                tool_call_id: None,
-            },
+            Message::user("what is 2+2?"),
+            Message::assistant("2+2 equals 4.", None),
         ];
 
         let transcript = format_transcript(&messages);
@@ -181,16 +171,14 @@ mod tests {
 
     #[test]
     fn transcript_with_tool_calls() {
-        let messages = vec![Message {
-            role: Role::Assistant,
-            content: String::new(),
-            tool_calls: Some(vec![ToolCall {
+        let messages = vec![Message::assistant(
+            "",
+            Some(vec![ToolCall {
                 id: "call_1".to_string(),
                 name: "exec".to_string(),
                 arguments: serde_json::json!({"command": "ls"}),
             }]),
-            tool_call_id: None,
-        }];
+        )];
 
         let transcript = format_transcript(&messages);
         assert!(
@@ -202,12 +190,7 @@ mod tests {
 
     #[test]
     fn transcript_with_tool_result() {
-        let messages = vec![Message {
-            role: Role::Tool,
-            content: "file1.txt\nfile2.txt".to_string(),
-            tool_calls: None,
-            tool_call_id: Some("call_1".to_string()),
-        }];
+        let messages = vec![Message::tool("file1.txt\nfile2.txt", "call_1")];
 
         let transcript = format_transcript(&messages);
         assert!(transcript.contains("**Tool**"), "should have tool label");
@@ -225,12 +208,7 @@ mod tests {
     async fn write_transcript_creates_file_in_month_dir() {
         let dir = tempfile::tempdir().unwrap();
         let episode = sample_episode();
-        let messages = vec![Message {
-            role: Role::User,
-            content: "hello".to_string(),
-            tool_calls: None,
-            tool_call_id: None,
-        }];
+        let messages = vec![Message::user("hello")];
 
         write_episode_transcript(dir.path(), &episode, &messages)
             .await

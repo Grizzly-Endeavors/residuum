@@ -8,7 +8,7 @@ use crate::error::IronclawError;
 use crate::memory::log_store::{load_observation_log, save_observation_log};
 use crate::memory::tokens::estimate_tokens;
 use crate::memory::types::ObservationLog;
-use crate::models::{CompletionOptions, Message, ModelProvider, Role};
+use crate::models::{CompletionOptions, Message, ModelProvider};
 use crate::workspace::layout::WorkspaceLayout;
 
 /// Reflector configuration.
@@ -100,21 +100,12 @@ impl Reflector {
 
 /// Build the reflection prompt with the serialized observation log.
 fn build_reflection_prompt(serialized_log: &str) -> Vec<Message> {
-    let system = Message {
-        role: Role::System,
-        content: REFLECTION_SYSTEM_PROMPT.to_string(),
-        tool_calls: None,
-        tool_call_id: None,
-    };
-
-    let user = Message {
-        role: Role::User,
-        content: format!("Reorganize and compress this observation log:\n\n{serialized_log}"),
-        tool_calls: None,
-        tool_call_id: None,
-    };
-
-    vec![system, user]
+    vec![
+        Message::system(REFLECTION_SYSTEM_PROMPT),
+        Message::user(format!(
+            "Reorganize and compress this observation log:\n\n{serialized_log}"
+        )),
+    ]
 }
 
 /// System prompt for the reflector model.

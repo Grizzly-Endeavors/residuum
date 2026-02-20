@@ -389,12 +389,7 @@ mod tests {
     }
 
     fn simple_user_message() -> Vec<Message> {
-        vec![Message {
-            role: Role::User,
-            content: "Hello".to_string(),
-            tool_calls: None,
-            tool_call_id: None,
-        }]
+        vec![Message::user("Hello")]
     }
 
     fn success_response_body() -> Value {
@@ -450,18 +445,8 @@ mod tests {
 
         let client = test_client(&server.uri());
         let messages = vec![
-            Message {
-                role: Role::System,
-                content: "You are a helpful assistant.".to_string(),
-                tool_calls: None,
-                tool_call_id: None,
-            },
-            Message {
-                role: Role::User,
-                content: "Hello".to_string(),
-                tool_calls: None,
-                tool_call_id: None,
-            },
+            Message::system("You are a helpful assistant."),
+            Message::user("Hello"),
         ];
         let options = CompletionOptions::default();
 
@@ -540,28 +525,16 @@ mod tests {
     #[tokio::test]
     async fn tool_result_serialization() {
         let messages = vec![
-            Message {
-                role: Role::User,
-                content: "Search for rust".to_string(),
-                tool_calls: None,
-                tool_call_id: None,
-            },
-            Message {
-                role: Role::Assistant,
-                content: "I'll search for that.".to_string(),
-                tool_calls: Some(vec![ToolCall {
+            Message::user("Search for rust"),
+            Message::assistant(
+                "I'll search for that.",
+                Some(vec![ToolCall {
                     id: "toolu_abc123".to_string(),
                     name: "web_search".to_string(),
                     arguments: json!({"query": "rust"}),
                 }]),
-                tool_call_id: None,
-            },
-            Message {
-                role: Role::Tool,
-                content: "Rust is a systems programming language.".to_string(),
-                tool_calls: None,
-                tool_call_id: Some("toolu_abc123".to_string()),
-            },
+            ),
+            Message::tool("Rust is a systems programming language.", "toolu_abc123"),
         ];
 
         let (system, api_msgs) = AnthropicClient::convert_messages(&messages);

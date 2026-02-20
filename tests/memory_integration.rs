@@ -22,7 +22,7 @@ mod memory_integration {
     use ironclaw::memory::reflector::{Reflector, ReflectorConfig};
     use ironclaw::memory::search::MemoryIndex;
     use ironclaw::models::{
-        CompletionOptions, Message, ModelError, ModelProvider, ModelResponse, Role, ToolDefinition,
+        CompletionOptions, Message, ModelError, ModelProvider, ModelResponse, ToolDefinition,
     };
     use ironclaw::workspace::layout::WorkspaceLayout;
 
@@ -100,21 +100,16 @@ mod memory_integration {
     fn make_messages(count: usize) -> Vec<Message> {
         (0..count)
             .map(|i| {
-                let role = if i % 2 == 0 {
-                    Role::User
+                let content = format!(
+                    "Message {i}: discussing workspace layout and file organization in detail. \
+                     The workspace uses a flat structure with identity files like SOUL.md, \
+                     AGENTS.md, USER.md, and MEMORY.md at the root level. {}",
+                    "Additional context and detail to increase token count. ".repeat(20)
+                );
+                if i % 2 == 0 {
+                    Message::user(content)
                 } else {
-                    Role::Assistant
-                };
-                Message {
-                    role,
-                    content: format!(
-                        "Message {i}: discussing workspace layout and file organization in detail. \
-                         The workspace uses a flat structure with identity files like SOUL.md, \
-                         AGENTS.md, USER.md, and MEMORY.md at the root level. {}",
-                        "Additional context and detail to increase token count. ".repeat(20)
-                    ),
-                    tool_calls: None,
-                    tool_call_id: None,
+                    Message::assistant(content, None)
                 }
             })
             .collect()
@@ -336,12 +331,7 @@ mod memory_integration {
             },
         );
 
-        let messages = vec![Message {
-            role: Role::User,
-            content: "hello".to_string(),
-            tool_calls: None,
-            tool_call_id: None,
-        }];
+        let messages = vec![Message::user("hello")];
 
         assert!(
             !observer.should_observe(&messages),

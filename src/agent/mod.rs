@@ -5,7 +5,7 @@ pub mod session;
 
 use crate::channels::TurnDisplay;
 use crate::error::IronclawError;
-use crate::models::{CompletionOptions, Message, ModelProvider, ModelResponse, Role};
+use crate::models::{CompletionOptions, Message, ModelProvider, ModelResponse};
 use crate::tools::ToolRegistry;
 use crate::workspace::identity::IdentityFiles;
 
@@ -116,12 +116,7 @@ impl Agent {
             format!("[System Alerts — please review]\n\n{events_text}\n\n---\n\n{user_input}")
         };
 
-        self.session.push(Message {
-            role: Role::User,
-            content: effective_input,
-            tool_calls: None,
-            tool_call_id: None,
-        });
+        self.session.push(Message::user(effective_input));
 
         execute_turn(
             &*self.provider,
@@ -149,12 +144,7 @@ impl Agent {
         display: &dyn TurnDisplay,
     ) -> Result<SystemTurnResult, IronclawError> {
         let mut session = Session::new();
-        session.push(Message {
-            role: Role::User,
-            content: prompt.to_string(),
-            tool_calls: None,
-            tool_call_id: None,
-        });
+        session.push(Message::user(prompt));
 
         let response = execute_turn(
             &*self.provider,
@@ -210,12 +200,7 @@ async fn execute_turn(
             .map_err(IronclawError::Model)?;
 
         if response.is_complete() || response.tool_calls.is_empty() {
-            session.push(Message {
-                role: Role::Assistant,
-                content: response.content.clone(),
-                tool_calls: None,
-                tool_call_id: None,
-            });
+            session.push(Message::assistant(response.content.clone(), None));
 
             log_usage(&response);
             return Ok(response.content);
@@ -227,12 +212,10 @@ async fn execute_turn(
             "processing tool calls"
         );
 
-        session.push(Message {
-            role: Role::Assistant,
-            content: response.content.clone(),
-            tool_calls: Some(response.tool_calls.clone()),
-            tool_call_id: None,
-        });
+        session.push(Message::assistant(
+            response.content.clone(),
+            Some(response.tool_calls.clone()),
+        ));
 
         for tool_call in &response.tool_calls {
             display.show_tool_call(&tool_call.name, &tool_call.arguments);
@@ -248,12 +231,7 @@ async fn execute_turn(
 
             display.show_tool_result(&tool_call.name, &output, is_error);
 
-            session.push(Message {
-                role: Role::Tool,
-                content: output,
-                tool_calls: None,
-                tool_call_id: Some(tool_call.id.clone()),
-            });
+            session.push(Message::tool(output, tool_call.id.clone()));
         }
 
         log_usage(&response);

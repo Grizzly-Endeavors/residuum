@@ -111,12 +111,7 @@ async fn run_job(
 
         (CronPayload::SystemEvent { text }, Delivery::Background) => {
             tracing::info!(job = %job.name, "background system event: {}", text);
-            let msg = crate::models::Message {
-                role: crate::models::Role::User,
-                content: format!("[cron: {}] {}", job.name, text),
-                tool_calls: None,
-                tool_call_id: None,
-            };
+            let msg = crate::models::Message::user(format!("[cron: {}] {}", job.name, text));
             (RunStatus::Ok, None, vec![msg])
         }
 

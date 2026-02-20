@@ -1,7 +1,6 @@
 //! Context assembly: builds the system prompt from identity files and tool info.
 
 use crate::models::Message;
-use crate::models::Role;
 use crate::tools::ToolRegistry;
 use crate::workspace::identity::IdentityFiles;
 
@@ -22,12 +21,7 @@ pub fn assemble_system_prompt(
 
     let mut messages = Vec::with_capacity(1 + session.messages().len());
 
-    messages.push(Message {
-        role: Role::System,
-        content: system_content,
-        tool_calls: None,
-        tool_call_id: None,
-    });
+    messages.push(Message::system(system_content));
 
     messages.extend(session.messages().iter().cloned());
 
@@ -90,6 +84,7 @@ fn build_system_content(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::models::Role;
 
     #[test]
     fn assemble_with_empty_identity() {
@@ -111,12 +106,7 @@ mod tests {
         let identity = IdentityFiles::default();
         let tools = ToolRegistry::new();
         let mut session = Session::new();
-        session.push(Message {
-            role: Role::User,
-            content: "hello".to_string(),
-            tool_calls: None,
-            tool_call_id: None,
-        });
+        session.push(Message::user("hello"));
 
         let messages = assemble_system_prompt(&identity, &tools, &session, None);
         assert_eq!(messages.len(), 2, "should have system + user message");

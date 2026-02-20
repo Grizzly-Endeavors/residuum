@@ -51,7 +51,7 @@ fn estimate_single_message(msg: &Message) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::models::{Role, ToolCall};
+    use crate::models::ToolCall;
 
     #[test]
     fn estimate_tokens_empty() {
@@ -100,12 +100,7 @@ mod tests {
 
     #[test]
     fn estimate_message_tokens_basic() {
-        let messages = vec![Message {
-            role: Role::User,
-            content: "hello world".to_string(),
-            tool_calls: None,
-            tool_call_id: None,
-        }];
+        let messages = vec![Message::user("hello world")];
         let tokens = estimate_message_tokens(&messages);
         // 11 content + 10 role = 21 chars => ceil(21/4) = 6 tokens
         assert!(tokens > 0, "should estimate some tokens");
@@ -117,16 +112,14 @@ mod tests {
 
     #[test]
     fn estimate_message_tokens_with_tool_calls() {
-        let messages = vec![Message {
-            role: Role::Assistant,
-            content: String::new(),
-            tool_calls: Some(vec![ToolCall {
+        let messages = vec![Message::assistant(
+            "",
+            Some(vec![ToolCall {
                 id: "call_1".to_string(),
                 name: "read_file".to_string(),
                 arguments: serde_json::json!({"path": "/tmp/test.txt"}),
             }]),
-            tool_call_id: None,
-        }];
+        )];
         let tokens = estimate_message_tokens(&messages);
         assert!(
             tokens > 5,
@@ -137,28 +130,16 @@ mod tests {
     #[test]
     fn estimate_message_tokens_multiple_messages() {
         let messages = vec![
-            Message {
-                role: Role::User,
-                content: "what files are in /tmp?".to_string(),
-                tool_calls: None,
-                tool_call_id: None,
-            },
-            Message {
-                role: Role::Assistant,
-                content: "I'll check for you.".to_string(),
-                tool_calls: Some(vec![ToolCall {
+            Message::user("what files are in /tmp?"),
+            Message::assistant(
+                "I'll check for you.",
+                Some(vec![ToolCall {
                     id: "call_1".to_string(),
                     name: "exec".to_string(),
                     arguments: serde_json::json!({"command": "ls /tmp"}),
                 }]),
-                tool_call_id: None,
-            },
-            Message {
-                role: Role::Tool,
-                content: "file1.txt\nfile2.txt".to_string(),
-                tool_calls: None,
-                tool_call_id: Some("call_1".to_string()),
-            },
+            ),
+            Message::tool("file1.txt\nfile2.txt", "call_1"),
         ];
         let single_tokens = estimate_message_tokens(messages.get(..1).unwrap_or_default());
         let all_tokens = estimate_message_tokens(&messages);

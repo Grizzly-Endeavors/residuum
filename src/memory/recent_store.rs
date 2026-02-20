@@ -97,15 +97,9 @@ pub async fn clear_recent_messages(path: &Path) -> Result<(), IronclawError> {
 #[expect(clippy::unwrap_used, reason = "test code uses unwrap for clarity")]
 mod tests {
     use super::*;
-    use crate::models::Role;
 
     fn sample_message(content: &str) -> Message {
-        Message {
-            role: Role::User,
-            content: content.to_string(),
-            tool_calls: None,
-            tool_call_id: None,
-        }
+        Message::user(content)
     }
 
     #[tokio::test]
