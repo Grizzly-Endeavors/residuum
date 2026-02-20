@@ -174,6 +174,7 @@ mod tests {
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
+    /// See `MockProvider` in `agent::tests` for duplication rationale.
     struct MockReflectorProvider {
         response: String,
         call_count: Arc<AtomicUsize>,

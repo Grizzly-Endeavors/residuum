@@ -60,6 +60,8 @@ impl ToolResult {
     }
 }
 
+// TODO(phase-6): add runtime JSON Schema validation for third-party tools
+
 /// Trait for tool implementations that the agent can invoke.
 #[async_trait]
 pub trait Tool: Send + Sync {

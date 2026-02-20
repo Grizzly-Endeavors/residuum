@@ -192,6 +192,8 @@ async fn execute_turn(
     let tool_definitions = tools.definitions();
 
     for iteration in 0..MAX_TOOL_ITERATIONS {
+        // System prompt is reassembled each iteration because tool execution
+        // can modify identity files (e.g. write_file updating MEMORY.md).
         let messages = assemble_system_prompt(identity, tools, session, observations);
 
         let response = provider
@@ -224,6 +226,7 @@ async fn execute_turn(
             Some(response.tool_calls.clone()),
         ));
 
+        // TODO(phase-4): add security boundary before Discord integration
         for tool_call in &response.tool_calls {
             display.show_tool_call(&tool_call.name, &tool_call.arguments);
 
@@ -271,6 +274,9 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     /// Mock provider that returns pre-configured responses in sequence.
+    ///
+    /// Intentionally duplicated across agent, observer, and reflector tests — each mock
+    /// has slightly different fields. Extract a shared mock when a 4th instance appears.
     struct MockProvider {
         responses: Vec<ModelResponse>,
         call_count: Arc<AtomicUsize>,
