@@ -105,7 +105,32 @@ pub async fn run_gateway(cfg: Config) -> Result<(), IronclawError> {
     tracing::info!(model = provider.model_name(), "model provider ready");
 
     // Build observer and reflector
-    let (observer, reflector) = build_memory_components(&cfg, http)?;
+    let (observer, reflector) = build_memory_components(&cfg, http.clone())?;
+
+    // Build optional per-role provider overrides for pulse and cron
+    let pulse_provider: Option<Box<dyn ModelProvider>> = if let Some(spec) = &cfg.pulse.provider {
+        Some(build_provider_from_spec(
+            &spec.model,
+            &spec.provider_url,
+            spec.api_key.as_deref(),
+            cfg.max_tokens,
+            http.clone(),
+        )?)
+    } else {
+        None
+    };
+
+    let cron_provider: Option<Box<dyn ModelProvider>> = if let Some(spec) = &cfg.cron.provider {
+        Some(build_provider_from_spec(
+            &spec.model,
+            &spec.provider_url,
+            spec.api_key.as_deref(),
+            cfg.max_tokens,
+            http,
+        )?)
+    } else {
+        None
+    };
 
     // Build search index
     let search_index = create_shared_index(&layout.search_index_dir())?;
@@ -252,7 +277,14 @@ pub async fn run_gateway(cfg: Config) -> Result<(), IronclawError> {
                 let due = pulse_scheduler.due_pulses(now, &layout.heartbeat_yml());
 
                 for pulse in &due {
-                    match execute_pulse(pulse, &agent, &layout.alerts_md()).await {
+                    match execute_pulse(
+                        pulse,
+                        &agent,
+                        &layout.alerts_md(),
+                        pulse_provider.as_deref(),
+                    )
+                    .await
+                    {
                         Ok(result) => {
                             if !result.is_heartbeat_ok
                                 && !matches!(result.alert_level, AlertLevel::Low)
@@ -295,6 +327,7 @@ pub async fn run_gateway(cfg: Config) -> Result<(), IronclawError> {
                 run_due_cron_jobs_gateway(
                     &cron_store, &mut agent, &observer, &reflector,
                     &search_index, &layout, &broadcast_tx,
+                    cron_provider.as_deref(),
                 ).await;
             }
 
@@ -303,6 +336,7 @@ pub async fn run_gateway(cfg: Config) -> Result<(), IronclawError> {
                 run_due_cron_jobs_gateway(
                     &cron_store, &mut agent, &observer, &reflector,
                     &search_index, &layout, &broadcast_tx,
+                    cron_provider.as_deref(),
                 ).await;
             }
         }
@@ -406,6 +440,10 @@ async fn handle_connection(socket: WebSocket, state: GatewayState) {
 }
 
 /// Execute due cron jobs, broadcast notifications, and run the memory pipeline.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "gateway cron helper requires all subsystem references; a struct would add indirection without clarity"
+)]
 async fn run_due_cron_jobs_gateway(
     cron_store: &Arc<tokio::sync::Mutex<CronStore>>,
     agent: &mut Agent,
@@ -414,6 +452,7 @@ async fn run_due_cron_jobs_gateway(
     search_index: &crate::memory::search::MemoryIndex,
     layout: &WorkspaceLayout,
     broadcast_tx: &broadcast::Sender<ServerMessage>,
+    provider_override: Option<&dyn ModelProvider>,
 ) {
     let now = chrono::Utc::now();
     let mut store = cron_store.lock().await;
@@ -426,7 +465,7 @@ async fn run_due_cron_jobs_gateway(
         }
     }
 
-    match execute_due_jobs(&mut store, agent, now).await {
+    match execute_due_jobs(&mut store, agent, now, provider_override).await {
         Ok(result) => {
             for notif in &result.notifications {
                 if broadcast_tx
@@ -575,25 +614,47 @@ async fn run_reflector_if_needed(reflector: &Reflector, layout: &WorkspaceLayout
     }
 }
 
-/// Build observer and reflector, sharing the same provider configuration.
+/// Build observer and reflector with independent provider configurations.
+///
+/// Reflector falls back to observer config, then main config when not explicitly set.
 ///
 /// # Errors
-/// Returns `IronclawError::Config` if the provider cannot be built.
+/// Returns `IronclawError::Config` if either provider cannot be built.
 pub(crate) fn build_memory_components(
     cfg: &Config,
     http: SharedHttpClient,
 ) -> Result<(Observer, Reflector), IronclawError> {
     let mem = &cfg.memory;
 
-    let spec = mem.observer_model.as_ref().unwrap_or(&cfg.model);
-    let url = mem
+    // Observer provider: observer-specific → main
+    let obs_spec = mem.observer_model.as_ref().unwrap_or(&cfg.model);
+    let obs_url = mem
         .observer_provider_url
         .as_deref()
         .unwrap_or(&cfg.provider_url);
-    let key = mem.observer_api_key.as_deref().or(cfg.api_key.as_deref());
+    let obs_key = mem.observer_api_key.as_deref().or(cfg.api_key.as_deref());
 
-    let observer_provider = build_provider_from_spec(spec, url, key, cfg.max_tokens, http.clone())?;
-    let reflector_provider = build_provider_from_spec(spec, url, key, cfg.max_tokens, http)?;
+    // Reflector provider: reflector-specific → observer-specific → main
+    let ref_spec = mem
+        .reflector_model
+        .as_ref()
+        .or(mem.observer_model.as_ref())
+        .unwrap_or(&cfg.model);
+    let ref_url = mem
+        .reflector_provider_url
+        .as_deref()
+        .or(mem.observer_provider_url.as_deref())
+        .unwrap_or(&cfg.provider_url);
+    let ref_key = mem
+        .reflector_api_key
+        .as_deref()
+        .or(mem.observer_api_key.as_deref())
+        .or(cfg.api_key.as_deref());
+
+    let observer_provider =
+        build_provider_from_spec(obs_spec, obs_url, obs_key, cfg.max_tokens, http.clone())?;
+    let reflector_provider =
+        build_provider_from_spec(ref_spec, ref_url, ref_key, cfg.max_tokens, http)?;
 
     let observer = Observer::new(
         observer_provider,

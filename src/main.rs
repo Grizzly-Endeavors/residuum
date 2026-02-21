@@ -47,6 +47,7 @@ async fn run() -> Result<(), IronclawError> {
         }
         // "serve" or no subcommand → start gateway
         Some("serve") | None => {
+            Config::bootstrap_config_dir()?;
             let cfg = Config::load()?;
             tracing::info!(
                 model = %cfg.model,

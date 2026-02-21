@@ -3,7 +3,7 @@ use std::path::Path;
 use crate::agent::Agent;
 use crate::channels::null::NullDisplay;
 use crate::error::IronclawError;
-use crate::models::Message;
+use crate::models::{Message, ModelProvider};
 
 use super::alerts::load_alerts;
 use super::types::{AlertLevel, PulseDef};
@@ -27,6 +27,9 @@ pub struct PulseResult {
 /// Builds a prompt from the pulse tasks and optional Alerts.md content,
 /// runs `agent.run_system_turn`, and handles alert delivery for the CLI.
 ///
+/// If `provider_override` is `Some`, that provider is used instead of the
+/// agent's default for this turn.
+///
 /// # Errors
 ///
 /// Returns `IronclawError` if loading alerts or running the agent turn fails.
@@ -34,6 +37,7 @@ pub async fn execute_pulse(
     pulse: &PulseDef,
     agent: &Agent,
     alerts_path: &Path,
+    provider_override: Option<&dyn ModelProvider>,
 ) -> Result<PulseResult, IronclawError> {
     let alerts_content = load_alerts(alerts_path).await?;
 
@@ -62,7 +66,9 @@ pub async fn execute_pulse(
     let prompt = parts.join("\n\n");
 
     let display = NullDisplay;
-    let result = agent.run_system_turn(&prompt, &display).await?;
+    let result = agent
+        .run_system_turn(&prompt, &display, provider_override)
+        .await?;
 
     let is_heartbeat_ok = result.response.contains("HEARTBEAT_OK");
 

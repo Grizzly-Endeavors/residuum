@@ -5,6 +5,7 @@ use chrono::{DateTime, Utc};
 use crate::agent::Agent;
 use crate::channels::null::NullDisplay;
 use crate::error::IronclawError;
+use crate::models::ModelProvider;
 
 use super::scheduler::compute_next_run_with_backoff;
 use super::store::CronStore;
@@ -34,6 +35,9 @@ pub struct CronExecutionResult {
 /// - `AgentTurn + UserVisible`: run ephemeral turn, queue as system event, return notification + messages
 /// - `AgentTurn + Background`: run ephemeral turn, return messages for memory pipeline
 ///
+/// If `provider_override` is `Some`, that provider is used for any `AgentTurn`
+/// jobs instead of the agent's default provider.
+///
 /// # Errors
 /// Returns `IronclawError` if a store save fails. Individual job failures are
 /// recorded in the job's state and do not abort the loop.
@@ -41,6 +45,7 @@ pub async fn execute_due_jobs(
     store: &mut CronStore,
     agent: &mut Agent,
     now: DateTime<Utc>,
+    provider_override: Option<&dyn ModelProvider>,
 ) -> Result<CronExecutionResult, IronclawError> {
     let due_ids: Vec<String> = store
         .find_due_jobs(now)
@@ -57,7 +62,8 @@ pub async fn execute_due_jobs(
             continue;
         };
 
-        let (status, error_msg, new_messages, notification) = run_job(&job, agent).await;
+        let (status, error_msg, new_messages, notification) =
+            run_job(&job, agent, provider_override).await;
         if let Some(notif) = notification {
             notifications.push(notif);
         }
@@ -124,6 +130,7 @@ pub async fn execute_due_jobs(
 async fn run_job(
     job: &CronJob,
     agent: &mut Agent,
+    provider_override: Option<&dyn ModelProvider>,
 ) -> (
     RunStatus,
     Option<String>,
@@ -148,7 +155,10 @@ async fn run_job(
 
         (CronPayload::AgentTurn { message }, Delivery::UserVisible) => {
             let display = NullDisplay;
-            match agent.run_system_turn(message, &display).await {
+            match agent
+                .run_system_turn(message, &display, provider_override)
+                .await
+            {
                 Ok(result) => {
                     tracing::info!(job = %job.name, "user-visible agent turn completed");
                     let notif = CronNotification {
@@ -167,7 +177,10 @@ async fn run_job(
 
         (CronPayload::AgentTurn { message }, Delivery::Background) => {
             let display = NullDisplay;
-            match agent.run_system_turn(message, &display).await {
+            match agent
+                .run_system_turn(message, &display, provider_override)
+                .await
+            {
                 Ok(result) => {
                     tracing::info!(job = %job.name, "background agent turn completed");
                     (RunStatus::Ok, None, result.messages, None)

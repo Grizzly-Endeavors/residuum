@@ -91,7 +91,9 @@ mod proactivity_integration {
             }],
         };
 
-        let result = execute_pulse(&pulse, &agent, &alerts_path).await.unwrap();
+        let result = execute_pulse(&pulse, &agent, &alerts_path, None)
+            .await
+            .unwrap();
 
         assert!(
             result.is_heartbeat_ok,
@@ -124,7 +126,9 @@ mod proactivity_integration {
             }],
         };
 
-        let result = execute_pulse(&pulse, &agent, &alerts_path).await.unwrap();
+        let result = execute_pulse(&pulse, &agent, &alerts_path, None)
+            .await
+            .unwrap();
 
         assert!(
             !result.is_heartbeat_ok,
@@ -151,7 +155,9 @@ mod proactivity_integration {
             tasks: vec![],
         };
 
-        let result = execute_pulse(&pulse, &agent, &alerts_path).await.unwrap();
+        let result = execute_pulse(&pulse, &agent, &alerts_path, None)
+            .await
+            .unwrap();
         assert!(
             result.is_heartbeat_ok,
             "should still process with alerts.md present"
@@ -177,7 +183,9 @@ mod proactivity_integration {
             }],
         };
 
-        let result = execute_pulse(&pulse, &agent, &alerts_path).await.unwrap();
+        let result = execute_pulse(&pulse, &agent, &alerts_path, None)
+            .await
+            .unwrap();
 
         // Ephemeral messages returned for memory pipeline
         assert!(
@@ -323,7 +331,9 @@ mod proactivity_integration {
         // Initially no pending events
         assert_eq!(agent.message_count(), 0, "no messages initially");
 
-        let result = execute_due_jobs(&mut store, &mut agent, now).await.unwrap();
+        let result = execute_due_jobs(&mut store, &mut agent, now, None)
+            .await
+            .unwrap();
 
         // SystemEvent+Main produces no ephemeral messages (just queues on agent)
         assert!(
@@ -374,7 +384,9 @@ mod proactivity_integration {
 
         let mut agent = make_agent(vec!["Background check complete.".to_string()]);
 
-        let result = execute_due_jobs(&mut store, &mut agent, now).await.unwrap();
+        let result = execute_due_jobs(&mut store, &mut agent, now, None)
+            .await
+            .unwrap();
 
         // AgentTurn+Isolated returns ephemeral messages for memory pipeline
         assert!(
@@ -423,7 +435,9 @@ mod proactivity_integration {
 
         let mut agent = make_agent(vec![]);
 
-        let result = execute_due_jobs(&mut store, &mut agent, now).await.unwrap();
+        let result = execute_due_jobs(&mut store, &mut agent, now, None)
+            .await
+            .unwrap();
 
         assert!(
             !result.messages.is_empty(),
@@ -477,7 +491,9 @@ mod proactivity_integration {
 
         let mut agent = make_agent(vec!["Visible check done.".to_string()]);
 
-        let result = execute_due_jobs(&mut store, &mut agent, now).await.unwrap();
+        let result = execute_due_jobs(&mut store, &mut agent, now, None)
+            .await
+            .unwrap();
 
         // UserVisible agent turn should return ephemeral messages for memory
         assert!(
@@ -500,7 +516,7 @@ mod proactivity_integration {
         let display = NullDisplay;
 
         let result = agent
-            .run_system_turn("background check prompt", &display)
+            .run_system_turn("background check prompt", &display, None)
             .await
             .unwrap();
 

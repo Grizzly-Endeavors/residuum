@@ -155,18 +155,24 @@ impl Agent {
     /// Returns both the response text and the ephemeral messages so the caller
     /// can feed them into `run_memory_pipeline()`.
     ///
+    /// If `provider_override` is `Some`, that provider is used instead of the
+    /// agent's default provider for this turn only.
+    ///
     /// # Errors
     /// Returns `IronclawError` if the model call fails.
     pub async fn run_system_turn(
         &self,
         prompt: &str,
         display: &dyn TurnDisplay,
+        provider_override: Option<&dyn ModelProvider>,
     ) -> Result<SystemTurnResult, IronclawError> {
         let mut session = Session::new();
         session.push(Message::user(prompt));
 
+        let provider: &dyn ModelProvider = provider_override.unwrap_or(&*self.provider);
+
         let texts = execute_turn(
-            &*self.provider,
+            provider,
             &self.tools,
             &self.identity,
             &self.options,
@@ -479,7 +485,7 @@ mod tests {
 
         let display = NullDisplay;
         let result = agent
-            .run_system_turn("check status", &display)
+            .run_system_turn("check status", &display, None)
             .await
             .unwrap();
         assert_eq!(result.response, "HEARTBEAT_OK", "response should match");
