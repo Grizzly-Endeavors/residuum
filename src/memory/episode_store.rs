@@ -17,7 +17,7 @@ use crate::models::Message;
 ///
 /// # Errors
 /// Returns an error if the file cannot be written.
-pub async fn write_episode_transcript(
+pub(crate) async fn write_episode_transcript(
     episodes_dir: &Path,
     episode: &Episode,
     messages: &[Message],
@@ -47,7 +47,7 @@ pub async fn write_episode_transcript(
 
 /// Get the path where an episode transcript would be written.
 #[must_use]
-pub fn episode_path(episodes_dir: &Path, episode: &Episode) -> std::path::PathBuf {
+pub(crate) fn episode_path(episodes_dir: &Path, episode: &Episode) -> std::path::PathBuf {
     episodes_dir
         .join(episode.date.format("%Y-%m/%d").to_string())
         .join(format!("{}.md", episode.id))
@@ -57,7 +57,7 @@ pub fn episode_path(episodes_dir: &Path, episode: &Episode) -> std::path::PathBu
 ///
 /// Hand-written to avoid a YAML serialization dependency.
 #[must_use]
-pub fn format_frontmatter(episode: &Episode) -> String {
+pub(crate) fn format_frontmatter(episode: &Episode) -> String {
     let mut parts = Vec::with_capacity(8);
     parts.push("---".to_string());
     parts.push(format!("id: {}", episode.id));

@@ -1,13 +1,15 @@
 //! Reflector: compresses the observation log when it exceeds a token threshold.
 //!
 //! Sends the full observation log to an LLM which reorganizes and merges
-//! episodes while preserving chronology and context tags.
+//! observations while preserving chronology and context tags.
+
+use chrono::Utc;
 
 use crate::config::DEFAULT_REFLECTOR_THRESHOLD;
 use crate::error::IronclawError;
 use crate::memory::log_store::{load_observation_log, save_observation_log};
 use crate::memory::tokens::estimate_tokens;
-use crate::memory::types::ObservationLog;
+use crate::memory::types::{Observation, ObservationLog, Visibility};
 use crate::models::{CompletionOptions, Message, ModelProvider};
 use crate::workspace::layout::WorkspaceLayout;
 
@@ -66,12 +68,9 @@ impl Reflector {
             return Ok(log);
         }
 
-        let source_ids: Vec<String> = log.episodes.iter().map(|ep| ep.id.clone()).collect();
-
-        // Build reflection prompt
-        let serialized = serde_json::to_string_pretty(&log).map_err(|e| {
-            IronclawError::Memory(format!("failed to serialize observation log: {e}"))
-        })?;
+        // Serialize the flat observations for the LLM prompt
+        let serialized = serde_json::to_string_pretty(&log.observations)
+            .map_err(|e| IronclawError::Memory(format!("failed to serialize observations: {e}")))?;
 
         let messages = build_reflection_prompt(&serialized);
 
@@ -83,7 +82,13 @@ impl Reflector {
             .map_err(IronclawError::Model)?;
 
         // Parse the compressed log
-        let compressed = parse_reflection_response(&response.content, &source_ids)?;
+        let compressed = parse_reflection_response(&response.content)?;
+
+        if compressed.is_empty() {
+            return Err(IronclawError::Memory(
+                "reflector returned empty observations, refusing to replace observation log".into(),
+            ));
+        }
 
         // Backup observation log before replacement
         let obs_path = layout.observations_json();
@@ -96,8 +101,8 @@ impl Reflector {
         save_observation_log(&obs_path, &compressed).await?;
 
         tracing::info!(
-            original_episodes = log.len(),
-            compressed_episodes = compressed.len(),
+            original_observations = log.len(),
+            compressed_observations = compressed.len(),
             "reflection complete"
         );
 
@@ -105,58 +110,81 @@ impl Reflector {
     }
 }
 
-/// Build the reflection prompt with the serialized observation log.
-fn build_reflection_prompt(serialized_log: &str) -> Vec<Message> {
+/// Build the reflection prompt with the serialized observation list.
+fn build_reflection_prompt(serialized_observations: &str) -> Vec<Message> {
     vec![
         Message::system(REFLECTION_SYSTEM_PROMPT),
         Message::user(format!(
-            "Reorganize and compress this observation log:\n\n{serialized_log}"
+            "Reorganize and compress these observations:\n\n{serialized_observations}"
         )),
     ]
 }
 
 /// System prompt for the reflector model.
-const REFLECTION_SYSTEM_PROMPT: &str = r#"You are a memory reorganization system. Given an observation log (JSON array of episodes), reorganize and merge related episodes to reduce size while preserving all important information.
+const REFLECTION_SYSTEM_PROMPT: &str = r#"You are a memory reorganization system. Given a flat list of observations (JSON array), reorganize and merge related observations to reduce size while preserving all important information.
 
 Rules:
-- Reorganize by topic/context, merging episodes with the same context
-- Do NOT summarize — preserve the specific details and observations
-- Preserve chronological order within each topic
-- Preserve all context tags exactly as they appear
+- Group related observations by topic/context
+- Do NOT summarize — preserve the specific details
 - Remove redundant or duplicate observations
-- Each reflected episode should use "ref-NNN" as the id format
-- Include a "source_episodes" field listing the original episode IDs that were merged
+- Each output episode should use "ref-NNN" as the id format
+- Include "context", "start", "end", and "observations" fields
 
 Return ONLY a valid JSON object with an "episodes" field containing the reorganized array. No markdown fencing, no explanation."#;
 
 /// Parse the model's reflection response into an `ObservationLog`.
 ///
+/// Accepts the same Episode-shaped JSON the model returns and converts
+/// each observation string into a flat [`Observation`].
+///
 /// # Errors
 /// Returns an error if the response cannot be parsed.
-fn parse_reflection_response(
-    content: &str,
-    source_ids: &[String],
-) -> Result<ObservationLog, IronclawError> {
+fn parse_reflection_response(content: &str) -> Result<ObservationLog, IronclawError> {
     let trimmed = content.trim();
     let json_str = crate::memory::strip_code_fences(trimmed);
 
-    // Try parsing as ObservationLog directly
-    let mut log: ObservationLog = serde_json::from_str(json_str).map_err(|e| {
+    let value: serde_json::Value = serde_json::from_str(json_str).map_err(|e| {
         IronclawError::Memory(format!(
             "failed to parse reflector response as JSON: {e}\nresponse: {trimmed}"
         ))
     })?;
 
-    if log.is_empty() {
-        return Err(IronclawError::Memory(
-            "reflector returned empty episodes, refusing to replace observation log".into(),
-        ));
-    }
+    let episodes = value
+        .get("episodes")
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(|| {
+            IronclawError::Memory("reflector response missing 'episodes' array".to_string())
+        })?;
 
-    // Ensure all reflected episodes have source_episodes if not set by the model
-    for episode in &mut log.episodes {
-        if episode.source_episodes.is_empty() {
-            episode.source_episodes = source_ids.to_vec();
+    let now = Utc::now();
+    let mut log = ObservationLog::new();
+
+    for episode in episodes {
+        let obs_strings = episode
+            .get("observations")
+            .and_then(serde_json::Value::as_array)
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(serde_json::Value::as_str)
+                    .map(String::from)
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+
+        let project_context = episode
+            .get("context")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("general")
+            .to_string();
+
+        for obs_content in obs_strings {
+            log.push(Observation {
+                timestamp: now,
+                project_context: project_context.clone(),
+                source_episodes: vec![],
+                visibility: Visibility::User,
+                content: obs_content,
+            });
         }
     }
 
@@ -167,10 +195,10 @@ fn parse_reflection_response(
 #[expect(clippy::unwrap_used, reason = "test code uses unwrap for clarity")]
 mod tests {
     use super::*;
-    use crate::memory::types::Episode;
+    use crate::memory::types::Visibility;
     use crate::models::{ModelError, ModelResponse, ToolDefinition};
     use async_trait::async_trait;
-    use chrono::NaiveDate;
+    use chrono::Utc;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -206,15 +234,13 @@ mod tests {
         }
     }
 
-    fn sample_episode(id: &str, ctx: &str) -> Episode {
-        Episode {
-            id: id.to_string(),
-            date: NaiveDate::from_ymd_opt(2026, 2, 19).unwrap(),
-            start: "started".to_string(),
-            end: "ended".to_string(),
-            context: ctx.to_string(),
-            observations: vec![format!("observation from {id}")],
-            source_episodes: vec![],
+    fn sample_observation(episode_id: &str, ctx: &str) -> Observation {
+        Observation {
+            timestamp: Utc::now(),
+            project_context: ctx.to_string(),
+            source_episodes: vec![episode_id.to_string()],
+            visibility: Visibility::User,
+            content: format!("observation from {episode_id}"),
         }
     }
 
@@ -245,7 +271,7 @@ mod tests {
         );
 
         let mut log = ObservationLog::new();
-        log.push(sample_episode("ep-001", "test"));
+        log.push(sample_observation("ep-001", "test"));
 
         assert!(
             !reflector.should_reflect(&log),
@@ -263,7 +289,7 @@ mod tests {
         );
 
         let mut log = ObservationLog::new();
-        log.push(sample_episode("ep-001", "test"));
+        log.push(sample_observation("ep-001", "test"));
 
         assert!(
             reflector.should_reflect(&log),
@@ -272,47 +298,35 @@ mod tests {
     }
 
     #[test]
-    fn parse_reflection_preserves_source_episodes() {
-        let log = parse_reflection_response(COMPRESSED_RESPONSE, &[]).unwrap();
+    fn parse_reflection_converts_to_flat_observations() {
+        let log = parse_reflection_response(COMPRESSED_RESPONSE).unwrap();
 
-        assert_eq!(log.len(), 1, "should have one reflected episode");
-        let episode = log.episodes.first().unwrap();
-        assert_eq!(episode.id, "ref-001", "should have ref- prefix");
+        // COMPRESSED_RESPONSE has 2 observation strings → 2 Observations
+        assert_eq!(log.len(), 2, "should have two observations");
         assert_eq!(
-            episode.source_episodes,
-            vec!["ep-001", "ep-002"],
-            "should preserve source episodes from model"
+            log.observations.first().map(|o| o.content.as_str()),
+            Some("workspace uses flat layout"),
+            "first observation content should match"
         );
-    }
-
-    #[test]
-    fn parse_reflection_fills_source_ids_when_missing() {
-        let response = r#"{
-            "episodes": [{
-                "id": "ref-001",
-                "date": "2026-02-19",
-                "start": "start",
-                "end": "end",
-                "context": "test",
-                "observations": ["obs"]
-            }]
-        }"#;
-
-        let source_ids = vec!["ep-001".to_string(), "ep-002".to_string()];
-        let log = parse_reflection_response(response, &source_ids).unwrap();
-
-        let episode = log.episodes.first().unwrap();
         assert_eq!(
-            episode.source_episodes, source_ids,
-            "should fill source_episodes from original IDs"
+            log.observations.first().map(|o| o.project_context.as_str()),
+            Some("ironclaw/workspace"),
+            "project_context should be taken from episode context"
+        );
+        // Reflector observations have empty source_episodes
+        assert!(
+            log.observations
+                .first()
+                .is_some_and(|o| o.source_episodes.is_empty()),
+            "reflector observations should have empty source_episodes"
         );
     }
 
     #[test]
     fn parse_reflection_handles_code_fences() {
         let fenced = format!("```json\n{COMPRESSED_RESPONSE}\n```");
-        let log = parse_reflection_response(&fenced, &[]).unwrap();
-        assert_eq!(log.len(), 1, "should parse despite code fences");
+        let log = parse_reflection_response(&fenced).unwrap();
+        assert_eq!(log.len(), 2, "should parse despite code fences");
     }
 
     #[tokio::test]
@@ -324,10 +338,10 @@ mod tests {
             .await
             .unwrap();
 
-        // Write initial log
+        // Write initial log with 2 observations
         let mut initial_log = ObservationLog::new();
-        initial_log.push(sample_episode("ep-001", "ironclaw/workspace"));
-        initial_log.push(sample_episode("ep-002", "ironclaw/workspace"));
+        initial_log.push(sample_observation("ep-001", "ironclaw/workspace"));
+        initial_log.push(sample_observation("ep-002", "ironclaw/workspace"));
         save_observation_log(&layout.observations_json(), &initial_log)
             .await
             .unwrap();
@@ -339,14 +353,19 @@ mod tests {
             },
         );
 
+        // COMPRESSED_RESPONSE yields 2 observations
         let result = reflector.reflect(&layout).await.unwrap();
-        assert_eq!(result.len(), 1, "compressed log should have one episode");
+        assert_eq!(
+            result.len(),
+            2,
+            "compressed log should have two observations"
+        );
 
         // Verify file was replaced
         let reloaded = load_observation_log(&layout.observations_json())
             .await
             .unwrap();
-        assert_eq!(reloaded.len(), 1, "file should contain compressed log");
+        assert_eq!(reloaded.len(), 2, "file should contain compressed log");
     }
 
     #[tokio::test]
@@ -370,13 +389,9 @@ mod tests {
     #[test]
     fn parse_reflection_rejects_empty_episodes() {
         let empty_response = r#"{"episodes": []}"#;
-        let source_ids = vec!["ep-001".to_string()];
-        let result = parse_reflection_response(empty_response, &source_ids);
-        assert!(result.is_err(), "empty episodes should be rejected");
-        assert!(
-            result.unwrap_err().to_string().contains("empty episodes"),
-            "error should mention empty episodes"
-        );
+        let log = parse_reflection_response(empty_response).unwrap();
+        // Empty episodes array → empty observations (error check is in reflect())
+        assert!(log.is_empty(), "empty episodes should yield empty log");
     }
 
     #[tokio::test]
@@ -389,8 +404,8 @@ mod tests {
             .unwrap();
 
         let mut initial_log = ObservationLog::new();
-        initial_log.push(sample_episode("ep-001", "ironclaw/workspace"));
-        initial_log.push(sample_episode("ep-002", "ironclaw/workspace"));
+        initial_log.push(sample_observation("ep-001", "ironclaw/workspace"));
+        initial_log.push(sample_observation("ep-002", "ironclaw/workspace"));
         save_observation_log(&layout.observations_json(), &initial_log)
             .await
             .unwrap();
@@ -428,7 +443,7 @@ mod tests {
             .unwrap();
 
         let mut initial_log = ObservationLog::new();
-        initial_log.push(sample_episode("ep-001", "test"));
+        initial_log.push(sample_observation("ep-001", "test"));
         save_observation_log(&layout.observations_json(), &initial_log)
             .await
             .unwrap();

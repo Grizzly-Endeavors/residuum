@@ -3,16 +3,27 @@
 //! Fires synchronously after the agent completes a turn when the accumulated
 //! recent message token count exceeds the configured threshold.
 
-use chrono::Local;
+use chrono::{Local, Utc};
 
 use crate::config::DEFAULT_OBSERVER_THRESHOLD;
 use crate::error::IronclawError;
 use crate::memory::episode_store::write_episode_transcript;
-use crate::memory::log_store::{append_episode, load_observation_log, next_episode_id};
+use crate::memory::log_store::{append_observations, load_observation_log, next_episode_id};
+use crate::memory::recent_store::RecentMessage;
 use crate::memory::tokens::estimate_message_tokens;
-use crate::memory::types::Episode;
+use crate::memory::types::{Episode, Observation, Visibility};
 use crate::models::{CompletionOptions, Message, ModelProvider, ModelResponse};
 use crate::workspace::layout::WorkspaceLayout;
+
+/// The result of a successful observation run.
+pub struct ObserveResult {
+    /// The episode identifier (e.g., `"ep-001"`).
+    pub id: String,
+    /// Path to the transcript file on disk.
+    pub transcript_path: std::path::PathBuf,
+    /// Number of observation strings extracted from the conversation.
+    pub observation_count: usize,
+}
 
 /// Observer configuration.
 #[derive(Debug, Clone)]
@@ -44,12 +55,14 @@ impl Observer {
 
     /// Check whether the observer should fire based on recent message token count.
     #[must_use]
-    pub fn should_observe(&self, recent_messages: &[Message]) -> bool {
-        let tokens = estimate_message_tokens(recent_messages);
+    pub fn should_observe(&self, recent_messages: &[RecentMessage]) -> bool {
+        let messages: Vec<&Message> = recent_messages.iter().map(|rm| &rm.message).collect();
+        let tokens =
+            estimate_message_tokens(&messages.iter().map(|m| (*m).clone()).collect::<Vec<_>>());
         tokens >= self.config.threshold_tokens
     }
 
-    /// Extract an episode from recent messages and persist it.
+    /// Extract observations from recent messages and persist them.
     ///
     /// The caller is responsible for clearing the recent messages file
     /// after this succeeds.
@@ -58,21 +71,31 @@ impl Observer {
     /// Returns an error if the LLM call fails or file persistence fails.
     pub async fn observe(
         &self,
-        recent_messages: &[Message],
+        recent_messages: &[RecentMessage],
         layout: &WorkspaceLayout,
-    ) -> Result<Episode, IronclawError> {
+    ) -> Result<ObserveResult, IronclawError> {
         if recent_messages.is_empty() {
             return Err(IronclawError::Memory(
                 "no recent messages to extract from".to_string(),
             ));
         }
 
+        // Derive observation metadata from the batch of recent messages.
+        let project_context = derive_project_context(recent_messages);
+        let visibility = derive_visibility(recent_messages);
+
+        // Extract inner messages for the LLM prompt and token estimation.
+        let messages: Vec<Message> = recent_messages
+            .iter()
+            .map(|rm| rm.message.clone())
+            .collect();
+
         // Load existing log for ID generation
         let log = load_observation_log(&layout.observations_json()).await?;
         let episode_id = next_episode_id(&log);
 
         // Build extraction prompt
-        let extraction_messages = build_extraction_prompt(recent_messages);
+        let extraction_messages = build_extraction_prompt(&messages);
 
         // Call the model
         let response = self
@@ -85,18 +108,68 @@ impl Observer {
         let episode = parse_episode_response(&response, &episode_id)?;
 
         // Persist transcript
-        write_episode_transcript(&layout.episodes_dir(), &episode, recent_messages).await?;
+        let transcript_path =
+            crate::memory::episode_store::episode_path(&layout.episodes_dir(), &episode);
+        write_episode_transcript(&layout.episodes_dir(), &episode, &messages).await?;
 
-        // Append to observation log
-        append_episode(&layout.observations_json(), episode.clone()).await?;
+        // Convert episode observations → flat Observations and append
+        let observation_count = episode.observations.len();
+        let observations: Vec<Observation> = episode
+            .observations
+            .iter()
+            .map(|content| Observation {
+                timestamp: Utc::now(),
+                project_context: project_context.clone(),
+                source_episodes: vec![episode.id.clone()],
+                visibility: visibility.clone(),
+                content: content.clone(),
+            })
+            .collect();
+
+        append_observations(&layout.observations_json(), observations).await?;
 
         tracing::info!(
             episode_id = %episode.id,
-            observations = episode.observations.len(),
+            observations = observation_count,
             "episode extracted"
         );
 
-        Ok(episode)
+        Ok(ObserveResult {
+            id: episode.id,
+            transcript_path,
+            observation_count,
+        })
+    }
+}
+
+/// Derive the project context from a batch of recent messages.
+///
+/// Uses the most common `project_context` across the batch, falling back to
+/// the first non-empty one, or `"general"` if all are empty.
+fn derive_project_context(messages: &[RecentMessage]) -> String {
+    use std::collections::HashMap;
+
+    let mut counts: HashMap<&str, usize> = HashMap::new();
+    for msg in messages {
+        if !msg.project_context.is_empty() {
+            *counts.entry(msg.project_context.as_str()).or_insert(0) += 1;
+        }
+    }
+
+    counts
+        .into_iter()
+        .max_by_key(|(_, count)| *count)
+        .map_or_else(|| "general".to_string(), |(ctx, _)| ctx.to_string())
+}
+
+/// Derive visibility from a batch of recent messages.
+///
+/// If any message has `Visibility::User`, the batch is considered user-visible.
+fn derive_visibility(messages: &[RecentMessage]) -> Visibility {
+    if messages.iter().any(|m| m.visibility == Visibility::User) {
+        Visibility::User
+    } else {
+        Visibility::Background
     }
 }
 
@@ -204,8 +277,10 @@ fn parse_episode_response(
 #[expect(clippy::unwrap_used, reason = "test code uses unwrap for clarity")]
 mod tests {
     use super::*;
+    use crate::memory::log_store::load_observation_log;
     use crate::models::{ModelError, ModelResponse, Role, ToolDefinition};
     use async_trait::async_trait;
+    use chrono::Utc;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -251,13 +326,16 @@ mod tests {
         ]
     }"#;
 
-    fn make_messages(count: usize) -> Vec<Message> {
+    fn make_recent_messages(count: usize) -> Vec<RecentMessage> {
         (0..count)
-            .map(|i| {
-                Message::user(format!(
+            .map(|i| RecentMessage {
+                message: Message::user(format!(
                     "message {i} with enough content to contribute to token count - {}",
                     "a".repeat(100)
-                ))
+                )),
+                timestamp: Utc::now(),
+                project_context: "ironclaw/workspace".to_string(),
+                visibility: Visibility::User,
             })
             .collect()
     }
@@ -329,7 +407,7 @@ mod tests {
                 threshold_tokens: 1000,
             },
         );
-        let messages = make_messages(2);
+        let messages = make_recent_messages(2);
 
         assert!(
             !observer.should_observe(&messages),
@@ -345,7 +423,7 @@ mod tests {
                 threshold_tokens: 10,
             },
         );
-        let messages = make_messages(5);
+        let messages = make_recent_messages(5);
 
         assert!(
             observer.should_observe(&messages),
@@ -372,19 +450,28 @@ mod tests {
             },
         );
 
-        let messages = make_messages(5);
-        let episode = observer.observe(&messages, &layout).await.unwrap();
+        let messages = make_recent_messages(5);
+        let result = observer.observe(&messages, &layout).await.unwrap();
 
-        assert_eq!(episode.id, "ep-001", "first episode should be ep-001");
-
-        let transcript_path =
-            crate::memory::episode_store::episode_path(&layout.episodes_dir(), &episode);
-        assert!(transcript_path.exists(), "transcript file should exist");
+        assert_eq!(result.id, "ep-001", "first episode should be ep-001");
+        assert_eq!(
+            result.observation_count, 2,
+            "SAMPLE_RESPONSE has 2 observations"
+        );
+        assert!(
+            result.transcript_path.exists(),
+            "transcript file should exist"
+        );
 
         let log = load_observation_log(&layout.observations_json())
             .await
             .unwrap();
-        assert_eq!(log.len(), 1, "observation log should have one episode");
+        // SAMPLE_RESPONSE has 2 observation strings → 2 Observations in the log
+        assert_eq!(
+            log.len(),
+            2,
+            "observation log should have two observations (one per string)"
+        );
     }
 
     #[test]
@@ -403,6 +490,68 @@ mod tests {
         assert!(
             user_content.contains("test content"),
             "should include message content"
+        );
+    }
+
+    #[test]
+    fn derive_project_context_most_common() {
+        let messages: Vec<RecentMessage> = vec![
+            RecentMessage {
+                message: Message::user("a"),
+                timestamp: Utc::now(),
+                project_context: "ironclaw/memory".to_string(),
+                visibility: Visibility::User,
+            },
+            RecentMessage {
+                message: Message::user("b"),
+                timestamp: Utc::now(),
+                project_context: "ironclaw/memory".to_string(),
+                visibility: Visibility::User,
+            },
+            RecentMessage {
+                message: Message::user("c"),
+                timestamp: Utc::now(),
+                project_context: "devops/k8s".to_string(),
+                visibility: Visibility::User,
+            },
+        ];
+        let ctx = derive_project_context(&messages);
+        assert_eq!(ctx, "ironclaw/memory", "should use most common context");
+    }
+
+    #[test]
+    fn derive_visibility_user_wins() {
+        let messages = vec![
+            RecentMessage {
+                message: Message::user("a"),
+                timestamp: Utc::now(),
+                project_context: String::new(),
+                visibility: Visibility::Background,
+            },
+            RecentMessage {
+                message: Message::user("b"),
+                timestamp: Utc::now(),
+                project_context: String::new(),
+                visibility: Visibility::User,
+            },
+        ];
+        let vis = derive_visibility(&messages);
+        assert_eq!(vis, Visibility::User, "User should win over Background");
+    }
+
+    #[test]
+    fn derive_visibility_all_background() {
+        let messages = vec![RecentMessage {
+            message: Message::user("a"),
+            timestamp: Utc::now(),
+            project_context: String::new(),
+            visibility: Visibility::Background,
+        }];
+        let vis = derive_visibility(&messages);
+        assert_eq!(
+            vis,
+            Visibility::Background,
+            "all-background batch should stay Background"
         );
     }
 }

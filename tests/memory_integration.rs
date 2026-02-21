@@ -1,6 +1,6 @@
 //! End-to-end integration test for the memory subsystem.
 //!
-//! Verifies the full flow: accumulate messages → observer fires → episode created →
+//! Verifies the full flow: accumulate messages → observer fires → observations created →
 //! observations.json updated → recent messages cleared → search indexes episode →
 //! reflector compresses.
 
@@ -11,16 +11,18 @@
 )]
 mod memory_integration {
     use async_trait::async_trait;
+    use chrono::Utc;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     use ironclaw::memory::log_store::{load_observation_log, next_episode_id};
-    use ironclaw::memory::observer::{Observer, ObserverConfig};
+    use ironclaw::memory::observer::{ObserveResult, Observer, ObserverConfig};
     use ironclaw::memory::recent_store::{
         append_recent_messages, clear_recent_messages, load_recent_messages,
     };
     use ironclaw::memory::reflector::{Reflector, ReflectorConfig};
     use ironclaw::memory::search::MemoryIndex;
+    use ironclaw::memory::types::{Observation, ObservationLog, Visibility};
     use ironclaw::models::{
         CompletionOptions, Message, ModelError, ModelProvider, ModelResponse, ToolDefinition,
     };
@@ -116,6 +118,10 @@ mod memory_integration {
     }
 
     #[tokio::test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "integration test exercises the full multi-phase memory pipeline"
+    )]
     async fn full_memory_flow() {
         let dir = tempfile::tempdir().unwrap();
         let layout = WorkspaceLayout::new(dir.path());
@@ -136,9 +142,14 @@ mod memory_integration {
         );
 
         let messages = make_messages(10);
-        append_recent_messages(&recent_path, &messages)
-            .await
-            .unwrap();
+        append_recent_messages(
+            &recent_path,
+            &messages,
+            "ironclaw/workspace",
+            Visibility::User,
+        )
+        .await
+        .unwrap();
 
         let recent = load_recent_messages(&recent_path).await.unwrap();
         assert!(
@@ -146,22 +157,18 @@ mod memory_integration {
             "should trigger observation"
         );
 
-        let episode = observer.observe(&recent, &layout).await.unwrap();
+        let ObserveResult {
+            id: episode_id,
+            transcript_path,
+            observation_count,
+        } = observer.observe(&recent, &layout).await.unwrap();
         clear_recent_messages(&recent_path).await.unwrap();
 
-        assert_eq!(episode.id, "ep-001", "first episode should be ep-001");
-        assert_eq!(
-            episode.context, "ironclaw/workspace",
-            "context should match"
-        );
-        assert_eq!(episode.observations.len(), 3, "should have 3 observations");
+        assert_eq!(episode_id, "ep-001", "first episode should be ep-001");
+        // observer_response has 3 observation strings
+        assert_eq!(observation_count, 3, "should have 3 observations");
 
-        // Verify transcript file was created in date subdir
-        let transcript_path = layout.episodes_dir().join(format!(
-            "{}/{}.md",
-            episode.date.format("%Y-%m/%d"),
-            episode.id
-        ));
+        // Verify transcript file was created
         assert!(transcript_path.exists(), "transcript file should exist");
 
         let transcript = tokio::fs::read_to_string(&transcript_path).await.unwrap();
@@ -170,11 +177,33 @@ mod memory_integration {
             "transcript should have frontmatter"
         );
 
-        // Verify observations.json was updated
+        // Verify observations.json was updated — 3 observation strings → 3 Observations
         let log = load_observation_log(&layout.observations_json())
             .await
             .unwrap();
-        assert_eq!(log.len(), 1, "observation log should have one episode");
+        assert_eq!(
+            log.len(),
+            3,
+            "observation log should have three observations (one per string)"
+        );
+        assert_eq!(
+            log.observations.first().map(|o| o.project_context.as_str()),
+            Some("ironclaw/workspace"),
+            "project_context should be preserved"
+        );
+        assert_eq!(
+            log.observations.first().map(|o| &o.visibility),
+            Some(&Visibility::User),
+            "visibility should be User"
+        );
+        assert_eq!(
+            log.observations
+                .first()
+                .and_then(|o| o.source_episodes.first())
+                .map(String::as_str),
+            Some("ep-001"),
+            "source_episodes should reference ep-001"
+        );
 
         // Verify recent messages were cleared
         let cleared = load_recent_messages(&recent_path).await.unwrap();
@@ -185,23 +214,29 @@ mod memory_integration {
 
         // Phase 2: More messages accumulate, second episode created
         let more_messages = make_messages(10);
-        append_recent_messages(&recent_path, &more_messages)
-            .await
-            .unwrap();
+        append_recent_messages(
+            &recent_path,
+            &more_messages,
+            "ironclaw/workspace",
+            Visibility::User,
+        )
+        .await
+        .unwrap();
 
         let recent2 = load_recent_messages(&recent_path).await.unwrap();
-        let episode2 = observer.observe(&recent2, &layout).await.unwrap();
+        let second_ep = observer.observe(&recent2, &layout).await.unwrap();
         clear_recent_messages(&recent_path).await.unwrap();
 
-        assert_eq!(episode2.id, "ep-002", "second episode should be ep-002");
+        assert_eq!(second_ep.id, "ep-002", "second episode should be ep-002");
 
         let updated_log = load_observation_log(&layout.observations_json())
             .await
             .unwrap();
+        // 3 from ep-001 + 3 from ep-002 = 6 observations
         assert_eq!(
             updated_log.len(),
-            2,
-            "observation log should have two episodes"
+            6,
+            "observation log should have six observations after two episodes"
         );
 
         // Phase 3: Search indexes episodes
@@ -229,18 +264,20 @@ mod memory_integration {
         );
 
         let compressed = reflector.reflect(&layout).await.unwrap();
+        // reflector_response has 2 observation strings → 2 observations
         assert_eq!(
             compressed.len(),
-            1,
-            "compressed log should have one reflected episode"
+            2,
+            "compressed log should have two observations"
         );
 
-        let ref_episode = compressed.episodes.first().unwrap();
-        assert_eq!(ref_episode.id, "ref-001", "should use ref- prefix");
-        assert_eq!(
-            ref_episode.source_episodes,
-            vec!["ep-001", "ep-002"],
-            "should track source episodes"
+        // Reflector observations have empty source_episodes
+        assert!(
+            compressed
+                .observations
+                .first()
+                .is_some_and(|o| o.source_episodes.is_empty()),
+            "reflected observations should have empty source_episodes"
         );
     }
 
@@ -256,7 +293,7 @@ mod memory_integration {
 
         // "Session 1" — add some messages, exit without hitting threshold
         let session1_msgs = make_messages(3);
-        append_recent_messages(&recent_path, &session1_msgs)
+        append_recent_messages(&recent_path, &session1_msgs, "ironclaw", Visibility::User)
             .await
             .unwrap();
 
@@ -270,7 +307,7 @@ mod memory_integration {
 
         // Add more messages in session 2
         let session2_msgs = make_messages(3);
-        append_recent_messages(&recent_path, &session2_msgs)
+        append_recent_messages(&recent_path, &session2_msgs, "ironclaw", Visibility::User)
             .await
             .unwrap();
 
@@ -280,18 +317,16 @@ mod memory_integration {
 
     #[test]
     fn episode_id_generation_is_sequential() {
-        let mut log = ironclaw::memory::types::ObservationLog::new();
+        let mut log = ObservationLog::new();
 
         assert_eq!(next_episode_id(&log), "ep-001", "first ID should be ep-001");
 
-        log.push(ironclaw::memory::types::Episode {
-            id: "ep-001".to_string(),
-            date: chrono::NaiveDate::from_ymd_opt(2026, 2, 19).unwrap(),
-            start: "s".to_string(),
-            end: "e".to_string(),
-            context: "test".to_string(),
-            observations: vec![],
-            source_episodes: vec![],
+        log.push(Observation {
+            timestamp: Utc::now(),
+            project_context: "test".to_string(),
+            source_episodes: vec!["ep-001".to_string()],
+            visibility: Visibility::User,
+            content: "first observation".to_string(),
         });
 
         assert_eq!(
@@ -331,7 +366,12 @@ mod memory_integration {
             },
         );
 
-        let messages = vec![Message::user("hello")];
+        let messages = vec![ironclaw::memory::recent_store::RecentMessage {
+            message: Message::user("hello"),
+            timestamp: Utc::now(),
+            project_context: "test".to_string(),
+            visibility: Visibility::User,
+        }];
 
         assert!(
             !observer.should_observe(&messages),

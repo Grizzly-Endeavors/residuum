@@ -4,7 +4,7 @@
 
 use std::path::Path;
 
-use crate::memory::types::{Episode, ObservationLog};
+use crate::memory::types::{Observation, ObservationLog};
 
 /// Load the observation log from disk.
 ///
@@ -72,35 +72,34 @@ pub async fn save_observation_log(
     Ok(())
 }
 
-/// Append an episode to the observation log on disk.
+/// Append observations to the observation log on disk.
 ///
-/// Loads the existing log, pushes the episode, and saves atomically.
+/// Loads the existing log, extends with new observations, and saves atomically.
 ///
 /// # Errors
 /// Returns an error if loading or saving fails.
-pub async fn append_episode(
+pub async fn append_observations(
     path: &Path,
-    episode: Episode,
+    observations: Vec<Observation>,
 ) -> Result<(), crate::error::IronclawError> {
     let mut log = load_observation_log(path).await?;
-    log.push(episode);
+    for obs in observations {
+        log.push(obs);
+    }
     save_observation_log(path, &log).await
 }
 
-/// Generate the next episode ID based on existing episodes.
+/// Generate the next episode ID based on existing observations.
 ///
-/// Parses `ep-NNN` IDs to find the maximum, then increments.
-/// Returns `"ep-001"` if no episodes exist.
+/// Scans `source_episodes` across all observations to find the maximum
+/// `ep-NNN` ID, then returns the next one. Returns `"ep-001"` if none exist.
 #[must_use]
 pub fn next_episode_id(log: &ObservationLog) -> String {
     let max_num = log
-        .episodes
+        .observations
         .iter()
-        .filter_map(|ep| {
-            ep.id
-                .strip_prefix("ep-")
-                .and_then(|n| n.parse::<u32>().ok())
-        })
+        .flat_map(|obs| obs.source_episodes.iter())
+        .filter_map(|id| id.strip_prefix("ep-").and_then(|n| n.parse::<u32>().ok()))
         .max()
         .unwrap_or(0);
 
@@ -111,17 +110,16 @@ pub fn next_episode_id(log: &ObservationLog) -> String {
 #[expect(clippy::unwrap_used, reason = "test code uses unwrap for clarity")]
 mod tests {
     use super::*;
-    use chrono::NaiveDate;
+    use crate::memory::types::Visibility;
+    use chrono::Utc;
 
-    fn sample_episode(id: &str) -> Episode {
-        Episode {
-            id: id.to_string(),
-            date: NaiveDate::from_ymd_opt(2026, 2, 19).unwrap(),
-            start: "started".to_string(),
-            end: "ended".to_string(),
-            context: "test".to_string(),
-            observations: vec!["observed something".to_string()],
-            source_episodes: vec![],
+    fn sample_observation(episode_id: &str) -> Observation {
+        Observation {
+            timestamp: Utc::now(),
+            project_context: "test".to_string(),
+            source_episodes: vec![episode_id.to_string()],
+            visibility: Visibility::User,
+            content: format!("observed something from {episode_id}"),
         }
     }
 
@@ -131,16 +129,19 @@ mod tests {
         let path = dir.path().join("observations.json");
 
         let mut log = ObservationLog::new();
-        log.push(sample_episode("ep-001"));
+        log.push(sample_observation("ep-001"));
 
         save_observation_log(&path, &log).await.unwrap();
         let loaded = load_observation_log(&path).await.unwrap();
 
-        assert_eq!(loaded.len(), 1, "should load one episode");
+        assert_eq!(loaded.len(), 1, "should load one observation");
         assert_eq!(
-            loaded.episodes.first().map(|e| e.id.as_str()),
+            loaded
+                .observations
+                .first()
+                .and_then(|o| o.source_episodes.first().map(String::as_str)),
             Some("ep-001"),
-            "episode ID should match"
+            "source episode ID should match"
         );
     }
 
@@ -158,12 +159,12 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("observations.json");
 
-        append_episode(&path, sample_episode("ep-001"))
+        append_observations(&path, vec![sample_observation("ep-001")])
             .await
             .unwrap();
 
         let log = load_observation_log(&path).await.unwrap();
-        assert_eq!(log.len(), 1, "should have one episode after append");
+        assert_eq!(log.len(), 1, "should have one observation after append");
     }
 
     #[tokio::test]
@@ -171,15 +172,19 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("observations.json");
 
-        append_episode(&path, sample_episode("ep-001"))
+        append_observations(&path, vec![sample_observation("ep-001")])
             .await
             .unwrap();
-        append_episode(&path, sample_episode("ep-002"))
+        append_observations(&path, vec![sample_observation("ep-002")])
             .await
             .unwrap();
 
         let log = load_observation_log(&path).await.unwrap();
-        assert_eq!(log.len(), 2, "should have two episodes after two appends");
+        assert_eq!(
+            log.len(),
+            2,
+            "should have two observations after two appends"
+        );
     }
 
     #[test]
@@ -191,26 +196,31 @@ mod tests {
     #[test]
     fn next_episode_id_increments() {
         let mut log = ObservationLog::new();
-        log.push(sample_episode("ep-001"));
-        log.push(sample_episode("ep-002"));
-        log.push(sample_episode("ep-003"));
+        log.push(sample_observation("ep-001"));
+        log.push(sample_observation("ep-002"));
+        log.push(sample_observation("ep-003"));
 
         assert_eq!(next_episode_id(&log), "ep-004", "should increment past max");
     }
 
     #[test]
-    fn next_episode_id_skips_reflected() {
+    fn next_episode_id_no_source_episodes() {
+        // Observations without source_episodes (e.g., from the reflector)
+        // should not contribute to the episode ID counter.
         let mut log = ObservationLog::new();
-        log.push(sample_episode("ep-005"));
-        log.push(Episode {
-            id: "ref-001".to_string(),
-            ..sample_episode("ref-001")
+        log.push(Observation {
+            timestamp: Utc::now(),
+            project_context: "test".to_string(),
+            source_episodes: vec![],
+            visibility: Visibility::User,
+            content: "reflected observation".to_string(),
         });
+        log.push(sample_observation("ep-005"));
 
         assert_eq!(
             next_episode_id(&log),
             "ep-006",
-            "should skip ref- prefixed IDs"
+            "should find max from source_episodes"
         );
     }
 

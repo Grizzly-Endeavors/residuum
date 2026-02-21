@@ -1,36 +1,67 @@
-//! Core memory data types for episodes and observation logs.
+//! Core memory data types for observations and the observation log.
 
-use chrono::NaiveDate;
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 /// A compressed episode extracted from a conversation segment.
 ///
-/// Episodes capture the key decisions, problems, solutions, and context
-/// from a block of conversation messages.
+/// Used internally for LLM parsing (observer and reflector responses).
+/// Not exposed publicly — callers work with [`Observation`] instead.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Episode {
-    /// Unique identifier (e.g., `"ep-001"` or `"ref-001"` for reflected).
-    pub id: String,
+pub(crate) struct Episode {
+    /// Unique identifier (e.g., `"ep-001"`).
+    pub(crate) id: String,
     /// Date of the episode.
-    pub date: NaiveDate,
+    pub(crate) date: chrono::NaiveDate,
     /// One-line summary of how the episode started.
-    pub start: String,
+    pub(crate) start: String,
     /// One-line summary of how the episode ended.
-    pub end: String,
+    pub(crate) end: String,
     /// The project or topic context tag.
-    pub context: String,
+    pub(crate) context: String,
     /// Concise single-sentence observations extracted from the conversation.
-    pub observations: Vec<String>,
+    pub(crate) observations: Vec<String>,
     /// IDs of episodes that were merged to create this one (for reflected episodes).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub source_episodes: Vec<String>,
+    pub(crate) source_episodes: Vec<String>,
 }
 
-/// Transparent wrapper over a list of episodes for serialization.
+/// Visibility of an observation relative to the conversation context.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum Visibility {
+    /// Observation came from a user-visible conversation turn.
+    #[default]
+    User,
+    /// Observation came from a background system turn (pulse, cron).
+    Background,
+}
+
+/// A single extracted observation with full metadata.
+///
+/// Each observation is self-describing: it carries when it was created,
+/// what project it belongs to, which episode transcript(s) it came from,
+/// and whether it originated from a user-visible or background turn.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Observation {
+    /// When this observation was created.
+    pub timestamp: DateTime<Utc>,
+    /// Project or workspace context at the time of observation.
+    pub project_context: String,
+    /// IDs of the episode transcript files that produced this observation.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub source_episodes: Vec<String>,
+    /// Whether this observation came from a user-visible or background turn.
+    pub visibility: Visibility,
+    /// The observation content as a single concise sentence.
+    pub content: String,
+}
+
+/// Flat list of all observations across sessions.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ObservationLog {
-    /// The episodes in the observation log.
-    pub episodes: Vec<Episode>,
+    /// All observations in chronological order.
+    pub observations: Vec<Observation>,
 }
 
 impl ObservationLog {
@@ -38,25 +69,25 @@ impl ObservationLog {
     #[must_use]
     pub fn new() -> Self {
         Self {
-            episodes: Vec::new(),
+            observations: Vec::new(),
         }
     }
 
-    /// Add an episode to the log.
-    pub fn push(&mut self, episode: Episode) {
-        self.episodes.push(episode);
+    /// Add an observation to the log.
+    pub fn push(&mut self, observation: Observation) {
+        self.observations.push(observation);
     }
 
-    /// Get the number of episodes.
+    /// Get the number of observations.
     #[must_use]
     pub fn len(&self) -> usize {
-        self.episodes.len()
+        self.observations.len()
     }
 
     /// Check if the log is empty.
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.episodes.is_empty()
+        self.observations.is_empty()
     }
 }
 
@@ -65,48 +96,49 @@ impl ObservationLog {
 mod tests {
     use super::*;
 
-    fn sample_episode() -> Episode {
-        Episode {
-            id: "ep-001".to_string(),
-            date: NaiveDate::from_ymd_opt(2026, 2, 19).unwrap(),
-            start: "user asked about memory design".to_string(),
-            end: "settled on episode-based approach".to_string(),
-            context: "ironclaw/memory".to_string(),
-            observations: vec![
-                "episodes compress conversation segments into structured data".to_string(),
-                "tantivy provides BM25 search without C dependencies".to_string(),
-            ],
-            source_episodes: vec![],
+    fn sample_observation() -> Observation {
+        Observation {
+            timestamp: DateTime::from_timestamp(1_708_300_800, 0).unwrap(),
+            project_context: "ironclaw/memory".to_string(),
+            source_episodes: vec!["ep-001".to_string()],
+            visibility: Visibility::User,
+            content: "tantivy provides BM25 search without C dependencies".to_string(),
         }
     }
 
     #[test]
-    fn episode_serde_round_trip() {
-        let episode = sample_episode();
-        let json = serde_json::to_string(&episode).unwrap();
-        let deserialized: Episode = serde_json::from_str(&json).unwrap();
+    fn observation_serde_round_trip() {
+        let obs = sample_observation();
+        let json = serde_json::to_string(&obs).unwrap();
+        let deserialized: Observation = serde_json::from_str(&json).unwrap();
 
-        assert_eq!(deserialized.id, "ep-001", "id should round-trip");
         assert_eq!(
-            deserialized.date,
-            NaiveDate::from_ymd_opt(2026, 2, 19).unwrap(),
-            "date should round-trip"
+            deserialized.content, obs.content,
+            "content should round-trip"
         );
         assert_eq!(
-            deserialized.observations.len(),
-            2,
-            "observations should round-trip"
+            deserialized.project_context, "ironclaw/memory",
+            "project_context should round-trip"
         );
-        assert!(
-            deserialized.source_episodes.is_empty(),
-            "empty source_episodes should round-trip"
+        assert_eq!(
+            deserialized.source_episodes,
+            vec!["ep-001"],
+            "source_episodes should round-trip"
+        );
+        assert_eq!(
+            deserialized.visibility,
+            Visibility::User,
+            "visibility should round-trip"
         );
     }
 
     #[test]
-    fn episode_source_episodes_skipped_when_empty() {
-        let episode = sample_episode();
-        let json = serde_json::to_string(&episode).unwrap();
+    fn observation_source_episodes_skipped_when_empty() {
+        let obs = Observation {
+            source_episodes: vec![],
+            ..sample_observation()
+        };
+        let json = serde_json::to_string(&obs).unwrap();
         assert!(
             !json.contains("source_episodes"),
             "empty source_episodes should be skipped in serialization"
@@ -114,26 +146,26 @@ mod tests {
     }
 
     #[test]
-    fn episode_source_episodes_preserved_when_set() {
-        let episode = Episode {
-            id: "ref-001".to_string(),
-            source_episodes: vec!["ep-001".to_string(), "ep-002".to_string()],
-            ..sample_episode()
-        };
-        let json = serde_json::to_string(&episode).unwrap();
-        let deserialized: Episode = serde_json::from_str(&json).unwrap();
+    fn visibility_default_is_user() {
+        let vis = Visibility::default();
+        assert_eq!(vis, Visibility::User, "default visibility should be User");
+    }
 
+    #[test]
+    fn visibility_serde_snake_case() {
+        let user = serde_json::to_string(&Visibility::User).unwrap();
+        let bg = serde_json::to_string(&Visibility::Background).unwrap();
+        assert_eq!(user, r#""user""#, "User should serialize as snake_case");
         assert_eq!(
-            deserialized.source_episodes.len(),
-            2,
-            "source_episodes should be preserved"
+            bg, r#""background""#,
+            "Background should serialize as snake_case"
         );
     }
 
     #[test]
     fn observation_log_serde_round_trip() {
         let mut log = ObservationLog::new();
-        log.push(sample_episode());
+        log.push(sample_observation());
 
         let json = serde_json::to_string(&log).unwrap();
         let deserialized: ObservationLog = serde_json::from_str(&json).unwrap();
@@ -141,7 +173,7 @@ mod tests {
         assert_eq!(
             deserialized.len(),
             1,
-            "log should round-trip with one episode"
+            "log should round-trip with one observation"
         );
     }
 
@@ -155,25 +187,8 @@ mod tests {
     #[test]
     fn observation_log_push() {
         let mut log = ObservationLog::new();
-        log.push(sample_episode());
+        log.push(sample_observation());
         assert!(!log.is_empty(), "log should not be empty after push");
-        assert_eq!(log.len(), 1, "log should have one episode after push");
-    }
-
-    #[test]
-    fn episode_deserialize_without_source_episodes() {
-        let json = r#"{
-            "id": "ep-001",
-            "date": "2026-02-19",
-            "start": "started",
-            "end": "ended",
-            "context": "test",
-            "observations": ["one"]
-        }"#;
-        let episode: Episode = serde_json::from_str(json).unwrap();
-        assert!(
-            episode.source_episodes.is_empty(),
-            "missing source_episodes should default to empty"
-        );
+        assert_eq!(log.len(), 1, "log should have one observation after push");
     }
 }

@@ -22,10 +22,11 @@ use crate::error::IronclawError;
 use crate::memory::log_store::load_observation_log;
 use crate::memory::observer::{Observer, ObserverConfig};
 use crate::memory::recent_store::{
-    append_recent_messages, clear_recent_messages, load_recent_messages,
+    append_recent_messages, clear_recent_messages, load_messages_for_agent, load_recent_messages,
 };
 use crate::memory::reflector::{Reflector, ReflectorConfig};
 use crate::memory::search::create_shared_index;
+use crate::memory::types::Visibility;
 use crate::models::anthropic::AnthropicClient;
 use crate::models::ollama::OllamaClient;
 use crate::models::openai::OpenAiClient;
@@ -137,13 +138,13 @@ pub async fn run_gateway(cfg: Config) -> Result<(), IronclawError> {
     agent.reload_observations(&layout).await?;
 
     // Restore unobserved messages from previous session
-    let recent = load_recent_messages(&layout.recent_messages_json()).await?;
-    if !recent.is_empty() {
+    let recent_for_restore = load_messages_for_agent(&layout.recent_messages_json()).await?;
+    if !recent_for_restore.is_empty() {
         tracing::info!(
-            count = recent.len(),
+            count = recent_for_restore.len(),
             "restoring recent messages from previous session"
         );
-        agent.restore_messages(recent);
+        agent.restore_messages(recent_for_restore);
     }
 
     // Channels
@@ -231,8 +232,11 @@ pub async fn run_gateway(cfg: Config) -> Result<(), IronclawError> {
                 }
 
                 let new_messages: Vec<_> = agent.messages_since(before).to_vec();
+                let project_context = workspace_name(&layout);
                 run_memory_pipeline(
                     &new_messages,
+                    &project_context,
+                    Visibility::User,
                     &observer,
                     &reflector,
                     &search_index,
@@ -266,8 +270,11 @@ pub async fn run_gateway(cfg: Config) -> Result<(), IronclawError> {
                                     tracing::trace!("no broadcast receivers for pulse event");
                                 }
                             }
+                            let pulse_context = workspace_name(&layout);
                             run_memory_pipeline(
                                 &result.messages,
+                                &pulse_context,
+                                Visibility::Background,
                                 &observer,
                                 &reflector,
                                 &search_index,
@@ -433,8 +440,11 @@ async fn run_due_cron_jobs_gateway(
                 }
             }
             if !result.messages.is_empty() {
+                let cron_context = workspace_name(layout);
                 run_memory_pipeline(
                     &result.messages,
+                    &cron_context,
+                    Visibility::Background,
                     observer,
                     reflector,
                     search_index,
@@ -451,8 +461,14 @@ async fn run_due_cron_jobs_gateway(
 }
 
 /// Persist new messages and run the observer/reflector/search pipeline.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "gateway memory pipeline requires all subsystem references; a struct would add indirection without clarity"
+)]
 pub(crate) async fn run_memory_pipeline(
     new_messages: &[crate::models::Message],
+    project_context: &str,
+    visibility: Visibility,
     observer: &Observer,
     reflector: &Reflector,
     search_index: &crate::memory::search::MemoryIndex,
@@ -463,7 +479,14 @@ pub(crate) async fn run_memory_pipeline(
         return;
     }
 
-    if let Err(e) = append_recent_messages(&layout.recent_messages_json(), new_messages).await {
+    if let Err(e) = append_recent_messages(
+        &layout.recent_messages_json(),
+        new_messages,
+        project_context,
+        visibility,
+    )
+    .await
+    {
         eprintln!("warning: failed to persist recent messages: {e}");
         return;
     }
@@ -481,19 +504,18 @@ pub(crate) async fn run_memory_pipeline(
     }
 
     match observer.observe(&recent, layout).await {
-        Ok(episode) => {
-            tracing::info!(episode_id = %episode.id, "observer extracted episode");
+        Ok(result) => {
+            tracing::info!(episode_id = %result.id, "observer extracted episode");
 
             if let Err(e) = clear_recent_messages(&layout.recent_messages_json()).await {
                 eprintln!("warning: failed to clear recent messages: {e}");
             }
             agent.clear_session();
 
-            let ep_path =
-                crate::memory::episode_store::episode_path(&layout.episodes_dir(), &episode);
-            match tokio::fs::read_to_string(&ep_path).await {
+            match tokio::fs::read_to_string(&result.transcript_path).await {
                 Ok(ep_content) => {
-                    if let Err(e) = search_index.index_file(&ep_path.to_string_lossy(), &ep_content)
+                    if let Err(e) = search_index
+                        .index_file(&result.transcript_path.to_string_lossy(), &ep_content)
                     {
                         eprintln!("warning: failed to index episode: {e}");
                     }
@@ -501,7 +523,7 @@ pub(crate) async fn run_memory_pipeline(
                 Err(e) => {
                     eprintln!(
                         "warning: failed to read episode file {}: {e}",
-                        ep_path.display()
+                        result.transcript_path.display()
                     );
                 }
             }
@@ -516,6 +538,16 @@ pub(crate) async fn run_memory_pipeline(
             eprintln!("warning: observer failed: {e}");
         }
     }
+}
+
+/// Derive the workspace name from the root directory for use as project context.
+fn workspace_name(layout: &WorkspaceLayout) -> String {
+    layout
+        .root()
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("unknown")
+        .to_string()
 }
 
 /// Run the reflector if the observation log exceeds the threshold.

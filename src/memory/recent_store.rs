@@ -6,8 +6,38 @@
 
 use std::path::Path;
 
+use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
+
 use crate::error::IronclawError;
+use crate::memory::types::Visibility;
 use crate::models::Message;
+
+/// Provides a default timestamp for backward-compatible deserialization.
+fn default_timestamp() -> DateTime<Utc> {
+    Utc::now()
+}
+
+/// A persisted message with session metadata.
+///
+/// Wraps a [`Message`] with the context needed for the observer to derive
+/// observation metadata (project context, visibility) without requiring the
+/// agent to re-examine the conversation on startup.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RecentMessage {
+    /// The underlying conversation message.
+    #[serde(flatten)]
+    pub message: Message,
+    /// When this message was added to the session.
+    #[serde(default = "default_timestamp")]
+    pub timestamp: DateTime<Utc>,
+    /// Workspace context at the time this message was recorded.
+    #[serde(default)]
+    pub project_context: String,
+    /// Whether this message came from a user-visible or background turn.
+    #[serde(default)]
+    pub visibility: Visibility,
+}
 
 /// Load recent messages from disk.
 ///
@@ -15,7 +45,7 @@ use crate::models::Message;
 ///
 /// # Errors
 /// Returns an error if the file exists but cannot be read or parsed.
-pub async fn load_recent_messages(path: &Path) -> Result<Vec<Message>, IronclawError> {
+pub async fn load_recent_messages(path: &Path) -> Result<Vec<RecentMessage>, IronclawError> {
     match tokio::fs::read_to_string(path).await {
         Ok(contents) if contents.trim().is_empty() => Ok(Vec::new()),
         Ok(contents) => serde_json::from_str(&contents).map_err(|e| {
@@ -32,11 +62,26 @@ pub async fn load_recent_messages(path: &Path) -> Result<Vec<Message>, IronclawE
     }
 }
 
-/// Save messages to disk atomically (temp file + rename).
+/// Load recent messages as plain [`Message`] values, stripping metadata.
+///
+/// Used when restoring the agent session at startup — the agent only needs
+/// the conversation messages, not the observation metadata.
+///
+/// # Errors
+/// Returns an error if the file exists but cannot be read or parsed.
+pub async fn load_messages_for_agent(path: &Path) -> Result<Vec<Message>, IronclawError> {
+    let recent = load_recent_messages(path).await?;
+    Ok(recent.into_iter().map(|rm| rm.message).collect())
+}
+
+/// Save recent messages to disk atomically (temp file + rename).
 ///
 /// # Errors
 /// Returns an error if the file cannot be written.
-async fn save_recent_messages(path: &Path, messages: &[Message]) -> Result<(), IronclawError> {
+async fn save_recent_messages(
+    path: &Path,
+    messages: &[RecentMessage],
+) -> Result<(), IronclawError> {
     let json = serde_json::to_string_pretty(messages)
         .map_err(|e| IronclawError::Memory(format!("failed to serialize recent messages: {e}")))?;
 
@@ -67,21 +112,29 @@ async fn save_recent_messages(path: &Path, messages: &[Message]) -> Result<(), I
     Ok(())
 }
 
-/// Append messages to the recent messages file.
+/// Append messages to the recent messages file, wrapping each with metadata.
 ///
-/// Loads existing messages, extends with new ones, and saves atomically.
+/// Loads existing messages, extends with new wrapped messages, and saves atomically.
 ///
 /// # Errors
 /// Returns an error if loading or saving fails.
 pub async fn append_recent_messages(
     path: &Path,
     new_messages: &[Message],
+    project_context: &str,
+    visibility: Visibility,
 ) -> Result<(), IronclawError> {
     if new_messages.is_empty() {
         return Ok(());
     }
     let mut existing = load_recent_messages(path).await?;
-    existing.extend(new_messages.iter().cloned());
+    let now = Utc::now();
+    existing.extend(new_messages.iter().map(|msg| RecentMessage {
+        message: msg.clone(),
+        timestamp: now,
+        project_context: project_context.to_string(),
+        visibility: visibility.clone(),
+    }));
     save_recent_messages(path, &existing).await
 }
 
@@ -116,14 +169,26 @@ mod tests {
         let path = dir.path().join("recent_messages.json");
 
         let msgs = vec![sample_message("hello"), sample_message("world")];
-        save_recent_messages(&path, &msgs).await.unwrap();
+        append_recent_messages(&path, &msgs, "test/project", Visibility::User)
+            .await
+            .unwrap();
 
         let loaded = load_recent_messages(&path).await.unwrap();
         assert_eq!(loaded.len(), 2, "should load two messages");
         assert_eq!(
-            loaded.first().map(|m| m.content.as_str()),
+            loaded.first().map(|m| m.message.content.as_str()),
             Some("hello"),
-            "first message should match"
+            "first message content should match"
+        );
+        assert_eq!(
+            loaded.first().map(|m| m.project_context.as_str()),
+            Some("test/project"),
+            "project_context should be preserved"
+        );
+        assert_eq!(
+            loaded.first().map(|m| &m.visibility),
+            Some(&Visibility::User),
+            "visibility should be preserved"
         );
     }
 
@@ -132,7 +197,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("recent_messages.json");
 
-        append_recent_messages(&path, &[sample_message("first")])
+        append_recent_messages(&path, &[sample_message("first")], "ctx", Visibility::User)
             .await
             .unwrap();
 
@@ -145,15 +210,25 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("recent_messages.json");
 
-        append_recent_messages(&path, &[sample_message("first")])
+        append_recent_messages(&path, &[sample_message("first")], "ctx", Visibility::User)
             .await
             .unwrap();
-        append_recent_messages(&path, &[sample_message("second")])
-            .await
-            .unwrap();
+        append_recent_messages(
+            &path,
+            &[sample_message("second")],
+            "ctx",
+            Visibility::Background,
+        )
+        .await
+        .unwrap();
 
         let loaded = load_recent_messages(&path).await.unwrap();
         assert_eq!(loaded.len(), 2, "should have two messages");
+        assert_eq!(
+            loaded.get(1).map(|m| &m.visibility),
+            Some(&Visibility::Background),
+            "second message should have Background visibility"
+        );
     }
 
     #[tokio::test]
@@ -161,7 +236,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("recent_messages.json");
 
-        append_recent_messages(&path, &[sample_message("first")])
+        append_recent_messages(&path, &[sample_message("first")], "ctx", Visibility::User)
             .await
             .unwrap();
         clear_recent_messages(&path).await.unwrap();
@@ -175,7 +250,9 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("recent_messages.json");
 
-        append_recent_messages(&path, &[]).await.unwrap();
+        append_recent_messages(&path, &[], "ctx", Visibility::User)
+            .await
+            .unwrap();
         assert!(
             !path.exists(),
             "appending nothing should not create the file"
@@ -190,5 +267,45 @@ mod tests {
 
         let loaded = load_recent_messages(&path).await.unwrap();
         assert!(loaded.is_empty(), "empty file should return empty vec");
+    }
+
+    #[tokio::test]
+    async fn load_messages_for_agent_strips_metadata() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("recent_messages.json");
+
+        append_recent_messages(&path, &[sample_message("hello")], "ctx", Visibility::User)
+            .await
+            .unwrap();
+
+        let messages = load_messages_for_agent(&path).await.unwrap();
+        assert_eq!(messages.len(), 1, "should return one message");
+        assert_eq!(
+            messages.first().map(|m| m.content.as_str()),
+            Some("hello"),
+            "message content should be preserved"
+        );
+    }
+
+    #[tokio::test]
+    async fn background_visibility_preserved() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("recent_messages.json");
+
+        append_recent_messages(
+            &path,
+            &[sample_message("system event")],
+            "pulse",
+            Visibility::Background,
+        )
+        .await
+        .unwrap();
+
+        let loaded = load_recent_messages(&path).await.unwrap();
+        assert_eq!(
+            loaded.first().map(|m| &m.visibility),
+            Some(&Visibility::Background),
+            "Background visibility should round-trip"
+        );
     }
 }
