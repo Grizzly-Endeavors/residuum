@@ -50,8 +50,8 @@ async fn run() -> Result<(), IronclawError> {
             Config::bootstrap_config_dir()?;
             let cfg = Config::load()?;
             tracing::info!(
-                model = %cfg.model,
-                provider_url = %cfg.provider_url,
+                model = %cfg.main.model,
+                provider_url = %cfg.main.provider_url,
                 workspace = %cfg.workspace_dir.display(),
                 "configuration loaded"
             );

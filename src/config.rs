@@ -1,7 +1,9 @@
 //! Configuration loading and validation.
 //!
 //! Uses a two-type pattern: `ConfigFile` (raw TOML deserialization) is validated
-//! into `Config` (runtime-safe values).
+//! into `Config` (runtime-safe values). Providers are defined in `[providers]`,
+//! models are assigned to roles in `[models]`, and everything resolves at load
+//! time into fully-built `ProviderSpec` values.
 
 use std::collections::HashMap;
 use std::fmt;
@@ -45,91 +47,73 @@ pub(crate) const DEFAULT_REFLECTOR_THRESHOLD: usize = 40_000;
 /// Minimal config.toml written on first run — user edits this.
 const MINIMAL_CONFIG: &str = "# IronClaw configuration. See config.example.toml for all options.\n\
     \n\
-    model = \"anthropic/claude-sonnet-4-6\"\n\
-    api_key = \"sk-ant-REPLACE_ME\"\n";
+    [models]\n\
+    main = \"anthropic/claude-sonnet-4-6\"\n";
 
 /// Full reference config always regenerated on startup.
 ///
 /// Every option is shown with its default and a brief comment.
-const EXAMPLE_CONFIG: &str = "# IronClaw example configuration — all options with defaults shown.\n\
-    # Copy to config.toml and edit as needed. Unknown keys are ignored.\n\
-    \n\
-    # ── Main agent provider ────────────────────────────────────────────────────\n\
-    model = \"anthropic/claude-sonnet-4-6\"\n\
-    # Override base URL (default depends on provider prefix):\n\
-    #   anthropic → https://api.anthropic.com\n\
-    #   openai    → https://api.openai.com/v1\n\
-    #   ollama    → http://localhost:11434\n\
-    # provider_url = \"https://api.anthropic.com\"\n\
-    api_key = \"sk-ant-REPLACE_ME\"\n\
-    # workspace_dir = \"~/.ironclaw/workspace\"\n\
-    timeout_secs = 120\n\
-    max_tokens = 8192\n\
-    \n\
-    # ── Named providers (optional, DRY alternative to per-section inline config)\n\
-    # Define reusable provider entries, then reference them in [roles].\n\
-    #\n\
-    # [providers.main]\n\
-    # model = \"anthropic/claude-sonnet-4-6\"\n\
-    # api_key = \"sk-ant-...\"\n\
-    #\n\
-    # [providers.fast]\n\
-    # model = \"anthropic/claude-haiku-4-5\"\n\
-    # api_key = \"sk-ant-...\"\n\
-    #\n\
-    # [providers.local]\n\
-    # model = \"ollama/llama3\"\n\
-    # provider_url = \"http://localhost:11434\"\n\
-    \n\
-    # ── Role assignments (optional, references entries in [providers]) ──────────\n\
-    # Override which provider each subsystem uses.\n\
-    # Inline model/api_key fields in [memory]/[pulse]/[cron] also work.\n\
-    #\n\
-    # [roles]\n\
-    # agent     = \"main\"    # top-level agent\n\
-    # observer  = \"fast\"    # memory observer\n\
-    # reflector = \"fast\"    # memory reflector\n\
-    # pulse     = \"fast\"    # pulse (heartbeat) checks\n\
-    # cron      = \"fast\"    # cron job agent turns\n\
-    \n\
-    # ── Memory subsystem ────────────────────────────────────────────────────────\n\
-    [memory]\n\
-    # observer_model = \"anthropic/claude-haiku-4-5\"\n\
-    # observer_provider_url = \"https://api.anthropic.com\"\n\
-    # observer_api_key = \"sk-ant-...\"\n\
-    observer_threshold_tokens = 30000\n\
-    # reflector_model = \"anthropic/claude-haiku-4-5\"\n\
-    # reflector_provider_url = \"https://api.anthropic.com\"\n\
-    # reflector_api_key = \"sk-ant-...\"\n\
-    reflector_threshold_tokens = 40000\n\
-    \n\
-    # ── Pulse (ambient monitoring) ──────────────────────────────────────────────\n\
-    [pulse]\n\
-    enabled = true\n\
-    # model = \"anthropic/claude-haiku-4-5\"\n\
-    # provider_url = \"https://api.anthropic.com\"\n\
-    # api_key = \"sk-ant-...\"\n\
-    \n\
-    # ── Cron (scheduled tasks) ──────────────────────────────────────────────────\n\
-    [cron]\n\
-    enabled = true\n\
-    # model = \"anthropic/claude-haiku-4-5\"\n\
-    # provider_url = \"https://api.anthropic.com\"\n\
-    # api_key = \"sk-ant-...\"\n\
-    \n\
-    # ── WebSocket gateway ───────────────────────────────────────────────────────\n\
-    [gateway]\n\
-    bind = \"127.0.0.1\"\n\
-    port = 7700\n";
+const EXAMPLE_CONFIG: &str = "\
+# IronClaw example configuration — all options with defaults shown.
+# Copy to config.toml and edit as needed.
+
+# ── Providers (optional, define named connections) ────────────────────────────
+# Each entry specifies a connection to a model API. The key becomes a name you
+# can reference in [models]. The `type` field selects the protocol:
+#   anthropic, openai, ollama, gemini
+#
+# [providers]
+# cerebras = { type = \"openai\", api_key = \"csk-...\", url = \"https://api.cerebras.ai/v1\" }
+# claude-max = { type = \"anthropic\", api_key = \"sk-ant-...\" }
+# google-api = { type = \"gemini\", api_key = \"AIza...\" }
+
+# ── Models (role assignments) ─────────────────────────────────────────────────
+# Format: \"provider_or_type/model_name\"
+# If the part before / matches a [providers] entry, that connection is used.
+# Otherwise it is treated as an implicit provider type (anthropic, openai, etc.)
+# and the API key is read from the provider-specific env var or IRONCLAW_API_KEY.
+#
+# Roles: main (required), default (fallback for unset roles), observer,
+#        reflector, pulse, cron
+[models]
+main = \"anthropic/claude-sonnet-4-6\"
+# default = \"anthropic/claude-haiku-4-5\"
+# observer = \"google-api/gemini-3.0-flash\"
+# reflector = \"google-api/gemini-3.0-flash\"
+# pulse = \"anthropic/claude-haiku-4-5\"
+# cron = \"anthropic/claude-haiku-4-5\"
+
+# ── General settings ──────────────────────────────────────────────────────────
+# workspace_dir = \"~/.ironclaw/workspace\"
+timeout_secs = 120
+max_tokens = 8192
+
+# ── Memory subsystem ──────────────────────────────────────────────────────────
+[memory]
+observer_threshold_tokens = 30000
+reflector_threshold_tokens = 40000
+
+# ── Pulse (ambient monitoring) ────────────────────────────────────────────────
+[pulse]
+enabled = true
+
+# ── Cron (scheduled tasks) ────────────────────────────────────────────────────
+[cron]
+enabled = true
+
+# ── WebSocket gateway ─────────────────────────────────────────────────────────
+[gateway]
+bind = \"127.0.0.1\"
+port = 7700
+";
 
 /// Resolved provider configuration for a specific role.
 ///
-/// The `name` is the TOML map key for named providers (e.g. `"cerebras"` from
-/// `[providers.cerebras]`) or the role label (e.g. `"pulse"`) for inline
-/// section overrides. It is used for logging and error attribution.
+/// Every role (main, observer, reflector, pulse, cron) gets a fully resolved
+/// `ProviderSpec` at config load time — no `Option` chains at use sites.
 #[derive(Clone)]
 pub struct ProviderSpec {
-    /// Human-readable identifier for this provider entry.
+    /// Human-readable identifier (provider entry name or implicit kind).
     pub name: String,
     /// Model spec for this role.
     pub model: ModelSpec,
@@ -151,26 +135,33 @@ impl fmt::Debug for ProviderSpec {
 }
 
 /// Validated runtime configuration.
+///
+/// All provider roles are fully resolved at load time. Consumers read fields
+/// directly — no fallback chains needed.
 #[derive(Clone)]
 pub struct Config {
-    /// Which model to use (parsed from `"provider/model"` format).
-    pub model: ModelSpec,
-    /// Base URL for the provider API.
-    pub provider_url: String,
-    /// API key for the provider (required for Anthropic/OpenAI, optional for Ollama).
-    pub api_key: Option<String>,
+    /// Fully resolved main agent provider.
+    pub main: ProviderSpec,
+    /// Fully resolved observer provider.
+    pub observer: ProviderSpec,
+    /// Fully resolved reflector provider.
+    pub reflector: ProviderSpec,
+    /// Fully resolved pulse provider.
+    pub pulse: ProviderSpec,
+    /// Fully resolved cron provider.
+    pub cron: ProviderSpec,
     /// Path to the workspace root directory.
     pub workspace_dir: PathBuf,
     /// Request timeout in seconds.
     pub timeout_secs: u64,
     /// Maximum tokens for model responses.
     pub max_tokens: u32,
-    /// Memory subsystem configuration.
+    /// Memory subsystem configuration (thresholds only).
     pub memory: MemoryConfig,
-    /// Pulse (ambient monitoring) configuration.
-    pub pulse: PulseConfig,
-    /// Cron (scheduled tasks) configuration.
-    pub cron: CronConfig,
+    /// Whether the pulse system is enabled.
+    pub pulse_enabled: bool,
+    /// Whether the cron system is enabled.
+    pub cron_enabled: bool,
     /// WebSocket gateway configuration.
     pub gateway: GatewayConfig,
 }
@@ -178,53 +169,19 @@ pub struct Config {
 impl fmt::Debug for Config {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Config")
-            .field("model", &self.model)
-            .field("provider_url", &self.provider_url)
-            .field("api_key", &self.api_key.as_ref().map(|_| "[REDACTED]"))
+            .field("main", &self.main)
+            .field("observer", &self.observer)
+            .field("reflector", &self.reflector)
+            .field("pulse", &self.pulse)
+            .field("cron", &self.cron)
             .field("workspace_dir", &self.workspace_dir)
             .field("timeout_secs", &self.timeout_secs)
             .field("max_tokens", &self.max_tokens)
             .field("memory", &self.memory)
-            .field("pulse", &self.pulse)
-            .field("cron", &self.cron)
+            .field("pulse_enabled", &self.pulse_enabled)
+            .field("cron_enabled", &self.cron_enabled)
             .field("gateway", &self.gateway)
             .finish()
-    }
-}
-
-/// Validated pulse subsystem configuration.
-#[derive(Debug, Clone)]
-pub struct PulseConfig {
-    /// Whether the pulse system is enabled.
-    pub enabled: bool,
-    /// Optional provider override for pulse agent turns.
-    pub provider: Option<ProviderSpec>,
-}
-
-impl Default for PulseConfig {
-    fn default() -> Self {
-        Self {
-            enabled: true,
-            provider: None,
-        }
-    }
-}
-
-/// Validated cron subsystem configuration.
-#[derive(Debug, Clone)]
-pub struct CronConfig {
-    /// Whether the cron system is enabled.
-    pub enabled: bool,
-    /// Optional provider override for cron agent turns.
-    pub provider: Option<ProviderSpec>,
-}
-
-impl Default for CronConfig {
-    fn default() -> Self {
-        Self {
-            enabled: true,
-            provider: None,
-        }
     }
 }
 
@@ -254,9 +211,18 @@ impl GatewayConfig {
             .or_else(|| section.and_then(|s| s.bind.clone()))
             .unwrap_or_else(|| DEFAULT_GATEWAY_BIND.to_string());
 
-        let port = std::env::var("IRONCLAW_GATEWAY_PORT")
-            .ok()
-            .and_then(|s| s.parse().ok())
+        let port_from_env = match std::env::var("IRONCLAW_GATEWAY_PORT") {
+            Ok(val) => match val.parse::<u16>() {
+                Ok(p) => Some(p),
+                Err(e) => {
+                    eprintln!("warning: IRONCLAW_GATEWAY_PORT '{val}' is not a valid port: {e}");
+                    None
+                }
+            },
+            Err(_) => None,
+        };
+
+        let port = port_from_env
             .or_else(|| section.and_then(|s| s.port))
             .unwrap_or(DEFAULT_GATEWAY_PORT);
 
@@ -270,123 +236,22 @@ impl GatewayConfig {
     }
 }
 
-/// Validated memory subsystem configuration.
-#[derive(Clone)]
+/// Validated memory subsystem configuration (thresholds only).
+///
+/// Provider assignments for observer/reflector are on `Config` directly.
+#[derive(Debug, Clone)]
 pub struct MemoryConfig {
-    /// Model spec for the observer (None = use main model).
-    pub observer_model: Option<ModelSpec>,
-    /// Base URL for the observer's provider (None = use main provider URL).
-    pub observer_provider_url: Option<String>,
-    /// API key for the observer's provider (None = use main API key).
-    pub observer_api_key: Option<String>,
     /// Token threshold before the observer fires.
     pub observer_threshold_tokens: usize,
-    /// Model spec for the reflector (None = fall back to observer, then main).
-    pub reflector_model: Option<ModelSpec>,
-    /// Base URL for the reflector's provider (None = fall back to observer, then main).
-    pub reflector_provider_url: Option<String>,
-    /// API key for the reflector's provider (None = fall back to observer, then main).
-    pub reflector_api_key: Option<String>,
     /// Token threshold before the reflector compresses.
     pub reflector_threshold_tokens: usize,
-}
-
-impl fmt::Debug for MemoryConfig {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("MemoryConfig")
-            .field("observer_model", &self.observer_model)
-            .field("observer_provider_url", &self.observer_provider_url)
-            .field(
-                "observer_api_key",
-                &self.observer_api_key.as_ref().map(|_| "[REDACTED]"),
-            )
-            .field("observer_threshold_tokens", &self.observer_threshold_tokens)
-            .field("reflector_model", &self.reflector_model)
-            .field("reflector_provider_url", &self.reflector_provider_url)
-            .field(
-                "reflector_api_key",
-                &self.reflector_api_key.as_ref().map(|_| "[REDACTED]"),
-            )
-            .field(
-                "reflector_threshold_tokens",
-                &self.reflector_threshold_tokens,
-            )
-            .finish()
-    }
 }
 
 impl Default for MemoryConfig {
     fn default() -> Self {
         Self {
-            observer_model: None,
-            observer_provider_url: None,
-            observer_api_key: None,
             observer_threshold_tokens: DEFAULT_OBSERVER_THRESHOLD,
-            reflector_model: None,
-            reflector_provider_url: None,
-            reflector_api_key: None,
             reflector_threshold_tokens: DEFAULT_REFLECTOR_THRESHOLD,
-        }
-    }
-}
-
-impl MemoryConfig {
-    /// Build from the raw TOML section and environment variables.
-    fn from_file_and_env(section: Option<&MemoryConfigFile>) -> Self {
-        let observer_model_str = std::env::var("IRONCLAW_OBSERVER_MODEL")
-            .ok()
-            .or_else(|| section.and_then(|s| s.observer_model.clone()));
-
-        let observer_model = observer_model_str.and_then(|s| match ModelSpec::from_str(&s) {
-            Ok(spec) => Some(spec),
-            Err(e) => {
-                tracing::warn!(value = %s, error = %e, "invalid observer model spec, falling back to main model");
-                None
-            }
-        });
-
-        let observer_provider_url = section.and_then(|s| s.observer_provider_url.clone());
-
-        let observer_api_key = std::env::var("IRONCLAW_OBSERVER_API_KEY")
-            .ok()
-            .or_else(|| section.and_then(|s| s.observer_api_key.clone()));
-
-        let observer_threshold_tokens = section
-            .and_then(|s| s.observer_threshold_tokens)
-            .unwrap_or(DEFAULT_OBSERVER_THRESHOLD);
-
-        // Reflector fields — env vars override config file, fall back to observer via gateway
-        let reflector_model_str = std::env::var("IRONCLAW_REFLECTOR_MODEL")
-            .ok()
-            .or_else(|| section.and_then(|s| s.reflector_model.clone()));
-
-        let reflector_model = reflector_model_str.and_then(|s| match ModelSpec::from_str(&s) {
-            Ok(spec) => Some(spec),
-            Err(e) => {
-                tracing::warn!(value = %s, error = %e, "invalid reflector model spec, falling back to observer model");
-                None
-            }
-        });
-
-        let reflector_provider_url = section.and_then(|s| s.reflector_provider_url.clone());
-
-        let reflector_api_key = std::env::var("IRONCLAW_REFLECTOR_API_KEY")
-            .ok()
-            .or_else(|| section.and_then(|s| s.reflector_api_key.clone()));
-
-        let reflector_threshold_tokens = section
-            .and_then(|s| s.reflector_threshold_tokens)
-            .unwrap_or(DEFAULT_REFLECTOR_THRESHOLD);
-
-        Self {
-            observer_model,
-            observer_provider_url,
-            observer_api_key,
-            observer_threshold_tokens,
-            reflector_model,
-            reflector_provider_url,
-            reflector_api_key,
-            reflector_threshold_tokens,
         }
     }
 }
@@ -440,63 +305,52 @@ impl Config {
     /// # Errors
     /// Returns `IronclawError::Config` if the model spec cannot be parsed or
     /// the workspace directory cannot be determined.
-    #[expect(
-        clippy::too_many_lines,
-        reason = "wires up all config sections sequentially; splitting would obscure the priority chain"
-    )]
     fn from_file_and_env(file: Option<&ConfigFile>) -> Result<Self, IronclawError> {
-        // Model: env > file > default
-        let model_str = std::env::var("IRONCLAW_MODEL")
+        warn_deprecated_env_vars();
+
+        let providers_map = file.and_then(|f| f.providers.as_ref());
+        let models = file.and_then(|f| f.models.as_ref());
+
+        // Resolve main: IRONCLAW_MODEL env > models.main > default
+        let main_model_str = std::env::var("IRONCLAW_MODEL")
             .ok()
-            .or_else(|| file.and_then(|f| f.model.clone()))
+            .or_else(|| models.and_then(|m| m.main.clone()))
             .unwrap_or_else(|| "anthropic/claude-sonnet-4-5".to_string());
 
-        let mut model = ModelSpec::from_str(&model_str)
-            .map_err(|e| IronclawError::Config(format!("invalid model spec: {e}")))?;
+        let mut main = resolve_model_string(&main_model_str, providers_map)?;
 
-        // Provider URL: env > file > default per provider
-        let mut provider_url = std::env::var("IRONCLAW_PROVIDER_URL")
-            .ok()
-            .or_else(|| file.and_then(|f| f.provider_url.clone()))
-            .unwrap_or_else(|| model.kind.default_url().to_string());
-
-        // API key: provider-specific env > generic env > file
-        let mut api_key = provider_api_key_env(model.kind)
-            .or_else(|| std::env::var("IRONCLAW_API_KEY").ok())
-            .or_else(|| file.and_then(|f| f.api_key.clone()));
-
-        // roles.agent → override the main provider fields
-        let providers = file.and_then(|f| f.providers.as_ref());
-        if let Some(agent_role) = file
-            .and_then(|f| f.roles.as_ref())
-            .and_then(|r| r.agent.as_deref())
-        {
-            let entry = providers.and_then(|p| p.get(agent_role)).ok_or_else(|| {
-                IronclawError::Config(format!(
-                    "roles.agent references unknown provider '{agent_role}'"
-                ))
-            })?;
-
-            if let Some(m) = &entry.model {
-                let new_model = ModelSpec::from_str(m).map_err(|e| {
-                    IronclawError::Config(format!("invalid model in provider '{agent_role}': {e}"))
-                })?;
-                // Re-derive URL from new model's default only if URL was not explicitly set
-                if entry.provider_url.is_none()
-                    && std::env::var("IRONCLAW_PROVIDER_URL").is_err()
-                    && file.and_then(|f| f.provider_url.as_ref()).is_none()
-                {
-                    provider_url = new_model.kind.default_url().to_string();
-                }
-                model = new_model;
-            }
-            if let Some(url) = &entry.provider_url {
-                provider_url.clone_from(url);
-            }
-            if let Some(key) = &entry.api_key {
-                api_key = Some(key.clone());
-            }
+        // IRONCLAW_PROVIDER_URL overrides main provider URL only
+        if let Ok(url) = std::env::var("IRONCLAW_PROVIDER_URL") {
+            main.provider_url = url;
         }
+
+        // Resolve each role: models.<role> > models.default > main
+        let default_str = models.and_then(|m| m.default.clone());
+
+        let observer = resolve_role(
+            models.and_then(|m| m.observer.as_deref()),
+            default_str.as_deref(),
+            &main,
+            providers_map,
+        )?;
+        let reflector = resolve_role(
+            models.and_then(|m| m.reflector.as_deref()),
+            default_str.as_deref(),
+            &main,
+            providers_map,
+        )?;
+        let pulse_spec = resolve_role(
+            models.and_then(|m| m.pulse.as_deref()),
+            default_str.as_deref(),
+            &main,
+            providers_map,
+        )?;
+        let cron_spec = resolve_role(
+            models.and_then(|m| m.cron.as_deref()),
+            default_str.as_deref(),
+            &main,
+            providers_map,
+        )?;
 
         // Workspace dir: env > file > default
         let workspace_dir = std::env::var("IRONCLAW_WORKSPACE")
@@ -516,102 +370,40 @@ impl Config {
             .and_then(|f| f.max_tokens)
             .unwrap_or(DEFAULT_MAX_TOKENS);
 
-        let mut memory = MemoryConfig::from_file_and_env(file.and_then(|f| f.memory.as_ref()));
-
-        // roles.observer → override memory observer fields (named provider beats inline)
-        if let Some(obs_role) = file
-            .and_then(|f| f.roles.as_ref())
-            .and_then(|r| r.observer.as_deref())
-            && let Some(spec) = resolve_role_provider(
-                Some(obs_role),
-                "observer",
-                None,
-                None,
-                None,
-                providers,
-                &model,
-                &provider_url,
-                api_key.as_deref(),
-            )?
-        {
-            memory.observer_model = Some(spec.model);
-            memory.observer_provider_url = Some(spec.provider_url);
-            memory.observer_api_key = spec.api_key;
-        }
-
-        // roles.reflector → override memory reflector fields (named provider beats inline)
-        if let Some(ref_role) = file
-            .and_then(|f| f.roles.as_ref())
-            .and_then(|r| r.reflector.as_deref())
-            && let Some(spec) = resolve_role_provider(
-                Some(ref_role),
-                "reflector",
-                None,
-                None,
-                None,
-                providers,
-                &model,
-                &provider_url,
-                api_key.as_deref(),
-            )?
-        {
-            memory.reflector_model = Some(spec.model);
-            memory.reflector_provider_url = Some(spec.provider_url);
-            memory.reflector_api_key = spec.api_key;
-        }
-
-        // Pulse provider resolution
-        let pulse_section = file.and_then(|f| f.pulse.as_ref());
-        let pulse_enabled = pulse_section.and_then(|s| s.enabled).unwrap_or(true);
-        let pulse_provider = resolve_role_provider(
-            file.and_then(|f| f.roles.as_ref())
-                .and_then(|r| r.pulse.as_deref()),
-            "pulse",
-            pulse_section.and_then(|s| s.model.as_deref()),
-            pulse_section.and_then(|s| s.provider_url.as_deref()),
-            pulse_section.and_then(|s| s.api_key.as_deref()),
-            providers,
-            &model,
-            &provider_url,
-            api_key.as_deref(),
-        )?;
-        let pulse = PulseConfig {
-            enabled: pulse_enabled,
-            provider: pulse_provider,
+        let mem_section = file.and_then(|f| f.memory.as_ref());
+        let memory = MemoryConfig {
+            observer_threshold_tokens: mem_section
+                .and_then(|m| m.observer_threshold_tokens)
+                .unwrap_or(DEFAULT_OBSERVER_THRESHOLD),
+            reflector_threshold_tokens: mem_section
+                .and_then(|m| m.reflector_threshold_tokens)
+                .unwrap_or(DEFAULT_REFLECTOR_THRESHOLD),
         };
 
-        // Cron provider resolution
-        let cron_section = file.and_then(|f| f.cron.as_ref());
-        let cron_enabled = cron_section.and_then(|s| s.enabled).unwrap_or(true);
-        let cron_provider = resolve_role_provider(
-            file.and_then(|f| f.roles.as_ref())
-                .and_then(|r| r.cron.as_deref()),
-            "cron",
-            cron_section.and_then(|s| s.model.as_deref()),
-            cron_section.and_then(|s| s.provider_url.as_deref()),
-            cron_section.and_then(|s| s.api_key.as_deref()),
-            providers,
-            &model,
-            &provider_url,
-            api_key.as_deref(),
-        )?;
-        let cron = CronConfig {
-            enabled: cron_enabled,
-            provider: cron_provider,
-        };
+        let pulse_enabled = file
+            .and_then(|f| f.pulse.as_ref())
+            .and_then(|p| p.enabled)
+            .unwrap_or(true);
+
+        let cron_enabled = file
+            .and_then(|f| f.cron.as_ref())
+            .and_then(|c| c.enabled)
+            .unwrap_or(true);
 
         let gateway = GatewayConfig::from_file_and_env(file.and_then(|f| f.gateway.as_ref()));
 
         Ok(Self {
-            model,
-            provider_url,
-            api_key,
+            main,
+            observer,
+            reflector,
+            pulse: pulse_spec,
+            cron: cron_spec,
             workspace_dir,
             timeout_secs,
             max_tokens,
             memory,
-            pulse,
-            cron,
+            pulse_enabled,
+            cron_enabled,
             gateway,
         })
     }
@@ -706,25 +498,22 @@ impl FromStr for ProviderKind {
     }
 }
 
+// ── TOML deserialization structs ─────────────────────────────────────────────
+
 /// Raw TOML config file structure (deserialized directly).
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct ConfigFile {
-    /// Model in `"provider/model"` format.
-    model: Option<String>,
-    /// Override provider base URL.
-    provider_url: Option<String>,
-    /// API key for the provider.
-    api_key: Option<String>,
+    /// Named provider definitions.
+    providers: Option<HashMap<String, ProviderEntryFile>>,
+    /// Role → model string assignments.
+    models: Option<ModelsConfigFile>,
     /// Workspace root directory path.
     workspace_dir: Option<String>,
     /// Request timeout in seconds.
     timeout_secs: Option<u64>,
     /// Maximum tokens for model responses.
     max_tokens: Option<u32>,
-    /// Named provider definitions.
-    providers: Option<HashMap<String, ProviderEntryFile>>,
-    /// Role → provider name assignments.
-    roles: Option<RolesConfigFile>,
     /// Memory subsystem configuration.
     memory: Option<MemoryConfigFile>,
     /// Pulse subsystem configuration.
@@ -737,58 +526,64 @@ struct ConfigFile {
 
 /// A named provider entry under `[providers.<name>]`.
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct ProviderEntryFile {
-    /// Model in `"provider/model"` format.
-    model: Option<String>,
-    /// Override base URL.
-    provider_url: Option<String>,
+    /// Provider protocol type (e.g. `"openai"`, `"anthropic"`).
+    #[serde(rename = "type")]
+    kind: String,
     /// API key.
     api_key: Option<String>,
+    /// Override base URL.
+    url: Option<String>,
 }
 
-/// Raw TOML `[roles]` section.
+/// Raw TOML `[models]` section — maps roles to `"provider/model"` strings.
 #[derive(Debug, Deserialize)]
-struct RolesConfigFile {
-    /// Named provider for the main agent.
-    agent: Option<String>,
-    /// Named provider for the memory observer.
+#[serde(deny_unknown_fields)]
+struct ModelsConfigFile {
+    /// Main agent model (required for operation).
+    main: Option<String>,
+    /// Default fallback for unset roles.
+    default: Option<String>,
+    /// Memory observer model.
     observer: Option<String>,
-    /// Named provider for the memory reflector.
+    /// Memory reflector model.
     reflector: Option<String>,
-    /// Named provider for pulse checks.
+    /// Pulse agent model.
     pulse: Option<String>,
-    /// Named provider for cron agent turns.
+    /// Cron agent model.
     cron: Option<String>,
+}
+
+/// Raw TOML `[memory]` section.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct MemoryConfigFile {
+    /// Token threshold before the observer fires.
+    observer_threshold_tokens: Option<usize>,
+    /// Token threshold before the reflector compresses.
+    reflector_threshold_tokens: Option<usize>,
 }
 
 /// Raw TOML `[pulse]` section.
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct PulseConfigFile {
     /// Whether the pulse system is enabled.
     enabled: Option<bool>,
-    /// Model override in `"provider/model"` format.
-    model: Option<String>,
-    /// Provider URL override.
-    provider_url: Option<String>,
-    /// API key override.
-    api_key: Option<String>,
 }
 
 /// Raw TOML `[cron]` section.
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct CronConfigFile {
     /// Whether the cron system is enabled.
     enabled: Option<bool>,
-    /// Model override in `"provider/model"` format.
-    model: Option<String>,
-    /// Provider URL override.
-    provider_url: Option<String>,
-    /// API key override.
-    api_key: Option<String>,
 }
 
 /// Raw TOML `[gateway]` section.
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct GatewayConfigFile {
     /// Address to bind the WebSocket server to.
     bind: Option<String>,
@@ -796,108 +591,128 @@ struct GatewayConfigFile {
     port: Option<u16>,
 }
 
-/// Raw TOML `[memory]` section.
-#[derive(Debug, Deserialize)]
-struct MemoryConfigFile {
-    /// Model for the observer in `"provider/model"` format.
-    observer_model: Option<String>,
-    /// Base URL for the observer's provider.
-    observer_provider_url: Option<String>,
-    /// API key for the observer's provider.
-    observer_api_key: Option<String>,
-    /// Token threshold before the observer fires.
-    observer_threshold_tokens: Option<usize>,
-    /// Model for the reflector in `"provider/model"` format.
-    reflector_model: Option<String>,
-    /// Base URL for the reflector's provider.
-    reflector_provider_url: Option<String>,
-    /// API key for the reflector's provider.
-    reflector_api_key: Option<String>,
-    /// Token threshold before the reflector compresses.
-    reflector_threshold_tokens: Option<usize>,
-}
+// ── Resolution logic ─────────────────────────────────────────────────────────
 
-/// Resolve a per-role provider from named provider or inline fields.
+/// Resolve a `"provider_or_name/model"` string into a `ProviderSpec`.
 ///
-/// Priority: named provider (via `role_name`) > inline fields > `main_*` fallbacks.
-/// Returns `None` if neither a role name nor any inline field is present — meaning
-/// the role should use the main provider unchanged.
-///
-/// `role_label` is the name embedded in the returned `ProviderSpec` when no
-/// named provider is used (i.e. for inline section overrides). When a named
-/// provider is used, the TOML map key (`role_name`) becomes the name.
+/// Splits on the first `/`:
+/// - If `provider_part` matches a key in `providers_map`, that entry's `type`,
+///   `url`, and `api_key` are used.
+/// - Otherwise `provider_part` is treated as an implicit `ProviderKind` name
+///   (e.g. `"anthropic"`). API key falls back to provider-specific env var,
+///   then `IRONCLAW_API_KEY`.
 ///
 /// # Errors
-/// Returns `IronclawError::Config` if `role_name` is set but does not match any
-/// entry in `providers`, or if a model string cannot be parsed.
-#[expect(
-    clippy::too_many_arguments,
-    reason = "provider resolution requires both inline fields and main-config fallbacks; a struct would add indirection without clarity"
-)]
-fn resolve_role_provider(
-    role_name: Option<&str>,
-    role_label: &str,
-    inline_model: Option<&str>,
-    inline_url: Option<&str>,
-    inline_key: Option<&str>,
-    providers: Option<&HashMap<String, ProviderEntryFile>>,
-    main_model: &ModelSpec,
-    main_url: &str,
-    main_key: Option<&str>,
-) -> Result<Option<ProviderSpec>, IronclawError> {
-    if let Some(provider_name) = role_name {
-        let entry = providers
-            .and_then(|p| p.get(provider_name))
-            .ok_or_else(|| {
-                IronclawError::Config(format!(
-                    "role references unknown provider '{provider_name}'"
-                ))
-            })?;
+/// Returns `IronclawError::Config` if the model string format is invalid,
+/// the provider is unknown, or an explicit provider entry references an
+/// unknown type.
+fn resolve_model_string(
+    model_str: &str,
+    providers_map: Option<&HashMap<String, ProviderEntryFile>>,
+) -> Result<ProviderSpec, IronclawError> {
+    let (provider_part, model_name) = model_str.split_once('/').ok_or_else(|| {
+        IronclawError::Config(format!(
+            "expected 'provider/model' format, got '{model_str}'"
+        ))
+    })?;
 
-        let model = if let Some(m) = entry.model.as_deref() {
-            ModelSpec::from_str(m).map_err(|e| {
-                IronclawError::Config(format!("invalid model in provider '{provider_name}': {e}"))
-            })?
-        } else {
-            main_model.clone()
-        };
+    if model_name.is_empty() {
+        return Err(IronclawError::Config(
+            "model name cannot be empty".to_string(),
+        ));
+    }
+
+    // Check if provider_part matches a named [providers] entry
+    if let Some(entry) = providers_map.and_then(|p| p.get(provider_part)) {
+        let kind = ProviderKind::from_str(&entry.kind).map_err(|e| {
+            IronclawError::Config(format!(
+                "provider '{provider_part}' has invalid type '{}': {e}",
+                entry.kind
+            ))
+        })?;
 
         let provider_url = entry
-            .provider_url
-            .as_deref()
-            .unwrap_or(main_url)
-            .to_string();
+            .url
+            .clone()
+            .unwrap_or_else(|| kind.default_url().to_string());
 
-        let api_key = entry.api_key.as_deref().or(main_key).map(str::to_owned);
+        let api_key = entry
+            .api_key
+            .clone()
+            .or_else(|| provider_api_key_env(kind))
+            .or_else(|| std::env::var("IRONCLAW_API_KEY").ok());
 
-        return Ok(Some(ProviderSpec {
-            name: provider_name.to_owned(),
-            model,
+        return Ok(ProviderSpec {
+            name: provider_part.to_owned(),
+            model: ModelSpec {
+                kind,
+                model: model_name.to_owned(),
+            },
             provider_url,
             api_key,
-        }));
+        });
     }
 
-    if inline_model.is_some() || inline_url.is_some() || inline_key.is_some() {
-        let model = if let Some(m) = inline_model {
-            ModelSpec::from_str(m)
-                .map_err(|e| IronclawError::Config(format!("invalid inline model spec: {e}")))?
-        } else {
-            main_model.clone()
-        };
+    // Treat provider_part as an implicit ProviderKind
+    let kind = ProviderKind::from_str(provider_part).map_err(|_parse_err| {
+        IronclawError::Config(format!(
+            "'{provider_part}' is not a known provider name or type \
+             (expected one of: anthropic, gemini, ollama, openai, \
+             or a key from [providers])"
+        ))
+    })?;
 
-        let provider_url = inline_url.unwrap_or(main_url).to_string();
-        let api_key = inline_key.or(main_key).map(str::to_owned);
+    let provider_url = kind.default_url().to_string();
 
-        return Ok(Some(ProviderSpec {
-            name: role_label.to_owned(),
-            model,
-            provider_url,
-            api_key,
-        }));
+    let api_key = provider_api_key_env(kind).or_else(|| std::env::var("IRONCLAW_API_KEY").ok());
+
+    Ok(ProviderSpec {
+        name: provider_part.to_owned(),
+        model: ModelSpec {
+            kind,
+            model: model_name.to_owned(),
+        },
+        provider_url,
+        api_key,
+    })
+}
+
+/// Resolve a role's provider: explicit role string > default string > clone of main.
+///
+/// # Errors
+/// Returns `IronclawError::Config` if the model string cannot be resolved.
+fn resolve_role(
+    role_str: Option<&str>,
+    default_str: Option<&str>,
+    main: &ProviderSpec,
+    providers_map: Option<&HashMap<String, ProviderEntryFile>>,
+) -> Result<ProviderSpec, IronclawError> {
+    if let Some(s) = role_str {
+        return resolve_model_string(s, providers_map);
     }
+    if let Some(s) = default_str {
+        return resolve_model_string(s, providers_map);
+    }
+    Ok(main.clone())
+}
 
-    Ok(None)
+/// Warn on deprecated environment variables that no longer have effect.
+fn warn_deprecated_env_vars() {
+    let deprecated = [
+        "IRONCLAW_OBSERVER_MODEL",
+        "IRONCLAW_REFLECTOR_MODEL",
+        "IRONCLAW_OBSERVER_API_KEY",
+        "IRONCLAW_REFLECTOR_API_KEY",
+    ];
+
+    for var in &deprecated {
+        if std::env::var(var).is_ok() {
+            eprintln!(
+                "warning: {var} is deprecated and has no effect; \
+                 use [models] observer/reflector in config.toml instead"
+            );
+        }
+    }
 }
 
 /// Get the provider-specific API key from environment variables.
@@ -964,6 +779,8 @@ mod tests {
     use super::*;
     use tempfile::tempdir;
 
+    // ── ModelSpec parsing (unchanged) ────────────────────────────────────────
+
     #[test]
     fn model_spec_parse_valid() {
         let spec = ModelSpec::from_str("anthropic/claude-sonnet-4-5").unwrap();
@@ -1017,6 +834,13 @@ mod tests {
     }
 
     #[test]
+    fn model_spec_parse_gemini() {
+        let spec = ModelSpec::from_str("gemini/gemini-2.0-flash").unwrap();
+        assert_eq!(spec.kind, ProviderKind::Gemini, "gemini should parse");
+        assert_eq!(spec.model, "gemini-2.0-flash", "model should parse");
+    }
+
+    #[test]
     fn provider_kind_case_insensitive() {
         assert_eq!(
             ProviderKind::from_str("Anthropic").unwrap(),
@@ -1032,7 +856,6 @@ mod tests {
 
     #[test]
     fn config_defaults_provider_kind() {
-        // Test default provider URL mapping
         assert_eq!(
             ProviderKind::Anthropic.default_url(),
             DEFAULT_ANTHROPIC_URL,
@@ -1055,169 +878,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn model_spec_parse_gemini() {
-        let spec = ModelSpec::from_str("gemini/gemini-2.0-flash").unwrap();
-        assert_eq!(spec.kind, ProviderKind::Gemini, "gemini should parse");
-        assert_eq!(spec.model, "gemini-2.0-flash", "model should parse");
-    }
-
-    #[test]
-    fn config_toml_parsing() {
-        let toml_str = r#"
-model = "anthropic/claude-sonnet-4-5"
-api_key = "sk-test"
-workspace_dir = "/tmp/ironclaw-test"
-timeout_secs = 90
-max_tokens = 16384
-"#;
-        let file: ConfigFile = toml::from_str(toml_str).unwrap();
-        assert_eq!(
-            file.model.as_deref(),
-            Some("anthropic/claude-sonnet-4-5"),
-            "model should parse"
-        );
-        assert_eq!(
-            file.api_key.as_deref(),
-            Some("sk-test"),
-            "api_key should parse"
-        );
-        assert_eq!(file.timeout_secs, Some(90), "timeout should parse");
-        assert_eq!(file.max_tokens, Some(16384), "max_tokens should parse");
-    }
-
-    #[test]
-    fn config_toml_with_ollama() {
-        let toml_str = r#"
-model = "ollama/llama3"
-provider_url = "http://localhost:11434"
-timeout_secs = 60
-max_tokens = 4096
-"#;
-        let file: ConfigFile = toml::from_str(toml_str).unwrap();
-        assert_eq!(
-            file.model.as_deref(),
-            Some("ollama/llama3"),
-            "model should parse"
-        );
-        assert_eq!(
-            file.provider_url.as_deref(),
-            Some("http://localhost:11434"),
-            "provider_url should parse"
-        );
-        assert_eq!(file.timeout_secs, Some(60), "timeout should parse");
-        assert_eq!(file.max_tokens, Some(4096), "max_tokens should parse");
-    }
-
-    #[test]
-    fn config_toml_empty() {
-        let toml_str = "";
-        let file: ConfigFile = toml::from_str(toml_str).unwrap();
-        assert!(file.model.is_none(), "empty toml should have no model");
-        assert!(file.api_key.is_none(), "empty toml should have no api_key");
-        assert!(
-            file.timeout_secs.is_none(),
-            "empty toml should have no timeout"
-        );
-    }
-
-    #[test]
-    fn config_toml_with_memory_section() {
-        let toml_str = r#"
-model = "anthropic/claude-sonnet-4-5"
-api_key = "sk-test"
-
-[memory]
-observer_model = "anthropic/claude-haiku-3-5"
-observer_threshold_tokens = 20000
-reflector_threshold_tokens = 50000
-"#;
-        let file: ConfigFile = toml::from_str(toml_str).unwrap();
-        let mem = file.memory.as_ref();
-        assert!(mem.is_some(), "memory section should parse");
-
-        let mem = mem.unwrap();
-        assert_eq!(
-            mem.observer_model.as_deref(),
-            Some("anthropic/claude-haiku-3-5"),
-            "observer model should parse"
-        );
-        assert_eq!(
-            mem.observer_threshold_tokens,
-            Some(20000),
-            "observer threshold should parse"
-        );
-        assert_eq!(
-            mem.reflector_threshold_tokens,
-            Some(50000),
-            "reflector threshold should parse"
-        );
-    }
-
-    #[test]
-    fn memory_config_defaults_when_absent() {
-        let cfg = MemoryConfig::from_file_and_env(None);
-        assert!(
-            cfg.observer_model.is_none(),
-            "default observer model should be None"
-        );
-        assert_eq!(
-            cfg.observer_threshold_tokens, DEFAULT_OBSERVER_THRESHOLD,
-            "default observer threshold"
-        );
-        assert_eq!(
-            cfg.reflector_threshold_tokens, DEFAULT_REFLECTOR_THRESHOLD,
-            "default reflector threshold"
-        );
-    }
-
-    #[test]
-    fn memory_config_from_file() {
-        let section = MemoryConfigFile {
-            observer_model: Some("anthropic/claude-haiku-3-5".to_string()),
-            observer_provider_url: None,
-            observer_api_key: Some("sk-observer".to_string()),
-            observer_threshold_tokens: Some(15000),
-            reflector_model: None,
-            reflector_provider_url: None,
-            reflector_api_key: None,
-            reflector_threshold_tokens: Some(45000),
-        };
-        let cfg = MemoryConfig::from_file_and_env(Some(&section));
-
-        assert!(cfg.observer_model.is_some(), "observer model should be set");
-        assert_eq!(
-            cfg.observer_model.as_ref().map(|m| m.model.as_str()),
-            Some("claude-haiku-3-5"),
-            "observer model name should match"
-        );
-        assert_eq!(
-            cfg.observer_api_key.as_deref(),
-            Some("sk-observer"),
-            "observer api key should match"
-        );
-        assert_eq!(
-            cfg.observer_threshold_tokens, 15000,
-            "observer threshold should match"
-        );
-        assert_eq!(
-            cfg.reflector_threshold_tokens, 45000,
-            "reflector threshold should match"
-        );
-    }
-
-    #[test]
-    fn config_toml_without_memory_section() {
-        let toml_str = r#"
-model = "anthropic/claude-sonnet-4-5"
-"#;
-        let file: ConfigFile = toml::from_str(toml_str).unwrap();
-        assert!(
-            file.memory.is_none(),
-            "missing memory section should be None"
-        );
-    }
-
     // ── Bootstrap tests ──────────────────────────────────────────────────────
 
     #[test]
@@ -1236,11 +896,12 @@ model = "anthropic/claude-sonnet-4-5"
         assert!(!config_path.exists(), "config.toml should not exist yet");
         bootstrap_at(dir.path()).unwrap();
         assert!(config_path.exists(), "config.toml should be written");
-        let contents = std::fs::read_to_string(&config_path).unwrap();
+        let body = std::fs::read_to_string(&config_path).unwrap();
         assert!(
-            contents.contains("model"),
-            "config.toml should contain model key"
+            body.contains("[models]"),
+            "config.toml should contain [models] section"
         );
+        assert!(body.contains("main"), "config.toml should contain main key");
     }
 
     #[test]
@@ -1249,9 +910,9 @@ model = "anthropic/claude-sonnet-4-5"
         let config_path = dir.path().join("config.toml");
         std::fs::write(&config_path, "# user customization").unwrap();
         bootstrap_at(dir.path()).unwrap();
-        let contents = std::fs::read_to_string(&config_path).unwrap();
+        let body = std::fs::read_to_string(&config_path).unwrap();
         assert_eq!(
-            contents, "# user customization",
+            body, "# user customization",
             "existing config.toml should not be overwritten"
         );
     }
@@ -1262,14 +923,14 @@ model = "anthropic/claude-sonnet-4-5"
         let example_path = dir.path().join("config.example.toml");
         std::fs::write(&example_path, "# old content").unwrap();
         bootstrap_at(dir.path()).unwrap();
-        let contents = std::fs::read_to_string(&example_path).unwrap();
+        let body = std::fs::read_to_string(&example_path).unwrap();
         assert_ne!(
-            contents, "# old content",
+            body, "# old content",
             "config.example.toml should be regenerated"
         );
         assert!(
-            contents.contains("[memory]"),
-            "example should contain memory section"
+            body.contains("[models]"),
+            "example should contain [models] section"
         );
     }
 
@@ -1277,226 +938,262 @@ model = "anthropic/claude-sonnet-4-5"
     fn bootstrap_example_contains_all_sections() {
         let dir = tempdir().unwrap();
         bootstrap_at(dir.path()).unwrap();
-        let contents = std::fs::read_to_string(dir.path().join("config.example.toml")).unwrap();
+        let body = std::fs::read_to_string(dir.path().join("config.example.toml")).unwrap();
         assert!(
-            contents.contains("[providers"),
-            "example should document providers table"
+            body.contains("[providers]") || body.contains("providers"),
+            "example should document providers"
         );
         assert!(
-            contents.contains("[roles]"),
-            "example should document roles table"
+            body.contains("[models]"),
+            "example should contain models section"
         );
         assert!(
-            contents.contains("[memory]"),
+            body.contains("[memory]"),
             "example should contain memory section"
         );
         assert!(
-            contents.contains("[pulse]"),
+            body.contains("[pulse]"),
             "example should contain pulse section"
         );
         assert!(
-            contents.contains("[cron]"),
+            body.contains("[cron]"),
             "example should contain cron section"
         );
         assert!(
-            contents.contains("[gateway]"),
+            body.contains("[gateway]"),
             "example should contain gateway section"
         );
     }
 
-    // ── Provider / role resolution tests ────────────────────────────────────
+    // ── New provider / model resolution tests ────────────────────────────────
 
     #[test]
-    fn named_providers_no_roles_ignored() {
-        let toml_str = r#"
-model = "anthropic/claude-sonnet-4-5"
-api_key = "sk-main"
-
-[providers.fast]
-model = "anthropic/claude-haiku-4-5"
-api_key = "sk-fast"
-"#;
-        let file: ConfigFile = toml::from_str(toml_str).unwrap();
-        let cfg = Config::from_file_and_env(Some(&file)).unwrap();
-        assert_eq!(
-            cfg.model.model, "claude-sonnet-4-5",
-            "providers table alone should not change main model"
-        );
+    fn implicit_provider_resolution() {
+        let spec = resolve_model_string("anthropic/claude-sonnet-4-6", None).unwrap();
+        assert_eq!(spec.model.kind, ProviderKind::Anthropic);
+        assert_eq!(spec.model.model, "claude-sonnet-4-6");
+        assert_eq!(spec.provider_url, DEFAULT_ANTHROPIC_URL);
+        assert_eq!(spec.name, "anthropic");
     }
 
     #[test]
-    fn roles_override_agent_provider() {
-        let toml_str = r#"
-model = "anthropic/claude-sonnet-4-5"
-api_key = "sk-main"
-
-[providers.fast]
-model = "anthropic/claude-haiku-4-5"
-api_key = "sk-fast"
-
-[roles]
-agent = "fast"
-"#;
-        let file: ConfigFile = toml::from_str(toml_str).unwrap();
-        let cfg = Config::from_file_and_env(Some(&file)).unwrap();
-        assert_eq!(
-            cfg.model.model, "claude-haiku-4-5",
-            "roles.agent should override main model"
-        );
-        assert_eq!(
-            cfg.api_key.as_deref(),
-            Some("sk-fast"),
-            "roles.agent should override main api_key"
-        );
-    }
-
-    #[test]
-    fn roles_assign_observer_to_named_provider() {
-        let main_model = ModelSpec::from_str("anthropic/claude-sonnet-4-5").unwrap();
+    fn explicit_provider_resolution() {
         let mut providers = HashMap::new();
         providers.insert(
-            "fast".to_string(),
+            "my-claude".to_string(),
             ProviderEntryFile {
-                model: Some("anthropic/claude-haiku-4-5".to_string()),
-                provider_url: None,
-                api_key: Some("sk-fast".to_string()),
+                kind: "anthropic".to_string(),
+                api_key: Some("sk-explicit".to_string()),
+                url: None,
             },
         );
 
-        let spec = resolve_role_provider(
-            Some("fast"),
-            "observer",
-            None,
-            None,
-            None,
-            Some(&providers),
-            &main_model,
-            DEFAULT_ANTHROPIC_URL,
-            Some("sk-main"),
-        )
-        .unwrap();
+        let spec = resolve_model_string("my-claude/claude-sonnet-4-6", Some(&providers)).unwrap();
+        assert_eq!(spec.model.kind, ProviderKind::Anthropic);
+        assert_eq!(spec.model.model, "claude-sonnet-4-6");
+        assert_eq!(spec.name, "my-claude");
+        assert_eq!(spec.api_key.as_deref(), Some("sk-explicit"));
+        assert_eq!(spec.provider_url, DEFAULT_ANTHROPIC_URL);
+    }
 
+    #[test]
+    fn unknown_implicit_provider_errors() {
+        let result = resolve_model_string("foobar/some-model", None);
+        assert!(result.is_err(), "unknown implicit provider should error");
+        let err = result.unwrap_err().to_string();
         assert!(
-            spec.is_some(),
-            "named provider should yield Some(ProviderSpec)"
-        );
-        let spec = spec.unwrap();
-        assert_eq!(spec.name, "fast", "named provider key becomes the name");
-        assert_eq!(
-            spec.model.model, "claude-haiku-4-5",
-            "named provider model should be used"
-        );
-        assert_eq!(
-            spec.api_key.as_deref(),
-            Some("sk-fast"),
-            "named provider key should be used"
+            err.contains("foobar"),
+            "error should mention the bad provider: {err}"
         );
     }
 
     #[test]
-    fn pulse_provider_from_inline_section() {
+    fn explicit_provider_url_override() {
+        let mut providers = HashMap::new();
+        providers.insert(
+            "cerebras".to_string(),
+            ProviderEntryFile {
+                kind: "openai".to_string(),
+                api_key: Some("csk-123".to_string()),
+                url: Some("https://api.cerebras.ai/v1".to_string()),
+            },
+        );
+
+        let spec = resolve_model_string("cerebras/llama-4", Some(&providers)).unwrap();
+        assert_eq!(spec.model.kind, ProviderKind::OpenAi);
+        assert_eq!(spec.provider_url, "https://api.cerebras.ai/v1");
+    }
+
+    #[test]
+    fn default_model_fallback() {
         let toml_str = r#"
-model = "anthropic/claude-sonnet-4-5"
-api_key = "sk-main"
+[models]
+main = "anthropic/claude-sonnet-4-6"
+default = "anthropic/claude-haiku-4-5"
+"#;
+        let file: ConfigFile = toml::from_str(toml_str).unwrap();
+        let cfg = Config::from_file_and_env(Some(&file)).unwrap();
+        // observer was not set, so it falls back to default
+        assert_eq!(cfg.observer.model.model, "claude-haiku-4-5");
+        assert_eq!(cfg.reflector.model.model, "claude-haiku-4-5");
+        assert_eq!(cfg.pulse.model.model, "claude-haiku-4-5");
+        assert_eq!(cfg.cron.model.model, "claude-haiku-4-5");
+        // main is still the explicit main
+        assert_eq!(cfg.main.model.model, "claude-sonnet-4-6");
+    }
+
+    #[test]
+    fn role_specific_overrides_default() {
+        let toml_str = r#"
+[models]
+main = "anthropic/claude-sonnet-4-6"
+default = "anthropic/claude-haiku-4-5"
+observer = "gemini/gemini-3.0-flash"
+"#;
+        let file: ConfigFile = toml::from_str(toml_str).unwrap();
+        let cfg = Config::from_file_and_env(Some(&file)).unwrap();
+        assert_eq!(
+            cfg.observer.model.model, "gemini-3.0-flash",
+            "explicit observer should override default"
+        );
+        assert_eq!(
+            cfg.reflector.model.model, "claude-haiku-4-5",
+            "unset reflector should still use default"
+        );
+    }
+
+    #[test]
+    fn all_roles_resolved_to_main_by_default() {
+        let toml_str = r#"
+[models]
+main = "anthropic/claude-sonnet-4-6"
+"#;
+        let file: ConfigFile = toml::from_str(toml_str).unwrap();
+        let cfg = Config::from_file_and_env(Some(&file)).unwrap();
+        assert_eq!(cfg.main.model.model, "claude-sonnet-4-6");
+        assert_eq!(cfg.observer.model.model, "claude-sonnet-4-6");
+        assert_eq!(cfg.reflector.model.model, "claude-sonnet-4-6");
+        assert_eq!(cfg.pulse.model.model, "claude-sonnet-4-6");
+        assert_eq!(cfg.cron.model.model, "claude-sonnet-4-6");
+    }
+
+    #[test]
+    fn deny_unknown_fields_rejects_typos() {
+        let toml_str = r#"
+[models]
+main = "anthropic/claude-sonnet-4-6"
+typo_field = "oops"
+"#;
+        let result = toml::from_str::<ConfigFile>(toml_str);
+        assert!(
+            result.is_err(),
+            "unknown field in [models] should be rejected"
+        );
+    }
+
+    #[test]
+    fn deny_unknown_fields_rejects_top_level_typos() {
+        let toml_str = r#"
+[models]
+main = "anthropic/claude-sonnet-4-6"
+
+[memori]
+observer_threshold_tokens = 30000
+"#;
+        let result = toml::from_str::<ConfigFile>(toml_str);
+        assert!(
+            result.is_err(),
+            "unknown top-level section should be rejected"
+        );
+    }
+
+    #[test]
+    fn provider_entry_type_field() {
+        let toml_str = r#"
+[providers.cerebras]
+type = "openai"
+api_key = "csk-123"
+url = "https://api.cerebras.ai/v1"
+
+[models]
+main = "cerebras/llama-4"
+"#;
+        let file: ConfigFile = toml::from_str(toml_str).unwrap();
+        let cfg = Config::from_file_and_env(Some(&file)).unwrap();
+        assert_eq!(cfg.main.model.kind, ProviderKind::OpenAi);
+        assert_eq!(cfg.main.provider_url, "https://api.cerebras.ai/v1");
+    }
+
+    #[test]
+    fn memory_config_just_thresholds() {
+        let toml_str = r#"
+[models]
+main = "anthropic/claude-sonnet-4-6"
+
+[memory]
+observer_threshold_tokens = 20000
+reflector_threshold_tokens = 50000
+"#;
+        let file: ConfigFile = toml::from_str(toml_str).unwrap();
+        let cfg = Config::from_file_and_env(Some(&file)).unwrap();
+        assert_eq!(cfg.memory.observer_threshold_tokens, 20000);
+        assert_eq!(cfg.memory.reflector_threshold_tokens, 50000);
+    }
+
+    #[test]
+    fn memory_config_defaults_when_absent() {
+        let toml_str = r#"
+[models]
+main = "anthropic/claude-sonnet-4-6"
+"#;
+        let file: ConfigFile = toml::from_str(toml_str).unwrap();
+        let cfg = Config::from_file_and_env(Some(&file)).unwrap();
+        assert_eq!(
+            cfg.memory.observer_threshold_tokens,
+            DEFAULT_OBSERVER_THRESHOLD
+        );
+        assert_eq!(
+            cfg.memory.reflector_threshold_tokens,
+            DEFAULT_REFLECTOR_THRESHOLD
+        );
+    }
+
+    #[test]
+    fn config_no_file_uses_defaults() {
+        let cfg = Config::from_file_and_env(None).unwrap();
+        assert_eq!(cfg.main.model.model, "claude-sonnet-4-5");
+        assert_eq!(cfg.main.model.kind, ProviderKind::Anthropic);
+        assert_eq!(cfg.timeout_secs, DEFAULT_TIMEOUT_SECS);
+        assert_eq!(cfg.max_tokens, DEFAULT_MAX_TOKENS);
+    }
+
+    #[test]
+    fn pulse_cron_enabled_defaults() {
+        let toml_str = r#"
+[models]
+main = "anthropic/claude-sonnet-4-6"
+"#;
+        let file: ConfigFile = toml::from_str(toml_str).unwrap();
+        let cfg = Config::from_file_and_env(Some(&file)).unwrap();
+        assert!(cfg.pulse_enabled, "pulse should default to enabled");
+        assert!(cfg.cron_enabled, "cron should default to enabled");
+    }
+
+    #[test]
+    fn pulse_cron_can_be_disabled() {
+        let toml_str = r#"
+[models]
+main = "anthropic/claude-sonnet-4-6"
 
 [pulse]
-enabled = true
-model = "anthropic/claude-haiku-4-5"
-"#;
-        let file: ConfigFile = toml::from_str(toml_str).unwrap();
-        let cfg = Config::from_file_and_env(Some(&file)).unwrap();
-        assert!(
-            cfg.pulse.provider.is_some(),
-            "inline pulse model should yield Some provider"
-        );
-        let pulse_prov = cfg.pulse.provider.as_ref().unwrap();
-        assert_eq!(
-            pulse_prov.name, "pulse",
-            "inline provider name should use the role label"
-        );
-        assert_eq!(
-            pulse_prov.model.model, "claude-haiku-4-5",
-            "pulse provider model should match"
-        );
-    }
-
-    #[test]
-    fn cron_provider_absent_is_none() {
-        let toml_str = r#"
-model = "anthropic/claude-sonnet-4-5"
-api_key = "sk-main"
+enabled = false
 
 [cron]
-enabled = true
+enabled = false
 "#;
         let file: ConfigFile = toml::from_str(toml_str).unwrap();
         let cfg = Config::from_file_and_env(Some(&file)).unwrap();
-        assert!(
-            cfg.cron.provider.is_none(),
-            "empty [cron] section should yield None provider"
-        );
-    }
-
-    #[test]
-    fn reflector_separate_from_observer() {
-        let section = MemoryConfigFile {
-            observer_model: Some("anthropic/claude-haiku-3-5".to_string()),
-            observer_provider_url: None,
-            observer_api_key: Some("sk-observer".to_string()),
-            observer_threshold_tokens: None,
-            reflector_model: Some("anthropic/claude-sonnet-4-5".to_string()),
-            reflector_provider_url: None,
-            reflector_api_key: Some("sk-reflector".to_string()),
-            reflector_threshold_tokens: None,
-        };
-        let cfg = MemoryConfig::from_file_and_env(Some(&section));
-        assert_eq!(
-            cfg.reflector_model.as_ref().map(|m| m.model.as_str()),
-            Some("claude-sonnet-4-5"),
-            "reflector model should be independently configured"
-        );
-        assert_eq!(
-            cfg.reflector_api_key.as_deref(),
-            Some("sk-reflector"),
-            "reflector api key should be independently configured"
-        );
-    }
-
-    #[test]
-    fn reflector_fallback_to_observer() {
-        let section = MemoryConfigFile {
-            observer_model: Some("anthropic/claude-haiku-3-5".to_string()),
-            observer_provider_url: None,
-            observer_api_key: Some("sk-observer".to_string()),
-            observer_threshold_tokens: None,
-            reflector_model: None,
-            reflector_provider_url: None,
-            reflector_api_key: None,
-            reflector_threshold_tokens: None,
-        };
-        let cfg = MemoryConfig::from_file_and_env(Some(&section));
-        // MemoryConfig itself just stores None for missing reflector fields;
-        // the gateway resolves the fallback chain at build time.
-        assert!(
-            cfg.reflector_model.is_none(),
-            "absent reflector_model stored as None (gateway falls back to observer)"
-        );
-        assert!(
-            cfg.observer_model.is_some(),
-            "observer model still populated"
-        );
-    }
-
-    #[test]
-    fn reflector_fallback_chain_to_main() {
-        let cfg = MemoryConfig::from_file_and_env(None);
-        assert!(
-            cfg.reflector_model.is_none(),
-            "no reflector model → gateway falls back to main"
-        );
-        assert!(
-            cfg.observer_model.is_none(),
-            "no observer model → gateway falls back to main"
-        );
+        assert!(!cfg.pulse_enabled);
+        assert!(!cfg.cron_enabled);
     }
 }

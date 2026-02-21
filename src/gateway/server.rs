@@ -15,7 +15,7 @@ use futures_util::{SinkExt, StreamExt};
 use tokio::sync::{broadcast, mpsc};
 
 use crate::agent::Agent;
-use crate::config::{Config, ModelSpec, ProviderKind};
+use crate::config::{Config, ModelSpec, ProviderKind, ProviderSpec};
 use crate::cron::executor::execute_due_jobs;
 use crate::cron::store::CronStore;
 use crate::error::IronclawError;
@@ -96,42 +96,16 @@ pub async fn run_gateway(cfg: Config) -> Result<(), IronclawError> {
         .map_err(|e| IronclawError::Config(format!("failed to build HTTP client: {e}")))?;
 
     // Build model provider
-    let provider = build_provider_from_spec(
-        &cfg.model,
-        &cfg.provider_url,
-        cfg.api_key.as_deref(),
-        cfg.max_tokens,
-        http.clone(),
-    )?;
+    let provider = build_provider_from_provider_spec(&cfg.main, cfg.max_tokens, http.clone())?;
     tracing::info!(model = provider.model_name(), "model provider ready");
 
     // Build observer and reflector
     let (observer, reflector) = build_memory_components(&cfg, http.clone())?;
 
-    // Build optional per-role provider overrides for pulse and cron
-    let pulse_provider: Option<Box<dyn ModelProvider>> = if let Some(spec) = &cfg.pulse.provider {
-        Some(build_provider_from_spec(
-            &spec.model,
-            &spec.provider_url,
-            spec.api_key.as_deref(),
-            cfg.max_tokens,
-            http.clone(),
-        )?)
-    } else {
-        None
-    };
-
-    let cron_provider: Option<Box<dyn ModelProvider>> = if let Some(spec) = &cfg.cron.provider {
-        Some(build_provider_from_spec(
-            &spec.model,
-            &spec.provider_url,
-            spec.api_key.as_deref(),
-            cfg.max_tokens,
-            http,
-        )?)
-    } else {
-        None
-    };
+    // Build per-role providers for pulse and cron
+    let pulse_provider =
+        build_provider_from_provider_spec(&cfg.pulse, cfg.max_tokens, http.clone())?;
+    let cron_provider = build_provider_from_provider_spec(&cfg.cron, cfg.max_tokens, http)?;
 
     // Build search index
     let search_index = create_shared_index(&layout.search_index_dir())?;
@@ -204,7 +178,7 @@ pub async fn run_gateway(cfg: Config) -> Result<(), IronclawError> {
 
     // Pulse scheduler
     let mut pulse_scheduler = PulseScheduler::new();
-    let pulse_enabled = cfg.pulse.enabled;
+    let pulse_enabled = cfg.pulse_enabled;
 
     // Timer intervals
     let mut pulse_tick = tokio::time::interval(tokio::time::Duration::from_secs(60));
@@ -282,7 +256,7 @@ pub async fn run_gateway(cfg: Config) -> Result<(), IronclawError> {
                         pulse,
                         &agent,
                         &layout.alerts_md(),
-                        pulse_provider.as_deref(),
+                        Some(&*pulse_provider),
                     )
                     .await
                     {
@@ -324,20 +298,20 @@ pub async fn run_gateway(cfg: Config) -> Result<(), IronclawError> {
             }
 
             // ── Cron timer ────────────────────────────────────────────────
-            _ = cron_tick.tick(), if cfg.cron.enabled => {
+            _ = cron_tick.tick(), if cfg.cron_enabled => {
                 run_due_cron_jobs_gateway(
                     &cron_store, &mut agent, &observer, &reflector,
                     &search_index, &layout, &broadcast_tx,
-                    cron_provider.as_deref(),
+                    Some(&*cron_provider),
                 ).await;
             }
 
             // ── Cron notify (tool mutation wakeup) ────────────────────────
-            () = cron_notify.notified(), if cfg.cron.enabled => {
+            () = cron_notify.notified(), if cfg.cron_enabled => {
                 run_due_cron_jobs_gateway(
                     &cron_store, &mut agent, &observer, &reflector,
                     &search_index, &layout, &broadcast_tx,
-                    cron_provider.as_deref(),
+                    Some(&*cron_provider),
                 ).await;
             }
         }
@@ -615,9 +589,7 @@ async fn run_reflector_if_needed(reflector: &Reflector, layout: &WorkspaceLayout
     }
 }
 
-/// Build observer and reflector with independent provider configurations.
-///
-/// Reflector falls back to observer config, then main config when not explicitly set.
+/// Build observer and reflector from fully-resolved provider specs on `Config`.
 ///
 /// # Errors
 /// Returns `IronclawError::Config` if either provider cannot be built.
@@ -625,53 +597,45 @@ pub(crate) fn build_memory_components(
     cfg: &Config,
     http: SharedHttpClient,
 ) -> Result<(Observer, Reflector), IronclawError> {
-    let mem = &cfg.memory;
-
-    // Observer provider: observer-specific → main
-    let obs_spec = mem.observer_model.as_ref().unwrap_or(&cfg.model);
-    let obs_url = mem
-        .observer_provider_url
-        .as_deref()
-        .unwrap_or(&cfg.provider_url);
-    let obs_key = mem.observer_api_key.as_deref().or(cfg.api_key.as_deref());
-
-    // Reflector provider: reflector-specific → observer-specific → main
-    let ref_spec = mem
-        .reflector_model
-        .as_ref()
-        .or(mem.observer_model.as_ref())
-        .unwrap_or(&cfg.model);
-    let ref_url = mem
-        .reflector_provider_url
-        .as_deref()
-        .or(mem.observer_provider_url.as_deref())
-        .unwrap_or(&cfg.provider_url);
-    let ref_key = mem
-        .reflector_api_key
-        .as_deref()
-        .or(mem.observer_api_key.as_deref())
-        .or(cfg.api_key.as_deref());
-
     let observer_provider =
-        build_provider_from_spec(obs_spec, obs_url, obs_key, cfg.max_tokens, http.clone())?;
+        build_provider_from_provider_spec(&cfg.observer, cfg.max_tokens, http.clone())?;
     let reflector_provider =
-        build_provider_from_spec(ref_spec, ref_url, ref_key, cfg.max_tokens, http)?;
+        build_provider_from_provider_spec(&cfg.reflector, cfg.max_tokens, http)?;
 
     let observer = Observer::new(
         observer_provider,
         ObserverConfig {
-            threshold_tokens: mem.observer_threshold_tokens,
+            threshold_tokens: cfg.memory.observer_threshold_tokens,
         },
     );
 
     let reflector = Reflector::new(
         reflector_provider,
         ReflectorConfig {
-            threshold_tokens: mem.reflector_threshold_tokens,
+            threshold_tokens: cfg.memory.reflector_threshold_tokens,
         },
     );
 
     Ok((observer, reflector))
+}
+
+/// Build a model provider from a resolved `ProviderSpec`.
+///
+/// # Errors
+/// Returns `IronclawError::Config` if the API key is missing for providers
+/// that require it.
+pub(crate) fn build_provider_from_provider_spec(
+    spec: &ProviderSpec,
+    max_tokens: u32,
+    http: SharedHttpClient,
+) -> Result<Box<dyn ModelProvider>, IronclawError> {
+    build_provider_from_spec(
+        &spec.model,
+        &spec.provider_url,
+        spec.api_key.as_deref(),
+        max_tokens,
+        http,
+    )
 }
 
 /// Build a model provider from explicit parameters.
