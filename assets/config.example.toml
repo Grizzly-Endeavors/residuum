@@ -1,0 +1,51 @@
+# IronClaw example configuration — all options with defaults shown.
+# Copy to config.toml and edit as needed.
+
+# ── Providers (optional, define named connections) ────────────────────────────
+# Each entry specifies a connection to a model API. The key becomes a name you
+# can reference in [models]. The `type` field selects the protocol:
+#   anthropic, openai, ollama, gemini
+#
+# [providers]
+# cerebras = { type = "openai", api_key = "csk-...", url = "https://api.cerebras.ai/v1" }
+# claude-max = { type = "anthropic", api_key = "sk-ant-..." }
+# google-api = { type = "gemini", api_key = "AIza..." }
+
+# ── Models (role assignments) ─────────────────────────────────────────────────
+# Format: "provider_or_type/model_name"
+# If the part before / matches a [providers] entry, that connection is used.
+# Otherwise it is treated as an implicit provider type (anthropic, openai, etc.)
+# and the API key is read from the provider-specific env var or IRONCLAW_API_KEY.
+#
+# Roles: main (required), default (fallback for unset roles), observer,
+#        reflector, pulse, cron
+[models]
+main = "anthropic/claude-sonnet-4-6"
+# default = "anthropic/claude-haiku-4-5"
+# observer = "google-api/gemini-3.0-flash"
+# reflector = "google-api/gemini-3.0-flash"
+# pulse = "anthropic/claude-haiku-4-5"
+# cron = "anthropic/claude-haiku-4-5"
+
+# ── General settings ──────────────────────────────────────────────────────────
+# workspace_dir = "~/.ironclaw/workspace"
+timeout_secs = 120
+max_tokens = 8192
+
+# ── Memory subsystem ──────────────────────────────────────────────────────────
+[memory]
+observer_threshold_tokens = 30000
+reflector_threshold_tokens = 40000
+
+# ── Pulse (ambient monitoring) ────────────────────────────────────────────────
+[pulse]
+enabled = true
+
+# ── Cron (scheduled tasks) ────────────────────────────────────────────────────
+[cron]
+enabled = true
+
+# ── WebSocket gateway ─────────────────────────────────────────────────────────
+[gateway]
+bind = "127.0.0.1"
+port = 7700
