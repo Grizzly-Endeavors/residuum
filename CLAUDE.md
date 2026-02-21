@@ -5,7 +5,7 @@ This project is a derivative of OpenClaw, and coopts much of its architecture. Y
 **Important docs:**
 ./design-philosophy.md
 ./ironclaw-design.md
-./para-context-design.md
+./projects-context-design.md
 ./personal-agent-design.md
 
 ## Commit Requirements, Linting, and Formatting

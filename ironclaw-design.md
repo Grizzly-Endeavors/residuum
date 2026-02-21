@@ -15,7 +15,7 @@ Carried forward from the existing design work, restated here as project-wide con
 1. **Start from what works.** OpenClaw's gateway pattern, channel normalization, and file-first workspace are sound. Every change targets a specific observed failure mode.
 2. **Simplicity that stays practical.** Directory scanning over registries. Flat files over knowledge graphs. If you can understand the system by looking at the filesystem, it's working.
 3. **Put the right work in the right place.** The gateway handles scheduling, file watching, schema validation, and protocol mechanics. The LLM handles judgment — what's relevant, what to alert on, what to write.
-4. **Independent systems that compose through shared data.** Memory, proactivity, PARA, and skills are designed independently. They share the workspace filesystem and observation log. Each is valuable on its own.
+4. **Independent systems that compose through shared data.** Memory, proactivity, Projects, and skills are designed independently. They share the workspace filesystem and observation log. Each is valuable on its own.
 5. **File-first, always.** System state lives in files the user can inspect, edit, and version control. No databases, no opaque embeddings. The filesystem is the source of truth.
 
 ---
@@ -60,12 +60,12 @@ ironclaw/
 │   │   ├── index.rs                  # Search index management
 │   │   └── daily_log.rs              # Legacy daily log compatibility
 │   │
-│   ├── para/
-│   │   ├── mod.rs                    # PARA system coordination
+│   ├── projects/
+│   │   ├── mod.rs                    # Projects system coordination
 │   │   ├── scanner.rs                # Directory discovery & context.yml parsing
 │   │   ├── activation.rs             # Context activation/deactivation logic
-│   │   ├── lifecycle.rs              # Create, archive, promote entries
-│   │   └── manifest.rs               # Generate file listings for active entries
+│   │   ├── lifecycle.rs              # Create and archive entries
+│   │   └── manifest.rs               # Generate file listings for the active entry
 │   │
 │   ├── pulse/
 │   │   ├── mod.rs                    # Pulse system coordination
@@ -117,7 +117,7 @@ ironclaw/
     ├── architecture.md
     ├── design-philosophy.md
     ├── memory-design.md
-    ├── para-design.md
+    ├── projects-design.md
     └── skills-mcp.md
 ```
 
@@ -126,8 +126,8 @@ ironclaw/
 The project is a single crate compiled to one binary. Module visibility enforces the same boundaries that separate crates would:
 
 - Each module directory exposes its public API through `mod.rs`. Internal types stay private.
-- `agent` is the integration point — it imports from `memory`, `para`, `skills`, `mcp`, and `tools` to assemble context.
-- `memory` doesn't import `para`. `skills` doesn't import `pulse`. Subsystems are independent and compose at the `agent` layer.
+- `agent` is the integration point — it imports from `memory`, `projects`, `skills`, `mcp`, and `tools` to assemble context.
+- `memory` doesn't import `projects`. `skills` doesn't import `pulse`. Subsystems are independent and compose at the `agent` layer.
 - Shared types (message types, config structs, error types) live at the crate root or in dedicated modules that any subsystem can import.
 
 If any module later needs to become a standalone library (e.g., the MCP client is useful in another project), it can be extracted into its own crate at that point. Start simple, promote when there's a reason.
@@ -177,7 +177,7 @@ enabled = true
 # This just controls whether the scheduler runs.
 
 [mcp]
-# MCP server definitions can live here or in PARA context.yml entries.
+# MCP server definitions can live here or in project context.yml entries.
 [mcp.servers.filesystem]
 command = "mcp-server-filesystem"
 args = ["/home/user/documents"]
@@ -190,9 +190,9 @@ Validation happens at startup via serde + custom validators. Invalid config prev
 
 ### Hot Reload
 
-The gateway watches `config.toml`, workspace identity files, `HEARTBEAT.yml`, `Alerts.md`, and the `para/` directory tree using `notify`. Changes are classified as:
+The gateway watches `config.toml`, workspace identity files, `HEARTBEAT.yml`, `Alerts.md`, and the `projects/` directory tree using `notify`. Changes are classified as:
 
-- **Hot-applicable**: Identity file changes, HEARTBEAT.yml updates, skill additions, PARA entry changes. Applied without restart.
+- **Hot-applicable**: Identity file changes, HEARTBEAT.yml updates, skill additions, project entry changes. Applied without restart.
 - **Infrastructure**: Channel config changes, model provider changes, MCP server config. Require gateway restart (or a targeted subsystem restart).
 
 ---
@@ -210,39 +210,29 @@ The gateway watches `config.toml`, workspace identity files, `HEARTBEAT.yml`, `A
 ├── Alerts.md                     # Alert behavior playbook
 │
 ├── memory/
-│   ├── observations.json           # Global observation log (episode-based timeline)
+│   ├── observations.json         # Global observation log (episode-based timeline)
 │   ├── episodes/                 # Raw episode transcripts (persisted by Observer)
 │   └── YYYY-MM-DD.md             # Daily logs (for explicit note-taking)
+│
+├── projects/
+│   └── aerohive-setup/
+│       ├── context.yml
+│       ├── notes/
+│       ├── references/
+│       └── workspace/
+│
+├── archive/
+│   └── proxmox-migration/
+│       ├── context.yml
+│       ├── notes/
+│       ├── references/
+│       └── workspace/
 │
 ├── skills/                       # User-defined workspace skills
 │   └── my-skill/
 │       ├── SKILL.md
 │       ├── scripts/
 │       └── references/
-│
-├── para/
-│   ├── projects/
-│   │   └── aerohive-setup/
-│   │       ├── context.yml
-│   │       ├── notes/
-│   │       ├── references/
-│   │       └── workspace/
-│   ├── areas/
-│   │   └── homelab/
-│   │       ├── context.yml
-│   │       ├── notes/
-│   │       └── references/
-│   ├── resources/
-│   │   └── ansible-patterns/
-│   │       ├── context.yml
-│   │       ├── notes/
-│   │       └── references/
-│   └── archive/
-│       └── proxmox-migration/
-│           ├── context.yml
-│           ├── notes/
-│           ├── references/
-│           └── workspace/
 │
 ├── cron/
 │   └── jobs.json                 # Agent-created scheduled jobs
@@ -258,7 +248,7 @@ These are YAML/TOML files the Rust gateway validates and acts on:
 |------|--------|---------------|
 | `config.toml` | TOML | Full gateway configuration |
 | `HEARTBEAT.yml` | YAML | Pulse scheduling, task definitions |
-| `para/**/context.yml` | YAML | PARA entry metadata, tool/skill/MCP resolution |
+| `projects/**/context.yml` | YAML | Project entry metadata, tool/skill/MCP resolution |
 | `cron/jobs.json` | JSON | Agent-created scheduled wake-ups |
 | `memory/observations.json` | JSON | Global observation log (episode-based) |
 
@@ -278,13 +268,13 @@ These are markdown files the gateway loads verbatim and inserts into the LLM con
 
 ### Files available via agent tool calls (progressive disclosure)
 
-These files are never auto-loaded into context. The agent knows they exist (via PARA manifests or skill metadata) and reads them on demand via the `read` tool:
+These files are never auto-loaded into context. The agent knows they exist (via project manifests or skill metadata) and reads them on demand via the `read` tool:
 
 | File | When available |
 |------|---------------|
-| `para/**/notes/*` | When PARA entry is active (listed in manifest) |
-| `para/**/references/*` | When PARA entry is active (listed in manifest) |
-| `para/**/workspace/*` | When PARA entry is active (listed in manifest) |
+| `projects/<n>/notes/*` | When project is active (listed in manifest) |
+| `projects/<n>/references/*` | When project is active (listed in manifest) |
+| `projects/<n>/workspace/*` | When project is active (listed in manifest) |
 | `skills/**/SKILL.md` (body) | When skill metadata is in prompt (agent reads to activate) |
 | `memory/episodes/*.md` | Always (via `read` tool or `memory_search`) |
 | `skills/**/scripts/*` | After agent has read the SKILL.md |
@@ -392,7 +382,7 @@ Different subsystems can use different models:
 The agent runtime is the core orchestration loop. On each turn:
 
 1. **Receive** normalized inbound message.
-2. **Assemble context** — system prompt + identity files + observation log + active PARA contexts + relevant skills + session history.
+2. **Assemble context** — system prompt + identity files + observation log + active project context + relevant skills + session history.
 3. **Send** to model provider.
 4. **Execute** any tool calls returned by the model.
 5. **Loop** if tool results need to be sent back to the model.
@@ -418,17 +408,17 @@ Context assembly is the critical integration point. It builds the full prompt fr
 │ Observation log                     │  ← from memory crate
 │ └── memory/observations.json        │  ← global timeline (always loaded)
 ├─────────────────────────────────────┤
-│ PARA index (always present)         │  ← from para crate
-│ └── name + description per entry    │
+│ Projects index (always present)     │  ← from projects crate
+│ └── name + description per entry   │
 ├─────────────────────────────────────┤
-│ Active PARA manifests               │  ← from para crate
+│ Active project manifest             │  ← from projects crate
 │ └── File listings (not contents)    │
-│     for each activated entry        │
+│     for the active project          │
 ├─────────────────────────────────────┤
 │ Available tools                     │
 │ ├── Built-in tools                  │  ← from tools crate
 │ ├── MCP server tools                │  ← from mcp crate
-│ └── PARA-scoped tools               │  ← from para + tools
+│ └── Project-scoped tools            │  ← from projects + tools
 ├─────────────────────────────────────┤
 │ Session history                     │
 │ └── Raw messages (current session)  │
@@ -443,8 +433,8 @@ The context assembler tracks token usage across sections. Progressive disclosure
 
 1. System prompt + identity files — always loaded (non-negotiable).
 2. Global observation log — always loaded (high-level timeline).
-3. PARA index — always loaded (lightweight, ~50-100 tokens per entry).
-4. Active PARA manifests — loaded when entries are active (file listings, not contents).
+3. Projects index — always loaded (lightweight, ~50-100 tokens per entry).
+4. Active project manifest — loaded when a project is active (file listings, not contents).
 5. Available skill metadata — always loaded (names + descriptions only).
 6. Session history — loaded newest-first, truncated from oldest.
 
@@ -467,7 +457,7 @@ A background task that watches accumulated raw messages. When unobserved tokens 
 5. Append the episode to `memory/observations.json`.
 6. Mark processed messages as observed.
 
-The Observer always writes to the single global observation log. If a PARA project is active at the time of compression, the episode is tagged with a `context` field identifying it. This is metadata for searchability, not a routing mechanism.
+The Observer always writes to the single global observation log. If a project is active at the time of compression, the episode is tagged with a `context` field identifying it. This is metadata for searchability, not a routing mechanism.
 
 The observer model is configured separately from the main agent model. Default: cheap, fast, high-throughput.
 
@@ -489,7 +479,7 @@ The observer model is configured separately from the main agent model. Default: 
 }
 ```
 
-The `context` field is optional — episodes generated outside any active project have no context tag. This lets the agent filter the observation log and episode transcripts by PARA entry when searching for project-specific history.
+The `context` field is optional — episodes generated outside any active project have no context tag. This lets the agent filter the observation log and episode transcripts by project when searching for project-specific history.
 
 **Episode transcript** (persisted to `memory/episodes/ep-001.md`):
 
@@ -531,22 +521,22 @@ The Reflector is the only operation that fully invalidates the prompt cache for 
 
 Hybrid retrieval over workspace files using BM25 + vector similarity:
 
-- Indexes `memory/` daily logs, `memory/episodes/` episode transcripts, PARA notes and references, archived PARA entries.
+- Indexes `memory/` daily logs, `memory/episodes/` episode transcripts, project notes and references, archived entries.
 - Episode transcripts are a primary search target — they contain the full raw detail that the observation log compressed away. The agent can follow episode IDs from the observation log to retrieve specific transcripts, or search across all transcripts when the observation log doesn't have enough context.
 - Available as a tool the agent can invoke for deep retrieval beyond the observation window.
 - Vector embeddings stored as local files (no external database).
 
-### 5. PARA Context Management (`para/`)
+### 5. Projects Context Management (`projects/`)
 
-Implements the PARA design from `para-context-design.md`.
+Implements the Projects design from `projects-context-design.md`.
 
 #### Scanner (`scanner.rs`)
 
 On startup and on filesystem change:
 
-1. Walk `para/projects/`, `para/areas/`, `para/resources/`, `para/archive/`.
+1. Walk `projects/` and `archive/`.
 2. Parse each `context.yml` with serde_yaml, validate against schema.
-3. Build in-memory index: name, description, status, category, tools, skills, MCP servers.
+3. Build in-memory index: name, description, status, tools, skills, MCP servers.
 
 The index is cheap to build (a few lines of YAML per entry) and always current.
 
@@ -555,8 +545,7 @@ The index is cheap to build (a few lines of YAML per entry) and always current.
 ```yaml
 name: aerohive-setup
 description: "AeroHive AP network configuration using Ansible"
-category: project                 # project | area | resource
-status: active                    # active | available | archived
+status: active                    # active | archived
 created: 2026-02-10
 
 # Optional: capabilities loaded when this context activates
@@ -575,38 +564,33 @@ mcp_servers:
 
 # Archive-only fields
 archived: null
-original_category: null
 ```
-
-Note the addition of `skills` and `mcp_servers` fields beyond the original PARA design. These bind scoped capabilities to specific contexts — when the project activates, its skills load into the prompt and its MCP servers spin up. When it deactivates, they unload.
 
 #### Activation (`activation.rs`)
 
-PARA activation follows a progressive disclosure model. The gateway never bulk-loads file contents on activation. Instead, it tells the agent what's available and lets the agent decide what to read.
+Project activation follows a progressive disclosure model. The gateway never bulk-loads file contents on activation. Instead, it tells the agent what's available and lets the agent decide what to read.
 
-**Single-project constraint:** Only one project may be active at a time. Activating a new project automatically deactivates the current one. Areas and resources have no such constraint — multiple can be active simultaneously alongside the active project.
+**Single-project constraint:** Only one project may be active at a time. Activating a new project automatically deactivates the current one.
 
 **Workspace write scoping:**
 
-When a project is active, project output stays within the project's `workspace/` folder. However, the agent can always write to global files — MEMORY.md, area notes, resource notes, and the global observation log — without requiring project deactivation.
+When a project is active, project output stays within the project's `workspace/` folder. However, the agent can always write to global files — MEMORY.md and the global observation log — without requiring project deactivation.
 
 | State | Scoped writes | Always writable | Read-only |
 |-------|---------------|-----------------|-----------|
-| Project active | `para/projects/<n>/workspace/**` | `MEMORY.md`, `memory/**`, area notes, resource notes, project notes | Identity files (SOUL.md, AGENTS.md), archive |
-| No project active | — | Global workspace (memory, MEMORY.md, area notes, etc.) | Archive |
-
-This means if you're working on the AeroHive project and say "add a note about my dentist appointment to my health area," the agent writes the note to the health area directly. The episode generated during that interaction gets tagged with `"context": "aerohive-setup"` in the global observation log, preserving the record of what was active at the time.
+| Project active | `projects/<n>/workspace/**` | `MEMORY.md`, `memory/**`, project notes | Identity files (SOUL.md, AGENTS.md), archive |
+| No project active | — | Global workspace (memory, MEMORY.md, etc.) | Archive |
 
 **Three tiers of progressive disclosure:**
 
-1. **Always present** — The lightweight PARA index (name + description + status for every entry) is always in the system prompt. The agent always knows what contexts exist. Cost: ~50-100 tokens per entry.
+1. **Always present** — The lightweight projects index (name + description + status for every entry) is always in the system prompt. The agent always knows what projects exist. Cost: ~50-100 tokens per entry.
 
-2. **On activation** — When the agent activates a PARA entry (via tool call or conversational cue), the gateway:
+2. **On activation** — When the agent activates a project (via tool call or conversational cue), the gateway:
    - Loads the entry's **manifest**: a listing of what files exist in `notes/`, `references/`, and `workspace/` (filenames and sizes, not contents).
    - Starts any **MCP servers** defined in the entry's `context.yml`.
    - Adds any **tools** defined in the entry's `context.yml` to the active tool set.
    - Adds the entry's **skills** to the available skills list (metadata only, not full SKILL.md bodies).
-   
+
    The manifest tells the agent "here's what's in this project folder." Contents are not loaded.
 
 3. **On agent request** — The agent reads specific files by invoking the `read` tool. This applies to:
@@ -623,13 +607,10 @@ This also aligns with how the Agent Skills spec works: skill metadata is always 
 
 **Tool and MCP server auto-loading is the exception.** Tools and MCP servers load immediately on activation because they define *capabilities*, not *knowledge*. The agent needs to know what it can do — it doesn't need to read every file to know that.
 
-**Tool union resolution:** When multiple active entries specify tools, the union is available. Deactivating an entry only removes tools no other active entry still needs.
-
 #### Lifecycle (`lifecycle.rs`)
 
 - **Create**: `mkdir` + write `context.yml` + create subfolders. No registry.
-- **Archive**: Update status, add archived date and original_category, move to `para/archive/`. Archived projects retain their notes, references, and workspace. Observation history is not carried with the project — it lives in the global observation log and is retrievable via the `context` tag on episodes.
-- **Promote**: Resource → Project (add workspace/), Project → Area (drop workspace/). Move between category directories.
+- **Archive**: Update status, add archived date, move to `archive/`. Archived projects retain their notes, references, and workspace. Observation history is not carried with the project — it lives in the global observation log and is retrievable via the `context` tag on episodes.
 
 ### 6. Pulse Scheduling (`pulse/`)
 
@@ -703,13 +684,13 @@ Discovers skills from configured directories:
 **Skill sources** (precedence, highest first):
 
 1. Workspace skills: `~/.ironclaw/workspace/skills/`
-2. PARA-scoped skills referenced in `context.yml`
+2. Project-scoped skills referenced in `context.yml`
 3. User-global skills: `~/.ironclaw/skills/`
 4. Bundled skills (shipped with the binary)
 
 #### Resolver (`resolver.rs`)
 
-Skills follow the same progressive disclosure model as PARA:
+Skills follow the same progressive disclosure model as the Projects system:
 
 1. **Always present**: All available skill metadata (name + description, ~100 tokens each) is in the system prompt. The agent always knows what skills exist.
 2. **Agent-driven activation**: When the agent decides a skill is relevant, it reads the SKILL.md body via the `read` tool. The full instructions (~5000 tokens recommended max) enter the context as part of session history.
@@ -752,7 +733,7 @@ Two transport mechanisms:
 
 MCP servers are managed as child processes:
 
-- **Spawn**: Start the server process when its context activates (either globally configured or via PARA entry).
+- **Spawn**: Start the server process when its context activates (either globally configured or via project entry).
 - **Health check**: Periodic ping to verify the server is responsive.
 - **Teardown**: Graceful shutdown when context deactivates or gateway shuts down.
 
@@ -769,7 +750,7 @@ Maintains the set of active MCP servers and their combined tool lists:
 MCP servers can be configured at two levels:
 
 1. **Global** (`config.toml` `[mcp.servers]`): Always available.
-2. **PARA-scoped** (`context.yml` `mcp_servers`): Available only when the PARA entry is active.
+2. **Project-scoped** (`context.yml` `mcp_servers`): Available only when the project is active.
 
 ### 10. Tool System (`tools/`)
 
@@ -797,13 +778,13 @@ Built-in tools the agent can invoke directly.
 Cascading tool policy resolution:
 
 1. **Global defaults** from config.
-2. **Per-PARA-entry** overrides from `context.yml` `tools` field.
+2. **Per-project** overrides from `context.yml` `tools` field.
 3. **Per-skill** additions from `allowed-tools` in SKILL.md frontmatter.
 4. **MCP server tools** from active MCP connections.
 
 The active tool set at any moment is the union of all sources, filtered by deny lists.
 
-**Write scope enforcement:** The `write`, `edit`, and `exec` tools enforce workspace write scoping. When a project is active, project output (generated files, build artifacts) is scoped to the project's `workspace/` directory. Global files (MEMORY.md, area/resource notes, observation log) remain writable. Identity files and archive are always read-only. The gateway enforces these constraints via path validation in the tool implementation, not by relying on LLM judgment.
+**Write scope enforcement:** The `write`, `edit`, and `exec` tools enforce workspace write scoping. When a project is active, project output (generated files, build artifacts) is scoped to the project's `workspace/` directory. Global files (MEMORY.md, observation log) remain writable. Identity files and archive are always read-only. The gateway enforces these constraints via path validation in the tool implementation, not by relying on LLM judgment.
 
 ---
 
@@ -821,7 +802,7 @@ Discord ──→ Channel adapter ──→ Normalized message
                               Context assembly
                               ├── Identity files
                               ├── Observation log
-                              ├── Active PARA contexts
+                              ├── Active project context
                               ├── Activated skills
                               ├── Available tools (built-in + MCP)
                               └── Session history
@@ -894,7 +875,7 @@ to memory/episodes/<id>.md
             ▼
 Append episode to
 memory/observations.json
-(tagged with active PARA context, if any)
+(tagged with active project context, if any)
             │
             ▼
 Raw messages marked as observed
@@ -912,7 +893,7 @@ Raw messages marked as observed
 | `serenity` | Discord gateway & API |
 | `reqwest` | HTTP client for model APIs and web tools |
 | `notify` | Filesystem watching |
-| `walkdir` | Directory traversal for PARA/skills scanning |
+| `walkdir` | Directory traversal for projects/skills scanning |
 | `tantivy` | BM25 full-text search for memory |
 | `axum` | HTTP server for webhook channel & API |
 | `tracing` | Structured logging |
@@ -957,7 +938,7 @@ Ordered by "what gets you a usable agent fastest":
 
 **Milestone: Agent remembers context across sessions.**
 
-### Phase 3: Proactivity
+### Phase 3: Proactivity (COMPLETE)
 12. `pulse/scheduler` — HEARTBEAT.yml parsing, scheduling loop.
 13. `pulse/executor` — Pulse task execution via agent runtime.
 14. `pulse/alerts` — Alert level behavior.
@@ -972,13 +953,13 @@ Ordered by "what gets you a usable agent fastest":
 
 **Milestone: Agent is accessible via Discord.**
 
-### Phase 5: PARA
-19. `para/scanner` — Directory discovery, context.yml parsing.
-20. `para/activation` — Context activation/deactivation via agent tool calls.
-21. `para/manifest` — Generate file listings for active entries.
-22. `para/lifecycle` — Create, archive, promote.
+### Phase 5: Projects
+19. `projects/scanner` — Directory discovery, context.yml parsing.
+20. `projects/activation` — Context activation/deactivation via agent tool calls.
+21. `projects/manifest` — Generate file listings for the active entry.
+22. `projects/lifecycle` — Create and archive.
 
-**Milestone: Agent manages structured project/area/resource contexts with progressive disclosure.**
+**Milestone: Agent manages structured project contexts with progressive disclosure.**
 
 ### Phase 6: Skills & MCP
 23. `skills/loader` — SKILL.md discovery and parsing.
@@ -986,6 +967,6 @@ Ordered by "what gets you a usable agent fastest":
 25. `mcp/client` — JSON-RPC client, stdio transport.
 26. `mcp/lifecycle` — Server spawn and teardown.
 27. `mcp/transport` — HTTP/SSE transport for remote servers.
-28. Integration: PARA context.yml → skill and MCP server activation.
+28. Integration: project context.yml → skill and MCP server activation.
 
 **Milestone: Agent can use OpenClaw-compatible skills and connect to MCP servers.**
