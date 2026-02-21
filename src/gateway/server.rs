@@ -408,6 +408,15 @@ async fn run_due_cron_jobs_gateway(
 ) {
     let now = chrono::Utc::now();
     let mut store = cron_store.lock().await;
+
+    // Reload from disk so external edits to jobs.json take effect immediately
+    match CronStore::load(layout.cron_jobs_json()).await {
+        Ok(fresh) => *store = fresh,
+        Err(e) => {
+            tracing::warn!(error = %e, "failed to reload cron store from disk; using in-memory state");
+        }
+    }
+
     match execute_due_jobs(&mut store, agent, now).await {
         Ok(result) => {
             for notif in &result.notifications {

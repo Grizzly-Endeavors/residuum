@@ -48,59 +48,48 @@ impl Tool for CronAddTool {
                         "type": "string",
                         "description": "Human-readable name for this job"
                     },
-                    "schedule": {
-                        "type": "object",
-                        "description": "Schedule specification",
-                        "oneOf": [
-                            {
-                                "properties": {
-                                    "type": {"const": "at"},
-                                    "at": {"type": "string", "description": "UTC ISO-8601 datetime"}
-                                },
-                                "required": ["type", "at"]
-                            },
-                            {
-                                "properties": {
-                                    "type": {"const": "every"},
-                                    "every_ms": {"type": "integer", "description": "Interval in milliseconds"},
-                                    "anchor_ms": {"type": "integer", "description": "Anchor epoch ms (0 = Unix epoch)"}
-                                },
-                                "required": ["type", "every_ms"]
-                            },
-                            {
-                                "properties": {
-                                    "type": {"const": "cron"},
-                                    "expr": {"type": "string", "description": "Cron expression (6-field with seconds)"},
-                                    "tz": {"type": "string", "description": "Timezone (UTC only in Phase 3)"}
-                                },
-                                "required": ["type", "expr"]
-                            }
-                        ]
+                    "schedule_type": {
+                        "type": "string",
+                        "enum": ["at", "every", "cron"],
+                        "description": "'at' = one-shot at a UTC datetime; 'every' = repeating interval; 'cron' = 6-field cron expression"
+                    },
+                    "schedule_at": {
+                        "type": "string",
+                        "description": "UTC ISO-8601 datetime, required when schedule_type='at'"
+                    },
+                    "schedule_every_ms": {
+                        "type": "integer",
+                        "description": "Interval in milliseconds, required when schedule_type='every'"
+                    },
+                    "schedule_anchor_ms": {
+                        "type": "integer",
+                        "description": "Anchor epoch ms, default 0 = Unix epoch; optional when schedule_type='every'"
+                    },
+                    "schedule_expr": {
+                        "type": "string",
+                        "description": "6-field cron expression including seconds, e.g. '0 30 9 * * *'; required when schedule_type='cron'"
+                    },
+                    "schedule_tz": {
+                        "type": "string",
+                        "description": "Timezone, default 'UTC'; optional when schedule_type='cron'"
                     },
                     "delivery": {
                         "type": "string",
                         "enum": ["user_visible", "background"],
                         "description": "'user_visible' prints to CLI and queues for next user turn; 'background' runs silently for memory"
                     },
-                    "payload": {
-                        "type": "object",
-                        "description": "What to do when the job fires",
-                        "oneOf": [
-                            {
-                                "properties": {
-                                    "type": {"const": "system_event"},
-                                    "text": {"type": "string", "description": "Text to announce/inject"}
-                                },
-                                "required": ["type", "text"]
-                            },
-                            {
-                                "properties": {
-                                    "type": {"const": "agent_turn"},
-                                    "message": {"type": "string", "description": "Prompt for the isolated agent turn"}
-                                },
-                                "required": ["type", "message"]
-                            }
-                        ]
+                    "payload_type": {
+                        "type": "string",
+                        "enum": ["system_event", "agent_turn"],
+                        "description": "'system_event' = inject text into main session; 'agent_turn' = run an isolated agent turn"
+                    },
+                    "payload_text": {
+                        "type": "string",
+                        "description": "Text to announce/inject, required when payload_type='system_event'"
+                    },
+                    "payload_message": {
+                        "type": "string",
+                        "description": "Prompt for the isolated agent turn, required when payload_type='agent_turn'"
                     },
                     "description": {
                         "type": "string",
@@ -115,7 +104,7 @@ impl Tool for CronAddTool {
                         "description": "Delete the job after it runs once (useful for one-shots)"
                     }
                 },
-                "required": ["name", "schedule", "delivery", "payload"]
+                "required": ["name", "schedule_type", "delivery", "payload_type"]
             }),
         }
     }
@@ -306,9 +295,45 @@ impl Tool for CronUpdateTool {
                     "description": {"type": "string"},
                     "enabled": {"type": "boolean"},
                     "delete_after_run": {"type": "boolean"},
-                    "schedule": {"type": "object", "description": "New schedule (replaces old)"},
+                    "schedule_type": {
+                        "type": "string",
+                        "enum": ["at", "every", "cron"],
+                        "description": "New schedule type — providing this replaces the existing schedule"
+                    },
+                    "schedule_at": {
+                        "type": "string",
+                        "description": "UTC ISO-8601 datetime, required when schedule_type='at'"
+                    },
+                    "schedule_every_ms": {
+                        "type": "integer",
+                        "description": "Interval in milliseconds, required when schedule_type='every'"
+                    },
+                    "schedule_anchor_ms": {
+                        "type": "integer",
+                        "description": "Anchor epoch ms, optional when schedule_type='every'"
+                    },
+                    "schedule_expr": {
+                        "type": "string",
+                        "description": "6-field cron expression, required when schedule_type='cron'"
+                    },
+                    "schedule_tz": {
+                        "type": "string",
+                        "description": "Timezone, optional when schedule_type='cron'"
+                    },
                     "delivery": {"type": "string", "enum": ["user_visible", "background"]},
-                    "payload": {"type": "object", "description": "New payload (replaces old)"}
+                    "payload_type": {
+                        "type": "string",
+                        "enum": ["system_event", "agent_turn"],
+                        "description": "New payload type — providing this replaces the existing payload"
+                    },
+                    "payload_text": {
+                        "type": "string",
+                        "description": "Text to inject, required when payload_type='system_event'"
+                    },
+                    "payload_message": {
+                        "type": "string",
+                        "description": "Agent prompt, required when payload_type='agent_turn'"
+                    }
                 },
                 "required": ["id"]
             }),
@@ -343,7 +368,7 @@ impl Tool for CronUpdateTool {
             if let Some(dar) = arguments.get("delete_after_run").and_then(Value::as_bool) {
                 job.delete_after_run = dar;
             }
-            if arguments.get("schedule").is_some() {
+            if arguments.get("schedule_type").is_some() {
                 job.schedule = parse_schedule(&arguments)?;
                 // Recompute next_run when schedule changes
                 initialize_next_run(job, now).map_err(|e| {
@@ -353,7 +378,7 @@ impl Tool for CronUpdateTool {
             if arguments.get("delivery").is_some() {
                 job.delivery = parse_delivery(&arguments)?;
             }
-            if arguments.get("payload").is_some() {
+            if arguments.get("payload_type").is_some() {
                 job.payload = parse_payload(&arguments)?;
             }
 
@@ -435,48 +460,56 @@ impl Tool for CronRemoveTool {
 // ─── Argument parsers ────────────────────────────────────────────────────────
 
 fn parse_schedule(args: &Value) -> Result<CronSchedule, ToolError> {
-    let sched = args
-        .get("schedule")
-        .ok_or_else(|| ToolError::InvalidArguments("schedule is required".to_string()))?;
-
-    let sched_type = sched
-        .get("type")
+    let sched_type = args
+        .get("schedule_type")
         .and_then(|v| v.as_str())
-        .ok_or_else(|| ToolError::InvalidArguments("schedule.type is required".to_string()))?;
+        .ok_or_else(|| ToolError::InvalidArguments("schedule_type is required".to_string()))?;
 
     match sched_type {
         "at" => {
-            let at_str = sched.get("at").and_then(|v| v.as_str()).ok_or_else(|| {
-                ToolError::InvalidArguments("schedule.at is required".to_string())
-            })?;
+            let at_str = args
+                .get("schedule_at")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| {
+                    ToolError::InvalidArguments(
+                        "schedule_at is required when schedule_type='at'".to_string(),
+                    )
+                })?;
             let at = at_str.parse::<chrono::DateTime<Utc>>().map_err(|e| {
                 ToolError::InvalidArguments(format!("invalid 'at' datetime '{at_str}': {e}"))
             })?;
             Ok(CronSchedule::At { at })
         }
         "every" => {
-            let every_ms = sched
-                .get("every_ms")
+            let every_ms = args
+                .get("schedule_every_ms")
                 .and_then(Value::as_u64)
                 .ok_or_else(|| {
-                    ToolError::InvalidArguments("schedule.every_ms is required".to_string())
+                    ToolError::InvalidArguments(
+                        "schedule_every_ms is required when schedule_type='every'".to_string(),
+                    )
                 })?;
-            let anchor_ms = sched.get("anchor_ms").and_then(Value::as_i64).unwrap_or(0);
+            let anchor_ms = args
+                .get("schedule_anchor_ms")
+                .and_then(Value::as_i64)
+                .unwrap_or(0);
             Ok(CronSchedule::Every {
                 every_ms,
                 anchor_ms,
             })
         }
         "cron" => {
-            let expr = sched
-                .get("expr")
+            let expr = args
+                .get("schedule_expr")
                 .and_then(|v| v.as_str())
                 .ok_or_else(|| {
-                    ToolError::InvalidArguments("schedule.expr is required".to_string())
+                    ToolError::InvalidArguments(
+                        "schedule_expr is required when schedule_type='cron'".to_string(),
+                    )
                 })?
                 .to_string();
-            let tz = sched
-                .get("tz")
+            let tz = args
+                .get("schedule_tz")
                 .and_then(|v| v.as_str())
                 .unwrap_or("UTC")
                 .to_string();
@@ -504,30 +537,32 @@ fn parse_delivery(args: &Value) -> Result<Delivery, ToolError> {
 }
 
 fn parse_payload(args: &Value) -> Result<CronPayload, ToolError> {
-    let payload = args
-        .get("payload")
-        .ok_or_else(|| ToolError::InvalidArguments("payload is required".to_string()))?;
-
-    let payload_type = payload
-        .get("type")
+    let payload_type = args
+        .get("payload_type")
         .and_then(|v| v.as_str())
-        .ok_or_else(|| ToolError::InvalidArguments("payload.type is required".to_string()))?;
+        .ok_or_else(|| ToolError::InvalidArguments("payload_type is required".to_string()))?;
 
     match payload_type {
         "system_event" => {
-            let text = payload
-                .get("text")
+            let text = args
+                .get("payload_text")
                 .and_then(|v| v.as_str())
-                .ok_or_else(|| ToolError::InvalidArguments("payload.text is required".to_string()))?
+                .ok_or_else(|| {
+                    ToolError::InvalidArguments(
+                        "payload_text is required when payload_type='system_event'".to_string(),
+                    )
+                })?
                 .to_string();
             Ok(CronPayload::SystemEvent { text })
         }
         "agent_turn" => {
-            let message = payload
-                .get("message")
+            let message = args
+                .get("payload_message")
                 .and_then(|v| v.as_str())
                 .ok_or_else(|| {
-                    ToolError::InvalidArguments("payload.message is required".to_string())
+                    ToolError::InvalidArguments(
+                        "payload_message is required when payload_type='agent_turn'".to_string(),
+                    )
                 })?
                 .to_string();
             Ok(CronPayload::AgentTurn { message })
@@ -551,9 +586,11 @@ mod tests {
     #[test]
     fn parse_schedule_at_valid() {
         let args = serde_json::json!({
-            "schedule": {"type": "at", "at": "2026-02-19T12:00:00Z"},
+            "schedule_type": "at",
+            "schedule_at": "2026-02-19T12:00:00Z",
             "delivery": "user_visible",
-            "payload": {"type": "system_event", "text": "hi"}
+            "payload_type": "system_event",
+            "payload_text": "hi"
         });
         let sched = parse_schedule(&args).unwrap();
         assert!(
@@ -565,7 +602,8 @@ mod tests {
     #[test]
     fn parse_schedule_every_valid() {
         let args = serde_json::json!({
-            "schedule": {"type": "every", "every_ms": 3_600_000}
+            "schedule_type": "every",
+            "schedule_every_ms": 3_600_000
         });
         let sched = parse_schedule(&args).unwrap();
         assert!(
@@ -583,7 +621,8 @@ mod tests {
     #[test]
     fn parse_schedule_cron_valid() {
         let args = serde_json::json!({
-            "schedule": {"type": "cron", "expr": "0 0 9 * * *"}
+            "schedule_type": "cron",
+            "schedule_expr": "0 0 9 * * *"
         });
         let sched = parse_schedule(&args).unwrap();
         assert!(
@@ -594,7 +633,7 @@ mod tests {
 
     #[test]
     fn parse_schedule_unknown_type_errors() {
-        let args = serde_json::json!({"schedule": {"type": "unknown"}});
+        let args = serde_json::json!({"schedule_type": "unknown"});
         assert!(
             parse_schedule(&args).is_err(),
             "unknown schedule type should error"
@@ -623,7 +662,7 @@ mod tests {
 
     #[test]
     fn parse_payload_system_event() {
-        let args = serde_json::json!({"payload": {"type": "system_event", "text": "hello"}});
+        let args = serde_json::json!({"payload_type": "system_event", "payload_text": "hello"});
         let p = parse_payload(&args).unwrap();
         assert!(
             matches!(p, CronPayload::SystemEvent { .. }),
@@ -633,7 +672,8 @@ mod tests {
 
     #[test]
     fn parse_payload_agent_turn() {
-        let args = serde_json::json!({"payload": {"type": "agent_turn", "message": "check email"}});
+        let args =
+            serde_json::json!({"payload_type": "agent_turn", "payload_message": "check email"});
         let p = parse_payload(&args).unwrap();
         assert!(
             matches!(p, CronPayload::AgentTurn { .. }),
