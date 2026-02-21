@@ -35,6 +35,44 @@ const DEFAULT_MEMORY: &str = "\
 Persistent notes across sessions. The agent can update this file.
 ";
 
+/// Default content for IDENTITY.md when creating a new workspace.
+const DEFAULT_IDENTITY: &str = "\
+# Identity
+
+Describe yourself here. This file can be updated as your understanding of your role evolves.
+";
+
+/// Default observer system prompt written to memory/OBSERVER.md.
+const DEFAULT_OBSERVER_PROMPT: &str = r#"You are a memory extraction system. Given a conversation segment, extract key observations as a JSON array of strings.
+
+Return ONLY a JSON array of concise, self-contained observation strings. Example:
+["user prefers concise responses", "project uses Rust 2024 edition"]
+
+For each observation, capture:
+- Key decisions made and their rationale
+- Problems encountered and their solutions
+- Corrections or mistakes that were fixed
+- Important technical details or patterns discovered
+- Action items or next steps identified
+
+Each string should be a complete sentence useful as context in a future session. Be specific and concise.
+
+Return ONLY a valid JSON array of strings, no markdown fencing, no explanation."#;
+
+/// Default reflector system prompt written to memory/REFLECTOR.md.
+const DEFAULT_REFLECTOR_PROMPT: &str = r#"You are a memory reorganization system. Given a list of observations, merge and deduplicate them to reduce size while preserving all important information.
+
+Return ONLY a JSON array of merged observation strings. Example:
+["merged fact one", "merged fact two"]
+
+Rules:
+- Merge related observations into single, precise sentences
+- Do NOT summarize — preserve specific details
+- Remove redundant or duplicate observations
+- Each output string should be a complete, self-contained sentence
+
+Return ONLY a valid JSON array of strings, no markdown fencing, no explanation."#;
+
 /// Default content for HEARTBEAT.yml when creating a new workspace.
 const DEFAULT_HEARTBEAT: &str = "\
 # HEARTBEAT.yml — Pulse monitoring configuration
@@ -96,6 +134,9 @@ pub async fn ensure_workspace(layout: &WorkspaceLayout) -> Result<(), IronclawEr
     write_if_missing(&layout.agents_md(), DEFAULT_AGENTS).await?;
     write_if_missing(&layout.user_md(), DEFAULT_USER).await?;
     write_if_missing(&layout.memory_md(), DEFAULT_MEMORY).await?;
+    write_if_missing(&layout.identity_md(), DEFAULT_IDENTITY).await?;
+    write_if_missing(&layout.observer_md(), DEFAULT_OBSERVER_PROMPT).await?;
+    write_if_missing(&layout.reflector_md(), DEFAULT_REFLECTOR_PROMPT).await?;
     write_if_missing(&layout.heartbeat_yml(), DEFAULT_HEARTBEAT).await?;
     write_if_missing(&layout.alerts_md(), DEFAULT_ALERTS).await?;
 
@@ -144,6 +185,9 @@ mod tests {
         assert!(layout.agents_md().exists(), "AGENTS.md should exist");
         assert!(layout.user_md().exists(), "USER.md should exist");
         assert!(layout.memory_md().exists(), "MEMORY.md should exist");
+        assert!(layout.identity_md().exists(), "IDENTITY.md should exist");
+        assert!(layout.observer_md().exists(), "OBSERVER.md should exist");
+        assert!(layout.reflector_md().exists(), "REFLECTOR.md should exist");
         assert!(
             layout.heartbeat_yml().exists(),
             "HEARTBEAT.yml should exist"

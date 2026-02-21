@@ -129,6 +129,24 @@ impl WorkspaceLayout {
         self.root.join("hooks")
     }
 
+    /// Path to IDENTITY.md -- agent self-description, updated as role evolves.
+    #[must_use]
+    pub fn identity_md(&self) -> PathBuf {
+        self.root.join("IDENTITY.md")
+    }
+
+    /// Path to memory/OBSERVER.md -- observer extraction system prompt.
+    #[must_use]
+    pub fn observer_md(&self) -> PathBuf {
+        self.root.join("memory/OBSERVER.md")
+    }
+
+    /// Path to memory/REFLECTOR.md -- reflector compression system prompt.
+    #[must_use]
+    pub fn reflector_md(&self) -> PathBuf {
+        self.root.join("memory/REFLECTOR.md")
+    }
+
     /// Path to HEARTBEAT.yml -- pulse monitoring configuration.
     #[must_use]
     pub fn heartbeat_yml(&self) -> PathBuf {
@@ -193,6 +211,21 @@ mod tests {
             layout.memory_dir(),
             PathBuf::from("/tmp/ws/memory"),
             "memory_dir path"
+        );
+        assert_eq!(
+            layout.identity_md(),
+            PathBuf::from("/tmp/ws/IDENTITY.md"),
+            "identity_md path"
+        );
+        assert_eq!(
+            layout.observer_md(),
+            PathBuf::from("/tmp/ws/memory/OBSERVER.md"),
+            "observer_md path"
+        );
+        assert_eq!(
+            layout.reflector_md(),
+            PathBuf::from("/tmp/ws/memory/REFLECTOR.md"),
+            "reflector_md path"
         );
     }
 

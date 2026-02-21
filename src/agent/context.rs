@@ -32,12 +32,13 @@ pub fn assemble_system_prompt(
 ///
 /// Assembly order:
 /// 1. SOUL.md content
-/// 2. AGENTS.md content
-/// 3. TOOLS.md content
-/// 4. Available tool names listing
-/// 5. USER.md content
-/// 6. MEMORY.md content
-/// 7. Observation log (if present)
+/// 2. IDENTITY.md content
+/// 3. AGENTS.md content
+/// 4. TOOLS.md content
+/// 5. Available tool names listing
+/// 6. USER.md content
+/// 7. MEMORY.md content
+/// 8. Observation log (if present)
 fn build_system_content(
     identity: &IdentityFiles,
     tools: &ToolRegistry,
@@ -47,6 +48,10 @@ fn build_system_content(
 
     if let Some(soul) = &identity.soul {
         parts.push(soul.clone());
+    }
+
+    if let Some(identity_md) = &identity.identity {
+        parts.push(identity_md.clone());
     }
 
     if let Some(agents) = &identity.agents {
@@ -129,6 +134,33 @@ mod tests {
         assert!(
             content.contains("User likes Rust"),
             "should include user content"
+        );
+    }
+
+    #[test]
+    fn system_content_includes_identity_md() {
+        let identity = IdentityFiles {
+            soul: Some("SOUL content".to_string()),
+            identity: Some("I have evolved my role over time.".to_string()),
+            ..IdentityFiles::default()
+        };
+        let tools = ToolRegistry::new();
+
+        let content = build_system_content(&identity, &tools, None);
+        assert!(
+            content.contains("SOUL content"),
+            "should include soul content"
+        );
+        assert!(
+            content.contains("evolved my role"),
+            "should include identity.md content"
+        );
+        // IDENTITY.md should appear after SOUL.md
+        let soul_pos = content.find("SOUL content").unwrap_or(usize::MAX);
+        let identity_pos = content.find("evolved my role").unwrap_or(usize::MAX);
+        assert!(
+            soul_pos < identity_pos,
+            "SOUL should appear before IDENTITY"
         );
     }
 

@@ -68,11 +68,19 @@ impl Reflector {
             return Ok(log);
         }
 
-        // Serialize the flat observations for the LLM prompt
+        // Load system prompt from disk, falling back to embedded constant.
+        let system_prompt = tokio::fs::read_to_string(layout.reflector_md())
+            .await
+            .ok()
+            .and_then(|s| if s.trim().is_empty() { None } else { Some(s) })
+            .unwrap_or_else(|| REFLECTION_SYSTEM_PROMPT.to_string());
+
+        // Serialize the flat observations for the LLM prompt — keep full objects
+        // so the model has project_context info for intelligent merging.
         let serialized = serde_json::to_string_pretty(&log.observations)
             .map_err(|e| IronclawError::Memory(format!("failed to serialize observations: {e}")))?;
 
-        let messages = build_reflection_prompt(&serialized);
+        let messages = build_reflection_prompt(&serialized, &system_prompt);
 
         // Call the model
         let response = self
@@ -81,7 +89,7 @@ impl Reflector {
             .await
             .map_err(IronclawError::Model)?;
 
-        // Parse the compressed log
+        // Parse the bare string-array response into a compressed log.
         let compressed = parse_reflection_response(&response.content)?;
 
         if compressed.is_empty() {
@@ -111,31 +119,36 @@ impl Reflector {
 }
 
 /// Build the reflection prompt with the serialized observation list.
-fn build_reflection_prompt(serialized_observations: &str) -> Vec<Message> {
+fn build_reflection_prompt(serialized_observations: &str, system_prompt: &str) -> Vec<Message> {
     vec![
-        Message::system(REFLECTION_SYSTEM_PROMPT),
+        Message::system(system_prompt),
         Message::user(format!(
             "Reorganize and compress these observations:\n\n{serialized_observations}"
         )),
     ]
 }
 
-/// System prompt for the reflector model.
-const REFLECTION_SYSTEM_PROMPT: &str = r#"You are a memory reorganization system. Given a flat list of observations (JSON array), reorganize and merge related observations to reduce size while preserving all important information.
+/// Embedded fallback system prompt for the reflector.
+///
+/// Used when `memory/REFLECTOR.md` is absent. The workspace bootstrap writes
+/// this same content to disk so users can customise it without recompiling.
+const REFLECTION_SYSTEM_PROMPT: &str = r#"You are a memory reorganization system. Given a list of observations, merge and deduplicate them to reduce size while preserving all important information.
+
+Return ONLY a JSON array of merged observation strings. Example:
+["merged fact one", "merged fact two"]
 
 Rules:
-- Group related observations by topic/context
-- Do NOT summarize — preserve the specific details
+- Merge related observations into single, precise sentences
+- Do NOT summarize — preserve specific details
 - Remove redundant or duplicate observations
-- Each output episode should use "ref-NNN" as the id format
-- Include "context", "start", "end", and "observations" fields
+- Each output string should be a complete, self-contained sentence
 
-Return ONLY a valid JSON object with an "episodes" field containing the reorganized array. No markdown fencing, no explanation."#;
+Return ONLY a valid JSON array of strings, no markdown fencing, no explanation."#;
 
 /// Parse the model's reflection response into an `ObservationLog`.
 ///
-/// Accepts the same Episode-shaped JSON the model returns and converts
-/// each observation string into a flat [`Observation`].
+/// Expects a bare JSON array of strings: `["obs 1", "obs 2", ...]`
+/// Each string becomes an [`Observation`] with `project_context = "general"`.
 ///
 /// # Errors
 /// Returns an error if the response cannot be parsed.
@@ -149,41 +162,23 @@ fn parse_reflection_response(content: &str) -> Result<ObservationLog, IronclawEr
         ))
     })?;
 
-    let episodes = value
-        .get("episodes")
-        .and_then(serde_json::Value::as_array)
-        .ok_or_else(|| {
-            IronclawError::Memory("reflector response missing 'episodes' array".to_string())
-        })?;
+    let strings = value.as_array().ok_or_else(|| {
+        IronclawError::Memory(format!(
+            "reflector response is not a JSON array\nresponse: {trimmed}"
+        ))
+    })?;
 
     let now = Utc::now();
     let mut log = ObservationLog::new();
 
-    for episode in episodes {
-        let obs_strings = episode
-            .get("observations")
-            .and_then(serde_json::Value::as_array)
-            .map(|arr| {
-                arr.iter()
-                    .filter_map(serde_json::Value::as_str)
-                    .map(String::from)
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_default();
-
-        let project_context = episode
-            .get("context")
-            .and_then(serde_json::Value::as_str)
-            .unwrap_or("general")
-            .to_string();
-
-        for obs_content in obs_strings {
+    for item in strings {
+        if let Some(obs_content) = item.as_str() {
             log.push(Observation {
                 timestamp: now,
-                project_context: project_context.clone(),
+                project_context: "general".to_string(),
                 source_episodes: vec![],
                 visibility: Visibility::User,
-                content: obs_content,
+                content: obs_content.to_string(),
             });
         }
     }
@@ -244,22 +239,8 @@ mod tests {
         }
     }
 
-    const COMPRESSED_RESPONSE: &str = r#"{
-        "episodes": [
-            {
-                "id": "ref-001",
-                "date": "2026-02-19",
-                "start": "workspace exploration",
-                "end": "file operations complete",
-                "context": "ironclaw/workspace",
-                "observations": [
-                    "workspace uses flat layout",
-                    "identity files loaded at startup"
-                ],
-                "source_episodes": ["ep-001", "ep-002"]
-            }
-        ]
-    }"#;
+    const COMPRESSED_RESPONSE: &str =
+        r#"["workspace uses flat layout", "identity files loaded at startup"]"#;
 
     #[test]
     fn should_reflect_below_threshold() {
@@ -310,8 +291,8 @@ mod tests {
         );
         assert_eq!(
             log.observations.first().map(|o| o.project_context.as_str()),
-            Some("ironclaw/workspace"),
-            "project_context should be taken from episode context"
+            Some("general"),
+            "project_context defaults to general"
         );
         // Reflector observations have empty source_episodes
         assert!(
@@ -387,11 +368,16 @@ mod tests {
     }
 
     #[test]
-    fn parse_reflection_rejects_empty_episodes() {
-        let empty_response = r#"{"episodes": []}"#;
-        let log = parse_reflection_response(empty_response).unwrap();
-        // Empty episodes array → empty observations (error check is in reflect())
-        assert!(log.is_empty(), "empty episodes should yield empty log");
+    fn parse_reflection_empty_array_yields_empty_log() {
+        let log = parse_reflection_response("[]").unwrap();
+        // Empty array → empty log (error check is in reflect())
+        assert!(log.is_empty(), "empty array should yield empty log");
+    }
+
+    #[test]
+    fn parse_reflection_non_array_errors() {
+        let result = parse_reflection_response(r#"{"episodes": []}"#);
+        assert!(result.is_err(), "non-array response should error");
     }
 
     #[tokio::test]
@@ -448,16 +434,16 @@ mod tests {
             .await
             .unwrap();
 
-        let empty_episodes = r#"{"episodes": []}"#;
+        let empty_array = "[]";
         let reflector = Reflector::new(
-            Box::new(MockReflectorProvider::new(empty_episodes)),
+            Box::new(MockReflectorProvider::new(empty_array)),
             ReflectorConfig {
                 threshold_tokens: 10,
             },
         );
 
         let result = reflector.reflect(&layout).await;
-        assert!(result.is_err(), "empty LLM response should error");
+        assert!(result.is_err(), "empty array response should error");
 
         // Original log should be preserved
         let preserved = load_observation_log(&layout.observations_json())

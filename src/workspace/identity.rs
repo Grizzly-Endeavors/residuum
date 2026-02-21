@@ -11,6 +11,8 @@ use super::layout::WorkspaceLayout;
 pub struct IdentityFiles {
     /// SOUL.md -- core agent identity and personality.
     pub soul: Option<String>,
+    /// IDENTITY.md -- agent self-description, updated as role evolves.
+    pub identity: Option<String>,
     /// AGENTS.md -- agent capabilities and behavior rules.
     pub agents: Option<String>,
     /// USER.md -- user preferences and context.
@@ -32,6 +34,7 @@ impl IdentityFiles {
     pub async fn load(layout: &WorkspaceLayout) -> Result<Self, IronclawError> {
         Ok(Self {
             soul: read_optional(&layout.soul_md()).await?,
+            identity: read_optional(&layout.identity_md()).await?,
             agents: read_optional(&layout.agents_md()).await?,
             user: read_optional(&layout.user_md()).await?,
             memory: read_optional(&layout.memory_md()).await?,
@@ -73,6 +76,7 @@ mod tests {
         let identity = IdentityFiles::load(&layout).await.unwrap();
 
         assert!(identity.soul.is_some(), "soul should be loaded");
+        assert!(identity.identity.is_some(), "identity should be loaded");
         assert!(identity.agents.is_some(), "agents should be loaded");
         assert!(identity.user.is_some(), "user should be loaded");
         assert!(identity.memory.is_some(), "memory should be loaded");

@@ -66,36 +66,19 @@ mod memory_integration {
     }
 
     fn observer_response() -> String {
-        r#"{
-            "start": "user asked about workspace structure",
-            "end": "discussed file layout and bootstrapping",
-            "context": "ironclaw/workspace",
-            "observations": [
-                "workspace uses a flat directory layout with identity files at root",
-                "bootstrap creates 10 required directories on first run",
-                "SOUL.md defines the agent personality and is loaded at startup"
-            ]
-        }"#
+        r#"[
+            "workspace uses a flat directory layout with identity files at root",
+            "bootstrap creates 10 required directories on first run",
+            "SOUL.md defines the agent personality and is loaded at startup"
+        ]"#
         .to_string()
     }
 
     fn reflector_response() -> String {
-        r#"{
-            "episodes": [
-                {
-                    "id": "ref-001",
-                    "date": "2026-02-19",
-                    "start": "workspace exploration",
-                    "end": "file layout discussed",
-                    "context": "ironclaw/workspace",
-                    "observations": [
-                        "workspace uses flat layout with identity files at root",
-                        "bootstrap creates required directories on first run"
-                    ],
-                    "source_episodes": ["ep-001", "ep-002"]
-                }
-            ]
-        }"#
+        r#"[
+            "workspace uses flat layout with identity files at root",
+            "bootstrap creates required directories on first run"
+        ]"#
         .to_string()
     }
 

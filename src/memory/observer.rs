@@ -93,8 +93,15 @@ impl Observer {
         // Generate the next episode ID by scanning the episodes directory
         let episode_id = next_episode_id(&layout.episodes_dir()).await?;
 
+        // Load system prompt from disk, falling back to embedded constant.
+        let system_prompt = tokio::fs::read_to_string(layout.observer_md())
+            .await
+            .ok()
+            .and_then(|s| if s.trim().is_empty() { None } else { Some(s) })
+            .unwrap_or_else(|| EXTRACTION_SYSTEM_PROMPT.to_string());
+
         // Build extraction prompt
-        let extraction_messages = build_extraction_prompt(&messages);
+        let extraction_messages = build_extraction_prompt(&messages, &system_prompt);
 
         // Call the model
         let response = self
@@ -103,8 +110,19 @@ impl Observer {
             .await
             .map_err(IronclawError::Model)?;
 
-        // Parse the response into an episode
-        let episode = parse_episode_response(&response, &episode_id)?;
+        // Parse the bare string-array response into observation strings.
+        let observation_strings = parse_observation_strings(&response)?;
+
+        // Build the episode internally — start/end are cosmetic and no longer LLM-extracted.
+        let episode = Episode {
+            id: episode_id.clone(),
+            date: Local::now().date_naive(),
+            start: String::new(),
+            end: String::new(),
+            context: project_context.clone(),
+            observations: observation_strings,
+            source_episodes: vec![],
+        };
 
         // Persist transcript
         let transcript_path =
@@ -175,7 +193,7 @@ fn derive_visibility(messages: &[RecentMessage]) -> Visibility {
 }
 
 /// Build the extraction prompt for the observer model.
-fn build_extraction_prompt(messages: &[Message]) -> Vec<Message> {
+fn build_extraction_prompt(messages: &[Message], system_prompt: &str) -> Vec<Message> {
     let transcript = messages
         .iter()
         .map(|m| format!("[{}]: {}", m.role.as_str(), m.content))
@@ -183,43 +201,41 @@ fn build_extraction_prompt(messages: &[Message]) -> Vec<Message> {
         .join("\n\n");
 
     vec![
-        Message::system(EXTRACTION_SYSTEM_PROMPT),
+        Message::system(system_prompt),
         Message::user(format!(
             "Extract observations from this conversation segment:\n\n{transcript}"
         )),
     ]
 }
 
-/// System prompt instructing the model to extract structured episode data.
-const EXTRACTION_SYSTEM_PROMPT: &str = r#"You are a memory extraction system. Given a conversation segment, extract key information into a structured JSON object.
+/// Embedded fallback system prompt for the observer.
+///
+/// Used when `memory/OBSERVER.md` is absent. The workspace bootstrap writes
+/// this same content to disk so users can customise it without recompiling.
+const EXTRACTION_SYSTEM_PROMPT: &str = r#"You are a memory extraction system. Given a conversation segment, extract key observations as a JSON array of strings.
 
-Return ONLY a JSON object with these fields:
-- "start": one-line summary of how the conversation segment started
-- "end": one-line summary of how the segment ended
-- "context": the project or topic being discussed (e.g. "ironclaw/memory", "devops/k8s", "general")
-- "observations": array of concise single-sentence observations
+Return ONLY a JSON array of concise, self-contained observation strings. Example:
+["user prefers concise responses", "project uses Rust 2024 edition"]
 
-For observations, extract:
+For each observation, capture:
 - Key decisions made and their rationale
 - Problems encountered and their solutions
 - Corrections or mistakes that were fixed
 - Important technical details or patterns discovered
 - Action items or next steps identified
 
-Each observation should be a complete, self-contained sentence that would be useful context in a future session. Be concise but specific.
+Each string should be a complete sentence useful as context in a future session. Be specific and concise.
 
-Return ONLY valid JSON, no markdown fencing, no explanation."#;
+Return ONLY a valid JSON array of strings, no markdown fencing, no explanation."#;
 
-/// Parse the model's JSON response into an `Episode`.
+/// Parse the model's JSON response into a list of observation strings.
+///
+/// Expects a bare JSON array: `["obs 1", "obs 2", ...]`
 ///
 /// # Errors
-/// Returns an error if the response cannot be parsed as the expected JSON structure.
-fn parse_episode_response(
-    response: &ModelResponse,
-    episode_id: &str,
-) -> Result<Episode, IronclawError> {
+/// Returns an error if the response cannot be parsed or the array is empty.
+fn parse_observation_strings(response: &ModelResponse) -> Result<Vec<String>, IronclawError> {
     let content = response.content.trim();
-
     let json_str = crate::memory::strip_code_fences(content);
 
     let value: serde_json::Value = serde_json::from_str(json_str).map_err(|e| {
@@ -228,34 +244,17 @@ fn parse_episode_response(
         ))
     })?;
 
-    let start = value
-        .get("start")
-        .and_then(serde_json::Value::as_str)
-        .unwrap_or("unknown")
-        .to_string();
-
-    let end = value
-        .get("end")
-        .and_then(serde_json::Value::as_str)
-        .unwrap_or("unknown")
-        .to_string();
-
-    let ctx = value
-        .get("context")
-        .and_then(serde_json::Value::as_str)
-        .unwrap_or("general")
-        .to_string();
-
     let observations: Vec<String> = value
-        .get("observations")
-        .and_then(serde_json::Value::as_array)
-        .map(|arr| {
-            arr.iter()
-                .filter_map(serde_json::Value::as_str)
-                .map(String::from)
-                .collect()
-        })
-        .unwrap_or_default();
+        .as_array()
+        .ok_or_else(|| {
+            IronclawError::Memory(format!(
+                "observer response is not a JSON array\nresponse: {content}"
+            ))
+        })?
+        .iter()
+        .filter_map(serde_json::Value::as_str)
+        .map(String::from)
+        .collect();
 
     if observations.is_empty() {
         return Err(IronclawError::Memory(
@@ -263,15 +262,7 @@ fn parse_episode_response(
         ));
     }
 
-    Ok(Episode {
-        id: episode_id.to_string(),
-        date: Local::now().date_naive(),
-        start,
-        end,
-        context: ctx,
-        observations,
-        source_episodes: vec![],
-    })
+    Ok(observations)
 }
 
 #[cfg(test)]
@@ -318,15 +309,8 @@ mod tests {
         }
     }
 
-    const SAMPLE_RESPONSE: &str = r#"{
-        "start": "user asked about file structure",
-        "end": "listed directory contents successfully",
-        "context": "ironclaw/workspace",
-        "observations": [
-            "workspace uses a flat directory layout",
-            "identity files are loaded at startup"
-        ]
-    }"#;
+    const SAMPLE_RESPONSE: &str =
+        r#"["workspace uses a flat directory layout", "identity files are loaded at startup"]"#;
 
     fn make_recent_messages(count: usize) -> Vec<RecentMessage> {
         (0..count)
@@ -343,62 +327,51 @@ mod tests {
     }
 
     #[test]
-    fn parse_episode_from_json() {
+    fn parse_observation_strings_from_json_array() {
         let response = ModelResponse::new(SAMPLE_RESPONSE.to_string(), vec![]);
-        let episode = parse_episode_response(&response, "ep-001").unwrap();
+        let observations = parse_observation_strings(&response).unwrap();
 
-        assert_eq!(episode.id, "ep-001", "ID should match");
+        assert_eq!(observations.len(), 2, "should have 2 observations");
         assert_eq!(
-            episode.start, "user asked about file structure",
-            "start should match"
+            observations.first().map(String::as_str),
+            Some("workspace uses a flat directory layout"),
+            "first observation should match"
         );
-        assert_eq!(episode.observations.len(), 2, "should have 2 observations");
         assert_eq!(
-            episode.context, "ironclaw/workspace",
-            "context should match"
+            observations.get(1).map(String::as_str),
+            Some("identity files are loaded at startup"),
+            "second observation should match"
         );
     }
 
     #[test]
-    fn parse_episode_with_code_fences() {
+    fn parse_observation_strings_with_code_fences() {
         let fenced = format!("```json\n{SAMPLE_RESPONSE}\n```");
         let response = ModelResponse::new(fenced, vec![]);
-        let episode = parse_episode_response(&response, "ep-002").unwrap();
+        let observations = parse_observation_strings(&response).unwrap();
 
-        assert_eq!(episode.id, "ep-002", "should parse despite fences");
-        assert_eq!(episode.observations.len(), 2, "should extract observations");
+        assert_eq!(observations.len(), 2, "should parse despite fences");
     }
 
     #[test]
-    fn parse_episode_missing_fields_uses_defaults() {
-        let minimal = r#"{"observations": ["one thing"]}"#;
-        let response = ModelResponse::new(minimal.to_string(), vec![]);
-        let episode = parse_episode_response(&response, "ep-003").unwrap();
-
-        assert_eq!(
-            episode.start, "unknown",
-            "missing start defaults to unknown"
-        );
-        assert_eq!(
-            episode.context, "general",
-            "missing context defaults to general"
-        );
-        assert_eq!(episode.observations.len(), 1, "should have one observation");
-    }
-
-    #[test]
-    fn parse_episode_invalid_json_errors() {
+    fn parse_observation_strings_invalid_json_errors() {
         let response = ModelResponse::new("not json at all".to_string(), vec![]);
-        let result = parse_episode_response(&response, "ep-004");
+        let result = parse_observation_strings(&response);
         assert!(result.is_err(), "invalid JSON should error");
     }
 
     #[test]
-    fn parse_episode_empty_observations_errors() {
-        let empty_obs = r#"{"start": "s", "end": "e", "context": "c", "observations": []}"#;
-        let response = ModelResponse::new(empty_obs.to_string(), vec![]);
-        let result = parse_episode_response(&response, "ep-005");
-        assert!(result.is_err(), "empty observations should error");
+    fn parse_observation_strings_not_array_errors() {
+        let response = ModelResponse::new(r#"{"observations": ["one thing"]}"#.to_string(), vec![]);
+        let result = parse_observation_strings(&response);
+        assert!(result.is_err(), "non-array JSON should error");
+    }
+
+    #[test]
+    fn parse_observation_strings_empty_array_errors() {
+        let response = ModelResponse::new("[]".to_string(), vec![]);
+        let result = parse_observation_strings(&response);
+        assert!(result.is_err(), "empty array should error");
     }
 
     #[test]
@@ -496,7 +469,7 @@ mod tests {
     fn extraction_prompt_includes_messages() {
         let messages = vec![Message::user("test content")];
 
-        let prompt = build_extraction_prompt(&messages);
+        let prompt = build_extraction_prompt(&messages, EXTRACTION_SYSTEM_PROMPT);
         assert_eq!(prompt.len(), 2, "should have system + user message");
         assert_eq!(
             prompt.first().map(|m| m.role),
