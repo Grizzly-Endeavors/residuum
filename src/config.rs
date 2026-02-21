@@ -21,6 +21,9 @@ const DEFAULT_OLLAMA_URL: &str = "http://localhost:11434";
 /// Default base URL for the `OpenAI` API.
 const DEFAULT_OPENAI_URL: &str = "https://api.openai.com/v1";
 
+/// Default base URL for the Google Gemini API.
+const DEFAULT_GEMINI_URL: &str = "https://generativelanguage.googleapis.com/v1beta";
+
 /// Default request timeout in seconds.
 const DEFAULT_TIMEOUT_SECS: u64 = 120;
 
@@ -655,6 +658,8 @@ impl FromStr for ModelSpec {
 pub enum ProviderKind {
     /// Anthropic Messages API.
     Anthropic,
+    /// Google Gemini `generateContent` API.
+    Gemini,
     /// Ollama local inference.
     Ollama,
     /// OpenAI-compatible chat completions (also vLLM, LM Studio, etc.).
@@ -667,6 +672,7 @@ impl ProviderKind {
     fn default_url(self) -> &'static str {
         match self {
             Self::Anthropic => DEFAULT_ANTHROPIC_URL,
+            Self::Gemini => DEFAULT_GEMINI_URL,
             Self::Ollama => DEFAULT_OLLAMA_URL,
             Self::OpenAi => DEFAULT_OPENAI_URL,
         }
@@ -677,6 +683,7 @@ impl fmt::Display for ProviderKind {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Anthropic => write!(f, "anthropic"),
+            Self::Gemini => write!(f, "gemini"),
             Self::Ollama => write!(f, "ollama"),
             Self::OpenAi => write!(f, "openai"),
         }
@@ -689,10 +696,11 @@ impl FromStr for ProviderKind {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s.to_lowercase().as_str() {
             "anthropic" => Ok(Self::Anthropic),
+            "gemini" => Ok(Self::Gemini),
             "ollama" => Ok(Self::Ollama),
             "openai" => Ok(Self::OpenAi),
             other => Err(format!(
-                "unknown provider '{other}', expected one of: anthropic, ollama, openai"
+                "unknown provider '{other}', expected one of: anthropic, gemini, ollama, openai"
             )),
         }
     }
@@ -896,6 +904,7 @@ fn resolve_role_provider(
 fn provider_api_key_env(kind: ProviderKind) -> Option<String> {
     match kind {
         ProviderKind::Anthropic => std::env::var("ANTHROPIC_API_KEY").ok(),
+        ProviderKind::Gemini => std::env::var("GEMINI_API_KEY").ok(),
         ProviderKind::OpenAi => std::env::var("OPENAI_API_KEY").ok(),
         ProviderKind::Ollama => std::env::var("OLLAMA_API_KEY").ok(),
     }
@@ -1039,6 +1048,18 @@ mod tests {
             DEFAULT_OPENAI_URL,
             "openai default URL"
         );
+        assert_eq!(
+            ProviderKind::Gemini.default_url(),
+            DEFAULT_GEMINI_URL,
+            "gemini default URL"
+        );
+    }
+
+    #[test]
+    fn model_spec_parse_gemini() {
+        let spec = ModelSpec::from_str("gemini/gemini-2.0-flash").unwrap();
+        assert_eq!(spec.kind, ProviderKind::Gemini, "gemini should parse");
+        assert_eq!(spec.model, "gemini-2.0-flash", "model should parse");
     }
 
     #[test]

@@ -1,6 +1,7 @@
 //! Model provider abstraction and shared LLM types.
 
 pub mod anthropic;
+pub mod gemini;
 mod http;
 pub mod ollama;
 pub mod openai;

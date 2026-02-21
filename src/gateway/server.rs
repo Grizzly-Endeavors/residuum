@@ -28,6 +28,7 @@ use crate::memory::reflector::{Reflector, ReflectorConfig};
 use crate::memory::search::create_shared_index;
 use crate::memory::types::Visibility;
 use crate::models::anthropic::AnthropicClient;
+use crate::models::gemini::GeminiClient;
 use crate::models::ollama::OllamaClient;
 use crate::models::openai::OpenAiClient;
 use crate::models::{CompletionOptions, HttpClientConfig, ModelProvider, SharedHttpClient};
@@ -695,6 +696,22 @@ pub(crate) fn build_provider_from_spec(
             })?;
 
             Ok(Box::new(AnthropicClient::new(
+                http,
+                url,
+                key,
+                &spec.model,
+                max_tokens,
+            )))
+        }
+        ProviderKind::Gemini => {
+            let key = api_key.ok_or_else(|| {
+                IronclawError::Config(
+                    "gemini requires an API key (set GEMINI_API_KEY or api_key in config)"
+                        .to_string(),
+                )
+            })?;
+
+            Ok(Box::new(GeminiClient::new(
                 http,
                 url,
                 key,

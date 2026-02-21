@@ -1,0 +1,663 @@
+//! Google Gemini API provider implementation.
+//!
+//! Uses the Gemini `generateContent` REST API. Authentication is via an API
+//! key passed as a query parameter. System messages are extracted and sent
+//! as the top-level `systemInstruction` field. Tool results are sent as
+//! `functionResponse` parts in user-role messages.
+
+use async_trait::async_trait;
+use serde::{Deserialize, Serialize};
+use tracing::debug;
+
+use super::http::{SharedHttpClient, map_request_error, warn_if_insecure_remote};
+use super::{
+    CompletionOptions, Message, ModelError, ModelProvider, ModelResponse, Role, ToolCall,
+    ToolDefinition, Usage,
+};
+
+/// Client for the Google Gemini `generateContent` API.
+pub struct GeminiClient {
+    http: SharedHttpClient,
+    base_url: String,
+    api_key: String,
+    model: String,
+    max_tokens: u32,
+}
+
+impl GeminiClient {
+    /// Create a new Gemini client with a shared HTTP client.
+    ///
+    /// # Arguments
+    /// * `http` - Shared HTTP client for connection pooling
+    /// * `base_url` - API base URL (e.g. `https://generativelanguage.googleapis.com/v1beta`)
+    /// * `api_key` - Google AI API key
+    /// * `model` - Model identifier (e.g. `gemini-2.0-flash`)
+    /// * `max_tokens` - Maximum output tokens for completions
+    #[must_use]
+    pub fn new(
+        http: SharedHttpClient,
+        base_url: impl Into<String>,
+        api_key: impl Into<String>,
+        model: impl Into<String>,
+        max_tokens: u32,
+    ) -> Self {
+        let base_url = base_url.into();
+        warn_if_insecure_remote(&base_url);
+        Self {
+            http,
+            base_url,
+            api_key: api_key.into(),
+            model: model.into(),
+            max_tokens,
+        }
+    }
+
+    /// Build the full endpoint URL with the API key query parameter.
+    fn endpoint(&self) -> String {
+        format!(
+            "{}/models/{}:generateContent?key={}",
+            self.base_url, self.model, self.api_key
+        )
+    }
+
+    /// Convert generic messages into Gemini API format.
+    ///
+    /// System messages are extracted and returned separately; Gemini uses a
+    /// top-level `systemInstruction` field rather than including system content
+    /// in the `contents` array. Multiple system messages are concatenated.
+    ///
+    /// Tool result messages (`Role::Tool`) become user-role messages containing
+    /// `functionResponse` parts, as required by the Gemini API.
+    fn convert_messages(
+        messages: &[Message],
+    ) -> (Option<GeminiSystemInstruction>, Vec<GeminiContent>) {
+        let mut system_parts: Vec<&str> = Vec::new();
+        let mut contents: Vec<GeminiContent> = Vec::new();
+
+        for msg in messages {
+            match msg.role {
+                Role::System => {
+                    system_parts.push(&msg.content);
+                }
+                Role::User => {
+                    contents.push(GeminiContent {
+                        role: "user".to_string(),
+                        parts: vec![GeminiPart::Text {
+                            text: msg.content.clone(),
+                        }],
+                    });
+                }
+                Role::Assistant => {
+                    let mut parts: Vec<GeminiPart> = Vec::new();
+
+                    if !msg.content.is_empty() {
+                        parts.push(GeminiPart::Text {
+                            text: msg.content.clone(),
+                        });
+                    }
+
+                    if let Some(tool_calls) = &msg.tool_calls {
+                        for tc in tool_calls {
+                            parts.push(GeminiPart::FunctionCall {
+                                function_call: GeminiFunctionCall {
+                                    name: tc.name.clone(),
+                                    args: tc.arguments.clone(),
+                                },
+                            });
+                        }
+                    }
+
+                    contents.push(GeminiContent {
+                        role: "model".to_string(),
+                        parts,
+                    });
+                }
+                Role::Tool => {
+                    // Gemini expects functionResponse in a user-role message.
+                    // The response must be a JSON object; wrap plain strings.
+                    let response_value = serde_json::json!({ "result": msg.content });
+                    let tool_name = msg.tool_call_id.as_deref().unwrap_or("unknown");
+
+                    contents.push(GeminiContent {
+                        role: "user".to_string(),
+                        parts: vec![GeminiPart::FunctionResponse {
+                            function_response: GeminiFunctionResponse {
+                                name: tool_name.to_string(),
+                                response: response_value,
+                            },
+                        }],
+                    });
+                }
+            }
+        }
+
+        let system_instruction = (!system_parts.is_empty()).then(|| GeminiSystemInstruction {
+            parts: vec![GeminiPart::Text {
+                text: system_parts.join("\n\n"),
+            }],
+        });
+
+        (system_instruction, contents)
+    }
+}
+
+#[async_trait]
+impl ModelProvider for GeminiClient {
+    async fn complete(
+        &self,
+        messages: &[Message],
+        tools: &[ToolDefinition],
+        options: &CompletionOptions,
+    ) -> Result<ModelResponse, ModelError> {
+        let url = self.endpoint();
+
+        let (system_instruction, contents) = Self::convert_messages(messages);
+
+        let gemini_tools = (!tools.is_empty()).then(|| {
+            vec![GeminiTools {
+                function_declarations: tools
+                    .iter()
+                    .map(|t| GeminiFunctionDeclaration {
+                        name: t.name.clone(),
+                        description: t.description.clone(),
+                        parameters: t.parameters.clone(),
+                    })
+                    .collect(),
+            }]
+        });
+
+        let max_output_tokens = options.max_tokens.unwrap_or(self.max_tokens);
+
+        let request = GeminiRequest {
+            contents,
+            system_instruction,
+            tools: gemini_tools,
+            generation_config: GeminiGenerationConfig { max_output_tokens },
+        };
+
+        debug!(model = %self.model, "sending Gemini generateContent request");
+
+        let response = self
+            .http
+            .client()
+            .post(&url)
+            .json(&request)
+            .send()
+            .await
+            .map_err(|e| map_request_error(e, self.http.timeout_secs()))?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let raw_body = match response.text().await {
+                Ok(body) => body,
+                Err(e) => {
+                    tracing::warn!(error = %e, "failed to read error response body");
+                    format!("failed to read response body: {e}")
+                }
+            };
+            let error_body = serde_json::from_str::<GeminiErrorResponse>(&raw_body)
+                .map_or_else(|_| raw_body, |e| e.error.message);
+            return Err(ModelError::Api(format!("{status}: {error_body}")));
+        }
+
+        let gemini_response: GeminiResponse = response.json().await?;
+
+        let candidate = gemini_response
+            .candidates
+            .into_iter()
+            .next()
+            .ok_or_else(|| {
+                ModelError::Parse("Gemini API response contained no candidates".to_string())
+            })?;
+
+        let mut content_text = String::new();
+        let mut tool_calls: Vec<ToolCall> = Vec::new();
+
+        for (idx, part) in candidate.content.parts.into_iter().enumerate() {
+            match part {
+                GeminiPart::Text { text } => {
+                    content_text.push_str(&text);
+                }
+                GeminiPart::FunctionCall { function_call } => {
+                    // Gemini does not return IDs for function calls; synthesize them.
+                    tool_calls.push(ToolCall {
+                        id: format!("call_{idx}"),
+                        name: function_call.name,
+                        arguments: function_call.args,
+                    });
+                }
+                GeminiPart::FunctionResponse { .. } => {
+                    // Gemini should not return functionResponse parts in model output.
+                    tracing::warn!("unexpected functionResponse part in Gemini model output");
+                }
+            }
+        }
+
+        let usage = gemini_response.usage_metadata.map(|u| Usage {
+            input_tokens: u.prompt_token_count,
+            output_tokens: u.candidates_token_count,
+        });
+
+        let mut model_response = ModelResponse::new(content_text, tool_calls);
+        model_response.usage = usage;
+
+        Ok(model_response)
+    }
+
+    fn model_name(&self) -> &str {
+        &self.model
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Gemini API request types
+// ---------------------------------------------------------------------------
+
+#[derive(Serialize)]
+struct GeminiRequest {
+    contents: Vec<GeminiContent>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    system_instruction: Option<GeminiSystemInstruction>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tools: Option<Vec<GeminiTools>>,
+    generation_config: GeminiGenerationConfig,
+}
+
+#[derive(Serialize)]
+struct GeminiSystemInstruction {
+    parts: Vec<GeminiPart>,
+}
+
+#[derive(Serialize)]
+struct GeminiContent {
+    role: String,
+    parts: Vec<GeminiPart>,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(untagged)]
+enum GeminiPart {
+    Text {
+        text: String,
+    },
+    FunctionCall {
+        #[serde(rename = "functionCall")]
+        function_call: GeminiFunctionCall,
+    },
+    FunctionResponse {
+        #[serde(rename = "functionResponse")]
+        function_response: GeminiFunctionResponse,
+    },
+}
+
+#[derive(Serialize, Deserialize)]
+struct GeminiFunctionCall {
+    name: String,
+    args: serde_json::Value,
+}
+
+#[derive(Serialize, Deserialize)]
+struct GeminiFunctionResponse {
+    name: String,
+    response: serde_json::Value,
+}
+
+#[derive(Serialize)]
+struct GeminiTools {
+    #[serde(rename = "functionDeclarations")]
+    function_declarations: Vec<GeminiFunctionDeclaration>,
+}
+
+#[derive(Serialize)]
+struct GeminiFunctionDeclaration {
+    name: String,
+    description: String,
+    parameters: serde_json::Value,
+}
+
+#[derive(Serialize)]
+struct GeminiGenerationConfig {
+    #[serde(rename = "maxOutputTokens")]
+    max_output_tokens: u32,
+}
+
+// ---------------------------------------------------------------------------
+// Gemini API response types
+// ---------------------------------------------------------------------------
+
+#[derive(Deserialize)]
+struct GeminiResponse {
+    candidates: Vec<GeminiCandidate>,
+    #[serde(rename = "usageMetadata")]
+    usage_metadata: Option<GeminiUsageMetadata>,
+}
+
+#[derive(Deserialize)]
+struct GeminiCandidate {
+    content: GeminiResponseContent,
+}
+
+#[derive(Deserialize)]
+struct GeminiResponseContent {
+    parts: Vec<GeminiPart>,
+}
+
+#[derive(Deserialize)]
+struct GeminiUsageMetadata {
+    #[serde(rename = "promptTokenCount")]
+    prompt_token_count: u32,
+    #[serde(rename = "candidatesTokenCount")]
+    candidates_token_count: u32,
+}
+
+#[derive(Deserialize)]
+struct GeminiErrorResponse {
+    error: GeminiError,
+}
+
+#[derive(Deserialize)]
+struct GeminiError {
+    message: String,
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+#[expect(clippy::unwrap_used, reason = "test code uses unwrap for clarity")]
+mod tests {
+    use super::*;
+    use crate::models::CompletionOptions;
+    use wiremock::matchers::{method, path_regex, query_param};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    fn make_client(base_url: &str) -> GeminiClient {
+        let http =
+            SharedHttpClient::new(&super::super::http::HttpClientConfig::with_timeout(60)).unwrap();
+        GeminiClient::new(http, base_url, "test-api-key", "gemini-2.0-flash", 8192)
+    }
+
+    #[test]
+    fn endpoint_includes_model_and_key() {
+        let http =
+            SharedHttpClient::new(&super::super::http::HttpClientConfig::with_timeout(60)).unwrap();
+        let client = GeminiClient::new(
+            http,
+            "https://generativelanguage.googleapis.com/v1beta",
+            "my-key",
+            "gemini-2.0-flash",
+            8192,
+        );
+        let ep = client.endpoint();
+        assert!(
+            ep.contains("/models/gemini-2.0-flash:generateContent"),
+            "endpoint should include model path"
+        );
+        assert!(ep.contains("key=my-key"), "endpoint should include API key");
+    }
+
+    #[test]
+    fn convert_messages_extracts_system() {
+        let messages = vec![Message::system("You are helpful."), Message::user("Hello")];
+        let (system, contents) = GeminiClient::convert_messages(&messages);
+
+        assert!(system.is_some(), "system instruction should be extracted");
+        let sys = system.unwrap();
+        assert_eq!(sys.parts.len(), 1, "should have one system part");
+        let first_part = sys.parts.first().unwrap();
+        assert!(
+            matches!(first_part, GeminiPart::Text { .. }),
+            "system part should be text"
+        );
+        if let GeminiPart::Text { text } = first_part {
+            assert_eq!(text, "You are helpful.", "system text should match");
+        }
+
+        assert_eq!(contents.len(), 1, "only user message in contents");
+        assert_eq!(
+            contents.first().map(|c| c.role.as_str()),
+            Some("user"),
+            "content role should be user"
+        );
+    }
+
+    #[test]
+    fn convert_messages_tool_result_becomes_function_response() {
+        let messages = vec![Message::tool("command output", "call_0")];
+        let (_, contents) = GeminiClient::convert_messages(&messages);
+
+        assert_eq!(contents.len(), 1, "tool message becomes one content entry");
+        let entry = contents.first().unwrap();
+        assert_eq!(entry.role, "user", "tool result role should be user");
+        assert_eq!(entry.parts.len(), 1, "should have one part");
+        let part = entry.parts.first().unwrap();
+        assert!(
+            matches!(part, GeminiPart::FunctionResponse { .. }),
+            "part should be functionResponse"
+        );
+        if let GeminiPart::FunctionResponse { function_response } = part {
+            assert_eq!(
+                function_response.response,
+                serde_json::json!({"result": "command output"}),
+                "response should wrap content"
+            );
+        }
+    }
+
+    #[test]
+    fn convert_messages_assistant_with_tool_calls() {
+        let messages = vec![Message::assistant(
+            "thinking",
+            Some(vec![ToolCall {
+                id: "call_0".to_string(),
+                name: "bash".to_string(),
+                arguments: serde_json::json!({"command": "ls"}),
+            }]),
+        )];
+        let (_, contents) = GeminiClient::convert_messages(&messages);
+
+        let entry = contents.first().unwrap();
+        assert_eq!(entry.role, "model", "assistant maps to model role");
+        assert_eq!(entry.parts.len(), 2, "text + function call parts");
+        assert!(
+            matches!(entry.parts.first(), Some(GeminiPart::Text { .. })),
+            "first part should be text"
+        );
+        assert!(
+            matches!(entry.parts.get(1), Some(GeminiPart::FunctionCall { .. })),
+            "second part should be function call"
+        );
+    }
+
+    #[test]
+    fn model_name_returns_model() {
+        let client = make_client("http://localhost");
+        assert_eq!(client.model_name(), "gemini-2.0-flash");
+    }
+
+    #[tokio::test]
+    async fn complete_success() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path_regex(r"/models/gemini-2\.0-flash:generateContent"))
+            .and(query_param("key", "test-api-key"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "candidates": [{
+                    "content": {
+                        "role": "model",
+                        "parts": [{"text": "Hello there!"}]
+                    },
+                    "finishReason": "STOP"
+                }],
+                "usageMetadata": {
+                    "promptTokenCount": 10,
+                    "candidatesTokenCount": 5,
+                    "totalTokenCount": 15
+                }
+            })))
+            .mount(&mock_server)
+            .await;
+
+        let client = make_client(&mock_server.uri());
+        let response = client
+            .complete(
+                &[Message::user("Hello")],
+                &[],
+                &CompletionOptions::default(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.content, "Hello there!", "content should match");
+        assert!(response.tool_calls.is_empty(), "should have no tool calls");
+        assert!(response.usage.is_some(), "should report usage");
+        let usage = response.usage.unwrap();
+        assert_eq!(usage.input_tokens, 10, "input tokens should match");
+        assert_eq!(usage.output_tokens, 5, "output tokens should match");
+        assert!(response.is_complete(), "text-only response is complete");
+    }
+
+    #[tokio::test]
+    async fn complete_with_tool_calls() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path_regex(r"/models/gemini-2\.0-flash:generateContent"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "candidates": [{
+                    "content": {
+                        "role": "model",
+                        "parts": [{
+                            "functionCall": {
+                                "name": "bash",
+                                "args": {"command": "ls -la"}
+                            }
+                        }]
+                    },
+                    "finishReason": "TOOL_CODE"
+                }]
+            })))
+            .mount(&mock_server)
+            .await;
+
+        let client = make_client(&mock_server.uri());
+        let response = client
+            .complete(
+                &[Message::user("List files")],
+                &[],
+                &CompletionOptions::default(),
+            )
+            .await
+            .unwrap();
+
+        assert!(response.content.is_empty(), "no text in tool-only response");
+        assert_eq!(response.tool_calls.len(), 1, "should have one tool call");
+        let tc = response.tool_calls.first().unwrap();
+        assert_eq!(tc.name, "bash", "tool name should match");
+        assert_eq!(
+            tc.arguments,
+            serde_json::json!({"command": "ls -la"}),
+            "arguments should be native JSON"
+        );
+        assert_eq!(tc.id, "call_0", "should have synthetic ID");
+        assert!(
+            !response.is_complete(),
+            "response with tool calls is not complete"
+        );
+    }
+
+    #[tokio::test]
+    async fn api_error_returned_as_model_error() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path_regex(r"/models/gemini-2\.0-flash:generateContent"))
+            .respond_with(ResponseTemplate::new(400).set_body_json(serde_json::json!({
+                "error": {
+                    "code": 400,
+                    "message": "API key not valid. Please pass a valid API key.",
+                    "status": "INVALID_ARGUMENT"
+                }
+            })))
+            .mount(&mock_server)
+            .await;
+
+        let client = make_client(&mock_server.uri());
+        let result = client
+            .complete(&[], &[], &CompletionOptions::default())
+            .await;
+
+        assert!(result.is_err(), "API error should return Err");
+        let err = result.unwrap_err();
+        assert!(matches!(err, ModelError::Api(_)), "should be an Api error");
+        assert!(
+            err.to_string().contains("400"),
+            "error should contain status code"
+        );
+        assert!(
+            err.to_string().contains("API key not valid"),
+            "error should contain Gemini message"
+        );
+    }
+
+    #[tokio::test]
+    async fn empty_candidates_returns_parse_error() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path_regex(r"/models/gemini-2\.0-flash:generateContent"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "candidates": []
+            })))
+            .mount(&mock_server)
+            .await;
+
+        let client = make_client(&mock_server.uri());
+        let result = client
+            .complete(&[], &[], &CompletionOptions::default())
+            .await;
+
+        assert!(result.is_err(), "empty candidates should return error");
+        let err = result.unwrap_err();
+        assert!(
+            matches!(err, ModelError::Parse(_)),
+            "should be a Parse error"
+        );
+        assert!(
+            err.to_string().contains("no candidates"),
+            "error should mention missing candidates"
+        );
+    }
+
+    #[tokio::test]
+    async fn complete_timeout() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path_regex(r"/models/gemini-2\.0-flash:generateContent"))
+            .respond_with(ResponseTemplate::new(200).set_delay(std::time::Duration::from_secs(3)))
+            .mount(&mock_server)
+            .await;
+
+        let http =
+            SharedHttpClient::new(&super::super::http::HttpClientConfig::with_timeout(1)).unwrap();
+        let client = GeminiClient::new(
+            http,
+            mock_server.uri(),
+            "test-api-key",
+            "gemini-2.0-flash",
+            8192,
+        );
+        let result = client
+            .complete(&[], &[], &CompletionOptions::default())
+            .await;
+
+        assert!(result.is_err(), "timeout should return error");
+        assert!(
+            matches!(result.unwrap_err(), ModelError::Timeout(1)),
+            "should be Timeout(1)"
+        );
+    }
+}
