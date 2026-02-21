@@ -114,8 +114,9 @@ impl Agent {
     /// Process a user message through the model, executing tool calls as needed.
     ///
     /// Any queued system events are prepended to the user message so the agent
-    /// sees pending alerts in context. Returns the final text response from the
-    /// model after all tool iterations.
+    /// sees pending alerts in context. Returns all non-empty assistant texts
+    /// produced during the turn — intermediate texts alongside tool calls come
+    /// first, the final text-only response last.
     ///
     /// # Errors
     /// Returns `IronclawError` if the model call fails or tool execution errors
@@ -124,7 +125,7 @@ impl Agent {
         &mut self,
         user_input: &str,
         display: &dyn TurnDisplay,
-    ) -> Result<String, IronclawError> {
+    ) -> Result<Vec<String>, IronclawError> {
         // Build effective input: prepend any pending system events
         let effective_input = if self.pending_system_events.is_empty() {
             user_input.to_string()
@@ -164,7 +165,7 @@ impl Agent {
         let mut session = Session::new();
         session.push(Message::user(prompt));
 
-        let response = execute_turn(
+        let texts = execute_turn(
             &*self.provider,
             &self.tools,
             &self.identity,
@@ -174,6 +175,8 @@ impl Agent {
             display,
         )
         .await?;
+
+        let response = texts.last().cloned().unwrap_or_default();
 
         Ok(SystemTurnResult {
             response,
@@ -198,6 +201,10 @@ impl Agent {
 ///
 /// Calls the provider repeatedly until it returns a text response (no tool calls),
 /// executing any requested tools in between. Updates `session` in place.
+///
+/// Returns all non-empty assistant texts produced during the turn. Any text
+/// emitted alongside tool calls is captured first; the final text-only response
+/// is appended last.
 async fn execute_turn(
     provider: &dyn ModelProvider,
     tools: &ToolRegistry,
@@ -206,8 +213,9 @@ async fn execute_turn(
     observations: Option<&str>,
     session: &mut Session,
     display: &dyn TurnDisplay,
-) -> Result<String, IronclawError> {
+) -> Result<Vec<String>, IronclawError> {
     let tool_definitions = tools.definitions();
+    let mut texts: Vec<String> = Vec::new();
 
     for iteration in 0..MAX_TOOL_ITERATIONS {
         // System prompt is reassembled each iteration because tool execution
@@ -230,7 +238,8 @@ async fn execute_turn(
                 )));
             }
 
-            return Ok(response.content);
+            texts.push(response.content);
+            return Ok(texts);
         }
 
         tracing::info!(
@@ -238,6 +247,11 @@ async fn execute_turn(
             tool_count = response.tool_calls.len(),
             "processing tool calls"
         );
+
+        // Capture any text the model emitted alongside tool calls.
+        if !response.content.is_empty() {
+            texts.push(response.content.clone());
+        }
 
         session.push(Message::assistant(
             response.content.clone(),
@@ -344,7 +358,7 @@ mod tests {
 
         let display = NullDisplay;
         let result = agent.process_message("hi", &display).await.unwrap();
-        assert_eq!(result, "hello there", "should return model text");
+        assert_eq!(result, vec!["hello there"], "should return model text");
     }
 
     #[tokio::test]
@@ -377,8 +391,46 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(
-            result, "the result was: test",
+            result,
+            vec!["the result was: test"],
             "should return final text after tool loop"
+        );
+    }
+
+    #[tokio::test]
+    async fn intermediate_text_returned() {
+        let mut registry = ToolRegistry::new();
+        registry.register_defaults(FileTracker::new_shared());
+
+        // First response has text alongside tool calls (intermediate), second is final.
+        let provider = MockProvider::new(vec![
+            ModelResponse::new(
+                "Let me check that for you...".to_string(),
+                vec![ToolCall {
+                    id: "call_1".to_string(),
+                    name: "exec".to_string(),
+                    arguments: serde_json::json!({"command": "echo test"}),
+                }],
+            ),
+            ModelResponse::new("Done! The output was: test".to_string(), vec![]),
+        ]);
+
+        let mut agent = Agent::new(
+            Box::new(provider),
+            registry,
+            IdentityFiles::default(),
+            CompletionOptions::default(),
+        );
+
+        let display = NullDisplay;
+        let result = agent
+            .process_message("what does echo test print?", &display)
+            .await
+            .unwrap();
+        assert_eq!(
+            result,
+            vec!["Let me check that for you...", "Done! The output was: test"],
+            "should return intermediate text and final text in order"
         );
     }
 

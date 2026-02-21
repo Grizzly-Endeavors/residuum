@@ -132,15 +132,17 @@ mod gateway_integration {
                     .process_message(&inbound.content, &broadcast_display)
                     .await
                 {
-                    Ok(response_text) => {
-                        if loop_broadcast_tx
-                            .send(ServerMessage::Response {
-                                reply_to: reply_id,
-                                content: response_text,
-                            })
-                            .is_err()
-                        {
-                            break;
+                    Ok(texts) => {
+                        for text in texts {
+                            if loop_broadcast_tx
+                                .send(ServerMessage::Response {
+                                    reply_to: reply_id.clone(),
+                                    content: text,
+                                })
+                                .is_err()
+                            {
+                                break;
+                            }
                         }
                     }
                     Err(e) => {

@@ -209,12 +209,14 @@ pub async fn run_gateway(cfg: Config) -> Result<(), IronclawError> {
                 let before = agent.message_count();
 
                 match agent.process_message(&inbound.content, &broadcast_display).await {
-                    Ok(response_text) => {
-                        if broadcast_tx.send(ServerMessage::Response {
-                            reply_to: reply_id,
-                            content: response_text,
-                        }).is_err() {
-                            tracing::trace!("no broadcast receivers for response");
+                    Ok(texts) => {
+                        for text in texts {
+                            if broadcast_tx.send(ServerMessage::Response {
+                                reply_to: reply_id.clone(),
+                                content: text,
+                            }).is_err() {
+                                tracing::trace!("no broadcast receivers for response");
+                            }
                         }
                     }
                     Err(e) => {
