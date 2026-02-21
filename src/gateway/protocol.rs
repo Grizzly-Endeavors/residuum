@@ -20,6 +20,8 @@ pub enum ClientMessage {
     },
     /// Keepalive ping.
     Ping,
+    /// Request the gateway to reload its configuration.
+    Reload,
 }
 
 /// Messages sent from the server to WebSocket clients.
@@ -70,6 +72,8 @@ pub enum ServerMessage {
     },
     /// Keepalive pong.
     Pong,
+    /// The gateway is reloading its configuration.
+    Reloading,
 }
 
 impl ServerMessage {
@@ -194,6 +198,35 @@ mod tests {
         };
         let json = serde_json::to_string(&msg).unwrap();
         assert!(json.contains("\"type\":\"error\""), "should have type tag");
+    }
+
+    #[test]
+    fn client_message_deserialize_reload() {
+        let json = r#"{"type":"reload"}"#;
+        let msg: ClientMessage = serde_json::from_str(json).unwrap();
+        assert!(
+            matches!(msg, ClientMessage::Reload),
+            "should deserialize to Reload"
+        );
+    }
+
+    #[test]
+    fn server_message_serialize_reloading() {
+        let msg = ServerMessage::Reloading;
+        let json = serde_json::to_string(&msg).unwrap();
+        assert_eq!(
+            json, r#"{"type":"reloading"}"#,
+            "reloading should serialize cleanly"
+        );
+    }
+
+    #[test]
+    fn is_verbose_only_reloading() {
+        let msg = ServerMessage::Reloading;
+        assert!(
+            !msg.is_verbose_only(),
+            "Reloading should not be verbose-only"
+        );
     }
 
     #[test]

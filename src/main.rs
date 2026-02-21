@@ -47,15 +47,23 @@ async fn run() -> Result<(), IronclawError> {
         }
         // "serve" or no subcommand → start gateway
         Some("serve") | None => {
-            Config::bootstrap_config_dir()?;
-            let cfg = Config::load()?;
-            tracing::info!(
-                model = %cfg.main.model,
-                provider_url = %cfg.main.provider_url,
-                workspace = %cfg.workspace_dir.display(),
-                "configuration loaded"
-            );
-            ironclaw::gateway::server::run_gateway(cfg).await
+            loop {
+                Config::bootstrap_config_dir()?;
+                let cfg = Config::load()?;
+                tracing::info!(
+                    model = %cfg.main.model,
+                    provider_url = %cfg.main.provider_url,
+                    workspace = %cfg.workspace_dir.display(),
+                    "configuration loaded"
+                );
+                match ironclaw::gateway::server::run_gateway(cfg).await? {
+                    ironclaw::gateway::server::GatewayExit::Shutdown => break,
+                    ironclaw::gateway::server::GatewayExit::Reload => {
+                        tracing::info!("configuration reloaded, restarting gateway");
+                    }
+                }
+            }
+            Ok(())
         }
         Some(other) => Err(IronclawError::Config(format!(
             "unknown subcommand '{other}', expected 'serve' or 'connect'"
@@ -122,6 +130,11 @@ async fn run_connect(url: &str, verbose: bool) -> Result<(), IronclawError> {
                                 &ClientMessage::SetVerbose { enabled: new_verbose },
                             ).await?;
                         }
+                        CommandAction::Reload => {
+                            send_client_message(&mut ws_tx, &ClientMessage::Reload).await?;
+                            // The server will broadcast Reloading then drop connections;
+                            // we break here and let the ws_rx arm print the notice.
+                        }
                         CommandAction::Quit => break,
                         CommandAction::PrintOutput(text) => eprintln!("{text}"),
                         CommandAction::None => {}
@@ -164,6 +177,10 @@ async fn run_connect(url: &str, verbose: bool) -> Result<(), IronclawError> {
                 };
 
                 match serde_json::from_str::<ServerMessage>(&raw) {
+                    Ok(ServerMessage::Reloading) => {
+                        eprintln!("server is reloading, reconnect when ready");
+                        break;
+                    }
                     Ok(server_msg) => client.display(&server_msg),
                     Err(e) => eprintln!("warning: failed to parse server message: {e}"),
                 }

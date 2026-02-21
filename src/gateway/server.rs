@@ -43,6 +43,14 @@ use crate::workspace::layout::WorkspaceLayout;
 use super::display::BroadcastDisplay;
 use super::protocol::{ClientMessage, ServerMessage};
 
+/// Outcome of the gateway main loop.
+pub enum GatewayExit {
+    /// Clean shutdown (inbound channel closed).
+    Shutdown,
+    /// Reload requested; caller should re-run with fresh config.
+    Reload,
+}
+
 /// An inbound message from a WebSocket client.
 struct InboundMessage {
     /// Client-generated correlation ID.
@@ -56,6 +64,7 @@ struct InboundMessage {
 struct GatewayState {
     inbound_tx: mpsc::Sender<InboundMessage>,
     broadcast_tx: broadcast::Sender<ServerMessage>,
+    reload_sender: tokio::sync::watch::Sender<bool>,
 }
 
 /// Start the WebSocket gateway server and run the main event loop.
@@ -74,7 +83,7 @@ struct GatewayState {
     clippy::too_many_lines,
     reason = "gateway entrypoint wires up all subsystems; splitting would obscure the startup sequence"
 )]
-pub async fn run_gateway(cfg: Config) -> Result<(), IronclawError> {
+pub async fn run_gateway(cfg: Config) -> Result<GatewayExit, IronclawError> {
     // Ensure workspace
     let layout = WorkspaceLayout::new(&cfg.workspace_dir);
     ensure_workspace(&layout).await?;
@@ -150,6 +159,7 @@ pub async fn run_gateway(cfg: Config) -> Result<(), IronclawError> {
     // Channels
     let (inbound_tx, mut inbound_rx) = mpsc::channel::<InboundMessage>(32);
     let (broadcast_tx, _broadcast_rx) = broadcast::channel::<ServerMessage>(256);
+    let (reload_sender, mut reload_rx) = tokio::sync::watch::channel(false);
 
     let broadcast_display = BroadcastDisplay::new(broadcast_tx.clone());
 
@@ -157,6 +167,7 @@ pub async fn run_gateway(cfg: Config) -> Result<(), IronclawError> {
     let state = GatewayState {
         inbound_tx,
         broadcast_tx: broadcast_tx.clone(),
+        reload_sender,
     };
 
     let app = axum::Router::new()
@@ -169,9 +180,15 @@ pub async fn run_gateway(cfg: Config) -> Result<(), IronclawError> {
         .map_err(|e| IronclawError::Gateway(format!("failed to bind to {addr}: {e}")))?;
     tracing::info!(addr = %addr, "gateway listening");
 
-    // Spawn the HTTP server
-    tokio::spawn(async move {
-        if let Err(e) = axum::serve(listener, app).await {
+    // Spawn the HTTP server with graceful shutdown on reload signal
+    let mut shutdown_rx = reload_rx.clone();
+    let server_handle = tokio::spawn(async move {
+        if let Err(e) = axum::serve(listener, app)
+            .with_graceful_shutdown(async move {
+                shutdown_rx.wait_for(|v| *v).await.ok();
+            })
+            .await
+        {
             tracing::error!(error = %e, "gateway server error");
         }
     });
@@ -191,10 +208,18 @@ pub async fn run_gateway(cfg: Config) -> Result<(), IronclawError> {
 
     loop {
         tokio::select! {
+            // ── Reload signal ─────────────────────────────────────────────
+            _ = reload_rx.changed() => {
+                tracing::info!("reloading configuration");
+                server_handle.abort();
+                return Ok(GatewayExit::Reload);
+            }
+
             // ── Inbound WebSocket messages ────────────────────────────────
             msg = inbound_rx.recv() => {
                 let Some(inbound) = msg else {
                     tracing::info!("inbound channel closed, shutting down");
+                    server_handle.abort();
                     break;
                 };
 
@@ -317,7 +342,7 @@ pub async fn run_gateway(cfg: Config) -> Result<(), IronclawError> {
         }
     }
 
-    Ok(())
+    Ok(GatewayExit::Shutdown)
 }
 
 /// Axum handler that upgrades an HTTP request to a WebSocket connection.
@@ -405,6 +430,13 @@ async fn handle_connection(socket: WebSocket, state: GatewayState) {
                 if state.broadcast_tx.send(ServerMessage::Pong).is_err() {
                     tracing::trace!("no broadcast receivers for pong");
                 }
+            }
+            ClientMessage::Reload => {
+                tracing::info!("reload requested by client");
+                // Notify all connected clients before the connection drops
+                state.broadcast_tx.send(ServerMessage::Reloading).ok();
+                // Signal the main loop and HTTP server
+                state.reload_sender.send(true).ok();
             }
         }
     }

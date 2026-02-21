@@ -9,6 +9,8 @@ pub enum SlashCommand {
     Status,
     /// Toggle verbose mode.
     Verbose,
+    /// Reload the gateway configuration.
+    Reload,
     /// Quit the client.
     Quit,
     /// An unrecognized slash command.
@@ -24,6 +26,8 @@ pub enum CommandAction {
     PrintOutput(String),
     /// Toggle verbose mode on/off.
     ToggleVerbose,
+    /// Send a reload request to the server.
+    Reload,
     /// Exit the client.
     Quit,
 }
@@ -42,6 +46,7 @@ impl SlashCommand {
             "help" | "h" => Self::Help,
             "status" => Self::Status,
             "verbose" | "v" => Self::Verbose,
+            "reload" | "r" => Self::Reload,
             "quit" | "exit" | "q" => Self::Quit,
             _ => Self::Unknown(keyword.to_string()),
         })
@@ -56,6 +61,7 @@ impl SlashCommand {
             Self::Help => CommandAction::PrintOutput(help_text()),
             Self::Status => CommandAction::PrintOutput(status_text(url, verbose)),
             Self::Verbose => CommandAction::ToggleVerbose,
+            Self::Reload => CommandAction::Reload,
             Self::Quit => CommandAction::Quit,
             Self::Unknown(name) => {
                 CommandAction::PrintOutput(format!("unknown command: /{name} (try /help)"))
@@ -70,6 +76,7 @@ fn help_text() -> String {
         "  /help, /h       — show this help",
         "  /status         — show connection info",
         "  /verbose, /v    — toggle verbose mode (tool events)",
+        "  /reload, /r     — reload server configuration",
         "  /quit, /exit, /q — disconnect and exit",
     ]
     .join("\n")
@@ -122,6 +129,20 @@ mod tests {
             SlashCommand::parse("/v"),
             Some(SlashCommand::Verbose),
             "should parse /v alias"
+        );
+    }
+
+    #[test]
+    fn parse_reload() {
+        assert_eq!(
+            SlashCommand::parse("/reload"),
+            Some(SlashCommand::Reload),
+            "should parse /reload"
+        );
+        assert_eq!(
+            SlashCommand::parse("/r"),
+            Some(SlashCommand::Reload),
+            "should parse /r alias"
         );
     }
 
@@ -201,6 +222,12 @@ mod tests {
             CommandAction::ToggleVerbose,
             "verbose should return ToggleVerbose"
         );
+    }
+
+    #[test]
+    fn execute_reload_returns_reload() {
+        let action = SlashCommand::Reload.execute("ws://localhost:7700/ws", false);
+        assert_eq!(action, CommandAction::Reload, "reload should return Reload");
     }
 
     #[test]

@@ -102,7 +102,8 @@ impl CliClient {
                 let line = format!("error: {message}");
                 eprintln!("{}", self.theme.format_error(&line));
             }
-            ServerMessage::Pong => {}
+            // Reloading is intercepted in run_connect before display() is called
+            ServerMessage::Pong | ServerMessage::Reloading => {}
         }
     }
 
