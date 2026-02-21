@@ -141,10 +141,10 @@ impl WorkspaceLayout {
         self.root.join("HEARTBEAT.yml")
     }
 
-    /// Path to Alerts.md -- alert delivery behavior instructions.
+    /// Path to ALERTS.md -- alert delivery behavior instructions.
     #[must_use]
     pub fn alerts_md(&self) -> PathBuf {
-        self.root.join("Alerts.md")
+        self.root.join("ALERTS.md")
     }
 
     /// Path to cron/jobs.json -- persisted scheduled jobs.
@@ -225,7 +225,7 @@ mod tests {
         );
         assert_eq!(
             layout.alerts_md(),
-            PathBuf::from("/tmp/ws/Alerts.md"),
+            PathBuf::from("/tmp/ws/ALERTS.md"),
             "alerts_md path"
         );
         assert_eq!(
