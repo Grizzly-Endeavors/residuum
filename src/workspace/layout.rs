@@ -93,28 +93,16 @@ impl WorkspaceLayout {
         self.root.join("skills")
     }
 
-    /// Path to the PARA projects directory.
+    /// Path to the projects directory for active project contexts.
     #[must_use]
-    pub(crate) fn para_projects_dir(&self) -> PathBuf {
-        self.root.join("para/projects")
+    pub(crate) fn projects_dir(&self) -> PathBuf {
+        self.root.join("projects")
     }
 
-    /// Path to the PARA areas directory.
+    /// Path to the archive directory for completed project contexts.
     #[must_use]
-    pub(crate) fn para_areas_dir(&self) -> PathBuf {
-        self.root.join("para/areas")
-    }
-
-    /// Path to the PARA resources directory.
-    #[must_use]
-    pub(crate) fn para_resources_dir(&self) -> PathBuf {
-        self.root.join("para/resources")
-    }
-
-    /// Path to the PARA archive directory.
-    #[must_use]
-    pub(crate) fn para_archive_dir(&self) -> PathBuf {
-        self.root.join("para/archive")
+    pub(crate) fn archive_dir(&self) -> PathBuf {
+        self.root.join("archive")
     }
 
     /// Path to the cron directory for scheduled tasks.
@@ -174,10 +162,8 @@ impl WorkspaceLayout {
             self.episodes_dir(),
             self.search_index_dir(),
             self.skills_dir(),
-            self.para_projects_dir(),
-            self.para_areas_dir(),
-            self.para_resources_dir(),
-            self.para_archive_dir(),
+            self.projects_dir(),
+            self.archive_dir(),
             self.cron_dir(),
             self.hooks_dir(),
             self.daily_log_dir(),
@@ -253,7 +239,7 @@ mod tests {
     fn required_dirs_count() {
         let layout = WorkspaceLayout::new("/tmp/ws");
         let dirs = layout.required_dirs();
-        assert_eq!(dirs.len(), 12, "should have all required directories");
+        assert_eq!(dirs.len(), 10, "should have all required directories");
         assert!(
             dirs.contains(&PathBuf::from("/tmp/ws")),
             "root should be included"

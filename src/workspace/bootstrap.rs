@@ -175,10 +175,8 @@ mod tests {
         assert!(layout.memory_dir().exists(), "memory dir should exist");
         assert!(layout.episodes_dir().exists(), "episodes dir should exist");
         assert!(layout.skills_dir().exists(), "skills dir should exist");
-        assert!(
-            layout.para_projects_dir().exists(),
-            "para/projects should exist"
-        );
+        assert!(layout.projects_dir().exists(), "projects dir should exist");
+        assert!(layout.archive_dir().exists(), "archive dir should exist");
         assert!(layout.cron_dir().exists(), "cron dir should exist");
         assert!(layout.hooks_dir().exists(), "hooks dir should exist");
         assert!(layout.soul_md().exists(), "SOUL.md should exist");
