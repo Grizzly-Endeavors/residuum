@@ -65,6 +65,8 @@ struct GatewayState {
     inbound_tx: mpsc::Sender<InboundMessage>,
     broadcast_tx: broadcast::Sender<ServerMessage>,
     reload_sender: tokio::sync::watch::Sender<bool>,
+    observe_notify: Arc<tokio::sync::Notify>,
+    reflect_notify: Arc<tokio::sync::Notify>,
 }
 
 /// Start the WebSocket gateway server and run the main event loop.
@@ -163,11 +165,16 @@ pub async fn run_gateway(cfg: Config) -> Result<GatewayExit, IronclawError> {
 
     let broadcast_display = BroadcastDisplay::new(broadcast_tx.clone());
 
+    let observe_notify = Arc::new(tokio::sync::Notify::new());
+    let reflect_notify = Arc::new(tokio::sync::Notify::new());
+
     // Build axum app
     let state = GatewayState {
         inbound_tx,
         broadcast_tx: broadcast_tx.clone(),
         reload_sender,
+        observe_notify: Arc::clone(&observe_notify),
+        reflect_notify: Arc::clone(&reflect_notify),
     };
 
     let app = axum::Router::new()
@@ -339,6 +346,24 @@ pub async fn run_gateway(cfg: Config) -> Result<GatewayExit, IronclawError> {
                     Some(&*cron_provider),
                 ).await;
             }
+
+            // ── Observe command wakeup ─────────────────────────────────────
+            () = observe_notify.notified() => {
+                run_forced_observe(
+                    &observer,
+                    &reflector,
+                    &search_index,
+                    &layout,
+                    &mut agent,
+                    &broadcast_tx,
+                )
+                .await;
+            }
+
+            // ── Reflect command wakeup ─────────────────────────────────────
+            () = reflect_notify.notified() => {
+                run_forced_reflect(&reflector, &layout, &mut agent, &broadcast_tx).await;
+            }
         }
     }
 
@@ -437,6 +462,14 @@ async fn handle_connection(socket: WebSocket, state: GatewayState) {
                 state.broadcast_tx.send(ServerMessage::Reloading).ok();
                 // Signal the main loop and HTTP server
                 state.reload_sender.send(true).ok();
+            }
+            ClientMessage::Observe => {
+                tracing::info!("observe requested by client");
+                state.observe_notify.notify_one();
+            }
+            ClientMessage::Reflect => {
+                tracing::info!("reflect requested by client");
+                state.reflect_notify.notify_one();
             }
         }
     }
@@ -616,6 +649,159 @@ async fn run_reflector_if_needed(reflector: &Reflector, layout: &WorkspaceLayout
             }
             Err(e) => {
                 eprintln!("warning: reflector failed: {e}");
+            }
+        }
+    }
+}
+
+/// Force an observation cycle regardless of token threshold.
+///
+/// Loads recent messages, runs the observer, clears recent messages, updates
+/// the search index, optionally triggers reflection, and broadcasts a `Notice`.
+async fn run_forced_observe(
+    observer: &Observer,
+    reflector: &Reflector,
+    search_index: &Arc<crate::memory::search::MemoryIndex>,
+    layout: &WorkspaceLayout,
+    agent: &mut Agent,
+    broadcast_tx: &broadcast::Sender<ServerMessage>,
+) {
+    let recent = match load_recent_messages(&layout.recent_messages_json()).await {
+        Ok(msgs) => msgs,
+        Err(e) => {
+            eprintln!("warning: forced observe failed to load recent messages: {e}");
+            if broadcast_tx
+                .send(ServerMessage::Error {
+                    reply_to: None,
+                    message: format!("observe failed: {e}"),
+                })
+                .is_err()
+            {
+                tracing::trace!("no broadcast receivers for error");
+            }
+            return;
+        }
+    };
+
+    if recent.is_empty() {
+        if broadcast_tx
+            .send(ServerMessage::Notice {
+                message: "[memory] observe: no recent messages".to_string(),
+            })
+            .is_err()
+        {
+            tracing::trace!("no broadcast receivers for notice");
+        }
+        return;
+    }
+
+    let result = match observer.observe(&recent, layout).await {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("warning: forced observe failed: {e}");
+            if broadcast_tx
+                .send(ServerMessage::Error {
+                    reply_to: None,
+                    message: format!("observe failed: {e}"),
+                })
+                .is_err()
+            {
+                tracing::trace!("no broadcast receivers for error");
+            }
+            return;
+        }
+    };
+
+    if let Err(e) = clear_recent_messages(&layout.recent_messages_json()).await {
+        eprintln!("warning: failed to clear recent messages after forced observe: {e}");
+    }
+    agent.clear_session();
+
+    match tokio::fs::read_to_string(&result.transcript_path).await {
+        Ok(ep_content) => {
+            if let Err(e) =
+                search_index.index_file(&result.transcript_path.to_string_lossy(), &ep_content)
+            {
+                eprintln!("warning: failed to index episode after forced observe: {e}");
+            }
+        }
+        Err(e) => {
+            eprintln!(
+                "warning: failed to read episode file {}: {e}",
+                result.transcript_path.display()
+            );
+        }
+    }
+
+    let reflected = match load_observation_log(&layout.observations_json()).await {
+        Ok(log) if reflector.should_reflect(&log) => match reflector.reflect(layout).await {
+            Ok(_) => true,
+            Err(e) => {
+                eprintln!("warning: reflector failed after forced observe: {e}");
+                false
+            }
+        },
+        Ok(_) => false,
+        Err(e) => {
+            eprintln!("warning: failed to load observation log for reflection check: {e}");
+            false
+        }
+    };
+
+    if let Err(e) = agent.reload_observations(layout).await {
+        eprintln!("warning: failed to reload observations after forced observe: {e}");
+    }
+
+    let suffix = if reflected {
+        "; reflection triggered"
+    } else {
+        ""
+    };
+    let notice = format!(
+        "[memory] observed: {} ({} observations){suffix}",
+        result.id, result.observation_count
+    );
+    if broadcast_tx
+        .send(ServerMessage::Notice { message: notice })
+        .is_err()
+    {
+        tracing::trace!("no broadcast receivers for notice");
+    }
+}
+
+/// Force a reflection cycle regardless of observation log size.
+///
+/// Runs the reflector, reloads observations into the agent, and broadcasts a `Notice`.
+async fn run_forced_reflect(
+    reflector: &Reflector,
+    layout: &WorkspaceLayout,
+    agent: &mut Agent,
+    broadcast_tx: &broadcast::Sender<ServerMessage>,
+) {
+    match reflector.reflect(layout).await {
+        Ok(compressed) => {
+            if let Err(e) = agent.reload_observations(layout).await {
+                eprintln!("warning: failed to reload observations after forced reflect: {e}");
+            }
+            if broadcast_tx
+                .send(ServerMessage::Notice {
+                    message: format!("[memory] reflected: {} observations", compressed.len()),
+                })
+                .is_err()
+            {
+                tracing::trace!("no broadcast receivers for notice");
+            }
+        }
+        Err(e) => {
+            eprintln!("warning: forced reflect failed: {e}");
+            if broadcast_tx
+                .send(ServerMessage::Error {
+                    reply_to: None,
+                    message: format!("reflect failed: {e}"),
+                })
+                .is_err()
+            {
+                tracing::trace!("no broadcast receivers for error");
             }
         }
     }

@@ -11,6 +11,10 @@ pub enum SlashCommand {
     Verbose,
     /// Reload the gateway configuration.
     Reload,
+    /// Force a memory observation cycle.
+    Observe,
+    /// Force a reflection cycle.
+    Reflect,
     /// Quit the client.
     Quit,
     /// An unrecognized slash command.
@@ -28,6 +32,10 @@ pub enum CommandAction {
     ToggleVerbose,
     /// Send a reload request to the server.
     Reload,
+    /// Send an observe request to the server.
+    ObserveRequest,
+    /// Send a reflect request to the server.
+    ReflectRequest,
     /// Exit the client.
     Quit,
 }
@@ -47,6 +55,8 @@ impl SlashCommand {
             "status" => Self::Status,
             "verbose" | "v" => Self::Verbose,
             "reload" | "r" => Self::Reload,
+            "observe" | "obs" => Self::Observe,
+            "reflect" | "ref" => Self::Reflect,
             "quit" | "exit" | "q" => Self::Quit,
             _ => Self::Unknown(keyword.to_string()),
         })
@@ -62,6 +72,8 @@ impl SlashCommand {
             Self::Status => CommandAction::PrintOutput(status_text(url, verbose)),
             Self::Verbose => CommandAction::ToggleVerbose,
             Self::Reload => CommandAction::Reload,
+            Self::Observe => CommandAction::ObserveRequest,
+            Self::Reflect => CommandAction::ReflectRequest,
             Self::Quit => CommandAction::Quit,
             Self::Unknown(name) => {
                 CommandAction::PrintOutput(format!("unknown command: /{name} (try /help)"))
@@ -77,6 +89,8 @@ fn help_text() -> String {
         "  /status         — show connection info",
         "  /verbose, /v    — toggle verbose mode (tool events)",
         "  /reload, /r     — reload server configuration",
+        "  /observe, /obs  — force a memory observation cycle",
+        "  /reflect, /ref  — force a reflection cycle",
         "  /quit, /exit, /q — disconnect and exit",
     ]
     .join("\n")
@@ -143,6 +157,54 @@ mod tests {
             SlashCommand::parse("/r"),
             Some(SlashCommand::Reload),
             "should parse /r alias"
+        );
+    }
+
+    #[test]
+    fn parse_observe() {
+        assert_eq!(
+            SlashCommand::parse("/observe"),
+            Some(SlashCommand::Observe),
+            "should parse /observe"
+        );
+        assert_eq!(
+            SlashCommand::parse("/obs"),
+            Some(SlashCommand::Observe),
+            "should parse /obs alias"
+        );
+    }
+
+    #[test]
+    fn parse_reflect() {
+        assert_eq!(
+            SlashCommand::parse("/reflect"),
+            Some(SlashCommand::Reflect),
+            "should parse /reflect"
+        );
+        assert_eq!(
+            SlashCommand::parse("/ref"),
+            Some(SlashCommand::Reflect),
+            "should parse /ref alias"
+        );
+    }
+
+    #[test]
+    fn execute_observe_returns_observe_request() {
+        let action = SlashCommand::Observe.execute("ws://localhost:7700/ws", false);
+        assert_eq!(
+            action,
+            CommandAction::ObserveRequest,
+            "observe should return ObserveRequest"
+        );
+    }
+
+    #[test]
+    fn execute_reflect_returns_reflect_request() {
+        let action = SlashCommand::Reflect.execute("ws://localhost:7700/ws", false);
+        assert_eq!(
+            action,
+            CommandAction::ReflectRequest,
+            "reflect should return ReflectRequest"
         );
     }
 

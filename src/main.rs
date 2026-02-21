@@ -135,6 +135,12 @@ async fn run_connect(url: &str, verbose: bool) -> Result<(), IronclawError> {
                             // The server will broadcast Reloading then drop connections;
                             // we break here and let the ws_rx arm print the notice.
                         }
+                        CommandAction::ObserveRequest => {
+                            send_client_message(&mut ws_tx, &ClientMessage::Observe).await?;
+                        }
+                        CommandAction::ReflectRequest => {
+                            send_client_message(&mut ws_tx, &ClientMessage::Reflect).await?;
+                        }
                         CommandAction::Quit => break,
                         CommandAction::PrintOutput(text) => eprintln!("{text}"),
                         CommandAction::None => {}

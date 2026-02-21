@@ -243,8 +243,8 @@ mod gateway_integration {
                         break;
                     }
                 }
-                // Reload is not handled in the test gateway stub
-                ClientMessage::Reload => {}
+                // Reload, Observe, Reflect are not handled in the test gateway stub
+                ClientMessage::Reload | ClientMessage::Observe | ClientMessage::Reflect => {}
             }
         }
 

@@ -22,6 +22,10 @@ pub enum ClientMessage {
     Ping,
     /// Request the gateway to reload its configuration.
     Reload,
+    /// Request a forced observation cycle.
+    Observe,
+    /// Request a forced reflection cycle.
+    Reflect,
 }
 
 /// Messages sent from the server to WebSocket clients.
@@ -74,6 +78,11 @@ pub enum ServerMessage {
     Pong,
     /// The gateway is reloading its configuration.
     Reloading,
+    /// Result of a manual memory operation (observe or reflect).
+    Notice {
+        /// Human-readable result message.
+        message: String,
+    },
 }
 
 impl ServerMessage {
@@ -227,6 +236,47 @@ mod tests {
             !msg.is_verbose_only(),
             "Reloading should not be verbose-only"
         );
+    }
+
+    #[test]
+    fn client_message_deserialize_observe() {
+        let json = r#"{"type":"observe"}"#;
+        let msg: ClientMessage = serde_json::from_str(json).unwrap();
+        assert!(
+            matches!(msg, ClientMessage::Observe),
+            "should deserialize to Observe"
+        );
+    }
+
+    #[test]
+    fn client_message_deserialize_reflect() {
+        let json = r#"{"type":"reflect"}"#;
+        let msg: ClientMessage = serde_json::from_str(json).unwrap();
+        assert!(
+            matches!(msg, ClientMessage::Reflect),
+            "should deserialize to Reflect"
+        );
+    }
+
+    #[test]
+    fn server_message_serialize_notice() {
+        let msg = ServerMessage::Notice {
+            message: "observed successfully".to_string(),
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(json.contains("\"type\":\"notice\""), "should have type tag");
+        assert!(
+            json.contains("\"message\":\"observed successfully\""),
+            "should have message field"
+        );
+    }
+
+    #[test]
+    fn is_verbose_only_notice() {
+        let msg = ServerMessage::Notice {
+            message: "done".to_string(),
+        };
+        assert!(!msg.is_verbose_only(), "Notice should not be verbose-only");
     }
 
     #[test]

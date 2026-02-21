@@ -77,6 +77,16 @@ impl Theme {
             text.to_string()
         }
     }
+
+    /// Format a memory operation notice in bright green.
+    #[must_use]
+    pub fn format_notice(&self, text: &str) -> String {
+        if self.color_enabled {
+            format!("{}", text.bright_green())
+        } else {
+            text.to_string()
+        }
+    }
 }
 
 #[cfg(test)]
@@ -119,6 +129,18 @@ mod tests {
         assert!(
             !styled.is_empty(),
             "colored theme should return non-empty string"
+        );
+    }
+
+    #[test]
+    fn theme_notice_no_color_passthrough() {
+        let theme = Theme {
+            color_enabled: false,
+        };
+        assert_eq!(
+            theme.format_notice("memory op done"),
+            "memory op done",
+            "plain theme should return unmodified notice text"
         );
     }
 
