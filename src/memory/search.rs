@@ -11,6 +11,8 @@ use tantivy::snippet::SnippetGenerator;
 use tantivy::{Index, IndexReader, IndexWriter, ReloadPolicy, TantivyDocument};
 
 use crate::error::IronclawError;
+use crate::memory::episode_store::EpisodeMeta;
+use crate::models::Message;
 
 /// Memory budget for the tantivy index writer (50 MB).
 const WRITER_MEMORY_BUDGET_BYTES: usize = 50_000_000;
@@ -83,7 +85,7 @@ impl MemoryIndex {
         })
     }
 
-    /// Rebuild the index by walking all episode and daily log files.
+    /// Rebuild the index by walking all episode JSONL and daily log files.
     ///
     /// Clears the existing index and re-indexes everything.
     ///
@@ -99,14 +101,14 @@ impl MemoryIndex {
 
         let mut count = 0;
 
-        // Index episodes
+        // Index episode JSONL files
         let episodes_dir = memory_dir.join("episodes");
         if episodes_dir.exists() {
-            count += self.index_directory(&mut writer, &episodes_dir)?;
+            count += self.index_jsonl_directory(&mut writer, &episodes_dir)?;
         }
 
-        // Index daily logs (*.md files directly in memory_dir)
-        count += self.index_daily_logs(&mut writer, memory_dir)?;
+        // Index daily log markdown files
+        count += self.index_daily_log_dir(&mut writer, &memory_dir.join("daily_log"))?;
 
         writer
             .commit()
@@ -126,7 +128,7 @@ impl MemoryIndex {
     pub fn index_file(&self, file_path: &str, content: &str) -> Result<(), IronclawError> {
         let mut writer = self.writer()?;
 
-        let date = extract_date_from_path(file_path);
+        let date = extract_daily_log_date(Path::new(file_path));
         add_document(
             &mut writer,
             self.path_field,
@@ -220,8 +222,11 @@ impl MemoryIndex {
             .map_err(|e| IronclawError::Memory(format!("failed to create index writer: {e}")))
     }
 
-    /// Recursively index all `.md` files in a directory tree.
-    fn index_directory(
+    /// Recursively index all `.jsonl` episode files in a directory tree.
+    ///
+    /// Parses each JSONL file and concatenates meta fields with message content.
+    /// Warns and skips files that cannot be parsed rather than failing the rebuild.
+    fn index_jsonl_directory(
         &self,
         writer: &mut IndexWriter,
         dir: &Path,
@@ -237,14 +242,67 @@ impl MemoryIndex {
             })?;
             let path = entry.path();
 
-            // Recurse into subdirectories (e.g. YYYY-MM month dirs)
             if path.is_dir() {
-                count += self.index_directory(writer, &path)?;
+                count += self.index_jsonl_directory(writer, &path)?;
+            } else if path.extension().is_some_and(|ext| ext == "jsonl") {
+                match parse_jsonl_for_index(&path) {
+                    Ok((date, text)) => {
+                        let path_str = path.to_string_lossy();
+                        add_document(
+                            writer,
+                            self.path_field,
+                            self.content_field,
+                            self.date_field,
+                            &path_str,
+                            &text,
+                            &date,
+                        )?;
+                        count += 1;
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            path = %path.display(),
+                            error = %e,
+                            "skipping unparseable episode file"
+                        );
+                    }
+                }
+            }
+        }
+
+        Ok(count)
+    }
+
+    /// Recursively index all `.md` files in the daily log directory.
+    ///
+    /// Returns `Ok(0)` if the directory does not exist.
+    fn index_daily_log_dir(
+        &self,
+        writer: &mut IndexWriter,
+        daily_log_dir: &Path,
+    ) -> Result<usize, IronclawError> {
+        if !daily_log_dir.exists() {
+            return Ok(0);
+        }
+
+        let mut count = 0;
+        let Ok(entries) = std::fs::read_dir(daily_log_dir) else {
+            return Ok(0);
+        };
+
+        for entry in entries {
+            let entry = entry.map_err(|e| {
+                IronclawError::Memory(format!("failed to read directory entry: {e}"))
+            })?;
+            let path = entry.path();
+
+            if path.is_dir() {
+                count += self.index_daily_log_dir(writer, &path)?;
             } else if path.extension().is_some_and(|ext| ext == "md") {
+                let date = extract_daily_log_date(&path);
                 match std::fs::read_to_string(&path) {
                     Ok(file_content) => {
                         let path_str = path.to_string_lossy();
-                        let date = extract_date_from_path(&path_str);
                         add_document(
                             writer,
                             self.path_field,
@@ -257,57 +315,11 @@ impl MemoryIndex {
                         count += 1;
                     }
                     Err(e) => {
-                        eprintln!("warning: skipping unreadable file {}: {e}", path.display());
-                    }
-                }
-            }
-        }
-
-        Ok(count)
-    }
-
-    /// Index daily log files (YYYY-MM-DD.md) directly in the memory directory.
-    fn index_daily_logs(
-        &self,
-        writer: &mut IndexWriter,
-        memory_dir: &Path,
-    ) -> Result<usize, IronclawError> {
-        let mut count = 0;
-        let Ok(entries) = std::fs::read_dir(memory_dir) else {
-            return Ok(0);
-        };
-
-        for entry in entries {
-            let entry = entry.map_err(|e| {
-                IronclawError::Memory(format!("failed to read directory entry: {e}"))
-            })?;
-            let path = entry.path();
-
-            if path.is_file() && path.extension().is_some_and(|ext| ext == "md") {
-                let filename = path.file_stem().map(|s| s.to_string_lossy().to_string());
-                // Only index files that look like date-named daily logs
-                if filename.as_ref().is_some_and(|n| is_date_filename(n)) {
-                    match std::fs::read_to_string(&path) {
-                        Ok(file_content) => {
-                            let path_str = path.to_string_lossy();
-                            let date = filename.unwrap_or_default();
-                            add_document(
-                                writer,
-                                self.path_field,
-                                self.content_field,
-                                self.date_field,
-                                &path_str,
-                                &file_content,
-                                &date,
-                            )?;
-                            count += 1;
-                        }
-                        Err(e) => {
-                            eprintln!(
-                                "warning: skipping unreadable daily log {}: {e}",
-                                path.display()
-                            );
-                        }
+                        tracing::warn!(
+                            path = %path.display(),
+                            error = %e,
+                            "skipping unreadable daily log file"
+                        );
                     }
                 }
             }
@@ -339,27 +351,65 @@ fn add_document(
     Ok(())
 }
 
-/// Extract a date string from a file path (best effort).
-fn extract_date_from_path(path: &str) -> String {
-    // Try to extract YYYY-MM-DD from the filename
-    let filename = Path::new(path)
-        .file_stem()
-        .map(|s| s.to_string_lossy().to_string())
-        .unwrap_or_default();
+/// Parse a JSONL episode file into a `(date_string, searchable_text)` tuple.
+///
+/// The first line is the meta object; subsequent lines are messages.
+fn parse_jsonl_for_index(path: &Path) -> Result<(String, String), IronclawError> {
+    let file_content = std::fs::read_to_string(path)
+        .map_err(|e| IronclawError::Memory(format!("failed to read {}: {e}", path.display())))?;
 
-    if is_date_filename(&filename) {
-        filename
-    } else {
-        String::new()
+    let mut lines = file_content.lines();
+    let meta_line = lines.next().ok_or_else(|| {
+        IronclawError::Memory(format!("empty episode file at {}", path.display()))
+    })?;
+
+    let meta: EpisodeMeta = serde_json::from_str(meta_line).map_err(|e| {
+        IronclawError::Memory(format!(
+            "failed to parse episode meta at {}: {e}",
+            path.display()
+        ))
+    })?;
+
+    let date = meta.date.to_string();
+
+    let mut text_parts = vec![meta.id, meta.context, meta.start, meta.end];
+
+    for line in lines {
+        if line.trim().is_empty() {
+            continue;
+        }
+        if let Ok(msg) = serde_json::from_str::<Message>(line)
+            && !msg.content.is_empty()
+        {
+            text_parts.push(msg.content);
+        }
     }
+
+    Ok((date, text_parts.join(" ")))
 }
 
-/// Check if a filename looks like a date (YYYY-MM-DD).
-fn is_date_filename(name: &str) -> bool {
-    name.len() == 10
-        && name.as_bytes().get(4) == Some(&b'-')
-        && name.as_bytes().get(7) == Some(&b'-')
-        && name.bytes().filter(u8::is_ascii_digit).count() == 8
+/// Extract a date string from a daily log file path.
+///
+/// Expects the structure `…/daily_log/{YYYY-MM}/daily-log-{DD}.md`.
+/// Returns an empty string if the path does not match this structure.
+fn extract_daily_log_date(path: &Path) -> String {
+    let day = path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .and_then(|s| s.strip_prefix("daily-log-"))
+        .unwrap_or("");
+
+    let month = path
+        .parent()
+        .and_then(|p| p.file_name())
+        .and_then(|s| s.to_str())
+        .unwrap_or("");
+
+    if day.is_empty() || month.is_empty() {
+        String::new()
+    } else {
+        format!("{month}-{day}")
+    }
 }
 
 /// Create a shared `MemoryIndex` wrapped in an `Arc` for tool sharing.
@@ -394,7 +444,7 @@ mod tests {
 
         index
             .index_file(
-                "episodes/ep-001.md",
+                "episodes/ep-001.jsonl",
                 "the quick brown fox jumps over the lazy dog",
             )
             .unwrap();
@@ -430,9 +480,12 @@ mod tests {
         let day_dir = memory_dir.join("episodes/2026-02/19");
         std::fs::create_dir_all(&day_dir).unwrap();
 
+        // Write a valid JSONL episode file
         std::fs::write(
-            day_dir.join("ep-001.md"),
-            "---\nid: ep-001\n---\nworkspace layout discussion",
+            day_dir.join("ep-001.jsonl"),
+            r#"{"type":"meta","id":"ep-001","date":"2026-02-19","start":"workspace layout discussion","end":"finished","context":"ironclaw"}
+{"role":"user","content":"tell me about workspace layout","tool_calls":null,"tool_call_id":null}
+"#,
         )
         .unwrap();
 
@@ -450,10 +503,11 @@ mod tests {
     fn rebuild_with_daily_logs() {
         let dir = tempfile::tempdir().unwrap();
         let memory_dir = dir.path().join("memory");
-        std::fs::create_dir_all(&memory_dir).unwrap();
+        let log_dir = memory_dir.join("daily_log/2026-02");
+        std::fs::create_dir_all(&log_dir).unwrap();
 
         std::fs::write(
-            memory_dir.join("2026-02-19.md"),
+            log_dir.join("daily-log-19.md"),
             "# 2026-02-19\n\n- **10:30** discussed kubernetes migration",
         )
         .unwrap();
@@ -469,19 +523,11 @@ mod tests {
     }
 
     #[test]
-    fn is_date_filename_valid() {
-        assert!(is_date_filename("2026-02-19"), "valid date");
-        assert!(!is_date_filename("ep-001"), "not a date");
-        assert!(!is_date_filename("observations"), "not a date");
-        assert!(!is_date_filename("2026-2-19"), "wrong format");
-    }
-
-    #[test]
     fn search_results_have_scores() {
         let (_dir, index) = create_test_index();
 
         index
-            .index_file("test.md", "rust programming language memory safety")
+            .index_file("test.jsonl", "rust programming language memory safety")
             .unwrap();
 
         let results = index.search("rust", 5).unwrap();
@@ -496,7 +542,7 @@ mod tests {
 
         index
             .index_file(
-                "test.md",
+                "test.jsonl",
                 "the observer monitors token counts and fires when the threshold is exceeded",
             )
             .unwrap();
@@ -505,5 +551,25 @@ mod tests {
         assert!(!results.is_empty(), "should have results");
         let first = results.first().unwrap();
         assert!(!first.snippet.is_empty(), "snippet should not be empty");
+    }
+
+    #[test]
+    fn extract_daily_log_date_valid() {
+        let path = Path::new("/memory/daily_log/2026-02/daily-log-19.md");
+        assert_eq!(
+            extract_daily_log_date(path),
+            "2026-02-19",
+            "should extract full date"
+        );
+    }
+
+    #[test]
+    fn extract_daily_log_date_non_matching() {
+        let path = Path::new("/memory/episodes/2026-02/19/ep-001.jsonl");
+        assert_eq!(
+            extract_daily_log_date(path),
+            "",
+            "non-daily-log path should return empty string"
+        );
     }
 }

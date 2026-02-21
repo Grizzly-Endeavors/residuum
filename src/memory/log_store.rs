@@ -89,21 +89,102 @@ pub async fn append_observations(
     save_observation_log(path, &log).await
 }
 
-/// Generate the next episode ID based on existing observations.
+/// Generate the next episode ID by scanning the episodes directory for existing JSONL files.
 ///
-/// Scans `source_episodes` across all observations to find the maximum
-/// `ep-NNN` ID, then returns the next one. Returns `"ep-001"` if none exist.
-#[must_use]
-pub fn next_episode_id(log: &ObservationLog) -> String {
-    let max_num = log
-        .observations
-        .iter()
-        .flat_map(|obs| obs.source_episodes.iter())
-        .filter_map(|id| id.strip_prefix("ep-").and_then(|n| n.parse::<u32>().ok()))
-        .max()
-        .unwrap_or(0);
+/// Walks `episodes_dir` recursively for files named `ep-NNN.jsonl`, takes the max `NNN`,
+/// and returns `ep-(max+1)` zero-padded to 3 digits. Returns `"ep-001"` if none exist.
+/// JSONL transcripts persist even after reflection, making this a stable counter.
+///
+/// # Errors
+/// Returns an error if the directory cannot be read.
+pub async fn next_episode_id(episodes_dir: &Path) -> Result<String, crate::error::IronclawError> {
+    let max_num = max_episode_num(episodes_dir)?;
+    Ok(format!("ep-{:03}", max_num + 1))
+}
 
-    format!("ep-{:03}", max_num + 1)
+/// Save per-episode observations to an archive file atomically.
+///
+/// Serializes `observations` as a JSON array and writes atomically via a temp file rename.
+///
+/// # Errors
+/// Returns an error if the file cannot be written.
+pub(crate) async fn save_episode_observations(
+    path: &Path,
+    observations: &[Observation],
+) -> Result<(), crate::error::IronclawError> {
+    let json = serde_json::to_string(observations).map_err(|e| {
+        crate::error::IronclawError::Memory(format!(
+            "failed to serialize episode observations: {e}"
+        ))
+    })?;
+
+    let dir = path.parent().ok_or_else(|| {
+        crate::error::IronclawError::Memory(format!(
+            "episode obs path has no parent directory: {}",
+            path.display()
+        ))
+    })?;
+
+    let tmp_path = dir.join(".obs.json.tmp");
+
+    tokio::fs::write(&tmp_path, &json).await.map_err(|e| {
+        crate::error::IronclawError::Memory(format!(
+            "failed to write episode observations at {}: {e}",
+            tmp_path.display()
+        ))
+    })?;
+
+    tokio::fs::rename(&tmp_path, path).await.map_err(|e| {
+        crate::error::IronclawError::Memory(format!(
+            "failed to rename episode observations from {} to {}: {e}",
+            tmp_path.display(),
+            path.display()
+        ))
+    })?;
+
+    Ok(())
+}
+
+/// Recursively walk `dir` for `ep-NNN.jsonl` files and return the maximum `NNN` found.
+///
+/// Returns `0` if the directory does not exist or contains no matching files.
+fn max_episode_num(dir: &Path) -> Result<u32, crate::error::IronclawError> {
+    if !dir.exists() {
+        return Ok(0);
+    }
+    let mut max = 0_u32;
+    walk_for_max(dir, &mut max)?;
+    Ok(max)
+}
+
+fn walk_for_max(dir: &Path, max: &mut u32) -> Result<(), crate::error::IronclawError> {
+    let entries = std::fs::read_dir(dir).map_err(|e| {
+        crate::error::IronclawError::Memory(format!(
+            "failed to read episodes directory {}: {e}",
+            dir.display()
+        ))
+    })?;
+
+    for entry in entries {
+        let entry = entry.map_err(|e| {
+            crate::error::IronclawError::Memory(format!("failed to read directory entry: {e}"))
+        })?;
+        let path = entry.path();
+
+        if path.is_dir() {
+            walk_for_max(&path, max)?;
+        } else if path.extension().is_some_and(|ext| ext == "jsonl")
+            && let Some(n) = path
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .and_then(|s| s.strip_prefix("ep-"))
+                .and_then(|s| s.parse::<u32>().ok())
+        {
+            *max = (*max).max(n);
+        }
+    }
+
+    Ok(())
 }
 
 #[cfg(test)]
@@ -187,40 +268,63 @@ mod tests {
         );
     }
 
-    #[test]
-    fn next_episode_id_empty() {
-        let log = ObservationLog::new();
-        assert_eq!(next_episode_id(&log), "ep-001", "first ID should be ep-001");
+    #[tokio::test]
+    async fn next_episode_id_empty_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        let episodes_dir = dir.path().join("episodes");
+        tokio::fs::create_dir_all(&episodes_dir).await.unwrap();
+
+        let id = next_episode_id(&episodes_dir).await.unwrap();
+        assert_eq!(id, "ep-001", "empty dir should return ep-001");
     }
 
-    #[test]
-    fn next_episode_id_increments() {
-        let mut log = ObservationLog::new();
-        log.push(sample_observation("ep-001"));
-        log.push(sample_observation("ep-002"));
-        log.push(sample_observation("ep-003"));
-
-        assert_eq!(next_episode_id(&log), "ep-004", "should increment past max");
+    #[tokio::test]
+    async fn next_episode_id_missing_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        let episodes_dir = dir.path().join("episodes");
+        // Dir does not exist — should still return ep-001
+        let id = next_episode_id(&episodes_dir).await.unwrap();
+        assert_eq!(id, "ep-001", "missing dir should return ep-001");
     }
 
-    #[test]
-    fn next_episode_id_no_source_episodes() {
-        // Observations without source_episodes (e.g., from the reflector)
-        // should not contribute to the episode ID counter.
-        let mut log = ObservationLog::new();
-        log.push(Observation {
-            timestamp: Utc::now(),
-            project_context: "test".to_string(),
-            source_episodes: vec![],
-            visibility: Visibility::User,
-            content: "reflected observation".to_string(),
-        });
-        log.push(sample_observation("ep-005"));
+    #[tokio::test]
+    async fn next_episode_id_scans_jsonl_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let episodes_dir = dir.path().join("episodes");
+        let month_dir = episodes_dir.join("2026-02/19");
+        tokio::fs::create_dir_all(&month_dir).await.unwrap();
 
+        // Write some dummy .jsonl files
+        tokio::fs::write(month_dir.join("ep-001.jsonl"), "")
+            .await
+            .unwrap();
+        tokio::fs::write(month_dir.join("ep-003.jsonl"), "")
+            .await
+            .unwrap();
+
+        let id = next_episode_id(&episodes_dir).await.unwrap();
+        assert_eq!(id, "ep-004", "should find max and increment");
+    }
+
+    #[tokio::test]
+    async fn save_and_load_episode_observations() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("ep-001.obs.json");
+
+        let observations = vec![sample_observation("ep-001"), sample_observation("ep-001")];
+
+        save_episode_observations(&path, &observations)
+            .await
+            .unwrap();
+
+        let raw = tokio::fs::read_to_string(&path).await.unwrap();
+        let loaded: Vec<Observation> = serde_json::from_str(&raw).unwrap();
+
+        assert_eq!(loaded.len(), 2, "should round-trip two observations");
         assert_eq!(
-            next_episode_id(&log),
-            "ep-006",
-            "should find max from source_episodes"
+            loaded.first().map(|o| o.content.as_str()),
+            Some("observed something from ep-001"),
+            "content should match"
         );
     }
 

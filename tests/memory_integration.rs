@@ -22,7 +22,7 @@ mod memory_integration {
     };
     use ironclaw::memory::reflector::{Reflector, ReflectorConfig};
     use ironclaw::memory::search::MemoryIndex;
-    use ironclaw::memory::types::{Observation, ObservationLog, Visibility};
+    use ironclaw::memory::types::Visibility;
     use ironclaw::models::{
         CompletionOptions, Message, ModelError, ModelProvider, ModelResponse, ToolDefinition,
     };
@@ -172,9 +172,11 @@ mod memory_integration {
         assert!(transcript_path.exists(), "transcript file should exist");
 
         let transcript = tokio::fs::read_to_string(&transcript_path).await.unwrap();
+        let first_line = transcript.lines().next().unwrap();
+        let meta: serde_json::Value = serde_json::from_str(first_line).unwrap();
         assert!(
-            transcript.contains("---"),
-            "transcript should have frontmatter"
+            meta.get("type").is_some(),
+            "transcript first line should be JSON with type field"
         );
 
         // Verify observations.json was updated — 3 observation strings → 3 Observations
@@ -315,25 +317,25 @@ mod memory_integration {
         assert_eq!(all.len(), 6, "should have messages from both sessions");
     }
 
-    #[test]
-    fn episode_id_generation_is_sequential() {
-        let mut log = ObservationLog::new();
+    #[tokio::test]
+    async fn episode_id_generation_is_sequential() {
+        let dir = tempfile::tempdir().unwrap();
+        let episodes_dir = dir.path().join("episodes");
+        tokio::fs::create_dir_all(&episodes_dir).await.unwrap();
 
-        assert_eq!(next_episode_id(&log), "ep-001", "first ID should be ep-001");
+        // Empty dir → ep-001
+        let id1 = next_episode_id(&episodes_dir).await.unwrap();
+        assert_eq!(id1, "ep-001", "first ID should be ep-001");
 
-        log.push(Observation {
-            timestamp: Utc::now(),
-            project_context: "test".to_string(),
-            source_episodes: vec!["ep-001".to_string()],
-            visibility: Visibility::User,
-            content: "first observation".to_string(),
-        });
+        // Write ep-001.jsonl → next should be ep-002
+        let month_dir = episodes_dir.join("2026-02/19");
+        tokio::fs::create_dir_all(&month_dir).await.unwrap();
+        tokio::fs::write(month_dir.join("ep-001.jsonl"), "")
+            .await
+            .unwrap();
 
-        assert_eq!(
-            next_episode_id(&log),
-            "ep-002",
-            "second ID should be ep-002"
-        );
+        let id2 = next_episode_id(&episodes_dir).await.unwrap();
+        assert_eq!(id2, "ep-002", "second ID should be ep-002");
     }
 
     #[test]

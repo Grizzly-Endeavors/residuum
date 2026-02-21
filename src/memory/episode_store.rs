@@ -1,19 +1,36 @@
 //! Episode transcript file persistence.
 //!
-//! Writes episode transcripts as markdown files with hand-written YAML
-//! frontmatter to `memory/episodes/YYYY-MM/<id>.md`.
+//! Writes episode transcripts as JSONL files to `memory/episodes/YYYY-MM/DD/<id>.jsonl`.
+//! Line 1 is a JSON meta object; subsequent lines are serialized [`Message`] values.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
+
+use serde::Deserialize;
 
 use crate::error::IronclawError;
 use crate::memory::types::Episode;
 use crate::models::Message;
 
+/// Metadata from the first line of an episode JSONL file.
+#[derive(Debug, Deserialize)]
+pub struct EpisodeMeta {
+    /// Episode identifier (e.g., `"ep-001"`).
+    pub id: String,
+    /// Date of the episode.
+    pub date: chrono::NaiveDate,
+    /// Project or topic context tag.
+    pub context: String,
+    /// One-line summary of how the episode started.
+    pub start: String,
+    /// One-line summary of how the episode ended.
+    pub end: String,
+}
+
 /// Write an episode transcript file to the episodes directory.
 ///
-/// Creates `{episodes_dir}/{YYYY-MM}/{DD}/{episode.id}.md` with YAML frontmatter
-/// followed by the formatted conversation transcript. Creates the date
-/// subdirectory if it doesn't exist.
+/// Creates `{episodes_dir}/{YYYY-MM}/{DD}/{episode.id}.jsonl` as a JSONL file.
+/// Line 1 is a meta JSON object; subsequent lines are serialized [`Message`] values.
+/// Creates the date subdirectory if it doesn't exist.
 ///
 /// # Errors
 /// Returns an error if the file cannot be written.
@@ -30,14 +47,33 @@ pub(crate) async fn write_episode_transcript(
         ))
     })?;
 
-    let filename = format!("{}.md", episode.id);
-    let path = day_dir.join(&filename);
+    let path = episode_jsonl_path(episodes_dir, episode);
 
-    let frontmatter = format_frontmatter(episode);
-    let transcript = format_transcript(messages);
-    let content = format!("{frontmatter}\n{transcript}");
+    let meta = serde_json::json!({
+        "type": "meta",
+        "id": episode.id,
+        "date": episode.date.to_string(),
+        "start": episode.start,
+        "end": episode.end,
+        "context": episode.context,
+    });
 
-    tokio::fs::write(&path, &content).await.map_err(|e| {
+    let mut lines = Vec::with_capacity(messages.len() + 1);
+    lines
+        .push(serde_json::to_string(&meta).map_err(|e| {
+            IronclawError::Memory(format!("failed to serialize episode meta: {e}"))
+        })?);
+
+    for msg in messages {
+        lines.push(
+            serde_json::to_string(msg)
+                .map_err(|e| IronclawError::Memory(format!("failed to serialize message: {e}")))?,
+        );
+    }
+
+    let file_content = lines.join("\n") + "\n";
+
+    tokio::fs::write(&path, &file_content).await.map_err(|e| {
         IronclawError::Memory(format!(
             "failed to write episode transcript at {}: {e}",
             path.display()
@@ -45,73 +81,71 @@ pub(crate) async fn write_episode_transcript(
     })
 }
 
-/// Get the path where an episode transcript would be written.
+/// Get the path where an episode JSONL transcript would be written.
 #[must_use]
-pub(crate) fn episode_path(episodes_dir: &Path, episode: &Episode) -> std::path::PathBuf {
+pub(crate) fn episode_jsonl_path(episodes_dir: &Path, episode: &Episode) -> PathBuf {
     episodes_dir
         .join(episode.date.format("%Y-%m/%d").to_string())
-        .join(format!("{}.md", episode.id))
+        .join(format!("{}.jsonl", episode.id))
 }
 
-/// Format YAML frontmatter for an episode.
+/// Get the path for the per-episode observations archive file.
+#[must_use]
+pub(crate) fn episode_obs_path(episodes_dir: &Path, episode: &Episode) -> PathBuf {
+    episodes_dir
+        .join(episode.date.format("%Y-%m/%d").to_string())
+        .join(format!("{}.obs.json", episode.id))
+}
+
+/// Read and parse a JSONL episode transcript file.
 ///
-/// Hand-written to avoid a YAML serialization dependency.
-#[must_use]
-pub(crate) fn format_frontmatter(episode: &Episode) -> String {
-    let mut parts = Vec::with_capacity(8);
-    parts.push("---".to_string());
-    parts.push(format!("id: {}", episode.id));
-    parts.push(format!("date: {}", episode.date));
-    parts.push(format!("start: {}", episode.start));
-    parts.push(format!("end: {}", episode.end));
-    parts.push(format!("context: {}", episode.context));
-    parts.push("---".to_string());
-    parts.join("\n")
-}
+/// Returns the episode metadata and the list of messages. The first line is
+/// parsed as [`EpisodeMeta`]; subsequent non-empty lines are parsed as [`Message`] values.
+///
+/// # Errors
+/// Returns an error if the file cannot be read or any line fails to parse.
+pub async fn read_episode_jsonl(path: &Path) -> Result<(EpisodeMeta, Vec<Message>), IronclawError> {
+    let file_content = tokio::fs::read_to_string(path).await.map_err(|e| {
+        IronclawError::Memory(format!(
+            "failed to read episode file at {}: {e}",
+            path.display()
+        ))
+    })?;
 
-/// Format messages as a readable markdown transcript.
-#[must_use]
-pub fn format_transcript(messages: &[Message]) -> String {
-    let parts: Vec<String> = messages.iter().map(format_single_message).collect();
-    parts.join("\n")
-}
+    let mut lines = file_content.lines();
 
-/// Format a single message as a markdown block.
-fn format_single_message(msg: &Message) -> String {
-    let role_label = msg.role.as_display_str();
+    let meta_line = lines.next().ok_or_else(|| {
+        IronclawError::Memory(format!("episode file is empty at {}", path.display()))
+    })?;
 
-    let header = match &msg.tool_call_id {
-        Some(id) => format!("{role_label} (call: {id})\n"),
-        None => format!("{role_label}\n"),
-    };
+    let meta: EpisodeMeta = serde_json::from_str(meta_line).map_err(|e| {
+        IronclawError::Memory(format!(
+            "failed to parse episode meta at {}: {e}",
+            path.display()
+        ))
+    })?;
 
-    let content = if msg.content.is_empty() {
-        String::new()
-    } else {
-        format!("{}\n", msg.content)
-    };
+    let mut messages = Vec::new();
+    for line in lines {
+        if line.trim().is_empty() {
+            continue;
+        }
+        let msg: Message = serde_json::from_str(line).map_err(|e| {
+            IronclawError::Memory(format!(
+                "failed to parse message line in {}: {e}",
+                path.display()
+            ))
+        })?;
+        messages.push(msg);
+    }
 
-    let tool_calls: Vec<String> = msg
-        .tool_calls
-        .as_deref()
-        .unwrap_or_default()
-        .iter()
-        .map(|call| {
-            format!(
-                "\n> Tool call: `{}` (id: {})\n> ```json\n> {}\n> ```\n",
-                call.name, call.id, call.arguments
-            )
-        })
-        .collect();
-
-    format!("{header}{content}{}", tool_calls.join(""))
+    Ok((meta, messages))
 }
 
 #[cfg(test)]
 #[expect(clippy::unwrap_used, reason = "test code uses unwrap for clarity")]
 mod tests {
     use super::*;
-    use crate::models::ToolCall;
     use chrono::NaiveDate;
 
     fn sample_episode() -> Episode {
@@ -126,84 +160,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn frontmatter_format() {
-        let episode = sample_episode();
-        let fm = format_frontmatter(&episode);
-
-        assert!(fm.starts_with("---"), "should start with ---");
-        assert!(fm.ends_with("---"), "should end with ---");
-        assert!(fm.contains("id: ep-001"), "should contain id");
-        assert!(fm.contains("date: 2026-02-19"), "should contain date");
-        assert!(
-            fm.contains("start: user asked about files"),
-            "should contain start"
-        );
-        assert!(
-            fm.contains("end: listed directory contents"),
-            "should contain end"
-        );
-        assert!(fm.contains("context: general"), "should contain context");
-    }
-
-    #[test]
-    fn transcript_basic_messages() {
-        let messages = vec![
-            Message::user("what is 2+2?"),
-            Message::assistant("2+2 equals 4.", None),
-        ];
-
-        let transcript = format_transcript(&messages);
-        assert!(transcript.contains("**User**"), "should have user label");
-        assert!(
-            transcript.contains("**Assistant**"),
-            "should have assistant label"
-        );
-        assert!(
-            transcript.contains("what is 2+2?"),
-            "should have user content"
-        );
-        assert!(
-            transcript.contains("2+2 equals 4."),
-            "should have assistant content"
-        );
-    }
-
-    #[test]
-    fn transcript_with_tool_calls() {
-        let messages = vec![Message::assistant(
-            "",
-            Some(vec![ToolCall {
-                id: "call_1".to_string(),
-                name: "exec".to_string(),
-                arguments: serde_json::json!({"command": "ls"}),
-            }]),
-        )];
-
-        let transcript = format_transcript(&messages);
-        assert!(
-            transcript.contains("Tool call: `exec`"),
-            "should show tool call name"
-        );
-        assert!(transcript.contains("call_1"), "should show tool call ID");
-    }
-
-    #[test]
-    fn transcript_with_tool_result() {
-        let messages = vec![Message::tool("file1.txt\nfile2.txt", "call_1")];
-
-        let transcript = format_transcript(&messages);
-        assert!(transcript.contains("**Tool**"), "should have tool label");
-        assert!(
-            transcript.contains("(call: call_1)"),
-            "should show call ID reference"
-        );
-        assert!(
-            transcript.contains("file1.txt"),
-            "should contain tool output"
-        );
-    }
-
     #[tokio::test]
     async fn write_transcript_creates_file_in_month_dir() {
         let dir = tempfile::tempdir().unwrap();
@@ -214,25 +170,53 @@ mod tests {
             .await
             .unwrap();
 
-        let path = dir.path().join("2026-02/19/ep-001.md");
+        let path = dir.path().join("2026-02/19/ep-001.jsonl");
         assert!(
             path.exists(),
             "transcript file should be created in date subdir"
         );
 
-        let contents = tokio::fs::read_to_string(&path).await.unwrap();
-        assert!(contents.starts_with("---"), "should start with frontmatter");
-        assert!(contents.contains("hello"), "should contain message content");
+        let raw = tokio::fs::read_to_string(&path).await.unwrap();
+        let first_line = raw.lines().next().unwrap();
+        let meta: serde_json::Value = serde_json::from_str(first_line).unwrap();
+        assert_eq!(
+            meta.get("type").and_then(|v| v.as_str()),
+            Some("meta"),
+            "first line should be meta JSON"
+        );
     }
 
     #[test]
-    fn episode_path_includes_month() {
+    fn episode_jsonl_path_includes_month() {
         let episode = sample_episode();
-        let path = episode_path(std::path::Path::new("/ws/episodes"), &episode);
+        let path = episode_jsonl_path(std::path::Path::new("/ws/episodes"), &episode);
         assert_eq!(
             path,
-            std::path::PathBuf::from("/ws/episodes/2026-02/19/ep-001.md"),
-            "path should include YYYY-MM/DD subdirectory"
+            std::path::PathBuf::from("/ws/episodes/2026-02/19/ep-001.jsonl"),
+            "path should include YYYY-MM/DD subdirectory with .jsonl extension"
+        );
+    }
+
+    #[tokio::test]
+    async fn read_episode_jsonl_round_trips() {
+        let dir = tempfile::tempdir().unwrap();
+        let episode = sample_episode();
+        let messages = vec![Message::user("hello"), Message::assistant("world", None)];
+
+        write_episode_transcript(dir.path(), &episode, &messages)
+            .await
+            .unwrap();
+
+        let path = episode_jsonl_path(dir.path(), &episode);
+        let (meta, loaded_messages) = read_episode_jsonl(&path).await.unwrap();
+
+        assert_eq!(meta.id, "ep-001", "meta ID should round-trip");
+        assert_eq!(meta.context, "general", "meta context should round-trip");
+        assert_eq!(loaded_messages.len(), 2, "should have 2 messages");
+        assert_eq!(
+            loaded_messages.first().map(|m| m.content.as_str()),
+            Some("hello"),
+            "first message should round-trip"
         );
     }
 }

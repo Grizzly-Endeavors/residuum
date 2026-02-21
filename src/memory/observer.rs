@@ -7,8 +7,8 @@ use chrono::{Local, Utc};
 
 use crate::config::DEFAULT_OBSERVER_THRESHOLD;
 use crate::error::IronclawError;
-use crate::memory::episode_store::write_episode_transcript;
-use crate::memory::log_store::{append_observations, load_observation_log, next_episode_id};
+use crate::memory::episode_store::{episode_obs_path, write_episode_transcript};
+use crate::memory::log_store::{append_observations, next_episode_id, save_episode_observations};
 use crate::memory::recent_store::RecentMessage;
 use crate::memory::tokens::estimate_message_tokens;
 use crate::memory::types::{Episode, Observation, Visibility};
@@ -90,9 +90,8 @@ impl Observer {
             .map(|rm| rm.message.clone())
             .collect();
 
-        // Load existing log for ID generation
-        let log = load_observation_log(&layout.observations_json()).await?;
-        let episode_id = next_episode_id(&log);
+        // Generate the next episode ID by scanning the episodes directory
+        let episode_id = next_episode_id(&layout.episodes_dir()).await?;
 
         // Build extraction prompt
         let extraction_messages = build_extraction_prompt(&messages);
@@ -109,7 +108,7 @@ impl Observer {
 
         // Persist transcript
         let transcript_path =
-            crate::memory::episode_store::episode_path(&layout.episodes_dir(), &episode);
+            crate::memory::episode_store::episode_jsonl_path(&layout.episodes_dir(), &episode);
         write_episode_transcript(&layout.episodes_dir(), &episode, &messages).await?;
 
         // Convert episode observations → flat Observations and append
@@ -126,6 +125,8 @@ impl Observer {
             })
             .collect();
 
+        let obs_path = episode_obs_path(&layout.episodes_dir(), &episode);
+        save_episode_observations(&obs_path, &observations).await?;
         append_observations(&layout.observations_json(), observations).await?;
 
         tracing::info!(
@@ -277,6 +278,7 @@ fn parse_episode_response(
 #[expect(clippy::unwrap_used, reason = "test code uses unwrap for clarity")]
 mod tests {
     use super::*;
+    use crate::memory::episode_store::episode_obs_path;
     use crate::memory::log_store::load_observation_log;
     use crate::models::{ModelError, ModelResponse, Role, ToolDefinition};
     use async_trait::async_trait;
@@ -471,6 +473,22 @@ mod tests {
             log.len(),
             2,
             "observation log should have two observations (one per string)"
+        );
+
+        // Verify the per-episode obs archive was written alongside the transcript
+        let episode = crate::memory::types::Episode {
+            id: result.id.clone(),
+            date: chrono::Local::now().date_naive(),
+            start: String::new(),
+            end: String::new(),
+            context: String::new(),
+            observations: vec![],
+            source_episodes: vec![],
+        };
+        let obs_archive = episode_obs_path(&layout.episodes_dir(), &episode);
+        assert!(
+            obs_archive.exists(),
+            "per-episode obs archive should exist alongside transcript"
         );
     }
 
