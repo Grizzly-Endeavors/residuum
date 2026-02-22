@@ -80,17 +80,11 @@ impl Theme {
 
     /// Format the user input prompt with bold styling.
     ///
-    /// Returns the prompt string with ANSI escape wrapping (`\x01`/`\x02`) for
-    /// correct readline width calculation.
+    /// Uses raw ANSI escapes which rustyline handles natively for width calculation.
     #[must_use]
     pub fn format_user_prompt(&self) -> String {
         if self.color_enabled {
-            // \x01 and \x02 bracket non-printing chars for readline width calculation
-            format!(
-                "\x01{bold}\x02You: \x01{reset}\x02",
-                bold = "\x1b[1;36m",
-                reset = "\x1b[0m",
-            )
+            format!("{bold}You: {reset}", bold = "\x1b[1;36m", reset = "\x1b[0m",)
         } else {
             "You: ".to_string()
         }
@@ -173,8 +167,12 @@ mod tests {
             "colored prompt should contain 'You: '"
         );
         assert!(
-            prompt.contains('\x01'),
-            "colored prompt should have readline escape markers"
+            prompt.contains("\x1b[1;36m"),
+            "colored prompt should have ANSI bold cyan escape"
+        );
+        assert!(
+            !prompt.contains('\x01'),
+            "colored prompt should not have readline escape markers"
         );
     }
 

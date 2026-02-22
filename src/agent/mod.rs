@@ -114,9 +114,9 @@ impl Agent {
     /// Process a user message through the model, executing tool calls as needed.
     ///
     /// Any queued system events are prepended to the user message so the agent
-    /// sees pending alerts in context. Returns all non-empty assistant texts
-    /// produced during the turn — intermediate texts alongside tool calls come
-    /// first, the final text-only response last.
+    /// sees pending alerts in context. Returns a vec containing the final
+    /// text-only response. Intermediate texts emitted alongside tool calls are
+    /// broadcast via `display` in real-time but not included in the return value.
     ///
     /// # Errors
     /// Returns `IronclawError` if the model call fails or tool execution errors
@@ -208,9 +208,9 @@ impl Agent {
 /// Calls the provider repeatedly until it returns a text response (no tool calls),
 /// executing any requested tools in between. Updates `recent_messages` in place.
 ///
-/// Returns all non-empty assistant texts produced during the turn. Any text
-/// emitted alongside tool calls is captured first; the final text-only response
-/// is appended last.
+/// Returns a vec containing the final text-only response. Intermediate texts
+/// emitted alongside tool calls are broadcast via `display` in real-time but
+/// not included in the return value.
 async fn execute_turn(
     provider: &dyn ModelProvider,
     tools: &ToolRegistry,
@@ -257,7 +257,6 @@ async fn execute_turn(
         // Broadcast any text the model emitted alongside tool calls in real-time.
         if !response.content.is_empty() {
             display.show_response(&response.content);
-            texts.push(response.content.clone());
         }
 
         recent_messages.push(Message::assistant(
@@ -405,7 +404,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn intermediate_text_returned() {
+    async fn intermediate_text_broadcast_not_returned() {
         let mut registry = ToolRegistry::new();
         registry.register_defaults(FileTracker::new_shared());
 
@@ -436,8 +435,8 @@ mod tests {
             .unwrap();
         assert_eq!(
             result,
-            vec!["Let me check that for you...", "Done! The output was: test"],
-            "should return intermediate text and final text in order"
+            vec!["Done! The output was: test"],
+            "should return only final text, intermediate is broadcast via display"
         );
     }
 
