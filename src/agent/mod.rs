@@ -9,7 +9,7 @@ use crate::models::{CompletionOptions, Message, ModelProvider, ModelResponse};
 use crate::tools::ToolRegistry;
 use crate::workspace::identity::IdentityFiles;
 
-use self::context::assemble_system_prompt;
+use self::context::{TimeContext, assemble_system_prompt};
 use self::recent_messages::RecentMessages;
 
 /// Maximum number of tool-call iterations before the agent stops.
@@ -35,6 +35,8 @@ pub struct Agent {
     observations: Option<String>,
     /// System event texts queued from cron jobs; injected at the start of the next user turn.
     pending_system_events: Vec<String>,
+    tz: chrono_tz::Tz,
+    last_user_message_at: Option<chrono::NaiveDateTime>,
 }
 
 impl Agent {
@@ -45,6 +47,7 @@ impl Agent {
         tools: ToolRegistry,
         identity: IdentityFiles,
         options: CompletionOptions,
+        tz: chrono_tz::Tz,
     ) -> Self {
         Self {
             provider,
@@ -54,6 +57,8 @@ impl Agent {
             options,
             observations: None,
             pending_system_events: Vec::new(),
+            tz,
+            last_user_message_at: None,
         }
     }
 
@@ -141,6 +146,13 @@ impl Agent {
         user_input: &str,
         display: &dyn TurnDisplay,
     ) -> Result<Vec<String>, IronclawError> {
+        let now = crate::time::now_local(self.tz);
+        let time_ctx = TimeContext {
+            now,
+            last_message_at: self.last_user_message_at,
+        };
+        self.last_user_message_at = Some(now);
+
         // Build effective input: prepend any pending system events
         let effective_input = if self.pending_system_events.is_empty() {
             user_input.to_string()
@@ -160,6 +172,7 @@ impl Agent {
             self.observations.as_deref(),
             &mut self.recent_messages,
             display,
+            Some(&time_ctx),
         )
         .await
     }
@@ -194,6 +207,7 @@ impl Agent {
             self.observations.as_deref(),
             &mut thread_messages,
             display,
+            None,
         )
         .await?;
 
@@ -226,6 +240,10 @@ impl Agent {
 /// Returns a vec containing the final text-only response. Intermediate texts
 /// emitted alongside tool calls are broadcast via `display` in real-time but
 /// not included in the return value.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "adding time_ctx pushes past 7; grouping into a struct would obscure the call site"
+)]
 async fn execute_turn(
     provider: &dyn ModelProvider,
     tools: &ToolRegistry,
@@ -234,6 +252,7 @@ async fn execute_turn(
     observations: Option<&str>,
     recent_messages: &mut RecentMessages,
     display: &dyn TurnDisplay,
+    time_ctx: Option<&TimeContext>,
 ) -> Result<Vec<String>, IronclawError> {
     let tool_definitions = tools.definitions();
     let mut texts: Vec<String> = Vec::new();
@@ -241,7 +260,8 @@ async fn execute_turn(
     for iteration in 0..MAX_TOOL_ITERATIONS {
         // System prompt is reassembled each iteration because tool execution
         // can modify identity files (e.g. write_file updating MEMORY.md).
-        let messages = assemble_system_prompt(identity, tools, recent_messages, observations);
+        let messages =
+            assemble_system_prompt(identity, tools, recent_messages, observations, time_ctx);
 
         let response = provider
             .complete(&messages, &tool_definitions, options)
@@ -375,6 +395,7 @@ mod tests {
             ToolRegistry::new(),
             IdentityFiles::default(),
             CompletionOptions::default(),
+            chrono_tz::UTC,
         );
 
         let display = NullDisplay;
@@ -404,6 +425,7 @@ mod tests {
             registry,
             IdentityFiles::default(),
             CompletionOptions::default(),
+            chrono_tz::UTC,
         );
 
         let display = NullDisplay;
@@ -441,6 +463,7 @@ mod tests {
             registry,
             IdentityFiles::default(),
             CompletionOptions::default(),
+            chrono_tz::UTC,
         );
 
         let display = NullDisplay;
@@ -479,6 +502,7 @@ mod tests {
             registry,
             IdentityFiles::default(),
             CompletionOptions::default(),
+            chrono_tz::UTC,
         );
 
         let display = NullDisplay;
@@ -496,6 +520,7 @@ mod tests {
             ToolRegistry::new(),
             IdentityFiles::default(),
             CompletionOptions::default(),
+            chrono_tz::UTC,
         );
 
         let display = NullDisplay;
@@ -525,6 +550,7 @@ mod tests {
             ToolRegistry::new(),
             IdentityFiles::default(),
             CompletionOptions::default(),
+            chrono_tz::UTC,
         );
 
         agent.queue_system_event("email arrived from boss".to_string());
@@ -550,6 +576,7 @@ mod tests {
             ToolRegistry::new(),
             IdentityFiles::default(),
             CompletionOptions::default(),
+            chrono_tz::UTC,
         );
 
         let display = NullDisplay;

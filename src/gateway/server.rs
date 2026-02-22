@@ -145,7 +145,7 @@ pub async fn run_gateway(cfg: Config) -> Result<GatewayExit, IronclawError> {
     };
 
     // Build agent
-    let mut agent = Agent::new(provider, tools, identity, options);
+    let mut agent = Agent::new(provider, tools, identity, options, tz);
     agent.reload_observations(&layout).await?;
 
     // Restore unobserved messages from previous run

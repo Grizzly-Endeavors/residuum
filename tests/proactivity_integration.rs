@@ -67,6 +67,7 @@ mod proactivity_integration {
             ToolRegistry::new(),
             IdentityFiles::default(),
             CompletionOptions::default(),
+            chrono_tz::UTC,
         )
     }
 
