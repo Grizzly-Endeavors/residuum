@@ -59,3 +59,19 @@ enabled = true
 [gateway]
 bind = "127.0.0.1"
 port = 7700
+
+# ── Discord bot (optional, requires --features discord) ──────────────────────
+# Bot token can be set here or via IRONCLAW_DISCORD_TOKEN env var.
+# Supports ${ENV_VAR} syntax for referencing environment variables.
+# Currently DM-only; guild channels, slash commands, and presence are planned.
+#
+# [discord]
+# token = "${IRONCLAW_DISCORD_TOKEN}"
+
+# ── Webhook endpoint (optional) ──────────────────────────────────────────────
+# Enables POST /webhook on the gateway server. If secret is set, requests
+# must include an Authorization: Bearer <secret> header.
+#
+# [webhook]
+# enabled = false
+# secret = "your-webhook-secret"

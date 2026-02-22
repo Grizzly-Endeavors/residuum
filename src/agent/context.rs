@@ -9,12 +9,14 @@ use crate::workspace::identity::IdentityFiles;
 
 use super::recent_messages::RecentMessages;
 
-/// Ephemeral time context injected before the last user message in each LLM call.
+/// Ephemeral context injected before the last user message in each LLM call.
 pub struct TimeContext {
     /// Current local time.
     pub now: NaiveDateTime,
     /// When the previous user message was sent (if any).
     pub last_message_at: Option<NaiveDateTime>,
+    /// Which channel this message arrived from (e.g. `"websocket"`, `"discord"`).
+    pub message_source: Option<String>,
 }
 
 /// Assemble the full message list for a model call.
@@ -54,17 +56,23 @@ pub fn assemble_system_prompt(
     messages
 }
 
-/// Build the `[Current Time: ...][Last Message: ...]` tag string.
+/// Build the `[Current Time: ...][Last Message: ...][Message Source: ...]` tag string.
 fn build_time_context_tag(ctx: &TimeContext) -> String {
     let current = format_display_datetime(ctx.now);
-    match ctx.last_message_at {
+    let mut tag = match ctx.last_message_at {
         Some(prev) => {
             let delta = ctx.now - prev;
             let relative = format_relative_time(delta);
             format!("[Current Time: {current}][Last Message: {relative}]")
         }
         None => format!("[Current Time: {current}]"),
+    };
+
+    if let Some(source) = &ctx.message_source {
+        tag = format!("{tag}[Message Source: {source}]");
     }
+
+    tag
 }
 
 /// Build the system prompt content from identity files and tool listings.
@@ -329,6 +337,7 @@ mod tests {
         let ctx = TimeContext {
             now: dt(2026, 2, 22, 17, 0),
             last_message_at: Some(dt(2026, 2, 22, 16, 45)),
+            message_source: None,
         };
 
         let messages = assemble_system_prompt(&identity, &tools, &recent, None, Some(&ctx));
@@ -382,6 +391,7 @@ mod tests {
         let ctx = TimeContext {
             now: dt(2026, 2, 22, 17, 0),
             last_message_at: None,
+            message_source: None,
         };
 
         let messages = assemble_system_prompt(&identity, &tools, &recent, None, Some(&ctx));
@@ -399,6 +409,33 @@ mod tests {
     }
 
     #[test]
+    fn time_context_includes_message_source() {
+        let identity = IdentityFiles::default();
+        let tools = ToolRegistry::new();
+        let mut recent = RecentMessages::new();
+        recent.push(Message::user("hello from discord"));
+
+        let ctx = TimeContext {
+            now: dt(2026, 2, 22, 17, 0),
+            last_message_at: None,
+            message_source: Some("discord".to_string()),
+        };
+
+        let messages = assemble_system_prompt(&identity, &tools, &recent, None, Some(&ctx));
+
+        let time_msg = messages
+            .iter()
+            .find(|m| m.content.contains("[Current Time:"));
+        assert!(time_msg.is_some(), "should have time context message");
+
+        let tag = &time_msg.as_ref().map(|m| m.content.as_str());
+        assert!(
+            tag.is_some_and(|t| t.contains("[Message Source: discord]")),
+            "should contain message source tag, got: {tag:?}"
+        );
+    }
+
+    #[test]
     fn time_context_only_before_last_user_message() {
         let identity = IdentityFiles::default();
         let tools = ToolRegistry::new();
@@ -412,6 +449,7 @@ mod tests {
         let ctx = TimeContext {
             now: dt(2026, 2, 22, 17, 0),
             last_message_at: Some(dt(2026, 2, 22, 16, 0)),
+            message_source: None,
         };
 
         let messages = assemble_system_prompt(&identity, &tools, &recent, None, Some(&ctx));

@@ -130,7 +130,7 @@ mod gateway_integration {
                 }
 
                 match agent
-                    .process_message(&inbound.content, &broadcast_display)
+                    .process_message(&inbound.content, &broadcast_display, None)
                     .await
                 {
                     Ok(texts) => {

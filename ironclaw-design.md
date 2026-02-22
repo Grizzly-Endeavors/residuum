@@ -945,10 +945,13 @@ Ordered by "what gets you a usable agent fastest":
 **Milestone: Agent proactively checks on things, notifies you, and can schedule its own wake-ups.**
 
 ### Phase 4: Discord & channels
-17. `channels/discord` — Serenity integration, rich messages.
+17. `channels/discord` — Serenity integration, DM support, message chunking.
 18. `channels/webhook` — Incoming webhook support.
+19. Channel abstraction — `ReplyHandle` trait, `RoutedMessage`, message source injection.
+20. `channels/discord` — Guild channels, mention gating, threads.
+21. `channels/discord` — Presence, slash commands, attachments.
 
-**Milestone: Agent is accessible via Discord.**
+**Milestone: Agent is fully accessible via Discord with presence, commands, and media.**
 
 ### Phase 5: Projects
 19. `projects/scanner` — Directory discovery, context.yml parsing.

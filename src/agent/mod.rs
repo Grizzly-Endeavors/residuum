@@ -4,6 +4,7 @@ pub mod context;
 pub mod recent_messages;
 
 use crate::channels::TurnDisplay;
+use crate::channels::types::MessageOrigin;
 use crate::error::IronclawError;
 use crate::models::{CompletionOptions, Message, ModelProvider, ModelResponse};
 use crate::tools::ToolRegistry;
@@ -153,11 +154,13 @@ impl Agent {
         &mut self,
         user_input: &str,
         display: &dyn TurnDisplay,
+        origin: Option<&MessageOrigin>,
     ) -> Result<Vec<String>, IronclawError> {
         let now = crate::time::now_local(self.tz);
         let time_ctx = TimeContext {
             now,
             last_message_at: self.last_user_message_at,
+            message_source: origin.map(|o| o.channel.clone()),
         };
         self.last_user_message_at = Some(now);
 
@@ -207,6 +210,7 @@ impl Agent {
 
         let provider: &dyn ModelProvider = provider_override.unwrap_or(&*self.provider);
 
+        // System turns don't inject time context (no user-facing timestamps)
         let texts = execute_turn(
             provider,
             &self.tools,
@@ -407,7 +411,7 @@ mod tests {
         );
 
         let display = NullDisplay;
-        let result = agent.process_message("hi", &display).await.unwrap();
+        let result = agent.process_message("hi", &display, None).await.unwrap();
         assert_eq!(result, vec!["hello there"], "should return model text");
     }
 
@@ -438,7 +442,7 @@ mod tests {
 
         let display = NullDisplay;
         let result = agent
-            .process_message("run echo test", &display)
+            .process_message("run echo test", &display, None)
             .await
             .unwrap();
         assert_eq!(
@@ -476,7 +480,7 @@ mod tests {
 
         let display = NullDisplay;
         let result = agent
-            .process_message("what does echo test print?", &display)
+            .process_message("what does echo test print?", &display, None)
             .await
             .unwrap();
         assert_eq!(
@@ -514,7 +518,7 @@ mod tests {
         );
 
         let display = NullDisplay;
-        let result = agent.process_message("loop forever", &display).await;
+        let result = agent.process_message("loop forever", &display, None).await;
         assert!(result.is_err(), "should error after max iterations");
     }
 
@@ -563,7 +567,10 @@ mod tests {
 
         agent.queue_system_event("email arrived from boss".to_string());
         let display = NullDisplay;
-        agent.process_message("what's up?", &display).await.unwrap();
+        agent
+            .process_message("what's up?", &display, None)
+            .await
+            .unwrap();
 
         // Queue should be drained
         let msgs = agent.messages_since(0);
@@ -588,7 +595,7 @@ mod tests {
         );
 
         let display = NullDisplay;
-        let result = agent.process_message("hello", &display).await;
+        let result = agent.process_message("hello", &display, None).await;
         assert!(result.is_err(), "empty response should return error");
 
         let err_msg = result.unwrap_err().to_string();

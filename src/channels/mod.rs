@@ -1,7 +1,13 @@
 //! Communication channels between the user and the agent.
 
+pub mod chunking;
 pub mod cli;
+#[cfg(feature = "discord")]
+pub mod discord;
 pub mod null;
+pub mod types;
+pub mod webhook;
+pub mod websocket;
 
 /// Trait for displaying agent tool activity during a turn.
 ///

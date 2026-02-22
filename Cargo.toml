@@ -46,8 +46,16 @@ tokio-tungstenite = "0.26"
 futures-util = "0.3"
 uuid = { version = "1", features = ["v4"] }
 
+# Discord (optional, feature-gated)
+serenity = { version = "0.12", default-features = false, features = ["client", "gateway", "http", "model", "rustls_backend"], optional = true }
+
+[features]
+default = []
+discord = ["dep:serenity"]
+
 [dev-dependencies]
 tempfile = "3"
+tower = "0.5"
 wiremock = "0.6"
 
 # Lint configuration

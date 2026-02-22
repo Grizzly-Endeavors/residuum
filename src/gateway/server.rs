@@ -14,6 +14,8 @@ use futures_util::{SinkExt, StreamExt};
 use tokio::sync::{broadcast, mpsc};
 
 use crate::agent::Agent;
+use crate::channels::types::{InboundMessage, MessageOrigin, RoutedMessage};
+use crate::channels::websocket::WsReplyHandle;
 use crate::config::{Config, ModelSpec, ProviderKind, ProviderSpec};
 use crate::cron::executor::execute_due_jobs;
 use crate::cron::store::CronStore;
@@ -50,18 +52,10 @@ pub enum GatewayExit {
     Reload,
 }
 
-/// An inbound message from a WebSocket client.
-struct InboundMessage {
-    /// Client-generated correlation ID.
-    id: String,
-    /// The user message content.
-    content: String,
-}
-
 /// Shared state for the axum WebSocket server.
 #[derive(Clone)]
 struct GatewayState {
-    inbound_tx: mpsc::Sender<InboundMessage>,
+    inbound_tx: mpsc::Sender<RoutedMessage>,
     broadcast_tx: broadcast::Sender<ServerMessage>,
     reload_sender: tokio::sync::watch::Sender<bool>,
     observe_notify: Arc<tokio::sync::Notify>,
@@ -160,7 +154,7 @@ pub async fn run_gateway(cfg: Config) -> Result<GatewayExit, IronclawError> {
     agent.set_last_user_message_at(restore.last_user_message_at);
 
     // Channels
-    let (inbound_tx, mut inbound_rx) = mpsc::channel::<InboundMessage>(32);
+    let (inbound_tx, mut inbound_rx) = mpsc::channel::<RoutedMessage>(32);
     let (broadcast_tx, _broadcast_rx) = broadcast::channel::<ServerMessage>(256);
     let (reload_sender, mut reload_rx) = tokio::sync::watch::channel(false);
 
@@ -168,6 +162,11 @@ pub async fn run_gateway(cfg: Config) -> Result<GatewayExit, IronclawError> {
 
     let observe_notify = Arc::new(tokio::sync::Notify::new());
     let reflect_notify = Arc::new(tokio::sync::Notify::new());
+
+    // Clone inbound_tx for additional channel adapters before moving into state
+    #[cfg(feature = "discord")]
+    let discord_inbound_tx = inbound_tx.clone();
+    let webhook_inbound_tx = inbound_tx.clone();
 
     // Build axum app
     let state = GatewayState {
@@ -178,9 +177,32 @@ pub async fn run_gateway(cfg: Config) -> Result<GatewayExit, IronclawError> {
         reflect_notify: Arc::clone(&reflect_notify),
     };
 
-    let app = axum::Router::new()
+    // Build webhook sub-router if enabled
+    let webhook_router = if cfg.webhook.enabled {
+        let webhook_state = crate::channels::webhook::WebhookState {
+            inbound_tx: webhook_inbound_tx,
+            secret: cfg.webhook.secret.clone(),
+        };
+        Some(
+            axum::Router::new()
+                .route(
+                    "/webhook",
+                    axum::routing::post(crate::channels::webhook::webhook_handler),
+                )
+                .with_state(webhook_state),
+        )
+    } else {
+        drop(webhook_inbound_tx);
+        None
+    };
+
+    let mut app = axum::Router::new()
         .route("/ws", get(ws_handler))
         .with_state(state);
+
+    if let Some(wh) = webhook_router {
+        app = app.merge(wh);
+    }
 
     let addr = cfg.gateway.addr();
     let listener = tokio::net::TcpListener::bind(&addr)
@@ -200,6 +222,19 @@ pub async fn run_gateway(cfg: Config) -> Result<GatewayExit, IronclawError> {
             tracing::error!(error = %e, "gateway server error");
         }
     });
+
+    // Spawn Discord adapter if configured
+    #[cfg(feature = "discord")]
+    if let Some(ref discord_cfg) = cfg.discord {
+        let discord =
+            crate::channels::discord::DiscordChannel::new(discord_cfg.clone(), discord_inbound_tx);
+        tokio::spawn(async move {
+            if let Err(e) = discord.start().await {
+                tracing::error!(error = %e, "discord channel failed");
+            }
+        });
+        tracing::info!("discord channel started (DM-only mode)");
+    }
 
     // Pulse scheduler
     let mut pulse_scheduler = PulseScheduler::new();
@@ -223,17 +258,18 @@ pub async fn run_gateway(cfg: Config) -> Result<GatewayExit, IronclawError> {
                 return Ok(GatewayExit::Reload);
             }
 
-            // ── Inbound WebSocket messages ────────────────────────────────
+            // ── Inbound messages (from any channel) ──────────────────────
             msg = inbound_rx.recv() => {
-                let Some(inbound) = msg else {
+                let Some(routed) = msg else {
                     tracing::info!("inbound channel closed, shutting down");
                     server_handle.abort();
                     break;
                 };
 
-                let reply_id = inbound.id.clone();
+                let reply_id = routed.message.id.clone();
+                let origin = routed.message.origin.clone();
 
-                // Notify clients that we're processing this message
+                // Notify WS clients that we're processing this message
                 if broadcast_tx.send(ServerMessage::TurnStarted {
                     reply_to: reply_id.clone(),
                 }).is_err() {
@@ -242,14 +278,20 @@ pub async fn run_gateway(cfg: Config) -> Result<GatewayExit, IronclawError> {
 
                 let before = agent.message_count();
 
-                match agent.process_message(&inbound.content, &broadcast_display).await {
+                match agent.process_message(&routed.message.content, &broadcast_display, Some(&origin)).await {
                     Ok(texts) => {
-                        for text in texts {
-                            if broadcast_tx.send(ServerMessage::Response {
-                                reply_to: reply_id.clone(),
-                                content: text,
-                            }).is_err() {
-                                tracing::trace!("no broadcast receivers for response");
+                        for text in &texts {
+                            routed.reply.send_response(text).await;
+                        }
+                        // Also broadcast to WS for non-WS channels
+                        if origin.channel != "websocket" {
+                            for text in texts {
+                                if broadcast_tx.send(ServerMessage::Response {
+                                    reply_to: reply_id.clone(),
+                                    content: text,
+                                }).is_err() {
+                                    tracing::trace!("no broadcast receivers for response");
+                                }
                             }
                         }
                     }
@@ -434,8 +476,23 @@ async fn handle_connection(socket: WebSocket, state: GatewayState) {
 
         match client_msg {
             ClientMessage::SendMessage { id, content } => {
-                let inbound = InboundMessage { id, content };
-                if state.inbound_tx.send(inbound).await.is_err() {
+                let origin = MessageOrigin {
+                    channel: "websocket".to_string(),
+                    sender_name: "ws-client".to_string(),
+                    sender_id: "ws-client".to_string(),
+                };
+                let inbound = InboundMessage {
+                    id: id.clone(),
+                    content,
+                    origin,
+                    timestamp: chrono::Utc::now(),
+                };
+                let reply = Box::new(WsReplyHandle::new(state.broadcast_tx.clone(), id));
+                let routed = RoutedMessage {
+                    message: inbound,
+                    reply,
+                };
+                if state.inbound_tx.send(routed).await.is_err() {
                     tracing::warn!("inbound channel closed, dropping message");
                     break;
                 }

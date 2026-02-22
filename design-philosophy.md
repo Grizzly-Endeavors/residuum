@@ -20,7 +20,7 @@ The HEARTBEAT.yml change captures this principle precisely: move the scheduling 
 
 ## Independent systems that compose through shared data
 
-Memory and proactivity are designed independently. PARA is designed independently. They share a data layer — the workspace filesystem and the observation log — which means improvements to one naturally benefit the others. But they don't depend on each other. You can run OM without PARA. You can run pulses without OM. Each system should be valuable on its own.
+Memory and proactivity are designed independently. The Projects system is designed independently. They share a data layer — the workspace filesystem and the observation log — which means improvements to one naturally benefit the others. But they don't depend on each other. You can run OM without Projects. You can run pulses without OM. Each system should be valuable on its own.
 
 Tight coupling between systems creates fragility. Shared data creates opportunity without obligation.
 
@@ -28,7 +28,7 @@ Tight coupling between systems creates fragility. Shared data creates opportunit
 
 OpenClaw's memory cliff — where context from two days ago becomes invisible unless the agent guesses it should search — is a failure of accessibility, not storage. The information exists in files. The agent just can't see it.
 
-OM fixes this by keeping compressed history in the context window at all times. PARA fixes this by giving the agent a scannable index of what knowledge domains exist and what's in them. The principle is the same: don't make the agent guess that it should look for something. Make relevant context visible by default and let the agent manage scope.
+OM fixes this by keeping compressed history in the context window at all times. The Projects system fixes this by giving the agent a scannable index of active and archived work — what projects exist, what's in each, and what capabilities they carry — without bulk-loading contents. The principle is the same: don't make the agent guess that it should look for something. Make relevant context visible by default and let the agent manage scope.
 
 ## Autonomy with transparency
 

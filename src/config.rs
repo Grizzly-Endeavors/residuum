@@ -116,6 +116,10 @@ pub struct Config {
     pub gateway: GatewayConfig,
     /// IANA timezone for the agent (e.g. `America/New_York`).
     pub timezone: chrono_tz::Tz,
+    /// Discord bot configuration (None if `[discord]` section absent or no token).
+    pub discord: Option<DiscordConfig>,
+    /// Webhook endpoint configuration.
+    pub webhook: WebhookConfig,
 }
 
 impl fmt::Debug for Config {
@@ -134,6 +138,8 @@ impl fmt::Debug for Config {
             .field("cron_enabled", &self.cron_enabled)
             .field("gateway", &self.gateway)
             .field("timezone", &self.timezone)
+            .field("discord", &self.discord.as_ref().map(|_| "[configured]"))
+            .field("webhook", &self.webhook)
             .finish()
     }
 }
@@ -209,6 +215,22 @@ impl Default for MemoryConfig {
     }
 }
 
+/// Validated Discord bot configuration.
+#[derive(Debug, Clone)]
+pub struct DiscordConfig {
+    /// Bot token for the Discord API.
+    pub token: String,
+}
+
+/// Validated webhook endpoint configuration.
+#[derive(Debug, Clone, Default)]
+pub struct WebhookConfig {
+    /// Whether the webhook endpoint is enabled.
+    pub enabled: bool,
+    /// Optional bearer token for authenticating incoming requests.
+    pub secret: Option<String>,
+}
+
 impl Config {
     /// Write default config files to `~/.ironclaw/` if not already present.
     ///
@@ -258,6 +280,10 @@ impl Config {
     /// # Errors
     /// Returns `IronclawError::Config` if the model spec cannot be parsed or
     /// the workspace directory cannot be determined.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "config resolution is a single sequential pipeline; splitting would obscure the precedence chain"
+    )]
     fn from_file_and_env(file: Option<&ConfigFile>) -> Result<Self, IronclawError> {
         warn_deprecated_env_vars();
 
@@ -345,6 +371,9 @@ impl Config {
 
         let gateway = GatewayConfig::from_file_and_env(file.and_then(|f| f.gateway.as_ref()));
 
+        let discord = resolve_discord_config(file.and_then(|f| f.discord.as_ref()));
+        let webhook = resolve_webhook_config(file.and_then(|f| f.webhook.as_ref()));
+
         let timezone_str = std::env::var("IRONCLAW_TIMEZONE")
             .ok()
             .or_else(|| file.and_then(|f| f.timezone.clone()));
@@ -375,6 +404,8 @@ impl Config {
             cron_enabled,
             gateway,
             timezone,
+            discord,
+            webhook,
         })
     }
 }
@@ -494,6 +525,10 @@ struct ConfigFile {
     cron: Option<CronConfigFile>,
     /// Gateway configuration.
     gateway: Option<GatewayConfigFile>,
+    /// Discord bot configuration.
+    discord: Option<DiscordConfigFile>,
+    /// Webhook endpoint configuration.
+    webhook: Option<WebhookConfigFile>,
 }
 
 /// A named provider entry under `[providers.<name>]`.
@@ -561,6 +596,24 @@ struct GatewayConfigFile {
     bind: Option<String>,
     /// Port for the WebSocket server.
     port: Option<u16>,
+}
+
+/// Raw TOML `[discord]` section.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DiscordConfigFile {
+    /// Bot token (supports `${ENV_VAR}` syntax).
+    token: Option<String>,
+}
+
+/// Raw TOML `[webhook]` section.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct WebhookConfigFile {
+    /// Whether the webhook endpoint is enabled.
+    enabled: Option<bool>,
+    /// Optional bearer token for authentication.
+    secret: Option<String>,
 }
 
 // ── Resolution logic ─────────────────────────────────────────────────────────
@@ -666,6 +719,60 @@ fn resolve_role(
         return resolve_model_string(s, providers_map);
     }
     Ok(main.clone())
+}
+
+/// Resolve Discord configuration from TOML section and environment.
+///
+/// Token resolution: `IRONCLAW_DISCORD_TOKEN` env > `token` field in TOML (with
+/// `${ENV_VAR}` expansion) > `None` if section is absent or no token found.
+fn resolve_discord_config(section: Option<&DiscordConfigFile>) -> Option<DiscordConfig> {
+    let token = std::env::var("IRONCLAW_DISCORD_TOKEN")
+        .ok()
+        .or_else(|| {
+            section
+                .and_then(|s| s.token.as_ref())
+                .and_then(|t| expand_env_token(t))
+        })
+        .filter(|t| !t.is_empty());
+
+    match (section, token) {
+        (_, Some(tok)) => Some(DiscordConfig { token: tok }),
+        (Some(_), None) => {
+            eprintln!(
+                "warning: [discord] section present but no token found; \
+                 set IRONCLAW_DISCORD_TOKEN or token in config"
+            );
+            None
+        }
+        (None, None) => None,
+    }
+}
+
+/// Expand `${ENV_VAR}` references in a token string.
+///
+/// Returns `Some(value)` if expansion succeeds or the string contains no `${...}`.
+/// Returns `None` if the referenced env var is not set.
+fn expand_env_token(raw: &str) -> Option<String> {
+    let inner = raw
+        .strip_prefix("${")
+        .and_then(|s| s.strip_suffix('}'))
+        .filter(|s| !s.is_empty());
+
+    match inner {
+        Some(var_name) => std::env::var(var_name).ok(),
+        None => Some(raw.to_string()),
+    }
+}
+
+/// Resolve webhook configuration from TOML section.
+fn resolve_webhook_config(section: Option<&WebhookConfigFile>) -> WebhookConfig {
+    match section {
+        Some(s) => WebhookConfig {
+            enabled: s.enabled.unwrap_or(false),
+            secret: s.secret.clone(),
+        },
+        None => WebhookConfig::default(),
+    }
 }
 
 /// Warn on deprecated environment variables that no longer have effect.
@@ -935,6 +1042,14 @@ mod tests {
             body.contains("[gateway]"),
             "example should contain gateway section"
         );
+        assert!(
+            body.contains("[discord]"),
+            "example should document discord section"
+        );
+        assert!(
+            body.contains("[webhook]"),
+            "example should document webhook section"
+        );
     }
 
     // ── New provider / model resolution tests ────────────────────────────────
@@ -1191,6 +1306,100 @@ main = "anthropic/claude-sonnet-4-6"
         let cfg = Config::from_file_and_env(Some(&file)).unwrap();
         assert!(cfg.pulse_enabled, "pulse should default to enabled");
         assert!(cfg.cron_enabled, "cron should default to enabled");
+    }
+
+    #[test]
+    fn discord_absent_returns_none() {
+        let toml_str = r#"
+timezone = "UTC"
+
+[models]
+main = "anthropic/claude-sonnet-4-6"
+"#;
+        let file: ConfigFile = toml::from_str(toml_str).unwrap();
+        let cfg = Config::from_file_and_env(Some(&file)).unwrap();
+        assert!(
+            cfg.discord.is_none(),
+            "no [discord] section should yield None"
+        );
+    }
+
+    #[test]
+    fn discord_section_without_token_returns_none() {
+        let toml_str = r#"
+timezone = "UTC"
+
+[models]
+main = "anthropic/claude-sonnet-4-6"
+
+[discord]
+"#;
+        let file: ConfigFile = toml::from_str(toml_str).unwrap();
+        let cfg = Config::from_file_and_env(Some(&file)).unwrap();
+        assert!(
+            cfg.discord.is_none(),
+            "[discord] with no token should yield None"
+        );
+    }
+
+    #[test]
+    fn discord_section_with_token() {
+        let toml_str = r#"
+timezone = "UTC"
+
+[models]
+main = "anthropic/claude-sonnet-4-6"
+
+[discord]
+token = "my-bot-token"
+"#;
+        let file: ConfigFile = toml::from_str(toml_str).unwrap();
+        let cfg = Config::from_file_and_env(Some(&file)).unwrap();
+        assert!(cfg.discord.is_some(), "[discord] with token should be Some");
+        assert_eq!(
+            cfg.discord.as_ref().map(|d| d.token.as_str()),
+            Some("my-bot-token"),
+            "token should match"
+        );
+    }
+
+    #[test]
+    fn webhook_defaults_when_absent() {
+        let toml_str = r#"
+timezone = "UTC"
+
+[models]
+main = "anthropic/claude-sonnet-4-6"
+"#;
+        let file: ConfigFile = toml::from_str(toml_str).unwrap();
+        let cfg = Config::from_file_and_env(Some(&file)).unwrap();
+        assert!(!cfg.webhook.enabled, "webhook should default to disabled");
+        assert!(
+            cfg.webhook.secret.is_none(),
+            "webhook secret should default to None"
+        );
+    }
+
+    #[test]
+    fn webhook_enabled_with_secret() {
+        let toml_str = r#"
+timezone = "UTC"
+
+[models]
+main = "anthropic/claude-sonnet-4-6"
+
+[webhook]
+enabled = true
+secret = "my-secret"
+"#;
+        let file: ConfigFile = toml::from_str(toml_str).unwrap();
+        let cfg = Config::from_file_and_env(Some(&file)).unwrap();
+        assert!(cfg.webhook.enabled, "webhook should be enabled");
+        assert_eq!(
+            cfg.webhook.secret.as_deref(),
+            Some("my-secret"),
+            "webhook secret should match"
+        );
     }
 
     #[test]
