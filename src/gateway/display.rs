@@ -44,8 +44,7 @@ impl TurnDisplay for BroadcastDisplay {
     }
 
     fn show_response(&self, content: &str) {
-        let msg = ServerMessage::Response {
-            reply_to: String::new(),
+        let msg = ServerMessage::BroadcastResponse {
             content: content.to_string(),
         };
         if self.tx.send(msg).is_err() {

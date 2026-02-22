@@ -19,6 +19,8 @@ pub struct CliClient {
     pub indicator: WorkingIndicator,
     url: String,
     verbose: bool,
+    /// Whether the agent prefix has been printed for the current turn.
+    turn_has_header: bool,
 }
 
 impl CliClient {
@@ -33,6 +35,7 @@ impl CliClient {
             indicator: WorkingIndicator::new(),
             url: url.into(),
             verbose,
+            turn_has_header: false,
         }
     }
 
@@ -63,6 +66,7 @@ impl CliClient {
     pub fn display(&mut self, msg: &ServerMessage) {
         match msg {
             ServerMessage::TurnStarted { .. } => {
+                self.turn_has_header = false;
                 self.indicator.start();
             }
             ServerMessage::ToolCall { name, arguments } => {
@@ -92,11 +96,27 @@ impl CliClient {
                     }
                 }
             }
+            ServerMessage::BroadcastResponse { content } => {
+                self.indicator.clear_line();
+                let header = if self.turn_has_header {
+                    String::new()
+                } else {
+                    self.turn_has_header = true;
+                    format!("\n{}\n", self.theme.format_prefix("IronClaw:"))
+                };
+                let rendered = self.renderer.render(content);
+                println!("{header}{rendered}");
+            }
             ServerMessage::Response { content, .. } => {
                 self.indicator.finish();
-                let prefix = self.theme.format_prefix("IronClaw:");
+                let header = if self.turn_has_header {
+                    String::new()
+                } else {
+                    format!("\n{}\n", self.theme.format_prefix("IronClaw:"))
+                };
+                self.turn_has_header = false;
                 let rendered = self.renderer.render(content);
-                println!("\n{prefix}\n{rendered}");
+                println!("{header}{rendered}");
             }
             ServerMessage::SystemEvent { source, content } => {
                 self.indicator.finish();

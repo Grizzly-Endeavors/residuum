@@ -67,6 +67,11 @@ pub enum ServerMessage {
         /// The event content.
         content: String,
     },
+    /// Intermediate text the agent emitted alongside tool calls.
+    BroadcastResponse {
+        /// The intermediate content.
+        content: String,
+    },
     /// An error related to a specific request.
     Error {
         /// Correlation ID of the original message, if applicable.
@@ -208,6 +213,22 @@ mod tests {
         assert!(
             json.contains("\"message\":\"observed successfully\""),
             "should have message field"
+        );
+    }
+
+    #[test]
+    fn server_message_serialize_broadcast_response() {
+        let msg = ServerMessage::BroadcastResponse {
+            content: "checking that for you".to_string(),
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(
+            json.contains("\"type\":\"broadcast_response\""),
+            "should have type tag"
+        );
+        assert!(
+            json.contains("\"content\":\"checking that for you\""),
+            "should have content field"
         );
     }
 

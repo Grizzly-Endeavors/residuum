@@ -46,6 +46,17 @@ impl WorkingIndicator {
         }
     }
 
+    /// Wipe the indicator line without deactivating.
+    ///
+    /// The animation resumes on the next tick or redraw. Use this when printing
+    /// intermediate content while the agent is still working.
+    pub fn clear_line(&mut self) {
+        if self.active {
+            eprint!("\r\x1b[2K");
+            drop(std::io::stderr().flush());
+        }
+    }
+
     /// Clear the indicator line and mark inactive.
     pub fn finish(&mut self) {
         if self.active {
@@ -144,6 +155,23 @@ mod tests {
         ind.start();
         ind.finish();
         assert!(!ind.is_active(), "finish should clear active state");
+    }
+
+    #[test]
+    fn clear_line_preserves_active() {
+        let mut ind = WorkingIndicator::new();
+        ind.start();
+        ind.on_tool_call();
+        ind.clear_line();
+        assert!(ind.is_active(), "clear_line should keep indicator active");
+        assert_eq!(ind.tool_count, 1, "clear_line should not reset tool count");
+    }
+
+    #[test]
+    fn clear_line_noop_when_inactive() {
+        let mut ind = WorkingIndicator::new();
+        ind.clear_line(); // should not panic
+        assert!(!ind.is_active(), "should remain inactive");
     }
 
     #[test]
