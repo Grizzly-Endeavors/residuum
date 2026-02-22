@@ -3,7 +3,7 @@
 //! Fires synchronously after the agent completes a turn when the accumulated
 //! recent message token count exceeds the configured threshold.
 
-use chrono::{Local, SecondsFormat, Utc};
+use chrono::{DateTime, Local, SecondsFormat, Utc};
 
 use crate::config::DEFAULT_OBSERVER_THRESHOLD;
 use crate::error::IronclawError;
@@ -80,23 +80,22 @@ impl Observer {
             ));
         }
 
-        // Derive observation metadata from the batch of recent messages.
+        // Derive project context from the batch of recent messages.
         let project_context = derive_project_context(recent_messages);
-        let visibility = derive_visibility(recent_messages);
 
         // Generate the next episode ID by scanning the episodes directory
         let episode_id = next_episode_id(&layout.episodes_dir()).await?;
 
-        // Load system prompt from disk, falling back to embedded constant.
-        let system_prompt = tokio::fs::read_to_string(layout.observer_md())
+        // Load content guidance from disk, falling back to embedded constant.
+        let content_guidance = tokio::fs::read_to_string(layout.observer_md())
             .await
             .ok()
             .and_then(|s| if s.trim().is_empty() { None } else { Some(s) })
-            .unwrap_or_else(|| EXTRACTION_SYSTEM_PROMPT.to_string());
+            .unwrap_or_else(|| EXTRACTION_CONTENT_PROMPT.to_string());
 
         // Build extraction prompt using full RecentMessage metadata (timestamps,
         // tool calls, project context) so the observer LLM has complete context.
-        let extraction_messages = build_extraction_prompt(recent_messages, &system_prompt);
+        let extraction_messages = build_extraction_prompt(recent_messages, &content_guidance);
 
         // Extract inner messages for the episode transcript written to disk.
         let messages: Vec<Message> = recent_messages
@@ -111,8 +110,8 @@ impl Observer {
             .await
             .map_err(IronclawError::Model)?;
 
-        // Parse the bare string-array response into observation strings.
-        let observation_strings = parse_observation_strings(&response)?;
+        // Parse the object-array response into extraction results.
+        let extractions = parse_observer_response(&response)?;
 
         // Build the episode internally — start/end are cosmetic and no longer LLM-extracted.
         let episode = Episode {
@@ -121,7 +120,7 @@ impl Observer {
             start: String::new(),
             end: String::new(),
             context: project_context.clone(),
-            observations: observation_strings,
+            observations: extractions.iter().map(|e| e.content.clone()).collect(),
             source_episodes: vec![],
         };
 
@@ -132,15 +131,14 @@ impl Observer {
 
         // Convert episode observations → flat Observations and append
         let observation_count = episode.observations.len();
-        let observations: Vec<Observation> = episode
-            .observations
+        let observations: Vec<Observation> = extractions
             .iter()
-            .map(|content| Observation {
-                timestamp: Utc::now(),
+            .map(|e| Observation {
+                timestamp: e.timestamp,
                 project_context: project_context.clone(),
                 source_episodes: vec![episode.id.clone()],
-                visibility: visibility.clone(),
-                content: content.clone(),
+                visibility: e.visibility.clone(),
+                content: e.content.clone(),
             })
             .collect();
 
@@ -162,6 +160,13 @@ impl Observer {
     }
 }
 
+/// Intermediate extraction result from the observer LLM response.
+struct ObserverExtraction {
+    content: String,
+    timestamp: DateTime<Utc>,
+    visibility: Visibility,
+}
+
 /// Derive the project context from a batch of recent messages.
 ///
 /// Uses the most common `project_context` across the batch, falling back to
@@ -180,17 +185,6 @@ fn derive_project_context(messages: &[RecentMessage]) -> String {
         .into_iter()
         .max_by_key(|(_, count)| *count)
         .map_or_else(|| "general".to_string(), |(ctx, _)| ctx.to_string())
-}
-
-/// Derive visibility from a batch of recent messages.
-///
-/// If any message has `Visibility::User`, the batch is considered user-visible.
-fn derive_visibility(messages: &[RecentMessage]) -> Visibility {
-    if messages.iter().any(|m| m.visibility == Visibility::User) {
-        Visibility::User
-    } else {
-        Visibility::Background
-    }
 }
 
 /// Format a single `RecentMessage` for the extraction prompt transcript.
@@ -236,7 +230,14 @@ fn format_recent_message(rm: &RecentMessage) -> String {
 }
 
 /// Build the extraction prompt for the observer model.
-fn build_extraction_prompt(recent_messages: &[RecentMessage], system_prompt: &str) -> Vec<Message> {
+///
+/// Injects the format spec alongside user-customizable content guidance so the
+/// format requirement cannot be lost by editing the disk file.
+fn build_extraction_prompt(
+    recent_messages: &[RecentMessage],
+    content_guidance: &str,
+) -> Vec<Message> {
+    let system = format!("{content_guidance}\n\n{EXTRACTION_FORMAT_SPEC}");
     let transcript = recent_messages
         .iter()
         .map(format_recent_message)
@@ -244,21 +245,18 @@ fn build_extraction_prompt(recent_messages: &[RecentMessage], system_prompt: &st
         .join("\n\n");
 
     vec![
-        Message::system(system_prompt),
+        Message::system(system),
         Message::user(format!(
             "Extract observations from this conversation segment:\n\n{transcript}"
         )),
     ]
 }
 
-/// Embedded fallback system prompt for the observer.
+/// User-customizable content guidance — default when `memory/OBSERVER.md` is absent.
 ///
-/// Used when `memory/OBSERVER.md` is absent. The workspace bootstrap writes
-/// this same content to disk so users can customise it without recompiling.
-const EXTRACTION_SYSTEM_PROMPT: &str = r#"You are a memory extraction system. Given a conversation segment, extract key observations as a JSON array of strings.
-
-Return ONLY a JSON array of concise, self-contained observation strings. Example:
-["user prefers concise responses", "project uses Rust 2024 edition"]
+/// The workspace bootstrap writes this same content to disk so users can customise
+/// it without recompiling. The format spec is always appended by code.
+const EXTRACTION_CONTENT_PROMPT: &str = "You are a memory extraction system. Given a conversation segment, extract key observations.
 
 For each observation, capture:
 - Key decisions made and their rationale
@@ -267,17 +265,33 @@ For each observation, capture:
 - Important technical details or patterns discovered
 - Action items or next steps identified
 
-Each string should be a complete sentence useful as context in a future session. Be specific and concise.
+Each observation should be a complete sentence useful as context in a future session. Be specific and concise.";
 
-Return ONLY a valid JSON array of strings, no markdown fencing, no explanation."#;
-
-/// Parse the model's JSON response into a list of observation strings.
+/// Output format spec — always appended by code, never stored in editable files.
 ///
-/// Expects a bare JSON array: `["obs 1", "obs 2", ...]`
+/// This is injected unconditionally so editing `OBSERVER.md` cannot break JSON parsing.
+const EXTRACTION_FORMAT_SPEC: &str = r#"Return ONLY a JSON array of objects. Each object must have:
+- "content": a complete, self-contained observation sentence
+- "timestamp": UTC timestamp at minute precision (YYYY-MM-DDTHH:MMZ) matching the most relevant message
+- "visibility": "user" if the observation involves a user-visible turn, "background" if from a system/background turn
+
+Example:
+[
+  {"content": "user prefers concise responses", "timestamp": "2026-02-21T14:30Z", "visibility": "user"},
+  {"content": "cron job executed daily backup successfully", "timestamp": "2026-02-21T03:00Z", "visibility": "background"}
+]
+
+Return ONLY a valid JSON array of objects, no markdown fencing, no explanation."#;
+
+/// Parse the model's JSON response into a list of `ObserverExtraction` values.
+///
+/// Expects a JSON array of objects with `content`, `timestamp`, and `visibility` fields.
 ///
 /// # Errors
 /// Returns an error if the response cannot be parsed or the array is empty.
-fn parse_observation_strings(response: &ModelResponse) -> Result<Vec<String>, IronclawError> {
+fn parse_observer_response(
+    response: &ModelResponse,
+) -> Result<Vec<ObserverExtraction>, IronclawError> {
     let content = response.content.trim();
     let json_str = crate::memory::strip_code_fences(content);
 
@@ -287,25 +301,61 @@ fn parse_observation_strings(response: &ModelResponse) -> Result<Vec<String>, Ir
         ))
     })?;
 
-    let observations: Vec<String> = value
-        .as_array()
-        .ok_or_else(|| {
-            IronclawError::Memory(format!(
-                "observer response is not a JSON array\nresponse: {content}"
-            ))
-        })?
-        .iter()
-        .filter_map(serde_json::Value::as_str)
-        .map(String::from)
-        .collect();
+    let items = value.as_array().ok_or_else(|| {
+        IronclawError::Memory(format!(
+            "observer response is not a JSON array\nresponse: {content}"
+        ))
+    })?;
 
-    if observations.is_empty() {
+    let mut extractions = Vec::new();
+    for item in items {
+        let Some(obs_content) = item.get("content").and_then(serde_json::Value::as_str) else {
+            tracing::warn!("observer response item missing 'content' field, skipping");
+            continue;
+        };
+
+        if obs_content.is_empty() {
+            continue;
+        }
+
+        let timestamp = item
+            .get("timestamp")
+            .and_then(serde_json::Value::as_str)
+            .map_or_else(
+                || {
+                    tracing::warn!(
+                        "observer response item missing 'timestamp', using current time"
+                    );
+                    Utc::now()
+                },
+                crate::memory::parse_minute_timestamp,
+            );
+
+        let visibility = item
+            .get("visibility")
+            .and_then(serde_json::Value::as_str)
+            .map_or(Visibility::User, |v| {
+                if v == "background" {
+                    Visibility::Background
+                } else {
+                    Visibility::User
+                }
+            });
+
+        extractions.push(ObserverExtraction {
+            content: obs_content.to_string(),
+            timestamp,
+            visibility,
+        });
+    }
+
+    if extractions.is_empty() {
         return Err(IronclawError::Memory(
             "observer returned empty observations array".to_string(),
         ));
     }
 
-    Ok(observations)
+    Ok(extractions)
 }
 
 #[cfg(test)]
@@ -352,8 +402,10 @@ mod tests {
         }
     }
 
-    const SAMPLE_RESPONSE: &str =
-        r#"["workspace uses a flat directory layout", "identity files are loaded at startup"]"#;
+    const SAMPLE_RESPONSE: &str = r#"[
+        {"content": "workspace uses a flat directory layout", "timestamp": "2026-02-21T14:30Z", "visibility": "user"},
+        {"content": "identity files are loaded at startup", "timestamp": "2026-02-21T14:31Z", "visibility": "user"}
+    ]"#;
 
     fn make_recent_messages(count: usize) -> Vec<RecentMessage> {
         (0..count)
@@ -370,51 +422,90 @@ mod tests {
     }
 
     #[test]
-    fn parse_observation_strings_from_json_array() {
+    fn parse_observer_response_from_json_array() {
         let response = ModelResponse::new(SAMPLE_RESPONSE.to_string(), vec![]);
-        let observations = parse_observation_strings(&response).unwrap();
+        let extractions = parse_observer_response(&response).unwrap();
 
-        assert_eq!(observations.len(), 2, "should have 2 observations");
+        assert_eq!(extractions.len(), 2, "should have 2 extractions");
         assert_eq!(
-            observations.first().map(String::as_str),
+            extractions.first().map(|e| e.content.as_str()),
             Some("workspace uses a flat directory layout"),
-            "first observation should match"
+            "first extraction content should match"
         );
         assert_eq!(
-            observations.get(1).map(String::as_str),
+            extractions.get(1).map(|e| e.content.as_str()),
             Some("identity files are loaded at startup"),
-            "second observation should match"
+            "second extraction content should match"
         );
     }
 
     #[test]
-    fn parse_observation_strings_with_code_fences() {
+    fn parse_observer_response_with_code_fences() {
         let fenced = format!("```json\n{SAMPLE_RESPONSE}\n```");
         let response = ModelResponse::new(fenced, vec![]);
-        let observations = parse_observation_strings(&response).unwrap();
+        let extractions = parse_observer_response(&response).unwrap();
 
-        assert_eq!(observations.len(), 2, "should parse despite fences");
+        assert_eq!(extractions.len(), 2, "should parse despite fences");
     }
 
     #[test]
-    fn parse_observation_strings_invalid_json_errors() {
+    fn parse_observer_response_invalid_json_errors() {
         let response = ModelResponse::new("not json at all".to_string(), vec![]);
-        let result = parse_observation_strings(&response);
+        let result = parse_observer_response(&response);
         assert!(result.is_err(), "invalid JSON should error");
     }
 
     #[test]
-    fn parse_observation_strings_not_array_errors() {
+    fn parse_observer_response_not_array_errors() {
         let response = ModelResponse::new(r#"{"observations": ["one thing"]}"#.to_string(), vec![]);
-        let result = parse_observation_strings(&response);
+        let result = parse_observer_response(&response);
         assert!(result.is_err(), "non-array JSON should error");
     }
 
     #[test]
-    fn parse_observation_strings_empty_array_errors() {
+    fn parse_observer_response_empty_array_errors() {
         let response = ModelResponse::new("[]".to_string(), vec![]);
-        let result = parse_observation_strings(&response);
+        let result = parse_observer_response(&response);
         assert!(result.is_err(), "empty array should error");
+    }
+
+    #[test]
+    fn parse_observer_response_timestamp_minute_precision() {
+        let response = ModelResponse::new(
+            r#"[{"content": "test obs", "timestamp": "2026-02-21T14:30Z", "visibility": "user"}]"#
+                .to_string(),
+            vec![],
+        );
+        let extractions = parse_observer_response(&response).unwrap();
+        let ts = extractions.first().unwrap().timestamp;
+        assert_eq!(ts.format("%Y-%m-%dT%H:%M").to_string(), "2026-02-21T14:30");
+    }
+
+    #[test]
+    fn parse_observer_response_timestamp_rfc3339_fallback() {
+        let response = ModelResponse::new(
+            r#"[{"content": "test obs", "timestamp": "2026-02-21T14:30:00Z", "visibility": "user"}]"#
+                .to_string(),
+            vec![],
+        );
+        let extractions = parse_observer_response(&response).unwrap();
+        let ts = extractions.first().unwrap().timestamp;
+        assert_eq!(ts.format("%Y-%m-%dT%H:%M").to_string(), "2026-02-21T14:30");
+    }
+
+    #[test]
+    fn parse_observer_response_background_visibility() {
+        let response = ModelResponse::new(
+            r#"[{"content": "cron job ran", "timestamp": "2026-02-21T03:00Z", "visibility": "background"}]"#
+                .to_string(),
+            vec![],
+        );
+        let extractions = parse_observer_response(&response).unwrap();
+        assert_eq!(
+            extractions.first().map(|e| &e.visibility),
+            Some(&Visibility::Background),
+            "background visibility should be parsed"
+        );
     }
 
     #[test]
@@ -484,11 +575,11 @@ mod tests {
         let log = load_observation_log(&layout.observations_json())
             .await
             .unwrap();
-        // SAMPLE_RESPONSE has 2 observation strings → 2 Observations in the log
+        // SAMPLE_RESPONSE has 2 observation objects → 2 Observations in the log
         assert_eq!(
             log.len(),
             2,
-            "observation log should have two observations (one per string)"
+            "observation log should have two observations (one per object)"
         );
 
         // Verify the per-episode obs archive was written alongside the transcript
@@ -517,12 +608,18 @@ mod tests {
             visibility: Visibility::User,
         }];
 
-        let prompt = build_extraction_prompt(&recent_messages, EXTRACTION_SYSTEM_PROMPT);
+        let prompt = build_extraction_prompt(&recent_messages, EXTRACTION_CONTENT_PROMPT);
         assert_eq!(prompt.len(), 2, "should have system + user message");
         assert_eq!(
             prompt.first().map(|m| m.role),
             Some(Role::System),
             "first should be system"
+        );
+
+        let system_content = prompt.first().map_or("", |m| m.content.as_str());
+        assert!(
+            system_content.contains(EXTRACTION_FORMAT_SPEC),
+            "system prompt should always include format spec"
         );
 
         let user_content = prompt.get(1).map_or("", |m| m.content.as_str());
@@ -632,41 +729,5 @@ mod tests {
         ];
         let ctx = derive_project_context(&messages);
         assert_eq!(ctx, "ironclaw/memory", "should use most common context");
-    }
-
-    #[test]
-    fn derive_visibility_user_wins() {
-        let messages = vec![
-            RecentMessage {
-                message: Message::user("a"),
-                timestamp: Utc::now(),
-                project_context: String::new(),
-                visibility: Visibility::Background,
-            },
-            RecentMessage {
-                message: Message::user("b"),
-                timestamp: Utc::now(),
-                project_context: String::new(),
-                visibility: Visibility::User,
-            },
-        ];
-        let vis = derive_visibility(&messages);
-        assert_eq!(vis, Visibility::User, "User should win over Background");
-    }
-
-    #[test]
-    fn derive_visibility_all_background() {
-        let messages = vec![RecentMessage {
-            message: Message::user("a"),
-            timestamp: Utc::now(),
-            project_context: String::new(),
-            visibility: Visibility::Background,
-        }];
-        let vis = derive_visibility(&messages);
-        assert_eq!(
-            vis,
-            Visibility::Background,
-            "all-background batch should stay Background"
-        );
     }
 }

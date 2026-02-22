@@ -67,17 +67,17 @@ mod memory_integration {
 
     fn observer_response() -> String {
         r#"[
-            "workspace uses a flat directory layout with identity files at root",
-            "bootstrap creates 10 required directories on first run",
-            "SOUL.md defines the agent personality and is loaded at startup"
+            {"content": "workspace uses a flat directory layout with identity files at root", "timestamp": "2026-02-21T14:30Z", "visibility": "user"},
+            {"content": "bootstrap creates 10 required directories on first run", "timestamp": "2026-02-21T14:31Z", "visibility": "user"},
+            {"content": "SOUL.md defines the agent personality and is loaded at startup", "timestamp": "2026-02-21T14:32Z", "visibility": "user"}
         ]"#
         .to_string()
     }
 
     fn reflector_response() -> String {
         r#"[
-            {"content": "workspace uses flat layout with identity files at root", "project_context": "ironclaw/workspace", "visibility": "user"},
-            {"content": "bootstrap creates required directories on first run", "project_context": "ironclaw/workspace", "visibility": "user"}
+            {"content": "workspace uses flat layout with identity files at root", "timestamp": "2026-02-21T14:32Z", "project_context": "ironclaw/workspace", "visibility": "user"},
+            {"content": "bootstrap creates required directories on first run", "timestamp": "2026-02-21T14:31Z", "project_context": "ironclaw/workspace", "visibility": "user"}
         ]"#
         .to_string()
     }

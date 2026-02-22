@@ -68,19 +68,19 @@ impl Reflector {
             return Ok(log);
         }
 
-        // Load system prompt from disk, falling back to embedded constant.
-        let system_prompt = tokio::fs::read_to_string(layout.reflector_md())
+        // Load content guidance from disk, falling back to embedded constant.
+        let content_guidance = tokio::fs::read_to_string(layout.reflector_md())
             .await
             .ok()
             .and_then(|s| if s.trim().is_empty() { None } else { Some(s) })
-            .unwrap_or_else(|| REFLECTION_SYSTEM_PROMPT.to_string());
+            .unwrap_or_else(|| REFLECTION_CONTENT_PROMPT.to_string());
 
         // Serialize the flat observations for the LLM prompt — keep full objects
-        // so the model has project_context info for intelligent merging.
+        // so the model has project_context and timestamp info for intelligent merging.
         let serialized = serde_json::to_string_pretty(&log.observations)
             .map_err(|e| IronclawError::Memory(format!("failed to serialize observations: {e}")))?;
 
-        let messages = build_reflection_prompt(&serialized, &system_prompt);
+        let messages = build_reflection_prompt(&serialized, &content_guidance);
 
         // Call the model
         let response = self
@@ -89,7 +89,7 @@ impl Reflector {
             .await
             .map_err(IronclawError::Model)?;
 
-        // Parse the bare string-array response into a compressed log.
+        // Parse the object-array response into a compressed log.
         let compressed = parse_reflection_response(&response.content)?;
 
         if compressed.is_empty() {
@@ -119,44 +119,52 @@ impl Reflector {
 }
 
 /// Build the reflection prompt with the serialized observation list.
-fn build_reflection_prompt(serialized_observations: &str, system_prompt: &str) -> Vec<Message> {
+///
+/// Injects the format spec alongside user-customizable content guidance so the
+/// format requirement cannot be lost by editing the disk file.
+fn build_reflection_prompt(serialized_observations: &str, content_guidance: &str) -> Vec<Message> {
+    let system = format!("{content_guidance}\n\n{REFLECTION_FORMAT_SPEC}");
     vec![
-        Message::system(system_prompt),
+        Message::system(system),
         Message::user(format!(
             "Reorganize and compress these observations:\n\n{serialized_observations}"
         )),
     ]
 }
 
-/// Embedded fallback system prompt for the reflector.
+/// User-customizable content guidance — default when `memory/REFLECTOR.md` is absent.
 ///
-/// Used when `memory/REFLECTOR.md` is absent. The workspace bootstrap writes
-/// this same content to disk so users can customise it without recompiling.
-const REFLECTION_SYSTEM_PROMPT: &str = r#"You are a memory reorganization system. Given a list of observations, merge and deduplicate them to reduce size while preserving all important information.
-
-Return ONLY a JSON array of observation objects with fields:
-- "content" (string): the merged observation as a complete, self-contained sentence
-- "project_context" (string): use the most relevant context from the source observations
-- "visibility" ("user" or "background"): use "background" only if all source observations were background
-
-Example:
-[{"content": "merged fact one", "project_context": "ironclaw/memory", "visibility": "user"}]
+/// The workspace bootstrap writes this same content to disk so users can customise
+/// it without recompiling. The format spec is always appended by code.
+const REFLECTION_CONTENT_PROMPT: &str = "You are a memory reorganization system. Given a list of observations, merge and deduplicate them to reduce size while preserving all important information.
 
 Rules:
 - Merge related observations into single, precise sentences
 - Do NOT summarize — preserve specific details
 - Remove redundant or duplicate observations
-- Each output object should have a complete, self-contained content sentence
+- Each output object should have a complete, self-contained content sentence";
+
+/// Output format spec — always appended by code, never stored in editable files.
+///
+/// This is injected unconditionally so editing `REFLECTOR.md` cannot break JSON parsing.
+const REFLECTION_FORMAT_SPEC: &str = r#"Return ONLY a JSON array of observation objects with fields:
+- "content" (string): the merged observation as a complete, self-contained sentence
+- "timestamp": UTC timestamp at minute precision (YYYY-MM-DDTHH:MMZ) — use the most recent timestamp from the source observations being merged
+- "project_context" (string): use the most relevant context from the source observations
+- "visibility" ("user" or "background"): use "background" only if all source observations were background
+
+Example:
+[{"content": "merged fact one", "timestamp": "2026-02-21T14:30Z", "project_context": "ironclaw/memory", "visibility": "user"}]
 
 Return ONLY a valid JSON array of objects, no markdown fencing, no explanation."#;
 
 /// Parse the model's reflection response into an `ObservationLog`.
 ///
 /// Expects a JSON array of objects:
-/// `[{"content": "obs 1", "project_context": "ironclaw/memory", "visibility": "user"}, ...]`
+/// `[{"content": "obs 1", "timestamp": "2026-02-21T14:30Z", "project_context": "ironclaw/memory", "visibility": "user"}, ...]`
 ///
-/// Each object's `project_context` and `visibility` are preserved.
-/// Defaults to `"general"` / `Visibility::User` when fields are absent or invalid.
+/// Each object's `timestamp`, `project_context`, and `visibility` are preserved.
+/// Defaults to `Utc::now()` / `"general"` / `Visibility::User` when fields are absent or invalid.
 ///
 /// # Errors
 /// Returns an error if the response cannot be parsed.
@@ -176,7 +184,6 @@ fn parse_reflection_response(content: &str) -> Result<ObservationLog, IronclawEr
         ))
     })?;
 
-    let now = Utc::now();
     let mut log = ObservationLog::new();
 
     for item in items {
@@ -187,6 +194,11 @@ fn parse_reflection_response(content: &str) -> Result<ObservationLog, IronclawEr
         if obs_content.is_empty() {
             continue;
         }
+
+        let timestamp = item
+            .get("timestamp")
+            .and_then(serde_json::Value::as_str)
+            .map_or_else(Utc::now, crate::memory::parse_minute_timestamp);
 
         let project_context = item
             .get("project_context")
@@ -200,7 +212,7 @@ fn parse_reflection_response(content: &str) -> Result<ObservationLog, IronclawEr
             .unwrap_or_default();
 
         log.push(Observation {
-            timestamp: now,
+            timestamp,
             project_context,
             source_episodes: vec![],
             visibility,
@@ -264,7 +276,10 @@ mod tests {
         }
     }
 
-    const COMPRESSED_RESPONSE: &str = r#"[{"content": "workspace uses flat layout", "project_context": "ironclaw/workspace", "visibility": "user"}, {"content": "identity files loaded at startup", "project_context": "ironclaw/workspace", "visibility": "user"}]"#;
+    const COMPRESSED_RESPONSE: &str = r#"[
+        {"content": "workspace uses flat layout", "timestamp": "2026-02-21T14:30Z", "project_context": "ironclaw/workspace", "visibility": "user"},
+        {"content": "identity files loaded at startup", "timestamp": "2026-02-21T14:31Z", "project_context": "ironclaw/workspace", "visibility": "user"}
+    ]"#;
 
     #[test]
     fn should_reflect_below_threshold() {
@@ -337,8 +352,8 @@ mod tests {
     #[test]
     fn parse_reflection_preserves_project_context() {
         let response = r#"[
-            {"content": "obs from ironclaw", "project_context": "ironclaw/memory", "visibility": "user"},
-            {"content": "obs from devops", "project_context": "devops/k8s", "visibility": "user"}
+            {"content": "obs from ironclaw", "timestamp": "2026-02-21T14:30Z", "project_context": "ironclaw/memory", "visibility": "user"},
+            {"content": "obs from devops", "timestamp": "2026-02-21T14:31Z", "project_context": "devops/k8s", "visibility": "user"}
         ]"#;
         let log = parse_reflection_response(response).unwrap();
 
@@ -358,8 +373,8 @@ mod tests {
     #[test]
     fn parse_reflection_preserves_visibility() {
         let response = r#"[
-            {"content": "background obs", "project_context": "pulse", "visibility": "background"},
-            {"content": "user obs", "project_context": "general", "visibility": "user"}
+            {"content": "background obs", "timestamp": "2026-02-21T03:00Z", "project_context": "pulse", "visibility": "background"},
+            {"content": "user obs", "timestamp": "2026-02-21T14:30Z", "project_context": "general", "visibility": "user"}
         ]"#;
         let log = parse_reflection_response(response).unwrap();
 
@@ -373,6 +388,30 @@ mod tests {
             log.observations.get(1).map(|o| &o.visibility),
             Some(&Visibility::User),
             "user visibility should round-trip"
+        );
+    }
+
+    #[test]
+    fn parse_reflection_preserves_timestamp() {
+        let response = r#"[
+            {"content": "an observation", "timestamp": "2026-02-21T14:30Z", "project_context": "test", "visibility": "user"}
+        ]"#;
+        let log = parse_reflection_response(response).unwrap();
+        let ts = log.observations.first().map(|o| o.timestamp).unwrap();
+        assert_eq!(ts.format("%Y-%m-%dT%H:%M").to_string(), "2026-02-21T14:30");
+    }
+
+    #[test]
+    fn parse_reflection_missing_timestamp_falls_back() {
+        let response = r#"[
+            {"content": "an observation", "project_context": "test", "visibility": "user"}
+        ]"#;
+        let log = parse_reflection_response(response).unwrap();
+        // Should succeed with Utc::now() fallback — just verify observation was parsed
+        assert_eq!(
+            log.len(),
+            1,
+            "should parse observation despite missing timestamp"
         );
     }
 

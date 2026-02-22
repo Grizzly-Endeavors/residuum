@@ -42,11 +42,11 @@ const DEFAULT_IDENTITY: &str = "\
 Describe yourself here. This file can be updated as your understanding of your role evolves.
 ";
 
-/// Default observer system prompt written to memory/OBSERVER.md.
-const DEFAULT_OBSERVER_PROMPT: &str = r#"You are a memory extraction system. Given a conversation segment, extract key observations as a JSON array of strings.
-
-Return ONLY a JSON array of concise, self-contained observation strings. Example:
-["user prefers concise responses", "project uses Rust 2024 edition"]
+/// Default observer content guidance written to memory/OBSERVER.md.
+///
+/// Contains only the customizable content portion — the output format spec is
+/// always injected by the Rust code and cannot be lost by editing this file.
+const DEFAULT_OBSERVER_PROMPT: &str = "You are a memory extraction system. Given a conversation segment, extract key observations.
 
 For each observation, capture:
 - Key decisions made and their rationale
@@ -55,23 +55,19 @@ For each observation, capture:
 - Important technical details or patterns discovered
 - Action items or next steps identified
 
-Each string should be a complete sentence useful as context in a future session. Be specific and concise.
+Each observation should be a complete sentence useful as context in a future session. Be specific and concise.";
 
-Return ONLY a valid JSON array of strings, no markdown fencing, no explanation."#;
-
-/// Default reflector system prompt written to memory/REFLECTOR.md.
-const DEFAULT_REFLECTOR_PROMPT: &str = r#"You are a memory reorganization system. Given a list of observations, merge and deduplicate them to reduce size while preserving all important information.
-
-Return ONLY a JSON array of merged observation strings. Example:
-["merged fact one", "merged fact two"]
+/// Default reflector content guidance written to memory/REFLECTOR.md.
+///
+/// Contains only the customizable content portion — the output format spec is
+/// always injected by the Rust code and cannot be lost by editing this file.
+const DEFAULT_REFLECTOR_PROMPT: &str = "You are a memory reorganization system. Given a list of observations, merge and deduplicate them to reduce size while preserving all important information.
 
 Rules:
 - Merge related observations into single, precise sentences
 - Do NOT summarize — preserve specific details
 - Remove redundant or duplicate observations
-- Each output string should be a complete, self-contained sentence
-
-Return ONLY a valid JSON array of strings, no markdown fencing, no explanation."#;
+- Each output object should have a complete, self-contained content sentence";
 
 /// Default content for HEARTBEAT.yml when creating a new workspace.
 const DEFAULT_HEARTBEAT: &str = "\
