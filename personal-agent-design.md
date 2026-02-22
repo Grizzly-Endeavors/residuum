@@ -2,7 +2,7 @@
 
 ## Design Philosophy
 
-This design targets two specific architectural weaknesses in OpenClaw's current systems: memory continuity across sessions and proactive behavior scheduling. Every other design decision in OpenClaw — the gateway pattern, channel normalization, Lane Queue, model-agnostic runtime, file-first workspace — serves the personal assistant use case well and is preserved as-is.
+This design targets two specific architectural weaknesses in OpenClaw's current systems: memory continuity across restarts and proactive behavior scheduling. Every other design decision in OpenClaw — the gateway pattern, channel normalization, Lane Queue, model-agnostic runtime, file-first workspace — serves the personal assistant use case well and is preserved as-is.
 
 The guiding principle is **targeted improvement without sacrificing simplicity**. Both systems should remain inspectable, editable, and understandable by the user. Elegance that stops being practical is not a goal.
 
@@ -12,11 +12,11 @@ The guiding principle is **targeted improvement without sacrificing simplicity**
 
 ### Problem
 
-OpenClaw's current memory has a day-boundary cliff. Identity files (SOUL.md, USER.md, MEMORY.md) and the last two days of daily logs are auto-loaded at session start. Anything older requires the agent to actively decide to call `memory_search` or `memory_get` — a judgment call LLMs are inconsistent at making.
+OpenClaw's current memory has a day-boundary cliff. Identity files (SOUL.md, USER.md, MEMORY.md) and the last two days of daily logs are auto-loaded at startup. Anything older requires the agent to actively decide to call `memory_search` or `memory_get` — a judgment call LLMs are inconsistent at making.
 
 The result: context from even the previous day can get dropped if it wasn't promoted to MEMORY.md or if the agent doesn't recognize it should search. Users end up building workarounds like scheduled summarization jobs to maintain continuity.
 
-The pre-compaction memory flush helps prevent loss during long sessions, but it's a single-shot, model-dependent save under token pressure — not a systematic solution for cross-session continuity.
+The pre-compaction memory flush helps prevent loss during long sessions, but it's a single-shot, model-dependent save under token pressure — not a systematic solution for continuity across restarts.
 
 ### Solution: Observational Memory Layer
 
@@ -28,8 +28,8 @@ Reference: [Mastra Observational Memory](https://mastra.ai/research/observationa
 
 #### What stays the same
 
-- **Identity layer**: SOUL.md, USER.md, AGENTS.md, IDENTITY.md, TOOLS.md — stable, curated, auto-loaded at session start. These define who the agent is and who the user is. OM does not touch these.
-- **MEMORY.md**: Long-term curated facts and preferences. Still loaded in private sessions. Still manually maintained by the agent and user.
+- **Identity layer**: SOUL.md, USER.md, AGENTS.md, IDENTITY.md, TOOLS.md — stable, curated, auto-loaded at startup. These define who the agent is and who the user is. OM does not touch these.
+- **MEMORY.md**: Long-term curated facts and preferences. Still loaded in private contexts. Still manually maintained by the agent and user.
 - **Hybrid search**: BM25 + vector retrieval over workspace files. Still available for deep retrieval beyond the observation window.
 - **Pre-compaction flush**: Still fires as a safety net. OM reduces its importance but doesn't replace it.
 
@@ -52,7 +52,7 @@ The `memory/YYYY-MM-DD.md` daily log system is supplemented (and for context loa
 │ - Maintained by Observer/Reflector  │
 ├─────────────────────────────────────┤
 │ Raw message history                 │
-│ (current session, verbatim)         │
+│ (unobserved, verbatim)         │
 └─────────────────────────────────────┘
 ```
 
@@ -139,7 +139,7 @@ The observation log never becomes a narrative blob. Even after reflection, it re
 - **Daily logs**: Can still be written to for explicit note-taking. But the primary continuity mechanism is the observation log, not daily file auto-loading.
 - **Hybrid search**: Episode transcripts persisted under `memory/episodes/` are indexed for hybrid search. When the Reflector compresses episodes out of the active log, the agent can still retrieve the full detail by following the `source_episodes` trail or searching directly. This provides deep retrieval for older history without the agent needing to guess that it should look.
 - **Compaction**: OM dramatically reduces compaction pressure by keeping the effective context window small. The pre-compaction flush becomes a secondary safety net rather than the primary continuity mechanism.
-- **Session boundaries**: The observation log carries across sessions. A new session loads the existing observation block, so context from last week is present without requiring a search decision.
+- **Restarts**: The observation log carries across restarts. A new run loads the existing observation block, so context from last week is present without requiring a search decision.
 
 ### Model Selection
 

@@ -32,7 +32,7 @@ Add your preferences here. This file is loaded into the agent's context.
 const DEFAULT_MEMORY: &str = "\
 # Memory
 
-Persistent notes across sessions. The agent can update this file.
+Persistent notes across restarts. The agent can update this file.
 ";
 
 /// Default content for IDENTITY.md when creating a new workspace.
@@ -46,7 +46,8 @@ Describe yourself here. This file can be updated as your understanding of your r
 ///
 /// Contains only the customizable content portion — the output format spec is
 /// always injected by the Rust code and cannot be lost by editing this file.
-const DEFAULT_OBSERVER_PROMPT: &str = "You are a memory extraction system. Given a conversation segment, extract key observations.
+const DEFAULT_OBSERVER_PROMPT: &str =
+    "You are a memory extraction system. Given a conversation segment, extract key observations.
 
 For each observation, capture:
 - Key decisions made and their rationale
@@ -55,7 +56,7 @@ For each observation, capture:
 - Important technical details or patterns discovered
 - Action items or next steps identified
 
-Each observation should be a complete sentence useful as context in a future session. Be specific and concise.";
+Each observation should be a complete sentence useful as future context. Be specific and concise.";
 
 /// Default reflector content guidance written to memory/REFLECTOR.md.
 ///

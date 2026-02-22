@@ -17,7 +17,7 @@ pub struct IdentityFiles {
     pub agents: Option<String>,
     /// USER.md -- user preferences and context.
     pub user: Option<String>,
-    /// MEMORY.md -- persistent memory across sessions.
+    /// MEMORY.md -- persistent memory across restarts.
     pub memory: Option<String>,
     /// TOOLS.md -- tool usage guidelines (optional).
     pub tools: Option<String>,

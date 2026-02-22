@@ -1,7 +1,7 @@
-//! Agent runtime: context assembly, tool loop, and session management.
+//! Agent runtime: context assembly, tool loop, and message history management.
 
 pub mod context;
-pub mod session;
+pub mod recent_messages;
 
 use crate::channels::TurnDisplay;
 use crate::error::IronclawError;
@@ -10,7 +10,7 @@ use crate::tools::ToolRegistry;
 use crate::workspace::identity::IdentityFiles;
 
 use self::context::assemble_system_prompt;
-use self::session::Session;
+use self::recent_messages::RecentMessages;
 
 /// Maximum number of tool-call iterations before the agent stops.
 const MAX_TOOL_ITERATIONS: usize = 50;
@@ -19,7 +19,7 @@ const MAX_TOOL_ITERATIONS: usize = 50;
 pub struct SystemTurnResult {
     /// The assistant's final text response.
     pub response: String,
-    /// All messages from the ephemeral session (user prompt + assistant response + tool calls).
+    /// All messages from the background thread (user prompt + assistant response + tool calls).
     ///
     /// Feed these into `run_memory_pipeline()` so background turns contribute to memory.
     pub messages: Vec<Message>,
@@ -30,7 +30,7 @@ pub struct Agent {
     provider: Box<dyn ModelProvider>,
     tools: ToolRegistry,
     identity: IdentityFiles,
-    session: Session,
+    recent_messages: RecentMessages,
     options: CompletionOptions,
     observations: Option<String>,
     /// System event texts queued from cron jobs; injected at the start of the next user turn.
@@ -50,7 +50,7 @@ impl Agent {
             provider,
             tools,
             identity,
-            session: Session::new(),
+            recent_messages: RecentMessages::new(),
             options,
             observations: None,
             pending_system_events: Vec::new(),
@@ -86,22 +86,22 @@ impl Agent {
         Ok(())
     }
 
-    /// Restore persisted messages into the session.
+    /// Restore persisted messages into the recent history.
     ///
     /// Used at startup to reload unobserved messages from `recent_messages.json`
-    /// so the agent retains context from the previous session.
+    /// so the agent retains context from the previous run.
     pub fn restore_messages(&mut self, messages: Vec<Message>) {
         for msg in messages {
-            self.session.push(msg);
+            self.recent_messages.push(msg);
         }
     }
 
-    /// Clear all messages from the session history.
+    /// Clear all messages from the recent history.
     ///
     /// Called after the observer fires so observed messages don't linger
-    /// in both the session and the observation log.
-    pub fn clear_session(&mut self) {
-        self.session.clear();
+    /// in both the recent messages and the observation log.
+    pub fn clear_recent_messages(&mut self) {
+        self.recent_messages.clear();
     }
 
     /// Queue a system event to be injected at the start of the next user turn.
@@ -135,7 +135,7 @@ impl Agent {
             format!("[System Alerts — please review]\n\n{events_text}\n\n---\n\n{user_input}")
         };
 
-        self.session.push(Message::user(effective_input));
+        self.recent_messages.push(Message::user(effective_input));
 
         execute_turn(
             &*self.provider,
@@ -143,16 +143,16 @@ impl Agent {
             &self.identity,
             &self.options,
             self.observations.as_deref(),
-            &mut self.session,
+            &mut self.recent_messages,
             display,
         )
         .await
     }
 
-    /// Run an ephemeral agent turn for background pulse or cron tasks.
+    /// Run a background agent thread for pulse or cron tasks.
     ///
-    /// Creates a temporary session that is not added to the main conversation.
-    /// Returns both the response text and the ephemeral messages so the caller
+    /// Creates a temporary message buffer that is not added to the main conversation.
+    /// Returns both the response text and the thread messages so the caller
     /// can feed them into `run_memory_pipeline()`.
     ///
     /// If `provider_override` is `Some`, that provider is used instead of the
@@ -166,8 +166,8 @@ impl Agent {
         display: &dyn TurnDisplay,
         provider_override: Option<&dyn ModelProvider>,
     ) -> Result<SystemTurnResult, IronclawError> {
-        let mut session = Session::new();
-        session.push(Message::user(prompt));
+        let mut thread_messages = RecentMessages::new();
+        thread_messages.push(Message::user(prompt));
 
         let provider: &dyn ModelProvider = provider_override.unwrap_or(&*self.provider);
 
@@ -177,7 +177,7 @@ impl Agent {
             &self.identity,
             &self.options,
             self.observations.as_deref(),
-            &mut session,
+            &mut thread_messages,
             display,
         )
         .await?;
@@ -186,27 +186,27 @@ impl Agent {
 
         Ok(SystemTurnResult {
             response,
-            messages: session.messages().to_vec(),
+            messages: thread_messages.messages().to_vec(),
         })
     }
 
-    /// Get the current session message count.
+    /// Get the current recent message count.
     #[must_use]
     pub fn message_count(&self) -> usize {
-        self.session.len()
+        self.recent_messages.len()
     }
 
-    /// Get messages added to the session since the given index.
+    /// Get messages added since the given index.
     #[must_use]
     pub fn messages_since(&self, idx: usize) -> &[Message] {
-        self.session.messages_since(idx)
+        self.recent_messages.messages_since(idx)
     }
 }
 
-/// Execute the tool loop against the given session.
+/// Execute the tool loop against the given message buffer.
 ///
 /// Calls the provider repeatedly until it returns a text response (no tool calls),
-/// executing any requested tools in between. Updates `session` in place.
+/// executing any requested tools in between. Updates `recent_messages` in place.
 ///
 /// Returns all non-empty assistant texts produced during the turn. Any text
 /// emitted alongside tool calls is captured first; the final text-only response
@@ -217,7 +217,7 @@ async fn execute_turn(
     identity: &IdentityFiles,
     options: &CompletionOptions,
     observations: Option<&str>,
-    session: &mut Session,
+    recent_messages: &mut RecentMessages,
     display: &dyn TurnDisplay,
 ) -> Result<Vec<String>, IronclawError> {
     let tool_definitions = tools.definitions();
@@ -226,7 +226,7 @@ async fn execute_turn(
     for iteration in 0..MAX_TOOL_ITERATIONS {
         // System prompt is reassembled each iteration because tool execution
         // can modify identity files (e.g. write_file updating MEMORY.md).
-        let messages = assemble_system_prompt(identity, tools, session, observations);
+        let messages = assemble_system_prompt(identity, tools, recent_messages, observations);
 
         let response = provider
             .complete(&messages, &tool_definitions, options)
@@ -234,7 +234,7 @@ async fn execute_turn(
             .map_err(IronclawError::Model)?;
 
         if response.tool_calls.is_empty() {
-            session.push(Message::assistant(response.content.clone(), None));
+            recent_messages.push(Message::assistant(response.content.clone(), None));
             log_usage(&response);
 
             if response.content.is_empty() {
@@ -259,7 +259,7 @@ async fn execute_turn(
             texts.push(response.content.clone());
         }
 
-        session.push(Message::assistant(
+        recent_messages.push(Message::assistant(
             response.content.clone(),
             Some(response.tool_calls.clone()),
         ));
@@ -279,7 +279,7 @@ async fn execute_turn(
 
             display.show_tool_result(&tool_call.name, &output, is_error);
 
-            session.push(Message::tool(output, tool_call.id.clone()));
+            recent_messages.push(Message::tool(output, tool_call.id.clone()));
         }
 
         log_usage(&response);
@@ -493,7 +493,11 @@ mod tests {
             !result.messages.is_empty(),
             "should have ephemeral messages"
         );
-        assert_eq!(agent.message_count(), 0, "main session should be untouched");
+        assert_eq!(
+            agent.message_count(),
+            0,
+            "main message history should be untouched"
+        );
     }
 
     #[tokio::test]

@@ -33,7 +33,7 @@ impl Tool for DailyLogTool {
             name: "daily_log".to_string(),
             description: "Append a timestamped note to today's daily log file. Use this to \
                           record important observations, decisions, or context that should \
-                          persist across sessions."
+                          persist across restarts."
                 .to_string(),
             parameters: serde_json::json!({
                 "type": "object",

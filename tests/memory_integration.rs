@@ -270,7 +270,7 @@ mod memory_integration {
     }
 
     #[tokio::test]
-    async fn messages_persist_across_simulated_sessions() {
+    async fn messages_persist_across_simulated_restarts() {
         let dir = tempfile::tempdir().unwrap();
         let layout = WorkspaceLayout::new(dir.path());
         tokio::fs::create_dir_all(layout.memory_dir())
@@ -279,11 +279,11 @@ mod memory_integration {
 
         let recent_path = layout.recent_messages_json();
 
-        // "Session 1" — add some messages, exit without hitting threshold
-        let session1_msgs = make_messages(3);
+        // "Run 1" — add some messages, exit without hitting threshold
+        let run1_msgs = make_messages(3);
         append_recent_messages(
             &recent_path,
-            &session1_msgs,
+            &run1_msgs,
             "ironclaw",
             Visibility::User,
             chrono_tz::UTC,
@@ -291,19 +291,15 @@ mod memory_integration {
         .await
         .unwrap();
 
-        // "Session 2" — load and verify messages survived
+        // "Run 2" — load and verify messages survived
         let loaded = load_recent_messages(&recent_path).await.unwrap();
-        assert_eq!(
-            loaded.len(),
-            3,
-            "messages from previous session should persist"
-        );
+        assert_eq!(loaded.len(), 3, "messages from previous run should persist");
 
-        // Add more messages in session 2
-        let session2_msgs = make_messages(3);
+        // Add more messages in run 2
+        let run2_msgs = make_messages(3);
         append_recent_messages(
             &recent_path,
-            &session2_msgs,
+            &run2_msgs,
             "ironclaw",
             Visibility::User,
             chrono_tz::UTC,
@@ -312,7 +308,7 @@ mod memory_integration {
         .unwrap();
 
         let all = load_recent_messages(&recent_path).await.unwrap();
-        assert_eq!(all.len(), 6, "should have messages from both sessions");
+        assert_eq!(all.len(), 6, "should have messages from both runs");
     }
 
     #[tokio::test]

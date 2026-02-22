@@ -1,6 +1,6 @@
 //! Memory subsystem: observation, reflection, and search.
 //!
-//! Provides persistence across sessions through structured episodes,
+//! Provides persistence across restarts through structured episodes,
 //! observation logs, daily notes, and full-text search.
 
 pub mod daily_log;

@@ -149,12 +149,12 @@ pub async fn run_gateway(cfg: Config) -> Result<GatewayExit, IronclawError> {
     let mut agent = Agent::new(provider, tools, identity, options);
     agent.reload_observations(&layout).await?;
 
-    // Restore unobserved messages from previous session
+    // Restore unobserved messages from previous run
     let recent_for_restore = load_messages_for_agent(&layout.recent_messages_json()).await?;
     if !recent_for_restore.is_empty() {
         tracing::info!(
             count = recent_for_restore.len(),
-            "restoring recent messages from previous session"
+            "restoring recent messages from previous run"
         );
         agent.restore_messages(recent_for_restore);
     }
@@ -596,7 +596,7 @@ pub(crate) async fn run_memory_pipeline(
             if let Err(e) = clear_recent_messages(&layout.recent_messages_json()).await {
                 eprintln!("warning: failed to clear recent messages: {e}");
             }
-            agent.clear_session();
+            agent.clear_recent_messages();
 
             match tokio::fs::read_to_string(&result.transcript_path).await {
                 Ok(ep_content) => {
@@ -722,7 +722,7 @@ async fn run_forced_observe(
     if let Err(e) = clear_recent_messages(&layout.recent_messages_json()).await {
         eprintln!("warning: failed to clear recent messages after forced observe: {e}");
     }
-    agent.clear_session();
+    agent.clear_recent_messages();
 
     match tokio::fs::read_to_string(&result.transcript_path).await {
         Ok(ep_content) => {

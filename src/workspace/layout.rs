@@ -39,7 +39,7 @@ impl WorkspaceLayout {
         self.root.join("USER.md")
     }
 
-    /// Path to MEMORY.md -- persistent memory across sessions.
+    /// Path to MEMORY.md -- persistent memory across restarts.
     #[must_use]
     pub fn memory_md(&self) -> PathBuf {
         self.root.join("MEMORY.md")

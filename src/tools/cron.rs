@@ -40,7 +40,7 @@ impl Tool for CronAddTool {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: "cron_add".to_string(),
-            description: "Create a new scheduled cron job. The job will persist across sessions."
+            description: "Create a new scheduled cron job. The job will persist across restarts."
                 .to_string(),
             parameters: serde_json::json!({
                 "type": "object",
@@ -82,7 +82,7 @@ impl Tool for CronAddTool {
                     "payload_type": {
                         "type": "string",
                         "enum": ["system_event", "agent_turn"],
-                        "description": "'system_event' = inject text into main session; 'agent_turn' = run an isolated agent turn"
+                        "description": "'system_event' = inject text into main conversation; 'agent_turn' = run a background agent turn"
                     },
                     "payload_text": {
                         "type": "string",

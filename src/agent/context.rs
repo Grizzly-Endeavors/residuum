@@ -4,26 +4,26 @@ use crate::models::Message;
 use crate::tools::ToolRegistry;
 use crate::workspace::identity::IdentityFiles;
 
-use super::session::Session;
+use super::recent_messages::RecentMessages;
 
 /// Assemble the full message list for a model call.
 ///
 /// Creates a system message from identity files, tool listings, and
-/// observation log content, then appends the session history.
+/// observation log content, then appends the recent messages.
 #[must_use]
 pub fn assemble_system_prompt(
     identity: &IdentityFiles,
     tools: &ToolRegistry,
-    session: &Session,
+    recent_messages: &RecentMessages,
     observations: Option<&str>,
 ) -> Vec<Message> {
     let system_content = build_system_content(identity, tools, observations);
 
-    let mut messages = Vec::with_capacity(1 + session.messages().len());
+    let mut messages = Vec::with_capacity(1 + recent_messages.messages().len());
 
     messages.push(Message::system(system_content));
 
-    messages.extend(session.messages().iter().cloned());
+    messages.extend(recent_messages.messages().iter().cloned());
 
     messages
 }
@@ -95,9 +95,9 @@ mod tests {
     fn assemble_with_empty_identity() {
         let identity = IdentityFiles::default();
         let tools = ToolRegistry::new();
-        let session = Session::new();
+        let recent = RecentMessages::new();
 
-        let messages = assemble_system_prompt(&identity, &tools, &session, None);
+        let messages = assemble_system_prompt(&identity, &tools, &recent, None);
         assert_eq!(messages.len(), 1, "should have system message only");
         assert_eq!(
             messages.first().map(|m| &m.role),
@@ -107,13 +107,13 @@ mod tests {
     }
 
     #[test]
-    fn assemble_includes_session_history() {
+    fn assemble_includes_message_history() {
         let identity = IdentityFiles::default();
         let tools = ToolRegistry::new();
-        let mut session = Session::new();
-        session.push(Message::user("hello"));
+        let mut recent = RecentMessages::new();
+        recent.push(Message::user("hello"));
 
-        let messages = assemble_system_prompt(&identity, &tools, &session, None);
+        let messages = assemble_system_prompt(&identity, &tools, &recent, None);
         assert_eq!(messages.len(), 2, "should have system + user message");
     }
 

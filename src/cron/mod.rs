@@ -1,6 +1,6 @@
 //! Cron system: agent-managed scheduled jobs.
 //!
-//! Jobs are persisted in `cron/jobs.json` and survive across sessions.
+//! Jobs are persisted in `cron/jobs.json` and survive across restarts.
 //! The agent can create, list, update, and remove jobs via cron tools.
 //!
 //! Supported schedule types:

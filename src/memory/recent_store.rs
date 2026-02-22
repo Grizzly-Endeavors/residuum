@@ -1,4 +1,4 @@
-//! Persistence for recent (unobserved) messages across sessions.
+//! Persistence for recent (unobserved) messages across restarts.
 //!
 //! Messages accumulate in `recent_messages.json` until the observer
 //! threshold is reached and an episode is created, at which point
@@ -13,7 +13,7 @@ use crate::error::IronclawError;
 use crate::memory::types::Visibility;
 use crate::models::Message;
 
-/// A persisted message with session metadata.
+/// A persisted message with observation metadata.
 ///
 /// Wraps a [`Message`] with the context needed for the observer to derive
 /// observation metadata (project context, visibility) without requiring the
@@ -23,7 +23,7 @@ pub struct RecentMessage {
     /// The underlying conversation message.
     #[serde(flatten)]
     pub message: Message,
-    /// When this message was added to the session.
+    /// When this message was recorded.
     pub timestamp: NaiveDateTime,
     /// Workspace context at the time this message was recorded.
     #[serde(default)]
@@ -58,7 +58,7 @@ pub async fn load_recent_messages(path: &Path) -> Result<Vec<RecentMessage>, Iro
 
 /// Load recent messages as plain [`Message`] values, stripping metadata.
 ///
-/// Used when restoring the agent session at startup — the agent only needs
+/// Used when restoring the agent at startup — the agent only needs
 /// the conversation messages, not the observation metadata.
 ///
 /// # Errors

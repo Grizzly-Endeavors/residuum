@@ -71,7 +71,7 @@ pub enum Delivery {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum CronPayload {
-    /// A plain text message queued into the main session.
+    /// A plain text message queued into the main conversation.
     SystemEvent {
         /// The event text to inject.
         text: String,

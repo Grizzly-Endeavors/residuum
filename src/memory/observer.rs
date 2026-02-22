@@ -261,7 +261,8 @@ fn build_extraction_prompt(
 ///
 /// The workspace bootstrap writes this same content to disk so users can customise
 /// it without recompiling. The format spec is always appended by code.
-const EXTRACTION_CONTENT_PROMPT: &str = "You are a memory extraction system. Given a conversation segment, extract key observations.
+const EXTRACTION_CONTENT_PROMPT: &str =
+    "You are a memory extraction system. Given a conversation segment, extract key observations.
 
 For each observation, capture:
 - Key decisions made and their rationale
@@ -270,7 +271,7 @@ For each observation, capture:
 - Important technical details or patterns discovered
 - Action items or next steps identified
 
-Each observation should be a complete sentence useful as context in a future session. Be specific and concise.";
+Each observation should be a complete sentence useful as future context. Be specific and concise.";
 
 /// Output format spec — always appended by code, never stored in editable files.
 ///

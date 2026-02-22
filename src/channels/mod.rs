@@ -12,7 +12,7 @@ pub struct AgentResponse {
 
 /// Trait for displaying agent tool activity during a turn.
 ///
-/// Implemented by `CliDisplay` for interactive sessions and `NullDisplay`
+/// Implemented by `CliDisplay` for interactive use and `NullDisplay`
 /// for background pulse/cron turns that run without user interaction.
 pub trait TurnDisplay: Send + Sync {
     /// Display a tool call being made.

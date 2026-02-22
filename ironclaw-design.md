@@ -41,7 +41,7 @@ ironclaw/
 │   │   ├── mod.rs                    # Agent runtime orchestration
 │   │   ├── context.rs                # Context window assembly
 │   │   ├── prompt.rs                 # System prompt builder
-│   │   ├── session.rs                # Session state & history
+│   │   ├── recent_messages.rs        # In-memory message history
 │   │   └── compaction.rs             # Context overflow handling
 │   │
 │   ├── models/
@@ -152,9 +152,6 @@ model = "anthropic/claude-sonnet-4-5"
 
 [agent.fallbacks]
 models = ["anthropic/claude-haiku-4-5", "ollama/llama3"]
-
-[agent.session]
-scope = "per-sender"          # "main" | "per-sender" | "per-channel-peer"
 
 [channels.discord]
 token = "${DISCORD_BOT_TOKEN}"
@@ -382,12 +379,12 @@ Different subsystems can use different models:
 The agent runtime is the core orchestration loop. On each turn:
 
 1. **Receive** normalized inbound message.
-2. **Assemble context** — system prompt + identity files + observation log + active project context + relevant skills + session history.
+2. **Assemble context** — system prompt + identity files + observation log + active project context + relevant skills + recent message history.
 3. **Send** to model provider.
 4. **Execute** any tool calls returned by the model.
 5. **Loop** if tool results need to be sent back to the model.
 6. **Deliver** final response through the originating channel.
-7. **Update** — append to session history, trigger Observer if token threshold reached.
+7. **Update** — append to recent messages, trigger Observer if token threshold reached.
 
 #### Context Assembly (`context.rs`)
 
@@ -420,8 +417,8 @@ Context assembly is the critical integration point. It builds the full prompt fr
 │ ├── MCP server tools                │  ← from mcp crate
 │ └── Project-scoped tools            │  ← from projects + tools
 ├─────────────────────────────────────┤
-│ Session history                     │
-│ └── Raw messages (current session)  │
+│ Recent messages                     │
+│ └── Raw messages (unobserved)       │
 │     (includes any file contents     │
 │      the agent has read via tools)  │
 └─────────────────────────────────────┘
@@ -436,9 +433,9 @@ The context assembler tracks token usage across sections. Progressive disclosure
 3. Projects index — always loaded (lightweight, ~50-100 tokens per entry).
 4. Active project manifest — loaded when a project is active (file listings, not contents).
 5. Available skill metadata — always loaded (names + descriptions only).
-6. Session history — loaded newest-first, truncated from oldest.
+6. Recent messages — loaded newest-first, truncated from oldest.
 
-File contents, skill instructions, and reference material enter the context window only when the agent reads them via tool calls — at which point they become part of the session history and are subject to the same truncation rules as any other message. This keeps the baseline context small and gives the agent control over what fills the remaining budget.
+File contents, skill instructions, and reference material enter the context window only when the agent reads them via tool calls — at which point they become part of the recent messages and are subject to the same truncation rules as any other message. This keeps the baseline context small and gives the agent control over what fills the remaining budget.
 
 Token counting uses tiktoken-rs or a provider-specific tokenizer.
 
@@ -501,7 +498,7 @@ context: aerohive-setup
 
 This is the full record the agent can retrieve via `read` tool or `memory_search` when the observation log's compressed view isn't enough detail. The `observations.json` log itself remains JSON since the gateway parses it structurally, but the persisted transcripts benefit from the more readable format.
 
-**Prompt cache optimization:** The observation log is a prefix that grows append-only between Observer runs. This enables prompt cache hits on the stable prefix across turns within a session.
+**Prompt cache optimization:** The observation log is a prefix that grows append-only between Observer runs. This enables prompt cache hits on the stable prefix across turns within a run.
 
 #### Reflector (`reflector.rs`)
 
@@ -664,7 +661,7 @@ A direct port of OpenClaw's cron job system. Cron gives the agent the ability to
 
 Three schedule types: `at` (one-shot at a timestamp), `every` (fixed interval), and `cron` (standard 5-field cron expressions with optional timezone). Jobs persist under the workspace at `cron/jobs.json` and survive gateway restarts.
 
-Two execution modes: **main session** (enqueue a system event picked up on the next pulse/heartbeat — agent has full context) and **isolated** (dedicated agent turn in a fresh session — can use a different model, supports delivery to a channel or webhook). The agent manages jobs via `cron_add`, `cron_update`, `cron_remove`, and `cron_list` tool calls.
+Two execution modes: **user-visible** (enqueue a system event picked up on the next pulse/heartbeat — agent has full context) and **background** (dedicated agent thread — can use a different model, supports delivery to a channel or webhook). The agent manages jobs via `cron_add`, `cron_update`, `cron_remove`, and `cron_list` tool calls.
 
 This is architecturally identical to OpenClaw's implementation. The design details are documented in [OpenClaw's cron docs](https://docs.openclaw.ai/automation/cron-jobs) and don't need to be restated here.
 
@@ -693,7 +690,7 @@ Discovers skills from configured directories:
 Skills follow the same progressive disclosure model as the Projects system:
 
 1. **Always present**: All available skill metadata (name + description, ~100 tokens each) is in the system prompt. The agent always knows what skills exist.
-2. **Agent-driven activation**: When the agent decides a skill is relevant, it reads the SKILL.md body via the `read` tool. The full instructions (~5000 tokens recommended max) enter the context as part of session history.
+2. **Agent-driven activation**: When the agent decides a skill is relevant, it reads the SKILL.md body via the `read` tool. The full instructions (~5000 tokens recommended max) enter the context as part of the recent messages.
 3. **Supporting files**: After reading a skill's SKILL.md, the agent can read files from `scripts/`, `references/`, and `assets/` as needed.
 
 The gateway's role is indexing and making skills discoverable. The agent's role is deciding which skills to load and when. If a skill specifies `allowed-tools`, those tools become available once the agent has read the skill.
@@ -796,7 +793,7 @@ The active tool set at any moment is the union of all sources, filtered by deny 
 Discord ──→ Channel adapter ──→ Normalized message
                                       │
                                       ▼
-                              Session resolution
+                              Feed resolution
                                       │
                                       ▼
                               Context assembly
@@ -805,7 +802,7 @@ Discord ──→ Channel adapter ──→ Normalized message
                               ├── Active project context
                               ├── Activated skills
                               ├── Available tools (built-in + MCP)
-                              └── Session history
+                              └── Recent messages
                                       │
                                       ▼
                               Model provider ──→ LLM
@@ -859,7 +856,7 @@ Check due pulses (HEARTBEAT.yml + timestamps)
 ### Observer compression
 
 ```
-Raw session messages accumulate
+Raw messages accumulate
             │
             ▼
 Token count exceeds threshold (~30k)
@@ -905,7 +902,7 @@ Raw messages marked as observed
 
 Things deliberately scoped out of the initial implementation:
 
-- **Multi-agent routing** — Single-agent mode only. The architecture supports it (the channel trait and session system are agent-agnostic) but the routing layer isn't built.
+- **Multi-agent routing** — Single-agent mode only. The architecture supports it (the channel trait and message routing are agent-agnostic) but the routing layer isn't built.
 - **Companion apps** — No macOS menu bar, iOS/Android nodes. CLI channel covers the dev use case.
 - **Canvas / A2UI** — No visual workspace. Text-only interactions.
 - **Voice** — No TTS/STT integration. Text channels only.
@@ -924,7 +921,7 @@ Ordered by "what gets you a usable agent fastest":
 2. `workspace` — Layout conventions, identity file loading, bootstrap.
 3. `models` — Anthropic + Ollama providers (use existing connectors).
 4. `channels/cli` — Local CLI channel.
-5. `agent` — Basic runtime: context assembly from identity files + session history, model call, tool execution loop.
+5. `agent` — Basic runtime: context assembly from identity files + recent messages, model call, tool execution loop.
 6. `tools` — `read`, `write`, `exec` (minimum viable tool set).
 7. `main.rs` + `config.rs` — Config loading, startup, wire everything together.
 
@@ -936,14 +933,14 @@ Ordered by "what gets you a usable agent fastest":
 10. `memory/reflector` — Tier 2 compression.
 11. `memory/search` — Hybrid retrieval (tantivy + embeddings).
 
-**Milestone: Agent remembers context across sessions.**
+**Milestone: Agent remembers context across restarts.**
 
 ### Phase 3: Proactivity (COMPLETE)
 12. `pulse/scheduler` — HEARTBEAT.yml parsing, scheduling loop.
 13. `pulse/executor` — Pulse task execution via agent runtime.
 14. `pulse/alerts` — Alert level behavior.
 15. `cron/store` — Job persistence, `cron/scheduler` — schedule evaluation.
-16. `cron/executor` — Job execution, isolated sessions, delivery.
+16. `cron/executor` — Job execution, background threads, delivery.
 
 **Milestone: Agent proactively checks on things, notifies you, and can schedule its own wake-ups.**
 

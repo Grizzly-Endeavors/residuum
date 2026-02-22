@@ -104,7 +104,11 @@ mod proactivity_integration {
             !result.messages.is_empty(),
             "should have ephemeral messages"
         );
-        assert_eq!(agent.message_count(), 0, "main session should be untouched");
+        assert_eq!(
+            agent.message_count(),
+            0,
+            "main message history should be untouched"
+        );
     }
 
     #[tokio::test]
@@ -165,7 +169,7 @@ mod proactivity_integration {
     }
 
     #[tokio::test]
-    async fn pulse_ephemeral_messages_not_in_main_session() {
+    async fn pulse_thread_messages_not_in_main_history() {
         let dir = tempdir().unwrap();
         let alerts_path = dir.path().join("Alerts.md");
 
@@ -192,11 +196,11 @@ mod proactivity_integration {
             !result.messages.is_empty(),
             "should have ephemeral messages"
         );
-        // Main agent session untouched
+        // Main agent message history untouched
         assert_eq!(
             agent.message_count(),
             0,
-            "main agent session should be empty"
+            "main agent message history should be empty"
         );
     }
 
@@ -393,8 +397,12 @@ mod proactivity_integration {
             !result.messages.is_empty(),
             "agent turn should produce ephemeral messages"
         );
-        // Main agent session should be untouched
-        assert_eq!(agent.message_count(), 0, "main session should be untouched");
+        // Main agent message history should be untouched
+        assert_eq!(
+            agent.message_count(),
+            0,
+            "main message history should be untouched"
+        );
     }
 
     // ── Cron delivery × payload matrix tests ───────────────────────────────
@@ -452,7 +460,11 @@ mod proactivity_integration {
                 .contains("background alert"),
             "synthetic message should contain event text"
         );
-        assert_eq!(agent.message_count(), 0, "main session should be untouched");
+        assert_eq!(
+            agent.message_count(),
+            0,
+            "main message history should be untouched"
+        );
     }
 
     #[tokio::test]
@@ -511,7 +523,7 @@ mod proactivity_integration {
     // ── run_system_turn tests ────────────────────────────────────────────────
 
     #[tokio::test]
-    async fn run_system_turn_does_not_modify_main_session() {
+    async fn run_system_turn_does_not_modify_main_history() {
         let agent = make_agent(vec!["I ran a background check.".to_string()]);
         let display = NullDisplay;
 
@@ -524,7 +536,11 @@ mod proactivity_integration {
             result.response, "I ran a background check.",
             "response should match mock"
         );
-        assert_eq!(agent.message_count(), 0, "main session should be empty");
+        assert_eq!(
+            agent.message_count(),
+            0,
+            "main message history should be empty"
+        );
         assert!(
             !result.messages.is_empty(),
             "should have ephemeral messages"
@@ -533,10 +549,7 @@ mod proactivity_integration {
         // Ephemeral messages include at least the user prompt and assistant response
         let has_user = result.messages.iter().any(|m| m.role == Role::User);
         let has_assistant = result.messages.iter().any(|m| m.role == Role::Assistant);
-        assert!(has_user, "should have user message in ephemeral session");
-        assert!(
-            has_assistant,
-            "should have assistant message in ephemeral session"
-        );
+        assert!(has_user, "should have user message in thread");
+        assert!(has_assistant, "should have assistant message in thread");
     }
 }
