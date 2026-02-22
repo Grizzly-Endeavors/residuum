@@ -116,6 +116,14 @@ impl Agent {
         }
     }
 
+    /// Seed the last user message timestamp from persisted data.
+    ///
+    /// Called at startup so the first time context tag after a restart
+    /// shows the correct "last message" duration.
+    pub fn set_last_user_message_at(&mut self, at: Option<chrono::NaiveDateTime>) {
+        self.last_user_message_at = at;
+    }
+
     /// Clear all messages from the recent history.
     ///
     /// Called after the observer fires so observed messages don't linger

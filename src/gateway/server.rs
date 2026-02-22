@@ -149,14 +149,15 @@ pub async fn run_gateway(cfg: Config) -> Result<GatewayExit, IronclawError> {
     agent.reload_observations(&layout).await?;
 
     // Restore unobserved messages from previous run
-    let recent_for_restore = load_messages_for_agent(&layout.recent_messages_json()).await?;
-    if !recent_for_restore.is_empty() {
+    let restore = load_messages_for_agent(&layout.recent_messages_json()).await?;
+    if !restore.messages.is_empty() {
         tracing::info!(
-            count = recent_for_restore.len(),
+            count = restore.messages.len(),
             "restoring recent messages from previous run"
         );
-        agent.restore_messages(recent_for_restore);
+        agent.restore_messages(restore.messages);
     }
+    agent.set_last_user_message_at(restore.last_user_message_at);
 
     // Channels
     let (inbound_tx, mut inbound_rx) = mpsc::channel::<InboundMessage>(32);

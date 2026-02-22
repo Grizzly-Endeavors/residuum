@@ -57,16 +57,39 @@ pub async fn load_recent_messages(path: &Path) -> Result<Vec<RecentMessage>, Iro
     }
 }
 
-/// Load recent messages as plain [`Message`] values, stripping metadata.
+/// Result of loading recent messages for agent restore.
+pub struct AgentRestore {
+    /// Plain conversation messages (metadata stripped).
+    pub messages: Vec<Message>,
+    /// Timestamp of the last user-visible, user-role message (if any).
+    pub last_user_message_at: Option<NaiveDateTime>,
+}
+
+/// Load recent messages for agent restore, extracting the last user timestamp.
 ///
-/// Used when restoring the agent at startup — the agent only needs
-/// the conversation messages, not the observation metadata.
+/// Returns plain [`Message`] values for the agent's history, plus the
+/// timestamp of the most recent user-visible user message so the agent
+/// can seed its time context across restarts.
 ///
 /// # Errors
 /// Returns an error if the file exists but cannot be read or parsed.
-pub async fn load_messages_for_agent(path: &Path) -> Result<Vec<Message>, IronclawError> {
+pub async fn load_messages_for_agent(path: &Path) -> Result<AgentRestore, IronclawError> {
     let recent = load_recent_messages(path).await?;
-    Ok(recent.into_iter().map(|rm| rm.message).collect())
+
+    let last_user_message_at = recent
+        .iter()
+        .rev()
+        .find(|rm| {
+            rm.message.role == crate::models::Role::User && rm.visibility == Visibility::User
+        })
+        .map(|rm| rm.timestamp);
+
+    let messages = recent.into_iter().map(|rm| rm.message).collect();
+
+    Ok(AgentRestore {
+        messages,
+        last_user_message_at,
+    })
 }
 
 /// Save recent messages to disk atomically (temp file + rename).
@@ -306,12 +329,16 @@ mod tests {
         .await
         .unwrap();
 
-        let messages = load_messages_for_agent(&path).await.unwrap();
-        assert_eq!(messages.len(), 1, "should return one message");
+        let restore = load_messages_for_agent(&path).await.unwrap();
+        assert_eq!(restore.messages.len(), 1, "should return one message");
         assert_eq!(
-            messages.first().map(|m| m.content.as_str()),
+            restore.messages.first().map(|m| m.content.as_str()),
             Some("hello"),
             "message content should be preserved"
+        );
+        assert!(
+            restore.last_user_message_at.is_some(),
+            "should extract last user message timestamp"
         );
     }
 
@@ -335,6 +362,45 @@ mod tests {
             loaded.first().map(|m| &m.visibility),
             Some(&Visibility::Background),
             "Background visibility should round-trip"
+        );
+    }
+
+    #[tokio::test]
+    async fn last_user_timestamp_skips_background_messages() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("recent_messages.json");
+
+        // First: a real user message
+        append_recent_messages(
+            &path,
+            &[sample_message("real user msg")],
+            "ctx",
+            Visibility::User,
+            chrono_tz::UTC,
+        )
+        .await
+        .unwrap();
+
+        // Second: a background system turn (uses user role internally)
+        append_recent_messages(
+            &path,
+            &[sample_message("heartbeat prompt")],
+            "pulse",
+            Visibility::Background,
+            chrono_tz::UTC,
+        )
+        .await
+        .unwrap();
+
+        let restore = load_messages_for_agent(&path).await.unwrap();
+        assert_eq!(restore.messages.len(), 2);
+        // The timestamp should come from the first (user-visible) message,
+        // not the second (background) message
+        let all = load_recent_messages(&path).await.unwrap();
+        let expected_ts = all.first().map(|rm| rm.timestamp);
+        assert_eq!(
+            restore.last_user_message_at, expected_ts,
+            "should use timestamp from user-visible message, not background"
         );
     }
 }
