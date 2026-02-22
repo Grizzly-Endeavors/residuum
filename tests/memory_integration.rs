@@ -76,8 +76,8 @@ mod memory_integration {
 
     fn reflector_response() -> String {
         r#"[
-            "workspace uses flat layout with identity files at root",
-            "bootstrap creates required directories on first run"
+            {"content": "workspace uses flat layout with identity files at root", "project_context": "ironclaw/workspace", "visibility": "user"},
+            {"content": "bootstrap creates required directories on first run", "project_context": "ironclaw/workspace", "visibility": "user"}
         ]"#
         .to_string()
     }

@@ -134,21 +134,29 @@ fn build_reflection_prompt(serialized_observations: &str, system_prompt: &str) -
 /// this same content to disk so users can customise it without recompiling.
 const REFLECTION_SYSTEM_PROMPT: &str = r#"You are a memory reorganization system. Given a list of observations, merge and deduplicate them to reduce size while preserving all important information.
 
-Return ONLY a JSON array of merged observation strings. Example:
-["merged fact one", "merged fact two"]
+Return ONLY a JSON array of observation objects with fields:
+- "content" (string): the merged observation as a complete, self-contained sentence
+- "project_context" (string): use the most relevant context from the source observations
+- "visibility" ("user" or "background"): use "background" only if all source observations were background
+
+Example:
+[{"content": "merged fact one", "project_context": "ironclaw/memory", "visibility": "user"}]
 
 Rules:
 - Merge related observations into single, precise sentences
 - Do NOT summarize — preserve specific details
 - Remove redundant or duplicate observations
-- Each output string should be a complete, self-contained sentence
+- Each output object should have a complete, self-contained content sentence
 
-Return ONLY a valid JSON array of strings, no markdown fencing, no explanation."#;
+Return ONLY a valid JSON array of objects, no markdown fencing, no explanation."#;
 
 /// Parse the model's reflection response into an `ObservationLog`.
 ///
-/// Expects a bare JSON array of strings: `["obs 1", "obs 2", ...]`
-/// Each string becomes an [`Observation`] with `project_context = "general"`.
+/// Expects a JSON array of objects:
+/// `[{"content": "obs 1", "project_context": "ironclaw/memory", "visibility": "user"}, ...]`
+///
+/// Each object's `project_context` and `visibility` are preserved.
+/// Defaults to `"general"` / `Visibility::User` when fields are absent or invalid.
 ///
 /// # Errors
 /// Returns an error if the response cannot be parsed.
@@ -162,7 +170,7 @@ fn parse_reflection_response(content: &str) -> Result<ObservationLog, IronclawEr
         ))
     })?;
 
-    let strings = value.as_array().ok_or_else(|| {
+    let items = value.as_array().ok_or_else(|| {
         IronclawError::Memory(format!(
             "reflector response is not a JSON array\nresponse: {trimmed}"
         ))
@@ -171,16 +179,33 @@ fn parse_reflection_response(content: &str) -> Result<ObservationLog, IronclawEr
     let now = Utc::now();
     let mut log = ObservationLog::new();
 
-    for item in strings {
-        if let Some(obs_content) = item.as_str() {
-            log.push(Observation {
-                timestamp: now,
-                project_context: "general".to_string(),
-                source_episodes: vec![],
-                visibility: Visibility::User,
-                content: obs_content.to_string(),
-            });
+    for item in items {
+        let Some(obs_content) = item.get("content").and_then(serde_json::Value::as_str) else {
+            continue;
+        };
+
+        if obs_content.is_empty() {
+            continue;
         }
+
+        let project_context = item
+            .get("project_context")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("general")
+            .to_string();
+
+        let visibility = item
+            .get("visibility")
+            .and_then(|v| serde_json::from_value::<Visibility>(v.clone()).ok())
+            .unwrap_or_default();
+
+        log.push(Observation {
+            timestamp: now,
+            project_context,
+            source_episodes: vec![],
+            visibility,
+            content: obs_content.to_string(),
+        });
     }
 
     Ok(log)
@@ -239,8 +264,7 @@ mod tests {
         }
     }
 
-    const COMPRESSED_RESPONSE: &str =
-        r#"["workspace uses flat layout", "identity files loaded at startup"]"#;
+    const COMPRESSED_RESPONSE: &str = r#"[{"content": "workspace uses flat layout", "project_context": "ironclaw/workspace", "visibility": "user"}, {"content": "identity files loaded at startup", "project_context": "ironclaw/workspace", "visibility": "user"}]"#;
 
     #[test]
     fn should_reflect_below_threshold() {
@@ -282,7 +306,7 @@ mod tests {
     fn parse_reflection_converts_to_flat_observations() {
         let log = parse_reflection_response(COMPRESSED_RESPONSE).unwrap();
 
-        // COMPRESSED_RESPONSE has 2 observation strings → 2 Observations
+        // COMPRESSED_RESPONSE has 2 observation objects → 2 Observations
         assert_eq!(log.len(), 2, "should have two observations");
         assert_eq!(
             log.observations.first().map(|o| o.content.as_str()),
@@ -291,8 +315,8 @@ mod tests {
         );
         assert_eq!(
             log.observations.first().map(|o| o.project_context.as_str()),
-            Some("general"),
-            "project_context defaults to general"
+            Some("ironclaw/workspace"),
+            "project_context should be preserved from JSON"
         );
         // Reflector observations have empty source_episodes
         assert!(
@@ -308,6 +332,48 @@ mod tests {
         let fenced = format!("```json\n{COMPRESSED_RESPONSE}\n```");
         let log = parse_reflection_response(&fenced).unwrap();
         assert_eq!(log.len(), 2, "should parse despite code fences");
+    }
+
+    #[test]
+    fn parse_reflection_preserves_project_context() {
+        let response = r#"[
+            {"content": "obs from ironclaw", "project_context": "ironclaw/memory", "visibility": "user"},
+            {"content": "obs from devops", "project_context": "devops/k8s", "visibility": "user"}
+        ]"#;
+        let log = parse_reflection_response(response).unwrap();
+
+        assert_eq!(log.len(), 2, "should have two observations");
+        assert_eq!(
+            log.observations.first().map(|o| o.project_context.as_str()),
+            Some("ironclaw/memory"),
+            "first project_context should round-trip"
+        );
+        assert_eq!(
+            log.observations.get(1).map(|o| o.project_context.as_str()),
+            Some("devops/k8s"),
+            "second project_context should round-trip"
+        );
+    }
+
+    #[test]
+    fn parse_reflection_preserves_visibility() {
+        let response = r#"[
+            {"content": "background obs", "project_context": "pulse", "visibility": "background"},
+            {"content": "user obs", "project_context": "general", "visibility": "user"}
+        ]"#;
+        let log = parse_reflection_response(response).unwrap();
+
+        assert_eq!(log.len(), 2, "should have two observations");
+        assert_eq!(
+            log.observations.first().map(|o| &o.visibility),
+            Some(&Visibility::Background),
+            "background visibility should round-trip"
+        );
+        assert_eq!(
+            log.observations.get(1).map(|o| &o.visibility),
+            Some(&Visibility::User),
+            "user visibility should round-trip"
+        );
     }
 
     #[tokio::test]

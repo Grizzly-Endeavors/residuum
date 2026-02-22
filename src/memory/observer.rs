@@ -3,7 +3,7 @@
 //! Fires synchronously after the agent completes a turn when the accumulated
 //! recent message token count exceeds the configured threshold.
 
-use chrono::{Local, Utc};
+use chrono::{Local, SecondsFormat, Utc};
 
 use crate::config::DEFAULT_OBSERVER_THRESHOLD;
 use crate::error::IronclawError;
@@ -84,12 +84,6 @@ impl Observer {
         let project_context = derive_project_context(recent_messages);
         let visibility = derive_visibility(recent_messages);
 
-        // Extract inner messages for the LLM prompt and token estimation.
-        let messages: Vec<Message> = recent_messages
-            .iter()
-            .map(|rm| rm.message.clone())
-            .collect();
-
         // Generate the next episode ID by scanning the episodes directory
         let episode_id = next_episode_id(&layout.episodes_dir()).await?;
 
@@ -100,8 +94,15 @@ impl Observer {
             .and_then(|s| if s.trim().is_empty() { None } else { Some(s) })
             .unwrap_or_else(|| EXTRACTION_SYSTEM_PROMPT.to_string());
 
-        // Build extraction prompt
-        let extraction_messages = build_extraction_prompt(&messages, &system_prompt);
+        // Build extraction prompt using full RecentMessage metadata (timestamps,
+        // tool calls, project context) so the observer LLM has complete context.
+        let extraction_messages = build_extraction_prompt(recent_messages, &system_prompt);
+
+        // Extract inner messages for the episode transcript written to disk.
+        let messages: Vec<Message> = recent_messages
+            .iter()
+            .map(|rm| rm.message.clone())
+            .collect();
 
         // Call the model
         let response = self
@@ -192,11 +193,53 @@ fn derive_visibility(messages: &[RecentMessage]) -> Visibility {
     }
 }
 
+/// Format a single `RecentMessage` for the extraction prompt transcript.
+///
+/// Includes timestamp, role, project context, visibility, content, and any
+/// tool calls or tool call IDs, so the observer LLM has full context.
+fn format_recent_message(rm: &RecentMessage) -> String {
+    let role = rm.message.role.as_str();
+    let timestamp = rm.timestamp.to_rfc3339_opts(SecondsFormat::Secs, true);
+    let visibility = match rm.visibility {
+        Visibility::User => "user",
+        Visibility::Background => "background",
+    };
+    let tool_call_id_part = rm
+        .message
+        .tool_call_id
+        .as_deref()
+        .map_or_else(String::new, |id| format!(" (call: {id})"));
+
+    let header = format!(
+        "[{timestamp}] [{role}]{tool_call_id_part} (project: {}, visibility: {visibility}):",
+        rm.project_context
+    );
+
+    let mut parts = vec![header];
+
+    if !rm.message.content.is_empty() {
+        parts.push(rm.message.content.clone());
+    }
+
+    if let Some(tool_calls) = &rm.message.tool_calls {
+        let mut tc_lines = vec!["  tool_calls:".to_string()];
+        for tc in tool_calls {
+            tc_lines.push(format!(
+                "    - {}({}) [id: {}]",
+                tc.name, tc.arguments, tc.id
+            ));
+        }
+        parts.push(tc_lines.join("\n"));
+    }
+
+    parts.join("\n")
+}
+
 /// Build the extraction prompt for the observer model.
-fn build_extraction_prompt(messages: &[Message], system_prompt: &str) -> Vec<Message> {
-    let transcript = messages
+fn build_extraction_prompt(recent_messages: &[RecentMessage], system_prompt: &str) -> Vec<Message> {
+    let transcript = recent_messages
         .iter()
-        .map(|m| format!("[{}]: {}", m.role.as_str(), m.content))
+        .map(format_recent_message)
         .collect::<Vec<_>>()
         .join("\n\n");
 
@@ -467,9 +510,14 @@ mod tests {
 
     #[test]
     fn extraction_prompt_includes_messages() {
-        let messages = vec![Message::user("test content")];
+        let recent_messages = vec![RecentMessage {
+            message: Message::user("test content"),
+            timestamp: Utc::now(),
+            project_context: "test/project".to_string(),
+            visibility: Visibility::User,
+        }];
 
-        let prompt = build_extraction_prompt(&messages, EXTRACTION_SYSTEM_PROMPT);
+        let prompt = build_extraction_prompt(&recent_messages, EXTRACTION_SYSTEM_PROMPT);
         assert_eq!(prompt.len(), 2, "should have system + user message");
         assert_eq!(
             prompt.first().map(|m| m.role),
@@ -481,6 +529,82 @@ mod tests {
         assert!(
             user_content.contains("test content"),
             "should include message content"
+        );
+        assert!(
+            user_content.contains("test/project"),
+            "should include project context"
+        );
+    }
+
+    #[test]
+    fn format_recent_message_includes_tool_calls() {
+        use crate::models::ToolCall;
+
+        let rm = RecentMessage {
+            message: Message::assistant(
+                String::new(),
+                Some(vec![ToolCall {
+                    id: "call_abc".to_string(),
+                    name: "read_file".to_string(),
+                    arguments: serde_json::json!({"path": "src/main.rs"}),
+                }]),
+            ),
+            timestamp: Utc::now(),
+            project_context: "ironclaw/memory".to_string(),
+            visibility: Visibility::User,
+        };
+
+        let formatted = format_recent_message(&rm);
+        assert!(formatted.contains("read_file"), "should include tool name");
+        assert!(
+            formatted.contains("call_abc"),
+            "should include tool call id"
+        );
+        assert!(
+            formatted.contains("src/main.rs"),
+            "should include arguments"
+        );
+    }
+
+    #[test]
+    fn format_recent_message_includes_tool_call_id() {
+        let rm = RecentMessage {
+            message: Message::tool("file contents", "call_abc"),
+            timestamp: Utc::now(),
+            project_context: "ironclaw/memory".to_string(),
+            visibility: Visibility::User,
+        };
+
+        let formatted = format_recent_message(&rm);
+        assert!(
+            formatted.contains("(call: call_abc)"),
+            "should include tool call id in header"
+        );
+    }
+
+    #[test]
+    fn format_recent_message_includes_timestamp_and_context() {
+        // 2026-02-21T00:00:00Z as unix timestamp
+        let timestamp = chrono::DateTime::from_timestamp(1_771_632_000, 0).unwrap();
+        let rm = RecentMessage {
+            message: Message::user("hello"),
+            timestamp,
+            project_context: "ironclaw/memory".to_string(),
+            visibility: Visibility::User,
+        };
+
+        let formatted = format_recent_message(&rm);
+        assert!(
+            formatted.contains("2026-02-21"),
+            "should include ISO date in timestamp"
+        );
+        assert!(
+            formatted.contains("ironclaw/memory"),
+            "should include project context"
+        );
+        assert!(
+            formatted.contains("visibility: user"),
+            "should include visibility"
         );
     }
 
