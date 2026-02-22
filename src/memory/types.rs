@@ -1,5 +1,7 @@
 //! Core memory data types for observations and the observation log.
 
+use std::fmt;
+
 use chrono::NaiveDateTime;
 use serde::{Deserialize, Serialize};
 
@@ -65,6 +67,31 @@ pub struct ObservationLog {
     pub observations: Vec<Observation>,
 }
 
+impl fmt::Display for Visibility {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::User => f.write_str("user"),
+            Self::Background => f.write_str("background"),
+        }
+    }
+}
+
+impl fmt::Display for Observation {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "[{}]", self.timestamp.format("%Y-%m-%dT%H:%M"))?;
+
+        if !self.source_episodes.is_empty() {
+            write!(f, " | [{}]", self.source_episodes.join(", "))?;
+        }
+
+        write!(
+            f,
+            " | {} | {}\n  {}",
+            self.project_context, self.visibility, self.content
+        )
+    }
+}
+
 impl ObservationLog {
     /// Create an empty observation log.
     #[must_use]
@@ -72,6 +99,24 @@ impl ObservationLog {
         Self {
             observations: Vec::new(),
         }
+    }
+
+    /// Format all observations as human-readable text for the system prompt.
+    ///
+    /// Produces a key line followed by one entry per observation.
+    #[must_use]
+    pub fn display_formatted(&self) -> String {
+        if self.observations.is_empty() {
+            return String::new();
+        }
+
+        let mut lines = Vec::with_capacity(self.observations.len() + 1);
+        lines
+            .push("Format: [timestamp] | [source episodes] | [project] | [visibility]".to_string());
+        for obs in &self.observations {
+            lines.push(obs.to_string());
+        }
+        lines.join("\n")
     }
 
     /// Add an observation to the log.
@@ -178,6 +223,53 @@ mod tests {
             deserialized.len(),
             1,
             "log should round-trip with one observation"
+        );
+    }
+
+    #[test]
+    fn observation_display_with_sources() {
+        let obs = sample_observation();
+        let formatted = obs.to_string();
+        assert_eq!(
+            formatted,
+            "[2024-02-19T00:00] | [ep-001] | ironclaw/memory | user\n  tantivy provides BM25 search without C dependencies"
+        );
+    }
+
+    #[test]
+    fn observation_display_without_sources() {
+        let obs = Observation {
+            source_episodes: vec![],
+            ..sample_observation()
+        };
+        let formatted = obs.to_string();
+        assert_eq!(
+            formatted,
+            "[2024-02-19T00:00] | ironclaw/memory | user\n  tantivy provides BM25 search without C dependencies"
+        );
+    }
+
+    #[test]
+    fn display_formatted_includes_key_line() {
+        let mut log = ObservationLog::new();
+        log.push(sample_observation());
+        let formatted = log.display_formatted();
+        assert!(
+            formatted.starts_with("Format: [timestamp]"),
+            "should start with key line"
+        );
+        assert!(
+            formatted.contains("tantivy provides BM25"),
+            "should include observation content"
+        );
+    }
+
+    #[test]
+    fn display_formatted_empty_log() {
+        let log = ObservationLog::new();
+        assert!(
+            log.display_formatted().is_empty(),
+            "empty log should produce empty string"
         );
     }
 

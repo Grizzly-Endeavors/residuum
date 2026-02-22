@@ -59,8 +59,11 @@ impl Agent {
 
     /// Reload observations from the observation log file.
     ///
+    /// Deserializes the JSON into an `ObservationLog` and formats it as
+    /// human-readable text for the system prompt.
+    ///
     /// # Errors
-    /// Returns an error if the file exists but cannot be read.
+    /// Returns an error if the file exists but cannot be read or parsed.
     pub async fn reload_observations(
         &mut self,
         layout: &crate::workspace::layout::WorkspaceLayout,
@@ -68,7 +71,19 @@ impl Agent {
         let path = layout.observations_json();
         match tokio::fs::read_to_string(&path).await {
             Ok(content) if !content.trim().is_empty() => {
-                self.observations = Some(content);
+                let log: crate::memory::types::ObservationLog = serde_json::from_str(&content)
+                    .map_err(|e| {
+                        IronclawError::Memory(format!(
+                            "failed to parse observations at {}: {e}",
+                            path.display()
+                        ))
+                    })?;
+                let formatted = log.display_formatted();
+                self.observations = if formatted.is_empty() {
+                    None
+                } else {
+                    Some(formatted)
+                };
             }
             Ok(_) => {
                 self.observations = None;
