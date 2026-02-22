@@ -1,6 +1,6 @@
 //! Core memory data types for observations and the observation log.
 
-use chrono::{DateTime, Utc};
+use chrono::NaiveDateTime;
 use serde::{Deserialize, Serialize};
 
 /// A compressed episode extracted from a conversation segment.
@@ -45,7 +45,7 @@ pub enum Visibility {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Observation {
     /// When this observation was created.
-    pub timestamp: DateTime<Utc>,
+    pub timestamp: NaiveDateTime,
     /// Project or workspace context at the time of observation.
     pub project_context: String,
     /// IDs of the episode transcript files that produced this observation.
@@ -98,7 +98,10 @@ mod tests {
 
     fn sample_observation() -> Observation {
         Observation {
-            timestamp: DateTime::from_timestamp(1_708_300_800, 0).unwrap(),
+            timestamp: chrono::NaiveDate::from_ymd_opt(2024, 2, 19)
+                .unwrap()
+                .and_hms_opt(0, 0, 0)
+                .unwrap(),
             project_context: "ironclaw/memory".to_string(),
             source_episodes: vec!["ep-001".to_string()],
             visibility: Visibility::User,

@@ -88,6 +88,7 @@ struct GatewayState {
 pub async fn run_gateway(cfg: Config) -> Result<GatewayExit, IronclawError> {
     // Ensure workspace
     let layout = WorkspaceLayout::new(&cfg.workspace_dir);
+    let tz = cfg.timezone;
     ensure_workspace(&layout).await?;
 
     // Change to workspace directory
@@ -111,7 +112,7 @@ pub async fn run_gateway(cfg: Config) -> Result<GatewayExit, IronclawError> {
     tracing::info!(model = provider.model_name(), "model provider ready");
 
     // Build observer and reflector
-    let (observer, reflector) = build_memory_components(&cfg, http.clone())?;
+    let (observer, reflector) = build_memory_components(&cfg, tz, http.clone())?;
 
     // Build per-role providers for pulse and cron
     let pulse_provider =
@@ -135,9 +136,9 @@ pub async fn run_gateway(cfg: Config) -> Result<GatewayExit, IronclawError> {
     let mut tools = ToolRegistry::new();
     let file_tracker = crate::tools::FileTracker::new_shared();
     tools.register_defaults(file_tracker);
-    tools.register_memory_tools(&layout);
+    tools.register_memory_tools(&layout, tz);
     tools.register_search_tool(Arc::clone(&search_index));
-    tools.register_cron_tools(Arc::clone(&cron_store), Arc::clone(&cron_notify));
+    tools.register_cron_tools(Arc::clone(&cron_store), Arc::clone(&cron_notify), tz);
 
     // Build completion options
     let options = CompletionOptions {
@@ -274,13 +275,14 @@ pub async fn run_gateway(cfg: Config) -> Result<GatewayExit, IronclawError> {
                     &search_index,
                     &layout,
                     &mut agent,
+                    tz,
                 )
                 .await;
             }
 
             // ── Pulse timer ───────────────────────────────────────────────
             _ = pulse_tick.tick(), if pulse_enabled => {
-                let now = chrono::Utc::now();
+                let now = crate::time::now_local(tz);
                 let due = pulse_scheduler.due_pulses(now, &layout.heartbeat_yml());
 
                 for pulse in &due {
@@ -319,6 +321,7 @@ pub async fn run_gateway(cfg: Config) -> Result<GatewayExit, IronclawError> {
                                 &search_index,
                                 &layout,
                                 &mut agent,
+                                tz,
                             )
                             .await;
                         }
@@ -334,7 +337,7 @@ pub async fn run_gateway(cfg: Config) -> Result<GatewayExit, IronclawError> {
                 run_due_cron_jobs_gateway(
                     &cron_store, &mut agent, &observer, &reflector,
                     &search_index, &layout, &broadcast_tx,
-                    Some(&*cron_provider),
+                    Some(&*cron_provider), tz,
                 ).await;
             }
 
@@ -343,7 +346,7 @@ pub async fn run_gateway(cfg: Config) -> Result<GatewayExit, IronclawError> {
                 run_due_cron_jobs_gateway(
                     &cron_store, &mut agent, &observer, &reflector,
                     &search_index, &layout, &broadcast_tx,
-                    Some(&*cron_provider),
+                    Some(&*cron_provider), tz,
                 ).await;
             }
 
@@ -493,8 +496,9 @@ async fn run_due_cron_jobs_gateway(
     layout: &WorkspaceLayout,
     broadcast_tx: &broadcast::Sender<ServerMessage>,
     provider_override: Option<&dyn ModelProvider>,
+    tz: chrono_tz::Tz,
 ) {
-    let now = chrono::Utc::now();
+    let now = crate::time::now_local(tz);
     let mut store = cron_store.lock().await;
 
     // Reload from disk so external edits to jobs.json take effect immediately
@@ -505,7 +509,7 @@ async fn run_due_cron_jobs_gateway(
         }
     }
 
-    match execute_due_jobs(&mut store, agent, now, provider_override).await {
+    match execute_due_jobs(&mut store, agent, now, tz, provider_override).await {
         Ok(result) => {
             for notif in &result.notifications {
                 if broadcast_tx
@@ -529,6 +533,7 @@ async fn run_due_cron_jobs_gateway(
                     search_index,
                     layout,
                     agent,
+                    tz,
                 )
                 .await;
             }
@@ -553,6 +558,7 @@ pub(crate) async fn run_memory_pipeline(
     search_index: &crate::memory::search::MemoryIndex,
     layout: &WorkspaceLayout,
     agent: &mut Agent,
+    tz: chrono_tz::Tz,
 ) {
     if new_messages.is_empty() {
         return;
@@ -563,6 +569,7 @@ pub(crate) async fn run_memory_pipeline(
         new_messages,
         project_context,
         visibility,
+        tz,
     )
     .await
     {
@@ -813,6 +820,7 @@ async fn run_forced_reflect(
 /// Returns `IronclawError::Config` if either provider cannot be built.
 pub(crate) fn build_memory_components(
     cfg: &Config,
+    tz: chrono_tz::Tz,
     http: SharedHttpClient,
 ) -> Result<(Observer, Reflector), IronclawError> {
     let observer_provider =
@@ -824,6 +832,7 @@ pub(crate) fn build_memory_components(
         observer_provider,
         ObserverConfig {
             threshold_tokens: cfg.memory.observer_threshold_tokens,
+            tz,
         },
     );
 
@@ -831,6 +840,7 @@ pub(crate) fn build_memory_components(
         reflector_provider,
         ReflectorConfig {
             threshold_tokens: cfg.memory.reflector_threshold_tokens,
+            tz,
         },
     );
 

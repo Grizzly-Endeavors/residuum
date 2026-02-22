@@ -136,8 +136,15 @@ impl ToolRegistry {
     }
 
     /// Register memory-related tools (`daily_log`).
-    pub fn register_memory_tools(&mut self, layout: &crate::workspace::layout::WorkspaceLayout) {
-        self.register(Box::new(daily_log::DailyLogTool::new(layout.memory_dir())));
+    pub fn register_memory_tools(
+        &mut self,
+        layout: &crate::workspace::layout::WorkspaceLayout,
+        tz: chrono_tz::Tz,
+    ) {
+        self.register(Box::new(daily_log::DailyLogTool::new(
+            layout.memory_dir(),
+            tz,
+        )));
     }
 
     /// Register the `memory_search` tool with a shared index.
@@ -153,15 +160,18 @@ impl ToolRegistry {
         &mut self,
         store: std::sync::Arc<tokio::sync::Mutex<crate::cron::store::CronStore>>,
         notify: std::sync::Arc<tokio::sync::Notify>,
+        tz: chrono_tz::Tz,
     ) {
         self.register(Box::new(cron::CronAddTool::new(
             Arc::clone(&store),
             Arc::clone(&notify),
+            tz,
         )));
         self.register(Box::new(cron::CronListTool::new(Arc::clone(&store))));
         self.register(Box::new(cron::CronUpdateTool::new(
             Arc::clone(&store),
             Arc::clone(&notify),
+            tz,
         )));
         self.register(Box::new(cron::CronRemoveTool::new(store, notify)));
     }

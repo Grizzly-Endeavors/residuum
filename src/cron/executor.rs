@@ -1,6 +1,7 @@
 //! Cron job execution: runs due jobs and updates their state.
 
-use chrono::{DateTime, Utc};
+use chrono::NaiveDateTime;
+use chrono_tz::Tz;
 
 use crate::agent::Agent;
 use crate::channels::null::NullDisplay;
@@ -44,7 +45,8 @@ pub struct CronExecutionResult {
 pub async fn execute_due_jobs(
     store: &mut CronStore,
     agent: &mut Agent,
-    now: DateTime<Utc>,
+    now: NaiveDateTime,
+    tz: Tz,
     provider_override: Option<&dyn ModelProvider>,
 ) -> Result<CronExecutionResult, IronclawError> {
     let due_ids: Vec<String> = store
@@ -95,7 +97,7 @@ pub async fn execute_due_jobs(
         }
 
         // Recompute next_run with backoff applied
-        match compute_next_run_with_backoff(job_mut, now) {
+        match compute_next_run_with_backoff(job_mut, now, tz) {
             Ok(next) => job_mut.state.next_run_at = next,
             Err(e) => {
                 eprintln!("warning: cron job '{job_id}' schedule is invalid, disabling: {e}");
@@ -200,8 +202,12 @@ async fn run_job(
 ///
 /// # Errors
 /// Returns `IronclawError::Scheduling` if the schedule cannot be parsed.
-pub fn initialize_next_run(job: &mut CronJob, now: DateTime<Utc>) -> Result<(), IronclawError> {
-    let next = compute_next_run_with_backoff(job, now)?;
+pub fn initialize_next_run(
+    job: &mut CronJob,
+    now: NaiveDateTime,
+    tz: Tz,
+) -> Result<(), IronclawError> {
+    let next = compute_next_run_with_backoff(job, now, tz)?;
     job.state.next_run_at = next;
     Ok(())
 }

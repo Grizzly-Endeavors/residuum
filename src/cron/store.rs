@@ -144,7 +144,7 @@ impl CronStore {
 
     /// Find jobs that are enabled and whose `next_run_at` is at or before `now`.
     #[must_use]
-    pub fn find_due_jobs(&self, now: chrono::DateTime<chrono::Utc>) -> Vec<&CronJob> {
+    pub fn find_due_jobs(&self, now: chrono::NaiveDateTime) -> Vec<&CronJob> {
         self.jobs
             .iter()
             .filter(|j| j.enabled && j.state.next_run_at.is_some_and(|next| next <= now))
@@ -162,12 +162,14 @@ impl CronStore {
 #[expect(clippy::unwrap_used, reason = "test code uses unwrap for clarity")]
 mod tests {
     use super::*;
-    use chrono::{TimeZone, Utc};
 
     use crate::cron::types::{CronJobState, CronPayload, CronSchedule, Delivery, RunStatus};
 
     fn make_job(id: &str) -> CronJob {
-        let now = Utc.with_ymd_and_hms(2026, 2, 19, 12, 0, 0).unwrap();
+        let now = chrono::NaiveDate::from_ymd_opt(2026, 2, 19)
+            .unwrap()
+            .and_hms_opt(12, 0, 0)
+            .unwrap();
         CronJob {
             id: id.to_string(),
             name: format!("job {id}"),
@@ -247,9 +249,18 @@ mod tests {
         let path = dir.path().join("jobs.json");
         let mut store = CronStore::load(&path).await.unwrap();
 
-        let now = Utc.with_ymd_and_hms(2026, 2, 19, 12, 0, 0).unwrap();
-        let past = Utc.with_ymd_and_hms(2026, 2, 19, 11, 0, 0).unwrap();
-        let future = Utc.with_ymd_and_hms(2026, 2, 19, 13, 0, 0).unwrap();
+        let now = chrono::NaiveDate::from_ymd_opt(2026, 2, 19)
+            .unwrap()
+            .and_hms_opt(12, 0, 0)
+            .unwrap();
+        let past = chrono::NaiveDate::from_ymd_opt(2026, 2, 19)
+            .unwrap()
+            .and_hms_opt(11, 0, 0)
+            .unwrap();
+        let future = chrono::NaiveDate::from_ymd_opt(2026, 2, 19)
+            .unwrap()
+            .and_hms_opt(13, 0, 0)
+            .unwrap();
 
         let mut due_job = make_job("cron-due");
         due_job.state.next_run_at = Some(past);
@@ -279,8 +290,14 @@ mod tests {
         let path = dir.path().join("jobs.json");
         let mut store = CronStore::load(&path).await.unwrap();
 
-        let now = Utc.with_ymd_and_hms(2026, 2, 19, 12, 0, 0).unwrap();
-        let past = Utc.with_ymd_and_hms(2026, 2, 19, 11, 0, 0).unwrap();
+        let now = chrono::NaiveDate::from_ymd_opt(2026, 2, 19)
+            .unwrap()
+            .and_hms_opt(12, 0, 0)
+            .unwrap();
+        let past = chrono::NaiveDate::from_ymd_opt(2026, 2, 19)
+            .unwrap()
+            .and_hms_opt(11, 0, 0)
+            .unwrap();
 
         let mut job = make_job("cron-disabled");
         job.enabled = false;

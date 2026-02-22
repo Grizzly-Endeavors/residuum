@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::path::Path;
 
-use chrono::{DateTime, Utc};
+use chrono::NaiveDateTime;
 
 use super::types::{
     HeartbeatConfig, PulseDef, is_within_active_hours, parse_active_hours, parse_schedule_duration,
@@ -12,7 +12,7 @@ use super::types::{
 /// Timestamps are in-memory only and reset on restart, so pulses fire
 /// immediately on first run after startup.
 pub struct PulseScheduler {
-    last_run: HashMap<String, DateTime<Utc>>,
+    last_run: HashMap<String, NaiveDateTime>,
 }
 
 impl Default for PulseScheduler {
@@ -70,7 +70,7 @@ impl PulseScheduler {
     ///
     /// Due pulses have their `last_run` updated to `now`.
     #[must_use]
-    pub fn due_pulses(&mut self, now: DateTime<Utc>, heartbeat_path: &Path) -> Vec<PulseDef> {
+    pub fn due_pulses(&mut self, now: NaiveDateTime, heartbeat_path: &Path) -> Vec<PulseDef> {
         let Some(heartbeat) = Self::load_heartbeat(heartbeat_path) else {
             return Vec::new();
         };
@@ -135,7 +135,6 @@ impl PulseScheduler {
 #[expect(clippy::unwrap_used, reason = "test code uses unwrap for clarity")]
 mod tests {
     use super::*;
-    use chrono::TimeZone;
     use tempfile::tempdir;
 
     fn write_heartbeat(dir: &std::path::Path, content: &str) -> std::path::PathBuf {
@@ -160,7 +159,10 @@ pulses:
         let dir = tempdir().unwrap();
         let path = write_heartbeat(dir.path(), SIMPLE_HEARTBEAT);
         let mut scheduler = PulseScheduler::new();
-        let now = Utc.with_ymd_and_hms(2026, 2, 19, 12, 0, 0).unwrap();
+        let now = chrono::NaiveDate::from_ymd_opt(2026, 2, 19)
+            .unwrap()
+            .and_hms_opt(12, 0, 0)
+            .unwrap();
         let due = scheduler.due_pulses(now, &path);
         assert_eq!(due.len(), 1, "should fire on first run");
         assert_eq!(due.first().unwrap().name, "test_pulse", "name should match");
@@ -171,14 +173,20 @@ pulses:
         let dir = tempdir().unwrap();
         let path = write_heartbeat(dir.path(), SIMPLE_HEARTBEAT);
         let mut scheduler = PulseScheduler::new();
-        let now = Utc.with_ymd_and_hms(2026, 2, 19, 12, 0, 0).unwrap();
+        let now = chrono::NaiveDate::from_ymd_opt(2026, 2, 19)
+            .unwrap()
+            .and_hms_opt(12, 0, 0)
+            .unwrap();
 
         // First run marks it as run
         let first = scheduler.due_pulses(now, &path);
         assert_eq!(first.len(), 1, "should fire on first run");
 
         // 30 minutes later — not yet due (schedule is 1h)
-        let later = Utc.with_ymd_and_hms(2026, 2, 19, 12, 30, 0).unwrap();
+        let later = chrono::NaiveDate::from_ymd_opt(2026, 2, 19)
+            .unwrap()
+            .and_hms_opt(12, 30, 0)
+            .unwrap();
         let due = scheduler.due_pulses(later, &path);
         assert!(due.is_empty(), "should not refire within schedule period");
     }
@@ -195,7 +203,10 @@ pulses:
         let dir = tempdir().unwrap();
         let path = write_heartbeat(dir.path(), yaml);
         let mut scheduler = PulseScheduler::new();
-        let now = Utc.with_ymd_and_hms(2026, 2, 19, 12, 0, 0).unwrap();
+        let now = chrono::NaiveDate::from_ymd_opt(2026, 2, 19)
+            .unwrap()
+            .and_hms_opt(12, 0, 0)
+            .unwrap();
         let due = scheduler.due_pulses(now, &path);
         assert!(due.is_empty(), "disabled pulse should not fire");
     }
@@ -214,7 +225,10 @@ pulses:
         let path = write_heartbeat(dir.path(), yaml);
         let mut scheduler = PulseScheduler::new();
         // 22:00 UTC — outside 09:00-17:00
-        let night = Utc.with_ymd_and_hms(2026, 2, 19, 22, 0, 0).unwrap();
+        let night = chrono::NaiveDate::from_ymd_opt(2026, 2, 19)
+            .unwrap()
+            .and_hms_opt(22, 0, 0)
+            .unwrap();
         let due = scheduler.due_pulses(night, &path);
         assert!(due.is_empty(), "pulse should not fire outside active hours");
     }
@@ -233,7 +247,10 @@ pulses:
         let path = write_heartbeat(dir.path(), yaml);
         let mut scheduler = PulseScheduler::new();
         // 12:00 UTC — inside 09:00-17:00
-        let day = Utc.with_ymd_and_hms(2026, 2, 19, 12, 0, 0).unwrap();
+        let day = chrono::NaiveDate::from_ymd_opt(2026, 2, 19)
+            .unwrap()
+            .and_hms_opt(12, 0, 0)
+            .unwrap();
         let due = scheduler.due_pulses(day, &path);
         assert_eq!(due.len(), 1, "pulse should fire inside active hours");
     }

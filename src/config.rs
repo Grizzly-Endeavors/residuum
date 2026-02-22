@@ -47,6 +47,8 @@ pub(crate) const DEFAULT_REFLECTOR_THRESHOLD: usize = 40_000;
 /// Minimal config.toml written on first run — user edits this.
 const MINIMAL_CONFIG: &str = "# IronClaw configuration. See config.example.toml for all options.\n\
     \n\
+    # timezone = \"America/New_York\"  # REQUIRED: IANA timezone name\n\
+    \n\
     [models]\n\
     main = \"anthropic/claude-sonnet-4-6\"\n";
 
@@ -112,6 +114,8 @@ pub struct Config {
     pub cron_enabled: bool,
     /// WebSocket gateway configuration.
     pub gateway: GatewayConfig,
+    /// IANA timezone for the agent (e.g. `America/New_York`).
+    pub timezone: chrono_tz::Tz,
 }
 
 impl fmt::Debug for Config {
@@ -129,6 +133,7 @@ impl fmt::Debug for Config {
             .field("pulse_enabled", &self.pulse_enabled)
             .field("cron_enabled", &self.cron_enabled)
             .field("gateway", &self.gateway)
+            .field("timezone", &self.timezone)
             .finish()
     }
 }
@@ -340,6 +345,22 @@ impl Config {
 
         let gateway = GatewayConfig::from_file_and_env(file.and_then(|f| f.gateway.as_ref()));
 
+        let timezone_str = std::env::var("IRONCLAW_TIMEZONE")
+            .ok()
+            .or_else(|| file.and_then(|f| f.timezone.clone()));
+        let tz_name = timezone_str.ok_or_else(|| {
+            IronclawError::Config(
+                "timezone is required: set IRONCLAW_TIMEZONE env var or 'timezone' in config.toml \
+                 (IANA name, e.g. \"America/New_York\")"
+                    .to_string(),
+            )
+        })?;
+        let timezone: chrono_tz::Tz = tz_name.parse().map_err(|_err| {
+            IronclawError::Config(format!(
+                "invalid timezone '{tz_name}': expected IANA name like 'America/New_York' or 'UTC'"
+            ))
+        })?;
+
         Ok(Self {
             main,
             observer,
@@ -353,6 +374,7 @@ impl Config {
             pulse_enabled,
             cron_enabled,
             gateway,
+            timezone,
         })
     }
 }
@@ -452,6 +474,8 @@ impl FromStr for ProviderKind {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ConfigFile {
+    /// IANA timezone name (e.g. `"America/New_York"`).
+    timezone: Option<String>,
     /// Named provider definitions.
     providers: Option<HashMap<String, ProviderEntryFile>>,
     /// Role → model string assignments.
@@ -975,6 +999,8 @@ mod tests {
     #[test]
     fn default_model_fallback() {
         let toml_str = r#"
+timezone = "UTC"
+
 [models]
 main = "anthropic/claude-sonnet-4-6"
 default = "anthropic/claude-haiku-4-5"
@@ -993,6 +1019,8 @@ default = "anthropic/claude-haiku-4-5"
     #[test]
     fn role_specific_overrides_default() {
         let toml_str = r#"
+timezone = "UTC"
+
 [models]
 main = "anthropic/claude-sonnet-4-6"
 default = "anthropic/claude-haiku-4-5"
@@ -1013,6 +1041,8 @@ observer = "gemini/gemini-3.0-flash"
     #[test]
     fn all_roles_resolved_to_main_by_default() {
         let toml_str = r#"
+timezone = "UTC"
+
 [models]
 main = "anthropic/claude-sonnet-4-6"
 "#;
@@ -1028,6 +1058,8 @@ main = "anthropic/claude-sonnet-4-6"
     #[test]
     fn deny_unknown_fields_rejects_typos() {
         let toml_str = r#"
+timezone = "UTC"
+
 [models]
 main = "anthropic/claude-sonnet-4-6"
 typo_field = "oops"
@@ -1042,6 +1074,8 @@ typo_field = "oops"
     #[test]
     fn deny_unknown_fields_rejects_top_level_typos() {
         let toml_str = r#"
+timezone = "UTC"
+
 [models]
 main = "anthropic/claude-sonnet-4-6"
 
@@ -1058,6 +1092,8 @@ observer_threshold_tokens = 30000
     #[test]
     fn provider_entry_type_field() {
         let toml_str = r#"
+timezone = "UTC"
+
 [providers.cerebras]
 type = "openai"
 api_key = "csk-123"
@@ -1075,6 +1111,8 @@ main = "cerebras/llama-4"
     #[test]
     fn memory_config_just_thresholds() {
         let toml_str = r#"
+timezone = "UTC"
+
 [models]
 main = "anthropic/claude-sonnet-4-6"
 
@@ -1091,6 +1129,8 @@ reflector_threshold_tokens = 50000
     #[test]
     fn memory_config_defaults_when_absent() {
         let toml_str = r#"
+timezone = "UTC"
+
 [models]
 main = "anthropic/claude-sonnet-4-6"
 "#;
@@ -1107,17 +1147,43 @@ main = "anthropic/claude-sonnet-4-6"
     }
 
     #[test]
-    fn config_no_file_uses_defaults() {
-        let cfg = Config::from_file_and_env(None).unwrap();
-        assert_eq!(cfg.main.model.model, "claude-sonnet-4-5");
-        assert_eq!(cfg.main.model.kind, ProviderKind::Anthropic);
-        assert_eq!(cfg.timeout_secs, DEFAULT_TIMEOUT_SECS);
-        assert_eq!(cfg.max_tokens, DEFAULT_MAX_TOKENS);
+    fn config_no_timezone_errors() {
+        let result = Config::from_file_and_env(None);
+        assert!(result.is_err(), "missing timezone should error");
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("timezone"),
+            "error should mention timezone: {err}"
+        );
+    }
+
+    #[test]
+    fn config_with_timezone() {
+        let toml_str =
+            "timezone = \"America/New_York\"\n\n[models]\nmain = \"anthropic/claude-sonnet-4-6\"\n";
+        let file: ConfigFile = toml::from_str(toml_str).unwrap();
+        let cfg = Config::from_file_and_env(Some(&file)).unwrap();
+        assert_eq!(
+            cfg.timezone.name(),
+            "America/New_York",
+            "timezone should be parsed"
+        );
+    }
+
+    #[test]
+    fn config_invalid_timezone_errors() {
+        let toml_str =
+            "timezone = \"Not/A/Timezone\"\n\n[models]\nmain = \"anthropic/claude-sonnet-4-6\"\n";
+        let file: ConfigFile = toml::from_str(toml_str).unwrap();
+        let result = Config::from_file_and_env(Some(&file));
+        assert!(result.is_err(), "invalid timezone should error");
     }
 
     #[test]
     fn pulse_cron_enabled_defaults() {
         let toml_str = r#"
+timezone = "UTC"
+
 [models]
 main = "anthropic/claude-sonnet-4-6"
 "#;
@@ -1130,6 +1196,8 @@ main = "anthropic/claude-sonnet-4-6"
     #[test]
     fn pulse_cron_can_be_disabled() {
         let toml_str = r#"
+timezone = "UTC"
+
 [models]
 main = "anthropic/claude-sonnet-4-6"
 

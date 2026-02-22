@@ -2,7 +2,9 @@
 
 use std::path::{Path, PathBuf};
 
-use chrono::Local;
+use chrono_tz::Tz;
+
+use crate::time::now_local;
 
 use crate::error::IronclawError;
 
@@ -10,8 +12,8 @@ use crate::error::IronclawError;
 ///
 /// Returns `{memory_dir}/daily_log/{YYYY-MM}/daily-log-{DD}.md`.
 #[must_use]
-pub fn daily_log_path(memory_dir: &Path) -> PathBuf {
-    let now = Local::now();
+pub fn daily_log_path(memory_dir: &Path, tz: Tz) -> PathBuf {
+    let now = now_local(tz);
     let month_dir = now.format("%Y-%m").to_string();
     let day = now.format("%d").to_string();
     memory_dir
@@ -24,12 +26,17 @@ pub fn daily_log_path(memory_dir: &Path) -> PathBuf {
 ///
 /// Creates the file and any missing parent directories if they don't exist.
 /// Each note is prefixed with a timestamp in `HH:MM` format.
+/// The `tz` parameter determines the timezone used for the date and timestamp.
 ///
 /// # Errors
 /// Returns an error if the file cannot be written.
-pub async fn append_daily_note(memory_dir: &Path, note: &str) -> Result<String, IronclawError> {
-    let path = daily_log_path(memory_dir);
-    let timestamp = Local::now().format("%H:%M");
+pub async fn append_daily_note(
+    memory_dir: &Path,
+    note: &str,
+    tz: Tz,
+) -> Result<String, IronclawError> {
+    let path = daily_log_path(memory_dir, tz);
+    let timestamp = now_local(tz).format("%H:%M");
 
     let entry = format!("- **{timestamp}** {note}\n");
 
@@ -47,7 +54,7 @@ pub async fn append_daily_note(memory_dir: &Path, note: &str) -> Result<String, 
     let existing = match tokio::fs::read_to_string(&path).await {
         Ok(file_content) => file_content,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            let header = format!("# {}\n\n", Local::now().format("%Y-%m-%d"));
+            let header = format!("# {}\n\n", now_local(tz).format("%Y-%m-%d"));
             header
         }
         Err(e) => {
@@ -78,7 +85,7 @@ mod tests {
     #[test]
     fn daily_log_path_format() {
         let dir = Path::new("/tmp/memory");
-        let path = daily_log_path(dir);
+        let path = daily_log_path(dir, chrono_tz::UTC);
         let path_str = path.to_string_lossy();
 
         assert!(
@@ -97,11 +104,13 @@ mod tests {
     #[tokio::test]
     async fn append_creates_file() {
         let dir = tempfile::tempdir().unwrap();
-        let result = append_daily_note(dir.path(), "test note").await.unwrap();
+        let result = append_daily_note(dir.path(), "test note", chrono_tz::UTC)
+            .await
+            .unwrap();
 
         assert!(result.contains("note added"), "should confirm addition");
 
-        let path = daily_log_path(dir.path());
+        let path = daily_log_path(dir.path(), chrono_tz::UTC);
         let file_content = tokio::fs::read_to_string(&path).await.unwrap();
         assert!(
             file_content.contains("test note"),
@@ -114,12 +123,12 @@ mod tests {
     async fn append_creates_parent_dirs() {
         let dir = tempfile::tempdir().unwrap();
         // The daily_log/YYYY-MM dir doesn't exist yet — append should create it
-        let result = append_daily_note(dir.path(), "parent dir test")
+        let result = append_daily_note(dir.path(), "parent dir test", chrono_tz::UTC)
             .await
             .unwrap();
         assert!(result.contains("note added"), "should succeed");
 
-        let path = daily_log_path(dir.path());
+        let path = daily_log_path(dir.path(), chrono_tz::UTC);
         assert!(path.exists(), "file should exist after append");
         assert!(
             path.parent().unwrap().exists(),
@@ -130,10 +139,14 @@ mod tests {
     #[tokio::test]
     async fn append_preserves_existing() {
         let dir = tempfile::tempdir().unwrap();
-        append_daily_note(dir.path(), "first note").await.unwrap();
-        append_daily_note(dir.path(), "second note").await.unwrap();
+        append_daily_note(dir.path(), "first note", chrono_tz::UTC)
+            .await
+            .unwrap();
+        append_daily_note(dir.path(), "second note", chrono_tz::UTC)
+            .await
+            .unwrap();
 
-        let path = daily_log_path(dir.path());
+        let path = daily_log_path(dir.path(), chrono_tz::UTC);
         let file_content = tokio::fs::read_to_string(&path).await.unwrap();
         assert!(
             file_content.contains("first note"),
@@ -148,9 +161,11 @@ mod tests {
     #[tokio::test]
     async fn append_has_timestamp() {
         let dir = tempfile::tempdir().unwrap();
-        append_daily_note(dir.path(), "timed note").await.unwrap();
+        append_daily_note(dir.path(), "timed note", chrono_tz::UTC)
+            .await
+            .unwrap();
 
-        let path = daily_log_path(dir.path());
+        let path = daily_log_path(dir.path(), chrono_tz::UTC);
         let file_content = tokio::fs::read_to_string(&path).await.unwrap();
         // Timestamp is in **HH:MM** format
         assert!(

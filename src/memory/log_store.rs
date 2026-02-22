@@ -192,11 +192,9 @@ fn walk_for_max(dir: &Path, max: &mut u32) -> Result<(), crate::error::IronclawE
 mod tests {
     use super::*;
     use crate::memory::types::Visibility;
-    use chrono::Utc;
-
     fn sample_observation(episode_id: &str) -> Observation {
         Observation {
-            timestamp: Utc::now(),
+            timestamp: chrono::Utc::now().naive_utc(),
             project_context: "test".to_string(),
             source_episodes: vec![episode_id.to_string()],
             visibility: Visibility::User,

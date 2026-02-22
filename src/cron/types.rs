@@ -1,6 +1,6 @@
 //! Cron job types: schedules, payloads, state, and job records.
 
-use chrono::{DateTime, Utc};
+use chrono::NaiveDateTime;
 use serde::{Deserialize, Serialize};
 
 /// A scheduled job managed by the cron system.
@@ -17,9 +17,9 @@ pub struct CronJob {
     /// Delete the job record after it successfully runs once.
     pub delete_after_run: bool,
     /// When the job was created.
-    pub created_at: DateTime<Utc>,
+    pub created_at: NaiveDateTime,
     /// When the job was last modified.
-    pub updated_at: DateTime<Utc>,
+    pub updated_at: NaiveDateTime,
     /// When and how often to run.
     pub schedule: CronSchedule,
     /// How the job's output is delivered: visible to the user or in the background.
@@ -34,10 +34,10 @@ pub struct CronJob {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum CronSchedule {
-    /// Fire once at a specific UTC timestamp.
+    /// Fire once at a specific local datetime.
     At {
-        /// UTC datetime to fire.
-        at: DateTime<Utc>,
+        /// Local datetime to fire.
+        at: NaiveDateTime,
     },
     /// Fire repeatedly on a fixed interval anchored to an epoch.
     Every {
@@ -50,7 +50,7 @@ pub enum CronSchedule {
     Cron {
         /// Standard cron expression (5 or 6 fields).
         expr: String,
-        /// Timezone string (reserved for Phase 4; "UTC" used for all in Phase 3).
+        /// IANA timezone for cron evaluation.
         tz: String,
     },
 }
@@ -87,9 +87,9 @@ pub enum CronPayload {
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct CronJobState {
     /// When this job is next scheduled to run.
-    pub next_run_at: Option<DateTime<Utc>>,
+    pub next_run_at: Option<NaiveDateTime>,
     /// When this job last ran.
-    pub last_run_at: Option<DateTime<Utc>>,
+    pub last_run_at: Option<NaiveDateTime>,
     /// Status of the last run.
     pub last_status: Option<RunStatus>,
     /// Error message from the last failed run, if any.
@@ -114,10 +114,12 @@ pub enum RunStatus {
 #[expect(clippy::unwrap_used, reason = "test code uses unwrap for clarity")]
 mod tests {
     use super::*;
-    use chrono::TimeZone;
 
     fn sample_job() -> CronJob {
-        let now = Utc.with_ymd_and_hms(2026, 2, 19, 12, 0, 0).unwrap();
+        let now = chrono::NaiveDate::from_ymd_opt(2026, 2, 19)
+            .unwrap()
+            .and_hms_opt(12, 0, 0)
+            .unwrap();
         CronJob {
             id: "cron-deadbeef".to_string(),
             name: "test job".to_string(),
@@ -146,7 +148,10 @@ mod tests {
 
     #[test]
     fn cron_schedule_at_tagged() {
-        let at = Utc.with_ymd_and_hms(2026, 2, 19, 12, 0, 0).unwrap();
+        let at = chrono::NaiveDate::from_ymd_opt(2026, 2, 19)
+            .unwrap()
+            .and_hms_opt(12, 0, 0)
+            .unwrap();
         let sched = CronSchedule::At { at };
         let json = serde_json::to_string(&sched).unwrap();
         assert!(json.contains("\"type\":\"at\""), "should use 'at' tag");

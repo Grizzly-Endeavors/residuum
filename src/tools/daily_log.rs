@@ -11,13 +11,14 @@ use crate::models::ToolDefinition;
 /// Tool that appends timestamped notes to daily log files.
 pub struct DailyLogTool {
     memory_dir: PathBuf,
+    tz: chrono_tz::Tz,
 }
 
 impl DailyLogTool {
     /// Create a new daily log tool targeting the given memory directory.
     #[must_use]
-    pub fn new(memory_dir: PathBuf) -> Self {
-        Self { memory_dir }
+    pub fn new(memory_dir: PathBuf, tz: chrono_tz::Tz) -> Self {
+        Self { memory_dir, tz }
     }
 }
 
@@ -59,7 +60,7 @@ impl Tool for DailyLogTool {
             return Ok(ToolResult::error("note cannot be empty"));
         }
 
-        match crate::memory::daily_log::append_daily_note(&self.memory_dir, note).await {
+        match crate::memory::daily_log::append_daily_note(&self.memory_dir, note, self.tz).await {
             Ok(msg) => Ok(ToolResult::success(msg)),
             Err(e) => Ok(ToolResult::error(format!("failed to write daily log: {e}"))),
         }
@@ -74,7 +75,7 @@ mod tests {
     #[tokio::test]
     async fn daily_log_tool_success() {
         let dir = tempfile::tempdir().unwrap();
-        let tool = DailyLogTool::new(dir.path().to_path_buf());
+        let tool = DailyLogTool::new(dir.path().to_path_buf(), chrono_tz::UTC);
 
         let result = tool
             .execute(serde_json::json!({"note": "test observation"}))
@@ -91,7 +92,7 @@ mod tests {
     #[tokio::test]
     async fn daily_log_tool_missing_note() {
         let dir = tempfile::tempdir().unwrap();
-        let tool = DailyLogTool::new(dir.path().to_path_buf());
+        let tool = DailyLogTool::new(dir.path().to_path_buf(), chrono_tz::UTC);
 
         let result = tool.execute(serde_json::json!({})).await;
         assert!(result.is_err(), "missing note should be ToolError");
@@ -100,7 +101,7 @@ mod tests {
     #[tokio::test]
     async fn daily_log_tool_empty_note() {
         let dir = tempfile::tempdir().unwrap();
-        let tool = DailyLogTool::new(dir.path().to_path_buf());
+        let tool = DailyLogTool::new(dir.path().to_path_buf(), chrono_tz::UTC);
 
         let result = tool
             .execute(serde_json::json!({"note": "  "}))
@@ -112,7 +113,7 @@ mod tests {
 
     #[test]
     fn daily_log_tool_definition() {
-        let tool = DailyLogTool::new(PathBuf::from("/tmp"));
+        let tool = DailyLogTool::new(PathBuf::from("/tmp"), chrono_tz::UTC);
         assert_eq!(tool.name(), "daily_log", "tool name should match");
         let def = tool.definition();
         assert_eq!(def.name, "daily_log", "definition name should match");

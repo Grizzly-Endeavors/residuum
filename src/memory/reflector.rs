@@ -3,7 +3,7 @@
 //! Sends the full observation log to an LLM which reorganizes and merges
 //! observations while preserving chronology and context tags.
 
-use chrono::Utc;
+use chrono_tz::Tz;
 
 use crate::config::DEFAULT_REFLECTOR_THRESHOLD;
 use crate::error::IronclawError;
@@ -11,6 +11,7 @@ use crate::memory::log_store::{load_observation_log, save_observation_log};
 use crate::memory::tokens::estimate_tokens;
 use crate::memory::types::{Observation, ObservationLog, Visibility};
 use crate::models::{CompletionOptions, Message, ModelProvider};
+use crate::time::now_local;
 use crate::workspace::layout::WorkspaceLayout;
 
 /// Reflector configuration.
@@ -18,12 +19,15 @@ use crate::workspace::layout::WorkspaceLayout;
 pub struct ReflectorConfig {
     /// Minimum estimated tokens in the observation log before reflection triggers.
     pub threshold_tokens: usize,
+    /// Timezone used for timestamps in observations.
+    pub tz: Tz,
 }
 
 impl Default for ReflectorConfig {
     fn default() -> Self {
         Self {
             threshold_tokens: DEFAULT_REFLECTOR_THRESHOLD,
+            tz: chrono_tz::UTC,
         }
     }
 }
@@ -90,7 +94,7 @@ impl Reflector {
             .map_err(IronclawError::Model)?;
 
         // Parse the object-array response into a compressed log.
-        let compressed = parse_reflection_response(&response.content)?;
+        let compressed = parse_reflection_response(&response.content, self.config.tz)?;
 
         if compressed.is_empty() {
             return Err(IronclawError::Memory(
@@ -149,26 +153,26 @@ Rules:
 /// This is injected unconditionally so editing `REFLECTOR.md` cannot break JSON parsing.
 const REFLECTION_FORMAT_SPEC: &str = r#"Return ONLY a JSON array of observation objects with fields:
 - "content" (string): the merged observation as a complete, self-contained sentence
-- "timestamp": UTC timestamp at minute precision (YYYY-MM-DDTHH:MMZ) — use the most recent timestamp from the source observations being merged
+- "timestamp": timestamp at minute precision (YYYY-MM-DDTHH:MM) — use the most recent timestamp from the source observations being merged
 - "project_context" (string): use the most relevant context from the source observations
 - "visibility" ("user" or "background"): use "background" only if all source observations were background
 
 Example:
-[{"content": "merged fact one", "timestamp": "2026-02-21T14:30Z", "project_context": "ironclaw/memory", "visibility": "user"}]
+[{"content": "merged fact one", "timestamp": "2026-02-21T14:30", "project_context": "ironclaw/memory", "visibility": "user"}]
 
 Return ONLY a valid JSON array of objects, no markdown fencing, no explanation."#;
 
 /// Parse the model's reflection response into an `ObservationLog`.
 ///
 /// Expects a JSON array of objects:
-/// `[{"content": "obs 1", "timestamp": "2026-02-21T14:30Z", "project_context": "ironclaw/memory", "visibility": "user"}, ...]`
+/// `[{"content": "obs 1", "timestamp": "2026-02-21T14:30", "project_context": "ironclaw/memory", "visibility": "user"}, ...]`
 ///
 /// Each object's `timestamp`, `project_context`, and `visibility` are preserved.
-/// Defaults to `Utc::now()` / `"general"` / `Visibility::User` when fields are absent or invalid.
+/// Defaults to `now_local(tz)` / `"general"` / `Visibility::User` when fields are absent or invalid.
 ///
 /// # Errors
 /// Returns an error if the response cannot be parsed.
-fn parse_reflection_response(content: &str) -> Result<ObservationLog, IronclawError> {
+fn parse_reflection_response(content: &str, tz: Tz) -> Result<ObservationLog, IronclawError> {
     let trimmed = content.trim();
     let json_str = crate::memory::strip_code_fences(trimmed);
 
@@ -198,7 +202,10 @@ fn parse_reflection_response(content: &str) -> Result<ObservationLog, IronclawEr
         let timestamp = item
             .get("timestamp")
             .and_then(serde_json::Value::as_str)
-            .map_or_else(Utc::now, crate::memory::parse_minute_timestamp);
+            .map_or_else(
+                || now_local(tz),
+                |ts| crate::memory::parse_minute_timestamp(ts, tz),
+            );
 
         let project_context = item
             .get("project_context")
@@ -230,7 +237,6 @@ mod tests {
     use crate::memory::types::Visibility;
     use crate::models::{ModelError, ModelResponse, ToolDefinition};
     use async_trait::async_trait;
-    use chrono::Utc;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -268,7 +274,7 @@ mod tests {
 
     fn sample_observation(episode_id: &str, ctx: &str) -> Observation {
         Observation {
-            timestamp: Utc::now(),
+            timestamp: chrono::Utc::now().naive_utc(),
             project_context: ctx.to_string(),
             source_episodes: vec![episode_id.to_string()],
             visibility: Visibility::User,
@@ -277,8 +283,8 @@ mod tests {
     }
 
     const COMPRESSED_RESPONSE: &str = r#"[
-        {"content": "workspace uses flat layout", "timestamp": "2026-02-21T14:30Z", "project_context": "ironclaw/workspace", "visibility": "user"},
-        {"content": "identity files loaded at startup", "timestamp": "2026-02-21T14:31Z", "project_context": "ironclaw/workspace", "visibility": "user"}
+        {"content": "workspace uses flat layout", "timestamp": "2026-02-21T14:30", "project_context": "ironclaw/workspace", "visibility": "user"},
+        {"content": "identity files loaded at startup", "timestamp": "2026-02-21T14:31", "project_context": "ironclaw/workspace", "visibility": "user"}
     ]"#;
 
     #[test]
@@ -287,6 +293,7 @@ mod tests {
             Box::new(MockReflectorProvider::new(COMPRESSED_RESPONSE)),
             ReflectorConfig {
                 threshold_tokens: 100_000,
+                tz: chrono_tz::UTC,
             },
         );
 
@@ -305,6 +312,7 @@ mod tests {
             Box::new(MockReflectorProvider::new(COMPRESSED_RESPONSE)),
             ReflectorConfig {
                 threshold_tokens: 10,
+                tz: chrono_tz::UTC,
             },
         );
 
@@ -319,7 +327,7 @@ mod tests {
 
     #[test]
     fn parse_reflection_converts_to_flat_observations() {
-        let log = parse_reflection_response(COMPRESSED_RESPONSE).unwrap();
+        let log = parse_reflection_response(COMPRESSED_RESPONSE, chrono_tz::UTC).unwrap();
 
         // COMPRESSED_RESPONSE has 2 observation objects → 2 Observations
         assert_eq!(log.len(), 2, "should have two observations");
@@ -345,17 +353,17 @@ mod tests {
     #[test]
     fn parse_reflection_handles_code_fences() {
         let fenced = format!("```json\n{COMPRESSED_RESPONSE}\n```");
-        let log = parse_reflection_response(&fenced).unwrap();
+        let log = parse_reflection_response(&fenced, chrono_tz::UTC).unwrap();
         assert_eq!(log.len(), 2, "should parse despite code fences");
     }
 
     #[test]
     fn parse_reflection_preserves_project_context() {
         let response = r#"[
-            {"content": "obs from ironclaw", "timestamp": "2026-02-21T14:30Z", "project_context": "ironclaw/memory", "visibility": "user"},
-            {"content": "obs from devops", "timestamp": "2026-02-21T14:31Z", "project_context": "devops/k8s", "visibility": "user"}
+            {"content": "obs from ironclaw", "timestamp": "2026-02-21T14:30", "project_context": "ironclaw/memory", "visibility": "user"},
+            {"content": "obs from devops", "timestamp": "2026-02-21T14:31", "project_context": "devops/k8s", "visibility": "user"}
         ]"#;
-        let log = parse_reflection_response(response).unwrap();
+        let log = parse_reflection_response(response, chrono_tz::UTC).unwrap();
 
         assert_eq!(log.len(), 2, "should have two observations");
         assert_eq!(
@@ -373,10 +381,10 @@ mod tests {
     #[test]
     fn parse_reflection_preserves_visibility() {
         let response = r#"[
-            {"content": "background obs", "timestamp": "2026-02-21T03:00Z", "project_context": "pulse", "visibility": "background"},
-            {"content": "user obs", "timestamp": "2026-02-21T14:30Z", "project_context": "general", "visibility": "user"}
+            {"content": "background obs", "timestamp": "2026-02-21T03:00", "project_context": "pulse", "visibility": "background"},
+            {"content": "user obs", "timestamp": "2026-02-21T14:30", "project_context": "general", "visibility": "user"}
         ]"#;
-        let log = parse_reflection_response(response).unwrap();
+        let log = parse_reflection_response(response, chrono_tz::UTC).unwrap();
 
         assert_eq!(log.len(), 2, "should have two observations");
         assert_eq!(
@@ -394,9 +402,9 @@ mod tests {
     #[test]
     fn parse_reflection_preserves_timestamp() {
         let response = r#"[
-            {"content": "an observation", "timestamp": "2026-02-21T14:30Z", "project_context": "test", "visibility": "user"}
+            {"content": "an observation", "timestamp": "2026-02-21T14:30", "project_context": "test", "visibility": "user"}
         ]"#;
-        let log = parse_reflection_response(response).unwrap();
+        let log = parse_reflection_response(response, chrono_tz::UTC).unwrap();
         let ts = log.observations.first().map(|o| o.timestamp).unwrap();
         assert_eq!(ts.format("%Y-%m-%dT%H:%M").to_string(), "2026-02-21T14:30");
     }
@@ -406,8 +414,8 @@ mod tests {
         let response = r#"[
             {"content": "an observation", "project_context": "test", "visibility": "user"}
         ]"#;
-        let log = parse_reflection_response(response).unwrap();
-        // Should succeed with Utc::now() fallback — just verify observation was parsed
+        let log = parse_reflection_response(response, chrono_tz::UTC).unwrap();
+        // Should succeed with now_local() fallback — just verify observation was parsed
         assert_eq!(
             log.len(),
             1,
@@ -436,6 +444,7 @@ mod tests {
             Box::new(MockReflectorProvider::new(COMPRESSED_RESPONSE)),
             ReflectorConfig {
                 threshold_tokens: 10,
+                tz: chrono_tz::UTC,
             },
         );
 
@@ -474,14 +483,14 @@ mod tests {
 
     #[test]
     fn parse_reflection_empty_array_yields_empty_log() {
-        let log = parse_reflection_response("[]").unwrap();
+        let log = parse_reflection_response("[]", chrono_tz::UTC).unwrap();
         // Empty array → empty log (error check is in reflect())
         assert!(log.is_empty(), "empty array should yield empty log");
     }
 
     #[test]
     fn parse_reflection_non_array_errors() {
-        let result = parse_reflection_response(r#"{"episodes": []}"#);
+        let result = parse_reflection_response(r#"{"episodes": []}"#, chrono_tz::UTC);
         assert!(result.is_err(), "non-array response should error");
     }
 
@@ -509,6 +518,7 @@ mod tests {
             Box::new(MockReflectorProvider::new(COMPRESSED_RESPONSE)),
             ReflectorConfig {
                 threshold_tokens: 10,
+                tz: chrono_tz::UTC,
             },
         );
 
@@ -544,6 +554,7 @@ mod tests {
             Box::new(MockReflectorProvider::new(empty_array)),
             ReflectorConfig {
                 threshold_tokens: 10,
+                tz: chrono_tz::UTC,
             },
         );
 

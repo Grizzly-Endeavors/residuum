@@ -3,7 +3,8 @@
 //! Fires synchronously after the agent completes a turn when the accumulated
 //! recent message token count exceeds the configured threshold.
 
-use chrono::{DateTime, Local, SecondsFormat, Utc};
+use chrono::NaiveDateTime;
+use chrono_tz::Tz;
 
 use crate::config::DEFAULT_OBSERVER_THRESHOLD;
 use crate::error::IronclawError;
@@ -13,6 +14,7 @@ use crate::memory::recent_store::RecentMessage;
 use crate::memory::tokens::estimate_message_tokens;
 use crate::memory::types::{Episode, Observation, Visibility};
 use crate::models::{CompletionOptions, Message, ModelProvider, ModelResponse};
+use crate::time::now_local;
 use crate::workspace::layout::WorkspaceLayout;
 
 /// The result of a successful observation run.
@@ -30,12 +32,15 @@ pub struct ObserveResult {
 pub struct ObserverConfig {
     /// Minimum estimated tokens in recent messages before observation triggers.
     pub threshold_tokens: usize,
+    /// Timezone used for timestamps in observations.
+    pub tz: Tz,
 }
 
 impl Default for ObserverConfig {
     fn default() -> Self {
         Self {
             threshold_tokens: DEFAULT_OBSERVER_THRESHOLD,
+            tz: chrono_tz::UTC,
         }
     }
 }
@@ -111,12 +116,12 @@ impl Observer {
             .map_err(IronclawError::Model)?;
 
         // Parse the object-array response into extraction results.
-        let extractions = parse_observer_response(&response)?;
+        let extractions = parse_observer_response(&response, self.config.tz)?;
 
         // Build the episode internally — start/end are cosmetic and no longer LLM-extracted.
         let episode = Episode {
             id: episode_id.clone(),
-            date: Local::now().date_naive(),
+            date: now_local(self.config.tz).date(),
             start: String::new(),
             end: String::new(),
             context: project_context.clone(),
@@ -163,7 +168,7 @@ impl Observer {
 /// Intermediate extraction result from the observer LLM response.
 struct ObserverExtraction {
     content: String,
-    timestamp: DateTime<Utc>,
+    timestamp: NaiveDateTime,
     visibility: Visibility,
 }
 
@@ -193,7 +198,7 @@ fn derive_project_context(messages: &[RecentMessage]) -> String {
 /// tool calls or tool call IDs, so the observer LLM has full context.
 fn format_recent_message(rm: &RecentMessage) -> String {
     let role = rm.message.role.as_str();
-    let timestamp = rm.timestamp.to_rfc3339_opts(SecondsFormat::Secs, true);
+    let timestamp = rm.timestamp.format("%Y-%m-%dT%H:%M:%S").to_string();
     let visibility = match rm.visibility {
         Visibility::User => "user",
         Visibility::Background => "background",
@@ -272,13 +277,13 @@ Each observation should be a complete sentence useful as context in a future ses
 /// This is injected unconditionally so editing `OBSERVER.md` cannot break JSON parsing.
 const EXTRACTION_FORMAT_SPEC: &str = r#"Return ONLY a JSON array of objects. Each object must have:
 - "content": a complete, self-contained observation sentence
-- "timestamp": UTC timestamp at minute precision (YYYY-MM-DDTHH:MMZ) matching the most relevant message
+- "timestamp": timestamp at minute precision (YYYY-MM-DDTHH:MM) matching the most relevant message
 - "visibility": "user" if the observation involves a user-visible turn, "background" if from a system/background turn
 
 Example:
 [
-  {"content": "user prefers concise responses", "timestamp": "2026-02-21T14:30Z", "visibility": "user"},
-  {"content": "cron job executed daily backup successfully", "timestamp": "2026-02-21T03:00Z", "visibility": "background"}
+  {"content": "user prefers concise responses", "timestamp": "2026-02-21T14:30", "visibility": "user"},
+  {"content": "cron job executed daily backup successfully", "timestamp": "2026-02-21T03:00", "visibility": "background"}
 ]
 
 Return ONLY a valid JSON array of objects, no markdown fencing, no explanation."#;
@@ -291,6 +296,7 @@ Return ONLY a valid JSON array of objects, no markdown fencing, no explanation."
 /// Returns an error if the response cannot be parsed or the array is empty.
 fn parse_observer_response(
     response: &ModelResponse,
+    tz: Tz,
 ) -> Result<Vec<ObserverExtraction>, IronclawError> {
     let content = response.content.trim();
     let json_str = crate::memory::strip_code_fences(content);
@@ -326,9 +332,9 @@ fn parse_observer_response(
                     tracing::warn!(
                         "observer response item missing 'timestamp', using current time"
                     );
-                    Utc::now()
+                    now_local(tz)
                 },
-                crate::memory::parse_minute_timestamp,
+                |ts| crate::memory::parse_minute_timestamp(ts, tz),
             );
 
         let visibility = item
@@ -366,7 +372,6 @@ mod tests {
     use crate::memory::log_store::load_observation_log;
     use crate::models::{ModelError, ModelResponse, Role, ToolDefinition};
     use async_trait::async_trait;
-    use chrono::Utc;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -403,8 +408,8 @@ mod tests {
     }
 
     const SAMPLE_RESPONSE: &str = r#"[
-        {"content": "workspace uses a flat directory layout", "timestamp": "2026-02-21T14:30Z", "visibility": "user"},
-        {"content": "identity files are loaded at startup", "timestamp": "2026-02-21T14:31Z", "visibility": "user"}
+        {"content": "workspace uses a flat directory layout", "timestamp": "2026-02-21T14:30", "visibility": "user"},
+        {"content": "identity files are loaded at startup", "timestamp": "2026-02-21T14:31", "visibility": "user"}
     ]"#;
 
     fn make_recent_messages(count: usize) -> Vec<RecentMessage> {
@@ -414,7 +419,7 @@ mod tests {
                     "message {i} with enough content to contribute to token count - {}",
                     "a".repeat(100)
                 )),
-                timestamp: Utc::now(),
+                timestamp: chrono::Utc::now().naive_utc(),
                 project_context: "ironclaw/workspace".to_string(),
                 visibility: Visibility::User,
             })
@@ -424,7 +429,7 @@ mod tests {
     #[test]
     fn parse_observer_response_from_json_array() {
         let response = ModelResponse::new(SAMPLE_RESPONSE.to_string(), vec![]);
-        let extractions = parse_observer_response(&response).unwrap();
+        let extractions = parse_observer_response(&response, chrono_tz::UTC).unwrap();
 
         assert_eq!(extractions.len(), 2, "should have 2 extractions");
         assert_eq!(
@@ -443,7 +448,7 @@ mod tests {
     fn parse_observer_response_with_code_fences() {
         let fenced = format!("```json\n{SAMPLE_RESPONSE}\n```");
         let response = ModelResponse::new(fenced, vec![]);
-        let extractions = parse_observer_response(&response).unwrap();
+        let extractions = parse_observer_response(&response, chrono_tz::UTC).unwrap();
 
         assert_eq!(extractions.len(), 2, "should parse despite fences");
     }
@@ -451,44 +456,44 @@ mod tests {
     #[test]
     fn parse_observer_response_invalid_json_errors() {
         let response = ModelResponse::new("not json at all".to_string(), vec![]);
-        let result = parse_observer_response(&response);
+        let result = parse_observer_response(&response, chrono_tz::UTC);
         assert!(result.is_err(), "invalid JSON should error");
     }
 
     #[test]
     fn parse_observer_response_not_array_errors() {
         let response = ModelResponse::new(r#"{"observations": ["one thing"]}"#.to_string(), vec![]);
-        let result = parse_observer_response(&response);
+        let result = parse_observer_response(&response, chrono_tz::UTC);
         assert!(result.is_err(), "non-array JSON should error");
     }
 
     #[test]
     fn parse_observer_response_empty_array_errors() {
         let response = ModelResponse::new("[]".to_string(), vec![]);
-        let result = parse_observer_response(&response);
+        let result = parse_observer_response(&response, chrono_tz::UTC);
         assert!(result.is_err(), "empty array should error");
     }
 
     #[test]
     fn parse_observer_response_timestamp_minute_precision() {
         let response = ModelResponse::new(
-            r#"[{"content": "test obs", "timestamp": "2026-02-21T14:30Z", "visibility": "user"}]"#
+            r#"[{"content": "test obs", "timestamp": "2026-02-21T14:30", "visibility": "user"}]"#
                 .to_string(),
             vec![],
         );
-        let extractions = parse_observer_response(&response).unwrap();
+        let extractions = parse_observer_response(&response, chrono_tz::UTC).unwrap();
         let ts = extractions.first().unwrap().timestamp;
         assert_eq!(ts.format("%Y-%m-%dT%H:%M").to_string(), "2026-02-21T14:30");
     }
 
     #[test]
-    fn parse_observer_response_timestamp_rfc3339_fallback() {
+    fn parse_observer_response_timestamp_legacy_z_fallback() {
         let response = ModelResponse::new(
-            r#"[{"content": "test obs", "timestamp": "2026-02-21T14:30:00Z", "visibility": "user"}]"#
+            r#"[{"content": "test obs", "timestamp": "2026-02-21T14:30Z", "visibility": "user"}]"#
                 .to_string(),
             vec![],
         );
-        let extractions = parse_observer_response(&response).unwrap();
+        let extractions = parse_observer_response(&response, chrono_tz::UTC).unwrap();
         let ts = extractions.first().unwrap().timestamp;
         assert_eq!(ts.format("%Y-%m-%dT%H:%M").to_string(), "2026-02-21T14:30");
     }
@@ -496,11 +501,11 @@ mod tests {
     #[test]
     fn parse_observer_response_background_visibility() {
         let response = ModelResponse::new(
-            r#"[{"content": "cron job ran", "timestamp": "2026-02-21T03:00Z", "visibility": "background"}]"#
+            r#"[{"content": "cron job ran", "timestamp": "2026-02-21T03:00", "visibility": "background"}]"#
                 .to_string(),
             vec![],
         );
-        let extractions = parse_observer_response(&response).unwrap();
+        let extractions = parse_observer_response(&response, chrono_tz::UTC).unwrap();
         assert_eq!(
             extractions.first().map(|e| &e.visibility),
             Some(&Visibility::Background),
@@ -514,6 +519,7 @@ mod tests {
             Box::new(MockObserverProvider::new(SAMPLE_RESPONSE)),
             ObserverConfig {
                 threshold_tokens: 1000,
+                tz: chrono_tz::UTC,
             },
         );
         let messages = make_recent_messages(2);
@@ -530,6 +536,7 @@ mod tests {
             Box::new(MockObserverProvider::new(SAMPLE_RESPONSE)),
             ObserverConfig {
                 threshold_tokens: 10,
+                tz: chrono_tz::UTC,
             },
         );
         let messages = make_recent_messages(5);
@@ -556,6 +563,7 @@ mod tests {
             Box::new(MockObserverProvider::new(SAMPLE_RESPONSE)),
             ObserverConfig {
                 threshold_tokens: 10,
+                tz: chrono_tz::UTC,
             },
         );
 
@@ -585,7 +593,7 @@ mod tests {
         // Verify the per-episode obs archive was written alongside the transcript
         let episode = crate::memory::types::Episode {
             id: result.id.clone(),
-            date: chrono::Local::now().date_naive(),
+            date: chrono::Utc::now().naive_utc().date(),
             start: String::new(),
             end: String::new(),
             context: String::new(),
@@ -603,7 +611,7 @@ mod tests {
     fn extraction_prompt_includes_messages() {
         let recent_messages = vec![RecentMessage {
             message: Message::user("test content"),
-            timestamp: Utc::now(),
+            timestamp: chrono::Utc::now().naive_utc(),
             project_context: "test/project".to_string(),
             visibility: Visibility::User,
         }];
@@ -646,7 +654,7 @@ mod tests {
                     arguments: serde_json::json!({"path": "src/main.rs"}),
                 }]),
             ),
-            timestamp: Utc::now(),
+            timestamp: chrono::Utc::now().naive_utc(),
             project_context: "ironclaw/memory".to_string(),
             visibility: Visibility::User,
         };
@@ -667,7 +675,7 @@ mod tests {
     fn format_recent_message_includes_tool_call_id() {
         let rm = RecentMessage {
             message: Message::tool("file contents", "call_abc"),
-            timestamp: Utc::now(),
+            timestamp: chrono::Utc::now().naive_utc(),
             project_context: "ironclaw/memory".to_string(),
             visibility: Visibility::User,
         };
@@ -681,8 +689,10 @@ mod tests {
 
     #[test]
     fn format_recent_message_includes_timestamp_and_context() {
-        // 2026-02-21T00:00:00Z as unix timestamp
-        let timestamp = chrono::DateTime::from_timestamp(1_771_632_000, 0).unwrap();
+        let timestamp = chrono::NaiveDate::from_ymd_opt(2026, 2, 21)
+            .unwrap()
+            .and_hms_opt(0, 0, 0)
+            .unwrap();
         let rm = RecentMessage {
             message: Message::user("hello"),
             timestamp,
@@ -710,19 +720,19 @@ mod tests {
         let messages: Vec<RecentMessage> = vec![
             RecentMessage {
                 message: Message::user("a"),
-                timestamp: Utc::now(),
+                timestamp: chrono::Utc::now().naive_utc(),
                 project_context: "ironclaw/memory".to_string(),
                 visibility: Visibility::User,
             },
             RecentMessage {
                 message: Message::user("b"),
-                timestamp: Utc::now(),
+                timestamp: chrono::Utc::now().naive_utc(),
                 project_context: "ironclaw/memory".to_string(),
                 visibility: Visibility::User,
             },
             RecentMessage {
                 message: Message::user("c"),
-                timestamp: Utc::now(),
+                timestamp: chrono::Utc::now().naive_utc(),
                 project_context: "devops/k8s".to_string(),
                 visibility: Visibility::User,
             },

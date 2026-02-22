@@ -8,5 +8,6 @@ pub mod gateway;
 pub mod memory;
 pub mod models;
 pub mod pulse;
+pub mod time;
 pub mod tools;
 pub mod workspace;

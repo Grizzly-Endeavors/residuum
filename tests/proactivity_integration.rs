@@ -213,7 +213,7 @@ mod proactivity_integration {
         .unwrap();
 
         let mut scheduler = PulseScheduler::new();
-        let now = chrono::Utc::now();
+        let now = chrono::Utc::now().naive_utc();
         let due = scheduler.due_pulses(now, &heartbeat_path);
         assert_eq!(due.len(), 1, "pulse should fire on first run");
     }
@@ -229,7 +229,7 @@ mod proactivity_integration {
         .unwrap();
 
         let mut scheduler = PulseScheduler::new();
-        let now = chrono::Utc::now();
+        let now = chrono::Utc::now().naive_utc();
 
         let first = scheduler.due_pulses(now, &heartbeat_path);
         assert_eq!(first.len(), 1, "first call should fire");
@@ -248,7 +248,7 @@ mod proactivity_integration {
         let dir = tempdir().unwrap();
         let path = dir.path().join("jobs.json");
 
-        let now = chrono::Utc::now();
+        let now = chrono::Utc::now().naive_utc();
         let job = CronJob {
             id: "cron-test0001".to_string(),
             name: "test job".to_string(),
@@ -301,7 +301,7 @@ mod proactivity_integration {
         let dir = tempdir().unwrap();
         let path = dir.path().join("jobs.json");
 
-        let now = chrono::Utc::now();
+        let now = chrono::Utc::now().naive_utc();
         let past = now - chrono::Duration::seconds(10);
 
         let job = CronJob {
@@ -331,7 +331,7 @@ mod proactivity_integration {
         // Initially no pending events
         assert_eq!(agent.message_count(), 0, "no messages initially");
 
-        let result = execute_due_jobs(&mut store, &mut agent, now, None)
+        let result = execute_due_jobs(&mut store, &mut agent, now, chrono_tz::UTC, None)
             .await
             .unwrap();
 
@@ -357,7 +357,7 @@ mod proactivity_integration {
         let dir = tempdir().unwrap();
         let path = dir.path().join("jobs.json");
 
-        let now = chrono::Utc::now();
+        let now = chrono::Utc::now().naive_utc();
         let past = now - chrono::Duration::seconds(10);
 
         let job = CronJob {
@@ -384,7 +384,7 @@ mod proactivity_integration {
 
         let mut agent = make_agent(vec!["Background check complete.".to_string()]);
 
-        let result = execute_due_jobs(&mut store, &mut agent, now, None)
+        let result = execute_due_jobs(&mut store, &mut agent, now, chrono_tz::UTC, None)
             .await
             .unwrap();
 
@@ -408,7 +408,7 @@ mod proactivity_integration {
         let dir = tempdir().unwrap();
         let path = dir.path().join("jobs.json");
 
-        let now = chrono::Utc::now();
+        let now = chrono::Utc::now().naive_utc();
         let past = now - chrono::Duration::seconds(10);
 
         let job = CronJob {
@@ -435,7 +435,7 @@ mod proactivity_integration {
 
         let mut agent = make_agent(vec![]);
 
-        let result = execute_due_jobs(&mut store, &mut agent, now, None)
+        let result = execute_due_jobs(&mut store, &mut agent, now, chrono_tz::UTC, None)
             .await
             .unwrap();
 
@@ -464,7 +464,7 @@ mod proactivity_integration {
         let dir = tempdir().unwrap();
         let path = dir.path().join("jobs.json");
 
-        let now = chrono::Utc::now();
+        let now = chrono::Utc::now().naive_utc();
         let past = now - chrono::Duration::seconds(10);
 
         let job = CronJob {
@@ -491,7 +491,7 @@ mod proactivity_integration {
 
         let mut agent = make_agent(vec!["Visible check done.".to_string()]);
 
-        let result = execute_due_jobs(&mut store, &mut agent, now, None)
+        let result = execute_due_jobs(&mut store, &mut agent, now, chrono_tz::UTC, None)
             .await
             .unwrap();
 

@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use chrono::Utc;
+
 use serde_json::Value;
 use tokio::sync::{Mutex, Notify};
 
@@ -20,13 +20,14 @@ use super::{Tool, ToolError, ToolResult};
 pub struct CronAddTool {
     store: Arc<Mutex<CronStore>>,
     notify: Arc<Notify>,
+    tz: chrono_tz::Tz,
 }
 
 impl CronAddTool {
     /// Create a new `CronAddTool`.
     #[must_use]
-    pub fn new(store: Arc<Mutex<CronStore>>, notify: Arc<Notify>) -> Self {
-        Self { store, notify }
+    pub fn new(store: Arc<Mutex<CronStore>>, notify: Arc<Notify>, tz: chrono_tz::Tz) -> Self {
+        Self { store, notify, tz }
     }
 }
 
@@ -55,7 +56,7 @@ impl Tool for CronAddTool {
                     },
                     "schedule_at": {
                         "type": "string",
-                        "description": "UTC ISO-8601 datetime, required when schedule_type='at'"
+                        "description": "Local datetime (YYYY-MM-DDTHH:MM:SS), required when schedule_type='at'"
                     },
                     "schedule_every_ms": {
                         "type": "integer",
@@ -71,7 +72,7 @@ impl Tool for CronAddTool {
                     },
                     "schedule_tz": {
                         "type": "string",
-                        "description": "Timezone, default 'UTC'; optional when schedule_type='cron'"
+                        "description": "IANA timezone for cron expression evaluation; defaults to the configured timezone"
                     },
                     "delivery": {
                         "type": "string",
@@ -116,7 +117,7 @@ impl Tool for CronAddTool {
             .ok_or_else(|| ToolError::InvalidArguments("name is required".to_string()))?
             .to_string();
 
-        let schedule = parse_schedule(&arguments)?;
+        let schedule = parse_schedule(&arguments, self.tz)?;
         let delivery = parse_delivery(&arguments)?;
         let payload = parse_payload(&arguments)?;
 
@@ -133,7 +134,7 @@ impl Tool for CronAddTool {
             .and_then(Value::as_bool)
             .unwrap_or(false);
 
-        let now = Utc::now();
+        let now = crate::time::now_local(self.tz);
         let id = CronStore::generate_id();
 
         let mut job = CronJob {
@@ -150,7 +151,7 @@ impl Tool for CronAddTool {
             state: CronJobState::default(),
         };
 
-        initialize_next_run(&mut job, now)
+        initialize_next_run(&mut job, now, self.tz)
             .map_err(|e| ToolError::Execution(format!("failed to compute next run: {e}")))?;
 
         let next_run = job.state.next_run_at;
@@ -167,7 +168,10 @@ impl Tool for CronAddTool {
 
         self.notify.notify_one();
 
-        let next_str = next_run.map_or_else(|| "never".to_string(), |t| t.to_rfc3339());
+        let next_str = next_run.map_or_else(
+            || "never".to_string(),
+            |t| t.format("%Y-%m-%dT%H:%M:%S").to_string(),
+        );
         Ok(ToolResult::success(format!(
             "Created job '{name}' with id {id}. Next run: {next_str}"
         )))
@@ -239,10 +243,10 @@ impl Tool for CronListTool {
                 Some(RunStatus::Skipped) => "skipped",
                 None => "never run",
             };
-            let next = job
-                .state
-                .next_run_at
-                .map_or_else(|| "—".to_string(), |t| t.to_rfc3339());
+            let next = job.state.next_run_at.map_or_else(
+                || "—".to_string(),
+                |t| t.format("%Y-%m-%dT%H:%M:%S").to_string(),
+            );
             let enabled_str = if job.enabled { "enabled" } else { "disabled" };
             lines.push(format!(
                 "  [{enabled_str}] {} ({}) — last: {status} — next: {next}",
@@ -263,13 +267,14 @@ impl Tool for CronListTool {
 pub struct CronUpdateTool {
     store: Arc<Mutex<CronStore>>,
     notify: Arc<Notify>,
+    tz: chrono_tz::Tz,
 }
 
 impl CronUpdateTool {
     /// Create a new `CronUpdateTool`.
     #[must_use]
-    pub fn new(store: Arc<Mutex<CronStore>>, notify: Arc<Notify>) -> Self {
-        Self { store, notify }
+    pub fn new(store: Arc<Mutex<CronStore>>, notify: Arc<Notify>, tz: chrono_tz::Tz) -> Self {
+        Self { store, notify, tz }
     }
 }
 
@@ -302,7 +307,7 @@ impl Tool for CronUpdateTool {
                     },
                     "schedule_at": {
                         "type": "string",
-                        "description": "UTC ISO-8601 datetime, required when schedule_type='at'"
+                        "description": "Local datetime (YYYY-MM-DDTHH:MM:SS), required when schedule_type='at'"
                     },
                     "schedule_every_ms": {
                         "type": "integer",
@@ -318,7 +323,7 @@ impl Tool for CronUpdateTool {
                     },
                     "schedule_tz": {
                         "type": "string",
-                        "description": "Timezone, optional when schedule_type='cron'"
+                        "description": "IANA timezone for cron expression evaluation; defaults to the configured timezone"
                     },
                     "delivery": {"type": "string", "enum": ["user_visible", "background"]},
                     "payload_type": {
@@ -347,7 +352,7 @@ impl Tool for CronUpdateTool {
             .ok_or_else(|| ToolError::InvalidArguments("id is required".to_string()))?
             .to_string();
 
-        let now = Utc::now();
+        let now = crate::time::now_local(self.tz);
 
         {
             let mut store = self.store.lock().await;
@@ -369,9 +374,9 @@ impl Tool for CronUpdateTool {
                 job.delete_after_run = dar;
             }
             if arguments.get("schedule_type").is_some() {
-                job.schedule = parse_schedule(&arguments)?;
+                job.schedule = parse_schedule(&arguments, self.tz)?;
                 // Recompute next_run when schedule changes
-                initialize_next_run(job, now).map_err(|e| {
+                initialize_next_run(job, now, self.tz).map_err(|e| {
                     ToolError::Execution(format!("failed to compute next run: {e}"))
                 })?;
             }
@@ -459,7 +464,7 @@ impl Tool for CronRemoveTool {
 
 // ─── Argument parsers ────────────────────────────────────────────────────────
 
-fn parse_schedule(args: &Value) -> Result<CronSchedule, ToolError> {
+fn parse_schedule(args: &Value, default_tz: chrono_tz::Tz) -> Result<CronSchedule, ToolError> {
     let sched_type = args
         .get("schedule_type")
         .and_then(|v| v.as_str())
@@ -475,9 +480,13 @@ fn parse_schedule(args: &Value) -> Result<CronSchedule, ToolError> {
                         "schedule_at is required when schedule_type='at'".to_string(),
                     )
                 })?;
-            let at = at_str.parse::<chrono::DateTime<Utc>>().map_err(|e| {
-                ToolError::InvalidArguments(format!("invalid 'at' datetime '{at_str}': {e}"))
-            })?;
+            let at = chrono::NaiveDateTime::parse_from_str(at_str, "%Y-%m-%dT%H:%M:%S")
+                .or_else(|_| chrono::NaiveDateTime::parse_from_str(at_str, "%Y-%m-%dT%H:%M"))
+                .map_err(|e| {
+                    ToolError::InvalidArguments(format!(
+                        "invalid 'at' datetime '{at_str}' (expected YYYY-MM-DDTHH:MM:SS or YYYY-MM-DDTHH:MM): {e}"
+                    ))
+                })?;
             Ok(CronSchedule::At { at })
         }
         "every" => {
@@ -511,7 +520,7 @@ fn parse_schedule(args: &Value) -> Result<CronSchedule, ToolError> {
             let tz = args
                 .get("schedule_tz")
                 .and_then(|v| v.as_str())
-                .unwrap_or("UTC")
+                .unwrap_or(default_tz.name())
                 .to_string();
             Ok(CronSchedule::Cron { expr, tz })
         }
@@ -587,12 +596,12 @@ mod tests {
     fn parse_schedule_at_valid() {
         let args = serde_json::json!({
             "schedule_type": "at",
-            "schedule_at": "2026-02-19T12:00:00Z",
+            "schedule_at": "2026-02-19T12:00:00",
             "delivery": "user_visible",
             "payload_type": "system_event",
             "payload_text": "hi"
         });
-        let sched = parse_schedule(&args).unwrap();
+        let sched = parse_schedule(&args, chrono_tz::UTC).unwrap();
         assert!(
             matches!(sched, CronSchedule::At { .. }),
             "should parse At schedule"
@@ -605,7 +614,7 @@ mod tests {
             "schedule_type": "every",
             "schedule_every_ms": 3_600_000
         });
-        let sched = parse_schedule(&args).unwrap();
+        let sched = parse_schedule(&args, chrono_tz::UTC).unwrap();
         assert!(
             matches!(
                 sched,
@@ -624,7 +633,7 @@ mod tests {
             "schedule_type": "cron",
             "schedule_expr": "0 0 9 * * *"
         });
-        let sched = parse_schedule(&args).unwrap();
+        let sched = parse_schedule(&args, chrono_tz::UTC).unwrap();
         assert!(
             matches!(sched, CronSchedule::Cron { .. }),
             "should parse Cron schedule"
@@ -635,7 +644,7 @@ mod tests {
     fn parse_schedule_unknown_type_errors() {
         let args = serde_json::json!({"schedule_type": "unknown"});
         assert!(
-            parse_schedule(&args).is_err(),
+            parse_schedule(&args, chrono_tz::UTC).is_err(),
             "unknown schedule type should error"
         );
     }

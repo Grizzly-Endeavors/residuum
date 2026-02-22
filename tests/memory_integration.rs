@@ -11,7 +11,6 @@
 )]
 mod memory_integration {
     use async_trait::async_trait;
-    use chrono::Utc;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -121,6 +120,7 @@ mod memory_integration {
             Box::new(MockProvider::new(vec![observer_response()])),
             ObserverConfig {
                 threshold_tokens: 100, // Very low threshold for testing
+                tz: chrono_tz::UTC,
             },
         );
 
@@ -130,6 +130,7 @@ mod memory_integration {
             &messages,
             "ironclaw/workspace",
             Visibility::User,
+            chrono_tz::UTC,
         )
         .await
         .unwrap();
@@ -204,6 +205,7 @@ mod memory_integration {
             &more_messages,
             "ironclaw/workspace",
             Visibility::User,
+            chrono_tz::UTC,
         )
         .await
         .unwrap();
@@ -240,6 +242,7 @@ mod memory_integration {
             Box::new(MockProvider::new(vec![reflector_response()])),
             ReflectorConfig {
                 threshold_tokens: 10, // Very low threshold for testing
+                tz: chrono_tz::UTC,
             },
         );
 
@@ -278,9 +281,15 @@ mod memory_integration {
 
         // "Session 1" — add some messages, exit without hitting threshold
         let session1_msgs = make_messages(3);
-        append_recent_messages(&recent_path, &session1_msgs, "ironclaw", Visibility::User)
-            .await
-            .unwrap();
+        append_recent_messages(
+            &recent_path,
+            &session1_msgs,
+            "ironclaw",
+            Visibility::User,
+            chrono_tz::UTC,
+        )
+        .await
+        .unwrap();
 
         // "Session 2" — load and verify messages survived
         let loaded = load_recent_messages(&recent_path).await.unwrap();
@@ -292,9 +301,15 @@ mod memory_integration {
 
         // Add more messages in session 2
         let session2_msgs = make_messages(3);
-        append_recent_messages(&recent_path, &session2_msgs, "ironclaw", Visibility::User)
-            .await
-            .unwrap();
+        append_recent_messages(
+            &recent_path,
+            &session2_msgs,
+            "ironclaw",
+            Visibility::User,
+            chrono_tz::UTC,
+        )
+        .await
+        .unwrap();
 
         let all = load_recent_messages(&recent_path).await.unwrap();
         assert_eq!(all.len(), 6, "should have messages from both sessions");
@@ -348,12 +363,13 @@ mod memory_integration {
             Box::new(MockProvider::new(vec![observer_response()])),
             ObserverConfig {
                 threshold_tokens: 1_000_000,
+                tz: chrono_tz::UTC,
             },
         );
 
         let messages = vec![ironclaw::memory::recent_store::RecentMessage {
             message: Message::user("hello"),
-            timestamp: Utc::now(),
+            timestamp: chrono::Utc::now().naive_utc(),
             project_context: "test".to_string(),
             visibility: Visibility::User,
         }];
@@ -370,14 +386,22 @@ mod memory_integration {
         let memory_dir = dir.path().join("memory");
         tokio::fs::create_dir_all(&memory_dir).await.unwrap();
 
-        ironclaw::memory::daily_log::append_daily_note(&memory_dir, "first observation")
-            .await
-            .unwrap();
-        ironclaw::memory::daily_log::append_daily_note(&memory_dir, "second observation")
-            .await
-            .unwrap();
+        ironclaw::memory::daily_log::append_daily_note(
+            &memory_dir,
+            "first observation",
+            chrono_tz::UTC,
+        )
+        .await
+        .unwrap();
+        ironclaw::memory::daily_log::append_daily_note(
+            &memory_dir,
+            "second observation",
+            chrono_tz::UTC,
+        )
+        .await
+        .unwrap();
 
-        let path = ironclaw::memory::daily_log::daily_log_path(&memory_dir);
+        let path = ironclaw::memory::daily_log::daily_log_path(&memory_dir, chrono_tz::UTC);
         let content = tokio::fs::read_to_string(&path).await.unwrap();
         assert!(
             content.contains("first observation"),

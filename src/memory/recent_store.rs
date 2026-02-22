@@ -6,17 +6,12 @@
 
 use std::path::Path;
 
-use chrono::{DateTime, Utc};
+use chrono::NaiveDateTime;
 use serde::{Deserialize, Serialize};
 
 use crate::error::IronclawError;
 use crate::memory::types::Visibility;
 use crate::models::Message;
-
-/// Provides a default timestamp for backward-compatible deserialization.
-fn default_timestamp() -> DateTime<Utc> {
-    Utc::now()
-}
 
 /// A persisted message with session metadata.
 ///
@@ -29,8 +24,7 @@ pub struct RecentMessage {
     #[serde(flatten)]
     pub message: Message,
     /// When this message was added to the session.
-    #[serde(default = "default_timestamp")]
-    pub timestamp: DateTime<Utc>,
+    pub timestamp: NaiveDateTime,
     /// Workspace context at the time this message was recorded.
     #[serde(default)]
     pub project_context: String,
@@ -115,6 +109,7 @@ async fn save_recent_messages(
 /// Append messages to the recent messages file, wrapping each with metadata.
 ///
 /// Loads existing messages, extends with new wrapped messages, and saves atomically.
+/// The `tz` parameter determines the timezone used for the message timestamp.
 ///
 /// # Errors
 /// Returns an error if loading or saving fails.
@@ -123,12 +118,13 @@ pub async fn append_recent_messages(
     new_messages: &[Message],
     project_context: &str,
     visibility: Visibility,
+    tz: chrono_tz::Tz,
 ) -> Result<(), IronclawError> {
     if new_messages.is_empty() {
         return Ok(());
     }
     let mut existing = load_recent_messages(path).await?;
-    let now = Utc::now();
+    let now = crate::time::now_local(tz);
     existing.extend(new_messages.iter().map(|msg| RecentMessage {
         message: msg.clone(),
         timestamp: now,
@@ -169,9 +165,15 @@ mod tests {
         let path = dir.path().join("recent_messages.json");
 
         let msgs = vec![sample_message("hello"), sample_message("world")];
-        append_recent_messages(&path, &msgs, "test/project", Visibility::User)
-            .await
-            .unwrap();
+        append_recent_messages(
+            &path,
+            &msgs,
+            "test/project",
+            Visibility::User,
+            chrono_tz::UTC,
+        )
+        .await
+        .unwrap();
 
         let loaded = load_recent_messages(&path).await.unwrap();
         assert_eq!(loaded.len(), 2, "should load two messages");
@@ -197,9 +199,15 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("recent_messages.json");
 
-        append_recent_messages(&path, &[sample_message("first")], "ctx", Visibility::User)
-            .await
-            .unwrap();
+        append_recent_messages(
+            &path,
+            &[sample_message("first")],
+            "ctx",
+            Visibility::User,
+            chrono_tz::UTC,
+        )
+        .await
+        .unwrap();
 
         let loaded = load_recent_messages(&path).await.unwrap();
         assert_eq!(loaded.len(), 1, "should have one message");
@@ -210,14 +218,21 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("recent_messages.json");
 
-        append_recent_messages(&path, &[sample_message("first")], "ctx", Visibility::User)
-            .await
-            .unwrap();
+        append_recent_messages(
+            &path,
+            &[sample_message("first")],
+            "ctx",
+            Visibility::User,
+            chrono_tz::UTC,
+        )
+        .await
+        .unwrap();
         append_recent_messages(
             &path,
             &[sample_message("second")],
             "ctx",
             Visibility::Background,
+            chrono_tz::UTC,
         )
         .await
         .unwrap();
@@ -236,9 +251,15 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("recent_messages.json");
 
-        append_recent_messages(&path, &[sample_message("first")], "ctx", Visibility::User)
-            .await
-            .unwrap();
+        append_recent_messages(
+            &path,
+            &[sample_message("first")],
+            "ctx",
+            Visibility::User,
+            chrono_tz::UTC,
+        )
+        .await
+        .unwrap();
         clear_recent_messages(&path).await.unwrap();
 
         let loaded = load_recent_messages(&path).await.unwrap();
@@ -250,7 +271,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("recent_messages.json");
 
-        append_recent_messages(&path, &[], "ctx", Visibility::User)
+        append_recent_messages(&path, &[], "ctx", Visibility::User, chrono_tz::UTC)
             .await
             .unwrap();
         assert!(
@@ -274,9 +295,15 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("recent_messages.json");
 
-        append_recent_messages(&path, &[sample_message("hello")], "ctx", Visibility::User)
-            .await
-            .unwrap();
+        append_recent_messages(
+            &path,
+            &[sample_message("hello")],
+            "ctx",
+            Visibility::User,
+            chrono_tz::UTC,
+        )
+        .await
+        .unwrap();
 
         let messages = load_messages_for_agent(&path).await.unwrap();
         assert_eq!(messages.len(), 1, "should return one message");
@@ -297,6 +324,7 @@ mod tests {
             &[sample_message("system event")],
             "pulse",
             Visibility::Background,
+            chrono_tz::UTC,
         )
         .await
         .unwrap();

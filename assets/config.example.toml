@@ -1,6 +1,16 @@
 # IronClaw example configuration — all options with defaults shown.
 # Copy to config.toml and edit as needed.
 
+# ── Timezone (REQUIRED) ──────────────────────────────────────────────────────
+# IANA timezone name for all timestamps. Affects daily logs, memory
+# observations, cron scheduling, pulse active hours, and all stored data.
+#
+# WARNING: Changing this value after initial setup is NOT recommended.
+# Existing timestamps will not be retroactively converted.
+#
+# Examples: "America/New_York", "Europe/London", "Asia/Tokyo", "UTC"
+timezone = "America/New_York"
+
 # ── Providers (optional, define named connections) ────────────────────────────
 # Each entry specifies a connection to a model API. The key becomes a name you
 # can reference in [models]. The `type` field selects the protocol:

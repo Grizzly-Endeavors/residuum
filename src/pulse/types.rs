@@ -1,4 +1,4 @@
-use chrono::{DateTime, Duration, NaiveTime, Utc};
+use chrono::{Duration, NaiveDateTime, NaiveTime};
 use serde::Deserialize;
 
 use crate::error::IronclawError;
@@ -79,7 +79,7 @@ pub fn parse_schedule_duration(s: &str) -> Result<Duration, IronclawError> {
 
 /// Parse an active-hours window string like "08:00-18:00".
 ///
-/// Returns `(start_time, end_time)` as `NaiveTime` values in UTC.
+/// Returns `(start_time, end_time)` as `NaiveTime` values in the configured timezone.
 ///
 /// # Errors
 ///
@@ -123,7 +123,7 @@ fn parse_naive_time(t: &str, context: &str) -> Result<NaiveTime, IronclawError> 
 ///
 /// Handles overnight windows (e.g. "22:00-06:00") where `start > end`.
 #[must_use]
-pub fn is_within_active_hours(now: DateTime<Utc>, start: NaiveTime, end: NaiveTime) -> bool {
+pub fn is_within_active_hours(now: NaiveDateTime, start: NaiveTime, end: NaiveTime) -> bool {
     let now_time = now.time();
     if start <= end {
         now_time >= start && now_time < end
@@ -137,7 +137,6 @@ pub fn is_within_active_hours(now: DateTime<Utc>, start: NaiveTime, end: NaiveTi
 #[expect(clippy::unwrap_used, reason = "test code uses unwrap for clarity")]
 mod tests {
     use super::*;
-    use chrono::TimeZone;
 
     #[test]
     fn parse_schedule_duration_minutes() {
@@ -228,7 +227,10 @@ mod tests {
 
     #[test]
     fn is_within_active_hours_inside() {
-        let noon = Utc.with_ymd_and_hms(2026, 2, 19, 12, 0, 0).unwrap();
+        let noon = chrono::NaiveDate::from_ymd_opt(2026, 2, 19)
+            .unwrap()
+            .and_hms_opt(12, 0, 0)
+            .unwrap();
         let start = NaiveTime::from_hms_opt(8, 0, 0).unwrap();
         let end = NaiveTime::from_hms_opt(18, 0, 0).unwrap();
         assert!(
@@ -239,7 +241,10 @@ mod tests {
 
     #[test]
     fn is_within_active_hours_outside() {
-        let late = Utc.with_ymd_and_hms(2026, 2, 19, 22, 0, 0).unwrap();
+        let late = chrono::NaiveDate::from_ymd_opt(2026, 2, 19)
+            .unwrap()
+            .and_hms_opt(22, 0, 0)
+            .unwrap();
         let start = NaiveTime::from_hms_opt(8, 0, 0).unwrap();
         let end = NaiveTime::from_hms_opt(18, 0, 0).unwrap();
         assert!(
