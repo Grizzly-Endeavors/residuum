@@ -254,8 +254,9 @@ async fn execute_turn(
             "processing tool calls"
         );
 
-        // Capture any text the model emitted alongside tool calls.
+        // Broadcast any text the model emitted alongside tool calls in real-time.
         if !response.content.is_empty() {
+            display.show_response(&response.content);
             texts.push(response.content.clone());
         }
 

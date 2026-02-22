@@ -178,19 +178,14 @@ mod gateway_integration {
 
     async fn test_handle_connection(socket: axum::extract::ws::WebSocket, state: TestGatewayState) {
         use axum::extract::ws::Message as WsMessage;
-        use std::sync::atomic::AtomicBool;
 
         let (mut ws_tx, mut ws_rx) = socket.split();
-        let verbose = Arc::new(AtomicBool::new(false));
-        let verbose_fwd = Arc::clone(&verbose);
 
         let mut broadcast_rx = state.broadcast_tx.subscribe();
 
+        // Forward all messages to the client (verbose filtering is client-side)
         let fwd_handle = tokio::spawn(async move {
             while let Ok(msg) = broadcast_rx.recv().await {
-                if msg.is_verbose_only() && !verbose_fwd.load(Ordering::Relaxed) {
-                    continue;
-                }
                 let Ok(json) = serde_json::to_string(&msg) else {
                     continue;
                 };
@@ -235,16 +230,16 @@ mod gateway_integration {
                         break;
                     }
                 }
-                ClientMessage::SetVerbose { enabled } => {
-                    verbose.store(enabled, Ordering::Relaxed);
-                }
                 ClientMessage::Ping => {
                     if state.broadcast_tx.send(ServerMessage::Pong).is_err() {
                         break;
                     }
                 }
-                // Reload, Observe, Reflect are not handled in the test gateway stub
-                ClientMessage::Reload | ClientMessage::Observe | ClientMessage::Reflect => {}
+                // SetVerbose (client-side), Reload, Observe, Reflect not handled in test stub
+                ClientMessage::SetVerbose { .. }
+                | ClientMessage::Reload
+                | ClientMessage::Observe
+                | ClientMessage::Reflect => {}
             }
         }
 
@@ -364,56 +359,14 @@ mod gateway_integration {
     }
 
     #[tokio::test]
-    async fn verbose_off_filters_tool_events() {
-        let agent = make_agent(vec!["hello back!".to_string()]);
-        let (_inbound_tx, broadcast_tx, addr) = start_test_gateway(agent).await;
-
-        let (mut tx, mut rx) = connect_client(&addr).await;
-
-        send_msg(
-            &mut tx,
-            &ClientMessage::SendMessage {
-                id: "msg-1".to_string(),
-                content: "hello".to_string(),
-            },
-        )
-        .await;
-
-        let msg1 = recv_msg(&mut rx).await;
-        assert!(
-            matches!(&msg1, ServerMessage::TurnStarted { .. }),
-            "should receive TurnStarted"
-        );
-
-        // Inject a tool_call event — should NOT reach this client (verbose off)
-        assert!(
-            broadcast_tx
-                .send(ServerMessage::ToolCall {
-                    name: "exec".to_string(),
-                    arguments: serde_json::json!({"command": "echo test"}),
-                })
-                .is_ok(),
-            "broadcast send should succeed"
-        );
-
-        // Next message should be Response, not ToolCall
-        let msg2 = recv_msg(&mut rx).await;
-        assert!(
-            matches!(&msg2, ServerMessage::Response { .. }),
-            "verbose-off client should skip ToolCall, got: {msg2:?}"
-        );
-    }
-
-    #[tokio::test]
-    async fn verbose_on_receives_tool_events() {
+    async fn all_clients_receive_tool_events() {
         let agent = make_agent(vec!["done".to_string()]);
         let (_inbound_tx, broadcast_tx, addr) = start_test_gateway(agent).await;
 
-        let (mut tx, mut rx) = connect_client(&addr).await;
+        let (_tx, mut rx) = connect_client(&addr).await;
 
-        send_msg(&mut tx, &ClientMessage::SetVerbose { enabled: true }).await;
-        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
-
+        // All clients receive tool events regardless of verbose setting
+        // (verbose filtering is handled client-side)
         assert!(
             broadcast_tx
                 .send(ServerMessage::ToolCall {
@@ -427,46 +380,16 @@ mod gateway_integration {
         let msg = recv_msg(&mut rx).await;
         assert!(
             matches!(&msg, ServerMessage::ToolCall { .. }),
-            "verbose-on client should receive ToolCall, got: {msg:?}"
+            "client should receive ToolCall (filtering is client-side), got: {msg:?}"
         );
     }
 
     #[tokio::test]
-    async fn verbose_off_does_not_receive_injected_tool_events() {
+    async fn all_clients_receive_tool_results() {
         let agent = make_agent(vec!["done".to_string()]);
         let (_inbound_tx, broadcast_tx, addr) = start_test_gateway(agent).await;
 
-        let (mut tx, mut rx) = connect_client(&addr).await;
-
-        assert!(
-            broadcast_tx
-                .send(ServerMessage::ToolCall {
-                    name: "exec".to_string(),
-                    arguments: serde_json::json!({"command": "echo test"}),
-                })
-                .is_ok(),
-            "broadcast send should succeed"
-        );
-
-        assert!(
-            broadcast_tx
-                .send(ServerMessage::SystemEvent {
-                    source: "test".to_string(),
-                    content: "marker".to_string(),
-                })
-                .is_ok(),
-            "broadcast send should succeed"
-        );
-
-        let msg = recv_msg(&mut rx).await;
-        assert!(
-            matches!(&msg, ServerMessage::SystemEvent { .. }),
-            "verbose-off client should skip ToolCall and get SystemEvent, got: {msg:?}"
-        );
-
-        // Enable verbose and verify tool events arrive
-        send_msg(&mut tx, &ClientMessage::SetVerbose { enabled: true }).await;
-        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+        let (_tx, mut rx) = connect_client(&addr).await;
 
         assert!(
             broadcast_tx
@@ -479,10 +402,10 @@ mod gateway_integration {
             "broadcast send should succeed"
         );
 
-        let msg2 = recv_msg(&mut rx).await;
+        let msg = recv_msg(&mut rx).await;
         assert!(
-            matches!(&msg2, ServerMessage::ToolResult { .. }),
-            "verbose-on client should receive ToolResult, got: {msg2:?}"
+            matches!(&msg, ServerMessage::ToolResult { .. }),
+            "client should receive ToolResult (filtering is client-side), got: {msg:?}"
         );
     }
 

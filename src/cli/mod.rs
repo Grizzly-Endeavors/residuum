@@ -47,6 +47,12 @@ impl CliClient {
         self.verbose = enabled;
     }
 
+    /// Get the formatted user input prompt string.
+    #[must_use]
+    pub fn user_prompt(&self) -> String {
+        self.theme.format_user_prompt()
+    }
+
     /// Print the startup banner to stderr.
     pub fn print_banner(&self) {
         let banner = format!("ironclaw v0.1.0 \u{2014} connected to {}", self.url);
@@ -61,36 +67,36 @@ impl CliClient {
             }
             ServerMessage::ToolCall { name, arguments } => {
                 self.indicator.on_tool_call();
-                let line = format!("[tool: {name}] {arguments}");
-                eprintln!("{}", self.theme.format_tool(&line));
+                if self.verbose {
+                    let line = format!("[tool: {name}] {arguments}");
+                    eprintln!("{}", self.theme.format_tool(&line));
+                }
             }
             ServerMessage::ToolResult {
                 name,
                 output,
                 is_error,
             } => {
-                if *is_error {
-                    let line = format!("[tool: {name} ERROR] {output}");
-                    eprintln!("{}", self.theme.format_error(&line));
-                } else {
-                    let preview = if output.len() > 200 {
-                        format!(
-                            "{}... ({} bytes)",
-                            output.get(..200).unwrap_or(output),
-                            output.len()
-                        )
+                if self.verbose {
+                    if *is_error {
+                        let line = format!("[tool: {name} ERROR] {output}");
+                        eprintln!("{}", self.theme.format_error(&line));
                     } else {
-                        output.clone()
-                    };
-                    let line = format!("[tool: {name}] {preview}");
-                    eprintln!("{}", self.theme.format_tool(&line));
+                        let preview = truncate_preview(output, 200);
+                        let line = if preview.len() < output.len() {
+                            format!("[tool: {name}] {preview}... ({} bytes)", output.len())
+                        } else {
+                            format!("[tool: {name}] {preview}")
+                        };
+                        eprintln!("{}", self.theme.format_tool(&line));
+                    }
                 }
             }
             ServerMessage::Response { content, .. } => {
                 self.indicator.finish();
-                let prefix = self.theme.format_prefix("ironclaw:");
+                let prefix = self.theme.format_prefix("IronClaw:");
                 let rendered = self.renderer.render(content);
-                println!("{prefix} {rendered}");
+                println!("\n{prefix}\n{rendered}");
             }
             ServerMessage::SystemEvent { source, content } => {
                 self.indicator.finish();
@@ -116,6 +122,13 @@ impl CliClient {
     pub fn handle_command(&self, cmd: &SlashCommand) -> CommandAction {
         cmd.execute(&self.url, self.verbose)
     }
+}
+
+/// Truncate a string to at most `max_chars` characters, safe for multi-byte UTF-8.
+fn truncate_preview(s: &str, max_chars: usize) -> &str {
+    s.char_indices()
+        .nth(max_chars)
+        .map_or(s, |(idx, _)| s.get(..idx).unwrap_or(s))
 }
 
 #[cfg(test)]
@@ -152,6 +165,31 @@ mod tests {
             client.handle_command(&SlashCommand::Verbose),
             CommandAction::ToggleVerbose,
             "verbose command should return ToggleVerbose action"
+        );
+    }
+
+    #[test]
+    fn truncate_preview_ascii() {
+        let s = "hello world";
+        assert_eq!(
+            truncate_preview(s, 5),
+            "hello",
+            "should truncate at 5 chars"
+        );
+        assert_eq!(
+            truncate_preview(s, 100),
+            s,
+            "should return full string when under limit"
+        );
+    }
+
+    #[test]
+    fn truncate_preview_multibyte() {
+        let s = "\u{1f600}\u{1f600}\u{1f600}abc";
+        let result = truncate_preview(s, 3);
+        assert_eq!(
+            result, "\u{1f600}\u{1f600}\u{1f600}",
+            "should truncate at char boundary, not byte boundary"
         );
     }
 }

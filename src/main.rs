@@ -79,6 +79,10 @@ async fn run() -> Result<(), IronclawError> {
 /// # Errors
 ///
 /// Returns `IronclawError::Gateway` if the WebSocket connection fails.
+#[expect(
+    clippy::too_many_lines,
+    reason = "CLI connect loop wires up readline, WS, and indicator; splitting would obscure the event flow"
+)]
 async fn run_connect(url: &str, verbose: bool) -> Result<(), IronclawError> {
     use futures_util::{SinkExt, StreamExt};
     use ironclaw::channels::cli::CliReader;
@@ -98,15 +102,21 @@ async fn run_connect(url: &str, verbose: bool) -> Result<(), IronclawError> {
         send_client_message(&mut ws_tx, &ClientMessage::SetVerbose { enabled: true }).await?;
     }
 
+    // Prompt gate: readline blocks after sending input until we signal turn completion
+    let (gate_tx, gate_rx) = std::sync::mpsc::channel::<()>();
+    let prompt = client.user_prompt();
+
     // Spawn readline thread
     let (input_tx, mut input_rx) = tokio::sync::mpsc::channel::<String>(1);
     tokio::task::spawn_blocking(move || match CliReader::new() {
-        Ok(reader) => reader.run(input_tx),
+        Ok(reader) => reader.run(input_tx, prompt, gate_rx),
         Err(e) => eprintln!("error initializing readline: {e}"),
     });
 
     let mut msg_counter: u64 = 0;
     let mut indicator_tick = tokio::time::interval(std::time::Duration::from_millis(300));
+    // Track whether we need to unblock the readline gate after the current turn
+    let mut turn_active = false;
 
     loop {
         tokio::select! {
@@ -132,8 +142,6 @@ async fn run_connect(url: &str, verbose: bool) -> Result<(), IronclawError> {
                         }
                         CommandAction::Reload => {
                             send_client_message(&mut ws_tx, &ClientMessage::Reload).await?;
-                            // The server will broadcast Reloading then drop connections;
-                            // we break here and let the ws_rx arm print the notice.
                         }
                         CommandAction::ObserveRequest => {
                             send_client_message(&mut ws_tx, &ClientMessage::Observe).await?;
@@ -145,6 +153,8 @@ async fn run_connect(url: &str, verbose: bool) -> Result<(), IronclawError> {
                         CommandAction::PrintOutput(text) => eprintln!("{text}"),
                         CommandAction::None => {}
                     }
+                    // Slash commands don't trigger agent turns; unblock prompt immediately
+                    gate_tx.send(()).ok();
                     continue;
                 }
 
@@ -160,6 +170,7 @@ async fn run_connect(url: &str, verbose: bool) -> Result<(), IronclawError> {
                     eprintln!("connection closed");
                     break;
                 }
+                turn_active = true;
             }
 
             // Gateway → display to user
@@ -186,6 +197,19 @@ async fn run_connect(url: &str, verbose: bool) -> Result<(), IronclawError> {
                     Ok(ServerMessage::Reloading) => {
                         eprintln!("server is reloading, reconnect when ready");
                         break;
+                    }
+                    Ok(ref server_msg @ ServerMessage::Response { ref reply_to, .. })
+                        if turn_active && !reply_to.is_empty() =>
+                    {
+                        client.display(server_msg);
+                        // Final response (non-empty reply_to) ends the turn
+                        turn_active = false;
+                        gate_tx.send(()).ok();
+                    }
+                    Ok(ref server_msg @ ServerMessage::Error { .. }) if turn_active => {
+                        client.display(server_msg);
+                        turn_active = false;
+                        gate_tx.send(()).ok();
                     }
                     Ok(server_msg) => client.display(&server_msg),
                     Err(e) => eprintln!("warning: failed to parse server message: {e}"),

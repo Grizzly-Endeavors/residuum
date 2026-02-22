@@ -1,11 +1,10 @@
 //! WebSocket gateway server and main event loop.
 //!
 //! Accepts WebSocket connections from multiple clients and routes messages
-//! through a single agent instance. All clients see responses and system
-//! events; tool events are only forwarded to clients with verbose mode on.
+//! through a single agent instance. All messages are forwarded to all clients;
+//! verbose filtering is handled client-side.
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
 
 use axum::extract::State;
 use axum::extract::ws::{Message as WsMessage, WebSocket};
@@ -384,24 +383,16 @@ async fn ws_handler(
 /// Handle a single WebSocket connection.
 ///
 /// Splits the socket into read/write halves. A forwarding task reads from the
-/// broadcast channel and sends events to the client (filtering tool events
-/// based on the per-connection verbose flag). The read loop processes incoming
-/// client messages.
+/// broadcast channel and sends all events to the client. Verbose filtering
+/// is handled client-side. The read loop processes incoming client messages.
 async fn handle_connection(socket: WebSocket, state: GatewayState) {
     let (mut ws_tx, mut ws_rx) = socket.split();
-    let verbose = Arc::new(AtomicBool::new(false));
-    let verbose_fwd = Arc::clone(&verbose);
 
     let mut broadcast_rx = state.broadcast_tx.subscribe();
 
     // Forwarding task: broadcast → WebSocket client
     let fwd_handle = tokio::spawn(async move {
         while let Ok(msg) = broadcast_rx.recv().await {
-            // Filter tool events for non-verbose clients
-            if msg.is_verbose_only() && !verbose_fwd.load(Ordering::Relaxed) {
-                continue;
-            }
-
             let Ok(json) = serde_json::to_string(&msg) else {
                 tracing::warn!("failed to serialize server message");
                 continue;
@@ -448,9 +439,8 @@ async fn handle_connection(socket: WebSocket, state: GatewayState) {
                     break;
                 }
             }
-            ClientMessage::SetVerbose { enabled } => {
-                verbose.store(enabled, Ordering::Relaxed);
-                tracing::debug!(enabled, "client set verbose mode");
+            ClientMessage::SetVerbose { .. } => {
+                // Verbose filtering is handled client-side; acknowledge silently.
             }
             ClientMessage::Ping => {
                 // Send pong through broadcast (all clients will filter; only this

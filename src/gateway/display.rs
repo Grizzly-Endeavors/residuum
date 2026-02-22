@@ -42,4 +42,14 @@ impl TurnDisplay for BroadcastDisplay {
             tracing::trace!("no broadcast receivers for tool_result event");
         }
     }
+
+    fn show_response(&self, content: &str) {
+        let msg = ServerMessage::Response {
+            reply_to: String::new(),
+            content: content.to_string(),
+        };
+        if self.tx.send(msg).is_err() {
+            tracing::trace!("no broadcast receivers for intermediate response");
+        }
+    }
 }

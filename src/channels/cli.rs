@@ -2,9 +2,7 @@
 
 use rustyline::DefaultEditor;
 use rustyline::error::ReadlineError;
-use serde_json::Value;
 
-use super::{AgentResponse, TurnDisplay};
 use crate::error::IronclawError;
 
 /// Reads user input interactively using rustyline.
@@ -28,15 +26,25 @@ impl CliReader {
 
     /// Read lines from stdin and send them through `tx`.
     ///
+    /// After each line is sent, blocks on `gate_rx` until the main loop
+    /// signals that the prompt should reappear (after a turn completes or
+    /// a slash command is handled). This prevents the prompt from appearing
+    /// while the agent is still responding.
+    ///
     /// Exits when EOF, `:q`, or `:quit` is entered, or when `tx` is closed.
     /// Ctrl+C cancels the current line and prompts again.
     #[expect(
         clippy::needless_pass_by_value,
         reason = "Sender must be owned so dropping it when this fn returns closes the channel"
     )]
-    pub fn run(mut self, tx: tokio::sync::mpsc::Sender<String>) {
+    pub fn run(
+        mut self,
+        tx: tokio::sync::mpsc::Sender<String>,
+        prompt: String,
+        gate_rx: std::sync::mpsc::Receiver<()>,
+    ) {
         loop {
-            match self.editor.readline("you> ") {
+            match self.editor.readline(&prompt) {
                 Ok(line) => {
                     let trimmed = line.trim().to_string();
                     if trimmed.is_empty() {
@@ -48,6 +56,10 @@ impl CliReader {
                     if tx.blocking_send(trimmed).is_err() {
                         return; // main task exited
                     }
+                    // Wait for the main loop to signal that the turn is done
+                    if gate_rx.recv().is_err() {
+                        return; // main task dropped the sender
+                    }
                 }
                 Err(ReadlineError::Eof) => return,
                 Err(ReadlineError::Interrupted) => {
@@ -58,51 +70,6 @@ impl CliReader {
                     return;
                 }
             }
-        }
-    }
-}
-
-/// Displays agent responses and tool activity to the user.
-///
-/// Implements `TurnDisplay` for use with `Agent::process_message`.
-pub struct CliDisplay {
-    agent_name: String,
-}
-
-impl CliDisplay {
-    /// Create a new `CliDisplay` with the given agent name for response prefix.
-    #[must_use]
-    pub fn new(agent_name: impl Into<String>) -> Self {
-        Self {
-            agent_name: agent_name.into(),
-        }
-    }
-
-    /// Display an agent response to the user.
-    pub fn show_response(&self, response: &AgentResponse) {
-        println!("{}: {}", self.agent_name, response.content);
-    }
-}
-
-impl TurnDisplay for CliDisplay {
-    fn show_tool_call(&self, name: &str, arguments: &Value) {
-        eprintln!("[tool: {name}] {arguments}");
-    }
-
-    fn show_tool_result(&self, name: &str, output: &str, is_error: bool) {
-        if is_error {
-            eprintln!("[tool: {name} ERROR] {output}");
-        } else {
-            let preview = if output.len() > 200 {
-                format!(
-                    "{}... ({} bytes)",
-                    output.get(..200).unwrap_or(output),
-                    output.len()
-                )
-            } else {
-                output.to_string()
-            };
-            eprintln!("[tool: {name}] {preview}");
         }
     }
 }

@@ -85,14 +85,6 @@ pub enum ServerMessage {
     },
 }
 
-impl ServerMessage {
-    /// Whether this message is only sent to clients with verbose mode enabled.
-    #[must_use]
-    pub fn is_verbose_only(&self) -> bool {
-        matches!(self, Self::ToolCall { .. } | Self::ToolResult { .. })
-    }
-}
-
 #[cfg(test)]
 #[expect(clippy::unwrap_used, reason = "test code uses unwrap for clarity")]
 mod tests {
@@ -157,49 +149,6 @@ mod tests {
     }
 
     #[test]
-    fn is_verbose_only_tool_call() {
-        let msg = ServerMessage::ToolCall {
-            name: "exec".to_string(),
-            arguments: serde_json::json!({}),
-        };
-        assert!(msg.is_verbose_only(), "ToolCall should be verbose-only");
-    }
-
-    #[test]
-    fn is_verbose_only_tool_result() {
-        let msg = ServerMessage::ToolResult {
-            name: "exec".to_string(),
-            output: "ok".to_string(),
-            is_error: false,
-        };
-        assert!(msg.is_verbose_only(), "ToolResult should be verbose-only");
-    }
-
-    #[test]
-    fn is_verbose_only_response() {
-        let msg = ServerMessage::Response {
-            reply_to: "id".to_string(),
-            content: "hi".to_string(),
-        };
-        assert!(
-            !msg.is_verbose_only(),
-            "Response should not be verbose-only"
-        );
-    }
-
-    #[test]
-    fn is_verbose_only_system_event() {
-        let msg = ServerMessage::SystemEvent {
-            source: "cron".to_string(),
-            content: "job done".to_string(),
-        };
-        assert!(
-            !msg.is_verbose_only(),
-            "SystemEvent should not be verbose-only"
-        );
-    }
-
-    #[test]
     fn server_message_serialize_error() {
         let msg = ServerMessage::Error {
             reply_to: Some("id-1".to_string()),
@@ -226,15 +175,6 @@ mod tests {
         assert_eq!(
             json, r#"{"type":"reloading"}"#,
             "reloading should serialize cleanly"
-        );
-    }
-
-    #[test]
-    fn is_verbose_only_reloading() {
-        let msg = ServerMessage::Reloading;
-        assert!(
-            !msg.is_verbose_only(),
-            "Reloading should not be verbose-only"
         );
     }
 
@@ -269,14 +209,6 @@ mod tests {
             json.contains("\"message\":\"observed successfully\""),
             "should have message field"
         );
-    }
-
-    #[test]
-    fn is_verbose_only_notice() {
-        let msg = ServerMessage::Notice {
-            message: "done".to_string(),
-        };
-        assert!(!msg.is_verbose_only(), "Notice should not be verbose-only");
     }
 
     #[test]

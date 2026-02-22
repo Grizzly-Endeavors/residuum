@@ -28,11 +28,11 @@ impl MarkdownRenderer {
     }
 
     fn styled_skin() -> termimad::MadSkin {
-        use termimad::crossterm::style::Color;
+        use termimad::crossterm::style::{Attribute, Color};
 
         let mut skin = termimad::MadSkin::default();
-        skin.bold.set_fg(Color::White);
-        skin.italic.set_fg(Color::Cyan);
+        skin.bold.add_attr(Attribute::Bold);
+        skin.italic.add_attr(Attribute::Italic);
         skin.inline_code.set_fg(Color::Green);
         skin.code_block.set_fg(Color::Green);
         // Headings in cyan bold
@@ -43,7 +43,8 @@ impl MarkdownRenderer {
 }
 
 fn terminal_width() -> usize {
-    termimad::terminal_size().0 as usize
+    let w = termimad::terminal_size().0 as usize;
+    w.max(80)
 }
 
 #[cfg(test)]

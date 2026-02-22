@@ -78,6 +78,24 @@ impl Theme {
         }
     }
 
+    /// Format the user input prompt with bold styling.
+    ///
+    /// Returns the prompt string with ANSI escape wrapping (`\x01`/`\x02`) for
+    /// correct readline width calculation.
+    #[must_use]
+    pub fn format_user_prompt(&self) -> String {
+        if self.color_enabled {
+            // \x01 and \x02 bracket non-printing chars for readline width calculation
+            format!(
+                "\x01{bold}\x02You: \x01{reset}\x02",
+                bold = "\x1b[1;36m",
+                reset = "\x1b[0m",
+            )
+        } else {
+            "You: ".to_string()
+        }
+    }
+
     /// Format a memory operation notice in bright green.
     #[must_use]
     pub fn format_notice(&self, text: &str) -> String {
@@ -99,8 +117,8 @@ mod tests {
             color_enabled: false,
         };
         assert_eq!(
-            theme.format_prefix("ironclaw:"),
-            "ironclaw:",
+            theme.format_prefix("IronClaw:"),
+            "IronClaw:",
             "plain theme should return unmodified text"
         );
         assert_eq!(
@@ -125,10 +143,38 @@ mod tests {
         let theme = Theme {
             color_enabled: true,
         };
-        let styled = theme.format_prefix("ironclaw:");
+        let styled = theme.format_prefix("IronClaw:");
         assert!(
             !styled.is_empty(),
             "colored theme should return non-empty string"
+        );
+    }
+
+    #[test]
+    fn format_user_prompt_no_color() {
+        let theme = Theme {
+            color_enabled: false,
+        };
+        assert_eq!(
+            theme.format_user_prompt(),
+            "You: ",
+            "plain theme should return plain prompt"
+        );
+    }
+
+    #[test]
+    fn format_user_prompt_with_color() {
+        let theme = Theme {
+            color_enabled: true,
+        };
+        let prompt = theme.format_user_prompt();
+        assert!(
+            prompt.contains("You: "),
+            "colored prompt should contain 'You: '"
+        );
+        assert!(
+            prompt.contains('\x01'),
+            "colored prompt should have readline escape markers"
         );
     }
 

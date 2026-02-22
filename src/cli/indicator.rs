@@ -41,7 +41,7 @@ impl WorkingIndicator {
     /// Advance the dot animation and redraw. Called on a timer tick.
     pub fn tick(&mut self) {
         if self.active {
-            self.dot_phase = (self.dot_phase + 1) % 3;
+            self.dot_phase = (self.dot_phase + 1) % 4;
             self.redraw();
         }
     }
@@ -50,8 +50,7 @@ impl WorkingIndicator {
     pub fn finish(&mut self) {
         if self.active {
             self.active = false;
-            // Overwrite with spaces and return to line start
-            eprint!("\r{}\r", " ".repeat(40));
+            eprint!("\r\x1b[2K");
             drop(std::io::stderr().flush());
         }
     }
@@ -64,8 +63,9 @@ impl WorkingIndicator {
 
     fn redraw(&self) {
         let dots = match self.dot_phase {
-            0 => ".  ",
-            1 => ".. ",
+            0 => "   ",
+            1 => ".  ",
+            2 => ".. ",
             _ => "...",
         };
         let tool_suffix = if self.tool_count > 0 {
@@ -73,7 +73,7 @@ impl WorkingIndicator {
         } else {
             String::new()
         };
-        eprint!("\rWorking{dots}{tool_suffix}");
+        eprint!("\x1b[2K\rWorking{dots}{tool_suffix}");
         drop(std::io::stderr().flush());
     }
 }
@@ -132,6 +132,8 @@ mod tests {
         assert_eq!(ind.dot_phase, 1, "should advance to phase 1");
         ind.tick();
         assert_eq!(ind.dot_phase, 2, "should advance to phase 2");
+        ind.tick();
+        assert_eq!(ind.dot_phase, 3, "should advance to phase 3");
         ind.tick();
         assert_eq!(ind.dot_phase, 0, "should wrap back to phase 0");
     }

@@ -3,16 +3,9 @@
 pub mod cli;
 pub mod null;
 
-/// A response from the agent to display to the user.
-#[derive(Debug, Clone)]
-pub struct AgentResponse {
-    /// The text content of the agent's response.
-    pub content: String,
-}
-
 /// Trait for displaying agent tool activity during a turn.
 ///
-/// Implemented by `CliDisplay` for interactive use and `NullDisplay`
+/// Implemented by `BroadcastDisplay` for gateway use and `NullDisplay`
 /// for background pulse/cron turns that run without user interaction.
 pub trait TurnDisplay: Send + Sync {
     /// Display a tool call being made.
@@ -20,4 +13,7 @@ pub trait TurnDisplay: Send + Sync {
 
     /// Display the result of a tool call.
     fn show_tool_result(&self, name: &str, output: &str, is_error: bool);
+
+    /// Display an intermediate text response emitted alongside tool calls.
+    fn show_response(&self, content: &str);
 }
