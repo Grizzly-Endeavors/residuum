@@ -47,40 +47,43 @@ fn build_system_content(
     let mut parts = Vec::new();
 
     if let Some(soul) = &identity.soul {
-        parts.push(soul.clone());
+        parts.push(format!("<SOUL.md>\n{soul}\n</SOUL.md>"));
     }
 
     if let Some(identity_md) = &identity.identity {
-        parts.push(identity_md.clone());
+        parts.push(format!("<IDENTITY.md>\n{identity_md}\n</IDENTITY.md>"));
     }
 
     if let Some(agents) = &identity.agents {
-        parts.push(agents.clone());
+        parts.push(format!("<AGENTS.md>\n{agents}\n</AGENTS.md>"));
     }
 
     if let Some(tools_md) = &identity.tools {
-        parts.push(tools_md.clone());
+        parts.push(format!("<TOOLS.md>\n{tools_md}\n</TOOLS.md>"));
     }
 
     // List available tools
     let tool_defs = tools.definitions();
     if !tool_defs.is_empty() {
         let tool_names: Vec<&str> = tool_defs.iter().map(|t| t.name.as_str()).collect();
-        parts.push(format!("## Available Tools\n\n{}", tool_names.join(", ")));
+        parts.push(format!(
+            "<AVAILABLE_TOOLS>\n{}\n</AVAILABLE_TOOLS>",
+            tool_names.join(", ")
+        ));
     }
 
     if let Some(user) = &identity.user {
-        parts.push(user.clone());
+        parts.push(format!("<USER.md>\n{user}\n</USER.md>"));
     }
 
     if let Some(memory) = &identity.memory {
-        parts.push(memory.clone());
+        parts.push(format!("<MEMORY.md>\n{memory}\n</MEMORY.md>"));
     }
 
     if let Some(obs) = observations
         && !obs.is_empty()
     {
-        parts.push(format!("## Observation Log\n\n{obs}"));
+        parts.push(format!("<OBSERVATION_LOG>\n{obs}\n</OBSERVATION_LOG>"));
     }
 
     parts.join("\n\n")
@@ -189,8 +192,12 @@ mod tests {
         let content = build_system_content(&identity, &tools, Some(observations));
 
         assert!(
-            content.contains("## Observation Log"),
-            "should have observation log header"
+            content.contains("<OBSERVATION_LOG>"),
+            "should have observation log tag"
+        );
+        assert!(
+            content.contains("</OBSERVATION_LOG>"),
+            "should have closing observation log tag"
         );
         assert!(
             content.contains("user prefers concise output"),
@@ -205,7 +212,7 @@ mod tests {
 
         let content = build_system_content(&identity, &tools, Some(""));
         assert!(
-            !content.contains("Observation Log"),
+            !content.contains("OBSERVATION_LOG"),
             "empty observations should be skipped"
         );
     }
@@ -217,8 +224,45 @@ mod tests {
 
         let content = build_system_content(&identity, &tools, None);
         assert!(
-            !content.contains("Observation Log"),
+            !content.contains("OBSERVATION_LOG"),
             "None observations should be skipped"
+        );
+    }
+
+    #[test]
+    fn sections_wrapped_in_xml_tags() {
+        let identity = IdentityFiles {
+            soul: Some("I am the soul.".to_string()),
+            memory: Some("User prefers Rust.".to_string()),
+            ..IdentityFiles::default()
+        };
+        let tools = ToolRegistry::new();
+        let observations = "some observation";
+        let content = build_system_content(&identity, &tools, Some(observations));
+
+        assert!(
+            content.contains("<SOUL.md>\nI am the soul.\n</SOUL.md>"),
+            "soul should be wrapped in SOUL.md tags"
+        );
+        assert!(
+            content.contains("<MEMORY.md>\nUser prefers Rust.\n</MEMORY.md>"),
+            "memory should be wrapped in MEMORY.md tags"
+        );
+        assert!(
+            content.contains("<OBSERVATION_LOG>\nsome observation\n</OBSERVATION_LOG>"),
+            "observations should be wrapped in OBSERVATION_LOG tags"
+        );
+
+        // Memory and observation log should be clearly separate sections
+        let memory_close = content.find("</MEMORY.md>");
+        let obs_open = content.find("<OBSERVATION_LOG>");
+        assert!(
+            memory_close.is_some() && obs_open.is_some(),
+            "both sections should exist"
+        );
+        assert!(
+            memory_close < obs_open,
+            "memory should close before observation log opens"
         );
     }
 }
