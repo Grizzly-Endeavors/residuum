@@ -24,6 +24,7 @@ pub struct RecentMessage {
     #[serde(flatten)]
     pub message: Message,
     /// When this message was recorded.
+    #[serde(with = "crate::time::minute_format")]
     pub timestamp: NaiveDateTime,
     /// Workspace context at the time this message was recorded.
     #[serde(default)]

@@ -480,11 +480,10 @@ fn parse_schedule(args: &Value, default_tz: chrono_tz::Tz) -> Result<CronSchedul
                         "schedule_at is required when schedule_type='at'".to_string(),
                     )
                 })?;
-            let at = chrono::NaiveDateTime::parse_from_str(at_str, "%Y-%m-%dT%H:%M:%S")
-                .or_else(|_| chrono::NaiveDateTime::parse_from_str(at_str, "%Y-%m-%dT%H:%M"))
-                .map_err(|e| {
+            let at =
+                chrono::NaiveDateTime::parse_from_str(at_str, "%Y-%m-%dT%H:%M").map_err(|e| {
                     ToolError::InvalidArguments(format!(
-                        "invalid 'at' datetime '{at_str}' (expected YYYY-MM-DDTHH:MM:SS or YYYY-MM-DDTHH:MM): {e}"
+                        "invalid 'at' datetime '{at_str}' (expected YYYY-MM-DDTHH:MM): {e}"
                     ))
                 })?;
             Ok(CronSchedule::At { at })
@@ -596,7 +595,7 @@ mod tests {
     fn parse_schedule_at_valid() {
         let args = serde_json::json!({
             "schedule_type": "at",
-            "schedule_at": "2026-02-19T12:00:00",
+            "schedule_at": "2026-02-19T12:00",
             "delivery": "user_visible",
             "payload_type": "system_event",
             "payload_text": "hi"

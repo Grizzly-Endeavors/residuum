@@ -31,11 +31,6 @@ pub(crate) fn parse_minute_timestamp(ts: &str, tz: chrono_tz::Tz) -> chrono::Nai
     if let Ok(naive) = chrono::NaiveDateTime::parse_from_str(ts, "%Y-%m-%dT%H:%M") {
         return naive;
     }
-    // Legacy fallback: strip trailing Z if present
-    let without_z = ts.trim_end_matches('Z');
-    if let Ok(naive) = chrono::NaiveDateTime::parse_from_str(without_z, "%Y-%m-%dT%H:%M") {
-        return naive;
-    }
     tracing::warn!(
         timestamp = ts,
         "failed to parse timestamp, using current time"

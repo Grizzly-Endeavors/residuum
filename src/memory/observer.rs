@@ -488,18 +488,6 @@ mod tests {
     }
 
     #[test]
-    fn parse_observer_response_timestamp_legacy_z_fallback() {
-        let response = ModelResponse::new(
-            r#"[{"content": "test obs", "timestamp": "2026-02-21T14:30Z", "visibility": "user"}]"#
-                .to_string(),
-            vec![],
-        );
-        let extractions = parse_observer_response(&response, chrono_tz::UTC).unwrap();
-        let ts = extractions.first().unwrap().timestamp;
-        assert_eq!(ts.format("%Y-%m-%dT%H:%M").to_string(), "2026-02-21T14:30");
-    }
-
-    #[test]
     fn parse_observer_response_background_visibility() {
         let response = ModelResponse::new(
             r#"[{"content": "cron job ran", "timestamp": "2026-02-21T03:00", "visibility": "background"}]"#

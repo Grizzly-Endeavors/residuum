@@ -45,6 +45,7 @@ pub enum Visibility {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Observation {
     /// When this observation was created.
+    #[serde(with = "crate::time::minute_format")]
     pub timestamp: NaiveDateTime,
     /// Project or workspace context at the time of observation.
     pub project_context: String,

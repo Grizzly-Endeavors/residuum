@@ -17,8 +17,10 @@ pub struct CronJob {
     /// Delete the job record after it successfully runs once.
     pub delete_after_run: bool,
     /// When the job was created.
+    #[serde(with = "crate::time::minute_format")]
     pub created_at: NaiveDateTime,
     /// When the job was last modified.
+    #[serde(with = "crate::time::minute_format")]
     pub updated_at: NaiveDateTime,
     /// When and how often to run.
     pub schedule: CronSchedule,
@@ -37,6 +39,7 @@ pub enum CronSchedule {
     /// Fire once at a specific local datetime.
     At {
         /// Local datetime to fire.
+        #[serde(with = "crate::time::minute_format")]
         at: NaiveDateTime,
     },
     /// Fire repeatedly on a fixed interval anchored to an epoch.
@@ -87,8 +90,10 @@ pub enum CronPayload {
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct CronJobState {
     /// When this job is next scheduled to run.
+    #[serde(default, with = "crate::time::minute_format_opt")]
     pub next_run_at: Option<NaiveDateTime>,
     /// When this job last ran.
+    #[serde(default, with = "crate::time::minute_format_opt")]
     pub last_run_at: Option<NaiveDateTime>,
     /// Status of the last run.
     pub last_status: Option<RunStatus>,
