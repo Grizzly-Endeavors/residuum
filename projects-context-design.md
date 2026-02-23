@@ -22,13 +22,14 @@ Users shouldn't have to manually switch contexts. The agent should recognize fro
 
 Every project entry is a folder with a consistent internal layout. The entry is self-describing — there's no central registry. The agent discovers available contexts by scanning the `projects/` directory tree.
 
-### context.yml
+### PROJECT.md
 
-Each entry's root contains a `context.yml` that defines what the entry is and what capabilities it carries.
+Each entry's root contains a `PROJECT.md` that defines what the entry is, what capabilities it carries, and any overview content the user wants the agent to know when entering this context. It uses YAML frontmatter for structured metadata and a markdown body for the human-maintained overview — the same format as `SKILL.md`.
 
 **Active project example:**
 
-```yaml
+```markdown
+---
 name: aerohive-setup
 description: "AeroHive AP network configuration using Ansible"
 status: active
@@ -43,19 +44,26 @@ mcp_servers:
   - name: filesystem
     command: "mcp-server-filesystem"
     args: ["/home/user/ansible/aerohive"]
+---
+
+Configuring 12 APs across the office using Ansible. APs use HiveManager CLI,
+not aoscli. Per-AP configuration lives in host_vars/ files. Primary contact
+for physical access is facilities@example.com.
 ```
 
 **Archived entry example:**
 
-```yaml
+```markdown
+---
 name: proxmox-migration
 description: "Migration from Proxmox to Docker-based homelab"
 status: archived
 created: 2025-11-01
 archived: 2026-02-08
+---
 ```
 
-#### context.yml fields
+#### Frontmatter fields
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
@@ -64,9 +72,11 @@ archived: 2026-02-08
 | `status` | string | yes | `active` or `archived` |
 | `created` | date | yes | When the entry was created |
 | `tools` | list | no | Tools to load when this context activates |
-| `skills` | list | no | Skills to load when this context activates |
+| `skills` | list | no | Skills to activate when this context activates |
 | `mcp_servers` | list | no | MCP servers to spin up when this context activates |
 | `archived` | date | no | When the entry was archived (archive entries only) |
+
+The body of `PROJECT.md` is an overview the agent maintains and reads automatically when the project activates — purpose, current state, key constraints, anything worth surfacing on entry. The agent updates it as the project evolves. Users can edit it directly if they want to guide or correct the agent's understanding.
 
 ### Subfolder conventions
 
@@ -74,15 +84,15 @@ archived: 2026-02-08
 
 Agent-maintained memories, decisions, and observations specific to this context. This is the agent's internal knowledge about the entry — what it's learned, what decisions were made, what the current state looks like.
 
-The agent writes here freely. This is the scoped equivalent of daily memory logs, but tied to a specific project.
+The agent writes here freely. This is the scoped equivalent of daily memory logs, but tied to a specific project. Users can read and edit these files to guide or correct the agent's understanding.
 
 Examples: `notes/decisions.md`, `notes/current-state.md`, `notes/blockers.md`
 
+`notes/log.md` is reserved for the `project_log` tool (see below) and should not be written to directly.
+
 #### references/
 
-User-added external material. Configs, documentation, PDFs, images, code snippets, links — anything the user wants the agent to have access to within this context.
-
-The agent reads from here but treats it as source material, not something it modifies. Users can add, remove, or update files at any time.
+External material relevant to the project — configs, documentation, PDFs, images, code snippets, links. Both the agent and the user can add files here. Users commonly drop in source material (job postings, topology diagrams, vendor configs) that the agent can't fetch itself. The agent can also save reference material it retrieves or generates.
 
 Examples: `references/topology.png`, `references/ap01.conf`, `references/job-posting.pdf`
 
@@ -108,8 +118,11 @@ Examples: `workspace/playbooks/`, `workspace/site/`, `workspace/draft-v2.md`
 │   └── YYYY-MM-DD.md
 ├── projects/
 │   ├── aerohive-setup/
-│   │   ├── context.yml
+│   │   ├── PROJECT.md          ← frontmatter + overview body
 │   │   ├── notes/
+│   │   │   ├── log/            ← written by project_deactivate (required)
+│   │   │   │   └── YYYY-MM/
+│   │   │   │       └── log-DD.md
 │   │   │   ├── decisions.md
 │   │   │   └── current-state.md
 │   │   ├── references/
@@ -120,7 +133,7 @@ Examples: `workspace/playbooks/`, `workspace/site/`, `workspace/draft-v2.md`
 │   │       └── playbooks/
 │   │           └── configure-aps.yml
 │   └── digi-application/
-│       ├── context.yml
+│       ├── PROJECT.md
 │       ├── notes/
 │       │   └── interview-prep.md
 │       ├── references/
@@ -129,7 +142,7 @@ Examples: `workspace/playbooks/`, `workspace/site/`, `workspace/draft-v2.md`
 │           └── resume-tailored.md
 ├── archive/
 │   └── proxmox-migration/
-│       ├── context.yml
+│       ├── PROJECT.md
 │       ├── notes/
 │       │   ├── decisions.md
 │       │   └── final-state.md
@@ -153,12 +166,12 @@ Examples: `workspace/playbooks/`, `workspace/site/`, `workspace/draft-v2.md`
 There is no central registry. The agent discovers available contexts by scanning the workspace:
 
 1. Walk the `projects/` directory.
-2. For each subfolder, read `context.yml`.
+2. For each subfolder, read `PROJECT.md` and parse the YAML frontmatter.
 3. Build an in-memory index of available entries with their names, descriptions, statuses, and capability lists.
 
 This scan happens at gateway startup and on filesystem changes (consistent with existing config hot-reload behavior).
 
-The lightweight nature of context.yml (a few lines of YAML each) means scanning is cheap. The agent always knows what projects exist without loading their full contents.
+The frontmatter is a few lines of YAML each, so scanning is cheap. The body of `PROJECT.md` is not loaded during scanning — only the frontmatter. The agent always knows what projects exist without loading their full contents.
 
 ### Activation
 
@@ -167,7 +180,7 @@ The lightweight nature of context.yml (a few lines of YAML each) means scanning 
 The agent autonomously decides which project to activate based on the current conversation.
 
 **Active context** means:
-- The entry's `context.yml` metadata is available.
+- `PROJECT.md` is read and included in context — the frontmatter metadata plus the agent-maintained overview body.
 - Files from `notes/` are accessible (agent's knowledge about this project).
 - Files from `references/` are accessible (user-provided material).
 - Files from `workspace/` are accessible.
@@ -186,13 +199,30 @@ The agent uses conversational cues to decide activation:
 
 The active project deactivates when the agent determines it's no longer relevant to the current conversation. Files are simply not included in the next context assembly, and tools/skills/MCP servers exclusive to that context are unloaded. Nothing is deleted or modified.
 
+**Gateway-enforced requirement:** `project_deactivate` requires a `log` field containing a non-empty session summary. The gateway writes the entry to the project's dated log file and then performs the deactivation. A call without a `log` value is rejected. This is enforced by the gateway at the tool call level — it is not a prompt instruction the agent can reason around.
+
+### project_log
+
+Project logging uses the same date-based file structure as `daily_log`. Entries are written to `notes/log/YYYY-MM/log-DD.md` within the active project's folder — one file per day, accumulated across sessions. The format is identical to daily logs: a `**HH:MM**` timestamp prefix per entry, with the date as a section header.
+
+```markdown
+# 2026-02-23
+
+- **14:32** Reviewed ap01.conf — channel assignment conflicts with ap03 on 5GHz band. Updated notes/current-state.md with findings.
+- **14:45** Generated configure-aps.yml playbook targeting host_vars layout. Needs testing against staging AP.
+```
+
+Rather than a separate `project_log` tool, logging is integrated directly into `project_deactivate` as a required `log` field. The gateway writes the log entry and then performs the deactivation atomically. A `project_deactivate` call with a missing or empty `log` field is rejected. This keeps the session record requirement without adding an extra tool call round-trip.
+
+The `notes/log/` subtree is reserved for this purpose and should not be written to via the `write` tool directly.
+
 ### Tool auto-loading
 
 Projects can specify `tools`, `skills`, and `mcp_servers` in their context.yml. When the entry activates, those capabilities become available. When it deactivates, tools not needed by any other active context are unloaded.
 
 **Tool resolution**: When a project is active, its tools are available. Deactivating a project removes tools that no other active context still needs.
 
-**Security note**: Tool auto-loading follows the same trust model as the rest of the workspace — the user controls context.yml and can restrict which entries carry tool permissions. The agent can suggest adding tools to an entry, but the file is user-editable.
+**Security note**: Tool auto-loading follows the same trust model as the rest of the workspace — the agent manages `PROJECT.md` but the user can edit it directly to restrict or adjust which tool permissions an entry carries.
 
 ---
 
@@ -203,7 +233,7 @@ Projects can specify `tools`, `skills`, and `mcp_servers` in their context.yml. 
 When the agent determines a project is complete — either through explicit user confirmation or by recognizing that the deliverable has been achieved — it automatically:
 
 1. Updates the project's notes with a final state summary.
-2. Sets `status: archived` and adds an `archived` date to context.yml.
+2. Sets `status: archived` and adds an `archived` date to the `PROJECT.md` frontmatter.
 3. Moves the project folder from `projects/` to `archive/`.
 
 The agent does not require user permission, but should mention it: "I've archived the AeroHive setup project since the configuration is complete. You can still search its contents anytime."
@@ -212,10 +242,10 @@ The agent does not require user permission, but should mention it: "I've archive
 
 The agent can create new project entries when it recognizes new work emerging from conversation:
 
-- "I'm starting to work on setting up game servers for friends" → agent creates a new project with context.yml, notes/, references/, workspace/, and appropriate tools
+- "I'm starting to work on setting up game servers for friends" → agent creates a new project with `PROJECT.md`, `notes/`, `references/`, `workspace/`, and appropriate tools
 - Repeated conversations about a topic with no existing entry → agent suggests creating one
 
-Creation is self-contained: make the folder, write context.yml, create subfolders. No registry to update.
+Creation is self-contained: make the folder, write `PROJECT.md`, create subfolders. No registry to update.
 
 ---
 
@@ -250,7 +280,7 @@ The Projects system is not a replacement for USER.md or MEMORY.md. Those files c
 
 ### Priorities
 
-1. Folder structure conventions and context.yml schema
+1. Folder structure conventions and `PROJECT.md` frontmatter schema
 2. Directory scanning and discovery at startup / on file change
 3. Agent instructions for activation, deactivation, and notes maintenance
 4. Tool, skill, and MCP server auto-loading
@@ -260,8 +290,9 @@ The Projects system is not a replacement for USER.md or MEMORY.md. Those files c
 
 ### Considerations
 
-- context.yml should be validated on scan with clear errors for malformed entries
-- File watching should detect user-added files in references/ and make them available without restart
+- `PROJECT.md` frontmatter should be validated on scan with clear errors for malformed entries
+- The `PROJECT.md` body is always loaded when a project is active — keep it concise; it occupies prime token budget
+- File watching should detect new files in references/ (from either agent or user) and make them available without restart
 - Token budget management for active project contexts needs thought — notes/ should always be loadable when active, references/ and workspace/ may need selective loading for large entries
 - The agent needs clear system prompt instructions for Projects behavior: when to activate, when to create, when to archive, how to maintain notes
 - Creating a new entry should be as simple as `mkdir` + write context.yml + create subfolders — no external dependencies

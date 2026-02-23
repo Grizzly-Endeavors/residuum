@@ -62,7 +62,7 @@ ironclaw/
 │   │
 │   ├── projects/
 │   │   ├── mod.rs                    # Projects system coordination
-│   │   ├── scanner.rs                # Directory discovery & context.yml parsing
+│   │   ├── scanner.rs                # Directory discovery & PROJECT.md frontmatter parsing
 │   │   ├── activation.rs             # Context activation/deactivation logic
 │   │   ├── lifecycle.rs              # Create and archive entries
 │   │   └── manifest.rs               # Generate file listings for the active entry
@@ -174,7 +174,7 @@ enabled = true
 # This just controls whether the scheduler runs.
 
 [mcp]
-# MCP server definitions can live here or in project context.yml entries.
+# MCP server definitions can live here or in project PROJECT.md frontmatter.
 [mcp.servers.filesystem]
 command = "mcp-server-filesystem"
 args = ["/home/user/documents"]
@@ -213,14 +213,14 @@ The gateway watches `config.toml`, workspace identity files, `HEARTBEAT.yml`, `A
 │
 ├── projects/
 │   └── aerohive-setup/
-│       ├── context.yml
+│       ├── PROJECT.md
 │       ├── notes/
 │       ├── references/
 │       └── workspace/
 │
 ├── archive/
 │   └── proxmox-migration/
-│       ├── context.yml
+│       ├── PROJECT.md
 │       ├── notes/
 │       ├── references/
 │       └── workspace/
@@ -245,7 +245,7 @@ These are YAML/TOML files the Rust gateway validates and acts on:
 |------|--------|---------------|
 | `config.toml` | TOML | Full gateway configuration |
 | `HEARTBEAT.yml` | YAML | Pulse scheduling, task definitions |
-| `projects/**/context.yml` | YAML | Project entry metadata, tool/skill/MCP resolution |
+| `projects/**/PROJECT.md` | Markdown+YAML frontmatter | Project entry metadata, tool/skill/MCP resolution |
 | `cron/jobs.json` | JSON | Agent-created scheduled wake-ups |
 | `memory/observations.json` | JSON | Global observation log (episode-based) |
 
@@ -396,7 +396,8 @@ Context assembly is the critical integration point. It builds the full prompt fr
 │ ├── SOUL.md                         │
 │ ├── AGENTS.md                       │
 │ ├── TOOLS.md                        │
-│ └── Available skill metadata        │  ← names + descriptions only
+│ ├── Available skill metadata        │  ← names + descriptions only
+│ └── Active skill instructions       │  ← full SKILL.md body, per activated skill
 ├─────────────────────────────────────┤
 │ User context                        │
 │ ├── USER.md                         │
@@ -408,9 +409,9 @@ Context assembly is the critical integration point. It builds the full prompt fr
 │ Projects index (always present)     │  ← from projects crate
 │ └── name + description per entry   │
 ├─────────────────────────────────────┤
-│ Active project manifest             │  ← from projects crate
-│ └── File listings (not contents)    │
-│     for the active project          │
+│ Active project context              │  ← from projects crate
+│ ├── PROJECT.md (frontmatter + body) │
+│ └── File manifest (not contents)    │
 ├─────────────────────────────────────┤
 │ Available tools                     │
 │ ├── Built-in tools                  │  ← from tools crate
@@ -431,11 +432,12 @@ The context assembler tracks token usage across sections. Progressive disclosure
 1. System prompt + identity files — always loaded (non-negotiable).
 2. Global observation log — always loaded (high-level timeline).
 3. Projects index — always loaded (lightweight, ~50-100 tokens per entry).
-4. Active project manifest — loaded when a project is active (file listings, not contents).
-5. Available skill metadata — always loaded (names + descriptions only).
-6. Recent messages — loaded newest-first, truncated from oldest.
+4. Active project context — loaded when a project is active (`PROJECT.md` body + file manifest).
+5. Skill metadata — always loaded (names + descriptions only, ~100 tokens each).
+6. Active skill instructions — loaded when a skill is activated (`skill_activate` tool call), persisted in the system prompt section (not the recent messages window, so they don't age out).
+7. Recent messages — loaded newest-first, truncated from oldest.
 
-File contents, skill instructions, and reference material enter the context window only when the agent reads them via tool calls — at which point they become part of the recent messages and are subject to the same truncation rules as any other message. This keeps the baseline context small and gives the agent control over what fills the remaining budget.
+File contents and reference material enter the context window only when the agent reads them via tool calls. Activated skill instructions are the exception — they're injected as a persistent system prompt section so they survive message window truncation.
 
 Token counting uses tiktoken-rs or a provider-specific tokenizer.
 
@@ -532,12 +534,12 @@ Implements the Projects design from `projects-context-design.md`.
 On startup and on filesystem change:
 
 1. Walk `projects/` and `archive/`.
-2. Parse each `context.yml` with serde_yaml, validate against schema.
+2. For each subfolder containing a `PROJECT.md`, parse the YAML frontmatter. Validate against schema.
 3. Build in-memory index: name, description, status, tools, skills, MCP servers.
 
-The index is cheap to build (a few lines of YAML per entry) and always current.
+The frontmatter is a few lines of YAML per entry, so scanning is cheap and always current. The body of `PROJECT.md` is not read during scanning — only on activation.
 
-#### context.yml schema
+#### PROJECT.md frontmatter schema
 
 ```yaml
 name: aerohive-setup
@@ -584,8 +586,8 @@ When a project is active, project output stays within the project's `workspace/`
 
 2. **On activation** — When the agent activates a project (via tool call or conversational cue), the gateway:
    - Loads the entry's **manifest**: a listing of what files exist in `notes/`, `references/`, and `workspace/` (filenames and sizes, not contents).
-   - Starts any **MCP servers** defined in the entry's `context.yml`.
-   - Adds any **tools** defined in the entry's `context.yml` to the active tool set.
+   - Starts any **MCP servers** defined in the entry's `PROJECT.md` frontmatter.
+   - Adds any **tools** defined in the entry's `PROJECT.md` frontmatter to the active tool set.
    - Adds the entry's **skills** to the available skills list (metadata only, not full SKILL.md bodies).
 
    The manifest tells the agent "here's what's in this project folder." Contents are not loaded.
@@ -606,7 +608,7 @@ This also aligns with how the Agent Skills spec works: skill metadata is always 
 
 #### Lifecycle (`lifecycle.rs`)
 
-- **Create**: `mkdir` + write `context.yml` + create subfolders. No registry.
+- **Create**: `mkdir` + write `PROJECT.md` (frontmatter + blank body) + create subfolders. No registry.
 - **Archive**: Update status, add archived date, move to `archive/`. Archived projects retain their notes, references, and workspace. Observation history is not carried with the project — it lives in the global observation log and is retrievable via the `context` tag on episodes.
 
 ### 6. Pulse Scheduling (`pulse/`)
@@ -681,19 +683,21 @@ Discovers skills from configured directories:
 **Skill sources** (precedence, highest first):
 
 1. Workspace skills: `~/.ironclaw/workspace/skills/`
-2. Project-scoped skills referenced in `context.yml`
+2. Project-scoped skills referenced in `PROJECT.md` frontmatter
 3. User-global skills: `~/.ironclaw/skills/`
 4. Bundled skills (shipped with the binary)
 
 #### Resolver (`resolver.rs`)
 
-Skills follow the same progressive disclosure model as the Projects system:
+Skills use the same activation/deactivation model as the Projects system:
 
 1. **Always present**: All available skill metadata (name + description, ~100 tokens each) is in the system prompt. The agent always knows what skills exist.
-2. **Agent-driven activation**: When the agent decides a skill is relevant, it reads the SKILL.md body via the `read` tool. The full instructions (~5000 tokens recommended max) enter the context as part of the recent messages.
-3. **Supporting files**: After reading a skill's SKILL.md, the agent can read files from `scripts/`, `references/`, and `assets/` as needed.
+2. **Explicit activation**: When the agent decides a skill is relevant, it calls `skill_activate` with the skill name. The gateway loads the full `SKILL.md` body into the system prompt and makes any `allowed-tools` available. The agent deactivates skills via `skill_deactivate` when they're no longer needed.
+3. **Supporting files**: While a skill is active, the agent can read files from `scripts/`, `references/`, and `assets/` via the `read` tool as needed.
 
-The gateway's role is indexing and making skills discoverable. The agent's role is deciding which skills to load and when. If a skill specifies `allowed-tools`, those tools become available once the agent has read the skill.
+The gateway tracks which skills are currently active and maintains their instructions as a persistent section of the system prompt (not part of the recent messages window). This means activated skill instructions don't age out of context the way read-tool results do.
+
+The gateway's role is indexing, making skills discoverable, and managing the active skill set. The agent's role is deciding which skills to activate and when.
 
 #### Compatibility
 
@@ -747,7 +751,7 @@ Maintains the set of active MCP servers and their combined tool lists:
 MCP servers can be configured at two levels:
 
 1. **Global** (`config.toml` `[mcp.servers]`): Always available.
-2. **Project-scoped** (`context.yml` `mcp_servers`): Available only when the project is active.
+2. **Project-scoped** (`PROJECT.md` frontmatter `mcp_servers`): Available only when the project is active.
 
 ### 10. Tool System (`tools/`)
 
@@ -769,13 +773,20 @@ Built-in tools the agent can invoke directly.
 | `cron_update` | Modify an existing cron job |
 | `cron_remove` | Delete a cron job |
 | `cron_list` | List scheduled cron jobs |
+| `skill_activate` | Load a skill's full instructions into the system prompt |
+| `skill_deactivate` | Remove a skill's instructions from the system prompt |
+| `project_activate` | Activate a project context |
+| `project_deactivate` | Deactivate the current project context; requires a `log` field which is written to the project's dated session log before deactivating |
+| `project_create` | Create a new project entry |
+| `project_archive` | Archive a completed project |
+| `project_list` | List all projects and their status |
 
 #### Policy (`policy.rs`)
 
 Cascading tool policy resolution:
 
 1. **Global defaults** from config.
-2. **Per-project** overrides from `context.yml` `tools` field.
+2. **Per-project** overrides from `PROJECT.md` frontmatter `tools` field.
 3. **Per-skill** additions from `allowed-tools` in SKILL.md frontmatter.
 4. **MCP server tools** from active MCP connections.
 
@@ -957,7 +968,7 @@ Guild channels, mention gating, and threads are deferred to Phase 5+.
 **Milestone: Agent is fully accessible via Discord with presence, commands, and media.**
 
 ### Phase 5: Projects
-19. `projects/scanner` — Directory discovery, context.yml parsing.
+19. `projects/scanner` — Directory discovery, PROJECT.md frontmatter parsing.
 20. `projects/activation` — Context activation/deactivation via agent tool calls.
 21. `projects/manifest` — Generate file listings for the active entry.
 22. `projects/lifecycle` — Create and archive.
@@ -970,6 +981,6 @@ Guild channels, mention gating, and threads are deferred to Phase 5+.
 25. `mcp/client` — JSON-RPC client, stdio transport.
 26. `mcp/lifecycle` — Server spawn and teardown.
 27. `mcp/transport` — HTTP/SSE transport for remote servers.
-28. Integration: project context.yml → skill and MCP server activation.
+28. Integration: project PROJECT.md frontmatter → skill and MCP server activation.
 
 **Milestone: Agent can use OpenClaw-compatible skills and connect to MCP servers.**
