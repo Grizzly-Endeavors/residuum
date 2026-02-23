@@ -1,0 +1,136 @@
+//! Discord channel adapter (DM-only).
+//!
+//! Feature-gated behind `--features discord`. Implements the serenity `EventHandler`
+//! trait to receive DMs and route them through the standard `RoutedMessage` pipeline.
+//!
+//! Supports:
+//! - Hot-reloadable presence via `PRESENCE.toml`
+//! - Slash commands mirroring the CLI command set
+//! - Attachment downloading to the workspace inbox
+
+mod handler;
+mod reply;
+
+use std::path::PathBuf;
+use std::sync::Arc;
+
+use serenity::prelude::*;
+use tokio::sync::mpsc;
+
+use crate::channels::types::RoutedMessage;
+use crate::config::DiscordConfig;
+
+use self::handler::{DiscordHandler, help_text, status_text};
+
+/// Discord channel adapter that routes DMs to the agent inbound channel.
+pub struct DiscordChannel {
+    cfg: DiscordConfig,
+    inbound_tx: mpsc::Sender<RoutedMessage>,
+    workspace_dir: PathBuf,
+    reload_sender: tokio::sync::watch::Sender<bool>,
+    observe_notify: Arc<tokio::sync::Notify>,
+    reflect_notify: Arc<tokio::sync::Notify>,
+}
+
+impl DiscordChannel {
+    /// Create a new Discord channel adapter.
+    ///
+    /// # Arguments
+    /// - `cfg`: Discord bot configuration (token).
+    /// - `inbound_tx`: Channel for routing messages to the agent.
+    /// - `workspace_dir`: Path to the workspace root (for PRESENCE.toml and inbox).
+    /// - `reload_sender`: Watch channel to trigger config reload.
+    /// - `observe_notify`: Notify to trigger an observation cycle.
+    /// - `reflect_notify`: Notify to trigger a reflection cycle.
+    #[must_use]
+    pub fn new(
+        cfg: DiscordConfig,
+        inbound_tx: mpsc::Sender<RoutedMessage>,
+        workspace_dir: PathBuf,
+        reload_sender: tokio::sync::watch::Sender<bool>,
+        observe_notify: Arc<tokio::sync::Notify>,
+        reflect_notify: Arc<tokio::sync::Notify>,
+    ) -> Self {
+        Self {
+            cfg,
+            inbound_tx,
+            workspace_dir,
+            reload_sender,
+            observe_notify,
+            reflect_notify,
+        }
+    }
+
+    /// Start the Discord gateway connection.
+    ///
+    /// This blocks until the connection is closed or an error occurs.
+    ///
+    /// # Errors
+    /// Returns an error if the serenity client cannot be built or the connection fails.
+    pub async fn start(self) -> Result<(), serenity::Error> {
+        let intents = GatewayIntents::DIRECT_MESSAGES | GatewayIntents::MESSAGE_CONTENT;
+
+        let presence_path = self.workspace_dir.join("PRESENCE.toml");
+        let inbox_dir = self.workspace_dir.join("inbox");
+
+        let handler = DiscordHandler {
+            inbound_tx: self.inbound_tx,
+            presence_path,
+            inbox_dir,
+            reload_sender: self.reload_sender,
+            observe_notify: self.observe_notify,
+            reflect_notify: self.reflect_notify,
+        };
+
+        let mut client = Client::builder(&self.cfg.token, intents)
+            .event_handler(handler)
+            .await?;
+
+        client.start().await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn help_text_contains_commands() {
+        let text = help_text();
+        assert!(text.contains("/help"), "should mention /help");
+        assert!(text.contains("/status"), "should mention /status");
+        assert!(text.contains("/reload"), "should mention /reload");
+        assert!(text.contains("/observe"), "should mention /observe");
+        assert!(text.contains("/reflect"), "should mention /reflect");
+    }
+
+    #[test]
+    fn status_text_contains_version() {
+        let text = status_text();
+        assert!(
+            text.contains(env!("CARGO_PKG_VERSION")),
+            "should contain package version"
+        );
+        assert!(text.contains("Online"), "should show online status");
+    }
+
+    #[test]
+    fn slash_command_names() {
+        // Verify the dispatch table matches registrations
+        let expected = ["help", "status", "reload", "observe", "reflect"];
+        for name in expected {
+            let text = match name {
+                "help" => help_text(),
+                "status" => status_text(),
+                "reload" => "Reloading configuration...".to_string(),
+                "observe" => "Observation cycle triggered.".to_string(),
+                "reflect" => "Reflection cycle triggered.".to_string(),
+                _ => "Unknown".to_string(),
+            };
+            assert!(
+                !text.contains("Unknown"),
+                "command '{name}' should have a known handler"
+            );
+        }
+    }
+}

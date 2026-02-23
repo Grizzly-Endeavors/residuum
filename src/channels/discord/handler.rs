@@ -1,12 +1,4 @@
-//! Discord channel adapter (DM-only).
-//!
-//! Feature-gated behind `--features discord`. Implements the serenity `EventHandler`
-//! trait to receive DMs and route them through the standard `RoutedMessage` pipeline.
-//!
-//! Supports:
-//! - Hot-reloadable presence via `PRESENCE.toml`
-//! - Slash commands mirroring the CLI command set
-//! - Attachment downloading to the workspace inbox
+//! Serenity event handler, slash command registration, and presence watcher.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -18,107 +10,29 @@ use serenity::builder::{
 use serenity::model::application::Interaction;
 use serenity::model::channel::Message;
 use serenity::model::gateway::Ready;
-use serenity::model::id::ChannelId;
 use serenity::prelude::*;
 use tokio::sync::mpsc;
 
 use crate::channels::attachment::{
     AttachmentInfo, download_attachment, format_attachment_line, format_failed_attachment_line,
 };
-use crate::channels::chunking::chunk_text;
 use crate::channels::presence::{load_presence, to_activity, to_online_status};
-use crate::config::DiscordConfig;
+use crate::channels::types::{InboundMessage, MessageOrigin, RoutedMessage};
 
-use super::types::{InboundMessage, MessageOrigin, ReplyHandle, RoutedMessage, TypingGuard};
-
-/// Maximum message length for Discord.
-const DISCORD_MAX_CHARS: usize = 2000;
-
-/// Interval between typing indicator re-sends (seconds).
-///
-/// Discord's typing indicator lasts ~10s, so 8s provides overlap.
-const TYPING_INTERVAL_SECS: u64 = 8;
+use super::reply::DiscordReplyHandle;
 
 /// Interval for polling PRESENCE.toml changes (seconds).
 const PRESENCE_POLL_SECS: u64 = 30;
 
-/// Discord channel adapter that routes DMs to the agent inbound channel.
-pub struct DiscordChannel {
-    cfg: DiscordConfig,
-    inbound_tx: mpsc::Sender<RoutedMessage>,
-    workspace_dir: PathBuf,
-    reload_sender: tokio::sync::watch::Sender<bool>,
-    observe_notify: Arc<tokio::sync::Notify>,
-    reflect_notify: Arc<tokio::sync::Notify>,
-}
-
-impl DiscordChannel {
-    /// Create a new Discord channel adapter.
-    ///
-    /// # Arguments
-    /// - `cfg`: Discord bot configuration (token).
-    /// - `inbound_tx`: Channel for routing messages to the agent.
-    /// - `workspace_dir`: Path to the workspace root (for PRESENCE.toml and inbox).
-    /// - `reload_sender`: Watch channel to trigger config reload.
-    /// - `observe_notify`: Notify to trigger an observation cycle.
-    /// - `reflect_notify`: Notify to trigger a reflection cycle.
-    #[must_use]
-    pub fn new(
-        cfg: DiscordConfig,
-        inbound_tx: mpsc::Sender<RoutedMessage>,
-        workspace_dir: PathBuf,
-        reload_sender: tokio::sync::watch::Sender<bool>,
-        observe_notify: Arc<tokio::sync::Notify>,
-        reflect_notify: Arc<tokio::sync::Notify>,
-    ) -> Self {
-        Self {
-            cfg,
-            inbound_tx,
-            workspace_dir,
-            reload_sender,
-            observe_notify,
-            reflect_notify,
-        }
-    }
-
-    /// Start the Discord gateway connection.
-    ///
-    /// This blocks until the connection is closed or an error occurs.
-    ///
-    /// # Errors
-    /// Returns an error if the serenity client cannot be built or the connection fails.
-    pub async fn start(self) -> Result<(), serenity::Error> {
-        let intents = GatewayIntents::DIRECT_MESSAGES | GatewayIntents::MESSAGE_CONTENT;
-
-        let presence_path = self.workspace_dir.join("PRESENCE.toml");
-        let inbox_dir = self.workspace_dir.join("inbox");
-
-        let handler = DiscordHandler {
-            inbound_tx: self.inbound_tx,
-            presence_path,
-            inbox_dir,
-            reload_sender: self.reload_sender,
-            observe_notify: self.observe_notify,
-            reflect_notify: self.reflect_notify,
-        };
-
-        let mut client = Client::builder(&self.cfg.token, intents)
-            .event_handler(handler)
-            .await?;
-
-        client.start().await
-    }
-}
-
 /// Serenity event handler that filters for DMs, manages presence,
 /// registers slash commands, and handles attachments.
-struct DiscordHandler {
-    inbound_tx: mpsc::Sender<RoutedMessage>,
-    presence_path: PathBuf,
-    inbox_dir: PathBuf,
-    reload_sender: tokio::sync::watch::Sender<bool>,
-    observe_notify: Arc<tokio::sync::Notify>,
-    reflect_notify: Arc<tokio::sync::Notify>,
+pub(super) struct DiscordHandler {
+    pub(super) inbound_tx: mpsc::Sender<RoutedMessage>,
+    pub(super) presence_path: PathBuf,
+    pub(super) inbox_dir: PathBuf,
+    pub(super) reload_sender: tokio::sync::watch::Sender<bool>,
+    pub(super) observe_notify: Arc<tokio::sync::Notify>,
+    pub(super) reflect_notify: Arc<tokio::sync::Notify>,
 }
 
 #[async_trait]
@@ -199,10 +113,10 @@ impl EventHandler for DiscordHandler {
             timestamp: chrono::Utc::now(),
         };
 
-        let reply = Arc::new(DiscordReplyHandle {
-            http: Arc::clone(&ctx.http),
-            channel_id: msg.channel_id,
-        });
+        let reply = Arc::new(DiscordReplyHandle::new(
+            Arc::clone(&ctx.http),
+            msg.channel_id,
+        ));
 
         let routed = RoutedMessage {
             message: inbound,
@@ -300,7 +214,7 @@ fn file_mtime(path: &std::path::Path) -> Option<std::time::SystemTime> {
 
 /// Generate help text for the `/help` slash command.
 #[must_use]
-fn help_text() -> String {
+pub(super) fn help_text() -> String {
     "\
 **IronClaw Bot Commands**
 
@@ -316,108 +230,9 @@ fn help_text() -> String {
 
 /// Generate status text for the `/status` slash command.
 #[must_use]
-fn status_text() -> String {
+pub(super) fn status_text() -> String {
     format!(
         "**IronClaw** v{}\nStatus: Online\nMode: DM-only",
         env!("CARGO_PKG_VERSION"),
     )
-}
-
-/// Routes responses back to a Discord DM channel.
-struct DiscordReplyHandle {
-    http: Arc<serenity::http::Http>,
-    channel_id: ChannelId,
-}
-
-#[async_trait]
-impl ReplyHandle for DiscordReplyHandle {
-    async fn send_response(&self, content: &str) {
-        let chunks = chunk_text(content, DISCORD_MAX_CHARS);
-        for chunk in chunks {
-            if let Err(e) = self.channel_id.say(&self.http, &chunk).await {
-                tracing::warn!(error = %e, "failed to send discord message");
-            }
-        }
-    }
-
-    async fn send_typing(&self) {
-        if let Err(e) = self.channel_id.broadcast_typing(&self.http).await {
-            tracing::trace!(error = %e, "failed to send discord typing indicator");
-        }
-    }
-
-    async fn send_system_event(&self, source: &str, content: &str) {
-        let text = format!("**[{source}]** {content}");
-        let chunks = chunk_text(&text, DISCORD_MAX_CHARS);
-        for chunk in chunks {
-            if let Err(e) = self.channel_id.say(&self.http, &chunk).await {
-                tracing::warn!(error = %e, "failed to send discord system event");
-            }
-        }
-    }
-
-    fn start_typing(&self) -> TypingGuard {
-        let http = Arc::clone(&self.http);
-        let channel_id = self.channel_id;
-        let (stop_tx, mut stop_rx) = tokio::sync::watch::channel(false);
-
-        let handle = tokio::spawn(async move {
-            loop {
-                if let Err(e) = channel_id.broadcast_typing(&http).await {
-                    tracing::trace!(error = %e, "typing indicator send failed");
-                }
-                tokio::select! {
-                    _ = tokio::time::sleep(tokio::time::Duration::from_secs(TYPING_INTERVAL_SECS)) => {}
-                    _ = stop_rx.changed() => break,
-                }
-            }
-        });
-
-        TypingGuard::new(stop_tx, handle)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn help_text_contains_commands() {
-        let text = help_text();
-        assert!(text.contains("/help"), "should mention /help");
-        assert!(text.contains("/status"), "should mention /status");
-        assert!(text.contains("/reload"), "should mention /reload");
-        assert!(text.contains("/observe"), "should mention /observe");
-        assert!(text.contains("/reflect"), "should mention /reflect");
-    }
-
-    #[test]
-    fn status_text_contains_version() {
-        let text = status_text();
-        assert!(
-            text.contains(env!("CARGO_PKG_VERSION")),
-            "should contain package version"
-        );
-        assert!(text.contains("Online"), "should show online status");
-    }
-
-    #[test]
-    fn slash_command_names() {
-        // Verify the dispatch table matches registrations
-        let expected = ["help", "status", "reload", "observe", "reflect"];
-        for name in expected {
-            let text = match name {
-                "help" => help_text(),
-                "status" => status_text(),
-                "reload" => "Reloading configuration...".to_string(),
-                "observe" => "Observation cycle triggered.".to_string(),
-                "reflect" => "Reflection cycle triggered.".to_string(),
-                _ => "Unknown".to_string(),
-            };
-            assert!(
-                !text.contains("Unknown"),
-                "command '{name}' should have a known handler"
-            );
-        }
-    }
 }

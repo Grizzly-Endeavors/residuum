@@ -1,4 +1,10 @@
 //! Code-fence-aware text chunking for channels with message size limits.
+// Chunking is currently only called by the discord adapter but is shared infrastructure
+// that additional channel providers (websocket, webhook, etc.) will use in the future.
+#![allow(
+    dead_code,
+    reason = "shared chunking infrastructure for future channel providers"
+)]
 
 /// Split text into chunks that fit within `max_chars`, preserving code fence integrity.
 ///
@@ -8,7 +14,7 @@
 /// - Returns a single-element vec if the text fits within the limit
 /// - Returns an empty vec for empty input
 #[must_use]
-pub fn chunk_text(text: &str, max_chars: usize) -> Vec<String> {
+pub(crate) fn chunk_text(text: &str, max_chars: usize) -> Vec<String> {
     if text.is_empty() || max_chars == 0 {
         return Vec::new();
     }
