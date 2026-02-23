@@ -33,7 +33,7 @@ pub(crate) fn build_provider_from_provider_spec(
 /// # Errors
 /// Returns `IronclawError::Config` if the API key is missing for providers
 /// that require it.
-pub(crate) fn build_provider_from_spec(
+fn build_provider_from_spec(
     spec: &ModelSpec,
     url: &str,
     api_key: Option<&str>,

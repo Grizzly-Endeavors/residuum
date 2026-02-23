@@ -16,7 +16,7 @@ use super::{
 };
 
 /// Client for the Google Gemini `generateContent` API.
-pub struct GeminiClient {
+pub(crate) struct GeminiClient {
     http: SharedHttpClient,
     base_url: String,
     api_key: String,

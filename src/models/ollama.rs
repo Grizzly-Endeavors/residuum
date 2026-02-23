@@ -3,43 +3,20 @@
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
-use super::http::{HttpClientConfig, SharedHttpClient, map_request_error, warn_if_insecure_remote};
+use super::http::{SharedHttpClient, map_request_error, warn_if_insecure_remote};
 use super::{
     CompletionOptions, Message, ModelError, ModelProvider, ModelResponse, ToolCall, ToolDefinition,
 };
 
 /// Ollama API client implementing the [`ModelProvider`] trait.
 #[derive(Clone)]
-pub struct OllamaClient {
+pub(crate) struct OllamaClient {
     http: SharedHttpClient,
     base_url: String,
     model: String,
 }
 
 impl OllamaClient {
-    /// Create a new Ollama client with the specified timeout.
-    ///
-    /// This creates a new HTTP client internally. For connection reuse across
-    /// multiple clients, use [`with_http_client`](Self::with_http_client) instead.
-    ///
-    /// # Errors
-    /// Returns `ModelError` if the HTTP client cannot be built.
-    pub fn new(
-        base_url: impl Into<String>,
-        model: impl Into<String>,
-        timeout_secs: u64,
-    ) -> Result<Self, ModelError> {
-        let base_url = base_url.into();
-        warn_if_insecure_remote(&base_url);
-        let http = SharedHttpClient::new(&HttpClientConfig::with_timeout(timeout_secs))?;
-
-        Ok(Self {
-            http,
-            base_url,
-            model: model.into(),
-        })
-    }
-
     /// Create a new Ollama client with a shared HTTP client.
     ///
     /// Use this constructor to share connection pools across multiple model providers.
@@ -221,8 +198,19 @@ struct OllamaErrorResponse {
 mod tests {
     use super::*;
     use crate::models::CompletionOptions;
+    use crate::models::http::{HttpClientConfig, SharedHttpClient};
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    fn make_client(url: impl Into<String>, model: &str) -> OllamaClient {
+        let http = SharedHttpClient::new(&HttpClientConfig::default()).unwrap();
+        OllamaClient::with_http_client(http, url, model)
+    }
+
+    fn make_client_with_timeout(url: impl Into<String>, model: &str, timeout: u64) -> OllamaClient {
+        let http = SharedHttpClient::new(&HttpClientConfig::with_timeout(timeout)).unwrap();
+        OllamaClient::with_http_client(http, url, model)
+    }
 
     #[test]
     fn message_conversion() {
@@ -252,7 +240,7 @@ mod tests {
             .mount(&mock_server)
             .await;
 
-        let client = OllamaClient::new(mock_server.uri(), "test-model", 60).unwrap();
+        let client = make_client(mock_server.uri(), "test-model");
         let messages = vec![Message::user("Hello")];
 
         let response = client
@@ -282,7 +270,7 @@ mod tests {
             .mount(&mock_server)
             .await;
 
-        let client = OllamaClient::new(mock_server.uri(), "nonexistent", 60).unwrap();
+        let client = make_client(mock_server.uri(), "nonexistent");
         let result = client
             .complete(&[], &[], &CompletionOptions::default())
             .await;
@@ -317,7 +305,7 @@ mod tests {
             .mount(&mock_server)
             .await;
 
-        let client = OllamaClient::new(mock_server.uri(), "test-model", 60).unwrap();
+        let client = make_client(mock_server.uri(), "test-model");
         let messages = vec![Message::user("List files")];
 
         let response = client
@@ -353,7 +341,7 @@ mod tests {
             .mount(&mock_server)
             .await;
 
-        let client = OllamaClient::new(mock_server.uri(), "test-model", 60).unwrap();
+        let client = make_client(mock_server.uri(), "test-model");
         let result = client
             .complete(&[], &[], &CompletionOptions::default())
             .await;
@@ -375,7 +363,7 @@ mod tests {
             .mount(&mock_server)
             .await;
 
-        let client = OllamaClient::new(mock_server.uri(), "test-model", 60).unwrap();
+        let client = make_client(mock_server.uri(), "test-model");
         let result = client
             .complete(&[], &[], &CompletionOptions::default())
             .await;
@@ -394,7 +382,7 @@ mod tests {
             .await;
 
         // Client with 1 second timeout
-        let client = OllamaClient::new(mock_server.uri(), "test-model", 1).unwrap();
+        let client = make_client_with_timeout(mock_server.uri(), "test-model", 1);
         let result = client
             .complete(&[], &[], &CompletionOptions::default())
             .await;

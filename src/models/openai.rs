@@ -6,14 +6,14 @@
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
-use super::http::{HttpClientConfig, SharedHttpClient, map_request_error, warn_if_insecure_remote};
+use super::http::{SharedHttpClient, map_request_error, warn_if_insecure_remote};
 use super::{
     CompletionOptions, Message, ModelError, ModelProvider, ModelResponse, ToolCall, ToolDefinition,
 };
 
 /// OpenAI-compatible API client.
 #[derive(Clone)]
-pub struct OpenAiClient {
+pub(crate) struct OpenAiClient {
     http: SharedHttpClient,
     base_url: String,
     api_key: Option<String>,
@@ -21,56 +21,6 @@ pub struct OpenAiClient {
 }
 
 impl OpenAiClient {
-    /// Create a new client without authentication (for local servers).
-    ///
-    /// This creates a new HTTP client internally. For connection reuse across
-    /// multiple clients, use [`with_http_client`](Self::with_http_client) instead.
-    ///
-    /// # Errors
-    /// Returns `ModelError::Request` if the HTTP client cannot be built.
-    pub fn new(
-        base_url: impl Into<String>,
-        model: impl Into<String>,
-        timeout_secs: u64,
-    ) -> Result<Self, ModelError> {
-        let base_url = base_url.into();
-        warn_if_insecure_remote(&base_url);
-        let http = SharedHttpClient::new(&HttpClientConfig::with_timeout(timeout_secs))?;
-
-        Ok(Self {
-            http,
-            base_url,
-            api_key: None,
-            model: model.into(),
-        })
-    }
-
-    /// Create a new client with API key authentication.
-    ///
-    /// This creates a new HTTP client internally. For connection reuse across
-    /// multiple clients, use [`with_http_client_and_api_key`](Self::with_http_client_and_api_key)
-    /// instead.
-    ///
-    /// # Errors
-    /// Returns `ModelError::Request` if the HTTP client cannot be built.
-    pub fn with_api_key(
-        base_url: impl Into<String>,
-        model: impl Into<String>,
-        api_key: impl Into<String>,
-        timeout_secs: u64,
-    ) -> Result<Self, ModelError> {
-        let base_url = base_url.into();
-        warn_if_insecure_remote(&base_url);
-        let http = SharedHttpClient::new(&HttpClientConfig::with_timeout(timeout_secs))?;
-
-        Ok(Self {
-            http,
-            base_url,
-            api_key: Some(api_key.into()),
-            model: model.into(),
-        })
-    }
-
     /// Create a new client with a shared HTTP client (no authentication).
     ///
     /// Use this constructor to share connection pools across multiple model providers.
@@ -317,8 +267,24 @@ struct OpenAiError {
 mod tests {
     use super::*;
     use crate::models::CompletionOptions;
+    use crate::models::http::{HttpClientConfig, SharedHttpClient};
     use wiremock::matchers::{header, method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    fn make_client(url: impl Into<String>, model: &str) -> OpenAiClient {
+        let http = SharedHttpClient::new(&HttpClientConfig::default()).unwrap();
+        OpenAiClient::with_http_client(http, url, model)
+    }
+
+    fn make_client_with_key(url: impl Into<String>, model: &str, api_key: &str) -> OpenAiClient {
+        let http = SharedHttpClient::new(&HttpClientConfig::default()).unwrap();
+        OpenAiClient::with_http_client_and_api_key(http, url, model, api_key)
+    }
+
+    fn make_client_with_timeout(url: impl Into<String>, model: &str, timeout: u64) -> OpenAiClient {
+        let http = SharedHttpClient::new(&HttpClientConfig::with_timeout(timeout)).unwrap();
+        OpenAiClient::with_http_client(http, url, model)
+    }
 
     #[test]
     fn message_conversion_user() {
@@ -409,7 +375,7 @@ mod tests {
             .mount(&mock_server)
             .await;
 
-        let client = OpenAiClient::new(mock_server.uri(), "gpt-4", 60).unwrap();
+        let client = make_client(mock_server.uri(), "gpt-4");
         let messages = vec![Message::user("Hello")];
 
         let response = client
@@ -442,8 +408,7 @@ mod tests {
             .mount(&mock_server)
             .await;
 
-        let client =
-            OpenAiClient::with_api_key(mock_server.uri(), "gpt-4", "sk-test-key", 60).unwrap();
+        let client = make_client_with_key(mock_server.uri(), "gpt-4", "sk-test-key");
         let messages = vec![Message::user("Hello")];
 
         let response = client
@@ -481,7 +446,7 @@ mod tests {
             .mount(&mock_server)
             .await;
 
-        let client = OpenAiClient::new(mock_server.uri(), "gpt-4", 60).unwrap();
+        let client = make_client(mock_server.uri(), "gpt-4");
         let messages = vec![Message::user("List files")];
 
         let response = client
@@ -529,7 +494,7 @@ mod tests {
             .mount(&mock_server)
             .await;
 
-        let client = OpenAiClient::new(mock_server.uri(), "gpt-4", 60).unwrap();
+        let client = make_client(mock_server.uri(), "gpt-4");
         let result = client
             .complete(&[], &[], &CompletionOptions::default())
             .await;
@@ -565,7 +530,7 @@ mod tests {
             .mount(&mock_server)
             .await;
 
-        let client = OpenAiClient::new(mock_server.uri(), "gpt-4", 60).unwrap();
+        let client = make_client(mock_server.uri(), "gpt-4");
         let result = client
             .complete(&[], &[], &CompletionOptions::default())
             .await;
@@ -597,7 +562,7 @@ mod tests {
             .mount(&mock_server)
             .await;
 
-        let client = OpenAiClient::new(mock_server.uri(), "gpt-4", 60).unwrap();
+        let client = make_client(mock_server.uri(), "gpt-4");
         let result = client
             .complete(&[], &[], &CompletionOptions::default())
             .await;
@@ -621,7 +586,7 @@ mod tests {
             .mount(&mock_server)
             .await;
 
-        let client = OpenAiClient::new(mock_server.uri(), "gpt-4", 60).unwrap();
+        let client = make_client(mock_server.uri(), "gpt-4");
         let result = client
             .complete(&[], &[], &CompletionOptions::default())
             .await;
@@ -664,7 +629,7 @@ mod tests {
             .mount(&mock_server)
             .await;
 
-        let client = OpenAiClient::new(mock_server.uri(), "gpt-4", 60).unwrap();
+        let client = make_client(mock_server.uri(), "gpt-4");
         let result = client
             .complete(&[], &[], &CompletionOptions::default())
             .await;
@@ -693,7 +658,7 @@ mod tests {
             .await;
 
         // Client with 1 second timeout
-        let client = OpenAiClient::new(mock_server.uri(), "gpt-4", 1).unwrap();
+        let client = make_client_with_timeout(mock_server.uri(), "gpt-4", 1);
         let result = client
             .complete(&[], &[], &CompletionOptions::default())
             .await;

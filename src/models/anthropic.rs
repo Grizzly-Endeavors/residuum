@@ -23,7 +23,7 @@ const ANTHROPIC_VERSION: &str = "2023-06-01";
 /// Sends chat completions to Anthropic's `/v1/messages` endpoint, handling
 /// the Anthropic-specific message format (system as top-level field, content
 /// blocks, tool use/result blocks).
-pub struct AnthropicClient {
+pub(crate) struct AnthropicClient {
     http: SharedHttpClient,
     base_url: String,
     api_key: String,

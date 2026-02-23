@@ -1,0 +1,11 @@
+- Nothing the LLM or user (via an external channel) does should be able to disrupt/break/otherwise disable the gateway in any way shape or form.
+- Disallow the LLM from editing the main config files under any circumstance.
+- Improve the bootstrapper code to better give the agent context about the workspace it inhabits. Mostly in AGENTS.md, it should have detailed information about how the Memory, Heartbeat, cron, and projects systems work.
+- `/context` command to show how many tokens are being used by observations/system prompts/message history.
+- Sub agents that the main agent can call. Async by default. Minimal system prompt. Full transcript saved separately from main context, only initial prompt and sub agent response (or completion notice) in main feed. Main agent can set a `wake on completion` parameter, if true a main agent turn is started (or queued if already running). If false, outputs are saved as a markdown file in /inbox.
+- `/inbox` command for sending a message or file directly to the agent's inbox without triggering a new agent turn.
+- `send_file` tool for the agent to send attachments to the user.
+- File watching for `projects/` and `memory/` directories — rescan index on filesystem changes (new files in references/, new projects, etc.) without requiring explicit tool calls.
+- Archive indexing for memory search — include `archive/` directory in BM25 search paths so completed project content remains searchable.
+- Wire up `src/models/retry.rs` (`RetryConfig`, `with_retry`) to the model providers — the logic is implemented and tested but never called in production.
+- Enforce JSON output at API level where possible.

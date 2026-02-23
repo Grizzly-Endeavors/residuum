@@ -1,16 +1,15 @@
 //! Model provider abstraction and shared LLM types.
 
-pub mod anthropic;
+pub(crate) mod anthropic;
 pub(crate) mod factory;
-pub mod gemini;
+pub(crate) mod gemini;
 mod http;
-pub mod ollama;
-pub mod openai;
-pub mod retry;
+pub(crate) mod ollama;
+pub(crate) mod openai;
+pub(crate) mod retry;
 
 pub(crate) use factory::build_provider_from_provider_spec;
 pub use http::{HttpClientConfig, SharedHttpClient};
-pub use retry::{RetryConfig, with_retry};
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
