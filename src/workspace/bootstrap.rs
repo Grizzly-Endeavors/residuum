@@ -96,6 +96,20 @@ const DEFAULT_HEARTBEAT: &str = "\
 pulses: []
 ";
 
+/// Default content for PRESENCE.toml when creating a new workspace.
+const DEFAULT_PRESENCE: &str = "\
+# PRESENCE.toml — Discord presence configuration
+#
+# The Discord adapter watches this file and updates the bot's status
+# when it changes (polled every 30s).
+#
+# All fields are optional. Defaults: online + listening to \"DMs\"
+
+# status = \"online\"           # online | idle | dnd | invisible
+# activity_type = \"listening\" # playing | watching | listening | competing
+# activity_text = \"DMs\"
+";
+
 /// Default content for Alerts.md when creating a new workspace.
 const DEFAULT_ALERTS: &str = "\
 # Alerts.md — Alert delivery behavior
@@ -136,6 +150,7 @@ pub async fn ensure_workspace(layout: &WorkspaceLayout) -> Result<(), IronclawEr
     write_if_missing(&layout.reflector_md(), DEFAULT_REFLECTOR_PROMPT).await?;
     write_if_missing(&layout.heartbeat_yml(), DEFAULT_HEARTBEAT).await?;
     write_if_missing(&layout.alerts_md(), DEFAULT_ALERTS).await?;
+    write_if_missing(&layout.presence_toml(), DEFAULT_PRESENCE).await?;
 
     tracing::info!(
         workspace = %layout.root().display(),
@@ -188,6 +203,11 @@ mod tests {
             "HEARTBEAT.yml should exist"
         );
         assert!(layout.alerts_md().exists(), "Alerts.md should exist");
+        assert!(
+            layout.presence_toml().exists(),
+            "PRESENCE.toml should exist"
+        );
+        assert!(layout.inbox_dir().exists(), "inbox dir should exist");
     }
 
     #[tokio::test]

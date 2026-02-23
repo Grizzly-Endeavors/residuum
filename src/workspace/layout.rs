@@ -117,6 +117,18 @@ impl WorkspaceLayout {
         self.root.join("hooks")
     }
 
+    /// Path to PRESENCE.toml — hot-reloadable Discord presence configuration.
+    #[must_use]
+    pub fn presence_toml(&self) -> PathBuf {
+        self.root.join("PRESENCE.toml")
+    }
+
+    /// Path to the inbox directory for downloaded attachments.
+    #[must_use]
+    pub fn inbox_dir(&self) -> PathBuf {
+        self.root.join("inbox")
+    }
+
     /// Path to IDENTITY.md -- agent self-description, updated as role evolves.
     #[must_use]
     pub fn identity_md(&self) -> PathBuf {
@@ -167,6 +179,7 @@ impl WorkspaceLayout {
             self.cron_dir(),
             self.hooks_dir(),
             self.daily_log_dir(),
+            self.inbox_dir(),
         ]
     }
 }
@@ -213,6 +226,16 @@ mod tests {
             PathBuf::from("/tmp/ws/memory/REFLECTOR.md"),
             "reflector_md path"
         );
+        assert_eq!(
+            layout.presence_toml(),
+            PathBuf::from("/tmp/ws/PRESENCE.toml"),
+            "presence_toml path"
+        );
+        assert_eq!(
+            layout.inbox_dir(),
+            PathBuf::from("/tmp/ws/inbox"),
+            "inbox_dir path"
+        );
     }
 
     #[test]
@@ -239,10 +262,14 @@ mod tests {
     fn required_dirs_count() {
         let layout = WorkspaceLayout::new("/tmp/ws");
         let dirs = layout.required_dirs();
-        assert_eq!(dirs.len(), 10, "should have all required directories");
+        assert_eq!(dirs.len(), 11, "should have all required directories");
         assert!(
             dirs.contains(&PathBuf::from("/tmp/ws")),
             "root should be included"
+        );
+        assert!(
+            dirs.contains(&PathBuf::from("/tmp/ws/inbox")),
+            "inbox should be included"
         );
     }
 

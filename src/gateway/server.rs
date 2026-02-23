@@ -168,6 +168,10 @@ pub async fn run_gateway(cfg: Config) -> Result<GatewayExit, IronclawError> {
     let discord_inbound_tx = inbound_tx.clone();
     let webhook_inbound_tx = inbound_tx.clone();
 
+    // Clone reload_sender for Discord adapter before moving into gateway state
+    #[cfg(feature = "discord")]
+    let discord_reload_sender = reload_sender.clone();
+
     // Build axum app
     let state = GatewayState {
         inbound_tx,
@@ -226,8 +230,14 @@ pub async fn run_gateway(cfg: Config) -> Result<GatewayExit, IronclawError> {
     // Spawn Discord adapter if configured
     #[cfg(feature = "discord")]
     if let Some(ref discord_cfg) = cfg.discord {
-        let discord =
-            crate::channels::discord::DiscordChannel::new(discord_cfg.clone(), discord_inbound_tx);
+        let discord = crate::channels::discord::DiscordChannel::new(
+            discord_cfg.clone(),
+            discord_inbound_tx,
+            cfg.workspace_dir.clone(),
+            discord_reload_sender,
+            Arc::clone(&observe_notify),
+            Arc::clone(&reflect_notify),
+        );
         tokio::spawn(async move {
             if let Err(e) = discord.start().await {
                 tracing::error!(error = %e, "discord channel failed");
