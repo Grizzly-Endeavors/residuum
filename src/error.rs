@@ -38,6 +38,10 @@ pub enum IronclawError {
     #[error("gateway error: {0}")]
     Gateway(String),
 
+    /// Projects subsystem error
+    #[error("projects error: {0}")]
+    Projects(String),
+
     /// Catch-all for other errors
     #[error(transparent)]
     Other(#[from] anyhow::Error),
