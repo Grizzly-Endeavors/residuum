@@ -166,6 +166,22 @@ pub fn compute_next_run_with_backoff(
     Ok(Some(next.max(backoff_next)))
 }
 
+/// Initialize `next_run_at` for a newly created job.
+///
+/// Should be called after adding a job to the store to set the first fire time.
+///
+/// # Errors
+/// Returns `IronclawError::Scheduling` if the schedule cannot be parsed.
+pub fn initialize_next_run(
+    job: &mut CronJob,
+    now: NaiveDateTime,
+    tz: Tz,
+) -> Result<(), IronclawError> {
+    let next = compute_next_run_with_backoff(job, now, tz)?;
+    job.state.next_run_at = next;
+    Ok(())
+}
+
 /// Error backoff durations: [30s, 60s, 5m, 15m, 1h] in milliseconds.
 fn backoff_duration_ms(consecutive_errors: u32) -> u64 {
     const BACKOFFS: [u64; 5] = [30_000, 60_000, 300_000, 900_000, 3_600_000];

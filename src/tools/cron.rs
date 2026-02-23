@@ -7,7 +7,7 @@ use async_trait::async_trait;
 use serde_json::Value;
 use tokio::sync::{Mutex, Notify};
 
-use crate::cron::executor::initialize_next_run;
+use crate::cron::scheduler::initialize_next_run;
 use crate::cron::store::CronStore;
 use crate::cron::types::{CronJob, CronJobState, CronPayload, CronSchedule, Delivery, RunStatus};
 use crate::models::ToolDefinition;

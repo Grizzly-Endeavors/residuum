@@ -210,19 +210,3 @@ async fn run_job(
         }
     }
 }
-
-/// Initialize `next_run_at` for a newly created job.
-///
-/// Should be called after adding a job to the store to set the first fire time.
-///
-/// # Errors
-/// Returns `IronclawError::Scheduling` if the schedule cannot be parsed.
-pub fn initialize_next_run(
-    job: &mut CronJob,
-    now: NaiveDateTime,
-    tz: Tz,
-) -> Result<(), IronclawError> {
-    let next = compute_next_run_with_backoff(job, now, tz)?;
-    job.state.next_run_at = next;
-    Ok(())
-}
