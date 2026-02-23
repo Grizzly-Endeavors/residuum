@@ -14,7 +14,7 @@ use futures_util::{SinkExt, StreamExt};
 use tokio::sync::{broadcast, mpsc};
 
 use crate::agent::Agent;
-use crate::agent::context::ProjectsContext;
+use crate::agent::context::{ProjectsContext, SkillsContext};
 use crate::channels::types::{InboundMessage, MessageOrigin, RoutedMessage};
 use crate::channels::websocket::WsReplyHandle;
 use crate::config::{Config, ModelSpec, ProviderKind, ProviderSpec};
@@ -40,6 +40,7 @@ use crate::projects::scanner::ProjectIndex;
 use crate::pulse::executor::execute_pulse;
 use crate::pulse::scheduler::PulseScheduler;
 use crate::pulse::types::AlertLevel;
+use crate::skills::{SharedSkillState, SkillIndex, SkillState};
 use crate::tools::ToolRegistry;
 use crate::workspace::bootstrap::ensure_workspace;
 use crate::workspace::identity::IdentityFiles;
@@ -136,6 +137,11 @@ pub async fn run_gateway(cfg: Config) -> Result<GatewayExit, IronclawError> {
         layout.clone(),
     )));
 
+    // Build skill state
+    let skill_index = SkillIndex::scan(&cfg.skills.dirs, None).await?;
+    let skill_state: SharedSkillState =
+        SkillState::new_shared(skill_index, cfg.skills.dirs.clone());
+
     // Build path policy for write scoping
     let path_policy = crate::tools::PathPolicy::new_shared(layout.root().to_path_buf());
 
@@ -157,8 +163,10 @@ pub async fn run_gateway(cfg: Config) -> Result<GatewayExit, IronclawError> {
         path_policy,
         Arc::clone(&tool_filter),
         mcp_registry,
+        Arc::clone(&skill_state),
         tz,
     );
+    tools.register_skill_tools(Arc::clone(&skill_state));
 
     // Build completion options
     let options = CompletionOptions {
@@ -332,7 +340,13 @@ pub async fn run_gateway(cfg: Config) -> Result<GatewayExit, IronclawError> {
                     active_context: active_text.as_deref(),
                 };
 
-                match agent.process_message(&routed.message.content, &turn_display, Some(&origin), &projects_ctx).await {
+                let (skill_idx_text, skill_active_text) = build_skill_context_strings(&skill_state).await;
+                let skills_ctx = SkillsContext {
+                    index: skill_idx_text.as_deref(),
+                    active_instructions: skill_active_text.as_deref(),
+                };
+
+                match agent.process_message(&routed.message.content, &turn_display, Some(&origin), &projects_ctx, &skills_ctx).await {
                     Ok(texts) => {
                         drop(typing_guard);
                         for text in &texts {
@@ -857,6 +871,25 @@ async fn build_project_context_strings(
     let state = project_state.lock().await;
     let index_text = Some(state.format_index_for_prompt());
     let active_text = state.format_active_context_for_prompt();
+    (index_text, active_text)
+}
+
+/// Build formatted strings for skills context from shared skill state.
+///
+/// Returns `(index_text, active_instructions_text)` — each `Option<String>`.
+async fn build_skill_context_strings(
+    skill_state: &SharedSkillState,
+) -> (Option<String>, Option<String>) {
+    let state = skill_state.lock().await;
+    let index_text = {
+        let formatted = state.format_index_for_prompt();
+        if formatted.is_empty() {
+            None
+        } else {
+            Some(formatted)
+        }
+    };
+    let active_text = state.format_active_for_prompt();
     (index_text, active_text)
 }
 

@@ -70,6 +70,12 @@ port = 7700
 # [discord]
 # token = "${IRONCLAW_DISCORD_TOKEN}"
 
+# ── Skills (optional, extra scan directories) ────────────────────────────────
+# The workspace skills/ directory is always scanned. Add extra directories here.
+#
+# [skills]
+# dirs = ["~/my-skills", "/opt/shared-skills"]
+
 # ── Webhook endpoint (optional) ──────────────────────────────────────────────
 # Enables POST /webhook on the gateway server. If secret is set, requests
 # must include an Authorization: Bearer <secret> header.

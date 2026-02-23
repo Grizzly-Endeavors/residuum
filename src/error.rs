@@ -42,6 +42,10 @@ pub enum IronclawError {
     #[error("projects error: {0}")]
     Projects(String),
 
+    /// Skills subsystem error
+    #[error("skills error: {0}")]
+    Skills(String),
+
     /// Catch-all for other errors
     #[error(transparent)]
     Other(#[from] anyhow::Error),

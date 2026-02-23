@@ -19,6 +19,7 @@ mod projects_integration {
     use ironclaw::projects::activation::{ProjectState, SharedProjectState};
     use ironclaw::projects::lifecycle;
     use ironclaw::projects::scanner::ProjectIndex;
+    use ironclaw::skills::{SharedSkillState, SkillIndex, SkillState};
     use ironclaw::tools::path_policy::{PathPolicy, SharedPathPolicy};
     use ironclaw::tools::projects::{
         ProjectActivateTool, ProjectArchiveTool, ProjectCreateTool, ProjectDeactivateTool,
@@ -38,6 +39,10 @@ mod projects_integration {
 
     fn empty_mcp() -> SharedMcpRegistry {
         McpRegistry::new_shared()
+    }
+
+    fn empty_skills() -> SharedSkillState {
+        SkillState::new_shared(SkillIndex::default(), vec![])
     }
 
     /// Set up a workspace with no projects.
@@ -272,6 +277,7 @@ mod projects_integration {
             permissive_policy(),
             no_filter(),
             empty_mcp(),
+            empty_skills(),
         );
         let activate_result = activate_tool
             .execute(serde_json::json!({"name": "Tool Test"}))
@@ -297,6 +303,7 @@ mod projects_integration {
             permissive_policy(),
             no_filter(),
             empty_mcp(),
+            empty_skills(),
             tz,
         );
         let deactivate_result = deactivate_tool
@@ -452,6 +459,7 @@ mod projects_integration {
             permissive_policy(),
             no_filter(),
             empty_mcp(),
+            empty_skills(),
         );
         activate_tool
             .execute(serde_json::json!({"name": "Active Proj"}))
@@ -525,6 +533,7 @@ mod projects_integration {
             permissive_policy(),
             no_filter(),
             empty_mcp(),
+            empty_skills(),
         );
         activate_tool
             .execute(serde_json::json!({"name": "Empty Log"}))
@@ -536,6 +545,7 @@ mod projects_integration {
             permissive_policy(),
             no_filter(),
             empty_mcp(),
+            empty_skills(),
             tz,
         );
         let result = deactivate_tool
@@ -607,6 +617,7 @@ mod projects_integration {
             Arc::clone(&policy),
             no_filter(),
             empty_mcp(),
+            empty_skills(),
         );
         activate_tool
             .execute(serde_json::json!({"name": "Project A"}))
@@ -634,6 +645,7 @@ mod projects_integration {
             Arc::clone(&policy),
             no_filter(),
             empty_mcp(),
+            empty_skills(),
             tz,
         );
         deactivate_tool
@@ -688,6 +700,7 @@ mod projects_integration {
             permissive_policy(),
             Arc::clone(&filter),
             empty_mcp(),
+            empty_skills(),
         );
         activate_tool
             .execute(serde_json::json!({"name": "With Exec"}))
@@ -708,6 +721,7 @@ mod projects_integration {
             permissive_policy(),
             Arc::clone(&filter),
             empty_mcp(),
+            empty_skills(),
             tz,
         );
         deactivate_tool
@@ -760,6 +774,7 @@ mod projects_integration {
             permissive_policy(),
             no_filter(),
             Arc::clone(&mcp),
+            empty_skills(),
         );
         activate_tool
             .execute(serde_json::json!({"name": "MCP Test"}))
@@ -783,6 +798,7 @@ mod projects_integration {
             permissive_policy(),
             no_filter(),
             Arc::clone(&mcp),
+            empty_skills(),
             tz,
         );
         deactivate_tool

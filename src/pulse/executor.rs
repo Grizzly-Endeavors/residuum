@@ -1,7 +1,7 @@
 use std::path::Path;
 
 use crate::agent::Agent;
-use crate::agent::context::ProjectsContext;
+use crate::agent::context::{ProjectsContext, SkillsContext};
 use crate::channels::null::NullDisplay;
 use crate::error::IronclawError;
 use crate::models::{Message, ModelProvider};
@@ -69,7 +69,13 @@ pub async fn execute_pulse(
 
     let display = NullDisplay;
     let result = agent
-        .run_system_turn(&prompt, &display, provider_override, projects_ctx)
+        .run_system_turn(
+            &prompt,
+            &display,
+            provider_override,
+            projects_ctx,
+            &SkillsContext::none(),
+        )
         .await?;
 
     let is_heartbeat_ok = result.response.contains("HEARTBEAT_OK");

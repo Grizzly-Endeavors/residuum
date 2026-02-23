@@ -48,6 +48,25 @@ impl ProjectsContext<'_> {
     }
 }
 
+/// Skills-related context injected into the system prompt.
+pub struct SkillsContext<'a> {
+    /// Formatted skills index XML (available skills listing).
+    pub index: Option<&'a str>,
+    /// Formatted active skill instructions XML.
+    pub active_instructions: Option<&'a str>,
+}
+
+impl SkillsContext<'_> {
+    /// Empty skills context (no index, no active skills).
+    #[must_use]
+    pub fn none() -> SkillsContext<'static> {
+        SkillsContext {
+            index: None,
+            active_instructions: None,
+        }
+    }
+}
+
 /// Assemble the full message list for a model call.
 ///
 /// Creates a system message from identity files and observation log content,
@@ -60,9 +79,10 @@ pub fn assemble_system_prompt(
     recent_messages: &RecentMessages,
     memory_ctx: &MemoryContext<'_>,
     projects_ctx: &ProjectsContext<'_>,
+    skills_ctx: &SkillsContext<'_>,
     time_ctx: Option<&TimeContext>,
 ) -> Vec<Message> {
-    let system_content = build_system_content(identity, memory_ctx, projects_ctx);
+    let system_content = build_system_content(identity, memory_ctx, projects_ctx, skills_ctx);
 
     let conversation = recent_messages.messages();
     let mut messages = Vec::with_capacity(2 + conversation.len());
@@ -116,10 +136,13 @@ fn build_time_context_tag(ctx: &TimeContext) -> String {
 /// 8. Recent context / narrative summary (if present)
 /// 9. Projects index (always present after bootstrap)
 /// 10. Active project context (when a project is active)
+/// 11. Skills index (available skills listing)
+/// 12. Active skill instructions (when skills are loaded)
 fn build_system_content(
     identity: &IdentityFiles,
     memory_ctx: &MemoryContext<'_>,
     projects_ctx: &ProjectsContext<'_>,
+    skills_ctx: &SkillsContext<'_>,
 ) -> String {
     let mut parts = Vec::new();
 
@@ -171,6 +194,18 @@ fn build_system_content(
         parts.push(format!("<ACTIVE_PROJECT>\n{active}\n</ACTIVE_PROJECT>"));
     }
 
+    if let Some(idx) = skills_ctx.index
+        && !idx.is_empty()
+    {
+        parts.push(format!("<SKILLS_INDEX>\n{idx}\n</SKILLS_INDEX>"));
+    }
+
+    if let Some(active) = skills_ctx.active_instructions
+        && !active.is_empty()
+    {
+        parts.push(format!("<ACTIVE_SKILLS>\n{active}\n</ACTIVE_SKILLS>"));
+    }
+
     parts.join("\n\n")
 }
 
@@ -203,8 +238,14 @@ mod tests {
         let identity = IdentityFiles::default();
         let recent = RecentMessages::new();
 
-        let messages =
-            assemble_system_prompt(&identity, &recent, &no_memory(), &no_projects(), None);
+        let messages = assemble_system_prompt(
+            &identity,
+            &recent,
+            &no_memory(),
+            &no_projects(),
+            &SkillsContext::none(),
+            None,
+        );
         assert_eq!(messages.len(), 1, "should have system message only");
         assert_eq!(
             messages.first().map(|m| &m.role),
@@ -219,8 +260,14 @@ mod tests {
         let mut recent = RecentMessages::new();
         recent.push(Message::user("hello"));
 
-        let messages =
-            assemble_system_prompt(&identity, &recent, &no_memory(), &no_projects(), None);
+        let messages = assemble_system_prompt(
+            &identity,
+            &recent,
+            &no_memory(),
+            &no_projects(),
+            &SkillsContext::none(),
+            None,
+        );
         assert_eq!(messages.len(), 2, "should have system + user message");
     }
 
@@ -232,7 +279,12 @@ mod tests {
             ..IdentityFiles::default()
         };
 
-        let content = build_system_content(&identity, &no_memory(), &no_projects());
+        let content = build_system_content(
+            &identity,
+            &no_memory(),
+            &no_projects(),
+            &SkillsContext::none(),
+        );
         assert!(
             content.contains("test agent"),
             "should include soul content"
@@ -251,7 +303,12 @@ mod tests {
             ..IdentityFiles::default()
         };
 
-        let content = build_system_content(&identity, &no_memory(), &no_projects());
+        let content = build_system_content(
+            &identity,
+            &no_memory(),
+            &no_projects(),
+            &SkillsContext::none(),
+        );
         assert!(
             content.contains("SOUL content"),
             "should include soul content"
@@ -277,7 +334,7 @@ mod tests {
             observations: Some("episode ep-001: user prefers concise output"),
             recent_context: None,
         };
-        let content = build_system_content(&identity, &mem, &no_projects());
+        let content = build_system_content(&identity, &mem, &no_projects(), &SkillsContext::none());
 
         assert!(
             content.contains("<OBSERVATION_LOG>"),
@@ -301,7 +358,7 @@ mod tests {
             observations: Some(""),
             recent_context: None,
         };
-        let content = build_system_content(&identity, &mem, &no_projects());
+        let content = build_system_content(&identity, &mem, &no_projects(), &SkillsContext::none());
         assert!(
             !content.contains("OBSERVATION_LOG"),
             "empty observations should be skipped"
@@ -312,7 +369,12 @@ mod tests {
     fn system_content_skips_none_observations() {
         let identity = IdentityFiles::default();
 
-        let content = build_system_content(&identity, &no_memory(), &no_projects());
+        let content = build_system_content(
+            &identity,
+            &no_memory(),
+            &no_projects(),
+            &SkillsContext::none(),
+        );
         assert!(
             !content.contains("OBSERVATION_LOG"),
             "None observations should be skipped"
@@ -330,7 +392,7 @@ mod tests {
             observations: Some("some observation"),
             recent_context: None,
         };
-        let content = build_system_content(&identity, &mem, &no_projects());
+        let content = build_system_content(&identity, &mem, &no_projects(), &SkillsContext::none());
 
         assert!(
             content.contains("<SOUL.md>\nI am the soul.\n</SOUL.md>"),
@@ -365,7 +427,7 @@ mod tests {
             observations: None,
             recent_context: Some("We were implementing a caching layer."),
         };
-        let content = build_system_content(&identity, &mem, &no_projects());
+        let content = build_system_content(&identity, &mem, &no_projects(), &SkillsContext::none());
 
         assert!(
             content.contains("<RECENT_CONTEXT>"),
@@ -384,7 +446,7 @@ mod tests {
             observations: None,
             recent_context: Some(""),
         };
-        let content = build_system_content(&identity, &mem, &no_projects());
+        let content = build_system_content(&identity, &mem, &no_projects(), &SkillsContext::none());
         assert!(
             !content.contains("RECENT_CONTEXT"),
             "empty recent context should be skipped"
@@ -398,7 +460,7 @@ mod tests {
             observations: Some("some observations"),
             recent_context: Some("narrative summary"),
         };
-        let content = build_system_content(&identity, &mem, &no_projects());
+        let content = build_system_content(&identity, &mem, &no_projects(), &SkillsContext::none());
 
         let obs_close = content.find("</OBSERVATION_LOG>");
         let ctx_open = content.find("<RECENT_CONTEXT>");
@@ -433,8 +495,14 @@ mod tests {
             message_source: None,
         };
 
-        let messages =
-            assemble_system_prompt(&identity, &recent, &no_memory(), &no_projects(), Some(&ctx));
+        let messages = assemble_system_prompt(
+            &identity,
+            &recent,
+            &no_memory(),
+            &no_projects(),
+            &SkillsContext::none(),
+            Some(&ctx),
+        );
 
         // Find the time context system message
         let time_msg = messages
@@ -470,8 +538,14 @@ mod tests {
         let mut recent = RecentMessages::new();
         recent.push(Message::user("hello"));
 
-        let messages =
-            assemble_system_prompt(&identity, &recent, &no_memory(), &no_projects(), None);
+        let messages = assemble_system_prompt(
+            &identity,
+            &recent,
+            &no_memory(),
+            &no_projects(),
+            &SkillsContext::none(),
+            None,
+        );
         assert_eq!(messages.len(), 2, "should have system + user, no time tag");
     }
 
@@ -487,8 +561,14 @@ mod tests {
             message_source: None,
         };
 
-        let messages =
-            assemble_system_prompt(&identity, &recent, &no_memory(), &no_projects(), Some(&ctx));
+        let messages = assemble_system_prompt(
+            &identity,
+            &recent,
+            &no_memory(),
+            &no_projects(),
+            &SkillsContext::none(),
+            Some(&ctx),
+        );
 
         let time_msg = messages
             .iter()
@@ -514,8 +594,14 @@ mod tests {
             message_source: Some("discord".to_string()),
         };
 
-        let messages =
-            assemble_system_prompt(&identity, &recent, &no_memory(), &no_projects(), Some(&ctx));
+        let messages = assemble_system_prompt(
+            &identity,
+            &recent,
+            &no_memory(),
+            &no_projects(),
+            &SkillsContext::none(),
+            Some(&ctx),
+        );
 
         let time_msg = messages
             .iter()
@@ -545,8 +631,14 @@ mod tests {
             message_source: None,
         };
 
-        let messages =
-            assemble_system_prompt(&identity, &recent, &no_memory(), &no_projects(), Some(&ctx));
+        let messages = assemble_system_prompt(
+            &identity,
+            &recent,
+            &no_memory(),
+            &no_projects(),
+            &SkillsContext::none(),
+            Some(&ctx),
+        );
 
         // Only one time context message
         let time_count = messages
@@ -567,6 +659,110 @@ mod tests {
             messages[time_pos + 1].content,
             "third",
             "time tag should be before the last user message"
+        );
+    }
+
+    // ── Skills context tests ─────────────────────────────────────────────────
+
+    #[test]
+    fn skills_index_in_prompt() {
+        let identity = IdentityFiles::default();
+        let skills = SkillsContext {
+            index: Some(
+                "<available_skills>\n  <skill><name>pdf</name></skill>\n</available_skills>",
+            ),
+            active_instructions: None,
+        };
+        let content = build_system_content(&identity, &no_memory(), &no_projects(), &skills);
+        assert!(
+            content.contains("<SKILLS_INDEX>"),
+            "should have skills index section"
+        );
+        assert!(
+            content.contains("</SKILLS_INDEX>"),
+            "should have closing skills index tag"
+        );
+        assert!(
+            content.contains("<name>pdf</name>"),
+            "should contain skill name"
+        );
+    }
+
+    #[test]
+    fn active_skills_in_prompt() {
+        let identity = IdentityFiles::default();
+        let skills = SkillsContext {
+            index: None,
+            active_instructions: Some(
+                "<active_skill name=\"pdf\">\nUse this for PDFs.\n</active_skill>",
+            ),
+        };
+        let content = build_system_content(&identity, &no_memory(), &no_projects(), &skills);
+        assert!(
+            content.contains("<ACTIVE_SKILLS>"),
+            "should have active skills section"
+        );
+        assert!(
+            content.contains("Use this for PDFs"),
+            "should contain skill body"
+        );
+    }
+
+    #[test]
+    fn skills_after_projects() {
+        let identity = IdentityFiles::default();
+        let projects = ProjectsContext {
+            index: Some("| Name | Status |"),
+            active_context: Some("**Project:** test"),
+        };
+        let skills = SkillsContext {
+            index: Some("<available_skills/>"),
+            active_instructions: Some("<active_skill/>"),
+        };
+        let content = build_system_content(&identity, &no_memory(), &projects, &skills);
+
+        let project_close = content.find("</ACTIVE_PROJECT>");
+        let skills_open = content.find("<SKILLS_INDEX>");
+        assert!(
+            project_close.is_some() && skills_open.is_some(),
+            "both sections should exist"
+        );
+        assert!(
+            project_close < skills_open,
+            "skills should appear after projects"
+        );
+    }
+
+    #[test]
+    fn skills_empty_index_skipped() {
+        let identity = IdentityFiles::default();
+        let skills = SkillsContext {
+            index: Some(""),
+            active_instructions: None,
+        };
+        let content = build_system_content(&identity, &no_memory(), &no_projects(), &skills);
+        assert!(
+            !content.contains("SKILLS_INDEX"),
+            "empty skills index should be skipped"
+        );
+    }
+
+    #[test]
+    fn skills_none_skipped() {
+        let identity = IdentityFiles::default();
+        let content = build_system_content(
+            &identity,
+            &no_memory(),
+            &no_projects(),
+            &SkillsContext::none(),
+        );
+        assert!(
+            !content.contains("SKILLS_INDEX"),
+            "None skills index should be skipped"
+        );
+        assert!(
+            !content.contains("ACTIVE_SKILLS"),
+            "None active skills should be skipped"
         );
     }
 }

@@ -10,6 +10,7 @@ pub mod memory;
 pub mod models;
 pub mod projects;
 pub mod pulse;
+pub mod skills;
 pub mod time;
 pub mod tools;
 pub mod workspace;

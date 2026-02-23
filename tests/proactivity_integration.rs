@@ -14,7 +14,7 @@ mod proactivity_integration {
     use tempfile::tempdir;
 
     use ironclaw::agent::Agent;
-    use ironclaw::agent::context::ProjectsContext;
+    use ironclaw::agent::context::{ProjectsContext, SkillsContext};
     use ironclaw::channels::null::NullDisplay;
     use ironclaw::models::{
         CompletionOptions, Message, ModelError, ModelProvider, ModelResponse, Role, ToolDefinition,
@@ -568,7 +568,13 @@ mod proactivity_integration {
 
         let no_projects = ProjectsContext::none();
         let result = agent
-            .run_system_turn("background check prompt", &display, None, &no_projects)
+            .run_system_turn(
+                "background check prompt",
+                &display,
+                None,
+                &no_projects,
+                &SkillsContext::none(),
+            )
             .await
             .unwrap();
 

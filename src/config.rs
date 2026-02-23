@@ -126,6 +126,8 @@ pub struct Config {
     pub discord: Option<DiscordConfig>,
     /// Webhook endpoint configuration.
     pub webhook: WebhookConfig,
+    /// Skills subsystem configuration.
+    pub skills: SkillsConfig,
 }
 
 impl fmt::Debug for Config {
@@ -146,6 +148,7 @@ impl fmt::Debug for Config {
             .field("timezone", &self.timezone)
             .field("discord", &self.discord.as_ref().map(|_| "[configured]"))
             .field("webhook", &self.webhook)
+            .field("skills", &self.skills)
             .finish()
     }
 }
@@ -241,6 +244,13 @@ pub struct WebhookConfig {
     pub enabled: bool,
     /// Optional bearer token for authenticating incoming requests.
     pub secret: Option<String>,
+}
+
+/// Validated skills subsystem configuration.
+#[derive(Debug, Clone)]
+pub struct SkillsConfig {
+    /// Directories to scan for skills (resolved, expanded paths).
+    pub dirs: Vec<PathBuf>,
 }
 
 impl Config {
@@ -392,6 +402,8 @@ impl Config {
         let discord = resolve_discord_config(file.and_then(|f| f.discord.as_ref()));
         let webhook = resolve_webhook_config(file.and_then(|f| f.webhook.as_ref()));
 
+        let skills = resolve_skills_config(file.and_then(|f| f.skills.as_ref()), &workspace_dir);
+
         let timezone_str = std::env::var("IRONCLAW_TIMEZONE")
             .ok()
             .or_else(|| file.and_then(|f| f.timezone.clone()));
@@ -424,6 +436,7 @@ impl Config {
             timezone,
             discord,
             webhook,
+            skills,
         })
     }
 }
@@ -547,6 +560,8 @@ struct ConfigFile {
     discord: Option<DiscordConfigFile>,
     /// Webhook endpoint configuration.
     webhook: Option<WebhookConfigFile>,
+    /// Skills subsystem configuration.
+    skills: Option<SkillsConfigFile>,
 }
 
 /// A named provider entry under `[providers.<name>]`.
@@ -636,6 +651,14 @@ struct WebhookConfigFile {
     enabled: Option<bool>,
     /// Optional bearer token for authentication.
     secret: Option<String>,
+}
+
+/// Raw TOML `[skills]` section.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SkillsConfigFile {
+    /// Additional directories to scan for skills.
+    dirs: Option<Vec<String>>,
 }
 
 // ── Resolution logic ─────────────────────────────────────────────────────────
@@ -795,6 +818,24 @@ fn resolve_webhook_config(section: Option<&WebhookConfigFile>) -> WebhookConfig 
         },
         None => WebhookConfig::default(),
     }
+}
+
+/// Resolve skills configuration from TOML section.
+///
+/// Defaults to the workspace `skills/` directory. Additional directories
+/// from the config are expanded and appended.
+fn resolve_skills_config(section: Option<&SkillsConfigFile>, workspace_dir: &Path) -> SkillsConfig {
+    let layout = crate::workspace::layout::WorkspaceLayout::new(workspace_dir);
+    let mut dirs = vec![layout.skills_dir()];
+
+    if let Some(extra) = section.and_then(|s| s.dirs.as_ref()) {
+        for raw in extra {
+            let expanded = shellexpand::tilde(raw);
+            dirs.push(PathBuf::from(expanded.as_ref()));
+        }
+    }
+
+    SkillsConfig { dirs }
 }
 
 /// Warn on deprecated environment variables that no longer have effect.
@@ -1071,6 +1112,10 @@ mod tests {
         assert!(
             body.contains("[webhook]"),
             "example should document webhook section"
+        );
+        assert!(
+            body.contains("[skills]"),
+            "example should document skills section"
         );
     }
 

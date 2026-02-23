@@ -10,7 +10,9 @@ use crate::models::{CompletionOptions, Message, ModelProvider, ModelResponse};
 use crate::tools::{SharedToolFilter, ToolRegistry};
 use crate::workspace::identity::IdentityFiles;
 
-use self::context::{MemoryContext, ProjectsContext, TimeContext, assemble_system_prompt};
+use self::context::{
+    MemoryContext, ProjectsContext, SkillsContext, TimeContext, assemble_system_prompt,
+};
 use self::recent_messages::RecentMessages;
 
 /// Maximum number of tool-call iterations before the agent stops.
@@ -193,6 +195,7 @@ impl Agent {
         display: &dyn TurnDisplay,
         origin: Option<&MessageOrigin>,
         projects_ctx: &ProjectsContext<'_>,
+        skills_ctx: &SkillsContext<'_>,
     ) -> Result<Vec<String>, IronclawError> {
         let now = crate::time::now_local(self.tz);
         let time_ctx = TimeContext {
@@ -226,6 +229,7 @@ impl Agent {
             &self.options,
             &memory_ctx,
             projects_ctx,
+            skills_ctx,
             &mut self.recent_messages,
             display,
             Some(&time_ctx),
@@ -250,6 +254,7 @@ impl Agent {
         display: &dyn TurnDisplay,
         provider_override: Option<&dyn ModelProvider>,
         projects_ctx: &ProjectsContext<'_>,
+        skills_ctx: &SkillsContext<'_>,
     ) -> Result<SystemTurnResult, IronclawError> {
         let mut thread_messages = RecentMessages::new();
         thread_messages.push(Message::user(prompt));
@@ -270,6 +275,7 @@ impl Agent {
             &self.options,
             &memory_ctx,
             projects_ctx,
+            skills_ctx,
             &mut thread_messages,
             display,
             None,
@@ -317,6 +323,7 @@ async fn execute_turn(
     options: &CompletionOptions,
     memory_ctx: &MemoryContext<'_>,
     projects_ctx: &ProjectsContext<'_>,
+    skills_ctx: &SkillsContext<'_>,
     recent_messages: &mut RecentMessages,
     display: &dyn TurnDisplay,
     time_ctx: Option<&TimeContext>,
@@ -333,6 +340,7 @@ async fn execute_turn(
             recent_messages,
             memory_ctx,
             projects_ctx,
+            skills_ctx,
             time_ctx,
         );
 
@@ -490,7 +498,7 @@ mod tests {
 
         let display = NullDisplay;
         let result = agent
-            .process_message("hi", &display, None, &no_projects())
+            .process_message("hi", &display, None, &no_projects(), &SkillsContext::none())
             .await
             .unwrap();
         assert_eq!(result, vec!["hello there"], "should return model text");
@@ -527,7 +535,13 @@ mod tests {
 
         let display = NullDisplay;
         let result = agent
-            .process_message("run echo test", &display, None, &no_projects())
+            .process_message(
+                "run echo test",
+                &display,
+                None,
+                &no_projects(),
+                &SkillsContext::none(),
+            )
             .await
             .unwrap();
         assert_eq!(
@@ -569,7 +583,13 @@ mod tests {
 
         let display = NullDisplay;
         let result = agent
-            .process_message("what does echo test print?", &display, None, &no_projects())
+            .process_message(
+                "what does echo test print?",
+                &display,
+                None,
+                &no_projects(),
+                &SkillsContext::none(),
+            )
             .await
             .unwrap();
         assert_eq!(
@@ -612,7 +632,13 @@ mod tests {
 
         let display = NullDisplay;
         let result = agent
-            .process_message("loop forever", &display, None, &no_projects())
+            .process_message(
+                "loop forever",
+                &display,
+                None,
+                &no_projects(),
+                &SkillsContext::none(),
+            )
             .await;
         assert!(result.is_err(), "should error after max iterations");
     }
@@ -633,7 +659,13 @@ mod tests {
 
         let display = NullDisplay;
         let result = agent
-            .run_system_turn("check status", &display, None, &no_projects())
+            .run_system_turn(
+                "check status",
+                &display,
+                None,
+                &no_projects(),
+                &SkillsContext::none(),
+            )
             .await
             .unwrap();
         assert_eq!(result.response, "HEARTBEAT_OK", "response should match");
@@ -665,7 +697,13 @@ mod tests {
         agent.queue_system_event("email arrived from boss".to_string());
         let display = NullDisplay;
         agent
-            .process_message("what's up?", &display, None, &no_projects())
+            .process_message(
+                "what's up?",
+                &display,
+                None,
+                &no_projects(),
+                &SkillsContext::none(),
+            )
             .await
             .unwrap();
 
@@ -738,7 +776,13 @@ mod tests {
 
         let display = NullDisplay;
         let result = agent
-            .process_message("hello", &display, None, &no_projects())
+            .process_message(
+                "hello",
+                &display,
+                None,
+                &no_projects(),
+                &SkillsContext::none(),
+            )
             .await;
         assert!(result.is_err(), "empty response should return error");
 

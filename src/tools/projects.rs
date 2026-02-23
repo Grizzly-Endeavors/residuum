@@ -7,6 +7,7 @@ use crate::mcp::SharedMcpRegistry;
 use crate::models::ToolDefinition;
 use crate::projects::activation::SharedProjectState;
 use crate::projects::lifecycle;
+use crate::skills::SharedSkillState;
 
 use super::path_policy::SharedPathPolicy;
 use super::{SharedToolFilter, Tool, ToolError, ToolResult};
@@ -19,6 +20,7 @@ pub struct ProjectActivateTool {
     path_policy: SharedPathPolicy,
     tool_filter: SharedToolFilter,
     mcp_registry: SharedMcpRegistry,
+    skill_state: SharedSkillState,
 }
 
 impl ProjectActivateTool {
@@ -29,12 +31,14 @@ impl ProjectActivateTool {
         path_policy: SharedPathPolicy,
         tool_filter: SharedToolFilter,
         mcp_registry: SharedMcpRegistry,
+        skill_state: SharedSkillState,
     ) -> Self {
         Self {
             state,
             path_policy,
             tool_filter,
             mcp_registry,
+            skill_state,
         }
     }
 }
@@ -98,6 +102,17 @@ impl Tool for ProjectActivateTool {
                         "mcp server reconciliation"
                     );
                 }
+                // Rescan skills to include project-scoped skills
+                let project_skills_dir = active.project_root.join("skills");
+                if let Err(e) = self
+                    .skill_state
+                    .lock()
+                    .await
+                    .rescan(Some(&project_skills_dir))
+                    .await
+                {
+                    tracing::warn!(error = %e, "failed to rescan skills after project activation");
+                }
                 Ok(ToolResult::success(manifest_summary))
             }
             Err(e) => Ok(ToolResult::error(e.to_string())),
@@ -113,6 +128,7 @@ pub struct ProjectDeactivateTool {
     path_policy: SharedPathPolicy,
     tool_filter: SharedToolFilter,
     mcp_registry: SharedMcpRegistry,
+    skill_state: SharedSkillState,
     tz: chrono_tz::Tz,
 }
 
@@ -124,6 +140,7 @@ impl ProjectDeactivateTool {
         path_policy: SharedPathPolicy,
         tool_filter: SharedToolFilter,
         mcp_registry: SharedMcpRegistry,
+        skill_state: SharedSkillState,
         tz: chrono_tz::Tz,
     ) -> Self {
         Self {
@@ -131,6 +148,7 @@ impl ProjectDeactivateTool {
             path_policy,
             tool_filter,
             mcp_registry,
+            skill_state,
             tz,
         }
     }
@@ -181,6 +199,10 @@ impl Tool for ProjectDeactivateTool {
                         count = stopped.len(),
                         "stopping mcp servers on deactivation"
                     );
+                }
+                // Rescan skills without project dir (removes project-scoped skills)
+                if let Err(e) = self.skill_state.lock().await.rescan(None).await {
+                    tracing::warn!(error = %e, "failed to rescan skills after project deactivation");
                 }
                 Ok(ToolResult::success(format!(
                     "Deactivated project '{name}'. Log entry recorded."
@@ -447,6 +469,7 @@ mod tests {
     use crate::mcp::McpRegistry;
     use crate::projects::activation::ProjectState;
     use crate::projects::scanner::ProjectIndex;
+    use crate::skills::{SkillIndex, SkillState};
     use crate::tools::ToolFilter;
     use crate::tools::path_policy::PathPolicy;
     use crate::workspace::bootstrap::ensure_workspace;
@@ -462,6 +485,10 @@ mod tests {
 
     fn empty_mcp() -> SharedMcpRegistry {
         McpRegistry::new_shared()
+    }
+
+    fn empty_skills() -> SharedSkillState {
+        SkillState::new_shared(SkillIndex::default(), vec![])
     }
 
     async fn setup() -> (tempfile::TempDir, SharedProjectState) {
@@ -483,20 +510,29 @@ mod tests {
 
         let filter = no_filter();
         let mcp = empty_mcp();
+        let skills = empty_skills();
         assert_eq!(
             ProjectActivateTool::new(
                 Arc::clone(&state),
                 Arc::clone(&policy),
                 Arc::clone(&filter),
                 Arc::clone(&mcp),
+                Arc::clone(&skills),
             )
             .name(),
             "project_activate",
             "activate tool name"
         );
         assert_eq!(
-            ProjectDeactivateTool::new(Arc::clone(&state), policy, filter, mcp, chrono_tz::UTC)
-                .name(),
+            ProjectDeactivateTool::new(
+                Arc::clone(&state),
+                policy,
+                filter,
+                mcp,
+                skills,
+                chrono_tz::UTC,
+            )
+            .name(),
             "project_deactivate",
             "deactivate tool name"
         );
@@ -554,7 +590,13 @@ mod tests {
     #[tokio::test]
     async fn activate_nonexistent() {
         let (_dir, state) = setup().await;
-        let tool = ProjectActivateTool::new(state, permissive_policy(), no_filter(), empty_mcp());
+        let tool = ProjectActivateTool::new(
+            state,
+            permissive_policy(),
+            no_filter(),
+            empty_mcp(),
+            empty_skills(),
+        );
         let result = tool
             .execute(serde_json::json!({"name": "nonexistent"}))
             .await
@@ -570,6 +612,7 @@ mod tests {
             permissive_policy(),
             no_filter(),
             empty_mcp(),
+            empty_skills(),
             chrono_tz::UTC,
         );
         let result = tool.execute(serde_json::json!({"log": ""})).await.unwrap();

@@ -89,7 +89,7 @@ impl WorkspaceLayout {
 
     /// Path to the skills directory.
     #[must_use]
-    pub(crate) fn skills_dir(&self) -> PathBuf {
+    pub fn skills_dir(&self) -> PathBuf {
         self.root.join("skills")
     }
 

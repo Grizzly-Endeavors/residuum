@@ -9,6 +9,7 @@ pub mod memory_search;
 pub mod path_policy;
 pub mod projects;
 mod read;
+pub mod skills;
 mod write;
 
 pub use file_tracker::{FileTracker, SharedFileTracker};
@@ -223,6 +224,7 @@ impl ToolRegistry {
         path_policy: SharedPathPolicy,
         tool_filter: SharedToolFilter,
         mcp_registry: crate::mcp::SharedMcpRegistry,
+        skill_state: crate::skills::SharedSkillState,
         tz: chrono_tz::Tz,
     ) {
         self.register(Box::new(projects::ProjectActivateTool::new(
@@ -230,12 +232,14 @@ impl ToolRegistry {
             Arc::clone(&path_policy),
             Arc::clone(&tool_filter),
             Arc::clone(&mcp_registry),
+            Arc::clone(&skill_state),
         )));
         self.register(Box::new(projects::ProjectDeactivateTool::new(
             Arc::clone(&state),
             path_policy,
             tool_filter,
             mcp_registry,
+            skill_state,
             tz,
         )));
         self.register(Box::new(projects::ProjectCreateTool::new(
@@ -247,6 +251,12 @@ impl ToolRegistry {
             tz,
         )));
         self.register(Box::new(projects::ProjectListTool::new(state)));
+    }
+
+    /// Register skill management tools (`skill_activate`, `skill_deactivate`).
+    pub fn register_skill_tools(&mut self, state: crate::skills::SharedSkillState) {
+        self.register(Box::new(skills::SkillActivateTool::new(Arc::clone(&state))));
+        self.register(Box::new(skills::SkillDeactivateTool::new(state)));
     }
 
     /// Register cron management tools (`cron_add`, `cron_list`, `cron_update`, `cron_remove`).

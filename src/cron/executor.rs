@@ -4,7 +4,7 @@ use chrono::NaiveDateTime;
 use chrono_tz::Tz;
 
 use crate::agent::Agent;
-use crate::agent::context::ProjectsContext;
+use crate::agent::context::{ProjectsContext, SkillsContext};
 use crate::channels::null::NullDisplay;
 use crate::error::IronclawError;
 use crate::models::ModelProvider;
@@ -161,7 +161,13 @@ async fn run_job(
         (CronPayload::AgentTurn { message }, Delivery::UserVisible) => {
             let display = NullDisplay;
             match agent
-                .run_system_turn(message, &display, provider_override, projects_ctx)
+                .run_system_turn(
+                    message,
+                    &display,
+                    provider_override,
+                    projects_ctx,
+                    &SkillsContext::none(),
+                )
                 .await
             {
                 Ok(result) => {
@@ -183,7 +189,13 @@ async fn run_job(
         (CronPayload::AgentTurn { message }, Delivery::Background) => {
             let display = NullDisplay;
             match agent
-                .run_system_turn(message, &display, provider_override, projects_ctx)
+                .run_system_turn(
+                    message,
+                    &display,
+                    provider_override,
+                    projects_ctx,
+                    &SkillsContext::none(),
+                )
                 .await
             {
                 Ok(result) => {
