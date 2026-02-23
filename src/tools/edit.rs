@@ -96,7 +96,7 @@ impl Tool for EditTool {
                           Validates content hashes before applying changes to detect stale edits. \
                           Operations: 'replace' (replace line or range), 'insert_after' (insert \
                           after a line; use start_line '0' to insert at file start), 'delete' \
-                          (remove line or range)."
+                          (remove line or range). Use this over write_file when updating existing content."
                 .to_string(),
             parameters: serde_json::json!({
                 "type": "object",
