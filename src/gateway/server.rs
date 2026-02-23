@@ -136,13 +136,29 @@ pub async fn run_gateway(cfg: Config) -> Result<GatewayExit, IronclawError> {
         layout.clone(),
     )));
 
+    // Build path policy for write scoping
+    let path_policy = crate::tools::PathPolicy::new_shared(layout.root().to_path_buf());
+
+    // Build tool filter — `exec` is gated, requires project opt-in
+    let tool_filter =
+        crate::tools::ToolFilter::new_shared(std::collections::HashSet::from(["exec"]));
+
+    // Build MCP registry for server lifecycle management
+    let mcp_registry = crate::mcp::McpRegistry::new_shared();
+
     // Build tool registry
     let mut tools = ToolRegistry::new();
     let file_tracker = crate::tools::FileTracker::new_shared();
-    tools.register_defaults(file_tracker);
+    tools.register_defaults(file_tracker, Arc::clone(&path_policy));
     tools.register_search_tool(Arc::clone(&search_index));
     tools.register_cron_tools(Arc::clone(&cron_store), Arc::clone(&cron_notify), tz);
-    tools.register_project_tools(Arc::clone(&project_state), tz);
+    tools.register_project_tools(
+        Arc::clone(&project_state),
+        path_policy,
+        Arc::clone(&tool_filter),
+        mcp_registry,
+        tz,
+    );
 
     // Build completion options
     let options = CompletionOptions {
@@ -150,7 +166,7 @@ pub async fn run_gateway(cfg: Config) -> Result<GatewayExit, IronclawError> {
     };
 
     // Build agent
-    let mut agent = Agent::new(provider, tools, identity, options, tz);
+    let mut agent = Agent::new(provider, tools, tool_filter, identity, options, tz);
     agent.reload_observations(&layout).await?;
     agent.reload_recent_context(&layout).await?;
 

@@ -11,17 +11,34 @@
 mod projects_integration {
     use std::sync::Arc;
 
+    use std::collections::HashSet;
+    use std::path::PathBuf;
+
     use ironclaw::agent::context::ProjectsContext;
+    use ironclaw::mcp::{McpRegistry, SharedMcpRegistry};
     use ironclaw::projects::activation::{ProjectState, SharedProjectState};
     use ironclaw::projects::lifecycle;
     use ironclaw::projects::scanner::ProjectIndex;
-    use ironclaw::tools::Tool;
+    use ironclaw::tools::path_policy::{PathPolicy, SharedPathPolicy};
     use ironclaw::tools::projects::{
         ProjectActivateTool, ProjectArchiveTool, ProjectCreateTool, ProjectDeactivateTool,
         ProjectListTool,
     };
+    use ironclaw::tools::{SharedToolFilter, Tool, ToolFilter};
     use ironclaw::workspace::bootstrap::ensure_workspace;
     use ironclaw::workspace::layout::WorkspaceLayout;
+
+    fn permissive_policy() -> SharedPathPolicy {
+        PathPolicy::new_shared(PathBuf::from("/tmp"))
+    }
+
+    fn no_filter() -> SharedToolFilter {
+        ToolFilter::new_shared(HashSet::new())
+    }
+
+    fn empty_mcp() -> SharedMcpRegistry {
+        McpRegistry::new_shared()
+    }
 
     /// Set up a workspace with no projects.
     async fn setup() -> (tempfile::TempDir, WorkspaceLayout, SharedProjectState) {
@@ -250,7 +267,12 @@ mod projects_integration {
         );
 
         // Activate
-        let activate_tool = ProjectActivateTool::new(Arc::clone(&state));
+        let activate_tool = ProjectActivateTool::new(
+            Arc::clone(&state),
+            permissive_policy(),
+            no_filter(),
+            empty_mcp(),
+        );
         let activate_result = activate_tool
             .execute(serde_json::json!({"name": "Tool Test"}))
             .await
@@ -270,7 +292,13 @@ mod projects_integration {
         );
 
         // Deactivate
-        let deactivate_tool = ProjectDeactivateTool::new(Arc::clone(&state), tz);
+        let deactivate_tool = ProjectDeactivateTool::new(
+            Arc::clone(&state),
+            permissive_policy(),
+            no_filter(),
+            empty_mcp(),
+            tz,
+        );
         let deactivate_result = deactivate_tool
             .execute(serde_json::json!({"log": "Tool-level test session."}))
             .await
@@ -419,7 +447,12 @@ mod projects_integration {
             .await
             .unwrap();
 
-        let activate_tool = ProjectActivateTool::new(Arc::clone(&state));
+        let activate_tool = ProjectActivateTool::new(
+            Arc::clone(&state),
+            permissive_policy(),
+            no_filter(),
+            empty_mcp(),
+        );
         activate_tool
             .execute(serde_json::json!({"name": "Active Proj"}))
             .await
@@ -487,13 +520,24 @@ mod projects_integration {
             .await
             .unwrap();
 
-        let activate_tool = ProjectActivateTool::new(Arc::clone(&state));
+        let activate_tool = ProjectActivateTool::new(
+            Arc::clone(&state),
+            permissive_policy(),
+            no_filter(),
+            empty_mcp(),
+        );
         activate_tool
             .execute(serde_json::json!({"name": "Empty Log"}))
             .await
             .unwrap();
 
-        let deactivate_tool = ProjectDeactivateTool::new(Arc::clone(&state), tz);
+        let deactivate_tool = ProjectDeactivateTool::new(
+            Arc::clone(&state),
+            permissive_policy(),
+            no_filter(),
+            empty_mcp(),
+            tz,
+        );
         let result = deactivate_tool
             .execute(serde_json::json!({"log": ""}))
             .await
@@ -515,5 +559,243 @@ mod projects_integration {
             ctx.active_context.is_none(),
             "none() should have no active context"
         );
+    }
+
+    // ── PathPolicy integration ────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn path_policy_scopes_writes_to_active_project() {
+        let (_dir, layout, state) = setup().await;
+        let tz = chrono_tz::UTC;
+
+        // Use the workspace root for the policy (matches real gateway behavior)
+        let ws_root = std::fs::canonicalize(layout.root()).unwrap();
+        let policy = PathPolicy::new_shared(ws_root.clone());
+
+        // Create two projects
+        let create_tool = ProjectCreateTool::new(Arc::clone(&state), tz);
+        create_tool
+            .execute(serde_json::json!({"name": "Project A", "description": "first"}))
+            .await
+            .unwrap();
+        create_tool
+            .execute(serde_json::json!({"name": "Project B", "description": "second"}))
+            .await
+            .unwrap();
+
+        // Without active project, writes to projects/ should be blocked
+        {
+            let p = policy.read().await;
+            assert!(
+                p.check_write(&ws_root.join("projects/project-a/file.md"))
+                    .is_err(),
+                "writes to projects/ should be blocked without active project"
+            );
+            assert!(
+                p.check_write(&ws_root.join("memory/notes.md")).is_ok(),
+                "workspace-level writes should be allowed"
+            );
+            assert!(
+                p.check_write(&ws_root.join("archive/old/file.md")).is_err(),
+                "archive writes should always be blocked"
+            );
+        }
+
+        // Activate project A
+        let activate_tool = ProjectActivateTool::new(
+            Arc::clone(&state),
+            Arc::clone(&policy),
+            no_filter(),
+            empty_mcp(),
+        );
+        activate_tool
+            .execute(serde_json::json!({"name": "Project A"}))
+            .await
+            .unwrap();
+
+        // Writes to project A should now be allowed, project B blocked
+        {
+            let p = policy.read().await;
+            assert!(
+                p.check_write(&ws_root.join("projects/project-a/notes/test.md"))
+                    .is_ok(),
+                "writes to active project should be allowed"
+            );
+            assert!(
+                p.check_write(&ws_root.join("projects/project-b/file.md"))
+                    .is_err(),
+                "writes to inactive project should be blocked"
+            );
+        }
+
+        // Deactivate — writes to projects/ blocked again
+        let deactivate_tool = ProjectDeactivateTool::new(
+            Arc::clone(&state),
+            Arc::clone(&policy),
+            no_filter(),
+            empty_mcp(),
+            tz,
+        );
+        deactivate_tool
+            .execute(serde_json::json!({"log": "done testing write scoping"}))
+            .await
+            .unwrap();
+
+        {
+            let p = policy.read().await;
+            assert!(
+                p.check_write(&ws_root.join("projects/project-a/file.md"))
+                    .is_err(),
+                "writes to projects/ should be blocked after deactivation"
+            );
+        }
+    }
+
+    // ── ToolFilter integration ────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn tool_filter_gates_exec_per_project() {
+        let (_dir, _layout, state) = setup().await;
+        let tz = chrono_tz::UTC;
+
+        let gated: HashSet<&str> = HashSet::from(["exec"]);
+        let filter = ToolFilter::new_shared(gated);
+
+        // Without active project, exec is gated
+        {
+            let f = filter.read().await;
+            assert!(!f.is_available("exec"), "exec should be gated by default");
+            assert!(
+                f.is_available("read_file"),
+                "non-gated tools should always be available"
+            );
+        }
+
+        // Create a project with tools: ["exec"]
+        let create_tool = ProjectCreateTool::new(Arc::clone(&state), tz);
+        create_tool
+            .execute(serde_json::json!({
+                "name": "With Exec",
+                "description": "project that enables exec",
+                "tools": ["exec"]
+            }))
+            .await
+            .unwrap();
+
+        // Activate — should enable exec via tool filter
+        let activate_tool = ProjectActivateTool::new(
+            Arc::clone(&state),
+            permissive_policy(),
+            Arc::clone(&filter),
+            empty_mcp(),
+        );
+        activate_tool
+            .execute(serde_json::json!({"name": "With Exec"}))
+            .await
+            .unwrap();
+
+        {
+            let f = filter.read().await;
+            assert!(
+                f.is_available("exec"),
+                "exec should be enabled after activating project with tools: [exec]"
+            );
+        }
+
+        // Deactivate — exec should be gated again
+        let deactivate_tool = ProjectDeactivateTool::new(
+            Arc::clone(&state),
+            permissive_policy(),
+            Arc::clone(&filter),
+            empty_mcp(),
+            tz,
+        );
+        deactivate_tool
+            .execute(serde_json::json!({"log": "testing tool filter"}))
+            .await
+            .unwrap();
+
+        {
+            let f = filter.read().await;
+            assert!(
+                !f.is_available("exec"),
+                "exec should be gated after deactivation"
+            );
+        }
+    }
+
+    // ── MCP registry integration ──────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn mcp_registry_reconciles_on_activate_deactivate() {
+        let (_dir, layout, state) = setup().await;
+        let tz = chrono_tz::UTC;
+        let mcp = McpRegistry::new_shared();
+
+        // Create a project with MCP servers in frontmatter
+        let create_tool = ProjectCreateTool::new(Arc::clone(&state), tz);
+        create_tool
+            .execute(serde_json::json!({
+                "name": "MCP Test",
+                "description": "has mcp servers"
+            }))
+            .await
+            .unwrap();
+
+        // Manually add mcp_servers to the PROJECT.md frontmatter
+        let project_md = layout.projects_dir().join("mcp-test/PROJECT.md");
+        let content = std::fs::read_to_string(&project_md).unwrap();
+        let new_content = content.replace(
+            "status: active",
+            "status: active\nmcp_servers:\n  - name: filesystem\n    command: mcp-server-fs\n    args:\n      - /tmp",
+        );
+        std::fs::write(&project_md, new_content).unwrap();
+
+        // Rescan to pick up changes
+        state.lock().await.rescan().await.unwrap();
+
+        // Activate — should reconcile and queue servers to start
+        let activate_tool = ProjectActivateTool::new(
+            Arc::clone(&state),
+            permissive_policy(),
+            no_filter(),
+            Arc::clone(&mcp),
+        );
+        activate_tool
+            .execute(serde_json::json!({"name": "MCP Test"}))
+            .await
+            .unwrap();
+
+        {
+            let r = mcp.read().await;
+            let servers = r.servers();
+            assert_eq!(servers.len(), 1, "should have one MCP server tracked");
+            assert_eq!(
+                servers.first().unwrap().name,
+                "filesystem",
+                "server name should match"
+            );
+        }
+
+        // Deactivate — should stop all
+        let deactivate_tool = ProjectDeactivateTool::new(
+            Arc::clone(&state),
+            permissive_policy(),
+            no_filter(),
+            Arc::clone(&mcp),
+            tz,
+        );
+        deactivate_tool
+            .execute(serde_json::json!({"log": "testing MCP lifecycle"}))
+            .await
+            .unwrap();
+
+        {
+            let r = mcp.read().await;
+            assert!(
+                r.servers().is_empty(),
+                "all MCP servers should be cleared after deactivation"
+            );
+        }
     }
 }

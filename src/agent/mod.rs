@@ -7,7 +7,7 @@ use crate::channels::TurnDisplay;
 use crate::channels::types::MessageOrigin;
 use crate::error::IronclawError;
 use crate::models::{CompletionOptions, Message, ModelProvider, ModelResponse};
-use crate::tools::ToolRegistry;
+use crate::tools::{SharedToolFilter, ToolRegistry};
 use crate::workspace::identity::IdentityFiles;
 
 use self::context::{MemoryContext, ProjectsContext, TimeContext, assemble_system_prompt};
@@ -30,6 +30,7 @@ pub struct SystemTurnResult {
 pub struct Agent {
     provider: Box<dyn ModelProvider>,
     tools: ToolRegistry,
+    tool_filter: SharedToolFilter,
     identity: IdentityFiles,
     recent_messages: RecentMessages,
     options: CompletionOptions,
@@ -48,6 +49,7 @@ impl Agent {
     pub fn new(
         provider: Box<dyn ModelProvider>,
         tools: ToolRegistry,
+        tool_filter: SharedToolFilter,
         identity: IdentityFiles,
         options: CompletionOptions,
         tz: chrono_tz::Tz,
@@ -55,6 +57,7 @@ impl Agent {
         Self {
             provider,
             tools,
+            tool_filter,
             identity,
             recent_messages: RecentMessages::new(),
             options,
@@ -218,6 +221,7 @@ impl Agent {
         execute_turn(
             &*self.provider,
             &self.tools,
+            &self.tool_filter,
             &self.identity,
             &self.options,
             &memory_ctx,
@@ -261,6 +265,7 @@ impl Agent {
         let texts = execute_turn(
             provider,
             &self.tools,
+            &self.tool_filter,
             &self.identity,
             &self.options,
             &memory_ctx,
@@ -307,6 +312,7 @@ impl Agent {
 async fn execute_turn(
     provider: &dyn ModelProvider,
     tools: &ToolRegistry,
+    tool_filter: &SharedToolFilter,
     identity: &IdentityFiles,
     options: &CompletionOptions,
     memory_ctx: &MemoryContext<'_>,
@@ -315,7 +321,8 @@ async fn execute_turn(
     display: &dyn TurnDisplay,
     time_ctx: Option<&TimeContext>,
 ) -> Result<Vec<String>, IronclawError> {
-    let tool_definitions = tools.definitions();
+    let filter = tool_filter.read().await;
+    let tool_definitions = tools.definitions(&filter);
     let mut texts: Vec<String> = Vec::new();
 
     for iteration in 0..MAX_TOOL_ITERATIONS {
@@ -370,7 +377,7 @@ async fn execute_turn(
             display.show_tool_call(&tool_call.name, &tool_call.arguments);
 
             let result = tools
-                .execute(&tool_call.name, tool_call.arguments.clone())
+                .execute(&tool_call.name, tool_call.arguments.clone(), &filter)
                 .await;
 
             let (output, is_error) = match result {
@@ -412,10 +419,15 @@ mod tests {
     use super::*;
     use crate::channels::null::NullDisplay;
     use crate::models::{ModelError, ToolCall, ToolDefinition};
-    use crate::tools::FileTracker;
+    use crate::tools::{FileTracker, PathPolicy, ToolFilter};
     use async_trait::async_trait;
+    use std::collections::HashSet;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
+
+    fn no_filter() -> SharedToolFilter {
+        ToolFilter::new_shared(HashSet::new())
+    }
 
     fn no_projects() -> ProjectsContext<'static> {
         ProjectsContext {
@@ -470,6 +482,7 @@ mod tests {
         let mut agent = Agent::new(
             Box::new(provider),
             ToolRegistry::new(),
+            no_filter(),
             IdentityFiles::default(),
             CompletionOptions::default(),
             chrono_tz::UTC,
@@ -486,7 +499,10 @@ mod tests {
     #[tokio::test]
     async fn tool_loop_then_text() {
         let mut registry = ToolRegistry::new();
-        registry.register_defaults(FileTracker::new_shared());
+        registry.register_defaults(
+            FileTracker::new_shared(),
+            PathPolicy::new_shared(std::path::PathBuf::from("/tmp")),
+        );
 
         let provider = MockProvider::new(vec![
             ModelResponse::new(
@@ -503,6 +519,7 @@ mod tests {
         let mut agent = Agent::new(
             Box::new(provider),
             registry,
+            no_filter(),
             IdentityFiles::default(),
             CompletionOptions::default(),
             chrono_tz::UTC,
@@ -523,7 +540,10 @@ mod tests {
     #[tokio::test]
     async fn intermediate_text_broadcast_not_returned() {
         let mut registry = ToolRegistry::new();
-        registry.register_defaults(FileTracker::new_shared());
+        registry.register_defaults(
+            FileTracker::new_shared(),
+            PathPolicy::new_shared(std::path::PathBuf::from("/tmp")),
+        );
 
         // First response has text alongside tool calls (intermediate), second is final.
         let provider = MockProvider::new(vec![
@@ -541,6 +561,7 @@ mod tests {
         let mut agent = Agent::new(
             Box::new(provider),
             registry,
+            no_filter(),
             IdentityFiles::default(),
             CompletionOptions::default(),
             chrono_tz::UTC,
@@ -574,12 +595,16 @@ mod tests {
             .collect();
 
         let mut registry = ToolRegistry::new();
-        registry.register_defaults(FileTracker::new_shared());
+        registry.register_defaults(
+            FileTracker::new_shared(),
+            PathPolicy::new_shared(std::path::PathBuf::from("/tmp")),
+        );
 
         let provider = MockProvider::new(responses);
         let mut agent = Agent::new(
             Box::new(provider),
             registry,
+            no_filter(),
             IdentityFiles::default(),
             CompletionOptions::default(),
             chrono_tz::UTC,
@@ -600,6 +625,7 @@ mod tests {
         let agent = Agent::new(
             Box::new(provider),
             ToolRegistry::new(),
+            no_filter(),
             IdentityFiles::default(),
             CompletionOptions::default(),
             chrono_tz::UTC,
@@ -630,6 +656,7 @@ mod tests {
         let mut agent = Agent::new(
             Box::new(provider),
             ToolRegistry::new(),
+            no_filter(),
             IdentityFiles::default(),
             CompletionOptions::default(),
             chrono_tz::UTC,
@@ -657,6 +684,7 @@ mod tests {
         let mut agent = Agent::new(
             Box::new(MockProvider::new(vec![])),
             ToolRegistry::new(),
+            no_filter(),
             IdentityFiles::default(),
             CompletionOptions::default(),
             chrono_tz::UTC,
@@ -702,6 +730,7 @@ mod tests {
         let mut agent = Agent::new(
             Box::new(provider),
             ToolRegistry::new(),
+            no_filter(),
             IdentityFiles::default(),
             CompletionOptions::default(),
             chrono_tz::UTC,

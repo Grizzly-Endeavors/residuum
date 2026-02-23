@@ -3,24 +3,39 @@
 use async_trait::async_trait;
 use serde_json::Value;
 
+use crate::mcp::SharedMcpRegistry;
 use crate::models::ToolDefinition;
 use crate::projects::activation::SharedProjectState;
 use crate::projects::lifecycle;
 
-use super::{Tool, ToolError, ToolResult};
+use super::path_policy::SharedPathPolicy;
+use super::{SharedToolFilter, Tool, ToolError, ToolResult};
 
 // ─── project_activate ────────────────────────────────────────────────────────
 
 /// Tool for activating a project context.
 pub struct ProjectActivateTool {
     state: SharedProjectState,
+    path_policy: SharedPathPolicy,
+    tool_filter: SharedToolFilter,
+    mcp_registry: SharedMcpRegistry,
 }
 
 impl ProjectActivateTool {
     /// Create a new `ProjectActivateTool`.
     #[must_use]
-    pub fn new(state: SharedProjectState) -> Self {
-        Self { state }
+    pub fn new(
+        state: SharedProjectState,
+        path_policy: SharedPathPolicy,
+        tool_filter: SharedToolFilter,
+        mcp_registry: SharedMcpRegistry,
+    ) -> Self {
+        Self {
+            state,
+            path_policy,
+            tool_filter,
+            mcp_registry,
+        }
     }
 }
 
@@ -55,14 +70,36 @@ impl Tool for ProjectActivateTool {
 
         let mut state = self.state.lock().await;
         match state.activate(name).await {
-            Ok(active) => Ok(ToolResult::success(format!(
-                "Activated project '{}'. Manifest: {} notes, {} references, {} workspace, {} skills files.",
-                active.name,
-                active.manifest.notes.len(),
-                active.manifest.references.len(),
-                active.manifest.workspace.len(),
-                active.manifest.skills.len(),
-            ))),
+            Ok(active) => {
+                let project_root = active.project_root.clone();
+                let tools_list = active.frontmatter.tools.clone();
+                let mcp_servers = active.frontmatter.mcp_servers.clone();
+                let manifest_summary = format!(
+                    "Activated project '{}'. Manifest: {} notes, {} references, {} workspace, {} skills files.",
+                    active.name,
+                    active.manifest.notes.len(),
+                    active.manifest.references.len(),
+                    active.manifest.workspace.len(),
+                    active.manifest.skills.len(),
+                );
+                // Update path policy to scope writes to this project
+                self.path_policy
+                    .write()
+                    .await
+                    .set_active_project(Some(project_root));
+                // Enable gated tools from project frontmatter
+                self.tool_filter.write().await.enable(&tools_list);
+                // Reconcile MCP servers
+                let mcp_result = self.mcp_registry.write().await.reconcile(&mcp_servers);
+                if !mcp_result.to_start.is_empty() || !mcp_result.to_stop.is_empty() {
+                    tracing::info!(
+                        to_start = mcp_result.to_start.len(),
+                        to_stop = mcp_result.to_stop.len(),
+                        "mcp server reconciliation"
+                    );
+                }
+                Ok(ToolResult::success(manifest_summary))
+            }
             Err(e) => Ok(ToolResult::error(e.to_string())),
         }
     }
@@ -73,14 +110,29 @@ impl Tool for ProjectActivateTool {
 /// Tool for deactivating the current project context.
 pub struct ProjectDeactivateTool {
     state: SharedProjectState,
+    path_policy: SharedPathPolicy,
+    tool_filter: SharedToolFilter,
+    mcp_registry: SharedMcpRegistry,
     tz: chrono_tz::Tz,
 }
 
 impl ProjectDeactivateTool {
     /// Create a new `ProjectDeactivateTool`.
     #[must_use]
-    pub fn new(state: SharedProjectState, tz: chrono_tz::Tz) -> Self {
-        Self { state, tz }
+    pub fn new(
+        state: SharedProjectState,
+        path_policy: SharedPathPolicy,
+        tool_filter: SharedToolFilter,
+        mcp_registry: SharedMcpRegistry,
+        tz: chrono_tz::Tz,
+    ) -> Self {
+        Self {
+            state,
+            path_policy,
+            tool_filter,
+            mcp_registry,
+            tz,
+        }
     }
 }
 
@@ -117,9 +169,23 @@ impl Tool for ProjectDeactivateTool {
         let mut state = self.state.lock().await;
 
         match state.deactivate(log, now).await {
-            Ok(name) => Ok(ToolResult::success(format!(
-                "Deactivated project '{name}'. Log entry recorded."
-            ))),
+            Ok(name) => {
+                // Clear path policy — no project-scoped writes allowed
+                self.path_policy.write().await.set_active_project(None);
+                // Clear gated tool permissions
+                self.tool_filter.write().await.clear_enabled();
+                // Stop all MCP servers
+                let stopped = self.mcp_registry.write().await.stop_all();
+                if !stopped.is_empty() {
+                    tracing::info!(
+                        count = stopped.len(),
+                        "stopping mcp servers on deactivation"
+                    );
+                }
+                Ok(ToolResult::success(format!(
+                    "Deactivated project '{name}'. Log entry recorded."
+                )))
+            }
             Err(e) => Ok(ToolResult::error(e.to_string())),
         }
     }
@@ -373,13 +439,30 @@ impl Tool for ProjectListTool {
 #[cfg(test)]
 #[expect(clippy::unwrap_used, reason = "test code uses unwrap for clarity")]
 mod tests {
+    use std::collections::HashSet;
+    use std::path::PathBuf;
     use std::sync::Arc;
 
     use super::*;
+    use crate::mcp::McpRegistry;
     use crate::projects::activation::ProjectState;
     use crate::projects::scanner::ProjectIndex;
+    use crate::tools::ToolFilter;
+    use crate::tools::path_policy::PathPolicy;
     use crate::workspace::bootstrap::ensure_workspace;
     use crate::workspace::layout::WorkspaceLayout;
+
+    fn permissive_policy() -> SharedPathPolicy {
+        PathPolicy::new_shared(PathBuf::from("/tmp"))
+    }
+
+    fn no_filter() -> SharedToolFilter {
+        ToolFilter::new_shared(HashSet::new())
+    }
+
+    fn empty_mcp() -> SharedMcpRegistry {
+        McpRegistry::new_shared()
+    }
 
     async fn setup() -> (tempfile::TempDir, SharedProjectState) {
         let dir = tempfile::tempdir().unwrap();
@@ -396,14 +479,24 @@ mod tests {
             ProjectIndex::default(),
             WorkspaceLayout::new("/tmp/test"),
         )));
+        let policy = permissive_policy();
 
+        let filter = no_filter();
+        let mcp = empty_mcp();
         assert_eq!(
-            ProjectActivateTool::new(Arc::clone(&state)).name(),
+            ProjectActivateTool::new(
+                Arc::clone(&state),
+                Arc::clone(&policy),
+                Arc::clone(&filter),
+                Arc::clone(&mcp),
+            )
+            .name(),
             "project_activate",
             "activate tool name"
         );
         assert_eq!(
-            ProjectDeactivateTool::new(Arc::clone(&state), chrono_tz::UTC).name(),
+            ProjectDeactivateTool::new(Arc::clone(&state), policy, filter, mcp, chrono_tz::UTC)
+                .name(),
             "project_deactivate",
             "deactivate tool name"
         );
@@ -461,7 +554,7 @@ mod tests {
     #[tokio::test]
     async fn activate_nonexistent() {
         let (_dir, state) = setup().await;
-        let tool = ProjectActivateTool::new(state);
+        let tool = ProjectActivateTool::new(state, permissive_policy(), no_filter(), empty_mcp());
         let result = tool
             .execute(serde_json::json!({"name": "nonexistent"}))
             .await
@@ -472,7 +565,13 @@ mod tests {
     #[tokio::test]
     async fn deactivate_requires_log() {
         let (_dir, state) = setup().await;
-        let tool = ProjectDeactivateTool::new(state, chrono_tz::UTC);
+        let tool = ProjectDeactivateTool::new(
+            state,
+            permissive_policy(),
+            no_filter(),
+            empty_mcp(),
+            chrono_tz::UTC,
+        );
         let result = tool.execute(serde_json::json!({"log": ""})).await.unwrap();
         assert!(
             result.is_error,

@@ -30,7 +30,7 @@ mod gateway_integration {
     use ironclaw::models::{
         CompletionOptions, Message, ModelError, ModelProvider, ModelResponse, ToolDefinition,
     };
-    use ironclaw::tools::ToolRegistry;
+    use ironclaw::tools::{ToolFilter, ToolRegistry};
     use ironclaw::workspace::identity::IdentityFiles;
 
     /// Mock provider that returns configurable responses in sequence.
@@ -74,6 +74,7 @@ mod gateway_integration {
         Agent::new(
             Box::new(MockProvider::new(responses)),
             ToolRegistry::new(),
+            ToolFilter::new_shared(std::collections::HashSet::new()),
             IdentityFiles::default(),
             CompletionOptions::default(),
             chrono_tz::UTC,

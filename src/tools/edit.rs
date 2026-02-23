@@ -9,19 +9,21 @@ use serde_json::Value;
 
 use super::file_tracker::SharedFileTracker;
 use super::line_hash::line_hash;
+use super::path_policy::SharedPathPolicy;
 use super::{Tool, ToolError, ToolResult};
 use crate::models::ToolDefinition;
 
 /// Tool that performs hash-validated line edits on files.
 pub struct EditTool {
     tracker: SharedFileTracker,
+    policy: SharedPathPolicy,
 }
 
 impl EditTool {
-    /// Create a new `EditTool` with shared file tracker.
+    /// Create a new `EditTool` with shared file tracker and path policy.
     #[must_use]
-    pub fn new(tracker: SharedFileTracker) -> Self {
-        Self { tracker }
+    pub fn new(tracker: SharedFileTracker, policy: SharedPathPolicy) -> Self {
+        Self { tracker, policy }
     }
 }
 
@@ -139,6 +141,16 @@ impl Tool for EditTool {
             .ok_or_else(|| {
                 ToolError::InvalidArguments("missing required 'path' argument".to_string())
             })?;
+
+        // Enforce write-scoping policy
+        if let Err(reason) = self
+            .policy
+            .read()
+            .await
+            .check_write(std::path::Path::new(path))
+        {
+            return Ok(ToolResult::error(reason));
+        }
 
         let operation = arguments
             .get("operation")
@@ -326,17 +338,23 @@ mod tests {
     use super::*;
     use crate::tools::file_tracker::FileTracker;
     use crate::tools::line_hash::line_hash as compute_hash;
+    use crate::tools::path_policy::PathPolicy;
+
+    /// Create a permissive policy rooted at `/tmp` (allows all test writes).
+    fn permissive_policy() -> SharedPathPolicy {
+        PathPolicy::new_shared(std::path::PathBuf::from("/tmp"))
+    }
 
     /// Create an `EditTool` with a pre-registered path in the tracker.
     async fn make_tool_with_file(path: &str) -> EditTool {
         let tracker = FileTracker::new_shared();
         tracker.lock().await.record_read(path);
-        EditTool::new(tracker)
+        EditTool::new(tracker, permissive_policy())
     }
 
     /// Create an `EditTool` with an empty tracker (nothing read).
     fn make_tool_no_reads() -> EditTool {
-        EditTool::new(FileTracker::new_shared())
+        EditTool::new(FileTracker::new_shared(), permissive_policy())
     }
 
     /// Helper: write a test file and return the tool with path registered.

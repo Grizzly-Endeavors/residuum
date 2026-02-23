@@ -22,7 +22,7 @@ mod proactivity_integration {
     use ironclaw::pulse::executor::execute_pulse;
     use ironclaw::pulse::scheduler::PulseScheduler;
     use ironclaw::pulse::types::{AlertLevel, PulseDef, PulseTask};
-    use ironclaw::tools::ToolRegistry;
+    use ironclaw::tools::{ToolFilter, ToolRegistry};
     use ironclaw::workspace::identity::IdentityFiles;
 
     /// Mock provider that returns configurable responses in sequence.
@@ -66,6 +66,7 @@ mod proactivity_integration {
         Agent::new(
             Box::new(MockProvider::new(responses)),
             ToolRegistry::new(),
+            ToolFilter::new_shared(std::collections::HashSet::new()),
             IdentityFiles::default(),
             CompletionOptions::default(),
             chrono_tz::UTC,

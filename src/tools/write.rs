@@ -4,19 +4,21 @@ use async_trait::async_trait;
 use serde_json::Value;
 
 use super::file_tracker::SharedFileTracker;
+use super::path_policy::SharedPathPolicy;
 use super::{Tool, ToolError, ToolResult};
 use crate::models::ToolDefinition;
 
 /// Tool that writes content to files, enforcing read-before-overwrite.
 pub struct WriteTool {
     tracker: SharedFileTracker,
+    policy: SharedPathPolicy,
 }
 
 impl WriteTool {
-    /// Create a new `WriteTool` with shared file tracker.
+    /// Create a new `WriteTool` with shared file tracker and path policy.
     #[must_use]
-    pub fn new(tracker: SharedFileTracker) -> Self {
-        Self { tracker }
+    pub fn new(tracker: SharedFileTracker, policy: SharedPathPolicy) -> Self {
+        Self { tracker, policy }
     }
 }
 
@@ -68,6 +70,11 @@ impl Tool for WriteTool {
 
         let file_path = std::path::Path::new(path);
 
+        // Enforce write-scoping policy
+        if let Err(reason) = self.policy.read().await.check_write(file_path) {
+            return Ok(ToolResult::error(reason));
+        }
+
         // Enforce read-before-overwrite for existing files
         if file_path.exists() && !self.tracker.lock().await.has_been_read(path) {
             return Ok(ToolResult::error(format!(
@@ -107,14 +114,21 @@ mod tests {
 
     use super::*;
     use crate::tools::file_tracker::FileTracker;
+    use crate::tools::path_policy::PathPolicy;
+
+    /// Create a permissive policy rooted at `/tmp` (allows all test writes).
+    fn permissive_policy() -> SharedPathPolicy {
+        PathPolicy::new_shared(std::path::PathBuf::from("/tmp"))
+    }
 
     fn make_tool() -> WriteTool {
-        WriteTool::new(FileTracker::new_shared())
+        WriteTool::new(FileTracker::new_shared(), permissive_policy())
     }
 
     fn make_tool_with_tracker() -> (WriteTool, SharedFileTracker) {
         let tracker = FileTracker::new_shared();
-        let tool = WriteTool::new(Arc::clone(&tracker));
+        let policy = permissive_policy();
+        let tool = WriteTool::new(Arc::clone(&tracker), policy);
         (tool, tracker)
     }
 
