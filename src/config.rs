@@ -44,6 +44,12 @@ pub(crate) const DEFAULT_OBSERVER_THRESHOLD: usize = 30_000;
 /// Default reflector token threshold before compressing.
 pub(crate) const DEFAULT_REFLECTOR_THRESHOLD: usize = 40_000;
 
+/// Default observer cooldown period in seconds before observation fires.
+pub(crate) const DEFAULT_OBSERVER_COOLDOWN_SECS: u64 = 120;
+
+/// Default force-observe token threshold (bypasses cooldown).
+pub(crate) const DEFAULT_OBSERVER_FORCE_THRESHOLD: usize = 60_000;
+
 /// Minimal config.toml written on first run — user edits this.
 const MINIMAL_CONFIG: &str = "# IronClaw configuration. See config.example.toml for all options.\n\
     \n\
@@ -204,6 +210,10 @@ pub struct MemoryConfig {
     pub observer_threshold_tokens: usize,
     /// Token threshold before the reflector compresses.
     pub reflector_threshold_tokens: usize,
+    /// Cooldown period in seconds after the soft threshold is crossed.
+    pub observer_cooldown_secs: u64,
+    /// Token threshold that forces immediate observation (bypasses cooldown).
+    pub observer_force_threshold_tokens: usize,
 }
 
 impl Default for MemoryConfig {
@@ -211,6 +221,8 @@ impl Default for MemoryConfig {
         Self {
             observer_threshold_tokens: DEFAULT_OBSERVER_THRESHOLD,
             reflector_threshold_tokens: DEFAULT_REFLECTOR_THRESHOLD,
+            observer_cooldown_secs: DEFAULT_OBSERVER_COOLDOWN_SECS,
+            observer_force_threshold_tokens: DEFAULT_OBSERVER_FORCE_THRESHOLD,
         }
     }
 }
@@ -357,6 +369,12 @@ impl Config {
             reflector_threshold_tokens: mem_section
                 .and_then(|m| m.reflector_threshold_tokens)
                 .unwrap_or(DEFAULT_REFLECTOR_THRESHOLD),
+            observer_cooldown_secs: mem_section
+                .and_then(|m| m.observer_cooldown_secs)
+                .unwrap_or(DEFAULT_OBSERVER_COOLDOWN_SECS),
+            observer_force_threshold_tokens: mem_section
+                .and_then(|m| m.observer_force_threshold_tokens)
+                .unwrap_or(DEFAULT_OBSERVER_FORCE_THRESHOLD),
         };
 
         let pulse_enabled = file
@@ -570,6 +588,10 @@ struct MemoryConfigFile {
     observer_threshold_tokens: Option<usize>,
     /// Token threshold before the reflector compresses.
     reflector_threshold_tokens: Option<usize>,
+    /// Cooldown period in seconds after the soft threshold is crossed.
+    observer_cooldown_secs: Option<u64>,
+    /// Token threshold that forces immediate observation (bypasses cooldown).
+    observer_force_threshold_tokens: Option<usize>,
 }
 
 /// Raw TOML `[pulse]` section.
@@ -1399,6 +1421,50 @@ secret = "my-secret"
             cfg.webhook.secret.as_deref(),
             Some("my-secret"),
             "webhook secret should match"
+        );
+    }
+
+    #[test]
+    fn memory_config_cooldown_defaults() {
+        let toml_str = r#"
+timezone = "UTC"
+
+[models]
+main = "anthropic/claude-sonnet-4-6"
+"#;
+        let file: ConfigFile = toml::from_str(toml_str).unwrap();
+        let cfg = Config::from_file_and_env(Some(&file)).unwrap();
+        assert_eq!(
+            cfg.memory.observer_cooldown_secs, DEFAULT_OBSERVER_COOLDOWN_SECS,
+            "cooldown should default"
+        );
+        assert_eq!(
+            cfg.memory.observer_force_threshold_tokens, DEFAULT_OBSERVER_FORCE_THRESHOLD,
+            "force threshold should default"
+        );
+    }
+
+    #[test]
+    fn memory_config_cooldown_custom() {
+        let toml_str = r#"
+timezone = "UTC"
+
+[models]
+main = "anthropic/claude-sonnet-4-6"
+
+[memory]
+observer_cooldown_secs = 60
+observer_force_threshold_tokens = 50000
+"#;
+        let file: ConfigFile = toml::from_str(toml_str).unwrap();
+        let cfg = Config::from_file_and_env(Some(&file)).unwrap();
+        assert_eq!(
+            cfg.memory.observer_cooldown_secs, 60,
+            "cooldown should be custom"
+        );
+        assert_eq!(
+            cfg.memory.observer_force_threshold_tokens, 50000,
+            "force threshold should be custom"
         );
     }
 

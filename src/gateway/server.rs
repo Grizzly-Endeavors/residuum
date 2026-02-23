@@ -21,9 +21,10 @@ use crate::cron::executor::execute_due_jobs;
 use crate::cron::store::CronStore;
 use crate::error::IronclawError;
 use crate::memory::log_store::load_observation_log;
-use crate::memory::observer::{Observer, ObserverConfig};
+use crate::memory::observer::{ObserveAction, Observer, ObserverConfig};
 use crate::memory::recent_store::{
-    append_recent_messages, clear_recent_messages, load_messages_for_agent, load_recent_messages,
+    RecentContext, append_recent_messages, clear_recent_messages, load_messages_for_agent,
+    load_recent_messages, save_recent_context,
 };
 use crate::memory::reflector::{Reflector, ReflectorConfig};
 use crate::memory::search::create_shared_index;
@@ -141,6 +142,7 @@ pub async fn run_gateway(cfg: Config) -> Result<GatewayExit, IronclawError> {
     // Build agent
     let mut agent = Agent::new(provider, tools, identity, options, tz);
     agent.reload_observations(&layout).await?;
+    agent.reload_recent_context(&layout).await?;
 
     // Restore unobserved messages from previous run
     let restore = load_messages_for_agent(&layout.recent_messages_json()).await?;
@@ -257,6 +259,9 @@ pub async fn run_gateway(cfg: Config) -> Result<GatewayExit, IronclawError> {
     // Skip first pulse tick
     pulse_tick.tick().await;
 
+    // Observer cooldown deadline — set when token count crosses soft threshold
+    let mut observe_deadline: Option<tokio::time::Instant> = None;
+
     tracing::info!("gateway ready, entering main loop");
 
     loop {
@@ -327,18 +332,27 @@ pub async fn run_gateway(cfg: Config) -> Result<GatewayExit, IronclawError> {
 
                 let new_messages: Vec<_> = agent.messages_since(before).to_vec();
                 let project_context = workspace_name(&layout);
-                run_memory_pipeline(
+                let action = persist_and_check_thresholds(
                     &new_messages,
                     &project_context,
                     Visibility::User,
                     &observer,
-                    &reflector,
-                    &search_index,
                     &layout,
-                    &mut agent,
                     tz,
                 )
                 .await;
+                match action {
+                    ObserveAction::ForceNow => {
+                        observe_deadline = None;
+                        execute_observation(&observer, &reflector, &search_index, &layout, &mut agent).await;
+                    }
+                    ObserveAction::StartCooldown => {
+                        let deadline = tokio::time::Instant::now()
+                            + tokio::time::Duration::from_secs(observer.cooldown_secs());
+                        observe_deadline = Some(deadline);
+                    }
+                    ObserveAction::None => {}
+                }
             }
 
             // ── Pulse timer ───────────────────────────────────────────────
@@ -373,18 +387,27 @@ pub async fn run_gateway(cfg: Config) -> Result<GatewayExit, IronclawError> {
                                 }
                             }
                             let pulse_context = workspace_name(&layout);
-                            run_memory_pipeline(
+                            let action = persist_and_check_thresholds(
                                 &result.messages,
                                 &pulse_context,
                                 Visibility::Background,
                                 &observer,
-                                &reflector,
-                                &search_index,
                                 &layout,
-                                &mut agent,
                                 tz,
                             )
                             .await;
+                            match action {
+                                ObserveAction::ForceNow => {
+                                    observe_deadline = None;
+                                    execute_observation(&observer, &reflector, &search_index, &layout, &mut agent).await;
+                                }
+                                ObserveAction::StartCooldown => {
+                                    let deadline = tokio::time::Instant::now()
+                                        + tokio::time::Duration::from_secs(observer.cooldown_secs());
+                                    observe_deadline = Some(deadline);
+                                }
+                                ObserveAction::None => {}
+                            }
                         }
                         Err(e) => {
                             tracing::warn!(pulse = %pulse.name, error = %e, "pulse failed");
@@ -395,24 +418,60 @@ pub async fn run_gateway(cfg: Config) -> Result<GatewayExit, IronclawError> {
 
             // ── Cron timer ────────────────────────────────────────────────
             _ = cron_tick.tick(), if cfg.cron_enabled => {
-                run_due_cron_jobs_gateway(
-                    &cron_store, &mut agent, &observer, &reflector,
-                    &search_index, &layout, &broadcast_tx,
+                let action = run_due_cron_jobs_gateway(
+                    &cron_store, &mut agent, &observer,
+                    &layout, &broadcast_tx,
                     Some(&*cron_provider), tz,
                 ).await;
+                match action {
+                    ObserveAction::ForceNow => {
+                        observe_deadline = None;
+                        execute_observation(&observer, &reflector, &search_index, &layout, &mut agent).await;
+                    }
+                    ObserveAction::StartCooldown => {
+                        let deadline = tokio::time::Instant::now()
+                            + tokio::time::Duration::from_secs(observer.cooldown_secs());
+                        observe_deadline = Some(deadline);
+                    }
+                    ObserveAction::None => {}
+                }
             }
 
             // ── Cron notify (tool mutation wakeup) ────────────────────────
             () = cron_notify.notified(), if cfg.cron_enabled => {
-                run_due_cron_jobs_gateway(
-                    &cron_store, &mut agent, &observer, &reflector,
-                    &search_index, &layout, &broadcast_tx,
+                let action = run_due_cron_jobs_gateway(
+                    &cron_store, &mut agent, &observer,
+                    &layout, &broadcast_tx,
                     Some(&*cron_provider), tz,
                 ).await;
+                match action {
+                    ObserveAction::ForceNow => {
+                        observe_deadline = None;
+                        execute_observation(&observer, &reflector, &search_index, &layout, &mut agent).await;
+                    }
+                    ObserveAction::StartCooldown => {
+                        let deadline = tokio::time::Instant::now()
+                            + tokio::time::Duration::from_secs(observer.cooldown_secs());
+                        observe_deadline = Some(deadline);
+                    }
+                    ObserveAction::None => {}
+                }
+            }
+
+            // ── Observer cooldown deadline ────────────────────────────────
+            () = async {
+                match observe_deadline {
+                    Some(d) => tokio::time::sleep_until(d).await,
+                    None => std::future::pending().await,
+                }
+            } => {
+                observe_deadline = None;
+                execute_observation(&observer, &reflector, &search_index, &layout, &mut agent).await;
             }
 
             // ── Observe command wakeup ─────────────────────────────────────
             () = observe_notify.notified() => {
+                observe_deadline = None;
                 run_forced_observe(
                     &observer,
                     &reflector,
@@ -549,22 +608,18 @@ async fn handle_connection(socket: WebSocket, state: GatewayState) {
     tracing::debug!("client disconnected");
 }
 
-/// Execute due cron jobs, broadcast notifications, and run the memory pipeline.
-#[expect(
-    clippy::too_many_arguments,
-    reason = "gateway cron helper requires all subsystem references; a struct would add indirection without clarity"
-)]
+/// Execute due cron jobs, broadcast notifications, and persist messages.
+///
+/// Returns the `ObserveAction` so the caller can manage the observe deadline.
 async fn run_due_cron_jobs_gateway(
     cron_store: &Arc<tokio::sync::Mutex<CronStore>>,
     agent: &mut Agent,
     observer: &Observer,
-    reflector: &Reflector,
-    search_index: &crate::memory::search::MemoryIndex,
     layout: &WorkspaceLayout,
     broadcast_tx: &broadcast::Sender<ServerMessage>,
     provider_override: Option<&dyn ModelProvider>,
     tz: chrono_tz::Tz,
-) {
+) -> ObserveAction {
     let now = crate::time::now_local(tz);
     let mut store = cron_store.lock().await;
 
@@ -591,44 +646,39 @@ async fn run_due_cron_jobs_gateway(
             }
             if !result.messages.is_empty() {
                 let cron_context = workspace_name(layout);
-                run_memory_pipeline(
+                return persist_and_check_thresholds(
                     &result.messages,
                     &cron_context,
                     Visibility::Background,
                     observer,
-                    reflector,
-                    search_index,
                     layout,
-                    agent,
                     tz,
                 )
                 .await;
             }
+            ObserveAction::None
         }
         Err(e) => {
             tracing::warn!(error = %e, "cron execution failed");
+            ObserveAction::None
         }
     }
 }
 
-/// Persist new messages and run the observer/reflector/search pipeline.
-#[expect(
-    clippy::too_many_arguments,
-    reason = "gateway memory pipeline requires all subsystem references; a struct would add indirection without clarity"
-)]
-pub(crate) async fn run_memory_pipeline(
+/// Persist new messages and check whether observation thresholds are met.
+///
+/// Appends messages to the recent messages file and returns the appropriate
+/// `ObserveAction` based on current token levels.
+pub(crate) async fn persist_and_check_thresholds(
     new_messages: &[crate::models::Message],
     project_context: &str,
     visibility: Visibility,
     observer: &Observer,
-    reflector: &Reflector,
-    search_index: &crate::memory::search::MemoryIndex,
     layout: &WorkspaceLayout,
-    agent: &mut Agent,
     tz: chrono_tz::Tz,
-) {
+) -> ObserveAction {
     if new_messages.is_empty() {
-        return;
+        return ObserveAction::None;
     }
 
     if let Err(e) = append_recent_messages(
@@ -641,18 +691,37 @@ pub(crate) async fn run_memory_pipeline(
     .await
     {
         eprintln!("warning: failed to persist recent messages: {e}");
-        return;
+        return ObserveAction::None;
     }
 
     let recent = match load_recent_messages(&layout.recent_messages_json()).await {
         Ok(msgs) => msgs,
         Err(e) => {
             eprintln!("warning: failed to load recent messages: {e}");
+            return ObserveAction::None;
+        }
+    };
+
+    observer.check_thresholds(&recent)
+}
+
+/// Execute an observation cycle: LLM call, clear file, rotate messages, index, reflect, reload.
+pub(crate) async fn execute_observation(
+    observer: &Observer,
+    reflector: &Reflector,
+    search_index: &crate::memory::search::MemoryIndex,
+    layout: &WorkspaceLayout,
+    agent: &mut Agent,
+) {
+    let recent = match load_recent_messages(&layout.recent_messages_json()).await {
+        Ok(msgs) => msgs,
+        Err(e) => {
+            eprintln!("warning: failed to load recent messages for observation: {e}");
             return;
         }
     };
 
-    if !observer.should_observe(&recent) {
+    if recent.is_empty() {
         return;
     }
 
@@ -660,10 +729,22 @@ pub(crate) async fn run_memory_pipeline(
         Ok(result) => {
             tracing::info!(episode_id = %result.id, "observer extracted episode");
 
+            // Save narrative context if present
+            if let Some(narrative) = &result.narrative {
+                let ctx = RecentContext {
+                    narrative: narrative.clone(),
+                    created_at: crate::time::now_local(observer.timezone()),
+                    episode_id: result.id.clone(),
+                };
+                if let Err(e) = save_recent_context(&layout.recent_context_json(), &ctx).await {
+                    eprintln!("warning: failed to save recent context: {e}");
+                }
+            }
+
             if let Err(e) = clear_recent_messages(&layout.recent_messages_json()).await {
                 eprintln!("warning: failed to clear recent messages: {e}");
             }
-            agent.clear_recent_messages();
+            agent.rotate_messages_after_observation();
 
             match tokio::fs::read_to_string(&result.transcript_path).await {
                 Ok(ep_content) => {
@@ -685,6 +766,9 @@ pub(crate) async fn run_memory_pipeline(
 
             if let Err(e) = agent.reload_observations(layout).await {
                 eprintln!("warning: failed to reload observations: {e}");
+            }
+            if let Err(e) = agent.reload_recent_context(layout).await {
+                eprintln!("warning: failed to reload recent context: {e}");
             }
         }
         Err(e) => {
@@ -732,6 +816,10 @@ async fn run_reflector_if_needed(reflector: &Reflector, layout: &WorkspaceLayout
 ///
 /// Loads recent messages, runs the observer, clears recent messages, updates
 /// the search index, optionally triggers reflection, and broadcasts a `Notice`.
+#[expect(
+    clippy::too_many_lines,
+    reason = "forced observe is a linear pipeline with error handling at each step"
+)]
 async fn run_forced_observe(
     observer: &Observer,
     reflector: &Reflector,
@@ -786,10 +874,22 @@ async fn run_forced_observe(
         }
     };
 
+    // Save narrative context if present
+    if let Some(narrative) = &result.narrative {
+        let ctx = RecentContext {
+            narrative: narrative.clone(),
+            created_at: crate::time::now_local(observer.timezone()),
+            episode_id: result.id.clone(),
+        };
+        if let Err(e) = save_recent_context(&layout.recent_context_json(), &ctx).await {
+            eprintln!("warning: failed to save recent context after forced observe: {e}");
+        }
+    }
+
     if let Err(e) = clear_recent_messages(&layout.recent_messages_json()).await {
         eprintln!("warning: failed to clear recent messages after forced observe: {e}");
     }
-    agent.clear_recent_messages();
+    agent.rotate_messages_after_observation();
 
     match tokio::fs::read_to_string(&result.transcript_path).await {
         Ok(ep_content) => {
@@ -824,6 +924,9 @@ async fn run_forced_observe(
 
     if let Err(e) = agent.reload_observations(layout).await {
         eprintln!("warning: failed to reload observations after forced observe: {e}");
+    }
+    if let Err(e) = agent.reload_recent_context(layout).await {
+        eprintln!("warning: failed to reload recent context after forced observe: {e}");
     }
 
     let suffix = if reflected {
@@ -899,6 +1002,8 @@ pub(crate) fn build_memory_components(
         observer_provider,
         ObserverConfig {
             threshold_tokens: cfg.memory.observer_threshold_tokens,
+            cooldown_secs: cfg.memory.observer_cooldown_secs,
+            force_threshold_tokens: cfg.memory.observer_force_threshold_tokens,
             tz,
         },
     );

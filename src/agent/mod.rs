@@ -10,7 +10,7 @@ use crate::models::{CompletionOptions, Message, ModelProvider, ModelResponse};
 use crate::tools::ToolRegistry;
 use crate::workspace::identity::IdentityFiles;
 
-use self::context::{TimeContext, assemble_system_prompt};
+use self::context::{MemoryContext, TimeContext, assemble_system_prompt};
 use self::recent_messages::RecentMessages;
 
 /// Maximum number of tool-call iterations before the agent stops.
@@ -34,6 +34,8 @@ pub struct Agent {
     recent_messages: RecentMessages,
     options: CompletionOptions,
     observations: Option<String>,
+    /// Narrative summary from the most recent observation cycle.
+    recent_context: Option<String>,
     /// System event texts queued from cron jobs; injected at the start of the next user turn.
     pending_system_events: Vec<String>,
     tz: chrono_tz::Tz,
@@ -57,6 +59,7 @@ impl Agent {
             recent_messages: RecentMessages::new(),
             options,
             observations: None,
+            recent_context: None,
             pending_system_events: Vec::new(),
             tz,
             last_user_message_at: None,
@@ -107,6 +110,27 @@ impl Agent {
         Ok(())
     }
 
+    /// Reload narrative context from the `recent_context.json` file.
+    ///
+    /// # Errors
+    /// Returns an error if the file exists but cannot be parsed.
+    pub async fn reload_recent_context(
+        &mut self,
+        layout: &crate::workspace::layout::WorkspaceLayout,
+    ) -> Result<(), IronclawError> {
+        let path = layout.recent_context_json();
+        match crate::memory::recent_store::load_recent_context(&path).await {
+            Ok(Some(ctx)) => {
+                self.recent_context = Some(ctx.narrative);
+            }
+            Ok(None) => {
+                self.recent_context = None;
+            }
+            Err(e) => return Err(e),
+        }
+        Ok(())
+    }
+
     /// Restore persisted messages into the recent history.
     ///
     /// Used at startup to reload unobserved messages from `recent_messages.json`
@@ -131,6 +155,16 @@ impl Agent {
     /// in both the recent messages and the observation log.
     pub fn clear_recent_messages(&mut self) {
         self.recent_messages.clear();
+    }
+
+    /// Rotate messages after an observation cycle.
+    ///
+    /// Extracts the last 3 text exchanges, clears the buffer, then prepends
+    /// the retained exchanges so the agent keeps conversational context.
+    pub fn rotate_messages_after_observation(&mut self) {
+        let retained = self.recent_messages.last_exchanges(3);
+        self.recent_messages.clear();
+        self.recent_messages.prepend(retained);
     }
 
     /// Queue a system event to be injected at the start of the next user turn.
@@ -175,12 +209,17 @@ impl Agent {
 
         self.recent_messages.push(Message::user(effective_input));
 
+        let memory_ctx = MemoryContext {
+            observations: self.observations.as_deref(),
+            recent_context: self.recent_context.as_deref(),
+        };
+
         execute_turn(
             &*self.provider,
             &self.tools,
             &self.identity,
             &self.options,
-            self.observations.as_deref(),
+            &memory_ctx,
             &mut self.recent_messages,
             display,
             Some(&time_ctx),
@@ -210,13 +249,18 @@ impl Agent {
 
         let provider: &dyn ModelProvider = provider_override.unwrap_or(&*self.provider);
 
+        let memory_ctx = MemoryContext {
+            observations: self.observations.as_deref(),
+            recent_context: self.recent_context.as_deref(),
+        };
+
         // System turns don't inject time context (no user-facing timestamps)
         let texts = execute_turn(
             provider,
             &self.tools,
             &self.identity,
             &self.options,
-            self.observations.as_deref(),
+            &memory_ctx,
             &mut thread_messages,
             display,
             None,
@@ -261,7 +305,7 @@ async fn execute_turn(
     tools: &ToolRegistry,
     identity: &IdentityFiles,
     options: &CompletionOptions,
-    observations: Option<&str>,
+    memory_ctx: &MemoryContext<'_>,
     recent_messages: &mut RecentMessages,
     display: &dyn TurnDisplay,
     time_ctx: Option<&TimeContext>,
@@ -272,7 +316,7 @@ async fn execute_turn(
     for iteration in 0..MAX_TOOL_ITERATIONS {
         // System prompt is reassembled each iteration because tool execution
         // can modify identity files (e.g. write_file updating MEMORY.md).
-        let messages = assemble_system_prompt(identity, recent_messages, observations, time_ctx);
+        let messages = assemble_system_prompt(identity, recent_messages, memory_ctx, time_ctx);
 
         let response = provider
             .complete(&messages, &tool_definitions, options)
@@ -348,7 +392,11 @@ fn log_usage(response: &ModelResponse) {
 }
 
 #[cfg(test)]
-#[expect(clippy::unwrap_used, reason = "test code uses unwrap for clarity")]
+#[expect(
+    clippy::unwrap_used,
+    clippy::indexing_slicing,
+    reason = "test code uses unwrap and indexing for clarity"
+)]
 mod tests {
     use super::*;
     use crate::channels::null::NullDisplay;
@@ -578,6 +626,49 @@ mod tests {
             msgs.first()
                 .is_some_and(|m| m.content.contains("email arrived from boss")),
             "system event should be in user message"
+        );
+    }
+
+    #[test]
+    fn rotate_messages_retains_last_exchanges() {
+        let mut agent = Agent::new(
+            Box::new(MockProvider::new(vec![])),
+            ToolRegistry::new(),
+            IdentityFiles::default(),
+            CompletionOptions::default(),
+            chrono_tz::UTC,
+        );
+
+        // Simulate a conversation with 5 exchanges
+        for i in 0..5 {
+            agent
+                .recent_messages
+                .push(Message::user(format!("question {i}")));
+            agent
+                .recent_messages
+                .push(Message::assistant(format!("answer {i}"), None));
+        }
+        assert_eq!(agent.message_count(), 10, "should have 10 messages");
+
+        agent.rotate_messages_after_observation();
+
+        // Should retain last 3 exchanges = 6 messages
+        assert_eq!(
+            agent.message_count(),
+            6,
+            "should retain 6 messages (3 exchanges)"
+        );
+
+        let msgs = agent.messages_since(0);
+        assert_eq!(
+            msgs[0].content, "question 2",
+            "first retained should be exchange 2"
+        );
+        assert_eq!(msgs[1].content, "answer 2");
+        assert_eq!(msgs[4].content, "question 4");
+        assert_eq!(
+            msgs[5].content, "answer 4",
+            "last retained should be exchange 4"
         );
     }
 

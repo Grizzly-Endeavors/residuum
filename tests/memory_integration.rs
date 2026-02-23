@@ -15,7 +15,8 @@ mod memory_integration {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     use ironclaw::memory::log_store::{load_observation_log, next_episode_id};
-    use ironclaw::memory::observer::{ObserveResult, Observer, ObserverConfig};
+    use ironclaw::memory::observer::{ObserveAction, ObserveResult, Observer, ObserverConfig};
+    use ironclaw::memory::recent_store::{RecentContext, load_recent_context, save_recent_context};
     use ironclaw::memory::recent_store::{
         append_recent_messages, clear_recent_messages, load_recent_messages,
     };
@@ -65,6 +66,18 @@ mod memory_integration {
     }
 
     fn observer_response() -> String {
+        r#"{
+            "observations": [
+                {"content": "workspace uses a flat directory layout with identity files at root", "timestamp": "2026-02-21T14:30Z", "visibility": "user"},
+                {"content": "bootstrap creates 10 required directories on first run", "timestamp": "2026-02-21T14:31Z", "visibility": "user"},
+                {"content": "SOUL.md defines the agent personality and is loaded at startup", "timestamp": "2026-02-21T14:32Z", "visibility": "user"}
+            ],
+            "narrative": "We were discussing the workspace layout and how identity files are organized. The bootstrap process creates the required directory structure."
+        }"#
+        .to_string()
+    }
+
+    fn observer_response_legacy() -> String {
         r#"[
             {"content": "workspace uses a flat directory layout with identity files at root", "timestamp": "2026-02-21T14:30Z", "visibility": "user"},
             {"content": "bootstrap creates 10 required directories on first run", "timestamp": "2026-02-21T14:31Z", "visibility": "user"},
@@ -120,7 +133,7 @@ mod memory_integration {
             Box::new(MockProvider::new(vec![observer_response()])),
             ObserverConfig {
                 threshold_tokens: 100, // Very low threshold for testing
-                tz: chrono_tz::UTC,
+                ..ObserverConfig::default()
             },
         );
 
@@ -145,6 +158,7 @@ mod memory_integration {
             id: episode_id,
             transcript_path,
             observation_count,
+            ..
         } = observer.observe(&recent, &layout).await.unwrap();
         clear_recent_messages(&recent_path).await.unwrap();
 
@@ -359,7 +373,7 @@ mod memory_integration {
             Box::new(MockProvider::new(vec![observer_response()])),
             ObserverConfig {
                 threshold_tokens: 1_000_000,
-                tz: chrono_tz::UTC,
+                ..ObserverConfig::default()
             },
         );
 
@@ -417,5 +431,157 @@ mod memory_integration {
             !results.is_empty(),
             "should find daily log content in search"
         );
+    }
+
+    #[test]
+    fn check_thresholds_returns_correct_actions() {
+        let observer = Observer::new(
+            Box::new(MockProvider::new(vec![observer_response()])),
+            ObserverConfig {
+                threshold_tokens: 500,
+                force_threshold_tokens: 100_000,
+                ..ObserverConfig::default()
+            },
+        );
+
+        // Below soft threshold — single short message is ~2 tokens
+        let few_recent = vec![ironclaw::memory::recent_store::RecentMessage {
+            message: Message::user("hello"),
+            timestamp: chrono::Utc::now().naive_utc(),
+            project_context: "test".to_string(),
+            visibility: Visibility::User,
+        }];
+
+        assert_eq!(
+            observer.check_thresholds(&few_recent),
+            ObserveAction::None,
+            "single short message should be below soft threshold"
+        );
+
+        // Above soft threshold but below force — make_messages(10) produces ~1250+ tokens
+        let many = make_messages(10);
+        let many_recent: Vec<ironclaw::memory::recent_store::RecentMessage> = many
+            .into_iter()
+            .map(|m| ironclaw::memory::recent_store::RecentMessage {
+                message: m,
+                timestamp: chrono::Utc::now().naive_utc(),
+                project_context: "test".to_string(),
+                visibility: Visibility::User,
+            })
+            .collect();
+
+        assert_eq!(
+            observer.check_thresholds(&many_recent),
+            ObserveAction::StartCooldown,
+            "many messages should start cooldown"
+        );
+    }
+
+    #[tokio::test]
+    async fn narrative_summary_in_observe_result() {
+        let dir = tempfile::tempdir().unwrap();
+        let layout = WorkspaceLayout::new(dir.path());
+
+        for d in layout.required_dirs() {
+            tokio::fs::create_dir_all(&d).await.unwrap();
+        }
+
+        let observer = Observer::new(
+            Box::new(MockProvider::new(vec![observer_response()])),
+            ObserverConfig {
+                threshold_tokens: 10,
+                ..ObserverConfig::default()
+            },
+        );
+
+        let messages = make_messages(5);
+        let recent_path = layout.recent_messages_json();
+        append_recent_messages(
+            &recent_path,
+            &messages,
+            "test",
+            Visibility::User,
+            chrono_tz::UTC,
+        )
+        .await
+        .unwrap();
+
+        let recent = load_recent_messages(&recent_path).await.unwrap();
+        let result = observer.observe(&recent, &layout).await.unwrap();
+
+        assert!(
+            result.narrative.is_some(),
+            "observe result should include narrative"
+        );
+        assert!(
+            result
+                .narrative
+                .as_ref()
+                .is_some_and(|n| n.contains("workspace layout")),
+            "narrative should contain conversation summary"
+        );
+    }
+
+    #[tokio::test]
+    async fn backward_compat_legacy_array_format() {
+        let dir = tempfile::tempdir().unwrap();
+        let layout = WorkspaceLayout::new(dir.path());
+
+        for d in layout.required_dirs() {
+            tokio::fs::create_dir_all(&d).await.unwrap();
+        }
+
+        // Use legacy bare-array format
+        let observer = Observer::new(
+            Box::new(MockProvider::new(vec![observer_response_legacy()])),
+            ObserverConfig {
+                threshold_tokens: 10,
+                ..ObserverConfig::default()
+            },
+        );
+
+        let messages = make_messages(5);
+        let recent_path = layout.recent_messages_json();
+        append_recent_messages(
+            &recent_path,
+            &messages,
+            "test",
+            Visibility::User,
+            chrono_tz::UTC,
+        )
+        .await
+        .unwrap();
+
+        let recent = load_recent_messages(&recent_path).await.unwrap();
+        let result = observer.observe(&recent, &layout).await.unwrap();
+
+        assert_eq!(
+            result.observation_count, 3,
+            "legacy format should still extract 3 observations"
+        );
+        assert!(
+            result.narrative.is_none(),
+            "legacy format should have no narrative"
+        );
+    }
+
+    #[tokio::test]
+    async fn recent_context_persistence_round_trip() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("recent_context.json");
+
+        let ctx = RecentContext {
+            narrative: "We were discussing workspace layout.".to_string(),
+            created_at: chrono::Utc::now().naive_utc(),
+            episode_id: "ep-001".to_string(),
+        };
+
+        save_recent_context(&path, &ctx).await.unwrap();
+        let loaded = load_recent_context(&path).await.unwrap();
+
+        assert!(loaded.is_some(), "should load persisted context");
+        let loaded = loaded.unwrap();
+        assert_eq!(loaded.narrative, ctx.narrative);
+        assert_eq!(loaded.episode_id, ctx.episode_id);
     }
 }

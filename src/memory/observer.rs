@@ -6,7 +6,9 @@
 use chrono::NaiveDateTime;
 use chrono_tz::Tz;
 
-use crate::config::DEFAULT_OBSERVER_THRESHOLD;
+use crate::config::{
+    DEFAULT_OBSERVER_COOLDOWN_SECS, DEFAULT_OBSERVER_FORCE_THRESHOLD, DEFAULT_OBSERVER_THRESHOLD,
+};
 use crate::error::IronclawError;
 use crate::memory::episode_store::{episode_obs_path, write_episode_transcript};
 use crate::memory::log_store::{append_observations, next_episode_id, save_episode_observations};
@@ -25,6 +27,19 @@ pub struct ObserveResult {
     pub transcript_path: std::path::PathBuf,
     /// Number of observation strings extracted from the conversation.
     pub observation_count: usize,
+    /// Narrative summary of the conversation at the time of observation.
+    pub narrative: Option<String>,
+}
+
+/// What the observer thinks should happen after checking token thresholds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ObserveAction {
+    /// Token count is below the soft threshold — do nothing.
+    None,
+    /// Token count is at or above the soft threshold — start or reset the cooldown timer.
+    StartCooldown,
+    /// Token count is at or above the force threshold — observe immediately.
+    ForceNow,
 }
 
 /// Observer configuration.
@@ -32,6 +47,10 @@ pub struct ObserveResult {
 pub struct ObserverConfig {
     /// Minimum estimated tokens in recent messages before observation triggers.
     pub threshold_tokens: usize,
+    /// Cooldown period in seconds after the soft threshold is crossed.
+    pub cooldown_secs: u64,
+    /// Token threshold that forces immediate observation (bypasses cooldown).
+    pub force_threshold_tokens: usize,
     /// Timezone used for timestamps in observations.
     pub tz: Tz,
 }
@@ -40,6 +59,8 @@ impl Default for ObserverConfig {
     fn default() -> Self {
         Self {
             threshold_tokens: DEFAULT_OBSERVER_THRESHOLD,
+            cooldown_secs: DEFAULT_OBSERVER_COOLDOWN_SECS,
+            force_threshold_tokens: DEFAULT_OBSERVER_FORCE_THRESHOLD,
             tz: chrono_tz::UTC,
         }
     }
@@ -58,13 +79,39 @@ impl Observer {
         Self { provider, config }
     }
 
+    /// The configured cooldown period in seconds.
+    #[must_use]
+    pub fn cooldown_secs(&self) -> u64 {
+        self.config.cooldown_secs
+    }
+
+    /// The configured timezone.
+    #[must_use]
+    pub fn timezone(&self) -> Tz {
+        self.config.tz
+    }
+
     /// Check whether the observer should fire based on recent message token count.
     #[must_use]
     pub fn should_observe(&self, recent_messages: &[RecentMessage]) -> bool {
-        let messages: Vec<&Message> = recent_messages.iter().map(|rm| &rm.message).collect();
-        let tokens =
-            estimate_message_tokens(&messages.iter().map(|m| (*m).clone()).collect::<Vec<_>>());
+        let tokens = estimate_recent_tokens(recent_messages);
         tokens >= self.config.threshold_tokens
+    }
+
+    /// Check token thresholds and return the appropriate action.
+    ///
+    /// Returns `ForceNow` if tokens >= force threshold, `StartCooldown` if
+    /// tokens >= soft threshold, or `None` if below both.
+    #[must_use]
+    pub fn check_thresholds(&self, recent_messages: &[RecentMessage]) -> ObserveAction {
+        let tokens = estimate_recent_tokens(recent_messages);
+        if tokens >= self.config.force_threshold_tokens {
+            ObserveAction::ForceNow
+        } else if tokens >= self.config.threshold_tokens {
+            ObserveAction::StartCooldown
+        } else {
+            ObserveAction::None
+        }
     }
 
     /// Extract observations from recent messages and persist them.
@@ -115,8 +162,8 @@ impl Observer {
             .await
             .map_err(IronclawError::Model)?;
 
-        // Parse the object-array response into extraction results.
-        let extractions = parse_observer_response(&response, self.config.tz)?;
+        // Parse the response into extraction results and optional narrative.
+        let parsed = parse_observer_response(&response, self.config.tz)?;
 
         // Build the episode internally — start/end are cosmetic and no longer LLM-extracted.
         let episode = Episode {
@@ -125,7 +172,11 @@ impl Observer {
             start: String::new(),
             end: String::new(),
             context: project_context.clone(),
-            observations: extractions.iter().map(|e| e.content.clone()).collect(),
+            observations: parsed
+                .extractions
+                .iter()
+                .map(|e| e.content.clone())
+                .collect(),
             source_episodes: vec![],
         };
 
@@ -136,7 +187,8 @@ impl Observer {
 
         // Convert episode observations → flat Observations and append
         let observation_count = episode.observations.len();
-        let observations: Vec<Observation> = extractions
+        let observations: Vec<Observation> = parsed
+            .extractions
             .iter()
             .map(|e| Observation {
                 timestamp: e.timestamp,
@@ -154,6 +206,7 @@ impl Observer {
         tracing::info!(
             episode_id = %episode.id,
             observations = observation_count,
+            has_narrative = parsed.narrative.is_some(),
             "episode extracted"
         );
 
@@ -161,6 +214,7 @@ impl Observer {
             id: episode.id,
             transcript_path,
             observation_count,
+            narrative: parsed.narrative,
         })
     }
 }
@@ -170,6 +224,21 @@ struct ObserverExtraction {
     content: String,
     timestamp: NaiveDateTime,
     visibility: Visibility,
+}
+
+/// Combined parse result: extractions plus optional narrative.
+struct ObserverParseResult {
+    extractions: Vec<ObserverExtraction>,
+    narrative: Option<String>,
+}
+
+/// Estimate the total token count of recent messages.
+fn estimate_recent_tokens(recent_messages: &[RecentMessage]) -> usize {
+    let messages: Vec<Message> = recent_messages
+        .iter()
+        .map(|rm| rm.message.clone())
+        .collect();
+    estimate_message_tokens(&messages)
 }
 
 /// Derive the project context from a batch of recent messages.
@@ -276,29 +345,40 @@ Each observation should be a complete sentence useful as future context. Be spec
 /// Output format spec — always appended by code, never stored in editable files.
 ///
 /// This is injected unconditionally so editing `OBSERVER.md` cannot break JSON parsing.
-const EXTRACTION_FORMAT_SPEC: &str = r#"Return ONLY a JSON array of objects. Each object must have:
-- "content": a complete, self-contained observation sentence
-- "timestamp": timestamp at minute precision (YYYY-MM-DDTHH:MM) matching the most relevant message
-- "visibility": "user" if the observation involves a user-visible turn, "background" if from a system/background turn
+const EXTRACTION_FORMAT_SPEC: &str = r#"Return ONLY a JSON object with two fields:
+
+1. "observations": an array of objects, each with:
+   - "content": a complete, self-contained observation sentence
+   - "timestamp": timestamp at minute precision (YYYY-MM-DDTHH:MM) matching the most relevant message
+   - "visibility": "user" if the observation involves a user-visible turn, "background" if from a system/background turn
+
+2. "narrative": a 2-4 sentence summary of what was being discussed and where things left off,
+   written as if briefing someone who needs to continue the conversation. Include the current
+   topic, any open questions, and the overall direction of the conversation.
 
 Example:
-[
-  {"content": "user prefers concise responses", "timestamp": "2026-02-21T14:30", "visibility": "user"},
-  {"content": "cron job executed daily backup successfully", "timestamp": "2026-02-21T03:00", "visibility": "background"}
-]
+{
+  "observations": [
+    {"content": "user prefers concise responses", "timestamp": "2026-02-21T14:30", "visibility": "user"},
+    {"content": "cron job executed daily backup successfully", "timestamp": "2026-02-21T03:00", "visibility": "background"}
+  ],
+  "narrative": "We were implementing a new caching layer for the API. The user chose Redis over in-memory caching. The basic connection setup is done but we haven't started on cache invalidation yet."
+}
 
-Return ONLY a valid JSON array of objects, no markdown fencing, no explanation."#;
+Return ONLY a valid JSON object, no markdown fencing, no explanation."#;
 
-/// Parse the model's JSON response into a list of `ObserverExtraction` values.
+/// Parse the model's JSON response into extractions and an optional narrative.
 ///
-/// Expects a JSON array of objects with `content`, `timestamp`, and `visibility` fields.
+/// Accepts two formats:
+/// - **New (object)**: `{"observations": [...], "narrative": "..."}`
+/// - **Legacy (bare array)**: `[{"content": ..., ...}, ...]`
 ///
 /// # Errors
-/// Returns an error if the response cannot be parsed or the array is empty.
+/// Returns an error if the response cannot be parsed or the observations are empty.
 fn parse_observer_response(
     response: &ModelResponse,
     tz: Tz,
-) -> Result<Vec<ObserverExtraction>, IronclawError> {
+) -> Result<ObserverParseResult, IronclawError> {
     let content = response.content.trim();
     let json_str = crate::memory::strip_code_fences(content);
 
@@ -308,13 +388,52 @@ fn parse_observer_response(
         ))
     })?;
 
-    let items = value.as_array().ok_or_else(|| {
-        IronclawError::Memory(format!(
-            "observer response is not a JSON array\nresponse: {content}"
-        ))
-    })?;
+    // Determine the items array and optional narrative
+    let (items, narrative) = if let Some(arr) = value.as_array() {
+        // Legacy bare-array format
+        (arr.clone(), None)
+    } else if let Some(obj) = value.as_object() {
+        let obs_array = obj
+            .get("observations")
+            .and_then(serde_json::Value::as_array)
+            .ok_or_else(|| {
+                IronclawError::Memory(format!(
+                    "observer response object missing 'observations' array\nresponse: {content}"
+                ))
+            })?
+            .clone();
 
+        let narr = obj
+            .get("narrative")
+            .and_then(serde_json::Value::as_str)
+            .filter(|s| !s.is_empty())
+            .map(String::from);
+
+        (obs_array, narr)
+    } else {
+        return Err(IronclawError::Memory(format!(
+            "observer response is not a JSON array or object\nresponse: {content}"
+        )));
+    };
+
+    let extractions = parse_extraction_items(&items, tz);
+
+    if extractions.is_empty() {
+        return Err(IronclawError::Memory(
+            "observer returned empty observations array".to_string(),
+        ));
+    }
+
+    Ok(ObserverParseResult {
+        extractions,
+        narrative,
+    })
+}
+
+/// Parse individual observation items from a JSON array.
+fn parse_extraction_items(items: &[serde_json::Value], tz: Tz) -> Vec<ObserverExtraction> {
     let mut extractions = Vec::new();
+
     for item in items {
         let Some(obs_content) = item.get("content").and_then(serde_json::Value::as_str) else {
             tracing::warn!("observer response item missing 'content' field, skipping");
@@ -356,13 +475,7 @@ fn parse_observer_response(
         });
     }
 
-    if extractions.is_empty() {
-        return Err(IronclawError::Memory(
-            "observer returned empty observations array".to_string(),
-        ));
-    }
-
-    Ok(extractions)
+    extractions
 }
 
 #[cfg(test)]
@@ -428,20 +541,60 @@ mod tests {
     }
 
     #[test]
-    fn parse_observer_response_from_json_array() {
+    fn parse_observer_response_legacy_array_format() {
         let response = ModelResponse::new(SAMPLE_RESPONSE.to_string(), vec![]);
-        let extractions = parse_observer_response(&response, chrono_tz::UTC).unwrap();
+        let parsed = parse_observer_response(&response, chrono_tz::UTC).unwrap();
 
-        assert_eq!(extractions.len(), 2, "should have 2 extractions");
+        assert_eq!(parsed.extractions.len(), 2, "should have 2 extractions");
         assert_eq!(
-            extractions.first().map(|e| e.content.as_str()),
+            parsed.extractions.first().map(|e| e.content.as_str()),
             Some("workspace uses a flat directory layout"),
             "first extraction content should match"
         );
         assert_eq!(
-            extractions.get(1).map(|e| e.content.as_str()),
+            parsed.extractions.get(1).map(|e| e.content.as_str()),
             Some("identity files are loaded at startup"),
             "second extraction content should match"
+        );
+        assert!(
+            parsed.narrative.is_none(),
+            "legacy format should have no narrative"
+        );
+    }
+
+    #[test]
+    fn parse_observer_response_new_format() {
+        let json = r#"{
+            "observations": [
+                {"content": "user prefers Rust", "timestamp": "2026-02-21T14:30", "visibility": "user"}
+            ],
+            "narrative": "We were discussing language preferences."
+        }"#;
+        let response = ModelResponse::new(json.to_string(), vec![]);
+        let parsed = parse_observer_response(&response, chrono_tz::UTC).unwrap();
+
+        assert_eq!(parsed.extractions.len(), 1, "should have 1 extraction");
+        assert_eq!(
+            parsed.narrative.as_deref(),
+            Some("We were discussing language preferences."),
+            "narrative should be extracted"
+        );
+    }
+
+    #[test]
+    fn parse_observer_response_narrative_missing() {
+        let json = r#"{
+            "observations": [
+                {"content": "user prefers Rust", "timestamp": "2026-02-21T14:30", "visibility": "user"}
+            ]
+        }"#;
+        let response = ModelResponse::new(json.to_string(), vec![]);
+        let parsed = parse_observer_response(&response, chrono_tz::UTC).unwrap();
+
+        assert_eq!(parsed.extractions.len(), 1, "should have 1 extraction");
+        assert!(
+            parsed.narrative.is_none(),
+            "missing narrative should be None"
         );
     }
 
@@ -449,9 +602,9 @@ mod tests {
     fn parse_observer_response_with_code_fences() {
         let fenced = format!("```json\n{SAMPLE_RESPONSE}\n```");
         let response = ModelResponse::new(fenced, vec![]);
-        let extractions = parse_observer_response(&response, chrono_tz::UTC).unwrap();
+        let parsed = parse_observer_response(&response, chrono_tz::UTC).unwrap();
 
-        assert_eq!(extractions.len(), 2, "should parse despite fences");
+        assert_eq!(parsed.extractions.len(), 2, "should parse despite fences");
     }
 
     #[test]
@@ -459,13 +612,6 @@ mod tests {
         let response = ModelResponse::new("not json at all".to_string(), vec![]);
         let result = parse_observer_response(&response, chrono_tz::UTC);
         assert!(result.is_err(), "invalid JSON should error");
-    }
-
-    #[test]
-    fn parse_observer_response_not_array_errors() {
-        let response = ModelResponse::new(r#"{"observations": ["one thing"]}"#.to_string(), vec![]);
-        let result = parse_observer_response(&response, chrono_tz::UTC);
-        assert!(result.is_err(), "non-array JSON should error");
     }
 
     #[test]
@@ -482,8 +628,8 @@ mod tests {
                 .to_string(),
             vec![],
         );
-        let extractions = parse_observer_response(&response, chrono_tz::UTC).unwrap();
-        let ts = extractions.first().unwrap().timestamp;
+        let parsed = parse_observer_response(&response, chrono_tz::UTC).unwrap();
+        let ts = parsed.extractions.first().unwrap().timestamp;
         assert_eq!(ts.format("%Y-%m-%dT%H:%M").to_string(), "2026-02-21T14:30");
     }
 
@@ -494,9 +640,9 @@ mod tests {
                 .to_string(),
             vec![],
         );
-        let extractions = parse_observer_response(&response, chrono_tz::UTC).unwrap();
+        let parsed = parse_observer_response(&response, chrono_tz::UTC).unwrap();
         assert_eq!(
-            extractions.first().map(|e| &e.visibility),
+            parsed.extractions.first().map(|e| &e.visibility),
             Some(&Visibility::Background),
             "background visibility should be parsed"
         );
@@ -508,7 +654,7 @@ mod tests {
             Box::new(MockObserverProvider::new(SAMPLE_RESPONSE)),
             ObserverConfig {
                 threshold_tokens: 1000,
-                tz: chrono_tz::UTC,
+                ..ObserverConfig::default()
             },
         );
         let messages = make_recent_messages(2);
@@ -525,7 +671,7 @@ mod tests {
             Box::new(MockObserverProvider::new(SAMPLE_RESPONSE)),
             ObserverConfig {
                 threshold_tokens: 10,
-                tz: chrono_tz::UTC,
+                ..ObserverConfig::default()
             },
         );
         let messages = make_recent_messages(5);
@@ -533,6 +679,60 @@ mod tests {
         assert!(
             observer.should_observe(&messages),
             "should observe above threshold"
+        );
+    }
+
+    #[test]
+    fn check_thresholds_below_soft() {
+        let observer = Observer::new(
+            Box::new(MockObserverProvider::new(SAMPLE_RESPONSE)),
+            ObserverConfig {
+                threshold_tokens: 100_000,
+                force_threshold_tokens: 200_000,
+                ..ObserverConfig::default()
+            },
+        );
+        let messages = make_recent_messages(2);
+        assert_eq!(
+            observer.check_thresholds(&messages),
+            ObserveAction::None,
+            "below soft threshold should return None"
+        );
+    }
+
+    #[test]
+    fn check_thresholds_between_soft_and_force() {
+        let observer = Observer::new(
+            Box::new(MockObserverProvider::new(SAMPLE_RESPONSE)),
+            ObserverConfig {
+                threshold_tokens: 10,
+                force_threshold_tokens: 100_000,
+                ..ObserverConfig::default()
+            },
+        );
+        let messages = make_recent_messages(5);
+        assert_eq!(
+            observer.check_thresholds(&messages),
+            ObserveAction::StartCooldown,
+            "between soft and force should return StartCooldown"
+        );
+    }
+
+    #[test]
+    fn check_thresholds_above_force() {
+        let observer = Observer::new(
+            Box::new(MockObserverProvider::new(SAMPLE_RESPONSE)),
+            ObserverConfig {
+                threshold_tokens: 10,
+                force_threshold_tokens: 10,
+                ..ObserverConfig::default()
+            },
+        );
+        let messages = make_recent_messages(5);
+        assert_eq!(
+            observer.check_thresholds(&messages),
+            ObserveAction::ForceNow,
+            "above force threshold should return ForceNow"
         );
     }
 
@@ -552,7 +752,7 @@ mod tests {
             Box::new(MockObserverProvider::new(SAMPLE_RESPONSE)),
             ObserverConfig {
                 threshold_tokens: 10,
-                tz: chrono_tz::UTC,
+                ..ObserverConfig::default()
             },
         );
 

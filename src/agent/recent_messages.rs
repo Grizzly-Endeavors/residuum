@@ -55,9 +55,81 @@ impl RecentMessages {
     pub fn is_empty(&self) -> bool {
         self.messages.is_empty()
     }
+
+    /// Return the last `n` user/assistant text-only exchange pairs.
+    ///
+    /// Walks backward through messages to find pairs of user + assistant
+    /// messages that have text content and no tool calls. Returns them
+    /// flattened in chronological order.
+    #[must_use]
+    pub fn last_exchanges(&self, n: usize) -> Vec<Message> {
+        if n == 0 {
+            return Vec::new();
+        }
+
+        let mut pairs: Vec<(Message, Message)> = Vec::new();
+        let mut i = self.messages.len();
+
+        while i > 0 && pairs.len() < n {
+            i -= 1;
+            let Some(msg) = self.messages.get(i) else {
+                break;
+            };
+
+            // Look for an assistant message with text and no tool calls
+            if msg.role != crate::models::Role::Assistant {
+                continue;
+            }
+            if msg.content.is_empty() || msg.tool_calls.is_some() {
+                continue;
+            }
+
+            // Walk backward to find the preceding user message, skipping
+            // tool results and assistant messages with tool calls (the tool
+            // call/result chain between a user message and the final text reply).
+            let mut j = i;
+            while j > 0 {
+                j -= 1;
+                let Some(prev) = self.messages.get(j) else {
+                    break;
+                };
+                if prev.role == crate::models::Role::User && !prev.content.is_empty() {
+                    pairs.push((prev.clone(), msg.clone()));
+                    i = j; // continue scanning before this user message
+                    break;
+                }
+                // Skip tool results and assistant-with-tool-calls (mid-chain)
+                if prev.role == crate::models::Role::Tool {
+                    continue;
+                }
+                if prev.role == crate::models::Role::Assistant && prev.tool_calls.is_some() {
+                    continue;
+                }
+                // Any other message type means no matching user message
+                break;
+            }
+        }
+
+        pairs.reverse();
+        pairs.into_iter().flat_map(|(u, a)| [u, a]).collect()
+    }
+
+    /// Insert messages at the beginning of the buffer.
+    pub fn prepend(&mut self, messages: Vec<Message>) {
+        if messages.is_empty() {
+            return;
+        }
+        let mut new_messages = messages;
+        new_messages.append(&mut self.messages);
+        self.messages = new_messages;
+    }
 }
 
 #[cfg(test)]
+#[expect(
+    clippy::indexing_slicing,
+    reason = "test code uses indexing for clarity"
+)]
 mod tests {
     use super::*;
     use crate::models::Role;
@@ -106,6 +178,148 @@ mod tests {
             tail.first().map(|m| m.content.as_str()),
             Some("second"),
             "first in tail should be 'second'"
+        );
+    }
+
+    fn push_assistant_msg(recent: &mut RecentMessages, content: &str) {
+        recent.push(Message {
+            role: Role::Assistant,
+            content: content.to_string(),
+            tool_calls: None,
+            tool_call_id: None,
+        });
+    }
+
+    fn push_tool_msg(recent: &mut RecentMessages, content: &str) {
+        recent.push(Message {
+            role: Role::Tool,
+            content: content.to_string(),
+            tool_calls: None,
+            tool_call_id: Some("call_1".to_string()),
+        });
+    }
+
+    fn push_assistant_with_tools(recent: &mut RecentMessages) {
+        recent.push(Message {
+            role: Role::Assistant,
+            content: String::new(),
+            tool_calls: Some(vec![crate::models::ToolCall {
+                id: "call_1".to_string(),
+                name: "exec".to_string(),
+                arguments: serde_json::json!({"command": "echo test"}),
+            }]),
+            tool_call_id: None,
+        });
+    }
+
+    #[test]
+    fn last_exchanges_empty_buffer() {
+        let recent = RecentMessages::new();
+        let exchanges = recent.last_exchanges(3);
+        assert!(exchanges.is_empty(), "empty buffer should return empty");
+    }
+
+    #[test]
+    fn last_exchanges_no_text_responses() {
+        let mut recent = RecentMessages::new();
+        push_user_msg(&mut recent, "hello");
+        push_assistant_with_tools(&mut recent);
+        push_tool_msg(&mut recent, "tool result");
+
+        let exchanges = recent.last_exchanges(3);
+        assert!(
+            exchanges.is_empty(),
+            "no text-only assistant responses should return empty"
+        );
+    }
+
+    #[test]
+    fn last_exchanges_single_exchange() {
+        let mut recent = RecentMessages::new();
+        push_user_msg(&mut recent, "hello");
+        push_assistant_msg(&mut recent, "hi there");
+
+        let exchanges = recent.last_exchanges(3);
+        assert_eq!(
+            exchanges.len(),
+            2,
+            "should return one exchange (2 messages)"
+        );
+        assert_eq!(exchanges[0].content, "hello");
+        assert_eq!(exchanges[1].content, "hi there");
+    }
+
+    #[test]
+    fn last_exchanges_three_from_longer_history() {
+        let mut recent = RecentMessages::new();
+        push_user_msg(&mut recent, "first");
+        push_assistant_msg(&mut recent, "first reply");
+        push_user_msg(&mut recent, "second");
+        push_assistant_msg(&mut recent, "second reply");
+        push_user_msg(&mut recent, "third");
+        push_assistant_msg(&mut recent, "third reply");
+        push_user_msg(&mut recent, "fourth");
+        push_assistant_msg(&mut recent, "fourth reply");
+
+        let exchanges = recent.last_exchanges(3);
+        assert_eq!(exchanges.len(), 6, "should return 3 exchanges (6 messages)");
+        assert_eq!(exchanges[0].content, "second");
+        assert_eq!(exchanges[1].content, "second reply");
+        assert_eq!(exchanges[4].content, "fourth");
+        assert_eq!(exchanges[5].content, "fourth reply");
+    }
+
+    #[test]
+    fn last_exchanges_skips_tool_messages() {
+        let mut recent = RecentMessages::new();
+        push_user_msg(&mut recent, "run a command");
+        push_assistant_with_tools(&mut recent);
+        push_tool_msg(&mut recent, "tool result");
+        push_assistant_msg(&mut recent, "the result was: test");
+        push_user_msg(&mut recent, "thanks");
+        push_assistant_msg(&mut recent, "you're welcome");
+
+        let exchanges = recent.last_exchanges(3);
+        // Should find "thanks"/"you're welcome" and "run a command"/"the result was: test"
+        assert_eq!(
+            exchanges.len(),
+            4,
+            "should find 2 text exchanges (4 messages), skipping tool call"
+        );
+        assert_eq!(exchanges[2].content, "thanks");
+        assert_eq!(exchanges[3].content, "you're welcome");
+    }
+
+    #[test]
+    fn prepend_to_empty() {
+        let mut recent = RecentMessages::new();
+        recent.prepend(vec![
+            Message::user("prepended"),
+            Message::assistant("response", None),
+        ]);
+        assert_eq!(recent.len(), 2, "should have 2 messages");
+        assert_eq!(
+            recent.messages()[0].content,
+            "prepended",
+            "first should be prepended"
+        );
+    }
+
+    #[test]
+    fn prepend_then_push() {
+        let mut recent = RecentMessages::new();
+        push_user_msg(&mut recent, "original");
+        recent.prepend(vec![Message::user("prepended")]);
+        assert_eq!(recent.len(), 2, "should have 2 messages");
+        assert_eq!(
+            recent.messages()[0].content,
+            "prepended",
+            "prepended should be first"
+        );
+        assert_eq!(
+            recent.messages()[1].content,
+            "original",
+            "original should be second"
         );
     }
 

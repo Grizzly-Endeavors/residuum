@@ -75,6 +75,12 @@ impl WorkspaceLayout {
         self.root.join("memory/recent_messages.json")
     }
 
+    /// Path to the narrative context file from the most recent observation.
+    #[must_use]
+    pub fn recent_context_json(&self) -> PathBuf {
+        self.root.join("memory/recent_context.json")
+    }
+
     /// Path to the tantivy search index directory.
     #[must_use]
     pub fn search_index_dir(&self) -> PathBuf {
