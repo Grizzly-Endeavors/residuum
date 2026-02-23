@@ -216,6 +216,7 @@ The gateway watches `config.toml`, workspace identity files, `HEARTBEAT.yml`, `A
 │       ├── PROJECT.md
 │       ├── notes/
 │       ├── references/
+│       ├── skills/
 │       └── workspace/
 │
 ├── archive/
@@ -223,6 +224,7 @@ The gateway watches `config.toml`, workspace identity files, `HEARTBEAT.yml`, `A
 │       ├── PROJECT.md
 │       ├── notes/
 │       ├── references/
+│       ├── skills/
 │       └── workspace/
 │
 ├── skills/                       # User-defined workspace skills
@@ -245,7 +247,7 @@ These are YAML/TOML files the Rust gateway validates and acts on:
 |------|--------|---------------|
 | `config.toml` | TOML | Full gateway configuration |
 | `HEARTBEAT.yml` | YAML | Pulse scheduling, task definitions |
-| `projects/**/PROJECT.md` | Markdown+YAML frontmatter | Project entry metadata, tool/skill/MCP resolution |
+| `projects/**/PROJECT.md` | Markdown+YAML frontmatter | Project entry metadata, tool/MCP resolution |
 | `cron/jobs.json` | JSON | Agent-created scheduled wake-ups |
 | `memory/observations.json` | JSON | Global observation log (episode-based) |
 
@@ -272,6 +274,7 @@ These files are never auto-loaded into context. The agent knows they exist (via 
 | `projects/<n>/notes/*` | When project is active (listed in manifest) |
 | `projects/<n>/references/*` | When project is active (listed in manifest) |
 | `projects/<n>/workspace/*` | When project is active (listed in manifest) |
+| `projects/<n>/skills/**/SKILL.md` (body) | When project is active (agent activates via `skill_activate`) |
 | `skills/**/SKILL.md` (body) | When skill metadata is in prompt (agent reads to activate) |
 | `memory/episodes/*.md` | Always (via `read` tool or `memory_search`) |
 | `skills/**/scripts/*` | After agent has read the SKILL.md |
@@ -535,7 +538,7 @@ On startup and on filesystem change:
 
 1. Walk `projects/` and `archive/`.
 2. For each subfolder containing a `PROJECT.md`, parse the YAML frontmatter. Validate against schema.
-3. Build in-memory index: name, description, status, tools, skills, MCP servers.
+3. Build in-memory index: name, description, status, tools, MCP servers.
 
 The frontmatter is a few lines of YAML per entry, so scanning is cheap and always current. The body of `PROJECT.md` is not read during scanning — only on activation.
 
@@ -552,9 +555,6 @@ tools:
   - exec
   - read
   - write
-
-skills:
-  - ansible-playbooks
 
 mcp_servers:
   - name: filesystem
@@ -585,10 +585,10 @@ When a project is active, project output stays within the project's `workspace/`
 1. **Always present** — The lightweight projects index (name + description + status for every entry) is always in the system prompt. The agent always knows what projects exist. Cost: ~50-100 tokens per entry.
 
 2. **On activation** — When the agent activates a project (via tool call or conversational cue), the gateway:
-   - Loads the entry's **manifest**: a listing of what files exist in `notes/`, `references/`, and `workspace/` (filenames and sizes, not contents).
+   - Loads the entry's **manifest**: a listing of what files exist in `notes/`, `references/`, `skills/`, and `workspace/` (filenames and sizes, not contents).
    - Starts any **MCP servers** defined in the entry's `PROJECT.md` frontmatter.
    - Adds any **tools** defined in the entry's `PROJECT.md` frontmatter to the active tool set.
-   - Adds the entry's **skills** to the available skills list (metadata only, not full SKILL.md bodies).
+   - Discovers any **skills** in the project's `skills/` subdirectory and adds their metadata to the available skills list (not full SKILL.md bodies).
 
    The manifest tells the agent "here's what's in this project folder." Contents are not loaded.
 
@@ -682,8 +682,8 @@ Discovers skills from configured directories:
 
 **Skill sources** (precedence, highest first):
 
-1. Workspace skills: `~/.ironclaw/workspace/skills/`
-2. Project-scoped skills referenced in `PROJECT.md` frontmatter
+1. Project-scoped skills: `projects/<active>/skills/` (only when project is active)
+2. Workspace skills: `~/.ironclaw/workspace/skills/`
 3. User-global skills: `~/.ironclaw/skills/`
 4. Bundled skills (shipped with the binary)
 
@@ -787,7 +787,7 @@ Cascading tool policy resolution:
 
 1. **Global defaults** from config.
 2. **Per-project** overrides from `PROJECT.md` frontmatter `tools` field.
-3. **Per-skill** additions from `allowed-tools` in SKILL.md frontmatter.
+3. **Per-skill** additions from `allowed-tools` in SKILL.md frontmatter (global or project-scoped skills).
 4. **MCP server tools** from active MCP connections.
 
 The active tool set at any moment is the union of all sources, filtered by deny lists.
@@ -980,6 +980,6 @@ Guild channels, mention gating, and threads are deferred to Phase 5+.
 25. `mcp/client` — JSON-RPC client, stdio transport.
 26. `mcp/lifecycle` — Server spawn and teardown.
 27. `mcp/transport` — HTTP/SSE transport for remote servers.
-28. Integration: project PROJECT.md frontmatter → skill and MCP server activation.
+28. Integration: project `skills/` subdirectory discovery on activation, MCP server activation from frontmatter.
 
 **Milestone: Agent can use OpenClaw-compatible skills and connect to MCP servers.**

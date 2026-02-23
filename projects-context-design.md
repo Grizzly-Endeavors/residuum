@@ -38,8 +38,6 @@ tools:
   - exec
   - read
   - write
-skills:
-  - ansible-playbooks
 mcp_servers:
   - name: filesystem
     command: "mcp-server-filesystem"
@@ -72,7 +70,6 @@ archived: 2026-02-08
 | `status` | string | yes | `active` or `archived` |
 | `created` | date | yes | When the entry was created |
 | `tools` | list | no | Tools to load when this context activates |
-| `skills` | list | no | Skills to activate when this context activates |
 | `mcp_servers` | list | no | MCP servers to spin up when this context activates |
 | `archived` | date | no | When the entry was archived (archive entries only) |
 
@@ -102,6 +99,16 @@ Active working directory for the project. This is where the agent produces outpu
 
 Examples: `workspace/playbooks/`, `workspace/site/`, `workspace/draft-v2.md`
 
+#### skills/
+
+Project-scoped skills that are only relevant when this project is active. Each skill is a subfolder containing a `SKILL.md` following the Agent Skills spec. When the project activates, the loader discovers skills here and adds their metadata to the available set. When the project deactivates, these skills are removed.
+
+This keeps project-specific skills colocated with the project they belong to — no need to pollute global skill directories with skills only one project uses. The project folder remains fully self-contained and portable.
+
+Global skills (in `~/.ironclaw/skills/` or `~/.ironclaw/workspace/skills/`) are always visible regardless of which project is active. The `skills/` subfolder is for skills that only make sense in this project's context.
+
+Examples: `skills/ansible-playbooks/SKILL.md`, `skills/ap-diagnostics/SKILL.md`
+
 ### Full layout
 
 ```
@@ -129,6 +136,10 @@ Examples: `workspace/playbooks/`, `workspace/site/`, `workspace/draft-v2.md`
 │   │   │   ├── topology.png
 │   │   │   └── config/
 │   │   │       └── ap01.conf
+│   │   ├── skills/
+│   │   │   └── ansible-playbooks/
+│   │   │       ├── SKILL.md
+│   │   │       └── references/
 │   │   └── workspace/
 │   │       └── playbooks/
 │   │           └── configure-aps.yml
@@ -184,7 +195,8 @@ The agent autonomously decides which project to activate based on the current co
 - Files from `notes/` are accessible (agent's knowledge about this project).
 - Files from `references/` are accessible (user-provided material).
 - Files from `workspace/` are accessible.
-- Any `tools`, `skills`, and `mcp_servers` specified in context.yml are loaded.
+- Any `tools` and `mcp_servers` specified in `PROJECT.md` frontmatter are loaded.
+- Any skills in the project's `skills/` subdirectory are discovered and added to the available set.
 
 **Inactive** means the agent knows the entry exists (name and description from the scan) but none of its contents or capabilities are loaded.
 
@@ -197,7 +209,7 @@ The agent uses conversational cues to decide activation:
 
 ### Deactivation
 
-The active project deactivates when the agent determines it's no longer relevant to the current conversation. Files are simply not included in the next context assembly, and tools/skills/MCP servers exclusive to that context are unloaded. Nothing is deleted or modified.
+The active project deactivates when the agent determines it's no longer relevant to the current conversation. Files are simply not included in the next context assembly, and tools/MCP servers/project-scoped skills exclusive to that context are unloaded. Nothing is deleted or modified.
 
 **Gateway-enforced requirement:** `project_deactivate` requires a `log` field containing a non-empty session summary. The gateway writes the entry to the project's dated log file and then performs the deactivation. A call without a `log` value is rejected. This is enforced by the gateway at the tool call level — it is not a prompt instruction the agent can reason around.
 
@@ -218,7 +230,7 @@ The `notes/log/` subtree is reserved for this purpose and should not be written 
 
 ### Tool auto-loading
 
-Projects can specify `tools`, `skills`, and `mcp_servers` in their context.yml. When the entry activates, those capabilities become available. When it deactivates, tools not needed by any other active context are unloaded.
+Projects can specify `tools` and `mcp_servers` in their `PROJECT.md` frontmatter, and include project-scoped skills in a `skills/` subdirectory. When the entry activates, those capabilities become available. When it deactivates, tools and skills not needed by any other active context are unloaded.
 
 **Tool resolution**: When a project is active, its tools are available. Deactivating a project removes tools that no other active context still needs.
 
@@ -283,7 +295,7 @@ The Projects system is not a replacement for USER.md or MEMORY.md. Those files c
 1. Folder structure conventions and `PROJECT.md` frontmatter schema
 2. Directory scanning and discovery at startup / on file change
 3. Agent instructions for activation, deactivation, and notes maintenance
-4. Tool, skill, and MCP server auto-loading
+4. Tool, MCP server, and project-scoped skill auto-loading
 5. Automatic archiving on project completion
 6. Archive indexing for search
 7. Dynamic entry creation from conversation
