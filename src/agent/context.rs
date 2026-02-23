@@ -1,10 +1,9 @@
-//! Context assembly: builds the system prompt from identity files and tool info.
+//! Context assembly: builds the system prompt from identity files.
 
 use chrono::NaiveDateTime;
 
 use crate::models::Message;
 use crate::time::{format_display_datetime, format_relative_time};
-use crate::tools::ToolRegistry;
 use crate::workspace::identity::IdentityFiles;
 
 use super::recent_messages::RecentMessages;
@@ -21,20 +20,18 @@ pub struct TimeContext {
 
 /// Assemble the full message list for a model call.
 ///
-/// Creates a system message from identity files, tool listings, and
-/// observation log content, then appends the recent messages. When a
-/// `TimeContext` is provided, a system message with the current time (and
-/// optionally how long since the last message) is inserted immediately
-/// before the last user message.
+/// Creates a system message from identity files and observation log content,
+/// then appends the recent messages. When a `TimeContext` is provided, a
+/// system message with the current time (and optionally how long since the
+/// last message) is inserted immediately before the last user message.
 #[must_use]
 pub fn assemble_system_prompt(
     identity: &IdentityFiles,
-    tools: &ToolRegistry,
     recent_messages: &RecentMessages,
     observations: Option<&str>,
     time_ctx: Option<&TimeContext>,
 ) -> Vec<Message> {
-    let system_content = build_system_content(identity, tools, observations);
+    let system_content = build_system_content(identity, observations);
 
     let conversation = recent_messages.messages();
     let mut messages = Vec::with_capacity(2 + conversation.len());
@@ -75,22 +72,17 @@ fn build_time_context_tag(ctx: &TimeContext) -> String {
     tag
 }
 
-/// Build the system prompt content from identity files and tool listings.
+/// Build the system prompt content from identity files.
 ///
 /// Assembly order:
 /// 1. SOUL.md content
 /// 2. IDENTITY.md content
 /// 3. AGENTS.md content
 /// 4. TOOLS.md content
-/// 5. Available tool names listing
-/// 6. USER.md content
-/// 7. MEMORY.md content
-/// 8. Observation log (if present)
-fn build_system_content(
-    identity: &IdentityFiles,
-    tools: &ToolRegistry,
-    observations: Option<&str>,
-) -> String {
+/// 5. USER.md content
+/// 6. MEMORY.md content
+/// 7. Observation log (if present)
+fn build_system_content(identity: &IdentityFiles, observations: Option<&str>) -> String {
     let mut parts = Vec::new();
 
     if let Some(soul) = &identity.soul {
@@ -107,16 +99,6 @@ fn build_system_content(
 
     if let Some(tools_md) = &identity.tools {
         parts.push(format!("<TOOLS.md>\n{tools_md}\n</TOOLS.md>"));
-    }
-
-    // List available tools
-    let tool_defs = tools.definitions();
-    if !tool_defs.is_empty() {
-        let tool_names: Vec<&str> = tool_defs.iter().map(|t| t.name.as_str()).collect();
-        parts.push(format!(
-            "<AVAILABLE_TOOLS>\n{}\n</AVAILABLE_TOOLS>",
-            tool_names.join(", ")
-        ));
     }
 
     if let Some(user) = &identity.user {
@@ -149,10 +131,9 @@ mod tests {
     #[test]
     fn assemble_with_empty_identity() {
         let identity = IdentityFiles::default();
-        let tools = ToolRegistry::new();
         let recent = RecentMessages::new();
 
-        let messages = assemble_system_prompt(&identity, &tools, &recent, None, None);
+        let messages = assemble_system_prompt(&identity, &recent, None, None);
         assert_eq!(messages.len(), 1, "should have system message only");
         assert_eq!(
             messages.first().map(|m| &m.role),
@@ -164,11 +145,10 @@ mod tests {
     #[test]
     fn assemble_includes_message_history() {
         let identity = IdentityFiles::default();
-        let tools = ToolRegistry::new();
         let mut recent = RecentMessages::new();
         recent.push(Message::user("hello"));
 
-        let messages = assemble_system_prompt(&identity, &tools, &recent, None, None);
+        let messages = assemble_system_prompt(&identity, &recent, None, None);
         assert_eq!(messages.len(), 2, "should have system + user message");
     }
 
@@ -179,9 +159,8 @@ mod tests {
             user: Some("User likes Rust".to_string()),
             ..IdentityFiles::default()
         };
-        let tools = ToolRegistry::new();
 
-        let content = build_system_content(&identity, &tools, None);
+        let content = build_system_content(&identity, None);
         assert!(
             content.contains("test agent"),
             "should include soul content"
@@ -199,9 +178,8 @@ mod tests {
             identity: Some("I have evolved my role over time.".to_string()),
             ..IdentityFiles::default()
         };
-        let tools = ToolRegistry::new();
 
-        let content = build_system_content(&identity, &tools, None);
+        let content = build_system_content(&identity, None);
         assert!(
             content.contains("SOUL content"),
             "should include soul content"
@@ -220,28 +198,11 @@ mod tests {
     }
 
     #[test]
-    fn system_content_includes_tool_listing() {
-        let identity = IdentityFiles::default();
-        let mut tools = ToolRegistry::new();
-        tools.register_defaults(crate::tools::FileTracker::new_shared());
-
-        let content = build_system_content(&identity, &tools, None);
-        assert!(content.contains("read_file"), "should list read_file tool");
-        assert!(
-            content.contains("write_file"),
-            "should list write_file tool"
-        );
-        assert!(content.contains("edit_file"), "should list edit_file tool");
-        assert!(content.contains("exec"), "should list exec tool");
-    }
-
-    #[test]
     fn system_content_includes_observations() {
         let identity = IdentityFiles::default();
-        let tools = ToolRegistry::new();
 
         let observations = "episode ep-001: user prefers concise output";
-        let content = build_system_content(&identity, &tools, Some(observations));
+        let content = build_system_content(&identity, Some(observations));
 
         assert!(
             content.contains("<OBSERVATION_LOG>"),
@@ -260,9 +221,8 @@ mod tests {
     #[test]
     fn system_content_skips_empty_observations() {
         let identity = IdentityFiles::default();
-        let tools = ToolRegistry::new();
 
-        let content = build_system_content(&identity, &tools, Some(""));
+        let content = build_system_content(&identity, Some(""));
         assert!(
             !content.contains("OBSERVATION_LOG"),
             "empty observations should be skipped"
@@ -272,9 +232,8 @@ mod tests {
     #[test]
     fn system_content_skips_none_observations() {
         let identity = IdentityFiles::default();
-        let tools = ToolRegistry::new();
 
-        let content = build_system_content(&identity, &tools, None);
+        let content = build_system_content(&identity, None);
         assert!(
             !content.contains("OBSERVATION_LOG"),
             "None observations should be skipped"
@@ -288,9 +247,8 @@ mod tests {
             memory: Some("User prefers Rust.".to_string()),
             ..IdentityFiles::default()
         };
-        let tools = ToolRegistry::new();
         let observations = "some observation";
-        let content = build_system_content(&identity, &tools, Some(observations));
+        let content = build_system_content(&identity, Some(observations));
 
         assert!(
             content.contains("<SOUL.md>\nI am the soul.\n</SOUL.md>"),
@@ -328,7 +286,6 @@ mod tests {
     #[test]
     fn time_context_inserted_before_last_user_message() {
         let identity = IdentityFiles::default();
-        let tools = ToolRegistry::new();
         let mut recent = RecentMessages::new();
         recent.push(Message::user("hello"));
         recent.push(Message::assistant("hi there", None));
@@ -340,7 +297,7 @@ mod tests {
             message_source: None,
         };
 
-        let messages = assemble_system_prompt(&identity, &tools, &recent, None, Some(&ctx));
+        let messages = assemble_system_prompt(&identity, &recent, None, Some(&ctx));
 
         // Find the time context system message
         let time_msg = messages
@@ -373,18 +330,16 @@ mod tests {
     #[test]
     fn time_context_none_no_injection() {
         let identity = IdentityFiles::default();
-        let tools = ToolRegistry::new();
         let mut recent = RecentMessages::new();
         recent.push(Message::user("hello"));
 
-        let messages = assemble_system_prompt(&identity, &tools, &recent, None, None);
+        let messages = assemble_system_prompt(&identity, &recent, None, None);
         assert_eq!(messages.len(), 2, "should have system + user, no time tag");
     }
 
     #[test]
     fn time_context_first_message_no_last() {
         let identity = IdentityFiles::default();
-        let tools = ToolRegistry::new();
         let mut recent = RecentMessages::new();
         recent.push(Message::user("first message"));
 
@@ -394,7 +349,7 @@ mod tests {
             message_source: None,
         };
 
-        let messages = assemble_system_prompt(&identity, &tools, &recent, None, Some(&ctx));
+        let messages = assemble_system_prompt(&identity, &recent, None, Some(&ctx));
 
         let time_msg = messages
             .iter()
@@ -411,7 +366,6 @@ mod tests {
     #[test]
     fn time_context_includes_message_source() {
         let identity = IdentityFiles::default();
-        let tools = ToolRegistry::new();
         let mut recent = RecentMessages::new();
         recent.push(Message::user("hello from discord"));
 
@@ -421,7 +375,7 @@ mod tests {
             message_source: Some("discord".to_string()),
         };
 
-        let messages = assemble_system_prompt(&identity, &tools, &recent, None, Some(&ctx));
+        let messages = assemble_system_prompt(&identity, &recent, None, Some(&ctx));
 
         let time_msg = messages
             .iter()
@@ -438,7 +392,6 @@ mod tests {
     #[test]
     fn time_context_only_before_last_user_message() {
         let identity = IdentityFiles::default();
-        let tools = ToolRegistry::new();
         let mut recent = RecentMessages::new();
         recent.push(Message::user("first"));
         recent.push(Message::assistant("response", None));
@@ -452,7 +405,7 @@ mod tests {
             message_source: None,
         };
 
-        let messages = assemble_system_prompt(&identity, &tools, &recent, None, Some(&ctx));
+        let messages = assemble_system_prompt(&identity, &recent, None, Some(&ctx));
 
         // Only one time context message
         let time_count = messages

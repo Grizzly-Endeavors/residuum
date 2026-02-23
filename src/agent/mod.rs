@@ -272,8 +272,7 @@ async fn execute_turn(
     for iteration in 0..MAX_TOOL_ITERATIONS {
         // System prompt is reassembled each iteration because tool execution
         // can modify identity files (e.g. write_file updating MEMORY.md).
-        let messages =
-            assemble_system_prompt(identity, tools, recent_messages, observations, time_ctx);
+        let messages = assemble_system_prompt(identity, recent_messages, observations, time_ctx);
 
         let response = provider
             .complete(&messages, &tool_definitions, options)
