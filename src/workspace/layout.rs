@@ -95,13 +95,13 @@ impl WorkspaceLayout {
 
     /// Path to the projects directory for active project contexts.
     #[must_use]
-    pub(crate) fn projects_dir(&self) -> PathBuf {
+    pub fn projects_dir(&self) -> PathBuf {
         self.root.join("projects")
     }
 
     /// Path to the archive directory for completed project contexts.
     #[must_use]
-    pub(crate) fn archive_dir(&self) -> PathBuf {
+    pub fn archive_dir(&self) -> PathBuf {
         self.root.join("archive")
     }
 
