@@ -74,7 +74,7 @@ impl SkillsContext<'_> {
 /// system message with the current time (and optionally how long since the
 /// last message) is inserted immediately before the last user message.
 #[must_use]
-pub fn assemble_system_prompt(
+pub(super) fn assemble_system_prompt(
     identity: &IdentityFiles,
     recent_messages: &RecentMessages,
     memory_ctx: &MemoryContext<'_>,
