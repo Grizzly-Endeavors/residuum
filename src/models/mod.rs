@@ -8,9 +8,9 @@ pub mod ollama;
 pub mod openai;
 pub mod retry;
 
+pub(crate) use factory::build_provider_from_provider_spec;
 pub use http::{HttpClientConfig, SharedHttpClient};
 pub use retry::{RetryConfig, with_retry};
-pub(crate) use factory::build_provider_from_provider_spec;
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};

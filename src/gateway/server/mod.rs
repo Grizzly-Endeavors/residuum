@@ -104,9 +104,8 @@ fn apply_observe_action(
             true
         }
         ObserveAction::StartCooldown => {
-            *observe_deadline = Some(
-                tokio::time::Instant::now() + tokio::time::Duration::from_secs(cooldown_secs),
-            );
+            *observe_deadline =
+                Some(tokio::time::Instant::now() + tokio::time::Duration::from_secs(cooldown_secs));
             false
         }
         ObserveAction::None => false,
