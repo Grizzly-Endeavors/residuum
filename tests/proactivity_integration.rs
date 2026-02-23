@@ -14,6 +14,7 @@ mod proactivity_integration {
     use tempfile::tempdir;
 
     use ironclaw::agent::Agent;
+    use ironclaw::agent::context::ProjectsContext;
     use ironclaw::channels::null::NullDisplay;
     use ironclaw::models::{
         CompletionOptions, Message, ModelError, ModelProvider, ModelResponse, Role, ToolDefinition,
@@ -92,7 +93,8 @@ mod proactivity_integration {
             }],
         };
 
-        let result = execute_pulse(&pulse, &agent, &alerts_path, None)
+        let no_projects = ProjectsContext::none();
+        let result = execute_pulse(&pulse, &agent, &alerts_path, None, &no_projects)
             .await
             .unwrap();
 
@@ -131,7 +133,8 @@ mod proactivity_integration {
             }],
         };
 
-        let result = execute_pulse(&pulse, &agent, &alerts_path, None)
+        let no_projects = ProjectsContext::none();
+        let result = execute_pulse(&pulse, &agent, &alerts_path, None, &no_projects)
             .await
             .unwrap();
 
@@ -160,7 +163,8 @@ mod proactivity_integration {
             tasks: vec![],
         };
 
-        let result = execute_pulse(&pulse, &agent, &alerts_path, None)
+        let no_projects = ProjectsContext::none();
+        let result = execute_pulse(&pulse, &agent, &alerts_path, None, &no_projects)
             .await
             .unwrap();
         assert!(
@@ -188,7 +192,8 @@ mod proactivity_integration {
             }],
         };
 
-        let result = execute_pulse(&pulse, &agent, &alerts_path, None)
+        let no_projects = ProjectsContext::none();
+        let result = execute_pulse(&pulse, &agent, &alerts_path, None, &no_projects)
             .await
             .unwrap();
 
@@ -336,9 +341,17 @@ mod proactivity_integration {
         // Initially no pending events
         assert_eq!(agent.message_count(), 0, "no messages initially");
 
-        let result = execute_due_jobs(&mut store, &mut agent, now, chrono_tz::UTC, None)
-            .await
-            .unwrap();
+        let no_projects = ProjectsContext::none();
+        let result = execute_due_jobs(
+            &mut store,
+            &mut agent,
+            now,
+            chrono_tz::UTC,
+            None,
+            &no_projects,
+        )
+        .await
+        .unwrap();
 
         // SystemEvent+Main produces no ephemeral messages (just queues on agent)
         assert!(
@@ -389,9 +402,17 @@ mod proactivity_integration {
 
         let mut agent = make_agent(vec!["Background check complete.".to_string()]);
 
-        let result = execute_due_jobs(&mut store, &mut agent, now, chrono_tz::UTC, None)
-            .await
-            .unwrap();
+        let no_projects = ProjectsContext::none();
+        let result = execute_due_jobs(
+            &mut store,
+            &mut agent,
+            now,
+            chrono_tz::UTC,
+            None,
+            &no_projects,
+        )
+        .await
+        .unwrap();
 
         // AgentTurn+Isolated returns ephemeral messages for memory pipeline
         assert!(
@@ -444,9 +465,17 @@ mod proactivity_integration {
 
         let mut agent = make_agent(vec![]);
 
-        let result = execute_due_jobs(&mut store, &mut agent, now, chrono_tz::UTC, None)
-            .await
-            .unwrap();
+        let no_projects = ProjectsContext::none();
+        let result = execute_due_jobs(
+            &mut store,
+            &mut agent,
+            now,
+            chrono_tz::UTC,
+            None,
+            &no_projects,
+        )
+        .await
+        .unwrap();
 
         assert!(
             !result.messages.is_empty(),
@@ -504,9 +533,17 @@ mod proactivity_integration {
 
         let mut agent = make_agent(vec!["Visible check done.".to_string()]);
 
-        let result = execute_due_jobs(&mut store, &mut agent, now, chrono_tz::UTC, None)
-            .await
-            .unwrap();
+        let no_projects = ProjectsContext::none();
+        let result = execute_due_jobs(
+            &mut store,
+            &mut agent,
+            now,
+            chrono_tz::UTC,
+            None,
+            &no_projects,
+        )
+        .await
+        .unwrap();
 
         // UserVisible agent turn should return ephemeral messages for memory
         assert!(
@@ -528,8 +565,9 @@ mod proactivity_integration {
         let agent = make_agent(vec!["I ran a background check.".to_string()]);
         let display = NullDisplay;
 
+        let no_projects = ProjectsContext::none();
         let result = agent
-            .run_system_turn("background check prompt", &display, None)
+            .run_system_turn("background check prompt", &display, None, &no_projects)
             .await
             .unwrap();
 

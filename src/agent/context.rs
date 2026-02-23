@@ -29,6 +29,25 @@ pub struct MemoryContext<'a> {
     pub recent_context: Option<&'a str>,
 }
 
+/// Projects-related context injected into the system prompt.
+pub struct ProjectsContext<'a> {
+    /// Formatted project index (always present after bootstrap).
+    pub index: Option<&'a str>,
+    /// Formatted active project context (only when a project is active).
+    pub active_context: Option<&'a str>,
+}
+
+impl ProjectsContext<'_> {
+    /// Empty projects context (no index, no active project).
+    #[must_use]
+    pub fn none() -> ProjectsContext<'static> {
+        ProjectsContext {
+            index: None,
+            active_context: None,
+        }
+    }
+}
+
 /// Assemble the full message list for a model call.
 ///
 /// Creates a system message from identity files and observation log content,
@@ -40,9 +59,10 @@ pub fn assemble_system_prompt(
     identity: &IdentityFiles,
     recent_messages: &RecentMessages,
     memory_ctx: &MemoryContext<'_>,
+    projects_ctx: &ProjectsContext<'_>,
     time_ctx: Option<&TimeContext>,
 ) -> Vec<Message> {
-    let system_content = build_system_content(identity, memory_ctx);
+    let system_content = build_system_content(identity, memory_ctx, projects_ctx);
 
     let conversation = recent_messages.messages();
     let mut messages = Vec::with_capacity(2 + conversation.len());
@@ -94,7 +114,13 @@ fn build_time_context_tag(ctx: &TimeContext) -> String {
 /// 6. MEMORY.md content
 /// 7. Observation log (if present)
 /// 8. Recent context / narrative summary (if present)
-fn build_system_content(identity: &IdentityFiles, memory_ctx: &MemoryContext<'_>) -> String {
+/// 9. Projects index (always present after bootstrap)
+/// 10. Active project context (when a project is active)
+fn build_system_content(
+    identity: &IdentityFiles,
+    memory_ctx: &MemoryContext<'_>,
+    projects_ctx: &ProjectsContext<'_>,
+) -> String {
     let mut parts = Vec::new();
 
     if let Some(soul) = &identity.soul {
@@ -133,6 +159,18 @@ fn build_system_content(identity: &IdentityFiles, memory_ctx: &MemoryContext<'_>
         parts.push(format!("<RECENT_CONTEXT>\n{ctx}\n</RECENT_CONTEXT>"));
     }
 
+    if let Some(idx) = projects_ctx.index
+        && !idx.is_empty()
+    {
+        parts.push(format!("<PROJECTS_INDEX>\n{idx}\n</PROJECTS_INDEX>"));
+    }
+
+    if let Some(active) = projects_ctx.active_context
+        && !active.is_empty()
+    {
+        parts.push(format!("<ACTIVE_PROJECT>\n{active}\n</ACTIVE_PROJECT>"));
+    }
+
     parts.join("\n\n")
 }
 
@@ -153,12 +191,20 @@ mod tests {
         }
     }
 
+    fn no_projects() -> ProjectsContext<'static> {
+        ProjectsContext {
+            index: None,
+            active_context: None,
+        }
+    }
+
     #[test]
     fn assemble_with_empty_identity() {
         let identity = IdentityFiles::default();
         let recent = RecentMessages::new();
 
-        let messages = assemble_system_prompt(&identity, &recent, &no_memory(), None);
+        let messages =
+            assemble_system_prompt(&identity, &recent, &no_memory(), &no_projects(), None);
         assert_eq!(messages.len(), 1, "should have system message only");
         assert_eq!(
             messages.first().map(|m| &m.role),
@@ -173,7 +219,8 @@ mod tests {
         let mut recent = RecentMessages::new();
         recent.push(Message::user("hello"));
 
-        let messages = assemble_system_prompt(&identity, &recent, &no_memory(), None);
+        let messages =
+            assemble_system_prompt(&identity, &recent, &no_memory(), &no_projects(), None);
         assert_eq!(messages.len(), 2, "should have system + user message");
     }
 
@@ -185,7 +232,7 @@ mod tests {
             ..IdentityFiles::default()
         };
 
-        let content = build_system_content(&identity, &no_memory());
+        let content = build_system_content(&identity, &no_memory(), &no_projects());
         assert!(
             content.contains("test agent"),
             "should include soul content"
@@ -204,7 +251,7 @@ mod tests {
             ..IdentityFiles::default()
         };
 
-        let content = build_system_content(&identity, &no_memory());
+        let content = build_system_content(&identity, &no_memory(), &no_projects());
         assert!(
             content.contains("SOUL content"),
             "should include soul content"
@@ -230,7 +277,7 @@ mod tests {
             observations: Some("episode ep-001: user prefers concise output"),
             recent_context: None,
         };
-        let content = build_system_content(&identity, &mem);
+        let content = build_system_content(&identity, &mem, &no_projects());
 
         assert!(
             content.contains("<OBSERVATION_LOG>"),
@@ -254,7 +301,7 @@ mod tests {
             observations: Some(""),
             recent_context: None,
         };
-        let content = build_system_content(&identity, &mem);
+        let content = build_system_content(&identity, &mem, &no_projects());
         assert!(
             !content.contains("OBSERVATION_LOG"),
             "empty observations should be skipped"
@@ -265,7 +312,7 @@ mod tests {
     fn system_content_skips_none_observations() {
         let identity = IdentityFiles::default();
 
-        let content = build_system_content(&identity, &no_memory());
+        let content = build_system_content(&identity, &no_memory(), &no_projects());
         assert!(
             !content.contains("OBSERVATION_LOG"),
             "None observations should be skipped"
@@ -283,7 +330,7 @@ mod tests {
             observations: Some("some observation"),
             recent_context: None,
         };
-        let content = build_system_content(&identity, &mem);
+        let content = build_system_content(&identity, &mem, &no_projects());
 
         assert!(
             content.contains("<SOUL.md>\nI am the soul.\n</SOUL.md>"),
@@ -318,7 +365,7 @@ mod tests {
             observations: None,
             recent_context: Some("We were implementing a caching layer."),
         };
-        let content = build_system_content(&identity, &mem);
+        let content = build_system_content(&identity, &mem, &no_projects());
 
         assert!(
             content.contains("<RECENT_CONTEXT>"),
@@ -337,7 +384,7 @@ mod tests {
             observations: None,
             recent_context: Some(""),
         };
-        let content = build_system_content(&identity, &mem);
+        let content = build_system_content(&identity, &mem, &no_projects());
         assert!(
             !content.contains("RECENT_CONTEXT"),
             "empty recent context should be skipped"
@@ -351,7 +398,7 @@ mod tests {
             observations: Some("some observations"),
             recent_context: Some("narrative summary"),
         };
-        let content = build_system_content(&identity, &mem);
+        let content = build_system_content(&identity, &mem, &no_projects());
 
         let obs_close = content.find("</OBSERVATION_LOG>");
         let ctx_open = content.find("<RECENT_CONTEXT>");
@@ -386,7 +433,8 @@ mod tests {
             message_source: None,
         };
 
-        let messages = assemble_system_prompt(&identity, &recent, &no_memory(), Some(&ctx));
+        let messages =
+            assemble_system_prompt(&identity, &recent, &no_memory(), &no_projects(), Some(&ctx));
 
         // Find the time context system message
         let time_msg = messages
@@ -422,7 +470,8 @@ mod tests {
         let mut recent = RecentMessages::new();
         recent.push(Message::user("hello"));
 
-        let messages = assemble_system_prompt(&identity, &recent, &no_memory(), None);
+        let messages =
+            assemble_system_prompt(&identity, &recent, &no_memory(), &no_projects(), None);
         assert_eq!(messages.len(), 2, "should have system + user, no time tag");
     }
 
@@ -438,7 +487,8 @@ mod tests {
             message_source: None,
         };
 
-        let messages = assemble_system_prompt(&identity, &recent, &no_memory(), Some(&ctx));
+        let messages =
+            assemble_system_prompt(&identity, &recent, &no_memory(), &no_projects(), Some(&ctx));
 
         let time_msg = messages
             .iter()
@@ -464,7 +514,8 @@ mod tests {
             message_source: Some("discord".to_string()),
         };
 
-        let messages = assemble_system_prompt(&identity, &recent, &no_memory(), Some(&ctx));
+        let messages =
+            assemble_system_prompt(&identity, &recent, &no_memory(), &no_projects(), Some(&ctx));
 
         let time_msg = messages
             .iter()
@@ -494,7 +545,8 @@ mod tests {
             message_source: None,
         };
 
-        let messages = assemble_system_prompt(&identity, &recent, &no_memory(), Some(&ctx));
+        let messages =
+            assemble_system_prompt(&identity, &recent, &no_memory(), &no_projects(), Some(&ctx));
 
         // Only one time context message
         let time_count = messages

@@ -1,6 +1,7 @@
 use std::path::Path;
 
 use crate::agent::Agent;
+use crate::agent::context::ProjectsContext;
 use crate::channels::null::NullDisplay;
 use crate::error::IronclawError;
 use crate::models::{Message, ModelProvider};
@@ -38,6 +39,7 @@ pub async fn execute_pulse(
     agent: &Agent,
     alerts_path: &Path,
     provider_override: Option<&dyn ModelProvider>,
+    projects_ctx: &ProjectsContext<'_>,
 ) -> Result<PulseResult, IronclawError> {
     let alerts_content = load_alerts(alerts_path).await?;
 
@@ -67,7 +69,7 @@ pub async fn execute_pulse(
 
     let display = NullDisplay;
     let result = agent
-        .run_system_turn(&prompt, &display, provider_override)
+        .run_system_turn(&prompt, &display, provider_override, projects_ctx)
         .await?;
 
     let is_heartbeat_ok = result.response.contains("HEARTBEAT_OK");

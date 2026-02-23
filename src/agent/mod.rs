@@ -10,7 +10,7 @@ use crate::models::{CompletionOptions, Message, ModelProvider, ModelResponse};
 use crate::tools::ToolRegistry;
 use crate::workspace::identity::IdentityFiles;
 
-use self::context::{MemoryContext, TimeContext, assemble_system_prompt};
+use self::context::{MemoryContext, ProjectsContext, TimeContext, assemble_system_prompt};
 use self::recent_messages::RecentMessages;
 
 /// Maximum number of tool-call iterations before the agent stops.
@@ -189,6 +189,7 @@ impl Agent {
         user_input: &str,
         display: &dyn TurnDisplay,
         origin: Option<&MessageOrigin>,
+        projects_ctx: &ProjectsContext<'_>,
     ) -> Result<Vec<String>, IronclawError> {
         let now = crate::time::now_local(self.tz);
         let time_ctx = TimeContext {
@@ -220,6 +221,7 @@ impl Agent {
             &self.identity,
             &self.options,
             &memory_ctx,
+            projects_ctx,
             &mut self.recent_messages,
             display,
             Some(&time_ctx),
@@ -243,6 +245,7 @@ impl Agent {
         prompt: &str,
         display: &dyn TurnDisplay,
         provider_override: Option<&dyn ModelProvider>,
+        projects_ctx: &ProjectsContext<'_>,
     ) -> Result<SystemTurnResult, IronclawError> {
         let mut thread_messages = RecentMessages::new();
         thread_messages.push(Message::user(prompt));
@@ -261,6 +264,7 @@ impl Agent {
             &self.identity,
             &self.options,
             &memory_ctx,
+            projects_ctx,
             &mut thread_messages,
             display,
             None,
@@ -298,7 +302,7 @@ impl Agent {
 /// not included in the return value.
 #[expect(
     clippy::too_many_arguments,
-    reason = "adding time_ctx pushes past 7; grouping into a struct would obscure the call site"
+    reason = "threading context through the turn loop; grouping into a struct would obscure the call site"
 )]
 async fn execute_turn(
     provider: &dyn ModelProvider,
@@ -306,6 +310,7 @@ async fn execute_turn(
     identity: &IdentityFiles,
     options: &CompletionOptions,
     memory_ctx: &MemoryContext<'_>,
+    projects_ctx: &ProjectsContext<'_>,
     recent_messages: &mut RecentMessages,
     display: &dyn TurnDisplay,
     time_ctx: Option<&TimeContext>,
@@ -316,7 +321,13 @@ async fn execute_turn(
     for iteration in 0..MAX_TOOL_ITERATIONS {
         // System prompt is reassembled each iteration because tool execution
         // can modify identity files (e.g. write_file updating MEMORY.md).
-        let messages = assemble_system_prompt(identity, recent_messages, memory_ctx, time_ctx);
+        let messages = assemble_system_prompt(
+            identity,
+            recent_messages,
+            memory_ctx,
+            projects_ctx,
+            time_ctx,
+        );
 
         let response = provider
             .complete(&messages, &tool_definitions, options)
@@ -406,6 +417,13 @@ mod tests {
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
+    fn no_projects() -> ProjectsContext<'static> {
+        ProjectsContext {
+            index: None,
+            active_context: None,
+        }
+    }
+
     /// Mock provider that returns pre-configured responses in sequence.
     ///
     /// Intentionally duplicated across agent, observer, and reflector tests — each mock
@@ -458,7 +476,10 @@ mod tests {
         );
 
         let display = NullDisplay;
-        let result = agent.process_message("hi", &display, None).await.unwrap();
+        let result = agent
+            .process_message("hi", &display, None, &no_projects())
+            .await
+            .unwrap();
         assert_eq!(result, vec!["hello there"], "should return model text");
     }
 
@@ -489,7 +510,7 @@ mod tests {
 
         let display = NullDisplay;
         let result = agent
-            .process_message("run echo test", &display, None)
+            .process_message("run echo test", &display, None, &no_projects())
             .await
             .unwrap();
         assert_eq!(
@@ -527,7 +548,7 @@ mod tests {
 
         let display = NullDisplay;
         let result = agent
-            .process_message("what does echo test print?", &display, None)
+            .process_message("what does echo test print?", &display, None, &no_projects())
             .await
             .unwrap();
         assert_eq!(
@@ -565,7 +586,9 @@ mod tests {
         );
 
         let display = NullDisplay;
-        let result = agent.process_message("loop forever", &display, None).await;
+        let result = agent
+            .process_message("loop forever", &display, None, &no_projects())
+            .await;
         assert!(result.is_err(), "should error after max iterations");
     }
 
@@ -584,7 +607,7 @@ mod tests {
 
         let display = NullDisplay;
         let result = agent
-            .run_system_turn("check status", &display, None)
+            .run_system_turn("check status", &display, None, &no_projects())
             .await
             .unwrap();
         assert_eq!(result.response, "HEARTBEAT_OK", "response should match");
@@ -615,7 +638,7 @@ mod tests {
         agent.queue_system_event("email arrived from boss".to_string());
         let display = NullDisplay;
         agent
-            .process_message("what's up?", &display, None)
+            .process_message("what's up?", &display, None, &no_projects())
             .await
             .unwrap();
 
@@ -685,7 +708,9 @@ mod tests {
         );
 
         let display = NullDisplay;
-        let result = agent.process_message("hello", &display, None).await;
+        let result = agent
+            .process_message("hello", &display, None, &no_projects())
+            .await;
         assert!(result.is_err(), "empty response should return error");
 
         let err_msg = result.unwrap_err().to_string();

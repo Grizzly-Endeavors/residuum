@@ -14,6 +14,7 @@ use futures_util::{SinkExt, StreamExt};
 use tokio::sync::{broadcast, mpsc};
 
 use crate::agent::Agent;
+use crate::agent::context::ProjectsContext;
 use crate::channels::types::{InboundMessage, MessageOrigin, RoutedMessage};
 use crate::channels::websocket::WsReplyHandle;
 use crate::config::{Config, ModelSpec, ProviderKind, ProviderSpec};
@@ -34,6 +35,8 @@ use crate::models::gemini::GeminiClient;
 use crate::models::ollama::OllamaClient;
 use crate::models::openai::OpenAiClient;
 use crate::models::{CompletionOptions, HttpClientConfig, ModelProvider, SharedHttpClient};
+use crate::projects::activation::{ProjectState, SharedProjectState};
+use crate::projects::scanner::ProjectIndex;
 use crate::pulse::executor::execute_pulse;
 use crate::pulse::scheduler::PulseScheduler;
 use crate::pulse::types::AlertLevel;
@@ -126,12 +129,20 @@ pub async fn run_gateway(cfg: Config) -> Result<GatewayExit, IronclawError> {
     ));
     let cron_notify = Arc::new(tokio::sync::Notify::new());
 
+    // Build project state
+    let project_index = ProjectIndex::scan(&layout).await?;
+    let project_state: SharedProjectState = Arc::new(tokio::sync::Mutex::new(ProjectState::new(
+        project_index,
+        layout.clone(),
+    )));
+
     // Build tool registry
     let mut tools = ToolRegistry::new();
     let file_tracker = crate::tools::FileTracker::new_shared();
     tools.register_defaults(file_tracker);
     tools.register_search_tool(Arc::clone(&search_index));
     tools.register_cron_tools(Arc::clone(&cron_store), Arc::clone(&cron_notify), tz);
+    tools.register_project_tools(Arc::clone(&project_state), tz);
 
     // Build completion options
     let options = CompletionOptions {
@@ -299,7 +310,13 @@ pub async fn run_gateway(cfg: Config) -> Result<GatewayExit, IronclawError> {
 
                 let before = agent.message_count();
 
-                match agent.process_message(&routed.message.content, &turn_display, Some(&origin)).await {
+                let (idx_text, active_text) = build_project_context_strings(&project_state).await;
+                let projects_ctx = ProjectsContext {
+                    index: idx_text.as_deref(),
+                    active_context: active_text.as_deref(),
+                };
+
+                match agent.process_message(&routed.message.content, &turn_display, Some(&origin), &projects_ctx).await {
                     Ok(texts) => {
                         drop(typing_guard);
                         for text in &texts {
@@ -330,7 +347,7 @@ pub async fn run_gateway(cfg: Config) -> Result<GatewayExit, IronclawError> {
                 }
 
                 let new_messages: Vec<_> = agent.messages_since(before).to_vec();
-                let project_context = workspace_name(&layout);
+                let project_context = project_context_label(&project_state, &layout).await;
                 let action = persist_and_check_thresholds(
                     &new_messages,
                     &project_context,
@@ -359,12 +376,19 @@ pub async fn run_gateway(cfg: Config) -> Result<GatewayExit, IronclawError> {
                 let now = crate::time::now_local(tz);
                 let due = pulse_scheduler.due_pulses(now, &layout.heartbeat_yml());
 
+                let (pulse_idx_text, pulse_active_text) = build_project_context_strings(&project_state).await;
+                let pulse_projects_ctx = ProjectsContext {
+                    index: pulse_idx_text.as_deref(),
+                    active_context: pulse_active_text.as_deref(),
+                };
+
                 for pulse in &due {
                     match execute_pulse(
                         pulse,
                         &agent,
                         &layout.alerts_md(),
                         Some(&*pulse_provider),
+                        &pulse_projects_ctx,
                     )
                     .await
                     {
@@ -385,7 +409,7 @@ pub async fn run_gateway(cfg: Config) -> Result<GatewayExit, IronclawError> {
                                     tracing::trace!("no broadcast receivers for pulse event");
                                 }
                             }
-                            let pulse_context = workspace_name(&layout);
+                            let pulse_context = project_context_label(&project_state, &layout).await;
                             let action = persist_and_check_thresholds(
                                 &result.messages,
                                 &pulse_context,
@@ -421,6 +445,7 @@ pub async fn run_gateway(cfg: Config) -> Result<GatewayExit, IronclawError> {
                     &cron_store, &mut agent, &observer,
                     &layout, &broadcast_tx,
                     Some(&*cron_provider), tz,
+                    &project_state,
                 ).await;
                 match action {
                     ObserveAction::ForceNow => {
@@ -442,6 +467,7 @@ pub async fn run_gateway(cfg: Config) -> Result<GatewayExit, IronclawError> {
                     &cron_store, &mut agent, &observer,
                     &layout, &broadcast_tx,
                     Some(&*cron_provider), tz,
+                    &project_state,
                 ).await;
                 match action {
                     ObserveAction::ForceNow => {
@@ -610,6 +636,10 @@ async fn handle_connection(socket: WebSocket, state: GatewayState) {
 /// Execute due cron jobs, broadcast notifications, and persist messages.
 ///
 /// Returns the `ObserveAction` so the caller can manage the observe deadline.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "gateway helper wiring multiple subsystems together"
+)]
 async fn run_due_cron_jobs_gateway(
     cron_store: &Arc<tokio::sync::Mutex<CronStore>>,
     agent: &mut Agent,
@@ -618,6 +648,7 @@ async fn run_due_cron_jobs_gateway(
     broadcast_tx: &broadcast::Sender<ServerMessage>,
     provider_override: Option<&dyn ModelProvider>,
     tz: chrono_tz::Tz,
+    project_state: &SharedProjectState,
 ) -> ObserveAction {
     let now = crate::time::now_local(tz);
     let mut store = cron_store.lock().await;
@@ -630,7 +661,22 @@ async fn run_due_cron_jobs_gateway(
         }
     }
 
-    match execute_due_jobs(&mut store, agent, now, tz, provider_override).await {
+    let (cron_idx_text, cron_active_text) = build_project_context_strings(project_state).await;
+    let cron_projects_ctx = ProjectsContext {
+        index: cron_idx_text.as_deref(),
+        active_context: cron_active_text.as_deref(),
+    };
+
+    match execute_due_jobs(
+        &mut store,
+        agent,
+        now,
+        tz,
+        provider_override,
+        &cron_projects_ctx,
+    )
+    .await
+    {
         Ok(result) => {
             for notif in &result.notifications {
                 if broadcast_tx
@@ -644,7 +690,7 @@ async fn run_due_cron_jobs_gateway(
                 }
             }
             if !result.messages.is_empty() {
-                let cron_context = workspace_name(layout);
+                let cron_context = project_context_label(project_state, layout).await;
                 return persist_and_check_thresholds(
                     &result.messages,
                     &cron_context,
@@ -784,6 +830,32 @@ fn workspace_name(layout: &WorkspaceLayout) -> String {
         .and_then(|n| n.to_str())
         .unwrap_or("unknown")
         .to_string()
+}
+
+/// Build formatted strings for project context from shared project state.
+///
+/// Returns `(index_text, active_context_text)` — each `Option<String>`.
+async fn build_project_context_strings(
+    project_state: &SharedProjectState,
+) -> (Option<String>, Option<String>) {
+    let state = project_state.lock().await;
+    let index_text = Some(state.format_index_for_prompt());
+    let active_text = state.format_active_context_for_prompt();
+    (index_text, active_text)
+}
+
+/// Derive the project context label for memory tagging.
+///
+/// Uses the active project name if one is active, otherwise falls back to the
+/// workspace directory name.
+async fn project_context_label(
+    project_state: &SharedProjectState,
+    layout: &WorkspaceLayout,
+) -> String {
+    let state = project_state.lock().await;
+    state
+        .active_project_name()
+        .map_or_else(|| workspace_name(layout), str::to_string)
 }
 
 /// Run the reflector if the observation log exceeds the threshold.

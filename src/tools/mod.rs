@@ -6,6 +6,7 @@ mod exec;
 pub(crate) mod file_tracker;
 mod line_hash;
 pub mod memory_search;
+pub mod projects;
 mod read;
 mod write;
 
@@ -140,6 +141,30 @@ impl ToolRegistry {
         index: std::sync::Arc<crate::memory::search::MemoryIndex>,
     ) {
         self.register(Box::new(memory_search::MemorySearchTool::new(index)));
+    }
+
+    /// Register project management tools.
+    pub fn register_project_tools(
+        &mut self,
+        state: crate::projects::activation::SharedProjectState,
+        tz: chrono_tz::Tz,
+    ) {
+        self.register(Box::new(projects::ProjectActivateTool::new(Arc::clone(
+            &state,
+        ))));
+        self.register(Box::new(projects::ProjectDeactivateTool::new(
+            Arc::clone(&state),
+            tz,
+        )));
+        self.register(Box::new(projects::ProjectCreateTool::new(
+            Arc::clone(&state),
+            tz,
+        )));
+        self.register(Box::new(projects::ProjectArchiveTool::new(
+            Arc::clone(&state),
+            tz,
+        )));
+        self.register(Box::new(projects::ProjectListTool::new(state)));
     }
 
     /// Register cron management tools (`cron_add`, `cron_list`, `cron_update`, `cron_remove`).

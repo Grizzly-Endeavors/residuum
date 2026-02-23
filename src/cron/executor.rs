@@ -4,6 +4,7 @@ use chrono::NaiveDateTime;
 use chrono_tz::Tz;
 
 use crate::agent::Agent;
+use crate::agent::context::ProjectsContext;
 use crate::channels::null::NullDisplay;
 use crate::error::IronclawError;
 use crate::models::ModelProvider;
@@ -48,6 +49,7 @@ pub async fn execute_due_jobs(
     now: NaiveDateTime,
     tz: Tz,
     provider_override: Option<&dyn ModelProvider>,
+    projects_ctx: &ProjectsContext<'_>,
 ) -> Result<CronExecutionResult, IronclawError> {
     let due_ids: Vec<String> = store
         .find_due_jobs(now)
@@ -65,7 +67,7 @@ pub async fn execute_due_jobs(
         };
 
         let (status, error_msg, new_messages, notification) =
-            run_job(&job, agent, provider_override).await;
+            run_job(&job, agent, provider_override, projects_ctx).await;
         if let Some(notif) = notification {
             notifications.push(notif);
         }
@@ -133,6 +135,7 @@ async fn run_job(
     job: &CronJob,
     agent: &mut Agent,
     provider_override: Option<&dyn ModelProvider>,
+    projects_ctx: &ProjectsContext<'_>,
 ) -> (
     RunStatus,
     Option<String>,
@@ -158,7 +161,7 @@ async fn run_job(
         (CronPayload::AgentTurn { message }, Delivery::UserVisible) => {
             let display = NullDisplay;
             match agent
-                .run_system_turn(message, &display, provider_override)
+                .run_system_turn(message, &display, provider_override, projects_ctx)
                 .await
             {
                 Ok(result) => {
@@ -180,7 +183,7 @@ async fn run_job(
         (CronPayload::AgentTurn { message }, Delivery::Background) => {
             let display = NullDisplay;
             match agent
-                .run_system_turn(message, &display, provider_override)
+                .run_system_turn(message, &display, provider_override, projects_ctx)
                 .await
             {
                 Ok(result) => {
