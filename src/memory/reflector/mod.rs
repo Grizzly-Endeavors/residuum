@@ -3,16 +3,20 @@
 //! Sends the full observation log to an LLM which reorganizes and merges
 //! observations while preserving chronology and context tags.
 
+mod parse;
+mod prompt;
+
 use chrono_tz::Tz;
 
 use crate::config::DEFAULT_REFLECTOR_THRESHOLD;
 use crate::error::IronclawError;
 use crate::memory::log_store::{load_observation_log, save_observation_log};
 use crate::memory::tokens::estimate_tokens;
-use crate::memory::types::{Observation, ObservationLog, Visibility};
-use crate::models::{CompletionOptions, Message, ModelProvider};
-use crate::time::now_local;
+use crate::memory::types::ObservationLog;
+use crate::models::{CompletionOptions, ModelProvider};
 use crate::workspace::layout::WorkspaceLayout;
+use parse::parse_reflection_response;
+use prompt::{REFLECTION_CONTENT_PROMPT, build_reflection_prompt};
 
 /// Reflector configuration.
 #[derive(Debug, Clone)]
@@ -122,155 +126,14 @@ impl Reflector {
     }
 }
 
-/// Build the reflection prompt with the serialized observation list.
-///
-/// Injects the format spec alongside user-customizable content guidance so the
-/// format requirement cannot be lost by editing the disk file.
-fn build_reflection_prompt(serialized_observations: &str, content_guidance: &str) -> Vec<Message> {
-    let system = format!("{content_guidance}\n\n{REFLECTION_FORMAT_SPEC}");
-    vec![
-        Message::system(system),
-        Message::user(format!(
-            "Reorganize and compress these observations:\n\n{serialized_observations}"
-        )),
-    ]
-}
-
-/// User-customizable content guidance — default when `memory/REFLECTOR.md` is absent.
-///
-/// The workspace bootstrap writes this same content to disk so users can customise
-/// it without recompiling. The format spec is always appended by code.
-const REFLECTION_CONTENT_PROMPT: &str = "You are a memory reorganization system. Given a list of observations, merge and deduplicate them to reduce size while preserving all important information.
-
-Rules:
-- Merge related observations into single, precise sentences
-- Do NOT summarize — preserve specific details
-- Remove redundant or duplicate observations
-- Each output object should have a complete, self-contained content sentence";
-
-/// Output format spec — always appended by code, never stored in editable files.
-///
-/// This is injected unconditionally so editing `REFLECTOR.md` cannot break JSON parsing.
-const REFLECTION_FORMAT_SPEC: &str = r#"Return ONLY a JSON array of observation objects with fields:
-- "content" (string): the merged observation as a complete, self-contained sentence
-- "timestamp": timestamp at minute precision (YYYY-MM-DDTHH:MM) — use the most recent timestamp from the source observations being merged
-- "project_context" (string): use the most relevant context from the source observations
-- "visibility" ("user" or "background"): use "background" only if all source observations were background
-
-Example:
-[{"content": "merged fact one", "timestamp": "2026-02-21T14:30", "project_context": "ironclaw/memory", "visibility": "user"}]
-
-Return ONLY a valid JSON array of objects, no markdown fencing, no explanation."#;
-
-/// Parse the model's reflection response into an `ObservationLog`.
-///
-/// Expects a JSON array of objects:
-/// `[{"content": "obs 1", "timestamp": "2026-02-21T14:30", "project_context": "ironclaw/memory", "visibility": "user"}, ...]`
-///
-/// Each object's `timestamp`, `project_context`, and `visibility` are preserved.
-/// Defaults to `now_local(tz)` / `"general"` / `Visibility::User` when fields are absent or invalid.
-///
-/// # Errors
-/// Returns an error if the response cannot be parsed.
-fn parse_reflection_response(content: &str, tz: Tz) -> Result<ObservationLog, IronclawError> {
-    let trimmed = content.trim();
-    let json_str = crate::memory::strip_code_fences(trimmed);
-
-    let value: serde_json::Value = serde_json::from_str(json_str).map_err(|e| {
-        IronclawError::Memory(format!(
-            "failed to parse reflector response as JSON: {e}\nresponse: {trimmed}"
-        ))
-    })?;
-
-    let items = value.as_array().ok_or_else(|| {
-        IronclawError::Memory(format!(
-            "reflector response is not a JSON array\nresponse: {trimmed}"
-        ))
-    })?;
-
-    let mut log = ObservationLog::new();
-
-    for item in items {
-        let Some(obs_content) = item.get("content").and_then(serde_json::Value::as_str) else {
-            continue;
-        };
-
-        if obs_content.is_empty() {
-            continue;
-        }
-
-        let timestamp = item
-            .get("timestamp")
-            .and_then(serde_json::Value::as_str)
-            .map_or_else(
-                || now_local(tz),
-                |ts| crate::memory::parse_minute_timestamp(ts, tz),
-            );
-
-        let project_context = item
-            .get("project_context")
-            .and_then(serde_json::Value::as_str)
-            .unwrap_or("general")
-            .to_string();
-
-        let visibility = item
-            .get("visibility")
-            .and_then(|v| serde_json::from_value::<Visibility>(v.clone()).ok())
-            .unwrap_or_default();
-
-        log.push(Observation {
-            timestamp,
-            project_context,
-            source_episodes: vec![],
-            visibility,
-            content: obs_content.to_string(),
-        });
-    }
-
-    Ok(log)
-}
-
 #[cfg(test)]
 #[expect(clippy::unwrap_used, reason = "test code uses unwrap for clarity")]
 mod tests {
     use super::*;
-    use crate::memory::types::Visibility;
-    use crate::models::{ModelError, ModelResponse, ToolDefinition};
-    use async_trait::async_trait;
-    use std::sync::Arc;
-    use std::sync::atomic::{AtomicUsize, Ordering};
-
-    /// See `MockProvider` in `agent::tests` for duplication rationale.
-    struct MockReflectorProvider {
-        response: String,
-        call_count: Arc<AtomicUsize>,
-    }
-
-    impl MockReflectorProvider {
-        fn new(response: &str) -> Self {
-            Self {
-                response: response.to_string(),
-                call_count: Arc::new(AtomicUsize::new(0)),
-            }
-        }
-    }
-
-    #[async_trait]
-    impl ModelProvider for MockReflectorProvider {
-        async fn complete(
-            &self,
-            _messages: &[Message],
-            _tools: &[ToolDefinition],
-            _options: &CompletionOptions,
-        ) -> Result<ModelResponse, ModelError> {
-            self.call_count.fetch_add(1, Ordering::SeqCst);
-            Ok(ModelResponse::new(self.response.clone(), vec![]))
-        }
-
-        fn model_name(&self) -> &'static str {
-            "mock-reflector"
-        }
-    }
+    use crate::memory::log_store::save_observation_log;
+    use crate::memory::test_helpers::MockMemoryProvider;
+    use crate::memory::types::{Observation, Visibility};
+    use parse::parse_reflection_response;
 
     fn sample_observation(episode_id: &str, ctx: &str) -> Observation {
         Observation {
@@ -290,7 +153,7 @@ mod tests {
     #[test]
     fn should_reflect_below_threshold() {
         let reflector = Reflector::new(
-            Box::new(MockReflectorProvider::new(COMPRESSED_RESPONSE)),
+            Box::new(MockMemoryProvider::new(COMPRESSED_RESPONSE)),
             ReflectorConfig {
                 threshold_tokens: 100_000,
                 tz: chrono_tz::UTC,
@@ -309,7 +172,7 @@ mod tests {
     #[test]
     fn should_reflect_above_threshold() {
         let reflector = Reflector::new(
-            Box::new(MockReflectorProvider::new(COMPRESSED_RESPONSE)),
+            Box::new(MockMemoryProvider::new(COMPRESSED_RESPONSE)),
             ReflectorConfig {
                 threshold_tokens: 10,
                 tz: chrono_tz::UTC,
@@ -441,7 +304,7 @@ mod tests {
             .unwrap();
 
         let reflector = Reflector::new(
-            Box::new(MockReflectorProvider::new(COMPRESSED_RESPONSE)),
+            Box::new(MockMemoryProvider::new(COMPRESSED_RESPONSE)),
             ReflectorConfig {
                 threshold_tokens: 10,
                 tz: chrono_tz::UTC,
@@ -473,7 +336,7 @@ mod tests {
             .unwrap();
 
         let reflector = Reflector::new(
-            Box::new(MockReflectorProvider::new(COMPRESSED_RESPONSE)),
+            Box::new(MockMemoryProvider::new(COMPRESSED_RESPONSE)),
             ReflectorConfig::default(),
         );
 
@@ -515,7 +378,7 @@ mod tests {
             .unwrap();
 
         let reflector = Reflector::new(
-            Box::new(MockReflectorProvider::new(COMPRESSED_RESPONSE)),
+            Box::new(MockMemoryProvider::new(COMPRESSED_RESPONSE)),
             ReflectorConfig {
                 threshold_tokens: 10,
                 tz: chrono_tz::UTC,
@@ -551,7 +414,7 @@ mod tests {
 
         let empty_array = "[]";
         let reflector = Reflector::new(
-            Box::new(MockReflectorProvider::new(empty_array)),
+            Box::new(MockMemoryProvider::new(empty_array)),
             ReflectorConfig {
                 threshold_tokens: 10,
                 tz: chrono_tz::UTC,

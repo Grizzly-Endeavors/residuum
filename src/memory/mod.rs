@@ -6,11 +6,15 @@
 pub mod episode_store;
 pub mod log_store;
 pub mod observer;
-pub mod recent_store;
+pub mod recent_context;
+pub mod recent_messages;
 pub mod reflector;
 pub mod search;
 pub mod tokens;
 pub mod types;
+
+#[cfg(test)]
+pub(crate) mod test_helpers;
 
 /// Strip markdown code fences (```` ```json ... ``` ````) from LLM responses.
 ///

@@ -16,8 +16,10 @@ mod memory_integration {
 
     use ironclaw::memory::log_store::{load_observation_log, next_episode_id};
     use ironclaw::memory::observer::{ObserveAction, ObserveResult, Observer, ObserverConfig};
-    use ironclaw::memory::recent_store::{RecentContext, load_recent_context, save_recent_context};
-    use ironclaw::memory::recent_store::{
+    use ironclaw::memory::recent_context::{
+        RecentContext, load_recent_context, save_recent_context,
+    };
+    use ironclaw::memory::recent_messages::{
         append_recent_messages, clear_recent_messages, load_recent_messages,
     };
     use ironclaw::memory::reflector::{Reflector, ReflectorConfig};
@@ -377,7 +379,7 @@ mod memory_integration {
             },
         );
 
-        let messages = vec![ironclaw::memory::recent_store::RecentMessage {
+        let messages = vec![ironclaw::memory::recent_messages::RecentMessage {
             message: Message::user("hello"),
             timestamp: chrono::Utc::now().naive_utc(),
             project_context: "test".to_string(),
@@ -402,7 +404,7 @@ mod memory_integration {
         );
 
         // Below soft threshold — single short message is ~2 tokens
-        let few_recent = vec![ironclaw::memory::recent_store::RecentMessage {
+        let few_recent = vec![ironclaw::memory::recent_messages::RecentMessage {
             message: Message::user("hello"),
             timestamp: chrono::Utc::now().naive_utc(),
             project_context: "test".to_string(),
@@ -417,9 +419,9 @@ mod memory_integration {
 
         // Above soft threshold but below force — make_messages(10) produces ~1250+ tokens
         let many = make_messages(10);
-        let many_recent: Vec<ironclaw::memory::recent_store::RecentMessage> = many
+        let many_recent: Vec<ironclaw::memory::recent_messages::RecentMessage> = many
             .into_iter()
-            .map(|m| ironclaw::memory::recent_store::RecentMessage {
+            .map(|m| ironclaw::memory::recent_messages::RecentMessage {
                 message: m,
                 timestamp: chrono::Utc::now().naive_utc(),
                 project_context: "test".to_string(),

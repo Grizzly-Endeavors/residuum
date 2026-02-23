@@ -7,7 +7,7 @@ use crate::config::Config;
 use crate::cron::store::CronStore;
 use crate::error::IronclawError;
 use crate::memory::observer::Observer;
-use crate::memory::recent_store::load_messages_for_agent;
+use crate::memory::recent_messages::load_messages_for_agent;
 use crate::memory::reflector::Reflector;
 use crate::memory::search::{MemoryIndex, create_shared_index};
 use crate::models::{

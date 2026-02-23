@@ -121,7 +121,7 @@ impl Agent {
         layout: &crate::workspace::layout::WorkspaceLayout,
     ) -> Result<(), IronclawError> {
         let path = layout.recent_context_json();
-        match crate::memory::recent_store::load_recent_context(&path).await {
+        match crate::memory::recent_context::load_recent_context(&path).await {
             Ok(Some(ctx)) => {
                 self.recent_context = Some(ctx.narrative);
             }

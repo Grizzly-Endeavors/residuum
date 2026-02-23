@@ -10,9 +10,9 @@ use crate::error::IronclawError;
 use crate::gateway::protocol::ServerMessage;
 use crate::memory::log_store::load_observation_log;
 use crate::memory::observer::{ObserveAction, Observer, ObserverConfig};
-use crate::memory::recent_store::{
-    RecentContext, append_recent_messages, clear_recent_messages, load_recent_messages,
-    save_recent_context,
+use crate::memory::recent_context::{RecentContext, save_recent_context};
+use crate::memory::recent_messages::{
+    append_recent_messages, clear_recent_messages, load_recent_messages,
 };
 use crate::memory::reflector::{Reflector, ReflectorConfig};
 use crate::memory::search::MemoryIndex;

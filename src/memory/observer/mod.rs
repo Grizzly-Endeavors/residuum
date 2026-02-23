@@ -3,7 +3,9 @@
 //! Fires synchronously after the agent completes a turn when the accumulated
 //! recent message token count exceeds the configured threshold.
 
-use chrono::NaiveDateTime;
+mod parse;
+mod prompt;
+
 use chrono_tz::Tz;
 
 use crate::config::{
@@ -12,12 +14,14 @@ use crate::config::{
 use crate::error::IronclawError;
 use crate::memory::episode_store::{episode_obs_path, write_episode_transcript};
 use crate::memory::log_store::{append_observations, next_episode_id, save_episode_observations};
-use crate::memory::recent_store::RecentMessage;
+use crate::memory::recent_messages::RecentMessage;
 use crate::memory::tokens::estimate_message_tokens;
-use crate::memory::types::{Episode, Observation, Visibility};
-use crate::models::{CompletionOptions, Message, ModelProvider, ModelResponse};
+use crate::memory::types::{Episode, Observation};
+use crate::models::{CompletionOptions, Message, ModelProvider};
 use crate::time::now_local;
 use crate::workspace::layout::WorkspaceLayout;
+use parse::{ObserverParseResult, parse_observer_response};
+use prompt::{EXTRACTION_CONTENT_PROMPT, build_extraction_prompt};
 
 /// The result of a successful observation run.
 pub struct ObserveResult {
@@ -165,71 +169,16 @@ impl Observer {
         // Parse the response into extraction results and optional narrative.
         let parsed = parse_observer_response(&response, self.config.tz)?;
 
-        // Build the episode internally — start/end are cosmetic and no longer LLM-extracted.
-        let episode = Episode {
-            id: episode_id.clone(),
-            date: now_local(self.config.tz).date(),
-            start: String::new(),
-            end: String::new(),
-            context: project_context.clone(),
-            observations: parsed
-                .extractions
-                .iter()
-                .map(|e| e.content.clone())
-                .collect(),
-            source_episodes: vec![],
-        };
-
-        // Persist transcript
-        let transcript_path =
-            crate::memory::episode_store::episode_jsonl_path(&layout.episodes_dir(), &episode);
-        write_episode_transcript(&layout.episodes_dir(), &episode, &messages).await?;
-
-        // Convert episode observations → flat Observations and append
-        let observation_count = episode.observations.len();
-        let observations: Vec<Observation> = parsed
-            .extractions
-            .iter()
-            .map(|e| Observation {
-                timestamp: e.timestamp,
-                project_context: project_context.clone(),
-                source_episodes: vec![episode.id.clone()],
-                visibility: e.visibility.clone(),
-                content: e.content.clone(),
-            })
-            .collect();
-
-        let obs_path = episode_obs_path(&layout.episodes_dir(), &episode);
-        save_episode_observations(&obs_path, &observations).await?;
-        append_observations(&layout.observations_json(), observations).await?;
-
-        tracing::info!(
-            episode_id = %episode.id,
-            observations = observation_count,
-            has_narrative = parsed.narrative.is_some(),
-            "episode extracted"
-        );
-
-        Ok(ObserveResult {
-            id: episode.id,
-            transcript_path,
-            observation_count,
-            narrative: parsed.narrative,
-        })
+        build_episode_and_persist(
+            parsed,
+            episode_id,
+            project_context,
+            messages,
+            layout,
+            self.config.tz,
+        )
+        .await
     }
-}
-
-/// Intermediate extraction result from the observer LLM response.
-struct ObserverExtraction {
-    content: String,
-    timestamp: NaiveDateTime,
-    visibility: Visibility,
-}
-
-/// Combined parse result: extractions plus optional narrative.
-struct ObserverParseResult {
-    extractions: Vec<ObserverExtraction>,
-    narrative: Option<String>,
 }
 
 /// Estimate the total token count of recent messages.
@@ -261,221 +210,66 @@ fn derive_project_context(messages: &[RecentMessage]) -> String {
         .map_or_else(|| "general".to_string(), |(ctx, _)| ctx.to_string())
 }
 
-/// Format a single `RecentMessage` for the extraction prompt transcript.
-///
-/// Includes timestamp, role, project context, visibility, content, and any
-/// tool calls or tool call IDs, so the observer LLM has full context.
-fn format_recent_message(rm: &RecentMessage) -> String {
-    let role = rm.message.role.as_str();
-    let timestamp = rm.timestamp.format("%Y-%m-%dT%H:%M:%S").to_string();
-    let visibility = match rm.visibility {
-        Visibility::User => "user",
-        Visibility::Background => "background",
+/// Build the episode from parsed extractions and persist all artifacts to disk.
+async fn build_episode_and_persist(
+    parsed: ObserverParseResult,
+    episode_id: String,
+    project_context: String,
+    messages: Vec<Message>,
+    layout: &WorkspaceLayout,
+    tz: Tz,
+) -> Result<ObserveResult, IronclawError> {
+    // Build the episode internally — start/end are cosmetic and no longer LLM-extracted.
+    let episode = Episode {
+        id: episode_id.clone(),
+        date: now_local(tz).date(),
+        start: String::new(),
+        end: String::new(),
+        context: project_context.clone(),
+        observations: parsed
+            .extractions
+            .iter()
+            .map(|e| e.content.clone())
+            .collect(),
+        source_episodes: vec![],
     };
-    let tool_call_id_part = rm
-        .message
-        .tool_call_id
-        .as_deref()
-        .map_or_else(String::new, |id| format!(" (call: {id})"));
 
-    let header = format!(
-        "[{timestamp}] [{role}]{tool_call_id_part} (project: {}, visibility: {visibility}):",
-        rm.project_context
+    // Persist transcript
+    let transcript_path =
+        crate::memory::episode_store::episode_jsonl_path(&layout.episodes_dir(), &episode);
+    write_episode_transcript(&layout.episodes_dir(), &episode, &messages).await?;
+
+    // Convert episode observations → flat Observations and append
+    let observation_count = episode.observations.len();
+    let observations: Vec<Observation> = parsed
+        .extractions
+        .iter()
+        .map(|e| Observation {
+            timestamp: e.timestamp,
+            project_context: project_context.clone(),
+            source_episodes: vec![episode.id.clone()],
+            visibility: e.visibility.clone(),
+            content: e.content.clone(),
+        })
+        .collect();
+
+    let obs_path = episode_obs_path(&layout.episodes_dir(), &episode);
+    save_episode_observations(&obs_path, &observations).await?;
+    append_observations(&layout.observations_json(), observations).await?;
+
+    tracing::info!(
+        episode_id = %episode.id,
+        observations = observation_count,
+        has_narrative = parsed.narrative.is_some(),
+        "episode extracted"
     );
 
-    let mut parts = vec![header];
-
-    if !rm.message.content.is_empty() {
-        parts.push(rm.message.content.clone());
-    }
-
-    if let Some(tool_calls) = &rm.message.tool_calls {
-        let mut tc_lines = vec!["  tool_calls:".to_string()];
-        for tc in tool_calls {
-            tc_lines.push(format!(
-                "    - {}({}) [id: {}]",
-                tc.name, tc.arguments, tc.id
-            ));
-        }
-        parts.push(tc_lines.join("\n"));
-    }
-
-    parts.join("\n")
-}
-
-/// Build the extraction prompt for the observer model.
-///
-/// Injects the format spec alongside user-customizable content guidance so the
-/// format requirement cannot be lost by editing the disk file.
-fn build_extraction_prompt(
-    recent_messages: &[RecentMessage],
-    content_guidance: &str,
-) -> Vec<Message> {
-    let system = format!("{content_guidance}\n\n{EXTRACTION_FORMAT_SPEC}");
-    let transcript = recent_messages
-        .iter()
-        .map(format_recent_message)
-        .collect::<Vec<_>>()
-        .join("\n\n");
-
-    vec![
-        Message::system(system),
-        Message::user(format!(
-            "Extract observations from this conversation segment:\n\n{transcript}"
-        )),
-    ]
-}
-
-/// User-customizable content guidance — default when `memory/OBSERVER.md` is absent.
-///
-/// The workspace bootstrap writes this same content to disk so users can customise
-/// it without recompiling. The format spec is always appended by code.
-const EXTRACTION_CONTENT_PROMPT: &str =
-    "You are a memory extraction system. Given a conversation segment, extract key observations.
-
-For each observation, capture:
-- Key decisions made and their rationale
-- Problems encountered and their solutions
-- Corrections or mistakes that were fixed
-- Important technical details or patterns discovered
-- Action items or next steps identified
-
-Each observation should be a complete sentence useful as future context. Be specific and concise.";
-
-/// Output format spec — always appended by code, never stored in editable files.
-///
-/// This is injected unconditionally so editing `OBSERVER.md` cannot break JSON parsing.
-const EXTRACTION_FORMAT_SPEC: &str = r#"Return ONLY a JSON object with two fields:
-
-1. "observations": an array of objects, each with:
-   - "content": a complete, self-contained observation sentence
-   - "timestamp": timestamp at minute precision (YYYY-MM-DDTHH:MM) matching the most relevant message
-   - "visibility": "user" if the observation involves a user-visible turn, "background" if from a system/background turn
-
-2. "narrative": a 2-4 sentence summary of what was being discussed and where things left off,
-   written as if briefing someone who needs to continue the conversation. Include the current
-   topic, any open questions, and the overall direction of the conversation.
-
-Example:
-{
-  "observations": [
-    {"content": "user prefers concise responses", "timestamp": "2026-02-21T14:30", "visibility": "user"},
-    {"content": "cron job executed daily backup successfully", "timestamp": "2026-02-21T03:00", "visibility": "background"}
-  ],
-  "narrative": "We were implementing a new caching layer for the API. The user chose Redis over in-memory caching. The basic connection setup is done but we haven't started on cache invalidation yet."
-}
-
-Return ONLY a valid JSON object, no markdown fencing, no explanation."#;
-
-/// Parse the model's JSON response into extractions and an optional narrative.
-///
-/// Accepts two formats:
-/// - **New (object)**: `{"observations": [...], "narrative": "..."}`
-/// - **Legacy (bare array)**: `[{"content": ..., ...}, ...]`
-///
-/// # Errors
-/// Returns an error if the response cannot be parsed or the observations are empty.
-fn parse_observer_response(
-    response: &ModelResponse,
-    tz: Tz,
-) -> Result<ObserverParseResult, IronclawError> {
-    let content = response.content.trim();
-    let json_str = crate::memory::strip_code_fences(content);
-
-    let value: serde_json::Value = serde_json::from_str(json_str).map_err(|e| {
-        IronclawError::Memory(format!(
-            "failed to parse observer response as JSON: {e}\nresponse: {content}"
-        ))
-    })?;
-
-    // Determine the items array and optional narrative
-    let (items, narrative) = if let Some(arr) = value.as_array() {
-        // Legacy bare-array format
-        (arr.clone(), None)
-    } else if let Some(obj) = value.as_object() {
-        let obs_array = obj
-            .get("observations")
-            .and_then(serde_json::Value::as_array)
-            .ok_or_else(|| {
-                IronclawError::Memory(format!(
-                    "observer response object missing 'observations' array\nresponse: {content}"
-                ))
-            })?
-            .clone();
-
-        let narr = obj
-            .get("narrative")
-            .and_then(serde_json::Value::as_str)
-            .filter(|s| !s.is_empty())
-            .map(String::from);
-
-        (obs_array, narr)
-    } else {
-        return Err(IronclawError::Memory(format!(
-            "observer response is not a JSON array or object\nresponse: {content}"
-        )));
-    };
-
-    let extractions = parse_extraction_items(&items, tz);
-
-    if extractions.is_empty() {
-        return Err(IronclawError::Memory(
-            "observer returned empty observations array".to_string(),
-        ));
-    }
-
-    Ok(ObserverParseResult {
-        extractions,
-        narrative,
+    Ok(ObserveResult {
+        id: episode.id,
+        transcript_path,
+        observation_count,
+        narrative: parsed.narrative,
     })
-}
-
-/// Parse individual observation items from a JSON array.
-fn parse_extraction_items(items: &[serde_json::Value], tz: Tz) -> Vec<ObserverExtraction> {
-    let mut extractions = Vec::new();
-
-    for item in items {
-        let Some(obs_content) = item.get("content").and_then(serde_json::Value::as_str) else {
-            tracing::warn!("observer response item missing 'content' field, skipping");
-            continue;
-        };
-
-        if obs_content.is_empty() {
-            continue;
-        }
-
-        let timestamp = item
-            .get("timestamp")
-            .and_then(serde_json::Value::as_str)
-            .map_or_else(
-                || {
-                    tracing::warn!(
-                        "observer response item missing 'timestamp', using current time"
-                    );
-                    now_local(tz)
-                },
-                |ts| crate::memory::parse_minute_timestamp(ts, tz),
-            );
-
-        let visibility = item
-            .get("visibility")
-            .and_then(serde_json::Value::as_str)
-            .map_or(Visibility::User, |v| {
-                if v == "background" {
-                    Visibility::Background
-                } else {
-                    Visibility::User
-                }
-            });
-
-        extractions.push(ObserverExtraction {
-            content: obs_content.to_string(),
-            timestamp,
-            visibility,
-        });
-    }
-
-    extractions
 }
 
 #[cfg(test)]
@@ -484,42 +278,15 @@ mod tests {
     use super::*;
     use crate::memory::episode_store::episode_obs_path;
     use crate::memory::log_store::load_observation_log;
-    use crate::models::{ModelError, ModelResponse, Role, ToolDefinition};
-    use async_trait::async_trait;
-    use std::sync::Arc;
-    use std::sync::atomic::{AtomicUsize, Ordering};
-
-    /// See `MockProvider` in `agent::tests` for duplication rationale.
-    struct MockObserverProvider {
-        response_json: String,
-        call_count: Arc<AtomicUsize>,
-    }
-
-    impl MockObserverProvider {
-        fn new(response_json: &str) -> Self {
-            Self {
-                response_json: response_json.to_string(),
-                call_count: Arc::new(AtomicUsize::new(0)),
-            }
-        }
-    }
-
-    #[async_trait]
-    impl ModelProvider for MockObserverProvider {
-        async fn complete(
-            &self,
-            _messages: &[Message],
-            _tools: &[ToolDefinition],
-            _options: &CompletionOptions,
-        ) -> Result<ModelResponse, ModelError> {
-            self.call_count.fetch_add(1, Ordering::SeqCst);
-            Ok(ModelResponse::new(self.response_json.clone(), vec![]))
-        }
-
-        fn model_name(&self) -> &'static str {
-            "mock-observer"
-        }
-    }
+    use crate::memory::recent_messages::RecentMessage;
+    use crate::memory::test_helpers::MockMemoryProvider;
+    use crate::memory::types::Visibility;
+    use crate::models::{ModelResponse, Role};
+    use parse::{parse_extraction_items, parse_observer_response};
+    use prompt::{
+        EXTRACTION_CONTENT_PROMPT, EXTRACTION_FORMAT_SPEC, build_extraction_prompt,
+        format_recent_message,
+    };
 
     const SAMPLE_RESPONSE: &str = r#"[
         {"content": "workspace uses a flat directory layout", "timestamp": "2026-02-21T14:30", "visibility": "user"},
@@ -651,7 +418,7 @@ mod tests {
     #[test]
     fn should_observe_below_threshold() {
         let observer = Observer::new(
-            Box::new(MockObserverProvider::new(SAMPLE_RESPONSE)),
+            Box::new(MockMemoryProvider::new(SAMPLE_RESPONSE)),
             ObserverConfig {
                 threshold_tokens: 1000,
                 ..ObserverConfig::default()
@@ -668,7 +435,7 @@ mod tests {
     #[test]
     fn should_observe_above_threshold() {
         let observer = Observer::new(
-            Box::new(MockObserverProvider::new(SAMPLE_RESPONSE)),
+            Box::new(MockMemoryProvider::new(SAMPLE_RESPONSE)),
             ObserverConfig {
                 threshold_tokens: 10,
                 ..ObserverConfig::default()
@@ -685,7 +452,7 @@ mod tests {
     #[test]
     fn check_thresholds_below_soft() {
         let observer = Observer::new(
-            Box::new(MockObserverProvider::new(SAMPLE_RESPONSE)),
+            Box::new(MockMemoryProvider::new(SAMPLE_RESPONSE)),
             ObserverConfig {
                 threshold_tokens: 100_000,
                 force_threshold_tokens: 200_000,
@@ -703,7 +470,7 @@ mod tests {
     #[test]
     fn check_thresholds_between_soft_and_force() {
         let observer = Observer::new(
-            Box::new(MockObserverProvider::new(SAMPLE_RESPONSE)),
+            Box::new(MockMemoryProvider::new(SAMPLE_RESPONSE)),
             ObserverConfig {
                 threshold_tokens: 10,
                 force_threshold_tokens: 100_000,
@@ -721,7 +488,7 @@ mod tests {
     #[test]
     fn check_thresholds_above_force() {
         let observer = Observer::new(
-            Box::new(MockObserverProvider::new(SAMPLE_RESPONSE)),
+            Box::new(MockMemoryProvider::new(SAMPLE_RESPONSE)),
             ObserverConfig {
                 threshold_tokens: 10,
                 force_threshold_tokens: 10,
@@ -749,7 +516,7 @@ mod tests {
             .unwrap();
 
         let observer = Observer::new(
-            Box::new(MockObserverProvider::new(SAMPLE_RESPONSE)),
+            Box::new(MockMemoryProvider::new(SAMPLE_RESPONSE)),
             ObserverConfig {
                 threshold_tokens: 10,
                 ..ObserverConfig::default()
@@ -928,5 +695,19 @@ mod tests {
         ];
         let ctx = derive_project_context(&messages);
         assert_eq!(ctx, "ironclaw/memory", "should use most common context");
+    }
+
+    #[test]
+    fn parse_extraction_items_skips_missing_content() {
+        let items = vec![
+            serde_json::json!({"timestamp": "2026-02-21T14:30", "visibility": "user"}),
+            serde_json::json!({"content": "valid obs", "timestamp": "2026-02-21T14:31", "visibility": "user"}),
+        ];
+        let results = parse_extraction_items(&items, chrono_tz::UTC);
+        assert_eq!(results.len(), 1, "item missing content should be skipped");
+        assert_eq!(
+            results.first().map(|e| e.content.as_str()),
+            Some("valid obs")
+        );
     }
 }
