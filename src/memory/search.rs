@@ -1,4 +1,4 @@
-//! Full-text BM25 search over episodes and daily logs using tantivy.
+//! Full-text BM25 search over episodes using tantivy.
 
 use std::path::Path;
 use std::sync::Arc;
@@ -85,7 +85,7 @@ impl MemoryIndex {
         })
     }
 
-    /// Rebuild the index by walking all episode JSONL and daily log files.
+    /// Rebuild the index by walking all episode JSONL files.
     ///
     /// Clears the existing index and re-indexes everything.
     ///
@@ -107,9 +107,6 @@ impl MemoryIndex {
             count += self.index_jsonl_directory(&mut writer, &episodes_dir)?;
         }
 
-        // Index daily log markdown files
-        count += self.index_daily_log_dir(&mut writer, &memory_dir.join("daily_log"))?;
-
         writer
             .commit()
             .map_err(|e| IronclawError::Memory(format!("failed to commit search index: {e}")))?;
@@ -128,7 +125,7 @@ impl MemoryIndex {
     pub fn index_file(&self, file_path: &str, content: &str) -> Result<(), IronclawError> {
         let mut writer = self.writer()?;
 
-        let date = extract_daily_log_date(Path::new(file_path));
+        let date = String::new();
         add_document(
             &mut writer,
             self.path_field,
@@ -272,61 +269,6 @@ impl MemoryIndex {
 
         Ok(count)
     }
-
-    /// Recursively index all `.md` files in the daily log directory.
-    ///
-    /// Returns `Ok(0)` if the directory does not exist.
-    fn index_daily_log_dir(
-        &self,
-        writer: &mut IndexWriter,
-        daily_log_dir: &Path,
-    ) -> Result<usize, IronclawError> {
-        if !daily_log_dir.exists() {
-            return Ok(0);
-        }
-
-        let mut count = 0;
-        let Ok(entries) = std::fs::read_dir(daily_log_dir) else {
-            return Ok(0);
-        };
-
-        for entry in entries {
-            let entry = entry.map_err(|e| {
-                IronclawError::Memory(format!("failed to read directory entry: {e}"))
-            })?;
-            let path = entry.path();
-
-            if path.is_dir() {
-                count += self.index_daily_log_dir(writer, &path)?;
-            } else if path.extension().is_some_and(|ext| ext == "md") {
-                let date = extract_daily_log_date(&path);
-                match std::fs::read_to_string(&path) {
-                    Ok(file_content) => {
-                        let path_str = path.to_string_lossy();
-                        add_document(
-                            writer,
-                            self.path_field,
-                            self.content_field,
-                            self.date_field,
-                            &path_str,
-                            &file_content,
-                            &date,
-                        )?;
-                        count += 1;
-                    }
-                    Err(e) => {
-                        tracing::warn!(
-                            path = %path.display(),
-                            error = %e,
-                            "skipping unreadable daily log file"
-                        );
-                    }
-                }
-            }
-        }
-
-        Ok(count)
-    }
 }
 
 /// Add a document to the index writer.
@@ -386,30 +328,6 @@ fn parse_jsonl_for_index(path: &Path) -> Result<(String, String), IronclawError>
     }
 
     Ok((date, text_parts.join(" ")))
-}
-
-/// Extract a date string from a daily log file path.
-///
-/// Expects the structure `…/daily_log/{YYYY-MM}/daily-log-{DD}.md`.
-/// Returns an empty string if the path does not match this structure.
-fn extract_daily_log_date(path: &Path) -> String {
-    let day = path
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .and_then(|s| s.strip_prefix("daily-log-"))
-        .unwrap_or("");
-
-    let month = path
-        .parent()
-        .and_then(|p| p.file_name())
-        .and_then(|s| s.to_str())
-        .unwrap_or("");
-
-    if day.is_empty() || month.is_empty() {
-        String::new()
-    } else {
-        format!("{month}-{day}")
-    }
 }
 
 /// Create a shared `MemoryIndex` wrapped in an `Arc` for tool sharing.
@@ -500,29 +418,6 @@ mod tests {
     }
 
     #[test]
-    fn rebuild_with_daily_logs() {
-        let dir = tempfile::tempdir().unwrap();
-        let memory_dir = dir.path().join("memory");
-        let log_dir = memory_dir.join("daily_log/2026-02");
-        std::fs::create_dir_all(&log_dir).unwrap();
-
-        std::fs::write(
-            log_dir.join("daily-log-19.md"),
-            "# 2026-02-19\n\n- **10:30** discussed kubernetes migration",
-        )
-        .unwrap();
-
-        let index_dir = memory_dir.join(".index");
-        let index = MemoryIndex::open_or_create(&index_dir).unwrap();
-        let count = index.rebuild(&memory_dir).unwrap();
-
-        assert_eq!(count, 1, "should index the daily log");
-
-        let results = index.search("kubernetes", 5).unwrap();
-        assert!(!results.is_empty(), "should find daily log content");
-    }
-
-    #[test]
     fn search_results_have_scores() {
         let (_dir, index) = create_test_index();
 
@@ -551,25 +446,5 @@ mod tests {
         assert!(!results.is_empty(), "should have results");
         let first = results.first().unwrap();
         assert!(!first.snippet.is_empty(), "snippet should not be empty");
-    }
-
-    #[test]
-    fn extract_daily_log_date_valid() {
-        let path = Path::new("/memory/daily_log/2026-02/daily-log-19.md");
-        assert_eq!(
-            extract_daily_log_date(path),
-            "2026-02-19",
-            "should extract full date"
-        );
-    }
-
-    #[test]
-    fn extract_daily_log_date_non_matching() {
-        let path = Path::new("/memory/episodes/2026-02/19/ep-001.jsonl");
-        assert_eq!(
-            extract_daily_log_date(path),
-            "",
-            "non-daily-log path should return empty string"
-        );
     }
 }

@@ -87,12 +87,6 @@ impl WorkspaceLayout {
         self.root.join("memory/.index")
     }
 
-    /// Path to the daily log directory.
-    #[must_use]
-    pub(crate) fn daily_log_dir(&self) -> PathBuf {
-        self.root.join("memory/daily_log")
-    }
-
     /// Path to the skills directory.
     #[must_use]
     pub(crate) fn skills_dir(&self) -> PathBuf {
@@ -184,7 +178,6 @@ impl WorkspaceLayout {
             self.archive_dir(),
             self.cron_dir(),
             self.hooks_dir(),
-            self.daily_log_dir(),
             self.inbox_dir(),
         ]
     }
@@ -268,7 +261,7 @@ mod tests {
     fn required_dirs_count() {
         let layout = WorkspaceLayout::new("/tmp/ws");
         let dirs = layout.required_dirs();
-        assert_eq!(dirs.len(), 11, "should have all required directories");
+        assert_eq!(dirs.len(), 10, "should have all required directories");
         assert!(
             dirs.contains(&PathBuf::from("/tmp/ws")),
             "root should be included"
@@ -276,16 +269,6 @@ mod tests {
         assert!(
             dirs.contains(&PathBuf::from("/tmp/ws/inbox")),
             "inbox should be included"
-        );
-    }
-
-    #[test]
-    fn daily_log_dir_path() {
-        let layout = WorkspaceLayout::new("/tmp/ws");
-        assert_eq!(
-            layout.daily_log_dir(),
-            PathBuf::from("/tmp/ws/memory/daily_log"),
-            "daily_log_dir path"
         );
     }
 }

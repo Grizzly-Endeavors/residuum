@@ -1,7 +1,6 @@
 //! Tool system for agent-invoked operations.
 
 pub mod cron;
-pub mod daily_log;
 mod edit;
 mod exec;
 pub(crate) mod file_tracker;
@@ -133,18 +132,6 @@ impl ToolRegistry {
         self.register(Box::new(write::WriteTool::new(Arc::clone(&tracker))));
         self.register(Box::new(edit::EditTool::new(tracker)));
         self.register(Box::new(exec::ExecTool));
-    }
-
-    /// Register memory-related tools (`daily_log`).
-    pub fn register_memory_tools(
-        &mut self,
-        layout: &crate::workspace::layout::WorkspaceLayout,
-        tz: chrono_tz::Tz,
-    ) {
-        self.register(Box::new(daily_log::DailyLogTool::new(
-            layout.memory_dir(),
-            tz,
-        )));
     }
 
     /// Register the `memory_search` tool with a shared index.

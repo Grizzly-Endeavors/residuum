@@ -390,49 +390,6 @@ mod memory_integration {
         );
     }
 
-    #[tokio::test]
-    async fn daily_log_integration() {
-        let dir = tempfile::tempdir().unwrap();
-        let memory_dir = dir.path().join("memory");
-        tokio::fs::create_dir_all(&memory_dir).await.unwrap();
-
-        ironclaw::memory::daily_log::append_daily_note(
-            &memory_dir,
-            "first observation",
-            chrono_tz::UTC,
-        )
-        .await
-        .unwrap();
-        ironclaw::memory::daily_log::append_daily_note(
-            &memory_dir,
-            "second observation",
-            chrono_tz::UTC,
-        )
-        .await
-        .unwrap();
-
-        let path = ironclaw::memory::daily_log::daily_log_path(&memory_dir, chrono_tz::UTC);
-        let content = tokio::fs::read_to_string(&path).await.unwrap();
-        assert!(
-            content.contains("first observation"),
-            "should have first note"
-        );
-        assert!(
-            content.contains("second observation"),
-            "should have second note"
-        );
-
-        let index_dir = dir.path().join(".index");
-        let index = MemoryIndex::open_or_create(&index_dir).unwrap();
-        index.rebuild(&memory_dir).unwrap();
-
-        let results = index.search("observation", 5).unwrap();
-        assert!(
-            !results.is_empty(),
-            "should find daily log content in search"
-        );
-    }
-
     #[test]
     fn check_thresholds_returns_correct_actions() {
         let observer = Observer::new(
