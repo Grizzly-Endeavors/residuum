@@ -14,7 +14,8 @@ echo -e "${YELLOW}Running pre-push checks...${NC}"
 
 # Full test suite (including ignored tests if any)
 echo -e "\n${YELLOW}Running full test suite...${NC}"
-if ! cargo test --all-targets 2>/dev/null; then
+if ! OUTPUT=$(cargo test --all-targets --quiet 2>&1); then
+    echo "$OUTPUT"
     echo -e "${RED}ERROR: Tests failed. Push aborted.${NC}"
     exit 1
 fi
