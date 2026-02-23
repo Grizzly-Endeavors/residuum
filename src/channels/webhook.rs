@@ -1,5 +1,7 @@
 //! Webhook channel adapter — accepts HTTP POST requests and routes them to the agent.
 
+use std::sync::Arc;
+
 use axum::body::Bytes;
 use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode};
@@ -71,7 +73,7 @@ pub async fn webhook_handler(
         timestamp: chrono::Utc::now(),
     };
 
-    let reply = Box::new(WebhookReplyHandle);
+    let reply = Arc::new(WebhookReplyHandle);
 
     let routed = RoutedMessage {
         message: inbound,

@@ -41,7 +41,7 @@ use crate::workspace::bootstrap::ensure_workspace;
 use crate::workspace::identity::IdentityFiles;
 use crate::workspace::layout::WorkspaceLayout;
 
-use super::display::BroadcastDisplay;
+use super::display::{BroadcastDisplay, ChannelAwareDisplay};
 use super::protocol::{ClientMessage, ServerMessage};
 
 /// Outcome of the gateway main loop.
@@ -286,10 +286,18 @@ pub async fn run_gateway(cfg: Config) -> Result<GatewayExit, IronclawError> {
                     tracing::trace!("no broadcast receivers for turn_started");
                 }
 
+                let typing_guard = routed.reply.start_typing();
+
+                let turn_display = ChannelAwareDisplay::new(
+                    broadcast_display.sender(),
+                    Arc::clone(&routed.reply),
+                );
+
                 let before = agent.message_count();
 
-                match agent.process_message(&routed.message.content, &broadcast_display, Some(&origin)).await {
+                match agent.process_message(&routed.message.content, &turn_display, Some(&origin)).await {
                     Ok(texts) => {
+                        drop(typing_guard);
                         for text in &texts {
                             routed.reply.send_response(text).await;
                         }
@@ -306,6 +314,7 @@ pub async fn run_gateway(cfg: Config) -> Result<GatewayExit, IronclawError> {
                         }
                     }
                     Err(e) => {
+                        drop(typing_guard);
                         tracing::warn!(error = %e, "agent processing error");
                         if broadcast_tx.send(ServerMessage::Error {
                             reply_to: Some(reply_id),
@@ -497,7 +506,7 @@ async fn handle_connection(socket: WebSocket, state: GatewayState) {
                     origin,
                     timestamp: chrono::Utc::now(),
                 };
-                let reply = Box::new(WsReplyHandle::new(state.broadcast_tx.clone(), id));
+                let reply = Arc::new(WsReplyHandle::new(state.broadcast_tx.clone(), id));
                 let routed = RoutedMessage {
                     message: inbound,
                     reply,

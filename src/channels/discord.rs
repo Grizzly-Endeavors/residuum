@@ -29,10 +29,15 @@ use crate::channels::chunking::chunk_text;
 use crate::channels::presence::{load_presence, to_activity, to_online_status};
 use crate::config::DiscordConfig;
 
-use super::types::{InboundMessage, MessageOrigin, ReplyHandle, RoutedMessage};
+use super::types::{InboundMessage, MessageOrigin, ReplyHandle, RoutedMessage, TypingGuard};
 
 /// Maximum message length for Discord.
 const DISCORD_MAX_CHARS: usize = 2000;
+
+/// Interval between typing indicator re-sends (seconds).
+///
+/// Discord's typing indicator lasts ~10s, so 8s provides overlap.
+const TYPING_INTERVAL_SECS: u64 = 8;
 
 /// Interval for polling PRESENCE.toml changes (seconds).
 const PRESENCE_POLL_SECS: u64 = 30;
@@ -194,7 +199,7 @@ impl EventHandler for DiscordHandler {
             timestamp: chrono::Utc::now(),
         };
 
-        let reply = Box::new(DiscordReplyHandle {
+        let reply = Arc::new(DiscordReplyHandle {
             http: Arc::clone(&ctx.http),
             channel_id: msg.channel_id,
         });
@@ -349,6 +354,26 @@ impl ReplyHandle for DiscordReplyHandle {
                 tracing::warn!(error = %e, "failed to send discord system event");
             }
         }
+    }
+
+    fn start_typing(&self) -> TypingGuard {
+        let http = Arc::clone(&self.http);
+        let channel_id = self.channel_id;
+        let (stop_tx, mut stop_rx) = tokio::sync::watch::channel(false);
+
+        let handle = tokio::spawn(async move {
+            loop {
+                if let Err(e) = channel_id.broadcast_typing(&http).await {
+                    tracing::trace!(error = %e, "typing indicator send failed");
+                }
+                tokio::select! {
+                    _ = tokio::time::sleep(tokio::time::Duration::from_secs(TYPING_INTERVAL_SECS)) => {}
+                    _ = stop_rx.changed() => break,
+                }
+            }
+        });
+
+        TypingGuard::new(stop_tx, handle)
     }
 }
 
