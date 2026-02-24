@@ -4,6 +4,7 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
 use super::http::{SharedHttpClient, map_request_error, warn_if_insecure_remote};
+use super::retry::{RetryConfig, with_retry};
 use super::{
     CompletionOptions, Message, ModelError, ModelProvider, ModelResponse, ToolCall, ToolDefinition,
 };
@@ -14,6 +15,7 @@ pub(crate) struct OllamaClient {
     http: SharedHttpClient,
     base_url: String,
     model: String,
+    retry: RetryConfig,
 }
 
 impl OllamaClient {
@@ -25,6 +27,7 @@ impl OllamaClient {
         http: SharedHttpClient,
         base_url: impl Into<String>,
         model: impl Into<String>,
+        retry: RetryConfig,
     ) -> Self {
         let base_url = base_url.into();
         warn_if_insecure_remote(&base_url);
@@ -33,6 +36,7 @@ impl OllamaClient {
             http,
             base_url,
             model: model.into(),
+            retry,
         }
     }
 
@@ -50,9 +54,7 @@ impl ModelProvider for OllamaClient {
         _options: &CompletionOptions,
     ) -> Result<ModelResponse, ModelError> {
         let url = format!("{}/api/chat", self.base_url);
-
         let ollama_messages: Vec<OllamaMessage> = messages.iter().map(Into::into).collect();
-
         let ollama_tools: Vec<OllamaTool> = tools
             .iter()
             .map(|t| OllamaTool {
@@ -64,49 +66,63 @@ impl ModelProvider for OllamaClient {
                 },
             })
             .collect();
+        let has_tools = !ollama_tools.is_empty();
+        let model = self.model.clone();
+        let http = self.http.clone();
+        let timeout_secs = self.timeout_secs();
 
-        let request = OllamaChatRequest {
-            model: &self.model,
-            messages: ollama_messages,
-            tools: (!ollama_tools.is_empty()).then_some(ollama_tools),
-            stream: false,
-        };
+        with_retry(&self.retry, || {
+            let url = url.clone();
+            let ollama_messages = ollama_messages.clone();
+            let ollama_tools = ollama_tools.clone();
+            let model = model.clone();
+            let http = http.clone();
 
-        let response = self
-            .http
-            .client()
-            .post(&url)
-            .json(&request)
-            .send()
-            .await
-            .map_err(|e| map_request_error(e, self.timeout_secs()))?;
+            async move {
+                let request = OllamaChatRequest {
+                    model: &model,
+                    messages: ollama_messages,
+                    tools: has_tools.then_some(ollama_tools),
+                    stream: false,
+                };
 
-        if !response.status().is_success() {
-            let status = response.status();
-            let error_body = response
-                .json::<OllamaErrorResponse>()
-                .await
-                .map_or_else(|_| format!("{status}: unknown error"), |e| e.error);
-            return Err(ModelError::Api(error_body));
-        }
+                let response = http
+                    .client()
+                    .post(&url)
+                    .json(&request)
+                    .send()
+                    .await
+                    .map_err(|e| map_request_error(e, timeout_secs))?;
 
-        let chat_response: OllamaChatResponse = response.json().await?;
+                if !response.status().is_success() {
+                    let status = response.status();
+                    let error_body = response
+                        .json::<OllamaErrorResponse>()
+                        .await
+                        .map_or_else(|_| format!("{status}: unknown error"), |e| e.error);
+                    return Err(ModelError::Api(error_body));
+                }
 
-        let content = chat_response.message.content.unwrap_or_default();
-        let tool_calls = chat_response
-            .message
-            .tool_calls
-            .unwrap_or_default()
-            .into_iter()
-            .enumerate()
-            .map(|(i, tc)| ToolCall {
-                id: format!("call_{i}"),
-                name: tc.function.name,
-                arguments: tc.function.arguments,
-            })
-            .collect();
+                let chat_response: OllamaChatResponse = response.json().await?;
 
-        Ok(ModelResponse::new(content, tool_calls))
+                let content = chat_response.message.content.unwrap_or_default();
+                let tool_calls = chat_response
+                    .message
+                    .tool_calls
+                    .unwrap_or_default()
+                    .into_iter()
+                    .enumerate()
+                    .map(|(i, tc)| ToolCall {
+                        id: format!("call_{i}"),
+                        name: tc.function.name,
+                        arguments: tc.function.arguments,
+                    })
+                    .collect();
+
+                Ok(ModelResponse::new(content, tool_calls))
+            }
+        })
+        .await
     }
 
     fn model_name(&self) -> &str {
@@ -125,7 +141,7 @@ struct OllamaChatRequest<'a> {
     stream: bool,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 struct OllamaMessage {
     role: String,
     content: Option<String>,
@@ -153,25 +169,25 @@ impl From<&Message> for OllamaMessage {
     }
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 struct OllamaTool {
     r#type: String,
     function: OllamaFunction,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 struct OllamaFunction {
     name: String,
     description: String,
     parameters: serde_json::Value,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 struct OllamaToolCall {
     function: OllamaFunctionCall,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 struct OllamaFunctionCall {
     name: String,
     arguments: serde_json::Value,
@@ -199,17 +215,18 @@ mod tests {
     use super::*;
     use crate::models::CompletionOptions;
     use crate::models::http::{HttpClientConfig, SharedHttpClient};
+    use crate::models::retry::RetryConfig;
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     fn make_client(url: impl Into<String>, model: &str) -> OllamaClient {
         let http = SharedHttpClient::new(&HttpClientConfig::default()).unwrap();
-        OllamaClient::with_http_client(http, url, model)
+        OllamaClient::with_http_client(http, url, model, RetryConfig::no_retry())
     }
 
     fn make_client_with_timeout(url: impl Into<String>, model: &str, timeout: u64) -> OllamaClient {
         let http = SharedHttpClient::new(&HttpClientConfig::with_timeout(timeout)).unwrap();
-        OllamaClient::with_http_client(http, url, model)
+        OllamaClient::with_http_client(http, url, model, RetryConfig::no_retry())
     }
 
     #[test]

@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
 use crate::error::IronclawError;
+use crate::models::retry::RetryConfig;
 
 use super::Config;
 use super::bootstrap::default_workspace_dir;
@@ -128,6 +129,24 @@ pub(super) fn from_file_and_env(file: Option<&ConfigFile>) -> Result<Config, Iro
     let skills = resolve_skills_config(file.and_then(|f| f.skills.as_ref()), &workspace_dir);
     let mcp = resolve_mcp_config(file.and_then(|f| f.mcp.as_ref()));
 
+    let retry = {
+        let r = file.and_then(|f| f.retry.as_ref());
+        let mut cfg = RetryConfig::default();
+        if let Some(v) = r.and_then(|r| r.max_retries) {
+            cfg.max_retries = v;
+        }
+        if let Some(v) = r.and_then(|r| r.initial_delay_ms) {
+            cfg.initial_delay = std::time::Duration::from_millis(v);
+        }
+        if let Some(v) = r.and_then(|r| r.max_delay_ms) {
+            cfg.max_delay = std::time::Duration::from_millis(v);
+        }
+        if let Some(v) = r.and_then(|r| r.backoff_multiplier) {
+            cfg.backoff_multiplier = v;
+        }
+        cfg
+    };
+
     let timezone_str = std::env::var("IRONCLAW_TIMEZONE")
         .ok()
         .or_else(|| file.and_then(|f| f.timezone.clone()));
@@ -162,6 +181,7 @@ pub(super) fn from_file_and_env(file: Option<&ConfigFile>) -> Result<Config, Iro
         webhook,
         skills,
         mcp,
+        retry,
     })
 }
 

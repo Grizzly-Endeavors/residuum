@@ -39,6 +39,8 @@ pub(super) struct ConfigFile {
     pub(super) skills: Option<SkillsConfigFile>,
     /// MCP server configuration.
     pub(super) mcp: Option<McpConfigFile>,
+    /// Retry configuration.
+    pub(super) retry: Option<RetryConfigFile>,
 }
 
 /// A named provider entry under `[providers.<name>]`.
@@ -144,6 +146,20 @@ pub(super) struct SkillsConfigFile {
 pub(super) struct McpConfigFile {
     /// Named MCP server definitions.
     pub(super) servers: Option<HashMap<String, McpServerConfigEntry>>,
+}
+
+/// Raw TOML `[retry]` section.
+#[derive(Debug, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+pub(super) struct RetryConfigFile {
+    /// Maximum number of retry attempts (0 = no retries).
+    pub(super) max_retries: Option<u32>,
+    /// Initial delay before first retry in milliseconds.
+    pub(super) initial_delay_ms: Option<u64>,
+    /// Maximum delay between retries in milliseconds.
+    pub(super) max_delay_ms: Option<u64>,
+    /// Multiplier for exponential backoff.
+    pub(super) backoff_multiplier: Option<f64>,
 }
 
 /// A single MCP server entry under `[mcp.servers.<name>]`.

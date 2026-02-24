@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 use tracing::debug;
 
 use super::http::{SharedHttpClient, map_request_error, warn_if_insecure_remote};
+use super::retry::{RetryConfig, with_retry};
 use super::{
     CompletionOptions, Message, ModelError, ModelProvider, ModelResponse, Role, ToolCall,
     ToolDefinition, Usage,
@@ -22,6 +23,7 @@ pub(crate) struct GeminiClient {
     api_key: String,
     model: String,
     max_tokens: u32,
+    retry: RetryConfig,
 }
 
 impl GeminiClient {
@@ -40,6 +42,7 @@ impl GeminiClient {
         api_key: impl Into<String>,
         model: impl Into<String>,
         max_tokens: u32,
+        retry: RetryConfig,
     ) -> Self {
         let base_url = base_url.into();
         warn_if_insecure_remote(&base_url);
@@ -49,6 +52,7 @@ impl GeminiClient {
             api_key: api_key.into(),
             model: model.into(),
             max_tokens,
+            retry,
         }
     }
 
@@ -150,9 +154,7 @@ impl ModelProvider for GeminiClient {
         options: &CompletionOptions,
     ) -> Result<ModelResponse, ModelError> {
         let url = self.endpoint();
-
         let (system_instruction, contents) = Self::convert_messages(messages);
-
         let gemini_tools = (!tools.is_empty()).then(|| {
             vec![GeminiTools {
                 function_declarations: tools
@@ -165,83 +167,98 @@ impl ModelProvider for GeminiClient {
                     .collect(),
             }]
         });
-
         let max_output_tokens = options.max_tokens.unwrap_or(self.max_tokens);
+        let model = self.model.clone();
+        let http = self.http.clone();
+        let timeout_secs = self.http.timeout_secs();
 
-        let request = GeminiRequest {
-            contents,
-            system_instruction,
-            tools: gemini_tools,
-            generation_config: GeminiGenerationConfig { max_output_tokens },
-        };
+        with_retry(&self.retry, || {
+            let url = url.clone();
+            let system_instruction = system_instruction.clone();
+            let contents = contents.clone();
+            let gemini_tools = gemini_tools.clone();
+            let model = model.clone();
+            let http = http.clone();
 
-        debug!(model = %self.model, "sending Gemini generateContent request");
+            async move {
+                let request = GeminiRequest {
+                    contents,
+                    system_instruction,
+                    tools: gemini_tools,
+                    generation_config: GeminiGenerationConfig { max_output_tokens },
+                };
 
-        let response = self
-            .http
-            .client()
-            .post(&url)
-            .json(&request)
-            .send()
-            .await
-            .map_err(|e| map_request_error(e, self.http.timeout_secs()))?;
+                debug!(model = %model, "sending Gemini generateContent request");
 
-        if !response.status().is_success() {
-            let status = response.status();
-            let raw_body = match response.text().await {
-                Ok(body) => body,
-                Err(e) => {
-                    tracing::warn!(error = %e, "failed to read error response body");
-                    format!("failed to read response body: {e}")
+                let response = http
+                    .client()
+                    .post(&url)
+                    .json(&request)
+                    .send()
+                    .await
+                    .map_err(|e| map_request_error(e, timeout_secs))?;
+
+                if !response.status().is_success() {
+                    let status = response.status();
+                    let raw_body = match response.text().await {
+                        Ok(body) => body,
+                        Err(e) => {
+                            tracing::warn!(error = %e, "failed to read error response body");
+                            format!("failed to read response body: {e}")
+                        }
+                    };
+                    let error_body = serde_json::from_str::<GeminiErrorResponse>(&raw_body)
+                        .map_or_else(|_| raw_body, |e| e.error.message);
+                    return Err(ModelError::Api(format!("{status}: {error_body}")));
                 }
-            };
-            let error_body = serde_json::from_str::<GeminiErrorResponse>(&raw_body)
-                .map_or_else(|_| raw_body, |e| e.error.message);
-            return Err(ModelError::Api(format!("{status}: {error_body}")));
-        }
 
-        let gemini_response: GeminiResponse = response.json().await?;
+                let gemini_response: GeminiResponse = response.json().await?;
 
-        let candidate = gemini_response
-            .candidates
-            .into_iter()
-            .next()
-            .ok_or_else(|| {
-                ModelError::Parse("Gemini API response contained no candidates".to_string())
-            })?;
+                let candidate = gemini_response
+                    .candidates
+                    .into_iter()
+                    .next()
+                    .ok_or_else(|| {
+                        ModelError::Parse("Gemini API response contained no candidates".to_string())
+                    })?;
 
-        let mut content_text = String::new();
-        let mut tool_calls: Vec<ToolCall> = Vec::new();
+                let mut content_text = String::new();
+                let mut tool_calls: Vec<ToolCall> = Vec::new();
 
-        for (idx, part) in candidate.content.parts.into_iter().enumerate() {
-            match part {
-                GeminiPart::Text { text } => {
-                    content_text.push_str(&text);
+                for (idx, part) in candidate.content.parts.into_iter().enumerate() {
+                    match part {
+                        GeminiPart::Text { text } => {
+                            content_text.push_str(&text);
+                        }
+                        GeminiPart::FunctionCall { function_call } => {
+                            // Gemini does not return IDs for function calls; synthesize them.
+                            tool_calls.push(ToolCall {
+                                id: format!("call_{idx}"),
+                                name: function_call.name,
+                                arguments: function_call.args,
+                            });
+                        }
+                        GeminiPart::FunctionResponse { .. } => {
+                            // Gemini should not return functionResponse parts in model output.
+                            tracing::warn!(
+                                "unexpected functionResponse part in Gemini model output"
+                            );
+                        }
+                    }
                 }
-                GeminiPart::FunctionCall { function_call } => {
-                    // Gemini does not return IDs for function calls; synthesize them.
-                    tool_calls.push(ToolCall {
-                        id: format!("call_{idx}"),
-                        name: function_call.name,
-                        arguments: function_call.args,
-                    });
-                }
-                GeminiPart::FunctionResponse { .. } => {
-                    // Gemini should not return functionResponse parts in model output.
-                    tracing::warn!("unexpected functionResponse part in Gemini model output");
-                }
+
+                let usage = gemini_response.usage_metadata.map(|u| Usage {
+                    input_tokens: u.prompt_token_count,
+                    output_tokens: u.candidates_token_count,
+                });
+
+                let mut model_response = ModelResponse::new(content_text, tool_calls);
+                model_response.usage = usage;
+
+                Ok(model_response)
             }
-        }
-
-        let usage = gemini_response.usage_metadata.map(|u| Usage {
-            input_tokens: u.prompt_token_count,
-            output_tokens: u.candidates_token_count,
-        });
-
-        let mut model_response = ModelResponse::new(content_text, tool_calls);
-        model_response.usage = usage;
-
-        Ok(model_response)
+        })
+        .await
     }
 
     fn model_name(&self) -> &str {
@@ -263,18 +280,18 @@ struct GeminiRequest {
     generation_config: GeminiGenerationConfig,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Clone)]
 struct GeminiSystemInstruction {
     parts: Vec<GeminiPart>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Clone)]
 struct GeminiContent {
     role: String,
     parts: Vec<GeminiPart>,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 #[serde(untagged)]
 enum GeminiPart {
     Text {
@@ -290,25 +307,25 @@ enum GeminiPart {
     },
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 struct GeminiFunctionCall {
     name: String,
     args: serde_json::Value,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 struct GeminiFunctionResponse {
     name: String,
     response: serde_json::Value,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Clone)]
 struct GeminiTools {
     #[serde(rename = "functionDeclarations")]
     function_declarations: Vec<GeminiFunctionDeclaration>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Clone)]
 struct GeminiFunctionDeclaration {
     name: String,
     description: String,
@@ -369,13 +386,21 @@ struct GeminiError {
 mod tests {
     use super::*;
     use crate::models::CompletionOptions;
+    use crate::models::retry::RetryConfig;
     use wiremock::matchers::{method, path_regex, query_param};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     fn make_client(base_url: &str) -> GeminiClient {
         let http =
             SharedHttpClient::new(&super::super::http::HttpClientConfig::with_timeout(60)).unwrap();
-        GeminiClient::new(http, base_url, "test-api-key", "gemini-2.0-flash", 8192)
+        GeminiClient::new(
+            http,
+            base_url,
+            "test-api-key",
+            "gemini-2.0-flash",
+            8192,
+            RetryConfig::no_retry(),
+        )
     }
 
     #[test]
@@ -388,6 +413,7 @@ mod tests {
             "my-key",
             "gemini-2.0-flash",
             8192,
+            RetryConfig::no_retry(),
         );
         let ep = client.endpoint();
         assert!(
@@ -649,6 +675,7 @@ mod tests {
             "test-api-key",
             "gemini-2.0-flash",
             8192,
+            RetryConfig::no_retry(),
         );
         let result = client
             .complete(&[], &[], &CompletionOptions::default())

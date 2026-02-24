@@ -2,11 +2,6 @@
 //!
 //! Implemented and tested but not yet wired up to model providers. See notes.md.
 
-#![allow(
-    dead_code,
-    reason = "retry infrastructure is complete but not yet wired to providers"
-)]
-
 use std::time::Duration;
 
 use tokio::time::sleep;

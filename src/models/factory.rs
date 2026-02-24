@@ -7,6 +7,7 @@ use super::anthropic::AnthropicClient;
 use super::gemini::GeminiClient;
 use super::ollama::OllamaClient;
 use super::openai::OpenAiClient;
+use super::retry::RetryConfig;
 use super::{ModelProvider, SharedHttpClient};
 
 /// Build a model provider from a resolved `ProviderSpec`.
@@ -18,6 +19,7 @@ pub(crate) fn build_provider_from_provider_spec(
     spec: &ProviderSpec,
     max_tokens: u32,
     http: SharedHttpClient,
+    retry: RetryConfig,
 ) -> Result<Box<dyn ModelProvider>, IronclawError> {
     build_provider_from_spec(
         &spec.model,
@@ -25,6 +27,7 @@ pub(crate) fn build_provider_from_provider_spec(
         spec.api_key.as_deref(),
         max_tokens,
         http,
+        retry,
     )
 }
 
@@ -39,6 +42,7 @@ fn build_provider_from_spec(
     api_key: Option<&str>,
     max_tokens: u32,
     http: SharedHttpClient,
+    retry: RetryConfig,
 ) -> Result<Box<dyn ModelProvider>, IronclawError> {
     match spec.kind {
         ProviderKind::Anthropic => {
@@ -55,6 +59,7 @@ fn build_provider_from_spec(
                 key,
                 &spec.model,
                 max_tokens,
+                retry,
             )))
         }
         ProviderKind::Gemini => {
@@ -71,12 +76,14 @@ fn build_provider_from_spec(
                 key,
                 &spec.model,
                 max_tokens,
+                retry,
             )))
         }
         ProviderKind::Ollama => Ok(Box::new(OllamaClient::with_http_client(
             http,
             url,
             &spec.model,
+            retry,
         ))),
         ProviderKind::OpenAi => {
             if let Some(key) = api_key {
@@ -85,12 +92,14 @@ fn build_provider_from_spec(
                     url,
                     &spec.model,
                     key,
+                    retry,
                 )))
             } else {
                 Ok(Box::new(OpenAiClient::with_http_client(
                     http,
                     url,
                     &spec.model,
+                    retry,
                 )))
             }
         }

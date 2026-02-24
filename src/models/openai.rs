@@ -7,6 +7,7 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
 use super::http::{SharedHttpClient, map_request_error, warn_if_insecure_remote};
+use super::retry::{RetryConfig, with_retry};
 use super::{
     CompletionOptions, Message, ModelError, ModelProvider, ModelResponse, ToolCall, ToolDefinition,
 };
@@ -18,6 +19,7 @@ pub(crate) struct OpenAiClient {
     base_url: String,
     api_key: Option<String>,
     model: String,
+    retry: RetryConfig,
 }
 
 impl OpenAiClient {
@@ -29,6 +31,7 @@ impl OpenAiClient {
         http: SharedHttpClient,
         base_url: impl Into<String>,
         model: impl Into<String>,
+        retry: RetryConfig,
     ) -> Self {
         let base_url = base_url.into();
         warn_if_insecure_remote(&base_url);
@@ -38,6 +41,7 @@ impl OpenAiClient {
             base_url,
             api_key: None,
             model: model.into(),
+            retry,
         }
     }
 
@@ -50,6 +54,7 @@ impl OpenAiClient {
         base_url: impl Into<String>,
         model: impl Into<String>,
         api_key: impl Into<String>,
+        retry: RetryConfig,
     ) -> Self {
         let base_url = base_url.into();
         warn_if_insecure_remote(&base_url);
@@ -59,6 +64,7 @@ impl OpenAiClient {
             base_url,
             api_key: Some(api_key.into()),
             model: model.into(),
+            retry,
         }
     }
 
@@ -77,9 +83,7 @@ impl ModelProvider for OpenAiClient {
         _options: &CompletionOptions,
     ) -> Result<ModelResponse, ModelError> {
         let url = format!("{}/chat/completions", self.base_url);
-
         let openai_messages: Vec<OpenAiMessage> = messages.iter().map(Into::into).collect();
-
         let openai_tools: Vec<OpenAiTool> = tools
             .iter()
             .map(|t| OpenAiTool {
@@ -91,71 +95,90 @@ impl ModelProvider for OpenAiClient {
                 },
             })
             .collect();
+        let has_tools = !tools.is_empty();
+        let model = self.model.clone();
+        let api_key = self.api_key.clone();
+        let http = self.http.clone();
+        let timeout_secs = self.timeout_secs();
 
-        let request = ChatCompletionRequest {
-            model: &self.model,
-            messages: openai_messages,
-            tools: (!openai_tools.is_empty()).then_some(openai_tools),
-            tool_choice: (!tools.is_empty()).then_some("auto"),
-        };
+        with_retry(&self.retry, || {
+            let url = url.clone();
+            let openai_messages = openai_messages.clone();
+            let openai_tools = openai_tools.clone();
+            let model = model.clone();
+            let api_key = api_key.clone();
+            let http = http.clone();
 
-        let mut req_builder = self.http.client().post(&url).json(&request);
+            async move {
+                let request = ChatCompletionRequest {
+                    model: &model,
+                    messages: openai_messages,
+                    tools: has_tools.then_some(openai_tools),
+                    tool_choice: has_tools.then_some("auto"),
+                };
 
-        if let Some(ref key) = self.api_key {
-            req_builder = req_builder.header("Authorization", format!("Bearer {key}"));
-        }
+                let mut req_builder = http.client().post(&url).json(&request);
 
-        let response = req_builder
-            .send()
-            .await
-            .map_err(|e| map_request_error(e, self.timeout_secs()))?;
-
-        if !response.status().is_success() {
-            let status = response.status();
-            let raw_body = match response.text().await {
-                Ok(body) => body,
-                Err(e) => {
-                    tracing::warn!(error = %e, "failed to read error response body");
-                    format!("failed to read response body: {e}")
+                if let Some(ref key) = api_key {
+                    req_builder = req_builder.header("Authorization", format!("Bearer {key}"));
                 }
-            };
-            let error_body = serde_json::from_str::<OpenAiErrorResponse>(&raw_body)
-                .map_or_else(|_| raw_body, |e| e.error.message);
-            return Err(ModelError::Api(format!("{status}: {error_body}")));
-        }
 
-        let chat_response: ChatCompletionResponse = response.json().await?;
+                let response = req_builder
+                    .send()
+                    .await
+                    .map_err(|e| map_request_error(e, timeout_secs))?;
 
-        let choice = chat_response.choices.into_iter().next().ok_or_else(|| {
-            ModelError::Parse("OpenAI API response contained no choices in response".to_string())
-        })?;
+                if !response.status().is_success() {
+                    let status = response.status();
+                    let raw_body = match response.text().await {
+                        Ok(body) => body,
+                        Err(e) => {
+                            tracing::warn!(error = %e, "failed to read error response body");
+                            format!("failed to read response body: {e}")
+                        }
+                    };
+                    let error_body = serde_json::from_str::<OpenAiErrorResponse>(&raw_body)
+                        .map_or_else(|_| raw_body, |e| e.error.message);
+                    return Err(ModelError::Api(format!("{status}: {error_body}")));
+                }
 
-        // OpenAI uses null for content when tool_calls are present
-        let content = choice.message.content.unwrap_or_default();
+                let chat_response: ChatCompletionResponse = response.json().await?;
 
-        let tool_calls = choice
-            .message
-            .tool_calls
-            .unwrap_or_default()
-            .into_iter()
-            .map(|tc| {
-                // OpenAI returns arguments as a JSON string, need to parse it
-                let arguments: serde_json::Value = serde_json::from_str(&tc.function.arguments)
-                    .map_err(|e| {
-                        ModelError::Parse(format!(
-                            "failed to parse tool arguments for '{}': {e} (raw: {})",
-                            tc.function.name, tc.function.arguments
-                        ))
-                    })?;
-                Ok(ToolCall {
-                    id: tc.id,
-                    name: tc.function.name,
-                    arguments,
-                })
-            })
-            .collect::<Result<Vec<_>, ModelError>>()?;
+                let choice = chat_response.choices.into_iter().next().ok_or_else(|| {
+                    ModelError::Parse(
+                        "OpenAI API response contained no choices in response".to_string(),
+                    )
+                })?;
 
-        Ok(ModelResponse::new(content, tool_calls))
+                // OpenAI uses null for content when tool_calls are present
+                let content = choice.message.content.unwrap_or_default();
+
+                let tool_calls = choice
+                    .message
+                    .tool_calls
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|tc| {
+                        // OpenAI returns arguments as a JSON string, need to parse it
+                        let arguments: serde_json::Value =
+                            serde_json::from_str(&tc.function.arguments).map_err(|e| {
+                                ModelError::Parse(format!(
+                                    "failed to parse tool arguments for '{}': {e} (raw: {})",
+                                    tc.function.name, tc.function.arguments
+                                ))
+                            })?;
+                        Ok(ToolCall {
+                            id: tc.id,
+                            name: tc.function.name,
+                            arguments,
+                        })
+                    })
+                    .collect::<Result<Vec<_>, ModelError>>()?;
+
+                Ok(ModelResponse::new(content, tool_calls))
+            }
+        })
+        .await
     }
 
     fn model_name(&self) -> &str {
@@ -175,7 +198,7 @@ struct ChatCompletionRequest<'a> {
     tool_choice: Option<&'a str>,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 struct OpenAiMessage {
     role: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -210,27 +233,27 @@ impl From<&Message> for OpenAiMessage {
     }
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 struct OpenAiTool {
     r#type: String,
     function: OpenAiFunction,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 struct OpenAiFunction {
     name: String,
     description: String,
     parameters: serde_json::Value,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 struct OpenAiToolCall {
     id: String,
     r#type: String,
     function: OpenAiFunctionCall,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 struct OpenAiFunctionCall {
     name: String,
     arguments: String, // OpenAI returns arguments as JSON string
@@ -268,22 +291,29 @@ mod tests {
     use super::*;
     use crate::models::CompletionOptions;
     use crate::models::http::{HttpClientConfig, SharedHttpClient};
+    use crate::models::retry::RetryConfig;
     use wiremock::matchers::{header, method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     fn make_client(url: impl Into<String>, model: &str) -> OpenAiClient {
         let http = SharedHttpClient::new(&HttpClientConfig::default()).unwrap();
-        OpenAiClient::with_http_client(http, url, model)
+        OpenAiClient::with_http_client(http, url, model, RetryConfig::no_retry())
     }
 
     fn make_client_with_key(url: impl Into<String>, model: &str, api_key: &str) -> OpenAiClient {
         let http = SharedHttpClient::new(&HttpClientConfig::default()).unwrap();
-        OpenAiClient::with_http_client_and_api_key(http, url, model, api_key)
+        OpenAiClient::with_http_client_and_api_key(
+            http,
+            url,
+            model,
+            api_key,
+            RetryConfig::no_retry(),
+        )
     }
 
     fn make_client_with_timeout(url: impl Into<String>, model: &str, timeout: u64) -> OpenAiClient {
         let http = SharedHttpClient::new(&HttpClientConfig::with_timeout(timeout)).unwrap();
-        OpenAiClient::with_http_client(http, url, model)
+        OpenAiClient::with_http_client(http, url, model, RetryConfig::no_retry())
     }
 
     #[test]

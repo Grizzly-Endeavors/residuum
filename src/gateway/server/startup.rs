@@ -75,13 +75,23 @@ pub(super) async fn initialize(cfg: &Config) -> Result<GatewayComponents, Ironcl
         .map_err(|e| IronclawError::Config(format!("failed to build HTTP client: {e}")))?;
 
     // Model providers
-    let provider = build_provider_from_provider_spec(&cfg.main, cfg.max_tokens, http.clone())?;
+    let provider = build_provider_from_provider_spec(
+        &cfg.main,
+        cfg.max_tokens,
+        http.clone(),
+        cfg.retry.clone(),
+    )?;
     tracing::info!(model = provider.model_name(), "model provider ready");
 
     let (observer, reflector) = build_memory_components(cfg, tz, http.clone())?;
-    let pulse_provider =
-        build_provider_from_provider_spec(&cfg.pulse, cfg.max_tokens, http.clone())?;
-    let cron_provider = build_provider_from_provider_spec(&cfg.cron, cfg.max_tokens, http)?;
+    let pulse_provider = build_provider_from_provider_spec(
+        &cfg.pulse,
+        cfg.max_tokens,
+        http.clone(),
+        cfg.retry.clone(),
+    )?;
+    let cron_provider =
+        build_provider_from_provider_spec(&cfg.cron, cfg.max_tokens, http, cfg.retry.clone())?;
 
     // Search index
     let search_index = create_shared_index(&layout.search_index_dir())?;

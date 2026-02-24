@@ -29,10 +29,14 @@ pub(super) fn build_memory_components(
     tz: chrono_tz::Tz,
     http: SharedHttpClient,
 ) -> Result<(Observer, Reflector), IronclawError> {
-    let observer_provider =
-        build_provider_from_provider_spec(&cfg.observer, cfg.max_tokens, http.clone())?;
+    let observer_provider = build_provider_from_provider_spec(
+        &cfg.observer,
+        cfg.max_tokens,
+        http.clone(),
+        cfg.retry.clone(),
+    )?;
     let reflector_provider =
-        build_provider_from_provider_spec(&cfg.reflector, cfg.max_tokens, http)?;
+        build_provider_from_provider_spec(&cfg.reflector, cfg.max_tokens, http, cfg.retry.clone())?;
 
     let observer = Observer::new(
         observer_provider,

@@ -16,6 +16,7 @@ use std::fmt;
 use std::path::PathBuf;
 
 use crate::error::IronclawError;
+use crate::models::retry::RetryConfig;
 
 // ── Public re-exports ─────────────────────────────────────────────────────────
 
@@ -70,6 +71,8 @@ pub struct Config {
     pub skills: SkillsConfig,
     /// MCP server configuration (global servers).
     pub mcp: McpConfig,
+    /// Retry configuration for model provider calls.
+    pub retry: RetryConfig,
 }
 
 impl fmt::Debug for Config {
@@ -92,6 +95,7 @@ impl fmt::Debug for Config {
             .field("webhook", &self.webhook)
             .field("skills", &self.skills)
             .field("mcp", &self.mcp)
+            .field("retry", &self.retry)
             .finish()
     }
 }

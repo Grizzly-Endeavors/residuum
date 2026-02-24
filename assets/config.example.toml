@@ -42,6 +42,13 @@ main = "anthropic/claude-sonnet-4-6"
 timeout_secs = 120
 max_tokens = 8192
 
+# ── Retry (optional, defaults shown) ─────────────────────────────────────────
+# [retry]
+# max_retries = 3
+# initial_delay_ms = 500
+# max_delay_ms = 30000
+# backoff_multiplier = 2.0
+
 # ── Memory subsystem ──────────────────────────────────────────────────────────
 [memory]
 observer_threshold_tokens = 30000       # soft threshold: starts cooldown timer

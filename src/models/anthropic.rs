@@ -6,6 +6,7 @@ use serde_json::Value;
 use tracing::{debug, info};
 
 use super::http::{SharedHttpClient, map_request_error, warn_if_insecure_remote};
+use super::retry::{RetryConfig, with_retry};
 use super::{
     CompletionOptions, Message, ModelError, ModelProvider, ModelResponse, Role, ToolCall,
     ToolDefinition, Usage,
@@ -29,6 +30,7 @@ pub(crate) struct AnthropicClient {
     api_key: String,
     model: String,
     max_tokens: u32,
+    retry: RetryConfig,
 }
 
 impl AnthropicClient {
@@ -47,6 +49,7 @@ impl AnthropicClient {
         api_key: impl Into<String>,
         model: impl Into<String>,
         max_tokens: u32,
+        retry: RetryConfig,
     ) -> Self {
         let base_url = base_url.into();
         warn_if_insecure_remote(&base_url);
@@ -56,6 +59,7 @@ impl AnthropicClient {
             api_key: api_key.into(),
             model: model.into(),
             max_tokens,
+            retry,
         }
     }
 
@@ -200,79 +204,100 @@ impl ModelProvider for AnthropicClient {
     ) -> Result<ModelResponse, ModelError> {
         let (system, api_messages) = Self::convert_messages(messages);
         let max_tokens = options.max_tokens.unwrap_or(self.max_tokens);
-
         let api_tools = (!tools.is_empty()).then(|| Self::convert_tools(tools));
+        let model = self.model.clone();
+        let endpoint = self.endpoint();
+        let api_key = self.api_key.clone();
+        let http = self.http.clone();
+        let message_count = messages.len();
+        let tool_count = tools.len();
 
-        let request = AnthropicRequest {
-            model: &self.model,
-            max_tokens,
-            system: system.as_deref(),
-            messages: api_messages,
-            tools: api_tools,
-        };
+        with_retry(&self.retry, || {
+            let system = system.clone();
+            let api_messages = api_messages.clone();
+            let api_tools = api_tools.clone();
+            let model = model.clone();
+            let endpoint = endpoint.clone();
+            let api_key = api_key.clone();
+            let http = http.clone();
 
-        debug!(
-            model = %self.model,
-            max_tokens = max_tokens,
-            message_count = messages.len(),
-            tool_count = tools.len(),
-            "sending anthropic completion request"
-        );
+            async move {
+                let request = AnthropicRequest {
+                    model: &model,
+                    max_tokens,
+                    system: system.as_deref(),
+                    messages: api_messages,
+                    tools: api_tools,
+                };
 
-        let timeout_secs = self.http.timeout_secs();
-        let mut req_builder = self
-            .http
-            .client()
-            .post(self.endpoint())
-            .header("anthropic-version", ANTHROPIC_VERSION)
-            .header("content-type", "application/json");
+                debug!(
+                    model = %model,
+                    max_tokens = max_tokens,
+                    message_count = message_count,
+                    tool_count = tool_count,
+                    "sending anthropic completion request"
+                );
 
-        // OAuth tokens (sk-ant-oat01-*) use Bearer auth + beta header;
-        // standard API keys use x-api-key
-        if self.api_key.starts_with("sk-ant-oat01-") {
-            req_builder = req_builder
-                .header("Authorization", format!("Bearer {}", self.api_key))
-                .header("anthropic-beta", "oauth-2025-04-20");
-        } else {
-            req_builder = req_builder.header("x-api-key", &self.api_key);
-        }
+                let timeout_secs = http.timeout_secs();
+                let mut req_builder = http
+                    .client()
+                    .post(&endpoint)
+                    .header("anthropic-version", ANTHROPIC_VERSION)
+                    .header("content-type", "application/json");
 
-        let response = req_builder
-            .json(&request)
-            .send()
-            .await
-            .map_err(|e| map_request_error(e, timeout_secs))?;
+                // OAuth tokens (sk-ant-oat01-*) use Bearer auth + beta header;
+                // standard API keys use x-api-key
+                if api_key.starts_with("sk-ant-oat01-") {
+                    req_builder = req_builder
+                        .header("Authorization", format!("Bearer {api_key}"))
+                        .header("anthropic-beta", "oauth-2025-04-20");
+                } else {
+                    req_builder = req_builder.header("x-api-key", &api_key);
+                }
 
-        let status = response.status();
-        if !status.is_success() {
-            let body = response.text().await.unwrap_or_default();
+                let response = req_builder
+                    .json(&request)
+                    .send()
+                    .await
+                    .map_err(|e| map_request_error(e, timeout_secs))?;
 
-            let error_msg = serde_json::from_str::<AnthropicErrorResponse>(&body).map_or_else(
-                |_| format!("anthropic api error {status}: {body}"),
-                |parsed| format!("anthropic api error {status}: {}", parsed.error.message),
-            );
+                let status = response.status();
+                if !status.is_success() {
+                    let body = response.text().await.unwrap_or_default();
 
-            return Err(ModelError::Api(error_msg));
-        }
+                    let error_msg = serde_json::from_str::<AnthropicErrorResponse>(&body)
+                        .map_or_else(
+                            |_| format!("anthropic api error {status}: {body}"),
+                            |parsed| {
+                                format!("anthropic api error {status}: {}", parsed.error.message)
+                            },
+                        );
 
-        let body = response
-            .text()
-            .await
-            .map_err(|e| map_request_error(e, timeout_secs))?;
+                    return Err(ModelError::Api(error_msg));
+                }
 
-        let api_response: AnthropicResponse = serde_json::from_str(&body)
-            .map_err(|e| ModelError::Parse(format!("failed to parse anthropic response: {e}")))?;
+                let body = response
+                    .text()
+                    .await
+                    .map_err(|e| map_request_error(e, timeout_secs))?;
 
-        let result = Self::parse_response(api_response);
+                let api_response: AnthropicResponse = serde_json::from_str(&body).map_err(|e| {
+                    ModelError::Parse(format!("failed to parse anthropic response: {e}"))
+                })?;
 
-        info!(
-            model = %self.model,
-            content_len = result.content.len(),
-            tool_calls = result.tool_calls.len(),
-            "anthropic completion received"
-        );
+                let result = Self::parse_response(api_response);
 
-        Ok(result)
+                info!(
+                    model = %model,
+                    content_len = result.content.len(),
+                    tool_calls = result.tool_calls.len(),
+                    "anthropic completion received"
+                );
+
+                Ok(result)
+            }
+        })
+        .await
     }
 
     fn model_name(&self) -> &str {
@@ -295,21 +320,21 @@ struct AnthropicRequest<'a> {
     tools: Option<Vec<AnthropicTool>>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 struct AnthropicMessage {
     role: String,
     content: AnthropicContent,
 }
 
 /// Content can be a simple string or an array of content blocks.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(untagged)]
 enum AnthropicContent {
     Text(String),
     Blocks(Vec<AnthropicContentBlock>),
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum AnthropicContentBlock {
     Text {
@@ -326,7 +351,7 @@ enum AnthropicContentBlock {
     },
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Clone)]
 struct AnthropicTool {
     name: String,
     description: String,
@@ -375,6 +400,7 @@ mod tests {
 
     use super::*;
     use crate::models::http::HttpClientConfig;
+    use crate::models::retry::RetryConfig;
 
     /// Create a test client pointing at the given mock server URL.
     fn test_client(base_url: &str) -> AnthropicClient {
@@ -385,6 +411,7 @@ mod tests {
             "test-api-key",
             "claude-sonnet-4-20250514",
             1024,
+            RetryConfig::no_retry(),
         )
     }
 
