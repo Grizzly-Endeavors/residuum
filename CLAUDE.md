@@ -13,7 +13,7 @@ This project is a derivative of OpenClaw, and coopts much of its architecture. Y
 ### Git Hooks
 
 Pre-commit hooks enforce quality gates:
-- **pre-commit**: `cargo fmt --check`, `cargo clippy`, `cargo test`
+- **pre-commit**: auto-formats with `cargo fmt` (auto-stages changes), runs `cargo clippy`, runs `cargo test`
 - **commit-msg**: validates message format
 - **pre-push**: full test suite
 
