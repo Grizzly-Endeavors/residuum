@@ -4,8 +4,8 @@
 //! - `serve` (default): starts the WebSocket gateway server
 //! - `connect [url]`: connects a CLI client to a running gateway
 
-use ironclaw::cli::CliClient;
-use ironclaw::cli::commands::{CommandAction, SlashCommand};
+use ironclaw::channels::cli::CliClient;
+use ironclaw::channels::cli::commands::{CommandAction, SlashCommand};
 use ironclaw::config::Config;
 use ironclaw::error::IronclawError;
 use ironclaw::gateway::protocol::{ClientMessage, ServerMessage};

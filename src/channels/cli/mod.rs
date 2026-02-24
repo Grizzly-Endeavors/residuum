@@ -3,7 +3,10 @@
 pub mod colors;
 pub mod commands;
 pub mod indicator;
+pub mod reader;
 pub mod render;
+
+pub use reader::CliReader;
 
 use crate::gateway::protocol::ServerMessage;
 use colors::Theme;
