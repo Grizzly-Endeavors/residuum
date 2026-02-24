@@ -13,10 +13,10 @@ use crate::error::IronclawError;
 use crate::memory::log_store::{load_observation_log, save_observation_log};
 use crate::memory::tokens::estimate_tokens;
 use crate::memory::types::ObservationLog;
-use crate::models::{CompletionOptions, ModelProvider};
+use crate::models::{CompletionOptions, ModelProvider, ResponseFormat};
 use crate::workspace::layout::WorkspaceLayout;
 use parse::parse_reflection_response;
-use prompt::{REFLECTION_CONTENT_PROMPT, build_reflection_prompt};
+use prompt::{REFLECTION_CONTENT_PROMPT, build_reflection_prompt, reflector_response_schema};
 
 /// Reflector configuration.
 #[derive(Debug, Clone)]
@@ -90,10 +90,17 @@ impl Reflector {
 
         let messages = build_reflection_prompt(&serialized, &content_guidance);
 
-        // Call the model
+        // Call the model with structured output
+        let options = CompletionOptions {
+            response_format: ResponseFormat::JsonSchema {
+                name: "reflector_compression".to_string(),
+                schema: reflector_response_schema(),
+            },
+            ..CompletionOptions::default()
+        };
         let response = self
             .provider
-            .complete(&messages, &[], &CompletionOptions::default())
+            .complete(&messages, &[], &options)
             .await
             .map_err(IronclawError::Model)?;
 
@@ -145,10 +152,12 @@ mod tests {
         }
     }
 
-    const COMPRESSED_RESPONSE: &str = r#"[
-        {"content": "workspace uses flat layout", "timestamp": "2026-02-21T14:30", "project_context": "ironclaw/workspace", "visibility": "user"},
-        {"content": "identity files loaded at startup", "timestamp": "2026-02-21T14:31", "project_context": "ironclaw/workspace", "visibility": "user"}
-    ]"#;
+    const COMPRESSED_RESPONSE: &str = r#"{
+        "observations": [
+            {"content": "workspace uses flat layout", "timestamp": "2026-02-21T14:30", "project_context": "ironclaw/workspace", "visibility": "user"},
+            {"content": "identity files loaded at startup", "timestamp": "2026-02-21T14:31", "project_context": "ironclaw/workspace", "visibility": "user"}
+        ]
+    }"#;
 
     #[test]
     fn should_reflect_below_threshold() {
@@ -352,9 +361,27 @@ mod tests {
     }
 
     #[test]
-    fn parse_reflection_non_array_errors() {
+    fn parse_reflection_malformed_object_errors() {
+        // Object without "observations" key — fails typed path, fails array check
         let result = parse_reflection_response(r#"{"episodes": []}"#, chrono_tz::UTC);
-        assert!(result.is_err(), "non-array response should error");
+        assert!(
+            result.is_err(),
+            "object without observations field should error"
+        );
+    }
+
+    #[test]
+    fn parse_reflection_bare_array_fallback() {
+        let bare_array = r#"[
+            {"content": "obs from bare array", "timestamp": "2026-02-21T14:30", "project_context": "test", "visibility": "user"}
+        ]"#;
+        let log = parse_reflection_response(bare_array, chrono_tz::UTC).unwrap();
+        assert_eq!(log.len(), 1, "bare array fallback should parse");
+        assert_eq!(
+            log.observations.first().map(|o| o.content.as_str()),
+            Some("obs from bare array"),
+            "content should match"
+        );
     }
 
     #[tokio::test]

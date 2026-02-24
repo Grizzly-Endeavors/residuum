@@ -17,11 +17,11 @@ use crate::memory::log_store::{append_observations, next_episode_id, save_episod
 use crate::memory::recent_messages::RecentMessage;
 use crate::memory::tokens::estimate_message_tokens;
 use crate::memory::types::{Episode, Observation};
-use crate::models::{CompletionOptions, Message, ModelProvider};
+use crate::models::{CompletionOptions, Message, ModelProvider, ResponseFormat};
 use crate::time::now_local;
 use crate::workspace::layout::WorkspaceLayout;
 use parse::{ObserverParseResult, parse_observer_response};
-use prompt::{EXTRACTION_CONTENT_PROMPT, build_extraction_prompt};
+use prompt::{EXTRACTION_CONTENT_PROMPT, build_extraction_prompt, observer_response_schema};
 
 /// The result of a successful observation run.
 pub struct ObserveResult {
@@ -159,10 +159,17 @@ impl Observer {
             .map(|rm| rm.message.clone())
             .collect();
 
-        // Call the model
+        // Call the model with structured output
+        let options = CompletionOptions {
+            response_format: ResponseFormat::JsonSchema {
+                name: "observer_extraction".to_string(),
+                schema: observer_response_schema(),
+            },
+            ..CompletionOptions::default()
+        };
         let response = self
             .provider
-            .complete(&extraction_messages, &[], &CompletionOptions::default())
+            .complete(&extraction_messages, &[], &options)
             .await
             .map_err(IronclawError::Model)?;
 
@@ -288,10 +295,13 @@ mod tests {
         format_recent_message,
     };
 
-    const SAMPLE_RESPONSE: &str = r#"[
-        {"content": "workspace uses a flat directory layout", "timestamp": "2026-02-21T14:30", "visibility": "user"},
-        {"content": "identity files are loaded at startup", "timestamp": "2026-02-21T14:31", "visibility": "user"}
-    ]"#;
+    const SAMPLE_RESPONSE: &str = r#"{
+        "observations": [
+            {"content": "workspace uses a flat directory layout", "timestamp": "2026-02-21T14:30", "visibility": "user"},
+            {"content": "identity files are loaded at startup", "timestamp": "2026-02-21T14:31", "visibility": "user"}
+        ],
+        "narrative": ""
+    }"#;
 
     fn make_recent_messages(count: usize) -> Vec<RecentMessage> {
         (0..count)
@@ -308,7 +318,7 @@ mod tests {
     }
 
     #[test]
-    fn parse_observer_response_legacy_array_format() {
+    fn parse_observer_response_typed_object_format() {
         let response = ModelResponse::new(SAMPLE_RESPONSE.to_string(), vec![]);
         let parsed = parse_observer_response(&response, chrono_tz::UTC).unwrap();
 
@@ -323,6 +333,19 @@ mod tests {
             Some("identity files are loaded at startup"),
             "second extraction content should match"
         );
+        assert!(parsed.narrative.is_none(), "empty narrative should be None");
+    }
+
+    #[test]
+    fn parse_observer_response_legacy_array_format() {
+        let bare_array = r#"[
+            {"content": "workspace uses a flat directory layout", "timestamp": "2026-02-21T14:30", "visibility": "user"},
+            {"content": "identity files are loaded at startup", "timestamp": "2026-02-21T14:31", "visibility": "user"}
+        ]"#;
+        let response = ModelResponse::new(bare_array.to_string(), vec![]);
+        let parsed = parse_observer_response(&response, chrono_tz::UTC).unwrap();
+
+        assert_eq!(parsed.extractions.len(), 2, "should have 2 extractions");
         assert!(
             parsed.narrative.is_none(),
             "legacy format should have no narrative"
@@ -372,6 +395,24 @@ mod tests {
         let parsed = parse_observer_response(&response, chrono_tz::UTC).unwrap();
 
         assert_eq!(parsed.extractions.len(), 2, "should parse despite fences");
+    }
+
+    #[test]
+    fn parse_observer_response_empty_narrative_is_none() {
+        let json = r#"{
+            "observations": [
+                {"content": "user prefers Rust", "timestamp": "2026-02-21T14:30", "visibility": "user"}
+            ],
+            "narrative": ""
+        }"#;
+        let response = ModelResponse::new(json.to_string(), vec![]);
+        let parsed = parse_observer_response(&response, chrono_tz::UTC).unwrap();
+
+        assert_eq!(parsed.extractions.len(), 1, "should have 1 extraction");
+        assert!(
+            parsed.narrative.is_none(),
+            "empty narrative string should be None"
+        );
     }
 
     #[test]

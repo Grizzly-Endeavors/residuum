@@ -1,18 +1,31 @@
 //! Response parsing for the reflector LLM output.
 
 use chrono_tz::Tz;
+use serde::Deserialize;
 
 use crate::error::IronclawError;
 use crate::memory::types::{Observation, ObservationLog, Visibility};
 use crate::time::now_local;
 
+/// Typed response from structured output mode (object-wrapped).
+#[derive(Deserialize)]
+struct ReflectorJsonResponse {
+    observations: Vec<ReflectorItem>,
+}
+
+/// Single observation item within the typed reflector response.
+#[derive(Deserialize)]
+struct ReflectorItem {
+    content: String,
+    timestamp: String,
+    project_context: String,
+    visibility: String,
+}
+
 /// Parse the model's reflection response into an `ObservationLog`.
 ///
-/// Expects a JSON array of objects:
-/// `[{"content": "obs 1", "timestamp": "2026-02-21T14:30", "project_context": "ironclaw/memory", "visibility": "user"}, ...]`
-///
-/// Each object's `timestamp`, `project_context`, and `visibility` are preserved.
-/// Defaults to `now_local(tz)` / `"general"` / `Visibility::User` when fields are absent or invalid.
+/// Tries typed deserialization first (structured output object format), then
+/// falls back to `Value`-based parsing for legacy bare arrays and Ollama fallback.
 ///
 /// # Errors
 /// Returns an error if the response cannot be parsed.
@@ -23,6 +36,31 @@ pub(super) fn parse_reflection_response(
     let trimmed = content.trim();
     let json_str = crate::memory::strip_code_fences(trimmed);
 
+    // Fast path: try typed deserialization (structured output object format)
+    if let Ok(typed) = serde_json::from_str::<ReflectorJsonResponse>(json_str) {
+        let mut log = ObservationLog::new();
+        for item in &typed.observations {
+            if item.content.is_empty() {
+                continue;
+            }
+            let timestamp = crate::memory::parse_minute_timestamp(&item.timestamp, tz);
+            let visibility = if item.visibility == "background" {
+                Visibility::Background
+            } else {
+                Visibility::User
+            };
+            log.push(Observation {
+                timestamp,
+                project_context: item.project_context.clone(),
+                source_episodes: vec![],
+                visibility,
+                content: item.content.clone(),
+            });
+        }
+        return Ok(log);
+    }
+
+    // Fallback: Value-based parsing for legacy bare arrays
     let value: serde_json::Value = serde_json::from_str(json_str).map_err(|e| {
         IronclawError::Memory(format!(
             "failed to parse reflector response as JSON: {e}\nresponse: {trimmed}"
@@ -31,7 +69,7 @@ pub(super) fn parse_reflection_response(
 
     let items = value.as_array().ok_or_else(|| {
         IronclawError::Memory(format!(
-            "reflector response is not a JSON array\nresponse: {trimmed}"
+            "reflector response is not a JSON array or object\nresponse: {trimmed}"
         ))
     })?;
 

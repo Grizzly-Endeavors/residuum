@@ -2,11 +2,27 @@
 
 use chrono::NaiveDateTime;
 use chrono_tz::Tz;
+use serde::Deserialize;
 
 use crate::error::IronclawError;
 use crate::memory::types::Visibility;
 use crate::models::ModelResponse;
 use crate::time::now_local;
+
+/// Typed response from structured output mode.
+#[derive(Deserialize)]
+struct ObserverJsonResponse {
+    observations: Vec<ObservationItem>,
+    narrative: String,
+}
+
+/// Single observation item within the typed response.
+#[derive(Deserialize)]
+struct ObservationItem {
+    content: String,
+    timestamp: String,
+    visibility: String,
+}
 
 /// Intermediate extraction result from the observer LLM response.
 pub(super) struct ObserverExtraction {
@@ -23,9 +39,8 @@ pub(super) struct ObserverParseResult {
 
 /// Parse the model's JSON response into extractions and an optional narrative.
 ///
-/// Accepts two formats:
-/// - **New (object)**: `{"observations": [...], "narrative": "..."}`
-/// - **Legacy (bare array)**: `[{"content": ..., ...}, ...]`
+/// Tries typed deserialization first (structured output path), then falls back
+/// to `Value`-based parsing for legacy bare arrays and Ollama fallback.
 ///
 /// # Errors
 /// Returns an error if the response cannot be parsed or the observations are empty.
@@ -36,15 +51,36 @@ pub(super) fn parse_observer_response(
     let content = response.content.trim();
     let json_str = crate::memory::strip_code_fences(content);
 
+    // Fast path: try typed deserialization (structured output)
+    if let Ok(typed) = serde_json::from_str::<ObserverJsonResponse>(json_str) {
+        let extractions = typed_items_to_extractions(&typed.observations, tz);
+
+        if extractions.is_empty() {
+            return Err(IronclawError::Memory(
+                "observer returned empty observations array".to_string(),
+            ));
+        }
+
+        let narrative = if typed.narrative.is_empty() {
+            None
+        } else {
+            Some(typed.narrative)
+        };
+
+        return Ok(ObserverParseResult {
+            extractions,
+            narrative,
+        });
+    }
+
+    // Fallback: Value-based parsing for legacy bare arrays and malformed objects
     let value: serde_json::Value = serde_json::from_str(json_str).map_err(|e| {
         IronclawError::Memory(format!(
             "failed to parse observer response as JSON: {e}\nresponse: {content}"
         ))
     })?;
 
-    // Determine the items array and optional narrative
     let (items, narrative) = if let Some(arr) = value.as_array() {
-        // Legacy bare-array format
         (arr.clone(), None)
     } else if let Some(obj) = value.as_object() {
         let obs_array = obj
@@ -82,6 +118,27 @@ pub(super) fn parse_observer_response(
         extractions,
         narrative,
     })
+}
+
+/// Convert typed `ObservationItem`s to `ObserverExtraction`s.
+fn typed_items_to_extractions(items: &[ObservationItem], tz: Tz) -> Vec<ObserverExtraction> {
+    items
+        .iter()
+        .filter(|item| !item.content.is_empty())
+        .map(|item| {
+            let timestamp = crate::memory::parse_minute_timestamp(&item.timestamp, tz);
+            let visibility = if item.visibility == "background" {
+                Visibility::Background
+            } else {
+                Visibility::User
+            };
+            ObserverExtraction {
+                content: item.content.clone(),
+                timestamp,
+                visibility,
+            }
+        })
+        .collect()
 }
 
 /// Parse individual observation items from a JSON array.

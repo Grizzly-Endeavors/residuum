@@ -89,10 +89,12 @@ mod memory_integration {
     }
 
     fn reflector_response() -> String {
-        r#"[
-            {"content": "workspace uses flat layout with identity files at root", "timestamp": "2026-02-21T14:32Z", "project_context": "ironclaw/workspace", "visibility": "user"},
-            {"content": "bootstrap creates required directories on first run", "timestamp": "2026-02-21T14:31Z", "project_context": "ironclaw/workspace", "visibility": "user"}
-        ]"#
+        r#"{
+            "observations": [
+                {"content": "workspace uses flat layout with identity files at root", "timestamp": "2026-02-21T14:32Z", "project_context": "ironclaw/workspace", "visibility": "user"},
+                {"content": "bootstrap creates required directories on first run", "timestamp": "2026-02-21T14:31Z", "project_context": "ironclaw/workspace", "visibility": "user"}
+            ]
+        }"#
         .to_string()
     }
 

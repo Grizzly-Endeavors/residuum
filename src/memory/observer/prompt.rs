@@ -23,27 +23,46 @@ Each observation should be a complete sentence useful as future context. Be spec
 /// Output format spec — always appended by code, never stored in editable files.
 ///
 /// This is injected unconditionally so editing `OBSERVER.md` cannot break JSON parsing.
-pub(super) const EXTRACTION_FORMAT_SPEC: &str = r#"Return ONLY a JSON object with two fields:
+/// The structural JSON requirements are enforced by the model's structured output mode
+/// (JSON schema), so this spec focuses on semantic field guidance only.
+pub(super) const EXTRACTION_FORMAT_SPEC: &str = r#"For each observation:
+- "content": a complete, self-contained observation sentence
+- "timestamp": timestamp at minute precision (YYYY-MM-DDTHH:MM) matching the most relevant message
+- "visibility": "user" if the observation involves a user-visible turn, "background" if from a system/background turn
 
-1. "observations": an array of objects, each with:
-   - "content": a complete, self-contained observation sentence
-   - "timestamp": timestamp at minute precision (YYYY-MM-DDTHH:MM) matching the most relevant message
-   - "visibility": "user" if the observation involves a user-visible turn, "background" if from a system/background turn
+"narrative": a 2-4 sentence summary of what was being discussed and where things left off,
+written as if briefing someone who needs to continue the conversation. Include the current
+topic, any open questions, and the overall direction of the conversation.
+Set to empty string if there is insufficient context for a meaningful narrative."#;
 
-2. "narrative": a 2-4 sentence summary of what was being discussed and where things left off,
-   written as if briefing someone who needs to continue the conversation. Include the current
-   topic, any open questions, and the overall direction of the conversation.
-
-Example:
-{
-  "observations": [
-    {"content": "user prefers concise responses", "timestamp": "2026-02-21T14:30", "visibility": "user"},
-    {"content": "cron job executed daily backup successfully", "timestamp": "2026-02-21T03:00", "visibility": "background"}
-  ],
-  "narrative": "We were implementing a new caching layer for the API. The user chose Redis over in-memory caching. The basic connection setup is done but we haven't started on cache invalidation yet."
+/// JSON schema for the observer response, used with structured output mode.
+///
+/// Returns a schema requiring `observations` (array of items with content, timestamp,
+/// visibility) and `narrative` (string, required but empty string maps to `None`).
+#[must_use]
+pub(super) fn observer_response_schema() -> serde_json::Value {
+    serde_json::json!({
+        "type": "object",
+        "properties": {
+            "observations": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "content": { "type": "string" },
+                        "timestamp": { "type": "string" },
+                        "visibility": { "type": "string", "enum": ["user", "background"] }
+                    },
+                    "required": ["content", "timestamp", "visibility"],
+                    "additionalProperties": false
+                }
+            },
+            "narrative": { "type": "string" }
+        },
+        "required": ["observations", "narrative"],
+        "additionalProperties": false
+    })
 }
-
-Return ONLY a valid JSON object, no markdown fencing, no explanation."#;
 
 /// Format a single `RecentMessage` for the extraction prompt transcript.
 ///
