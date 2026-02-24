@@ -12,8 +12,8 @@ use crate::memory::recent_messages::load_messages_for_agent;
 use crate::memory::reflector::Reflector;
 use crate::memory::search::{MemoryIndex, create_shared_index};
 use crate::models::{
-    CompletionOptions, HttpClientConfig, ModelProvider, SharedHttpClient,
-    build_provider_from_provider_spec,
+    CompletionOptions, EmbeddingProvider, HttpClientConfig, ModelProvider, SharedHttpClient,
+    build_embedding_provider, build_provider_from_provider_spec,
 };
 use crate::projects::activation::{ProjectState, SharedProjectState};
 use crate::projects::scanner::ProjectIndex;
@@ -38,6 +38,8 @@ pub(super) struct GatewayComponents {
     pub(super) mcp_registry: SharedMcpRegistry,
     pub(super) project_state: SharedProjectState,
     pub(super) skill_state: SharedSkillState,
+    #[expect(dead_code, reason = "will be used by vector search integration")]
+    pub(super) embedding_provider: Option<Box<dyn EmbeddingProvider>>,
     pub(super) pulse_provider: Box<dyn ModelProvider>,
     pub(super) cron_provider: Box<dyn ModelProvider>,
     pub(super) pulse_enabled: bool,
@@ -90,6 +92,14 @@ pub(super) async fn initialize(cfg: &Config) -> Result<GatewayComponents, Ironcl
         http.clone(),
         cfg.retry.clone(),
     )?;
+    let embedding_provider = cfg
+        .embedding
+        .as_ref()
+        .map(|spec| build_embedding_provider(spec, http.clone(), cfg.retry.clone()))
+        .transpose()?;
+    if let Some(ref ep) = embedding_provider {
+        tracing::info!(model = ep.model_name(), "embedding provider ready");
+    }
     let cron_provider =
         build_provider_from_provider_spec(&cfg.cron, cfg.max_tokens, http, cfg.retry.clone())?;
 
@@ -187,6 +197,7 @@ pub(super) async fn initialize(cfg: &Config) -> Result<GatewayComponents, Ironcl
         mcp_registry,
         project_state,
         skill_state,
+        embedding_provider,
         pulse_provider,
         cron_provider,
         pulse_enabled: cfg.pulse_enabled,

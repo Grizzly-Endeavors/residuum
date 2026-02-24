@@ -3,6 +3,7 @@
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
+use super::embedding::{EmbeddingProvider, EmbeddingResponse};
 use super::http::{SharedHttpClient, map_request_error, warn_if_insecure_remote};
 use super::retry::{RetryConfig, with_retry};
 use super::{
@@ -217,6 +218,107 @@ struct OllamaResponseMessage {
 #[derive(Deserialize)]
 struct OllamaErrorResponse {
     error: String,
+}
+
+/// Ollama embeddings API client.
+pub(crate) struct OllamaEmbeddingClient {
+    http: SharedHttpClient,
+    base_url: String,
+    model: String,
+    retry: RetryConfig,
+}
+
+impl OllamaEmbeddingClient {
+    /// Create a new Ollama embedding client with a shared HTTP client.
+    #[must_use]
+    pub fn with_http_client(
+        http: SharedHttpClient,
+        base_url: impl Into<String>,
+        model: impl Into<String>,
+        retry: RetryConfig,
+    ) -> Self {
+        let base_url = base_url.into();
+        warn_if_insecure_remote(&base_url);
+
+        Self {
+            http,
+            base_url,
+            model: model.into(),
+            retry,
+        }
+    }
+}
+
+#[async_trait]
+impl EmbeddingProvider for OllamaEmbeddingClient {
+    async fn embed(&self, texts: &[&str]) -> Result<EmbeddingResponse, ModelError> {
+        let url = format!("{}/api/embed", self.base_url);
+        let model = self.model.clone();
+        let http = self.http.clone();
+        let timeout_secs = self.http.timeout_secs();
+
+        with_retry(&self.retry, || {
+            let url = url.clone();
+            let model = model.clone();
+            let http = http.clone();
+
+            async move {
+                let request = OllamaEmbedRequest {
+                    model: &model,
+                    input: texts,
+                };
+
+                let response = http
+                    .client()
+                    .post(&url)
+                    .json(&request)
+                    .send()
+                    .await
+                    .map_err(|e| map_request_error(e, timeout_secs))?;
+
+                if !response.status().is_success() {
+                    let status = response.status();
+                    let error_body = response
+                        .json::<OllamaErrorResponse>()
+                        .await
+                        .map_or_else(|_| format!("{status}: unknown error"), |e| e.error);
+                    return Err(ModelError::Api(error_body));
+                }
+
+                let embed_response: OllamaEmbedResponse = response.json().await?;
+
+                let dimensions =
+                    embed_response
+                        .embeddings
+                        .first()
+                        .map(Vec::len)
+                        .ok_or_else(|| {
+                            ModelError::Parse("embeddings response contained no data".to_string())
+                        })?;
+
+                Ok(EmbeddingResponse {
+                    embeddings: embed_response.embeddings,
+                    dimensions,
+                })
+            }
+        })
+        .await
+    }
+
+    fn model_name(&self) -> &str {
+        &self.model
+    }
+}
+
+#[derive(Serialize)]
+struct OllamaEmbedRequest<'a> {
+    model: &'a str,
+    input: &'a [&'a str],
+}
+
+#[derive(Deserialize)]
+struct OllamaEmbedResponse {
+    embeddings: Vec<Vec<f32>>,
 }
 
 #[cfg(test)]
@@ -471,6 +573,100 @@ mod tests {
         assert_eq!(
             response.content, "{\"answer\": \"hello\"}",
             "should return JSON content"
+        );
+    }
+
+    // --- Embedding client tests ---
+
+    use crate::models::embedding::EmbeddingProvider;
+
+    fn make_embedding_client(url: impl Into<String>, model: &str) -> OllamaEmbeddingClient {
+        let http = SharedHttpClient::new(&HttpClientConfig::default()).unwrap();
+        OllamaEmbeddingClient::with_http_client(http, url, model, RetryConfig::no_retry())
+    }
+
+    #[tokio::test]
+    async fn embed_success() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path("/api/embed"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "embeddings": [
+                    [0.1, 0.2, 0.3],
+                    [0.4, 0.5, 0.6]
+                ]
+            })))
+            .mount(&mock_server)
+            .await;
+
+        let client = make_embedding_client(mock_server.uri(), "nomic-embed-text");
+        let result = client.embed(&["hello", "world"]).await.unwrap();
+
+        assert_eq!(result.embeddings.len(), 2, "should have 2 embeddings");
+        assert_eq!(
+            result.dimensions, 3,
+            "each embedding should have 3 dimensions"
+        );
+        assert_eq!(
+            result.embeddings.first().map(Vec::as_slice),
+            Some([0.1_f32, 0.2, 0.3].as_slice()),
+            "first embedding should match"
+        );
+        assert_eq!(
+            result.embeddings.get(1).map(Vec::as_slice),
+            Some([0.4_f32, 0.5, 0.6].as_slice()),
+            "second embedding should match"
+        );
+    }
+
+    #[tokio::test]
+    async fn embed_batch() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path("/api/embed"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "embeddings": [
+                    [1.0, 2.0],
+                    [3.0, 4.0],
+                    [5.0, 6.0]
+                ]
+            })))
+            .mount(&mock_server)
+            .await;
+
+        let client = make_embedding_client(mock_server.uri(), "nomic-embed-text");
+        let result = client.embed(&["a", "b", "c"]).await.unwrap();
+
+        assert_eq!(result.embeddings.len(), 3, "should have 3 embeddings");
+        assert_eq!(
+            result.dimensions, 2,
+            "each embedding should have 2 dimensions"
+        );
+    }
+
+    #[tokio::test]
+    async fn embed_api_error_404() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path("/api/embed"))
+            .respond_with(ResponseTemplate::new(404).set_body_json(serde_json::json!({
+                "error": "model not found"
+            })))
+            .mount(&mock_server)
+            .await;
+
+        let client = make_embedding_client(mock_server.uri(), "nonexistent");
+        let result = client.embed(&["hello"]).await;
+
+        assert!(result.is_err(), "should return an error for 404");
+        let err = result.unwrap_err();
+        assert!(matches!(err, ModelError::Api(_)), "should be an Api error");
+        assert!(
+            err.to_string().contains("model not found"),
+            "error should contain 'model not found'"
         );
     }
 }

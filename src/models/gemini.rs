@@ -9,6 +9,7 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use tracing::debug;
 
+use super::embedding::{EmbeddingProvider, EmbeddingResponse};
 use super::http::{SharedHttpClient, map_request_error, warn_if_insecure_remote};
 use super::retry::{RetryConfig, with_retry};
 use super::{
@@ -396,6 +397,223 @@ struct GeminiError {
 }
 
 // ---------------------------------------------------------------------------
+// Gemini embedding request types
+// ---------------------------------------------------------------------------
+
+#[derive(Serialize, Clone)]
+struct GeminiEmbedContentRequest {
+    model: String,
+    content: GeminiEmbedContent,
+}
+
+#[derive(Serialize, Clone)]
+struct GeminiEmbedContent {
+    parts: Vec<GeminiEmbedPart>,
+}
+
+#[derive(Serialize, Clone)]
+struct GeminiEmbedPart {
+    text: String,
+}
+
+#[derive(Serialize, Clone)]
+struct GeminiBatchEmbedRequest {
+    requests: Vec<GeminiEmbedContentRequest>,
+}
+
+// ---------------------------------------------------------------------------
+// Gemini embedding response types
+// ---------------------------------------------------------------------------
+
+#[derive(Deserialize)]
+struct GeminiEmbedContentResponse {
+    embedding: GeminiEmbeddingValues,
+}
+
+#[derive(Deserialize)]
+struct GeminiEmbeddingValues {
+    values: Vec<f32>,
+}
+
+#[derive(Deserialize)]
+struct GeminiBatchEmbedResponse {
+    embeddings: Vec<GeminiEmbeddingValues>,
+}
+
+// ---------------------------------------------------------------------------
+// Gemini embedding client
+// ---------------------------------------------------------------------------
+
+/// Google Gemini embeddings API client.
+pub(crate) struct GeminiEmbeddingClient {
+    http: SharedHttpClient,
+    base_url: String,
+    api_key: String,
+    model: String,
+    retry: RetryConfig,
+}
+
+impl GeminiEmbeddingClient {
+    #[must_use]
+    pub fn new(
+        http: SharedHttpClient,
+        base_url: impl Into<String>,
+        api_key: impl Into<String>,
+        model: impl Into<String>,
+        retry: RetryConfig,
+    ) -> Self {
+        let base_url = base_url.into();
+        warn_if_insecure_remote(&base_url);
+        Self {
+            http,
+            base_url,
+            api_key: api_key.into(),
+            model: model.into(),
+            retry,
+        }
+    }
+
+    async fn embed_single(
+        &self,
+        text: String,
+        base_url: String,
+        api_key: String,
+        model: String,
+        http: SharedHttpClient,
+        timeout_secs: u64,
+    ) -> Result<EmbeddingResponse, ModelError> {
+        with_retry(&self.retry, || {
+            let url = format!("{base_url}/models/{model}:embedContent?key={api_key}");
+            let body = GeminiEmbedContentRequest {
+                model: format!("models/{model}"),
+                content: GeminiEmbedContent {
+                    parts: vec![GeminiEmbedPart { text: text.clone() }],
+                },
+            };
+            let http = http.clone();
+
+            async move {
+                let response = http
+                    .client()
+                    .post(&url)
+                    .json(&body)
+                    .send()
+                    .await
+                    .map_err(|e| map_request_error(e, timeout_secs))?;
+
+                if !response.status().is_success() {
+                    return Err(parse_gemini_embed_error(response).await);
+                }
+
+                let parsed: GeminiEmbedContentResponse = response.json().await?;
+                let dimensions = parsed.embedding.values.len();
+                Ok(EmbeddingResponse {
+                    embeddings: vec![parsed.embedding.values],
+                    dimensions,
+                })
+            }
+        })
+        .await
+    }
+
+    async fn embed_batch(
+        &self,
+        owned_texts: Vec<String>,
+        base_url: String,
+        api_key: String,
+        model: String,
+        http: SharedHttpClient,
+        timeout_secs: u64,
+    ) -> Result<EmbeddingResponse, ModelError> {
+        with_retry(&self.retry, || {
+            let url = format!("{base_url}/models/{model}:batchEmbedContents?key={api_key}");
+            let requests: Vec<GeminiEmbedContentRequest> = owned_texts
+                .iter()
+                .map(|t| GeminiEmbedContentRequest {
+                    model: format!("models/{model}"),
+                    content: GeminiEmbedContent {
+                        parts: vec![GeminiEmbedPart { text: t.clone() }],
+                    },
+                })
+                .collect();
+            let body = GeminiBatchEmbedRequest { requests };
+            let http = http.clone();
+
+            async move {
+                let response = http
+                    .client()
+                    .post(&url)
+                    .json(&body)
+                    .send()
+                    .await
+                    .map_err(|e| map_request_error(e, timeout_secs))?;
+
+                if !response.status().is_success() {
+                    return Err(parse_gemini_embed_error(response).await);
+                }
+
+                let parsed: GeminiBatchEmbedResponse = response.json().await?;
+                let dimensions = parsed.embeddings.first().map_or(0, |e| e.values.len());
+                let embeddings = parsed.embeddings.into_iter().map(|e| e.values).collect();
+                Ok(EmbeddingResponse {
+                    embeddings,
+                    dimensions,
+                })
+            }
+        })
+        .await
+    }
+}
+
+#[async_trait]
+impl EmbeddingProvider for GeminiEmbeddingClient {
+    async fn embed(&self, texts: &[&str]) -> Result<EmbeddingResponse, ModelError> {
+        if texts.is_empty() {
+            return Ok(EmbeddingResponse {
+                embeddings: Vec::new(),
+                dimensions: 0,
+            });
+        }
+
+        let base_url = self.base_url.clone();
+        let api_key = self.api_key.clone();
+        let model = self.model.clone();
+        let http = self.http.clone();
+        let timeout_secs = self.http.timeout_secs();
+
+        if texts.len() == 1 {
+            // Safe: we checked `texts.is_empty()` above
+            let text = texts.first().map(|t| (*t).to_string()).unwrap_or_default();
+            self.embed_single(text, base_url, api_key, model, http, timeout_secs)
+                .await
+        } else {
+            let owned_texts: Vec<String> = texts.iter().map(|t| (*t).to_string()).collect();
+            self.embed_batch(owned_texts, base_url, api_key, model, http, timeout_secs)
+                .await
+        }
+    }
+
+    fn model_name(&self) -> &str {
+        &self.model
+    }
+}
+
+/// Parse a Gemini error response into a `ModelError::Api`.
+async fn parse_gemini_embed_error(response: reqwest::Response) -> ModelError {
+    let status = response.status();
+    let raw_body = match response.text().await {
+        Ok(b) => b,
+        Err(e) => {
+            tracing::warn!(error = %e, "failed to read error response body");
+            format!("failed to read response body: {e}")
+        }
+    };
+    let error_body = serde_json::from_str::<GeminiErrorResponse>(&raw_body)
+        .map_or_else(|_| raw_body, |e| e.error.message);
+    ModelError::Api(format!("{status}: {error_body}"))
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -762,6 +980,115 @@ mod tests {
         assert_eq!(
             response.content, "{\"answer\": \"hello\"}",
             "should return JSON content"
+        );
+    }
+
+    // --- Embedding tests ---
+
+    use crate::models::embedding::EmbeddingProvider;
+
+    fn make_embedding_client(base_url: &str) -> GeminiEmbeddingClient {
+        let http =
+            SharedHttpClient::new(&super::super::http::HttpClientConfig::with_timeout(60)).unwrap();
+        GeminiEmbeddingClient::new(
+            http,
+            base_url,
+            "test-api-key",
+            "text-embedding-004",
+            RetryConfig::no_retry(),
+        )
+    }
+
+    #[tokio::test]
+    async fn embed_single_success() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path_regex("/models/text-embedding-004:embedContent"))
+            .and(query_param("key", "test-api-key"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "embedding": {
+                    "values": [0.1, 0.2, 0.3]
+                }
+            })))
+            .mount(&mock_server)
+            .await;
+
+        let client = make_embedding_client(&mock_server.uri());
+        let response = client.embed(&["hello world"]).await.unwrap();
+
+        assert_eq!(response.embeddings.len(), 1, "should have one embedding");
+        assert_eq!(response.dimensions, 3, "should have 3 dimensions");
+        assert_eq!(
+            response.embeddings.first().map(Vec::as_slice),
+            Some([0.1_f32, 0.2, 0.3].as_slice()),
+            "embedding values should match"
+        );
+    }
+
+    #[tokio::test]
+    async fn embed_batch_success() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path_regex("/models/text-embedding-004:batchEmbedContents"))
+            .and(query_param("key", "test-api-key"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "embeddings": [
+                    { "values": [0.1, 0.2, 0.3] },
+                    { "values": [0.4, 0.5, 0.6] }
+                ]
+            })))
+            .mount(&mock_server)
+            .await;
+
+        let client = make_embedding_client(&mock_server.uri());
+        let response = client.embed(&["hello", "world"]).await.unwrap();
+
+        assert_eq!(response.embeddings.len(), 2, "should have two embeddings");
+        assert_eq!(response.dimensions, 3, "should have 3 dimensions");
+        assert_eq!(
+            response.embeddings.first().map(Vec::as_slice),
+            Some([0.1_f32, 0.2, 0.3].as_slice()),
+            "first embedding should match"
+        );
+        assert_eq!(
+            response.embeddings.get(1).map(Vec::as_slice),
+            Some([0.4_f32, 0.5, 0.6].as_slice()),
+            "second embedding should match"
+        );
+    }
+
+    #[tokio::test]
+    async fn embed_api_key_error() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path_regex("/models/text-embedding-004:embedContent"))
+            .and(query_param("key", "test-api-key"))
+            .respond_with(ResponseTemplate::new(400).set_body_json(serde_json::json!({
+                "error": {
+                    "code": 400,
+                    "message": "API key not valid. Please pass a valid API key.",
+                    "status": "INVALID_ARGUMENT"
+                }
+            })))
+            .mount(&mock_server)
+            .await;
+
+        let client = make_embedding_client(&mock_server.uri());
+        let result = client.embed(&["hello"]).await;
+
+        assert!(result.is_err(), "API error should return Err");
+        let err = result.unwrap_err();
+        assert!(matches!(err, ModelError::Api(_)), "should be an Api error");
+        assert!(
+            err.to_string().contains("400"),
+            "error should contain status code"
+        );
+        assert!(
+            err.to_string().contains("API key not valid"),
+            "error should contain Gemini message"
         );
     }
 }

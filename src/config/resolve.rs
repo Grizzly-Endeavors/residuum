@@ -79,6 +79,21 @@ pub(super) fn from_file_and_env(file: Option<&ConfigFile>) -> Result<Config, Iro
         providers_map,
     )?;
 
+    // Resolve embedding: models.embedding only, no fallback to default or main
+    let embedding = models
+        .and_then(|m| m.embedding.as_deref())
+        .map(|s| resolve_model_string(s, providers_map))
+        .transpose()?;
+    if let Some(ref spec) = embedding
+        && spec.model.kind == ProviderKind::Anthropic
+    {
+        return Err(IronclawError::Config(
+            "anthropic does not offer an embeddings API; \
+             use openai, ollama, or gemini for models.embedding"
+                .to_string(),
+        ));
+    }
+
     // Workspace dir: env > file > default
     let workspace_dir = std::env::var("IRONCLAW_WORKSPACE")
         .ok()
@@ -169,6 +184,7 @@ pub(super) fn from_file_and_env(file: Option<&ConfigFile>) -> Result<Config, Iro
         reflector,
         pulse: pulse_spec,
         cron: cron_spec,
+        embedding,
         workspace_dir,
         timeout_secs,
         max_tokens,
@@ -952,6 +968,78 @@ main = "anthropic/claude-sonnet-4-6"
         assert!(
             cfg.mcp.servers.is_empty(),
             "empty [mcp] section should yield no servers"
+        );
+    }
+
+    // ── Embedding config ──────────────────────────────────────────────────
+
+    #[test]
+    fn embedding_role_resolved() {
+        let toml_str = r#"
+timezone = "UTC"
+
+[models]
+main = "anthropic/claude-sonnet-4-6"
+embedding = "openai/text-embedding-3-small"
+"#;
+        let file: ConfigFile = toml::from_str(toml_str).unwrap();
+        let cfg = from_file_and_env(Some(&file)).unwrap();
+        let emb = cfg.embedding.as_ref();
+        assert!(emb.is_some(), "embedding should be resolved");
+        let emb = emb.unwrap();
+        assert_eq!(emb.model.kind, ProviderKind::OpenAi);
+        assert_eq!(emb.model.model, "text-embedding-3-small");
+    }
+
+    #[test]
+    fn embedding_anthropic_rejected() {
+        let toml_str = r#"
+timezone = "UTC"
+
+[models]
+main = "anthropic/claude-sonnet-4-6"
+embedding = "anthropic/some-model"
+"#;
+        let file: ConfigFile = toml::from_str(toml_str).unwrap();
+        let result = from_file_and_env(Some(&file));
+        assert!(result.is_err(), "anthropic embedding should be rejected");
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("anthropic"),
+            "error should mention anthropic: {err}"
+        );
+    }
+
+    #[test]
+    fn embedding_absent_is_none() {
+        let toml_str = r#"
+timezone = "UTC"
+
+[models]
+main = "anthropic/claude-sonnet-4-6"
+"#;
+        let file: ConfigFile = toml::from_str(toml_str).unwrap();
+        let cfg = from_file_and_env(Some(&file)).unwrap();
+        assert!(
+            cfg.embedding.is_none(),
+            "missing embedding should yield None"
+        );
+    }
+
+    #[test]
+    fn embedding_no_fallback_to_default() {
+        let toml_str = r#"
+timezone = "UTC"
+
+[models]
+main = "anthropic/claude-sonnet-4-6"
+default = "openai/gpt-4o"
+"#;
+        let file: ConfigFile = toml::from_str(toml_str).unwrap();
+        let cfg = from_file_and_env(Some(&file)).unwrap();
+        assert!(
+            cfg.embedding.is_none(),
+            "embedding should not fall back to default"
         );
     }
 }

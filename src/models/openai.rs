@@ -6,6 +6,7 @@
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
+use super::embedding::{EmbeddingProvider, EmbeddingResponse};
 use super::http::{SharedHttpClient, map_request_error, warn_if_insecure_remote};
 use super::retry::{RetryConfig, with_retry};
 use super::{
@@ -313,6 +314,151 @@ struct OpenAiErrorResponse {
 #[derive(Deserialize)]
 struct OpenAiError {
     message: String,
+}
+
+// --- OpenAI Embeddings API types ---
+
+#[derive(Serialize)]
+struct EmbeddingRequest<'a> {
+    model: &'a str,
+    input: &'a [&'a str],
+}
+
+#[derive(Deserialize)]
+struct EmbeddingApiResponse {
+    data: Vec<EmbeddingData>,
+}
+
+#[derive(Deserialize)]
+struct EmbeddingData {
+    embedding: Vec<f32>,
+    index: u32,
+}
+
+/// OpenAI-compatible embeddings API client.
+pub(crate) struct OpenAiEmbeddingClient {
+    http: SharedHttpClient,
+    base_url: String,
+    api_key: Option<String>,
+    model: String,
+    retry: RetryConfig,
+}
+
+impl OpenAiEmbeddingClient {
+    /// Create a new embedding client with a shared HTTP client (no authentication).
+    #[must_use]
+    pub fn with_http_client(
+        http: SharedHttpClient,
+        base_url: impl Into<String>,
+        model: impl Into<String>,
+        retry: RetryConfig,
+    ) -> Self {
+        let base_url = base_url.into();
+        warn_if_insecure_remote(&base_url);
+
+        Self {
+            http,
+            base_url,
+            api_key: None,
+            model: model.into(),
+            retry,
+        }
+    }
+
+    /// Create a new embedding client with a shared HTTP client and API key authentication.
+    #[must_use]
+    pub fn with_http_client_and_api_key(
+        http: SharedHttpClient,
+        base_url: impl Into<String>,
+        model: impl Into<String>,
+        api_key: impl Into<String>,
+        retry: RetryConfig,
+    ) -> Self {
+        let base_url = base_url.into();
+        warn_if_insecure_remote(&base_url);
+
+        Self {
+            http,
+            base_url,
+            api_key: Some(api_key.into()),
+            model: model.into(),
+            retry,
+        }
+    }
+}
+
+#[async_trait]
+impl EmbeddingProvider for OpenAiEmbeddingClient {
+    async fn embed(&self, texts: &[&str]) -> Result<EmbeddingResponse, ModelError> {
+        let url = format!("{}/embeddings", self.base_url);
+        let model = self.model.clone();
+        let api_key = self.api_key.clone();
+        let http = self.http.clone();
+        let timeout_secs = self.http.timeout_secs();
+
+        with_retry(&self.retry, || {
+            let url = url.clone();
+            let model = model.clone();
+            let api_key = api_key.clone();
+            let http = http.clone();
+
+            async move {
+                let request = EmbeddingRequest {
+                    model: &model,
+                    input: texts,
+                };
+
+                let mut req_builder = http.client().post(&url).json(&request);
+
+                if let Some(ref key) = api_key {
+                    req_builder = req_builder.header("Authorization", format!("Bearer {key}"));
+                }
+
+                let response = req_builder
+                    .send()
+                    .await
+                    .map_err(|e| map_request_error(e, timeout_secs))?;
+
+                if !response.status().is_success() {
+                    let status = response.status();
+                    let raw_body = match response.text().await {
+                        Ok(body) => body,
+                        Err(e) => {
+                            tracing::warn!(error = %e, "failed to read error response body");
+                            format!("failed to read response body: {e}")
+                        }
+                    };
+                    let error_body = serde_json::from_str::<OpenAiErrorResponse>(&raw_body)
+                        .map_or_else(|_| raw_body, |e| e.error.message);
+                    return Err(ModelError::Api(format!("{status}: {error_body}")));
+                }
+
+                let mut api_response: EmbeddingApiResponse = response.json().await?;
+
+                if api_response.data.is_empty() {
+                    return Err(ModelError::Parse(
+                        "embeddings response contained no data".to_string(),
+                    ));
+                }
+
+                api_response.data.sort_by_key(|d| d.index);
+
+                let dimensions = api_response.data.first().map_or(0, |d| d.embedding.len());
+
+                let embeddings = api_response.data.into_iter().map(|d| d.embedding).collect();
+
+                Ok(EmbeddingResponse {
+                    embeddings,
+                    dimensions,
+                })
+            }
+        })
+        .await
+    }
+
+    fn model_name(&self) -> &str {
+        &self.model
+    }
 }
 
 #[cfg(test)]
@@ -789,6 +935,161 @@ mod tests {
         assert_eq!(
             response.content, "{\"answer\": \"hello\"}",
             "should return JSON string content"
+        );
+    }
+
+    // --- Embedding client tests ---
+
+    fn make_embedding_client(url: impl Into<String>, model: &str) -> OpenAiEmbeddingClient {
+        let http = SharedHttpClient::new(&HttpClientConfig::default()).unwrap();
+        OpenAiEmbeddingClient::with_http_client(http, url, model, RetryConfig::no_retry())
+    }
+
+    fn make_embedding_client_with_key(
+        url: impl Into<String>,
+        model: &str,
+        api_key: &str,
+    ) -> OpenAiEmbeddingClient {
+        let http = SharedHttpClient::new(&HttpClientConfig::default()).unwrap();
+        OpenAiEmbeddingClient::with_http_client_and_api_key(
+            http,
+            url,
+            model,
+            api_key,
+            RetryConfig::no_retry(),
+        )
+    }
+
+    #[tokio::test]
+    async fn embed_success() {
+        use crate::models::embedding::EmbeddingProvider;
+
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path("/embeddings"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "data": [
+                    { "embedding": [0.1, 0.2, 0.3], "index": 0 },
+                    { "embedding": [0.4, 0.5, 0.6], "index": 1 }
+                ]
+            })))
+            .mount(&mock_server)
+            .await;
+
+        let client = make_embedding_client(mock_server.uri(), "text-embedding-3-small");
+        let response = client.embed(&["hello", "world"]).await.unwrap();
+
+        assert_eq!(response.embeddings.len(), 2, "should have 2 embeddings");
+        assert_eq!(response.dimensions, 3, "dimensions should be 3");
+        assert_eq!(
+            response.embeddings.first().map(Vec::as_slice),
+            Some([0.1_f32, 0.2, 0.3].as_slice()),
+            "first embedding should match"
+        );
+        assert_eq!(
+            response.embeddings.get(1).map(Vec::as_slice),
+            Some([0.4_f32, 0.5, 0.6].as_slice()),
+            "second embedding should match"
+        );
+    }
+
+    #[tokio::test]
+    async fn embed_batch_ordering() {
+        use crate::models::embedding::EmbeddingProvider;
+
+        let mock_server = MockServer::start().await;
+
+        // Return embeddings out of order
+        Mock::given(method("POST"))
+            .and(path("/embeddings"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "data": [
+                    { "embedding": [0.4, 0.5, 0.6], "index": 1 },
+                    { "embedding": [0.1, 0.2, 0.3], "index": 0 }
+                ]
+            })))
+            .mount(&mock_server)
+            .await;
+
+        let client = make_embedding_client(mock_server.uri(), "text-embedding-3-small");
+        let response = client.embed(&["first", "second"]).await.unwrap();
+
+        assert_eq!(
+            response.embeddings.first().map(Vec::as_slice),
+            Some([0.1_f32, 0.2, 0.3].as_slice()),
+            "index 0 embedding should be first after sorting"
+        );
+        assert_eq!(
+            response.embeddings.get(1).map(Vec::as_slice),
+            Some([0.4_f32, 0.5, 0.6].as_slice()),
+            "index 1 embedding should be second after sorting"
+        );
+    }
+
+    #[tokio::test]
+    async fn embed_api_error_401() {
+        use crate::models::embedding::EmbeddingProvider;
+
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path("/embeddings"))
+            .respond_with(ResponseTemplate::new(401).set_body_json(serde_json::json!({
+                "error": {
+                    "message": "Invalid API key",
+                    "type": "invalid_request_error"
+                }
+            })))
+            .mount(&mock_server)
+            .await;
+
+        let client =
+            make_embedding_client_with_key(mock_server.uri(), "text-embedding-3-small", "bad-key");
+        let result = client.embed(&["test"]).await;
+
+        assert!(result.is_err(), "401 should return error");
+        let err = result.unwrap_err();
+        assert!(
+            matches!(err, ModelError::Api(_)),
+            "should be an Api error variant"
+        );
+        assert!(
+            err.to_string().contains("401"),
+            "error should contain status code"
+        );
+        assert!(
+            err.to_string().contains("Invalid API key"),
+            "error should contain message"
+        );
+    }
+
+    #[tokio::test]
+    async fn embed_empty_data() {
+        use crate::models::embedding::EmbeddingProvider;
+
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path("/embeddings"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({ "data": [] })),
+            )
+            .mount(&mock_server)
+            .await;
+
+        let client = make_embedding_client(mock_server.uri(), "text-embedding-3-small");
+        let result = client.embed(&["test"]).await;
+
+        assert!(result.is_err(), "empty data should return error");
+        let err = result.unwrap_err();
+        assert!(
+            matches!(err, ModelError::Parse(_)),
+            "should be a Parse error variant"
+        );
+        assert!(
+            err.to_string().contains("no data"),
+            "error should mention empty data"
         );
     }
 }

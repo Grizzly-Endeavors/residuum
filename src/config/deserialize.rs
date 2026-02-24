@@ -72,6 +72,8 @@ pub(super) struct ModelsConfigFile {
     pub(super) pulse: Option<String>,
     /// Cron agent model.
     pub(super) cron: Option<String>,
+    /// Embedding model (no fallback to default/main).
+    pub(super) embedding: Option<String>,
 }
 
 /// Raw TOML `[memory]` section.

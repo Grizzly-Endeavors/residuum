@@ -47,6 +47,8 @@ pub struct Config {
     pub pulse: ProviderSpec,
     /// Fully resolved cron provider.
     pub cron: ProviderSpec,
+    /// Fully resolved embedding provider (None if not configured).
+    pub embedding: Option<ProviderSpec>,
     /// Path to the workspace root directory.
     pub workspace_dir: PathBuf,
     /// Request timeout in seconds.
@@ -83,6 +85,7 @@ impl fmt::Debug for Config {
             .field("reflector", &self.reflector)
             .field("pulse", &self.pulse)
             .field("cron", &self.cron)
+            .field("embedding", &self.embedding)
             .field("workspace_dir", &self.workspace_dir)
             .field("timeout_secs", &self.timeout_secs)
             .field("max_tokens", &self.max_tokens)

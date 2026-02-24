@@ -1,6 +1,7 @@
 //! Model provider abstraction and shared LLM types.
 
 pub(crate) mod anthropic;
+pub(crate) mod embedding;
 pub(crate) mod factory;
 pub(crate) mod gemini;
 mod http;
@@ -8,6 +9,8 @@ pub(crate) mod ollama;
 pub(crate) mod openai;
 pub(crate) mod retry;
 
+pub(crate) use embedding::build_embedding_provider;
+pub use embedding::{EmbeddingProvider, EmbeddingResponse};
 pub(crate) use factory::build_provider_from_provider_spec;
 pub use http::{HttpClientConfig, SharedHttpClient};
 
