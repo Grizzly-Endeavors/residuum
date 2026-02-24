@@ -7,6 +7,7 @@ mod turn;
 use crate::channels::TurnDisplay;
 use crate::channels::types::MessageOrigin;
 use crate::error::IronclawError;
+use crate::mcp::SharedMcpRegistry;
 use crate::models::{CompletionOptions, Message, ModelProvider};
 use crate::tools::{SharedToolFilter, ToolRegistry};
 use crate::workspace::identity::IdentityFiles;
@@ -30,6 +31,7 @@ pub struct Agent {
     provider: Box<dyn ModelProvider>,
     tools: ToolRegistry,
     tool_filter: SharedToolFilter,
+    mcp_registry: SharedMcpRegistry,
     identity: IdentityFiles,
     recent_messages: RecentMessages,
     options: CompletionOptions,
@@ -49,6 +51,7 @@ impl Agent {
         provider: Box<dyn ModelProvider>,
         tools: ToolRegistry,
         tool_filter: SharedToolFilter,
+        mcp_registry: SharedMcpRegistry,
         identity: IdentityFiles,
         options: CompletionOptions,
         tz: chrono_tz::Tz,
@@ -57,6 +60,7 @@ impl Agent {
             provider,
             tools,
             tool_filter,
+            mcp_registry,
             identity,
             recent_messages: RecentMessages::new(),
             options,
@@ -66,6 +70,12 @@ impl Agent {
             tz,
             last_user_message_at: None,
         }
+    }
+
+    /// Get a reference to the MCP registry.
+    #[must_use]
+    pub fn mcp_registry(&self) -> &SharedMcpRegistry {
+        &self.mcp_registry
     }
 
     /// Reload observations from the observation log file.
@@ -222,6 +232,7 @@ impl Agent {
             &*self.provider,
             &self.tools,
             &self.tool_filter,
+            &self.mcp_registry,
             &self.identity,
             &self.options,
             &memory_ctx,
@@ -268,6 +279,7 @@ impl Agent {
             provider,
             &self.tools,
             &self.tool_filter,
+            &self.mcp_registry,
             &self.identity,
             &self.options,
             &memory_ctx,
@@ -310,6 +322,7 @@ mod tests {
     use super::turn::MAX_TOOL_ITERATIONS;
     use super::*;
     use crate::channels::null::NullDisplay;
+    use crate::mcp::McpRegistry;
     use crate::models::{ModelError, ModelResponse, ToolCall, ToolDefinition};
     use crate::tools::{FileTracker, PathPolicy, ToolFilter};
     use async_trait::async_trait;
@@ -319,6 +332,10 @@ mod tests {
 
     fn no_filter() -> SharedToolFilter {
         ToolFilter::new_shared(HashSet::new())
+    }
+
+    fn empty_mcp() -> SharedMcpRegistry {
+        McpRegistry::new_shared()
     }
 
     fn no_projects() -> ProjectsContext<'static> {
@@ -375,6 +392,7 @@ mod tests {
             Box::new(provider),
             ToolRegistry::new(),
             no_filter(),
+            empty_mcp(),
             IdentityFiles::default(),
             CompletionOptions::default(),
             chrono_tz::UTC,
@@ -412,6 +430,7 @@ mod tests {
             Box::new(provider),
             registry,
             no_filter(),
+            empty_mcp(),
             IdentityFiles::default(),
             CompletionOptions::default(),
             chrono_tz::UTC,
@@ -460,6 +479,7 @@ mod tests {
             Box::new(provider),
             registry,
             no_filter(),
+            empty_mcp(),
             IdentityFiles::default(),
             CompletionOptions::default(),
             chrono_tz::UTC,
@@ -509,6 +529,7 @@ mod tests {
             Box::new(provider),
             registry,
             no_filter(),
+            empty_mcp(),
             IdentityFiles::default(),
             CompletionOptions::default(),
             chrono_tz::UTC,
@@ -536,6 +557,7 @@ mod tests {
             Box::new(provider),
             ToolRegistry::new(),
             no_filter(),
+            empty_mcp(),
             IdentityFiles::default(),
             CompletionOptions::default(),
             chrono_tz::UTC,
@@ -573,6 +595,7 @@ mod tests {
             Box::new(provider),
             ToolRegistry::new(),
             no_filter(),
+            empty_mcp(),
             IdentityFiles::default(),
             CompletionOptions::default(),
             chrono_tz::UTC,
@@ -607,6 +630,7 @@ mod tests {
             Box::new(MockProvider::new(vec![])),
             ToolRegistry::new(),
             no_filter(),
+            empty_mcp(),
             IdentityFiles::default(),
             CompletionOptions::default(),
             chrono_tz::UTC,
@@ -653,6 +677,7 @@ mod tests {
             Box::new(provider),
             ToolRegistry::new(),
             no_filter(),
+            empty_mcp(),
             IdentityFiles::default(),
             CompletionOptions::default(),
             chrono_tz::UTC,

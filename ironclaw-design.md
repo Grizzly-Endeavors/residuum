@@ -966,7 +966,7 @@ Guild channels, mention gating, and threads are deferred to Phase 5+.
 
 **Milestone: Agent is fully accessible via Discord with presence, commands, and media.**
 
-### Phase 5: Projects
+### Phase 5: Projects (COMPLETE)
 19. `projects/scanner` — Directory discovery, PROJECT.md frontmatter parsing.
 20. `projects/activation` — Context activation/deactivation via agent tool calls.
 21. `projects/manifest` — Generate file listings for the active entry.

@@ -67,6 +67,7 @@ mod proactivity_integration {
             Box::new(MockProvider::new(responses)),
             ToolRegistry::new(),
             ToolFilter::new_shared(std::collections::HashSet::new()),
+            ironclaw::mcp::McpRegistry::new_shared(),
             IdentityFiles::default(),
             CompletionOptions::default(),
             chrono_tz::UTC,

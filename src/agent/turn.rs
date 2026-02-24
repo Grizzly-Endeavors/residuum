@@ -2,8 +2,9 @@
 
 use crate::channels::TurnDisplay;
 use crate::error::IronclawError;
+use crate::mcp::SharedMcpRegistry;
 use crate::models::{CompletionOptions, Message, ModelProvider, ModelResponse};
-use crate::tools::{SharedToolFilter, ToolRegistry};
+use crate::tools::{SharedToolFilter, ToolError, ToolRegistry};
 use crate::workspace::identity::IdentityFiles;
 
 use super::context::{
@@ -19,6 +20,9 @@ pub(super) const MAX_TOOL_ITERATIONS: usize = 50;
 /// Calls the provider repeatedly until it returns a text response (no tool calls),
 /// executing any requested tools in between. Updates `recent_messages` in place.
 ///
+/// MCP tool definitions are merged into the built-in tool list, and tool calls
+/// fall back to MCP servers when no built-in tool matches.
+///
 /// Returns a vec containing the final text-only response. Intermediate texts
 /// emitted alongside tool calls are broadcast via `display` in real-time but
 /// not included in the return value.
@@ -30,6 +34,7 @@ pub(super) async fn execute_turn(
     provider: &dyn ModelProvider,
     tools: &ToolRegistry,
     tool_filter: &SharedToolFilter,
+    mcp_registry: &SharedMcpRegistry,
     identity: &IdentityFiles,
     options: &CompletionOptions,
     memory_ctx: &MemoryContext<'_>,
@@ -40,7 +45,13 @@ pub(super) async fn execute_turn(
     time_ctx: Option<&TimeContext>,
 ) -> Result<Vec<String>, IronclawError> {
     let filter = tool_filter.read().await;
-    let tool_definitions = tools.definitions(&filter);
+    let mut tool_definitions = tools.definitions(&filter);
+
+    // Merge MCP tool definitions from all connected servers
+    let mcp_guard = mcp_registry.read().await;
+    tool_definitions.extend(mcp_guard.tool_definitions());
+    drop(mcp_guard);
+
     let mut texts: Vec<String> = Vec::new();
 
     for iteration in 0..MAX_TOOL_ITERATIONS {
@@ -95,9 +106,20 @@ pub(super) async fn execute_turn(
         for tool_call in &response.tool_calls {
             display.show_tool_call(&tool_call.name, &tool_call.arguments);
 
-            let result = tools
+            // Try built-in tools first, fall back to MCP servers
+            let result = match tools
                 .execute(&tool_call.name, tool_call.arguments.clone(), &filter)
-                .await;
+                .await
+            {
+                Err(ToolError::NotFound(_)) => {
+                    mcp_registry
+                        .read()
+                        .await
+                        .call_tool(&tool_call.name, tool_call.arguments.clone())
+                        .await
+                }
+                other => other,
+            };
 
             let (output, is_error) = match result {
                 Ok(r) => (r.output, r.is_error),

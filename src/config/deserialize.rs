@@ -37,6 +37,8 @@ pub(super) struct ConfigFile {
     pub(super) webhook: Option<WebhookConfigFile>,
     /// Skills subsystem configuration.
     pub(super) skills: Option<SkillsConfigFile>,
+    /// MCP server configuration.
+    pub(super) mcp: Option<McpConfigFile>,
 }
 
 /// A named provider entry under `[providers.<name>]`.
@@ -134,4 +136,24 @@ pub(super) struct WebhookConfigFile {
 pub(super) struct SkillsConfigFile {
     /// Additional directories to scan for skills.
     pub(super) dirs: Option<Vec<String>>,
+}
+
+/// Raw TOML `[mcp]` section.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct McpConfigFile {
+    /// Named MCP server definitions.
+    pub(super) servers: Option<HashMap<String, McpServerConfigEntry>>,
+}
+
+/// A single MCP server entry under `[mcp.servers.<name>]`.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct McpServerConfigEntry {
+    /// Command to start the server.
+    pub(super) command: String,
+    /// Command-line arguments.
+    pub(super) args: Option<Vec<String>>,
+    /// Environment variables to pass to the server process.
+    pub(super) env: Option<HashMap<String, String>>,
 }

@@ -81,3 +81,10 @@ pub struct SkillsConfig {
     /// Directories to scan for skills (resolved, expanded paths).
     pub dirs: Vec<PathBuf>,
 }
+
+/// Validated MCP server configuration.
+#[derive(Debug, Clone, Default)]
+pub struct McpConfig {
+    /// Global MCP servers to start on gateway boot.
+    pub servers: Vec<crate::projects::types::McpServerEntry>,
+}

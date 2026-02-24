@@ -9,3 +9,5 @@
 - Archive indexing for memory search — include `archive/` directory in BM25 search paths so completed project content remains searchable.
 - Wire up `src/models/retry.rs` (`RetryConfig`, `with_retry`) to the model providers — the logic is implemented and tested but never called in production.
 - Enforce JSON output at API level where possible.
+- Embedding and RAG support for memory search
+- HTTP/SSE transport support for MCP servers.

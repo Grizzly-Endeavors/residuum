@@ -93,12 +93,20 @@ impl Tool for ProjectActivateTool {
                     .set_active_project(Some(project_root));
                 // Enable gated tools from project frontmatter
                 self.tool_filter.write().await.enable(&tools_list);
-                // Reconcile MCP servers
-                let mcp_result = self.mcp_registry.write().await.reconcile(&mcp_servers);
-                if !mcp_result.to_start.is_empty() || !mcp_result.to_stop.is_empty() {
+                // Reconcile and connect MCP servers
+                let mcp_report = self
+                    .mcp_registry
+                    .write()
+                    .await
+                    .reconcile_and_connect(&mcp_servers)
+                    .await;
+                for (server_name, err) in &mcp_report.failures {
+                    tracing::warn!(server = %server_name, error = %err, "mcp server failed to start");
+                }
+                if mcp_report.started > 0 || mcp_report.stopped > 0 {
                     tracing::info!(
-                        to_start = mcp_result.to_start.len(),
-                        to_stop = mcp_result.to_stop.len(),
+                        started = mcp_report.started,
+                        stopped = mcp_report.stopped,
                         "mcp server reconciliation"
                     );
                 }
@@ -192,12 +200,12 @@ impl Tool for ProjectDeactivateTool {
                 self.path_policy.write().await.set_active_project(None);
                 // Clear gated tool permissions
                 self.tool_filter.write().await.clear_enabled();
-                // Stop all MCP servers
-                let stopped = self.mcp_registry.write().await.stop_all();
+                // Disconnect all MCP servers
+                let stopped = self.mcp_registry.write().await.disconnect_all().await;
                 if !stopped.is_empty() {
                     tracing::info!(
                         count = stopped.len(),
-                        "stopping mcp servers on deactivation"
+                        "disconnecting mcp servers on deactivation"
                     );
                 }
                 // Rescan skills without project dir (removes project-scoped skills)

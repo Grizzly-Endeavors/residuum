@@ -14,11 +14,13 @@ use super::constants::{
     DEFAULT_TIMEOUT_SECS,
 };
 use super::deserialize::{
-    ConfigFile, DiscordConfigFile, GatewayConfigFile, ProviderEntryFile, SkillsConfigFile,
-    WebhookConfigFile,
+    ConfigFile, DiscordConfigFile, GatewayConfigFile, McpConfigFile, ProviderEntryFile,
+    SkillsConfigFile, WebhookConfigFile,
 };
 use super::provider::{ModelSpec, ProviderKind, ProviderSpec};
-use super::types::{DiscordConfig, GatewayConfig, MemoryConfig, SkillsConfig, WebhookConfig};
+use super::types::{
+    DiscordConfig, GatewayConfig, McpConfig, MemoryConfig, SkillsConfig, WebhookConfig,
+};
 
 /// Build a `Config` from an optional config file and environment variables.
 ///
@@ -124,6 +126,7 @@ pub(super) fn from_file_and_env(file: Option<&ConfigFile>) -> Result<Config, Iro
     let discord = resolve_discord_config(file.and_then(|f| f.discord.as_ref()));
     let webhook = resolve_webhook_config(file.and_then(|f| f.webhook.as_ref()));
     let skills = resolve_skills_config(file.and_then(|f| f.skills.as_ref()), &workspace_dir);
+    let mcp = resolve_mcp_config(file.and_then(|f| f.mcp.as_ref()));
 
     let timezone_str = std::env::var("IRONCLAW_TIMEZONE")
         .ok()
@@ -158,6 +161,7 @@ pub(super) fn from_file_and_env(file: Option<&ConfigFile>) -> Result<Config, Iro
         discord,
         webhook,
         skills,
+        mcp,
     })
 }
 
@@ -359,6 +363,31 @@ fn resolve_skills_config(section: Option<&SkillsConfigFile>, workspace_dir: &Pat
     }
 
     SkillsConfig { dirs }
+}
+
+/// Resolve MCP server configuration from TOML section.
+///
+/// Converts named server entries into `McpServerEntry` values with the
+/// map key used as the server name.
+fn resolve_mcp_config(section: Option<&McpConfigFile>) -> McpConfig {
+    let Some(section) = section else {
+        return McpConfig::default();
+    };
+    let Some(servers_map) = &section.servers else {
+        return McpConfig::default();
+    };
+
+    let servers = servers_map
+        .iter()
+        .map(|(name, entry)| crate::projects::types::McpServerEntry {
+            name: name.clone(),
+            command: entry.command.clone(),
+            args: entry.args.clone().unwrap_or_default(),
+            env: entry.env.clone().unwrap_or_default(),
+        })
+        .collect();
+
+    McpConfig { servers }
 }
 
 /// Warn on deprecated environment variables that no longer have effect.

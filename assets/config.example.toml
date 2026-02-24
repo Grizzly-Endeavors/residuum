@@ -83,3 +83,12 @@ port = 7700
 # [webhook]
 # enabled = false
 # secret = "your-webhook-secret"
+
+# ── MCP servers (optional, always-on tool servers) ───────────────────────
+# Servers defined here start on gateway boot and stay running.
+# Project-scoped MCP servers are defined in PROJECT.md frontmatter instead.
+#
+# [mcp.servers.filesystem]
+# command = "mcp-server-filesystem"
+# args = ["/home/user/documents"]
+# env = { MCP_LOG = "debug" }

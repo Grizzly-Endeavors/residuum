@@ -169,5 +169,6 @@ mod tests {
             body.contains("[skills]"),
             "example should document skills section"
         );
+        assert!(body.contains("mcp"), "example should document mcp section");
     }
 }

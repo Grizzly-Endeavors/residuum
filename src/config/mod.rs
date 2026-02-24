@@ -24,7 +24,9 @@ pub(crate) use constants::{
     DEFAULT_REFLECTOR_THRESHOLD,
 };
 pub use provider::{ModelSpec, ProviderKind, ProviderSpec};
-pub use types::{DiscordConfig, GatewayConfig, MemoryConfig, SkillsConfig, WebhookConfig};
+pub use types::{
+    DiscordConfig, GatewayConfig, McpConfig, MemoryConfig, SkillsConfig, WebhookConfig,
+};
 
 // ── Config struct ─────────────────────────────────────────────────────────────
 
@@ -66,6 +68,8 @@ pub struct Config {
     pub webhook: WebhookConfig,
     /// Skills subsystem configuration.
     pub skills: SkillsConfig,
+    /// MCP server configuration (global servers).
+    pub mcp: McpConfig,
 }
 
 impl fmt::Debug for Config {
@@ -87,6 +91,7 @@ impl fmt::Debug for Config {
             .field("discord", &self.discord.as_ref().map(|_| "[configured]"))
             .field("webhook", &self.webhook)
             .field("skills", &self.skills)
+            .field("mcp", &self.mcp)
             .finish()
     }
 }

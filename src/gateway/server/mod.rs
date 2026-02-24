@@ -22,6 +22,7 @@ use crate::channels::types::RoutedMessage;
 use crate::config::Config;
 use crate::cron::store::CronStore;
 use crate::error::IronclawError;
+use crate::mcp::SharedMcpRegistry;
 use crate::memory::observer::{ObserveAction, Observer};
 use crate::memory::reflector::Reflector;
 use crate::memory::search::MemoryIndex;
@@ -73,6 +74,7 @@ struct GatewayRuntime {
     search_index: Arc<MemoryIndex>,
     cron_store: Arc<tokio::sync::Mutex<CronStore>>,
     cron_notify: Arc<tokio::sync::Notify>,
+    mcp_registry: SharedMcpRegistry,
     project_state: SharedProjectState,
     skill_state: SharedSkillState,
     pulse_provider: Box<dyn ModelProvider>,
@@ -220,6 +222,7 @@ pub async fn run_gateway(cfg: Config) -> Result<GatewayExit, IronclawError> {
         search_index: parts.search_index,
         cron_store: parts.cron_store,
         cron_notify: parts.cron_notify,
+        mcp_registry: parts.mcp_registry,
         project_state: parts.project_state,
         skill_state: parts.skill_state,
         pulse_provider: parts.pulse_provider,
@@ -260,6 +263,7 @@ async fn run_event_loop(mut rt: GatewayRuntime) -> GatewayExit {
             // ── Reload signal ─────────────────────────────────────────────
             _ = rt.reload_rx.changed() => {
                 tracing::info!("reloading configuration");
+                rt.mcp_registry.write().await.disconnect_all().await;
                 rt.server_handle.abort();
                 return GatewayExit::Reload;
             }
@@ -268,6 +272,7 @@ async fn run_event_loop(mut rt: GatewayRuntime) -> GatewayExit {
             msg = rt.inbound_rx.recv() => {
                 let Some(routed) = msg else {
                     tracing::info!("inbound channel closed, shutting down");
+                    rt.mcp_registry.write().await.disconnect_all().await;
                     rt.server_handle.abort();
                     break;
                 };

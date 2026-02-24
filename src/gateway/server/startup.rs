@@ -6,6 +6,7 @@ use crate::agent::Agent;
 use crate::config::Config;
 use crate::cron::store::CronStore;
 use crate::error::IronclawError;
+use crate::mcp::SharedMcpRegistry;
 use crate::memory::observer::Observer;
 use crate::memory::recent_messages::load_messages_for_agent;
 use crate::memory::reflector::Reflector;
@@ -34,6 +35,7 @@ pub(super) struct GatewayComponents {
     pub(super) search_index: Arc<MemoryIndex>,
     pub(super) cron_store: Arc<tokio::sync::Mutex<CronStore>>,
     pub(super) cron_notify: Arc<tokio::sync::Notify>,
+    pub(super) mcp_registry: SharedMcpRegistry,
     pub(super) project_state: SharedProjectState,
     pub(super) skill_state: SharedSkillState,
     pub(super) pulse_provider: Box<dyn ModelProvider>,
@@ -49,6 +51,10 @@ pub(super) struct GatewayComponents {
 ///
 /// # Errors
 /// Returns `IronclawError` if any subsystem fails to initialize.
+#[expect(
+    clippy::too_many_lines,
+    reason = "sequential initialization pipeline; splitting would obscure the boot order"
+)]
 pub(super) async fn initialize(cfg: &Config) -> Result<GatewayComponents, IronclawError> {
     // Workspace
     let layout = WorkspaceLayout::new(&cfg.workspace_dir);
@@ -114,7 +120,7 @@ pub(super) async fn initialize(cfg: &Config) -> Result<GatewayComponents, Ironcl
         Arc::clone(&project_state),
         path_policy,
         Arc::clone(&tool_filter),
-        mcp_registry,
+        Arc::clone(&mcp_registry),
         Arc::clone(&skill_state),
         tz,
     );
@@ -124,7 +130,27 @@ pub(super) async fn initialize(cfg: &Config) -> Result<GatewayComponents, Ironcl
     let options = CompletionOptions {
         max_tokens: Some(cfg.max_tokens),
     };
-    let mut agent = Agent::new(provider, tools, tool_filter, identity, options, tz);
+    // Connect global MCP servers from config
+    if !cfg.mcp.servers.is_empty() {
+        let mut reg = mcp_registry.write().await;
+        let report = reg.reconcile_and_connect(&cfg.mcp.servers).await;
+        for (name, err) in &report.failures {
+            eprintln!("warning: global mcp server '{name}' failed to start: {err}");
+        }
+        if report.started > 0 {
+            tracing::info!(connected = report.started, "global mcp servers ready");
+        }
+    }
+
+    let mut agent = Agent::new(
+        provider,
+        tools,
+        tool_filter,
+        Arc::clone(&mcp_registry),
+        identity,
+        options,
+        tz,
+    );
     agent.reload_observations(&layout).await?;
     agent.reload_recent_context(&layout).await?;
 
@@ -147,6 +173,7 @@ pub(super) async fn initialize(cfg: &Config) -> Result<GatewayComponents, Ironcl
         search_index,
         cron_store,
         cron_notify,
+        mcp_registry,
         project_state,
         skill_state,
         pulse_provider,
