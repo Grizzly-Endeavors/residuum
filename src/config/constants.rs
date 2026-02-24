@@ -1,0 +1,37 @@
+//! Compile-time default values for configuration fields.
+
+/// Default base URL for the Anthropic API.
+pub(crate) const DEFAULT_ANTHROPIC_URL: &str = "https://api.anthropic.com";
+
+/// Default base URL for a local Ollama instance.
+pub(crate) const DEFAULT_OLLAMA_URL: &str = "http://localhost:11434";
+
+/// Default base URL for the `OpenAI` API.
+pub(crate) const DEFAULT_OPENAI_URL: &str = "https://api.openai.com/v1";
+
+/// Default base URL for the Google Gemini API.
+pub(crate) const DEFAULT_GEMINI_URL: &str = "https://generativelanguage.googleapis.com/v1beta";
+
+/// Default request timeout in seconds.
+pub(crate) const DEFAULT_TIMEOUT_SECS: u64 = 120;
+
+/// Default gateway bind address.
+pub(crate) const DEFAULT_GATEWAY_BIND: &str = "127.0.0.1";
+
+/// Default gateway port.
+pub(crate) const DEFAULT_GATEWAY_PORT: u16 = 7700;
+
+/// Default max tokens for model responses.
+pub(crate) const DEFAULT_MAX_TOKENS: u32 = 8192;
+
+/// Default observer token threshold before firing.
+pub(crate) const DEFAULT_OBSERVER_THRESHOLD: usize = 30_000;
+
+/// Default reflector token threshold before compressing.
+pub(crate) const DEFAULT_REFLECTOR_THRESHOLD: usize = 40_000;
+
+/// Default observer cooldown period in seconds before observation fires.
+pub(crate) const DEFAULT_OBSERVER_COOLDOWN_SECS: u64 = 120;
+
+/// Default force-observe token threshold (bypasses cooldown).
+pub(crate) const DEFAULT_OBSERVER_FORCE_THRESHOLD: usize = 60_000;
