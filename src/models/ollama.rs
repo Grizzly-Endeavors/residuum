@@ -6,7 +6,8 @@ use serde::{Deserialize, Serialize};
 use super::http::{SharedHttpClient, map_request_error, warn_if_insecure_remote};
 use super::retry::{RetryConfig, with_retry};
 use super::{
-    CompletionOptions, Message, ModelError, ModelProvider, ModelResponse, ToolCall, ToolDefinition,
+    CompletionOptions, Message, ModelError, ModelProvider, ModelResponse, ResponseFormat, ToolCall,
+    ToolDefinition,
 };
 
 /// Ollama API client implementing the [`ModelProvider`] trait.
@@ -51,7 +52,7 @@ impl ModelProvider for OllamaClient {
         &self,
         messages: &[Message],
         tools: &[ToolDefinition],
-        _options: &CompletionOptions,
+        options: &CompletionOptions,
     ) -> Result<ModelResponse, ModelError> {
         let url = format!("{}/api/chat", self.base_url);
         let ollama_messages: Vec<OllamaMessage> = messages.iter().map(Into::into).collect();
@@ -71,12 +72,18 @@ impl ModelProvider for OllamaClient {
         let http = self.http.clone();
         let timeout_secs = self.timeout_secs();
 
+        let format = match &options.response_format {
+            ResponseFormat::Text => None,
+            ResponseFormat::JsonSchema { schema, .. } => Some(schema.clone()),
+        };
+
         with_retry(&self.retry, || {
             let url = url.clone();
             let ollama_messages = ollama_messages.clone();
             let ollama_tools = ollama_tools.clone();
             let model = model.clone();
             let http = http.clone();
+            let format = format.clone();
 
             async move {
                 let request = OllamaChatRequest {
@@ -84,6 +91,7 @@ impl ModelProvider for OllamaClient {
                     messages: ollama_messages,
                     tools: has_tools.then_some(ollama_tools),
                     stream: false,
+                    format,
                 };
 
                 let response = http
@@ -139,6 +147,8 @@ struct OllamaChatRequest<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     tools: Option<Vec<OllamaTool>>,
     stream: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    format: Option<serde_json::Value>,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -414,6 +424,53 @@ mod tests {
             err.to_string(),
             "request timed out after 1 seconds",
             "timeout message should include duration"
+        );
+    }
+
+    #[tokio::test]
+    async fn complete_with_json_schema_response_format() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path("/api/chat"))
+            .and(wiremock::matchers::body_partial_json(serde_json::json!({
+                "format": {
+                    "type": "object",
+                    "properties": {
+                        "answer": {"type": "string"}
+                    }
+                }
+            })))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "message": {
+                    "role": "assistant",
+                    "content": "{\"answer\": \"hello\"}"
+                }
+            })))
+            .mount(&mock_server)
+            .await;
+
+        let client = make_client(mock_server.uri(), "test-model");
+        let options = CompletionOptions {
+            response_format: crate::models::ResponseFormat::JsonSchema {
+                name: "test_schema".to_string(),
+                schema: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "answer": {"type": "string"}
+                    }
+                }),
+            },
+            ..CompletionOptions::default()
+        };
+
+        let response = client
+            .complete(&[Message::user("Hello")], &[], &options)
+            .await
+            .unwrap();
+        assert_eq!(
+            response.content, "{\"answer\": \"hello\"}",
+            "should return JSON content"
         );
     }
 }

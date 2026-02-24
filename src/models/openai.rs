@@ -9,7 +9,8 @@ use serde::{Deserialize, Serialize};
 use super::http::{SharedHttpClient, map_request_error, warn_if_insecure_remote};
 use super::retry::{RetryConfig, with_retry};
 use super::{
-    CompletionOptions, Message, ModelError, ModelProvider, ModelResponse, ToolCall, ToolDefinition,
+    CompletionOptions, Message, ModelError, ModelProvider, ModelResponse, ResponseFormat, ToolCall,
+    ToolDefinition,
 };
 
 /// OpenAI-compatible API client.
@@ -80,7 +81,7 @@ impl ModelProvider for OpenAiClient {
         &self,
         messages: &[Message],
         tools: &[ToolDefinition],
-        _options: &CompletionOptions,
+        options: &CompletionOptions,
     ) -> Result<ModelResponse, ModelError> {
         let url = format!("{}/chat/completions", self.base_url);
         let openai_messages: Vec<OpenAiMessage> = messages.iter().map(Into::into).collect();
@@ -101,6 +102,18 @@ impl ModelProvider for OpenAiClient {
         let http = self.http.clone();
         let timeout_secs = self.timeout_secs();
 
+        let response_format = match &options.response_format {
+            ResponseFormat::Text => None,
+            ResponseFormat::JsonSchema { name, schema } => Some(OpenAiResponseFormat {
+                r#type: "json_schema".to_string(),
+                json_schema: OpenAiJsonSchema {
+                    name: name.clone(),
+                    schema: schema.clone(),
+                    strict: true,
+                },
+            }),
+        };
+
         with_retry(&self.retry, || {
             let url = url.clone();
             let openai_messages = openai_messages.clone();
@@ -108,6 +121,7 @@ impl ModelProvider for OpenAiClient {
             let model = model.clone();
             let api_key = api_key.clone();
             let http = http.clone();
+            let response_format = response_format.clone();
 
             async move {
                 let request = ChatCompletionRequest {
@@ -115,6 +129,7 @@ impl ModelProvider for OpenAiClient {
                     messages: openai_messages,
                     tools: has_tools.then_some(openai_tools),
                     tool_choice: has_tools.then_some("auto"),
+                    response_format,
                 };
 
                 let mut req_builder = http.client().post(&url).json(&request);
@@ -196,6 +211,21 @@ struct ChatCompletionRequest<'a> {
     tools: Option<Vec<OpenAiTool>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     tool_choice: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    response_format: Option<OpenAiResponseFormat>,
+}
+
+#[derive(Serialize, Clone)]
+struct OpenAiResponseFormat {
+    r#type: String,
+    json_schema: OpenAiJsonSchema,
+}
+
+#[derive(Serialize, Clone)]
+struct OpenAiJsonSchema {
+    name: String,
+    schema: serde_json::Value,
+    strict: bool,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -703,6 +733,62 @@ mod tests {
             err.to_string(),
             "request timed out after 1 seconds",
             "timeout display should include duration"
+        );
+    }
+
+    #[tokio::test]
+    async fn complete_with_json_schema_response_format() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .and(wiremock::matchers::body_partial_json(serde_json::json!({
+                "response_format": {
+                    "type": "json_schema",
+                    "json_schema": {
+                        "name": "test_schema",
+                        "strict": true,
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "answer": {"type": "string"}
+                            }
+                        }
+                    }
+                }
+            })))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "choices": [{
+                    "message": {
+                        "role": "assistant",
+                        "content": "{\"answer\": \"hello\"}"
+                    }
+                }]
+            })))
+            .mount(&mock_server)
+            .await;
+
+        let client = make_client(mock_server.uri(), "gpt-4");
+        let options = CompletionOptions {
+            response_format: crate::models::ResponseFormat::JsonSchema {
+                name: "test_schema".to_string(),
+                schema: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "answer": {"type": "string"}
+                    }
+                }),
+            },
+            ..CompletionOptions::default()
+        };
+
+        let response = client
+            .complete(&[Message::user("Hello")], &[], &options)
+            .await
+            .unwrap();
+        assert_eq!(
+            response.content, "{\"answer\": \"hello\"}",
+            "should return JSON string content"
         );
     }
 }

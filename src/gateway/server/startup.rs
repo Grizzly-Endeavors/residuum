@@ -139,6 +139,7 @@ pub(super) async fn initialize(cfg: &Config) -> Result<GatewayComponents, Ironcl
     // Agent
     let options = CompletionOptions {
         max_tokens: Some(cfg.max_tokens),
+        ..CompletionOptions::default()
     };
     // Connect global MCP servers from config
     if !cfg.mcp.servers.is_empty() {

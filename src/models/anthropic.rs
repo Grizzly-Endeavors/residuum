@@ -8,8 +8,8 @@ use tracing::{debug, info};
 use super::http::{SharedHttpClient, map_request_error, warn_if_insecure_remote};
 use super::retry::{RetryConfig, with_retry};
 use super::{
-    CompletionOptions, Message, ModelError, ModelProvider, ModelResponse, Role, ToolCall,
-    ToolDefinition, Usage,
+    CompletionOptions, Message, ModelError, ModelProvider, ModelResponse, ResponseFormat, Role,
+    ToolCall, ToolDefinition, Usage,
 };
 
 /// Anthropic Messages API version header value.
@@ -212,10 +212,21 @@ impl ModelProvider for AnthropicClient {
         let message_count = messages.len();
         let tool_count = tools.len();
 
+        let output_config = match &options.response_format {
+            ResponseFormat::Text => None,
+            ResponseFormat::JsonSchema { schema, .. } => Some(AnthropicOutputConfig {
+                format: AnthropicOutputFormat {
+                    r#type: "json_schema".to_string(),
+                    schema: schema.clone(),
+                },
+            }),
+        };
+
         with_retry(&self.retry, || {
             let system = system.clone();
             let api_messages = api_messages.clone();
             let api_tools = api_tools.clone();
+            let output_config = output_config.clone();
             let model = model.clone();
             let endpoint = endpoint.clone();
             let api_key = api_key.clone();
@@ -228,6 +239,7 @@ impl ModelProvider for AnthropicClient {
                     system: system.as_deref(),
                     messages: api_messages,
                     tools: api_tools,
+                    output_config,
                 };
 
                 debug!(
@@ -318,6 +330,8 @@ struct AnthropicRequest<'a> {
     messages: Vec<AnthropicMessage>,
     #[serde(skip_serializing_if = "Option::is_none")]
     tools: Option<Vec<AnthropicTool>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    output_config: Option<AnthropicOutputConfig>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -356,6 +370,17 @@ struct AnthropicTool {
     name: String,
     description: String,
     input_schema: Value,
+}
+
+#[derive(Debug, Serialize, Clone)]
+struct AnthropicOutputConfig {
+    format: AnthropicOutputFormat,
+}
+
+#[derive(Debug, Serialize, Clone)]
+struct AnthropicOutputFormat {
+    r#type: String,
+    schema: serde_json::Value,
 }
 
 #[derive(Debug, Deserialize)]
@@ -742,6 +767,58 @@ mod tests {
         assert!(
             matches!(err, ModelError::Timeout(_)),
             "error should be Timeout variant, got: {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn complete_with_json_schema_response_format() {
+        let server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path("/v1/messages"))
+            .and(wiremock::matchers::body_partial_json(json!({
+                "output_config": {
+                    "format": {
+                        "type": "json_schema",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "answer": {"type": "string"}
+                            }
+                        }
+                    }
+                }
+            })))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "content": [
+                    {"type": "text", "text": "{\"answer\": \"hello\"}"}
+                ],
+                "stop_reason": "end_turn",
+                "usage": {"input_tokens": 10, "output_tokens": 15}
+            })))
+            .mount(&server)
+            .await;
+
+        let client = test_client(&server.uri());
+        let options = CompletionOptions {
+            response_format: crate::models::ResponseFormat::JsonSchema {
+                name: "test_schema".to_string(),
+                schema: json!({
+                    "type": "object",
+                    "properties": {
+                        "answer": {"type": "string"}
+                    }
+                }),
+            },
+            ..CompletionOptions::default()
+        };
+
+        let result = client.complete(&simple_user_message(), &[], &options).await;
+        assert!(result.is_ok(), "structured output request should succeed");
+        assert_eq!(
+            result.unwrap().content,
+            "{\"answer\": \"hello\"}",
+            "should return JSON content"
         );
     }
 }

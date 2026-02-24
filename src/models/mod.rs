@@ -219,11 +219,28 @@ impl ModelResponse {
     }
 }
 
+/// Desired response format for model completions.
+#[derive(Debug, Clone, Default)]
+pub enum ResponseFormat {
+    /// Plain text response (default behavior).
+    #[default]
+    Text,
+    /// JSON response conforming to a JSON Schema.
+    JsonSchema {
+        /// Schema name (required by `OpenAI`, ignored by other providers).
+        name: String,
+        /// The JSON Schema that the response must conform to.
+        schema: serde_json::Value,
+    },
+}
+
 /// Options for model completion requests.
 #[derive(Debug, Clone, Default)]
 pub struct CompletionOptions {
     /// Maximum tokens to generate.
     pub max_tokens: Option<u32>,
+    /// Desired response format.
+    pub response_format: ResponseFormat,
 }
 
 /// Trait for model provider implementations.
@@ -378,5 +395,26 @@ mod tests {
         let owned = String::from("owned content");
         let msg = Message::user(owned);
         assert_eq!(msg.content, "owned content", "should accept String");
+    }
+
+    #[test]
+    fn response_format_default_is_text() {
+        assert!(
+            matches!(ResponseFormat::default(), ResponseFormat::Text),
+            "default ResponseFormat should be Text"
+        );
+    }
+
+    #[test]
+    fn completion_options_default_has_text_format() {
+        let opts = CompletionOptions::default();
+        assert!(
+            matches!(opts.response_format, ResponseFormat::Text),
+            "default CompletionOptions should have Text response format"
+        );
+        assert!(
+            opts.max_tokens.is_none(),
+            "default max_tokens should be None"
+        );
     }
 }

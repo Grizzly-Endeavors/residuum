@@ -12,8 +12,8 @@ use tracing::debug;
 use super::http::{SharedHttpClient, map_request_error, warn_if_insecure_remote};
 use super::retry::{RetryConfig, with_retry};
 use super::{
-    CompletionOptions, Message, ModelError, ModelProvider, ModelResponse, Role, ToolCall,
-    ToolDefinition, Usage,
+    CompletionOptions, Message, ModelError, ModelProvider, ModelResponse, ResponseFormat, Role,
+    ToolCall, ToolDefinition, Usage,
 };
 
 /// Client for the Google Gemini `generateContent` API.
@@ -54,6 +54,48 @@ impl GeminiClient {
             max_tokens,
             retry,
         }
+    }
+
+    /// Parse a successful Gemini response into our generic `ModelResponse`.
+    fn parse_response(gemini_response: GeminiResponse) -> Result<ModelResponse, ModelError> {
+        let candidate = gemini_response
+            .candidates
+            .into_iter()
+            .next()
+            .ok_or_else(|| {
+                ModelError::Parse("Gemini API response contained no candidates".to_string())
+            })?;
+
+        let mut content_text = String::new();
+        let mut tool_calls: Vec<ToolCall> = Vec::new();
+
+        for (idx, part) in candidate.content.parts.into_iter().enumerate() {
+            match part {
+                GeminiPart::Text { text } => {
+                    content_text.push_str(&text);
+                }
+                GeminiPart::FunctionCall { function_call } => {
+                    // Gemini does not return IDs for function calls; synthesize them.
+                    tool_calls.push(ToolCall {
+                        id: format!("call_{idx}"),
+                        name: function_call.name,
+                        arguments: function_call.args,
+                    });
+                }
+                GeminiPart::FunctionResponse { .. } => {
+                    tracing::warn!("unexpected functionResponse part in Gemini model output");
+                }
+            }
+        }
+
+        let usage = gemini_response.usage_metadata.map(|u| Usage {
+            input_tokens: u.prompt_token_count,
+            output_tokens: u.candidates_token_count,
+        });
+
+        let mut model_response = ModelResponse::new(content_text, tool_calls);
+        model_response.usage = usage;
+        Ok(model_response)
     }
 
     /// Build the full endpoint URL with the API key query parameter.
@@ -172,11 +214,24 @@ impl ModelProvider for GeminiClient {
         let http = self.http.clone();
         let timeout_secs = self.http.timeout_secs();
 
+        let (response_mime_type, response_schema) = match &options.response_format {
+            ResponseFormat::Text => (None, None),
+            ResponseFormat::JsonSchema { schema, .. } => {
+                (Some("application/json".to_string()), Some(schema.clone()))
+            }
+        };
+        let generation_config = GeminiGenerationConfig {
+            max_output_tokens,
+            response_mime_type,
+            response_schema,
+        };
+
         with_retry(&self.retry, || {
             let url = url.clone();
             let system_instruction = system_instruction.clone();
             let contents = contents.clone();
             let gemini_tools = gemini_tools.clone();
+            let generation_config = generation_config.clone();
             let model = model.clone();
             let http = http.clone();
 
@@ -185,7 +240,7 @@ impl ModelProvider for GeminiClient {
                     contents,
                     system_instruction,
                     tools: gemini_tools,
-                    generation_config: GeminiGenerationConfig { max_output_tokens },
+                    generation_config,
                 };
 
                 debug!(model = %model, "sending Gemini generateContent request");
@@ -213,49 +268,7 @@ impl ModelProvider for GeminiClient {
                 }
 
                 let gemini_response: GeminiResponse = response.json().await?;
-
-                let candidate = gemini_response
-                    .candidates
-                    .into_iter()
-                    .next()
-                    .ok_or_else(|| {
-                        ModelError::Parse("Gemini API response contained no candidates".to_string())
-                    })?;
-
-                let mut content_text = String::new();
-                let mut tool_calls: Vec<ToolCall> = Vec::new();
-
-                for (idx, part) in candidate.content.parts.into_iter().enumerate() {
-                    match part {
-                        GeminiPart::Text { text } => {
-                            content_text.push_str(&text);
-                        }
-                        GeminiPart::FunctionCall { function_call } => {
-                            // Gemini does not return IDs for function calls; synthesize them.
-                            tool_calls.push(ToolCall {
-                                id: format!("call_{idx}"),
-                                name: function_call.name,
-                                arguments: function_call.args,
-                            });
-                        }
-                        GeminiPart::FunctionResponse { .. } => {
-                            // Gemini should not return functionResponse parts in model output.
-                            tracing::warn!(
-                                "unexpected functionResponse part in Gemini model output"
-                            );
-                        }
-                    }
-                }
-
-                let usage = gemini_response.usage_metadata.map(|u| Usage {
-                    input_tokens: u.prompt_token_count,
-                    output_tokens: u.candidates_token_count,
-                });
-
-                let mut model_response = ModelResponse::new(content_text, tool_calls);
-                model_response.usage = usage;
-
-                Ok(model_response)
+                Self::parse_response(gemini_response)
             }
         })
         .await
@@ -271,6 +284,7 @@ impl ModelProvider for GeminiClient {
 // ---------------------------------------------------------------------------
 
 #[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 struct GeminiRequest {
     contents: Vec<GeminiContent>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -332,10 +346,14 @@ struct GeminiFunctionDeclaration {
     parameters: serde_json::Value,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Clone)]
 struct GeminiGenerationConfig {
     #[serde(rename = "maxOutputTokens")]
     max_output_tokens: u32,
+    #[serde(rename = "responseMimeType", skip_serializing_if = "Option::is_none")]
+    response_mime_type: Option<String>,
+    #[serde(rename = "responseSchema", skip_serializing_if = "Option::is_none")]
+    response_schema: Option<serde_json::Value>,
 }
 
 // ---------------------------------------------------------------------------
@@ -685,6 +703,65 @@ mod tests {
         assert!(
             matches!(result.unwrap_err(), ModelError::Timeout(1)),
             "should be Timeout(1)"
+        );
+    }
+
+    #[tokio::test]
+    async fn complete_with_json_schema_response_format() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path_regex(r"/models/gemini-2\.0-flash:generateContent"))
+            .and(query_param("key", "test-api-key"))
+            .and(wiremock::matchers::body_partial_json(serde_json::json!({
+                "generationConfig": {
+                    "responseMimeType": "application/json",
+                    "responseSchema": {
+                        "type": "object",
+                        "properties": {
+                            "answer": {"type": "string"}
+                        }
+                    }
+                }
+            })))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "candidates": [{
+                    "content": {
+                        "role": "model",
+                        "parts": [{"text": "{\"answer\": \"hello\"}"}]
+                    },
+                    "finishReason": "STOP"
+                }],
+                "usageMetadata": {
+                    "promptTokenCount": 10,
+                    "candidatesTokenCount": 5,
+                    "totalTokenCount": 15
+                }
+            })))
+            .mount(&mock_server)
+            .await;
+
+        let client = make_client(&mock_server.uri());
+        let options = CompletionOptions {
+            response_format: crate::models::ResponseFormat::JsonSchema {
+                name: "test_schema".to_string(),
+                schema: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "answer": {"type": "string"}
+                    }
+                }),
+            },
+            ..CompletionOptions::default()
+        };
+
+        let response = client
+            .complete(&[Message::user("Hello")], &[], &options)
+            .await
+            .unwrap();
+        assert_eq!(
+            response.content, "{\"answer\": \"hello\"}",
+            "should return JSON content"
         );
     }
 }
