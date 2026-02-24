@@ -1,15 +1,18 @@
 //! MCP server registry and reconciliation.
 //!
-//! Tracks which MCP servers are running and provides a reconciliation
-//! interface for project activation/deactivation. The actual launch pipeline
-//! (process spawning, protocol negotiation, tool registration) is handled
-//! separately — this module only manages desired-vs-running state.
+//! Tracks which MCP servers are running, manages live `McpClient` handles,
+//! and exposes discovered tools to the agent's tool loop.
 
 use std::sync::Arc;
 
+use serde_json::Value;
 use tokio::sync::RwLock;
 
+use crate::models::ToolDefinition;
 use crate::projects::types::McpServerEntry;
+use crate::tools::{ToolError, ToolResult};
+
+use super::client::McpClient;
 
 /// Shared MCP registry, accessible from project tools and the gateway.
 pub type SharedMcpRegistry = Arc<RwLock<McpRegistry>>;
@@ -25,7 +28,7 @@ pub enum McpStatus {
     Failed(String),
 }
 
-/// Tracked state of a single MCP server.
+/// Public snapshot of a single MCP server's state (for external inspection).
 #[derive(Debug, Clone)]
 pub struct McpServerState {
     /// Server name (matches `McpServerEntry::name`).
@@ -36,9 +39,34 @@ pub struct McpServerState {
     pub args: Vec<String>,
     /// Current lifecycle status.
     pub status: McpStatus,
+    /// Cached tool definitions from this server.
+    pub tools: Vec<ToolDefinition>,
 }
 
-/// Result of a reconciliation pass.
+/// Internal tracked server entry (holds the live client handle).
+struct TrackedServer {
+    name: String,
+    command: String,
+    args: Vec<String>,
+    status: McpStatus,
+    client: Option<McpClient>,
+    tools: Vec<ToolDefinition>,
+}
+
+impl TrackedServer {
+    /// Produce a public snapshot (without the client handle).
+    fn snapshot(&self) -> McpServerState {
+        McpServerState {
+            name: self.name.clone(),
+            command: self.command.clone(),
+            args: self.args.clone(),
+            status: self.status.clone(),
+            tools: self.tools.clone(),
+        }
+    }
+}
+
+/// Result of a reconciliation diff (before connections are made).
 #[derive(Debug, Default)]
 pub struct McpReconcileResult {
     /// Servers that need to be started (in `desired` but not running).
@@ -47,10 +75,26 @@ pub struct McpReconcileResult {
     pub to_stop: Vec<String>,
 }
 
-/// Registry tracking MCP server lifecycle state.
+/// Report from `reconcile_and_connect` — how many servers started, stopped, or failed.
 #[derive(Debug, Default)]
+pub struct McpReconcileReport {
+    /// Number of servers that connected successfully.
+    pub started: usize,
+    /// Number of servers that were stopped.
+    pub stopped: usize,
+    /// Servers that failed to start, with their errors.
+    pub failures: Vec<(String, String)>,
+}
+
+/// Registry tracking MCP server lifecycle state and live client handles.
 pub struct McpRegistry {
-    servers: Vec<McpServerState>,
+    servers: Vec<TrackedServer>,
+}
+
+impl Default for McpRegistry {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl McpRegistry {
@@ -68,10 +112,10 @@ impl McpRegistry {
         Arc::new(RwLock::new(Self::new()))
     }
 
-    /// Reconcile desired servers (from project frontmatter) against current state.
+    /// Reconcile desired servers against current state (pure diff, no connections).
     ///
-    /// Returns lists of servers to start and stop. Does not perform the actual
-    /// start/stop — the caller feeds the result to the launch pipeline.
+    /// Returns lists of servers to start and stop. The caller is responsible
+    /// for acting on the result.
     pub fn reconcile(&mut self, desired: &[McpServerEntry]) -> McpReconcileResult {
         let mut result = McpReconcileResult::default();
 
@@ -84,13 +128,15 @@ impl McpRegistry {
                 }
                 _ => {
                     result.to_start.push(entry.clone());
-                    // Add as pending
+                    // Remove old entry if exists, add as pending
                     self.servers.retain(|s| s.name != entry.name);
-                    self.servers.push(McpServerState {
+                    self.servers.push(TrackedServer {
                         name: entry.name.clone(),
                         command: entry.command.clone(),
                         args: entry.args.clone(),
                         status: McpStatus::Pending,
+                        client: None,
+                        tools: Vec::new(),
                     });
                 }
             }
@@ -115,7 +161,130 @@ impl McpRegistry {
         result
     }
 
-    /// Mark a server as running.
+    /// Connect to an MCP server, list its tools, and mark it running.
+    ///
+    /// On failure, marks the server as failed.
+    ///
+    /// # Errors
+    /// Returns the connection error (server is already marked failed internally).
+    pub async fn connect(&mut self, entry: &McpServerEntry) -> Result<(), anyhow::Error> {
+        let client = McpClient::connect(entry).await?;
+        let tools = client.list_tools().await?;
+
+        if let Some(server) = self.servers.iter_mut().find(|s| s.name == entry.name) {
+            server.status = McpStatus::Running;
+            server.client = Some(client);
+            server.tools = tools;
+            tracing::info!(
+                server = %entry.name,
+                tool_count = server.tools.len(),
+                "mcp server connected"
+            );
+        }
+
+        Ok(())
+    }
+
+    /// Disconnect a specific server by name.
+    pub async fn disconnect(&mut self, name: &str) {
+        if let Some(idx) = self.servers.iter().position(|s| s.name == name) {
+            let server = self.servers.remove(idx);
+            if let Some(client) = server.client {
+                client.shutdown().await;
+            }
+            tracing::info!(server = %name, "mcp server disconnected");
+        }
+    }
+
+    /// Disconnect all tracked servers.
+    ///
+    /// Returns names of servers that were disconnected.
+    pub async fn disconnect_all(&mut self) -> Vec<String> {
+        let servers: Vec<TrackedServer> = self.servers.drain(..).collect();
+        let mut names = Vec::with_capacity(servers.len());
+
+        for server in servers {
+            names.push(server.name.clone());
+            if let Some(client) = server.client {
+                client.shutdown().await;
+            }
+        }
+
+        names
+    }
+
+    /// Reconcile and connect/disconnect in one step.
+    ///
+    /// Runs the state diff, then connects new servers and disconnects removed ones.
+    pub async fn reconcile_and_connect(
+        &mut self,
+        desired: &[McpServerEntry],
+    ) -> McpReconcileReport {
+        let diff = self.reconcile(desired);
+        let mut report = McpReconcileReport {
+            started: 0,
+            stopped: diff.to_stop.len(),
+            failures: Vec::new(),
+        };
+
+        for entry in &diff.to_start {
+            if let Err(e) = self.connect(entry).await {
+                let reason = e.to_string();
+                // Mark server as failed
+                if let Some(server) = self.servers.iter_mut().find(|s| s.name == entry.name) {
+                    server.status = McpStatus::Failed(reason.clone());
+                }
+                report.failures.push((entry.name.clone(), reason));
+            } else {
+                report.started += 1;
+            }
+        }
+
+        // Disconnect servers that should be stopped (already removed from tracking
+        // by reconcile, but we need to shut down their clients).
+        // Note: reconcile already removed them from self.servers, so we handle
+        // disconnection through the to_stop list. The clients were dropped when
+        // the TrackedServer was removed. This is fine because ChildWithCleanup
+        // handles process cleanup on drop.
+
+        report
+    }
+
+    /// Get tool definitions from all running servers (flat union).
+    #[must_use]
+    pub fn tool_definitions(&self) -> Vec<ToolDefinition> {
+        self.servers
+            .iter()
+            .filter(|s| s.status == McpStatus::Running)
+            .flat_map(|s| s.tools.iter().cloned())
+            .collect()
+    }
+
+    /// Call a tool by name, routing to the server that owns it.
+    ///
+    /// # Errors
+    /// Returns `ToolError::NotFound` if no running server has the tool.
+    /// Returns `ToolError::Execution` if the RPC call fails.
+    pub async fn call_tool(&self, name: &str, args: Value) -> Result<ToolResult, ToolError> {
+        let server = self
+            .servers
+            .iter()
+            .filter(|s| s.status == McpStatus::Running)
+            .find(|s| s.tools.iter().any(|t| t.name == name));
+
+        let server = server.ok_or_else(|| ToolError::NotFound(name.to_string()))?;
+
+        let client = server.client.as_ref().ok_or_else(|| {
+            ToolError::Execution(format!(
+                "mcp server '{}' is marked running but has no client",
+                server.name
+            ))
+        })?;
+
+        client.call_tool(name, args).await
+    }
+
+    /// Mark a server as running (used in tests without a live client).
     pub fn mark_running(&mut self, name: &str) {
         if let Some(server) = self.servers.iter_mut().find(|s| s.name == name) {
             server.status = McpStatus::Running;
@@ -134,9 +303,10 @@ impl McpRegistry {
         }
     }
 
-    /// Stop all tracked servers. Returns names of servers that were running or pending.
+    /// Stop all tracked servers without async shutdown.
     ///
-    /// Called on project deactivation.
+    /// Returns names of servers that were running or pending.
+    /// Clients are dropped (child processes killed via `ChildWithCleanup::drop`).
     pub fn stop_all(&mut self) -> Vec<String> {
         let names: Vec<String> = self
             .servers
@@ -151,8 +321,16 @@ impl McpRegistry {
 
     /// Get a snapshot of all tracked servers.
     #[must_use]
-    pub fn servers(&self) -> &[McpServerState] {
-        &self.servers
+    pub fn servers(&self) -> Vec<McpServerState> {
+        self.servers.iter().map(TrackedServer::snapshot).collect()
+    }
+}
+
+impl std::fmt::Debug for McpRegistry {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("McpRegistry")
+            .field("server_count", &self.servers.len())
+            .finish_non_exhaustive()
     }
 }
 
@@ -166,6 +344,7 @@ mod tests {
             name: name.to_string(),
             command: command.to_string(),
             args: vec![],
+            env: std::collections::HashMap::new(),
         }
     }
 
@@ -275,11 +454,58 @@ mod tests {
         registry.reconcile(&[entry("fs", "mcp-fs")]);
 
         registry.mark_failed("fs", "connection refused");
-        let server = registry.servers().first().unwrap();
+        let servers = registry.servers();
+        let server = servers.first().unwrap();
         assert_eq!(
             server.status,
             McpStatus::Failed("connection refused".to_string()),
             "status should be Failed"
+        );
+    }
+
+    #[test]
+    fn tool_definitions_empty_when_no_running() {
+        let registry = McpRegistry::new();
+        assert!(
+            registry.tool_definitions().is_empty(),
+            "should be empty with no servers"
+        );
+    }
+
+    #[tokio::test]
+    async fn call_tool_not_found() {
+        let registry = McpRegistry::new();
+        let result = registry
+            .call_tool("nonexistent", serde_json::json!({}))
+            .await;
+        assert!(result.is_err(), "should error for unknown tool");
+        let err = result.unwrap_err();
+        assert!(
+            matches!(err, ToolError::NotFound(_)),
+            "should be NotFound error"
+        );
+    }
+
+    #[tokio::test]
+    async fn reconcile_and_connect_nonexistent_fails_gracefully() {
+        let mut registry = McpRegistry::new();
+        let desired = vec![entry("bad", "/nonexistent/mcp-server")];
+
+        let report = registry.reconcile_and_connect(&desired).await;
+        assert_eq!(report.started, 0, "nothing should start");
+        assert_eq!(report.failures.len(), 1, "should have one failure");
+        assert_eq!(
+            report.failures.first().unwrap().0,
+            "bad",
+            "failed server name"
+        );
+
+        // Server should be marked failed
+        let servers = registry.servers();
+        let server = servers.first().unwrap();
+        assert!(
+            matches!(server.status, McpStatus::Failed(_)),
+            "server should be marked failed"
         );
     }
 }

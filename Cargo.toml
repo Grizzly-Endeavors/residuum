@@ -28,6 +28,7 @@ shellexpand = "3"
 chrono = { version = "0.4", features = ["serde"] }
 chrono-tz = "0.10"
 tantivy = "0.22"
+rmcp = { version = "0.16", features = ["client", "transport-child-process"] }
 serde_yml = "0.0"
 cron = "0.12"
 

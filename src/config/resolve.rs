@@ -39,7 +39,7 @@ pub(super) fn from_file_and_env(file: Option<&ConfigFile>) -> Result<Config, Iro
     let main_model_str = std::env::var("IRONCLAW_MODEL")
         .ok()
         .or_else(|| models.and_then(|m| m.main.clone()))
-        .unwrap_or_else(|| "anthropic/claude-sonnet-4-5".to_string());
+        .unwrap_or_else(|| "anthropic/claude-sonnet-4-6".to_string());
 
     let mut main = resolve_model_string(&main_model_str, providers_map)?;
 

@@ -1,5 +1,6 @@
 //! Project context data types.
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 
 use chrono::NaiveDate;
@@ -47,6 +48,9 @@ pub struct McpServerEntry {
     /// Command-line arguments.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub args: Vec<String>,
+    /// Environment variables to pass to the server process.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub env: HashMap<String, String>,
 }
 
 /// Lightweight index entry for a project (frontmatter only, no body).
