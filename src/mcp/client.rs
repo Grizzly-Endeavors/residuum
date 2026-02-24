@@ -4,6 +4,7 @@
 //! tool listing and invocation backed by the rmcp SDK.
 
 use std::borrow::Cow;
+use std::time::Duration;
 
 use rmcp::RoleClient;
 use rmcp::model::{CallToolRequestParams, CallToolResult, Content};
@@ -14,6 +15,9 @@ use serde_json::Value;
 use crate::models::ToolDefinition;
 use crate::projects::types::McpServerEntry;
 use crate::tools::{ToolError, ToolResult};
+
+/// Default timeout for MCP tool calls (seconds).
+const TOOL_CALL_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// A live connection to a single MCP server process.
 pub struct McpClient {
@@ -95,12 +99,22 @@ impl McpClient {
             task: None,
         };
 
-        let result: CallToolResult = self.service.peer().call_tool(params).await.map_err(|e| {
-            ToolError::Execution(format!(
-                "mcp tool call '{name}' on server '{}' failed: {e}",
-                self.server_name
-            ))
-        })?;
+        let result: CallToolResult =
+            tokio::time::timeout(TOOL_CALL_TIMEOUT, self.service.peer().call_tool(params))
+                .await
+                .map_err(|_elapsed| {
+                    ToolError::Execution(format!(
+                        "mcp tool call '{name}' on server '{}' timed out after {}s",
+                        self.server_name,
+                        TOOL_CALL_TIMEOUT.as_secs()
+                    ))
+                })?
+                .map_err(|e| {
+                    ToolError::Execution(format!(
+                        "mcp tool call '{name}' on server '{}' failed: {e}",
+                        self.server_name
+                    ))
+                })?;
 
         let is_error = result.is_error.unwrap_or(false);
         let output = extract_text_content(&result.content);

@@ -44,17 +44,20 @@ pub(super) async fn execute_turn(
     display: &dyn TurnDisplay,
     time_ctx: Option<&TimeContext>,
 ) -> Result<Vec<String>, IronclawError> {
-    let filter = tool_filter.read().await;
-    let mut tool_definitions = tools.definitions(&filter);
-
-    // Merge MCP tool definitions from all connected servers
-    let mcp_guard = mcp_registry.read().await;
-    tool_definitions.extend(mcp_guard.tool_definitions());
-    drop(mcp_guard);
-
     let mut texts: Vec<String> = Vec::new();
 
     for iteration in 0..MAX_TOOL_ITERATIONS {
+        // Clone the filter each iteration so the guard is dropped before tool
+        // execution. Tools like project_activate need a write lock on the same
+        // RwLock, which would deadlock if we held a read guard across the call.
+        let filter = tool_filter.read().await.clone();
+        let mut tool_definitions = tools.definitions(&filter);
+
+        // Merge MCP tool definitions from all connected servers
+        let mcp_guard = mcp_registry.read().await;
+        tool_definitions.extend(mcp_guard.tool_definitions());
+        drop(mcp_guard);
+
         // System prompt is reassembled each iteration because tool execution
         // can modify identity files (e.g. write_file updating MEMORY.md).
         let messages = assemble_system_prompt(

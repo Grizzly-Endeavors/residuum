@@ -79,6 +79,7 @@ pub type SharedToolFilter = Arc<RwLock<ToolFilter>>;
 ///
 /// Some tools (e.g. `exec`) are "gated" — only available when the active
 /// project opts in via its `tools` field. Core tools are always visible.
+#[derive(Clone)]
 pub struct ToolFilter {
     /// Tool names that require an active project to opt in.
     gated: HashSet<&'static str>,
