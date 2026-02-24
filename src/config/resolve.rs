@@ -840,4 +840,98 @@ enabled = false
         assert!(!cfg.pulse_enabled);
         assert!(!cfg.cron_enabled);
     }
+
+    // ── MCP config ──────────────────────────────────────────────────────────
+
+    #[test]
+    fn mcp_defaults_empty_when_absent() {
+        let toml_str = r#"
+timezone = "UTC"
+
+[models]
+main = "anthropic/claude-sonnet-4-6"
+"#;
+        let file: ConfigFile = toml::from_str(toml_str).unwrap();
+        let cfg = from_file_and_env(Some(&file)).unwrap();
+        assert!(
+            cfg.mcp.servers.is_empty(),
+            "mcp servers should default to empty"
+        );
+    }
+
+    #[test]
+    fn mcp_section_with_servers() {
+        let toml_str = r#"
+timezone = "UTC"
+
+[models]
+main = "anthropic/claude-sonnet-4-6"
+
+[mcp.servers.filesystem]
+command = "mcp-server-filesystem"
+args = ["/home/user/docs"]
+env = { MCP_LOG = "debug" }
+
+[mcp.servers.git]
+command = "mcp-server-git"
+"#;
+        let file: ConfigFile = toml::from_str(toml_str).unwrap();
+        let cfg = from_file_and_env(Some(&file)).unwrap();
+        assert_eq!(cfg.mcp.servers.len(), 2, "should have two mcp servers");
+
+        let fs_server = cfg.mcp.servers.iter().find(|s| s.name == "filesystem");
+        assert!(fs_server.is_some(), "should have filesystem server");
+        let fs_server = fs_server.unwrap();
+        assert_eq!(fs_server.command, "mcp-server-filesystem");
+        assert_eq!(fs_server.args, vec!["/home/user/docs"]);
+        assert_eq!(
+            fs_server.env.get("MCP_LOG").map(String::as_str),
+            Some("debug"),
+            "env should be parsed"
+        );
+
+        let git_server = cfg.mcp.servers.iter().find(|s| s.name == "git");
+        assert!(git_server.is_some(), "should have git server");
+        let git_server = git_server.unwrap();
+        assert_eq!(git_server.command, "mcp-server-git");
+        assert!(git_server.args.is_empty(), "args should default to empty");
+        assert!(git_server.env.is_empty(), "env should default to empty");
+    }
+
+    #[test]
+    fn mcp_deny_unknown_fields() {
+        let toml_str = r#"
+timezone = "UTC"
+
+[models]
+main = "anthropic/claude-sonnet-4-6"
+
+[mcp.servers.test]
+command = "test"
+unknown_field = "oops"
+"#;
+        let result = toml::from_str::<ConfigFile>(toml_str);
+        assert!(
+            result.is_err(),
+            "unknown field in mcp server should be rejected"
+        );
+    }
+
+    #[test]
+    fn mcp_empty_section_ok() {
+        let toml_str = r#"
+timezone = "UTC"
+
+[models]
+main = "anthropic/claude-sonnet-4-6"
+
+[mcp]
+"#;
+        let file: ConfigFile = toml::from_str(toml_str).unwrap();
+        let cfg = from_file_and_env(Some(&file)).unwrap();
+        assert!(
+            cfg.mcp.servers.is_empty(),
+            "empty [mcp] section should yield no servers"
+        );
+    }
 }
