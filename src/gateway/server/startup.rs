@@ -204,6 +204,7 @@ pub(super) async fn initialize(cfg: &Config) -> Result<GatewayComponents, Ironcl
     let file_tracker = crate::tools::FileTracker::new_shared();
     tools.register_defaults(file_tracker, Arc::clone(&path_policy));
     tools.register_search_tool(Arc::clone(&search_index));
+    tools.register_memory_get_tool(layout.episodes_dir());
     tools.register_cron_tools(Arc::clone(&cron_store), Arc::clone(&cron_notify), tz);
     tools.register_project_tools(
         Arc::clone(&project_state),

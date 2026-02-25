@@ -1,3 +1,4 @@
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use serde_json::Value;
@@ -12,7 +13,7 @@ use crate::skills::SharedSkillState;
 
 use super::{
     SharedFileTracker, SharedPathPolicy, SharedToolFilter, Tool, ToolError, ToolFilter, ToolResult,
-    cron, edit, exec, memory_search, projects, read, skills, write,
+    cron, edit, exec, memory_get, memory_search, projects, read, skills, write,
 };
 
 /// Registry of available tools.
@@ -88,6 +89,11 @@ impl ToolRegistry {
     /// Register the `memory_search` tool with a shared index.
     pub fn register_search_tool(&mut self, index: Arc<MemoryIndex>) {
         self.register(Box::new(memory_search::MemorySearchTool::new(index)));
+    }
+
+    /// Register the `memory_get` tool for episode transcript retrieval.
+    pub fn register_memory_get_tool(&mut self, episodes_dir: PathBuf) {
+        self.register(Box::new(memory_get::MemoryGetTool::new(episodes_dir)));
     }
 
     /// Register project management tools.

@@ -5,6 +5,7 @@ mod edit;
 mod exec;
 pub(crate) mod file_tracker;
 mod line_hash;
+pub mod memory_get;
 pub mod memory_search;
 pub mod path_policy;
 pub mod projects;
