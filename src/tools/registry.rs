@@ -13,7 +13,7 @@ use crate::skills::SharedSkillState;
 
 use super::{
     SharedFileTracker, SharedPathPolicy, SharedToolFilter, Tool, ToolError, ToolFilter, ToolResult,
-    cron, edit, exec, memory_get, memory_search, projects, read, skills, write,
+    cron, edit, exec, inbox, memory_get, memory_search, projects, read, skills, write,
 };
 
 /// Registry of available tools.
@@ -136,6 +136,22 @@ impl ToolRegistry {
     pub fn register_skill_tools(&mut self, state: SharedSkillState) {
         self.register(Box::new(skills::SkillActivateTool::new(Arc::clone(&state))));
         self.register(Box::new(skills::SkillDeactivateTool::new(state)));
+    }
+
+    /// Register inbox management tools (`inbox_list`, `inbox_read`, `inbox_add`, `inbox_archive`).
+    pub fn register_inbox_tools(
+        &mut self,
+        inbox_dir: PathBuf,
+        archive_dir: PathBuf,
+        tz: chrono_tz::Tz,
+    ) {
+        self.register(Box::new(inbox::InboxListTool::new(inbox_dir.clone())));
+        self.register(Box::new(inbox::InboxReadTool::new(inbox_dir.clone())));
+        self.register(Box::new(inbox::InboxAddTool::new(inbox_dir.clone(), tz)));
+        self.register(Box::new(inbox::InboxArchiveTool::new(
+            inbox_dir,
+            archive_dir,
+        )));
     }
 
     /// Register cron management tools (`cron_add`, `cron_list`, `cron_update`, `cron_remove`).

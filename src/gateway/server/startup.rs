@@ -300,6 +300,7 @@ pub(super) async fn initialize(cfg: &Config) -> Result<GatewayComponents, Ironcl
         tz,
     );
     tools.register_skill_tools(Arc::clone(&skill_state));
+    tools.register_inbox_tools(layout.inbox_dir(), layout.inbox_archive_dir(), tz);
 
     // Agent
     let options = CompletionOptions {

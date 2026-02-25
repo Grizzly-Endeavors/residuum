@@ -4,6 +4,7 @@ pub mod cron;
 mod edit;
 mod exec;
 pub(crate) mod file_tracker;
+pub mod inbox;
 mod line_hash;
 pub mod memory_get;
 pub mod memory_search;

@@ -486,3 +486,109 @@ On success: `"Removed job '{id}'"`
 On error: job not found, or save failure.
 
 **Side effect:** Persists removal to `jobs.json` and wakes the cron scheduler.
+
+---
+
+## `inbox_list`
+
+**Source:** `inbox.rs` · `InboxListTool`
+
+**Description sent to LLM:**
+> List inbox items. Shows unread/read status, title, source, and timestamp for each item.
+
+### Input
+
+| Parameter     | Type    | Required | Description                                  |
+|---------------|---------|----------|----------------------------------------------|
+| `unread_only` | boolean | no       | Only show unread items (default false)       |
+
+### Output
+
+On success: count header followed by one entry per item:
+```
+{N} inbox item(s):
+  [{read|unread}] {filename} — {title} ({source}, {timestamp})
+```
+
+When no items match: `"No inbox items found."`
+
+---
+
+## `inbox_read`
+
+**Source:** `inbox.rs` · `InboxReadTool`
+
+**Description sent to LLM:**
+> Read a single inbox item by filename stem. Marks the item as read and returns its full content.
+
+### Input
+
+| Parameter | Type   | Required | Description                                              |
+|-----------|--------|----------|----------------------------------------------------------|
+| `id`      | string | yes      | Filename stem of the inbox item (without .json extension) |
+
+### Output
+
+On success: formatted item content:
+```
+Title: {title}
+Source: {source}
+Time: {timestamp}
+Attachments: {paths}  (only if non-empty)
+
+{body}
+```
+
+On error: item not found or read failure.
+
+**Side effect:** Marks the item as read on disk.
+
+---
+
+## `inbox_add`
+
+**Source:** `inbox.rs` · `InboxAddTool`
+
+**Description sent to LLM:**
+> Add a new item to the inbox. Use this to save reminders, notes, or anything to deal with later.
+
+### Input
+
+| Parameter | Type   | Required | Description                            |
+|-----------|--------|----------|----------------------------------------|
+| `title`   | string | yes      | Short summary of the inbox item        |
+| `body`    | string | yes      | Full body text of the item             |
+| `source`  | string | no       | Origin label (default: `"agent"`)      |
+
+### Output
+
+On success: `"Added inbox item '{title}' as {filename}"`
+
+On error: save failure.
+
+**Side effect:** Creates a new `.json` file in the inbox directory.
+
+---
+
+## `inbox_archive`
+
+**Source:** `inbox.rs` · `InboxArchiveTool`
+
+**Description sent to LLM:**
+> Archive one or more inbox items by filename stem. Moves them to the archive directory.
+
+### Input
+
+| Parameter | Type            | Required | Description                                 |
+|-----------|-----------------|----------|---------------------------------------------|
+| `ids`     | array\<string\> | yes      | Filename stems of inbox items to archive    |
+
+### Output
+
+On success: `"Archived {N} item(s): {list}"`
+
+On partial failure: success message plus `"Failed to archive {N} item(s): {errors}"`
+
+On total failure: error with failure details.
+
+**Side effect:** Moves `.json` files from inbox to `archive/inbox/`.
