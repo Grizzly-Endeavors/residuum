@@ -193,12 +193,14 @@ pub(super) async fn initialize(cfg: &Config) -> Result<GatewayComponents, Ironcl
                 let dim = probe.dimensions;
                 let model_name = ep.model_name().to_string();
 
-                // Check if model changed — clear vector store if so
-                if let Some(ref manifest_model) = manifest.embedding_model
-                    && *manifest_model != model_name
-                {
+                // Check if model changed — clear vector store and reset embedded flags
+                let model_changed = manifest
+                    .embedding_model
+                    .as_ref()
+                    .is_some_and(|m| *m != model_name);
+                if model_changed {
                     tracing::info!(
-                        old_model = manifest_model.as_str(),
+                        old_model = manifest.embedding_model.as_deref().unwrap_or("none"),
                         new_model = model_name.as_str(),
                         "embedding model changed, clearing vector store"
                     );
@@ -212,6 +214,22 @@ pub(super) async fn initialize(cfg: &Config) -> Result<GatewayComponents, Ironcl
                 match VectorStore::open_or_create(&layout.vectors_db(), dim) {
                     Ok(vs) => {
                         tracing::info!(dim, model = model_name.as_str(), "vector store ready");
+
+                        // Update manifest with embedding info
+                        let mut updated_manifest = IndexManifest::load(&manifest_path)
+                            .await
+                            .unwrap_or_default();
+                        updated_manifest.embedding_model = Some(model_name);
+                        updated_manifest.embedding_dim = Some(dim);
+                        if model_changed {
+                            for entry in updated_manifest.files.values_mut() {
+                                entry.embedded = false;
+                            }
+                        }
+                        if let Err(e) = updated_manifest.save(&manifest_path).await {
+                            eprintln!("warning: failed to save manifest with embedding info: {e}");
+                        }
+
                         Some(Arc::new(vs))
                     }
                     Err(e) => {

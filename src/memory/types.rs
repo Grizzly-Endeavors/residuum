@@ -167,6 +167,9 @@ pub struct ManifestFileEntry {
     pub mtime: String,
     /// Document IDs that were indexed from this file.
     pub doc_ids: Vec<String>,
+    /// Whether this file's observations/chunks have been embedded in the vector store.
+    #[serde(default)]
+    pub embedded: bool,
 }
 
 /// Manifest tracking which files have been indexed and their state.
@@ -456,6 +459,7 @@ mod tests {
             ManifestFileEntry {
                 mtime: "2026-02-19T14:30:00".to_string(),
                 doc_ids: vec!["ep-001-o0".to_string(), "ep-001-o1".to_string()],
+                embedded: false,
             },
         );
         let json = serde_json::to_string_pretty(&manifest).unwrap();
@@ -490,6 +494,7 @@ mod tests {
             ManifestFileEntry {
                 mtime: "2026-02-19T14:30:00".to_string(),
                 doc_ids: vec!["id-1".to_string()],
+                embedded: false,
             },
         );
 
@@ -504,10 +509,19 @@ mod tests {
         let entry = ManifestFileEntry {
             mtime: "2026-02-19T14:30:00".to_string(),
             doc_ids: vec!["a".to_string(), "b".to_string()],
+            embedded: true,
         };
         let json = serde_json::to_string(&entry).unwrap();
         let deserialized: ManifestFileEntry = serde_json::from_str(&json).unwrap();
         assert_eq!(deserialized.mtime, "2026-02-19T14:30:00");
         assert_eq!(deserialized.doc_ids, vec!["a", "b"]);
+        assert!(deserialized.embedded, "embedded should round-trip");
+    }
+
+    #[test]
+    fn manifest_file_entry_embedded_defaults_false() {
+        let json = r#"{"mtime":"2026-02-19T14:30:00","doc_ids":["a"]}"#;
+        let entry: ManifestFileEntry = serde_json::from_str(json).unwrap();
+        assert!(!entry.embedded, "embedded should default to false");
     }
 }

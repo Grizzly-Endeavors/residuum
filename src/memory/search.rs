@@ -448,6 +448,7 @@ impl MemoryIndex {
                 ManifestFileEntry {
                     mtime: mtime.clone(),
                     doc_ids,
+                    embedded: false,
                 },
             );
         }
@@ -517,9 +518,14 @@ impl MemoryIndex {
                                     doc_ids.push(doc_id);
                                 }
                                 result.obs_count += observations.len();
-                                result
-                                    .file_entries
-                                    .push((rel_path, ManifestFileEntry { mtime, doc_ids }));
+                                result.file_entries.push((
+                                    rel_path,
+                                    ManifestFileEntry {
+                                        mtime,
+                                        doc_ids,
+                                        embedded: false,
+                                    },
+                                ));
                             }
                             Err(e) => {
                                 tracing::warn!(path = %path.display(), error = %e, "skipping unparseable obs file");
@@ -534,9 +540,14 @@ impl MemoryIndex {
                             doc_ids.push(chunk.chunk_id.clone());
                         }
                         result.chunk_count += chunks.len();
-                        result
-                            .file_entries
-                            .push((rel_path, ManifestFileEntry { mtime, doc_ids }));
+                        result.file_entries.push((
+                            rel_path,
+                            ManifestFileEntry {
+                                mtime,
+                                doc_ids,
+                                embedded: false,
+                            },
+                        ));
                     }
                     _ => {}
                 }
