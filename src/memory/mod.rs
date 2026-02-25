@@ -13,6 +13,7 @@ pub mod reflector;
 pub mod search;
 pub mod tokens;
 pub mod types;
+pub mod vector_store;
 
 #[cfg(test)]
 pub(crate) mod test_helpers;

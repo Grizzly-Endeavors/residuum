@@ -74,7 +74,9 @@ wiremock = "0.6"
 # know immediately if something needs fixing.
 
 [lints.rust]
-unsafe_code = "forbid"
+# deny rather than forbid so sqlite-vec FFI registration can use a targeted
+# #[expect(unsafe_code)] — forbid cannot be overridden at the item level.
+unsafe_code = "deny"
 
 [lints.clippy]
 # Pedantic baseline. Kept at warn (not deny) because new clippy versions
