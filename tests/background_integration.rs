@@ -11,6 +11,7 @@
 mod background_integration {
     use std::collections::HashMap;
     use std::path::PathBuf;
+    use std::sync::Arc;
 
     use tempfile::tempdir;
     use tokio::sync::mpsc;
@@ -228,6 +229,127 @@ mod background_integration {
 
         // Transcript path was set (would have been written by spawner)
         assert!(result.transcript_path.is_some());
+    }
+
+    // ── Phase 3: list_active_tasks and cancel ─────────────────────
+
+    #[tokio::test]
+    async fn cancel_long_running_script_produces_cancelled_result() {
+        let dir = tempdir().unwrap();
+        let (tx, mut rx) = mpsc::channel(32);
+        let spawner = Arc::new(BackgroundTaskSpawner::new(
+            tx,
+            3,
+            PathBuf::from("/tmp"),
+            dir.path().to_path_buf(),
+            chrono_tz::UTC,
+        ));
+
+        let task = BackgroundTask {
+            id: "cancel-e2e-1".to_string(),
+            task_name: "long_task".to_string(),
+            source: TaskSource::Agent,
+            execution: Execution::Script(ScriptConfig {
+                command: "sleep".to_string(),
+                args: vec!["30".to_string()],
+                working_dir: None,
+                timeout_secs: None,
+            }),
+            routing: ResultRouting::Notify,
+        };
+
+        spawner.spawn(task, None).unwrap();
+
+        // Give it time to register and start
+        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+
+        assert_eq!(
+            spawner.active_task_ids().await.len(),
+            1,
+            "should have 1 active task"
+        );
+
+        let cancelled = spawner.cancel("cancel-e2e-1").await;
+        assert!(cancelled, "cancel should return true for active task");
+
+        let result = rx.recv().await.unwrap();
+        assert!(
+            matches!(result.status, TaskStatus::Cancelled),
+            "status should be Cancelled"
+        );
+
+        // Wait briefly for cleanup then verify task removed
+        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+        assert_eq!(
+            spawner.active_task_ids().await.len(),
+            0,
+            "active_task_ids should be empty after cancel"
+        );
+    }
+
+    #[tokio::test]
+    async fn list_active_tasks_returns_metadata_for_running_task() {
+        let dir = tempdir().unwrap();
+        let (tx, mut rx) = mpsc::channel(32);
+        let spawner = Arc::new(BackgroundTaskSpawner::new(
+            tx,
+            3,
+            PathBuf::from("/tmp"),
+            dir.path().to_path_buf(),
+            chrono_tz::UTC,
+        ));
+
+        let task = BackgroundTask {
+            id: "list-meta-1".to_string(),
+            task_name: "metadata_task".to_string(),
+            source: TaskSource::Cron,
+            execution: Execution::Script(ScriptConfig {
+                command: "sleep".to_string(),
+                args: vec!["30".to_string()],
+                working_dir: None,
+                timeout_secs: None,
+            }),
+            routing: ResultRouting::Notify,
+        };
+
+        spawner.spawn(task, None).unwrap();
+        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+
+        let tasks = spawner.list_active_tasks().await;
+        assert_eq!(tasks.len(), 1, "should list 1 active task");
+
+        let (id, info) = tasks.first().unwrap();
+        assert_eq!(id, "list-meta-1");
+        assert_eq!(info.task_name, "metadata_task");
+        assert_eq!(info.execution_type, "script");
+        assert!(
+            info.prompt_preview.contains("sleep"),
+            "preview should contain command"
+        );
+        assert!(
+            matches!(info.source, TaskSource::Cron),
+            "source should be Cron"
+        );
+
+        // Clean up
+        spawner.cancel("list-meta-1").await;
+        rx.recv().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn cancel_nonexistent_task_returns_false() {
+        let dir = tempdir().unwrap();
+        let (tx, _rx) = mpsc::channel(32);
+        let spawner = Arc::new(BackgroundTaskSpawner::new(
+            tx,
+            3,
+            PathBuf::from("/tmp"),
+            dir.path().to_path_buf(),
+            chrono_tz::UTC,
+        ));
+
+        let not_found = spawner.cancel("does-not-exist").await;
+        assert!(!not_found, "cancel should return false for unknown task");
     }
 
     // ── Format result ──────────────────────────────────────────────────

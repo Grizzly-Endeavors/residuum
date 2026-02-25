@@ -592,3 +592,50 @@ On partial failure: success message plus `"Failed to archive {N} item(s): {error
 On total failure: error with failure details.
 
 **Side effect:** Moves `.json` files from inbox to `archive/inbox/`.
+
+---
+
+## `stop_agent`
+
+**Source:** `background.rs` · `StopAgentTool`
+
+**Description sent to LLM:**
+> Cancel a running background task by ID. Returns an error if no task with that ID is active. Use list_agents to find active task IDs.
+
+### Input
+
+| Parameter | Type   | Required | Description                                  |
+|-----------|--------|----------|----------------------------------------------|
+| `task_id` | string | yes      | The ID of the background task to cancel      |
+
+### Output
+
+On success: `"Cancelled task {task_id}."`
+
+On error (task not found): `"No active task with id {task_id}."` (returned as `is_error = true`)
+
+---
+
+## `list_agents`
+
+**Source:** `background.rs` · `ListAgentsTool`
+
+**Description sent to LLM:**
+> List all currently running background tasks with their IDs, types, sources, prompt previews, and elapsed time.
+
+### Input
+
+No parameters required (empty object accepted).
+
+### Output
+
+When no tasks are running: `"No active background tasks."`
+
+When tasks are running:
+```
+{N} active task(s):
+  [{id}] {task_name} — type: {sub_agent|script} — source: {pulse|cron|agent} — running {elapsed}s
+    preview: {prompt or command preview, up to 120 chars}
+```
+
+The `preview` line is omitted if the task has an empty prompt/command.

@@ -1,5 +1,6 @@
 //! Tool system for agent-invoked operations.
 
+pub mod background;
 pub mod cron;
 mod edit;
 mod exec;

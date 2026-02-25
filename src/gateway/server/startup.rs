@@ -64,7 +64,7 @@ pub(super) struct GatewayComponents {
     pub(super) pulse_enabled: bool,
     pub(super) cron_enabled: bool,
     pub(super) notification_router: NotificationRouter,
-    pub(super) background_spawner: BackgroundTaskSpawner,
+    pub(super) background_spawner: Arc<BackgroundTaskSpawner>,
     pub(super) background_result_rx: mpsc::Receiver<BackgroundResult>,
     #[expect(
         dead_code,
@@ -296,6 +296,16 @@ pub(super) async fn initialize(cfg: &Config) -> Result<GatewayComponents, Ironcl
     let skill_state: SharedSkillState =
         SkillState::new_shared(skill_index, cfg.skills.dirs.clone());
 
+    // Background task spawner (created before tool registry so tools can hold Arc clones)
+    let (bg_result_tx, bg_result_rx) = mpsc::channel::<BackgroundResult>(32);
+    let background_spawner = Arc::new(BackgroundTaskSpawner::new(
+        bg_result_tx,
+        cfg.background.max_concurrent,
+        layout.root().to_path_buf(),
+        layout.background_dir(),
+        tz,
+    ));
+
     // Tool registry
     let path_policy = crate::tools::PathPolicy::new_shared(layout.root().to_path_buf());
     let tool_filter =
@@ -317,6 +327,7 @@ pub(super) async fn initialize(cfg: &Config) -> Result<GatewayComponents, Ironcl
     );
     tools.register_skill_tools(Arc::clone(&skill_state));
     tools.register_inbox_tools(layout.inbox_dir(), layout.inbox_archive_dir(), tz);
+    tools.register_background_tools(Arc::clone(&background_spawner));
 
     // Agent
     let options = CompletionOptions {
@@ -360,16 +371,6 @@ pub(super) async fn initialize(cfg: &Config) -> Result<GatewayComponents, Ironcl
 
     // Notification router
     let notification_router = build_notification_router(cfg, &layout);
-
-    // Background task spawner
-    let (bg_result_tx, bg_result_rx) = mpsc::channel::<BackgroundResult>(32);
-    let background_spawner = BackgroundTaskSpawner::new(
-        bg_result_tx,
-        cfg.background.max_concurrent,
-        layout.root().to_path_buf(),
-        layout.background_dir(),
-        tz,
-    );
 
     Ok(GatewayComponents {
         layout,

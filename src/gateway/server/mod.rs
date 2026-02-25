@@ -91,9 +91,9 @@ struct GatewayRuntime {
     notification_router: NotificationRouter,
     #[expect(
         dead_code,
-        reason = "spawner is stored for future tool access; unused until background tools are wired"
+        reason = "retained for Phase 5 pulse/cron spawning; tools hold Arc clones"
     )]
-    background_spawner: BackgroundTaskSpawner,
+    background_spawner: Arc<BackgroundTaskSpawner>,
     background_result_rx: mpsc::Receiver<BackgroundResult>,
     // Runtime channels + handles
     inbound_rx: mpsc::Receiver<RoutedMessage>,

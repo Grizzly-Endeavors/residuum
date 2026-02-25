@@ -4,6 +4,7 @@ use std::sync::Arc;
 use serde_json::Value;
 use tokio::sync::{Mutex, Notify};
 
+use crate::background::BackgroundTaskSpawner;
 use crate::cron::store::CronStore;
 use crate::mcp::SharedMcpRegistry;
 use crate::memory::search::HybridSearcher;
@@ -13,7 +14,7 @@ use crate::skills::SharedSkillState;
 
 use super::{
     SharedFileTracker, SharedPathPolicy, SharedToolFilter, Tool, ToolError, ToolFilter, ToolResult,
-    cron, edit, exec, inbox, memory_get, memory_search, projects, read, skills, write,
+    background, cron, edit, exec, inbox, memory_get, memory_search, projects, read, skills, write,
 };
 
 /// Registry of available tools.
@@ -152,6 +153,14 @@ impl ToolRegistry {
             inbox_dir,
             archive_dir,
         )));
+    }
+
+    /// Register background task management tools (`stop_agent`, `list_agents`).
+    pub fn register_background_tools(&mut self, spawner: Arc<BackgroundTaskSpawner>) {
+        self.register(Box::new(background::StopAgentTool::new(Arc::clone(
+            &spawner,
+        ))));
+        self.register(Box::new(background::ListAgentsTool::new(spawner)));
     }
 
     /// Register cron management tools (`cron_add`, `cron_list`, `cron_update`, `cron_remove`).

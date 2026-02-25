@@ -10,13 +10,15 @@ use tokio_util::sync::CancellationToken;
 
 use super::script::execute_script;
 use super::subagent::{SubAgentResources, execute_subagent};
-use super::types::{BackgroundResult, BackgroundTask, Execution, TaskStatus};
+use super::types::{
+    ActiveTaskInfo, BackgroundResult, BackgroundTask, Execution, TaskStatus, execution_info,
+};
 
 /// Spawns and manages background tasks with bounded concurrency.
 pub struct BackgroundTaskSpawner {
     result_tx: mpsc::Sender<BackgroundResult>,
     semaphore: Arc<Semaphore>,
-    active_tasks: Arc<Mutex<HashMap<String, CancellationToken>>>,
+    active_tasks: Arc<Mutex<HashMap<String, (CancellationToken, ActiveTaskInfo)>>>,
     workspace_root: PathBuf,
     background_dir: PathBuf,
     #[expect(
@@ -69,12 +71,21 @@ impl BackgroundTaskSpawner {
         let child_token = token.clone();
         let spawn_task_id = task_id.clone();
 
+        let (exec_type, prompt_preview) = execution_info(&task.execution);
+        let active_info = ActiveTaskInfo {
+            task_name: task.task_name.clone(),
+            source: task.source,
+            execution_type: exec_type,
+            prompt_preview,
+            started_at: Utc::now(),
+        };
+
         // Register the task before spawning
         {
             let mut guard = active_tasks.try_lock().map_err(|lock_err| {
                 anyhow::anyhow!("failed to lock active_tasks for registration: {lock_err}")
             })?;
-            guard.insert(task_id.clone(), token);
+            guard.insert(task_id.clone(), (token, active_info));
         }
 
         tokio::spawn(async move {
@@ -139,12 +150,22 @@ impl BackgroundTaskSpawner {
     /// Cancel a running task. Returns `true` if the task was found and cancelled.
     pub async fn cancel(&self, task_id: &str) -> bool {
         let guard = self.active_tasks.lock().await;
-        if let Some(token) = guard.get(task_id) {
+        if let Some((token, _info)) = guard.get(task_id) {
             token.cancel();
             true
         } else {
             false
         }
+    }
+
+    /// Snapshot of active task metadata for display.
+    pub async fn list_active_tasks(&self) -> Vec<(String, ActiveTaskInfo)> {
+        self.active_tasks
+            .lock()
+            .await
+            .iter()
+            .map(|(id, (_token, info))| (id.clone(), info.clone()))
+            .collect()
     }
 
     /// List IDs of currently active tasks.

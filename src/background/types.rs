@@ -88,6 +88,39 @@ pub struct BackgroundResult {
     pub routing: ResultRouting,
 }
 
+/// Metadata tracked for a currently-running background task.
+#[derive(Debug, Clone)]
+pub struct ActiveTaskInfo {
+    /// Human-readable task name.
+    pub task_name: String,
+    /// Where this task originated.
+    pub source: TaskSource,
+    /// Execution variant label: `"sub_agent"` or `"script"`.
+    pub execution_type: &'static str,
+    /// Truncated prompt or command preview (at most 120 chars).
+    pub prompt_preview: String,
+    /// When the task was spawned (UTC).
+    pub started_at: DateTime<Utc>,
+}
+
+/// Extract display info from an `Execution` config.
+pub(crate) fn execution_info(execution: &Execution) -> (&'static str, String) {
+    match execution {
+        Execution::SubAgent(cfg) => {
+            let preview = cfg.prompt.chars().take(120).collect();
+            ("sub_agent", preview)
+        }
+        Execution::Script(cfg) => {
+            let mut s = cfg.command.clone();
+            if !cfg.args.is_empty() {
+                s.push(' ');
+                s.push_str(&cfg.args.join(" "));
+            }
+            ("script", s.chars().take(120).collect())
+        }
+    }
+}
+
 /// Completion status of a background task.
 #[derive(Debug, Clone)]
 pub enum TaskStatus {
