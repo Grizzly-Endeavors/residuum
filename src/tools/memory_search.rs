@@ -175,7 +175,7 @@ mod tests {
             content: "rust memory safety and ownership model".to_string(),
         }];
         index
-            .index_observations("ep-001", "2026-02-19", "ironclaw", &obs)
+            .index_observations("ep-001", "2026-02-19", &obs)
             .unwrap();
 
         let tool = MemorySearchTool::new(Arc::new(index));

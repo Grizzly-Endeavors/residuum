@@ -145,9 +145,6 @@ impl Observer {
             ));
         }
 
-        // Derive project context from the batch of recent messages.
-        let project_context = derive_project_context(recent_messages);
-
         // Generate the next episode ID by scanning the episodes directory
         let episode_id = next_episode_id(&layout.episodes_dir()).await?;
 
@@ -161,12 +158,6 @@ impl Observer {
         // Build extraction prompt using full RecentMessage metadata (timestamps,
         // tool calls, project context) so the observer LLM has complete context.
         let extraction_messages = build_extraction_prompt(recent_messages, &content_guidance);
-
-        // Extract inner messages for the episode transcript written to disk.
-        let messages: Vec<Message> = recent_messages
-            .iter()
-            .map(|rm| rm.message.clone())
-            .collect();
 
         // Call the model with structured output
         let options = CompletionOptions {
@@ -185,15 +176,7 @@ impl Observer {
         // Parse the response into extraction results and optional narrative.
         let parsed = parse_observer_response(&response, self.config.tz)?;
 
-        build_episode_and_persist(
-            parsed,
-            episode_id,
-            project_context,
-            messages,
-            layout,
-            self.config.tz,
-        )
-        .await
+        build_episode_and_persist(parsed, episode_id, recent_messages, layout, self.config.tz).await
     }
 }
 
@@ -206,17 +189,16 @@ fn estimate_recent_tokens(recent_messages: &[RecentMessage]) -> usize {
     estimate_message_tokens(&messages)
 }
 
-/// Derive the project context from a batch of recent messages.
+/// Pick the most common context from a list of context strings.
 ///
-/// Uses the most common `project_context` across the batch, falling back to
-/// the first non-empty one, or `"general"` if all are empty.
-fn derive_project_context(messages: &[RecentMessage]) -> String {
+/// Falls back to `"general"` if the list is empty or all strings are empty.
+fn majority_context(contexts: &[String]) -> String {
     use std::collections::HashMap;
 
     let mut counts: HashMap<&str, usize> = HashMap::new();
-    for msg in messages {
-        if !msg.project_context.is_empty() {
-            *counts.entry(msg.project_context.as_str()).or_insert(0) += 1;
+    for ctx in contexts {
+        if !ctx.is_empty() {
+            *counts.entry(ctx.as_str()).or_insert(0) += 1;
         }
     }
 
@@ -230,18 +212,31 @@ fn derive_project_context(messages: &[RecentMessage]) -> String {
 async fn build_episode_and_persist(
     parsed: ObserverParseResult,
     episode_id: String,
-    project_context: String,
-    messages: Vec<Message>,
+    recent_messages: &[RecentMessage],
     layout: &WorkspaceLayout,
     tz: Tz,
 ) -> Result<ObserveResult, IronclawError> {
+    // Extract inner messages for the episode transcript.
+    let messages: Vec<Message> = recent_messages
+        .iter()
+        .map(|rm| rm.message.clone())
+        .collect();
+
+    // Episode-level context via majority vote over per-extraction contexts.
+    let extraction_contexts: Vec<String> = parsed
+        .extractions
+        .iter()
+        .map(|e| e.project_context.clone())
+        .collect();
+    let episode_context = majority_context(&extraction_contexts);
+
     // Build the episode internally — start/end are cosmetic and no longer LLM-extracted.
     let episode = Episode {
         id: episode_id.clone(),
         date: now_local(tz).date(),
         start: String::new(),
         end: String::new(),
-        context: project_context.clone(),
+        context: episode_context.clone(),
         observations: parsed
             .extractions
             .iter()
@@ -255,14 +250,14 @@ async fn build_episode_and_persist(
         crate::memory::episode_store::episode_jsonl_path(&layout.episodes_dir(), &episode);
     write_episode_transcript(&layout.episodes_dir(), &episode, &messages).await?;
 
-    // Convert episode observations → flat Observations and append
+    // Convert episode observations → flat Observations with per-extraction context
     let observation_count = episode.observations.len();
     let observations: Vec<Observation> = parsed
         .extractions
         .iter()
         .map(|e| Observation {
             timestamp: e.timestamp,
-            project_context: project_context.clone(),
+            project_context: e.project_context.clone(),
             source_episodes: vec![episode.id.clone()],
             visibility: e.visibility.clone(),
             content: e.content.clone(),
@@ -273,10 +268,10 @@ async fn build_episode_and_persist(
     save_episode_observations(&obs_path, &observations).await?;
     append_observations(&layout.observations_json(), observations.clone()).await?;
 
-    // Extract interaction-pair chunks from messages and persist as idx.jsonl.
+    // Extract interaction-pair chunks from recent messages and persist as idx.jsonl.
     // line_offset=2 because line 1 is the meta object in the JSONL transcript.
     let date_str = episode.date.to_string();
-    let chunks = extract_chunks(&messages, &episode.id, &date_str, &project_context, 2);
+    let chunks = extract_chunks(recent_messages, &episode.id, &date_str, 2);
     let idx_path = episode_idx_path(&layout.episodes_dir(), &episode);
     write_idx_jsonl(&idx_path, &chunks).await?;
 
@@ -296,7 +291,7 @@ async fn build_episode_and_persist(
         observations,
         chunks,
         date: date_str,
-        context: project_context,
+        context: episode_context,
     })
 }
 
@@ -318,8 +313,8 @@ mod tests {
 
     const SAMPLE_RESPONSE: &str = r#"{
         "observations": [
-            {"content": "workspace uses a flat directory layout", "timestamp": "2026-02-21T14:30", "visibility": "user"},
-            {"content": "identity files are loaded at startup", "timestamp": "2026-02-21T14:31", "visibility": "user"}
+            {"content": "workspace uses a flat directory layout", "timestamp": "2026-02-21T14:30", "visibility": "user", "project_context": "ironclaw/workspace"},
+            {"content": "identity files are loaded at startup", "timestamp": "2026-02-21T14:31", "visibility": "user", "project_context": "ironclaw/workspace"}
         ],
         "narrative": ""
     }"#;
@@ -377,7 +372,7 @@ mod tests {
     fn parse_observer_response_new_format() {
         let json = r#"{
             "observations": [
-                {"content": "user prefers Rust", "timestamp": "2026-02-21T14:30", "visibility": "user"}
+                {"content": "user prefers Rust", "timestamp": "2026-02-21T14:30", "visibility": "user", "project_context": "ironclaw"}
             ],
             "narrative": "We were discussing language preferences."
         }"#;
@@ -422,7 +417,7 @@ mod tests {
     fn parse_observer_response_empty_narrative_is_none() {
         let json = r#"{
             "observations": [
-                {"content": "user prefers Rust", "timestamp": "2026-02-21T14:30", "visibility": "user"}
+                {"content": "user prefers Rust", "timestamp": "2026-02-21T14:30", "visibility": "user", "project_context": "ironclaw"}
             ],
             "narrative": ""
         }"#;
@@ -734,29 +729,21 @@ mod tests {
     }
 
     #[test]
-    fn derive_project_context_most_common() {
-        let messages: Vec<RecentMessage> = vec![
-            RecentMessage {
-                message: Message::user("a"),
-                timestamp: chrono::Utc::now().naive_utc(),
-                project_context: "ironclaw/memory".to_string(),
-                visibility: Visibility::User,
-            },
-            RecentMessage {
-                message: Message::user("b"),
-                timestamp: chrono::Utc::now().naive_utc(),
-                project_context: "ironclaw/memory".to_string(),
-                visibility: Visibility::User,
-            },
-            RecentMessage {
-                message: Message::user("c"),
-                timestamp: chrono::Utc::now().naive_utc(),
-                project_context: "devops/k8s".to_string(),
-                visibility: Visibility::User,
-            },
+    fn majority_context_picks_most_common() {
+        let contexts = vec![
+            "ironclaw/memory".to_string(),
+            "ironclaw/memory".to_string(),
+            "devops/k8s".to_string(),
         ];
-        let ctx = derive_project_context(&messages);
+        let ctx = majority_context(&contexts);
         assert_eq!(ctx, "ironclaw/memory", "should use most common context");
+    }
+
+    #[test]
+    fn majority_context_empty_falls_back() {
+        let contexts: Vec<String> = vec![];
+        let ctx = majority_context(&contexts);
+        assert_eq!(ctx, "general", "empty list should fall back to general");
     }
 
     #[test]

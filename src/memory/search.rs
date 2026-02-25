@@ -160,7 +160,6 @@ impl MemoryIndex {
         &self,
         episode_id: &str,
         date: &str,
-        context: &str,
         observations: &[Observation],
     ) -> Result<Vec<String>, IronclawError> {
         if observations.is_empty() {
@@ -177,7 +176,7 @@ impl MemoryIndex {
             doc.add_text(self.source_type_field, "observation");
             doc.add_text(self.episode_id_field, episode_id);
             doc.add_text(self.date_field, date);
-            doc.add_text(self.ctx_field, context);
+            doc.add_text(self.ctx_field, &obs.project_context);
             doc.add_text(self.content_field, &obs.content);
             doc.add_text(self.line_start_field, "");
             doc.add_text(self.line_end_field, "");
@@ -497,7 +496,7 @@ impl MemoryIndex {
                 match ext {
                     "json" if path.to_string_lossy().ends_with(".obs.json") => {
                         match parse_obs_file(&path) {
-                            Ok((episode_id, date, ctx, observations)) => {
+                            Ok((episode_id, date, observations)) => {
                                 let mut doc_ids = Vec::new();
                                 for (i, obs) in observations.iter().enumerate() {
                                     let doc_id = format!("{episode_id}-o{i}");
@@ -507,7 +506,7 @@ impl MemoryIndex {
                                         &doc_id,
                                         &episode_id,
                                         &date,
-                                        &ctx,
+                                        &obs.project_context,
                                         &obs.content,
                                     )?;
                                     doc_ids.push(doc_id);
@@ -552,7 +551,7 @@ impl MemoryIndex {
         let mut doc_ids = Vec::new();
 
         if rel_path.ends_with(".obs.json") {
-            let (episode_id, date, ctx, observations) = parse_obs_file(abs_path)?;
+            let (episode_id, date, observations) = parse_obs_file(abs_path)?;
             for (i, obs) in observations.iter().enumerate() {
                 let doc_id = format!("{episode_id}-o{i}");
                 add_obs_document(
@@ -561,7 +560,7 @@ impl MemoryIndex {
                     &doc_id,
                     &episode_id,
                     &date,
-                    &ctx,
+                    &obs.project_context,
                     &obs.content,
                 )?;
                 doc_ids.push(doc_id);
@@ -655,13 +654,11 @@ fn parse_line_num(doc: &TantivyDocument, field: Field) -> Option<usize> {
     }
 }
 
-/// Parse an `.obs.json` file into `(episode_id, date, context, observations)`.
+/// Parse an `.obs.json` file into `(episode_id, date, observations)`.
 ///
 /// The `episode_id` and date are derived from the filename: `ep-NNN.obs.json`
 /// lives under `episodes/YYYY-MM/DD/`.
-fn parse_obs_file(
-    path: &Path,
-) -> Result<(String, String, String, Vec<Observation>), IronclawError> {
+fn parse_obs_file(path: &Path) -> Result<(String, String, Vec<Observation>), IronclawError> {
     let content = std::fs::read_to_string(path)
         .map_err(|e| IronclawError::Memory(format!("failed to read {}: {e}", path.display())))?;
 
@@ -683,12 +680,7 @@ fn parse_obs_file(
     // Extract date from directory path: .../YYYY-MM/DD/... → YYYY-MM-DD
     let date = extract_date_from_path(path);
 
-    // Use the project_context from the first observation (episode-level majority already applied)
-    let ctx = observations
-        .first()
-        .map_or_else(|| "general".to_string(), |o| o.project_context.clone());
-
-    Ok((episode_id, date, ctx, observations))
+    Ok((episode_id, date, observations))
 }
 
 /// Extract a date string from an episode file path.
@@ -820,7 +812,7 @@ mod tests {
         ];
 
         let ids = index
-            .index_observations("ep-001", "2026-02-19", "ironclaw", &obs)
+            .index_observations("ep-001", "2026-02-19", &obs)
             .unwrap();
         assert_eq!(ids.len(), 2);
         assert_eq!(ids[0], "ep-001-o0");
@@ -863,7 +855,7 @@ mod tests {
 
         let obs = vec![sample_observation("rust memory safety model")];
         index
-            .index_observations("ep-001", "2026-02-19", "ironclaw", &obs)
+            .index_observations("ep-001", "2026-02-19", &obs)
             .unwrap();
 
         let chunks = vec![IndexChunk {
@@ -915,12 +907,12 @@ mod tests {
 
         let obs1 = vec![sample_observation("early observation about rust")];
         index
-            .index_observations("ep-001", "2026-02-15", "ironclaw", &obs1)
+            .index_observations("ep-001", "2026-02-15", &obs1)
             .unwrap();
 
         let obs2 = vec![sample_observation("later observation about rust safety")];
         index
-            .index_observations("ep-002", "2026-02-20", "ironclaw", &obs2)
+            .index_observations("ep-002", "2026-02-20", &obs2)
             .unwrap();
 
         let filtered = index
@@ -945,7 +937,7 @@ mod tests {
 
         let obs1 = vec![sample_observation("ironclaw observation about testing")];
         index
-            .index_observations("ep-001", "2026-02-19", "ironclaw", &obs1)
+            .index_observations("ep-001", "2026-02-19", &obs1)
             .unwrap();
 
         let obs2 = vec![Observation {
@@ -953,7 +945,7 @@ mod tests {
             ..sample_observation("devops observation about testing")
         }];
         index
-            .index_observations("ep-002", "2026-02-19", "devops", &obs2)
+            .index_observations("ep-002", "2026-02-19", &obs2)
             .unwrap();
 
         let filtered = index
@@ -980,14 +972,14 @@ mod tests {
             "observation from episode one about memory",
         )];
         index
-            .index_observations("ep-001", "2026-02-19", "ironclaw", &obs1)
+            .index_observations("ep-001", "2026-02-19", &obs1)
             .unwrap();
 
         let obs2 = vec![sample_observation(
             "observation from episode two about memory",
         )];
         index
-            .index_observations("ep-002", "2026-02-19", "ironclaw", &obs2)
+            .index_observations("ep-002", "2026-02-19", &obs2)
             .unwrap();
 
         let filtered = index
@@ -1026,7 +1018,7 @@ mod tests {
 
         let obs = vec![sample_observation("deleteable observation about rust")];
         let ids = index
-            .index_observations("ep-001", "2026-02-19", "ironclaw", &obs)
+            .index_observations("ep-001", "2026-02-19", &obs)
             .unwrap();
 
         let before = index.search("deleteable rust", 5, &no_filters()).unwrap();
@@ -1046,7 +1038,7 @@ mod tests {
             "rust programming language memory safety",
         )];
         index
-            .index_observations("ep-001", "2026-02-19", "ironclaw", &obs)
+            .index_observations("ep-001", "2026-02-19", &obs)
             .unwrap();
 
         let results = index.search("rust", 5, &no_filters()).unwrap();
@@ -1065,7 +1057,7 @@ mod tests {
             "the observer monitors token counts and fires when exceeded",
         )];
         index
-            .index_observations("ep-001", "2026-02-19", "ironclaw", &obs)
+            .index_observations("ep-001", "2026-02-19", &obs)
             .unwrap();
 
         let results = index.search("observer token", 5, &no_filters()).unwrap();
@@ -1205,7 +1197,7 @@ mod tests {
 
         let obs = vec![sample_observation("observation about line ranges")];
         index
-            .index_observations("ep-001", "2026-02-19", "ironclaw", &obs)
+            .index_observations("ep-001", "2026-02-19", &obs)
             .unwrap();
 
         let chunks = vec![IndexChunk {
@@ -1263,14 +1255,14 @@ mod tests {
             "early ironclaw observation about search",
         )];
         index
-            .index_observations("ep-001", "2026-02-15", "ironclaw", &obs1)
+            .index_observations("ep-001", "2026-02-15", &obs1)
             .unwrap();
 
         let obs2 = vec![sample_observation(
             "later ironclaw observation about search",
         )];
         index
-            .index_observations("ep-002", "2026-02-20", "ironclaw", &obs2)
+            .index_observations("ep-002", "2026-02-20", &obs2)
             .unwrap();
 
         let obs3 = vec![Observation {
@@ -1278,7 +1270,7 @@ mod tests {
             ..sample_observation("devops observation about search")
         }];
         index
-            .index_observations("ep-003", "2026-02-20", "devops", &obs3)
+            .index_observations("ep-003", "2026-02-20", &obs3)
             .unwrap();
 
         // Filter: ironclaw + after 2026-02-18
@@ -1301,7 +1293,7 @@ mod tests {
     fn index_empty_observations() {
         let (_dir, index) = create_test_index();
         let ids = index
-            .index_observations("ep-001", "2026-02-19", "ironclaw", &[])
+            .index_observations("ep-001", "2026-02-19", &[])
             .unwrap();
         assert!(ids.is_empty(), "empty obs should return empty ids");
     }

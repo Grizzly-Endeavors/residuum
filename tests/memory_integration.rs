@@ -70,9 +70,9 @@ mod memory_integration {
     fn observer_response() -> String {
         r#"{
             "observations": [
-                {"content": "workspace uses a flat directory layout with identity files at root", "timestamp": "2026-02-21T14:30Z", "visibility": "user"},
-                {"content": "bootstrap creates 10 required directories on first run", "timestamp": "2026-02-21T14:31Z", "visibility": "user"},
-                {"content": "SOUL.md defines the agent personality and is loaded at startup", "timestamp": "2026-02-21T14:32Z", "visibility": "user"}
+                {"content": "workspace uses a flat directory layout with identity files at root", "timestamp": "2026-02-21T14:30Z", "visibility": "user", "project_context": "ironclaw/workspace"},
+                {"content": "bootstrap creates 10 required directories on first run", "timestamp": "2026-02-21T14:31Z", "visibility": "user", "project_context": "ironclaw/workspace"},
+                {"content": "SOUL.md defines the agent personality and is loaded at startup", "timestamp": "2026-02-21T14:32Z", "visibility": "user", "project_context": "ironclaw/workspace"}
             ],
             "narrative": "We were discussing the workspace layout and how identity files are organized. The bootstrap process creates the required directory structure."
         }"#
@@ -81,9 +81,9 @@ mod memory_integration {
 
     fn observer_response_legacy() -> String {
         r#"[
-            {"content": "workspace uses a flat directory layout with identity files at root", "timestamp": "2026-02-21T14:30Z", "visibility": "user"},
-            {"content": "bootstrap creates 10 required directories on first run", "timestamp": "2026-02-21T14:31Z", "visibility": "user"},
-            {"content": "SOUL.md defines the agent personality and is loaded at startup", "timestamp": "2026-02-21T14:32Z", "visibility": "user"}
+            {"content": "workspace uses a flat directory layout with identity files at root", "timestamp": "2026-02-21T14:30Z", "visibility": "user", "project_context": "ironclaw/workspace"},
+            {"content": "bootstrap creates 10 required directories on first run", "timestamp": "2026-02-21T14:31Z", "visibility": "user", "project_context": "ironclaw/workspace"},
+            {"content": "SOUL.md defines the agent personality and is loaded at startup", "timestamp": "2026-02-21T14:32Z", "visibility": "user", "project_context": "ironclaw/workspace"}
         ]"#
         .to_string()
     }
@@ -441,7 +441,7 @@ mod memory_integration {
         }];
 
         index
-            .index_observations("ep-001", "2026-02-19", "ironclaw", &obs)
+            .index_observations("ep-001", "2026-02-19", &obs)
             .unwrap();
 
         let results = index.search("personality", 5, &no_filters()).unwrap();

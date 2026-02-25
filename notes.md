@@ -10,6 +10,5 @@
 - Wire up `src/models/retry.rs` (`RetryConfig`, `with_retry`) to the model providers — the logic is implemented and tested but never called in production.
 - Enforce JSON output at API level where possible.
 - Embedding and RAG support for memory search
-- Observer bug: observations should carry per-message `project_context` (from the `RecentMessage` closest to each extraction), not the episode-level majority-vote context. Currently `build_episode_and_persist` stamps every observation with the same `project_context`. This means project switches mid-episode tag all observations with the majority project. Fix when implementing memory search improvements.
 - HTTP/SSE transport support for MCP servers.
 - Add a trigger count option for heartbeat pulses that can be provided in place of interval. It would schedule a number of triggers equal to the count across the active period. Triggers would be roughly evenly spaced throughout the active period, with added randomization to make the triggers feel less rigid.

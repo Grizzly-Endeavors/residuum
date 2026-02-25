@@ -7,35 +7,40 @@
 use std::path::Path;
 
 use crate::error::IronclawError;
+use crate::memory::recent_messages::RecentMessage;
 use crate::memory::types::IndexChunk;
-use crate::models::{Message, Role};
+use crate::models::Role;
 
-/// Extract interaction-pair chunks from a sequence of messages.
+/// Extract interaction-pair chunks from a sequence of recent messages.
 ///
 /// Walks messages in order. A chunk is closed when an assistant message with
 /// non-empty text content follows a pending user message. Tool-only assistant
 /// messages (empty/whitespace text content) are skipped. System and tool
 /// messages are also skipped.
 ///
+/// Each chunk inherits `project_context` from the user `RecentMessage` that
+/// started the pair.
+///
 /// `line_offset` is the transcript line number of the first message (typically 2,
 /// since line 1 is the meta object in JSONL transcripts).
 #[must_use]
 pub(crate) fn extract_chunks(
-    messages: &[Message],
+    recent_messages: &[RecentMessage],
     episode_id: &str,
     date: &str,
-    ctx: &str,
     line_offset: usize,
 ) -> Vec<IndexChunk> {
     let mut chunks = Vec::new();
-    let mut pending_user: Option<(usize, &str)> = None; // (line_number, content)
+    // (line_number, content, project_context)
+    let mut pending_user: Option<(usize, &str, &str)> = None;
 
-    for (i, msg) in messages.iter().enumerate() {
+    for (i, rm) in recent_messages.iter().enumerate() {
+        let msg = &rm.message;
         let line_num = line_offset + i;
         match msg.role {
             Role::User => {
                 // New user message — set (or replace) pending
-                pending_user = Some((line_num, &msg.content));
+                pending_user = Some((line_num, &msg.content, &rm.project_context));
             }
             Role::Assistant => {
                 let text = msg.content.trim();
@@ -43,13 +48,13 @@ pub(crate) fn extract_chunks(
                     // Tool-call-only assistant message — skip, keep pending user
                     continue;
                 }
-                if let Some((user_line, user_content)) = pending_user.take() {
+                if let Some((user_line, user_content, user_ctx)) = pending_user.take() {
                     let chunk_id = format!("{episode_id}-c{}", chunks.len());
                     chunks.push(IndexChunk {
                         chunk_id,
                         episode_id: episode_id.to_string(),
                         date: date.to_string(),
-                        context: ctx.to_string(),
+                        context: user_ctx.to_string(),
                         line_start: user_line,
                         line_end: line_num,
                         content: format!("user: {user_content}\nassistant: {text}"),
@@ -151,39 +156,68 @@ pub(crate) fn read_idx_jsonl(path: &Path) -> Vec<IndexChunk> {
 )]
 mod tests {
     use super::*;
-    use crate::models::ToolCall;
+    use crate::memory::types::Visibility;
+    use crate::models::{Message, ToolCall};
 
-    fn user(text: &str) -> Message {
-        Message::user(text)
+    fn recent_user(text: &str) -> RecentMessage {
+        RecentMessage {
+            message: Message::user(text),
+            timestamp: chrono::Utc::now().naive_utc(),
+            project_context: "ironclaw".to_string(),
+            visibility: Visibility::User,
+        }
     }
 
-    fn assistant(text: &str) -> Message {
-        Message::assistant(text.to_string(), None)
+    fn recent_assistant(text: &str) -> RecentMessage {
+        RecentMessage {
+            message: Message::assistant(text.to_string(), None),
+            timestamp: chrono::Utc::now().naive_utc(),
+            project_context: "ironclaw".to_string(),
+            visibility: Visibility::User,
+        }
     }
 
-    fn assistant_tool_only() -> Message {
-        Message::assistant(
-            String::new(),
-            Some(vec![ToolCall {
-                id: "call_1".to_string(),
-                name: "read_file".to_string(),
-                arguments: serde_json::json!({"path": "src/main.rs"}),
-            }]),
-        )
+    fn recent_assistant_tool_only() -> RecentMessage {
+        RecentMessage {
+            message: Message::assistant(
+                String::new(),
+                Some(vec![ToolCall {
+                    id: "call_1".to_string(),
+                    name: "read_file".to_string(),
+                    arguments: serde_json::json!({"path": "src/main.rs"}),
+                }]),
+            ),
+            timestamp: chrono::Utc::now().naive_utc(),
+            project_context: "ironclaw".to_string(),
+            visibility: Visibility::User,
+        }
     }
 
-    fn tool_result() -> Message {
-        Message::tool("file contents here", "call_1")
+    fn recent_tool() -> RecentMessage {
+        RecentMessage {
+            message: Message::tool("file contents here", "call_1"),
+            timestamp: chrono::Utc::now().naive_utc(),
+            project_context: "ironclaw".to_string(),
+            visibility: Visibility::User,
+        }
     }
 
-    fn system_msg() -> Message {
-        Message::system("you are a helpful assistant")
+    fn recent_system() -> RecentMessage {
+        RecentMessage {
+            message: Message::system("you are a helpful assistant"),
+            timestamp: chrono::Utc::now().naive_utc(),
+            project_context: "ironclaw".to_string(),
+            visibility: Visibility::User,
+        }
     }
 
     #[test]
     fn basic_pairing() {
-        let msgs = vec![user("how does X work?"), assistant("X works by doing Y.")];
-        let chunks = extract_chunks(&msgs, "ep-001", "2026-02-19", "ironclaw", 2);
+        let msgs = vec![
+            recent_user("how does X work?"),
+            recent_assistant("X works by doing Y."),
+        ];
+        let chunks = extract_chunks(&msgs, "ep-001", "2026-02-19", 2);
         assert_eq!(chunks.len(), 1, "should produce one chunk");
         assert_eq!(chunks[0].chunk_id, "ep-001-c0");
         assert!(chunks[0].content.contains("user: how does X work?"));
@@ -193,12 +227,12 @@ mod tests {
     #[test]
     fn tool_only_assistant_skipped() {
         let msgs = vec![
-            user("read a file"),
-            assistant_tool_only(),
-            tool_result(),
-            assistant("here are the file contents"),
+            recent_user("read a file"),
+            recent_assistant_tool_only(),
+            recent_tool(),
+            recent_assistant("here are the file contents"),
         ];
-        let chunks = extract_chunks(&msgs, "ep-001", "2026-02-19", "ironclaw", 2);
+        let chunks = extract_chunks(&msgs, "ep-001", "2026-02-19", 2);
         assert_eq!(
             chunks.len(),
             1,
@@ -214,13 +248,12 @@ mod tests {
 
     #[test]
     fn incomplete_pair_discarded() {
-        // User message followed by another user message — first is discarded
         let msgs = vec![
-            user("first question"),
-            user("second question"),
-            assistant("answer to second"),
+            recent_user("first question"),
+            recent_user("second question"),
+            recent_assistant("answer to second"),
         ];
-        let chunks = extract_chunks(&msgs, "ep-001", "2026-02-19", "ironclaw", 2);
+        let chunks = extract_chunks(&msgs, "ep-001", "2026-02-19", 2);
         assert_eq!(chunks.len(), 1, "first user message should be discarded");
         assert!(chunks[0].content.contains("user: second question"));
     }
@@ -228,10 +261,15 @@ mod tests {
     #[test]
     fn empty_content_skipped() {
         let msgs = vec![
-            user("question"),
-            Message::assistant("   ".to_string(), None), // whitespace-only
+            recent_user("question"),
+            RecentMessage {
+                message: Message::assistant("   ".to_string(), None),
+                timestamp: chrono::Utc::now().naive_utc(),
+                project_context: "ironclaw".to_string(),
+                visibility: Visibility::User,
+            },
         ];
-        let chunks = extract_chunks(&msgs, "ep-001", "2026-02-19", "ironclaw", 2);
+        let chunks = extract_chunks(&msgs, "ep-001", "2026-02-19", 2);
         assert!(
             chunks.is_empty(),
             "whitespace-only assistant should not close pair"
@@ -241,12 +279,12 @@ mod tests {
     #[test]
     fn line_numbers_correct() {
         let msgs = vec![
-            user("q1"),      // line 2
-            assistant("a1"), // line 3
-            user("q2"),      // line 4
-            assistant("a2"), // line 5
+            recent_user("q1"),      // line 2
+            recent_assistant("a1"), // line 3
+            recent_user("q2"),      // line 4
+            recent_assistant("a2"), // line 5
         ];
-        let chunks = extract_chunks(&msgs, "ep-001", "2026-02-19", "ironclaw", 2);
+        let chunks = extract_chunks(&msgs, "ep-001", "2026-02-19", 2);
         assert_eq!(chunks.len(), 2);
         assert_eq!(chunks[0].line_start, 2);
         assert_eq!(chunks[0].line_end, 3);
@@ -256,14 +294,14 @@ mod tests {
 
     #[test]
     fn no_messages() {
-        let chunks = extract_chunks(&[], "ep-001", "2026-02-19", "ironclaw", 2);
+        let chunks = extract_chunks(&[], "ep-001", "2026-02-19", 2);
         assert!(chunks.is_empty(), "no messages should produce no chunks");
     }
 
     #[test]
     fn all_tool_messages() {
-        let msgs = vec![tool_result(), system_msg(), tool_result()];
-        let chunks = extract_chunks(&msgs, "ep-001", "2026-02-19", "ironclaw", 2);
+        let msgs = vec![recent_tool(), recent_system(), recent_tool()];
+        let chunks = extract_chunks(&msgs, "ep-001", "2026-02-19", 2);
         assert!(
             chunks.is_empty(),
             "tool-only messages should produce no chunks"
@@ -273,18 +311,42 @@ mod tests {
     #[test]
     fn chunk_ids_sequential() {
         let msgs = vec![
-            user("q1"),
-            assistant("a1"),
-            user("q2"),
-            assistant("a2"),
-            user("q3"),
-            assistant("a3"),
+            recent_user("q1"),
+            recent_assistant("a1"),
+            recent_user("q2"),
+            recent_assistant("a2"),
+            recent_user("q3"),
+            recent_assistant("a3"),
         ];
-        let chunks = extract_chunks(&msgs, "ep-001", "2026-02-19", "ironclaw", 2);
+        let chunks = extract_chunks(&msgs, "ep-001", "2026-02-19", 2);
         assert_eq!(chunks.len(), 3);
         assert_eq!(chunks[0].chunk_id, "ep-001-c0");
         assert_eq!(chunks[1].chunk_id, "ep-001-c1");
         assert_eq!(chunks[2].chunk_id, "ep-001-c2");
+    }
+
+    #[test]
+    fn per_chunk_project_context() {
+        let msgs = vec![
+            RecentMessage {
+                message: Message::user("how is ironclaw?"),
+                timestamp: chrono::Utc::now().naive_utc(),
+                project_context: "ironclaw".to_string(),
+                visibility: Visibility::User,
+            },
+            recent_assistant("it's great"),
+            RecentMessage {
+                message: Message::user("how about devops?"),
+                timestamp: chrono::Utc::now().naive_utc(),
+                project_context: "devops".to_string(),
+                visibility: Visibility::User,
+            },
+            recent_assistant("also good"),
+        ];
+        let chunks = extract_chunks(&msgs, "ep-001", "2026-02-19", 2);
+        assert_eq!(chunks.len(), 2);
+        assert_eq!(chunks[0].context, "ironclaw");
+        assert_eq!(chunks[1].context, "devops");
     }
 
     #[tokio::test]

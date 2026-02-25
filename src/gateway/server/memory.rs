@@ -141,12 +141,9 @@ pub(super) async fn execute_observation(
             agent.rotate_messages_after_observation();
 
             // Index observations and chunks into the search index
-            if let Err(e) = search_index.index_observations(
-                &result.id,
-                &result.date,
-                &result.context,
-                &result.observations,
-            ) {
+            if let Err(e) =
+                search_index.index_observations(&result.id, &result.date, &result.observations)
+            {
                 eprintln!("warning: failed to index observations: {e}");
             }
             if let Err(e) = search_index.index_chunks(&result.chunks) {
@@ -273,12 +270,8 @@ pub(super) async fn run_forced_observe(
     agent.rotate_messages_after_observation();
 
     // Index observations and chunks into the search index
-    if let Err(e) = search_index.index_observations(
-        &result.id,
-        &result.date,
-        &result.context,
-        &result.observations,
-    ) {
+    if let Err(e) = search_index.index_observations(&result.id, &result.date, &result.observations)
+    {
         eprintln!("warning: failed to index observations after forced observe: {e}");
     }
     if let Err(e) = search_index.index_chunks(&result.chunks) {
