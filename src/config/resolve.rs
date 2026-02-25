@@ -16,11 +16,12 @@ use super::constants::{
 };
 use super::deserialize::{
     ConfigFile, DiscordConfigFile, GatewayConfigFile, McpConfigFile, ProviderEntryFile,
-    SkillsConfigFile, WebhookConfigFile,
+    SearchConfigFile, SkillsConfigFile, WebhookConfigFile,
 };
 use super::provider::{ModelSpec, ProviderKind, ProviderSpec};
 use super::types::{
-    DiscordConfig, GatewayConfig, McpConfig, MemoryConfig, SkillsConfig, WebhookConfig,
+    DiscordConfig, GatewayConfig, McpConfig, MemoryConfig, SearchConfig, SkillsConfig,
+    WebhookConfig,
 };
 
 /// Build a `Config` from an optional config file and environment variables.
@@ -113,6 +114,7 @@ pub(super) fn from_file_and_env(file: Option<&ConfigFile>) -> Result<Config, Iro
         .unwrap_or(DEFAULT_MAX_TOKENS);
 
     let mem_section = file.and_then(|f| f.memory.as_ref());
+    let search = resolve_search_config(mem_section.and_then(|m| m.search.as_ref()));
     let memory = MemoryConfig {
         observer_threshold_tokens: mem_section
             .and_then(|m| m.observer_threshold_tokens)
@@ -126,6 +128,7 @@ pub(super) fn from_file_and_env(file: Option<&ConfigFile>) -> Result<Config, Iro
         observer_force_threshold_tokens: mem_section
             .and_then(|m| m.observer_force_threshold_tokens)
             .unwrap_or(DEFAULT_OBSERVER_FORCE_THRESHOLD),
+        search,
     };
 
     let pulse_enabled = file
@@ -424,6 +427,34 @@ fn resolve_mcp_config(section: Option<&McpConfigFile>) -> McpConfig {
         .collect();
 
     McpConfig { servers }
+}
+
+/// Resolve hybrid search configuration from TOML section with defaults.
+fn resolve_search_config(section: Option<&SearchConfigFile>) -> SearchConfig {
+    let cfg = SearchConfig {
+        vector_weight: section
+            .and_then(|s| s.vector_weight)
+            .unwrap_or(SearchConfig::default().vector_weight),
+        text_weight: section
+            .and_then(|s| s.text_weight)
+            .unwrap_or(SearchConfig::default().text_weight),
+        min_score: section
+            .and_then(|s| s.min_score)
+            .unwrap_or(SearchConfig::default().min_score),
+        candidate_multiplier: section
+            .and_then(|s| s.candidate_multiplier)
+            .unwrap_or(SearchConfig::default().candidate_multiplier),
+    };
+
+    let sum = cfg.vector_weight + cfg.text_weight;
+    if (sum - 1.0).abs() > 0.01 {
+        eprintln!(
+            "warning: [memory.search] vector_weight ({}) + text_weight ({}) = {sum:.2}, expected ~1.0",
+            cfg.vector_weight, cfg.text_weight
+        );
+    }
+
+    cfg
 }
 
 /// Warn on deprecated environment variables that no longer have effect.
@@ -1040,6 +1071,90 @@ default = "openai/gpt-4o"
         assert!(
             cfg.embedding.is_none(),
             "embedding should not fall back to default"
+        );
+    }
+
+    // ── Search config ─────────────────────────────────────────────────────
+
+    #[test]
+    fn search_config_defaults_when_absent() {
+        let toml_str = r#"
+timezone = "UTC"
+
+[models]
+main = "anthropic/claude-sonnet-4-6"
+"#;
+        let file: ConfigFile = toml::from_str(toml_str).unwrap();
+        let cfg = from_file_and_env(Some(&file)).unwrap();
+        let search = &cfg.memory.search;
+        assert!(
+            (search.vector_weight - 0.7).abs() < f64::EPSILON,
+            "vector_weight should default to 0.7"
+        );
+        assert!(
+            (search.text_weight - 0.3).abs() < f64::EPSILON,
+            "text_weight should default to 0.3"
+        );
+        assert!(
+            (search.min_score - 0.35).abs() < f64::EPSILON,
+            "min_score should default to 0.35"
+        );
+        assert_eq!(
+            search.candidate_multiplier, 4,
+            "candidate_multiplier should default to 4"
+        );
+    }
+
+    #[test]
+    fn search_config_custom_values() {
+        let toml_str = r#"
+timezone = "UTC"
+
+[models]
+main = "anthropic/claude-sonnet-4-6"
+
+[memory.search]
+vector_weight = 0.5
+text_weight = 0.5
+min_score = 0.2
+candidate_multiplier = 8
+"#;
+        let file: ConfigFile = toml::from_str(toml_str).unwrap();
+        let cfg = from_file_and_env(Some(&file)).unwrap();
+        let search = &cfg.memory.search;
+        assert!(
+            (search.vector_weight - 0.5).abs() < f64::EPSILON,
+            "vector_weight should be custom"
+        );
+        assert!(
+            (search.text_weight - 0.5).abs() < f64::EPSILON,
+            "text_weight should be custom"
+        );
+        assert!(
+            (search.min_score - 0.2).abs() < f64::EPSILON,
+            "min_score should be custom"
+        );
+        assert_eq!(
+            search.candidate_multiplier, 8,
+            "candidate_multiplier should be custom"
+        );
+    }
+
+    #[test]
+    fn search_config_deny_unknown_fields() {
+        let toml_str = r#"
+timezone = "UTC"
+
+[models]
+main = "anthropic/claude-sonnet-4-6"
+
+[memory.search]
+typo_field = 0.5
+"#;
+        let result = toml::from_str::<ConfigFile>(toml_str);
+        assert!(
+            result.is_err(),
+            "unknown field in [memory.search] should be rejected"
         );
     }
 }

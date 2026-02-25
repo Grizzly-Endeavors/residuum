@@ -5,6 +5,8 @@ use std::path::PathBuf;
 use super::constants::{
     DEFAULT_GATEWAY_BIND, DEFAULT_GATEWAY_PORT, DEFAULT_OBSERVER_COOLDOWN_SECS,
     DEFAULT_OBSERVER_FORCE_THRESHOLD, DEFAULT_OBSERVER_THRESHOLD, DEFAULT_REFLECTOR_THRESHOLD,
+    DEFAULT_SEARCH_CANDIDATE_MULTIPLIER, DEFAULT_SEARCH_MIN_SCORE, DEFAULT_SEARCH_TEXT_WEIGHT,
+    DEFAULT_SEARCH_VECTOR_WEIGHT,
 };
 
 /// Validated gateway configuration.
@@ -46,6 +48,8 @@ pub struct MemoryConfig {
     pub observer_cooldown_secs: u64,
     /// Token threshold that forces immediate observation (bypasses cooldown).
     pub observer_force_threshold_tokens: usize,
+    /// Hybrid search configuration.
+    pub search: SearchConfig,
 }
 
 impl Default for MemoryConfig {
@@ -55,6 +59,31 @@ impl Default for MemoryConfig {
             reflector_threshold_tokens: DEFAULT_REFLECTOR_THRESHOLD,
             observer_cooldown_secs: DEFAULT_OBSERVER_COOLDOWN_SECS,
             observer_force_threshold_tokens: DEFAULT_OBSERVER_FORCE_THRESHOLD,
+            search: SearchConfig::default(),
+        }
+    }
+}
+
+/// Validated hybrid search configuration.
+#[derive(Debug, Clone)]
+pub struct SearchConfig {
+    /// Weight for vector similarity scores in hybrid merge (0.0–1.0).
+    pub vector_weight: f64,
+    /// Weight for BM25 text scores in hybrid merge (0.0–1.0).
+    pub text_weight: f64,
+    /// Minimum hybrid score threshold for results.
+    pub min_score: f64,
+    /// Multiplier on limit for candidate retrieval before merge.
+    pub candidate_multiplier: usize,
+}
+
+impl Default for SearchConfig {
+    fn default() -> Self {
+        Self {
+            vector_weight: DEFAULT_SEARCH_VECTOR_WEIGHT,
+            text_weight: DEFAULT_SEARCH_TEXT_WEIGHT,
+            min_score: DEFAULT_SEARCH_MIN_SCORE,
+            candidate_multiplier: DEFAULT_SEARCH_CANDIDATE_MULTIPLIER,
         }
     }
 }

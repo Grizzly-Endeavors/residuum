@@ -93,6 +93,12 @@ impl WorkspaceLayout {
         self.root.join("memory/.index_manifest.json")
     }
 
+    /// Path to the sqlite-vec vector database file.
+    #[must_use]
+    pub fn vectors_db(&self) -> PathBuf {
+        self.root.join("memory/vectors.db")
+    }
+
     /// Path to the skills directory.
     #[must_use]
     pub fn skills_dir(&self) -> PathBuf {
@@ -240,6 +246,11 @@ mod tests {
             layout.inbox_dir(),
             PathBuf::from("/tmp/ws/inbox"),
             "inbox_dir path"
+        );
+        assert_eq!(
+            layout.vectors_db(),
+            PathBuf::from("/tmp/ws/memory/vectors.db"),
+            "vectors_db path"
         );
     }
 

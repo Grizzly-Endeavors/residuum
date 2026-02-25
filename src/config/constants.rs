@@ -35,3 +35,15 @@ pub(crate) const DEFAULT_OBSERVER_COOLDOWN_SECS: u64 = 120;
 
 /// Default force-observe token threshold (bypasses cooldown).
 pub(crate) const DEFAULT_OBSERVER_FORCE_THRESHOLD: usize = 60_000;
+
+/// Default weight for vector similarity in hybrid search merge.
+pub(crate) const DEFAULT_SEARCH_VECTOR_WEIGHT: f64 = 0.7;
+
+/// Default weight for BM25 text scores in hybrid search merge.
+pub(crate) const DEFAULT_SEARCH_TEXT_WEIGHT: f64 = 0.3;
+
+/// Default minimum hybrid score threshold.
+pub(crate) const DEFAULT_SEARCH_MIN_SCORE: f64 = 0.35;
+
+/// Default candidate multiplier for hybrid search over-fetch.
+pub(crate) const DEFAULT_SEARCH_CANDIDATE_MULTIPLIER: usize = 4;

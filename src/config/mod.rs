@@ -26,7 +26,8 @@ pub(crate) use constants::{
 };
 pub use provider::{ModelSpec, ProviderKind, ProviderSpec};
 pub use types::{
-    DiscordConfig, GatewayConfig, McpConfig, MemoryConfig, SkillsConfig, WebhookConfig,
+    DiscordConfig, GatewayConfig, McpConfig, MemoryConfig, SearchConfig, SkillsConfig,
+    WebhookConfig,
 };
 
 // ── Config struct ─────────────────────────────────────────────────────────────
