@@ -1,0 +1,488 @@
+# Tool Contracts
+
+This document is the source of truth for every tool exposed to the LLM. It must be kept in sync with the Rust `definition()` implementations in this directory.
+
+**Gating note:** `exec` is a gated tool — only available when the active project's `tools` list opts it in. All other tools listed here are always available.
+
+---
+
+## `read_file`
+
+**Source:** `read.rs` · `ReadTool`
+
+**Description sent to LLM:**
+> Read the contents of a file. Each output line is tagged with a content hash (e.g. `1:f1\thello`) for use with edit_file. By default returns the first 2000 lines; use offset/limit for larger files. Lines longer than 2000 characters are truncated.
+
+### Input
+
+| Parameter | Type    | Required | Description                                      |
+|-----------|---------|----------|--------------------------------------------------|
+| `path`    | string  | yes      | Absolute or relative path to the file to read    |
+| `offset`  | integer | no       | Line number to start reading from (0-based, default: 0) |
+| `limit`   | integer | no       | Maximum number of lines to read (default: 2000)  |
+
+### Output
+
+On success: lines formatted as `{line_num:>4}:{hash}\t{content}` joined by newlines, optionally preceded by warning lines.
+
+Warnings prepended when:
+- File exceeds 2000 lines and no explicit `limit`/`offset` was given
+- Any lines exceed 2000 characters (they are truncated with `... (truncated)`)
+
+On error (returned as `is_error = true`):
+- File does not exist or cannot be read
+- File exceeds 10 MB size cap
+
+**Side effect:** Records the path in the `FileTracker` (enables subsequent `write_file`/`edit_file`).
+
+---
+
+## `write_file`
+
+**Source:** `write.rs` · `WriteTool`
+
+**Description sent to LLM:**
+> Write content to a file. Creates parent directories if they don't exist. Overwrites the file if it already exists. Existing files must be read with read_file before overwriting.
+
+### Input
+
+| Parameter | Type   | Required | Description                                   |
+|-----------|--------|----------|-----------------------------------------------|
+| `path`    | string | yes      | Absolute or relative path to the file to write |
+| `content` | string | yes      | The content to write to the file              |
+
+### Output
+
+On success: `"wrote {N} bytes to {path}"`
+
+On error:
+- `PathPolicy` rejects the write path (path is outside the active project root)
+- File already exists but has not been read via `read_file` first
+- Directory creation fails
+- Write fails
+
+**Side effect:** Records the path in the `FileTracker` after a successful write.
+
+---
+
+## `edit_file`
+
+**Source:** `edit.rs` · `EditTool`
+
+**Description sent to LLM:**
+> Edit a file using line:hash anchors from read_file output. Validates content hashes before applying changes to detect stale edits. Operations: 'replace' (replace line or range), 'insert_after' (insert after a line; use start_line '0' to insert at file start), 'delete' (remove line or range). Use this over write_file when updating existing content.
+
+### Input
+
+| Parameter    | Type   | Required | Description                                                                 |
+|--------------|--------|----------|-----------------------------------------------------------------------------|
+| `path`       | string | yes      | Path to the file to edit                                                    |
+| `operation`  | string | yes      | One of: `"replace"`, `"insert_after"`, `"delete"`                          |
+| `start_line` | string | yes      | Line anchor as `"N:hash"` (e.g. `"5:a3"`). Use `"0"` for insert at file start |
+| `end_line`   | string | no       | Optional end line anchor `"N:hash"` for range operations                   |
+| `content`    | string | no*      | New content. Required for `replace` and `insert_after`; omitted for `delete` |
+
+\* `content` is required when `operation` is `replace` or `insert_after`.
+
+**Operations:**
+- `replace` — replaces `start_line` through `end_line` (or just `start_line` if no range) with `content`
+- `insert_after` — inserts `content` after `start_line` (use `"0"` to insert at file start)
+- `delete` — removes `start_line` through `end_line`; cannot delete all lines from a file
+
+### Output
+
+On success: `"edited {path}: {description}"` where description is e.g. `"replaced line(s) 5"` or `"deleted line(s) 2-4"`.
+
+On error:
+- `PathPolicy` rejects the path
+- File does not exist
+- File has not been read via `read_file` first
+- Hash mismatch on `start_line` or `end_line` (file changed since last read)
+- Line number out of bounds
+- Attempt to delete all lines from a file
+
+---
+
+## `exec`
+
+**Source:** `exec.rs` · `ExecTool`
+
+**Gated:** requires an active project with `"exec"` in its `tools` list.
+
+**Description sent to LLM:**
+> Execute a shell command and return its output. Commands run via `sh -c` with a configurable timeout (default 120 seconds).
+
+### Input
+
+| Parameter      | Type    | Required | Description                               |
+|----------------|---------|----------|-------------------------------------------|
+| `command`      | string  | yes      | The shell command to execute              |
+| `timeout_secs` | integer | no       | Timeout in seconds (default: 120)         |
+
+### Output
+
+On success (exit code 0): stdout, followed by `STDERR:\n{stderr}` if stderr is non-empty. If both are empty, returns `"(no output)"`.
+
+On error (exit code ≠ 0): `"command exited with code {N}\n{stdout+stderr}"`.
+
+On timeout: `"command timed out after {N} seconds"`.
+
+Output is capped at 100 KB; larger output is truncated with `\n... (output truncated)`.
+
+---
+
+## `memory_search`
+
+**Source:** `memory_search.rs` · `MemorySearchTool`
+
+**Description sent to LLM (vector enabled):**
+> Search past conversation observations and interaction chunks using hybrid BM25 + vector similarity search. Returns matching results with relevance scores and snippets. Supports filtering by source type, date range, project context, and episode IDs.
+
+**Description sent to LLM (BM25 only):**
+> Search past conversation observations and interaction chunks using BM25 full-text search. Returns matching results with relevance scores and snippets. Supports filtering by source type, date range, project context, and episode IDs.
+
+### Input
+
+| Parameter         | Type            | Required | Description                                                  |
+|-------------------|-----------------|----------|--------------------------------------------------------------|
+| `query`           | string          | yes      | Search query (supports AND, OR, phrase queries with quotes)  |
+| `limit`           | integer         | no       | Maximum results to return (default: 5, max: 20)              |
+| `source`          | string          | no       | Filter by source: `"observation"` or `"chunk"`               |
+| `date_from`       | string          | no       | Filter on or after date (YYYY-MM-DD, inclusive)              |
+| `date_to`         | string          | no       | Filter on or before date (YYYY-MM-DD, inclusive)             |
+| `project_context` | string          | no       | Filter by project context (exact match)                      |
+| `episode_ids`     | array\<string\> | no       | Filter to results from these episode IDs                     |
+
+### Output
+
+On success with results:
+```
+Found {N} result(s):
+
+1. [{source_type}] {id} | {date} | {context} | lines {s}-{e} (score: {score})
+   {snippet}
+```
+
+On success with no results: `"no results found"`
+
+On error: `"search failed: {reason}"`
+
+---
+
+## `memory_get`
+
+**Source:** `memory_get.rs` · `MemoryGetTool`
+
+**Description sent to LLM:**
+> Retrieve a raw episode transcript by ID. Use after memory_search to drill into the full conversation transcript of a specific episode. Returns formatted message lines with role labels and line numbers.
+
+### Input
+
+| Parameter    | Type    | Required | Description                                              |
+|--------------|---------|----------|----------------------------------------------------------|
+| `episode_id` | string  | yes      | The episode ID to retrieve (e.g., `"ep-001"`)            |
+| `from_line`  | integer | no       | Start reading from this line offset (1-indexed, default: start) |
+| `lines`      | integer | no       | Number of message lines to return (default: 50, max: 200) |
+
+**Security:** `episode_id` containing `/`, `\`, or `..` is rejected with a path-traversal error.
+
+### Output
+
+On success: formatted transcript with header (`Episode: {id}`), message lines as `[line {N}] {Role}: {text}`, and an optional footer showing the range when `from_line`/`lines` are used.
+
+On error:
+- Episode not found
+- `episode_id` is empty or contains invalid characters
+- Failed to read transcript file
+
+---
+
+## `project_activate`
+
+**Source:** `projects.rs` · `ProjectActivateTool`
+
+**Description sent to LLM:**
+> Activate a project context. Loads the project's overview, manifest, and configuration into the agent's context.
+
+### Input
+
+| Parameter | Type   | Required | Description                                         |
+|-----------|--------|----------|-----------------------------------------------------|
+| `name`    | string | yes      | Name of the project to activate (case-insensitive)  |
+
+### Output
+
+On success: summary string like `"Activated project '{name}'. Manifest: {N} notes, {N} references, {N} workspace, {N} skills files."`
+
+On error: project not found or activation failure message.
+
+**Side effects:** Updates `PathPolicy` to scope writes to the project root; enables gated tools from the project's `tools` frontmatter list; reconciles MCP servers; rescans skills to include project-scoped skills.
+
+---
+
+## `project_deactivate`
+
+**Source:** `projects.rs` · `ProjectDeactivateTool`
+
+**Description sent to LLM:**
+> Deactivate the current project context. Requires a non-empty session summary log entry.
+
+### Input
+
+| Parameter | Type   | Required | Description                                           |
+|-----------|--------|----------|-------------------------------------------------------|
+| `log`     | string | yes      | Session summary log entry (required, must not be empty) |
+
+### Output
+
+On success: `"Deactivated project '{name}'. Log entry recorded."`
+
+On error: no active project, or empty `log`.
+
+**Side effects:** Resets `PathPolicy` to no active project; clears all gated tool permissions; disconnects all MCP servers; rescans skills without project dir.
+
+---
+
+## `project_create`
+
+**Source:** `projects.rs` · `ProjectCreateTool`
+
+**Description sent to LLM:**
+> Create a new project with the standard directory structure and PROJECT.md.
+
+### Input
+
+| Parameter     | Type            | Required | Description                                               |
+|---------------|-----------------|----------|-----------------------------------------------------------|
+| `name`        | string          | yes      | Human-readable project name                               |
+| `description` | string          | yes      | Brief summary of what this project covers                 |
+| `tools`       | array\<string\> | no       | Optional list of tool names to associate with this project |
+
+### Output
+
+On success: `"Created project '{name}' at {path}"`
+
+On error: creation failure message (e.g. name conflict, filesystem error).
+
+**Side effect:** Triggers a project index rescan after successful creation.
+
+---
+
+## `project_archive`
+
+**Source:** `projects.rs` · `ProjectArchiveTool`
+
+**Description sent to LLM:**
+> Archive a completed project. Updates frontmatter to archived status and moves it to the archive directory.
+
+### Input
+
+| Parameter | Type   | Required | Description                       |
+|-----------|--------|----------|-----------------------------------|
+| `name`    | string | yes      | Name of the project to archive    |
+
+### Output
+
+On success: `"Archived project '{name}'. Moved to archive/."`
+
+On error:
+- Project not found in index
+- Project is currently active (must deactivate first)
+- Filesystem error
+
+**Side effect:** Triggers a project index rescan after successful archival.
+
+---
+
+## `project_list`
+
+**Source:** `projects.rs` · `ProjectListTool`
+
+**Description sent to LLM:**
+> List all projects and their status.
+
+### Input
+
+| Parameter          | Type    | Required | Description                                       |
+|--------------------|---------|----------|---------------------------------------------------|
+| `include_archived` | boolean | no       | Include archived projects in the list (default false) |
+
+### Output
+
+On success: count header followed by one line per project:
+```
+{N} project(s):
+  [{status}] {name}[ACTIVE] — {description}
+```
+
+When no projects exist: `"No projects found."`
+
+---
+
+## `skill_activate`
+
+**Source:** `skills.rs` · `SkillActivateTool`
+
+**Description sent to LLM:**
+> Load a skill's full instructions into the system prompt. Use when a task matches an available skill's description.
+
+### Input
+
+| Parameter | Type   | Required | Description                                          |
+|-----------|--------|----------|------------------------------------------------------|
+| `name`    | string | yes      | Name of the skill to activate (case-insensitive)     |
+
+### Output
+
+On success: `"Activated skill '{name}'."`
+
+On error: skill not found.
+
+**Side effect:** Appends the skill's markdown body to the active system prompt.
+
+---
+
+## `skill_deactivate`
+
+**Source:** `skills.rs` · `SkillDeactivateTool`
+
+**Description sent to LLM:**
+> Remove a skill's instructions from the system prompt when no longer needed.
+
+### Input
+
+| Parameter | Type   | Required | Description                         |
+|-----------|--------|----------|-------------------------------------|
+| `name`    | string | yes      | Name of the skill to deactivate     |
+
+### Output
+
+On success: `"Deactivated skill '{name}'."`
+
+On error: skill is not currently active.
+
+**Side effect:** Removes the skill's instructions from the active system prompt.
+
+---
+
+## `cron_add`
+
+**Source:** `cron.rs` · `CronAddTool`
+
+**Description sent to LLM:**
+> Create a new scheduled cron job. The job will persist across restarts.
+
+### Input
+
+Required fields: `name`, `schedule_type`, `delivery`, `payload_type`
+
+| Parameter            | Type    | Required   | Description                                                                          |
+|----------------------|---------|------------|--------------------------------------------------------------------------------------|
+| `name`               | string  | yes        | Human-readable name for this job                                                     |
+| `schedule_type`      | string  | yes        | `"at"` / `"every"` / `"cron"`                                                       |
+| `schedule_at`        | string  | if `at`    | Local datetime `YYYY-MM-DDTHH:MM:SS`, required when `schedule_type="at"`            |
+| `schedule_every_ms`  | integer | if `every` | Interval in milliseconds, required when `schedule_type="every"`                     |
+| `schedule_anchor_ms` | integer | no         | Anchor epoch ms (default 0 = Unix epoch), optional when `schedule_type="every"`     |
+| `schedule_expr`      | string  | if `cron`  | 6-field cron expression including seconds, e.g. `"0 30 9 * * *"`; required when `schedule_type="cron"` |
+| `schedule_tz`        | string  | no         | IANA timezone for cron evaluation; defaults to configured timezone                  |
+| `delivery`           | string  | yes        | `"user_visible"` or `"background"`                                                  |
+| `payload_type`       | string  | yes        | `"system_event"` or `"agent_turn"`                                                  |
+| `payload_text`       | string  | if `system_event` | Text to inject; required when `payload_type="system_event"`                |
+| `payload_message`    | string  | if `agent_turn`   | Prompt for isolated agent turn; required when `payload_type="agent_turn"`  |
+| `description`        | string  | no         | Optional description of what this job does                                          |
+| `enabled`            | boolean | no         | Start the job enabled (default true)                                                |
+| `delete_after_run`   | boolean | no         | Delete the job after it runs once                                                   |
+
+### Output
+
+On success: `"Created job '{name}' with id {id}. Next run: {datetime}"`
+
+On error: invalid schedule, invalid delivery/payload, or save failure.
+
+**Side effect:** Persists the job to `jobs.json` and wakes the cron scheduler.
+
+---
+
+## `cron_list`
+
+**Source:** `cron.rs` · `CronListTool`
+
+**Description sent to LLM:**
+> List all scheduled cron jobs with their status and next run time.
+
+### Input
+
+| Parameter          | Type    | Required | Description                                         |
+|--------------------|---------|----------|-----------------------------------------------------|
+| `include_disabled` | boolean | no       | Include disabled jobs in the list (default false)   |
+
+### Output
+
+On success: count header followed by one entry per job:
+```
+{N} job(s):
+  [{enabled|disabled}] {name} ({id}) — last: {status} — next: {datetime}
+    {description}
+```
+
+When no jobs match: `"No cron jobs found."`
+
+---
+
+## `cron_update`
+
+**Source:** `cron.rs` · `CronUpdateTool`
+
+**Description sent to LLM:**
+> Update an existing cron job by ID. Only provided fields are changed.
+
+### Input
+
+| Parameter            | Type    | Required | Description                                                                         |
+|----------------------|---------|----------|-------------------------------------------------------------------------------------|
+| `id`                 | string  | yes      | Job ID to update                                                                    |
+| `name`               | string  | no       | New name                                                                            |
+| `description`        | string  | no       | New description                                                                     |
+| `enabled`            | boolean | no       | Enable or disable the job                                                           |
+| `delete_after_run`   | boolean | no       | Toggle delete-after-run                                                             |
+| `schedule_type`      | string  | no       | New schedule type — replaces existing schedule (`"at"` / `"every"` / `"cron"`)     |
+| `schedule_at`        | string  | no       | Required when updating to `schedule_type="at"`                                     |
+| `schedule_every_ms`  | integer | no       | Required when updating to `schedule_type="every"`                                  |
+| `schedule_anchor_ms` | integer | no       | Optional when updating to `schedule_type="every"`                                  |
+| `schedule_expr`      | string  | no       | Required when updating to `schedule_type="cron"`                                   |
+| `schedule_tz`        | string  | no       | IANA timezone for cron evaluation                                                  |
+| `delivery`           | string  | no       | `"user_visible"` or `"background"`                                                 |
+| `payload_type`       | string  | no       | New payload type — replaces existing payload (`"system_event"` / `"agent_turn"`)   |
+| `payload_text`       | string  | no       | Required when updating to `payload_type="system_event"`                            |
+| `payload_message`    | string  | no       | Required when updating to `payload_type="agent_turn"`                              |
+
+### Output
+
+On success: `"Updated job '{id}'"`
+
+On error: job not found, invalid schedule/delivery/payload, or save failure.
+
+**Side effect:** Persists changes to `jobs.json` and wakes the cron scheduler.
+
+---
+
+## `cron_remove`
+
+**Source:** `cron.rs` · `CronRemoveTool`
+
+**Description sent to LLM:**
+> Remove a scheduled cron job by ID.
+
+### Input
+
+| Parameter | Type   | Required | Description         |
+|-----------|--------|----------|---------------------|
+| `id`      | string | yes      | Job ID to remove    |
+
+### Output
+
+On success: `"Removed job '{id}'"`
+
+On error: job not found, or save failure.
+
+**Side effect:** Persists removal to `jobs.json` and wakes the cron scheduler.
