@@ -171,12 +171,6 @@ impl WorkspaceLayout {
         self.root.join("HEARTBEAT.yml")
     }
 
-    /// Path to ALERTS.md -- alert delivery behavior instructions.
-    #[must_use]
-    pub fn alerts_md(&self) -> PathBuf {
-        self.root.join("ALERTS.md")
-    }
-
     /// Path to NOTIFY.yml -- notification routing configuration.
     #[must_use]
     pub fn notify_yml(&self) -> PathBuf {
@@ -279,11 +273,6 @@ mod tests {
             layout.heartbeat_yml(),
             PathBuf::from("/tmp/ws/HEARTBEAT.yml"),
             "heartbeat_yml path"
-        );
-        assert_eq!(
-            layout.alerts_md(),
-            PathBuf::from("/tmp/ws/ALERTS.md"),
-            "alerts_md path"
         );
         assert_eq!(
             layout.notify_yml(),

@@ -374,7 +374,7 @@ On error: skill is not currently active.
 
 ### Input
 
-Required fields: `name`, `schedule_type`, `delivery`, `payload_type`
+Required fields: `name`, `schedule_type`, `payload_type`
 
 | Parameter            | Type    | Required   | Description                                                                          |
 |----------------------|---------|------------|--------------------------------------------------------------------------------------|
@@ -385,7 +385,6 @@ Required fields: `name`, `schedule_type`, `delivery`, `payload_type`
 | `schedule_anchor_ms` | integer | no         | Anchor epoch ms (default 0 = Unix epoch), optional when `schedule_type="every"`     |
 | `schedule_expr`      | string  | if `cron`  | 6-field cron expression including seconds, e.g. `"0 30 9 * * *"`; required when `schedule_type="cron"` |
 | `schedule_tz`        | string  | no         | IANA timezone for cron evaluation; defaults to configured timezone                  |
-| `delivery`           | string  | yes        | `"user_visible"` or `"background"`                                                  |
 | `payload_type`       | string  | yes        | `"system_event"` or `"agent_turn"`                                                  |
 | `payload_text`       | string  | if `system_event` | Text to inject; required when `payload_type="system_event"`                |
 | `payload_message`    | string  | if `agent_turn`   | Prompt for isolated agent turn; required when `payload_type="agent_turn"`  |
@@ -397,7 +396,9 @@ Required fields: `name`, `schedule_type`, `delivery`, `payload_type`
 
 On success: `"Created job '{name}' with id {id}. Next run: {datetime}"`
 
-On error: invalid schedule, invalid delivery/payload, or save failure.
+On error: invalid schedule, invalid payload, or save failure.
+
+**Routing:** Results are routed via `NOTIFY.yml`. Add the job name to a channel list (`agent_feed`, `inbox`, or an external channel) to control where results are delivered.
 
 **Side effect:** Persists the job to `jobs.json` and wakes the cron scheduler.
 
@@ -451,7 +452,6 @@ When no jobs match: `"No cron jobs found."`
 | `schedule_anchor_ms` | integer | no       | Optional when updating to `schedule_type="every"`                                  |
 | `schedule_expr`      | string  | no       | Required when updating to `schedule_type="cron"`                                   |
 | `schedule_tz`        | string  | no       | IANA timezone for cron evaluation                                                  |
-| `delivery`           | string  | no       | `"user_visible"` or `"background"`                                                 |
 | `payload_type`       | string  | no       | New payload type — replaces existing payload (`"system_event"` / `"agent_turn"`)   |
 | `payload_text`       | string  | no       | Required when updating to `payload_type="system_event"`                            |
 | `payload_message`    | string  | no       | Required when updating to `payload_type="agent_turn"`                              |
@@ -460,7 +460,7 @@ When no jobs match: `"No cron jobs found."`
 
 On success: `"Updated job '{id}'"`
 
-On error: job not found, invalid schedule/delivery/payload, or save failure.
+On error: job not found, invalid schedule/payload, or save failure.
 
 **Side effect:** Persists changes to `jobs.json` and wakes the cron scheduler.
 

@@ -128,21 +128,6 @@ agent_feed: []
 inbox: []
 ";
 
-/// Default content for Alerts.md when creating a new workspace.
-const DEFAULT_ALERTS: &str = "\
-# Alerts.md — Alert delivery behavior
-
-This file is injected into the agent's prompt when running pulse checks.
-Use it to customize how the agent reports findings.
-
-## Guidelines
-
-- If you find nothing noteworthy, respond with exactly: HEARTBEAT_OK
-- For high-priority findings, be specific and actionable
-- Keep reports concise — one paragraph per finding
-- Include timestamps when relevant
-";
-
 /// Ensure the workspace directory structure exists with default identity files.
 ///
 /// This is idempotent: existing files and directories are not modified.
@@ -167,7 +152,6 @@ pub async fn ensure_workspace(layout: &WorkspaceLayout) -> Result<(), IronclawEr
     write_if_missing(&layout.observer_md(), DEFAULT_OBSERVER_PROMPT).await?;
     write_if_missing(&layout.reflector_md(), DEFAULT_REFLECTOR_PROMPT).await?;
     write_if_missing(&layout.heartbeat_yml(), DEFAULT_HEARTBEAT).await?;
-    write_if_missing(&layout.alerts_md(), DEFAULT_ALERTS).await?;
     write_if_missing(&layout.notify_yml(), DEFAULT_NOTIFY).await?;
     write_if_missing(&layout.presence_toml(), DEFAULT_PRESENCE).await?;
 
@@ -221,7 +205,6 @@ mod tests {
             layout.heartbeat_yml().exists(),
             "HEARTBEAT.yml should exist"
         );
-        assert!(layout.alerts_md().exists(), "Alerts.md should exist");
         assert!(layout.notify_yml().exists(), "NOTIFY.yml should exist");
         assert!(
             layout.presence_toml().exists(),
