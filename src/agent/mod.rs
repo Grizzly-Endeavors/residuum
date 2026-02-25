@@ -12,7 +12,7 @@ use crate::models::{CompletionOptions, Message, ModelProvider};
 use crate::tools::{SharedToolFilter, ToolRegistry};
 use crate::workspace::identity::IdentityFiles;
 
-use self::context::{MemoryContext, ProjectsContext, SkillsContext, TimeContext};
+use self::context::{MemoryContext, ProjectsContext, SkillsContext, StatusLine};
 use self::recent_messages::RecentMessages;
 use self::turn::execute_turn;
 
@@ -42,11 +42,17 @@ pub struct Agent {
     pending_system_events: Vec<String>,
     tz: chrono_tz::Tz,
     last_user_message_at: Option<chrono::NaiveDateTime>,
+    /// Path to the inbox directory (for computing unread count per turn).
+    inbox_dir: std::path::PathBuf,
 }
 
 impl Agent {
     /// Create a new agent with the given components.
     #[must_use]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "agent needs all subsystem handles at construction"
+    )]
     pub fn new(
         provider: Box<dyn ModelProvider>,
         tools: ToolRegistry,
@@ -55,6 +61,7 @@ impl Agent {
         identity: IdentityFiles,
         options: CompletionOptions,
         tz: chrono_tz::Tz,
+        inbox_dir: std::path::PathBuf,
     ) -> Self {
         Self {
             provider,
@@ -69,6 +76,7 @@ impl Agent {
             pending_system_events: Vec::new(),
             tz,
             last_user_message_at: None,
+            inbox_dir,
         }
     }
 
@@ -205,10 +213,12 @@ impl Agent {
         skills_ctx: &SkillsContext<'_>,
     ) -> Result<Vec<String>, IronclawError> {
         let now = crate::time::now_local(self.tz);
-        let time_ctx = TimeContext {
+        let unread = crate::inbox::count_unread(&self.inbox_dir);
+        let status_line = StatusLine {
             now,
             last_message_at: self.last_user_message_at,
             message_source: origin.map(|o| o.channel.clone()),
+            unread_inbox_count: unread,
         };
         self.last_user_message_at = Some(now);
 
@@ -240,7 +250,7 @@ impl Agent {
             skills_ctx,
             &mut self.recent_messages,
             display,
-            Some(&time_ctx),
+            Some(&status_line),
         )
         .await
     }
@@ -396,6 +406,7 @@ mod tests {
             IdentityFiles::default(),
             CompletionOptions::default(),
             chrono_tz::UTC,
+            std::path::PathBuf::from("/tmp/ironclaw-test-inbox"),
         );
 
         let display = NullDisplay;
@@ -434,6 +445,7 @@ mod tests {
             IdentityFiles::default(),
             CompletionOptions::default(),
             chrono_tz::UTC,
+            std::path::PathBuf::from("/tmp/ironclaw-test-inbox"),
         );
 
         let display = NullDisplay;
@@ -483,6 +495,7 @@ mod tests {
             IdentityFiles::default(),
             CompletionOptions::default(),
             chrono_tz::UTC,
+            std::path::PathBuf::from("/tmp/ironclaw-test-inbox"),
         );
 
         let display = NullDisplay;
@@ -533,6 +546,7 @@ mod tests {
             IdentityFiles::default(),
             CompletionOptions::default(),
             chrono_tz::UTC,
+            std::path::PathBuf::from("/tmp/ironclaw-test-inbox"),
         );
 
         let display = NullDisplay;
@@ -561,6 +575,7 @@ mod tests {
             IdentityFiles::default(),
             CompletionOptions::default(),
             chrono_tz::UTC,
+            std::path::PathBuf::from("/tmp/ironclaw-test-inbox"),
         );
 
         let display = NullDisplay;
@@ -599,6 +614,7 @@ mod tests {
             IdentityFiles::default(),
             CompletionOptions::default(),
             chrono_tz::UTC,
+            std::path::PathBuf::from("/tmp/ironclaw-test-inbox"),
         );
 
         agent.queue_system_event("email arrived from boss".to_string());
@@ -634,6 +650,7 @@ mod tests {
             IdentityFiles::default(),
             CompletionOptions::default(),
             chrono_tz::UTC,
+            std::path::PathBuf::from("/tmp/ironclaw-test-inbox"),
         );
 
         // Simulate a conversation with 5 exchanges
@@ -681,6 +698,7 @@ mod tests {
             IdentityFiles::default(),
             CompletionOptions::default(),
             chrono_tz::UTC,
+            std::path::PathBuf::from("/tmp/ironclaw-test-inbox"),
         );
 
         let display = NullDisplay;

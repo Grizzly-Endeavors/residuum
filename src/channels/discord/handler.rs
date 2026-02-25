@@ -18,6 +18,7 @@ use crate::channels::attachment::{
 };
 use crate::channels::presence::{load_presence, to_activity, to_online_status};
 use crate::channels::types::{InboundMessage, MessageOrigin, RoutedMessage};
+use crate::inbox;
 
 use super::reply::DiscordReplyHandle;
 
@@ -33,6 +34,7 @@ pub(super) struct DiscordHandler {
     pub(super) reload_sender: tokio::sync::watch::Sender<bool>,
     pub(super) observe_notify: Arc<tokio::sync::Notify>,
     pub(super) reflect_notify: Arc<tokio::sync::Notify>,
+    pub(super) tz: chrono_tz::Tz,
 }
 
 #[async_trait]
@@ -86,6 +88,34 @@ impl EventHandler for DiscordHandler {
                     let line = format_attachment_line(&saved, &info);
                     content.push('\n');
                     content.push_str(&line);
+
+                    // Create companion inbox item for the attachment
+                    let saved_name = saved
+                        .local_path
+                        .file_name()
+                        .unwrap_or_default()
+                        .to_string_lossy()
+                        .to_string();
+                    let content_type_str = info.content_type.as_deref().unwrap_or("unknown");
+                    let companion = inbox::InboxItem {
+                        title: format!("Discord attachment: {}", info.filename),
+                        body: format!(
+                            "From: {}\nSize: {} bytes\nContent-Type: {content_type_str}",
+                            msg.author.name, info.size,
+                        ),
+                        source: "discord".to_string(),
+                        timestamp: crate::time::now_local(self.tz),
+                        read: false,
+                        attachments: vec![PathBuf::from("inbox").join(&saved_name)],
+                    };
+                    let filename = inbox::generate_filename(&companion.title, self.tz);
+                    if let Err(e) = inbox::save_item(&self.inbox_dir, &filename, &companion).await {
+                        tracing::warn!(
+                            filename = %info.filename,
+                            error = %e,
+                            "failed to create companion inbox item for discord attachment"
+                        );
+                    }
                 }
                 Err(reason) => {
                     tracing::warn!(

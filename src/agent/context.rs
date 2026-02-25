@@ -9,13 +9,15 @@ use crate::workspace::identity::IdentityFiles;
 use super::recent_messages::RecentMessages;
 
 /// Ephemeral context injected before the last user message in each LLM call.
-pub struct TimeContext {
+pub struct StatusLine {
     /// Current local time.
     pub now: NaiveDateTime,
     /// When the previous user message was sent (if any).
     pub last_message_at: Option<NaiveDateTime>,
     /// Which channel this message arrived from (e.g. `"websocket"`, `"discord"`).
     pub message_source: Option<String>,
+    /// Number of unread inbox items (0 → tag omitted).
+    pub unread_inbox_count: usize,
 }
 
 /// Memory-related context injected into the system prompt.
@@ -70,7 +72,7 @@ impl SkillsContext<'_> {
 /// Assemble the full message list for a model call.
 ///
 /// Creates a system message from identity files and observation log content,
-/// then appends the recent messages. When a `TimeContext` is provided, a
+/// then appends the recent messages. When a `StatusLine` is provided, a
 /// system message with the current time (and optionally how long since the
 /// last message) is inserted immediately before the last user message.
 #[must_use]
@@ -80,7 +82,7 @@ pub(super) fn assemble_system_prompt(
     memory_ctx: &MemoryContext<'_>,
     projects_ctx: &ProjectsContext<'_>,
     skills_ctx: &SkillsContext<'_>,
-    time_ctx: Option<&TimeContext>,
+    status_line: Option<&StatusLine>,
 ) -> Vec<Message> {
     let system_content = build_system_content(identity, memory_ctx, projects_ctx, skills_ctx);
 
@@ -90,8 +92,8 @@ pub(super) fn assemble_system_prompt(
     messages.push(Message::system(system_content));
     messages.extend(conversation.iter().cloned());
 
-    if let Some(ctx) = time_ctx {
-        let tag = build_time_context_tag(ctx);
+    if let Some(ctx) = status_line {
+        let tag = build_status_line(ctx);
         // Insert before the last user message
         if let Some(pos) = messages
             .iter()
@@ -104,8 +106,8 @@ pub(super) fn assemble_system_prompt(
     messages
 }
 
-/// Build the `[Current Time: ...][Last Message: ...][Message Source: ...]` tag string.
-fn build_time_context_tag(ctx: &TimeContext) -> String {
+/// Build the `[Current Time: ...][Last Message: ...][Message Source: ...][Unread Inbox: N]` tag string.
+fn build_status_line(ctx: &StatusLine) -> String {
     let current = format_display_datetime(ctx.now);
     let mut tag = match ctx.last_message_at {
         Some(prev) => {
@@ -118,6 +120,10 @@ fn build_time_context_tag(ctx: &TimeContext) -> String {
 
     if let Some(source) = &ctx.message_source {
         tag = format!("{tag}[Message Source: {source}]");
+    }
+
+    if ctx.unread_inbox_count > 0 {
+        tag = format!("{tag}[Unread Inbox: {}]", ctx.unread_inbox_count);
     }
 
     tag
@@ -489,10 +495,11 @@ mod tests {
         recent.push(Message::assistant("hi there", None));
         recent.push(Message::user("what time is it?"));
 
-        let ctx = TimeContext {
+        let ctx = StatusLine {
             now: dt(2026, 2, 22, 17, 0),
             last_message_at: Some(dt(2026, 2, 22, 16, 45)),
             message_source: None,
+            unread_inbox_count: 0,
         };
 
         let messages = assemble_system_prompt(
@@ -504,11 +511,11 @@ mod tests {
             Some(&ctx),
         );
 
-        // Find the time context system message
+        // Find the status line system message
         let time_msg = messages
             .iter()
             .find(|m| m.content.contains("[Current Time:"));
-        assert!(time_msg.is_some(), "should have time context message");
+        assert!(time_msg.is_some(), "should have status line message");
 
         let tag = &time_msg.unwrap().content;
         assert!(
@@ -520,7 +527,7 @@ mod tests {
             "should contain relative time, got: {tag}"
         );
 
-        // Time tag should be right before the last user message
+        // Status line should be right before the last user message
         let time_pos = messages
             .iter()
             .position(|m| m.content.contains("[Current Time:"))
@@ -528,7 +535,7 @@ mod tests {
         assert_eq!(
             messages[time_pos + 1].content,
             "what time is it?",
-            "time tag should be immediately before last user message"
+            "status line should be immediately before last user message"
         );
     }
 
@@ -555,10 +562,11 @@ mod tests {
         let mut recent = RecentMessages::new();
         recent.push(Message::user("first message"));
 
-        let ctx = TimeContext {
+        let ctx = StatusLine {
             now: dt(2026, 2, 22, 17, 0),
             last_message_at: None,
             message_source: None,
+            unread_inbox_count: 0,
         };
 
         let messages = assemble_system_prompt(
@@ -573,7 +581,7 @@ mod tests {
         let time_msg = messages
             .iter()
             .find(|m| m.content.contains("[Current Time:"));
-        assert!(time_msg.is_some(), "should have time context message");
+        assert!(time_msg.is_some(), "should have status line message");
 
         let tag = &time_msg.unwrap().content;
         assert!(
@@ -588,10 +596,11 @@ mod tests {
         let mut recent = RecentMessages::new();
         recent.push(Message::user("hello from discord"));
 
-        let ctx = TimeContext {
+        let ctx = StatusLine {
             now: dt(2026, 2, 22, 17, 0),
             last_message_at: None,
             message_source: Some("discord".to_string()),
+            unread_inbox_count: 0,
         };
 
         let messages = assemble_system_prompt(
@@ -625,10 +634,11 @@ mod tests {
         recent.push(Message::assistant("response 2", None));
         recent.push(Message::user("third"));
 
-        let ctx = TimeContext {
+        let ctx = StatusLine {
             now: dt(2026, 2, 22, 17, 0),
             last_message_at: Some(dt(2026, 2, 22, 16, 0)),
             message_source: None,
+            unread_inbox_count: 0,
         };
 
         let messages = assemble_system_prompt(
@@ -659,6 +669,70 @@ mod tests {
             messages[time_pos + 1].content,
             "third",
             "time tag should be before the last user message"
+        );
+    }
+
+    #[test]
+    fn status_line_includes_unread_inbox_count() {
+        let identity = IdentityFiles::default();
+        let mut recent = RecentMessages::new();
+        recent.push(Message::user("check inbox"));
+
+        let ctx = StatusLine {
+            now: dt(2026, 2, 22, 17, 0),
+            last_message_at: None,
+            message_source: None,
+            unread_inbox_count: 3,
+        };
+
+        let messages = assemble_system_prompt(
+            &identity,
+            &recent,
+            &no_memory(),
+            &no_projects(),
+            &SkillsContext::none(),
+            Some(&ctx),
+        );
+
+        let tag = messages
+            .iter()
+            .find(|m| m.content.contains("[Current Time:"))
+            .map(|m| m.content.as_str());
+        assert!(
+            tag.is_some_and(|t| t.contains("[Unread Inbox: 3]")),
+            "should include unread inbox count, got: {tag:?}"
+        );
+    }
+
+    #[test]
+    fn status_line_omits_zero_unread() {
+        let identity = IdentityFiles::default();
+        let mut recent = RecentMessages::new();
+        recent.push(Message::user("check inbox"));
+
+        let ctx = StatusLine {
+            now: dt(2026, 2, 22, 17, 0),
+            last_message_at: None,
+            message_source: None,
+            unread_inbox_count: 0,
+        };
+
+        let messages = assemble_system_prompt(
+            &identity,
+            &recent,
+            &no_memory(),
+            &no_projects(),
+            &SkillsContext::none(),
+            Some(&ctx),
+        );
+
+        let tag = messages
+            .iter()
+            .find(|m| m.content.contains("[Current Time:"))
+            .map(|m| m.content.as_str());
+        assert!(
+            tag.is_some_and(|t| !t.contains("[Unread Inbox:")),
+            "should not include unread inbox tag when count is 0, got: {tag:?}"
         );
     }
 

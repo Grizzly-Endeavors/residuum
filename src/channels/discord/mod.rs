@@ -30,6 +30,7 @@ pub struct DiscordChannel {
     reload_sender: tokio::sync::watch::Sender<bool>,
     observe_notify: Arc<tokio::sync::Notify>,
     reflect_notify: Arc<tokio::sync::Notify>,
+    tz: chrono_tz::Tz,
 }
 
 impl DiscordChannel {
@@ -42,6 +43,7 @@ impl DiscordChannel {
     /// - `reload_sender`: Watch channel to trigger config reload.
     /// - `observe_notify`: Notify to trigger an observation cycle.
     /// - `reflect_notify`: Notify to trigger a reflection cycle.
+    /// - `tz`: Timezone for inbox item timestamps.
     #[must_use]
     pub fn new(
         cfg: DiscordConfig,
@@ -50,6 +52,7 @@ impl DiscordChannel {
         reload_sender: tokio::sync::watch::Sender<bool>,
         observe_notify: Arc<tokio::sync::Notify>,
         reflect_notify: Arc<tokio::sync::Notify>,
+        tz: chrono_tz::Tz,
     ) -> Self {
         Self {
             cfg,
@@ -58,6 +61,7 @@ impl DiscordChannel {
             reload_sender,
             observe_notify,
             reflect_notify,
+            tz,
         }
     }
 
@@ -80,6 +84,7 @@ impl DiscordChannel {
             reload_sender: self.reload_sender,
             observe_notify: self.observe_notify,
             reflect_notify: self.reflect_notify,
+            tz: self.tz,
         };
 
         let mut client = Client::builder(&self.cfg.token, intents)

@@ -327,6 +327,7 @@ pub(super) async fn initialize(cfg: &Config) -> Result<GatewayComponents, Ironcl
         identity,
         options,
         tz,
+        layout.inbox_dir(),
     );
     agent.reload_observations(&layout).await?;
     agent.reload_recent_context(&layout).await?;

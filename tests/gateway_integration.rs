@@ -79,6 +79,7 @@ mod gateway_integration {
             IdentityFiles::default(),
             CompletionOptions::default(),
             chrono_tz::UTC,
+            std::path::PathBuf::from("/tmp/ironclaw-test-inbox"),
         )
     }
 

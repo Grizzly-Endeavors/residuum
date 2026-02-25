@@ -207,6 +207,7 @@ pub async fn run_gateway(cfg: Config) -> Result<GatewayExit, IronclawError> {
             discord_reload_sender,
             Arc::clone(&observe_notify),
             Arc::clone(&reflect_notify),
+            parts.tz,
         );
         tokio::spawn(async move {
             if let Err(e) = discord.start().await {

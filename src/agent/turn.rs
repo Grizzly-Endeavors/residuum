@@ -8,7 +8,7 @@ use crate::tools::{SharedToolFilter, ToolError, ToolRegistry};
 use crate::workspace::identity::IdentityFiles;
 
 use super::context::{
-    MemoryContext, ProjectsContext, SkillsContext, TimeContext, assemble_system_prompt,
+    MemoryContext, ProjectsContext, SkillsContext, StatusLine, assemble_system_prompt,
 };
 use super::recent_messages::RecentMessages;
 
@@ -42,7 +42,7 @@ pub(super) async fn execute_turn(
     skills_ctx: &SkillsContext<'_>,
     recent_messages: &mut RecentMessages,
     display: &dyn TurnDisplay,
-    time_ctx: Option<&TimeContext>,
+    status_line: Option<&StatusLine>,
 ) -> Result<Vec<String>, IronclawError> {
     let mut texts: Vec<String> = Vec::new();
 
@@ -66,7 +66,7 @@ pub(super) async fn execute_turn(
             memory_ctx,
             projects_ctx,
             skills_ctx,
-            time_ctx,
+            status_line,
         );
 
         let response = provider
