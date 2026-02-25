@@ -176,7 +176,7 @@ workspace/
     └── jobs.json                   # Agent-created scheduled jobs
 ```
 
-Every file is plain text (Markdown, JSON, YAML, TOML). No databases, no opaque embeddings. If you can open it in a text editor, the system is working as intended.
+Every file is plain text (Markdown, JSON, YAML, TOML). If you can open it in a text editor, the system is working as intended.
 
 ## Architecture
 
