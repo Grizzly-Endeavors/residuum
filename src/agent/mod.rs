@@ -1,6 +1,7 @@
 //! Agent runtime: context assembly, tool loop, and message history management.
 
 pub mod context;
+pub mod interrupt;
 pub mod recent_messages;
 mod turn;
 
@@ -209,6 +210,7 @@ impl Agent {
         origin: Option<&MessageOrigin>,
         projects_ctx: &ProjectsContext<'_>,
         skills_ctx: &SkillsContext<'_>,
+        interrupt_rx: &mut tokio::sync::mpsc::Receiver<interrupt::Interrupt>,
     ) -> Result<Vec<String>, IronclawError> {
         let now = crate::time::now_local(self.tz);
         let unread = crate::inbox::count_unread(&self.inbox_dir);
@@ -249,6 +251,7 @@ impl Agent {
             &mut self.recent_messages,
             display,
             Some(&status_line),
+            interrupt_rx,
         )
         .await
     }
@@ -282,6 +285,9 @@ impl Agent {
             recent_context: self.recent_context.as_deref(),
         };
 
+        // System turns don't participate in interrupts — use a dead-end channel
+        let mut sys_interrupt_rx = interrupt::dead_interrupt_rx();
+
         // System turns don't inject time context (no user-facing timestamps)
         let texts = execute_turn(
             provider,
@@ -296,6 +302,7 @@ impl Agent {
             &mut thread_messages,
             display,
             None,
+            &mut sys_interrupt_rx,
         )
         .await?;
 
@@ -408,8 +415,16 @@ mod tests {
         );
 
         let display = NullDisplay;
+        let mut irx = interrupt::dead_interrupt_rx();
         let result = agent
-            .process_message("hi", &display, None, &no_projects(), &SkillsContext::none())
+            .process_message(
+                "hi",
+                &display,
+                None,
+                &no_projects(),
+                &SkillsContext::none(),
+                &mut irx,
+            )
             .await
             .unwrap();
         assert_eq!(result, vec!["hello there"], "should return model text");
@@ -447,6 +462,7 @@ mod tests {
         );
 
         let display = NullDisplay;
+        let mut irx = interrupt::dead_interrupt_rx();
         let result = agent
             .process_message(
                 "run echo test",
@@ -454,6 +470,7 @@ mod tests {
                 None,
                 &no_projects(),
                 &SkillsContext::none(),
+                &mut irx,
             )
             .await
             .unwrap();
@@ -497,6 +514,7 @@ mod tests {
         );
 
         let display = NullDisplay;
+        let mut irx = interrupt::dead_interrupt_rx();
         let result = agent
             .process_message(
                 "what does echo test print?",
@@ -504,6 +522,7 @@ mod tests {
                 None,
                 &no_projects(),
                 &SkillsContext::none(),
+                &mut irx,
             )
             .await
             .unwrap();
@@ -548,6 +567,7 @@ mod tests {
         );
 
         let display = NullDisplay;
+        let mut irx = interrupt::dead_interrupt_rx();
         let result = agent
             .process_message(
                 "loop forever",
@@ -555,6 +575,7 @@ mod tests {
                 None,
                 &no_projects(),
                 &SkillsContext::none(),
+                &mut irx,
             )
             .await;
         assert!(result.is_err(), "should error after max iterations");
@@ -617,6 +638,7 @@ mod tests {
 
         agent.queue_system_event("email arrived from boss".to_string());
         let display = NullDisplay;
+        let mut irx = interrupt::dead_interrupt_rx();
         agent
             .process_message(
                 "what's up?",
@@ -624,6 +646,7 @@ mod tests {
                 None,
                 &no_projects(),
                 &SkillsContext::none(),
+                &mut irx,
             )
             .await
             .unwrap();
@@ -684,9 +707,255 @@ mod tests {
         );
     }
 
+    type InjectEntry = (usize, Vec<interrupt::Interrupt>);
+
+    /// Provider that captures messages per call and sends interrupts after call N.
+    struct CapturingProvider {
+        responses: Vec<ModelResponse>,
+        call_count: Arc<AtomicUsize>,
+        /// Messages seen by the provider on each call (indexed by call number).
+        captured: Arc<tokio::sync::Mutex<Vec<Vec<Message>>>>,
+        /// Interrupts to send after a given call index: `(call_index, interrupts)`.
+        inject_after: Arc<tokio::sync::Mutex<Vec<InjectEntry>>>,
+        interrupt_tx: tokio::sync::mpsc::Sender<interrupt::Interrupt>,
+    }
+
+    impl CapturingProvider {
+        fn new(
+            responses: Vec<ModelResponse>,
+            interrupt_tx: tokio::sync::mpsc::Sender<interrupt::Interrupt>,
+        ) -> Self {
+            Self {
+                responses,
+                call_count: Arc::new(AtomicUsize::new(0)),
+                captured: Arc::new(tokio::sync::Mutex::new(Vec::new())),
+                inject_after: Arc::new(tokio::sync::Mutex::new(Vec::new())),
+                interrupt_tx,
+            }
+        }
+
+        fn schedule_interrupt(&self, after_call: usize, interrupts: Vec<interrupt::Interrupt>) {
+            // Block on mutex — only called from test setup, not async context
+            self.inject_after
+                .try_lock()
+                .unwrap()
+                .push((after_call, interrupts));
+        }
+    }
+
+    #[async_trait]
+    impl ModelProvider for CapturingProvider {
+        async fn complete(
+            &self,
+            messages: &[Message],
+            _tools: &[ToolDefinition],
+            _options: &CompletionOptions,
+        ) -> Result<ModelResponse, ModelError> {
+            let idx = self.call_count.fetch_add(1, Ordering::SeqCst);
+            self.captured.lock().await.push(messages.to_vec());
+
+            let response = self
+                .responses
+                .get(idx)
+                .cloned()
+                .ok_or_else(|| ModelError::Api("no more mock responses".to_string()))?;
+
+            // Inject scheduled interrupts after this call
+            let scheduled: Vec<_> = {
+                let guard = self.inject_after.lock().await;
+                guard
+                    .iter()
+                    .filter(|(after, _)| *after == idx)
+                    .flat_map(|(_, ints)| ints.clone())
+                    .collect()
+            };
+            for intr in scheduled {
+                drop(self.interrupt_tx.try_send(intr));
+            }
+
+            Ok(response)
+        }
+
+        fn model_name(&self) -> &'static str {
+            "capturing-mock"
+        }
+    }
+
+    fn make_inbound(id: &str, content: &str) -> crate::channels::types::InboundMessage {
+        crate::channels::types::InboundMessage {
+            id: id.to_string(),
+            content: content.to_string(),
+            origin: crate::channels::types::MessageOrigin {
+                channel: "test".to_string(),
+                sender_name: "tester".to_string(),
+                sender_id: "t1".to_string(),
+            },
+            timestamp: chrono::Utc::now(),
+        }
+    }
+
     #[tokio::test]
-    async fn empty_response_returns_error() {
-        let provider = MockProvider::new(vec![ModelResponse::new(String::new(), vec![])]);
+    async fn interrupt_injects_user_message_mid_turn() {
+        let mut registry = ToolRegistry::new();
+        registry.register_defaults(
+            FileTracker::new_shared(),
+            PathPolicy::new_shared(std::path::PathBuf::from("/tmp")),
+        );
+
+        let (interrupt_tx, mut interrupt_rx) = tokio::sync::mpsc::channel(32);
+
+        let provider = CapturingProvider::new(
+            vec![
+                // Call 0: tool call — triggers tool loop iteration
+                ModelResponse::new(
+                    String::new(),
+                    vec![ToolCall {
+                        id: "call_1".to_string(),
+                        name: "exec".to_string(),
+                        arguments: serde_json::json!({"command": "echo test"}),
+                    }],
+                ),
+                // Call 1: final text
+                ModelResponse::new("done".to_string(), vec![]),
+            ],
+            interrupt_tx,
+        );
+        provider.schedule_interrupt(
+            0,
+            vec![interrupt::Interrupt::UserMessage(make_inbound(
+                "int-1",
+                "actually, do X instead",
+            ))],
+        );
+        let captured = Arc::clone(&provider.captured);
+
+        let mut agent = Agent::new(
+            Box::new(provider),
+            registry,
+            no_filter(),
+            empty_mcp(),
+            IdentityFiles::default(),
+            CompletionOptions::default(),
+            chrono_tz::UTC,
+            std::path::PathBuf::from("/tmp/ironclaw-test-inbox"),
+        );
+
+        let display = NullDisplay;
+        let result = agent
+            .process_message(
+                "hello",
+                &display,
+                None,
+                &no_projects(),
+                &SkillsContext::none(),
+                &mut interrupt_rx,
+            )
+            .await
+            .unwrap();
+        assert_eq!(result, vec!["done"]);
+
+        // The second LLM call (index 1) should contain the injected user message
+        let calls = captured.lock().await;
+        assert_eq!(calls.len(), 2, "provider should be called twice");
+        let second_call_msgs = &calls[1];
+        assert!(
+            second_call_msgs
+                .iter()
+                .any(|m| m.content.contains("actually, do X instead")),
+            "second call should contain the injected user message"
+        );
+    }
+
+    #[tokio::test]
+    async fn multiple_interrupts_drained_at_checkpoint() {
+        let mut registry = ToolRegistry::new();
+        registry.register_defaults(
+            FileTracker::new_shared(),
+            PathPolicy::new_shared(std::path::PathBuf::from("/tmp")),
+        );
+
+        let (interrupt_tx, mut interrupt_rx) = tokio::sync::mpsc::channel(32);
+
+        let provider = CapturingProvider::new(
+            vec![
+                ModelResponse::new(
+                    String::new(),
+                    vec![ToolCall {
+                        id: "call_1".to_string(),
+                        name: "exec".to_string(),
+                        arguments: serde_json::json!({"command": "echo test"}),
+                    }],
+                ),
+                ModelResponse::new("done".to_string(), vec![]),
+            ],
+            interrupt_tx,
+        );
+        provider.schedule_interrupt(
+            0,
+            vec![
+                interrupt::Interrupt::UserMessage(make_inbound("int-1", "first steering")),
+                interrupt::Interrupt::UserMessage(make_inbound("int-2", "second steering")),
+            ],
+        );
+        let captured = Arc::clone(&provider.captured);
+
+        let mut agent = Agent::new(
+            Box::new(provider),
+            registry,
+            no_filter(),
+            empty_mcp(),
+            IdentityFiles::default(),
+            CompletionOptions::default(),
+            chrono_tz::UTC,
+            std::path::PathBuf::from("/tmp/ironclaw-test-inbox"),
+        );
+
+        let display = NullDisplay;
+        agent
+            .process_message(
+                "hello",
+                &display,
+                None,
+                &no_projects(),
+                &SkillsContext::none(),
+                &mut interrupt_rx,
+            )
+            .await
+            .unwrap();
+
+        let calls = captured.lock().await;
+        let second_call_msgs = &calls[1];
+        let has_first = second_call_msgs
+            .iter()
+            .any(|m| m.content.contains("first steering"));
+        let has_second = second_call_msgs
+            .iter()
+            .any(|m| m.content.contains("second steering"));
+        assert!(
+            has_first && has_second,
+            "both interrupts should appear in the second call"
+        );
+    }
+
+    #[tokio::test]
+    async fn interrupt_during_final_response_not_consumed() {
+        let (interrupt_tx, mut interrupt_rx) = tokio::sync::mpsc::channel(32);
+
+        let provider = CapturingProvider::new(
+            vec![
+                // Single call: returns final text (no tool calls)
+                ModelResponse::new("final answer".to_string(), vec![]),
+            ],
+            interrupt_tx.clone(),
+        );
+        // Schedule an interrupt during the first (and only) call
+        provider.schedule_interrupt(
+            0,
+            vec![interrupt::Interrupt::UserMessage(make_inbound(
+                "int-late",
+                "too late to steer",
+            ))],
+        );
 
         let mut agent = Agent::new(
             Box::new(provider),
@@ -707,6 +976,45 @@ mod tests {
                 None,
                 &no_projects(),
                 &SkillsContext::none(),
+                &mut interrupt_rx,
+            )
+            .await
+            .unwrap();
+        assert_eq!(result, vec!["final answer"]);
+
+        // The interrupt should still be in the channel — not consumed
+        let pending = interrupt_rx.try_recv();
+        assert!(
+            pending.is_ok(),
+            "interrupt should remain in the channel for the next turn"
+        );
+    }
+
+    #[tokio::test]
+    async fn empty_response_returns_error() {
+        let provider = MockProvider::new(vec![ModelResponse::new(String::new(), vec![])]);
+
+        let mut agent = Agent::new(
+            Box::new(provider),
+            ToolRegistry::new(),
+            no_filter(),
+            empty_mcp(),
+            IdentityFiles::default(),
+            CompletionOptions::default(),
+            chrono_tz::UTC,
+            std::path::PathBuf::from("/tmp/ironclaw-test-inbox"),
+        );
+
+        let display = NullDisplay;
+        let mut irx = interrupt::dead_interrupt_rx();
+        let result = agent
+            .process_message(
+                "hello",
+                &display,
+                None,
+                &no_projects(),
+                &SkillsContext::none(),
+                &mut irx,
             )
             .await;
         assert!(result.is_err(), "empty response should return error");

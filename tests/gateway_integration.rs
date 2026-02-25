@@ -25,6 +25,7 @@ mod gateway_integration {
 
     use ironclaw::agent::Agent;
     use ironclaw::agent::context::{ProjectsContext, SkillsContext};
+    use ironclaw::agent::interrupt;
     use ironclaw::gateway::display::BroadcastDisplay;
     use ironclaw::gateway::protocol::{ClientMessage, ServerMessage};
     use ironclaw::models::{
@@ -134,6 +135,7 @@ mod gateway_integration {
                 }
 
                 let no_projects = ProjectsContext::none();
+                let mut irx = interrupt::dead_interrupt_rx();
                 match agent
                     .process_message(
                         &inbound.content,
@@ -141,6 +143,7 @@ mod gateway_integration {
                         None,
                         &no_projects,
                         &SkillsContext::none(),
+                        &mut irx,
                     )
                     .await
                 {

@@ -1,5 +1,7 @@
 //! Turn execution: the tool loop that drives the agent.
 
+use tokio::sync::mpsc;
+
 use crate::channels::TurnDisplay;
 use crate::error::IronclawError;
 use crate::mcp::SharedMcpRegistry;
@@ -10,6 +12,7 @@ use crate::workspace::identity::IdentityFiles;
 use super::context::{
     MemoryContext, ProjectsContext, SkillsContext, StatusLine, assemble_system_prompt,
 };
+use super::interrupt::Interrupt;
 use super::recent_messages::RecentMessages;
 
 /// Maximum number of tool-call iterations before the agent stops.
@@ -43,10 +46,21 @@ pub(super) async fn execute_turn(
     recent_messages: &mut RecentMessages,
     display: &dyn TurnDisplay,
     status_line: Option<&StatusLine>,
+    interrupt_rx: &mut mpsc::Receiver<Interrupt>,
 ) -> Result<Vec<String>, IronclawError> {
     let mut texts: Vec<String> = Vec::new();
 
     for iteration in 0..MAX_TOOL_ITERATIONS {
+        // === Interrupt check point ===
+        // Drain any messages that arrived while tools were executing.
+        while let Ok(interrupt) = interrupt_rx.try_recv() {
+            match interrupt {
+                Interrupt::UserMessage(msg) => {
+                    tracing::info!(msg_id = %msg.id, "injecting mid-turn user message");
+                    recent_messages.push(Message::user(msg.content));
+                }
+            }
+        }
         // Clone the filter each iteration so the guard is dropped before tool
         // execution. Tools like project_activate need a write lock on the same
         // RwLock, which would deadlock if we held a read guard across the call.

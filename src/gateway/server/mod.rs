@@ -18,6 +18,7 @@ use tokio::time::Duration;
 
 use crate::agent::Agent;
 use crate::agent::context::{ProjectsContext, SkillsContext};
+use crate::agent::interrupt::Interrupt;
 use crate::channels::types::RoutedMessage;
 use crate::config::Config;
 use crate::cron::store::CronStore;
@@ -310,7 +311,39 @@ async fn run_event_loop(mut rt: GatewayRuntime) -> GatewayExit {
                     active_instructions: skill_active_text.as_deref(),
                 };
 
-                match rt.agent.process_message(&routed.message.content, &turn_display, Some(&origin), &projects_ctx, &skills_ctx).await {
+                let turn_result = {
+                    let (interrupt_tx, mut interrupt_rx) = mpsc::channel::<Interrupt>(32);
+                    let mut turn = std::pin::pin!(
+                        rt.agent.process_message(
+                            &routed.message.content,
+                            &turn_display,
+                            Some(&origin),
+                            &projects_ctx,
+                            &skills_ctx,
+                            &mut interrupt_rx,
+                        )
+                    );
+
+                    loop {
+                        tokio::select! {
+                            result = &mut turn => break result,
+                            next_msg = rt.inbound_rx.recv() => {
+                                if let Some(next_routed) = next_msg {
+                                    drop(interrupt_tx.try_send(
+                                        Interrupt::UserMessage(next_routed.message)
+                                    ));
+                                }
+                            }
+                            _ = rt.reload_rx.changed() => {
+                                rt.mcp_registry.write().await.disconnect_all().await;
+                                rt.server_handle.abort();
+                                return GatewayExit::Reload;
+                            }
+                        }
+                    }
+                };
+
+                match turn_result {
                     Ok(texts) => {
                         drop(typing_guard);
                         for text in &texts {
