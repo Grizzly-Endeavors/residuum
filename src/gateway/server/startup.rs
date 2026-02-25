@@ -10,8 +10,9 @@ use crate::mcp::SharedMcpRegistry;
 use crate::memory::observer::Observer;
 use crate::memory::recent_messages::load_messages_for_agent;
 use crate::memory::reflector::Reflector;
-use crate::memory::search::{MemoryIndex, RebuildResult, create_shared_index};
+use crate::memory::search::{HybridSearcher, MemoryIndex, RebuildResult, create_shared_index};
 use crate::memory::types::IndexManifest;
+use crate::memory::vector_store::VectorStore;
 use crate::models::{
     CompletionOptions, EmbeddingProvider, HttpClientConfig, ModelProvider, SharedHttpClient,
     build_embedding_provider, build_provider_from_provider_spec,
@@ -34,13 +35,20 @@ pub(super) struct GatewayComponents {
     pub(super) observer: Observer,
     pub(super) reflector: Reflector,
     pub(super) search_index: Arc<MemoryIndex>,
+    #[expect(
+        dead_code,
+        reason = "used only in tool registration, not read by event loop"
+    )]
+    pub(super) hybrid_searcher: Arc<HybridSearcher>,
+    #[expect(dead_code, reason = "will be used by observation pipeline embedding")]
+    pub(super) vector_store: Option<Arc<VectorStore>>,
     pub(super) cron_store: Arc<tokio::sync::Mutex<CronStore>>,
     pub(super) cron_notify: Arc<tokio::sync::Notify>,
     pub(super) mcp_registry: SharedMcpRegistry,
     pub(super) project_state: SharedProjectState,
     pub(super) skill_state: SharedSkillState,
-    #[expect(dead_code, reason = "will be used by vector search integration")]
-    pub(super) embedding_provider: Option<Box<dyn EmbeddingProvider>>,
+    #[expect(dead_code, reason = "will be used by observation pipeline embedding")]
+    pub(super) embedding_provider: Option<Arc<dyn EmbeddingProvider>>,
     pub(super) pulse_provider: Box<dyn ModelProvider>,
     pub(super) cron_provider: Box<dyn ModelProvider>,
     pub(super) pulse_enabled: bool,
@@ -93,11 +101,12 @@ pub(super) async fn initialize(cfg: &Config) -> Result<GatewayComponents, Ironcl
         http.clone(),
         cfg.retry.clone(),
     )?;
-    let embedding_provider = cfg
+    let embedding_provider: Option<Arc<dyn EmbeddingProvider>> = cfg
         .embedding
         .as_ref()
         .map(|spec| build_embedding_provider(spec, http.clone(), cfg.retry.clone()))
-        .transpose()?;
+        .transpose()?
+        .map(Arc::from);
     if let Some(ref ep) = embedding_provider {
         tracing::info!(model = ep.model_name(), "embedding provider ready");
     }
@@ -179,6 +188,57 @@ pub(super) async fn initialize(cfg: &Config) -> Result<GatewayComponents, Ironcl
         }
     }
 
+    // Vector store (only if embedding provider is configured)
+    let vector_store: Option<Arc<VectorStore>> = if let Some(ref ep) = embedding_provider {
+        match ep.embed(&["dimension probe"]).await {
+            Ok(probe) => {
+                let dim = probe.dimensions;
+                let model_name = ep.model_name().to_string();
+
+                // Check if model changed — clear vector store if so
+                if let Some(ref manifest_model) = manifest.embedding_model
+                    && *manifest_model != model_name
+                {
+                    tracing::info!(
+                        old_model = manifest_model.as_str(),
+                        new_model = model_name.as_str(),
+                        "embedding model changed, clearing vector store"
+                    );
+                    if let Err(e) = std::fs::remove_file(layout.vectors_db())
+                        && e.kind() != std::io::ErrorKind::NotFound
+                    {
+                        eprintln!("warning: failed to remove old vector store: {e}");
+                    }
+                }
+
+                match VectorStore::open_or_create(&layout.vectors_db(), dim) {
+                    Ok(vs) => {
+                        tracing::info!(dim, model = model_name.as_str(), "vector store ready");
+                        Some(Arc::new(vs))
+                    }
+                    Err(e) => {
+                        eprintln!("warning: failed to open vector store: {e}");
+                        None
+                    }
+                }
+            }
+            Err(e) => {
+                eprintln!("warning: embedding dimension probe failed: {e}");
+                None
+            }
+        }
+    } else {
+        None
+    };
+
+    // Hybrid searcher
+    let hybrid_searcher = Arc::new(HybridSearcher::new(
+        Arc::clone(&search_index),
+        vector_store.clone(),
+        embedding_provider.clone(),
+        cfg.memory.search.clone(),
+    ));
+
     // Cron store
     let cron_store = Arc::new(tokio::sync::Mutex::new(
         CronStore::load(layout.cron_jobs_json()).await?,
@@ -203,7 +263,7 @@ pub(super) async fn initialize(cfg: &Config) -> Result<GatewayComponents, Ironcl
     let mut tools = ToolRegistry::new();
     let file_tracker = crate::tools::FileTracker::new_shared();
     tools.register_defaults(file_tracker, Arc::clone(&path_policy));
-    tools.register_search_tool(Arc::clone(&search_index));
+    tools.register_search_tool(Arc::clone(&hybrid_searcher));
     tools.register_memory_get_tool(layout.episodes_dir());
     tools.register_cron_tools(Arc::clone(&cron_store), Arc::clone(&cron_notify), tz);
     tools.register_project_tools(
@@ -262,6 +322,8 @@ pub(super) async fn initialize(cfg: &Config) -> Result<GatewayComponents, Ironcl
         observer,
         reflector,
         search_index,
+        hybrid_searcher,
+        vector_store,
         cron_store,
         cron_notify,
         mcp_registry,

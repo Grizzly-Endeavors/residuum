@@ -6,7 +6,7 @@ use tokio::sync::{Mutex, Notify};
 
 use crate::cron::store::CronStore;
 use crate::mcp::SharedMcpRegistry;
-use crate::memory::search::MemoryIndex;
+use crate::memory::search::HybridSearcher;
 use crate::models::ToolDefinition;
 use crate::projects::activation::SharedProjectState;
 use crate::skills::SharedSkillState;
@@ -86,9 +86,9 @@ impl ToolRegistry {
         self.register(Box::new(exec::ExecTool));
     }
 
-    /// Register the `memory_search` tool with a shared index.
-    pub fn register_search_tool(&mut self, index: Arc<MemoryIndex>) {
-        self.register(Box::new(memory_search::MemorySearchTool::new(index)));
+    /// Register the `memory_search` tool with a shared hybrid searcher.
+    pub fn register_search_tool(&mut self, searcher: Arc<HybridSearcher>) {
+        self.register(Box::new(memory_search::MemorySearchTool::new(searcher)));
     }
 
     /// Register the `memory_get` tool for episode transcript retrieval.

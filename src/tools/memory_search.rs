@@ -6,19 +6,19 @@ use async_trait::async_trait;
 use serde_json::Value;
 
 use super::{Tool, ToolError, ToolResult};
-use crate::memory::search::{MemoryIndex, SearchFilters};
+use crate::memory::search::{HybridSearcher, SearchFilters};
 use crate::models::ToolDefinition;
 
-/// Tool that searches the memory index using BM25 full-text search.
+/// Tool that searches the memory index using hybrid BM25 + vector search.
 pub struct MemorySearchTool {
-    index: Arc<MemoryIndex>,
+    searcher: Arc<HybridSearcher>,
 }
 
 impl MemorySearchTool {
-    /// Create a new memory search tool with the given shared index.
+    /// Create a new memory search tool with the given hybrid searcher.
     #[must_use]
-    pub fn new(index: Arc<MemoryIndex>) -> Self {
-        Self { index }
+    pub fn new(searcher: Arc<HybridSearcher>) -> Self {
+        Self { searcher }
     }
 }
 
@@ -29,13 +29,20 @@ impl Tool for MemorySearchTool {
     }
 
     fn definition(&self) -> ToolDefinition {
+        let desc = if self.searcher.has_vector() {
+            "Search past conversation observations and interaction chunks using \
+             hybrid BM25 + vector similarity search. Returns matching results with \
+             relevance scores and snippets. Supports filtering by source type, date \
+             range, project context, and episode IDs."
+        } else {
+            "Search past conversation observations and interaction chunks using \
+             BM25 full-text search. Returns matching results with relevance scores \
+             and snippets. Supports filtering by source type, date range, project \
+             context, and episode IDs."
+        };
         ToolDefinition {
             name: "memory_search".to_string(),
-            description: "Search past conversation observations and interaction chunks using \
-                          BM25 full-text search. Returns matching results with relevance scores \
-                          and snippets. Supports filtering by source type, date range, project \
-                          context, and episode IDs."
-                .to_string(),
+            description: desc.to_string(),
             parameters: serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -119,7 +126,7 @@ impl Tool for MemorySearchTool {
             }),
         };
 
-        match self.index.search(query, limit, &filters) {
+        match self.searcher.search(query, limit, &filters).await {
             Ok(results) if results.is_empty() => Ok(ToolResult::success("no results found")),
             Ok(results) => {
                 let formatted: Vec<String> = results
@@ -159,6 +166,8 @@ impl Tool for MemorySearchTool {
 #[expect(clippy::unwrap_used, reason = "test code uses unwrap for clarity")]
 mod tests {
     use super::*;
+    use crate::config::SearchConfig;
+    use crate::memory::search::MemoryIndex;
     use crate::memory::types::Observation;
     use crate::memory::types::Visibility;
 
@@ -178,7 +187,8 @@ mod tests {
             .index_observations("ep-001", "2026-02-19", &obs)
             .unwrap();
 
-        let tool = MemorySearchTool::new(Arc::new(index));
+        let searcher = HybridSearcher::new(Arc::new(index), None, None, SearchConfig::default());
+        let tool = MemorySearchTool::new(Arc::new(searcher));
         (dir, tool)
     }
 
@@ -235,7 +245,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let index_dir = dir.path().join(".index");
         let index = MemoryIndex::open_or_create(&index_dir).unwrap();
-        let tool = MemorySearchTool::new(Arc::new(index));
+        let searcher = HybridSearcher::new(Arc::new(index), None, None, SearchConfig::default());
+        let tool = MemorySearchTool::new(Arc::new(searcher));
 
         assert_eq!(tool.name(), "memory_search", "tool name should match");
         let def = tool.definition();
