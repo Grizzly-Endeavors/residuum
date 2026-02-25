@@ -1,13 +1,10 @@
-use std::path::Path;
-
 use crate::agent::Agent;
 use crate::agent::context::{ProjectsContext, SkillsContext};
 use crate::channels::null::NullDisplay;
 use crate::error::IronclawError;
 use crate::models::{Message, ModelProvider};
 
-use super::alerts::load_alerts;
-use super::types::{AlertLevel, PulseDef};
+use super::types::PulseDef;
 
 /// Result of executing a pulse check.
 pub struct PulseResult {
@@ -19,39 +16,30 @@ pub struct PulseResult {
     pub messages: Vec<Message>,
     /// True if the response contains the `HEARTBEAT_OK` sentinel.
     pub is_heartbeat_ok: bool,
-    /// The highest alert level across pulse tasks (meaningful only when `!is_heartbeat_ok`).
-    pub alert_level: AlertLevel,
 }
 
 /// Execute a pulse check using the given agent.
 ///
-/// Builds a prompt from the pulse tasks and optional Alerts.md content,
-/// runs `agent.run_system_turn`, and handles alert delivery for the CLI.
+/// Builds a prompt from the pulse tasks, runs `agent.run_system_turn`,
+/// and logs the result.
 ///
 /// If `provider_override` is `Some`, that provider is used instead of the
 /// agent's default for this turn.
 ///
 /// # Errors
 ///
-/// Returns `IronclawError` if loading alerts or running the agent turn fails.
+/// Returns `IronclawError` if running the agent turn fails.
 pub async fn execute_pulse(
     pulse: &PulseDef,
     agent: &Agent,
-    alerts_path: &Path,
     provider_override: Option<&dyn ModelProvider>,
     projects_ctx: &ProjectsContext<'_>,
 ) -> Result<PulseResult, IronclawError> {
-    let alerts_content = load_alerts(alerts_path).await?;
-
     let mut parts = Vec::new();
     parts.push(format!(
         "You are running a scheduled pulse check: {}",
         pulse.name
     ));
-
-    if let Some(ref alerts) = alerts_content {
-        parts.push(alerts.clone());
-    }
 
     parts.push("## Tasks".to_string());
 
@@ -80,22 +68,9 @@ pub async fn execute_pulse(
 
     let is_heartbeat_ok = result.response.contains("HEARTBEAT_OK");
 
-    // Compute the highest alert level across tasks
-    let alert_level =
-        pulse
-            .tasks
-            .iter()
-            .fold(AlertLevel::Low, |acc, task| match (acc, task.alert) {
-                (AlertLevel::High | AlertLevel::Medium | AlertLevel::Low, AlertLevel::High)
-                | (AlertLevel::High, AlertLevel::Medium | AlertLevel::Low) => AlertLevel::High,
-                (AlertLevel::Medium | AlertLevel::Low, AlertLevel::Medium)
-                | (AlertLevel::Medium, AlertLevel::Low) => AlertLevel::Medium,
-                (AlertLevel::Low, AlertLevel::Low) => AlertLevel::Low,
-            });
-
     if is_heartbeat_ok {
         tracing::info!(pulse = %pulse.name, "pulse check: HEARTBEAT_OK");
-    } else if matches!(alert_level, AlertLevel::Low) {
+    } else {
         tracing::info!(
             pulse = %pulse.name,
             response = %result.response,
@@ -108,6 +83,5 @@ pub async fn execute_pulse(
         response: result.response,
         messages: result.messages,
         is_heartbeat_ok,
-        alert_level,
     })
 }

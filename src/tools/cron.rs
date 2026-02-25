@@ -9,7 +9,7 @@ use tokio::sync::{Mutex, Notify};
 
 use crate::cron::scheduler::initialize_next_run;
 use crate::cron::store::CronStore;
-use crate::cron::types::{CronJob, CronJobState, CronPayload, CronSchedule, Delivery, RunStatus};
+use crate::cron::types::{CronJob, CronJobState, CronPayload, CronSchedule, RunStatus};
 use crate::models::ToolDefinition;
 
 use super::{Tool, ToolError, ToolResult};
@@ -74,11 +74,6 @@ impl Tool for CronAddTool {
                         "type": "string",
                         "description": "IANA timezone for cron expression evaluation; defaults to the configured timezone"
                     },
-                    "delivery": {
-                        "type": "string",
-                        "enum": ["user_visible", "background"],
-                        "description": "'user_visible' prints to CLI and queues for next user turn; 'background' runs silently for memory"
-                    },
                     "payload_type": {
                         "type": "string",
                         "enum": ["system_event", "agent_turn"],
@@ -105,7 +100,7 @@ impl Tool for CronAddTool {
                         "description": "Delete the job after it runs once (useful for one-shots)"
                     }
                 },
-                "required": ["name", "schedule_type", "delivery", "payload_type"]
+                "required": ["name", "schedule_type", "payload_type"]
             }),
         }
     }
@@ -118,7 +113,6 @@ impl Tool for CronAddTool {
             .to_string();
 
         let schedule = parse_schedule(&arguments, self.tz)?;
-        let delivery = parse_delivery(&arguments)?;
         let payload = parse_payload(&arguments)?;
 
         let description = arguments
@@ -146,7 +140,6 @@ impl Tool for CronAddTool {
             created_at: now,
             updated_at: now,
             schedule,
-            delivery,
             payload,
             state: CronJobState::default(),
         };
@@ -325,7 +318,6 @@ impl Tool for CronUpdateTool {
                         "type": "string",
                         "description": "IANA timezone for cron expression evaluation; defaults to the configured timezone"
                     },
-                    "delivery": {"type": "string", "enum": ["user_visible", "background"]},
                     "payload_type": {
                         "type": "string",
                         "enum": ["system_event", "agent_turn"],
@@ -379,9 +371,6 @@ impl Tool for CronUpdateTool {
                 initialize_next_run(job, now, self.tz).map_err(|e| {
                     ToolError::Execution(format!("failed to compute next run: {e}"))
                 })?;
-            }
-            if arguments.get("delivery").is_some() {
-                job.delivery = parse_delivery(&arguments)?;
             }
             if arguments.get("payload_type").is_some() {
                 job.payload = parse_payload(&arguments)?;
@@ -529,21 +518,6 @@ fn parse_schedule(args: &Value, default_tz: chrono_tz::Tz) -> Result<CronSchedul
     }
 }
 
-fn parse_delivery(args: &Value) -> Result<Delivery, ToolError> {
-    let value = args
-        .get("delivery")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| ToolError::InvalidArguments("delivery is required".to_string()))?;
-
-    match value {
-        "user_visible" => Ok(Delivery::UserVisible),
-        "background" => Ok(Delivery::Background),
-        other => Err(ToolError::InvalidArguments(format!(
-            "unknown delivery '{other}': expected 'user_visible' or 'background'"
-        ))),
-    }
-}
-
 fn parse_payload(args: &Value) -> Result<CronPayload, ToolError> {
     let payload_type = args
         .get("payload_type")
@@ -596,7 +570,6 @@ mod tests {
         let args = serde_json::json!({
             "schedule_type": "at",
             "schedule_at": "2026-02-19T12:00",
-            "delivery": "user_visible",
             "payload_type": "system_event",
             "payload_text": "hi"
         });
@@ -645,26 +618,6 @@ mod tests {
         assert!(
             parse_schedule(&args, chrono_tz::UTC).is_err(),
             "unknown schedule type should error"
-        );
-    }
-
-    #[test]
-    fn parse_delivery_user_visible() {
-        let args = serde_json::json!({"delivery": "user_visible"});
-        assert_eq!(
-            parse_delivery(&args).unwrap(),
-            Delivery::UserVisible,
-            "should parse user_visible"
-        );
-    }
-
-    #[test]
-    fn parse_delivery_background() {
-        let args = serde_json::json!({"delivery": "background"});
-        assert_eq!(
-            parse_delivery(&args).unwrap(),
-            Delivery::Background,
-            "should parse background"
         );
     }
 

@@ -21,7 +21,7 @@ mod proactivity_integration {
     };
     use ironclaw::pulse::executor::execute_pulse;
     use ironclaw::pulse::scheduler::PulseScheduler;
-    use ironclaw::pulse::types::{AlertLevel, PulseDef, PulseTask};
+    use ironclaw::pulse::types::{PulseDef, PulseTask};
     use ironclaw::tools::{ToolFilter, ToolRegistry};
     use ironclaw::workspace::identity::IdentityFiles;
 
@@ -79,9 +79,6 @@ mod proactivity_integration {
 
     #[tokio::test]
     async fn pulse_heartbeat_ok_response() {
-        let dir = tempdir().unwrap();
-        let alerts_path = dir.path().join("Alerts.md");
-
         let agent = make_agent(vec!["HEARTBEAT_OK".to_string()]);
 
         let pulse = PulseDef {
@@ -92,12 +89,11 @@ mod proactivity_integration {
             tasks: vec![PulseTask {
                 name: "check".to_string(),
                 prompt: "Check everything.".to_string(),
-                alert: AlertLevel::Low,
             }],
         };
 
         let no_projects = ProjectsContext::none();
-        let result = execute_pulse(&pulse, &agent, &alerts_path, None, &no_projects)
+        let result = execute_pulse(&pulse, &agent, None, &no_projects)
             .await
             .unwrap();
 
@@ -119,9 +115,6 @@ mod proactivity_integration {
 
     #[tokio::test]
     async fn pulse_finding_response() {
-        let dir = tempdir().unwrap();
-        let alerts_path = dir.path().join("Alerts.md");
-
         let agent = make_agent(vec!["Found 3 urgent emails requiring action.".to_string()]);
 
         let pulse = PulseDef {
@@ -132,12 +125,11 @@ mod proactivity_integration {
             tasks: vec![PulseTask {
                 name: "check_inbox".to_string(),
                 prompt: "Check email.".to_string(),
-                alert: AlertLevel::High,
             }],
         };
 
         let no_projects = ProjectsContext::none();
-        let result = execute_pulse(&pulse, &agent, &alerts_path, None, &no_projects)
+        let result = execute_pulse(&pulse, &agent, None, &no_projects)
             .await
             .unwrap();
 
@@ -149,17 +141,11 @@ mod proactivity_integration {
     }
 
     #[tokio::test]
-    async fn pulse_with_alerts_md_content() {
-        let dir = tempdir().unwrap();
-        let alerts_path = dir.path().join("Alerts.md");
-        tokio::fs::write(&alerts_path, "# Alert Guidelines\nBe concise.")
-            .await
-            .unwrap();
-
+    async fn pulse_with_no_tasks() {
         let agent = make_agent(vec!["HEARTBEAT_OK".to_string()]);
 
         let pulse = PulseDef {
-            name: "alert_test".to_string(),
+            name: "empty_test".to_string(),
             enabled: true,
             schedule: "1h".to_string(),
             active_hours: None,
@@ -167,20 +153,14 @@ mod proactivity_integration {
         };
 
         let no_projects = ProjectsContext::none();
-        let result = execute_pulse(&pulse, &agent, &alerts_path, None, &no_projects)
+        let result = execute_pulse(&pulse, &agent, None, &no_projects)
             .await
             .unwrap();
-        assert!(
-            result.is_heartbeat_ok,
-            "should still process with alerts.md present"
-        );
+        assert!(result.is_heartbeat_ok, "should still process with no tasks");
     }
 
     #[tokio::test]
     async fn pulse_thread_messages_not_in_main_history() {
-        let dir = tempdir().unwrap();
-        let alerts_path = dir.path().join("Alerts.md");
-
         let agent = make_agent(vec!["HEARTBEAT_OK".to_string()]);
 
         let pulse = PulseDef {
@@ -191,12 +171,11 @@ mod proactivity_integration {
             tasks: vec![PulseTask {
                 name: "check".to_string(),
                 prompt: "Check something.".to_string(),
-                alert: AlertLevel::Medium,
             }],
         };
 
         let no_projects = ProjectsContext::none();
-        let result = execute_pulse(&pulse, &agent, &alerts_path, None, &no_projects)
+        let result = execute_pulse(&pulse, &agent, None, &no_projects)
             .await
             .unwrap();
 
@@ -256,7 +235,7 @@ mod proactivity_integration {
     #[tokio::test]
     async fn cron_store_round_trip() {
         use ironclaw::cron::store::CronStore;
-        use ironclaw::cron::types::{CronJob, CronJobState, CronPayload, CronSchedule, Delivery};
+        use ironclaw::cron::types::{CronJob, CronJobState, CronPayload, CronSchedule};
 
         let dir = tempdir().unwrap();
         let path = dir.path().join("jobs.json");
@@ -274,7 +253,6 @@ mod proactivity_integration {
                 every_ms: 3_600_000,
                 anchor_ms: 0,
             },
-            delivery: Delivery::Background,
             payload: CronPayload::AgentTurn {
                 message: "Run a check.".to_string(),
             },
@@ -309,7 +287,7 @@ mod proactivity_integration {
     async fn cron_executor_system_event_queues_on_agent() {
         use ironclaw::cron::executor::execute_due_jobs;
         use ironclaw::cron::store::CronStore;
-        use ironclaw::cron::types::{CronJob, CronJobState, CronPayload, CronSchedule, Delivery};
+        use ironclaw::cron::types::{CronJob, CronJobState, CronPayload, CronSchedule};
 
         let dir = tempdir().unwrap();
         let path = dir.path().join("jobs.json");
@@ -326,7 +304,6 @@ mod proactivity_integration {
             created_at: now,
             updated_at: now,
             schedule: CronSchedule::At { at: past },
-            delivery: Delivery::UserVisible,
             payload: CronPayload::SystemEvent {
                 text: "system alert text".to_string(),
             },
@@ -356,16 +333,16 @@ mod proactivity_integration {
         .await
         .unwrap();
 
-        // SystemEvent+Main produces no ephemeral messages (just queues on agent)
+        // SystemEvent produces messages for the memory pipeline
         assert!(
-            result.messages.is_empty(),
-            "system event should produce no ephemeral messages"
+            !result.messages.is_empty(),
+            "system event should produce messages for memory pipeline"
         );
-        // But produces a notification for display
-        assert_eq!(
-            result.notifications.len(),
-            1,
-            "should produce one notification"
+        // Produces a job result with a summary
+        assert_eq!(result.results.len(), 1, "should produce one job result");
+        assert!(
+            result.results.first().unwrap().summary.is_some(),
+            "system event should have a summary"
         );
     }
 
@@ -373,7 +350,7 @@ mod proactivity_integration {
     async fn cron_executor_agent_turn_returns_messages() {
         use ironclaw::cron::executor::execute_due_jobs;
         use ironclaw::cron::store::CronStore;
-        use ironclaw::cron::types::{CronJob, CronJobState, CronPayload, CronSchedule, Delivery};
+        use ironclaw::cron::types::{CronJob, CronJobState, CronPayload, CronSchedule};
 
         let dir = tempdir().unwrap();
         let path = dir.path().join("jobs.json");
@@ -390,7 +367,6 @@ mod proactivity_integration {
             created_at: now,
             updated_at: now,
             schedule: CronSchedule::At { at: past },
-            delivery: Delivery::Background,
             payload: CronPayload::AgentTurn {
                 message: "Do a background check.".to_string(),
             },
@@ -430,13 +406,13 @@ mod proactivity_integration {
         );
     }
 
-    // ── Cron delivery × payload matrix tests ───────────────────────────────
+    // ── Cron system event message content test ─────────────────────────────
 
     #[tokio::test]
-    async fn cron_executor_system_event_background_returns_messages() {
+    async fn cron_executor_system_event_message_contains_text() {
         use ironclaw::cron::executor::execute_due_jobs;
         use ironclaw::cron::store::CronStore;
-        use ironclaw::cron::types::{CronJob, CronJobState, CronPayload, CronSchedule, Delivery};
+        use ironclaw::cron::types::{CronJob, CronJobState, CronPayload, CronSchedule};
 
         let dir = tempdir().unwrap();
         let path = dir.path().join("jobs.json");
@@ -453,7 +429,6 @@ mod proactivity_integration {
             created_at: now,
             updated_at: now,
             schedule: CronSchedule::At { at: past },
-            delivery: Delivery::Background,
             payload: CronPayload::SystemEvent {
                 text: "background alert".to_string(),
             },
@@ -482,7 +457,7 @@ mod proactivity_integration {
 
         assert!(
             !result.messages.is_empty(),
-            "background system event should return messages for memory pipeline"
+            "system event should return messages for memory pipeline"
         );
         assert!(
             result
@@ -497,67 +472,6 @@ mod proactivity_integration {
             agent.message_count(),
             0,
             "main message history should be untouched"
-        );
-    }
-
-    #[tokio::test]
-    async fn cron_executor_agent_turn_user_visible_returns_messages() {
-        use ironclaw::cron::executor::execute_due_jobs;
-        use ironclaw::cron::store::CronStore;
-        use ironclaw::cron::types::{CronJob, CronJobState, CronPayload, CronSchedule, Delivery};
-
-        let dir = tempdir().unwrap();
-        let path = dir.path().join("jobs.json");
-
-        let now = chrono::Utc::now().naive_utc();
-        let past = now - chrono::Duration::seconds(10);
-
-        let job = CronJob {
-            id: "cron-vis-agt1".to_string(),
-            name: "visible agent".to_string(),
-            description: None,
-            enabled: true,
-            delete_after_run: false,
-            created_at: now,
-            updated_at: now,
-            schedule: CronSchedule::At { at: past },
-            delivery: Delivery::UserVisible,
-            payload: CronPayload::AgentTurn {
-                message: "Do a visible check.".to_string(),
-            },
-            state: CronJobState {
-                next_run_at: Some(past),
-                ..CronJobState::default()
-            },
-        };
-
-        let mut store = CronStore::load(&path).await.unwrap();
-        store.add_job(job);
-
-        let mut agent = make_agent(vec!["Visible check done.".to_string()]);
-
-        let no_projects = ProjectsContext::none();
-        let result = execute_due_jobs(
-            &mut store,
-            &mut agent,
-            now,
-            chrono_tz::UTC,
-            None,
-            &no_projects,
-        )
-        .await
-        .unwrap();
-
-        // UserVisible agent turn should return ephemeral messages for memory
-        assert!(
-            !result.messages.is_empty(),
-            "user-visible agent turn should return messages"
-        );
-        // Also produces a notification for display
-        assert_eq!(
-            result.notifications.len(),
-            1,
-            "should produce one notification"
         );
     }
 

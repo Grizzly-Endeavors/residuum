@@ -32,7 +32,6 @@ use crate::models::{EmbeddingProvider, ModelProvider};
 use crate::projects::activation::SharedProjectState;
 use crate::pulse::executor::execute_pulse;
 use crate::pulse::scheduler::PulseScheduler;
-use crate::pulse::types::AlertLevel;
 use crate::skills::SharedSkillState;
 use crate::workspace::layout::WorkspaceLayout;
 
@@ -364,15 +363,12 @@ async fn run_event_loop(mut rt: GatewayRuntime) -> GatewayExit {
 
                 for pulse in &due {
                     match execute_pulse(
-                        pulse, &rt.agent, &rt.layout.alerts_md(),
+                        pulse, &rt.agent,
                         Some(&*rt.pulse_provider), &pulse_projects_ctx,
                     ).await {
                         Ok(result) => {
-                            if !result.is_heartbeat_ok && !matches!(result.alert_level, AlertLevel::Low) {
-                                let prefix = match result.alert_level {
-                                    AlertLevel::High => format!("⚠ ALERT [{}]", result.pulse_name),
-                                    AlertLevel::Medium | AlertLevel::Low => format!("pulse: {}", result.pulse_name),
-                                };
+                            if !result.is_heartbeat_ok {
+                                let prefix = format!("pulse: {}", result.pulse_name);
                                 if rt.broadcast_tx.send(ServerMessage::SystemEvent {
                                     source: prefix, content: result.response.clone(),
                                 }).is_err() {

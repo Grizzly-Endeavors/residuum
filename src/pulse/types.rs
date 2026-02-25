@@ -31,21 +31,6 @@ fn default_enabled() -> bool {
 pub struct PulseTask {
     pub name: String,
     pub prompt: String,
-    #[serde(default)]
-    pub alert: AlertLevel,
-}
-
-/// Alert urgency level.
-#[derive(Debug, Clone, Copy, Deserialize, Default)]
-#[serde(rename_all = "lowercase")]
-pub enum AlertLevel {
-    /// Highest urgency — shown prominently to the user.
-    High,
-    /// Normal urgency — shown to the user.
-    #[default]
-    Medium,
-    /// Low urgency — logged at info level only.
-    Low,
 }
 
 /// Parse a schedule duration string like "30m", "2h", "24h", "1d", "60s".
@@ -279,7 +264,6 @@ pulses:
     tasks:
       - name: check_inbox
         prompt: "Check email"
-        alert: high
 "#;
         let cfg: HeartbeatConfig = serde_yml::from_str(yaml).unwrap();
         assert_eq!(cfg.pulses.len(), 1, "should parse one pulse");

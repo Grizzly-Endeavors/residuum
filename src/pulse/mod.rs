@@ -4,7 +4,6 @@
 //! Each pulse fires a background agent turn using `Agent::run_system_turn`,
 //! and the resulting messages flow into the memory pipeline.
 
-pub mod alerts;
 pub mod executor;
 pub mod scheduler;
 pub mod types;

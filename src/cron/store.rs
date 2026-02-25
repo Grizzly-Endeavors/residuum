@@ -163,7 +163,7 @@ impl CronStore {
 mod tests {
     use super::*;
 
-    use crate::cron::types::{CronJobState, CronPayload, CronSchedule, Delivery, RunStatus};
+    use crate::cron::types::{CronJobState, CronPayload, CronSchedule, RunStatus};
 
     fn make_job(id: &str) -> CronJob {
         let now = chrono::NaiveDate::from_ymd_opt(2026, 2, 19)
@@ -179,7 +179,6 @@ mod tests {
             created_at: now,
             updated_at: now,
             schedule: CronSchedule::At { at: now },
-            delivery: Delivery::UserVisible,
             payload: CronPayload::SystemEvent {
                 text: "event".to_string(),
             },

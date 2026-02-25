@@ -18,7 +18,7 @@ use crate::workspace::layout::WorkspaceLayout;
 use super::context::{build_project_context_strings, project_context_label};
 use super::memory::persist_and_check_thresholds;
 
-/// Execute due cron jobs, broadcast notifications, and persist messages.
+/// Execute due cron jobs, broadcast results, and persist messages.
 ///
 /// Returns the `ObserveAction` so the caller can manage the observe deadline.
 #[expect(
@@ -63,13 +63,14 @@ pub(super) async fn run_due_cron_jobs_gateway(
     .await
     {
         Ok(result) => {
-            for notif in &result.notifications {
-                if broadcast_tx
-                    .send(ServerMessage::SystemEvent {
-                        source: format!("cron: {}", notif.job_name),
-                        content: notif.text.clone(),
-                    })
-                    .is_err()
+            for job_result in &result.results {
+                if let Some(ref summary) = job_result.summary
+                    && broadcast_tx
+                        .send(ServerMessage::SystemEvent {
+                            source: format!("cron: {}", job_result.job_name),
+                            content: summary.clone(),
+                        })
+                        .is_err()
                 {
                     tracing::trace!("no broadcast receivers for cron notification");
                 }

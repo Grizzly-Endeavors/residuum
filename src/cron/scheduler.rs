@@ -196,7 +196,7 @@ fn backoff_duration_ms(consecutive_errors: u32) -> u64 {
 mod tests {
     use super::*;
 
-    use crate::cron::types::{CronJobState, CronPayload, CronSchedule, Delivery};
+    use crate::cron::types::{CronJobState, CronPayload, CronSchedule};
 
     fn base_job(schedule: CronSchedule) -> CronJob {
         let now = chrono::NaiveDate::from_ymd_opt(2026, 2, 19)
@@ -212,7 +212,6 @@ mod tests {
             created_at: now,
             updated_at: now,
             schedule,
-            delivery: Delivery::UserVisible,
             payload: CronPayload::SystemEvent {
                 text: "test".to_string(),
             },

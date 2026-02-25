@@ -87,11 +87,9 @@ const DEFAULT_HEARTBEAT: &str = "\
 #     tasks:
 #       - name: check_inbox
 #         prompt: \"Check my email for urgent messages. Report anything requiring action.\"
-#         alert: high
 #
 # schedule: duration string — \"30m\", \"2h\", \"24h\"
 # active_hours: optional time window — \"HH:MM-HH:MM\" (UTC)
-# alert: high | medium | low
 
 pulses: []
 ";

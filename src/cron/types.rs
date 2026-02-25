@@ -24,8 +24,6 @@ pub struct CronJob {
     pub updated_at: NaiveDateTime,
     /// When and how often to run.
     pub schedule: CronSchedule,
-    /// How the job's output is delivered: visible to the user or in the background.
-    pub delivery: Delivery,
     /// What the job delivers when it fires.
     pub payload: CronPayload,
     /// Runtime state (next run, last run, errors).
@@ -56,18 +54,6 @@ pub enum CronSchedule {
         /// IANA timezone for cron evaluation.
         tz: String,
     },
-}
-
-/// How a job's output is delivered.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum Delivery {
-    /// Print to CLI and queue for the next user turn (user sees it).
-    #[serde(alias = "main")]
-    UserVisible,
-    /// Run silently in the background (feeds memory pipeline only).
-    #[serde(alias = "isolated")]
-    Background,
 }
 
 /// What a job does when it fires.
@@ -134,7 +120,6 @@ mod tests {
             created_at: now,
             updated_at: now,
             schedule: CronSchedule::At { at: now },
-            delivery: Delivery::UserVisible,
             payload: CronPayload::SystemEvent {
                 text: "hello".to_string(),
             },
@@ -183,36 +168,6 @@ mod tests {
         };
         let json = serde_json::to_string(&sched).unwrap();
         assert!(json.contains("\"type\":\"cron\""), "should use 'cron' tag");
-    }
-
-    #[test]
-    fn delivery_serializes() {
-        let json = serde_json::to_string(&Delivery::UserVisible).unwrap();
-        assert_eq!(
-            json, "\"user_visible\"",
-            "user_visible should serialize as 'user_visible'"
-        );
-        let json2 = serde_json::to_string(&Delivery::Background).unwrap();
-        assert_eq!(
-            json2, "\"background\"",
-            "background should serialize as 'background'"
-        );
-    }
-
-    #[test]
-    fn delivery_legacy_aliases_deserialize() {
-        let main: Delivery = serde_json::from_str("\"main\"").unwrap();
-        assert_eq!(
-            main,
-            Delivery::UserVisible,
-            "'main' should deserialize to UserVisible"
-        );
-        let isolated: Delivery = serde_json::from_str("\"isolated\"").unwrap();
-        assert_eq!(
-            isolated,
-            Delivery::Background,
-            "'isolated' should deserialize to Background"
-        );
     }
 
     #[test]
