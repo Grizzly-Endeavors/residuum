@@ -104,6 +104,10 @@ pub(super) struct SearchConfigFile {
     pub(super) min_score: Option<f64>,
     /// Multiplier on limit for candidate retrieval before merge.
     pub(super) candidate_multiplier: Option<usize>,
+    /// Whether temporal decay is enabled for search scoring.
+    pub(super) temporal_decay: Option<bool>,
+    /// Half-life in days for temporal decay scoring.
+    pub(super) temporal_decay_half_life_days: Option<f64>,
 }
 
 /// Raw TOML `[pulse]` section.

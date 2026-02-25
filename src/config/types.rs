@@ -5,7 +5,8 @@ use std::path::PathBuf;
 use super::constants::{
     DEFAULT_GATEWAY_BIND, DEFAULT_GATEWAY_PORT, DEFAULT_OBSERVER_COOLDOWN_SECS,
     DEFAULT_OBSERVER_FORCE_THRESHOLD, DEFAULT_OBSERVER_THRESHOLD, DEFAULT_REFLECTOR_THRESHOLD,
-    DEFAULT_SEARCH_CANDIDATE_MULTIPLIER, DEFAULT_SEARCH_MIN_SCORE, DEFAULT_SEARCH_TEXT_WEIGHT,
+    DEFAULT_SEARCH_CANDIDATE_MULTIPLIER, DEFAULT_SEARCH_MIN_SCORE, DEFAULT_SEARCH_TEMPORAL_DECAY,
+    DEFAULT_SEARCH_TEMPORAL_DECAY_HALF_LIFE_DAYS, DEFAULT_SEARCH_TEXT_WEIGHT,
     DEFAULT_SEARCH_VECTOR_WEIGHT,
 };
 
@@ -75,6 +76,10 @@ pub struct SearchConfig {
     pub min_score: f64,
     /// Multiplier on limit for candidate retrieval before merge.
     pub candidate_multiplier: usize,
+    /// Whether temporal decay is enabled (default: false).
+    pub temporal_decay: bool,
+    /// Half-life in days for temporal decay (default: 30.0).
+    pub temporal_decay_half_life_days: f64,
 }
 
 impl Default for SearchConfig {
@@ -84,6 +89,8 @@ impl Default for SearchConfig {
             text_weight: DEFAULT_SEARCH_TEXT_WEIGHT,
             min_score: DEFAULT_SEARCH_MIN_SCORE,
             candidate_multiplier: DEFAULT_SEARCH_CANDIDATE_MULTIPLIER,
+            temporal_decay: DEFAULT_SEARCH_TEMPORAL_DECAY,
+            temporal_decay_half_life_days: DEFAULT_SEARCH_TEMPORAL_DECAY_HALF_LIFE_DAYS,
         }
     }
 }

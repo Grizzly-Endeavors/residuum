@@ -835,8 +835,17 @@ impl HybridSearcher {
 
         // If no vector search available, return BM25 results directly
         let (Some(vs), Some(ep)) = (&self.vector, &self.embedding) else {
-            // BM25-only: return top `limit` without score filtering
+            // BM25-only: apply temporal decay if enabled, re-sort, then truncate
             let mut results = bm25_results;
+            if self.cfg.temporal_decay {
+                let today = chrono::Utc::now().date_naive();
+                apply_temporal_decay(&mut results, self.cfg.temporal_decay_half_life_days, today);
+                results.sort_by(|a, b| {
+                    b.score
+                        .partial_cmp(&a.score)
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                });
+            }
             results.truncate(limit);
             return Ok(results);
         };
@@ -869,7 +878,18 @@ impl HybridSearcher {
         .map_err(|e| IronclawError::Memory(format!("vector search task failed: {e}")))??;
 
         // Merge results
-        let merged = merge_hybrid_results(&bm25_results, &vec_results, &self.cfg, limit);
+        let mut merged = merge_hybrid_results(&bm25_results, &vec_results, &self.cfg, limit);
+
+        // Apply temporal decay after merge if enabled
+        if self.cfg.temporal_decay {
+            let today = chrono::Utc::now().date_naive();
+            apply_temporal_decay(&mut merged, self.cfg.temporal_decay_half_life_days, today);
+            merged.sort_by(|a, b| {
+                b.score
+                    .partial_cmp(&a.score)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            });
+        }
 
         Ok(merged)
     }
@@ -1017,6 +1037,41 @@ fn merge_hybrid_results(
     scored.truncate(limit);
 
     scored.into_iter().map(|(_, r)| r).collect()
+}
+
+/// Apply exponential temporal decay to search result scores.
+///
+/// Each result's score is multiplied by `exp(-lambda * age_days)` where
+/// `lambda = ln(2) / half_life_days`. Results with unparseable dates are
+/// left unchanged.
+fn apply_temporal_decay(
+    results: &mut [SearchResult],
+    half_life_days: f64,
+    today: chrono::NaiveDate,
+) {
+    let lambda = f64::ln(2.0) / half_life_days;
+
+    for result in results {
+        let Ok(date) = chrono::NaiveDate::parse_from_str(&result.date, "%Y-%m-%d") else {
+            tracing::warn!(date = %result.date, id = %result.id, "unparseable date, skipping temporal decay");
+            continue;
+        };
+
+        let age_days = (today - date).num_days().max(0);
+
+        #[expect(
+            clippy::cast_precision_loss,
+            reason = "age in days is small enough that i64→f64 precision loss is irrelevant"
+        )]
+        let age_f64 = age_days as f64;
+
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "decay factor is in [0.0, 1.0], safe to truncate to f32"
+        )]
+        let decay = f64::exp(-lambda * age_f64) as f32;
+        result.score *= decay;
+    }
 }
 
 #[cfg(test)]
@@ -1651,6 +1706,8 @@ mod tests {
             text_weight: 0.3,
             min_score: 0.0,
             candidate_multiplier: 4,
+            temporal_decay: false,
+            temporal_decay_half_life_days: 30.0,
         }
     }
 
@@ -1745,5 +1802,98 @@ mod tests {
             .unwrap();
         assert!(!results.is_empty(), "BM25 fallback should find results");
         assert_eq!(results[0].source_type, "observation");
+    }
+
+    // ── Temporal decay tests ─────────────────────────────────────────────
+
+    fn make_result(id: &str, date: &str, score: f32) -> SearchResult {
+        SearchResult {
+            id: id.to_string(),
+            source_type: "observation".to_string(),
+            episode_id: "ep-001".to_string(),
+            date: date.to_string(),
+            context: "test".to_string(),
+            line_start: None,
+            line_end: None,
+            snippet: "test snippet".to_string(),
+            score,
+        }
+    }
+
+    #[test]
+    fn temporal_decay_reduces_old_scores() {
+        let today = chrono::NaiveDate::from_ymd_opt(2026, 2, 24).unwrap();
+        let mut results = vec![
+            make_result("recent", "2026-02-23", 1.0),
+            make_result("old", "2026-01-01", 1.0),
+        ];
+
+        apply_temporal_decay(&mut results, 30.0, today);
+
+        assert!(
+            results[0].score > results[1].score,
+            "recent result ({}) should score higher than old result ({})",
+            results[0].score,
+            results[1].score
+        );
+        assert!(
+            results[0].score < 1.0,
+            "even recent result should have some decay"
+        );
+    }
+
+    #[test]
+    fn temporal_decay_preserves_order_when_disabled() {
+        let results = [
+            make_result("a", "2025-01-01", 0.8),
+            make_result("b", "2026-02-24", 0.5),
+        ];
+        let original_a = results[0].score;
+        let original_b = results[1].score;
+
+        // decay is off — don't call apply_temporal_decay at all, verify scores unchanged
+        assert!(
+            (results[0].score - original_a).abs() < f32::EPSILON,
+            "score a should be unchanged when decay is disabled"
+        );
+        assert!(
+            (results[1].score - original_b).abs() < f32::EPSILON,
+            "score b should be unchanged when decay is disabled"
+        );
+    }
+
+    #[test]
+    fn temporal_decay_with_unparseable_date() {
+        let today = chrono::NaiveDate::from_ymd_opt(2026, 2, 24).unwrap();
+        let mut results = vec![make_result("bad-date", "not-a-date", 1.0)];
+
+        apply_temporal_decay(&mut results, 30.0, today);
+
+        assert!(
+            (results[0].score - 1.0).abs() < f32::EPSILON,
+            "score should be unchanged for unparseable date, got {}",
+            results[0].score
+        );
+    }
+
+    #[test]
+    fn temporal_decay_half_life_accuracy() {
+        let today = chrono::NaiveDate::from_ymd_opt(2026, 2, 24).unwrap();
+        let half_life = 30.0;
+        let date_at_half_life = today - chrono::Duration::days(30);
+        let mut results = vec![make_result(
+            "half",
+            &date_at_half_life.format("%Y-%m-%d").to_string(),
+            1.0,
+        )];
+
+        apply_temporal_decay(&mut results, half_life, today);
+
+        let expected = 0.5_f32;
+        assert!(
+            (results[0].score - expected).abs() < 0.01,
+            "score at half-life should be ~0.5, got {}",
+            results[0].score
+        );
     }
 }

@@ -47,3 +47,9 @@ pub(crate) const DEFAULT_SEARCH_MIN_SCORE: f64 = 0.35;
 
 /// Default candidate multiplier for hybrid search over-fetch.
 pub(crate) const DEFAULT_SEARCH_CANDIDATE_MULTIPLIER: usize = 4;
+
+/// Whether temporal decay is enabled for search scoring by default.
+pub(crate) const DEFAULT_SEARCH_TEMPORAL_DECAY: bool = false;
+
+/// Default half-life in days for temporal decay scoring.
+pub(crate) const DEFAULT_SEARCH_TEMPORAL_DECAY_HALF_LIFE_DAYS: f64 = 30.0;

@@ -431,19 +431,39 @@ fn resolve_mcp_config(section: Option<&McpConfigFile>) -> McpConfig {
 
 /// Resolve hybrid search configuration from TOML section with defaults.
 fn resolve_search_config(section: Option<&SearchConfigFile>) -> SearchConfig {
+    let defaults = SearchConfig::default();
+
+    let half_life = section
+        .and_then(|s| s.temporal_decay_half_life_days)
+        .unwrap_or(defaults.temporal_decay_half_life_days);
+    let half_life = if half_life <= 0.0 {
+        eprintln!(
+            "warning: [memory.search] temporal_decay_half_life_days must be positive, \
+             got {half_life}; using default {}",
+            defaults.temporal_decay_half_life_days
+        );
+        defaults.temporal_decay_half_life_days
+    } else {
+        half_life
+    };
+
     let cfg = SearchConfig {
         vector_weight: section
             .and_then(|s| s.vector_weight)
-            .unwrap_or(SearchConfig::default().vector_weight),
+            .unwrap_or(defaults.vector_weight),
         text_weight: section
             .and_then(|s| s.text_weight)
-            .unwrap_or(SearchConfig::default().text_weight),
+            .unwrap_or(defaults.text_weight),
         min_score: section
             .and_then(|s| s.min_score)
-            .unwrap_or(SearchConfig::default().min_score),
+            .unwrap_or(defaults.min_score),
         candidate_multiplier: section
             .and_then(|s| s.candidate_multiplier)
-            .unwrap_or(SearchConfig::default().candidate_multiplier),
+            .unwrap_or(defaults.candidate_multiplier),
+        temporal_decay: section
+            .and_then(|s| s.temporal_decay)
+            .unwrap_or(defaults.temporal_decay),
+        temporal_decay_half_life_days: half_life,
     };
 
     let sum = cfg.vector_weight + cfg.text_weight;
