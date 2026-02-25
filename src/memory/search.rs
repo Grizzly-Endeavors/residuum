@@ -674,7 +674,9 @@ fn parse_line_num(doc: &TantivyDocument, field: Field) -> Option<usize> {
 ///
 /// The `episode_id` and date are derived from the filename: `ep-NNN.obs.json`
 /// lives under `episodes/YYYY-MM/DD/`.
-fn parse_obs_file(path: &Path) -> Result<(String, String, Vec<Observation>), IronclawError> {
+pub(crate) fn parse_obs_file(
+    path: &Path,
+) -> Result<(String, String, Vec<Observation>), IronclawError> {
     let content = std::fs::read_to_string(path)
         .map_err(|e| IronclawError::Memory(format!("failed to read {}: {e}", path.display())))?;
 

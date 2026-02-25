@@ -1,5 +1,6 @@
 //! Gateway initialization: builds all subsystems before the event loop starts.
 
+use std::path::Path;
 use std::sync::Arc;
 
 use crate::agent::Agent;
@@ -7,10 +8,13 @@ use crate::config::Config;
 use crate::cron::store::CronStore;
 use crate::error::IronclawError;
 use crate::mcp::SharedMcpRegistry;
+use crate::memory::chunk_extractor::read_idx_jsonl;
 use crate::memory::observer::Observer;
 use crate::memory::recent_messages::load_messages_for_agent;
 use crate::memory::reflector::Reflector;
-use crate::memory::search::{HybridSearcher, MemoryIndex, RebuildResult, create_shared_index};
+use crate::memory::search::{
+    HybridSearcher, MemoryIndex, RebuildResult, create_shared_index, parse_obs_file,
+};
 use crate::memory::types::IndexManifest;
 use crate::memory::vector_store::VectorStore;
 use crate::models::{
@@ -247,6 +251,11 @@ pub(super) async fn initialize(cfg: &Config) -> Result<GatewayComponents, Ironcl
         None
     };
 
+    // Backfill embeddings for any unembedded files
+    if let (Some(vs), Some(ep)) = (&vector_store, &embedding_provider) {
+        backfill_embeddings(vs, ep.as_ref(), &layout, &manifest_path).await;
+    }
+
     // Hybrid searcher
     let hybrid_searcher = Arc::new(HybridSearcher::new(
         Arc::clone(&search_index),
@@ -361,4 +370,114 @@ fn build_manifest_from_rebuild(result: RebuildResult) -> IndexManifest {
         manifest.files.insert(path, entry);
     }
     manifest
+}
+
+/// Embed any manifest entries that have `embedded: false` into the vector store.
+///
+/// Reads each unembedded `.obs.json` or `.idx.jsonl` file from disk, calls the
+/// embedding provider, and inserts into the vector store. Failures are warnings
+/// and never block startup.
+async fn backfill_embeddings(
+    vs: &VectorStore,
+    ep: &dyn EmbeddingProvider,
+    layout: &WorkspaceLayout,
+    manifest_path: &Path,
+) {
+    let mut manifest = match IndexManifest::load(manifest_path).await {
+        Ok(m) => m,
+        Err(e) => {
+            eprintln!("warning: failed to load manifest for embedding backfill: {e}");
+            return;
+        }
+    };
+
+    let unembedded: Vec<String> = manifest
+        .files
+        .iter()
+        .filter(|(_, entry)| !entry.embedded)
+        .map(|(path, _)| path.clone())
+        .collect();
+
+    if unembedded.is_empty() {
+        return;
+    }
+
+    tracing::info!(
+        count = unembedded.len(),
+        "backfilling embeddings for unembedded files"
+    );
+    let memory_dir = layout.memory_dir();
+    let mut embedded_count = 0_usize;
+
+    for rel_path in &unembedded {
+        let abs_path = memory_dir.join(rel_path);
+
+        if rel_path.ends_with(".obs.json") {
+            if let Err(e) = backfill_obs_file(vs, ep, &abs_path).await {
+                eprintln!("warning: failed to backfill embeddings for {rel_path}: {e}");
+                continue;
+            }
+        } else if rel_path.ends_with(".idx.jsonl") {
+            if let Err(e) = backfill_idx_file(vs, ep, &abs_path).await {
+                eprintln!("warning: failed to backfill embeddings for {rel_path}: {e}");
+                continue;
+            }
+        } else {
+            continue;
+        }
+
+        if let Some(entry) = manifest.files.get_mut(rel_path) {
+            entry.embedded = true;
+        }
+        embedded_count += 1;
+    }
+
+    if embedded_count > 0 {
+        if let Err(e) = manifest.save(manifest_path).await {
+            eprintln!("warning: failed to save manifest after embedding backfill: {e}");
+        }
+        tracing::info!(embedded_count, "embedding backfill complete");
+    }
+}
+
+/// Embed a single `.obs.json` file and insert into the vector store.
+async fn backfill_obs_file(
+    vs: &VectorStore,
+    ep: &dyn EmbeddingProvider,
+    path: &Path,
+) -> Result<(), IronclawError> {
+    let (episode_id, date, observations) = parse_obs_file(path)?;
+    if observations.is_empty() {
+        return Ok(());
+    }
+
+    let texts: Vec<&str> = observations.iter().map(|o| o.content.as_str()).collect();
+    let response = ep.embed(&texts).await.map_err(|e| {
+        IronclawError::Memory(format!("embedding failed for {}: {e}", path.display()))
+    })?;
+
+    let embeddings = response.embeddings;
+    vs.insert_observations(&episode_id, &date, &observations, &embeddings)?;
+    Ok(())
+}
+
+/// Embed a single `.idx.jsonl` file and insert into the vector store.
+async fn backfill_idx_file(
+    vs: &VectorStore,
+    ep: &dyn EmbeddingProvider,
+    path: &Path,
+) -> Result<(), IronclawError> {
+    let chunks = read_idx_jsonl(path);
+    if chunks.is_empty() {
+        return Ok(());
+    }
+
+    let texts: Vec<&str> = chunks.iter().map(|c| c.content.as_str()).collect();
+    let response = ep.embed(&texts).await.map_err(|e| {
+        IronclawError::Memory(format!("embedding failed for {}: {e}", path.display()))
+    })?;
+
+    let embeddings = response.embeddings;
+    vs.insert_chunks(&chunks, &embeddings)?;
+    Ok(())
 }
