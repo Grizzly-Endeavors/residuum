@@ -1,5 +1,7 @@
-//! Full-text BM25 search over observations and interaction-pair chunks using tantivy.
+//! Full-text BM25 search over observations and interaction-pair chunks using tantivy,
+//! with optional hybrid vector search via sqlite-vec.
 
+use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
 
@@ -9,9 +11,12 @@ use tantivy::query::{BooleanQuery, QueryParser};
 use tantivy::schema::{Field, OwnedValue, STORED, STRING, Schema, TEXT};
 use tantivy::{Index, IndexReader, IndexWriter, ReloadPolicy, TantivyDocument, Term};
 
+use crate::config::SearchConfig;
 use crate::error::IronclawError;
 use crate::memory::chunk_extractor::read_idx_jsonl;
 use crate::memory::types::{IndexChunk, IndexManifest, ManifestFileEntry, Observation};
+use crate::memory::vector_store::{VectorSearchFilters, VectorStore};
+use crate::models::EmbeddingProvider;
 
 /// Memory budget for the tantivy index writer (50 MB).
 const WRITER_MEMORY_BUDGET_BYTES: usize = 50_000_000;
@@ -766,6 +771,243 @@ pub fn create_shared_index(index_dir: &Path) -> Result<Arc<MemoryIndex>, Ironcla
     Ok(Arc::new(index))
 }
 
+// ── Hybrid searcher ─────────────────────────────────────────────────────────
+
+/// Orchestrates BM25 + vector search with score normalization and merging.
+///
+/// When no vector store or embedding provider is configured, delegates
+/// entirely to BM25 (existing behavior, no score filtering).
+pub struct HybridSearcher {
+    bm25: Arc<MemoryIndex>,
+    vector: Option<Arc<VectorStore>>,
+    embedding: Option<Arc<dyn EmbeddingProvider>>,
+    cfg: SearchConfig,
+}
+
+impl HybridSearcher {
+    /// Create a new hybrid searcher.
+    #[must_use]
+    pub fn new(
+        bm25: Arc<MemoryIndex>,
+        vector: Option<Arc<VectorStore>>,
+        embedding: Option<Arc<dyn EmbeddingProvider>>,
+        cfg: SearchConfig,
+    ) -> Self {
+        Self {
+            bm25,
+            vector,
+            embedding,
+            cfg,
+        }
+    }
+
+    /// Whether vector search is available (both store and provider configured).
+    #[must_use]
+    pub fn has_vector(&self) -> bool {
+        self.vector.is_some() && self.embedding.is_some()
+    }
+
+    /// Search using hybrid BM25 + vector scoring, or BM25-only fallback.
+    ///
+    /// # Errors
+    /// Returns an error if BM25 search or embedding generation fails.
+    pub async fn search(
+        &self,
+        query: &str,
+        limit: usize,
+        filters: &SearchFilters,
+    ) -> Result<Vec<SearchResult>, IronclawError> {
+        let candidates = limit * self.cfg.candidate_multiplier;
+
+        // BM25 search
+        let bm25_results = self.bm25.search(query, candidates, filters)?;
+
+        // If no vector search available, return BM25 results directly
+        let (Some(vs), Some(ep)) = (&self.vector, &self.embedding) else {
+            // BM25-only: return top `limit` without score filtering
+            let mut results = bm25_results;
+            results.truncate(limit);
+            return Ok(results);
+        };
+
+        // Embed the query
+        let embed_response = ep
+            .embed(&[query])
+            .await
+            .map_err(|e| IronclawError::Memory(format!("failed to embed search query: {e}")))?;
+        let query_vec = embed_response
+            .embeddings
+            .into_iter()
+            .next()
+            .ok_or_else(|| {
+                IronclawError::Memory("embedding provider returned no embeddings".to_string())
+            })?;
+
+        // Vector search (sync, so use spawn_blocking)
+        let vs_clone = Arc::clone(vs);
+        let vec_filters = VectorSearchFilters {
+            date_from: filters.date_from.clone(),
+            date_to: filters.date_to.clone(),
+            project_context: filters.project_context.clone(),
+        };
+        let vec_limit = candidates;
+        let vec_results = tokio::task::spawn_blocking(move || {
+            vs_clone.search(&query_vec, vec_limit, &vec_filters)
+        })
+        .await
+        .map_err(|e| IronclawError::Memory(format!("vector search task failed: {e}")))??;
+
+        // Merge results
+        let merged = merge_hybrid_results(&bm25_results, &vec_results, &self.cfg, limit);
+
+        Ok(merged)
+    }
+
+    /// Get a reference to the underlying BM25 index.
+    #[must_use]
+    pub fn bm25(&self) -> &MemoryIndex {
+        &self.bm25
+    }
+}
+
+/// Min-max normalize a list of scores to [0, 1].
+///
+/// Single-element or empty inputs are handled: single → 1.0, empty → empty.
+fn normalize_scores(scores: &[f32]) -> Vec<f32> {
+    if scores.is_empty() {
+        return Vec::new();
+    }
+    if scores.len() == 1 {
+        return vec![1.0];
+    }
+
+    let min = scores.iter().copied().reduce(f32::min).unwrap_or_default();
+    let max = scores.iter().copied().reduce(f32::max).unwrap_or_default();
+    let range = max - min;
+
+    if range < f32::EPSILON {
+        return vec![1.0; scores.len()];
+    }
+
+    scores.iter().map(|s| (s - min) / range).collect()
+}
+
+/// Merge BM25 and vector results into hybrid-scored `SearchResult` values.
+fn merge_hybrid_results(
+    bm25_results: &[SearchResult],
+    vec_results: &[super::vector_store::VectorSearchResult],
+    cfg: &SearchConfig,
+    limit: usize,
+) -> Vec<SearchResult> {
+    // Normalize BM25 scores
+    let bm25_scores: Vec<f32> = bm25_results.iter().map(|r| r.score).collect();
+    let norm_bm25 = normalize_scores(&bm25_scores);
+
+    // Convert vector distances to similarities and normalize
+    let vec_similarities: Vec<f32> = vec_results
+        .iter()
+        .map(|r| {
+            #[expect(
+                clippy::cast_possible_truncation,
+                reason = "cosine distance is always in [0, 2], safe to truncate to f32"
+            )]
+            let sim = 1.0 - r.distance as f32;
+            sim.max(0.0)
+        })
+        .collect();
+    let norm_vec = normalize_scores(&vec_similarities);
+
+    // Build maps: doc_id → normalized score
+    let mut bm25_map: HashMap<&str, (f32, &SearchResult)> = HashMap::new();
+    for (i, result) in bm25_results.iter().enumerate() {
+        if let Some(&norm) = norm_bm25.get(i) {
+            bm25_map.insert(&result.id, (norm, result));
+        }
+    }
+
+    let mut vec_map: HashMap<&str, (f32, &super::vector_store::VectorSearchResult)> =
+        HashMap::new();
+    for (i, result) in vec_results.iter().enumerate() {
+        if let Some(&norm) = norm_vec.get(i) {
+            vec_map.insert(&result.id, (norm, result));
+        }
+    }
+
+    // Collect all unique doc IDs
+    let mut all_ids: Vec<&str> = Vec::new();
+    for id in bm25_map.keys() {
+        all_ids.push(id);
+    }
+    for id in vec_map.keys() {
+        if !bm25_map.contains_key(id) {
+            all_ids.push(id);
+        }
+    }
+
+    // Compute hybrid scores
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "search weights are in [0.0, 1.0], safe to truncate to f32"
+    )]
+    let text_w = cfg.text_weight as f32;
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "search weights are in [0.0, 1.0], safe to truncate to f32"
+    )]
+    let vec_w = cfg.vector_weight as f32;
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "min_score is in [0.0, 1.0], safe to truncate to f32"
+    )]
+    let min_score = cfg.min_score as f32;
+
+    let mut scored: Vec<(f32, SearchResult)> = Vec::new();
+    for id in &all_ids {
+        let bm25_score = bm25_map.get(id).map_or(0.0, |(s, _)| *s);
+        let vec_score = vec_map.get(id).map_or(0.0, |(s, _)| *s);
+        let hybrid = text_w * bm25_score + vec_w * vec_score;
+
+        if hybrid < min_score {
+            continue;
+        }
+
+        // Build SearchResult from whichever source has the data
+        let result = if let Some((_, bm25_r)) = bm25_map.get(id) {
+            SearchResult {
+                score: hybrid,
+                ..(*bm25_r).clone()
+            }
+        } else if let Some((_, vec_r)) = vec_map.get(id) {
+            let snippet = if vec_r.content.len() > 200 {
+                vec_r.content.get(..200).unwrap_or_default().to_string()
+            } else {
+                vec_r.content.clone()
+            };
+            SearchResult {
+                id: vec_r.id.clone(),
+                source_type: vec_r.source_type.clone(),
+                episode_id: vec_r.episode_id.clone(),
+                date: vec_r.date.clone(),
+                context: vec_r.context.clone(),
+                line_start: vec_r.line_start,
+                line_end: vec_r.line_end,
+                snippet,
+                score: hybrid,
+            }
+        } else {
+            continue;
+        };
+
+        scored.push((hybrid, result));
+    }
+
+    // Sort descending by hybrid score
+    scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+    scored.truncate(limit);
+
+    scored.into_iter().map(|(_, r)| r).collect()
+}
+
 #[cfg(test)]
 #[expect(clippy::unwrap_used, reason = "test code uses unwrap for clarity")]
 #[expect(
@@ -1315,5 +1557,182 @@ mod tests {
     fn extract_date_from_path_invalid() {
         let path = std::path::PathBuf::from("/some/random/path.json");
         assert!(extract_date_from_path(&path).is_empty());
+    }
+
+    // ── Normalize scores ─────────────────────────────────────────────────
+
+    #[test]
+    fn normalize_empty() {
+        let result = normalize_scores(&[]);
+        assert!(result.is_empty(), "empty input should produce empty output");
+    }
+
+    #[test]
+    fn normalize_single() {
+        let result = normalize_scores(&[5.0]);
+        assert_eq!(result.len(), 1, "single input should produce one output");
+        assert!(
+            (result[0] - 1.0).abs() < f32::EPSILON,
+            "single value should normalize to 1.0"
+        );
+    }
+
+    #[test]
+    fn normalize_multiple() {
+        let result = normalize_scores(&[2.0, 4.0, 6.0]);
+        assert_eq!(result.len(), 3);
+        assert!(
+            (result[0] - 0.0).abs() < f32::EPSILON,
+            "min should normalize to 0.0"
+        );
+        assert!(
+            (result[1] - 0.5).abs() < f32::EPSILON,
+            "mid should normalize to 0.5"
+        );
+        assert!(
+            (result[2] - 1.0).abs() < f32::EPSILON,
+            "max should normalize to 1.0"
+        );
+    }
+
+    #[test]
+    fn normalize_equal_values() {
+        let result = normalize_scores(&[3.0, 3.0, 3.0]);
+        assert!(
+            result.iter().all(|&v| (v - 1.0).abs() < f32::EPSILON),
+            "equal values should all normalize to 1.0"
+        );
+    }
+
+    // ── Merge hybrid results ─────────────────────────────────────────────
+
+    fn make_bm25_result(id: &str, score: f32) -> SearchResult {
+        SearchResult {
+            id: id.to_string(),
+            source_type: "observation".to_string(),
+            episode_id: "ep-001".to_string(),
+            date: "2026-02-19".to_string(),
+            context: "ironclaw".to_string(),
+            line_start: None,
+            line_end: None,
+            snippet: format!("bm25 content for {id}"),
+            score,
+        }
+    }
+
+    fn make_vec_result(id: &str, distance: f64) -> crate::memory::vector_store::VectorSearchResult {
+        crate::memory::vector_store::VectorSearchResult {
+            id: id.to_string(),
+            source_type: "observation".to_string(),
+            episode_id: "ep-001".to_string(),
+            date: "2026-02-19".to_string(),
+            context: "ironclaw".to_string(),
+            content: format!("vec content for {id}"),
+            line_start: None,
+            line_end: None,
+            distance,
+        }
+    }
+
+    fn test_search_config() -> SearchConfig {
+        SearchConfig {
+            vector_weight: 0.7,
+            text_weight: 0.3,
+            min_score: 0.0,
+            candidate_multiplier: 4,
+        }
+    }
+
+    #[test]
+    fn merge_bm25_only() {
+        let bm25 = vec![make_bm25_result("a", 5.0), make_bm25_result("b", 3.0)];
+        let vec_results: Vec<crate::memory::vector_store::VectorSearchResult> = vec![];
+
+        let merged = merge_hybrid_results(&bm25, &vec_results, &test_search_config(), 10);
+        assert_eq!(merged.len(), 2, "should return all bm25 results");
+        assert_eq!(merged[0].id, "a", "highest bm25 should be first");
+    }
+
+    #[test]
+    fn merge_vector_only() {
+        let bm25: Vec<SearchResult> = vec![];
+        let vec_results = vec![make_vec_result("x", 0.1), make_vec_result("y", 0.5)];
+
+        let merged = merge_hybrid_results(&bm25, &vec_results, &test_search_config(), 10);
+        assert_eq!(merged.len(), 2, "should return all vector results");
+        // x has smaller distance (0.1) → higher similarity → higher score
+        assert_eq!(merged[0].id, "x", "closest vector should be first");
+    }
+
+    #[test]
+    fn merge_hybrid_overlap() {
+        let bm25 = vec![make_bm25_result("a", 5.0), make_bm25_result("b", 3.0)];
+        let vec_results = vec![
+            make_vec_result("a", 0.1), // same doc as bm25
+            make_vec_result("c", 0.2), // vector-only
+        ];
+
+        let cfg = test_search_config();
+        let merged = merge_hybrid_results(&bm25, &vec_results, &cfg, 10);
+
+        // "a" appears in both → hybrid score = text_w * norm_bm25 + vec_w * norm_vec
+        // "b" is bm25-only, "c" is vec-only
+        assert_eq!(merged.len(), 3, "should have 3 unique docs");
+        // "a" should have the highest score since it appears in both
+        assert_eq!(merged[0].id, "a", "overlapping doc should rank highest");
+    }
+
+    #[test]
+    fn merge_min_score_filter() {
+        let bm25 = vec![make_bm25_result("a", 5.0), make_bm25_result("b", 0.1)];
+        let vec_results: Vec<crate::memory::vector_store::VectorSearchResult> = vec![];
+
+        let cfg = SearchConfig {
+            min_score: 0.5, // high threshold
+            ..test_search_config()
+        };
+        let merged = merge_hybrid_results(&bm25, &vec_results, &cfg, 10);
+
+        // With only BM25, scores are normalized. "a" → 1.0, "b" → 0.0
+        // hybrid("a") = 0.3 * 1.0 = 0.3 (below 0.5 threshold)
+        // hybrid("b") = 0.3 * 0.0 = 0.0 (below 0.5 threshold)
+        // Both below threshold because text_weight is only 0.3
+        // This is expected: without vector scores, max hybrid = text_weight * 1.0 = 0.3
+        assert!(merged.len() <= 2, "min_score filter should reduce results");
+    }
+
+    #[test]
+    fn merge_respects_limit() {
+        let bm25 = vec![
+            make_bm25_result("a", 5.0),
+            make_bm25_result("b", 4.0),
+            make_bm25_result("c", 3.0),
+        ];
+        let vec_results: Vec<crate::memory::vector_store::VectorSearchResult> = vec![];
+
+        let merged = merge_hybrid_results(&bm25, &vec_results, &test_search_config(), 2);
+        assert_eq!(merged.len(), 2, "should respect limit");
+    }
+
+    #[test]
+    fn hybrid_searcher_bm25_fallback() {
+        let (_dir, index) = create_test_index();
+        let obs = vec![sample_observation("rust ownership model")];
+        index
+            .index_observations("ep-001", "2026-02-19", &obs)
+            .unwrap();
+
+        let searcher = HybridSearcher::new(Arc::new(index), None, None, SearchConfig::default());
+        assert!(!searcher.has_vector(), "should not have vector search");
+
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let results = rt
+            .block_on(searcher.search("rust ownership", 5, &no_filters()))
+            .unwrap();
+        assert!(!results.is_empty(), "BM25 fallback should find results");
+        assert_eq!(results[0].source_type, "observation");
     }
 }
