@@ -9,7 +9,7 @@ use crate::config::Config;
 use crate::error::IronclawError;
 use crate::gateway::protocol::ServerMessage;
 use crate::memory::log_store::load_observation_log;
-use crate::memory::observer::{ObserveAction, Observer, ObserverConfig};
+use crate::memory::observer::{ObserveAction, ObserveResult, Observer, ObserverConfig};
 use crate::memory::recent_context::{RecentContext, save_recent_context};
 use crate::memory::recent_messages::{
     append_recent_messages, clear_recent_messages, load_recent_messages,
@@ -17,7 +17,8 @@ use crate::memory::recent_messages::{
 use crate::memory::reflector::{Reflector, ReflectorConfig};
 use crate::memory::search::MemoryIndex;
 use crate::memory::types::Visibility;
-use crate::models::{SharedHttpClient, build_provider_from_provider_spec};
+use crate::memory::vector_store::VectorStore;
+use crate::models::{EmbeddingProvider, SharedHttpClient, build_provider_from_provider_spec};
 use crate::workspace::layout::WorkspaceLayout;
 
 /// Build observer and reflector from fully-resolved provider specs on `Config`.
@@ -106,6 +107,8 @@ pub(super) async fn execute_observation(
     search_index: &MemoryIndex,
     layout: &WorkspaceLayout,
     agent: &mut Agent,
+    vector_store: Option<&Arc<VectorStore>>,
+    embedding_provider: Option<&Arc<dyn EmbeddingProvider>>,
 ) {
     let recent = match load_recent_messages(&layout.recent_messages_json()).await {
         Ok(msgs) => msgs,
@@ -150,6 +153,9 @@ pub(super) async fn execute_observation(
                 eprintln!("warning: failed to index chunks: {e}");
             }
 
+            // Embed and store in vector index
+            embed_observation_result(&result, vector_store, embedding_provider).await;
+
             run_reflector_if_needed(reflector, layout).await;
 
             if let Err(e) = agent.reload_observations(layout).await {
@@ -190,6 +196,72 @@ async fn run_reflector_if_needed(reflector: &Reflector, layout: &WorkspaceLayout
     }
 }
 
+/// Embed observations and chunks from an observer result into the vector store.
+///
+/// Silently returns if no embedding provider or vector store is configured.
+/// Embedding failures are reported as warnings, never fatal.
+async fn embed_observation_result(
+    result: &ObserveResult,
+    vector_store: Option<&Arc<VectorStore>>,
+    embedding_provider: Option<&Arc<dyn EmbeddingProvider>>,
+) {
+    let (Some(vs), Some(ep)) = (vector_store, embedding_provider) else {
+        return;
+    };
+
+    // Embed observations
+    if !result.observations.is_empty() {
+        let texts: Vec<&str> = result
+            .observations
+            .iter()
+            .map(|o| o.content.as_str())
+            .collect();
+        match ep.embed(&texts).await {
+            Ok(response) => {
+                let vs = Arc::clone(vs);
+                let episode_id = result.id.clone();
+                let date = result.date.clone();
+                let observations = result.observations.clone();
+                let embeddings = response.embeddings;
+                match tokio::task::spawn_blocking(move || {
+                    vs.insert_observations(&episode_id, &date, &observations, &embeddings)
+                })
+                .await
+                {
+                    Ok(Err(e)) => eprintln!("warning: failed to insert observation vectors: {e}"),
+                    Err(e) => eprintln!("warning: observation vector insert task panicked: {e}"),
+                    Ok(Ok(_)) => {}
+                }
+            }
+            Err(e) => {
+                eprintln!("warning: failed to embed observations: {e}");
+            }
+        }
+    }
+
+    // Embed chunks
+    if !result.chunks.is_empty() {
+        let texts: Vec<&str> = result.chunks.iter().map(|c| c.content.as_str()).collect();
+        match ep.embed(&texts).await {
+            Ok(response) => {
+                let vs = Arc::clone(vs);
+                let chunks = result.chunks.clone();
+                let embeddings = response.embeddings;
+                match tokio::task::spawn_blocking(move || vs.insert_chunks(&chunks, &embeddings))
+                    .await
+                {
+                    Ok(Err(e)) => eprintln!("warning: failed to insert chunk vectors: {e}"),
+                    Err(e) => eprintln!("warning: chunk vector insert task panicked: {e}"),
+                    Ok(Ok(_)) => {}
+                }
+            }
+            Err(e) => {
+                eprintln!("warning: failed to embed chunks: {e}");
+            }
+        }
+    }
+}
+
 /// Force an observation cycle regardless of token threshold.
 ///
 /// Loads recent messages, runs the observer, clears recent messages, updates
@@ -198,6 +270,10 @@ async fn run_reflector_if_needed(reflector: &Reflector, layout: &WorkspaceLayout
     clippy::too_many_lines,
     reason = "forced observe is a linear pipeline with error handling at each step"
 )]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "pipeline function threading subsystem references through from the event loop"
+)]
 pub(super) async fn run_forced_observe(
     observer: &Observer,
     reflector: &Reflector,
@@ -205,6 +281,8 @@ pub(super) async fn run_forced_observe(
     layout: &WorkspaceLayout,
     agent: &mut Agent,
     broadcast_tx: &broadcast::Sender<ServerMessage>,
+    vector_store: Option<&Arc<VectorStore>>,
+    embedding_provider: Option<&Arc<dyn EmbeddingProvider>>,
 ) {
     let recent = match load_recent_messages(&layout.recent_messages_json()).await {
         Ok(msgs) => msgs,
@@ -277,6 +355,9 @@ pub(super) async fn run_forced_observe(
     if let Err(e) = search_index.index_chunks(&result.chunks) {
         eprintln!("warning: failed to index chunks after forced observe: {e}");
     }
+
+    // Embed and store in vector index
+    embed_observation_result(&result, vector_store, embedding_provider).await;
 
     let reflected = match load_observation_log(&layout.observations_json()).await {
         Ok(log) if reflector.should_reflect(&log) => match reflector.reflect(layout).await {

@@ -40,14 +40,12 @@ pub(super) struct GatewayComponents {
         reason = "used only in tool registration, not read by event loop"
     )]
     pub(super) hybrid_searcher: Arc<HybridSearcher>,
-    #[expect(dead_code, reason = "will be used by observation pipeline embedding")]
     pub(super) vector_store: Option<Arc<VectorStore>>,
     pub(super) cron_store: Arc<tokio::sync::Mutex<CronStore>>,
     pub(super) cron_notify: Arc<tokio::sync::Notify>,
     pub(super) mcp_registry: SharedMcpRegistry,
     pub(super) project_state: SharedProjectState,
     pub(super) skill_state: SharedSkillState,
-    #[expect(dead_code, reason = "will be used by observation pipeline embedding")]
     pub(super) embedding_provider: Option<Arc<dyn EmbeddingProvider>>,
     pub(super) pulse_provider: Box<dyn ModelProvider>,
     pub(super) cron_provider: Box<dyn ModelProvider>,

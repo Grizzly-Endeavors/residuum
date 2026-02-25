@@ -27,7 +27,8 @@ use crate::memory::observer::{ObserveAction, Observer};
 use crate::memory::reflector::Reflector;
 use crate::memory::search::MemoryIndex;
 use crate::memory::types::Visibility;
-use crate::models::ModelProvider;
+use crate::memory::vector_store::VectorStore;
+use crate::models::{EmbeddingProvider, ModelProvider};
 use crate::projects::activation::SharedProjectState;
 use crate::pulse::executor::execute_pulse;
 use crate::pulse::scheduler::PulseScheduler;
@@ -72,6 +73,8 @@ struct GatewayRuntime {
     observer: Observer,
     reflector: Reflector,
     search_index: Arc<MemoryIndex>,
+    vector_store: Option<Arc<VectorStore>>,
+    embedding_provider: Option<Arc<dyn EmbeddingProvider>>,
     cron_store: Arc<tokio::sync::Mutex<CronStore>>,
     cron_notify: Arc<tokio::sync::Notify>,
     mcp_registry: SharedMcpRegistry,
@@ -220,6 +223,8 @@ pub async fn run_gateway(cfg: Config) -> Result<GatewayExit, IronclawError> {
         observer: parts.observer,
         reflector: parts.reflector,
         search_index: parts.search_index,
+        vector_store: parts.vector_store,
+        embedding_provider: parts.embedding_provider,
         cron_store: parts.cron_store,
         cron_notify: parts.cron_notify,
         mcp_registry: parts.mcp_registry,
@@ -341,7 +346,7 @@ async fn run_event_loop(mut rt: GatewayRuntime) -> GatewayExit {
                     &rt.observer, &rt.layout, rt.tz,
                 ).await;
                 if apply_observe_action(action, &mut observe_deadline, rt.observer.cooldown_secs()) {
-                    execute_observation(&rt.observer, &rt.reflector, &rt.search_index, &rt.layout, &mut rt.agent).await;
+                    execute_observation(&rt.observer, &rt.reflector, &rt.search_index, &rt.layout, &mut rt.agent, rt.vector_store.as_ref(), rt.embedding_provider.as_ref()).await;
                 }
             }
 
@@ -379,7 +384,7 @@ async fn run_event_loop(mut rt: GatewayRuntime) -> GatewayExit {
                                 &rt.observer, &rt.layout, rt.tz,
                             ).await;
                             if apply_observe_action(action, &mut observe_deadline, rt.observer.cooldown_secs()) {
-                                execute_observation(&rt.observer, &rt.reflector, &rt.search_index, &rt.layout, &mut rt.agent).await;
+                                execute_observation(&rt.observer, &rt.reflector, &rt.search_index, &rt.layout, &mut rt.agent, rt.vector_store.as_ref(), rt.embedding_provider.as_ref()).await;
                             }
                         }
                         Err(e) => tracing::warn!(pulse = %pulse.name, error = %e, "pulse failed"),
@@ -394,7 +399,7 @@ async fn run_event_loop(mut rt: GatewayRuntime) -> GatewayExit {
                     &rt.broadcast_tx, Some(&*rt.cron_provider), rt.tz, &rt.project_state,
                 ).await;
                 if apply_observe_action(action, &mut observe_deadline, rt.observer.cooldown_secs()) {
-                    execute_observation(&rt.observer, &rt.reflector, &rt.search_index, &rt.layout, &mut rt.agent).await;
+                    execute_observation(&rt.observer, &rt.reflector, &rt.search_index, &rt.layout, &mut rt.agent, rt.vector_store.as_ref(), rt.embedding_provider.as_ref()).await;
                 }
             }
 
@@ -405,7 +410,7 @@ async fn run_event_loop(mut rt: GatewayRuntime) -> GatewayExit {
                     &rt.broadcast_tx, Some(&*rt.cron_provider), rt.tz, &rt.project_state,
                 ).await;
                 if apply_observe_action(action, &mut observe_deadline, rt.observer.cooldown_secs()) {
-                    execute_observation(&rt.observer, &rt.reflector, &rt.search_index, &rt.layout, &mut rt.agent).await;
+                    execute_observation(&rt.observer, &rt.reflector, &rt.search_index, &rt.layout, &mut rt.agent, rt.vector_store.as_ref(), rt.embedding_provider.as_ref()).await;
                 }
             }
 
@@ -417,7 +422,7 @@ async fn run_event_loop(mut rt: GatewayRuntime) -> GatewayExit {
                 }
             } => {
                 observe_deadline = None;
-                execute_observation(&rt.observer, &rt.reflector, &rt.search_index, &rt.layout, &mut rt.agent).await;
+                execute_observation(&rt.observer, &rt.reflector, &rt.search_index, &rt.layout, &mut rt.agent, rt.vector_store.as_ref(), rt.embedding_provider.as_ref()).await;
             }
 
             // ── Observe command wakeup ─────────────────────────────────────
@@ -426,6 +431,7 @@ async fn run_event_loop(mut rt: GatewayRuntime) -> GatewayExit {
                 run_forced_observe(
                     &rt.observer, &rt.reflector, &rt.search_index,
                     &rt.layout, &mut rt.agent, &rt.broadcast_tx,
+                    rt.vector_store.as_ref(), rt.embedding_provider.as_ref(),
                 ).await;
             }
 
