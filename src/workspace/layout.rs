@@ -177,6 +177,12 @@ impl WorkspaceLayout {
         self.root.join("ALERTS.md")
     }
 
+    /// Path to NOTIFY.yml -- notification routing configuration.
+    #[must_use]
+    pub fn notify_yml(&self) -> PathBuf {
+        self.root.join("NOTIFY.yml")
+    }
+
     /// Path to cron/jobs.json -- persisted scheduled jobs.
     #[must_use]
     pub fn cron_jobs_json(&self) -> PathBuf {
@@ -278,6 +284,11 @@ mod tests {
             layout.alerts_md(),
             PathBuf::from("/tmp/ws/ALERTS.md"),
             "alerts_md path"
+        );
+        assert_eq!(
+            layout.notify_yml(),
+            PathBuf::from("/tmp/ws/NOTIFY.yml"),
+            "notify_yml path"
         );
         assert_eq!(
             layout.cron_jobs_json(),

@@ -15,13 +15,13 @@ use super::constants::{
     DEFAULT_TIMEOUT_SECS,
 };
 use super::deserialize::{
-    ConfigFile, DiscordConfigFile, GatewayConfigFile, McpConfigFile, ProviderEntryFile,
-    SearchConfigFile, SkillsConfigFile, WebhookConfigFile,
+    ConfigFile, DiscordConfigFile, GatewayConfigFile, McpConfigFile, NotificationsConfigFile,
+    ProviderEntryFile, SearchConfigFile, SkillsConfigFile, WebhookConfigFile,
 };
 use super::provider::{ModelSpec, ProviderKind, ProviderSpec};
 use super::types::{
-    DiscordConfig, GatewayConfig, McpConfig, MemoryConfig, SearchConfig, SkillsConfig,
-    WebhookConfig,
+    DiscordConfig, ExternalChannelConfig, ExternalChannelKind, GatewayConfig, McpConfig,
+    MemoryConfig, NotificationsConfig, SearchConfig, SkillsConfig, WebhookConfig,
 };
 
 /// Build a `Config` from an optional config file and environment variables.
@@ -147,6 +147,8 @@ pub(super) fn from_file_and_env(file: Option<&ConfigFile>) -> Result<Config, Iro
     let skills = resolve_skills_config(file.and_then(|f| f.skills.as_ref()), &workspace_dir);
     let mcp = resolve_mcp_config(file.and_then(|f| f.mcp.as_ref()));
 
+    let notifications = resolve_notifications_config(file.and_then(|f| f.notifications.as_ref()));
+
     let retry = {
         let r = file.and_then(|f| f.retry.as_ref());
         let mut cfg = RetryConfig::default();
@@ -201,6 +203,7 @@ pub(super) fn from_file_and_env(file: Option<&ConfigFile>) -> Result<Config, Iro
         skills,
         mcp,
         retry,
+        notifications,
     })
 }
 
@@ -475,6 +478,74 @@ fn resolve_search_config(section: Option<&SearchConfigFile>) -> SearchConfig {
     }
 
     cfg
+}
+
+/// Resolve notification channel configuration from TOML section.
+fn resolve_notifications_config(section: Option<&NotificationsConfigFile>) -> NotificationsConfig {
+    let Some(section) = section else {
+        return NotificationsConfig::default();
+    };
+    let Some(channels_map) = &section.channels else {
+        return NotificationsConfig::default();
+    };
+
+    let mut channels = Vec::new();
+
+    for (name, entry) in channels_map {
+        match entry.kind.as_str() {
+            "ntfy" => {
+                let Some(url) = entry.url.clone() else {
+                    eprintln!(
+                        "warning: [notifications.channels.{name}] type=ntfy requires 'url' field, skipping"
+                    );
+                    continue;
+                };
+                let Some(topic) = entry.topic.clone() else {
+                    eprintln!(
+                        "warning: [notifications.channels.{name}] type=ntfy requires 'topic' field, skipping"
+                    );
+                    continue;
+                };
+                channels.push(ExternalChannelConfig {
+                    name: name.clone(),
+                    kind: ExternalChannelKind::Ntfy {
+                        url,
+                        topic,
+                        priority: entry.priority.clone(),
+                    },
+                });
+            }
+            "webhook" => {
+                let Some(url) = entry.url.clone() else {
+                    eprintln!(
+                        "warning: [notifications.channels.{name}] type=webhook requires 'url' field, skipping"
+                    );
+                    continue;
+                };
+                let headers: Vec<(String, String)> = entry
+                    .headers
+                    .as_ref()
+                    .map(|h| h.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
+                    .unwrap_or_default();
+                channels.push(ExternalChannelConfig {
+                    name: name.clone(),
+                    kind: ExternalChannelKind::Webhook {
+                        url,
+                        method: entry.method.clone(),
+                        headers,
+                    },
+                });
+            }
+            other => {
+                eprintln!(
+                    "warning: [notifications.channels.{name}] unknown type '{other}', \
+                     expected 'ntfy' or 'webhook'; skipping"
+                );
+            }
+        }
+    }
+
+    NotificationsConfig { channels }
 }
 
 /// Warn on deprecated environment variables that no longer have effect.

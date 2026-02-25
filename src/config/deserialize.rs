@@ -41,6 +41,8 @@ pub(super) struct ConfigFile {
     pub(super) mcp: Option<McpConfigFile>,
     /// Retry configuration.
     pub(super) retry: Option<RetryConfigFile>,
+    /// Notification channel configuration.
+    pub(super) notifications: Option<NotificationsConfigFile>,
 }
 
 /// A named provider entry under `[providers.<name>]`.
@@ -182,6 +184,33 @@ pub(super) struct RetryConfigFile {
     pub(super) max_delay_ms: Option<u64>,
     /// Multiplier for exponential backoff.
     pub(super) backoff_multiplier: Option<f64>,
+}
+
+/// Raw TOML `[notifications]` section.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct NotificationsConfigFile {
+    /// Named external channel definitions.
+    pub(super) channels: Option<HashMap<String, ChannelConfigEntry>>,
+}
+
+/// A single channel entry under `[notifications.channels.<name>]`.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct ChannelConfigEntry {
+    /// Channel type: `"ntfy"` or `"webhook"`.
+    #[serde(rename = "type")]
+    pub(super) kind: String,
+    /// URL for the channel endpoint.
+    pub(super) url: Option<String>,
+    /// Ntfy topic name.
+    pub(super) topic: Option<String>,
+    /// Ntfy priority (default: `"default"`).
+    pub(super) priority: Option<String>,
+    /// HTTP method for webhooks (default: `"POST"`).
+    pub(super) method: Option<String>,
+    /// Additional HTTP headers for webhooks.
+    pub(super) headers: Option<HashMap<String, String>>,
 }
 
 /// A single MCP server entry under `[mcp.servers.<name>]`.

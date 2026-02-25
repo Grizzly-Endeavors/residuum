@@ -110,6 +110,26 @@ const DEFAULT_PRESENCE: &str = "\
 # activity_text = \"DMs\"
 ";
 
+/// Default content for NOTIFY.yml when creating a new workspace.
+const DEFAULT_NOTIFY: &str = "\
+# NOTIFY.yml — Notification routing
+# Maps channels to the background tasks they receive.
+# Edit this file to control where background task results are delivered.
+# The agent will also evolve this file based on your preferences.
+#
+# Built-in channels:
+#   agent_wake  — inject into agent feed, start a turn if idle
+#   agent_feed  — inject into agent feed, wait for next interaction
+#   inbox       — store silently, surface as unread count
+#
+# External channels (ntfy, webhook, etc.) are defined in config.toml
+# under [notifications.channels].
+
+agent_feed: []
+
+inbox: []
+";
+
 /// Default content for Alerts.md when creating a new workspace.
 const DEFAULT_ALERTS: &str = "\
 # Alerts.md — Alert delivery behavior
@@ -150,6 +170,7 @@ pub async fn ensure_workspace(layout: &WorkspaceLayout) -> Result<(), IronclawEr
     write_if_missing(&layout.reflector_md(), DEFAULT_REFLECTOR_PROMPT).await?;
     write_if_missing(&layout.heartbeat_yml(), DEFAULT_HEARTBEAT).await?;
     write_if_missing(&layout.alerts_md(), DEFAULT_ALERTS).await?;
+    write_if_missing(&layout.notify_yml(), DEFAULT_NOTIFY).await?;
     write_if_missing(&layout.presence_toml(), DEFAULT_PRESENCE).await?;
 
     tracing::info!(
@@ -203,6 +224,7 @@ mod tests {
             "HEARTBEAT.yml should exist"
         );
         assert!(layout.alerts_md().exists(), "Alerts.md should exist");
+        assert!(layout.notify_yml().exists(), "NOTIFY.yml should exist");
         assert!(
             layout.presence_toml().exists(),
             "PRESENCE.toml should exist"
