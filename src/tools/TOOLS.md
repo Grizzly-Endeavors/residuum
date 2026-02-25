@@ -216,7 +216,7 @@ On success: summary string like `"Activated project '{name}'. Manifest: {N} note
 
 On error: project not found or activation failure message.
 
-**Side effects:** Updates `PathPolicy` to scope writes to the project root; enables gated tools from the project's `tools` frontmatter list; reconciles MCP servers; rescans skills to include project-scoped skills.
+**Side effects:** Updates `PathPolicy` to scope writes to the project root; enables gated tools from the project's `tools` frontmatter list; activates MCP servers with reference counting (servers are shared when multiple agents activate the same project simultaneously — they are only stopped when the last agent deactivates); rescans skills to include project-scoped skills.
 
 ---
 
@@ -239,7 +239,7 @@ On success: `"Deactivated project '{name}'. Log entry recorded."`
 
 On error: no active project, or empty `log`.
 
-**Side effects:** Resets `PathPolicy` to no active project; clears all gated tool permissions; disconnects all MCP servers; rescans skills without project dir.
+**Side effects:** Resets `PathPolicy` to no active project; clears all gated tool permissions; decrements MCP server reference count (servers are only disconnected when the last agent deactivates — see `project_activate`); rescans skills without project dir.
 
 ---
 

@@ -98,9 +98,40 @@ impl BackgroundTaskSpawner {
                 }
             };
 
+            // Extract Arc clones for cancellation cleanup (cheap; no data copied)
+            let cleanup_handles = resources.as_ref().map(|r| {
+                (
+                    Arc::clone(&r.project_state),
+                    Arc::clone(&r.mcp_registry),
+                    Arc::clone(&r.path_policy),
+                    Arc::clone(&r.tool_filter),
+                )
+            });
+
             let result = tokio::select! {
                 biased;
                 () = child_token.cancelled() => {
+                    // Deactivate any active project the sub-agent had open
+                    if let Some((project_state, mcp_registry, path_policy, tool_filter)) =
+                        cleanup_handles
+                    {
+                        let active_name = project_state
+                            .lock()
+                            .await
+                            .active_project_name()
+                            .map(str::to_string);
+                        if let Some(name) = active_name {
+                            tracing::info!(
+                                task_id = %spawn_task_id,
+                                project = %name,
+                                "[cancelled] SubAgent {spawn_task_id} was stopped. Work may be incomplete."
+                            );
+                            mcp_registry.write().await.deactivate_project(&name).await;
+                            path_policy.write().await.set_active_project(None);
+                            tool_filter.write().await.clear_enabled();
+                        }
+                    }
+
                     BackgroundResult {
                         id: task.id.clone(),
                         task_name: task.task_name.clone(),

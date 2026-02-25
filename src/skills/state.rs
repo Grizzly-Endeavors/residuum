@@ -148,6 +148,12 @@ impl SkillState {
     pub fn index(&self) -> &SkillIndex {
         &self.index
     }
+
+    /// Get the skill scan directories (used when building isolated subagent state).
+    #[must_use]
+    pub fn dirs(&self) -> &[PathBuf] {
+        &self.dirs
+    }
 }
 
 #[cfg(test)]

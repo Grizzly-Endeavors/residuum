@@ -78,6 +78,7 @@ impl Tool for ProjectActivateTool {
                 let project_root = active.project_root.clone();
                 let tools_list = active.frontmatter.tools.clone();
                 let mcp_servers = active.frontmatter.mcp_servers.clone();
+                let project_name = active.name.clone();
                 let manifest_summary = format!(
                     "Activated project '{}'. Manifest: {} notes, {} references, {} workspace, {} skills files.",
                     active.name,
@@ -93,12 +94,12 @@ impl Tool for ProjectActivateTool {
                     .set_active_project(Some(project_root));
                 // Enable gated tools from project frontmatter
                 self.tool_filter.write().await.enable(&tools_list);
-                // Reconcile and connect MCP servers
+                // Activate MCP servers with reference counting
                 let mcp_report = self
                     .mcp_registry
                     .write()
                     .await
-                    .reconcile_and_connect(&mcp_servers)
+                    .activate_project(&project_name, &mcp_servers)
                     .await;
                 for (server_name, err) in &mcp_report.failures {
                     tracing::warn!(server = %server_name, error = %err, "mcp server failed to start");
@@ -200,8 +201,13 @@ impl Tool for ProjectDeactivateTool {
                 self.path_policy.write().await.set_active_project(None);
                 // Clear gated tool permissions
                 self.tool_filter.write().await.clear_enabled();
-                // Disconnect all MCP servers
-                let stopped = self.mcp_registry.write().await.disconnect_all().await;
+                // Decrement MCP reference count; stops servers only when last ref goes
+                let stopped = self
+                    .mcp_registry
+                    .write()
+                    .await
+                    .deactivate_project(&name)
+                    .await;
                 if !stopped.is_empty() {
                     tracing::info!(
                         count = stopped.len(),

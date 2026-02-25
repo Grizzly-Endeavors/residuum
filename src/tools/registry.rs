@@ -163,6 +163,51 @@ impl ToolRegistry {
         self.register(Box::new(background::ListAgentsTool::new(spawner)));
     }
 
+    /// Build a tool registry for a background sub-agent.
+    ///
+    /// Includes core tools (read, write, edit, exec), project tools (activate,
+    /// deactivate, list — not create or archive), and skill tools (activate,
+    /// deactivate). Excludes cron, inbox, memory, and background management
+    /// tools which are not appropriate for isolated sub-agent turns.
+    #[must_use]
+    pub fn build_subagent_registry(
+        tracker: SharedFileTracker,
+        path_policy: SharedPathPolicy,
+        project_state: SharedProjectState,
+        tool_filter: SharedToolFilter,
+        mcp_registry: SharedMcpRegistry,
+        skill_state: SharedSkillState,
+        tz: chrono_tz::Tz,
+    ) -> Self {
+        let mut registry = Self::new();
+
+        // Core I/O tools
+        registry.register_defaults(tracker, Arc::clone(&path_policy));
+
+        // Project tools: activate, deactivate, list (not create/archive)
+        registry.register(Box::new(projects::ProjectActivateTool::new(
+            Arc::clone(&project_state),
+            Arc::clone(&path_policy),
+            Arc::clone(&tool_filter),
+            Arc::clone(&mcp_registry),
+            Arc::clone(&skill_state),
+        )));
+        registry.register(Box::new(projects::ProjectDeactivateTool::new(
+            Arc::clone(&project_state),
+            path_policy,
+            tool_filter,
+            mcp_registry,
+            Arc::clone(&skill_state),
+            tz,
+        )));
+        registry.register(Box::new(projects::ProjectListTool::new(project_state)));
+
+        // Skill tools: activate, deactivate
+        registry.register_skill_tools(skill_state);
+
+        registry
+    }
+
     /// Register cron management tools (`cron_add`, `cron_list`, `cron_update`, `cron_remove`).
     pub fn register_cron_tools(
         &mut self,

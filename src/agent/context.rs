@@ -131,13 +131,14 @@ fn build_status_line(ctx: &StatusLine) -> String {
 
 /// Build a minimal system prompt for background sub-agent turns.
 ///
-/// Includes only TOOLS.md, USER.md, and the projects index — excludes SOUL,
-/// IDENTITY, AGENTS, MEMORY, observations, recent context, and skills to keep
-/// the sub-agent focused on the task.
+/// Includes TOOLS.md, USER.md, the projects index, and the skills index.
+/// Excludes SOUL, IDENTITY, AGENTS, MEMORY, observations, recent context,
+/// and active skill instructions to keep the sub-agent focused on the task.
 #[must_use]
 pub(crate) fn build_subagent_system_content(
     identity: &IdentityFiles,
     projects_ctx: &ProjectsContext<'_>,
+    skills_ctx: &SkillsContext<'_>,
 ) -> String {
     let mut parts = Vec::new();
 
@@ -153,6 +154,12 @@ pub(crate) fn build_subagent_system_content(
         && !idx.is_empty()
     {
         parts.push(format!("<PROJECTS_INDEX>\n{idx}\n</PROJECTS_INDEX>"));
+    }
+
+    if let Some(idx) = skills_ctx.index
+        && !idx.is_empty()
+    {
+        parts.push(format!("<SKILLS_INDEX>\n{idx}\n</SKILLS_INDEX>"));
     }
 
     parts.join("\n\n")
@@ -866,6 +873,70 @@ mod tests {
         assert!(
             !content.contains("ACTIVE_SKILLS"),
             "None active skills should be skipped"
+        );
+    }
+
+    // ── build_subagent_system_content tests ──────────────────────────────────
+
+    #[test]
+    fn subagent_system_content_includes_tools_user_projects_skills() {
+        let identity = IdentityFiles {
+            soul: Some("SOUL content".to_string()),
+            tools: Some("tool docs".to_string()),
+            user: Some("user prefs".to_string()),
+            ..IdentityFiles::default()
+        };
+        let projects_ctx = ProjectsContext {
+            index: Some("| proj | active |"),
+            active_context: None,
+        };
+        let skills_ctx = SkillsContext {
+            index: Some("<available_skills/>"),
+            active_instructions: None,
+        };
+        let content = build_subagent_system_content(&identity, &projects_ctx, &skills_ctx);
+
+        assert!(!content.contains("SOUL"), "should exclude SOUL.md");
+        assert!(content.contains("tool docs"), "should include TOOLS.md");
+        assert!(content.contains("user prefs"), "should include USER.md");
+        assert!(
+            content.contains("| proj | active |"),
+            "should include projects index"
+        );
+        assert!(
+            content.contains("<SKILLS_INDEX>"),
+            "should include skills index"
+        );
+    }
+
+    #[test]
+    fn subagent_system_content_excludes_active_skills() {
+        // Active skill instructions are not included in the sub-agent system prompt
+        let identity = IdentityFiles::default();
+        let skills_ctx = SkillsContext {
+            index: Some("<available_skills/>"),
+            active_instructions: Some("<active_skill>instructions</active_skill>"),
+        };
+        let content =
+            build_subagent_system_content(&identity, &ProjectsContext::none(), &skills_ctx);
+        assert!(
+            !content.contains("instructions"),
+            "active skill instructions should not appear in subagent system prompt"
+        );
+    }
+
+    #[test]
+    fn subagent_system_content_skills_index_empty_skipped() {
+        let identity = IdentityFiles::default();
+        let skills_ctx = SkillsContext {
+            index: Some(""),
+            active_instructions: None,
+        };
+        let content =
+            build_subagent_system_content(&identity, &ProjectsContext::none(), &skills_ctx);
+        assert!(
+            !content.contains("SKILLS_INDEX"),
+            "empty skills index should be skipped"
         );
     }
 }

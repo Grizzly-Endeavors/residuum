@@ -3,6 +3,7 @@
 //! Tracks which MCP servers are running, manages live `McpClient` handles,
 //! and exposes discovered tools to the agent's tool loop.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use serde_json::Value;
@@ -86,9 +87,23 @@ pub struct McpReconcileReport {
     pub failures: Vec<(String, String)>,
 }
 
+/// Per-project activation state for MCP reference counting.
+struct ProjectMcpState {
+    /// Number of currently active agents that activated this project.
+    active_count: usize,
+    /// Server entries remembered for decrement-to-zero cleanup.
+    servers: Vec<McpServerEntry>,
+}
+
 /// Registry tracking MCP server lifecycle state and live client handles.
 pub struct McpRegistry {
     servers: Vec<TrackedServer>,
+    /// Per-project activation reference counts.
+    ///
+    /// Keyed by lowercase project name. When multiple sub-agents activate the
+    /// same project simultaneously, servers are shared and only disconnected
+    /// when the last agent deactivates.
+    project_refs: HashMap<String, ProjectMcpState>,
 }
 
 impl Default for McpRegistry {
@@ -103,6 +118,7 @@ impl McpRegistry {
     pub fn new() -> Self {
         Self {
             servers: Vec::new(),
+            project_refs: HashMap::new(),
         }
     }
 
@@ -250,6 +266,110 @@ impl McpRegistry {
         report
     }
 
+    /// Activate a project's MCP servers with reference counting.
+    ///
+    /// On first activation (count 0→1): reconciles and connects the project's
+    /// servers. On subsequent activations: increments the reference count and
+    /// returns an empty report (servers already running are reused).
+    ///
+    /// Multiple agents activating the same project share a single set of
+    /// running servers. Servers are only stopped when the last agent deactivates.
+    pub async fn activate_project(
+        &mut self,
+        project_name: &str,
+        servers: &[McpServerEntry],
+    ) -> McpReconcileReport {
+        let key = project_name.to_lowercase();
+        if let Some(state) = self.project_refs.get_mut(&key) {
+            state.active_count += 1;
+            tracing::debug!(
+                project = %project_name,
+                count = state.active_count,
+                "project mcp ref count incremented (servers already running)"
+            );
+            return McpReconcileReport::default();
+        }
+
+        // First activation: start the servers and track them
+        let report = self.reconcile_and_connect(servers).await;
+        self.project_refs.insert(
+            key,
+            ProjectMcpState {
+                active_count: 1,
+                servers: servers.to_vec(),
+            },
+        );
+        tracing::debug!(
+            project = %project_name,
+            started = report.started,
+            "project mcp servers activated (first ref)"
+        );
+        report
+    }
+
+    /// Deactivate a project's MCP servers, decrementing the reference count.
+    ///
+    /// When the count reaches zero, the project's servers are disconnected.
+    /// Returns the names of servers that were stopped (empty if count > 0).
+    pub async fn deactivate_project(&mut self, project_name: &str) -> Vec<String> {
+        let key = project_name.to_lowercase();
+        let Some(state) = self.project_refs.get_mut(&key) else {
+            return Vec::new();
+        };
+
+        if state.active_count > 0 {
+            state.active_count -= 1;
+        }
+
+        if state.active_count == 0 {
+            let server_names: Vec<String> = state.servers.iter().map(|s| s.name.clone()).collect();
+            self.project_refs.remove(&key);
+
+            let mut stopped = Vec::new();
+            for name in &server_names {
+                self.disconnect(name).await;
+                stopped.push(name.clone());
+            }
+            tracing::debug!(
+                project = %project_name,
+                count = stopped.len(),
+                "project mcp servers stopped (last ref)"
+            );
+            stopped
+        } else {
+            tracing::debug!(
+                project = %project_name,
+                count = state.active_count,
+                "project mcp ref count decremented (servers still in use)"
+            );
+            Vec::new()
+        }
+    }
+
+    /// Force-deactivate a project's MCP servers regardless of reference count.
+    ///
+    /// Sets the count to zero and disconnects immediately. Used for crash
+    /// recovery when a sub-agent exits without calling `deactivate_project`.
+    /// Returns the names of servers that were stopped.
+    pub async fn force_deactivate_project(&mut self, project_name: &str) -> Vec<String> {
+        let key = project_name.to_lowercase();
+        let Some(state) = self.project_refs.remove(&key) else {
+            return Vec::new();
+        };
+
+        let mut stopped = Vec::new();
+        for server in &state.servers {
+            self.disconnect(&server.name).await;
+            stopped.push(server.name.clone());
+        }
+        tracing::debug!(
+            project = %project_name,
+            count = stopped.len(),
+            "project mcp servers force-stopped"
+        );
+        stopped
+    }
+
     /// Get tool definitions from all running servers (flat union).
     #[must_use]
     pub fn tool_definitions(&self) -> Vec<ToolDefinition> {
@@ -330,6 +450,7 @@ impl std::fmt::Debug for McpRegistry {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("McpRegistry")
             .field("server_count", &self.servers.len())
+            .field("project_ref_count", &self.project_refs.len())
             .finish_non_exhaustive()
     }
 }
@@ -483,6 +604,128 @@ mod tests {
         assert!(
             matches!(err, ToolError::NotFound(_)),
             "should be NotFound error"
+        );
+    }
+
+    // ── activate_project / deactivate_project / force_deactivate ─────────────
+
+    #[tokio::test]
+    async fn activate_project_first_time_records_state() {
+        // Verify that activation tracks the project even when server connect fails.
+        // On first activation: project_refs entry is created.
+        // On second activation: count increments and empty report returned.
+        let mut registry = McpRegistry::new();
+
+        let report1 = registry
+            .activate_project("testproject", &[entry("fs", "/nonexistent")])
+            .await;
+        assert_eq!(
+            report1.failures.len(),
+            1,
+            "server connect fails (no binary)"
+        );
+
+        // Second activation: no new connections started
+        let report2 = registry
+            .activate_project("testproject", &[entry("fs", "/nonexistent")])
+            .await;
+        assert_eq!(report2.started, 0, "second activation returns empty report");
+        assert_eq!(report2.failures.len(), 0, "no re-connect attempted");
+
+        // Project entry should still exist (first deactivation won't stop servers)
+        let first_deact = registry.deactivate_project("testproject").await;
+        assert!(first_deact.is_empty(), "count 2→1, no servers stopped");
+
+        // Second deactivation clears the entry
+        let second_deact = registry.deactivate_project("testproject").await;
+        assert_eq!(second_deact, vec!["fs"], "count 1→0, server name returned");
+        assert!(
+            !registry.project_refs.contains_key("testproject"),
+            "project entry removed at count 0"
+        );
+    }
+
+    #[tokio::test]
+    async fn deactivate_project_decrements_count() {
+        let mut registry = McpRegistry::new();
+        // Simulate two activations by inserting directly
+        registry.project_refs.insert(
+            "myproject".to_string(),
+            ProjectMcpState {
+                active_count: 2,
+                servers: vec![entry("svc", "mcp-svc")],
+            },
+        );
+        // Track the server as pending (no real client)
+        registry.reconcile(&[entry("svc", "mcp-svc")]);
+
+        // First deactivation: count 2 → 1, no servers stopped
+        let first_stopped = registry.deactivate_project("myproject").await;
+        assert!(
+            first_stopped.is_empty(),
+            "count > 0, no servers should be stopped"
+        );
+        // Project entry should still exist (entry still has count = 1)
+        assert!(
+            registry.project_refs.contains_key("myproject"),
+            "project still tracked at count 1"
+        );
+
+        // Second deactivation: count 1 → 0, servers stopped
+        let second_stopped = registry.deactivate_project("myproject").await;
+        assert_eq!(
+            second_stopped,
+            vec!["svc"],
+            "server should be stopped at count 0"
+        );
+        assert!(
+            !registry.project_refs.contains_key("myproject"),
+            "project entry should be removed"
+        );
+    }
+
+    #[tokio::test]
+    async fn deactivate_project_unknown_is_noop() {
+        let mut registry = McpRegistry::new();
+        let stopped = registry.deactivate_project("unknown").await;
+        assert!(
+            stopped.is_empty(),
+            "deactivating unknown project is a no-op"
+        );
+    }
+
+    #[tokio::test]
+    async fn force_deactivate_project_ignores_count() {
+        let mut registry = McpRegistry::new();
+        // Simulate 3 active refs
+        registry.project_refs.insert(
+            "bigproject".to_string(),
+            ProjectMcpState {
+                active_count: 3,
+                servers: vec![entry("alpha", "mcp-alpha"), entry("beta", "mcp-beta")],
+            },
+        );
+        registry.reconcile(&[entry("alpha", "mcp-alpha"), entry("beta", "mcp-beta")]);
+
+        let stopped = registry.force_deactivate_project("bigproject").await;
+        assert_eq!(
+            stopped.len(),
+            2,
+            "both servers should be reported as stopped"
+        );
+        assert!(
+            !registry.project_refs.contains_key("bigproject"),
+            "project entry should be removed"
+        );
+    }
+
+    #[tokio::test]
+    async fn force_deactivate_project_unknown_is_noop() {
+        let mut registry = McpRegistry::new();
+        let stopped = registry.force_deactivate_project("unknown").await;
+        assert!(
+            stopped.is_empty(),
+            "force deactivating unknown project is a no-op"
         );
     }
 

@@ -1,7 +1,8 @@
-//! End-to-end integration tests for the background task subsystem (Phase 2).
+//! End-to-end integration tests for the background task subsystem (Phase 2 + 4).
 //!
-//! Tests script execution, sub-agent execution, spawner concurrency, and
-//! result routing through the notification system.
+//! Tests script execution, sub-agent execution, spawner concurrency, result
+//! routing through the notification system, and Phase 4 isolated project/skill
+//! state for sub-agents.
 
 #[expect(clippy::unwrap_used, reason = "test code uses unwrap for clarity")]
 #[expect(
@@ -350,6 +351,72 @@ mod background_integration {
 
         let not_found = spawner.cancel("does-not-exist").await;
         assert!(!not_found, "cancel should return false for unknown task");
+    }
+
+    // ── Phase 4: MCP ref counting ──────────────────────────────────────
+
+    #[tokio::test]
+    async fn mcp_ref_counting_two_activations_one_deactivation_keeps_servers() {
+        use ironclaw::mcp::McpRegistry;
+        use ironclaw::projects::types::McpServerEntry;
+
+        let mut registry = McpRegistry::new();
+        let entry = McpServerEntry {
+            name: "shared-svc".to_string(),
+            // Nonexistent binary: connection fails but ref count is still tracked
+            command: "/nonexistent/mcp-shared-svc".to_string(),
+            args: vec![],
+            env: std::collections::HashMap::new(),
+        };
+
+        // First activation: starts (fails) the server but records ref count = 1
+        let report1 = registry
+            .activate_project("proj-x", std::slice::from_ref(&entry))
+            .await;
+        assert_eq!(
+            report1.failures.len(),
+            1,
+            "server connect fails (no binary)"
+        );
+        // Manually mark running to simulate a real running server for the test
+        registry.mark_running("shared-svc");
+
+        // Second activation: count increments to 2, empty report returned
+        let report2 = registry
+            .activate_project("proj-x", std::slice::from_ref(&entry))
+            .await;
+        assert_eq!(report2.started, 0, "second activation returns empty report");
+        assert_eq!(
+            report2.failures.len(),
+            0,
+            "no failures on second activation"
+        );
+
+        // First deactivation: count 2 → 1, no servers stopped
+        let first_deactivation = registry.deactivate_project("proj-x").await;
+        assert!(
+            first_deactivation.is_empty(),
+            "deactivation at count > 0 should not stop servers"
+        );
+        // Server should still be tracked
+        let states_after_first = registry.servers();
+        assert!(
+            states_after_first.iter().any(|s| s.name == "shared-svc"),
+            "server should still be running after partial deactivation"
+        );
+
+        // Second deactivation: count 1 → 0, server disconnected
+        let second_deactivation = registry.deactivate_project("proj-x").await;
+        assert_eq!(
+            second_deactivation,
+            vec!["shared-svc"],
+            "server stopped at count 0"
+        );
+        let states_after_second = registry.servers();
+        assert!(
+            !states_after_second.iter().any(|s| s.name == "shared-svc"),
+            "server should be gone after full deactivation"
+        );
     }
 
     // ── Format result ──────────────────────────────────────────────────

@@ -2,8 +2,9 @@
 
 mod script;
 mod spawner;
-mod subagent;
+pub mod subagent;
 pub mod types;
 
 pub use spawner::BackgroundTaskSpawner;
+pub use subagent::{SubAgentBuildConfig, SubAgentResources, build_resources};
 pub use types::*;
