@@ -467,14 +467,17 @@ New crates:
 - Apply as post-scoring adjustment after hybrid merge, before final ranking
 - Tests
 
-### Phase 5: Backfill and migration
+### Phase 5: Backfill ~~and migration~~ (simplified)
 
-**Goal:** Generate idx.jsonl files for existing episodes that predate the new pipeline.
+**Goal:** Generate idx.jsonl files for the handful of existing episodes that predate the new pipeline.
 
-- Startup check: walk episodes dir, generate missing `.idx.jsonl` files from existing `.jsonl` transcripts
-- Incremental sync picks up the new files automatically
-- Optional `--rebuild-index` flag for full teardown + rebuild when needed
-- Verify search quality across old and new episodes
+**Original plan** called for a startup migration pass that walks the episodes directory and generates missing `.idx.jsonl` files automatically. This is unnecessary — at the time of implementation there are only 4 pre-existing episodes. A one-off Python script generates the missing files, and the existing incremental sync (Phase 1) picks them up on next startup.
+
+If the corpus ever grows large enough that a proper migration path matters, it can be added then. The extraction algorithm is deterministic and the raw `.jsonl` transcripts are always available.
+
+- One-off script: `scripts/backfill_idx.py` — parses existing `.jsonl` transcripts and writes `.idx.jsonl` using the same interaction-pair algorithm as `chunk_extractor.rs`
+- Run once, verify output, done
+- Incremental sync handles the rest
 
 ### Deferred
 

@@ -20,7 +20,7 @@ use tokio::sync::mpsc;
 use crate::channels::types::RoutedMessage;
 use crate::config::DiscordConfig;
 
-use self::handler::{DiscordHandler, help_text, status_text};
+use self::handler::DiscordHandler;
 
 /// Discord channel adapter that routes DMs to the agent inbound channel.
 pub struct DiscordChannel {
@@ -92,6 +92,7 @@ impl DiscordChannel {
 
 #[cfg(test)]
 mod tests {
+    use super::handler::{help_text, status_text};
     use super::*;
 
     #[test]
