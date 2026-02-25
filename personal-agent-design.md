@@ -160,11 +160,11 @@ OpenClaw's heartbeat fires a full agent turn every N minutes (default 30). The L
 
 The heartbeat-state.json tracking pattern (checking which task is most overdue) is a community-invented workaround for the lack of per-task scheduling in the heartbeat system.
 
-Additionally, the agent has no structured framework for deciding what warrants user notification versus silent logging.
+Additionally, the agent has no structured framework for deciding where results should be delivered — to the agent, to an external notification service, or silently to a log.
 
-### Solution: Structured Pulse Scheduling + Self-Evolving Alert Behavior
+### Solution: Structured Pulse Scheduling + Channel-Based Notification Routing
 
-Replace HEARTBEAT.md with **HEARTBEAT.yml** for machine-parseable scheduling, and add **Alerts.md** for LLM-driven notification behavior.
+Replace HEARTBEAT.md with **HEARTBEAT.yml** for machine-parseable scheduling, and add **NOTIFY.yml** for channel-based result routing. See [Notification Routing Design](notification-routing-design.md) for the full NOTIFY.yml specification.
 
 ### HEARTBEAT.yml
 
@@ -179,13 +179,10 @@ pulses:
     tasks:
       - name: inbox_scan
         prompt: "Check for urgent unread emails"
-        alert: high
       - name: pr_review
         prompt: "Any PRs waiting on my review?"
-        alert: low
       - name: blocked_tasks
         prompt: "Any tasks stalled or waiting on input?"
-        alert: medium
 
   - name: daily_review
     enabled: true
@@ -194,10 +191,8 @@ pulses:
     tasks:
       - name: morning_brief
         prompt: "Summarize today's calendar and top priorities"
-        alert: medium
       - name: follow_up_check
         prompt: "Any pending follow-ups from yesterday?"
-        alert: high
 
   - name: evening_wind_down
     enabled: false
@@ -206,7 +201,6 @@ pulses:
     tasks:
       - name: tomorrow_prep
         prompt: "Anything I should prep for tomorrow?"
-        alert: low
 ```
 
 #### Scheduling behavior
@@ -237,52 +231,49 @@ The LLM is no longer a scheduler. It only receives focused task groups when ther
 |-------|------|-------------|
 | `name` | string | Identifier for the task |
 | `prompt` | string | Instruction passed to the LLM |
-| `alert` | string | Default alert level (`high`, `medium`, `low`) — informs LLM notification behavior via Alerts.md |
 
 #### Agent self-modification
 
 The agent can add, remove, or modify pulses and tasks by editing HEARTBEAT.yml, consistent with the existing self-evolving workspace pattern. Example: "Add a pulse that checks my GitHub notifications every hour during work hours."
 
-### Alerts.md
+### NOTIFY.yml
 
-A markdown file defining how the agent handles findings at each alert level. This is the agent's self-evolving playbook for notification behavior.
+A YAML file defining where background task results are delivered. Channels are top-level keys; each lists the task names whose results it should receive.
 
-```markdown
-# Alert Behavior
+```yaml
+# NOTIFY.yml — Notification routing
 
-## High
-Notify immediately on the most recently active channel.
-Include a concise summary of the finding and any recommended action.
+agent_wake:
+  - work_check
 
-## Medium
-Batch findings and surface at the next natural interaction point.
-If no interaction occurs within 2 hours, notify on the active channel.
+agent_feed:
+  - daily_review
 
-## Low
-Log to the observation log silently. Do not notify.
-Mention at next interaction only if contextually relevant.
+ntfy:
+  - work_check
+  - daily_review
 
-## Escalation
-The agent may escalate a finding beyond its default alert level
-if the content warrants it. Use judgment — a "low" PR review that
-reveals a broken production build should be treated as high.
+inbox:
+  - evening_wind_down
 ```
+
+Built-in channels: `agent_wake` (inject into feed + start turn if idle), `agent_feed` (inject into feed passively), `inbox` (store silently). External channels (ntfy, webhook, etc.) are defined in `config.toml` under `[notifications.channels]`.
+
+A task not listed in any channel is not routed — its result is silently discarded after transcript storage. HEARTBEAT_OK results (nothing actionable) are never routed regardless of channel configuration.
 
 #### Self-evolution
 
-Following the existing workspace pattern (mirroring SOUL.md's "this file is yours to evolve"), the agent refines Alerts.md over time based on user feedback:
+Following the existing workspace pattern (mirroring SOUL.md's "this file is yours to evolve"), the agent refines NOTIFY.yml over time based on user feedback:
 
-- User consistently ignores medium-level calendar notifications → agent adjusts those to low
-- User responds urgently to a specific type of finding → agent notes the pattern and adjusts
-- User explicitly says "don't bother me with PR reviews from the docs repo" → agent updates accordingly
-
-The alert level on each task in HEARTBEAT.yml sets the *default*. Alerts.md defines the *behavior*. The LLM has final discretion.
+- User consistently ignores a pulse's results → agent removes it from `agent_feed`, moves to `inbox` or drops it
+- User responds urgently to a specific type of finding → agent adds the task to `agent_wake`
+- User explicitly says "don't bother me with PR reviews from the docs repo" → agent removes the relevant task from notification channels
 
 ### Interaction with Existing Systems
 
-- **Cron jobs**: Unchanged. Cron handles deterministic scheduled actions ("run this backup script at 3am"). Pulses handle ambient awareness ("is anything worth my attention right now?"). These are complementary, not overlapping.
-- **HEARTBEAT_OK**: Still used as the ack signal when a pulse evaluation finds nothing actionable.
-- **Observation log**: Findings from pulse evaluations — even low-alert ones that don't notify the user — feed into the OM observation log, building the agent's ongoing awareness of what's happening.
+- **Cron jobs**: Unchanged. Cron handles deterministic scheduled actions ("run this backup script at 3am"). Pulses handle ambient awareness ("is anything worth my attention right now?"). These are complementary, not overlapping. Both route results through NOTIFY.yml.
+- **HEARTBEAT_OK**: Still used as the ack signal when a pulse evaluation finds nothing actionable. HEARTBEAT_OK results are never routed.
+- **Observation log**: Findings from pulse evaluations feed into the OM observation log when they're routed to `agent_wake` or `agent_feed` and processed by the main agent. Results routed only to external channels or inbox enter the observation stream when the agent reviews them.
 
 ---
 
@@ -292,7 +283,7 @@ These two systems are designed independently but share a data layer, which means
 
 **Memory → Proactivity**: A richer observation log means pulse task evaluations have better context. When the agent checks "any pending follow-ups?", it's reasoning over a dense event history, not hoping it remembered to write something to MEMORY.md.
 
-**Proactivity → Memory**: Pulse findings — even silent, low-alert ones — append to the observation log. The agent's ambient awareness of inbox state, calendar, task progress, etc. becomes part of the persistent record without explicit memory-write decisions.
+**Proactivity → Memory**: Pulse findings routed to the agent feed append to the observation log through the standard compression path. The agent's ambient awareness of inbox state, calendar, task progress, etc. becomes part of the persistent record without explicit memory-write decisions.
 
 The user and agent can deepen this integration over time (e.g., pulses that specifically reason over the observation log), but the systems function independently by default.
 
@@ -302,13 +293,13 @@ The user and agent can deepen this integration over time (e.g., pulses that spec
 
 ### Priorities
 1. HEARTBEAT.yml + gateway-level scheduling (highest impact-to-effort ratio)
-2. Alerts.md framework
+2. NOTIFY.yml routing + notification channel infrastructure
 3. Observer integration
 4. Reflector integration
 
 ### Considerations
 - Observer/Reflector model selection should be configurable but default to cheap/fast
 - HEARTBEAT.yml schema should be validated at gateway startup with clear error messages
-- Alerts.md should ship with sensible defaults that work without modification
+- NOTIFY.yml should ship with minimal defaults (empty channel lists) to avoid surprising behavior on first run
 - Observation log storage location should be consistent with existing workspace layout
 - Migration path from existing HEARTBEAT.md should be documented (or automated)

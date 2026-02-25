@@ -135,10 +135,16 @@ impl WorkspaceLayout {
         self.root.join("PRESENCE.toml")
     }
 
-    /// Path to the inbox directory for downloaded attachments.
+    /// Path to the inbox directory for downloaded attachments and inbox items.
     #[must_use]
     pub fn inbox_dir(&self) -> PathBuf {
         self.root.join("inbox")
+    }
+
+    /// Path to the inbox archive directory for archived inbox items.
+    #[must_use]
+    pub fn inbox_archive_dir(&self) -> PathBuf {
+        self.root.join("archive/inbox")
     }
 
     /// Path to IDENTITY.md -- agent self-description, updated as role evolves.
@@ -191,6 +197,7 @@ impl WorkspaceLayout {
             self.cron_dir(),
             self.hooks_dir(),
             self.inbox_dir(),
+            self.inbox_archive_dir(),
         ]
     }
 }
@@ -248,6 +255,11 @@ mod tests {
             "inbox_dir path"
         );
         assert_eq!(
+            layout.inbox_archive_dir(),
+            PathBuf::from("/tmp/ws/archive/inbox"),
+            "inbox_archive_dir path"
+        );
+        assert_eq!(
             layout.vectors_db(),
             PathBuf::from("/tmp/ws/memory/vectors.db"),
             "vectors_db path"
@@ -278,7 +290,7 @@ mod tests {
     fn required_dirs_count() {
         let layout = WorkspaceLayout::new("/tmp/ws");
         let dirs = layout.required_dirs();
-        assert_eq!(dirs.len(), 10, "should have all required directories");
+        assert_eq!(dirs.len(), 11, "should have all required directories");
         assert!(
             dirs.contains(&PathBuf::from("/tmp/ws")),
             "root should be included"
@@ -286,6 +298,10 @@ mod tests {
         assert!(
             dirs.contains(&PathBuf::from("/tmp/ws/inbox")),
             "inbox should be included"
+        );
+        assert!(
+            dirs.contains(&PathBuf::from("/tmp/ws/archive/inbox")),
+            "inbox archive should be included"
         );
     }
 }

@@ -154,7 +154,7 @@ workspace/
 ├── MEMORY.md               # Curated long-term memory
 ├── TOOLS.md                # Tool usage notes
 ├── HEARTBEAT.yml           # Pulse schedule definitions
-├── Alerts.md               # Alert behavior playbook
+├── NOTIFY.yml              # Notification routing
 │
 ├── memory/
 │   ├── observations.json           # Compressed event history (always in context)
@@ -271,6 +271,8 @@ src/
 - [Architecture Design](ironclaw-design.md) — Full system architecture
 - [Memory & Proactivity](personal-agent-design.md) — Observational Memory and Pulse system design
 - [Projects System](projects-context-design.md) — Context management design
+- [Background Tasks](background-tasks-design.md) — Background task execution and turn loop interrupts
+- [Notification Routing](notification-routing-design.md) — NOTIFY.yml channel-based result delivery
 
 ## License
 

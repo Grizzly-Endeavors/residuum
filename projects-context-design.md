@@ -118,7 +118,7 @@ Examples: `skills/ansible-playbooks/SKILL.md`, `skills/ap-diagnostics/SKILL.md`
 ├── AGENTS.md
 ├── MEMORY.md
 ├── HEARTBEAT.yml
-├── Alerts.md
+├── NOTIFY.yml
 ├── memory/
 │   ├── observations.json
 │   ├── episodes/

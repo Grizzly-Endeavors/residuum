@@ -195,8 +195,8 @@ This is one of IronClaw's most distinctive features. It gives the agent structur
 
 ### IronClaw: Structured pulse scheduling + cron
 
-- **Pulse**: `HEARTBEAT.yml` — machine-parseable YAML with named pulses, per-task schedules, active hours windows, and alert levels. The gateway handles scheduling logic; the LLM only fires when a pulse is actually due. **Zero token cost when nothing is due.**
-- **Alert framework**: `Alerts.md` defines notification behavior per alert level (high/medium/low). Agent self-evolves this file based on user feedback.
+- **Pulse**: `HEARTBEAT.yml` — machine-parseable YAML with named pulses, per-task schedules, and active hours windows. The gateway handles scheduling logic; the LLM only fires when a pulse is actually due. **Zero token cost when nothing is due.**
+- **Notification routing**: `NOTIFY.yml` maps channels to task names. Agent self-evolves this file based on user feedback. Supports built-in channels (agent_wake, agent_feed, inbox) and external channels (ntfy, webhook).
 - **Cron**: Nearly identical to OpenClaw. `cron` crate (0.12), JSON persistence, At/Every/Cron schedules, UserVisible/Background delivery modes.
 
 **Key difference**: IronClaw moves scheduling decisions from the LLM to the gateway. OpenClaw's heartbeat fires a full LLM turn every 30 minutes to ask "is anything due?" — most of which return HEARTBEAT_OK. IronClaw's pulse system only invokes the LLM when the gateway's scheduler determines a pulse is actually due based on timestamps and active hours.
@@ -356,7 +356,7 @@ Both projects take testing seriously. IronClaw's Clippy-as-error approach means 
 2. **Two-tier compression**: Observer + Reflector with episode-based structure and retrieval trails
 3. **Projects system**: Structured context management with progressive disclosure, write scoping, and tool gating
 4. **Structured pulse scheduling**: `HEARTBEAT.yml` with machine-parseable schedules, active hours, and zero-cost-when-idle
-5. **Alert framework**: `Alerts.md` self-evolving notification behavior
+5. **Notification routing**: `NOTIFY.yml` channel-based result routing with external channel support
 6. **Native MCP client**: Full lifecycle management with project-scoped servers
 7. **Dynamic skill activation**: Runtime activate/deactivate via tool calls with persistent prompt injection
 8. **Single-binary deployment**: No runtime dependencies

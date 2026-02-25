@@ -71,7 +71,7 @@ ironclaw/
 │   │   ├── mod.rs                    # Pulse system coordination
 │   │   ├── scheduler.rs              # HEARTBEAT.yml parsing & pulse scheduling
 │   │   ├── executor.rs               # Pulse task execution
-│   │   └── alerts.rs                 # Alerts.md behavior parsing
+│   │   └── router.rs                 # NOTIFY.yml parsing & channel dispatch
 │   │
 │   ├── cron/
 │   │   ├── mod.rs                    # Cron system coordination
@@ -181,13 +181,21 @@ args = ["/home/user/documents"]
 
 [skills]
 dirs = ["~/.ironclaw/skills", "~/.ironclaw/workspace/skills"]
+
+[notifications.channels.ntfy]
+type = "ntfy"
+url = "https://ntfy.example.com/ironclaw"
+
+# External notification channels are defined here.
+# Built-in channels (agent_wake, agent_feed, inbox) need no config.
+# NOTIFY.yml in the workspace maps pulse/cron task names to channels.
 ```
 
 Validation happens at startup via serde + custom validators. Invalid config prevents boot with clear error messages.
 
 ### Hot Reload
 
-The gateway watches `config.toml`, workspace identity files, `HEARTBEAT.yml`, `Alerts.md`, and the `projects/` directory tree using `notify`. Changes are classified as:
+The gateway watches `config.toml`, workspace identity files, `HEARTBEAT.yml`, `NOTIFY.yml`, and the `projects/` directory tree using `notify`. Changes are classified as:
 
 - **Hot-applicable**: Identity file changes, HEARTBEAT.yml updates, skill additions, project entry changes. Applied without restart.
 - **Infrastructure**: Channel config changes, model provider changes, MCP server config. Require gateway restart (or a targeted subsystem restart).
@@ -204,7 +212,7 @@ The gateway watches `config.toml`, workspace identity files, `HEARTBEAT.yml`, `A
 ├── MEMORY.md                     # Curated long-term memory
 ├── TOOLS.md                      # Local tool notes
 ├── HEARTBEAT.yml                 # Structured pulse schedule
-├── Alerts.md                     # Alert behavior playbook
+├── NOTIFY.yml                    # Notification routing
 │
 ├── memory/
 │   ├── observations.json         # Global observation log (episode-based timeline)
@@ -262,7 +270,6 @@ These are markdown files the gateway loads verbatim and inserts into the LLM con
 | `USER.md` | Always (DM sessions) |
 | `MEMORY.md` | Always (DM sessions) |
 | `TOOLS.md` | Always |
-| `Alerts.md` | When pulse tasks are being evaluated |
 | `memory/observations.json` | Always (global timeline) |
 
 ### Files available via agent tool calls (progressive disclosure)
@@ -628,10 +635,8 @@ pulses:
     tasks:
       - name: inbox_scan
         prompt: "Check for urgent unread emails"
-        alert: high
       - name: pr_review
         prompt: "Any PRs waiting on my review?"
-        alert: low
 
   - name: daily_review
     enabled: true
@@ -640,7 +645,6 @@ pulses:
     tasks:
       - name: morning_brief
         prompt: "Summarize today's calendar and top priorities"
-        alert: medium
 ```
 
 The scheduler runs on a tokio interval timer. Each tick:
@@ -648,14 +652,14 @@ The scheduler runs on a tokio interval timer. Each tick:
 1. Check which pulses are due based on schedule, active_hours, `enabled` flag, and last-run timestamps.
 2. If a pulse is due, invoke the agent with the pulse's tasks as context.
 3. Track the result. If HEARTBEAT_OK (nothing actionable), log silently.
-4. If actionable, apply alert behavior from Alerts.md.
+4. If actionable, route result via NOTIFY.yml to listed channels.
 5. Update last-run timestamp.
 
 **Zero cost when idle.** If no pulses are due, no LLM invocation happens.
 
-#### Alerts (`alerts.rs`)
+#### Notification routing
 
-Parses `Alerts.md` for notification behavior at each level. This is treated as prompt content for the agent, not structurally parsed — the agent reads it and exercises judgment. The gateway only needs to know the alert level to decide delivery channel and timing.
+Result routing is handled by the gateway based on `NOTIFY.yml`. When a pulse evaluation produces a result (not HEARTBEAT_OK), the gateway looks up the pulse name in `NOTIFY.yml` and dispatches to every channel that lists it. See [Notification Routing Design](notification-routing-design.md) for the full specification.
 
 ### 7. Cron System (`cron/`)
 
@@ -852,16 +856,9 @@ Check due pulses (HEARTBEAT.yml + timestamps)
                     │            │
               HEARTBEAT_OK   Findings
                     │            │
-              Log silently   Apply alert level
-                              (Alerts.md behavior)
-                                   │
-                              ┌────┴────┐
-                              │         │
-                           High      Low
-                              │         │
-                        Notify now  Log to observations
-                        via channel  (surface later
-                                     if relevant)
+              Log silently   Route via NOTIFY.yml
+                             (dispatch to all channels
+                              listing this pulse name)
 ```
 
 ### Observer compression
@@ -948,7 +945,7 @@ Ordered by "what gets you a usable agent fastest":
 ### Phase 3: Proactivity (COMPLETE)
 12. `pulse/scheduler` — HEARTBEAT.yml parsing, scheduling loop.
 13. `pulse/executor` — Pulse task execution via agent runtime.
-14. `pulse/alerts` — Alert level behavior.
+14. `notifications/` — NOTIFY.yml parsing, channel dispatch, `NotificationChannel` trait.
 15. `cron/store` — Job persistence, `cron/scheduler` — schedule evaluation.
 16. `cron/executor` — Job execution, background threads, delivery.
 

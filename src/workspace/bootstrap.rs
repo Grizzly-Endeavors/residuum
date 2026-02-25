@@ -208,6 +208,10 @@ mod tests {
             "PRESENCE.toml should exist"
         );
         assert!(layout.inbox_dir().exists(), "inbox dir should exist");
+        assert!(
+            layout.inbox_archive_dir().exists(),
+            "inbox archive dir should exist"
+        );
     }
 
     #[tokio::test]

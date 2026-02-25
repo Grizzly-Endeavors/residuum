@@ -4,6 +4,7 @@ pub mod config;
 pub mod cron;
 pub mod error;
 pub mod gateway;
+pub mod inbox;
 pub mod mcp;
 pub mod memory;
 pub mod models;
