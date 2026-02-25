@@ -1,9 +1,14 @@
 //! Gateway initialization: builds all subsystems before the event loop starts.
 
+use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
 
+use tokio::sync::mpsc;
+
 use crate::agent::Agent;
+use crate::background::BackgroundTaskSpawner;
+use crate::background::types::BackgroundResult;
 use crate::config::Config;
 use crate::cron::store::CronStore;
 use crate::error::IronclawError;
@@ -21,6 +26,9 @@ use crate::models::{
     CompletionOptions, EmbeddingProvider, HttpClientConfig, ModelProvider, SharedHttpClient,
     build_embedding_provider, build_provider_from_provider_spec,
 };
+use crate::notify::channels::{InboxChannel, NotificationChannel};
+use crate::notify::external::{NtfyChannel, WebhookChannel};
+use crate::notify::router::NotificationRouter;
 use crate::projects::activation::{ProjectState, SharedProjectState};
 use crate::projects::scanner::ProjectIndex;
 use crate::skills::{SharedSkillState, SkillIndex, SkillState};
@@ -55,6 +63,14 @@ pub(super) struct GatewayComponents {
     pub(super) cron_provider: Box<dyn ModelProvider>,
     pub(super) pulse_enabled: bool,
     pub(super) cron_enabled: bool,
+    pub(super) notification_router: NotificationRouter,
+    pub(super) background_spawner: BackgroundTaskSpawner,
+    pub(super) background_result_rx: mpsc::Receiver<BackgroundResult>,
+    #[expect(
+        dead_code,
+        reason = "stored for future background tool access and tier resolution"
+    )]
+    pub(super) background_config: crate::config::BackgroundConfig,
 }
 
 /// Initialize all gateway subsystems from config.
@@ -342,6 +358,19 @@ pub(super) async fn initialize(cfg: &Config) -> Result<GatewayComponents, Ironcl
     }
     agent.set_last_user_message_at(restore.last_user_message_at);
 
+    // Notification router
+    let notification_router = build_notification_router(cfg, &layout);
+
+    // Background task spawner
+    let (bg_result_tx, bg_result_rx) = mpsc::channel::<BackgroundResult>(32);
+    let background_spawner = BackgroundTaskSpawner::new(
+        bg_result_tx,
+        cfg.background.max_concurrent,
+        layout.root().to_path_buf(),
+        layout.background_dir(),
+        tz,
+    );
+
     Ok(GatewayComponents {
         layout,
         tz,
@@ -361,7 +390,48 @@ pub(super) async fn initialize(cfg: &Config) -> Result<GatewayComponents, Ironcl
         cron_provider,
         pulse_enabled: cfg.pulse_enabled,
         cron_enabled: cfg.cron_enabled,
+        notification_router,
+        background_spawner,
+        background_result_rx: bg_result_rx,
+        background_config: cfg.background.clone(),
     })
+}
+
+/// Build a `NotificationRouter` from config channel definitions.
+fn build_notification_router(cfg: &Config, layout: &WorkspaceLayout) -> NotificationRouter {
+    let http_client = reqwest::Client::new();
+    let mut external_channels: HashMap<String, Box<dyn NotificationChannel>> = HashMap::new();
+
+    for channel_cfg in &cfg.notifications.channels {
+        let channel: Box<dyn NotificationChannel> = match &channel_cfg.kind {
+            crate::config::ExternalChannelKind::Ntfy {
+                url,
+                topic,
+                priority,
+            } => Box::new(NtfyChannel::new(
+                channel_cfg.name.clone(),
+                http_client.clone(),
+                url.clone(),
+                topic.clone(),
+                priority.clone(),
+            )),
+            crate::config::ExternalChannelKind::Webhook {
+                url,
+                method,
+                headers,
+            } => Box::new(WebhookChannel::new(
+                channel_cfg.name.clone(),
+                http_client.clone(),
+                url.clone(),
+                method.clone(),
+                headers.clone(),
+            )),
+        };
+        external_channels.insert(channel_cfg.name.clone(), channel);
+    }
+
+    let inbox_channel = InboxChannel::new(layout.inbox_dir(), cfg.timezone);
+    NotificationRouter::new(external_channels, Some(inbox_channel))
 }
 
 /// Build an `IndexManifest` from a full rebuild result.

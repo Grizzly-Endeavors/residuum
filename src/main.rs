@@ -56,7 +56,7 @@ async fn run() -> Result<(), IronclawError> {
                     workspace = %cfg.workspace_dir.display(),
                     "configuration loaded"
                 );
-                match ironclaw::gateway::server::run_gateway(cfg).await? {
+                match Box::pin(ironclaw::gateway::server::run_gateway(cfg)).await? {
                     ironclaw::gateway::server::GatewayExit::Shutdown => break,
                     ironclaw::gateway::server::GatewayExit::Reload => {
                         tracing::info!("configuration reloaded, restarting gateway");

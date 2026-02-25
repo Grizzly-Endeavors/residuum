@@ -46,6 +46,7 @@ impl NotificationChannel for NtfyChannel {
         let source_label = match notification.source {
             super::types::TaskSource::Pulse => "pulse",
             super::types::TaskSource::Cron => "cron",
+            super::types::TaskSource::Agent => "agent",
         };
 
         let title = format!("[{}] {}", source_label, notification.task_name);
@@ -110,6 +111,7 @@ impl NotificationChannel for WebhookChannel {
         let source_type = match notification.source {
             super::types::TaskSource::Pulse => "pulse",
             super::types::TaskSource::Cron => "cron",
+            super::types::TaskSource::Agent => "agent",
         };
 
         let payload = serde_json::json!({

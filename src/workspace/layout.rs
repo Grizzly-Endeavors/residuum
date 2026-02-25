@@ -177,6 +177,14 @@ impl WorkspaceLayout {
         self.root.join("NOTIFY.yml")
     }
 
+    /// Path to the background task transcript directory.
+    ///
+    /// Created on-demand when the first transcript is written, not at bootstrap.
+    #[must_use]
+    pub fn background_dir(&self) -> PathBuf {
+        self.root.join("memory/background")
+    }
+
     /// Path to cron/jobs.json -- persisted scheduled jobs.
     #[must_use]
     pub fn cron_jobs_json(&self) -> PathBuf {

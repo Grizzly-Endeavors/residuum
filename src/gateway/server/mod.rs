@@ -19,6 +19,8 @@ use tokio::time::Duration;
 use crate::agent::Agent;
 use crate::agent::context::{ProjectsContext, SkillsContext};
 use crate::agent::interrupt::Interrupt;
+use crate::background::BackgroundTaskSpawner;
+use crate::background::types::{BackgroundResult, ResultRouting, format_background_result};
 use crate::channels::types::RoutedMessage;
 use crate::config::Config;
 use crate::cron::store::CronStore;
@@ -30,6 +32,8 @@ use crate::memory::search::MemoryIndex;
 use crate::memory::types::Visibility;
 use crate::memory::vector_store::VectorStore;
 use crate::models::{EmbeddingProvider, ModelProvider};
+use crate::notify::router::NotificationRouter;
+use crate::notify::types::Notification;
 use crate::projects::activation::SharedProjectState;
 use crate::pulse::executor::execute_pulse;
 use crate::pulse::scheduler::PulseScheduler;
@@ -84,6 +88,13 @@ struct GatewayRuntime {
     cron_provider: Box<dyn ModelProvider>,
     pulse_enabled: bool,
     cron_enabled: bool,
+    notification_router: NotificationRouter,
+    #[expect(
+        dead_code,
+        reason = "spawner is stored for future tool access; unused until background tools are wired"
+    )]
+    background_spawner: BackgroundTaskSpawner,
+    background_result_rx: mpsc::Receiver<BackgroundResult>,
     // Runtime channels + handles
     inbound_rx: mpsc::Receiver<RoutedMessage>,
     broadcast_tx: broadcast::Sender<ServerMessage>,
@@ -235,6 +246,9 @@ pub async fn run_gateway(cfg: Config) -> Result<GatewayExit, IronclawError> {
         cron_provider: parts.cron_provider,
         pulse_enabled: parts.pulse_enabled,
         cron_enabled: parts.cron_enabled,
+        notification_router: parts.notification_router,
+        background_spawner: parts.background_spawner,
+        background_result_rx: parts.background_result_rx,
         inbound_rx,
         broadcast_tx,
         broadcast_display,
@@ -246,6 +260,69 @@ pub async fn run_gateway(cfg: Config) -> Result<GatewayExit, IronclawError> {
     };
 
     Ok(run_event_loop(rt).await)
+}
+
+/// Handle a background task result: route through NOTIFY.yml or direct channels.
+async fn handle_background_result(
+    result: BackgroundResult,
+    router: &NotificationRouter,
+    layout: &WorkspaceLayout,
+    agent: &mut Agent,
+) {
+    let formatted = format_background_result(&result);
+
+    match &result.routing {
+        ResultRouting::Notify => {
+            let notification = Notification {
+                task_name: result.task_name.clone(),
+                summary: result.summary.clone(),
+                source: result.source,
+                timestamp: result.timestamp,
+            };
+
+            let outcome = router.route(&notification, &layout.notify_yml()).await;
+
+            if outcome.agent_wake || outcome.agent_feed {
+                agent.queue_system_event(formatted.clone());
+            }
+
+            tracing::info!(
+                task = %result.task_name,
+                agent_wake = outcome.agent_wake,
+                agent_feed = outcome.agent_feed,
+                inbox = outcome.inbox,
+                external_count = outcome.external_dispatched.len(),
+                "background result routed via NOTIFY.yml"
+            );
+        }
+        ResultRouting::Direct(channels) => {
+            let mut agent_inject = false;
+            for channel_name in channels {
+                match channel_name.as_str() {
+                    "agent_wake" | "agent_feed" => agent_inject = true,
+                    "inbox" => {
+                        let notification = Notification {
+                            task_name: result.task_name.clone(),
+                            summary: result.summary.clone(),
+                            source: result.source,
+                            timestamp: result.timestamp,
+                        };
+                        router.route(&notification, &layout.notify_yml()).await;
+                    }
+                    _ => {
+                        tracing::debug!(
+                            channel = channel_name,
+                            task = %result.task_name,
+                            "direct channel routing (external channels not yet supported for direct)"
+                        );
+                    }
+                }
+            }
+            if agent_inject {
+                agent.queue_system_event(formatted);
+            }
+        }
+    }
 }
 
 /// Run the main gateway event loop.
@@ -453,6 +530,13 @@ async fn run_event_loop(mut rt: GatewayRuntime) -> GatewayExit {
             } => {
                 observe_deadline = None;
                 execute_observation(&rt.observer, &rt.reflector, &rt.search_index, &rt.layout, &mut rt.agent, rt.vector_store.as_ref(), rt.embedding_provider.as_ref()).await;
+            }
+
+            // ── Background task results ──────────────────────────────────
+            bg_result = rt.background_result_rx.recv() => {
+                if let Some(result) = bg_result {
+                    handle_background_result(result, &rt.notification_router, &rt.layout, &mut rt.agent).await;
+                }
             }
 
             // ── Observe command wakeup ─────────────────────────────────────

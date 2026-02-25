@@ -54,6 +54,7 @@ impl NotificationChannel for InboxChannel {
         let source_label = match notification.source {
             super::types::TaskSource::Pulse => format!("pulse:{}", notification.task_name),
             super::types::TaskSource::Cron => format!("cron:{}", notification.task_name),
+            super::types::TaskSource::Agent => format!("agent:{}", notification.task_name),
         };
 
         let now = crate::time::now_local(self.tz);

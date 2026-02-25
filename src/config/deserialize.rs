@@ -43,6 +43,8 @@ pub(super) struct ConfigFile {
     pub(super) retry: Option<RetryConfigFile>,
     /// Notification channel configuration.
     pub(super) notifications: Option<NotificationsConfigFile>,
+    /// Background task configuration.
+    pub(super) background: Option<BackgroundConfigFile>,
 }
 
 /// A named provider entry under `[providers.<name>]`.
@@ -211,6 +213,30 @@ pub(super) struct ChannelConfigEntry {
     pub(super) method: Option<String>,
     /// Additional HTTP headers for webhooks.
     pub(super) headers: Option<HashMap<String, String>>,
+}
+
+/// Raw TOML `[background]` section.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct BackgroundConfigFile {
+    /// Maximum number of concurrent background tasks.
+    pub(super) max_concurrent: Option<usize>,
+    /// Number of days to retain background task transcripts.
+    pub(super) transcript_retention_days: Option<u64>,
+    /// Model tier assignments for background tasks.
+    pub(super) models: Option<BackgroundModelsFile>,
+}
+
+/// Raw TOML `[background.models]` section.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct BackgroundModelsFile {
+    /// Small/fast model for simple tasks.
+    pub(super) small: Option<String>,
+    /// Medium model for typical tasks (default tier).
+    pub(super) medium: Option<String>,
+    /// Large model for complex tasks.
+    pub(super) large: Option<String>,
 }
 
 /// A single MCP server entry under `[mcp.servers.<name>]`.

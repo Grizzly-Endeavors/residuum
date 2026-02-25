@@ -26,8 +26,9 @@ pub(crate) use constants::{
 };
 pub use provider::{ModelSpec, ProviderKind, ProviderSpec};
 pub use types::{
-    DiscordConfig, ExternalChannelConfig, ExternalChannelKind, GatewayConfig, McpConfig,
-    MemoryConfig, NotificationsConfig, SearchConfig, SkillsConfig, WebhookConfig,
+    BackgroundConfig, BackgroundModelTier, BackgroundModelsConfig, DiscordConfig,
+    ExternalChannelConfig, ExternalChannelKind, GatewayConfig, McpConfig, MemoryConfig,
+    NotificationsConfig, SearchConfig, SkillsConfig, WebhookConfig,
 };
 
 // ── Config struct ─────────────────────────────────────────────────────────────
@@ -78,6 +79,8 @@ pub struct Config {
     pub retry: RetryConfig,
     /// Notification channel configuration.
     pub notifications: NotificationsConfig,
+    /// Background task configuration.
+    pub background: BackgroundConfig,
 }
 
 impl fmt::Debug for Config {
@@ -103,6 +106,7 @@ impl fmt::Debug for Config {
             .field("mcp", &self.mcp)
             .field("retry", &self.retry)
             .field("notifications", &self.notifications)
+            .field("background", &self.background)
             .finish()
     }
 }

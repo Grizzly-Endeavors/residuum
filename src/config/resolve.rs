@@ -15,13 +15,15 @@ use super::constants::{
     DEFAULT_TIMEOUT_SECS,
 };
 use super::deserialize::{
-    ConfigFile, DiscordConfigFile, GatewayConfigFile, McpConfigFile, NotificationsConfigFile,
-    ProviderEntryFile, SearchConfigFile, SkillsConfigFile, WebhookConfigFile,
+    BackgroundConfigFile, ConfigFile, DiscordConfigFile, GatewayConfigFile, McpConfigFile,
+    NotificationsConfigFile, ProviderEntryFile, SearchConfigFile, SkillsConfigFile,
+    WebhookConfigFile,
 };
 use super::provider::{ModelSpec, ProviderKind, ProviderSpec};
 use super::types::{
-    DiscordConfig, ExternalChannelConfig, ExternalChannelKind, GatewayConfig, McpConfig,
-    MemoryConfig, NotificationsConfig, SearchConfig, SkillsConfig, WebhookConfig,
+    BackgroundConfig, BackgroundModelsConfig, DiscordConfig, ExternalChannelConfig,
+    ExternalChannelKind, GatewayConfig, McpConfig, MemoryConfig, NotificationsConfig, SearchConfig,
+    SkillsConfig, WebhookConfig,
 };
 
 /// Build a `Config` from an optional config file and environment variables.
@@ -148,6 +150,8 @@ pub(super) fn from_file_and_env(file: Option<&ConfigFile>) -> Result<Config, Iro
     let mcp = resolve_mcp_config(file.and_then(|f| f.mcp.as_ref()));
 
     let notifications = resolve_notifications_config(file.and_then(|f| f.notifications.as_ref()));
+    let background =
+        resolve_background_config(file.and_then(|f| f.background.as_ref()), providers_map)?;
 
     let retry = {
         let r = file.and_then(|f| f.retry.as_ref());
@@ -204,6 +208,7 @@ pub(super) fn from_file_and_env(file: Option<&ConfigFile>) -> Result<Config, Iro
         mcp,
         retry,
         notifications,
+        background,
     })
 }
 
@@ -546,6 +551,48 @@ fn resolve_notifications_config(section: Option<&NotificationsConfigFile>) -> No
     }
 
     NotificationsConfig { channels }
+}
+
+/// Resolve background task configuration from TOML section.
+///
+/// # Errors
+/// Returns `IronclawError::Config` if a model tier string cannot be resolved.
+fn resolve_background_config(
+    section: Option<&BackgroundConfigFile>,
+    providers_map: Option<&HashMap<String, ProviderEntryFile>>,
+) -> Result<BackgroundConfig, IronclawError> {
+    let Some(section) = section else {
+        return Ok(BackgroundConfig::default());
+    };
+
+    let models_section = section.models.as_ref();
+
+    let small = models_section
+        .and_then(|m| m.small.as_deref())
+        .map(|s| resolve_model_string(s, providers_map))
+        .transpose()?;
+    let medium = models_section
+        .and_then(|m| m.medium.as_deref())
+        .map(|s| resolve_model_string(s, providers_map))
+        .transpose()?;
+    let large = models_section
+        .and_then(|m| m.large.as_deref())
+        .map(|s| resolve_model_string(s, providers_map))
+        .transpose()?;
+
+    Ok(BackgroundConfig {
+        max_concurrent: section
+            .max_concurrent
+            .unwrap_or(super::constants::DEFAULT_MAX_CONCURRENT_BACKGROUND),
+        transcript_retention_days: section
+            .transcript_retention_days
+            .unwrap_or(super::constants::DEFAULT_TRANSCRIPT_RETENTION_DAYS),
+        models: BackgroundModelsConfig {
+            small,
+            medium,
+            large,
+        },
+    })
 }
 
 /// Warn on deprecated environment variables that no longer have effect.

@@ -53,3 +53,9 @@ pub(crate) const DEFAULT_SEARCH_TEMPORAL_DECAY: bool = false;
 
 /// Default half-life in days for temporal decay scoring.
 pub(crate) const DEFAULT_SEARCH_TEMPORAL_DECAY_HALF_LIFE_DAYS: f64 = 30.0;
+
+/// Default maximum number of concurrent background tasks.
+pub(crate) const DEFAULT_MAX_CONCURRENT_BACKGROUND: usize = 3;
+
+/// Default number of days to retain background task transcripts.
+pub(crate) const DEFAULT_TRANSCRIPT_RETENTION_DAYS: u64 = 30;

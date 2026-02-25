@@ -3,12 +3,13 @@
 use std::path::PathBuf;
 
 use super::constants::{
-    DEFAULT_GATEWAY_BIND, DEFAULT_GATEWAY_PORT, DEFAULT_OBSERVER_COOLDOWN_SECS,
-    DEFAULT_OBSERVER_FORCE_THRESHOLD, DEFAULT_OBSERVER_THRESHOLD, DEFAULT_REFLECTOR_THRESHOLD,
-    DEFAULT_SEARCH_CANDIDATE_MULTIPLIER, DEFAULT_SEARCH_MIN_SCORE, DEFAULT_SEARCH_TEMPORAL_DECAY,
-    DEFAULT_SEARCH_TEMPORAL_DECAY_HALF_LIFE_DAYS, DEFAULT_SEARCH_TEXT_WEIGHT,
-    DEFAULT_SEARCH_VECTOR_WEIGHT,
+    DEFAULT_GATEWAY_BIND, DEFAULT_GATEWAY_PORT, DEFAULT_MAX_CONCURRENT_BACKGROUND,
+    DEFAULT_OBSERVER_COOLDOWN_SECS, DEFAULT_OBSERVER_FORCE_THRESHOLD, DEFAULT_OBSERVER_THRESHOLD,
+    DEFAULT_REFLECTOR_THRESHOLD, DEFAULT_SEARCH_CANDIDATE_MULTIPLIER, DEFAULT_SEARCH_MIN_SCORE,
+    DEFAULT_SEARCH_TEMPORAL_DECAY, DEFAULT_SEARCH_TEMPORAL_DECAY_HALF_LIFE_DAYS,
+    DEFAULT_SEARCH_TEXT_WEIGHT, DEFAULT_SEARCH_VECTOR_WEIGHT, DEFAULT_TRANSCRIPT_RETENTION_DAYS,
 };
+use super::provider::ProviderSpec;
 
 /// Validated gateway configuration.
 #[derive(Debug, Clone)]
@@ -162,4 +163,74 @@ pub enum ExternalChannelKind {
         /// Additional headers.
         headers: Vec<(String, String)>,
     },
+}
+
+/// Validated background task configuration.
+#[derive(Debug, Clone)]
+pub struct BackgroundConfig {
+    /// Maximum number of concurrent background tasks.
+    pub max_concurrent: usize,
+    /// Number of days to retain background task transcripts.
+    pub transcript_retention_days: u64,
+    /// Model tier assignments for background tasks.
+    pub models: BackgroundModelsConfig,
+}
+
+impl Default for BackgroundConfig {
+    fn default() -> Self {
+        Self {
+            max_concurrent: DEFAULT_MAX_CONCURRENT_BACKGROUND,
+            transcript_retention_days: DEFAULT_TRANSCRIPT_RETENTION_DAYS,
+            models: BackgroundModelsConfig::default(),
+        }
+    }
+}
+
+/// Model tier assignments for background tasks.
+///
+/// Each tier can be explicitly assigned a model. Unset tiers fall back
+/// to the next tier up, ultimately falling back to main.
+#[derive(Debug, Clone, Default)]
+pub struct BackgroundModelsConfig {
+    /// Small/fast model for simple tasks.
+    pub small: Option<ProviderSpec>,
+    /// Medium model for typical tasks (default tier).
+    pub medium: Option<ProviderSpec>,
+    /// Large model for complex tasks.
+    pub large: Option<ProviderSpec>,
+}
+
+impl BackgroundModelsConfig {
+    /// Resolve a specific tier to a concrete `ProviderSpec`.
+    ///
+    /// Fallback chain: tier → next tier up → main.
+    #[must_use]
+    pub fn resolve_tier(&self, tier: &BackgroundModelTier, main: &ProviderSpec) -> ProviderSpec {
+        match tier {
+            BackgroundModelTier::Small => self
+                .small
+                .clone()
+                .or_else(|| self.medium.clone())
+                .or_else(|| self.large.clone())
+                .unwrap_or_else(|| main.clone()),
+            BackgroundModelTier::Medium => self
+                .medium
+                .clone()
+                .or_else(|| self.large.clone())
+                .unwrap_or_else(|| main.clone()),
+            BackgroundModelTier::Large => self.large.clone().unwrap_or_else(|| main.clone()),
+        }
+    }
+}
+
+/// Which model tier a background task requests.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum BackgroundModelTier {
+    /// Small/fast model for simple tasks.
+    Small,
+    /// Medium model for typical tasks.
+    #[default]
+    Medium,
+    /// Large model for complex tasks.
+    Large,
 }

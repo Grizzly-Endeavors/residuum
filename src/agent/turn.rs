@@ -16,7 +16,7 @@ use super::interrupt::Interrupt;
 use super::recent_messages::RecentMessages;
 
 /// Maximum number of tool-call iterations before the agent stops.
-pub(super) const MAX_TOOL_ITERATIONS: usize = 50;
+pub(crate) const MAX_TOOL_ITERATIONS: usize = 50;
 
 /// Execute the tool loop against the given message buffer.
 ///
@@ -33,7 +33,7 @@ pub(super) const MAX_TOOL_ITERATIONS: usize = 50;
     clippy::too_many_arguments,
     reason = "threading context through the turn loop; grouping into a struct would obscure the call site"
 )]
-pub(super) async fn execute_turn(
+pub(crate) async fn execute_turn(
     provider: &dyn ModelProvider,
     tools: &ToolRegistry,
     tool_filter: &SharedToolFilter,
@@ -58,6 +58,16 @@ pub(super) async fn execute_turn(
                 Interrupt::UserMessage(msg) => {
                     tracing::info!(msg_id = %msg.id, "injecting mid-turn user message");
                     recent_messages.push(Message::user(msg.content));
+                }
+                Interrupt::BackgroundResult(result) => {
+                    tracing::info!(
+                        task_id = %result.id,
+                        task_name = %result.task_name,
+                        "injecting background task result"
+                    );
+                    recent_messages.push(Message::system(
+                        crate::background::types::format_background_result(&result),
+                    ));
                 }
             }
         }

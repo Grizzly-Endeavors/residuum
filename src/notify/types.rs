@@ -30,6 +30,8 @@ pub enum TaskSource {
     Pulse,
     /// Result from a cron job.
     Cron,
+    /// Result from an agent-spawned background task.
+    Agent,
 }
 
 /// A notification to be routed to channels.

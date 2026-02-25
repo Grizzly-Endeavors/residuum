@@ -129,6 +129,35 @@ fn build_status_line(ctx: &StatusLine) -> String {
     tag
 }
 
+/// Build a minimal system prompt for background sub-agent turns.
+///
+/// Includes only TOOLS.md, USER.md, and the projects index — excludes SOUL,
+/// IDENTITY, AGENTS, MEMORY, observations, recent context, and skills to keep
+/// the sub-agent focused on the task.
+#[must_use]
+pub(crate) fn build_subagent_system_content(
+    identity: &IdentityFiles,
+    projects_ctx: &ProjectsContext<'_>,
+) -> String {
+    let mut parts = Vec::new();
+
+    if let Some(tools_md) = &identity.tools {
+        parts.push(format!("<TOOLS.md>\n{tools_md}\n</TOOLS.md>"));
+    }
+
+    if let Some(user) = &identity.user {
+        parts.push(format!("<USER.md>\n{user}\n</USER.md>"));
+    }
+
+    if let Some(idx) = projects_ctx.index
+        && !idx.is_empty()
+    {
+        parts.push(format!("<PROJECTS_INDEX>\n{idx}\n</PROJECTS_INDEX>"));
+    }
+
+    parts.join("\n\n")
+}
+
 /// Build the system prompt content from identity files.
 ///
 /// Assembly order:

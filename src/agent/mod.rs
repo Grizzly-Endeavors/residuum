@@ -3,7 +3,7 @@
 pub mod context;
 pub mod interrupt;
 pub mod recent_messages;
-mod turn;
+pub(crate) mod turn;
 
 use crate::channels::TurnDisplay;
 use crate::channels::types::MessageOrigin;
