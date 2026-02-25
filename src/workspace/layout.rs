@@ -87,6 +87,12 @@ impl WorkspaceLayout {
         self.root.join("memory/.index")
     }
 
+    /// Path to the index manifest file tracking which files have been indexed.
+    #[must_use]
+    pub fn index_manifest_json(&self) -> PathBuf {
+        self.root.join("memory/.index_manifest.json")
+    }
+
     /// Path to the skills directory.
     #[must_use]
     pub fn skills_dir(&self) -> PathBuf {

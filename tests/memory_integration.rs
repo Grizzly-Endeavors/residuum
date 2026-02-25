@@ -23,8 +23,8 @@ mod memory_integration {
         append_recent_messages, clear_recent_messages, load_recent_messages,
     };
     use ironclaw::memory::reflector::{Reflector, ReflectorConfig};
-    use ironclaw::memory::search::MemoryIndex;
-    use ironclaw::memory::types::Visibility;
+    use ironclaw::memory::search::{MemoryIndex, SearchFilters};
+    use ironclaw::memory::types::{IndexManifest, Visibility};
     use ironclaw::models::{
         CompletionOptions, Message, ModelError, ModelProvider, ModelResponse, ToolDefinition,
     };
@@ -116,6 +116,10 @@ mod memory_integration {
             .collect()
     }
 
+    fn no_filters() -> SearchFilters {
+        SearchFilters::default()
+    }
+
     #[tokio::test]
     #[expect(
         clippy::too_many_lines,
@@ -162,6 +166,10 @@ mod memory_integration {
             id: episode_id,
             transcript_path,
             observation_count,
+            observations,
+            chunks,
+            date,
+            context,
             ..
         } = observer.observe(&recent, &layout).await.unwrap();
         clear_recent_messages(&recent_path).await.unwrap();
@@ -169,6 +177,13 @@ mod memory_integration {
         assert_eq!(episode_id, "ep-001", "first episode should be ep-001");
         // observer_response has 3 observation strings
         assert_eq!(observation_count, 3, "should have 3 observations");
+        assert_eq!(
+            observations.len(),
+            3,
+            "observations vec should have 3 items"
+        );
+        assert!(!date.is_empty(), "date should not be empty");
+        assert_eq!(context, "ironclaw/workspace", "context should match");
 
         // Verify transcript file was created
         assert!(transcript_path.exists(), "transcript file should exist");
@@ -179,6 +194,22 @@ mod memory_integration {
         assert!(
             meta.get("type").is_some(),
             "transcript first line should be JSON with type field"
+        );
+
+        // Verify idx.jsonl was created alongside transcript
+        let idx_path = transcript_path
+            .parent()
+            .unwrap()
+            .join(format!("{episode_id}.idx.jsonl"));
+        assert!(
+            idx_path.exists(),
+            "idx.jsonl should exist alongside transcript"
+        );
+
+        // Verify chunks were extracted (messages alternate user/assistant so should produce pairs)
+        assert!(
+            !chunks.is_empty(),
+            "should have extracted at least one interaction pair"
         );
 
         // Verify observations.json was updated — 3 observation strings → 3 Observations
@@ -244,15 +275,60 @@ mod memory_integration {
             "observation log should have six observations after two episodes"
         );
 
-        // Phase 3: Search indexes episodes
+        // Phase 3: Search indexes observations and chunks
         let index = MemoryIndex::open_or_create(&layout.search_index_dir()).unwrap();
-        let count = index.rebuild(&layout.memory_dir()).unwrap();
-        assert!(count >= 2, "should index at least 2 episode files");
-
-        let results = index.search("workspace layout", 5).unwrap();
+        let result = index.rebuild(&layout.memory_dir()).unwrap();
         assert!(
-            !results.is_empty(),
-            "should find results for workspace layout"
+            result.obs_count >= 6,
+            "should index at least 6 observations"
+        );
+        assert!(result.chunk_count >= 1, "should index at least 1 chunk");
+
+        // Search should find observations
+        let obs_results = index
+            .search(
+                "workspace layout",
+                5,
+                &SearchFilters {
+                    source: Some("observation".to_string()),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        assert!(
+            !obs_results.is_empty(),
+            "should find observation results for workspace layout"
+        );
+        assert!(
+            obs_results.iter().all(|r| r.source_type == "observation"),
+            "all should be observations"
+        );
+
+        // Search should also find chunks
+        let chunk_results = index
+            .search(
+                "workspace layout",
+                5,
+                &SearchFilters {
+                    source: Some("chunk".to_string()),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        assert!(
+            !chunk_results.is_empty(),
+            "should find chunk results for workspace layout"
+        );
+        assert!(
+            chunk_results.iter().all(|r| r.source_type == "chunk"),
+            "all should be chunks"
+        );
+
+        // Unfiltered search should find both types
+        let all_results = index.search("workspace layout", 10, &no_filters()).unwrap();
+        assert!(
+            all_results.len() >= 2,
+            "should find both obs and chunk results"
         );
 
         // Phase 4: Reflector compresses when threshold hit
@@ -351,23 +427,33 @@ mod memory_integration {
     }
 
     #[test]
-    fn search_index_creation_and_single_file() {
+    fn search_index_creation_and_observations() {
         let dir = tempfile::tempdir().unwrap();
         let index_dir = dir.path().join(".index");
         let index = MemoryIndex::open_or_create(&index_dir).unwrap();
 
+        let obs = vec![ironclaw::memory::types::Observation {
+            timestamp: chrono::Utc::now().naive_utc(),
+            project_context: "ironclaw".to_string(),
+            source_episodes: vec!["ep-001".to_string()],
+            visibility: Visibility::User,
+            content: "the agent uses SOUL.md for personality".to_string(),
+        }];
+
         index
-            .index_file(
-                "episodes/ep-001.md",
-                "the agent uses SOUL.md for personality",
-            )
+            .index_observations("ep-001", "2026-02-19", "ironclaw", &obs)
             .unwrap();
 
-        let results = index.search("personality", 5).unwrap();
+        let results = index.search("personality", 5, &no_filters()).unwrap();
         assert!(!results.is_empty(), "should find indexed content");
         assert!(
             results.first().unwrap().score > 0.0,
             "score should be positive"
+        );
+        assert_eq!(
+            results.first().unwrap().source_type,
+            "observation",
+            "should be an observation"
         );
     }
 
@@ -544,5 +630,202 @@ mod memory_integration {
         let loaded = loaded.unwrap();
         assert_eq!(loaded.narrative, ctx.narrative);
         assert_eq!(loaded.episode_id, ctx.episode_id);
+    }
+
+    #[tokio::test]
+    async fn incremental_sync_simulation() {
+        let dir = tempfile::tempdir().unwrap();
+        let layout = WorkspaceLayout::new(dir.path());
+        for d in layout.required_dirs() {
+            tokio::fs::create_dir_all(&d).await.unwrap();
+        }
+
+        // Create first episode with observation + chunk files
+        let day_dir = layout.episodes_dir().join("2026-02/19");
+        tokio::fs::create_dir_all(&day_dir).await.unwrap();
+
+        let obs1 = vec![ironclaw::memory::types::Observation {
+            timestamp: chrono::Utc::now().naive_utc(),
+            project_context: "ironclaw".to_string(),
+            source_episodes: vec!["ep-001".to_string()],
+            visibility: Visibility::User,
+            content: "first observation about workspace".to_string(),
+        }];
+        tokio::fs::write(
+            day_dir.join("ep-001.obs.json"),
+            serde_json::to_string(&obs1).unwrap(),
+        )
+        .await
+        .unwrap();
+
+        let chunk1 = ironclaw::memory::types::IndexChunk {
+            chunk_id: "ep-001-c0".to_string(),
+            episode_id: "ep-001".to_string(),
+            date: "2026-02-19".to_string(),
+            context: "ironclaw".to_string(),
+            line_start: 2,
+            line_end: 3,
+            content: "user: what about workspace?\nassistant: it uses flat layout".to_string(),
+        };
+        tokio::fs::write(
+            day_dir.join("ep-001.idx.jsonl"),
+            serde_json::to_string(&chunk1).unwrap() + "\n",
+        )
+        .await
+        .unwrap();
+
+        // Build index with full rebuild
+        let index = MemoryIndex::open_or_create(&layout.search_index_dir()).unwrap();
+        let rebuild_result = index.rebuild(&layout.memory_dir()).unwrap();
+        assert_eq!(rebuild_result.obs_count, 1);
+        assert_eq!(rebuild_result.chunk_count, 1);
+
+        // Create manifest from rebuild
+        let mut manifest = IndexManifest::new();
+        manifest.last_rebuild = "2026-02-19T14:00:00".to_string();
+        for (path, entry) in rebuild_result.file_entries {
+            manifest.files.insert(path, entry);
+        }
+
+        // Add a second episode
+        let obs2 = vec![ironclaw::memory::types::Observation {
+            timestamp: chrono::Utc::now().naive_utc(),
+            project_context: "ironclaw".to_string(),
+            source_episodes: vec!["ep-002".to_string()],
+            visibility: Visibility::User,
+            content: "second observation about testing".to_string(),
+        }];
+        tokio::fs::write(
+            day_dir.join("ep-002.obs.json"),
+            serde_json::to_string(&obs2).unwrap(),
+        )
+        .await
+        .unwrap();
+
+        // Incremental sync should only index the new file
+        let (new_manifest, stats) = index
+            .incremental_sync(&layout.memory_dir(), &manifest)
+            .unwrap();
+        assert_eq!(stats.added, 1, "should add 1 new file");
+        assert_eq!(stats.unchanged, 2, "2 existing files unchanged");
+        assert!(
+            new_manifest.files.len() > manifest.files.len(),
+            "manifest should grow"
+        );
+
+        // Should find both observations
+        let results = index.search("observation", 10, &no_filters()).unwrap();
+        assert!(
+            results.len() >= 2,
+            "should find observations from both episodes"
+        );
+    }
+
+    #[test]
+    fn filter_end_to_end() {
+        let dir = tempfile::tempdir().unwrap();
+        let memory_dir = dir.path().join("memory");
+        let day_dir_1 = memory_dir.join("episodes/2026-02/15");
+        let day_dir_2 = memory_dir.join("episodes/2026-02/20");
+        std::fs::create_dir_all(&day_dir_1).unwrap();
+        std::fs::create_dir_all(&day_dir_2).unwrap();
+
+        // Early ironclaw observation
+        let obs1 = vec![ironclaw::memory::types::Observation {
+            timestamp: chrono::Utc::now().naive_utc(),
+            project_context: "ironclaw".to_string(),
+            source_episodes: vec!["ep-001".to_string()],
+            visibility: Visibility::User,
+            content: "ironclaw uses tantivy for search".to_string(),
+        }];
+        std::fs::write(
+            day_dir_1.join("ep-001.obs.json"),
+            serde_json::to_string(&obs1).unwrap(),
+        )
+        .unwrap();
+
+        // Later devops observation
+        let obs2 = vec![ironclaw::memory::types::Observation {
+            timestamp: chrono::Utc::now().naive_utc(),
+            project_context: "devops".to_string(),
+            source_episodes: vec!["ep-002".to_string()],
+            visibility: Visibility::User,
+            content: "devops uses kubernetes for search orchestration".to_string(),
+        }];
+        std::fs::write(
+            day_dir_2.join("ep-002.obs.json"),
+            serde_json::to_string(&obs2).unwrap(),
+        )
+        .unwrap();
+
+        // Chunk from ep-001
+        let chunk = ironclaw::memory::types::IndexChunk {
+            chunk_id: "ep-001-c0".to_string(),
+            episode_id: "ep-001".to_string(),
+            date: "2026-02-15".to_string(),
+            context: "ironclaw".to_string(),
+            line_start: 2,
+            line_end: 3,
+            content: "user: how does search work?\nassistant: we use tantivy BM25".to_string(),
+        };
+        std::fs::write(
+            day_dir_1.join("ep-001.idx.jsonl"),
+            serde_json::to_string(&chunk).unwrap() + "\n",
+        )
+        .unwrap();
+
+        let index_dir = memory_dir.join(".index");
+        let index = MemoryIndex::open_or_create(&index_dir).unwrap();
+        index.rebuild(&memory_dir).unwrap();
+
+        // Filter: observations only
+        let obs_only = index
+            .search(
+                "search",
+                10,
+                &SearchFilters {
+                    source: Some("observation".to_string()),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        assert!(
+            obs_only.iter().all(|r| r.source_type == "observation"),
+            "should only return observations"
+        );
+
+        // Filter: date range (only 2026-02-18+)
+        let date_filtered = index
+            .search(
+                "search",
+                10,
+                &SearchFilters {
+                    date_from: Some("2026-02-18".to_string()),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        assert!(
+            date_filtered
+                .iter()
+                .all(|r| r.date.as_str() >= "2026-02-18"),
+            "should only return results from 2026-02-18 onwards"
+        );
+
+        // Filter: project context
+        let ctx_filtered = index
+            .search(
+                "search",
+                10,
+                &SearchFilters {
+                    project_context: Some("ironclaw".to_string()),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        assert!(
+            ctx_filtered.iter().all(|r| r.context == "ironclaw"),
+            "should only return ironclaw results"
+        );
     }
 }

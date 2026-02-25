@@ -3,6 +3,7 @@
 //! Provides persistence across restarts through structured episodes,
 //! observation logs, and full-text search.
 
+pub(crate) mod chunk_extractor;
 pub mod episode_store;
 pub mod log_store;
 pub mod observer;

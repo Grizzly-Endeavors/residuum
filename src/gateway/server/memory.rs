@@ -140,20 +140,17 @@ pub(super) async fn execute_observation(
             }
             agent.rotate_messages_after_observation();
 
-            match tokio::fs::read_to_string(&result.transcript_path).await {
-                Ok(ep_content) => {
-                    if let Err(e) = search_index
-                        .index_file(&result.transcript_path.to_string_lossy(), &ep_content)
-                    {
-                        eprintln!("warning: failed to index episode: {e}");
-                    }
-                }
-                Err(e) => {
-                    eprintln!(
-                        "warning: failed to read episode file {}: {e}",
-                        result.transcript_path.display()
-                    );
-                }
+            // Index observations and chunks into the search index
+            if let Err(e) = search_index.index_observations(
+                &result.id,
+                &result.date,
+                &result.context,
+                &result.observations,
+            ) {
+                eprintln!("warning: failed to index observations: {e}");
+            }
+            if let Err(e) = search_index.index_chunks(&result.chunks) {
+                eprintln!("warning: failed to index chunks: {e}");
             }
 
             run_reflector_if_needed(reflector, layout).await;
@@ -275,20 +272,17 @@ pub(super) async fn run_forced_observe(
     }
     agent.rotate_messages_after_observation();
 
-    match tokio::fs::read_to_string(&result.transcript_path).await {
-        Ok(ep_content) => {
-            if let Err(e) =
-                search_index.index_file(&result.transcript_path.to_string_lossy(), &ep_content)
-            {
-                eprintln!("warning: failed to index episode after forced observe: {e}");
-            }
-        }
-        Err(e) => {
-            eprintln!(
-                "warning: failed to read episode file {}: {e}",
-                result.transcript_path.display()
-            );
-        }
+    // Index observations and chunks into the search index
+    if let Err(e) = search_index.index_observations(
+        &result.id,
+        &result.date,
+        &result.context,
+        &result.observations,
+    ) {
+        eprintln!("warning: failed to index observations after forced observe: {e}");
+    }
+    if let Err(e) = search_index.index_chunks(&result.chunks) {
+        eprintln!("warning: failed to index chunks after forced observe: {e}");
     }
 
     let reflected = match load_observation_log(&layout.observations_json()).await {

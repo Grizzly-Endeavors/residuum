@@ -12,11 +12,12 @@ use crate::config::{
     DEFAULT_OBSERVER_COOLDOWN_SECS, DEFAULT_OBSERVER_FORCE_THRESHOLD, DEFAULT_OBSERVER_THRESHOLD,
 };
 use crate::error::IronclawError;
-use crate::memory::episode_store::{episode_obs_path, write_episode_transcript};
+use crate::memory::chunk_extractor::{extract_chunks, write_idx_jsonl};
+use crate::memory::episode_store::{episode_idx_path, episode_obs_path, write_episode_transcript};
 use crate::memory::log_store::{append_observations, next_episode_id, save_episode_observations};
 use crate::memory::recent_messages::RecentMessage;
 use crate::memory::tokens::estimate_message_tokens;
-use crate::memory::types::{Episode, Observation};
+use crate::memory::types::{Episode, IndexChunk, Observation};
 use crate::models::{CompletionOptions, Message, ModelProvider, ResponseFormat};
 use crate::time::now_local;
 use crate::workspace::layout::WorkspaceLayout;
@@ -33,6 +34,14 @@ pub struct ObserveResult {
     pub observation_count: usize,
     /// Narrative summary of the conversation at the time of observation.
     pub narrative: Option<String>,
+    /// The extracted observations, for downstream indexing without re-reading disk.
+    pub observations: Vec<Observation>,
+    /// Interaction-pair chunks extracted from the transcript.
+    pub chunks: Vec<IndexChunk>,
+    /// Episode date in `YYYY-MM-DD` format.
+    pub date: String,
+    /// Project context tag.
+    pub context: String,
 }
 
 /// What the observer thinks should happen after checking token thresholds.
@@ -262,11 +271,19 @@ async fn build_episode_and_persist(
 
     let obs_path = episode_obs_path(&layout.episodes_dir(), &episode);
     save_episode_observations(&obs_path, &observations).await?;
-    append_observations(&layout.observations_json(), observations).await?;
+    append_observations(&layout.observations_json(), observations.clone()).await?;
+
+    // Extract interaction-pair chunks from messages and persist as idx.jsonl.
+    // line_offset=2 because line 1 is the meta object in the JSONL transcript.
+    let date_str = episode.date.to_string();
+    let chunks = extract_chunks(&messages, &episode.id, &date_str, &project_context, 2);
+    let idx_path = episode_idx_path(&layout.episodes_dir(), &episode);
+    write_idx_jsonl(&idx_path, &chunks).await?;
 
     tracing::info!(
         episode_id = %episode.id,
         observations = observation_count,
+        chunks = chunks.len(),
         has_narrative = parsed.narrative.is_some(),
         "episode extracted"
     );
@@ -276,6 +293,10 @@ async fn build_episode_and_persist(
         transcript_path,
         observation_count,
         narrative: parsed.narrative,
+        observations,
+        chunks,
+        date: date_str,
+        context: project_context,
     })
 }
 

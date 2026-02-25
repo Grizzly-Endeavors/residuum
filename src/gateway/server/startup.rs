@@ -10,7 +10,8 @@ use crate::mcp::SharedMcpRegistry;
 use crate::memory::observer::Observer;
 use crate::memory::recent_messages::load_messages_for_agent;
 use crate::memory::reflector::Reflector;
-use crate::memory::search::{MemoryIndex, create_shared_index};
+use crate::memory::search::{MemoryIndex, RebuildResult, create_shared_index};
+use crate::memory::types::IndexManifest;
 use crate::models::{
     CompletionOptions, EmbeddingProvider, HttpClientConfig, ModelProvider, SharedHttpClient,
     build_embedding_provider, build_provider_from_provider_spec,
@@ -103,11 +104,79 @@ pub(super) async fn initialize(cfg: &Config) -> Result<GatewayComponents, Ironcl
     let cron_provider =
         build_provider_from_provider_spec(&cfg.cron, cfg.max_tokens, http, cfg.retry.clone())?;
 
-    // Search index
+    // Search index — schema migration + incremental sync
+    let manifest_path = layout.index_manifest_json();
+    let manifest = IndexManifest::load(&manifest_path)
+        .await
+        .map_err(|e| IronclawError::Memory(format!("failed to load index manifest: {e}")))?;
+
+    // If no manifest exists but old index dir does, clear it (schema migration)
+    if manifest.files.is_empty()
+        && layout.search_index_dir().exists()
+        && let Err(migration_err) = std::fs::remove_dir_all(layout.search_index_dir())
+    {
+        tracing::warn!(error = %migration_err, "failed to clear old search index for schema migration");
+    }
+
     let search_index = create_shared_index(&layout.search_index_dir())?;
-    match search_index.rebuild(&layout.memory_dir()) {
-        Ok(count) => tracing::info!(indexed = count, "search index rebuilt"),
-        Err(e) => eprintln!("warning: failed to rebuild search index: {e}"),
+
+    if manifest.files.is_empty() {
+        // Full rebuild
+        match search_index.rebuild(&layout.memory_dir()) {
+            Ok(result) => {
+                let total = result.obs_count + result.chunk_count;
+                tracing::info!(
+                    observations = result.obs_count,
+                    chunks = result.chunk_count,
+                    "search index rebuilt ({total} documents)"
+                );
+                let rebuilt = build_manifest_from_rebuild(result);
+                if let Err(save_err) = rebuilt.save(&manifest_path).await {
+                    eprintln!("warning: failed to save index manifest after rebuild: {save_err}");
+                }
+            }
+            Err(rebuild_err) => eprintln!("warning: failed to rebuild search index: {rebuild_err}"),
+        }
+    } else {
+        // Incremental sync
+        match search_index.incremental_sync(&layout.memory_dir(), &manifest) {
+            Ok((synced_manifest, stats)) => {
+                tracing::info!(
+                    added = stats.added,
+                    updated = stats.updated,
+                    removed = stats.removed,
+                    unchanged = stats.unchanged,
+                    "search index synced incrementally"
+                );
+                if let Err(save_err) = synced_manifest.save(&manifest_path).await {
+                    eprintln!("warning: failed to save index manifest after sync: {save_err}");
+                }
+            }
+            Err(sync_err) => {
+                eprintln!(
+                    "warning: incremental sync failed, falling back to full rebuild: {sync_err}"
+                );
+                match search_index.rebuild(&layout.memory_dir()) {
+                    Ok(result) => {
+                        let total = result.obs_count + result.chunk_count;
+                        tracing::info!(
+                            observations = result.obs_count,
+                            chunks = result.chunk_count,
+                            "search index rebuilt after sync failure ({total} documents)"
+                        );
+                        let rebuilt = build_manifest_from_rebuild(result);
+                        if let Err(save_err) = rebuilt.save(&manifest_path).await {
+                            eprintln!(
+                                "warning: failed to save index manifest after fallback rebuild: {save_err}"
+                            );
+                        }
+                    }
+                    Err(rebuild_err) => {
+                        eprintln!("warning: fallback rebuild also failed: {rebuild_err}");
+                    }
+                }
+            }
+        }
     }
 
     // Cron store
@@ -203,4 +272,14 @@ pub(super) async fn initialize(cfg: &Config) -> Result<GatewayComponents, Ironcl
         pulse_enabled: cfg.pulse_enabled,
         cron_enabled: cfg.cron_enabled,
     })
+}
+
+/// Build an `IndexManifest` from a full rebuild result.
+fn build_manifest_from_rebuild(result: RebuildResult) -> IndexManifest {
+    let mut manifest = IndexManifest::new();
+    manifest.last_rebuild = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%S").to_string();
+    for (path, entry) in result.file_entries {
+        manifest.files.insert(path, entry);
+    }
+    manifest
 }

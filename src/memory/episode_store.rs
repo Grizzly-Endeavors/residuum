@@ -97,6 +97,14 @@ pub(crate) fn episode_obs_path(episodes_dir: &Path, episode: &Episode) -> PathBu
         .join(format!("{}.obs.json", episode.id))
 }
 
+/// Get the path for the per-episode interaction-pair index file.
+#[must_use]
+pub(crate) fn episode_idx_path(episodes_dir: &Path, episode: &Episode) -> PathBuf {
+    episodes_dir
+        .join(episode.date.format("%Y-%m/%d").to_string())
+        .join(format!("{}.idx.jsonl", episode.id))
+}
+
 /// Read and parse a JSONL episode transcript file.
 ///
 /// Returns the episode metadata and the list of messages. The first line is

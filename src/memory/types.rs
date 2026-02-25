@@ -1,9 +1,13 @@
 //! Core memory data types for observations and the observation log.
 
+use std::collections::HashMap;
 use std::fmt;
+use std::path::Path;
 
 use chrono::NaiveDateTime;
 use serde::{Deserialize, Serialize};
+
+use crate::error::IronclawError;
 
 /// A compressed episode extracted from a conversation segment.
 ///
@@ -137,8 +141,130 @@ impl ObservationLog {
     }
 }
 
+/// A single chunk from an episode's idx.jsonl file — one interaction pair or other segment.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IndexChunk {
+    /// Unique chunk identifier (e.g., `"ep-001-c0"`).
+    pub chunk_id: String,
+    /// Parent episode identifier.
+    pub episode_id: String,
+    /// Date string in `YYYY-MM-DD` format.
+    pub date: String,
+    /// Project context tag.
+    pub context: String,
+    /// Line number of the first message in this chunk (in the transcript).
+    pub line_start: usize,
+    /// Line number of the last message in this chunk (in the transcript).
+    pub line_end: usize,
+    /// Searchable text content (user question + assistant text response).
+    pub content: String,
+}
+
+/// File entry in the index manifest tracking what has been indexed.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ManifestFileEntry {
+    /// File modification time as ISO string.
+    pub mtime: String,
+    /// Document IDs that were indexed from this file.
+    pub doc_ids: Vec<String>,
+}
+
+/// Manifest tracking which files have been indexed and their state.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IndexManifest {
+    /// Timestamp of the last full rebuild.
+    pub last_rebuild: String,
+    /// Embedding model name (for future vector search).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub embedding_model: Option<String>,
+    /// Embedding dimension (for future vector search).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub embedding_dim: Option<usize>,
+    /// Map of relative file path to its indexed state.
+    pub files: HashMap<String, ManifestFileEntry>,
+}
+
+impl IndexManifest {
+    /// Create a new empty manifest.
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            last_rebuild: String::new(),
+            embedding_model: None,
+            embedding_dim: None,
+            files: HashMap::new(),
+        }
+    }
+
+    /// Load the manifest from disk. Returns an empty manifest if the file is missing.
+    ///
+    /// # Errors
+    /// Returns an error if the file exists but cannot be read or parsed.
+    pub async fn load(path: &Path) -> Result<Self, IronclawError> {
+        match tokio::fs::read_to_string(path).await {
+            Ok(contents) => serde_json::from_str(&contents).map_err(|e| {
+                IronclawError::Memory(format!(
+                    "failed to parse index manifest at {}: {e}",
+                    path.display()
+                ))
+            }),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Self::new()),
+            Err(e) => Err(IronclawError::Memory(format!(
+                "failed to read index manifest at {}: {e}",
+                path.display()
+            ))),
+        }
+    }
+
+    /// Save the manifest to disk atomically (temp file + rename).
+    ///
+    /// # Errors
+    /// Returns an error if the file cannot be written.
+    pub async fn save(&self, path: &Path) -> Result<(), IronclawError> {
+        let json = serde_json::to_string_pretty(self).map_err(|e| {
+            IronclawError::Memory(format!("failed to serialize index manifest: {e}"))
+        })?;
+
+        let dir = path.parent().ok_or_else(|| {
+            IronclawError::Memory(format!(
+                "index manifest path has no parent directory: {}",
+                path.display()
+            ))
+        })?;
+
+        let tmp_path = dir.join(".index_manifest.json.tmp");
+
+        tokio::fs::write(&tmp_path, &json).await.map_err(|e| {
+            IronclawError::Memory(format!(
+                "failed to write temporary index manifest at {}: {e}",
+                tmp_path.display()
+            ))
+        })?;
+
+        tokio::fs::rename(&tmp_path, path).await.map_err(|e| {
+            IronclawError::Memory(format!(
+                "failed to rename index manifest from {} to {}: {e}",
+                tmp_path.display(),
+                path.display()
+            ))
+        })?;
+
+        Ok(())
+    }
+}
+
+impl Default for IndexManifest {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[cfg(test)]
 #[expect(clippy::unwrap_used, reason = "test code uses unwrap for clarity")]
+#[expect(
+    clippy::indexing_slicing,
+    reason = "test code indexes into known-length collections"
+)]
 mod tests {
     use super::*;
 
@@ -286,5 +412,102 @@ mod tests {
         log.push(sample_observation());
         assert!(!log.is_empty(), "log should not be empty after push");
         assert_eq!(log.len(), 1, "log should have one observation after push");
+    }
+
+    #[test]
+    fn index_chunk_serde_round_trip() {
+        let chunk = IndexChunk {
+            chunk_id: "ep-001-c0".to_string(),
+            episode_id: "ep-001".to_string(),
+            date: "2026-02-19".to_string(),
+            context: "ironclaw".to_string(),
+            line_start: 2,
+            line_end: 3,
+            content: "user: hello\nassistant: hi there".to_string(),
+        };
+        let json = serde_json::to_string(&chunk).unwrap();
+        let deserialized: IndexChunk = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.chunk_id, "ep-001-c0");
+        assert_eq!(deserialized.line_start, 2);
+        assert_eq!(deserialized.content, chunk.content);
+    }
+
+    #[test]
+    fn index_manifest_new_is_empty() {
+        let manifest = IndexManifest::new();
+        assert!(
+            manifest.files.is_empty(),
+            "new manifest should have no files"
+        );
+        assert!(
+            manifest.last_rebuild.is_empty(),
+            "new manifest should have empty last_rebuild"
+        );
+        assert!(manifest.embedding_model.is_none());
+        assert!(manifest.embedding_dim.is_none());
+    }
+
+    #[test]
+    fn index_manifest_serde_round_trip() {
+        let mut manifest = IndexManifest::new();
+        manifest.last_rebuild = "2026-02-19T14:00".to_string();
+        manifest.files.insert(
+            "episodes/2026-02/19/ep-001.obs.json".to_string(),
+            ManifestFileEntry {
+                mtime: "2026-02-19T14:30:00".to_string(),
+                doc_ids: vec!["ep-001-o0".to_string(), "ep-001-o1".to_string()],
+            },
+        );
+        let json = serde_json::to_string_pretty(&manifest).unwrap();
+        let deserialized: IndexManifest = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.last_rebuild, "2026-02-19T14:00");
+        assert_eq!(deserialized.files.len(), 1);
+        assert_eq!(
+            deserialized.files["episodes/2026-02/19/ep-001.obs.json"]
+                .doc_ids
+                .len(),
+            2
+        );
+    }
+
+    #[tokio::test]
+    async fn index_manifest_load_missing_returns_empty() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("nonexistent.json");
+        let manifest = IndexManifest::load(&path).await.unwrap();
+        assert!(manifest.files.is_empty());
+    }
+
+    #[tokio::test]
+    async fn index_manifest_save_and_load_round_trip() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("manifest.json");
+
+        let mut manifest = IndexManifest::new();
+        manifest.last_rebuild = "2026-02-19T14:00".to_string();
+        manifest.files.insert(
+            "test.obs.json".to_string(),
+            ManifestFileEntry {
+                mtime: "2026-02-19T14:30:00".to_string(),
+                doc_ids: vec!["id-1".to_string()],
+            },
+        );
+
+        manifest.save(&path).await.unwrap();
+        let loaded = IndexManifest::load(&path).await.unwrap();
+        assert_eq!(loaded.last_rebuild, "2026-02-19T14:00");
+        assert_eq!(loaded.files.len(), 1);
+    }
+
+    #[test]
+    fn manifest_file_entry_serde() {
+        let entry = ManifestFileEntry {
+            mtime: "2026-02-19T14:30:00".to_string(),
+            doc_ids: vec!["a".to_string(), "b".to_string()],
+        };
+        let json = serde_json::to_string(&entry).unwrap();
+        let deserialized: ManifestFileEntry = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.mtime, "2026-02-19T14:30:00");
+        assert_eq!(deserialized.doc_ids, vec!["a", "b"]);
     }
 }
