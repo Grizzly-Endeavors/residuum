@@ -32,7 +32,7 @@ use crate::memory::reflector::Reflector;
 use crate::memory::search::MemoryIndex;
 use crate::memory::types::Visibility;
 use crate::memory::vector_store::VectorStore;
-use crate::models::EmbeddingProvider;
+use crate::models::{EmbeddingProvider, Message};
 use crate::notify::router::NotificationRouter;
 use crate::notify::types::{Notification, TaskSource};
 use crate::projects::activation::SharedProjectState;
@@ -272,21 +272,35 @@ pub async fn run_gateway(cfg: Config) -> Result<GatewayExit, IronclawError> {
 }
 
 /// Handle a background task result: route through NOTIFY.yml or direct channels.
+///
+/// When a result targets the agent feed, the formatted message is persisted to
+/// `recent_messages.json` and injected into the agent's conversation history
+/// immediately — no longer deferred to the next user turn.
+///
+/// Returns `true` if observation should fire immediately (token threshold exceeded).
+#[expect(
+    clippy::too_many_arguments,
+    reason = "threads subsystem references from the event loop for immediate persistence"
+)]
 async fn handle_background_result(
     result: BackgroundResult,
     router: &NotificationRouter,
     layout: &WorkspaceLayout,
     agent: &mut Agent,
-) {
+    observer: &Observer,
+    project_state: &SharedProjectState,
+    tz: chrono_tz::Tz,
+    observe_deadline: &mut Option<tokio::time::Instant>,
+) -> bool {
     // Pulse HEARTBEAT_OK results are silently logged — no routing, no agent events
     if matches!(result.source, TaskSource::Pulse) && result.summary.contains("HEARTBEAT_OK") {
         tracing::info!(task = %result.task_name, "pulse check: HEARTBEAT_OK");
-        return;
+        return false;
     }
 
     let formatted = format_background_result(&result);
 
-    match &result.routing {
+    let should_inject = match &result.routing {
         ResultRouting::Notify => {
             let notification = Notification {
                 task_name: result.task_name.clone(),
@@ -297,10 +311,6 @@ async fn handle_background_result(
 
             let outcome = router.route(&notification, &layout.notify_yml()).await;
 
-            if outcome.agent_wake || outcome.agent_feed {
-                agent.queue_system_event(formatted.clone());
-            }
-
             tracing::info!(
                 task = %result.task_name,
                 agent_wake = outcome.agent_wake,
@@ -309,6 +319,8 @@ async fn handle_background_result(
                 external_count = outcome.external_dispatched.len(),
                 "background result routed via NOTIFY.yml"
             );
+
+            outcome.agent_wake || outcome.agent_feed
         }
         ResultRouting::Direct(channels) => {
             let mut agent_inject = false;
@@ -333,11 +345,33 @@ async fn handle_background_result(
                     }
                 }
             }
-            if agent_inject {
-                agent.queue_system_event(formatted);
-            }
+            agent_inject
         }
+    };
+
+    if !should_inject {
+        return false;
     }
+
+    // Persist immediately so the message survives restarts
+    let sys_msg = Message::system(&formatted);
+    let project_ctx = project_context_label(project_state, layout).await;
+    let action = persist_and_check_thresholds(
+        &[sys_msg],
+        &project_ctx,
+        Visibility::Background,
+        observer,
+        layout,
+        tz,
+    )
+    .await;
+
+    let force = apply_observe_action(action, observe_deadline, observer.cooldown_secs());
+
+    // Inject into LLM context
+    agent.inject_system_message(formatted);
+
+    force
 }
 
 /// Dispatch a named server command from any client channel.
@@ -622,7 +656,14 @@ async fn run_event_loop(mut rt: GatewayRuntime) -> GatewayExit {
             // ── Background task results ──────────────────────────────────
             bg_result = rt.background_result_rx.recv() => {
                 if let Some(result) = bg_result {
-                    handle_background_result(result, &rt.notification_router, &rt.layout, &mut rt.agent).await;
+                    let force = handle_background_result(
+                        result, &rt.notification_router, &rt.layout,
+                        &mut rt.agent, &rt.observer, &rt.project_state,
+                        rt.tz, &mut observe_deadline,
+                    ).await;
+                    if force {
+                        execute_observation(&rt.observer, &rt.reflector, &rt.search_index, &rt.layout, &mut rt.agent, rt.vector_store.as_ref(), rt.embedding_provider.as_ref()).await;
+                    }
                 }
             }
 

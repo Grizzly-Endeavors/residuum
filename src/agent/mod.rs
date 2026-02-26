@@ -39,8 +39,6 @@ pub struct Agent {
     observations: Option<String>,
     /// Narrative summary from the most recent observation cycle.
     recent_context: Option<String>,
-    /// System event texts queued from cron jobs; injected at the start of the next user turn.
-    pending_system_events: Vec<String>,
     tz: chrono_tz::Tz,
     last_user_message_at: Option<chrono::NaiveDateTime>,
     /// Path to the inbox directory (for computing unread count per turn).
@@ -74,7 +72,6 @@ impl Agent {
             options,
             observations: None,
             recent_context: None,
-            pending_system_events: Vec::new(),
             tz,
             last_user_message_at: None,
             inbox_dir,
@@ -147,17 +144,19 @@ impl Agent {
         self.recent_messages.prepend(retained);
     }
 
-    /// Queue a system event to be injected at the start of the next user turn.
-    pub fn queue_system_event(&mut self, text: String) {
-        self.pending_system_events.push(text);
+    /// Inject a system message directly into the conversation history.
+    ///
+    /// Used for background task results that should be immediately visible
+    /// in the agent's context rather than waiting for the next user turn.
+    pub fn inject_system_message(&mut self, content: impl Into<String>) {
+        self.recent_messages.push(Message::system(content));
     }
 
     /// Process a user message through the model, executing tool calls as needed.
     ///
-    /// Any queued system events are prepended to the user message so the agent
-    /// sees pending alerts in context. Returns a vec containing the final
-    /// text-only response. Intermediate texts emitted alongside tool calls are
-    /// broadcast via `display` in real-time but not included in the return value.
+    /// Returns a vec containing the final text-only response. Intermediate texts
+    /// emitted alongside tool calls are broadcast via `display` in real-time but
+    /// not included in the return value.
     ///
     /// # Errors
     /// Returns `IronclawError` if the model call fails or tool execution errors
@@ -180,16 +179,7 @@ impl Agent {
         };
         self.last_user_message_at = Some(now);
 
-        // Build effective input: prepend any pending system events
-        let effective_input = if self.pending_system_events.is_empty() {
-            user_input.to_string()
-        } else {
-            let events: Vec<String> = self.pending_system_events.drain(..).collect();
-            let events_text = events.join("\n\n");
-            format!("[System Alerts — please review]\n\n{events_text}\n\n---\n\n{user_input}")
-        };
-
-        self.recent_messages.push(Message::user(effective_input));
+        self.recent_messages.push(Message::user(user_input));
 
         let memory_ctx = MemoryContext {
             observations: self.observations.as_deref(),
@@ -587,15 +577,10 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn pending_system_events_prepended() {
-        let provider = MockProvider::new(vec![
-            ModelResponse::new("acknowledged".to_string(), vec![]),
-            ModelResponse::new("ok".to_string(), vec![]),
-        ]);
-
+    #[test]
+    fn inject_system_message_appears_in_history() {
         let mut agent = Agent::new(
-            Box::new(provider),
+            Box::new(MockProvider::new(vec![])),
             ToolRegistry::new(),
             no_filter(),
             empty_mcp(),
@@ -605,55 +590,25 @@ mod tests {
             std::path::PathBuf::from("/tmp/ironclaw-test-inbox"),
         );
 
-        agent.queue_system_event("email arrived from boss".to_string());
-        let display = NullDisplay;
-        let mut irx = interrupt::dead_interrupt_rx();
-        agent
-            .process_message(
-                "what's up?",
-                &display,
-                None,
-                &PromptContext::none(),
-                &mut irx,
-            )
-            .await
-            .unwrap();
+        agent.inject_system_message("background task completed: report-gen");
 
-        // Event should appear in the first turn's user message
         let msgs = agent.messages_since(0);
-        assert_eq!(msgs.len(), 2, "should have user + assistant messages");
-        assert!(
-            msgs.first()
-                .is_some_and(|m| m.content.contains("email arrived from boss")),
-            "system event should be in user message"
+        assert_eq!(msgs.len(), 1, "should have one system message");
+        assert_eq!(
+            msgs[0].content, "background task completed: report-gen",
+            "system message content should match"
         );
-
-        // Queue should be drained — second turn must not re-inject the event
-        agent
-            .process_message(
-                "anything else?",
-                &display,
-                None,
-                &PromptContext::none(),
-                &mut irx,
-            )
-            .await
-            .unwrap();
-        let second_turn_msgs = agent.messages_since(2);
-        assert!(
-            second_turn_msgs
-                .first()
-                .is_some_and(|m| !m.content.contains("email arrived from boss")),
-            "system event should not re-appear in second turn after queue drain"
+        assert_eq!(
+            msgs[0].role,
+            crate::models::Role::System,
+            "injected message should have System role"
         );
     }
 
-    #[tokio::test]
-    async fn multiple_system_events_combined_in_user_message() {
-        let provider = MockProvider::new(vec![ModelResponse::new("ok".to_string(), vec![])]);
-
+    #[test]
+    fn injected_message_excluded_from_later_messages_since() {
         let mut agent = Agent::new(
-            Box::new(provider),
+            Box::new(MockProvider::new(vec![])),
             ToolRegistry::new(),
             no_filter(),
             empty_mcp(),
@@ -663,25 +618,28 @@ mod tests {
             std::path::PathBuf::from("/tmp/ironclaw-test-inbox"),
         );
 
-        agent.queue_system_event("first alert".to_string());
-        agent.queue_system_event("second alert".to_string());
-        let display = NullDisplay;
-        let mut irx = interrupt::dead_interrupt_rx();
-        agent
-            .process_message("hello", &display, None, &PromptContext::none(), &mut irx)
-            .await
-            .unwrap();
+        // Inject a background message before the "turn"
+        agent.inject_system_message("bg result arrived");
 
-        let msgs = agent.messages_since(0);
-        let user_content = &msgs.first().unwrap().content;
-        assert!(
-            user_content.contains("first alert"),
-            "first queued event should appear in user message"
+        // Snapshot count after injection — simulates `before = agent.message_count()`
+        let before = agent.message_count();
+        assert_eq!(before, 1, "injected message should be counted");
+
+        // Simulate a user turn by pushing user + assistant messages
+        agent.recent_messages.push(Message::user("hello"));
+        agent
+            .recent_messages
+            .push(Message::assistant("hi there", None));
+
+        // messages_since(before) should only contain the turn's messages
+        let turn_msgs = agent.messages_since(before);
+        assert_eq!(
+            turn_msgs.len(),
+            2,
+            "only the user turn messages should appear after the snapshot"
         );
-        assert!(
-            user_content.contains("second alert"),
-            "second queued event should appear in user message"
-        );
+        assert_eq!(turn_msgs[0].content, "hello");
+        assert_eq!(turn_msgs[1].content, "hi there");
     }
 
     #[test]
