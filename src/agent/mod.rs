@@ -163,9 +163,9 @@ impl Agent {
 
     /// Run an autonomous wake turn triggered by background results.
     ///
-    /// Unlike `process_message`, this does NOT push a user message and does NOT
-    /// update `last_user_message_at`. Instead, pushes a system kickoff message
-    /// so the agent reviews injected background results and takes action.
+    /// Unlike `process_message`, this does NOT update `last_user_message_at`.
+    /// Pushes a user-role kickoff message (required by models that reject
+    /// assistant prefill) so the agent reviews injected background results.
     ///
     /// # Errors
     /// Returns `IronclawError` if the model call fails or tool execution errors
@@ -185,8 +185,9 @@ impl Agent {
             unread_inbox_count: unread,
         };
 
-        // System kickoff — not a user message
-        self.recent_messages.push(Message::system(
+        // User-role kickoff — models require the conversation to end with a
+        // user message. Tagged as background via the status line.
+        self.recent_messages.push(Message::user(
             "[Background results require your attention. Review and take action.]",
         ));
 
@@ -666,7 +667,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn wake_turn_pushes_system_kickoff_not_user_message() {
+    async fn wake_turn_pushes_user_kickoff_without_updating_timestamp() {
         let provider = MockProvider::new(vec![ModelResponse::new(
             "I'll handle it".to_string(),
             vec![],
@@ -708,23 +709,17 @@ mod tests {
             "wake turn should not update last_user_message_at"
         );
 
-        // Verify: no User role messages were added by the wake turn itself
+        // Verify: kickoff message is present and uses user role (required by models)
         let msgs = agent.messages_since(0);
-        let user_msgs: Vec<_> = msgs
-            .iter()
-            .filter(|m| m.role == crate::models::Role::User)
-            .collect();
-        assert!(
-            user_msgs.is_empty(),
-            "wake turn should not push any user messages"
-        );
-
-        // Verify: system kickoff message is present
-        assert!(
-            msgs.iter().any(|m| m
-                .content
-                .contains("Background results require your attention")),
-            "wake turn should push system kickoff message"
+        let kickoff = msgs.iter().find(|m| {
+            m.content
+                .contains("Background results require your attention")
+        });
+        assert!(kickoff.is_some(), "wake turn should push kickoff message");
+        assert_eq!(
+            kickoff.unwrap().role,
+            crate::models::Role::User,
+            "kickoff must be user-role for model compatibility"
         );
     }
 
