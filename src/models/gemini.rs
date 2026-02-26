@@ -217,9 +217,10 @@ impl ModelProvider for GeminiClient {
 
         let (response_mime_type, response_schema) = match &options.response_format {
             ResponseFormat::Text => (None, None),
-            ResponseFormat::JsonSchema { schema, .. } => {
-                (Some("application/json".to_string()), Some(schema.clone()))
-            }
+            ResponseFormat::JsonSchema { schema, .. } => (
+                Some("application/json".to_string()),
+                Some(strip_unsupported_schema_fields(schema.clone())),
+            ),
         };
         let generation_config = GeminiGenerationConfig {
             max_output_tokens,
@@ -345,6 +346,22 @@ struct GeminiFunctionDeclaration {
     name: String,
     description: String,
     parameters: serde_json::Value,
+}
+
+/// Recursively remove fields that Gemini's `responseSchema` doesn't support
+/// (e.g. `additionalProperties`).
+fn strip_unsupported_schema_fields(mut value: serde_json::Value) -> serde_json::Value {
+    if let Some(obj) = value.as_object_mut() {
+        obj.remove("additionalProperties");
+        for child in obj.values_mut() {
+            *child = strip_unsupported_schema_fields(child.take());
+        }
+    } else if let Some(arr) = value.as_array_mut() {
+        for item in arr.iter_mut() {
+            *item = strip_unsupported_schema_fields(item.take());
+        }
+    }
+    value
 }
 
 #[derive(Serialize, Clone)]
