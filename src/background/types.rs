@@ -251,6 +251,54 @@ mod tests {
         let formatted = format_background_result(&result);
         assert!(formatted.contains("cancelled"), "should contain status");
         assert!(formatted.contains("pulse"), "should contain source");
+        assert!(
+            formatted.contains("partial output"),
+            "should include non-empty summary"
+        );
+        assert!(
+            !formatted.contains("Error:"),
+            "cancelled task should not include Error: line"
+        );
+    }
+
+    #[test]
+    fn execution_info_subagent_truncates_at_120_chars() {
+        let long_prompt = "x".repeat(200);
+        let config = SubAgentConfig {
+            prompt: long_prompt,
+            context: None,
+            model_tier: BackgroundModelTier::Medium,
+        };
+        let (exec_type, preview) = execution_info(&Execution::SubAgent(config));
+        assert_eq!(exec_type, "sub_agent");
+        assert_eq!(preview.len(), 120, "preview should be capped at 120 chars");
+    }
+
+    #[test]
+    fn execution_info_script_joins_args() {
+        use std::path::PathBuf;
+        let config = crate::background::types::ScriptConfig {
+            command: "echo".to_string(),
+            args: vec!["hello".to_string(), "world".to_string()],
+            working_dir: Some(PathBuf::from("/tmp")),
+            timeout_secs: None,
+        };
+        let (exec_type, preview) = execution_info(&Execution::Script(config));
+        assert_eq!(exec_type, "script");
+        assert_eq!(preview, "echo hello world");
+    }
+
+    #[test]
+    fn execution_info_script_no_args() {
+        use std::path::PathBuf;
+        let config = crate::background::types::ScriptConfig {
+            command: "pwd".to_string(),
+            args: vec![],
+            working_dir: Some(PathBuf::from("/tmp")),
+            timeout_secs: None,
+        };
+        let (_exec_type, preview) = execution_info(&Execution::Script(config));
+        assert_eq!(preview, "pwd", "no trailing space when args is empty");
     }
 
     #[test]

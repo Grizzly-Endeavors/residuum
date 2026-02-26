@@ -420,24 +420,25 @@ mod tests {
         assert_eq!(result, "3 new emails found");
     }
 
-    #[tokio::test]
-    async fn subagent_includes_environment_md() {
-        let mut resources = make_resources("done");
-        resources.identity = IdentityFiles {
+    #[test]
+    fn subagent_system_content_includes_environment() {
+        // Directly verify build_subagent_system_content includes ENVIRONMENT.md
+        // content. (The execute_subagent mock ignores message contents, so
+        // testing at that level can't catch a silent drop of identity fields.)
+        let identity = IdentityFiles {
             environment: Some("You have access to exec tool.".to_string()),
             ..IdentityFiles::default()
         };
-
-        let config = SubAgentConfig {
-            prompt: "do something".to_string(),
-            context: None,
-            model_tier: crate::config::BackgroundModelTier::Small,
-        };
-
-        let result = execute_subagent("bg-002", &config, &resources)
-            .await
-            .unwrap();
-        assert_eq!(result, "done");
+        let content = build_subagent_system_content(
+            &identity,
+            &ProjectsContext::none(),
+            &SkillsContext::none(),
+            None,
+        );
+        assert!(
+            content.contains("You have access to exec tool."),
+            "should include ENVIRONMENT.md content"
+        );
     }
 
     #[tokio::test]

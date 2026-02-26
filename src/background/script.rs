@@ -137,6 +137,27 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn nonzero_exit_no_stderr_omits_stderr_section() {
+        // When stderr is empty, the error message should use the stdout-only
+        // format ("exit code N\nstdout:\n...") without a "stderr:" section.
+        let config = ScriptConfig {
+            command: "sh".to_string(),
+            args: vec!["-c".to_string(), "echo only_stdout; exit 2".to_string()],
+            working_dir: None,
+            timeout_secs: None,
+        };
+        let result = execute_script("bg-test", &config, Path::new("/tmp")).await;
+        assert!(result.is_err(), "non-zero exit should return Err");
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("exit code 2"), "should contain exit code");
+        assert!(err.contains("only_stdout"), "should contain stdout");
+        assert!(
+            !err.contains("stderr:"),
+            "should not include stderr section when stderr is empty"
+        );
+    }
+
+    #[tokio::test]
     async fn timeout_returns_error() {
         let config = ScriptConfig {
             command: "sleep".to_string(),

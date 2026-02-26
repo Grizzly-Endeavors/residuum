@@ -329,10 +329,9 @@ mod tests {
             routing: ResultRouting::Notify,
         };
 
+        // Task is registered in active_tasks before tokio::spawn, so it is
+        // visible to cancel() as soon as spawn() returns — no sleep needed.
         spawner.spawn(task, None).await.unwrap();
-
-        // Give the spawned task time to register and start
-        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
 
         let cancelled = spawner.cancel("long-1").await;
         assert!(cancelled, "should return true for active task");
@@ -349,18 +348,18 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn concurrency_limit_enforced() {
+    async fn tasks_queued_when_over_limit_all_complete() {
         let (tx, mut rx) = mpsc::channel(32);
         let dir = tempfile::tempdir().unwrap();
-        let max_concurrent = 2;
         let spawner = BackgroundTaskSpawner::new(
             tx,
-            max_concurrent,
+            2, // max_concurrent
             PathBuf::from("/tmp"),
             dir.path().to_path_buf(),
         );
 
-        // Spawn 3 tasks (one more than limit)
+        // Spawn 3 tasks against a limit of 2 — the 3rd queues behind the semaphore
+        // and must complete once a slot opens. All 3 should eventually succeed.
         for i in 0..3 {
             let task = BackgroundTask {
                 id: format!("conc-{i}"),
@@ -377,7 +376,6 @@ mod tests {
             spawner.spawn(task, None).await.unwrap();
         }
 
-        // All 3 should complete (the semaphore just queues the 3rd)
         let mut results = Vec::new();
         for _ in 0..3 {
             results.push(rx.recv().await.unwrap());
@@ -420,7 +418,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn result_sent_to_channel() {
+    async fn transcript_written_after_successful_task() {
         let (tx, mut rx) = mpsc::channel(32);
         let dir = tempfile::tempdir().unwrap();
         let spawner =
@@ -430,8 +428,10 @@ mod tests {
         spawner.spawn(task, None).await.unwrap();
 
         let result = rx.recv().await.unwrap();
-        assert_eq!(result.task_name, "test_echo");
         assert!(result.transcript_path.is_some(), "should write transcript");
+        // Verify the transcript file actually exists on disk
+        let path = result.transcript_path.unwrap();
+        assert!(path.exists(), "transcript file should exist at {path:?}");
     }
 
     #[tokio::test]
