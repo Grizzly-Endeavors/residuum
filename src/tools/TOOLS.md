@@ -68,7 +68,7 @@ On error:
 **Source:** `edit.rs` · `EditTool`
 
 **Description sent to LLM:**
-> Edit a file using line:hash anchors from read_file output. Validates content hashes before applying changes to detect stale edits. Operations: 'replace' (replace line or range), 'insert_after' (insert after a line; use start_line '0' to insert at file start), 'delete' (remove line or range). Use this over write_file when updating existing content.
+> Edit a file using line:hash anchors from read_file output. Validates content hashes before applying changes to detect stale edits. Operations: 'replace' (replace exact range; end_line required — use the same anchor as start_line for a single-line replacement), 'insert_after' (insert after a line; use start_line '0' to insert at file start), 'delete' (remove line or range; end_line optional for ranges). Use this over write_file when updating existing content.
 
 ### Input
 
@@ -77,13 +77,14 @@ On error:
 | `path`       | string | yes      | Path to the file to edit                                                    |
 | `operation`  | string | yes      | One of: `"replace"`, `"insert_after"`, `"delete"`                          |
 | `start_line` | string | yes      | Line anchor as `"N:hash"` (e.g. `"5:a3"`). Use `"0"` for insert at file start |
-| `end_line`   | string | no       | Optional end line anchor `"N:hash"` for range operations                   |
-| `content`    | string | no*      | New content. Required for `replace` and `insert_after`; omitted for `delete` |
+| `end_line`   | string | no*      | End line anchor `"N:hash"`. Required for `replace` (use same anchor as `start_line` for single-line). Optional for `delete`. Not used by `insert_after`. |
+| `content`    | string | no**     | New content. Required for `replace` and `insert_after`; omitted for `delete` |
 
-\* `content` is required when `operation` is `replace` or `insert_after`.
+\* `end_line` is required when `operation` is `replace`.
+\*\* `content` is required when `operation` is `replace` or `insert_after`.
 
 **Operations:**
-- `replace` — replaces `start_line` through `end_line` (or just `start_line` if no range) with `content`
+- `replace` — replaces `start_line` through `end_line` with `content`. Both anchors are required — pass the same anchor for both to replace a single line.
 - `insert_after` — inserts `content` after `start_line` (use `"0"` to insert at file start)
 - `delete` — removes `start_line` through `end_line`; cannot delete all lines from a file
 
@@ -98,6 +99,7 @@ On error:
 - Hash mismatch on `start_line` or `end_line` (file changed since last read)
 - Line number out of bounds
 - Attempt to delete all lines from a file
+- `replace` called without `end_line`
 
 ---
 

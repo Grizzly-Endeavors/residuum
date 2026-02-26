@@ -96,9 +96,11 @@ impl Tool for EditTool {
             name: "edit_file".to_string(),
             description: "Edit a file using line:hash anchors from read_file output. \
                           Validates content hashes before applying changes to detect stale edits. \
-                          Operations: 'replace' (replace line or range), 'insert_after' (insert \
-                          after a line; use start_line '0' to insert at file start), 'delete' \
-                          (remove line or range). Use this over write_file when updating existing content."
+                          Operations: 'replace' (replace exact range; end_line required — use the \
+                          same anchor as start_line for a single-line replacement), 'insert_after' \
+                          (insert after a line; use start_line '0' to insert at file start), \
+                          'delete' (remove line or range; end_line optional for ranges). \
+                          Use this over write_file when updating existing content."
                 .to_string(),
             parameters: serde_json::json!({
                 "type": "object",
@@ -118,7 +120,7 @@ impl Tool for EditTool {
                     },
                     "end_line": {
                         "type": "string",
-                        "description": "Optional end line anchor as 'N:hash' for range operations"
+                        "description": "End line anchor as 'N:hash'. Required for replace (use same anchor as start_line for single-line replacement). Optional for delete (omit to remove only start_line). Not used by insert_after."
                     },
                     "content": {
                         "type": "string",
@@ -181,6 +183,15 @@ impl Tool for EditTool {
             return Err(ToolError::InvalidArguments(format!(
                 "'{operation}' requires 'content' argument"
             )));
+        }
+
+        // end_line required for replace — forces the model to be explicit about the full range
+        // being overwritten, preventing silent under-deletion when content spans multiple lines.
+        if operation == "replace" && end_line_str.is_none() {
+            return Err(ToolError::InvalidArguments(
+                "replace requires 'end_line' (use the same anchor as start_line to replace a single line)"
+                    .to_string(),
+            ));
         }
 
         // Parse start_line — special case: "0" for insert_after at file start
@@ -380,6 +391,7 @@ mod tests {
                 "path": path,
                 "operation": "replace",
                 "start_line": anchor(2, "bbb"),
+                "end_line": anchor(2, "bbb"),
                 "content": "BBB"
             }))
             .await
@@ -392,6 +404,31 @@ mod tests {
         );
         let updated = tokio::fs::read_to_string(&path).await.unwrap();
         assert_eq!(updated, "aaa\nBBB\nccc\n", "line 2 should be replaced");
+    }
+
+    #[tokio::test]
+    async fn replace_requires_end_line() {
+        let dir = tempfile::tempdir().unwrap();
+        let (tool, path) = setup_file(&dir, "no_end.txt", "aaa\nbbb\nccc\n").await;
+
+        let result = tool
+            .execute(serde_json::json!({
+                "path": path,
+                "operation": "replace",
+                "start_line": anchor(2, "bbb"),
+                "content": "BBB"
+            }))
+            .await;
+
+        assert!(
+            result.is_err(),
+            "replace without end_line should return ToolError"
+        );
+        let err_msg = format!("{}", result.unwrap_err());
+        assert!(
+            err_msg.contains("end_line"),
+            "error should mention end_line: {err_msg}"
+        );
     }
 
     #[tokio::test]
@@ -525,6 +562,7 @@ mod tests {
                 "path": path,
                 "operation": "replace",
                 "start_line": "1:ff",
+                "end_line": "1:ff",
                 "content": "replaced"
             }))
             .await
@@ -547,6 +585,7 @@ mod tests {
                 "path": "/nonexistent/edit_target.txt",
                 "operation": "replace",
                 "start_line": "1:aa",
+                "end_line": "1:aa",
                 "content": "x"
             }))
             .await
@@ -571,6 +610,7 @@ mod tests {
                 "path": file_path.to_str().unwrap(),
                 "operation": "replace",
                 "start_line": "1:aa",
+                "end_line": "1:aa",
                 "content": "x"
             }))
             .await
