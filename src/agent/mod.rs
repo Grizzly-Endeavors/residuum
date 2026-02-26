@@ -161,6 +161,57 @@ impl Agent {
         self.recent_messages.push(Message::user(content));
     }
 
+    /// Run an autonomous wake turn triggered by background results.
+    ///
+    /// Unlike `process_message`, this does NOT push a user message and does NOT
+    /// update `last_user_message_at`. Instead, pushes a system kickoff message
+    /// so the agent reviews injected background results and takes action.
+    ///
+    /// # Errors
+    /// Returns `IronclawError` if the model call fails or tool execution errors
+    /// are unrecoverable.
+    pub async fn run_wake_turn(
+        &mut self,
+        display: &dyn TurnDisplay,
+        prompt_ctx: &PromptContext<'_>,
+        interrupt_rx: &mut tokio::sync::mpsc::Receiver<interrupt::Interrupt>,
+    ) -> Result<Vec<String>, IronclawError> {
+        let now = crate::time::now_local(self.tz);
+        let unread = crate::inbox::count_unread(&self.inbox_dir);
+        let status_line = StatusLine {
+            now,
+            last_message_at: self.last_user_message_at,
+            message_source: Some("background".to_string()),
+            unread_inbox_count: unread,
+        };
+
+        // System kickoff — not a user message
+        self.recent_messages.push(Message::system(
+            "[Background results require your attention. Review and take action.]",
+        ));
+
+        let memory_ctx = MemoryContext {
+            observations: self.observations.as_deref(),
+            recent_context: self.recent_context.as_deref(),
+        };
+
+        execute_turn(
+            &*self.provider,
+            &self.tools,
+            &self.tool_filter,
+            &self.mcp_registry,
+            &self.identity,
+            &self.options,
+            &memory_ctx,
+            prompt_ctx,
+            &mut self.recent_messages,
+            display,
+            Some(&status_line),
+            interrupt_rx,
+        )
+        .await
+    }
+
     /// Process a user message through the model, executing tool calls as needed.
     ///
     /// Returns a vec containing the final text-only response. Intermediate texts
@@ -611,6 +662,69 @@ mod tests {
             msgs[0].role,
             crate::models::Role::User,
             "injected message should have User role"
+        );
+    }
+
+    #[tokio::test]
+    async fn wake_turn_pushes_system_kickoff_not_user_message() {
+        let provider = MockProvider::new(vec![ModelResponse::new(
+            "I'll handle it".to_string(),
+            vec![],
+        )]);
+
+        let mut agent = Agent::new(
+            Box::new(provider),
+            ToolRegistry::new(),
+            no_filter(),
+            empty_mcp(),
+            IdentityFiles::default(),
+            CompletionOptions::default(),
+            chrono_tz::UTC,
+            std::path::PathBuf::from("/tmp/ironclaw-test-inbox"),
+        );
+
+        // Set a known timestamp so we can verify it doesn't change
+        let fixed_time = chrono::NaiveDateTime::new(
+            chrono::NaiveDate::from_ymd_opt(2025, 1, 1).unwrap(),
+            chrono::NaiveTime::from_hms_opt(12, 0, 0).unwrap(),
+        );
+        agent.set_last_user_message_at(Some(fixed_time));
+
+        // Inject a background result first (simulates what the gateway does)
+        agent.inject_system_message("bg result: task completed");
+
+        let display = NullDisplay;
+        let mut irx = interrupt::dead_interrupt_rx();
+        let result = agent
+            .run_wake_turn(&display, &PromptContext::none(), &mut irx)
+            .await
+            .unwrap();
+        assert_eq!(result, vec!["I'll handle it"]);
+
+        // Verify: last_user_message_at should be unchanged
+        assert_eq!(
+            agent.last_user_message_at,
+            Some(fixed_time),
+            "wake turn should not update last_user_message_at"
+        );
+
+        // Verify: no User role messages were added by the wake turn itself
+        let msgs = agent.messages_since(0);
+        let user_msgs: Vec<_> = msgs
+            .iter()
+            .filter(|m| m.role == crate::models::Role::User)
+            .collect();
+        assert!(
+            user_msgs.is_empty(),
+            "wake turn should not push any user messages"
+        );
+
+        // Verify: system kickoff message is present
+        assert!(
+            msgs.iter().any(|m| m
+                .content
+                .contains("Background results require your attention")),
+            "wake turn should push system kickoff message"
         );
     }
 

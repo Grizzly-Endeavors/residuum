@@ -271,13 +271,19 @@ pub async fn run_gateway(cfg: Config) -> Result<GatewayExit, IronclawError> {
     Ok(run_event_loop(rt).await)
 }
 
+/// Outcome of handling a background task result.
+struct BackgroundResultOutcome {
+    /// Whether observation should fire immediately (token threshold exceeded).
+    force_observe: bool,
+    /// Whether the agent should start an autonomous wake turn.
+    wake_requested: bool,
+}
+
 /// Handle a background task result: route through NOTIFY.yml or direct channels.
 ///
-/// When a result targets the agent feed, the formatted message is persisted to
+/// When a result targets the agent feed or wake, the formatted message is persisted to
 /// `recent_messages.json` and injected into the agent's conversation history
 /// immediately — no longer deferred to the next user turn.
-///
-/// Returns `true` if observation should fire immediately (token threshold exceeded).
 #[expect(
     clippy::too_many_arguments,
     reason = "threads subsystem references from the event loop for immediate persistence"
@@ -291,16 +297,21 @@ async fn handle_background_result(
     project_state: &SharedProjectState,
     tz: chrono_tz::Tz,
     observe_deadline: &mut Option<tokio::time::Instant>,
-) -> bool {
+) -> BackgroundResultOutcome {
+    let no_action = BackgroundResultOutcome {
+        force_observe: false,
+        wake_requested: false,
+    };
+
     // Pulse HEARTBEAT_OK results are silently logged — no routing, no agent events
     if matches!(result.source, TaskSource::Pulse) && result.summary.contains("HEARTBEAT_OK") {
         tracing::info!(task = %result.task_name, "pulse check: HEARTBEAT_OK");
-        return false;
+        return no_action;
     }
 
     let formatted = format_background_result(&result);
 
-    let should_inject = match &result.routing {
+    let (should_inject, wake) = match &result.routing {
         ResultRouting::Notify => {
             let notification = Notification {
                 task_name: result.task_name.clone(),
@@ -320,13 +331,18 @@ async fn handle_background_result(
                 "background result routed via NOTIFY.yml"
             );
 
-            outcome.agent_wake || outcome.agent_feed
+            (outcome.agent_wake || outcome.agent_feed, outcome.agent_wake)
         }
         ResultRouting::Direct(channels) => {
             let mut agent_inject = false;
+            let mut wake_requested = false;
             for channel_name in channels {
                 match channel_name.as_str() {
-                    "agent_wake" | "agent_feed" => agent_inject = true,
+                    "agent_wake" => {
+                        agent_inject = true;
+                        wake_requested = true;
+                    }
+                    "agent_feed" => agent_inject = true,
                     "inbox" => {
                         let notification = Notification {
                             task_name: result.task_name.clone(),
@@ -345,12 +361,12 @@ async fn handle_background_result(
                     }
                 }
             }
-            agent_inject
+            (agent_inject, wake_requested)
         }
     };
 
     if !should_inject {
-        return false;
+        return no_action;
     }
 
     // Persist immediately so the message survives restarts
@@ -371,7 +387,10 @@ async fn handle_background_result(
     // Inject into LLM context
     agent.inject_system_message(formatted);
 
-    force
+    BackgroundResultOutcome {
+        force_observe: force,
+        wake_requested: wake,
+    }
 }
 
 /// Dispatch a named server command from any client channel.
@@ -448,6 +467,178 @@ async fn handle_server_command(
                 .ok();
         }
     }
+}
+
+/// Run an autonomous agent wake turn triggered by a background result.
+///
+/// Follows the same pattern as the inbound message handler but does not push
+/// a user message — uses `run_wake_turn` which injects a system kickoff.
+/// Broadcasts responses with `reply_to: "wake"` and persists messages with
+/// `Visibility::Background`.
+///
+/// Returns `Some(GatewayExit)` if a reload signal fires during the turn.
+#[expect(
+    clippy::too_many_lines,
+    reason = "mirrors the inbound message handler: context build, turn loop, drain, persist, and leftover processing"
+)]
+async fn run_wake_turn_handler(
+    rt: &mut GatewayRuntime,
+    observe_deadline: &mut Option<tokio::time::Instant>,
+) -> Option<GatewayExit> {
+    tracing::info!("starting autonomous wake turn from background result");
+
+    let before = rt.agent.message_count();
+
+    let (idx_text, active_text) = build_project_context_strings(&rt.project_state).await;
+    let (skill_idx_text, skill_active_text) = build_skill_context_strings(&rt.skill_state).await;
+    let subagents_idx_text = build_subagents_context_string(&rt.layout.subagents_dir()).await;
+    let prompt_ctx = PromptContext {
+        projects: ProjectsContext {
+            index: idx_text.as_deref(),
+            active_context: active_text.as_deref(),
+        },
+        skills: SkillsContext {
+            index: skill_idx_text.as_deref(),
+            active_instructions: skill_active_text.as_deref(),
+        },
+        subagents: SubagentsContext {
+            index: subagents_idx_text.as_deref(),
+        },
+    };
+
+    let (interrupt_tx, mut interrupt_rx) = mpsc::channel::<Interrupt>(32);
+
+    let turn_result = {
+        let mut turn = std::pin::pin!(rt.agent.run_wake_turn(
+            &rt.broadcast_display,
+            &prompt_ctx,
+            &mut interrupt_rx,
+        ));
+
+        loop {
+            tokio::select! {
+                result = &mut turn => break result,
+                next_msg = rt.inbound_rx.recv() => {
+                    if let Some(next_routed) = next_msg {
+                        drop(interrupt_tx.try_send(
+                            Interrupt::UserMessage(next_routed.message)
+                        ));
+                    }
+                }
+                bg_result = rt.background_result_rx.recv() => {
+                    if let Some(result) = bg_result {
+                        drop(interrupt_tx.try_send(
+                            Interrupt::BackgroundResult(result)
+                        ));
+                    }
+                }
+                _ = rt.reload_rx.changed() => {
+                    rt.mcp_registry.write().await.disconnect_all().await;
+                    rt.server_handle.abort();
+                    return Some(GatewayExit::Reload);
+                }
+            }
+        }
+    };
+
+    // Drain leftover interrupts
+    drop(interrupt_tx);
+    let mut leftover_interrupts = Vec::new();
+    while let Ok(intr) = interrupt_rx.try_recv() {
+        leftover_interrupts.push(intr);
+    }
+
+    match turn_result {
+        Ok(texts) => {
+            for text in texts {
+                if rt
+                    .broadcast_tx
+                    .send(ServerMessage::Response {
+                        reply_to: "wake".to_string(),
+                        content: text,
+                    })
+                    .is_err()
+                {
+                    tracing::trace!("no broadcast receivers for wake response");
+                }
+            }
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "wake turn processing error");
+            if rt
+                .broadcast_tx
+                .send(ServerMessage::Error {
+                    reply_to: Some("wake".to_string()),
+                    message: e.to_string(),
+                })
+                .is_err()
+            {
+                tracing::trace!("no broadcast receivers for wake error");
+            }
+        }
+    }
+
+    let new_messages: Vec<_> = rt.agent.messages_since(before).to_vec();
+    let project_ctx = project_context_label(&rt.project_state, &rt.layout).await;
+    let action = persist_and_check_thresholds(
+        &new_messages,
+        &project_ctx,
+        Visibility::Background,
+        &rt.observer,
+        &rt.layout,
+        rt.tz,
+    )
+    .await;
+    if apply_observe_action(action, observe_deadline, rt.observer.cooldown_secs()) {
+        execute_observation(
+            &rt.observer,
+            &rt.reflector,
+            &rt.search_index,
+            &rt.layout,
+            &mut rt.agent,
+            rt.vector_store.as_ref(),
+            rt.embedding_provider.as_ref(),
+        )
+        .await;
+    }
+
+    // Process leftover interrupts from the wake turn
+    for intr in leftover_interrupts {
+        match intr {
+            Interrupt::BackgroundResult(bg_leftover) => {
+                let bg_outcome = handle_background_result(
+                    bg_leftover,
+                    &rt.notification_router,
+                    &rt.layout,
+                    &mut rt.agent,
+                    &rt.observer,
+                    &rt.project_state,
+                    rt.tz,
+                    observe_deadline,
+                )
+                .await;
+                if bg_outcome.force_observe {
+                    execute_observation(
+                        &rt.observer,
+                        &rt.reflector,
+                        &rt.search_index,
+                        &rt.layout,
+                        &mut rt.agent,
+                        rt.vector_store.as_ref(),
+                        rt.embedding_provider.as_ref(),
+                    )
+                    .await;
+                }
+                // Don't recursively trigger wake turns from leftovers — they'll
+                // be picked up on the next event loop iteration
+            }
+            Interrupt::UserMessage(leftover_msg) => {
+                rt.agent.inject_user_message(leftover_msg.content);
+            }
+        }
+    }
+
+    None
 }
 
 /// Run the main gateway event loop.
@@ -610,14 +801,19 @@ async fn run_event_loop(mut rt: GatewayRuntime) -> GatewayExit {
                 // Process leftover interrupts that arrived during the final LLM call
                 for intr in leftover_interrupts {
                     match intr {
-                        Interrupt::BackgroundResult(result) => {
-                            let force = handle_background_result(
-                                result, &rt.notification_router, &rt.layout,
+                        Interrupt::BackgroundResult(bg_leftover) => {
+                            let bg_outcome = handle_background_result(
+                                bg_leftover, &rt.notification_router, &rt.layout,
                                 &mut rt.agent, &rt.observer, &rt.project_state,
                                 rt.tz, &mut observe_deadline,
                             ).await;
-                            if force {
+                            if bg_outcome.force_observe {
                                 execute_observation(&rt.observer, &rt.reflector, &rt.search_index, &rt.layout, &mut rt.agent, rt.vector_store.as_ref(), rt.embedding_provider.as_ref()).await;
+                            }
+                            if bg_outcome.wake_requested
+                                && let Some(exit) = run_wake_turn_handler(&mut rt, &mut observe_deadline).await
+                            {
+                                return exit;
                             }
                         }
                         Interrupt::UserMessage(leftover_msg) => {
@@ -686,13 +882,18 @@ async fn run_event_loop(mut rt: GatewayRuntime) -> GatewayExit {
             // ── Background task results ──────────────────────────────────
             bg_result = rt.background_result_rx.recv() => {
                 if let Some(result) = bg_result {
-                    let force = handle_background_result(
+                    let bg_outcome = handle_background_result(
                         result, &rt.notification_router, &rt.layout,
                         &mut rt.agent, &rt.observer, &rt.project_state,
                         rt.tz, &mut observe_deadline,
                     ).await;
-                    if force {
+                    if bg_outcome.force_observe {
                         execute_observation(&rt.observer, &rt.reflector, &rt.search_index, &rt.layout, &mut rt.agent, rt.vector_store.as_ref(), rt.embedding_provider.as_ref()).await;
+                    }
+                    if bg_outcome.wake_requested
+                        && let Some(exit) = run_wake_turn_handler(&mut rt, &mut observe_deadline).await
+                    {
+                        return exit;
                     }
                 }
             }
