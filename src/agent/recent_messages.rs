@@ -45,6 +45,11 @@ impl RecentMessages {
         self.messages.len()
     }
 
+    /// Append all messages to the end of the buffer.
+    pub fn extend(&mut self, messages: Vec<Message>) {
+        self.messages.extend(messages);
+    }
+
     /// Remove all messages from the buffer.
     pub fn clear(&mut self) {
         self.messages.clear();

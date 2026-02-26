@@ -268,13 +268,6 @@ mod tests {
         }
     }
 
-    fn no_projects() -> ProjectsContext<'static> {
-        ProjectsContext {
-            index: None,
-            active_context: None,
-        }
-    }
-
     #[test]
     fn assemble_with_empty_identity() {
         let identity = IdentityFiles::default();
@@ -284,7 +277,7 @@ mod tests {
             &identity,
             &recent,
             &no_memory(),
-            &no_projects(),
+            &ProjectsContext::none(),
             &SkillsContext::none(),
             None,
         );
@@ -306,7 +299,7 @@ mod tests {
             &identity,
             &recent,
             &no_memory(),
-            &no_projects(),
+            &ProjectsContext::none(),
             &SkillsContext::none(),
             None,
         );
@@ -324,7 +317,7 @@ mod tests {
         let content = build_system_content(
             &identity,
             &no_memory(),
-            &no_projects(),
+            &ProjectsContext::none(),
             &SkillsContext::none(),
         );
         assert!(
@@ -348,7 +341,7 @@ mod tests {
         let content = build_system_content(
             &identity,
             &no_memory(),
-            &no_projects(),
+            &ProjectsContext::none(),
             &SkillsContext::none(),
         );
         assert!(
@@ -376,7 +369,12 @@ mod tests {
             observations: Some("episode ep-001: user prefers concise output"),
             recent_context: None,
         };
-        let content = build_system_content(&identity, &mem, &no_projects(), &SkillsContext::none());
+        let content = build_system_content(
+            &identity,
+            &mem,
+            &ProjectsContext::none(),
+            &SkillsContext::none(),
+        );
 
         assert!(
             content.contains("<OBSERVATION_LOG>"),
@@ -400,7 +398,12 @@ mod tests {
             observations: Some(""),
             recent_context: None,
         };
-        let content = build_system_content(&identity, &mem, &no_projects(), &SkillsContext::none());
+        let content = build_system_content(
+            &identity,
+            &mem,
+            &ProjectsContext::none(),
+            &SkillsContext::none(),
+        );
         assert!(
             !content.contains("OBSERVATION_LOG"),
             "empty observations should be skipped"
@@ -414,7 +417,7 @@ mod tests {
         let content = build_system_content(
             &identity,
             &no_memory(),
-            &no_projects(),
+            &ProjectsContext::none(),
             &SkillsContext::none(),
         );
         assert!(
@@ -434,7 +437,12 @@ mod tests {
             observations: Some("some observation"),
             recent_context: None,
         };
-        let content = build_system_content(&identity, &mem, &no_projects(), &SkillsContext::none());
+        let content = build_system_content(
+            &identity,
+            &mem,
+            &ProjectsContext::none(),
+            &SkillsContext::none(),
+        );
 
         assert!(
             content.contains("<SOUL.md>\nI am the soul.\n</SOUL.md>"),
@@ -469,7 +477,12 @@ mod tests {
             observations: None,
             recent_context: Some("We were implementing a caching layer."),
         };
-        let content = build_system_content(&identity, &mem, &no_projects(), &SkillsContext::none());
+        let content = build_system_content(
+            &identity,
+            &mem,
+            &ProjectsContext::none(),
+            &SkillsContext::none(),
+        );
 
         assert!(
             content.contains("<RECENT_CONTEXT>"),
@@ -488,7 +501,12 @@ mod tests {
             observations: None,
             recent_context: Some(""),
         };
-        let content = build_system_content(&identity, &mem, &no_projects(), &SkillsContext::none());
+        let content = build_system_content(
+            &identity,
+            &mem,
+            &ProjectsContext::none(),
+            &SkillsContext::none(),
+        );
         assert!(
             !content.contains("RECENT_CONTEXT"),
             "empty recent context should be skipped"
@@ -502,7 +520,12 @@ mod tests {
             observations: Some("some observations"),
             recent_context: Some("narrative summary"),
         };
-        let content = build_system_content(&identity, &mem, &no_projects(), &SkillsContext::none());
+        let content = build_system_content(
+            &identity,
+            &mem,
+            &ProjectsContext::none(),
+            &SkillsContext::none(),
+        );
 
         let obs_close = content.find("</OBSERVATION_LOG>");
         let ctx_open = content.find("<RECENT_CONTEXT>");
@@ -542,7 +565,7 @@ mod tests {
             &identity,
             &recent,
             &no_memory(),
-            &no_projects(),
+            &ProjectsContext::none(),
             &SkillsContext::none(),
             Some(&ctx),
         );
@@ -585,7 +608,7 @@ mod tests {
             &identity,
             &recent,
             &no_memory(),
-            &no_projects(),
+            &ProjectsContext::none(),
             &SkillsContext::none(),
             None,
         );
@@ -609,7 +632,7 @@ mod tests {
             &identity,
             &recent,
             &no_memory(),
-            &no_projects(),
+            &ProjectsContext::none(),
             &SkillsContext::none(),
             Some(&ctx),
         );
@@ -643,7 +666,7 @@ mod tests {
             &identity,
             &recent,
             &no_memory(),
-            &no_projects(),
+            &ProjectsContext::none(),
             &SkillsContext::none(),
             Some(&ctx),
         );
@@ -681,7 +704,7 @@ mod tests {
             &identity,
             &recent,
             &no_memory(),
-            &no_projects(),
+            &ProjectsContext::none(),
             &SkillsContext::none(),
             Some(&ctx),
         );
@@ -725,7 +748,7 @@ mod tests {
             &identity,
             &recent,
             &no_memory(),
-            &no_projects(),
+            &ProjectsContext::none(),
             &SkillsContext::none(),
             Some(&ctx),
         );
@@ -757,7 +780,7 @@ mod tests {
             &identity,
             &recent,
             &no_memory(),
-            &no_projects(),
+            &ProjectsContext::none(),
             &SkillsContext::none(),
             Some(&ctx),
         );
@@ -783,7 +806,8 @@ mod tests {
             ),
             active_instructions: None,
         };
-        let content = build_system_content(&identity, &no_memory(), &no_projects(), &skills);
+        let content =
+            build_system_content(&identity, &no_memory(), &ProjectsContext::none(), &skills);
         assert!(
             content.contains("<SKILLS_INDEX>"),
             "should have skills index section"
@@ -807,7 +831,8 @@ mod tests {
                 "<active_skill name=\"pdf\">\nUse this for PDFs.\n</active_skill>",
             ),
         };
-        let content = build_system_content(&identity, &no_memory(), &no_projects(), &skills);
+        let content =
+            build_system_content(&identity, &no_memory(), &ProjectsContext::none(), &skills);
         assert!(
             content.contains("<ACTIVE_SKILLS>"),
             "should have active skills section"
@@ -850,7 +875,8 @@ mod tests {
             index: Some(""),
             active_instructions: None,
         };
-        let content = build_system_content(&identity, &no_memory(), &no_projects(), &skills);
+        let content =
+            build_system_content(&identity, &no_memory(), &ProjectsContext::none(), &skills);
         assert!(
             !content.contains("SKILLS_INDEX"),
             "empty skills index should be skipped"
@@ -863,7 +889,7 @@ mod tests {
         let content = build_system_content(
             &identity,
             &no_memory(),
-            &no_projects(),
+            &ProjectsContext::none(),
             &SkillsContext::none(),
         );
         assert!(

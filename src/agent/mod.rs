@@ -140,15 +140,9 @@ impl Agent {
         layout: &crate::workspace::layout::WorkspaceLayout,
     ) -> Result<(), IronclawError> {
         let path = layout.recent_context_json();
-        match crate::memory::recent_context::load_recent_context(&path).await {
-            Ok(Some(ctx)) => {
-                self.recent_context = Some(ctx.narrative);
-            }
-            Ok(None) => {
-                self.recent_context = None;
-            }
-            Err(e) => return Err(e),
-        }
+        self.recent_context = crate::memory::recent_context::load_recent_context(&path)
+            .await?
+            .map(|ctx| ctx.narrative);
         Ok(())
     }
 
@@ -157,9 +151,7 @@ impl Agent {
     /// Used at startup to reload unobserved messages from `recent_messages.json`
     /// so the agent retains context from the previous run.
     pub fn restore_messages(&mut self, messages: Vec<Message>) {
-        for msg in messages {
-            self.recent_messages.push(msg);
-        }
+        self.recent_messages.extend(messages);
     }
 
     /// Seed the last user message timestamp from persisted data.
@@ -353,13 +345,6 @@ mod tests {
         McpRegistry::new_shared()
     }
 
-    fn no_projects() -> ProjectsContext<'static> {
-        ProjectsContext {
-            index: None,
-            active_context: None,
-        }
-    }
-
     /// Mock provider that returns pre-configured responses in sequence.
     ///
     /// Intentionally duplicated across agent, observer, and reflector tests — each mock
@@ -421,7 +406,7 @@ mod tests {
                 "hi",
                 &display,
                 None,
-                &no_projects(),
+                &ProjectsContext::none(),
                 &SkillsContext::none(),
                 &mut irx,
             )
@@ -468,7 +453,7 @@ mod tests {
                 "run echo test",
                 &display,
                 None,
-                &no_projects(),
+                &ProjectsContext::none(),
                 &SkillsContext::none(),
                 &mut irx,
             )
@@ -520,7 +505,7 @@ mod tests {
                 "what does echo test print?",
                 &display,
                 None,
-                &no_projects(),
+                &ProjectsContext::none(),
                 &SkillsContext::none(),
                 &mut irx,
             )
@@ -573,7 +558,7 @@ mod tests {
                 "loop forever",
                 &display,
                 None,
-                &no_projects(),
+                &ProjectsContext::none(),
                 &SkillsContext::none(),
                 &mut irx,
             )
@@ -603,7 +588,7 @@ mod tests {
                 "check status",
                 &display,
                 None,
-                &no_projects(),
+                &ProjectsContext::none(),
                 &SkillsContext::none(),
             )
             .await
@@ -644,7 +629,7 @@ mod tests {
                 "what's up?",
                 &display,
                 None,
-                &no_projects(),
+                &ProjectsContext::none(),
                 &SkillsContext::none(),
                 &mut irx,
             )
@@ -846,7 +831,7 @@ mod tests {
                 "hello",
                 &display,
                 None,
-                &no_projects(),
+                &ProjectsContext::none(),
                 &SkillsContext::none(),
                 &mut interrupt_rx,
             )
@@ -916,7 +901,7 @@ mod tests {
                 "hello",
                 &display,
                 None,
-                &no_projects(),
+                &ProjectsContext::none(),
                 &SkillsContext::none(),
                 &mut interrupt_rx,
             )
@@ -974,7 +959,7 @@ mod tests {
                 "hello",
                 &display,
                 None,
-                &no_projects(),
+                &ProjectsContext::none(),
                 &SkillsContext::none(),
                 &mut interrupt_rx,
             )
@@ -1012,7 +997,7 @@ mod tests {
                 "hello",
                 &display,
                 None,
-                &no_projects(),
+                &ProjectsContext::none(),
                 &SkillsContext::none(),
                 &mut irx,
             )
