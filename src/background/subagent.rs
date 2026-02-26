@@ -421,10 +421,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn subagent_includes_tools_md() {
+    async fn subagent_includes_environment_md() {
         let mut resources = make_resources("done");
         resources.identity = IdentityFiles {
-            tools: Some("You have access to exec tool.".to_string()),
+            environment: Some("You have access to exec tool.".to_string()),
             ..IdentityFiles::default()
         };
 
@@ -441,11 +441,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn subagent_excludes_soul_and_identity() {
+    async fn subagent_excludes_soul() {
         let identity = IdentityFiles {
             soul: Some("I am a test soul.".to_string()),
-            identity: Some("Self-evolving identity.".to_string()),
-            tools: Some("exec tool".to_string()),
+            environment: Some("exec tool".to_string()),
             user: Some("User likes Rust".to_string()),
             ..IdentityFiles::default()
         };
@@ -459,10 +458,9 @@ mod tests {
 
         assert!(!content.contains("test soul"), "should not include SOUL.md");
         assert!(
-            !content.contains("Self-evolving"),
-            "should not include IDENTITY.md"
+            content.contains("exec tool"),
+            "should include ENVIRONMENT.md"
         );
-        assert!(content.contains("exec tool"), "should include TOOLS.md");
         assert!(
             content.contains("User likes Rust"),
             "should include USER.md"
@@ -476,7 +474,7 @@ mod tests {
     #[test]
     fn subagent_system_content_includes_skills_index() {
         let identity = IdentityFiles {
-            tools: Some("exec tool".to_string()),
+            environment: Some("exec tool".to_string()),
             ..IdentityFiles::default()
         };
         let projects_ctx = ProjectsContext::none();

@@ -172,8 +172,8 @@ fn build_status_line(ctx: &StatusLine) -> String {
 
 /// Build a minimal system prompt for background sub-agent turns.
 ///
-/// Includes optional preset instructions, TOOLS.md, USER.md, the projects
-/// index, and skills index. Excludes SOUL, IDENTITY, AGENTS, MEMORY,
+/// Includes optional preset instructions, ENVIRONMENT.md, USER.md, the projects
+/// index, and skills index. Excludes SOUL, AGENTS, MEMORY,
 /// observations, recent context, active skill instructions, and the
 /// subagents index (subagents cannot spawn other subagents).
 #[must_use]
@@ -193,8 +193,10 @@ pub(crate) fn build_subagent_system_content(
         ));
     }
 
-    if let Some(tools_md) = &identity.tools {
-        parts.push(format!("<TOOLS.md>\n{tools_md}\n</TOOLS.md>"));
+    if let Some(environment_md) = &identity.environment {
+        parts.push(format!(
+            "<ENVIRONMENT.md>\n{environment_md}\n</ENVIRONMENT.md>"
+        ));
     }
 
     if let Some(user) = &identity.user {
@@ -220,17 +222,16 @@ pub(crate) fn build_subagent_system_content(
 ///
 /// Assembly order:
 /// 1. SOUL.md content
-/// 2. IDENTITY.md content
-/// 3. AGENTS.md content
-/// 4. TOOLS.md content
-/// 5. USER.md content
-/// 6. MEMORY.md content
-/// 7. Observation log (if present)
-/// 8. Recent context / narrative summary (if present)
-/// 9. Projects index (always present after bootstrap)
-/// 10. Active project context (when a project is active)
-/// 11. Skills index (available skills listing)
-/// 12. Active skill instructions (when skills are loaded)
+/// 2. AGENTS.md content
+/// 3. ENVIRONMENT.md content
+/// 4. USER.md content
+/// 5. MEMORY.md content
+/// 6. Observation log (if present)
+/// 7. Recent context / narrative summary (if present)
+/// 8. Projects index (always present after bootstrap)
+/// 9. Active project context (when a project is active)
+/// 10. Skills index (available skills listing)
+/// 11. Active skill instructions (when skills are loaded)
 fn build_system_content(
     identity: &IdentityFiles,
     memory_ctx: &MemoryContext<'_>,
@@ -244,16 +245,14 @@ fn build_system_content(
         parts.push(format!("<SOUL.md>\n{soul}\n</SOUL.md>"));
     }
 
-    if let Some(identity_md) = &identity.identity {
-        parts.push(format!("<IDENTITY.md>\n{identity_md}\n</IDENTITY.md>"));
-    }
-
     if let Some(agents) = &identity.agents {
         parts.push(format!("<AGENTS.md>\n{agents}\n</AGENTS.md>"));
     }
 
-    if let Some(tools_md) = &identity.tools {
-        parts.push(format!("<TOOLS.md>\n{tools_md}\n</TOOLS.md>"));
+    if let Some(environment_md) = &identity.environment {
+        parts.push(format!(
+            "<ENVIRONMENT.md>\n{environment_md}\n</ENVIRONMENT.md>"
+        ));
     }
 
     if let Some(user) = &identity.user {
@@ -384,38 +383,6 @@ mod tests {
         assert!(
             content.contains("User likes Rust"),
             "should include user content"
-        );
-    }
-
-    #[test]
-    fn system_content_includes_identity_md() {
-        let identity = IdentityFiles {
-            soul: Some("SOUL content".to_string()),
-            identity: Some("I have evolved my role over time.".to_string()),
-            ..IdentityFiles::default()
-        };
-
-        let content = build_system_content(
-            &identity,
-            &no_memory(),
-            &ProjectsContext::none(),
-            &SkillsContext::none(),
-            &SubagentsContext::none(),
-        );
-        assert!(
-            content.contains("SOUL content"),
-            "should include soul content"
-        );
-        assert!(
-            content.contains("evolved my role"),
-            "should include identity.md content"
-        );
-        // IDENTITY.md should appear after SOUL.md
-        let soul_pos = content.find("SOUL content").unwrap_or(usize::MAX);
-        let identity_pos = content.find("evolved my role").unwrap_or(usize::MAX);
-        assert!(
-            soul_pos < identity_pos,
-            "SOUL should appear before IDENTITY"
         );
     }
 
@@ -985,10 +952,10 @@ mod tests {
     // ── build_subagent_system_content tests ──────────────────────────────────
 
     #[test]
-    fn subagent_system_content_includes_tools_user_projects_skills() {
+    fn subagent_system_content_includes_environment_user_projects_skills() {
         let identity = IdentityFiles {
             soul: Some("SOUL content".to_string()),
-            tools: Some("tool docs".to_string()),
+            environment: Some("env notes".to_string()),
             user: Some("user prefs".to_string()),
             ..IdentityFiles::default()
         };
@@ -1003,7 +970,10 @@ mod tests {
         let content = build_subagent_system_content(&identity, &projects_ctx, &skills_ctx, None);
 
         assert!(!content.contains("SOUL"), "should exclude SOUL.md");
-        assert!(content.contains("tool docs"), "should include TOOLS.md");
+        assert!(
+            content.contains("env notes"),
+            "should include ENVIRONMENT.md"
+        );
         assert!(content.contains("user prefs"), "should include USER.md");
         assert!(
             content.contains("| proj | active |"),

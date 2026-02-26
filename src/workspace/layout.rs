@@ -45,10 +45,10 @@ impl WorkspaceLayout {
         self.root.join("MEMORY.md")
     }
 
-    /// Path to TOOLS.md -- tool usage guidelines.
+    /// Path to ENVIRONMENT.md -- local environment notes.
     #[must_use]
-    pub fn tools_md(&self) -> PathBuf {
-        self.root.join("TOOLS.md")
+    pub fn environment_md(&self) -> PathBuf {
+        self.root.join("ENVIRONMENT.md")
     }
 
     /// Path to the memory directory for episodes and persistent state.
@@ -153,12 +153,6 @@ impl WorkspaceLayout {
         self.root.join("archive/inbox")
     }
 
-    /// Path to IDENTITY.md -- agent self-description, updated as role evolves.
-    #[must_use]
-    pub fn identity_md(&self) -> PathBuf {
-        self.root.join("IDENTITY.md")
-    }
-
     /// Path to memory/OBSERVER.md -- observer extraction system prompt.
     #[must_use]
     pub fn observer_md(&self) -> PathBuf {
@@ -245,9 +239,9 @@ mod tests {
             "memory_dir path"
         );
         assert_eq!(
-            layout.identity_md(),
-            PathBuf::from("/tmp/ws/IDENTITY.md"),
-            "identity_md path"
+            layout.environment_md(),
+            PathBuf::from("/tmp/ws/ENVIRONMENT.md"),
+            "environment_md path"
         );
         assert_eq!(
             layout.observer_md(),

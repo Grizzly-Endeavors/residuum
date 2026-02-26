@@ -127,14 +127,14 @@ SubAgents get minimal context by default:
 |----------|-----------|
 | Task prompt | The work to be done |
 | USER.md | Timezone, preferences that affect judgment |
-| TOOLS.md | Tool usage conventions |
+| ENVIRONMENT.md | Local environment notes |
 | Projects index | SubAgents can activate/deactivate projects |
 | `context` (if provided) | Inline context from the spawner |
 | `context_files` (if provided) | Explicit file references from the spawner |
 
 | Excluded | Rationale |
 |----------|-----------|
-| SOUL.md / IDENTITY.md | Worker, not conversationalist |
+| SOUL.md | Worker, not conversationalist |
 | Observation log | No need for history — task is self-contained |
 | Skills metadata | Not activating skills (can read files directly if needed) |
 | MEMORY.md | Curated memory is for the main agent's judgment |
@@ -166,7 +166,7 @@ The `subagent_spawn` tool's `tools` parameter can restrict this set further.
 
 Each SubAgent runs a simplified turn loop — same structure as the main agent's, but with the stripped-down context and no interrupt checking (these are fire-and-forget workers that run to completion or cancellation):
 
-1. Assemble minimal context (task prompt + USER.md + TOOLS.md + projects index + context).
+1. Assemble minimal context (task prompt + USER.md + ENVIRONMENT.md + projects index + context).
 2. Call model provider.
 3. Execute tool calls if any, loop back.
 4. Check cancellation token between iterations.
@@ -826,7 +826,7 @@ The highest-impact change: user messages can be injected mid-turn.
 
 - Define `BackgroundTask`, `BackgroundResult`, `TaskSource`, `TaskStatus`, `Execution`, `ModelTier`.
 - Implement `BackgroundTaskSpawner` with semaphore-bounded `tokio::spawn` and `CancellationToken`.
-- Implement SubAgent execution: minimal context assembly (USER.md + TOOLS.md + projects index + task prompt), simplified turn loop, transcript writing.
+- Implement SubAgent execution: minimal context assembly (USER.md + ENVIRONMENT.md + projects index + task prompt), simplified turn loop, transcript writing.
 - Implement Script execution: child process spawning, output capture, timeout.
 - NOTIFY.yml parsing and routing: load routing config, dispatch results to listed channels by task name.
 - `NotificationChannel` trait and built-in channel implementations (`agent_wake`, `agent_feed`, `inbox`).

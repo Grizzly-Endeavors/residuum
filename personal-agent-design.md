@@ -28,7 +28,7 @@ Reference: [Mastra Observational Memory](https://mastra.ai/research/observationa
 
 #### What stays the same
 
-- **Identity layer**: SOUL.md, USER.md, AGENTS.md, IDENTITY.md, TOOLS.md — stable, curated, auto-loaded at startup. These define who the agent is and who the user is. OM does not touch these.
+- **Identity layer**: SOUL.md, USER.md, AGENTS.md, ENVIRONMENT.md — stable, curated, auto-loaded at startup. These define who the agent is and who the user is. OM does not touch these.
 - **MEMORY.md**: Long-term curated facts and preferences. Still loaded in private contexts. Still manually maintained by the agent and user.
 - **Hybrid search**: BM25 + vector retrieval over workspace files. Still available for deep retrieval beyond the observation window.
 - **Pre-compaction flush**: Still fires as a safety net. OM reduces its importance but doesn't replace it.

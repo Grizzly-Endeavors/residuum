@@ -60,7 +60,7 @@ The core loop is structurally identical in both:
 
 | Context Section | OpenClaw | IronClaw |
 |-----------------|----------|----------|
-| Identity files | SOUL.md, AGENTS.md, USER.md, MEMORY.md, TOOLS.md | Same set + IDENTITY.md (self-evolved) |
+| Identity files | SOUL.md, AGENTS.md, USER.md, MEMORY.md, TOOLS.md | SOUL.md (with Identity section), AGENTS.md, USER.md, MEMORY.md, ENVIRONMENT.md |
 | Memory | Session transcripts (JSONL), MEMORY.md, last 2 daily logs | Observation log (always in context), recent context narrative, episode transcripts on demand |
 | Projects | No project system | Projects index + active project context + file manifest |
 | Skills | Per-agent skill list, loaded at config time | Progressive disclosure: metadata always visible, full body on activation |

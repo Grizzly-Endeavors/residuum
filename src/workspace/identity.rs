@@ -11,34 +11,31 @@ use super::layout::WorkspaceLayout;
 pub struct IdentityFiles {
     /// SOUL.md -- core agent identity and personality.
     pub soul: Option<String>,
-    /// IDENTITY.md -- agent self-description, updated as role evolves.
-    pub identity: Option<String>,
     /// AGENTS.md -- agent capabilities and behavior rules.
     pub agents: Option<String>,
     /// USER.md -- user preferences and context.
     pub user: Option<String>,
     /// MEMORY.md -- persistent memory across restarts.
     pub memory: Option<String>,
-    /// TOOLS.md -- tool usage guidelines (optional).
-    pub tools: Option<String>,
+    /// ENVIRONMENT.md -- local environment notes (optional).
+    pub environment: Option<String>,
 }
 
 impl IdentityFiles {
     /// Load all identity files from the workspace.
     ///
     /// Missing files are silently treated as `None` (only the required ones
-    /// are created during bootstrap; TOOLS.md is always optional).
+    /// are created during bootstrap; ENVIRONMENT.md is always optional).
     ///
     /// # Errors
     /// Returns `IronclawError::Workspace` if a file exists but cannot be read.
     pub async fn load(layout: &WorkspaceLayout) -> Result<Self, IronclawError> {
         Ok(Self {
             soul: read_optional(&layout.soul_md()).await?,
-            identity: read_optional(&layout.identity_md()).await?,
             agents: read_optional(&layout.agents_md()).await?,
             user: read_optional(&layout.user_md()).await?,
             memory: read_optional(&layout.memory_md()).await?,
-            tools: read_optional(&layout.tools_md()).await?,
+            environment: read_optional(&layout.environment_md()).await?,
         })
     }
 }
@@ -76,13 +73,12 @@ mod tests {
         let identity = IdentityFiles::load(&layout).await.unwrap();
 
         assert!(identity.soul.is_some(), "soul should be loaded");
-        assert!(identity.identity.is_some(), "identity should be loaded");
         assert!(identity.agents.is_some(), "agents should be loaded");
         assert!(identity.user.is_some(), "user should be loaded");
         assert!(identity.memory.is_some(), "memory should be loaded");
         assert!(
-            identity.tools.is_none(),
-            "tools should be None (not created by bootstrap)"
+            identity.environment.is_none(),
+            "environment should be None (not created by bootstrap)"
         );
     }
 

@@ -10,6 +10,13 @@ const DEFAULT_SOUL: &str = "\
 
 You are IronClaw, a personal AI assistant. You are helpful, direct, and concise.
 You use tools when needed to accomplish tasks the user requests.
+
+## Identity
+
+- **Name**: IronClaw
+- **Archetype**: Personal assistant
+- **Tone**: Direct and helpful
+- **Emoji**: 🦅
 ";
 
 /// Default content for AGENTS.md when creating a new workspace.
@@ -33,13 +40,6 @@ const DEFAULT_MEMORY: &str = "\
 # Memory
 
 Persistent notes across restarts. The agent can update this file.
-";
-
-/// Default content for IDENTITY.md when creating a new workspace.
-const DEFAULT_IDENTITY: &str = "\
-# Identity
-
-Describe yourself here. This file can be updated as your understanding of your role evolves.
 ";
 
 /// Default observer content guidance written to memory/OBSERVER.md.
@@ -148,7 +148,6 @@ pub async fn ensure_workspace(layout: &WorkspaceLayout) -> Result<(), IronclawEr
     write_if_missing(&layout.agents_md(), DEFAULT_AGENTS).await?;
     write_if_missing(&layout.user_md(), DEFAULT_USER).await?;
     write_if_missing(&layout.memory_md(), DEFAULT_MEMORY).await?;
-    write_if_missing(&layout.identity_md(), DEFAULT_IDENTITY).await?;
     write_if_missing(&layout.observer_md(), DEFAULT_OBSERVER_PROMPT).await?;
     write_if_missing(&layout.reflector_md(), DEFAULT_REFLECTOR_PROMPT).await?;
     write_if_missing(&layout.heartbeat_yml(), DEFAULT_HEARTBEAT).await?;
@@ -198,7 +197,6 @@ mod tests {
         assert!(layout.agents_md().exists(), "AGENTS.md should exist");
         assert!(layout.user_md().exists(), "USER.md should exist");
         assert!(layout.memory_md().exists(), "MEMORY.md should exist");
-        assert!(layout.identity_md().exists(), "IDENTITY.md should exist");
         assert!(layout.observer_md().exists(), "OBSERVER.md should exist");
         assert!(layout.reflector_md().exists(), "REFLECTOR.md should exist");
         assert!(

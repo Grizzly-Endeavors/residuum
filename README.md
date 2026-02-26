@@ -147,12 +147,11 @@ All agent state lives in human-readable files under `~/.ironclaw/workspace/`:
 
 ```
 workspace/
-├── SOUL.md                 # Agent persona and boundaries
-├── IDENTITY.md             # Self-evolved agent identity
+├── SOUL.md                 # Agent persona, boundaries, and identity
 ├── AGENTS.md               # Operating instructions
 ├── USER.md                 # User info and preferences
 ├── MEMORY.md               # Curated long-term memory
-├── TOOLS.md                # Tool usage notes
+├── ENVIRONMENT.md          # Local environment notes (optional)
 ├── HEARTBEAT.yml           # Pulse schedule definitions
 ├── NOTIFY.yml              # Notification routing
 │

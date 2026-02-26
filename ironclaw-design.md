@@ -210,7 +210,7 @@ The gateway watches `config.toml`, workspace identity files, `HEARTBEAT.yml`, `N
 ├── AGENTS.md                     # Operating instructions for the agent
 ├── USER.md                       # User info & preferences
 ├── MEMORY.md                     # Curated long-term memory
-├── TOOLS.md                      # Local tool notes
+├── ENVIRONMENT.md                # Local environment notes
 ├── HEARTBEAT.yml                 # Structured pulse schedule
 ├── NOTIFY.yml                    # Notification routing
 │
@@ -269,7 +269,7 @@ These are markdown files the gateway loads verbatim and inserts into the LLM con
 | `AGENTS.md` | Always |
 | `USER.md` | Always (DM sessions) |
 | `MEMORY.md` | Always (DM sessions) |
-| `TOOLS.md` | Always |
+| `ENVIRONMENT.md` | When present |
 | `memory/observations.json` | Always (global timeline) |
 
 ### Files available via agent tool calls (progressive disclosure)
@@ -405,7 +405,7 @@ Context assembly is the critical integration point. It builds the full prompt fr
 │ System prompt                       │
 │ ├── SOUL.md                         │
 │ ├── AGENTS.md                       │
-│ ├── TOOLS.md                        │
+│ ├── ENVIRONMENT.md                  │
 │ ├── Available skill metadata        │  ← names + descriptions only
 │ └── Active skill instructions       │  ← full SKILL.md body, per activated skill
 ├─────────────────────────────────────┤
