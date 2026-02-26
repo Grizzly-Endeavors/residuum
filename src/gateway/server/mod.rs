@@ -4,8 +4,8 @@
 //! through a single agent instance. All messages are forwarded to all clients;
 //! verbose filtering is handled client-side.
 
-mod context;
 mod cron;
+mod helpers;
 mod memory;
 mod spawn_helpers;
 mod startup;
@@ -44,11 +44,11 @@ use crate::workspace::layout::WorkspaceLayout;
 use super::display::{BroadcastDisplay, ChannelAwareDisplay};
 use super::protocol::ServerMessage;
 
-use context::{
+use crate::agent::context::loading::{
     build_project_context_strings, build_skill_context_strings, build_subagents_context_string,
-    project_context_label,
 };
 use cron::spawn_due_cron_jobs;
+use helpers::project_context_label;
 use memory::{
     execute_observation, persist_and_check_thresholds, run_forced_observe, run_forced_reflect,
 };

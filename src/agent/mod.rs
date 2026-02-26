@@ -89,45 +89,14 @@ impl Agent {
 
     /// Reload observations from the observation log file.
     ///
-    /// Deserializes the JSON into an `ObservationLog` and formats it as
-    /// human-readable text for the system prompt.
-    ///
     /// # Errors
     /// Returns an error if the file exists but cannot be read or parsed.
     pub async fn reload_observations(
         &mut self,
         layout: &crate::workspace::layout::WorkspaceLayout,
     ) -> Result<(), IronclawError> {
-        let path = layout.observations_json();
-        match tokio::fs::read_to_string(&path).await {
-            Ok(content) if !content.trim().is_empty() => {
-                let log: crate::memory::types::ObservationLog = serde_json::from_str(&content)
-                    .map_err(|e| {
-                        IronclawError::Memory(format!(
-                            "failed to parse observations at {}: {e}",
-                            path.display()
-                        ))
-                    })?;
-                let formatted = log.display_formatted();
-                self.observations = if formatted.is_empty() {
-                    None
-                } else {
-                    Some(formatted)
-                };
-            }
-            Ok(_) => {
-                self.observations = None;
-            }
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                self.observations = None;
-            }
-            Err(e) => {
-                return Err(IronclawError::Memory(format!(
-                    "failed to read observations at {}: {e}",
-                    path.display()
-                )));
-            }
-        }
+        self.observations =
+            context::loading::load_observations(&layout.observations_json()).await?;
         Ok(())
     }
 
@@ -139,10 +108,8 @@ impl Agent {
         &mut self,
         layout: &crate::workspace::layout::WorkspaceLayout,
     ) -> Result<(), IronclawError> {
-        let path = layout.recent_context_json();
-        self.recent_context = crate::memory::recent_context::load_recent_context(&path)
-            .await?
-            .map(|ctx| ctx.narrative);
+        self.recent_context =
+            context::loading::load_recent_context_narrative(&layout.recent_context_json()).await?;
         Ok(())
     }
 
