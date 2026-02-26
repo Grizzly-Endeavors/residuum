@@ -79,7 +79,7 @@ pub(crate) async fn build_spawn_resources(
     };
 
     let build_config = SubAgentBuildConfig {
-        gated_tools: HashSet::from(["exec"]),
+        gated_tools: HashSet::new(),
         preset_tool_restriction,
         workspace_layout: ctx.layout.clone(),
         identity: ctx.identity.clone(),

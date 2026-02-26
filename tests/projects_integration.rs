@@ -666,74 +666,21 @@ mod projects_integration {
     // ── ToolFilter integration ────────────────────────────────────────────────
 
     #[tokio::test]
-    async fn tool_filter_gates_exec_per_project() {
-        let (_dir, _layout, state) = setup().await;
-        let tz = chrono_tz::UTC;
+    async fn exec_always_available_without_gating() {
+        let (_dir, _layout, _state) = setup().await;
 
-        let gated: HashSet<&str> = HashSet::from(["exec"]);
-        let filter = ToolFilter::new_shared(gated);
-
-        // Without active project, exec is gated
-        {
-            let f = filter.read().await;
-            assert!(!f.is_available("exec"), "exec should be gated by default");
-            assert!(
-                f.is_available("read_file"),
-                "non-gated tools should always be available"
-            );
-        }
-
-        // Create a project with tools: ["exec"]
-        let create_tool = ProjectCreateTool::new(Arc::clone(&state), tz);
-        create_tool
-            .execute(serde_json::json!({
-                "name": "With Exec",
-                "description": "project that enables exec",
-                "tools": ["exec"]
-            }))
-            .await
-            .unwrap();
-
-        // Activate — should enable exec via tool filter
-        let activate_tool = ProjectActivateTool::new(
-            Arc::clone(&state),
-            permissive_policy(),
-            Arc::clone(&filter),
-            empty_mcp(),
-            empty_skills(),
-        );
-        activate_tool
-            .execute(serde_json::json!({"name": "With Exec"}))
-            .await
-            .unwrap();
+        // No gated tools — exec should always be available
+        let filter = ToolFilter::new_shared(HashSet::new());
 
         {
             let f = filter.read().await;
             assert!(
                 f.is_available("exec"),
-                "exec should be enabled after activating project with tools: [exec]"
+                "exec should be available without project activation"
             );
-        }
-
-        // Deactivate — exec should be gated again
-        let deactivate_tool = ProjectDeactivateTool::new(
-            Arc::clone(&state),
-            permissive_policy(),
-            Arc::clone(&filter),
-            empty_mcp(),
-            empty_skills(),
-            tz,
-        );
-        deactivate_tool
-            .execute(serde_json::json!({"log": "testing tool filter"}))
-            .await
-            .unwrap();
-
-        {
-            let f = filter.read().await;
             assert!(
-                !f.is_available("exec"),
-                "exec should be gated after deactivation"
+                f.is_available("read_file"),
+                "non-gated tools should always be available"
             );
         }
     }

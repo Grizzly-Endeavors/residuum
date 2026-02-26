@@ -149,7 +149,7 @@ SubAgents have access to the full tool set by default, including project managem
 | `read` | Always | Read any workspace file |
 | `write` | Always | Subject to project write scoping when a project is active |
 | `edit` | Always | Subject to project write scoping |
-| `exec` | When project opts in | Same gating as main agent |
+| `exec` | Always | Shell command execution |
 | `memory_search` | Always | Can search for relevant history |
 | `memory_get` | Always | Can retrieve episode details |
 | `project_activate` | Always | Can activate a project for scoped work |

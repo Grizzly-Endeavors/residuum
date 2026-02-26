@@ -301,12 +301,13 @@ mod tests {
         let policy = PathPolicy::new_shared(std::path::PathBuf::from("/tmp"));
         registry.register_defaults(FileTracker::new_shared(), policy);
 
-        let filter_exec = ToolFilter::new(HashSet::from(["exec"]));
-        let defs = registry.definitions(&filter_exec);
-        assert_eq!(defs.len(), 3, "exec should be filtered out");
+        // Gate exec artificially to test filtering logic
+        let filter_with_gate = ToolFilter::new(HashSet::from(["exec"]));
+        let defs = registry.definitions(&filter_with_gate);
+        assert_eq!(defs.len(), 3, "gated tool should be filtered out");
         assert!(
             defs.iter().all(|d| d.name != "exec"),
-            "exec should not appear in definitions"
+            "gated tool should not appear in definitions"
         );
     }
 
@@ -316,12 +317,13 @@ mod tests {
         let policy = PathPolicy::new_shared(std::path::PathBuf::from("/tmp"));
         registry.register_defaults(FileTracker::new_shared(), policy);
 
-        let filter_exec = ToolFilter::new(HashSet::from(["exec"]));
+        // Gate exec artificially to test blocking logic
+        let filter_with_gate = ToolFilter::new(HashSet::from(["exec"]));
         let result = registry
             .execute(
                 "exec",
                 serde_json::json!({"command": "echo test"}),
-                &filter_exec,
+                &filter_with_gate,
             )
             .await
             .unwrap();

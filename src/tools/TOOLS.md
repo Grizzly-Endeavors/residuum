@@ -2,8 +2,6 @@
 
 This document is the source of truth for every tool exposed to the LLM. It must be kept in sync with the Rust `definition()` implementations in this directory.
 
-**Gating note:** `exec` is a gated tool — only available when the active project's `tools` list opts it in. All other tools listed here are always available.
-
 ---
 
 ## `read_file`
@@ -106,8 +104,6 @@ On error:
 ## `exec`
 
 **Source:** `exec.rs` · `ExecTool`
-
-**Gated:** requires an active project with `"exec"` in its `tools` list.
 
 **Description sent to LLM:**
 > Execute a shell command and return its output. Commands run via `sh -c` with a configurable timeout (default 120 seconds).
@@ -216,7 +212,7 @@ On success: summary string like `"Activated project '{name}'. Manifest: {N} note
 
 On error: project not found or activation failure message.
 
-**Side effects:** Updates `PathPolicy` to scope writes to the project root; enables gated tools from the project's `tools` frontmatter list; activates MCP servers with reference counting (servers are shared when multiple agents activate the same project simultaneously — they are only stopped when the last agent deactivates); rescans skills to include project-scoped skills.
+**Side effects:** Updates `PathPolicy` to scope writes to the project root; activates MCP servers with reference counting (servers are shared when multiple agents activate the same project simultaneously — they are only stopped when the last agent deactivates); rescans skills to include project-scoped skills.
 
 ---
 
@@ -239,7 +235,7 @@ On success: `"Deactivated project '{name}'. Log entry recorded."`
 
 On error: no active project, or empty `log`.
 
-**Side effects:** Resets `PathPolicy` to no active project; clears all gated tool permissions; decrements MCP server reference count (servers are only disconnected when the last agent deactivates — see `project_activate`); rescans skills without project dir.
+**Side effects:** Resets `PathPolicy` to no active project; decrements MCP server reference count (servers are only disconnected when the last agent deactivates — see `project_activate`); rescans skills without project dir.
 
 ---
 

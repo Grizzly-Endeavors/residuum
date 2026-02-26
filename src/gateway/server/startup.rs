@@ -310,8 +310,7 @@ pub(super) async fn initialize(cfg: &Config) -> Result<GatewayComponents, Ironcl
 
     // Tool registry
     let path_policy = crate::tools::PathPolicy::new_shared(layout.root().to_path_buf());
-    let tool_filter =
-        crate::tools::ToolFilter::new_shared(std::collections::HashSet::from(["exec"]));
+    let tool_filter = crate::tools::ToolFilter::new_shared(std::collections::HashSet::new());
     let mcp_registry = crate::mcp::McpRegistry::new_shared();
     let mut tools = ToolRegistry::new();
     let file_tracker = crate::tools::FileTracker::new_shared();

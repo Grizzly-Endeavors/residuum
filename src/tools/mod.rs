@@ -78,14 +78,14 @@ impl ToolResult {
 /// Shared tool filter, consulted by `ToolRegistry` to gate tools per-project.
 pub type SharedToolFilter = Arc<RwLock<ToolFilter>>;
 
-/// Controls which gated tools are visible and executable.
+/// Controls which tools are visible and executable.
 ///
-/// Some tools (e.g. `exec`) are "gated" — only available when the active
-/// project opts in via its `tools` field. Core tools are always visible.
-///
-/// Subagent presets can additionally restrict tools via `denied_tools`
+/// Supports gated tools (only available when the active project opts in
+/// via its `tools` field) and subagent preset restrictions via `denied_tools`
 /// (permanently blocked regardless of project activation) or `allowed_tools`
 /// (only listed tools are available, overrides all other logic).
+///
+/// Currently no tools are gated by default — all tools are always available.
 #[derive(Clone)]
 pub struct ToolFilter {
     /// Tool names that require an active project to opt in.
@@ -210,33 +210,37 @@ mod tests {
 
     #[test]
     fn tool_filter_gating() {
-        let mut filter = ToolFilter::new(HashSet::from(["exec"]));
+        let mut filter = ToolFilter::new(HashSet::from(["hypothetical_gated"]));
         assert!(
-            !filter.is_available("exec"),
-            "exec should be gated and unavailable by default"
+            !filter.is_available("hypothetical_gated"),
+            "gated tool should be unavailable by default"
         );
         assert!(
             filter.is_available("read_file"),
             "ungated tools should always be available"
         );
-
-        filter.enable(&["exec".to_string()]);
         assert!(
             filter.is_available("exec"),
-            "exec should be available after enabling"
+            "exec should always be available (not gated)"
+        );
+
+        filter.enable(&["hypothetical_gated".to_string()]);
+        assert!(
+            filter.is_available("hypothetical_gated"),
+            "gated tool should be available after enabling"
         );
 
         filter.clear_enabled();
         assert!(
-            !filter.is_available("exec"),
-            "exec should be unavailable after clearing"
+            !filter.is_available("hypothetical_gated"),
+            "gated tool should be unavailable after clearing"
         );
     }
 
     #[tokio::test]
     async fn tool_filter_preset_denied() {
         let filter = ToolFilter::new_shared_with_denied(
-            HashSet::from(["exec"]),
+            HashSet::new(),
             HashSet::from(["write_file".to_string()]),
         );
         let f = filter.read().await;
@@ -245,8 +249,8 @@ mod tests {
             "preset-denied tool should be unavailable"
         );
         assert!(
-            !f.is_available("exec"),
-            "gated tool should still be unavailable"
+            f.is_available("exec"),
+            "exec should be available (not gated)"
         );
         assert!(
             f.is_available("read_file"),
