@@ -116,17 +116,13 @@ async fn handle_connection(socket: WebSocket, state: GatewayState) {
                 // Signal the main loop and HTTP server
                 state.reload_sender.send(true).ok();
             }
-            ClientMessage::Observe => {
-                tracing::info!("observe requested by client");
-                state.observe_notify.notify_one();
-            }
-            ClientMessage::Reflect => {
-                tracing::info!("reflect requested by client");
-                state.reflect_notify.notify_one();
-            }
-            ClientMessage::ContextRequest => {
-                tracing::info!("context request from client");
-                state.context_notify.notify_one();
+            ClientMessage::ServerCommand { name, args } => {
+                tracing::info!(command = %name, "server command from client");
+                state
+                    .command_tx
+                    .send(super::ServerCommand { name, args })
+                    .await
+                    .ok();
             }
             ClientMessage::InboxAdd { body } => {
                 tracing::info!("inbox add requested by client");

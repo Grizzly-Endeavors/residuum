@@ -5,7 +5,7 @@
 //! - `connect [url]`: connects a CLI client to a running gateway
 
 use ironclaw::channels::cli::CliClient;
-use ironclaw::channels::cli::commands::{CommandAction, SlashCommand};
+use ironclaw::channels::cli::commands::CommandEffect;
 use ironclaw::config::Config;
 use ironclaw::error::IronclawError;
 use ironclaw::gateway::protocol::{ClientMessage, ServerMessage};
@@ -128,9 +128,9 @@ async fn run_connect(url: &str, verbose: bool) -> Result<(), IronclawError> {
                 };
 
                 // Check for slash commands
-                if let Some(cmd) = SlashCommand::parse(&line) {
-                    match client.handle_command(&cmd) {
-                        CommandAction::ToggleVerbose => {
+                if let Some(effect) = client.handle_command(&line) {
+                    match effect {
+                        CommandEffect::ToggleVerbose => {
                             let new_verbose = !client.verbose();
                             client.set_verbose(new_verbose);
                             let label = if new_verbose { "on" } else { "off" };
@@ -140,28 +140,27 @@ async fn run_connect(url: &str, verbose: bool) -> Result<(), IronclawError> {
                                 &ClientMessage::SetVerbose { enabled: new_verbose },
                             ).await?;
                         }
-                        CommandAction::Reload => {
+                        CommandEffect::Reload => {
                             send_client_message(&mut ws_tx, &ClientMessage::Reload).await?;
                         }
-                        CommandAction::ObserveRequest => {
-                            send_client_message(&mut ws_tx, &ClientMessage::Observe).await?;
+                        CommandEffect::ServerCommand { name, args } => {
+                            send_client_message(
+                                &mut ws_tx,
+                                &ClientMessage::ServerCommand {
+                                    name: name.to_string(),
+                                    args,
+                                },
+                            ).await?;
                         }
-                        CommandAction::ReflectRequest => {
-                            send_client_message(&mut ws_tx, &ClientMessage::Reflect).await?;
-                        }
-                        CommandAction::ContextRequest => {
-                            send_client_message(&mut ws_tx, &ClientMessage::ContextRequest).await?;
-                        }
-                        CommandAction::InboxAdd(body) => {
+                        CommandEffect::InboxAdd(body) => {
                             send_client_message(
                                 &mut ws_tx,
                                 &ClientMessage::InboxAdd { body },
                             )
                             .await?;
                         }
-                        CommandAction::Quit => break,
-                        CommandAction::PrintOutput(text) => eprintln!("{text}"),
-                        CommandAction::None => {}
+                        CommandEffect::Quit => break,
+                        CommandEffect::PrintLocal(text) => eprintln!("{text}"),
                     }
                     // Slash commands don't trigger agent turns; unblock prompt immediately
                     gate_tx.send(()).ok();

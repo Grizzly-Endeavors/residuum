@@ -248,13 +248,11 @@ mod gateway_integration {
                         break;
                     }
                 }
-                // SetVerbose (client-side), Reload, Observe, Reflect, ContextRequest,
-                // InboxAdd not handled in test stub
+                // SetVerbose (client-side), Reload, ServerCommand, InboxAdd
+                // not handled in test stub
                 ClientMessage::SetVerbose { .. }
                 | ClientMessage::Reload
-                | ClientMessage::Observe
-                | ClientMessage::Reflect
-                | ClientMessage::ContextRequest
+                | ClientMessage::ServerCommand { .. }
                 | ClientMessage::InboxAdd { .. } => {}
             }
         }

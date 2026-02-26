@@ -22,12 +22,13 @@ pub enum ClientMessage {
     Ping,
     /// Request the gateway to reload its configuration.
     Reload,
-    /// Request a forced observation cycle.
-    Observe,
-    /// Request a forced reflection cycle.
-    Reflect,
-    /// Request a token usage summary.
-    ContextRequest,
+    /// A named server command (observe, reflect, context, etc.).
+    ServerCommand {
+        /// Command name.
+        name: String,
+        /// Optional argument text.
+        args: Option<String>,
+    },
     /// Add a message to the inbox without triggering an agent turn.
     InboxAdd {
         /// The message body to add.
@@ -191,22 +192,30 @@ mod tests {
     }
 
     #[test]
-    fn client_message_deserialize_observe() {
-        let json = r#"{"type":"observe"}"#;
+    fn client_message_deserialize_server_command() {
+        let json = r#"{"type":"server_command","name":"observe","args":null}"#;
         let msg: ClientMessage = serde_json::from_str(json).unwrap();
         assert!(
-            matches!(msg, ClientMessage::Observe),
-            "should deserialize to Observe"
+            matches!(
+                &msg,
+                ClientMessage::ServerCommand { name, args }
+                    if name == "observe" && args.is_none()
+            ),
+            "should deserialize to ServerCommand with name=observe"
         );
     }
 
     #[test]
-    fn client_message_deserialize_reflect() {
-        let json = r#"{"type":"reflect"}"#;
+    fn client_message_deserialize_server_command_with_args() {
+        let json = r#"{"type":"server_command","name":"custom","args":"some arg"}"#;
         let msg: ClientMessage = serde_json::from_str(json).unwrap();
         assert!(
-            matches!(msg, ClientMessage::Reflect),
-            "should deserialize to Reflect"
+            matches!(
+                &msg,
+                ClientMessage::ServerCommand { name, args }
+                    if name == "custom" && args.as_deref() == Some("some arg")
+            ),
+            "should deserialize ServerCommand with args"
         );
     }
 
@@ -240,12 +249,19 @@ mod tests {
     }
 
     #[test]
-    fn client_message_deserialize_context_request() {
-        let json = r#"{"type":"context_request"}"#;
-        let msg: ClientMessage = serde_json::from_str(json).unwrap();
+    fn client_message_serialize_server_command() {
+        let msg = ClientMessage::ServerCommand {
+            name: "reflect".to_string(),
+            args: None,
+        };
+        let json = serde_json::to_string(&msg).unwrap();
         assert!(
-            matches!(msg, ClientMessage::ContextRequest),
-            "should deserialize to ContextRequest"
+            json.contains("\"type\":\"server_command\""),
+            "should have type tag"
+        );
+        assert!(
+            json.contains("\"name\":\"reflect\""),
+            "should have name field"
         );
     }
 
@@ -260,12 +276,19 @@ mod tests {
     }
 
     #[test]
-    fn client_message_serialize_context_request() {
-        let msg = ClientMessage::ContextRequest;
+    fn client_message_serialize_server_command_with_args() {
+        let msg = ClientMessage::ServerCommand {
+            name: "context".to_string(),
+            args: Some("verbose".to_string()),
+        };
         let json = serde_json::to_string(&msg).unwrap();
-        assert_eq!(
-            json, r#"{"type":"context_request"}"#,
-            "context_request should serialize cleanly"
+        assert!(
+            json.contains("\"type\":\"server_command\""),
+            "should have type tag"
+        );
+        assert!(
+            json.contains("\"args\":\"verbose\""),
+            "should have args field"
         );
     }
 

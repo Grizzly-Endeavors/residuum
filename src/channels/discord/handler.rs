@@ -18,6 +18,7 @@ use crate::channels::attachment::{
 };
 use crate::channels::presence::{load_presence, to_activity, to_online_status};
 use crate::channels::types::{InboundMessage, MessageOrigin, RoutedMessage};
+use crate::gateway::server::ServerCommand;
 use crate::inbox;
 
 use super::reply::DiscordReplyHandle;
@@ -32,8 +33,7 @@ pub(super) struct DiscordHandler {
     pub(super) presence_path: PathBuf,
     pub(super) inbox_dir: PathBuf,
     pub(super) reload_sender: tokio::sync::watch::Sender<bool>,
-    pub(super) observe_notify: Arc<tokio::sync::Notify>,
-    pub(super) reflect_notify: Arc<tokio::sync::Notify>,
+    pub(super) command_tx: mpsc::Sender<ServerCommand>,
     pub(super) tz: chrono_tz::Tz,
 }
 
@@ -171,18 +171,15 @@ impl EventHandler for DiscordHandler {
                 self.reload_sender.send(true).ok();
                 "Reloading configuration...".to_string()
             }
-            "observe" => {
-                tracing::info!("observe requested via discord slash command");
-                self.observe_notify.notify_one();
-                "Observation cycle triggered.".to_string()
-            }
-            "reflect" => {
-                tracing::info!("reflect requested via discord slash command");
-                self.reflect_notify.notify_one();
-                "Reflection cycle triggered.".to_string()
-            }
             name => {
-                format!("Unknown command: `{name}`")
+                tracing::info!(command = %name, "server command via discord slash command");
+                self.command_tx
+                    .try_send(ServerCommand {
+                        name: name.to_string(),
+                        args: None,
+                    })
+                    .ok();
+                format!("{name} triggered.")
             }
         };
 
@@ -200,13 +197,16 @@ impl EventHandler for DiscordHandler {
 
 /// Register global slash commands with Discord.
 async fn register_slash_commands(ctx: &Context) -> Result<(), serenity::Error> {
-    let commands = vec![
+    let mut commands = vec![
         CreateCommand::new("help").description("Show available commands and usage info"),
         CreateCommand::new("status").description("Show bot status and version info"),
         CreateCommand::new("reload").description("Reload the agent configuration"),
-        CreateCommand::new("observe").description("Trigger a memory observation cycle"),
-        CreateCommand::new("reflect").description("Trigger a memory reflection cycle"),
     ];
+
+    // Derive server commands from the shared CLI registry
+    for info in crate::channels::cli::commands::server_commands() {
+        commands.push(CreateCommand::new(info.name).description(info.help));
+    }
 
     for cmd in commands {
         serenity::model::application::Command::create_global_command(&ctx.http, cmd).await?;
@@ -245,17 +245,21 @@ fn file_mtime(path: &std::path::Path) -> Option<std::time::SystemTime> {
 /// Generate help text for the `/help` slash command.
 #[must_use]
 pub(super) fn help_text() -> String {
-    "\
-**IronClaw Bot Commands**
+    let mut lines = vec![
+        "**IronClaw Bot Commands**".to_string(),
+        String::new(),
+        "`/help` \u{2014} Show this help text".to_string(),
+        "`/status` \u{2014} Show bot status info".to_string(),
+        "`/reload` \u{2014} Reload configuration".to_string(),
+    ];
 
-`/help` — Show this help text
-`/status` — Show bot status info
-`/reload` — Reload configuration
-`/observe` — Trigger memory observation
-`/reflect` — Trigger memory reflection
+    for info in crate::channels::cli::commands::server_commands() {
+        lines.push(format!("`/{}` \u{2014} {}", info.name, info.help));
+    }
 
-**Messaging**: Send a DM to interact with the agent directly."
-        .to_string()
+    lines.push(String::new());
+    lines.push("**Messaging**: Send a DM to interact with the agent directly.".to_string());
+    lines.join("\n")
 }
 
 /// Generate status text for the `/status` slash command.

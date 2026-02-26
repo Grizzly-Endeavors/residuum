@@ -63,15 +63,21 @@ pub enum GatewayExit {
     Reload,
 }
 
+/// A named command dispatched from any client channel to the server event loop.
+pub struct ServerCommand {
+    /// Command name (e.g. "observe", "reflect", "context").
+    pub name: String,
+    /// Optional argument text.
+    pub args: Option<String>,
+}
+
 /// Shared state for the axum WebSocket server.
 #[derive(Clone)]
 struct GatewayState {
     inbound_tx: mpsc::Sender<RoutedMessage>,
     broadcast_tx: broadcast::Sender<ServerMessage>,
     reload_sender: tokio::sync::watch::Sender<bool>,
-    observe_notify: Arc<tokio::sync::Notify>,
-    reflect_notify: Arc<tokio::sync::Notify>,
-    context_notify: Arc<tokio::sync::Notify>,
+    command_tx: mpsc::Sender<ServerCommand>,
     inbox_dir: std::path::PathBuf,
     tz: chrono_tz::Tz,
 }
@@ -103,9 +109,7 @@ struct GatewayRuntime {
     broadcast_tx: broadcast::Sender<ServerMessage>,
     broadcast_display: BroadcastDisplay,
     reload_rx: tokio::sync::watch::Receiver<bool>,
-    observe_notify: Arc<tokio::sync::Notify>,
-    reflect_notify: Arc<tokio::sync::Notify>,
-    context_notify: Arc<tokio::sync::Notify>,
+    command_rx: mpsc::Receiver<ServerCommand>,
     server_handle: tokio::task::JoinHandle<()>,
     pulse_scheduler: PulseScheduler,
 }
@@ -151,9 +155,7 @@ pub async fn run_gateway(cfg: Config) -> Result<GatewayExit, IronclawError> {
     let (broadcast_tx, _broadcast_rx) = broadcast::channel::<ServerMessage>(256);
     let (reload_sender, reload_rx) = tokio::sync::watch::channel(false);
     let broadcast_display = BroadcastDisplay::new(broadcast_tx.clone());
-    let observe_notify = Arc::new(tokio::sync::Notify::new());
-    let reflect_notify = Arc::new(tokio::sync::Notify::new());
-    let context_notify = Arc::new(tokio::sync::Notify::new());
+    let (command_tx, command_rx) = mpsc::channel::<ServerCommand>(32);
 
     // Clone senders for additional adapters before moving into GatewayState
     #[cfg(feature = "discord")]
@@ -161,14 +163,14 @@ pub async fn run_gateway(cfg: Config) -> Result<GatewayExit, IronclawError> {
     let webhook_inbound_tx = inbound_tx.clone();
     #[cfg(feature = "discord")]
     let discord_reload_sender = reload_sender.clone();
+    #[cfg(feature = "discord")]
+    let discord_command_tx = command_tx.clone();
 
     let state = GatewayState {
         inbound_tx,
         broadcast_tx: broadcast_tx.clone(),
         reload_sender,
-        observe_notify: Arc::clone(&observe_notify),
-        reflect_notify: Arc::clone(&reflect_notify),
-        context_notify: Arc::clone(&context_notify),
+        command_tx,
         inbox_dir: parts.layout.inbox_dir(),
         tz: parts.tz,
     };
@@ -224,8 +226,7 @@ pub async fn run_gateway(cfg: Config) -> Result<GatewayExit, IronclawError> {
             discord_inbound_tx,
             cfg.workspace_dir.clone(),
             discord_reload_sender,
-            Arc::clone(&observe_notify),
-            Arc::clone(&reflect_notify),
+            discord_command_tx,
             parts.tz,
         );
         tokio::spawn(async move {
@@ -260,9 +261,7 @@ pub async fn run_gateway(cfg: Config) -> Result<GatewayExit, IronclawError> {
         broadcast_tx,
         broadcast_display,
         reload_rx,
-        observe_notify,
-        reflect_notify,
-        context_notify,
+        command_rx,
         server_handle,
         pulse_scheduler: PulseScheduler::new(),
     };
@@ -339,13 +338,72 @@ async fn handle_background_result(
     }
 }
 
+/// Dispatch a named server command from any client channel.
+async fn handle_server_command(
+    cmd: ServerCommand,
+    rt: &mut GatewayRuntime,
+    observe_deadline: &mut Option<tokio::time::Instant>,
+) {
+    match cmd.name.as_str() {
+        "observe" => {
+            *observe_deadline = None;
+            run_forced_observe(
+                &rt.observer,
+                &rt.reflector,
+                &rt.search_index,
+                &rt.layout,
+                &mut rt.agent,
+                &rt.broadcast_tx,
+                rt.vector_store.as_ref(),
+                rt.embedding_provider.as_ref(),
+            )
+            .await;
+        }
+        "reflect" => {
+            run_forced_reflect(&rt.reflector, &rt.layout, &mut rt.agent, &rt.broadcast_tx).await;
+        }
+        "context" => {
+            let summary = rt.agent.context_summary();
+            let unobserved_tokens = crate::memory::recent_messages::load_recent_messages(
+                &rt.layout.recent_messages_json(),
+            )
+            .await
+            .ok()
+            .map_or(0, |msgs| {
+                let raw: Vec<_> = msgs.iter().map(|rm| rm.message.clone()).collect();
+                crate::memory::tokens::estimate_message_tokens(&raw)
+            });
+            let msg = format!(
+                "[context]\n  system (identity + memory):   ~{} tokens\n  message history:              ~{} tokens ({} messages)\n  unobserved messages:          ~{} tokens\n  observer threshold: {:>9} tokens  |  force: {:>9} tokens",
+                summary.system_tokens,
+                summary.history_tokens,
+                summary.history_count,
+                unobserved_tokens,
+                rt.observer.threshold_tokens(),
+                rt.observer.force_threshold_tokens(),
+            );
+            rt.broadcast_tx
+                .send(ServerMessage::Notice { message: msg })
+                .ok();
+        }
+        unknown => {
+            rt.broadcast_tx
+                .send(ServerMessage::Error {
+                    reply_to: None,
+                    message: format!("unknown server command: {unknown}"),
+                })
+                .ok();
+        }
+    }
+}
+
 /// Run the main gateway event loop.
 ///
 /// Processes inbound messages, pulse ticks, cron ticks, and memory pipeline
 /// signals until shutdown or reload is requested.
 #[expect(
     clippy::too_many_lines,
-    reason = "9-arm select! loop; each arm is a distinct event source and cannot be split further"
+    reason = "7-arm select! loop; each arm is a distinct event source and cannot be split further"
 )]
 async fn run_event_loop(mut rt: GatewayRuntime) -> GatewayExit {
     let mut pulse_tick = tokio::time::interval(Duration::from_secs(60));
@@ -549,40 +607,11 @@ async fn run_event_loop(mut rt: GatewayRuntime) -> GatewayExit {
                 }
             }
 
-            // ── Observe command wakeup ─────────────────────────────────────
-            () = rt.observe_notify.notified() => {
-                observe_deadline = None;
-                run_forced_observe(
-                    &rt.observer, &rt.reflector, &rt.search_index,
-                    &rt.layout, &mut rt.agent, &rt.broadcast_tx,
-                    rt.vector_store.as_ref(), rt.embedding_provider.as_ref(),
-                ).await;
-            }
-
-            // ── Reflect command wakeup ─────────────────────────────────────
-            () = rt.reflect_notify.notified() => {
-                run_forced_reflect(&rt.reflector, &rt.layout, &mut rt.agent, &rt.broadcast_tx).await;
-            }
-
-            // ── Context request ────────────────────────────────────────────
-            () = rt.context_notify.notified() => {
-                let summary = rt.agent.context_summary();
-                let unobserved_tokens = crate::memory::recent_messages::load_recent_messages(
-                    &rt.layout.recent_messages_json(),
-                ).await.ok().map_or(0, |msgs| {
-                    let raw: Vec<_> = msgs.iter().map(|rm| rm.message.clone()).collect();
-                    crate::memory::tokens::estimate_message_tokens(&raw)
-                });
-                let msg = format!(
-                    "[context]\n  system (identity + memory):   ~{} tokens\n  message history:              ~{} tokens ({} messages)\n  unobserved messages:          ~{} tokens\n  observer threshold: {:>9} tokens  |  force: {:>9} tokens",
-                    summary.system_tokens,
-                    summary.history_tokens,
-                    summary.history_count,
-                    unobserved_tokens,
-                    rt.observer.threshold_tokens(),
-                    rt.observer.force_threshold_tokens(),
-                );
-                rt.broadcast_tx.send(ServerMessage::Notice { message: msg }).ok();
+            // ── Server commands (observe, reflect, context, etc.) ────────
+            cmd = rt.command_rx.recv() => {
+                if let Some(cmd) = cmd {
+                    handle_server_command(cmd, &mut rt, &mut observe_deadline).await;
+                }
             }
         }
     }

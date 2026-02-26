@@ -10,7 +10,7 @@ pub use reader::CliReader;
 
 use crate::gateway::protocol::ServerMessage;
 use colors::Theme;
-use commands::{CommandAction, SlashCommand};
+use commands::CommandEffect;
 use indicator::WorkingIndicator;
 use render::MarkdownRenderer;
 
@@ -140,10 +140,12 @@ impl CliClient {
         }
     }
 
-    /// Handle a parsed slash command, returning the action for the main loop.
+    /// Parse and execute a slash command, returning the effect for the main loop.
+    ///
+    /// Returns `None` if the input is not a slash command.
     #[must_use]
-    pub fn handle_command(&self, cmd: &SlashCommand) -> CommandAction {
-        cmd.execute(&self.url, self.verbose)
+    pub fn handle_command(&self, input: &str) -> Option<CommandEffect> {
+        commands::parse_command(input, &self.url, self.verbose)
     }
 }
 
@@ -180,14 +182,19 @@ mod tests {
     fn handle_command_routes_correctly() {
         let client = CliClient::new("ws://localhost:7700/ws", true);
         assert_eq!(
-            client.handle_command(&SlashCommand::Quit),
-            CommandAction::Quit,
-            "quit command should return Quit action"
+            client.handle_command("/quit"),
+            Some(CommandEffect::Quit),
+            "quit command should return Quit effect"
         );
         assert_eq!(
-            client.handle_command(&SlashCommand::Verbose),
-            CommandAction::ToggleVerbose,
-            "verbose command should return ToggleVerbose action"
+            client.handle_command("/verbose"),
+            Some(CommandEffect::ToggleVerbose),
+            "verbose command should return ToggleVerbose effect"
+        );
+        assert_eq!(
+            client.handle_command("hello world"),
+            None,
+            "non-slash input should return None"
         );
     }
 

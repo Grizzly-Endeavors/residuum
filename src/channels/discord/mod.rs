@@ -12,13 +12,13 @@ mod handler;
 mod reply;
 
 use std::path::PathBuf;
-use std::sync::Arc;
 
 use serenity::prelude::*;
 use tokio::sync::mpsc;
 
 use crate::channels::types::RoutedMessage;
 use crate::config::DiscordConfig;
+use crate::gateway::server::ServerCommand;
 
 use self::handler::DiscordHandler;
 
@@ -28,8 +28,7 @@ pub struct DiscordChannel {
     inbound_tx: mpsc::Sender<RoutedMessage>,
     workspace_dir: PathBuf,
     reload_sender: tokio::sync::watch::Sender<bool>,
-    observe_notify: Arc<tokio::sync::Notify>,
-    reflect_notify: Arc<tokio::sync::Notify>,
+    command_tx: mpsc::Sender<ServerCommand>,
     tz: chrono_tz::Tz,
 }
 
@@ -41,8 +40,7 @@ impl DiscordChannel {
     /// - `inbound_tx`: Channel for routing messages to the agent.
     /// - `workspace_dir`: Path to the workspace root (for PRESENCE.toml and inbox).
     /// - `reload_sender`: Watch channel to trigger config reload.
-    /// - `observe_notify`: Notify to trigger an observation cycle.
-    /// - `reflect_notify`: Notify to trigger a reflection cycle.
+    /// - `command_tx`: Channel for dispatching named server commands.
     /// - `tz`: Timezone for inbox item timestamps.
     #[must_use]
     pub fn new(
@@ -50,8 +48,7 @@ impl DiscordChannel {
         inbound_tx: mpsc::Sender<RoutedMessage>,
         workspace_dir: PathBuf,
         reload_sender: tokio::sync::watch::Sender<bool>,
-        observe_notify: Arc<tokio::sync::Notify>,
-        reflect_notify: Arc<tokio::sync::Notify>,
+        command_tx: mpsc::Sender<ServerCommand>,
         tz: chrono_tz::Tz,
     ) -> Self {
         Self {
@@ -59,8 +56,7 @@ impl DiscordChannel {
             inbound_tx,
             workspace_dir,
             reload_sender,
-            observe_notify,
-            reflect_notify,
+            command_tx,
             tz,
         }
     }
@@ -82,8 +78,7 @@ impl DiscordChannel {
             presence_path,
             inbox_dir,
             reload_sender: self.reload_sender,
-            observe_notify: self.observe_notify,
-            reflect_notify: self.reflect_notify,
+            command_tx: self.command_tx,
             tz: self.tz,
         };
 
@@ -122,20 +117,31 @@ mod tests {
 
     #[test]
     fn slash_command_names() {
-        // Verify the dispatch table matches registrations
-        let expected = ["help", "status", "reload", "observe", "reflect"];
-        for name in expected {
+        // Platform-specific commands always present
+        let platform_cmds = ["help", "status", "reload"];
+        for name in platform_cmds {
             let text = match name {
                 "help" => help_text(),
                 "status" => status_text(),
                 "reload" => "Reloading configuration...".to_string(),
-                "observe" => "Observation cycle triggered.".to_string(),
-                "reflect" => "Reflection cycle triggered.".to_string(),
                 _ => "Unknown".to_string(),
             };
             assert!(
                 !text.contains("Unknown"),
                 "command '{name}' should have a known handler"
+            );
+        }
+
+        // Server commands derived from shared registry
+        let server_cmds: Vec<_> = crate::channels::cli::commands::server_commands().collect();
+        assert!(
+            !server_cmds.is_empty(),
+            "should have at least one server command"
+        );
+        for info in &server_cmds {
+            assert!(
+                !info.name.is_empty(),
+                "server command name should not be empty"
             );
         }
     }
