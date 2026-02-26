@@ -452,7 +452,6 @@ mod tests {
             3,
             PathBuf::from("/tmp"),
             dir.path().to_path_buf(),
-            chrono_tz::UTC,
         ));
         (spawner, rx)
     }

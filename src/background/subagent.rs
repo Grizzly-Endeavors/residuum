@@ -1,6 +1,5 @@
 //! Sub-agent execution for background tasks.
 
-use std::path::Path;
 use std::sync::Arc;
 
 use crate::agent::context::{ProjectsContext, SkillsContext, build_subagent_system_content};
@@ -181,7 +180,7 @@ pub(crate) async fn execute_subagent(
     }
 
     for path in &config.context_files {
-        match read_context_file(path).await {
+        match tokio::fs::read_to_string(path).await {
             Ok(content) => {
                 let filename = path.file_name().map_or_else(
                     || path.display().to_string(),
@@ -328,12 +327,6 @@ async fn ensure_project_deactivated(
         resources.path_policy.write().await.set_active_project(None);
         resources.tool_filter.write().await.clear_enabled();
     }
-}
-
-/// Read a context file from disk.
-async fn read_context_file(path: &Path) -> Result<String, anyhow::Error> {
-    let content = tokio::fs::read_to_string(path).await?;
-    Ok(content)
 }
 
 #[cfg(test)]

@@ -51,13 +51,8 @@ mod background_integration {
     async fn script_echo_end_to_end() {
         let dir = tempdir().unwrap();
         let (tx, mut rx) = mpsc::channel(32);
-        let spawner = BackgroundTaskSpawner::new(
-            tx,
-            3,
-            PathBuf::from("/tmp"),
-            dir.path().to_path_buf(),
-            chrono_tz::UTC,
-        );
+        let spawner =
+            BackgroundTaskSpawner::new(tx, 3, PathBuf::from("/tmp"), dir.path().to_path_buf());
 
         let task = make_script_task("e2e-1", "echo", &["hello world"]);
         spawner.spawn(task, None).await.unwrap();
@@ -79,13 +74,8 @@ mod background_integration {
     async fn script_failure_end_to_end() {
         let dir = tempdir().unwrap();
         let (tx, mut rx) = mpsc::channel(32);
-        let spawner = BackgroundTaskSpawner::new(
-            tx,
-            3,
-            PathBuf::from("/tmp"),
-            dir.path().to_path_buf(),
-            chrono_tz::UTC,
-        );
+        let spawner =
+            BackgroundTaskSpawner::new(tx, 3, PathBuf::from("/tmp"), dir.path().to_path_buf());
 
         let task = BackgroundTask {
             id: "fail-1".to_string(),
@@ -104,10 +94,9 @@ mod background_integration {
 
         let result = rx.recv().await.unwrap();
         assert_eq!(result.id, "fail-1");
-        // `false` returns exit code 1, which is captured as Completed with exit code info
         assert!(
-            matches!(result.status, TaskStatus::Completed),
-            "non-zero exit is captured as completed with exit info"
+            matches!(result.status, TaskStatus::Failed { .. }),
+            "non-zero exit should be recorded as failed"
         );
         assert!(
             result.summary.contains("exit code"),
@@ -122,13 +111,8 @@ mod background_integration {
         let dir = tempdir().unwrap();
         let max = 2;
         let (tx, mut rx) = mpsc::channel(32);
-        let spawner = BackgroundTaskSpawner::new(
-            tx,
-            max,
-            PathBuf::from("/tmp"),
-            dir.path().to_path_buf(),
-            chrono_tz::UTC,
-        );
+        let spawner =
+            BackgroundTaskSpawner::new(tx, max, PathBuf::from("/tmp"), dir.path().to_path_buf());
 
         // Spawn max + 1 tasks
         for i in 0..=max {
@@ -247,7 +231,6 @@ mod background_integration {
             3,
             PathBuf::from("/tmp"),
             dir.path().to_path_buf(),
-            chrono_tz::UTC,
         ));
 
         let task = BackgroundTask {
@@ -301,7 +284,6 @@ mod background_integration {
             3,
             PathBuf::from("/tmp"),
             dir.path().to_path_buf(),
-            chrono_tz::UTC,
         ));
 
         let task = BackgroundTask {
@@ -350,7 +332,6 @@ mod background_integration {
             3,
             PathBuf::from("/tmp"),
             dir.path().to_path_buf(),
-            chrono_tz::UTC,
         ));
 
         let not_found = spawner.cancel("does-not-exist").await;
@@ -453,13 +434,8 @@ mod background_integration {
     async fn send_result_delivers_cron_system_event() {
         let dir = tempdir().unwrap();
         let (tx, mut rx) = mpsc::channel(32);
-        let spawner = BackgroundTaskSpawner::new(
-            tx,
-            3,
-            PathBuf::from("/tmp"),
-            dir.path().to_path_buf(),
-            chrono_tz::UTC,
-        );
+        let spawner =
+            BackgroundTaskSpawner::new(tx, 3, PathBuf::from("/tmp"), dir.path().to_path_buf());
 
         let result = ironclaw::background::types::BackgroundResult {
             id: "cron-evt-test-1".to_string(),
@@ -496,7 +472,6 @@ mod background_integration {
             3,
             PathBuf::from("/tmp"),
             dir.path().to_path_buf(),
-            chrono_tz::UTC,
         ));
 
         let task = BackgroundTask {

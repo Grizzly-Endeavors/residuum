@@ -21,11 +21,6 @@ pub struct BackgroundTaskSpawner {
     active_tasks: Arc<Mutex<HashMap<String, (CancellationToken, ActiveTaskInfo)>>>,
     workspace_root: PathBuf,
     background_dir: PathBuf,
-    #[expect(
-        dead_code,
-        reason = "stored for future transcript timestamp formatting"
-    )]
-    tz: chrono_tz::Tz,
 }
 
 impl BackgroundTaskSpawner {
@@ -36,7 +31,6 @@ impl BackgroundTaskSpawner {
         max_concurrent: usize,
         workspace_root: PathBuf,
         background_dir: PathBuf,
-        tz: chrono_tz::Tz,
     ) -> Self {
         Self {
             result_tx,
@@ -44,7 +38,6 @@ impl BackgroundTaskSpawner {
             active_tasks: Arc::new(Mutex::new(HashMap::new())),
             workspace_root,
             background_dir,
-            tz,
         }
     }
 
@@ -296,13 +289,8 @@ mod tests {
     async fn spawn_and_receive_result() {
         let (tx, mut rx) = mpsc::channel(32);
         let dir = tempfile::tempdir().unwrap();
-        let spawner = BackgroundTaskSpawner::new(
-            tx,
-            3,
-            PathBuf::from("/tmp"),
-            dir.path().to_path_buf(),
-            chrono_tz::UTC,
-        );
+        let spawner =
+            BackgroundTaskSpawner::new(tx, 3, PathBuf::from("/tmp"), dir.path().to_path_buf());
 
         let task = make_echo_task("t1");
         let id = spawner.spawn(task, None).await.unwrap();
@@ -324,13 +312,8 @@ mod tests {
     async fn cancel_returns_correct_bool() {
         let (tx, mut rx) = mpsc::channel(32);
         let dir = tempfile::tempdir().unwrap();
-        let spawner = BackgroundTaskSpawner::new(
-            tx,
-            3,
-            PathBuf::from("/tmp"),
-            dir.path().to_path_buf(),
-            chrono_tz::UTC,
-        );
+        let spawner =
+            BackgroundTaskSpawner::new(tx, 3, PathBuf::from("/tmp"), dir.path().to_path_buf());
 
         // Spawn a long-running task
         let task = BackgroundTask {
@@ -375,7 +358,6 @@ mod tests {
             max_concurrent,
             PathBuf::from("/tmp"),
             dir.path().to_path_buf(),
-            chrono_tz::UTC,
         );
 
         // Spawn 3 tasks (one more than limit)
@@ -414,13 +396,8 @@ mod tests {
     async fn send_result_delivers_to_channel() {
         let (tx, mut rx) = mpsc::channel(32);
         let dir = tempfile::tempdir().unwrap();
-        let spawner = BackgroundTaskSpawner::new(
-            tx,
-            3,
-            PathBuf::from("/tmp"),
-            dir.path().to_path_buf(),
-            chrono_tz::UTC,
-        );
+        let spawner =
+            BackgroundTaskSpawner::new(tx, 3, PathBuf::from("/tmp"), dir.path().to_path_buf());
 
         let result = BackgroundResult {
             id: "direct-1".to_string(),
@@ -446,13 +423,8 @@ mod tests {
     async fn result_sent_to_channel() {
         let (tx, mut rx) = mpsc::channel(32);
         let dir = tempfile::tempdir().unwrap();
-        let spawner = BackgroundTaskSpawner::new(
-            tx,
-            3,
-            PathBuf::from("/tmp"),
-            dir.path().to_path_buf(),
-            chrono_tz::UTC,
-        );
+        let spawner =
+            BackgroundTaskSpawner::new(tx, 3, PathBuf::from("/tmp"), dir.path().to_path_buf());
 
         let task = make_echo_task("ch-1");
         spawner.spawn(task, None).await.unwrap();
@@ -466,13 +438,8 @@ mod tests {
     async fn failed_task_transcript_contains_error() {
         let (tx, mut rx) = mpsc::channel(32);
         let dir = tempfile::tempdir().unwrap();
-        let spawner = BackgroundTaskSpawner::new(
-            tx,
-            3,
-            PathBuf::from("/tmp"),
-            dir.path().to_path_buf(),
-            chrono_tz::UTC,
-        );
+        let spawner =
+            BackgroundTaskSpawner::new(tx, 3, PathBuf::from("/tmp"), dir.path().to_path_buf());
 
         // SubAgent without resources → guaranteed failure
         let task = BackgroundTask {

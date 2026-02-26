@@ -148,12 +148,6 @@ impl fmt::Display for TaskStatus {
 /// Format a `BackgroundResult` for injection into the agent message stream.
 #[must_use]
 pub fn format_background_result(result: &BackgroundResult) -> String {
-    let status_label = match &result.status {
-        TaskStatus::Completed => "completed",
-        TaskStatus::Cancelled => "cancelled",
-        TaskStatus::Failed { .. } => "failed",
-    };
-
     let source_label = match result.source {
         TaskSource::Pulse => "pulse",
         TaskSource::Cron => "cron",
@@ -162,7 +156,7 @@ pub fn format_background_result(result: &BackgroundResult) -> String {
 
     let mut parts = vec![format!(
         "[Background Task Result]\nTask: {} ({})\nSource: {}\nStatus: {}",
-        result.task_name, result.id, source_label, status_label
+        result.task_name, result.id, source_label, result.status
     )];
 
     if !result.summary.is_empty() {

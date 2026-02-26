@@ -290,7 +290,6 @@ pub(super) async fn initialize(cfg: &Config) -> Result<GatewayComponents, Ironcl
         cfg.background.max_concurrent,
         layout.root().to_path_buf(),
         layout.background_dir(),
-        tz,
     ));
 
     // SpawnContext for pulse/cron/on-demand background task spawning

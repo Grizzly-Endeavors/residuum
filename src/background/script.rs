@@ -22,7 +22,7 @@ const MAX_OUTPUT_BYTES: usize = 10_240;
 /// # Errors
 /// Returns an error if the command cannot be spawned.
 pub(crate) async fn execute_script(
-    _task_id: &str,
+    task_id: &str,
     config: &ScriptConfig,
     workspace_root: &Path,
 ) -> Result<String, anyhow::Error> {
@@ -38,6 +38,8 @@ pub(crate) async fn execute_script(
         .stderr(std::process::Stdio::piped());
 
     let child = cmd.spawn()?;
+
+    tracing::debug!(task_id = %task_id, command = %config.command, "script started");
 
     let output = match tokio::time::timeout(
         tokio::time::Duration::from_secs(timeout_secs),
@@ -67,7 +69,15 @@ pub(crate) async fn execute_script(
         } else {
             format!("exit code {code}\nstdout:\n{stdout}\nstderr:\n{stderr}")
         };
-        Ok(truncate_output(&combined, MAX_OUTPUT_BYTES))
+        tracing::warn!(
+            task_id = %task_id,
+            exit_code = code,
+            "script exited with non-zero status"
+        );
+        Err(anyhow::anyhow!(
+            "{}",
+            truncate_output(&combined, MAX_OUTPUT_BYTES)
+        ))
     }
 }
 
@@ -112,18 +122,18 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn nonzero_exit_includes_stderr() {
+    async fn nonzero_exit_returns_error() {
         let config = ScriptConfig {
             command: "sh".to_string(),
             args: vec!["-c".to_string(), "echo err >&2; exit 1".to_string()],
             working_dir: None,
             timeout_secs: None,
         };
-        let result = execute_script("bg-test", &config, Path::new("/tmp"))
-            .await
-            .unwrap();
-        assert!(result.contains("exit code 1"), "should contain exit code");
-        assert!(result.contains("err"), "should contain stderr output");
+        let result = execute_script("bg-test", &config, Path::new("/tmp")).await;
+        assert!(result.is_err(), "non-zero exit should return Err");
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("exit code 1"), "should contain exit code");
+        assert!(err.contains("err"), "should contain stderr output");
     }
 
     #[tokio::test]
