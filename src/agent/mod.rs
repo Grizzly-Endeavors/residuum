@@ -269,14 +269,40 @@ impl Agent {
         })
     }
 
-    /// Compute an approximate token usage summary for the current agent context.
-    #[must_use]
-    pub fn context_summary(&self) -> context::ContextSummary {
+    /// Compute a per-section token breakdown for the current agent context.
+    pub async fn context_breakdown(
+        &self,
+        prompt_ctx: &PromptContext<'_>,
+    ) -> context::ContextBreakdown {
         let memory_ctx = MemoryContext {
             observations: self.observations.as_deref(),
             recent_context: self.recent_context.as_deref(),
         };
-        context::compute_context_summary(&self.identity, &memory_ctx, &self.recent_messages)
+
+        let filter = self.tool_filter.read().await;
+        let builtin_defs = self.tools.definitions(&filter);
+        drop(filter);
+
+        let mcp_defs = self.mcp_registry.read().await.tool_definitions();
+
+        let tool_tokens: usize = builtin_defs
+            .iter()
+            .chain(mcp_defs.iter())
+            .map(|def| {
+                let param_str = def.parameters.to_string();
+                crate::memory::tokens::estimate_tokens(&def.name)
+                    + crate::memory::tokens::estimate_tokens(&def.description)
+                    + crate::memory::tokens::estimate_tokens(&param_str)
+            })
+            .sum();
+
+        context::compute_context_breakdown(
+            &self.identity,
+            &memory_ctx,
+            prompt_ctx,
+            &self.recent_messages,
+            tool_tokens,
+        )
     }
 
     /// Get the current recent message count.

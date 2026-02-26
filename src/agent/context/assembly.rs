@@ -6,37 +6,50 @@ use crate::workspace::identity::IdentityFiles;
 
 use super::super::recent_messages::RecentMessages;
 use super::prompt::{build_status_line, build_system_content};
-use super::types::{
-    ContextSummary, MemoryContext, ProjectsContext, PromptContext, SkillsContext, StatusLine,
-    SubagentsContext,
-};
+use super::types::{ContextBreakdown, MemoryContext, PromptContext, StatusLine};
 
-/// Compute an approximate token summary for the current agent context.
-///
-/// Uses `build_system_content` with empty projects/skills/subagents contexts so
-/// the estimate reflects only the stable identity + memory sections.
-pub(in crate::agent) fn compute_context_summary(
+/// Compute a per-section token breakdown for the current agent context.
+pub(in crate::agent) fn compute_context_breakdown(
     identity: &IdentityFiles,
     memory_ctx: &MemoryContext<'_>,
+    prompt_ctx: &PromptContext<'_>,
     recent_messages: &RecentMessages,
-) -> ContextSummary {
-    let system_content = build_system_content(
-        identity,
-        memory_ctx,
-        &ProjectsContext::none(),
-        &SkillsContext::none(),
-        &SubagentsContext::none(),
-    );
-    let system_tokens = estimate_tokens(&system_content);
+    tool_tokens: usize,
+) -> ContextBreakdown {
+    let identity_tokens = [
+        identity.soul.as_deref(),
+        identity.agents.as_deref(),
+        identity.environment.as_deref(),
+        identity.user.as_deref(),
+        identity.memory.as_deref(),
+    ]
+    .into_iter()
+    .flatten()
+    .map(estimate_tokens)
+    .sum();
+
+    let observation_log_tokens = memory_ctx.observations.map_or(0, estimate_tokens)
+        + memory_ctx.recent_context.map_or(0, estimate_tokens);
 
     let msgs = recent_messages.messages();
-    let history_tokens = estimate_message_tokens(msgs);
-    let history_count = msgs.len();
 
-    ContextSummary {
-        system_tokens,
-        history_tokens,
-        history_count,
+    ContextBreakdown {
+        identity_tokens,
+        observation_log_tokens,
+        subagents_index_tokens: prompt_ctx.subagents.index.map_or(0, estimate_tokens),
+        projects_index_tokens: prompt_ctx.projects.index.map_or(0, estimate_tokens),
+        active_project_tokens: prompt_ctx
+            .projects
+            .active_context
+            .map_or(0, estimate_tokens),
+        skills_index_tokens: prompt_ctx.skills.index.map_or(0, estimate_tokens),
+        active_skills_tokens: prompt_ctx
+            .skills
+            .active_instructions
+            .map_or(0, estimate_tokens),
+        tool_tokens,
+        history_tokens: estimate_message_tokens(msgs),
+        history_count: msgs.len(),
     }
 }
 
@@ -386,29 +399,26 @@ mod tests {
         );
     }
 
-    // ── compute_context_summary tests ────────────────────────────────────────
+    // ── compute_context_breakdown tests ──────────────────────────────────────
 
     #[test]
-    fn context_summary_empty_identity_no_messages() {
+    fn context_breakdown_empty_identity_no_messages() {
         let identity = IdentityFiles::default();
         let memory = no_memory();
         let recent = RecentMessages::new();
 
-        let summary = compute_context_summary(&identity, &memory, &recent);
-        assert_eq!(summary.history_count, 0, "no messages should give count 0");
+        let bd = compute_context_breakdown(&identity, &memory, &PromptContext::none(), &recent, 0);
+        assert_eq!(bd.history_count, 0, "no messages should give count 0");
+        assert_eq!(bd.history_tokens, 0, "no messages should give 0 tokens");
+        assert_eq!(bd.identity_tokens, 0, "empty identity should give 0 tokens");
         assert_eq!(
-            summary.history_tokens, 0,
-            "no messages should give 0 tokens"
-        );
-        // system_tokens may be 0 for empty identity
-        assert_eq!(
-            summary.system_tokens, 0,
-            "empty identity should give 0 system tokens"
+            bd.observation_log_tokens, 0,
+            "no memory should give 0 tokens"
         );
     }
 
     #[test]
-    fn context_summary_with_identity_has_nonzero_system_tokens() {
+    fn context_breakdown_with_identity_has_nonzero_identity_tokens() {
         let identity = IdentityFiles {
             soul: Some("I am a helpful assistant.".to_string()),
             ..IdentityFiles::default()
@@ -416,29 +426,59 @@ mod tests {
         let memory = no_memory();
         let recent = RecentMessages::new();
 
-        let summary = compute_context_summary(&identity, &memory, &recent);
+        let bd = compute_context_breakdown(&identity, &memory, &PromptContext::none(), &recent, 0);
         assert!(
-            summary.system_tokens > 0,
-            "non-empty identity should give positive system token count"
+            bd.identity_tokens > 0,
+            "non-empty identity should give positive identity token count"
         );
     }
 
     #[test]
-    fn context_summary_history_count_matches_messages() {
+    fn context_breakdown_history_count_matches_messages() {
         let identity = IdentityFiles::default();
         let memory = no_memory();
         let mut recent = RecentMessages::new();
         recent.push(Message::user("hello"));
         recent.push(Message::assistant("hi there", None));
 
-        let summary = compute_context_summary(&identity, &memory, &recent);
+        let bd = compute_context_breakdown(&identity, &memory, &PromptContext::none(), &recent, 0);
         assert_eq!(
-            summary.history_count, 2,
+            bd.history_count, 2,
             "history count should match message count"
         );
         assert!(
-            summary.history_tokens > 0,
+            bd.history_tokens > 0,
             "non-empty history should have positive token count"
+        );
+    }
+
+    #[test]
+    fn context_breakdown_memory_counts_separately() {
+        let identity = IdentityFiles::default();
+        let observations = "Episode 1: the user asked about rust.".to_string();
+        let memory = MemoryContext {
+            observations: Some(&observations),
+            recent_context: None,
+        };
+        let recent = RecentMessages::new();
+
+        let bd = compute_context_breakdown(&identity, &memory, &PromptContext::none(), &recent, 0);
+        assert!(
+            bd.observation_log_tokens > 0,
+            "observation content should produce nonzero observation_log_tokens"
+        );
+    }
+
+    #[test]
+    fn context_breakdown_tool_tokens_passed_through() {
+        let identity = IdentityFiles::default();
+        let memory = no_memory();
+        let recent = RecentMessages::new();
+
+        let bd = compute_context_breakdown(&identity, &memory, &PromptContext::none(), &recent, 42);
+        assert_eq!(
+            bd.tool_tokens, 42,
+            "tool_tokens should pass through unchanged"
         );
     }
 }

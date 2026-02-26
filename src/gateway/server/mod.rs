@@ -363,24 +363,37 @@ async fn handle_server_command(
             run_forced_reflect(&rt.reflector, &rt.layout, &mut rt.agent, &rt.broadcast_tx).await;
         }
         "context" => {
-            let summary = rt.agent.context_summary();
-            let unobserved_tokens = crate::memory::recent_messages::load_recent_messages(
-                &rt.layout.recent_messages_json(),
-            )
-            .await
-            .ok()
-            .map_or(0, |msgs| {
-                let raw: Vec<_> = msgs.iter().map(|rm| rm.message.clone()).collect();
-                crate::memory::tokens::estimate_message_tokens(&raw)
-            });
+            let (idx_text, active_text) = build_project_context_strings(&rt.project_state).await;
+            let (skill_idx_text, skill_active_text) =
+                build_skill_context_strings(&rt.skill_state).await;
+            let subagents_idx_text =
+                build_subagents_context_string(&rt.layout.subagents_dir()).await;
+            let prompt_ctx = PromptContext {
+                projects: ProjectsContext {
+                    index: idx_text.as_deref(),
+                    active_context: active_text.as_deref(),
+                },
+                skills: SkillsContext {
+                    index: skill_idx_text.as_deref(),
+                    active_instructions: skill_active_text.as_deref(),
+                },
+                subagents: SubagentsContext {
+                    index: subagents_idx_text.as_deref(),
+                },
+            };
+            let bd = rt.agent.context_breakdown(&prompt_ctx).await;
             let msg = format!(
-                "[context]\n  system (identity + memory):   ~{} tokens\n  message history:              ~{} tokens ({} messages)\n  unobserved messages:          ~{} tokens\n  observer threshold: {:>9} tokens  |  force: {:>9} tokens",
-                summary.system_tokens,
-                summary.history_tokens,
-                summary.history_count,
-                unobserved_tokens,
-                rt.observer.threshold_tokens(),
-                rt.observer.force_threshold_tokens(),
+                "[context]\n  identity:          ~{} tokens\n  observation log:   ~{} tokens\n  subagents index:   ~{} tokens\n  projects index:    ~{} tokens\n  active project:    ~{} tokens\n  skills index:      ~{} tokens\n  active skills:     ~{} tokens\n  tool schemas:      ~{} tokens\n  message history:   ~{} tokens ({} messages)",
+                bd.identity_tokens,
+                bd.observation_log_tokens,
+                bd.subagents_index_tokens,
+                bd.projects_index_tokens,
+                bd.active_project_tokens,
+                bd.skills_index_tokens,
+                bd.active_skills_tokens,
+                bd.tool_tokens,
+                bd.history_tokens,
+                bd.history_count,
             );
             rt.broadcast_tx
                 .send(ServerMessage::Notice { message: msg })

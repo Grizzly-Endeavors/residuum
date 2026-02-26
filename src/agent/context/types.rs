@@ -99,10 +99,24 @@ impl PromptContext<'_> {
     }
 }
 
-/// A snapshot of the agent's approximate token usage.
-pub struct ContextSummary {
-    /// Estimated tokens in the system prompt (identity + memory; no projects/skills).
-    pub system_tokens: usize,
+/// A per-section breakdown of the agent's approximate token usage.
+pub struct ContextBreakdown {
+    /// Estimated tokens from stable identity files (soul, agents, env, user, memory).
+    pub identity_tokens: usize,
+    /// Estimated tokens from the memory pipeline (observation log + recent context).
+    pub observation_log_tokens: usize,
+    /// Estimated tokens from the subagents preset index.
+    pub subagents_index_tokens: usize,
+    /// Estimated tokens from the projects index.
+    pub projects_index_tokens: usize,
+    /// Estimated tokens from the active project context (0 if none active).
+    pub active_project_tokens: usize,
+    /// Estimated tokens from the skills index.
+    pub skills_index_tokens: usize,
+    /// Estimated tokens from active skill instructions (0 if none active).
+    pub active_skills_tokens: usize,
+    /// Estimated tokens from tool definitions (built-in + MCP).
+    pub tool_tokens: usize,
     /// Estimated tokens across the in-memory recent message history.
     pub history_tokens: usize,
     /// Number of messages in the recent history.
