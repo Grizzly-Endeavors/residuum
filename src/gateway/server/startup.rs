@@ -65,7 +65,7 @@ pub(super) struct GatewayComponents {
     pub(super) notification_router: NotificationRouter,
     pub(super) background_spawner: Arc<BackgroundTaskSpawner>,
     pub(super) background_result_rx: mpsc::Receiver<BackgroundResult>,
-    pub(super) spawn_context: SpawnContext,
+    pub(super) spawn_context: Arc<SpawnContext>,
 }
 
 /// Initialize all gateway subsystems from config.
@@ -293,6 +293,22 @@ pub(super) async fn initialize(cfg: &Config) -> Result<GatewayComponents, Ironcl
         tz,
     ));
 
+    // SpawnContext for pulse/cron/on-demand background task spawning
+    let spawn_context = Arc::new(SpawnContext {
+        background_config: cfg.background.clone(),
+        main_provider_spec: cfg.main.clone(),
+        http_client: http,
+        max_tokens: cfg.max_tokens,
+        retry_config: cfg.retry.clone(),
+        identity: identity.clone(),
+        options: CompletionOptions {
+            max_tokens: Some(cfg.max_tokens),
+            ..CompletionOptions::default()
+        },
+        layout: layout.clone(),
+        tz,
+    });
+
     // Tool registry
     let path_policy = crate::tools::PathPolicy::new_shared(layout.root().to_path_buf());
     let tool_filter =
@@ -315,12 +331,21 @@ pub(super) async fn initialize(cfg: &Config) -> Result<GatewayComponents, Ironcl
     tools.register_skill_tools(Arc::clone(&skill_state));
     tools.register_inbox_tools(layout.inbox_dir(), layout.inbox_archive_dir(), tz);
     tools.register_background_tools(Arc::clone(&background_spawner));
+    let valid_external_channels: std::collections::HashSet<String> = cfg
+        .notifications
+        .channels
+        .iter()
+        .map(|ch| ch.name.clone())
+        .collect();
+    tools.register_spawn_tool(
+        Arc::clone(&background_spawner),
+        Arc::clone(&spawn_context),
+        Arc::clone(&project_state),
+        Arc::clone(&skill_state),
+        Arc::clone(&mcp_registry),
+        valid_external_channels,
+    );
 
-    // Agent
-    let options = CompletionOptions {
-        max_tokens: Some(cfg.max_tokens),
-        ..CompletionOptions::default()
-    };
     // Connect global MCP servers from config
     if !cfg.mcp.servers.is_empty() {
         let mut reg = mcp_registry.write().await;
@@ -333,19 +358,11 @@ pub(super) async fn initialize(cfg: &Config) -> Result<GatewayComponents, Ironcl
         }
     }
 
-    // SpawnContext for pulse/cron background task spawning
-    let spawn_context = SpawnContext {
-        background_config: cfg.background.clone(),
-        main_provider_spec: cfg.main.clone(),
-        http_client: http,
-        max_tokens: cfg.max_tokens,
-        retry_config: cfg.retry.clone(),
-        identity: identity.clone(),
-        options: options.clone(),
-        layout: layout.clone(),
-        tz,
+    // Agent
+    let options = CompletionOptions {
+        max_tokens: Some(cfg.max_tokens),
+        ..CompletionOptions::default()
     };
-
     let mut agent = Agent::new(
         provider,
         tools,

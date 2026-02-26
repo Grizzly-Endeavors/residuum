@@ -482,6 +482,63 @@ mod background_integration {
         assert!(matches!(received.status, TaskStatus::Completed));
     }
 
+    // ── Phase 6: subagent_spawn async result delivery ──────────────────
+
+    #[tokio::test]
+    async fn subagent_spawn_async_result_delivery() {
+        use ironclaw::background::types::{Execution, SubAgentConfig};
+        use ironclaw::config::BackgroundModelTier;
+
+        let dir = tempdir().unwrap();
+        let (tx, mut rx) = mpsc::channel(32);
+        let spawner = Arc::new(BackgroundTaskSpawner::new(
+            tx,
+            3,
+            PathBuf::from("/tmp"),
+            dir.path().to_path_buf(),
+            chrono_tz::UTC,
+        ));
+
+        let task = BackgroundTask {
+            id: "agent-spawn-e2e-1".to_string(),
+            task_name: "my_subagent".to_string(),
+            source: TaskSource::Agent,
+            execution: Execution::SubAgent(SubAgentConfig {
+                prompt: "summarize recent events".to_string(),
+                context: None,
+                context_files: Vec::new(),
+                model_tier: BackgroundModelTier::Medium,
+            }),
+            routing: ResultRouting::Direct(vec!["agent_feed".to_string(), "inbox".to_string()]),
+        };
+
+        // Without real SubAgentResources, the spawner will fail with a "requires SubAgentResources" error.
+        // That's fine — we're testing that the task enters the pipeline with correct source and routing.
+        spawner.spawn(task, None).unwrap();
+
+        let result = rx.recv().await.unwrap();
+        assert_eq!(result.id, "agent-spawn-e2e-1");
+        assert_eq!(result.task_name, "my_subagent");
+        assert!(
+            matches!(result.source, TaskSource::Agent),
+            "source should be Agent"
+        );
+        // Should be Failed because no resources were provided
+        assert!(
+            matches!(result.status, TaskStatus::Failed { .. }),
+            "should fail without resources"
+        );
+        // Routing should be preserved on the result
+        match &result.routing {
+            ResultRouting::Direct(channels) => {
+                assert_eq!(channels.len(), 2);
+                assert!(channels.contains(&"agent_feed".to_string()));
+                assert!(channels.contains(&"inbox".to_string()));
+            }
+            ResultRouting::Notify => panic!("expected Direct routing"),
+        }
+    }
+
     #[test]
     fn build_pulse_task_creates_correct_structure() {
         use ironclaw::background::types::Execution;

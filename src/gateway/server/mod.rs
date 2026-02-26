@@ -91,7 +91,7 @@ struct GatewayRuntime {
     notification_router: NotificationRouter,
     background_spawner: Arc<BackgroundTaskSpawner>,
     background_result_rx: mpsc::Receiver<BackgroundResult>,
-    spawn_context: SpawnContext,
+    spawn_context: Arc<SpawnContext>,
     // Runtime channels + handles
     inbound_rx: mpsc::Receiver<RoutedMessage>,
     broadcast_tx: broadcast::Sender<ServerMessage>,
