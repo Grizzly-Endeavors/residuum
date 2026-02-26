@@ -647,19 +647,44 @@ The `preview` line is omitted if the task has an empty prompt/command.
 **Source:** `background.rs` · `SubAgentSpawnTool`
 
 **Description sent to LLM:**
-> Spawn a background sub-agent to handle a task. By default runs asynchronously and delivers the result to the specified channels. Set wait=true to block until the sub-agent finishes and return its output directly.
+> Spawn a background sub-agent to handle a task. The agent_name selects a preset that configures the sub-agent's instructions, model tier, and tool restrictions. Unknown preset names fail immediately with a list of available presets. By default runs asynchronously and delivers the result to the specified channels. Set wait=true to block until the sub-agent finishes and return its output directly.
 
 ### Input
 
 | Parameter        | Type            | Required | Description                                                          |
 |------------------|-----------------|----------|----------------------------------------------------------------------|
 | `task`           | string          | yes      | The prompt/instructions for the sub-agent                            |
-| `agent_name`     | string          | no       | Human-readable name for the task (default: `"subagent"`)             |
-| `model_override` | string          | no       | Model tier: `"small"`, `"medium"`, `"large"` (default: `"medium"`)   |
-| `channels`       | array\<string\> | no       | Result delivery channels (default: `["agent_feed"]`). Only used in async mode. |
+| `agent_name`     | string          | no       | Preset name to use (default: `"general-purpose"`). Must match a known preset or the call fails. |
+| `model_override` | string          | no       | Override the preset's model tier: `"small"`, `"medium"`, `"large"`. If omitted, uses the preset's tier (default: `"medium"`). |
+| `channels`       | array\<string\> | no       | Result delivery channels. If omitted, uses the preset's default channels (fallback: `["agent_feed"]`). Only used in async mode. |
 | `wait`           | boolean         | no       | Block until the sub-agent finishes and return its output (default: `false`) |
 
 Valid channel names: `agent_wake`, `agent_feed`, `inbox`, or any configured external notification channel.
+
+### Subagent Presets
+
+Presets are Markdown files in the `subagents/` directory at the workspace root (e.g., `subagents/researcher.md`). They configure sub-agent behaviour via YAML frontmatter:
+
+```markdown
+---
+name: researcher
+description: "Research specialist for gathering information"
+model_tier: small          # small / medium / large (optional, default: medium)
+denied_tools:              # permanently block these tools (mutually exclusive with allowed_tools)
+  - exec
+channels:                  # default result channels (overrideable at spawn time)
+  - inbox
+---
+
+You are a research specialist. Focus on gathering and synthesising
+information. Always cite sources.
+```
+
+**Built-in preset:** `general-purpose` — no tool restrictions, medium tier. Always present even with no `subagents/` directory.
+
+**User-defined presets** with the same name as a built-in override the built-in.
+
+**Unknown preset names** return a `ToolResult::error` listing available presets — the call does not proceed.
 
 ### Output
 
@@ -677,6 +702,7 @@ On error: `"sub-agent failed: {reason}"` (returned as `is_error = true`).
 
 - Missing or empty `task` → `InvalidArguments`
 - Invalid `model_override` value → `InvalidArguments`
+- Unknown `agent_name` (preset not found) → `is_error = true` with available preset list
 - Unknown channel name (async mode only) → `is_error = true` with message
 - Provider construction failure → `Execution` error
 
