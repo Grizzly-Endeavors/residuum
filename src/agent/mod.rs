@@ -302,6 +302,16 @@ impl Agent {
         })
     }
 
+    /// Compute an approximate token usage summary for the current agent context.
+    #[must_use]
+    pub fn context_summary(&self) -> context::ContextSummary {
+        let memory_ctx = MemoryContext {
+            observations: self.observations.as_deref(),
+            recent_context: self.recent_context.as_deref(),
+        };
+        context::compute_context_summary(&self.identity, &memory_ctx, &self.recent_messages)
+    }
+
     /// Get the current recent message count.
     #[must_use]
     pub fn message_count(&self) -> usize {

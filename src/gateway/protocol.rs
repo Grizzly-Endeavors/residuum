@@ -26,6 +26,13 @@ pub enum ClientMessage {
     Observe,
     /// Request a forced reflection cycle.
     Reflect,
+    /// Request a token usage summary.
+    ContextRequest,
+    /// Add a message to the inbox without triggering an agent turn.
+    InboxAdd {
+        /// The message body to add.
+        body: String,
+    },
 }
 
 /// Messages sent from the server to WebSocket clients.
@@ -229,6 +236,52 @@ mod tests {
         assert!(
             json.contains("\"content\":\"checking that for you\""),
             "should have content field"
+        );
+    }
+
+    #[test]
+    fn client_message_deserialize_context_request() {
+        let json = r#"{"type":"context_request"}"#;
+        let msg: ClientMessage = serde_json::from_str(json).unwrap();
+        assert!(
+            matches!(msg, ClientMessage::ContextRequest),
+            "should deserialize to ContextRequest"
+        );
+    }
+
+    #[test]
+    fn client_message_deserialize_inbox_add() {
+        let json = r#"{"type":"inbox_add","body":"remember to deploy tomorrow"}"#;
+        let msg: ClientMessage = serde_json::from_str(json).unwrap();
+        assert!(
+            matches!(&msg, ClientMessage::InboxAdd { body } if body == "remember to deploy tomorrow"),
+            "should deserialize to InboxAdd with correct body"
+        );
+    }
+
+    #[test]
+    fn client_message_serialize_context_request() {
+        let msg = ClientMessage::ContextRequest;
+        let json = serde_json::to_string(&msg).unwrap();
+        assert_eq!(
+            json, r#"{"type":"context_request"}"#,
+            "context_request should serialize cleanly"
+        );
+    }
+
+    #[test]
+    fn client_message_serialize_inbox_add() {
+        let msg = ClientMessage::InboxAdd {
+            body: "hello world".to_string(),
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(
+            json.contains("\"type\":\"inbox_add\""),
+            "should have type tag"
+        );
+        assert!(
+            json.contains("\"body\":\"hello world\""),
+            "should have body field"
         );
     }
 

@@ -71,6 +71,9 @@ struct GatewayState {
     reload_sender: tokio::sync::watch::Sender<bool>,
     observe_notify: Arc<tokio::sync::Notify>,
     reflect_notify: Arc<tokio::sync::Notify>,
+    context_notify: Arc<tokio::sync::Notify>,
+    inbox_dir: std::path::PathBuf,
+    tz: chrono_tz::Tz,
 }
 
 /// All state needed by the main event loop.
@@ -102,6 +105,7 @@ struct GatewayRuntime {
     reload_rx: tokio::sync::watch::Receiver<bool>,
     observe_notify: Arc<tokio::sync::Notify>,
     reflect_notify: Arc<tokio::sync::Notify>,
+    context_notify: Arc<tokio::sync::Notify>,
     server_handle: tokio::task::JoinHandle<()>,
     pulse_scheduler: PulseScheduler,
 }
@@ -149,6 +153,7 @@ pub async fn run_gateway(cfg: Config) -> Result<GatewayExit, IronclawError> {
     let broadcast_display = BroadcastDisplay::new(broadcast_tx.clone());
     let observe_notify = Arc::new(tokio::sync::Notify::new());
     let reflect_notify = Arc::new(tokio::sync::Notify::new());
+    let context_notify = Arc::new(tokio::sync::Notify::new());
 
     // Clone senders for additional adapters before moving into GatewayState
     #[cfg(feature = "discord")]
@@ -163,6 +168,9 @@ pub async fn run_gateway(cfg: Config) -> Result<GatewayExit, IronclawError> {
         reload_sender,
         observe_notify: Arc::clone(&observe_notify),
         reflect_notify: Arc::clone(&reflect_notify),
+        context_notify: Arc::clone(&context_notify),
+        inbox_dir: parts.layout.inbox_dir(),
+        tz: parts.tz,
     };
 
     let webhook_router = if cfg.webhook.enabled {
@@ -254,6 +262,7 @@ pub async fn run_gateway(cfg: Config) -> Result<GatewayExit, IronclawError> {
         reload_rx,
         observe_notify,
         reflect_notify,
+        context_notify,
         server_handle,
         pulse_scheduler: PulseScheduler::new(),
     };
@@ -336,7 +345,7 @@ async fn handle_background_result(
 /// signals until shutdown or reload is requested.
 #[expect(
     clippy::too_many_lines,
-    reason = "8-arm select! loop; each arm is a distinct event source and cannot be split further"
+    reason = "9-arm select! loop; each arm is a distinct event source and cannot be split further"
 )]
 async fn run_event_loop(mut rt: GatewayRuntime) -> GatewayExit {
     let mut pulse_tick = tokio::time::interval(Duration::from_secs(60));
@@ -553,6 +562,27 @@ async fn run_event_loop(mut rt: GatewayRuntime) -> GatewayExit {
             // ── Reflect command wakeup ─────────────────────────────────────
             () = rt.reflect_notify.notified() => {
                 run_forced_reflect(&rt.reflector, &rt.layout, &mut rt.agent, &rt.broadcast_tx).await;
+            }
+
+            // ── Context request ────────────────────────────────────────────
+            () = rt.context_notify.notified() => {
+                let summary = rt.agent.context_summary();
+                let unobserved_tokens = crate::memory::recent_messages::load_recent_messages(
+                    &rt.layout.recent_messages_json(),
+                ).await.ok().map_or(0, |msgs| {
+                    let raw: Vec<_> = msgs.iter().map(|rm| rm.message.clone()).collect();
+                    crate::memory::tokens::estimate_message_tokens(&raw)
+                });
+                let msg = format!(
+                    "[context]\n  system (identity + memory):   ~{} tokens\n  message history:              ~{} tokens ({} messages)\n  unobserved messages:          ~{} tokens\n  observer threshold: {:>9} tokens  |  force: {:>9} tokens",
+                    summary.system_tokens,
+                    summary.history_tokens,
+                    summary.history_count,
+                    unobserved_tokens,
+                    rt.observer.threshold_tokens(),
+                    rt.observer.force_threshold_tokens(),
+                );
+                rt.broadcast_tx.send(ServerMessage::Notice { message: msg }).ok();
             }
         }
     }

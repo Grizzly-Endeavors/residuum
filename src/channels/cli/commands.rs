@@ -15,6 +15,10 @@ pub enum SlashCommand {
     Observe,
     /// Force a reflection cycle.
     Reflect,
+    /// Show context token usage.
+    Context,
+    /// Add a message to the inbox.
+    Inbox(String),
     /// Quit the client.
     Quit,
     /// An unrecognized slash command.
@@ -36,6 +40,10 @@ pub enum CommandAction {
     ObserveRequest,
     /// Send a reflect request to the server.
     ReflectRequest,
+    /// Send a context token summary request to the server.
+    ContextRequest,
+    /// Send an inbox add request to the server.
+    InboxAdd(String),
     /// Exit the client.
     Quit,
 }
@@ -57,6 +65,18 @@ impl SlashCommand {
             "reload" | "r" => Self::Reload,
             "observe" | "obs" => Self::Observe,
             "reflect" | "ref" => Self::Reflect,
+            "context" | "ctx" => Self::Context,
+            "inbox" => {
+                let body = cmd
+                    .split_once(char::is_whitespace)
+                    .map_or("", |x| x.1.trim())
+                    .to_string();
+                if body.is_empty() {
+                    Self::Unknown("inbox".to_string())
+                } else {
+                    Self::Inbox(body)
+                }
+            }
             "quit" | "exit" | "q" => Self::Quit,
             _ => Self::Unknown(keyword.to_string()),
         })
@@ -74,6 +94,8 @@ impl SlashCommand {
             Self::Reload => CommandAction::Reload,
             Self::Observe => CommandAction::ObserveRequest,
             Self::Reflect => CommandAction::ReflectRequest,
+            Self::Context => CommandAction::ContextRequest,
+            Self::Inbox(body) => CommandAction::InboxAdd(body.clone()),
             Self::Quit => CommandAction::Quit,
             Self::Unknown(name) => {
                 CommandAction::PrintOutput(format!("unknown command: /{name} (try /help)"))
@@ -85,13 +107,15 @@ impl SlashCommand {
 fn help_text() -> String {
     [
         "Available commands:",
-        "  /help, /h       — show this help",
-        "  /status         — show connection info",
-        "  /verbose, /v    — toggle verbose mode (tool events)",
-        "  /reload, /r     — reload server configuration",
-        "  /observe, /obs  — force a memory observation cycle",
-        "  /reflect, /ref  — force a reflection cycle",
-        "  /quit, /exit, /q — disconnect and exit",
+        "  /help, /h          — show this help",
+        "  /status            — show connection info",
+        "  /verbose, /v       — toggle verbose mode (tool events)",
+        "  /reload, /r        — reload server configuration",
+        "  /observe, /obs     — force a memory observation cycle",
+        "  /reflect, /ref     — force a reflection cycle",
+        "  /context, /ctx     — show context token usage",
+        "  /inbox <text>      — add a message to the agent's inbox",
+        "  /quit, /exit, /q   — disconnect and exit",
     ]
     .join("\n")
 }
@@ -185,6 +209,59 @@ mod tests {
             SlashCommand::parse("/ref"),
             Some(SlashCommand::Reflect),
             "should parse /ref alias"
+        );
+    }
+
+    #[test]
+    fn parse_context() {
+        assert_eq!(
+            SlashCommand::parse("/context"),
+            Some(SlashCommand::Context),
+            "should parse /context"
+        );
+        assert_eq!(
+            SlashCommand::parse("/ctx"),
+            Some(SlashCommand::Context),
+            "should parse /ctx alias"
+        );
+    }
+
+    #[test]
+    fn parse_inbox_with_text() {
+        assert_eq!(
+            SlashCommand::parse("/inbox hello world"),
+            Some(SlashCommand::Inbox("hello world".to_string())),
+            "should parse /inbox with body"
+        );
+    }
+
+    #[test]
+    fn parse_inbox_empty_returns_unknown() {
+        assert_eq!(
+            SlashCommand::parse("/inbox"),
+            Some(SlashCommand::Unknown("inbox".to_string())),
+            "/inbox with no text should return Unknown"
+        );
+    }
+
+    #[test]
+    fn execute_context_returns_context_request() {
+        let action = SlashCommand::Context.execute("ws://localhost:7700/ws", false);
+        assert_eq!(
+            action,
+            CommandAction::ContextRequest,
+            "context should return ContextRequest"
+        );
+    }
+
+    #[test]
+    fn execute_inbox_returns_inbox_add() {
+        let action = SlashCommand::Inbox("deploy tomorrow".to_string())
+            .execute("ws://localhost:7700/ws", false);
+        assert_eq!(
+            action,
+            CommandAction::InboxAdd("deploy tomorrow".to_string()),
+            "inbox should return InboxAdd with body"
         );
     }
 

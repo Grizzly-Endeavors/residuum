@@ -26,6 +26,10 @@ pub(super) async fn ws_handler(
 /// Splits the socket into read/write halves. A forwarding task reads from the
 /// broadcast channel and sends all events to the client. Verbose filtering
 /// is handled client-side. The read loop processes incoming client messages.
+#[expect(
+    clippy::too_many_lines,
+    reason = "match on all ClientMessage variants; splitting would obscure the dispatch logic"
+)]
 async fn handle_connection(socket: WebSocket, state: GatewayState) {
     let (mut ws_tx, mut ws_rx) = socket.split();
 
@@ -119,6 +123,50 @@ async fn handle_connection(socket: WebSocket, state: GatewayState) {
             ClientMessage::Reflect => {
                 tracing::info!("reflect requested by client");
                 state.reflect_notify.notify_one();
+            }
+            ClientMessage::ContextRequest => {
+                tracing::info!("context request from client");
+                state.context_notify.notify_one();
+            }
+            ClientMessage::InboxAdd { body } => {
+                tracing::info!("inbox add requested by client");
+                let dir = state.inbox_dir.clone();
+                let tz = state.tz;
+                let tx = state.broadcast_tx.clone();
+                tokio::spawn(async move {
+                    let title = body
+                        .lines()
+                        .next()
+                        .unwrap_or("Inbox message")
+                        .chars()
+                        .take(60)
+                        .collect::<String>();
+                    let timestamp = crate::time::now_local(tz);
+                    let item = crate::inbox::InboxItem {
+                        title: title.clone(),
+                        body,
+                        source: "cli".to_string(),
+                        timestamp,
+                        read: false,
+                        attachments: Vec::new(),
+                    };
+                    let filename = crate::inbox::generate_filename(&title, tz);
+                    match crate::inbox::save_item(&dir, &filename, &item).await {
+                        Ok(()) => {
+                            tx.send(ServerMessage::Notice {
+                                message: "[inbox] item added".to_string(),
+                            })
+                            .ok();
+                        }
+                        Err(e) => {
+                            tx.send(ServerMessage::Error {
+                                reply_to: None,
+                                message: format!("inbox add failed: {e}"),
+                            })
+                            .ok();
+                        }
+                    }
+                });
             }
         }
     }

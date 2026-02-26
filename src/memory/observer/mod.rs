@@ -98,6 +98,18 @@ impl Observer {
         self.config.cooldown_secs
     }
 
+    /// The soft observation threshold in tokens.
+    #[must_use]
+    pub fn threshold_tokens(&self) -> usize {
+        self.config.threshold_tokens
+    }
+
+    /// The force observation threshold in tokens (bypasses cooldown).
+    #[must_use]
+    pub fn force_threshold_tokens(&self) -> usize {
+        self.config.force_threshold_tokens
+    }
+
     /// The configured timezone.
     #[must_use]
     pub fn timezone(&self) -> Tz {

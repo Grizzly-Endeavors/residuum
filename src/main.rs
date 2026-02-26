@@ -149,6 +149,16 @@ async fn run_connect(url: &str, verbose: bool) -> Result<(), IronclawError> {
                         CommandAction::ReflectRequest => {
                             send_client_message(&mut ws_tx, &ClientMessage::Reflect).await?;
                         }
+                        CommandAction::ContextRequest => {
+                            send_client_message(&mut ws_tx, &ClientMessage::ContextRequest).await?;
+                        }
+                        CommandAction::InboxAdd(body) => {
+                            send_client_message(
+                                &mut ws_tx,
+                                &ClientMessage::InboxAdd { body },
+                            )
+                            .await?;
+                        }
                         CommandAction::Quit => break,
                         CommandAction::PrintOutput(text) => eprintln!("{text}"),
                         CommandAction::None => {}

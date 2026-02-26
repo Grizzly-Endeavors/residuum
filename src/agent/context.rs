@@ -105,6 +105,47 @@ impl PromptContext<'_> {
     }
 }
 
+/// A snapshot of the agent's approximate token usage.
+pub struct ContextSummary {
+    /// Estimated tokens in the system prompt (identity + memory; no projects/skills).
+    pub system_tokens: usize,
+    /// Estimated tokens across the in-memory recent message history.
+    pub history_tokens: usize,
+    /// Number of messages in the recent history.
+    pub history_count: usize,
+}
+
+/// Compute an approximate token summary for the current agent context.
+///
+/// Uses `build_system_content` with empty projects/skills/subagents contexts so
+/// the estimate reflects only the stable identity + memory sections.
+pub(super) fn compute_context_summary(
+    identity: &IdentityFiles,
+    memory_ctx: &MemoryContext<'_>,
+    recent_messages: &RecentMessages,
+) -> ContextSummary {
+    use crate::memory::tokens::{estimate_message_tokens, estimate_tokens};
+
+    let system_content = build_system_content(
+        identity,
+        memory_ctx,
+        &ProjectsContext::none(),
+        &SkillsContext::none(),
+        &SubagentsContext::none(),
+    );
+    let system_tokens = estimate_tokens(&system_content);
+
+    let msgs = recent_messages.messages();
+    let history_tokens = estimate_message_tokens(msgs);
+    let history_count = msgs.len();
+
+    ContextSummary {
+        system_tokens,
+        history_tokens,
+        history_count,
+    }
+}
+
 /// Assemble the full message list for a model call.
 ///
 /// Creates a system message from identity files and observation log content,
@@ -844,6 +885,62 @@ mod tests {
         assert!(
             tag.is_some_and(|t| !t.contains("[Unread Inbox:")),
             "should not include unread inbox tag when count is 0, got: {tag:?}"
+        );
+    }
+
+    // ── compute_context_summary tests ────────────────────────────────────────
+
+    #[test]
+    fn context_summary_empty_identity_no_messages() {
+        let identity = IdentityFiles::default();
+        let memory = no_memory();
+        let recent = RecentMessages::new();
+
+        let summary = compute_context_summary(&identity, &memory, &recent);
+        assert_eq!(summary.history_count, 0, "no messages should give count 0");
+        assert_eq!(
+            summary.history_tokens, 0,
+            "no messages should give 0 tokens"
+        );
+        // system_tokens may be 0 for empty identity
+        assert_eq!(
+            summary.system_tokens, 0,
+            "empty identity should give 0 system tokens"
+        );
+    }
+
+    #[test]
+    fn context_summary_with_identity_has_nonzero_system_tokens() {
+        let identity = IdentityFiles {
+            soul: Some("I am a helpful assistant.".to_string()),
+            ..IdentityFiles::default()
+        };
+        let memory = no_memory();
+        let recent = RecentMessages::new();
+
+        let summary = compute_context_summary(&identity, &memory, &recent);
+        assert!(
+            summary.system_tokens > 0,
+            "non-empty identity should give positive system token count"
+        );
+    }
+
+    #[test]
+    fn context_summary_history_count_matches_messages() {
+        let identity = IdentityFiles::default();
+        let memory = no_memory();
+        let mut recent = RecentMessages::new();
+        recent.push(Message::user("hello"));
+        recent.push(Message::assistant("hi there", None));
+
+        let summary = compute_context_summary(&identity, &memory, &recent);
+        assert_eq!(
+            summary.history_count, 2,
+            "history count should match message count"
+        );
+        assert!(
+            summary.history_tokens > 0,
+            "non-empty history should have positive token count"
         );
     }
 
