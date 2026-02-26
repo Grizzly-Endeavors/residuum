@@ -43,13 +43,11 @@ impl NotificationChannel for NtfyChannel {
 
     async fn deliver(&self, notification: &Notification) -> anyhow::Result<()> {
         let endpoint = format!("{}/{}", self.url.trim_end_matches('/'), self.topic);
-        let source_label = match notification.source {
-            super::types::TaskSource::Pulse => "pulse",
-            super::types::TaskSource::Cron => "cron",
-            super::types::TaskSource::Agent => "agent",
-        };
-
-        let title = format!("[{}] {}", source_label, notification.task_name);
+        let title = format!(
+            "[{}] {}",
+            notification.source.as_str(),
+            notification.task_name
+        );
 
         let resp = self
             .client
@@ -108,17 +106,11 @@ impl NotificationChannel for WebhookChannel {
     }
 
     async fn deliver(&self, notification: &Notification) -> anyhow::Result<()> {
-        let source_type = match notification.source {
-            super::types::TaskSource::Pulse => "pulse",
-            super::types::TaskSource::Cron => "cron",
-            super::types::TaskSource::Agent => "agent",
-        };
-
         let payload = serde_json::json!({
             "task_name": notification.task_name,
             "summary": notification.summary,
             "timestamp": notification.timestamp.to_rfc3339(),
-            "source_type": source_type,
+            "source_type": notification.source.as_str(),
         });
 
         let mut builder = match self.method.to_uppercase().as_str() {

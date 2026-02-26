@@ -51,11 +51,11 @@ impl NotificationChannel for InboxChannel {
     }
 
     async fn deliver(&self, notification: &Notification) -> anyhow::Result<()> {
-        let source_label = match notification.source {
-            super::types::TaskSource::Pulse => format!("pulse:{}", notification.task_name),
-            super::types::TaskSource::Cron => format!("cron:{}", notification.task_name),
-            super::types::TaskSource::Agent => format!("agent:{}", notification.task_name),
-        };
+        let source_label = format!(
+            "{}:{}",
+            notification.source.as_str(),
+            notification.task_name
+        );
 
         let now = crate::time::now_local(self.tz);
         let item = inbox::InboxItem {

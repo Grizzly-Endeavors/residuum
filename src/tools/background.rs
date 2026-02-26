@@ -119,11 +119,7 @@ impl Tool for ListAgentsTool {
 
         for (id, info) in &tasks {
             let elapsed_secs = (now - info.started_at).num_seconds().max(0);
-            let source_label = match info.source {
-                TaskSource::Pulse => "pulse",
-                TaskSource::Cron => "cron",
-                TaskSource::Agent => "agent",
-            };
+            let source_label = info.source.as_str();
             let preview_suffix = if info.prompt_preview.is_empty() {
                 String::new()
             } else {

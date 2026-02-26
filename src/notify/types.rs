@@ -34,6 +34,18 @@ pub enum TaskSource {
     Agent,
 }
 
+impl TaskSource {
+    /// Lowercase label for display and serialization.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Pulse => "pulse",
+            Self::Cron => "cron",
+            Self::Agent => "agent",
+        }
+    }
+}
+
 /// A notification to be routed to channels.
 pub struct Notification {
     /// Task name used for NOTIFY.yml lookup.
