@@ -172,10 +172,20 @@ fn build_status_line(ctx: &StatusLine) -> String {
 
 /// Build a minimal system prompt for background sub-agent turns.
 ///
-/// Includes optional preset instructions, ENVIRONMENT.md, USER.md, the projects
-/// index, and skills index. Excludes SOUL, AGENTS, MEMORY,
-/// observations, recent context, active skill instructions, and the
-/// subagents index (subagents cannot spawn other subagents).
+/// Includes optional preset instructions, ENVIRONMENT.md, USER.md, projects index,
+/// active project context, skills index, and active skill instructions.
+///
+/// Excludes SOUL, AGENTS, MEMORY, observations, recent context, and the subagents
+/// index (subagents cannot spawn other subagents).
+///
+/// Assembly order (matching main prompt structure for cache efficiency):
+/// 1. `AGENT_INSTRUCTIONS` (preset instructions, if any)
+/// 2. `ENVIRONMENT.md`
+/// 3. `USER.md`
+/// 4. `PROJECTS_INDEX`
+/// 5. `ACTIVE_PROJECT` (when a project is active)
+/// 6. `SKILLS_INDEX`
+/// 7. `ACTIVE_SKILLS` (when skills are loaded)
 #[must_use]
 pub(crate) fn build_subagent_system_content(
     identity: &IdentityFiles,
@@ -209,10 +219,22 @@ pub(crate) fn build_subagent_system_content(
         parts.push(format!("<PROJECTS_INDEX>\n{idx}\n</PROJECTS_INDEX>"));
     }
 
+    if let Some(active) = projects_ctx.active_context
+        && !active.is_empty()
+    {
+        parts.push(format!("<ACTIVE_PROJECT>\n{active}\n</ACTIVE_PROJECT>"));
+    }
+
     if let Some(idx) = skills_ctx.index
         && !idx.is_empty()
     {
         parts.push(format!("<SKILLS_INDEX>\n{idx}\n</SKILLS_INDEX>"));
+    }
+
+    if let Some(active) = skills_ctx.active_instructions
+        && !active.is_empty()
+    {
+        parts.push(format!("<ACTIVE_SKILLS>\n{active}\n</ACTIVE_SKILLS>"));
     }
 
     parts.join("\n\n")
@@ -220,18 +242,23 @@ pub(crate) fn build_subagent_system_content(
 
 /// Build the system prompt content from identity files.
 ///
-/// Assembly order:
-/// 1. SOUL.md content
-/// 2. AGENTS.md content
-/// 3. ENVIRONMENT.md content
-/// 4. USER.md content
-/// 5. MEMORY.md content
-/// 6. Observation log (if present)
-/// 7. Recent context / narrative summary (if present)
-/// 8. Projects index (always present after bootstrap)
-/// 9. Active project context (when a project is active)
-/// 10. Skills index (available skills listing)
-/// 11. Active skill instructions (when skills are loaded)
+/// Assembly order (designed to maximize prompt caching efficiency):
+/// 1. `SOUL.md`
+/// 2. `AGENTS.md`
+/// 3. `ENVIRONMENT.md`
+/// 4. `USER.md`
+/// 5. `MEMORY.md`
+/// 6. `OBSERVATION_LOG` (if present)
+/// 7. `RECENT_CONTEXT` (if present)
+/// 8. `SUBAGENTS_INDEX` (available presets listing)
+/// 9. `PROJECTS_INDEX` (always present after bootstrap)
+/// 10. `SKILLS_INDEX` (available skills listing)
+/// 11. `ACTIVE_PROJECT` (when a project is active)
+/// 12. `ACTIVE_SKILLS` (when skills are loaded)
+///
+/// Static sections (1-4) form a stable cache prefix shared across all conversations.
+/// Dynamic sections (5-7) update as memory changes. Indices (8-10) appear before
+/// active sections (11-12) to maximize cache reuse as projects/skills change.
 fn build_system_content(
     identity: &IdentityFiles,
     memory_ctx: &MemoryContext<'_>,
@@ -275,16 +302,16 @@ fn build_system_content(
         parts.push(format!("<RECENT_CONTEXT>\n{ctx}\n</RECENT_CONTEXT>"));
     }
 
+    if let Some(idx) = subagents_ctx.index
+        && !idx.is_empty()
+    {
+        parts.push(format!("<SUBAGENTS_INDEX>\n{idx}\n</SUBAGENTS_INDEX>"));
+    }
+
     if let Some(idx) = projects_ctx.index
         && !idx.is_empty()
     {
         parts.push(format!("<PROJECTS_INDEX>\n{idx}\n</PROJECTS_INDEX>"));
-    }
-
-    if let Some(active) = projects_ctx.active_context
-        && !active.is_empty()
-    {
-        parts.push(format!("<ACTIVE_PROJECT>\n{active}\n</ACTIVE_PROJECT>"));
     }
 
     if let Some(idx) = skills_ctx.index
@@ -293,16 +320,16 @@ fn build_system_content(
         parts.push(format!("<SKILLS_INDEX>\n{idx}\n</SKILLS_INDEX>"));
     }
 
+    if let Some(active) = projects_ctx.active_context
+        && !active.is_empty()
+    {
+        parts.push(format!("<ACTIVE_PROJECT>\n{active}\n</ACTIVE_PROJECT>"));
+    }
+
     if let Some(active) = skills_ctx.active_instructions
         && !active.is_empty()
     {
         parts.push(format!("<ACTIVE_SKILLS>\n{active}\n</ACTIVE_SKILLS>"));
-    }
-
-    if let Some(idx) = subagents_ctx.index
-        && !idx.is_empty()
-    {
-        parts.push(format!("<SUBAGENTS_INDEX>\n{idx}\n</SUBAGENTS_INDEX>"));
     }
 
     parts.join("\n\n")
@@ -879,7 +906,7 @@ mod tests {
     }
 
     #[test]
-    fn skills_after_projects() {
+    fn section_order_subagents_projects_skills_active() {
         let identity = IdentityFiles::default();
         let projects = ProjectsContext {
             index: Some("| Name | Status |"),
@@ -889,23 +916,45 @@ mod tests {
             index: Some("<available_skills/>"),
             active_instructions: Some("<active_skill/>"),
         };
-        let content = build_system_content(
-            &identity,
-            &no_memory(),
-            &projects,
-            &skills,
-            &SubagentsContext::none(),
+        let subagents = SubagentsContext {
+            index: Some("<presets/>"),
+        };
+        let content = build_system_content(&identity, &no_memory(), &projects, &skills, &subagents);
+
+        // Verify the order: SUBAGENTS_INDEX → PROJECTS_INDEX → SKILLS_INDEX → ACTIVE_PROJECT → ACTIVE_SKILLS
+        let subagents_open = content.find("<SUBAGENTS_INDEX>");
+        let projects_open = content.find("<PROJECTS_INDEX>");
+        let skills_open = content.find("<SKILLS_INDEX>");
+        let active_proj_open = content.find("<ACTIVE_PROJECT>");
+        let active_skills_open = content.find("<ACTIVE_SKILLS>");
+
+        assert!(
+            subagents_open.is_some()
+                && projects_open.is_some()
+                && skills_open.is_some()
+                && active_proj_open.is_some()
+                && active_skills_open.is_some(),
+            "all sections should exist"
         );
 
-        let project_close = content.find("</ACTIVE_PROJECT>");
-        let skills_open = content.find("<SKILLS_INDEX>");
+        let sub = subagents_open.unwrap();
+        let proj = projects_open.unwrap();
+        let skl = skills_open.unwrap();
+        let act_proj = active_proj_open.unwrap();
+        let act_skl = active_skills_open.unwrap();
+
         assert!(
-            project_close.is_some() && skills_open.is_some(),
-            "both sections should exist"
+            sub < proj,
+            "SUBAGENTS_INDEX should come before PROJECTS_INDEX"
+        );
+        assert!(proj < skl, "PROJECTS_INDEX should come before SKILLS_INDEX");
+        assert!(
+            skl < act_proj,
+            "SKILLS_INDEX should come before ACTIVE_PROJECT"
         );
         assert!(
-            project_close < skills_open,
-            "skills should appear after projects"
+            act_proj < act_skl,
+            "ACTIVE_PROJECT should come before ACTIVE_SKILLS"
         );
     }
 
@@ -986,8 +1035,8 @@ mod tests {
     }
 
     #[test]
-    fn subagent_system_content_excludes_active_skills() {
-        // Active skill instructions are not included in the sub-agent system prompt
+    fn subagent_system_content_includes_active_skills() {
+        // Active skill instructions are now included in the sub-agent system prompt
         let identity = IdentityFiles::default();
         let skills_ctx = SkillsContext {
             index: Some("<available_skills/>"),
@@ -996,8 +1045,12 @@ mod tests {
         let content =
             build_subagent_system_content(&identity, &ProjectsContext::none(), &skills_ctx, None);
         assert!(
-            !content.contains("instructions"),
-            "active skill instructions should not appear in subagent system prompt"
+            content.contains("<ACTIVE_SKILLS>"),
+            "active skills section should appear in subagent system prompt"
+        );
+        assert!(
+            content.contains("instructions"),
+            "active skill instructions should appear in subagent system prompt"
         );
     }
 
@@ -1013,6 +1066,60 @@ mod tests {
         assert!(
             !content.contains("SKILLS_INDEX"),
             "empty skills index should be skipped"
+        );
+    }
+
+    #[test]
+    fn subagent_system_content_includes_active_project() {
+        let identity = IdentityFiles::default();
+        let projects_ctx = ProjectsContext {
+            index: Some("| proj | status |"),
+            active_context: Some("**Current Project:** test-proj"),
+        };
+        let content =
+            build_subagent_system_content(&identity, &projects_ctx, &SkillsContext::none(), None);
+        assert!(
+            content.contains("<ACTIVE_PROJECT>"),
+            "active project section should appear in subagent system prompt"
+        );
+        assert!(
+            content.contains("test-proj"),
+            "active project context should appear in subagent system prompt"
+        );
+    }
+
+    #[test]
+    fn subagent_system_content_section_order() {
+        let identity = IdentityFiles {
+            environment: Some("env content".to_string()),
+            user: Some("user content".to_string()),
+            ..IdentityFiles::default()
+        };
+        let projects_ctx = ProjectsContext {
+            index: Some("projects"),
+            active_context: Some("active proj"),
+        };
+        let skills_ctx = SkillsContext {
+            index: Some("skills"),
+            active_instructions: Some("active skills"),
+        };
+        let content = build_subagent_system_content(&identity, &projects_ctx, &skills_ctx, None);
+
+        // Verify order: ENVIRONMENT → USER → PROJECTS_INDEX → ACTIVE_PROJECT → SKILLS_INDEX → ACTIVE_SKILLS
+        let env_pos = content.find("env content").unwrap();
+        let user_pos = content.find("user content").unwrap();
+        let proj_idx_pos = content.find("<PROJECTS_INDEX>").unwrap();
+        let active_proj_pos = content.find("<ACTIVE_PROJECT>").unwrap();
+        let skl_idx_pos = content.find("<SKILLS_INDEX>").unwrap();
+        let active_skl_pos = content.find("<ACTIVE_SKILLS>").unwrap();
+
+        assert!(
+            env_pos < user_pos
+                && user_pos < proj_idx_pos
+                && proj_idx_pos < active_proj_pos
+                && active_proj_pos < skl_idx_pos
+                && skl_idx_pos < active_skl_pos,
+            "sections should appear in order: ENVIRONMENT, USER, PROJECTS_INDEX, ACTIVE_PROJECT, SKILLS_INDEX, ACTIVE_SKILLS"
         );
     }
 }

@@ -494,9 +494,8 @@ mod tests {
     }
 
     #[test]
-    fn subagent_system_content_excludes_active_skills_instructions() {
-        // Sub-agents don't get active skill instructions in the system prompt
-        // (skills are activated mid-turn and appear in tool results instead)
+    fn subagent_system_content_includes_active_skills_instructions() {
+        // Sub-agents now include active skill instructions in the system prompt
         let identity = IdentityFiles::default();
         let projects_ctx = ProjectsContext::none();
         let skills_ctx = SkillsContext {
@@ -505,8 +504,12 @@ mod tests {
         };
         let content = build_subagent_system_content(&identity, &projects_ctx, &skills_ctx, None);
         assert!(
-            !content.contains("Do PDFs"),
-            "active skill instructions should not appear in subagent system prompt"
+            content.contains("Do PDFs"),
+            "active skill instructions should appear in subagent system prompt"
+        );
+        assert!(
+            content.contains("<ACTIVE_SKILLS>"),
+            "should include active skills section"
         );
     }
 
