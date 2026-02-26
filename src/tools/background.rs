@@ -321,6 +321,7 @@ impl Tool for SubAgentSpawnTool {
 
             self.spawner
                 .spawn(task, Some(resources))
+                .await
                 .map_err(|err| ToolError::Execution(format!("failed to spawn sub-agent: {err}")))?;
 
             Ok(ToolResult::success(format!("Subagent spawned: {task_id}")))

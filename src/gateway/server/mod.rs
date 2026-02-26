@@ -413,6 +413,13 @@ async fn run_event_loop(mut rt: GatewayRuntime) -> GatewayExit {
                                     ));
                                 }
                             }
+                            bg_result = rt.background_result_rx.recv() => {
+                                if let Some(result) = bg_result {
+                                    drop(interrupt_tx.try_send(
+                                        Interrupt::BackgroundResult(result)
+                                    ));
+                                }
+                            }
                             _ = rt.reload_rx.changed() => {
                                 rt.mcp_registry.write().await.disconnect_all().await;
                                 rt.server_handle.abort();
@@ -479,7 +486,7 @@ async fn run_event_loop(mut rt: GatewayRuntime) -> GatewayExit {
                         Arc::clone(&rt.mcp_registry),
                     ).await {
                         Ok(resources) => {
-                            if let Err(e) = rt.background_spawner.spawn(task, Some(resources)) {
+                            if let Err(e) = rt.background_spawner.spawn(task, Some(resources)).await {
                                 tracing::warn!(pulse = %pulse.name, error = %e, "failed to spawn pulse task");
                             }
                         }

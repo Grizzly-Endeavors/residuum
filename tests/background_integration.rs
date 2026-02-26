@@ -60,7 +60,7 @@ mod background_integration {
         );
 
         let task = make_script_task("e2e-1", "echo", &["hello world"]);
-        spawner.spawn(task, None).unwrap();
+        spawner.spawn(task, None).await.unwrap();
 
         let result = rx.recv().await.unwrap();
         assert_eq!(result.id, "e2e-1");
@@ -100,7 +100,7 @@ mod background_integration {
             routing: ResultRouting::Notify,
         };
 
-        spawner.spawn(task, None).unwrap();
+        spawner.spawn(task, None).await.unwrap();
 
         let result = rx.recv().await.unwrap();
         assert_eq!(result.id, "fail-1");
@@ -133,7 +133,7 @@ mod background_integration {
         // Spawn max + 1 tasks
         for i in 0..=max {
             let task = make_script_task(&format!("conc-{i}"), "echo", &[&format!("task-{i}")]);
-            spawner.spawn(task, None).unwrap();
+            spawner.spawn(task, None).await.unwrap();
         }
 
         // All should eventually complete
@@ -263,7 +263,7 @@ mod background_integration {
             routing: ResultRouting::Notify,
         };
 
-        spawner.spawn(task, None).unwrap();
+        spawner.spawn(task, None).await.unwrap();
 
         // Give it time to register and start
         tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
@@ -317,7 +317,7 @@ mod background_integration {
             routing: ResultRouting::Notify,
         };
 
-        spawner.spawn(task, None).unwrap();
+        spawner.spawn(task, None).await.unwrap();
         tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
 
         let tasks = spawner.list_active_tasks().await;
@@ -514,7 +514,7 @@ mod background_integration {
 
         // Without real SubAgentResources, the spawner will fail with a "requires SubAgentResources" error.
         // That's fine — we're testing that the task enters the pipeline with correct source and routing.
-        spawner.spawn(task, None).unwrap();
+        spawner.spawn(task, None).await.unwrap();
 
         let result = rx.recv().await.unwrap();
         assert_eq!(result.id, "agent-spawn-e2e-1");

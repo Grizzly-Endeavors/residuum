@@ -55,7 +55,11 @@ impl BackgroundTaskSpawner {
     ///
     /// # Errors
     /// Returns an error if the task cannot be registered (e.g. duplicate ID).
-    pub fn spawn(
+    #[expect(
+        clippy::too_many_lines,
+        reason = "single async spawn with setup, select!, and cleanup — splitting would fragment the task lifecycle"
+    )]
+    pub async fn spawn(
         &self,
         task: BackgroundTask,
         resources: Option<SubAgentResources>,
@@ -81,12 +85,10 @@ impl BackgroundTaskSpawner {
         };
 
         // Register the task before spawning
-        {
-            let mut guard = active_tasks.try_lock().map_err(|lock_err| {
-                anyhow::anyhow!("failed to lock active_tasks for registration: {lock_err}")
-            })?;
-            guard.insert(task_id.clone(), (token, active_info));
-        }
+        active_tasks
+            .lock()
+            .await
+            .insert(task_id.clone(), (token, active_info));
 
         tokio::spawn(async move {
             // Acquire semaphore permit (waits if at capacity)
@@ -146,7 +148,10 @@ impl BackgroundTaskSpawner {
                 outcome = execute_task(&task, resources.as_ref(), &workspace_root) => {
                     let (status, summary) = match outcome {
                         Ok(output) => (TaskStatus::Completed, output),
-                        Err(e) => (TaskStatus::Failed { error: e.to_string() }, String::new()),
+                        Err(e) => {
+                            let error_msg = e.to_string();
+                            (TaskStatus::Failed { error: error_msg.clone() }, format!("[FAILED] {error_msg}"))
+                        }
                     };
 
                     let transcript_path = write_transcript(
@@ -268,7 +273,8 @@ async fn write_transcript(
 #[expect(clippy::unwrap_used, reason = "test code uses unwrap for clarity")]
 mod tests {
     use super::*;
-    use crate::background::types::{Execution, ResultRouting, ScriptConfig};
+    use crate::background::types::{Execution, ResultRouting, ScriptConfig, SubAgentConfig};
+    use crate::config::BackgroundModelTier;
     use crate::notify::types::TaskSource;
 
     fn make_echo_task(id: &str) -> BackgroundTask {
@@ -299,7 +305,7 @@ mod tests {
         );
 
         let task = make_echo_task("t1");
-        let id = spawner.spawn(task, None).unwrap();
+        let id = spawner.spawn(task, None).await.unwrap();
         assert_eq!(id, "t1");
 
         let result = rx.recv().await.unwrap();
@@ -340,7 +346,7 @@ mod tests {
             routing: ResultRouting::Notify,
         };
 
-        spawner.spawn(task, None).unwrap();
+        spawner.spawn(task, None).await.unwrap();
 
         // Give the spawned task time to register and start
         tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
@@ -386,7 +392,7 @@ mod tests {
                 }),
                 routing: ResultRouting::Notify,
             };
-            spawner.spawn(task, None).unwrap();
+            spawner.spawn(task, None).await.unwrap();
         }
 
         // All 3 should complete (the semaphore just queues the 3rd)
@@ -449,10 +455,58 @@ mod tests {
         );
 
         let task = make_echo_task("ch-1");
-        spawner.spawn(task, None).unwrap();
+        spawner.spawn(task, None).await.unwrap();
 
         let result = rx.recv().await.unwrap();
         assert_eq!(result.task_name, "test_echo");
         assert!(result.transcript_path.is_some(), "should write transcript");
+    }
+
+    #[tokio::test]
+    async fn failed_task_transcript_contains_error() {
+        let (tx, mut rx) = mpsc::channel(32);
+        let dir = tempfile::tempdir().unwrap();
+        let spawner = BackgroundTaskSpawner::new(
+            tx,
+            3,
+            PathBuf::from("/tmp"),
+            dir.path().to_path_buf(),
+            chrono_tz::UTC,
+        );
+
+        // SubAgent without resources → guaranteed failure
+        let task = BackgroundTask {
+            id: "fail-transcript-1".to_string(),
+            task_name: "failing_agent".to_string(),
+            source: TaskSource::Agent,
+            execution: Execution::SubAgent(SubAgentConfig {
+                prompt: "do something".to_string(),
+                context: None,
+                context_files: Vec::new(),
+                model_tier: BackgroundModelTier::Medium,
+            }),
+            routing: ResultRouting::Notify,
+        };
+
+        spawner.spawn(task, None).await.unwrap();
+
+        let result = rx.recv().await.unwrap();
+        assert!(
+            matches!(result.status, TaskStatus::Failed { .. }),
+            "should be failed"
+        );
+        assert!(
+            result.summary.contains("[FAILED]"),
+            "summary should contain [FAILED] prefix, got: {}",
+            result.summary
+        );
+        assert!(
+            !result.summary.is_empty(),
+            "summary should not be empty on failure"
+        );
+        assert!(
+            result.transcript_path.is_some(),
+            "failed task should still write transcript"
+        );
     }
 }

@@ -108,7 +108,7 @@ pub(super) async fn spawn_due_cron_jobs(
                 .await
                 {
                     Ok(resources) => {
-                        if let Err(e) = spawner.spawn(task, Some(resources)) {
+                        if let Err(e) = spawner.spawn(task, Some(resources)).await {
                             tracing::warn!(job = %job.name, error = %e, "failed to spawn cron agent task");
                             false
                         } else {
