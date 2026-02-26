@@ -22,7 +22,7 @@ use crate::agent::context::{ProjectsContext, PromptContext, SkillsContext, Subag
 use crate::agent::interrupt::Interrupt;
 use crate::background::BackgroundTaskSpawner;
 use crate::background::types::{BackgroundResult, ResultRouting, format_background_result};
-use crate::channels::types::RoutedMessage;
+use crate::channels::types::{ReplyHandle, RoutedMessage};
 use crate::config::Config;
 use crate::cron::store::CronStore;
 use crate::error::IronclawError;
@@ -114,6 +114,9 @@ struct GatewayRuntime {
     command_rx: mpsc::Receiver<ServerCommand>,
     server_handle: tokio::task::JoinHandle<()>,
     pulse_scheduler: PulseScheduler,
+    /// Most recent reply handle from a user message. Used by wake turns to
+    /// deliver responses to the channel the user last interacted from.
+    last_reply: Option<Arc<dyn ReplyHandle>>,
 }
 
 /// Apply an `ObserveAction` to the current observe deadline.
@@ -266,6 +269,7 @@ pub async fn run_gateway(cfg: Config) -> Result<GatewayExit, IronclawError> {
         command_rx,
         server_handle,
         pulse_scheduler: PulseScheduler::new(),
+        last_reply: None,
     };
 
     Ok(run_event_loop(rt).await)
@@ -485,6 +489,11 @@ async fn run_wake_turn_handler(
     rt: &mut GatewayRuntime,
     observe_deadline: &mut Option<tokio::time::Instant>,
 ) -> Option<GatewayExit> {
+    let Some(reply) = rt.last_reply.as_ref().map(Arc::clone) else {
+        tracing::warn!("wake turn requested but no channel has connected yet, skipping");
+        return None;
+    };
+
     tracing::info!("starting autonomous wake turn from background result");
 
     let before = rt.agent.message_count();
@@ -506,11 +515,14 @@ async fn run_wake_turn_handler(
         },
     };
 
+    let typing_guard = reply.start_typing();
+    let turn_display = ChannelAwareDisplay::new(rt.broadcast_display.sender(), Arc::clone(&reply));
+
     let (interrupt_tx, mut interrupt_rx) = mpsc::channel::<Interrupt>(32);
 
     let turn_result = {
         let mut turn = std::pin::pin!(rt.agent.run_wake_turn(
-            &rt.broadcast_display,
+            &turn_display,
             &prompt_ctx,
             &mut interrupt_rx,
         ));
@@ -550,6 +562,10 @@ async fn run_wake_turn_handler(
 
     match turn_result {
         Ok(texts) => {
+            drop(typing_guard);
+            for text in &texts {
+                reply.send_response(text).await;
+            }
             for text in texts {
                 if rt
                     .broadcast_tx
@@ -564,6 +580,7 @@ async fn run_wake_turn_handler(
             }
         }
         Err(e) => {
+            drop(typing_guard);
             tracing::warn!(error = %e, "wake turn processing error");
             if rt
                 .broadcast_tx
@@ -685,6 +702,7 @@ async fn run_event_loop(mut rt: GatewayRuntime) -> GatewayExit {
                     tracing::trace!("no broadcast receivers for turn_started");
                 }
 
+                rt.last_reply = Some(Arc::clone(&routed.reply));
                 let typing_guard = routed.reply.start_typing();
                 let turn_display = ChannelAwareDisplay::new(
                     rt.broadcast_display.sender(),
