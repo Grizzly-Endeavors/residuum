@@ -1,12 +1,16 @@
 # Ironclaw
 
-This project is a derivative of OpenClaw, and coopts much of its architecture. You can review it's code at ~/Projects/openclaw
+This project is a derivative of OpenClaw, and coopts much of its architecture. You can review its code locally at ~/Projects/openclaw
 
 **Important docs:**
-./design-philosophy.md
-./ironclaw-design.md
-./projects-context-design.md
-./personal-agent-design.md
+- [Design Philosophy](./docs/design-philosophy.md)
+- [Ironclaw Design](./docs/ironclaw-design.md)
+- [Projects Context](./docs/projects-context-design.md)
+- [Personal Agent](./docs/personal-agent-design.md)
+- [Background Tasks](./docs/background-tasks-design.md)
+- [Memory Search](./docs/memory-search-design.md)
+- [Notification Routing](./docs/notification-routing-design.md)
+- [Plugin System](./docs/plugin-system-design.md)
 
 ## Commit Requirements, Linting, and Formatting
 
@@ -28,7 +32,11 @@ Clippy pedantic is enabled with strict error handling:
 
 Test modules have `#[expect(clippy::unwrap_used, reason = "test code uses unwrap for clarity")]` for readability.
 
-DO NOT, under any circumstance, change this config or add allow macros without explicit approval from the user.
+DO NOT, under any circumstance, change this config without explicit approval from the user.
+
+### Verification Steps
+
+Tests, linting, and formatting are handled by the git hooks. Start by attempting to commit the changes, instead of re-running all checks constantly. 
 
 ## Style Guidelines
 
@@ -96,5 +104,5 @@ The orchestrating agent is responsible for running `cargo fmt`, `cargo clippy`, 
 - Testing is a first class operation, NEVER skip test implementation.
 - Commits should be made frequently, especially for large multi-phase tasks.
 - All changes must be pushed before giving the user a completion summary.
-- Never use `git -C` — the shell is already in the project root; use plain `git` commands.
+- **Never** use `git -C` — the shell is already in the project root; use plain `git` commands.
 - Always run `cargo test --quiet` — never plain `cargo test`. The `--quiet` flag suppresses per-test noise and only shows failures and the summary.
