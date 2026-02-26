@@ -178,6 +178,21 @@ impl BackgroundTaskSpawner {
         Ok(task_id)
     }
 
+    /// Send a pre-built result directly through the result channel.
+    ///
+    /// Used for cron `SystemEvent` jobs that need no LLM call — they produce
+    /// a `BackgroundResult` immediately and inject it into the normal result
+    /// pipeline.
+    ///
+    /// # Errors
+    /// Returns an error if the result channel is closed.
+    pub async fn send_result(&self, result: BackgroundResult) -> Result<(), anyhow::Error> {
+        self.result_tx
+            .send(result)
+            .await
+            .map_err(|send_err| anyhow::anyhow!("failed to send direct result: {send_err}"))
+    }
+
     /// Cancel a running task. Returns `true` if the task was found and cancelled.
     pub async fn cancel(&self, task_id: &str) -> bool {
         let guard = self.active_tasks.lock().await;
@@ -387,6 +402,38 @@ mod tests {
                 "all should be completed"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn send_result_delivers_to_channel() {
+        let (tx, mut rx) = mpsc::channel(32);
+        let dir = tempfile::tempdir().unwrap();
+        let spawner = BackgroundTaskSpawner::new(
+            tx,
+            3,
+            PathBuf::from("/tmp"),
+            dir.path().to_path_buf(),
+            chrono_tz::UTC,
+        );
+
+        let result = BackgroundResult {
+            id: "direct-1".to_string(),
+            task_name: "cron_event".to_string(),
+            source: TaskSource::Cron,
+            summary: "system alert".to_string(),
+            transcript_path: None,
+            status: super::TaskStatus::Completed,
+            timestamp: chrono::Utc::now(),
+            routing: ResultRouting::Notify,
+        };
+
+        spawner.send_result(result).await.unwrap();
+
+        let received = rx.recv().await.unwrap();
+        assert_eq!(received.id, "direct-1");
+        assert_eq!(received.task_name, "cron_event");
+        assert_eq!(received.summary, "system alert");
+        assert!(matches!(received.source, TaskSource::Cron));
     }
 
     #[tokio::test]

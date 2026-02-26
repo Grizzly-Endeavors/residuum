@@ -6,6 +6,10 @@
 
 #[expect(clippy::unwrap_used, reason = "test code uses unwrap for clarity")]
 #[expect(
+    clippy::panic,
+    reason = "test assertions use panic for unreachable variants"
+)]
+#[expect(
     clippy::tests_outside_test_module,
     reason = "integration tests live in tests/ directory, not inside #[cfg(test)] modules"
 )]
@@ -441,5 +445,75 @@ mod background_integration {
         assert!(formatted.contains("completed"));
         assert!(formatted.contains("task completed successfully"));
         assert!(formatted.contains("/tmp/bg-fmt-1.log"));
+    }
+
+    // ── Phase 5: Pulse/cron via background spawner ──────────────────────
+
+    #[tokio::test]
+    async fn send_result_delivers_cron_system_event() {
+        let dir = tempdir().unwrap();
+        let (tx, mut rx) = mpsc::channel(32);
+        let spawner = BackgroundTaskSpawner::new(
+            tx,
+            3,
+            PathBuf::from("/tmp"),
+            dir.path().to_path_buf(),
+            chrono_tz::UTC,
+        );
+
+        let result = ironclaw::background::types::BackgroundResult {
+            id: "cron-evt-test-1".to_string(),
+            task_name: "reminder".to_string(),
+            source: TaskSource::Cron,
+            summary: "time to stretch".to_string(),
+            transcript_path: None,
+            status: TaskStatus::Completed,
+            timestamp: chrono::Utc::now(),
+            routing: ResultRouting::Notify,
+        };
+
+        spawner.send_result(result).await.unwrap();
+
+        let received = rx.recv().await.unwrap();
+        assert_eq!(received.id, "cron-evt-test-1");
+        assert_eq!(received.task_name, "reminder");
+        assert_eq!(received.summary, "time to stretch");
+        assert!(matches!(received.source, TaskSource::Cron));
+        assert!(matches!(received.status, TaskStatus::Completed));
+    }
+
+    #[test]
+    fn build_pulse_task_creates_correct_structure() {
+        use ironclaw::background::types::Execution;
+        use ironclaw::config::BackgroundModelTier;
+        use ironclaw::pulse::executor::build_pulse_task;
+        use ironclaw::pulse::types::{PulseDef, PulseTask};
+
+        let pulse = PulseDef {
+            name: "status_check".to_string(),
+            enabled: true,
+            schedule: "1h".to_string(),
+            active_hours: None,
+            tasks: vec![PulseTask {
+                name: "check_health".to_string(),
+                prompt: "Check system health.".to_string(),
+            }],
+        };
+
+        let task = build_pulse_task(&pulse);
+
+        assert_eq!(task.task_name, "status_check");
+        assert!(task.id.starts_with("pulse-status_check-"));
+        assert!(matches!(task.source, TaskSource::Pulse));
+        assert!(matches!(task.routing, ResultRouting::Notify));
+
+        match &task.execution {
+            Execution::SubAgent(cfg) => {
+                assert_eq!(cfg.model_tier, BackgroundModelTier::Small);
+                assert!(cfg.prompt.contains("status_check"));
+                assert!(cfg.prompt.contains("HEARTBEAT_OK"));
+            }
+            Execution::Script(_) => panic!("expected SubAgent"),
+        }
     }
 }

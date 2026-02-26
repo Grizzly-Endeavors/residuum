@@ -4,6 +4,10 @@
 
 #[expect(clippy::unwrap_used, reason = "test code uses unwrap for clarity")]
 #[expect(
+    clippy::panic,
+    reason = "test assertions use panic for unreachable variants"
+)]
+#[expect(
     clippy::tests_outside_test_module,
     reason = "integration tests live in tests/ directory, not inside #[cfg(test)] modules"
 )]
@@ -15,11 +19,14 @@ mod proactivity_integration {
 
     use ironclaw::agent::Agent;
     use ironclaw::agent::context::{ProjectsContext, SkillsContext};
+    use ironclaw::background::types::{Execution, ResultRouting};
     use ironclaw::channels::null::NullDisplay;
+    use ironclaw::config::BackgroundModelTier;
     use ironclaw::models::{
         CompletionOptions, Message, ModelError, ModelProvider, ModelResponse, Role, ToolDefinition,
     };
-    use ironclaw::pulse::executor::execute_pulse;
+    use ironclaw::notify::types::TaskSource;
+    use ironclaw::pulse::executor::build_pulse_task;
     use ironclaw::pulse::scheduler::PulseScheduler;
     use ironclaw::pulse::types::{PulseDef, PulseTask};
     use ironclaw::tools::{ToolFilter, ToolRegistry};
@@ -75,49 +82,8 @@ mod proactivity_integration {
         )
     }
 
-    // ── Pulse tests ──────────────────────────────────────────────────────────
-
-    #[tokio::test]
-    async fn pulse_heartbeat_ok_response() {
-        let agent = make_agent(vec!["HEARTBEAT_OK".to_string()]);
-
-        let pulse = PulseDef {
-            name: "test_pulse".to_string(),
-            enabled: true,
-            schedule: "1h".to_string(),
-            active_hours: None,
-            tasks: vec![PulseTask {
-                name: "check".to_string(),
-                prompt: "Check everything.".to_string(),
-            }],
-        };
-
-        let no_projects = ProjectsContext::none();
-        let result = execute_pulse(&pulse, &agent, None, &no_projects)
-            .await
-            .unwrap();
-
-        assert!(
-            result.is_heartbeat_ok,
-            "response with HEARTBEAT_OK should set is_heartbeat_ok"
-        );
-        assert_eq!(result.pulse_name, "test_pulse", "pulse name should match");
-        assert!(
-            !result.messages.is_empty(),
-            "should have ephemeral messages"
-        );
-        assert_eq!(
-            agent.message_count(),
-            0,
-            "main message history should be untouched"
-        );
-    }
-
-    #[tokio::test]
-    async fn pulse_finding_response() {
-        let agent = make_agent(vec!["Found 3 urgent emails requiring action.".to_string()]);
-
-        let pulse = PulseDef {
+    fn sample_pulse() -> PulseDef {
+        PulseDef {
             name: "email_check".to_string(),
             enabled: true,
             schedule: "30m".to_string(),
@@ -126,24 +92,96 @@ mod proactivity_integration {
                 name: "check_inbox".to_string(),
                 prompt: "Check email.".to_string(),
             }],
-        };
-
-        let no_projects = ProjectsContext::none();
-        let result = execute_pulse(&pulse, &agent, None, &no_projects)
-            .await
-            .unwrap();
-
-        assert!(
-            !result.is_heartbeat_ok,
-            "non-HEARTBEAT_OK response should not set flag"
-        );
-        assert_eq!(result.pulse_name, "email_check", "pulse name should match");
+        }
     }
 
-    #[tokio::test]
-    async fn pulse_with_no_tasks() {
-        let agent = make_agent(vec!["HEARTBEAT_OK".to_string()]);
+    // ── build_pulse_task tests ───────────────────────────────────────────
 
+    #[test]
+    fn build_pulse_task_source_is_pulse() {
+        let pulse = sample_pulse();
+        let task = build_pulse_task(&pulse);
+        assert!(
+            matches!(task.source, TaskSource::Pulse),
+            "source should be Pulse"
+        );
+    }
+
+    #[test]
+    fn build_pulse_task_name_matches_pulse() {
+        let pulse = sample_pulse();
+        let task = build_pulse_task(&pulse);
+        assert_eq!(
+            task.task_name, "email_check",
+            "task_name should match pulse name"
+        );
+    }
+
+    #[test]
+    fn build_pulse_task_id_format() {
+        let pulse = sample_pulse();
+        let task = build_pulse_task(&pulse);
+        assert!(
+            task.id.starts_with("pulse-email_check-"),
+            "id should start with pulse-<name>-"
+        );
+    }
+
+    #[test]
+    fn build_pulse_task_execution_is_subagent_small() {
+        let pulse = sample_pulse();
+        let task = build_pulse_task(&pulse);
+        match &task.execution {
+            Execution::SubAgent(cfg) => {
+                assert_eq!(
+                    cfg.model_tier,
+                    BackgroundModelTier::Small,
+                    "tier should be Small"
+                );
+            }
+            Execution::Script(_) => panic!("expected SubAgent execution"),
+        }
+    }
+
+    #[test]
+    fn build_pulse_task_prompt_contains_pulse_name_and_heartbeat_ok() {
+        let pulse = sample_pulse();
+        let task = build_pulse_task(&pulse);
+        let prompt = match &task.execution {
+            Execution::SubAgent(cfg) => &cfg.prompt,
+            Execution::Script(_) => panic!("expected SubAgent"),
+        };
+
+        assert!(
+            prompt.contains("email_check"),
+            "prompt should contain pulse name"
+        );
+        assert!(
+            prompt.contains("check_inbox"),
+            "prompt should contain task name"
+        );
+        assert!(
+            prompt.contains("Check email"),
+            "prompt should contain task prompt"
+        );
+        assert!(
+            prompt.contains("HEARTBEAT_OK"),
+            "prompt should contain HEARTBEAT_OK instruction"
+        );
+    }
+
+    #[test]
+    fn build_pulse_task_routing_is_notify() {
+        let pulse = sample_pulse();
+        let task = build_pulse_task(&pulse);
+        assert!(
+            matches!(task.routing, ResultRouting::Notify),
+            "routing should be Notify"
+        );
+    }
+
+    #[test]
+    fn build_pulse_task_with_no_tasks() {
         let pulse = PulseDef {
             name: "empty_test".to_string(),
             enabled: true,
@@ -152,43 +190,15 @@ mod proactivity_integration {
             tasks: vec![],
         };
 
-        let no_projects = ProjectsContext::none();
-        let result = execute_pulse(&pulse, &agent, None, &no_projects)
-            .await
-            .unwrap();
-        assert!(result.is_heartbeat_ok, "should still process with no tasks");
-    }
-
-    #[tokio::test]
-    async fn pulse_thread_messages_not_in_main_history() {
-        let agent = make_agent(vec!["HEARTBEAT_OK".to_string()]);
-
-        let pulse = PulseDef {
-            name: "ephemeral_test".to_string(),
-            enabled: true,
-            schedule: "1h".to_string(),
-            active_hours: None,
-            tasks: vec![PulseTask {
-                name: "check".to_string(),
-                prompt: "Check something.".to_string(),
-            }],
+        let task = build_pulse_task(&pulse);
+        assert_eq!(task.task_name, "empty_test");
+        let prompt = match &task.execution {
+            Execution::SubAgent(cfg) => &cfg.prompt,
+            Execution::Script(_) => panic!("expected SubAgent"),
         };
-
-        let no_projects = ProjectsContext::none();
-        let result = execute_pulse(&pulse, &agent, None, &no_projects)
-            .await
-            .unwrap();
-
-        // Ephemeral messages returned for memory pipeline
         assert!(
-            !result.messages.is_empty(),
-            "should have ephemeral messages"
-        );
-        // Main agent message history untouched
-        assert_eq!(
-            agent.message_count(),
-            0,
-            "main agent message history should be empty"
+            prompt.contains("HEARTBEAT_OK"),
+            "should still have HEARTBEAT_OK instruction with no tasks"
         );
     }
 
@@ -280,198 +290,6 @@ mod proactivity_integration {
             loaded_job.description.as_deref(),
             Some("integration test job"),
             "description should survive reload"
-        );
-    }
-
-    #[tokio::test]
-    async fn cron_executor_system_event_queues_on_agent() {
-        use ironclaw::cron::executor::execute_due_jobs;
-        use ironclaw::cron::store::CronStore;
-        use ironclaw::cron::types::{CronJob, CronJobState, CronPayload, CronSchedule};
-
-        let dir = tempdir().unwrap();
-        let path = dir.path().join("jobs.json");
-
-        let now = chrono::Utc::now().naive_utc();
-        let past = now - chrono::Duration::seconds(10);
-
-        let job = CronJob {
-            id: "cron-evt00001".to_string(),
-            name: "event job".to_string(),
-            description: None,
-            enabled: true,
-            delete_after_run: false,
-            created_at: now,
-            updated_at: now,
-            schedule: CronSchedule::At { at: past },
-            payload: CronPayload::SystemEvent {
-                text: "system alert text".to_string(),
-            },
-            state: CronJobState {
-                next_run_at: Some(past),
-                ..CronJobState::default()
-            },
-        };
-
-        let mut store = CronStore::load(&path).await.unwrap();
-        store.add_job(job);
-
-        let mut agent = make_agent(vec![]);
-
-        // Initially no pending events
-        assert_eq!(agent.message_count(), 0, "no messages initially");
-
-        let no_projects = ProjectsContext::none();
-        let result = execute_due_jobs(
-            &mut store,
-            &mut agent,
-            now,
-            chrono_tz::UTC,
-            None,
-            &no_projects,
-        )
-        .await
-        .unwrap();
-
-        // SystemEvent produces messages for the memory pipeline
-        assert!(
-            !result.messages.is_empty(),
-            "system event should produce messages for memory pipeline"
-        );
-        // Produces a job result with a summary
-        assert_eq!(result.results.len(), 1, "should produce one job result");
-        assert!(
-            result.results.first().unwrap().summary.is_some(),
-            "system event should have a summary"
-        );
-    }
-
-    #[tokio::test]
-    async fn cron_executor_agent_turn_returns_messages() {
-        use ironclaw::cron::executor::execute_due_jobs;
-        use ironclaw::cron::store::CronStore;
-        use ironclaw::cron::types::{CronJob, CronJobState, CronPayload, CronSchedule};
-
-        let dir = tempdir().unwrap();
-        let path = dir.path().join("jobs.json");
-
-        let now = chrono::Utc::now().naive_utc();
-        let past = now - chrono::Duration::seconds(10);
-
-        let job = CronJob {
-            id: "cron-agt00001".to_string(),
-            name: "agent turn job".to_string(),
-            description: None,
-            enabled: true,
-            delete_after_run: false,
-            created_at: now,
-            updated_at: now,
-            schedule: CronSchedule::At { at: past },
-            payload: CronPayload::AgentTurn {
-                message: "Do a background check.".to_string(),
-            },
-            state: CronJobState {
-                next_run_at: Some(past),
-                ..CronJobState::default()
-            },
-        };
-
-        let mut store = CronStore::load(&path).await.unwrap();
-        store.add_job(job);
-
-        let mut agent = make_agent(vec!["Background check complete.".to_string()]);
-
-        let no_projects = ProjectsContext::none();
-        let result = execute_due_jobs(
-            &mut store,
-            &mut agent,
-            now,
-            chrono_tz::UTC,
-            None,
-            &no_projects,
-        )
-        .await
-        .unwrap();
-
-        // AgentTurn+Isolated returns ephemeral messages for memory pipeline
-        assert!(
-            !result.messages.is_empty(),
-            "agent turn should produce ephemeral messages"
-        );
-        // Main agent message history should be untouched
-        assert_eq!(
-            agent.message_count(),
-            0,
-            "main message history should be untouched"
-        );
-    }
-
-    // ── Cron system event message content test ─────────────────────────────
-
-    #[tokio::test]
-    async fn cron_executor_system_event_message_contains_text() {
-        use ironclaw::cron::executor::execute_due_jobs;
-        use ironclaw::cron::store::CronStore;
-        use ironclaw::cron::types::{CronJob, CronJobState, CronPayload, CronSchedule};
-
-        let dir = tempdir().unwrap();
-        let path = dir.path().join("jobs.json");
-
-        let now = chrono::Utc::now().naive_utc();
-        let past = now - chrono::Duration::seconds(10);
-
-        let job = CronJob {
-            id: "cron-bg-evt01".to_string(),
-            name: "bg event".to_string(),
-            description: None,
-            enabled: true,
-            delete_after_run: false,
-            created_at: now,
-            updated_at: now,
-            schedule: CronSchedule::At { at: past },
-            payload: CronPayload::SystemEvent {
-                text: "background alert".to_string(),
-            },
-            state: CronJobState {
-                next_run_at: Some(past),
-                ..CronJobState::default()
-            },
-        };
-
-        let mut store = CronStore::load(&path).await.unwrap();
-        store.add_job(job);
-
-        let mut agent = make_agent(vec![]);
-
-        let no_projects = ProjectsContext::none();
-        let result = execute_due_jobs(
-            &mut store,
-            &mut agent,
-            now,
-            chrono_tz::UTC,
-            None,
-            &no_projects,
-        )
-        .await
-        .unwrap();
-
-        assert!(
-            !result.messages.is_empty(),
-            "system event should return messages for memory pipeline"
-        );
-        assert!(
-            result
-                .messages
-                .first()
-                .unwrap()
-                .content
-                .contains("background alert"),
-            "synthetic message should contain event text"
-        );
-        assert_eq!(
-            agent.message_count(),
-            0,
-            "main message history should be untouched"
         );
     }
 

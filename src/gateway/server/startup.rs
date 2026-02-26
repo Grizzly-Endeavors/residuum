@@ -23,7 +23,7 @@ use crate::memory::search::{
 use crate::memory::types::IndexManifest;
 use crate::memory::vector_store::VectorStore;
 use crate::models::{
-    CompletionOptions, EmbeddingProvider, HttpClientConfig, ModelProvider, SharedHttpClient,
+    CompletionOptions, EmbeddingProvider, HttpClientConfig, SharedHttpClient,
     build_embedding_provider, build_provider_from_provider_spec,
 };
 use crate::notify::channels::{InboxChannel, NotificationChannel};
@@ -38,6 +38,7 @@ use crate::workspace::identity::IdentityFiles;
 use crate::workspace::layout::WorkspaceLayout;
 
 use super::memory::build_memory_components;
+use super::spawn_helpers::SpawnContext;
 
 /// All subsystems initialized before the gateway event loop.
 pub(super) struct GatewayComponents {
@@ -59,18 +60,12 @@ pub(super) struct GatewayComponents {
     pub(super) project_state: SharedProjectState,
     pub(super) skill_state: SharedSkillState,
     pub(super) embedding_provider: Option<Arc<dyn EmbeddingProvider>>,
-    pub(super) pulse_provider: Box<dyn ModelProvider>,
-    pub(super) cron_provider: Box<dyn ModelProvider>,
     pub(super) pulse_enabled: bool,
     pub(super) cron_enabled: bool,
     pub(super) notification_router: NotificationRouter,
     pub(super) background_spawner: Arc<BackgroundTaskSpawner>,
     pub(super) background_result_rx: mpsc::Receiver<BackgroundResult>,
-    #[expect(
-        dead_code,
-        reason = "stored for future background tool access and tier resolution"
-    )]
-    pub(super) background_config: crate::config::BackgroundConfig,
+    pub(super) spawn_context: SpawnContext,
 }
 
 /// Initialize all gateway subsystems from config.
@@ -113,12 +108,6 @@ pub(super) async fn initialize(cfg: &Config) -> Result<GatewayComponents, Ironcl
     tracing::info!(model = provider.model_name(), "model provider ready");
 
     let (observer, reflector) = build_memory_components(cfg, tz, http.clone())?;
-    let pulse_provider = build_provider_from_provider_spec(
-        &cfg.pulse,
-        cfg.max_tokens,
-        http.clone(),
-        cfg.retry.clone(),
-    )?;
     let embedding_provider: Option<Arc<dyn EmbeddingProvider>> = cfg
         .embedding
         .as_ref()
@@ -128,8 +117,6 @@ pub(super) async fn initialize(cfg: &Config) -> Result<GatewayComponents, Ironcl
     if let Some(ref ep) = embedding_provider {
         tracing::info!(model = ep.model_name(), "embedding provider ready");
     }
-    let cron_provider =
-        build_provider_from_provider_spec(&cfg.cron, cfg.max_tokens, http, cfg.retry.clone())?;
 
     // Search index — schema migration + incremental sync
     let manifest_path = layout.index_manifest_json();
@@ -346,6 +333,19 @@ pub(super) async fn initialize(cfg: &Config) -> Result<GatewayComponents, Ironcl
         }
     }
 
+    // SpawnContext for pulse/cron background task spawning
+    let spawn_context = SpawnContext {
+        background_config: cfg.background.clone(),
+        main_provider_spec: cfg.main.clone(),
+        http_client: http,
+        max_tokens: cfg.max_tokens,
+        retry_config: cfg.retry.clone(),
+        identity: identity.clone(),
+        options: options.clone(),
+        layout: layout.clone(),
+        tz,
+    };
+
     let mut agent = Agent::new(
         provider,
         tools,
@@ -387,14 +387,12 @@ pub(super) async fn initialize(cfg: &Config) -> Result<GatewayComponents, Ironcl
         project_state,
         skill_state,
         embedding_provider,
-        pulse_provider,
-        cron_provider,
         pulse_enabled: cfg.pulse_enabled,
         cron_enabled: cfg.cron_enabled,
         notification_router,
         background_spawner,
         background_result_rx: bg_result_rx,
-        background_config: cfg.background.clone(),
+        spawn_context,
     })
 }
 

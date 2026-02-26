@@ -7,6 +7,7 @@
 mod context;
 mod cron;
 mod memory;
+mod spawn_helpers;
 mod startup;
 mod ws;
 
@@ -31,11 +32,11 @@ use crate::memory::reflector::Reflector;
 use crate::memory::search::MemoryIndex;
 use crate::memory::types::Visibility;
 use crate::memory::vector_store::VectorStore;
-use crate::models::{EmbeddingProvider, ModelProvider};
+use crate::models::EmbeddingProvider;
 use crate::notify::router::NotificationRouter;
-use crate::notify::types::Notification;
+use crate::notify::types::{Notification, TaskSource};
 use crate::projects::activation::SharedProjectState;
-use crate::pulse::executor::execute_pulse;
+use crate::pulse::executor::build_pulse_task;
 use crate::pulse::scheduler::PulseScheduler;
 use crate::skills::SharedSkillState;
 use crate::workspace::layout::WorkspaceLayout;
@@ -44,10 +45,11 @@ use super::display::{BroadcastDisplay, ChannelAwareDisplay};
 use super::protocol::ServerMessage;
 
 use context::{build_project_context_strings, build_skill_context_strings, project_context_label};
-use cron::run_due_cron_jobs_gateway;
+use cron::spawn_due_cron_jobs;
 use memory::{
     execute_observation, persist_and_check_thresholds, run_forced_observe, run_forced_reflect,
 };
+use spawn_helpers::SpawnContext;
 use ws::ws_handler;
 
 /// Outcome of the gateway main loop.
@@ -84,17 +86,12 @@ struct GatewayRuntime {
     mcp_registry: SharedMcpRegistry,
     project_state: SharedProjectState,
     skill_state: SharedSkillState,
-    pulse_provider: Box<dyn ModelProvider>,
-    cron_provider: Box<dyn ModelProvider>,
     pulse_enabled: bool,
     cron_enabled: bool,
     notification_router: NotificationRouter,
-    #[expect(
-        dead_code,
-        reason = "retained for Phase 5 pulse/cron spawning; tools hold Arc clones"
-    )]
     background_spawner: Arc<BackgroundTaskSpawner>,
     background_result_rx: mpsc::Receiver<BackgroundResult>,
+    spawn_context: SpawnContext,
     // Runtime channels + handles
     inbound_rx: mpsc::Receiver<RoutedMessage>,
     broadcast_tx: broadcast::Sender<ServerMessage>,
@@ -242,13 +239,12 @@ pub async fn run_gateway(cfg: Config) -> Result<GatewayExit, IronclawError> {
         mcp_registry: parts.mcp_registry,
         project_state: parts.project_state,
         skill_state: parts.skill_state,
-        pulse_provider: parts.pulse_provider,
-        cron_provider: parts.cron_provider,
         pulse_enabled: parts.pulse_enabled,
         cron_enabled: parts.cron_enabled,
         notification_router: parts.notification_router,
         background_spawner: parts.background_spawner,
         background_result_rx: parts.background_result_rx,
+        spawn_context: parts.spawn_context,
         inbound_rx,
         broadcast_tx,
         broadcast_display,
@@ -269,6 +265,12 @@ async fn handle_background_result(
     layout: &WorkspaceLayout,
     agent: &mut Agent,
 ) {
+    // Pulse HEARTBEAT_OK results are silently logged — no routing, no agent events
+    if matches!(result.source, TaskSource::Pulse) && result.summary.contains("HEARTBEAT_OK") {
+        tracing::info!(task = %result.task_name, "pulse check: HEARTBEAT_OK");
+        return;
+    }
+
     let formatted = format_background_result(&result);
 
     match &result.routing {
@@ -465,60 +467,43 @@ async fn run_event_loop(mut rt: GatewayRuntime) -> GatewayExit {
                 let now = crate::time::now_local(rt.tz);
                 let due = rt.pulse_scheduler.due_pulses(now, &rt.layout.heartbeat_yml());
 
-                let (pulse_idx_text, pulse_active_text) = build_project_context_strings(&rt.project_state).await;
-                let pulse_projects_ctx = ProjectsContext {
-                    index: pulse_idx_text.as_deref(),
-                    active_context: pulse_active_text.as_deref(),
-                };
-
                 for pulse in &due {
-                    match execute_pulse(
-                        pulse, &rt.agent,
-                        Some(&*rt.pulse_provider), &pulse_projects_ctx,
+                    let task = build_pulse_task(pulse);
+                    let tier = match &task.execution {
+                        crate::background::types::Execution::SubAgent(cfg) => cfg.model_tier,
+                        crate::background::types::Execution::Script(_) => crate::config::BackgroundModelTier::Small,
+                    };
+                    match spawn_helpers::build_spawn_resources(
+                        &rt.spawn_context, &tier,
+                        &rt.project_state, &rt.skill_state,
+                        Arc::clone(&rt.mcp_registry),
                     ).await {
-                        Ok(result) => {
-                            if !result.is_heartbeat_ok {
-                                let prefix = format!("pulse: {}", result.pulse_name);
-                                if rt.broadcast_tx.send(ServerMessage::SystemEvent {
-                                    source: prefix, content: result.response.clone(),
-                                }).is_err() {
-                                    tracing::trace!("no broadcast receivers for pulse event");
-                                }
-                            }
-                            let pulse_context = project_context_label(&rt.project_state, &rt.layout).await;
-                            let action = persist_and_check_thresholds(
-                                &result.messages, &pulse_context, Visibility::Background,
-                                &rt.observer, &rt.layout, rt.tz,
-                            ).await;
-                            if apply_observe_action(action, &mut observe_deadline, rt.observer.cooldown_secs()) {
-                                execute_observation(&rt.observer, &rt.reflector, &rt.search_index, &rt.layout, &mut rt.agent, rt.vector_store.as_ref(), rt.embedding_provider.as_ref()).await;
+                        Ok(resources) => {
+                            if let Err(e) = rt.background_spawner.spawn(task, Some(resources)) {
+                                tracing::warn!(pulse = %pulse.name, error = %e, "failed to spawn pulse task");
                             }
                         }
-                        Err(e) => tracing::warn!(pulse = %pulse.name, error = %e, "pulse failed"),
+                        Err(e) => tracing::warn!(pulse = %pulse.name, error = %e, "failed to build pulse resources"),
                     }
                 }
             }
 
             // ── Cron timer ────────────────────────────────────────────────
             _ = cron_tick.tick(), if rt.cron_enabled => {
-                let action = run_due_cron_jobs_gateway(
-                    &rt.cron_store, &mut rt.agent, &rt.observer, &rt.layout,
-                    &rt.broadcast_tx, Some(&*rt.cron_provider), rt.tz, &rt.project_state,
+                spawn_due_cron_jobs(
+                    &rt.cron_store, &rt.layout,
+                    &rt.spawn_context, &rt.project_state, &rt.skill_state,
+                    &rt.mcp_registry, &rt.background_spawner, rt.tz,
                 ).await;
-                if apply_observe_action(action, &mut observe_deadline, rt.observer.cooldown_secs()) {
-                    execute_observation(&rt.observer, &rt.reflector, &rt.search_index, &rt.layout, &mut rt.agent, rt.vector_store.as_ref(), rt.embedding_provider.as_ref()).await;
-                }
             }
 
             // ── Cron notify (tool mutation wakeup) ────────────────────────
             () = rt.cron_notify.notified(), if rt.cron_enabled => {
-                let action = run_due_cron_jobs_gateway(
-                    &rt.cron_store, &mut rt.agent, &rt.observer, &rt.layout,
-                    &rt.broadcast_tx, Some(&*rt.cron_provider), rt.tz, &rt.project_state,
+                spawn_due_cron_jobs(
+                    &rt.cron_store, &rt.layout,
+                    &rt.spawn_context, &rt.project_state, &rt.skill_state,
+                    &rt.mcp_registry, &rt.background_spawner, rt.tz,
                 ).await;
-                if apply_observe_action(action, &mut observe_deadline, rt.observer.cooldown_secs()) {
-                    execute_observation(&rt.observer, &rt.reflector, &rt.search_index, &rt.layout, &mut rt.agent, rt.vector_store.as_ref(), rt.embedding_provider.as_ref()).await;
-                }
             }
 
             // ── Observer cooldown deadline ────────────────────────────────
