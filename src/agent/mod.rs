@@ -457,7 +457,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn intermediate_text_broadcast_not_returned() {
+    async fn intermediate_text_not_in_return_value() {
         let mut registry = ToolRegistry::new();
         registry.register_defaults(
             FileTracker::new_shared(),
@@ -589,8 +589,10 @@ mod tests {
 
     #[tokio::test]
     async fn pending_system_events_prepended() {
-        let provider =
-            MockProvider::new(vec![ModelResponse::new("acknowledged".to_string(), vec![])]);
+        let provider = MockProvider::new(vec![
+            ModelResponse::new("acknowledged".to_string(), vec![]),
+            ModelResponse::new("ok".to_string(), vec![]),
+        ]);
 
         let mut agent = Agent::new(
             Box::new(provider),
@@ -617,13 +619,68 @@ mod tests {
             .await
             .unwrap();
 
-        // Queue should be drained
+        // Event should appear in the first turn's user message
         let msgs = agent.messages_since(0);
         assert_eq!(msgs.len(), 2, "should have user + assistant messages");
         assert!(
             msgs.first()
                 .is_some_and(|m| m.content.contains("email arrived from boss")),
             "system event should be in user message"
+        );
+
+        // Queue should be drained — second turn must not re-inject the event
+        agent
+            .process_message(
+                "anything else?",
+                &display,
+                None,
+                &PromptContext::none(),
+                &mut irx,
+            )
+            .await
+            .unwrap();
+        let second_turn_msgs = agent.messages_since(2);
+        assert!(
+            second_turn_msgs
+                .first()
+                .is_some_and(|m| !m.content.contains("email arrived from boss")),
+            "system event should not re-appear in second turn after queue drain"
+        );
+    }
+
+    #[tokio::test]
+    async fn multiple_system_events_combined_in_user_message() {
+        let provider = MockProvider::new(vec![ModelResponse::new("ok".to_string(), vec![])]);
+
+        let mut agent = Agent::new(
+            Box::new(provider),
+            ToolRegistry::new(),
+            no_filter(),
+            empty_mcp(),
+            IdentityFiles::default(),
+            CompletionOptions::default(),
+            chrono_tz::UTC,
+            std::path::PathBuf::from("/tmp/ironclaw-test-inbox"),
+        );
+
+        agent.queue_system_event("first alert".to_string());
+        agent.queue_system_event("second alert".to_string());
+        let display = NullDisplay;
+        let mut irx = interrupt::dead_interrupt_rx();
+        agent
+            .process_message("hello", &display, None, &PromptContext::none(), &mut irx)
+            .await
+            .unwrap();
+
+        let msgs = agent.messages_since(0);
+        let user_content = &msgs.first().unwrap().content;
+        assert!(
+            user_content.contains("first alert"),
+            "first queued event should appear in user message"
+        );
+        assert!(
+            user_content.contains("second alert"),
+            "second queued event should appear in user message"
         );
     }
 
@@ -980,5 +1037,149 @@ mod tests {
             err_msg.contains("empty response"),
             "error should mention empty response, got: {err_msg}"
         );
+    }
+
+    #[tokio::test]
+    async fn background_result_interrupt_injects_system_message() {
+        let mut registry = ToolRegistry::new();
+        registry.register_defaults(
+            FileTracker::new_shared(),
+            PathPolicy::new_shared(std::path::PathBuf::from("/tmp")),
+        );
+
+        let (interrupt_tx, mut interrupt_rx) = tokio::sync::mpsc::channel(32);
+
+        let provider = CapturingProvider::new(
+            vec![
+                // Call 0: tool call to trigger a second iteration
+                ModelResponse::new(
+                    String::new(),
+                    vec![ToolCall {
+                        id: "call_1".to_string(),
+                        name: "exec".to_string(),
+                        arguments: serde_json::json!({"command": "echo test"}),
+                    }],
+                ),
+                // Call 1: final text
+                ModelResponse::new("done".to_string(), vec![]),
+            ],
+            interrupt_tx,
+        );
+        provider.schedule_interrupt(
+            0,
+            vec![interrupt::Interrupt::BackgroundResult(
+                crate::background::types::BackgroundResult {
+                    id: "bg-1".to_string(),
+                    task_name: "my-background-task".to_string(),
+                    source: crate::notify::types::TaskSource::Agent,
+                    summary: "the task finished successfully".to_string(),
+                    transcript_path: None,
+                    status: crate::background::types::TaskStatus::Completed,
+                    timestamp: chrono::Utc::now(),
+                    routing: crate::background::types::ResultRouting::Notify,
+                },
+            )],
+        );
+        let captured = Arc::clone(&provider.captured);
+
+        let mut agent = Agent::new(
+            Box::new(provider),
+            registry,
+            no_filter(),
+            empty_mcp(),
+            IdentityFiles::default(),
+            CompletionOptions::default(),
+            chrono_tz::UTC,
+            std::path::PathBuf::from("/tmp/ironclaw-test-inbox"),
+        );
+
+        let display = NullDisplay;
+        agent
+            .process_message(
+                "hello",
+                &display,
+                None,
+                &PromptContext::none(),
+                &mut interrupt_rx,
+            )
+            .await
+            .unwrap();
+
+        let calls = captured.lock().await;
+        assert_eq!(calls.len(), 2, "provider should be called twice");
+        // The injected BackgroundResult is formatted and pushed as a system message;
+        // it must appear in the context of the next LLM call.
+        let second_call_msgs = &calls[1];
+        assert!(
+            second_call_msgs
+                .iter()
+                .any(|m| m.content.contains("my-background-task")),
+            "second call should contain the background task name from the injected result"
+        );
+    }
+
+    #[test]
+    fn rotate_messages_retains_all_when_fewer_than_three_exchanges() {
+        let mut agent = Agent::new(
+            Box::new(MockProvider::new(vec![])),
+            ToolRegistry::new(),
+            no_filter(),
+            empty_mcp(),
+            IdentityFiles::default(),
+            CompletionOptions::default(),
+            chrono_tz::UTC,
+            std::path::PathBuf::from("/tmp/ironclaw-test-inbox"),
+        );
+
+        // Only 2 exchanges — fewer than the 3-exchange retention window
+        for i in 0..2 {
+            agent.recent_messages.push(Message::user(format!("q{i}")));
+            agent
+                .recent_messages
+                .push(Message::assistant(format!("a{i}"), None));
+        }
+        assert_eq!(agent.message_count(), 4);
+
+        agent.rotate_messages_after_observation();
+
+        assert_eq!(
+            agent.message_count(),
+            4,
+            "all messages should be retained when fewer than 3 exchanges exist"
+        );
+        assert_eq!(agent.messages_since(0)[0].content, "q0");
+        assert_eq!(agent.messages_since(0)[3].content, "a1");
+    }
+
+    #[test]
+    fn restore_messages_loads_into_history() {
+        let mut agent = Agent::new(
+            Box::new(MockProvider::new(vec![])),
+            ToolRegistry::new(),
+            no_filter(),
+            empty_mcp(),
+            IdentityFiles::default(),
+            CompletionOptions::default(),
+            chrono_tz::UTC,
+            std::path::PathBuf::from("/tmp/ironclaw-test-inbox"),
+        );
+
+        let messages = vec![
+            Message::user("persisted question"),
+            Message::assistant("persisted answer", None),
+        ];
+        agent.restore_messages(messages);
+
+        assert_eq!(
+            agent.message_count(),
+            2,
+            "restored messages should be counted"
+        );
+        assert_eq!(
+            agent.messages_since(0)[0].content,
+            "persisted question",
+            "restored content should match"
+        );
+        assert_eq!(agent.messages_since(0)[1].content, "persisted answer");
     }
 }

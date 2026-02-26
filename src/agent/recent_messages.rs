@@ -346,4 +346,50 @@ mod tests {
         let all = recent.messages_since(0);
         assert_eq!(all.len(), 2, "index 0 should return all messages");
     }
+
+    #[test]
+    fn last_exchanges_zero_n_returns_empty() {
+        let mut recent = RecentMessages::new();
+        push_user_msg(&mut recent, "hello");
+        push_assistant_msg(&mut recent, "hi");
+
+        let exchanges = recent.last_exchanges(0);
+        assert!(
+            exchanges.is_empty(),
+            "n=0 should return empty regardless of buffer contents"
+        );
+    }
+
+    #[test]
+    fn extend_appends_messages() {
+        let mut recent = RecentMessages::new();
+        push_user_msg(&mut recent, "first");
+        recent.extend(vec![
+            Message::user("second"),
+            Message::assistant("third", None),
+        ]);
+        assert_eq!(recent.len(), 3, "extend should append all messages");
+        assert_eq!(
+            recent.messages()[2].content,
+            "third",
+            "last message should be from extend"
+        );
+    }
+
+    #[test]
+    fn prepend_empty_vec_is_noop() {
+        let mut recent = RecentMessages::new();
+        push_user_msg(&mut recent, "existing");
+        recent.prepend(vec![]);
+        assert_eq!(
+            recent.len(),
+            1,
+            "prepending empty vec should not change length"
+        );
+        assert_eq!(
+            recent.messages()[0].content,
+            "existing",
+            "existing message should be unchanged"
+        );
+    }
 }
