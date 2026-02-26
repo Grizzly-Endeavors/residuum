@@ -13,7 +13,7 @@ use crate::models::{CompletionOptions, Message, ModelProvider};
 use crate::tools::{SharedToolFilter, ToolRegistry};
 use crate::workspace::identity::IdentityFiles;
 
-use self::context::{MemoryContext, ProjectsContext, SkillsContext, StatusLine};
+use self::context::{MemoryContext, PromptContext, StatusLine};
 use self::recent_messages::RecentMessages;
 use self::turn::execute_turn;
 
@@ -200,8 +200,7 @@ impl Agent {
         user_input: &str,
         display: &dyn TurnDisplay,
         origin: Option<&MessageOrigin>,
-        projects_ctx: &ProjectsContext<'_>,
-        skills_ctx: &SkillsContext<'_>,
+        prompt_ctx: &PromptContext<'_>,
         interrupt_rx: &mut tokio::sync::mpsc::Receiver<interrupt::Interrupt>,
     ) -> Result<Vec<String>, IronclawError> {
         let now = crate::time::now_local(self.tz);
@@ -238,8 +237,7 @@ impl Agent {
             &self.identity,
             &self.options,
             &memory_ctx,
-            projects_ctx,
-            skills_ctx,
+            prompt_ctx,
             &mut self.recent_messages,
             display,
             Some(&status_line),
@@ -264,8 +262,7 @@ impl Agent {
         prompt: &str,
         display: &dyn TurnDisplay,
         provider_override: Option<&dyn ModelProvider>,
-        projects_ctx: &ProjectsContext<'_>,
-        skills_ctx: &SkillsContext<'_>,
+        prompt_ctx: &PromptContext<'_>,
     ) -> Result<SystemTurnResult, IronclawError> {
         let mut thread_messages = RecentMessages::new();
         thread_messages.push(Message::user(prompt));
@@ -289,8 +286,7 @@ impl Agent {
             &self.identity,
             &self.options,
             &memory_ctx,
-            projects_ctx,
-            skills_ctx,
+            prompt_ctx,
             &mut thread_messages,
             display,
             None,
@@ -402,14 +398,7 @@ mod tests {
         let display = NullDisplay;
         let mut irx = interrupt::dead_interrupt_rx();
         let result = agent
-            .process_message(
-                "hi",
-                &display,
-                None,
-                &ProjectsContext::none(),
-                &SkillsContext::none(),
-                &mut irx,
-            )
+            .process_message("hi", &display, None, &PromptContext::none(), &mut irx)
             .await
             .unwrap();
         assert_eq!(result, vec!["hello there"], "should return model text");
@@ -453,8 +442,7 @@ mod tests {
                 "run echo test",
                 &display,
                 None,
-                &ProjectsContext::none(),
-                &SkillsContext::none(),
+                &PromptContext::none(),
                 &mut irx,
             )
             .await
@@ -505,8 +493,7 @@ mod tests {
                 "what does echo test print?",
                 &display,
                 None,
-                &ProjectsContext::none(),
-                &SkillsContext::none(),
+                &PromptContext::none(),
                 &mut irx,
             )
             .await
@@ -558,8 +545,7 @@ mod tests {
                 "loop forever",
                 &display,
                 None,
-                &ProjectsContext::none(),
-                &SkillsContext::none(),
+                &PromptContext::none(),
                 &mut irx,
             )
             .await;
@@ -584,13 +570,7 @@ mod tests {
 
         let display = NullDisplay;
         let result = agent
-            .run_system_turn(
-                "check status",
-                &display,
-                None,
-                &ProjectsContext::none(),
-                &SkillsContext::none(),
-            )
+            .run_system_turn("check status", &display, None, &PromptContext::none())
             .await
             .unwrap();
         assert_eq!(result.response, "HEARTBEAT_OK", "response should match");
@@ -629,8 +609,7 @@ mod tests {
                 "what's up?",
                 &display,
                 None,
-                &ProjectsContext::none(),
-                &SkillsContext::none(),
+                &PromptContext::none(),
                 &mut irx,
             )
             .await
@@ -831,8 +810,7 @@ mod tests {
                 "hello",
                 &display,
                 None,
-                &ProjectsContext::none(),
-                &SkillsContext::none(),
+                &PromptContext::none(),
                 &mut interrupt_rx,
             )
             .await
@@ -901,8 +879,7 @@ mod tests {
                 "hello",
                 &display,
                 None,
-                &ProjectsContext::none(),
-                &SkillsContext::none(),
+                &PromptContext::none(),
                 &mut interrupt_rx,
             )
             .await
@@ -959,8 +936,7 @@ mod tests {
                 "hello",
                 &display,
                 None,
-                &ProjectsContext::none(),
-                &SkillsContext::none(),
+                &PromptContext::none(),
                 &mut interrupt_rx,
             )
             .await
@@ -993,14 +969,7 @@ mod tests {
         let display = NullDisplay;
         let mut irx = interrupt::dead_interrupt_rx();
         let result = agent
-            .process_message(
-                "hello",
-                &display,
-                None,
-                &ProjectsContext::none(),
-                &SkillsContext::none(),
-                &mut irx,
-            )
+            .process_message("hello", &display, None, &PromptContext::none(), &mut irx)
             .await;
         assert!(result.is_err(), "empty response should return error");
 

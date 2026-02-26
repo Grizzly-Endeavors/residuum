@@ -69,6 +69,42 @@ impl SkillsContext<'_> {
     }
 }
 
+/// Subagent-preset-related context injected into the system prompt.
+pub struct SubagentsContext<'a> {
+    /// Formatted subagent presets index XML (available presets listing).
+    pub index: Option<&'a str>,
+}
+
+impl SubagentsContext<'_> {
+    /// Empty subagents context (no index).
+    #[must_use]
+    pub fn none() -> SubagentsContext<'static> {
+        SubagentsContext { index: None }
+    }
+}
+
+/// Bundle of external context injected into the system prompt.
+///
+/// Groups projects, skills, and subagents context into a single struct to
+/// reduce argument count on functions that thread all three through.
+pub struct PromptContext<'a> {
+    pub projects: ProjectsContext<'a>,
+    pub skills: SkillsContext<'a>,
+    pub subagents: SubagentsContext<'a>,
+}
+
+impl PromptContext<'_> {
+    /// Empty prompt context (no projects, skills, or subagents).
+    #[must_use]
+    pub fn none() -> PromptContext<'static> {
+        PromptContext {
+            projects: ProjectsContext::none(),
+            skills: SkillsContext::none(),
+            subagents: SubagentsContext::none(),
+        }
+    }
+}
+
 /// Assemble the full message list for a model call.
 ///
 /// Creates a system message from identity files and observation log content,
@@ -80,11 +116,16 @@ pub(super) fn assemble_system_prompt(
     identity: &IdentityFiles,
     recent_messages: &RecentMessages,
     memory_ctx: &MemoryContext<'_>,
-    projects_ctx: &ProjectsContext<'_>,
-    skills_ctx: &SkillsContext<'_>,
+    prompt_ctx: &PromptContext<'_>,
     status_line: Option<&StatusLine>,
 ) -> Vec<Message> {
-    let system_content = build_system_content(identity, memory_ctx, projects_ctx, skills_ctx);
+    let system_content = build_system_content(
+        identity,
+        memory_ctx,
+        &prompt_ctx.projects,
+        &prompt_ctx.skills,
+        &prompt_ctx.subagents,
+    );
 
     let conversation = recent_messages.messages();
     let mut messages = Vec::with_capacity(2 + conversation.len());
@@ -131,16 +172,26 @@ fn build_status_line(ctx: &StatusLine) -> String {
 
 /// Build a minimal system prompt for background sub-agent turns.
 ///
-/// Includes TOOLS.md, USER.md, the projects index, and the skills index.
-/// Excludes SOUL, IDENTITY, AGENTS, MEMORY, observations, recent context,
-/// and active skill instructions to keep the sub-agent focused on the task.
+/// Includes optional preset instructions, TOOLS.md, USER.md, the projects
+/// index, and skills index. Excludes SOUL, IDENTITY, AGENTS, MEMORY,
+/// observations, recent context, active skill instructions, and the
+/// subagents index (subagents cannot spawn other subagents).
 #[must_use]
 pub(crate) fn build_subagent_system_content(
     identity: &IdentityFiles,
     projects_ctx: &ProjectsContext<'_>,
     skills_ctx: &SkillsContext<'_>,
+    preset_instructions: Option<&str>,
 ) -> String {
     let mut parts = Vec::new();
+
+    if let Some(instructions) = preset_instructions
+        && !instructions.is_empty()
+    {
+        parts.push(format!(
+            "<AGENT_INSTRUCTIONS>\n{instructions}\n</AGENT_INSTRUCTIONS>"
+        ));
+    }
 
     if let Some(tools_md) = &identity.tools {
         parts.push(format!("<TOOLS.md>\n{tools_md}\n</TOOLS.md>"));
@@ -185,6 +236,7 @@ fn build_system_content(
     memory_ctx: &MemoryContext<'_>,
     projects_ctx: &ProjectsContext<'_>,
     skills_ctx: &SkillsContext<'_>,
+    subagents_ctx: &SubagentsContext<'_>,
 ) -> String {
     let mut parts = Vec::new();
 
@@ -248,6 +300,12 @@ fn build_system_content(
         parts.push(format!("<ACTIVE_SKILLS>\n{active}\n</ACTIVE_SKILLS>"));
     }
 
+    if let Some(idx) = subagents_ctx.index
+        && !idx.is_empty()
+    {
+        parts.push(format!("<SUBAGENTS_INDEX>\n{idx}\n</SUBAGENTS_INDEX>"));
+    }
+
     parts.join("\n\n")
 }
 
@@ -277,8 +335,7 @@ mod tests {
             &identity,
             &recent,
             &no_memory(),
-            &ProjectsContext::none(),
-            &SkillsContext::none(),
+            &PromptContext::none(),
             None,
         );
         assert_eq!(messages.len(), 1, "should have system message only");
@@ -299,8 +356,7 @@ mod tests {
             &identity,
             &recent,
             &no_memory(),
-            &ProjectsContext::none(),
-            &SkillsContext::none(),
+            &PromptContext::none(),
             None,
         );
         assert_eq!(messages.len(), 2, "should have system + user message");
@@ -319,6 +375,7 @@ mod tests {
             &no_memory(),
             &ProjectsContext::none(),
             &SkillsContext::none(),
+            &SubagentsContext::none(),
         );
         assert!(
             content.contains("test agent"),
@@ -343,6 +400,7 @@ mod tests {
             &no_memory(),
             &ProjectsContext::none(),
             &SkillsContext::none(),
+            &SubagentsContext::none(),
         );
         assert!(
             content.contains("SOUL content"),
@@ -374,6 +432,7 @@ mod tests {
             &mem,
             &ProjectsContext::none(),
             &SkillsContext::none(),
+            &SubagentsContext::none(),
         );
 
         assert!(
@@ -403,6 +462,7 @@ mod tests {
             &mem,
             &ProjectsContext::none(),
             &SkillsContext::none(),
+            &SubagentsContext::none(),
         );
         assert!(
             !content.contains("OBSERVATION_LOG"),
@@ -419,6 +479,7 @@ mod tests {
             &no_memory(),
             &ProjectsContext::none(),
             &SkillsContext::none(),
+            &SubagentsContext::none(),
         );
         assert!(
             !content.contains("OBSERVATION_LOG"),
@@ -442,6 +503,7 @@ mod tests {
             &mem,
             &ProjectsContext::none(),
             &SkillsContext::none(),
+            &SubagentsContext::none(),
         );
 
         assert!(
@@ -482,6 +544,7 @@ mod tests {
             &mem,
             &ProjectsContext::none(),
             &SkillsContext::none(),
+            &SubagentsContext::none(),
         );
 
         assert!(
@@ -506,6 +569,7 @@ mod tests {
             &mem,
             &ProjectsContext::none(),
             &SkillsContext::none(),
+            &SubagentsContext::none(),
         );
         assert!(
             !content.contains("RECENT_CONTEXT"),
@@ -525,6 +589,7 @@ mod tests {
             &mem,
             &ProjectsContext::none(),
             &SkillsContext::none(),
+            &SubagentsContext::none(),
         );
 
         let obs_close = content.find("</OBSERVATION_LOG>");
@@ -565,8 +630,7 @@ mod tests {
             &identity,
             &recent,
             &no_memory(),
-            &ProjectsContext::none(),
-            &SkillsContext::none(),
+            &PromptContext::none(),
             Some(&ctx),
         );
 
@@ -608,8 +672,7 @@ mod tests {
             &identity,
             &recent,
             &no_memory(),
-            &ProjectsContext::none(),
-            &SkillsContext::none(),
+            &PromptContext::none(),
             None,
         );
         assert_eq!(messages.len(), 2, "should have system + user, no time tag");
@@ -632,8 +695,7 @@ mod tests {
             &identity,
             &recent,
             &no_memory(),
-            &ProjectsContext::none(),
-            &SkillsContext::none(),
+            &PromptContext::none(),
             Some(&ctx),
         );
 
@@ -666,8 +728,7 @@ mod tests {
             &identity,
             &recent,
             &no_memory(),
-            &ProjectsContext::none(),
-            &SkillsContext::none(),
+            &PromptContext::none(),
             Some(&ctx),
         );
 
@@ -704,8 +765,7 @@ mod tests {
             &identity,
             &recent,
             &no_memory(),
-            &ProjectsContext::none(),
-            &SkillsContext::none(),
+            &PromptContext::none(),
             Some(&ctx),
         );
 
@@ -748,8 +808,7 @@ mod tests {
             &identity,
             &recent,
             &no_memory(),
-            &ProjectsContext::none(),
-            &SkillsContext::none(),
+            &PromptContext::none(),
             Some(&ctx),
         );
 
@@ -780,8 +839,7 @@ mod tests {
             &identity,
             &recent,
             &no_memory(),
-            &ProjectsContext::none(),
-            &SkillsContext::none(),
+            &PromptContext::none(),
             Some(&ctx),
         );
 
@@ -806,8 +864,13 @@ mod tests {
             ),
             active_instructions: None,
         };
-        let content =
-            build_system_content(&identity, &no_memory(), &ProjectsContext::none(), &skills);
+        let content = build_system_content(
+            &identity,
+            &no_memory(),
+            &ProjectsContext::none(),
+            &skills,
+            &SubagentsContext::none(),
+        );
         assert!(
             content.contains("<SKILLS_INDEX>"),
             "should have skills index section"
@@ -831,8 +894,13 @@ mod tests {
                 "<active_skill name=\"pdf\">\nUse this for PDFs.\n</active_skill>",
             ),
         };
-        let content =
-            build_system_content(&identity, &no_memory(), &ProjectsContext::none(), &skills);
+        let content = build_system_content(
+            &identity,
+            &no_memory(),
+            &ProjectsContext::none(),
+            &skills,
+            &SubagentsContext::none(),
+        );
         assert!(
             content.contains("<ACTIVE_SKILLS>"),
             "should have active skills section"
@@ -854,7 +922,13 @@ mod tests {
             index: Some("<available_skills/>"),
             active_instructions: Some("<active_skill/>"),
         };
-        let content = build_system_content(&identity, &no_memory(), &projects, &skills);
+        let content = build_system_content(
+            &identity,
+            &no_memory(),
+            &projects,
+            &skills,
+            &SubagentsContext::none(),
+        );
 
         let project_close = content.find("</ACTIVE_PROJECT>");
         let skills_open = content.find("<SKILLS_INDEX>");
@@ -875,8 +949,13 @@ mod tests {
             index: Some(""),
             active_instructions: None,
         };
-        let content =
-            build_system_content(&identity, &no_memory(), &ProjectsContext::none(), &skills);
+        let content = build_system_content(
+            &identity,
+            &no_memory(),
+            &ProjectsContext::none(),
+            &skills,
+            &SubagentsContext::none(),
+        );
         assert!(
             !content.contains("SKILLS_INDEX"),
             "empty skills index should be skipped"
@@ -891,6 +970,7 @@ mod tests {
             &no_memory(),
             &ProjectsContext::none(),
             &SkillsContext::none(),
+            &SubagentsContext::none(),
         );
         assert!(
             !content.contains("SKILLS_INDEX"),
@@ -920,7 +1000,7 @@ mod tests {
             index: Some("<available_skills/>"),
             active_instructions: None,
         };
-        let content = build_subagent_system_content(&identity, &projects_ctx, &skills_ctx);
+        let content = build_subagent_system_content(&identity, &projects_ctx, &skills_ctx, None);
 
         assert!(!content.contains("SOUL"), "should exclude SOUL.md");
         assert!(content.contains("tool docs"), "should include TOOLS.md");
@@ -944,7 +1024,7 @@ mod tests {
             active_instructions: Some("<active_skill>instructions</active_skill>"),
         };
         let content =
-            build_subagent_system_content(&identity, &ProjectsContext::none(), &skills_ctx);
+            build_subagent_system_content(&identity, &ProjectsContext::none(), &skills_ctx, None);
         assert!(
             !content.contains("instructions"),
             "active skill instructions should not appear in subagent system prompt"
@@ -959,7 +1039,7 @@ mod tests {
             active_instructions: None,
         };
         let content =
-            build_subagent_system_content(&identity, &ProjectsContext::none(), &skills_ctx);
+            build_subagent_system_content(&identity, &ProjectsContext::none(), &skills_ctx, None);
         assert!(
             !content.contains("SKILLS_INDEX"),
             "empty skills index should be skipped"

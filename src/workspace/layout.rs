@@ -105,6 +105,12 @@ impl WorkspaceLayout {
         self.root.join("skills")
     }
 
+    /// Path to the subagent presets directory.
+    #[must_use]
+    pub fn subagents_dir(&self) -> PathBuf {
+        self.root.join("subagents")
+    }
+
     /// Path to the projects directory for active project contexts.
     #[must_use]
     pub fn projects_dir(&self) -> PathBuf {
@@ -200,6 +206,7 @@ impl WorkspaceLayout {
             self.episodes_dir(),
             self.search_index_dir(),
             self.skills_dir(),
+            self.subagents_dir(),
             self.projects_dir(),
             self.archive_dir(),
             self.cron_dir(),
@@ -272,6 +279,11 @@ mod tests {
             PathBuf::from("/tmp/ws/memory/vectors.db"),
             "vectors_db path"
         );
+        assert_eq!(
+            layout.subagents_dir(),
+            PathBuf::from("/tmp/ws/subagents"),
+            "subagents_dir path"
+        );
     }
 
     #[test]
@@ -298,7 +310,7 @@ mod tests {
     fn required_dirs_count() {
         let layout = WorkspaceLayout::new("/tmp/ws");
         let dirs = layout.required_dirs();
-        assert_eq!(dirs.len(), 11, "should have all required directories");
+        assert_eq!(dirs.len(), 12, "should have all required directories");
         assert!(
             dirs.contains(&PathBuf::from("/tmp/ws")),
             "root should be included"

@@ -46,6 +46,10 @@ pub enum IronclawError {
     #[error("skills error: {0}")]
     Skills(String),
 
+    /// Subagent presets subsystem error
+    #[error("subagents error: {0}")]
+    Subagents(String),
+
     /// Inbox subsystem error
     #[error("inbox error: {0}")]
     Inbox(String),

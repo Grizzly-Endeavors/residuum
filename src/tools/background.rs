@@ -434,6 +434,7 @@ mod tests {
             options: CompletionOptions::default(),
             projects_ctx_index: None,
             skills_index: None,
+            preset_instructions: None,
         }
     }
 

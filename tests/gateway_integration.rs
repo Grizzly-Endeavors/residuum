@@ -24,7 +24,7 @@ mod gateway_integration {
     use tokio_tungstenite::tungstenite::Message as TungsteniteMessage;
 
     use ironclaw::agent::Agent;
-    use ironclaw::agent::context::{ProjectsContext, SkillsContext};
+    use ironclaw::agent::context::PromptContext;
     use ironclaw::agent::interrupt;
     use ironclaw::gateway::display::BroadcastDisplay;
     use ironclaw::gateway::protocol::{ClientMessage, ServerMessage};
@@ -134,15 +134,13 @@ mod gateway_integration {
                     break;
                 }
 
-                let no_projects = ProjectsContext::none();
                 let mut irx = interrupt::dead_interrupt_rx();
                 match agent
                     .process_message(
                         &inbound.content,
                         &broadcast_display,
                         None,
-                        &no_projects,
-                        &SkillsContext::none(),
+                        &PromptContext::none(),
                         &mut irx,
                     )
                     .await

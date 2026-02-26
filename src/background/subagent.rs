@@ -2,7 +2,9 @@
 
 use std::sync::Arc;
 
-use crate::agent::context::{ProjectsContext, SkillsContext, build_subagent_system_content};
+use crate::agent::context::{
+    ProjectsContext, PromptContext, SkillsContext, SubagentsContext, build_subagent_system_content,
+};
 use crate::agent::interrupt::dead_interrupt_rx;
 use crate::agent::recent_messages::RecentMessages;
 use crate::agent::turn::execute_turn;
@@ -37,6 +39,8 @@ pub struct SubAgentResources {
     pub(crate) projects_ctx_index: Option<String>,
     /// Formatted skill index for the system prompt (built at spawn time).
     pub(crate) skills_index: Option<String>,
+    /// Preset-specific instructions to prepend to the subagent system prompt.
+    pub(crate) preset_instructions: Option<String>,
 }
 
 /// Configuration passed to [`build_resources`] that groups constructor arguments.
@@ -130,6 +134,7 @@ pub async fn build_resources(
         options,
         projects_ctx_index,
         skills_index,
+        preset_instructions: None,
     }
 }
 
@@ -165,8 +170,12 @@ pub(crate) async fn execute_subagent(
         active_instructions: active_instructions.as_deref(),
     };
 
-    let system_content =
-        build_subagent_system_content(&resources.identity, &projects_ctx, &skills_ctx);
+    let system_content = build_subagent_system_content(
+        &resources.identity,
+        &projects_ctx,
+        &skills_ctx,
+        resources.preset_instructions.as_deref(),
+    );
 
     // Build user message: system content + context files + prompt
     let mut user_parts = Vec::new();
@@ -210,6 +219,12 @@ pub(crate) async fn execute_subagent(
         recent_context: None,
     };
 
+    let prompt_ctx = PromptContext {
+        projects: projects_ctx,
+        skills: skills_ctx,
+        subagents: SubagentsContext::none(),
+    };
+
     let texts: Vec<String> = execute_turn(
         &*resources.provider,
         &resources.tools,
@@ -218,8 +233,7 @@ pub(crate) async fn execute_subagent(
         &resources.identity,
         &resources.options,
         &memory_ctx,
-        &projects_ctx,
-        &skills_ctx,
+        &prompt_ctx,
         &mut recent_messages,
         &display,
         None,
@@ -232,8 +246,7 @@ pub(crate) async fn execute_subagent(
         config,
         resources,
         &memory_ctx,
-        &projects_ctx,
-        &skills_ctx,
+        &prompt_ctx,
         &mut recent_messages,
         &display,
     )
@@ -245,17 +258,12 @@ pub(crate) async fn execute_subagent(
 /// If a project is still active after the main turn, give the sub-agent one
 /// more turn with a deactivation prompt so it can write a proper session log.
 /// If the retry turn also fails, fall back to a manual ref-count decrement.
-#[expect(
-    clippy::too_many_arguments,
-    reason = "passes through the same context needed for a turn; grouping would obscure the call"
-)]
 async fn ensure_project_deactivated(
     task_id: &str,
     config: &SubAgentConfig,
     resources: &SubAgentResources,
     memory_ctx: &crate::agent::context::MemoryContext<'_>,
-    projects_ctx: &ProjectsContext<'_>,
-    skills_ctx: &SkillsContext<'_>,
+    prompt_ctx: &PromptContext<'_>,
     recent_messages: &mut RecentMessages,
     display: &dyn crate::channels::TurnDisplay,
 ) {
@@ -292,8 +300,7 @@ async fn ensure_project_deactivated(
         &resources.identity,
         &resources.options,
         memory_ctx,
-        projects_ctx,
-        skills_ctx,
+        prompt_ctx,
         recent_messages,
         display,
         None,
@@ -388,6 +395,7 @@ mod tests {
             options: CompletionOptions::default(),
             projects_ctx_index: None,
             skills_index: None,
+            preset_instructions: None,
         }
     }
 
@@ -444,7 +452,7 @@ mod tests {
             active_context: None,
         };
         let content =
-            build_subagent_system_content(&identity, &projects_ctx, &SkillsContext::none());
+            build_subagent_system_content(&identity, &projects_ctx, &SkillsContext::none(), None);
 
         assert!(!content.contains("test soul"), "should not include SOUL.md");
         assert!(
@@ -473,7 +481,7 @@ mod tests {
             index: Some("<available_skills><skill>pdf</skill></available_skills>"),
             active_instructions: None,
         };
-        let content = build_subagent_system_content(&identity, &projects_ctx, &skills_ctx);
+        let content = build_subagent_system_content(&identity, &projects_ctx, &skills_ctx, None);
         assert!(
             content.contains("<SKILLS_INDEX>"),
             "should include skills index section"
@@ -494,7 +502,7 @@ mod tests {
             index: None,
             active_instructions: Some("<active_skill name=\"pdf\">Do PDFs.</active_skill>"),
         };
-        let content = build_subagent_system_content(&identity, &projects_ctx, &skills_ctx);
+        let content = build_subagent_system_content(&identity, &projects_ctx, &skills_ctx, None);
         assert!(
             !content.contains("Do PDFs"),
             "active skill instructions should not appear in subagent system prompt"

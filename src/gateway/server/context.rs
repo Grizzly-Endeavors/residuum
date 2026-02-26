@@ -1,7 +1,10 @@
 //! Context-building helpers: project index strings, skill strings, and context labels.
 
+use std::path::Path;
+
 use crate::projects::activation::SharedProjectState;
 use crate::skills::SharedSkillState;
+use crate::subagents::SubagentPresetIndex;
 use crate::workspace::layout::WorkspaceLayout;
 
 /// Derive the workspace name from the root directory for use as project context.
@@ -43,6 +46,26 @@ pub(super) async fn build_skill_context_strings(
     };
     let active_text = state.format_active_for_prompt();
     (index_text, active_text)
+}
+
+/// Scan the subagents directory and format the index for the system prompt.
+///
+/// Returns `None` if the index is empty (shouldn't happen — built-in presets are always present).
+pub(super) async fn build_subagents_context_string(subagents_dir: &Path) -> Option<String> {
+    match SubagentPresetIndex::scan(subagents_dir).await {
+        Ok(index) => {
+            let formatted = index.format_for_prompt();
+            if formatted.is_empty() {
+                None
+            } else {
+                Some(formatted)
+            }
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "failed to scan subagent presets");
+            None
+        }
+    }
 }
 
 /// Derive the project context label for memory tagging.

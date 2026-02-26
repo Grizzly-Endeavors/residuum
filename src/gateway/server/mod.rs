@@ -18,7 +18,7 @@ use tokio::sync::{broadcast, mpsc};
 use tokio::time::Duration;
 
 use crate::agent::Agent;
-use crate::agent::context::{ProjectsContext, SkillsContext};
+use crate::agent::context::{ProjectsContext, PromptContext, SkillsContext, SubagentsContext};
 use crate::agent::interrupt::Interrupt;
 use crate::background::BackgroundTaskSpawner;
 use crate::background::types::{BackgroundResult, ResultRouting, format_background_result};
@@ -44,7 +44,10 @@ use crate::workspace::layout::WorkspaceLayout;
 use super::display::{BroadcastDisplay, ChannelAwareDisplay};
 use super::protocol::ServerMessage;
 
-use context::{build_project_context_strings, build_skill_context_strings, project_context_label};
+use context::{
+    build_project_context_strings, build_skill_context_strings, build_subagents_context_string,
+    project_context_label,
+};
 use cron::spawn_due_cron_jobs;
 use memory::{
     execute_observation, persist_and_check_thresholds, run_forced_observe, run_forced_reflect,
@@ -380,14 +383,20 @@ async fn run_event_loop(mut rt: GatewayRuntime) -> GatewayExit {
                 let before = rt.agent.message_count();
 
                 let (idx_text, active_text) = build_project_context_strings(&rt.project_state).await;
-                let projects_ctx = ProjectsContext {
-                    index: idx_text.as_deref(),
-                    active_context: active_text.as_deref(),
-                };
                 let (skill_idx_text, skill_active_text) = build_skill_context_strings(&rt.skill_state).await;
-                let skills_ctx = SkillsContext {
-                    index: skill_idx_text.as_deref(),
-                    active_instructions: skill_active_text.as_deref(),
+                let subagents_idx_text = build_subagents_context_string(&rt.layout.subagents_dir()).await;
+                let prompt_ctx = PromptContext {
+                    projects: ProjectsContext {
+                        index: idx_text.as_deref(),
+                        active_context: active_text.as_deref(),
+                    },
+                    skills: SkillsContext {
+                        index: skill_idx_text.as_deref(),
+                        active_instructions: skill_active_text.as_deref(),
+                    },
+                    subagents: SubagentsContext {
+                        index: subagents_idx_text.as_deref(),
+                    },
                 };
 
                 let turn_result = {
@@ -397,8 +406,7 @@ async fn run_event_loop(mut rt: GatewayRuntime) -> GatewayExit {
                             &routed.message.content,
                             &turn_display,
                             Some(&origin),
-                            &projects_ctx,
-                            &skills_ctx,
+                            &prompt_ctx,
                             &mut interrupt_rx,
                         )
                     );

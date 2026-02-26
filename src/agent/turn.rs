@@ -9,9 +9,7 @@ use crate::models::{CompletionOptions, Message, ModelProvider, ModelResponse};
 use crate::tools::{SharedToolFilter, ToolError, ToolRegistry};
 use crate::workspace::identity::IdentityFiles;
 
-use super::context::{
-    MemoryContext, ProjectsContext, SkillsContext, StatusLine, assemble_system_prompt,
-};
+use super::context::{MemoryContext, PromptContext, StatusLine, assemble_system_prompt};
 use super::interrupt::Interrupt;
 use super::recent_messages::RecentMessages;
 
@@ -41,8 +39,7 @@ pub(crate) async fn execute_turn(
     identity: &IdentityFiles,
     options: &CompletionOptions,
     memory_ctx: &MemoryContext<'_>,
-    projects_ctx: &ProjectsContext<'_>,
-    skills_ctx: &SkillsContext<'_>,
+    prompt_ctx: &PromptContext<'_>,
     recent_messages: &mut RecentMessages,
     display: &dyn TurnDisplay,
     status_line: Option<&StatusLine>,
@@ -88,8 +85,7 @@ pub(crate) async fn execute_turn(
             identity,
             recent_messages,
             memory_ctx,
-            projects_ctx,
-            skills_ctx,
+            prompt_ctx,
             status_line,
         );
 

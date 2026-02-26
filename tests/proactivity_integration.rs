@@ -18,7 +18,7 @@ mod proactivity_integration {
     use tempfile::tempdir;
 
     use ironclaw::agent::Agent;
-    use ironclaw::agent::context::{ProjectsContext, SkillsContext};
+    use ironclaw::agent::context::PromptContext;
     use ironclaw::background::types::{Execution, ResultRouting};
     use ironclaw::channels::null::NullDisplay;
     use ironclaw::config::BackgroundModelTier;
@@ -300,14 +300,12 @@ mod proactivity_integration {
         let agent = make_agent(vec!["I ran a background check.".to_string()]);
         let display = NullDisplay;
 
-        let no_projects = ProjectsContext::none();
         let result = agent
             .run_system_turn(
                 "background check prompt",
                 &display,
                 None,
-                &no_projects,
-                &SkillsContext::none(),
+                &PromptContext::none(),
             )
             .await
             .unwrap();
