@@ -519,8 +519,9 @@ async fn run_event_loop(mut rt: GatewayRuntime) -> GatewayExit {
                     },
                 };
 
+                let (interrupt_tx, mut interrupt_rx) = mpsc::channel::<Interrupt>(32);
+
                 let turn_result = {
-                    let (interrupt_tx, mut interrupt_rx) = mpsc::channel::<Interrupt>(32);
                     let mut turn = std::pin::pin!(
                         rt.agent.process_message(
                             &routed.message.content,
@@ -556,6 +557,16 @@ async fn run_event_loop(mut rt: GatewayRuntime) -> GatewayExit {
                         }
                     }
                 };
+
+                // Drain any interrupts that arrived during the final LLM call
+                // but weren't consumed by the turn (race window between last
+                // tool-loop check and turn completion). The turn future is
+                // dropped above so interrupt_rx is no longer borrowed.
+                drop(interrupt_tx);
+                let mut leftover_interrupts = Vec::new();
+                while let Ok(intr) = interrupt_rx.try_recv() {
+                    leftover_interrupts.push(intr);
+                }
 
                 match turn_result {
                     Ok(texts) => {
@@ -594,6 +605,25 @@ async fn run_event_loop(mut rt: GatewayRuntime) -> GatewayExit {
                 ).await;
                 if apply_observe_action(action, &mut observe_deadline, rt.observer.cooldown_secs()) {
                     execute_observation(&rt.observer, &rt.reflector, &rt.search_index, &rt.layout, &mut rt.agent, rt.vector_store.as_ref(), rt.embedding_provider.as_ref()).await;
+                }
+
+                // Process leftover interrupts that arrived during the final LLM call
+                for intr in leftover_interrupts {
+                    match intr {
+                        Interrupt::BackgroundResult(result) => {
+                            let force = handle_background_result(
+                                result, &rt.notification_router, &rt.layout,
+                                &mut rt.agent, &rt.observer, &rt.project_state,
+                                rt.tz, &mut observe_deadline,
+                            ).await;
+                            if force {
+                                execute_observation(&rt.observer, &rt.reflector, &rt.search_index, &rt.layout, &mut rt.agent, rt.vector_store.as_ref(), rt.embedding_provider.as_ref()).await;
+                            }
+                        }
+                        Interrupt::UserMessage(leftover_msg) => {
+                            rt.agent.inject_user_message(leftover_msg.content);
+                        }
+                    }
                 }
             }
 

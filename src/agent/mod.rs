@@ -152,6 +152,15 @@ impl Agent {
         self.recent_messages.push(Message::system(content));
     }
 
+    /// Inject a user message directly into the conversation history.
+    ///
+    /// Used for user messages that arrived as interrupts during a turn's final
+    /// LLM call and were drained after the turn completed. Ensures the message
+    /// is visible in the next turn without being lost.
+    pub fn inject_user_message(&mut self, content: impl Into<String>) {
+        self.recent_messages.push(Message::user(content));
+    }
+
     /// Process a user message through the model, executing tool calls as needed.
     ///
     /// Returns a vec containing the final text-only response. Intermediate texts
@@ -574,6 +583,34 @@ mod tests {
             agent.message_count(),
             0,
             "main message history should be untouched"
+        );
+    }
+
+    #[test]
+    fn inject_user_message_appears_in_history() {
+        let mut agent = Agent::new(
+            Box::new(MockProvider::new(vec![])),
+            ToolRegistry::new(),
+            no_filter(),
+            empty_mcp(),
+            IdentityFiles::default(),
+            CompletionOptions::default(),
+            chrono_tz::UTC,
+            std::path::PathBuf::from("/tmp/ironclaw-test-inbox"),
+        );
+
+        agent.inject_user_message("leftover interrupt message");
+
+        let msgs = agent.messages_since(0);
+        assert_eq!(msgs.len(), 1, "should have one user message");
+        assert_eq!(
+            msgs[0].content, "leftover interrupt message",
+            "user message content should match"
+        );
+        assert_eq!(
+            msgs[0].role,
+            crate::models::Role::User,
+            "injected message should have User role"
         );
     }
 
