@@ -41,8 +41,8 @@ pub(super) fn build_status_line(ctx: &StatusLine) -> String {
 /// 2. `ENVIRONMENT.md`
 /// 3. `USER.md`
 /// 4. `PROJECTS_INDEX`
-/// 5. `ACTIVE_PROJECT` (when a project is active)
-/// 6. `SKILLS_INDEX`
+/// 5. `SKILLS_INDEX`
+/// 6. `ACTIVE_PROJECT` (when a project is active)
 /// 7. `ACTIVE_SKILLS` (when skills are loaded)
 #[must_use]
 pub(crate) fn build_subagent_system_content(
@@ -77,16 +77,16 @@ pub(crate) fn build_subagent_system_content(
         parts.push(format!("<PROJECTS_INDEX>\n{idx}\n</PROJECTS_INDEX>"));
     }
 
-    if let Some(active) = projects_ctx.active_context
-        && !active.is_empty()
-    {
-        parts.push(format!("<ACTIVE_PROJECT>\n{active}\n</ACTIVE_PROJECT>"));
-    }
-
     if let Some(idx) = skills_ctx.index
         && !idx.is_empty()
     {
         parts.push(format!("<SKILLS_INDEX>\n{idx}\n</SKILLS_INDEX>"));
+    }
+
+    if let Some(active) = projects_ctx.active_context
+        && !active.is_empty()
+    {
+        parts.push(format!("<ACTIVE_PROJECT>\n{active}\n</ACTIVE_PROJECT>"));
     }
 
     if let Some(active) = skills_ctx.active_instructions
@@ -672,21 +672,21 @@ mod tests {
         };
         let content = build_subagent_system_content(&identity, &projects_ctx, &skills_ctx, None);
 
-        // Verify order: ENVIRONMENT → USER → PROJECTS_INDEX → ACTIVE_PROJECT → SKILLS_INDEX → ACTIVE_SKILLS
+        // Verify order: ENVIRONMENT → USER → PROJECTS_INDEX → SKILLS_INDEX → ACTIVE_PROJECT → ACTIVE_SKILLS
         let env_pos = content.find("env content").unwrap();
         let user_pos = content.find("user content").unwrap();
         let proj_idx_pos = content.find("<PROJECTS_INDEX>").unwrap();
-        let active_proj_pos = content.find("<ACTIVE_PROJECT>").unwrap();
         let skl_idx_pos = content.find("<SKILLS_INDEX>").unwrap();
+        let active_proj_pos = content.find("<ACTIVE_PROJECT>").unwrap();
         let active_skl_pos = content.find("<ACTIVE_SKILLS>").unwrap();
 
         assert!(
             env_pos < user_pos
                 && user_pos < proj_idx_pos
-                && proj_idx_pos < active_proj_pos
-                && active_proj_pos < skl_idx_pos
-                && skl_idx_pos < active_skl_pos,
-            "sections should appear in order: ENVIRONMENT, USER, PROJECTS_INDEX, ACTIVE_PROJECT, SKILLS_INDEX, ACTIVE_SKILLS"
+                && proj_idx_pos < skl_idx_pos
+                && skl_idx_pos < active_proj_pos
+                && active_proj_pos < active_skl_pos,
+            "sections should appear in order: ENVIRONMENT, USER, PROJECTS_INDEX, SKILLS_INDEX, ACTIVE_PROJECT, ACTIVE_SKILLS"
         );
     }
 }
