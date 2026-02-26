@@ -44,6 +44,30 @@ impl NotificationRouter {
         }
     }
 
+    /// Deliver a notification directly to the inbox channel, bypassing NOTIFY.yml.
+    ///
+    /// Returns `true` if delivery succeeded, `false` if no inbox is configured
+    /// or delivery failed.
+    pub async fn deliver_to_inbox(&self, notification: &Notification) -> bool {
+        if let Some(ref inbox) = self.inbox_channel {
+            if let Err(e) = inbox.deliver(notification).await {
+                tracing::warn!(
+                    task = %notification.task_name,
+                    error = %e,
+                    "direct inbox delivery failed"
+                );
+                return false;
+            }
+            true
+        } else {
+            tracing::warn!(
+                task = %notification.task_name,
+                "direct inbox delivery requested but no inbox configured"
+            );
+            false
+        }
+    }
+
     /// Route a notification based on NOTIFY.yml.
     ///
     /// Loads NOTIFY.yml fresh each call (hot-reload pattern). Resolves which
@@ -228,6 +252,34 @@ mod tests {
 
         assert!(outcome.agent_wake);
         assert!(outcome.agent_feed);
+    }
+
+    #[tokio::test]
+    async fn deliver_to_inbox_with_channel() {
+        let dir = tempfile::tempdir().unwrap();
+        let inbox_dir = dir.path().join("inbox");
+        std::fs::create_dir_all(&inbox_dir).unwrap();
+
+        let inbox_channel = InboxChannel::new(&inbox_dir, chrono_tz::UTC);
+        let router = NotificationRouter::new(HashMap::new(), Some(inbox_channel));
+
+        let notif = make_notification("direct_task");
+        let ok = router.deliver_to_inbox(&notif).await;
+        assert!(ok, "should succeed when inbox is configured");
+
+        let items: Vec<_> = std::fs::read_dir(&inbox_dir)
+            .unwrap()
+            .filter_map(Result::ok)
+            .collect();
+        assert_eq!(items.len(), 1, "should create one inbox item");
+    }
+
+    #[tokio::test]
+    async fn deliver_to_inbox_without_channel() {
+        let router = NotificationRouter::empty();
+        let notif = make_notification("orphan_task");
+        let ok = router.deliver_to_inbox(&notif).await;
+        assert!(!ok, "should return false when no inbox is configured");
     }
 
     #[tokio::test]

@@ -57,6 +57,15 @@ reflector_threshold_tokens = 40000
 observer_cooldown_secs = 120            # seconds to wait after soft threshold before observing
 observer_force_threshold_tokens = 60000 # hard threshold: observe immediately, bypass cooldown
 
+# Hybrid search tuning (BM25 + vector merge).
+# [memory.search]
+# vector_weight = 0.7              # weight for vector similarity (0.0–1.0)
+# text_weight = 0.3                # weight for BM25 text scores (0.0–1.0)
+# min_score = 0.35                 # minimum hybrid score threshold
+# candidate_multiplier = 4         # over-fetch multiplier for pre-merge retrieval
+# temporal_decay = false            # enable temporal decay scoring
+# temporal_decay_half_life_days = 30.0
+
 # ── Pulse (ambient monitoring) ────────────────────────────────────────────────
 [pulse]
 enabled = true
@@ -91,6 +100,35 @@ port = 7700
 # [webhook]
 # enabled = false
 # secret = "your-webhook-secret"
+
+# ── Notifications (optional, external channel routing) ─────────────────────
+# Named channels for routing background task results and alerts.
+# Supported types: ntfy, webhook
+#
+# [notifications.channels.push-notify]
+# type = "ntfy"
+# url = "https://ntfy.sh"
+# topic = "my-alerts"
+# priority = "high"                # optional, default: "default"
+#
+# [notifications.channels.slack-webhook]
+# type = "webhook"
+# url = "https://hooks.slack.com/services/..."
+# method = "POST"                  # optional, default: "POST"
+# headers = { Authorization = "Bearer token" }
+
+# ── Background tasks (optional) ───────────────────────────────────────────
+# Semaphore-bounded concurrent background tasks (sub-agents and scripts).
+# Model tiers fall back: tier → next tier up → main.
+#
+# [background]
+# max_concurrent = 3
+# transcript_retention_days = 30
+#
+# [background.models]
+# small = "anthropic/claude-haiku-4-5"
+# medium = "anthropic/claude-sonnet-4-6"
+# large = "anthropic/claude-sonnet-4-6"
 
 # ── MCP servers (optional, always-on tool servers) ───────────────────────
 # Servers defined here start on gateway boot and stay running.

@@ -334,7 +334,7 @@ async fn handle_background_result(
                             source: result.source,
                             timestamp: result.timestamp,
                         };
-                        router.route(&notification, &layout.notify_yml()).await;
+                        router.deliver_to_inbox(&notification).await;
                     }
                     _ => {
                         tracing::debug!(
