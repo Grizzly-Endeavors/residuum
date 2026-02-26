@@ -103,6 +103,7 @@ pub(super) async fn spawn_due_cron_jobs(
                     project_state,
                     skill_state,
                     Arc::clone(mcp_registry),
+                    None,
                 )
                 .await
                 {

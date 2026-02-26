@@ -1,6 +1,7 @@
 //! Background task management tools: `stop_agent`, `list_agents`, and `subagent_spawn`.
 
 use std::collections::HashSet;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -18,6 +19,7 @@ use crate::models::ToolDefinition;
 use crate::notify::types::TaskSource;
 use crate::projects::activation::SharedProjectState;
 use crate::skills::SharedSkillState;
+use crate::subagents::SubagentPresetIndex;
 
 use super::{Tool, ToolError, ToolResult};
 
@@ -149,10 +151,13 @@ pub struct SubAgentSpawnTool {
     skill_state: SharedSkillState,
     mcp_registry: SharedMcpRegistry,
     valid_external_channels: HashSet<String>,
+    subagents_dir: PathBuf,
 }
 
 impl SubAgentSpawnTool {
     /// Create a new `SubAgentSpawnTool`.
+    ///
+    /// The `subagents_dir` for preset loading is derived from `spawn_context.layout`.
     #[must_use]
     pub(crate) fn new(
         spawner: Arc<BackgroundTaskSpawner>,
@@ -162,6 +167,7 @@ impl SubAgentSpawnTool {
         mcp_registry: SharedMcpRegistry,
         valid_external_channels: HashSet<String>,
     ) -> Self {
+        let subagents_dir = spawn_context.layout.subagents_dir();
         Self {
             spawner,
             spawn_context,
@@ -169,6 +175,7 @@ impl SubAgentSpawnTool {
             skill_state,
             mcp_registry,
             valid_external_channels,
+            subagents_dir,
         }
     }
 }
@@ -182,7 +189,7 @@ impl Tool for SubAgentSpawnTool {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: "subagent_spawn".to_string(),
-            description: "Spawn a background sub-agent to handle a task. By default runs asynchronously and delivers the result to the specified channels. Set wait=true to block until the sub-agent finishes and return its output directly.".to_string(),
+            description: "Spawn a background sub-agent to handle a task. The agent_name selects a preset that configures the sub-agent's instructions, model tier, and tool restrictions. Unknown preset names fail immediately with a list of available presets. By default runs asynchronously and delivers the result to the specified channels. Set wait=true to block until the sub-agent finishes and return its output directly.".to_string(),
             parameters: serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -192,17 +199,17 @@ impl Tool for SubAgentSpawnTool {
                     },
                     "agent_name": {
                         "type": "string",
-                        "description": "Human-readable name for the task (default: \"subagent\")"
+                        "description": "Preset name to use (default: \"general-purpose\"). Must match a known preset or the call fails."
                     },
                     "model_override": {
                         "type": "string",
                         "enum": ["small", "medium", "large"],
-                        "description": "Model tier to use (default: \"medium\")"
+                        "description": "Override the preset's model tier. If omitted, the preset's tier is used (default: \"medium\")."
                     },
                     "channels": {
                         "type": "array",
                         "items": { "type": "string" },
-                        "description": "Result delivery channels (default: [\"agent_feed\"]). Only used in async mode."
+                        "description": "Result delivery channels. If omitted, uses the preset's default channels (fallback: [\"agent_feed\"]). Only used in async mode."
                     },
                     "wait": {
                         "type": "boolean",
@@ -215,7 +222,6 @@ impl Tool for SubAgentSpawnTool {
     }
 
     async fn execute(&self, arguments: Value) -> Result<ToolResult, ToolError> {
-        // Parse required task param
         let task_prompt = arguments
             .get("task")
             .and_then(Value::as_str)
@@ -227,38 +233,39 @@ impl Tool for SubAgentSpawnTool {
             ));
         }
 
-        // Parse optional params
-        let agent_name = arguments
+        let preset_name = arguments
             .get("agent_name")
             .and_then(Value::as_str)
-            .unwrap_or("subagent");
-
-        let tier = arguments
-            .get("model_override")
-            .and_then(Value::as_str)
-            .map_or(Ok(BackgroundModelTier::Medium), parse_model_tier)?;
-
+            .unwrap_or("general-purpose");
         let wait = arguments
             .get("wait")
             .and_then(Value::as_bool)
             .unwrap_or(false);
-
-        let channels: Vec<String> = arguments
+        let explicit_model_override = arguments.get("model_override").and_then(Value::as_str);
+        let explicit_channels: Option<Vec<String>> = arguments
             .get("channels")
             .and_then(Value::as_array)
-            .map_or_else(
-                || vec!["agent_feed".to_string()],
-                |arr| {
-                    arr.iter()
-                        .filter_map(Value::as_str)
-                        .map(String::from)
-                        .collect()
-                },
-            );
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(Value::as_str)
+                    .map(String::from)
+                    .collect()
+            });
 
-        // Validate channels in async mode
+        let resolved = match resolve_spawn_params(
+            &self.subagents_dir,
+            preset_name,
+            explicit_model_override,
+            explicit_channels,
+        )
+        .await
+        {
+            Ok(r) => r,
+            Err(tool_result) => return Ok(tool_result),
+        };
+
         if !wait {
-            for ch in &channels {
+            for ch in &resolved.channels {
                 if !is_valid_channel(ch, &self.valid_external_channels) {
                     return Ok(ToolResult::error(format!(
                         "unknown channel '{ch}'. Valid: agent_wake, agent_feed, inbox, or configured external channels."
@@ -271,17 +278,19 @@ impl Tool for SubAgentSpawnTool {
         let config = SubAgentConfig {
             prompt: task_prompt.to_string(),
             context: None,
-            model_tier: tier,
+            model_tier: resolved.tier,
         };
+        let preset_arg = Some((&resolved.preset_fm, resolved.preset_body.clone()));
 
         if wait {
             // Sync mode: run directly, no spawner
             let resources = build_spawn_resources(
                 &self.spawn_context,
-                &tier,
+                &resolved.tier,
                 &self.project_state,
                 &self.skill_state,
                 Arc::clone(&self.mcp_registry),
+                preset_arg,
             )
             .await
             .map_err(|err| {
@@ -296,10 +305,11 @@ impl Tool for SubAgentSpawnTool {
             // Async mode: spawn via BackgroundTaskSpawner
             let resources = build_spawn_resources(
                 &self.spawn_context,
-                &tier,
+                &resolved.tier,
                 &self.project_state,
                 &self.skill_state,
                 Arc::clone(&self.mcp_registry),
+                preset_arg,
             )
             .await
             .map_err(|err| {
@@ -308,10 +318,10 @@ impl Tool for SubAgentSpawnTool {
 
             let task = BackgroundTask {
                 id: task_id.clone(),
-                task_name: agent_name.to_string(),
+                task_name: resolved.preset_name,
                 source: TaskSource::Agent,
                 execution: Execution::SubAgent(config),
-                routing: ResultRouting::Direct(channels),
+                routing: ResultRouting::Direct(resolved.channels),
             };
 
             self.spawner
@@ -322,6 +332,52 @@ impl Tool for SubAgentSpawnTool {
             Ok(ToolResult::success(format!("Subagent spawned: {task_id}")))
         }
     }
+}
+
+/// Resolved spawn parameters after loading a preset.
+struct ResolvedSpawn {
+    preset_name: String,
+    tier: BackgroundModelTier,
+    channels: Vec<String>,
+    preset_fm: crate::subagents::types::SubagentPresetFrontmatter,
+    preset_body: String,
+}
+
+/// Load a preset and resolve tier/channel defaults from arguments + preset.
+async fn resolve_spawn_params(
+    subagents_dir: &std::path::Path,
+    preset_name: &str,
+    explicit_model_override: Option<&str>,
+    explicit_channels: Option<Vec<String>>,
+) -> Result<ResolvedSpawn, ToolResult> {
+    let index = SubagentPresetIndex::scan(subagents_dir)
+        .await
+        .map_err(|e| ToolResult::error(format!("failed to load subagent presets: {e}")))?;
+
+    let (preset_fm, preset_body) = index
+        .load_preset(preset_name)
+        .await
+        .map_err(|e| ToolResult::error(e.to_string()))?;
+
+    let tier = if let Some(s) = explicit_model_override {
+        parse_model_tier(s).map_err(|e| ToolResult::error(e.to_string()))?
+    } else if let Some(tier_str) = preset_fm.model_tier.as_deref() {
+        parse_model_tier(tier_str).unwrap_or(BackgroundModelTier::Medium)
+    } else {
+        BackgroundModelTier::Medium
+    };
+
+    let channels = explicit_channels
+        .or_else(|| preset_fm.channels.clone())
+        .unwrap_or_else(|| vec!["agent_feed".to_string()]);
+
+    Ok(ResolvedSpawn {
+        preset_name: preset_name.to_string(),
+        tier,
+        channels,
+        preset_fm,
+        preset_body,
+    })
 }
 
 fn parse_model_tier(s: &str) -> Result<BackgroundModelTier, ToolError> {
@@ -648,5 +704,81 @@ mod tests {
                 .unwrap()
                 .contains(&Value::String("task".to_string()))
         );
+    }
+
+    #[tokio::test]
+    async fn unknown_preset_name_returns_error() {
+        let (spawner, _rx) = make_spawner();
+        let project_state = ProjectState::new_shared(
+            ProjectIndex::default(),
+            WorkspaceLayout::new(PathBuf::from("/tmp")),
+        );
+        let skill_state = SkillState::new_shared(SkillIndex::default(), vec![]);
+        let mcp_registry = McpRegistry::new_shared();
+
+        let tool = SubAgentSpawnTool::new(
+            spawner,
+            make_test_spawn_context(),
+            project_state,
+            skill_state,
+            mcp_registry,
+            HashSet::new(),
+        );
+
+        let result = tool
+            .execute(serde_json::json!({
+                "task": "do something",
+                "agent_name": "definitely-not-a-real-preset"
+            }))
+            .await
+            .unwrap();
+
+        assert!(result.is_error, "unknown preset should return a tool error");
+        assert!(
+            result.output.contains("unknown preset"),
+            "error should mention unknown preset, got: {}",
+            result.output
+        );
+    }
+
+    #[tokio::test]
+    async fn default_preset_general_purpose_used_when_no_agent_name() {
+        // When no agent_name is provided, the general-purpose preset is used.
+        // We test this indirectly — the call should not fail with an unknown-preset error.
+        let (spawner, _rx) = make_spawner();
+        let project_state = ProjectState::new_shared(
+            ProjectIndex::default(),
+            WorkspaceLayout::new(PathBuf::from("/tmp")),
+        );
+        let skill_state = SkillState::new_shared(SkillIndex::default(), vec![]);
+        let mcp_registry = McpRegistry::new_shared();
+
+        let tool = SubAgentSpawnTool::new(
+            spawner,
+            make_test_spawn_context(),
+            project_state,
+            skill_state,
+            mcp_registry,
+            HashSet::new(),
+        );
+
+        // No agent_name → should not fail with "unknown preset"
+        let result = tool
+            .execute(serde_json::json!({
+                "task": "do something"
+            }))
+            .await;
+
+        // May fail with provider error (no valid API key in test), but not with preset error
+        match result {
+            Ok(res) if res.is_error => {
+                assert!(
+                    !res.output.contains("unknown preset"),
+                    "should not fail with unknown-preset error, got: {}",
+                    res.output
+                );
+            }
+            Ok(_) | Err(_) => {} // any other outcome is acceptable
+        }
     }
 }

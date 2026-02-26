@@ -492,6 +492,7 @@ async fn run_event_loop(mut rt: GatewayRuntime) -> GatewayExit {
                         &rt.spawn_context, &tier,
                         &rt.project_state, &rt.skill_state,
                         Arc::clone(&rt.mcp_registry),
+                        None,
                     ).await {
                         Ok(resources) => {
                             if let Err(e) = rt.background_spawner.spawn(task, Some(resources)).await {

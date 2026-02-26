@@ -43,10 +43,20 @@ pub struct SubAgentResources {
     pub(crate) preset_instructions: Option<String>,
 }
 
+/// Preset-derived tool restriction for a sub-agent.
+pub enum PresetToolRestriction {
+    /// Tools permanently blocked (from `denied_tools` frontmatter).
+    Denied(std::collections::HashSet<String>),
+    /// Only listed tools are available (from `allowed_tools` frontmatter).
+    AllowedOnly(std::collections::HashSet<String>),
+}
+
 /// Configuration passed to [`build_resources`] that groups constructor arguments.
 pub struct SubAgentBuildConfig {
     /// Gated tool names (e.g. `"exec"`) — passed to the isolated `ToolFilter`.
     pub gated_tools: std::collections::HashSet<&'static str>,
+    /// Optional preset-level tool restriction (denied or allowed-only).
+    pub preset_tool_restriction: Option<PresetToolRestriction>,
     /// Workspace layout (used to set the path policy root).
     pub workspace_layout: WorkspaceLayout,
     /// Identity files for the system prompt.
@@ -55,6 +65,8 @@ pub struct SubAgentBuildConfig {
     pub options: CompletionOptions,
     /// Timezone used by project management tools.
     pub tz: chrono_tz::Tz,
+    /// Preset-specific instructions to inject into the subagent system prompt.
+    pub preset_instructions: Option<String>,
 }
 
 /// Build isolated sub-agent resources from the main agent's shared state.
@@ -72,10 +84,12 @@ pub async fn build_resources(
 ) -> SubAgentResources {
     let SubAgentBuildConfig {
         gated_tools,
+        preset_tool_restriction,
         workspace_layout,
         identity,
         options,
         tz,
+        preset_instructions,
     } = config;
     // Clone project index and layout for an isolated ProjectState
     let (project_index, layout_clone) = {
@@ -94,8 +108,16 @@ pub async fn build_resources(
     // Fresh isolated path policy rooted at the workspace
     let path_policy = PathPolicy::new_shared(workspace_layout.root().to_path_buf());
 
-    // Fresh isolated tool filter
-    let tool_filter = ToolFilter::new_shared(gated_tools);
+    // Fresh isolated tool filter — apply preset restrictions if any
+    let tool_filter = match preset_tool_restriction {
+        Some(PresetToolRestriction::AllowedOnly(allowed)) => {
+            ToolFilter::new_shared_allowed_only(allowed)
+        }
+        Some(PresetToolRestriction::Denied(denied)) => {
+            ToolFilter::new_shared_with_denied(gated_tools, denied)
+        }
+        None => ToolFilter::new_shared(gated_tools),
+    };
 
     // Fresh file tracker (tracks reads within this sub-agent turn only)
     let tracker = FileTracker::new_shared();
@@ -134,7 +156,7 @@ pub async fn build_resources(
         options,
         projects_ctx_index,
         skills_index,
-        preset_instructions: None,
+        preset_instructions,
     }
 }
 

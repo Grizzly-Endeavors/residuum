@@ -13,7 +13,11 @@ use crate::skills::SharedSkillState;
 use crate::workspace::identity::IdentityFiles;
 use crate::workspace::layout::WorkspaceLayout;
 
-use super::subagent::{SubAgentBuildConfig, SubAgentResources, build_resources};
+use crate::subagents::types::SubagentPresetFrontmatter;
+
+use super::subagent::{
+    PresetToolRestriction, SubAgentBuildConfig, SubAgentResources, build_resources,
+};
 
 /// Everything needed to spawn background tasks from the gateway event loop.
 pub(crate) struct SpawnContext {
@@ -33,6 +37,8 @@ pub(crate) struct SpawnContext {
 /// Resolves the model tier to a concrete provider spec, constructs the provider,
 /// and calls `background::build_resources()` with fresh isolated state.
 ///
+/// If `preset` is provided, its tool restrictions and instructions are applied.
+///
 /// # Errors
 /// Returns an error if provider construction fails (e.g. missing API key).
 pub(crate) async fn build_spawn_resources(
@@ -41,6 +47,7 @@ pub(crate) async fn build_spawn_resources(
     project_state: &SharedProjectState,
     skill_state: &SharedSkillState,
     mcp_registry: SharedMcpRegistry,
+    preset: Option<(&SubagentPresetFrontmatter, String)>,
 ) -> Result<SubAgentResources, anyhow::Error> {
     let spec = ctx
         .background_config
@@ -54,12 +61,31 @@ pub(crate) async fn build_spawn_resources(
         ctx.retry_config.clone(),
     )?;
 
+    let (preset_tool_restriction, preset_instructions) = match preset {
+        Some((fm, body)) => {
+            let restriction = match (&fm.allowed_tools, &fm.denied_tools) {
+                (Some(allowed), _) => Some(PresetToolRestriction::AllowedOnly(
+                    allowed.iter().cloned().collect(),
+                )),
+                (None, Some(denied)) => Some(PresetToolRestriction::Denied(
+                    denied.iter().cloned().collect(),
+                )),
+                (None, None) => None,
+            };
+            let instructions = if body.is_empty() { None } else { Some(body) };
+            (restriction, instructions)
+        }
+        None => (None, None),
+    };
+
     let build_config = SubAgentBuildConfig {
         gated_tools: HashSet::from(["exec"]),
+        preset_tool_restriction,
         workspace_layout: ctx.layout.clone(),
         identity: ctx.identity.clone(),
         options: ctx.options.clone(),
         tz: ctx.tz,
+        preset_instructions,
     };
 
     Ok(build_resources(

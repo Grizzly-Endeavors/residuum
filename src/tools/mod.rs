@@ -82,12 +82,20 @@ pub type SharedToolFilter = Arc<RwLock<ToolFilter>>;
 ///
 /// Some tools (e.g. `exec`) are "gated" — only available when the active
 /// project opts in via its `tools` field. Core tools are always visible.
+///
+/// Subagent presets can additionally restrict tools via `denied_tools`
+/// (permanently blocked regardless of project activation) or `allowed_tools`
+/// (only listed tools are available, overrides all other logic).
 #[derive(Clone)]
 pub struct ToolFilter {
     /// Tool names that require an active project to opt in.
     gated: HashSet<&'static str>,
     /// Currently enabled gated tool names (set by active project's `tools` field).
     enabled: HashSet<String>,
+    /// Tools permanently blocked by the subagent preset (`denied_tools`).
+    preset_blocked: HashSet<String>,
+    /// If set, ONLY these tools are available (`allowed_tools` preset restriction).
+    preset_allowed_only: Option<HashSet<String>>,
 }
 
 impl ToolFilter {
@@ -97,6 +105,8 @@ impl ToolFilter {
         Self {
             gated,
             enabled: HashSet::new(),
+            preset_blocked: HashSet::new(),
+            preset_allowed_only: None,
         }
     }
 
@@ -104,6 +114,31 @@ impl ToolFilter {
     #[must_use]
     pub fn new_shared(gated: HashSet<&'static str>) -> SharedToolFilter {
         Arc::new(RwLock::new(Self::new(gated)))
+    }
+
+    /// Create a new shared tool filter with additional preset-denied tools.
+    #[must_use]
+    pub fn new_shared_with_denied(
+        gated: HashSet<&'static str>,
+        denied: HashSet<String>,
+    ) -> SharedToolFilter {
+        Arc::new(RwLock::new(Self {
+            gated,
+            enabled: HashSet::new(),
+            preset_blocked: denied,
+            preset_allowed_only: None,
+        }))
+    }
+
+    /// Create a new shared tool filter that only permits the listed tools.
+    #[must_use]
+    pub fn new_shared_allowed_only(allowed: HashSet<String>) -> SharedToolFilter {
+        Arc::new(RwLock::new(Self {
+            gated: HashSet::new(),
+            enabled: HashSet::new(),
+            preset_blocked: HashSet::new(),
+            preset_allowed_only: Some(allowed),
+        }))
     }
 
     /// Enable a set of gated tools (called on project activation).
@@ -120,9 +155,19 @@ impl ToolFilter {
         self.enabled.clear();
     }
 
-    /// Check whether a tool is available (either not gated, or gated and enabled).
+    /// Check whether a tool is available.
+    ///
+    /// If the preset set `allowed_only`, only listed tools are available.
+    /// Otherwise, preset-blocked tools are never available; all others follow
+    /// the normal gated/enabled logic.
     #[must_use]
     pub fn is_available(&self, name: &str) -> bool {
+        if let Some(allowed) = &self.preset_allowed_only {
+            return allowed.contains(name);
+        }
+        if self.preset_blocked.contains(name) {
+            return false;
+        }
         !self.gated.contains(name) || self.enabled.contains(name)
     }
 }
@@ -185,6 +230,52 @@ mod tests {
         assert!(
             !filter.is_available("exec"),
             "exec should be unavailable after clearing"
+        );
+    }
+
+    #[tokio::test]
+    async fn tool_filter_preset_denied() {
+        let filter = ToolFilter::new_shared_with_denied(
+            HashSet::from(["exec"]),
+            HashSet::from(["write_file".to_string()]),
+        );
+        let f = filter.read().await;
+        assert!(
+            !f.is_available("write_file"),
+            "preset-denied tool should be unavailable"
+        );
+        assert!(
+            !f.is_available("exec"),
+            "gated tool should still be unavailable"
+        );
+        assert!(
+            f.is_available("read_file"),
+            "non-denied ungated tool should be available"
+        );
+    }
+
+    #[tokio::test]
+    async fn tool_filter_preset_allowed_only() {
+        let filter = ToolFilter::new_shared_allowed_only(HashSet::from([
+            "read_file".to_string(),
+            "write_file".to_string(),
+        ]));
+        let f = filter.read().await;
+        assert!(
+            f.is_available("read_file"),
+            "listed tool should be available"
+        );
+        assert!(
+            f.is_available("write_file"),
+            "listed tool should be available"
+        );
+        assert!(
+            !f.is_available("exec"),
+            "unlisted tool should be unavailable"
+        );
+        assert!(
+            !f.is_available("edit_file"),
+            "unlisted tool should be unavailable"
         );
     }
 }
