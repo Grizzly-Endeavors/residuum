@@ -196,6 +196,8 @@ pub(super) fn build_system_content(
 #[cfg(test)]
 #[expect(clippy::unwrap_used, reason = "test code uses unwrap for clarity")]
 mod tests {
+    use chrono::NaiveDateTime;
+
     use super::*;
 
     fn no_memory() -> MemoryContext<'static> {
@@ -205,10 +207,18 @@ mod tests {
         }
     }
 
+    fn dt(year: i32, month: u32, day: u32, hour: u32, min: u32) -> NaiveDateTime {
+        chrono::NaiveDate::from_ymd_opt(year, month, day)
+            .unwrap()
+            .and_hms_opt(hour, min, 0)
+            .unwrap()
+    }
+
     #[test]
     fn system_content_includes_identity() {
         let identity = IdentityFiles {
             soul: Some("I am a test agent".to_string()),
+            agents: Some("Agents content".to_string()),
             user: Some("User likes Rust".to_string()),
             ..IdentityFiles::default()
         };
@@ -227,6 +237,14 @@ mod tests {
         assert!(
             content.contains("User likes Rust"),
             "should include user content"
+        );
+        assert!(
+            content.contains("Agents content"),
+            "should include agents content"
+        );
+        assert!(
+            content.contains("<AGENTS.md>"),
+            "should wrap agents content in AGENTS.md tags"
         );
     }
 
@@ -587,6 +605,20 @@ mod tests {
         let content = build_subagent_system_content(&identity, &projects_ctx, &skills_ctx, None);
 
         assert!(!content.contains("SOUL"), "should exclude SOUL.md");
+        assert!(!content.contains("AGENTS.md"), "should exclude AGENTS.md");
+        assert!(!content.contains("MEMORY.md"), "should exclude MEMORY.md");
+        assert!(
+            !content.contains("OBSERVATION_LOG"),
+            "should exclude OBSERVATION_LOG"
+        );
+        assert!(
+            !content.contains("RECENT_CONTEXT"),
+            "should exclude RECENT_CONTEXT"
+        );
+        assert!(
+            !content.contains("SUBAGENTS_INDEX"),
+            "should exclude SUBAGENTS_INDEX"
+        );
         assert!(
             content.contains("env notes"),
             "should include ENVIRONMENT.md"
@@ -687,6 +719,121 @@ mod tests {
                 && skl_idx_pos < active_proj_pos
                 && active_proj_pos < active_skl_pos,
             "sections should appear in order: ENVIRONMENT, USER, PROJECTS_INDEX, SKILLS_INDEX, ACTIVE_PROJECT, ACTIVE_SKILLS"
+        );
+    }
+
+    #[test]
+    fn subagent_system_content_includes_preset_instructions() {
+        let identity = IdentityFiles {
+            environment: Some("env notes".to_string()),
+            ..IdentityFiles::default()
+        };
+        let content = build_subagent_system_content(
+            &identity,
+            &ProjectsContext::none(),
+            &SkillsContext::none(),
+            Some("Do this specific task"),
+        );
+
+        assert!(
+            content.contains("<AGENT_INSTRUCTIONS>"),
+            "should wrap preset instructions in AGENT_INSTRUCTIONS tags"
+        );
+        assert!(
+            content.contains("Do this specific task"),
+            "should include preset instruction content"
+        );
+        // AGENT_INSTRUCTIONS must appear before ENVIRONMENT.md
+        let instructions_pos = content.find("<AGENT_INSTRUCTIONS>").unwrap();
+        let env_pos = content.find("<ENVIRONMENT.md>").unwrap();
+        assert!(
+            instructions_pos < env_pos,
+            "AGENT_INSTRUCTIONS should come before ENVIRONMENT.md"
+        );
+    }
+
+    // ── build_status_line tests ───────────────────────────────────────────────
+
+    #[test]
+    fn status_line_no_last_message() {
+        let ctx = StatusLine {
+            now: dt(2026, 2, 22, 17, 0),
+            last_message_at: None,
+            message_source: None,
+            unread_inbox_count: 0,
+        };
+        let result = build_status_line(&ctx);
+        assert!(
+            result.contains("[Current Time:"),
+            "should have current time tag"
+        );
+        assert!(
+            !result.contains("[Last Message:"),
+            "should not have last message tag"
+        );
+    }
+
+    #[test]
+    fn status_line_with_last_message() {
+        let ctx = StatusLine {
+            now: dt(2026, 2, 22, 17, 0),
+            last_message_at: Some(dt(2026, 2, 22, 16, 45)),
+            message_source: None,
+            unread_inbox_count: 0,
+        };
+        let result = build_status_line(&ctx);
+        assert!(
+            result.contains("[Current Time:"),
+            "should have current time tag"
+        );
+        assert!(
+            result.contains("[Last Message:"),
+            "should have last message tag"
+        );
+    }
+
+    #[test]
+    fn status_line_with_source() {
+        let ctx = StatusLine {
+            now: dt(2026, 2, 22, 17, 0),
+            last_message_at: None,
+            message_source: Some("discord".to_string()),
+            unread_inbox_count: 0,
+        };
+        let result = build_status_line(&ctx);
+        assert!(
+            result.contains("[Message Source: discord]"),
+            "should have message source tag"
+        );
+    }
+
+    #[test]
+    fn status_line_with_nonzero_unread() {
+        let ctx = StatusLine {
+            now: dt(2026, 2, 22, 17, 0),
+            last_message_at: None,
+            message_source: None,
+            unread_inbox_count: 5,
+        };
+        let result = build_status_line(&ctx);
+        assert!(
+            result.contains("[Unread Inbox: 5]"),
+            "should have unread inbox tag with count"
+        );
+    }
+
+    #[test]
+    fn status_line_zero_unread_omitted() {
+        let ctx = StatusLine {
+            now: dt(2026, 2, 22, 17, 0),
+            last_message_at: None,
+            message_source: None,
+            unread_inbox_count: 0,
+        };
+        let result = build_status_line(&ctx);
+        assert!(
+            !result.contains("[Unread Inbox:"),
+            "should not have unread inbox tag when count is 0"
         );
     }
 }

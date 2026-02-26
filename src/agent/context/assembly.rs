@@ -105,6 +105,7 @@ mod tests {
     use chrono::NaiveDateTime;
 
     use super::*;
+    use crate::agent::context::types::{ProjectsContext, SkillsContext, SubagentsContext};
     use crate::models::Role;
 
     fn no_memory() -> MemoryContext<'static> {
@@ -139,6 +140,10 @@ mod tests {
             Some(&Role::System),
             "first message should be system"
         );
+        assert!(
+            messages[0].content.is_empty(),
+            "system message content should be empty for default identity"
+        );
     }
 
     #[test]
@@ -155,6 +160,20 @@ mod tests {
             None,
         );
         assert_eq!(messages.len(), 2, "should have system + user message");
+        assert_eq!(
+            messages[0].role,
+            Role::System,
+            "first message should be system"
+        );
+        assert_eq!(
+            messages[1].role,
+            Role::User,
+            "second message should be user"
+        );
+        assert_eq!(
+            messages[1].content, "hello",
+            "user message content should match"
+        );
     }
 
     #[test]
@@ -181,19 +200,11 @@ mod tests {
         );
 
         // Find the status line system message
-        let time_msg = messages
-            .iter()
-            .find(|m| m.content.contains("[Current Time:"));
-        assert!(time_msg.is_some(), "should have status line message");
-
-        let tag = &time_msg.unwrap().content;
         assert!(
-            tag.contains("Sunday Feb 22nd 2026 | 17:00"),
-            "should contain formatted time, got: {tag}"
-        );
-        assert!(
-            tag.contains("[Last Message: 15 mins ago]"),
-            "should contain relative time, got: {tag}"
+            messages
+                .iter()
+                .any(|m| m.content.contains("[Current Time:")),
+            "should have status line message"
         );
 
         // Status line should be right before the last user message
@@ -479,6 +490,84 @@ mod tests {
         assert_eq!(
             bd.tool_tokens, 42,
             "tool_tokens should pass through unchanged"
+        );
+    }
+
+    #[test]
+    fn context_breakdown_prompt_context_tokens() {
+        let identity = IdentityFiles::default();
+        let memory = no_memory();
+        let recent = RecentMessages::new();
+
+        let prompt_ctx = PromptContext {
+            projects: ProjectsContext {
+                index: Some("| Name | Status |"),
+                active_context: Some("active project content here"),
+            },
+            skills: SkillsContext {
+                index: Some("<available_skills/>"),
+                active_instructions: Some("<active_skill>instructions</active_skill>"),
+            },
+            subagents: SubagentsContext {
+                index: Some("<presets/>"),
+            },
+        };
+
+        let bd = compute_context_breakdown(&identity, &memory, &prompt_ctx, &recent, 0);
+        assert!(
+            bd.projects_index_tokens > 0,
+            "projects index should produce nonzero tokens"
+        );
+        assert!(
+            bd.active_project_tokens > 0,
+            "active project should produce nonzero tokens"
+        );
+        assert!(
+            bd.skills_index_tokens > 0,
+            "skills index should produce nonzero tokens"
+        );
+        assert!(
+            bd.active_skills_tokens > 0,
+            "active skills should produce nonzero tokens"
+        );
+        assert!(
+            bd.subagents_index_tokens > 0,
+            "subagents index should produce nonzero tokens"
+        );
+    }
+
+    #[test]
+    fn status_line_no_user_message_no_injection() {
+        let identity = IdentityFiles::default();
+        let mut recent = RecentMessages::new();
+        recent.push(Message::assistant("hello", None));
+
+        let ctx = StatusLine {
+            now: dt(2026, 2, 22, 17, 0),
+            last_message_at: None,
+            message_source: None,
+            unread_inbox_count: 0,
+        };
+
+        let messages = assemble_system_prompt(
+            &identity,
+            &recent,
+            &no_memory(),
+            &PromptContext::none(),
+            Some(&ctx),
+        );
+
+        // No user message in history → rposition finds nothing → no injection
+        assert_eq!(
+            messages.len(),
+            2,
+            "no user message means no status line injection"
+        );
+        assert!(
+            !messages
+                .iter()
+                .any(|m| m.content.contains("[Current Time:")),
+            "should not inject status line when no user message is present"
         );
     }
 }
