@@ -139,9 +139,10 @@ pub async fn build_resources(
 /// Builds a minimal system prompt, reads any context files, and runs a single
 /// agent turn loop. Returns the final text response.
 ///
-/// After the turn completes, any project left active is force-deactivated and
-/// a warning is logged (sub-agents are expected to call `project_deactivate`
-/// before finishing).
+/// After the turn completes, if a project is still active the sub-agent gets
+/// one more turn with a deactivation prompt so it can call `project_deactivate`
+/// with a proper session log. If it still fails to deactivate, the project is
+/// deactivated manually (ref-count decremented, no session log).
 ///
 /// # Errors
 /// Returns an error if file reading or the model call fails.
@@ -227,31 +228,106 @@ pub(crate) async fn execute_subagent(
     )
     .await?;
 
-    // Mandatory cleanup: force-deactivate any project the sub-agent left active
+    ensure_project_deactivated(
+        task_id,
+        config,
+        resources,
+        &memory_ctx,
+        &projects_ctx,
+        &skills_ctx,
+        &mut recent_messages,
+        &display,
+    )
+    .await;
+
+    Ok(texts.last().cloned().unwrap_or_default())
+}
+
+/// If a project is still active after the main turn, give the sub-agent one
+/// more turn with a deactivation prompt so it can write a proper session log.
+/// If the retry turn also fails, fall back to a manual ref-count decrement.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "passes through the same context needed for a turn; grouping would obscure the call"
+)]
+async fn ensure_project_deactivated(
+    task_id: &str,
+    config: &SubAgentConfig,
+    resources: &SubAgentResources,
+    memory_ctx: &crate::agent::context::MemoryContext<'_>,
+    projects_ctx: &ProjectsContext<'_>,
+    skills_ctx: &SkillsContext<'_>,
+    recent_messages: &mut RecentMessages,
+    display: &dyn crate::channels::TurnDisplay,
+) {
     let active_name = resources
         .project_state
         .lock()
         .await
         .active_project_name()
         .map(str::to_string);
-    if let Some(name) = active_name {
+
+    let Some(name) = active_name else {
+        return;
+    };
+
+    // Retry: prompt the sub-agent to call project_deactivate with a session log
+    tracing::info!(
+        task_id = %task_id,
+        project = %name,
+        "sub-agent left project active, prompting deactivation turn"
+    );
+
+    recent_messages.push(Message::system(format!(
+        "You completed your task but left project \"{name}\" active. \
+         Call project_deactivate now with a session log summarizing \
+         the work you did."
+    )));
+
+    let mut deactivation_interrupt_rx = dead_interrupt_rx();
+    if let Err(err) = execute_turn(
+        &*resources.provider,
+        &resources.tools,
+        &resources.tool_filter,
+        &resources.mcp_registry,
+        &resources.identity,
+        &resources.options,
+        memory_ctx,
+        projects_ctx,
+        skills_ctx,
+        recent_messages,
+        display,
+        None,
+        &mut deactivation_interrupt_rx,
+    )
+    .await
+    {
+        tracing::warn!(task_id = %task_id, error = %err, "deactivation turn failed");
+    }
+
+    // Safety net: if the retry didn't clean up, decrement the ref manually
+    let still_active = resources
+        .project_state
+        .lock()
+        .await
+        .active_project_name()
+        .map(str::to_string);
+    if let Some(still_name) = still_active {
         let prompt_preview: String = config.prompt.chars().take(200).collect();
         tracing::warn!(
             task_id = %task_id,
-            project = %name,
-            "[auto] SubAgent {task_id} completed without deactivating. Task: {prompt_preview}"
+            project = %still_name,
+            "[auto] SubAgent {task_id} completed without deactivating after retry. Task: {prompt_preview}"
         );
         resources
             .mcp_registry
             .write()
             .await
-            .force_deactivate_project(&name)
+            .deactivate_project(&still_name)
             .await;
         resources.path_policy.write().await.set_active_project(None);
         resources.tool_filter.write().await.clear_enabled();
     }
-
-    Ok(texts.last().cloned().unwrap_or_default())
 }
 
 /// Read a context file from disk.

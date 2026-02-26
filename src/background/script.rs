@@ -33,6 +33,7 @@ pub(crate) async fn execute_script(
     let mut cmd = Command::new(&config.command);
     cmd.args(&config.args)
         .current_dir(working_dir)
+        .kill_on_drop(true)
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
 

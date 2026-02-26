@@ -875,11 +875,6 @@ The highest-impact change: user messages can be injected mid-turn.
 
 **Milestone: Main agent can delegate work to background workers.**
 
-### Phase 7: Search indexing and cleanup
-
-- Add background transcripts to memory search index paths.
-- Implement transcript retention cleanup (`transcript_retention_days`).
-
 ---
 
 ## What's Not Included
