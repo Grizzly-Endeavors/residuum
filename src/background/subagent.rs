@@ -188,23 +188,6 @@ pub(crate) async fn execute_subagent(
         user_parts.push(ctx.clone());
     }
 
-    for path in &config.context_files {
-        match tokio::fs::read_to_string(path).await {
-            Ok(content) => {
-                let filename = path.file_name().map_or_else(
-                    || path.display().to_string(),
-                    |n| n.to_string_lossy().to_string(),
-                );
-                user_parts.push(format!(
-                    "<context_file name=\"{filename}\">\n{content}\n</context_file>"
-                ));
-            }
-            Err(e) => {
-                tracing::warn!(path = %path.display(), error = %e, "failed to read context file for sub-agent");
-            }
-        }
-    }
-
     user_parts.push(config.prompt.clone());
 
     let combined_prompt = user_parts.join("\n\n");
@@ -406,7 +389,6 @@ mod tests {
         let config = SubAgentConfig {
             prompt: "check emails".to_string(),
             context: None,
-            context_files: Vec::new(),
             model_tier: crate::config::BackgroundModelTier::Medium,
         };
 
@@ -427,7 +409,6 @@ mod tests {
         let config = SubAgentConfig {
             prompt: "do something".to_string(),
             context: None,
-            context_files: Vec::new(),
             model_tier: crate::config::BackgroundModelTier::Small,
         };
 
@@ -516,7 +497,6 @@ mod tests {
         let config = SubAgentConfig {
             prompt: "do something quick".to_string(),
             context: None,
-            context_files: Vec::new(),
             model_tier: crate::config::BackgroundModelTier::Small,
         };
 

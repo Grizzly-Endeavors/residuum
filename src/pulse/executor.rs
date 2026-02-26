@@ -23,7 +23,6 @@ pub fn build_pulse_task(pulse: &PulseDef) -> BackgroundTask {
         execution: Execution::SubAgent(SubAgentConfig {
             prompt,
             context: None,
-            context_files: Vec::new(),
             model_tier: BackgroundModelTier::Small,
         }),
         routing: ResultRouting::Notify,

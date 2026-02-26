@@ -93,7 +93,6 @@ pub(super) async fn spawn_due_cron_jobs(
                     execution: Execution::SubAgent(SubAgentConfig {
                         prompt: message.clone(),
                         context: None,
-                        context_files: Vec::new(),
                         model_tier: BackgroundModelTier::Medium,
                     }),
                     routing: ResultRouting::Notify,

@@ -481,7 +481,6 @@ mod background_integration {
             execution: Execution::SubAgent(SubAgentConfig {
                 prompt: "summarize recent events".to_string(),
                 context: None,
-                context_files: Vec::new(),
                 model_tier: BackgroundModelTier::Medium,
             }),
             routing: ResultRouting::Direct(vec!["agent_feed".to_string(), "inbox".to_string()]),

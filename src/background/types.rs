@@ -48,8 +48,6 @@ pub struct SubAgentConfig {
     pub prompt: String,
     /// Additional context to prepend (e.g. project context).
     pub context: Option<String>,
-    /// Files to read and include as context.
-    pub context_files: Vec<PathBuf>,
     /// Which model tier to use.
     pub model_tier: BackgroundModelTier,
 }

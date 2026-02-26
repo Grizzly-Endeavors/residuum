@@ -271,7 +271,6 @@ impl Tool for SubAgentSpawnTool {
         let config = SubAgentConfig {
             prompt: task_prompt.to_string(),
             context: None,
-            context_files: Vec::new(),
             model_tier: tier,
         };
 
@@ -500,7 +499,6 @@ mod tests {
         let config = SubAgentConfig {
             prompt: "analyze logs".to_string(),
             context: None,
-            context_files: Vec::new(),
             model_tier: BackgroundModelTier::Medium,
         };
 

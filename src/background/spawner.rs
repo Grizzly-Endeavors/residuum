@@ -449,7 +449,6 @@ mod tests {
             execution: Execution::SubAgent(SubAgentConfig {
                 prompt: "do something".to_string(),
                 context: None,
-                context_files: Vec::new(),
                 model_tier: BackgroundModelTier::Medium,
             }),
             routing: ResultRouting::Notify,
