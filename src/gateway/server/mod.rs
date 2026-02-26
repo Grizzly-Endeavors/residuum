@@ -69,6 +69,8 @@ pub struct ServerCommand {
     pub name: String,
     /// Optional argument text.
     pub args: Option<String>,
+    /// Optional oneshot sender for commands that return a response (e.g. "context").
+    pub reply_tx: Option<tokio::sync::oneshot::Sender<String>>,
 }
 
 /// Shared state for the axum WebSocket server.
@@ -383,7 +385,7 @@ async fn handle_server_command(
             };
             let bd = rt.agent.context_breakdown(&prompt_ctx).await;
             let msg = format!(
-                "[context]\n  identity:          ~{} tokens\n  observation log:   ~{} tokens\n  subagents index:   ~{} tokens\n  projects index:    ~{} tokens\n  active project:    ~{} tokens\n  skills index:      ~{} tokens\n  active skills:     ~{} tokens\n  tool schemas:      ~{} tokens\n  message history:   ~{} tokens ({} messages)",
+                "[context]\n  identity:          ~{} tokens\n  observation log:   ~{} tokens\n  subagents index:   ~{} tokens\n  projects index:    ~{} tokens\n  active project:    ~{} tokens\n  skills index:      ~{} tokens\n  active skills:     ~{} tokens\n  system tools:      ~{} tokens\n  mcp tools:         ~{} tokens\n  message history:   ~{} tokens ({} messages)",
                 bd.identity_tokens,
                 bd.observation_log_tokens,
                 bd.subagents_index_tokens,
@@ -391,10 +393,14 @@ async fn handle_server_command(
                 bd.active_project_tokens,
                 bd.skills_index_tokens,
                 bd.active_skills_tokens,
-                bd.tool_tokens,
+                bd.system_tool_tokens,
+                bd.mcp_tool_tokens,
                 bd.history_tokens,
                 bd.history_count,
             );
+            if let Some(tx) = cmd.reply_tx {
+                tx.send(msg.clone()).ok();
+            }
             rt.broadcast_tx
                 .send(ServerMessage::Notice { message: msg })
                 .ok();

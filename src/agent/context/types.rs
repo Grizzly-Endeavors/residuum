@@ -115,8 +115,10 @@ pub struct ContextBreakdown {
     pub skills_index_tokens: usize,
     /// Estimated tokens from active skill instructions (0 if none active).
     pub active_skills_tokens: usize,
-    /// Estimated tokens from tool definitions (built-in + MCP).
-    pub tool_tokens: usize,
+    /// Estimated tokens from built-in system tool definitions.
+    pub system_tool_tokens: usize,
+    /// Estimated tokens from MCP tool definitions.
+    pub mcp_tool_tokens: usize,
     /// Estimated tokens across the in-memory recent message history.
     pub history_tokens: usize,
     /// Number of messages in the recent history.

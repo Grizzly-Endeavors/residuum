@@ -14,7 +14,8 @@ pub(in crate::agent) fn compute_context_breakdown(
     memory_ctx: &MemoryContext<'_>,
     prompt_ctx: &PromptContext<'_>,
     recent_messages: &RecentMessages,
-    tool_tokens: usize,
+    system_tool_tokens: usize,
+    mcp_tool_tokens: usize,
 ) -> ContextBreakdown {
     let identity_tokens = [
         identity.soul.as_deref(),
@@ -47,7 +48,8 @@ pub(in crate::agent) fn compute_context_breakdown(
             .skills
             .active_instructions
             .map_or(0, estimate_tokens),
-        tool_tokens,
+        system_tool_tokens,
+        mcp_tool_tokens,
         history_tokens: estimate_message_tokens(msgs),
         history_count: msgs.len(),
     }
@@ -418,7 +420,8 @@ mod tests {
         let memory = no_memory();
         let recent = RecentMessages::new();
 
-        let bd = compute_context_breakdown(&identity, &memory, &PromptContext::none(), &recent, 0);
+        let bd =
+            compute_context_breakdown(&identity, &memory, &PromptContext::none(), &recent, 0, 0);
         assert_eq!(bd.history_count, 0, "no messages should give count 0");
         assert_eq!(bd.history_tokens, 0, "no messages should give 0 tokens");
         assert_eq!(bd.identity_tokens, 0, "empty identity should give 0 tokens");
@@ -437,7 +440,8 @@ mod tests {
         let memory = no_memory();
         let recent = RecentMessages::new();
 
-        let bd = compute_context_breakdown(&identity, &memory, &PromptContext::none(), &recent, 0);
+        let bd =
+            compute_context_breakdown(&identity, &memory, &PromptContext::none(), &recent, 0, 0);
         assert!(
             bd.identity_tokens > 0,
             "non-empty identity should give positive identity token count"
@@ -452,7 +456,8 @@ mod tests {
         recent.push(Message::user("hello"));
         recent.push(Message::assistant("hi there", None));
 
-        let bd = compute_context_breakdown(&identity, &memory, &PromptContext::none(), &recent, 0);
+        let bd =
+            compute_context_breakdown(&identity, &memory, &PromptContext::none(), &recent, 0, 0);
         assert_eq!(
             bd.history_count, 2,
             "history count should match message count"
@@ -473,7 +478,8 @@ mod tests {
         };
         let recent = RecentMessages::new();
 
-        let bd = compute_context_breakdown(&identity, &memory, &PromptContext::none(), &recent, 0);
+        let bd =
+            compute_context_breakdown(&identity, &memory, &PromptContext::none(), &recent, 0, 0);
         assert!(
             bd.observation_log_tokens > 0,
             "observation content should produce nonzero observation_log_tokens"
@@ -486,10 +492,15 @@ mod tests {
         let memory = no_memory();
         let recent = RecentMessages::new();
 
-        let bd = compute_context_breakdown(&identity, &memory, &PromptContext::none(), &recent, 42);
+        let bd =
+            compute_context_breakdown(&identity, &memory, &PromptContext::none(), &recent, 42, 7);
         assert_eq!(
-            bd.tool_tokens, 42,
-            "tool_tokens should pass through unchanged"
+            bd.system_tool_tokens, 42,
+            "system_tool_tokens should pass through unchanged"
+        );
+        assert_eq!(
+            bd.mcp_tool_tokens, 7,
+            "mcp_tool_tokens should pass through unchanged"
         );
     }
 
@@ -513,7 +524,7 @@ mod tests {
             },
         };
 
-        let bd = compute_context_breakdown(&identity, &memory, &prompt_ctx, &recent, 0);
+        let bd = compute_context_breakdown(&identity, &memory, &prompt_ctx, &recent, 0, 0);
         assert!(
             bd.projects_index_tokens > 0,
             "projects index should produce nonzero tokens"

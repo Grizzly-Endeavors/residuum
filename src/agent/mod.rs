@@ -285,23 +285,22 @@ impl Agent {
 
         let mcp_defs = self.mcp_registry.read().await.tool_definitions();
 
-        let tool_tokens: usize = builtin_defs
-            .iter()
-            .chain(mcp_defs.iter())
-            .map(|def| {
-                let param_str = def.parameters.to_string();
-                crate::memory::tokens::estimate_tokens(&def.name)
-                    + crate::memory::tokens::estimate_tokens(&def.description)
-                    + crate::memory::tokens::estimate_tokens(&param_str)
-            })
-            .sum();
+        let token_count = |def: &crate::models::ToolDefinition| {
+            let param_str = def.parameters.to_string();
+            crate::memory::tokens::estimate_tokens(&def.name)
+                + crate::memory::tokens::estimate_tokens(&def.description)
+                + crate::memory::tokens::estimate_tokens(&param_str)
+        };
+        let system_tool_tokens: usize = builtin_defs.iter().map(token_count).sum();
+        let mcp_tool_tokens: usize = mcp_defs.iter().map(token_count).sum();
 
         context::compute_context_breakdown(
             &self.identity,
             &memory_ctx,
             prompt_ctx,
             &self.recent_messages,
-            tool_tokens,
+            system_tool_tokens,
+            mcp_tool_tokens,
         )
     }
 

@@ -120,7 +120,11 @@ async fn handle_connection(socket: WebSocket, state: GatewayState) {
                 tracing::info!(command = %name, "server command from client");
                 state
                     .command_tx
-                    .send(super::ServerCommand { name, args })
+                    .send(super::ServerCommand {
+                        name,
+                        args,
+                        reply_tx: None,
+                    })
                     .await
                     .ok();
             }

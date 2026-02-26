@@ -2,6 +2,7 @@
 
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 
 use serenity::async_trait;
 use serenity::builder::{
@@ -173,13 +174,18 @@ impl EventHandler for DiscordHandler {
             }
             name => {
                 tracing::info!(command = %name, "server command via discord slash command");
+                let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
                 self.command_tx
                     .try_send(ServerCommand {
                         name: name.to_string(),
                         args: None,
+                        reply_tx: Some(reply_tx),
                     })
                     .ok();
-                format!("{name} triggered.")
+                match tokio::time::timeout(Duration::from_secs(10), reply_rx).await {
+                    Ok(Ok(msg)) => msg,
+                    _ => format!("{name} triggered."),
+                }
             }
         };
 
