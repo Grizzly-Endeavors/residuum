@@ -1,12 +1,18 @@
 # IronClaw
 
-A personal AI agent gateway written in Rust. Single binary, file-first, no databases.
+One Agent, for *You*.
 
-IronClaw shares architectural DNA with [OpenClaw](https://github.com/nicepkg/openclaw) — the gateway pattern, channel normalization, model-agnostic runtime, and file-first workspace — while making targeted improvements to memory continuity, proactive scheduling, and structured context management.
+Memory the lasts, capabilities that grow with you, proactivity without the pricetag. Built to be an assistant that learns with you, providing support in the areas you need it. 
 
-## What It Does
+## What Is IronClaw?
 
-IronClaw runs a persistent WebSocket gateway that connects you to an AI agent through multiple channels (CLI, Discord, webhooks). The agent has long-term memory that survives restarts, manages structured project contexts, activates skills on demand, connects to MCP tool servers, and proactively monitors things on a schedule you define.
+IronClaw is a *personal* assistant. Not multi-user, not a swarm, not an automation platform. The design explicitly rejects the kitchen sink approach in favor of depth in the areas that matter for an always-on personal assistant. 
+
+Continuity is the biggest area, most frameworks try to carry context across sessions, and while some approaches almost bridge the gap, it can still feel like you have to re-explain things the agent should know every time a new session starts. IronClaw does not have sessions, it has one feed. Whether you message your agent via the CLI or Discord (or any other platform), it picks up right where you left off. (More on how this works later)
+
+The second area is *efficient* proactivity. Instead of burning frontier tokens to ckeck if there's anything to do every thirty minutes. HEARTBEAT.yml allows the agent or user to define individual Pulses, each with their own schedule and set of tasks. Want the agent to check your email every two hours? Have it create a pulse. Want it to check for action items in your conversations from that day? Make a pulse. If you don't mind the token spend, and like the freeform "is there anything to do?" checks, make a pulse and point it at a markdown file.
+
+Lastly, IronClaw prioritizes giving your agent everything it needs to keep up with the full scope of your life, *without* buring thousands of tokens to do it. Projects allow your agent to always have a lightweight index of the important areas and work in your life. Instead of trying to juggle everything all the time, it can activate a project when it matters, and deactivate it when it doesn't. Your agent never has to guess where to look for important information.
 
 ### Key Capabilities
 
