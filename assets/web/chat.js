@@ -32,7 +32,40 @@ const Chat = {
 
         this.sendBtn.addEventListener('click', () => this.send());
 
-        this.connect();
+        this.loadHistory().then(() => this.connect());
+    },
+
+    async loadHistory() {
+        try {
+            const resp = await fetch('/api/chat/history');
+            if (!resp.ok) return;
+            const messages = await resp.json();
+            if (!messages.length) return;
+
+            for (const msg of messages) {
+                const content = msg.content || '';
+                switch (msg.role) {
+                    case 'user':
+                        this.appendUserMessage(content);
+                        break;
+                    case 'assistant':
+                        this.appendAssistantMessage(content);
+                        break;
+                    case 'system':
+                        this.appendSystemMessage(content);
+                        break;
+                    // skip 'tool' messages — internal, not user-facing
+                }
+            }
+
+            const divider = document.createElement('div');
+            divider.className = 'msg msg-divider';
+            divider.textContent = '\u2014 session resumed \u2014';
+            this.feed.appendChild(divider);
+            this.scrollToBottom();
+        } catch {
+            // history unavailable — start with empty feed
+        }
     },
 
     connect() {

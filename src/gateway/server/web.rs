@@ -16,6 +16,7 @@ use serde::Serialize;
 use tokio::sync::watch;
 
 use crate::config::Config;
+use crate::memory::recent_messages::load_recent_messages;
 
 mod embedded {
     //! Module boundary isolates `rust-embed` derive from clippy `same_name_method`.
@@ -38,6 +39,8 @@ use embedded::WebAssets;
 pub(super) struct ConfigApiState {
     /// Path to the ironclaw config directory (`~/.ironclaw/`).
     pub config_dir: PathBuf,
+    /// Path to the workspace memory directory (None in setup mode).
+    pub memory_dir: Option<PathBuf>,
     /// Signal the running gateway to reload (None in setup mode).
     pub reload_sender: Option<watch::Sender<bool>>,
     /// Signal the setup server that config is saved (None in running mode).
@@ -60,6 +63,7 @@ pub(super) fn config_api_router(state: ConfigApiState) -> axum::Router {
         .route("/api/config/complete-setup", post(api_complete_setup))
         .route("/api/system/timezone", get(api_system_timezone))
         .route("/api/mcp-catalog", get(api_mcp_catalog))
+        .route("/api/chat/history", get(api_chat_history))
         .with_state(state)
 }
 
@@ -226,6 +230,27 @@ async fn api_mcp_catalog() -> Response {
     }
 }
 
+/// `GET /api/chat/history` — return recent messages for the chat feed.
+///
+/// Reads `recent_messages.json` from the workspace memory directory.
+/// Returns an empty array in setup mode or when the file doesn't exist.
+async fn api_chat_history(
+    State(state): State<ConfigApiState>,
+) -> Json<Vec<crate::memory::recent_messages::RecentMessage>> {
+    let Some(memory_dir) = &state.memory_dir else {
+        return Json(Vec::new());
+    };
+
+    let path = memory_dir.join("recent_messages.json");
+    match load_recent_messages(&path).await {
+        Ok(messages) => Json(messages),
+        Err(err) => {
+            tracing::debug!(error = %err, "no chat history available");
+            Json(Vec::new())
+        }
+    }
+}
+
 /// Fallback handler for serving embedded static files.
 ///
 /// Serves the file at the requested URI path, falling back to `index.html`
@@ -300,6 +325,36 @@ mod tests {
         assert!(
             serve_embedded("does-not-exist.txt").is_none(),
             "missing file should return None"
+        );
+    }
+
+    #[tokio::test]
+    async fn chat_history_returns_empty_when_no_memory_dir() {
+        let state = ConfigApiState {
+            config_dir: PathBuf::from("/tmp/ironclaw-test-nonexistent"),
+            memory_dir: None,
+            reload_sender: None,
+            setup_done: None,
+        };
+        let Json(messages) = api_chat_history(State(state)).await;
+        assert!(
+            messages.is_empty(),
+            "setup mode should return empty history"
+        );
+    }
+
+    #[tokio::test]
+    async fn chat_history_returns_empty_when_file_missing() {
+        let state = ConfigApiState {
+            config_dir: PathBuf::from("/tmp/ironclaw-test-nonexistent"),
+            memory_dir: Some(PathBuf::from("/tmp/ironclaw-test-nonexistent-memory")),
+            reload_sender: None,
+            setup_done: None,
+        };
+        let Json(messages) = api_chat_history(State(state)).await;
+        assert!(
+            messages.is_empty(),
+            "missing file should return empty history"
         );
     }
 }

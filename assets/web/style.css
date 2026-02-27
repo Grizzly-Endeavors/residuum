@@ -246,6 +246,17 @@ html, body {
     border-left: 3px solid var(--border-subtle);
 }
 
+.msg-divider {
+    font-size: 11px;
+    color: var(--text-dim);
+    text-align: center;
+    padding: 4px 0;
+    margin: 12px 0;
+    border-top: 1px solid var(--border-subtle);
+    border-bottom: 1px solid var(--border-subtle);
+    letter-spacing: 0.5px;
+}
+
 .msg-error {
     background: var(--error-bg);
     border-left: 3px solid var(--error);

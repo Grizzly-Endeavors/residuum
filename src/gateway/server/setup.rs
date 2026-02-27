@@ -36,6 +36,7 @@ pub async fn run_setup_server() -> Result<SetupExit, IronclawError> {
 
     let api_state = ConfigApiState {
         config_dir,
+        memory_dir: None,
         reload_sender: None,
         setup_done: Some(Arc::clone(&setup_done_tx)),
     };
