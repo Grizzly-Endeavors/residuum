@@ -8,8 +8,59 @@
 </head>
 <body>
     <div id="app">
-        <p>Loading...</p>
+
+        <!-- Header -->
+        <div class="header">
+            <div class="header-brand">
+                <div class="header-icon" id="header-icon">&#9775;</div>
+                <span class="header-title">IronClaw</span>
+                <span class="header-status" id="conn-status">...</span>
+            </div>
+            <div class="header-actions">
+                <button class="icon-btn" id="btn-verbose" title="Toggle tool visibility">&#128295;</button>
+                <button class="icon-btn" id="btn-settings" title="Settings">&#9881;</button>
+            </div>
+        </div>
+
+        <!-- Chat view -->
+        <div class="chat-view" id="chat-view">
+            <div class="chat-feed" id="chat-feed">
+                <div class="chat-feed-inner" id="chat-feed-inner"></div>
+            </div>
+            <div class="chat-input-area">
+                <div class="chat-input-wrap">
+                    <textarea class="chat-input" id="chat-input"
+                        placeholder="Send a message..."
+                        rows="1"></textarea>
+                    <button class="send-btn" id="send-btn">Send</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Settings view -->
+        <div class="settings-view" id="settings-view">
+            <div class="settings-header">
+                <button class="icon-btn" id="btn-settings-back" title="Back to chat">&#8592;</button>
+                <h2>Settings</h2>
+                <button class="btn btn-secondary" id="btn-reload">Reload Gateway</button>
+            </div>
+            <div class="settings-body">
+                <div class="settings-inner" id="settings-inner"></div>
+            </div>
+        </div>
+
+        <!-- Setup wizard view -->
+        <div class="setup-view" id="setup-view">
+            <div class="setup-body">
+                <div class="setup-card" id="setup-card"></div>
+            </div>
+        </div>
+
     </div>
+
+    <script src="/setup.js"></script>
+    <script src="/chat.js"></script>
+    <script src="/settings.js"></script>
     <script src="/app.js"></script>
 </body>
 </html>
