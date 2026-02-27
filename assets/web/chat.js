@@ -42,6 +42,9 @@ const Chat = {
             const messages = await resp.json();
             if (!messages.length) return;
 
+            // Temporary map to match tool results back to their call elements
+            const toolCallItems = new Map();
+
             for (const msg of messages) {
                 const content = msg.content || '';
                 switch (msg.role) {
@@ -49,12 +52,53 @@ const Chat = {
                         this.appendUserMessage(content);
                         break;
                     case 'assistant':
-                        this.appendAssistantMessage(content);
+                        if (content.trim()) {
+                            this.appendAssistantMessage(content);
+                        }
+                        if (msg.tool_calls && msg.tool_calls.length) {
+                            const group = document.createElement('div');
+                            group.className = 'tool-group';
+                            group.style.display = App.verbose ? '' : 'none';
+                            this.feed.appendChild(group);
+
+                            for (const tc of msg.tool_calls) {
+                                const item = document.createElement('div');
+                                item.className = 'tool-item';
+
+                                const header = document.createElement('div');
+                                header.className = 'tool-header';
+                                header.innerHTML = `
+                                    <span class="tool-chevron">&#9654;</span>
+                                    <span class="tool-name">${this.esc(tc.name)}</span>
+                                    <span class="tool-status ok">done</span>
+                                `;
+                                header.addEventListener('click', () => item.classList.toggle('open'));
+
+                                const body = document.createElement('div');
+                                body.className = 'tool-body';
+                                body.textContent = tc.arguments || '';
+
+                                item.appendChild(header);
+                                item.appendChild(body);
+                                group.appendChild(item);
+
+                                toolCallItems.set(tc.id, item);
+                            }
+                        }
                         break;
-                    case 'system':
-                        this.appendSystemMessage(content);
+                    case 'tool':
+                        if (msg.tool_call_id) {
+                            const item = toolCallItems.get(msg.tool_call_id);
+                            if (item) {
+                                const body = item.querySelector('.tool-body');
+                                if (content) {
+                                    body.textContent += '\n─── result ───\n' + content;
+                                }
+                                toolCallItems.delete(msg.tool_call_id);
+                            }
+                        }
                         break;
-                    // skip 'tool' messages — internal, not user-facing
+                    // skip 'system' messages — internal, not user-facing
                 }
             }
 
@@ -263,7 +307,7 @@ const Chat = {
     appendUserMessage(text) {
         const el = document.createElement('div');
         el.className = 'msg msg-user';
-        el.innerHTML = `<div class="msg-label">You</div><div class="msg-content">${this.esc(text)}</div>`;
+        el.innerHTML = `<div class="msg-content">${this.esc(text)}</div>`;
         this.feed.appendChild(el);
         this.scrollToBottom();
     },
@@ -271,7 +315,7 @@ const Chat = {
     appendAssistantMessage(text) {
         const el = document.createElement('div');
         el.className = 'msg msg-assistant';
-        el.innerHTML = `<div class="msg-label">IronClaw</div><div class="msg-content">${this.renderMarkdown(text)}</div>`;
+        el.innerHTML = `<div class="msg-content">${this.renderMarkdown(text)}</div>`;
         this.feed.appendChild(el);
         this.scrollToBottom();
     },

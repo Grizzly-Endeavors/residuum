@@ -5,7 +5,7 @@
 
 const App = {
     mode: null,
-    verbose: false,
+    verbose: localStorage.getItem('ironclaw-verbose') === 'true',
 
     async init() {
         try {
@@ -69,10 +69,13 @@ const App = {
             this.hideSettings();
         });
 
-        document.getElementById('btn-verbose').addEventListener('click', () => {
+        const verboseBtn = document.getElementById('btn-verbose');
+        verboseBtn.classList.toggle('active', this.verbose);
+
+        verboseBtn.addEventListener('click', () => {
             this.verbose = !this.verbose;
-            const btn = document.getElementById('btn-verbose');
-            btn.classList.toggle('active', this.verbose);
+            localStorage.setItem('ironclaw-verbose', this.verbose);
+            verboseBtn.classList.toggle('active', this.verbose);
             Chat.setVerbose(this.verbose);
         });
 
