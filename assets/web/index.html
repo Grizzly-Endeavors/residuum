@@ -40,9 +40,17 @@
         <!-- Settings view -->
         <div class="settings-view" id="settings-view">
             <div class="settings-header">
-                <button class="icon-btn" id="btn-settings-back" title="Back to chat">&#8592;</button>
-                <h2>Settings</h2>
-                <button class="btn btn-secondary" id="btn-reload">Reload Gateway</button>
+                <div class="settings-header-left">
+                    <button class="icon-btn" id="btn-settings-back" title="Back to chat">&#8592;</button>
+                    <h2>Settings</h2>
+                </div>
+                <div class="mode-toggle">
+                    <button class="active" data-mode="form">Form</button>
+                    <button data-mode="advanced">Advanced</button>
+                </div>
+                <div class="settings-header-right">
+                    <button class="btn btn-secondary" id="btn-reload">Reload Gateway</button>
+                </div>
             </div>
             <div class="settings-body">
                 <div class="settings-inner" id="settings-inner"></div>
@@ -58,6 +66,7 @@
 
     </div>
 
+    <script src="/vendor/smol-toml.iife.js"></script>
     <script src="/setup.js"></script>
     <script src="/chat.js"></script>
     <script src="/settings.js"></script>

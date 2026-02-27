@@ -272,7 +272,7 @@ const Chat = {
         this.thinkingEl = document.createElement('div');
         this.thinkingEl.className = 'thinking';
         this.thinkingEl.innerHTML = `
-            <span class="thinking-dots"><span></span><span></span><span></span></span>
+            <span class="thinking-bars"><span></span><span></span><span></span></span>
             <span>Thinking...</span>
         `;
         this.feed.appendChild(this.thinkingEl);
@@ -319,6 +319,34 @@ const Chat = {
         // Italic: *...*
         html = html.replace(/(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)/g, '<em>$1</em>');
 
+        // Links: [text](url)
+        html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
+
+        // Horizontal rules: --- or *** on their own line
+        html = html.replace(/\n(---|\*\*\*)\n/g, '\n<hr>\n');
+
+        // Headings: ## through #### (must be at line start)
+        html = html.replace(/^#### (.+)$/gm, '<h4>$1</h4>');
+        html = html.replace(/^### (.+)$/gm, '<h3>$1</h3>');
+        html = html.replace(/^## (.+)$/gm, '<h2>$1</h2>');
+
+        // Blockquotes: > text
+        html = html.replace(/^&gt; (.+)$/gm, '<blockquote>$1</blockquote>');
+        // Merge consecutive blockquotes
+        html = html.replace(/<\/blockquote>\n<blockquote>/g, '<br>');
+
+        // Unordered lists: - item
+        html = html.replace(/(^|\n)(- .+(?:\n- .+)*)/g, (_m, pre, block) => {
+            const items = block.split('\n').map(line => `<li>${line.replace(/^- /, '')}</li>`).join('');
+            return `${pre}<ul>${items}</ul>`;
+        });
+
+        // Ordered lists: 1. item
+        html = html.replace(/(^|\n)(\d+\. .+(?:\n\d+\. .+)*)/g, (_m, pre, block) => {
+            const items = block.split('\n').map(line => `<li>${line.replace(/^\d+\. /, '')}</li>`).join('');
+            return `${pre}<ol>${items}</ol>`;
+        });
+
         // Line breaks (outside of pre blocks)
         html = html.replace(/\n/g, '<br>');
 
@@ -326,6 +354,10 @@ const Chat = {
         html = html.replace(/<pre><code>([\s\S]*?)<\/code><\/pre>/g, (_m, inner) => {
             return `<pre><code>${inner.replace(/<br>/g, '\n')}</code></pre>`;
         });
+
+        // Clean up line breaks adjacent to block elements
+        html = html.replace(/<br>(<\/?(?:h[234]|blockquote|ul|ol|li|hr|pre)>)/g, '$1');
+        html = html.replace(/(<\/?(?:h[234]|blockquote|ul|ol|li|hr|pre)>)<br>/g, '$1');
 
         return html;
     }
