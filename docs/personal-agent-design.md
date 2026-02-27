@@ -271,7 +271,7 @@ Following the existing workspace pattern (mirroring SOUL.md's "this file is your
 
 ### Interaction with Existing Systems
 
-- **Cron jobs**: Unchanged. Cron handles deterministic scheduled actions ("run this backup script at 3am"). Pulses handle ambient awareness ("is anything worth my attention right now?"). These are complementary, not overlapping. Both route results through NOTIFY.yml.
+- **Scheduled actions**: Unchanged. Scheduled actions handle deterministic work ("run this backup script at 3am"). Pulses handle ambient awareness ("is anything worth my attention right now?"). These are complementary, not overlapping. Both route results through NOTIFY.yml.
 - **HEARTBEAT_OK**: Still used as the ack signal when a pulse evaluation finds nothing actionable. HEARTBEAT_OK results are never routed.
 - **Observation log**: Findings from pulse evaluations feed into the OM observation log when they're routed to `agent_wake` or `agent_feed` and processed by the main agent. Results routed only to external channels or inbox enter the observation stream when the agent reviews them.
 

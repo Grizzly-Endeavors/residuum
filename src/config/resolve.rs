@@ -75,13 +75,6 @@ pub(super) fn from_file_and_env(file: Option<&ConfigFile>) -> Result<Config, Iro
         &main,
         providers_map,
     )?;
-    let cron_spec = resolve_role(
-        models.and_then(|m| m.cron.as_deref()),
-        default_str.as_deref(),
-        &main,
-        providers_map,
-    )?;
-
     // Resolve embedding: models.embedding only, no fallback to default or main
     let embedding = models
         .and_then(|m| m.embedding.as_deref())
@@ -138,11 +131,6 @@ pub(super) fn from_file_and_env(file: Option<&ConfigFile>) -> Result<Config, Iro
         .and_then(|p| p.enabled)
         .unwrap_or(true);
 
-    let cron_enabled = file
-        .and_then(|f| f.cron.as_ref())
-        .and_then(|c| c.enabled)
-        .unwrap_or(true);
-
     let gateway = resolve_gateway_config(file.and_then(|f| f.gateway.as_ref()));
     let discord = resolve_discord_config(file.and_then(|f| f.discord.as_ref()));
     let webhook = resolve_webhook_config(file.and_then(|f| f.webhook.as_ref()));
@@ -192,14 +180,12 @@ pub(super) fn from_file_and_env(file: Option<&ConfigFile>) -> Result<Config, Iro
         observer,
         reflector,
         pulse: pulse_spec,
-        cron: cron_spec,
         embedding,
         workspace_dir,
         timeout_secs,
         max_tokens,
         memory,
         pulse_enabled,
-        cron_enabled,
         gateway,
         timezone,
         discord,
@@ -706,7 +692,6 @@ default = "anthropic/claude-haiku-4-5"
         assert_eq!(cfg.observer.model.model, "claude-haiku-4-5");
         assert_eq!(cfg.reflector.model.model, "claude-haiku-4-5");
         assert_eq!(cfg.pulse.model.model, "claude-haiku-4-5");
-        assert_eq!(cfg.cron.model.model, "claude-haiku-4-5");
         // main is still the explicit main
         assert_eq!(cfg.main.model.model, "claude-sonnet-4-6");
     }
@@ -747,7 +732,6 @@ main = "anthropic/claude-sonnet-4-6"
         assert_eq!(cfg.observer.model.model, "claude-sonnet-4-6");
         assert_eq!(cfg.reflector.model.model, "claude-sonnet-4-6");
         assert_eq!(cfg.pulse.model.model, "claude-sonnet-4-6");
-        assert_eq!(cfg.cron.model.model, "claude-sonnet-4-6");
     }
 
     #[test]
@@ -875,7 +859,7 @@ main = "anthropic/claude-sonnet-4-6"
     }
 
     #[test]
-    fn pulse_cron_enabled_defaults() {
+    fn pulse_enabled_defaults() {
         let toml_str = r#"
 timezone = "UTC"
 
@@ -885,7 +869,6 @@ main = "anthropic/claude-sonnet-4-6"
         let file: ConfigFile = toml::from_str(toml_str).unwrap();
         let cfg = from_file_and_env(Some(&file)).unwrap();
         assert!(cfg.pulse_enabled, "pulse should default to enabled");
-        assert!(cfg.cron_enabled, "cron should default to enabled");
     }
 
     #[test]
@@ -1027,7 +1010,7 @@ observer_force_threshold_tokens = 50000
     }
 
     #[test]
-    fn pulse_cron_can_be_disabled() {
+    fn pulse_can_be_disabled() {
         let toml_str = r#"
 timezone = "UTC"
 
@@ -1036,14 +1019,10 @@ main = "anthropic/claude-sonnet-4-6"
 
 [pulse]
 enabled = false
-
-[cron]
-enabled = false
 "#;
         let file: ConfigFile = toml::from_str(toml_str).unwrap();
         let cfg = from_file_and_env(Some(&file)).unwrap();
         assert!(!cfg.pulse_enabled);
-        assert!(!cfg.cron_enabled);
     }
 
     // ── MCP config ──────────────────────────────────────────────────────────

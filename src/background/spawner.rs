@@ -178,7 +178,7 @@ impl BackgroundTaskSpawner {
 
     /// Send a pre-built result directly through the result channel.
     ///
-    /// Used for cron `SystemEvent` jobs that need no LLM call — they produce
+    /// Used for pre-built results that need no LLM call — they produce
     /// a `BackgroundResult` immediately and inject it into the normal result
     /// pipeline.
     ///
@@ -399,8 +399,8 @@ mod tests {
 
         let result = BackgroundResult {
             id: "direct-1".to_string(),
-            task_name: "cron_event".to_string(),
-            source: TaskSource::Cron,
+            task_name: "action_event".to_string(),
+            source: TaskSource::Action,
             summary: "system alert".to_string(),
             transcript_path: None,
             status: super::TaskStatus::Completed,
@@ -412,9 +412,9 @@ mod tests {
 
         let received = rx.recv().await.unwrap();
         assert_eq!(received.id, "direct-1");
-        assert_eq!(received.task_name, "cron_event");
+        assert_eq!(received.task_name, "action_event");
         assert_eq!(received.summary, "system alert");
-        assert!(matches!(received.source, TaskSource::Cron));
+        assert!(matches!(received.source, TaskSource::Action));
     }
 
     #[tokio::test]

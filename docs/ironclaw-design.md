@@ -73,11 +73,11 @@ ironclaw/
 │   │   ├── executor.rs               # Pulse task execution
 │   │   └── router.rs                 # NOTIFY.yml parsing & channel dispatch
 │   │
-│   ├── cron/
-│   │   ├── mod.rs                    # Cron system coordination
-│   │   ├── store.rs                  # Job persistence (jobs.json)
-│   │   ├── scheduler.rs              # Schedule evaluation (at/every/cron)
-│   │   └── executor.rs              # Job execution & delivery
+│   ├── actions/
+│   │   ├── mod.rs                    # Scheduled actions coordination
+│   │   ├── store.rs                  # Action persistence (scheduled_actions.json)
+│   │   ├── scheduler.rs              # Schedule evaluation (at/every/cron expression)
+│   │   └── executor.rs              # Action execution & delivery
 │   │
 │   ├── skills/
 │   │   ├── mod.rs                    # Skills system coordination
@@ -188,7 +188,7 @@ url = "https://ntfy.example.com/ironclaw"
 
 # External notification channels are defined here.
 # Built-in channels (agent_wake, agent_feed, inbox) need no config.
-# NOTIFY.yml in the workspace maps pulse/cron task names to channels.
+# NOTIFY.yml in the workspace maps pulse/action task names to channels.
 ```
 
 Validation happens at startup via serde + custom validators. Invalid config prevents boot with clear error messages.
@@ -241,8 +241,8 @@ The gateway watches `config.toml`, workspace identity files, `HEARTBEAT.yml`, `N
 │       ├── scripts/
 │       └── references/
 │
-├── cron/
-│   └── jobs.json                 # Agent-created scheduled jobs
+├── actions/
+│   └── scheduled_actions.json    # Agent-created scheduled actions
 │
 └── hooks/                        # Optional user-defined hooks
 ```
@@ -256,7 +256,7 @@ These are YAML/TOML files the Rust gateway validates and acts on:
 | `config.toml` | TOML | Full gateway configuration |
 | `HEARTBEAT.yml` | YAML | Pulse scheduling, task definitions |
 | `projects/**/PROJECT.md` | Markdown+YAML frontmatter | Project entry metadata, tool/MCP resolution |
-| `cron/jobs.json` | JSON | Agent-created scheduled wake-ups |
+| `actions/scheduled_actions.json` | JSON | Agent-created scheduled actions |
 | `memory/observations.json` | JSON | Global observation log (episode-based) |
 
 ### Files injected as system prompt content
@@ -661,13 +661,13 @@ The scheduler runs on a tokio interval timer. Each tick:
 
 Result routing is handled by the gateway based on `NOTIFY.yml`. When a pulse evaluation produces a result (not HEARTBEAT_OK), the gateway looks up the pulse name in `NOTIFY.yml` and dispatches to every channel that lists it. See [Notification Routing Design](notification-routing-design.md) for the full specification.
 
-### 7. Cron System (`cron/`)
+### 7. Scheduled Actions System (`actions/`)
 
-A direct port of OpenClaw's cron job system. Cron gives the agent the ability to schedule its own wake-ups — one-shot reminders, recurring tasks, deferred follow-ups. Where pulses are user-defined ambient monitoring (declarative YAML, LLM-evaluated), cron jobs are agent-created scheduled actions (created via tool calls, persisted as JSON, executed by the gateway).
+A direct port of OpenClaw's cron job system. Scheduled actions give the agent the ability to schedule its own wake-ups — one-shot reminders, recurring tasks, deferred follow-ups. Where pulses are user-defined ambient monitoring (declarative YAML, LLM-evaluated), scheduled actions are agent-created (created via tool calls, persisted as JSON, executed by the gateway).
 
-Three schedule types: `at` (one-shot at a timestamp), `every` (fixed interval), and `cron` (standard 5-field cron expressions with optional timezone). Jobs persist under the workspace at `cron/jobs.json` and survive gateway restarts.
+Three schedule types: `at` (one-shot at a timestamp), `every` (fixed interval), and `cron` (standard 5-field cron expressions with optional timezone). Actions persist under the workspace at `actions/scheduled_actions.json` and survive gateway restarts.
 
-Two execution modes: **user-visible** (enqueue a system event picked up on the next pulse/heartbeat — agent has full context) and **background** (dedicated agent thread — can use a different model, supports delivery to a channel or webhook). The agent manages jobs via `cron_add`, `cron_update`, `cron_remove`, and `cron_list` tool calls.
+Two execution modes: **user-visible** (enqueue a system event picked up on the next pulse/heartbeat — agent has full context) and **background** (dedicated agent thread — can use a different model, supports delivery to a channel or webhook). The agent manages actions via `action_add`, `action_update`, `action_remove`, and `action_list` tool calls.
 
 This is architecturally identical to OpenClaw's implementation. The design details are documented in [OpenClaw's cron docs](https://docs.openclaw.ai/automation/cron-jobs) and don't need to be restated here.
 
@@ -773,10 +773,10 @@ Built-in tools the agent can invoke directly.
 | `web_fetch` | Fetch URL contents |
 | `browser` | Headless browser automation |
 | `memory_search` | Hybrid retrieval over workspace |
-| `cron_add` | Schedule a one-shot or recurring agent wake-up |
-| `cron_update` | Modify an existing cron job |
-| `cron_remove` | Delete a cron job |
-| `cron_list` | List scheduled cron jobs |
+| `action_add` | Schedule a one-shot or recurring agent wake-up |
+| `action_update` | Modify an existing scheduled action |
+| `action_remove` | Delete a scheduled action |
+| `action_list` | List scheduled actions |
 | `skill_activate` | Load a skill's full instructions into the system prompt |
 | `skill_deactivate` | Remove a skill's instructions from the system prompt |
 | `project_activate` | Activate a project context |
@@ -946,8 +946,8 @@ Ordered by "what gets you a usable agent fastest":
 12. `pulse/scheduler` — HEARTBEAT.yml parsing, scheduling loop.
 13. `pulse/executor` — Pulse task execution via agent runtime.
 14. `notifications/` — NOTIFY.yml parsing, channel dispatch, `NotificationChannel` trait.
-15. `cron/store` — Job persistence, `cron/scheduler` — schedule evaluation.
-16. `cron/executor` — Job execution, background threads, delivery.
+15. `actions/store` — Action persistence, `actions/scheduler` — schedule evaluation.
+16. `actions/executor` — Action execution, background threads, delivery.
 
 **Milestone: Agent proactively checks on things, notifies you, and can schedule its own wake-ups.**
 

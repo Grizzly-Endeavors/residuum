@@ -246,76 +246,6 @@ mod proactivity_integration {
         }
     }
 
-    // ── Cron agent field tests ──────────────────────────────────────────
-
-    #[tokio::test]
-    async fn cron_store_round_trip_with_agent_field() {
-        use ironclaw::cron::store::CronStore;
-        use ironclaw::cron::types::{CronJob, CronJobState, CronPayload, CronSchedule};
-
-        let dir = tempdir().unwrap();
-        let path = dir.path().join("jobs.json");
-
-        let now = chrono::Utc::now().naive_utc();
-        let job = CronJob {
-            id: "cron-agent-test".to_string(),
-            name: "agent turn with preset".to_string(),
-            description: None,
-            enabled: true,
-            delete_after_run: false,
-            created_at: now,
-            updated_at: now,
-            schedule: CronSchedule::Every {
-                every_ms: 3_600_000,
-                anchor_ms: 0,
-            },
-            payload: CronPayload::AgentTurn {
-                message: "Run a check.".to_string(),
-                agent: Some("memory-agent".to_string()),
-            },
-            state: CronJobState::default(),
-        };
-
-        let mut store = CronStore::load(&path).await.unwrap();
-        store.add_job(job);
-        store.save().await.unwrap();
-
-        let reloaded = CronStore::load(&path).await.unwrap();
-        let loaded = reloaded.list_jobs().first().unwrap();
-        match &loaded.payload {
-            CronPayload::AgentTurn { message, agent } => {
-                assert_eq!(message, "Run a check.");
-                assert_eq!(agent.as_deref(), Some("memory-agent"));
-            }
-            CronPayload::SystemEvent { .. } => panic!("expected AgentTurn"),
-        }
-    }
-
-    #[tokio::test]
-    async fn cron_store_backward_compat_no_agent_field() {
-        use ironclaw::cron::store::CronStore;
-        use ironclaw::cron::types::CronPayload;
-
-        let dir = tempdir().unwrap();
-        let path = dir.path().join("jobs.json");
-
-        // Write a jobs.json that predates the agent field
-        let legacy_json = r#"[{"id":"cron-legacy","name":"legacy","description":null,"enabled":true,"delete_after_run":false,"created_at":"2026-02-19T12:00","updated_at":"2026-02-19T12:00","schedule":{"type":"every","every_ms":3600000,"anchor_ms":0},"payload":{"type":"agent_turn","message":"do stuff"},"state":{"next_run_at":null,"last_run_at":null,"last_status":null,"last_error":null,"consecutive_errors":0}}]"#;
-        std::fs::write(&path, legacy_json).unwrap();
-
-        let store = CronStore::load(&path).await.unwrap();
-        let loaded = store.list_jobs().first().unwrap();
-        match &loaded.payload {
-            CronPayload::AgentTurn { agent, .. } => {
-                assert!(
-                    agent.is_none(),
-                    "agent should default to None for legacy jobs"
-                );
-            }
-            CronPayload::SystemEvent { .. } => panic!("expected AgentTurn"),
-        }
-    }
-
     // ── Scheduler tests ──────────────────────────────────────────────────────
 
     #[test]
@@ -354,57 +284,125 @@ mod proactivity_integration {
         assert!(second.is_empty(), "same-time call should not refire");
     }
 
-    // ── Cron store tests ─────────────────────────────────────────────────────
+    // ── Action store tests ────────────────────────────────────────────────────
 
     #[tokio::test]
-    async fn cron_store_round_trip() {
-        use ironclaw::cron::store::CronStore;
-        use ironclaw::cron::types::{CronJob, CronJobState, CronPayload, CronSchedule};
+    async fn action_store_round_trip() {
+        use ironclaw::actions::store::ActionStore;
+        use ironclaw::actions::types::ScheduledAction;
 
         let dir = tempdir().unwrap();
-        let path = dir.path().join("jobs.json");
+        let path = dir.path().join("scheduled_actions.json");
 
-        let now = chrono::Utc::now().naive_utc();
-        let job = CronJob {
-            id: "cron-test0001".to_string(),
-            name: "test job".to_string(),
-            description: Some("integration test job".to_string()),
-            enabled: true,
-            delete_after_run: false,
+        let now = chrono::Utc::now();
+        let action = ScheduledAction {
+            id: "action-test0001".to_string(),
+            name: "test action".to_string(),
+            prompt: "Run a check.".to_string(),
+            run_at: now + chrono::Duration::hours(1),
+            agent: Some("memory-agent".to_string()),
+            model_tier: None,
+            channels: vec!["agent_feed".to_string()],
             created_at: now,
-            updated_at: now,
-            schedule: CronSchedule::Every {
-                every_ms: 3_600_000,
-                anchor_ms: 0,
-            },
-            payload: CronPayload::AgentTurn {
-                message: "Run a check.".to_string(),
-                agent: None,
-            },
-            state: CronJobState::default(),
         };
 
-        let mut store = CronStore::load(&path).await.unwrap();
-        store.add_job(job);
+        let mut store = ActionStore::load(&path).await.unwrap();
+        store.add(action);
         store.save().await.unwrap();
 
-        let reloaded = CronStore::load(&path).await.unwrap();
+        let reloaded = ActionStore::load(&path).await.unwrap();
         assert_eq!(
-            reloaded.list_jobs().len(),
+            reloaded.list().len(),
             1,
-            "should have one job after reload"
+            "should have one action after reload"
         );
 
-        let loaded_job = reloaded.list_jobs().first().unwrap();
+        let loaded = reloaded.list().first().unwrap();
         assert_eq!(
-            loaded_job.id, "cron-test0001",
-            "job id should survive reload"
+            loaded.id, "action-test0001",
+            "action id should survive reload"
         );
-        assert_eq!(loaded_job.name, "test job", "name should survive reload");
+        assert_eq!(loaded.name, "test action", "name should survive reload");
         assert_eq!(
-            loaded_job.description.as_deref(),
-            Some("integration test job"),
-            "description should survive reload"
+            loaded.prompt, "Run a check.",
+            "prompt should survive reload"
+        );
+        assert_eq!(
+            loaded.agent.as_deref(),
+            Some("memory-agent"),
+            "agent should survive reload"
+        );
+    }
+
+    #[tokio::test]
+    async fn action_store_take_due() {
+        use ironclaw::actions::store::ActionStore;
+        use ironclaw::actions::types::ScheduledAction;
+
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("scheduled_actions.json");
+
+        let now = chrono::Utc::now();
+        let past_action = ScheduledAction {
+            id: "action-past".to_string(),
+            name: "past".to_string(),
+            prompt: "overdue".to_string(),
+            run_at: now - chrono::Duration::minutes(5),
+            agent: None,
+            model_tier: None,
+            channels: vec!["agent_feed".to_string()],
+            created_at: now,
+        };
+        let future_action = ScheduledAction {
+            id: "action-future".to_string(),
+            name: "future".to_string(),
+            prompt: "not yet".to_string(),
+            run_at: now + chrono::Duration::hours(1),
+            agent: None,
+            model_tier: None,
+            channels: vec!["agent_feed".to_string()],
+            created_at: now,
+        };
+
+        let mut store = ActionStore::load(&path).await.unwrap();
+        store.add(past_action);
+        store.add(future_action);
+
+        let due = store.take_due(now);
+        assert_eq!(due.len(), 1, "only the past action should be due");
+        assert_eq!(due.first().unwrap().id, "action-past");
+        assert_eq!(store.list().len(), 1, "future action should remain");
+    }
+
+    #[tokio::test]
+    async fn action_store_remove() {
+        use ironclaw::actions::store::ActionStore;
+        use ironclaw::actions::types::ScheduledAction;
+
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("scheduled_actions.json");
+
+        let now = chrono::Utc::now();
+        let action = ScheduledAction {
+            id: "action-cancel-me".to_string(),
+            name: "cancel me".to_string(),
+            prompt: "test".to_string(),
+            run_at: now + chrono::Duration::hours(1),
+            agent: None,
+            model_tier: None,
+            channels: vec!["agent_feed".to_string()],
+            created_at: now,
+        };
+
+        let mut store = ActionStore::load(&path).await.unwrap();
+        store.add(action);
+        assert_eq!(store.list().len(), 1);
+
+        assert!(store.remove("action-cancel-me"), "should find and remove");
+        assert!(store.list().is_empty(), "store should be empty");
+        assert!(
+            !store.remove("action-cancel-me"),
+            "should return false for missing"
         );
     }
 

@@ -150,10 +150,6 @@ mod tests {
             "example should contain pulse section"
         );
         assert!(
-            body.contains("[cron]"),
-            "example should contain cron section"
-        );
-        assert!(
             body.contains("[gateway]"),
             "example should contain gateway section"
         );

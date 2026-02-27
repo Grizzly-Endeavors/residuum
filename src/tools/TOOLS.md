@@ -363,129 +363,81 @@ On error: skill is not currently active.
 
 ---
 
-## `cron_add`
+## `schedule_action`
 
-**Source:** `cron.rs` · `CronAddTool`
+**Source:** `actions.rs` · `ScheduleActionTool`
 
 **Description sent to LLM:**
-> Create a new scheduled cron job. The job will persist across restarts.
+> Schedule a one-off action to fire at a specific time. The action runs once and is removed after firing.
 
 ### Input
 
-Required fields: `name`, `schedule_type`, `payload_type`
+| Parameter    | Type            | Required | Description                                                                                                                                                       |
+|--------------|-----------------|----------|-------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `name`       | string          | yes      | Human-readable name for this action                                                                                                                               |
+| `prompt`     | string          | yes      | The prompt to execute when the action fires                                                                                                                       |
+| `run_at`     | string          | yes      | When to fire, as an ISO 8601 datetime string. Interpreted in the configured timezone if no offset is provided (e.g. `2026-03-01T09:00:00` or `2026-03-01T14:00:00Z`). Must be in the future. |
+| `agent_name` | string          | no       | Agent routing: `"main"` runs a full wake turn with conversation context; a preset name (e.g. `"memory-agent"`) spawns a sub-agent using that preset. Omit for default sub-agent behavior. |
+| `model_tier` | string (enum)   | no       | Model tier override for sub-agent actions: `"small"`, `"medium"`, `"large"`. Defaults to medium.                                                                 |
+| `channels`   | array\<string\> | no       | Result delivery channels for sub-agent actions. Defaults to `["agent_feed"]`. Not used when `agent_name="main"`.                                                  |
 
-| Parameter            | Type    | Required   | Description                                                                          |
-|----------------------|---------|------------|--------------------------------------------------------------------------------------|
-| `name`               | string  | yes        | Human-readable name for this job                                                     |
-| `schedule_type`      | string  | yes        | `"at"` / `"every"` / `"cron"`                                                       |
-| `schedule_at`        | string  | if `at`    | Local datetime `YYYY-MM-DDTHH:MM:SS`, required when `schedule_type="at"`            |
-| `schedule_every_ms`  | integer | if `every` | Interval in milliseconds, required when `schedule_type="every"`                     |
-| `schedule_anchor_ms` | integer | no         | Anchor epoch ms (default 0 = Unix epoch), optional when `schedule_type="every"`     |
-| `schedule_expr`      | string  | if `cron`  | 6-field cron expression including seconds, e.g. `"0 30 9 * * *"`; required when `schedule_type="cron"` |
-| `schedule_tz`        | string  | no         | IANA timezone for cron evaluation; defaults to configured timezone                  |
-| `payload_type`       | string  | yes        | `"system_event"` or `"agent_turn"`                                                  |
-| `payload_text`       | string  | if `system_event` | Text to inject; required when `payload_type="system_event"`                |
-| `payload_message`    | string  | if `agent_turn`   | Prompt for isolated agent turn; required when `payload_type="agent_turn"`  |
-| `agent`              | string  | no         | Agent routing for `agent_turn` payloads: `"main"` runs a full wake turn with conversation context; a preset name (e.g. `"memory-agent"`) spawns a sub-agent using that preset. Omit for default sub-agent behavior. |
-| `description`        | string  | no         | Optional description of what this job does                                          |
-| `enabled`            | boolean | no         | Start the job enabled (default true)                                                |
-| `delete_after_run`   | boolean | no         | Delete the job after it runs once                                                   |
+**Mutual exclusion:** if `agent_name="main"`, `channels` must not be provided — main-turn actions inject directly into the agent.
 
 ### Output
 
-On success: `"Created job '{name}' with id {id}. Next run: {datetime}"`
+On success: `"Scheduled '{name}' (id: {id}). Fires at: {datetime}"`
 
-On error: invalid schedule, invalid payload, or save failure.
+On error: invalid datetime, `run_at` in the past, invalid channel, or save failure.
 
-**Routing:** Results are routed via `NOTIFY.yml`. Add the job name to a channel list (`agent_feed`, `inbox`, or an external channel) to control where results are delivered.
-
-**Side effect:** Persists the job to `jobs.json` and wakes the cron scheduler.
+**Side effect:** Persists the action to `scheduled_actions.json` and wakes the action scheduler.
 
 ---
 
-## `cron_list`
+## `list_actions`
 
-**Source:** `cron.rs` · `CronListTool`
+**Source:** `actions.rs` · `ListActionsTool`
 
 **Description sent to LLM:**
-> List all scheduled cron jobs with their status and next run time.
+> List all pending scheduled actions with their IDs, names, and fire times.
 
 ### Input
 
-| Parameter          | Type    | Required | Description                                         |
-|--------------------|---------|----------|-----------------------------------------------------|
-| `include_disabled` | boolean | no       | Include disabled jobs in the list (default false)   |
+No parameters required (empty object accepted).
 
 ### Output
 
-On success: count header followed by one entry per job:
+On success: count header followed by one entry per action:
 ```
-{N} job(s):
-  [{enabled|disabled}] {name} ({id}) — last: {status} — next: {datetime}
-    {description}
+{N} action(s):
+  {name} ({id}) — fires: {datetime} [agent info] → [channels]
 ```
 
-When no jobs match: `"No cron jobs found."`
+The agent label shows `[main turn]` for main-turn actions, `[preset: {name}]` for preset-routed actions, or nothing for default sub-agent actions. The channels suffix is omitted for main-turn actions.
+
+When no actions exist: `"No pending scheduled actions."`
 
 ---
 
-## `cron_update`
+## `cancel_action`
 
-**Source:** `cron.rs` · `CronUpdateTool`
+**Source:** `actions.rs` · `CancelActionTool`
 
 **Description sent to LLM:**
-> Update an existing cron job by ID. Only provided fields are changed.
+> Cancel a pending scheduled action by ID.
 
 ### Input
 
-| Parameter            | Type    | Required | Description                                                                         |
-|----------------------|---------|----------|-------------------------------------------------------------------------------------|
-| `id`                 | string  | yes      | Job ID to update                                                                    |
-| `name`               | string  | no       | New name                                                                            |
-| `description`        | string  | no       | New description                                                                     |
-| `enabled`            | boolean | no       | Enable or disable the job                                                           |
-| `delete_after_run`   | boolean | no       | Toggle delete-after-run                                                             |
-| `schedule_type`      | string  | no       | New schedule type — replaces existing schedule (`"at"` / `"every"` / `"cron"`)     |
-| `schedule_at`        | string  | no       | Required when updating to `schedule_type="at"`                                     |
-| `schedule_every_ms`  | integer | no       | Required when updating to `schedule_type="every"`                                  |
-| `schedule_anchor_ms` | integer | no       | Optional when updating to `schedule_type="every"`                                  |
-| `schedule_expr`      | string  | no       | Required when updating to `schedule_type="cron"`                                   |
-| `schedule_tz`        | string  | no       | IANA timezone for cron evaluation                                                  |
-| `payload_type`       | string  | no       | New payload type — replaces existing payload (`"system_event"` / `"agent_turn"`)   |
-| `payload_text`       | string  | no       | Required when updating to `payload_type="system_event"`                            |
-| `payload_message`    | string  | no       | Required when updating to `payload_type="agent_turn"`                              |
-| `agent`              | string  | no       | Agent routing for `agent_turn` payloads: `"main"` for a full wake turn, or a preset name. Can be updated independently of `payload_type`. |
+| Parameter | Type   | Required | Description          |
+|-----------|--------|----------|----------------------|
+| `id`      | string | yes      | Action ID to cancel  |
 
 ### Output
 
-On success: `"Updated job '{id}'"`
+On success: `"Cancelled action '{id}'"`
 
-On error: job not found, invalid schedule/payload, or save failure.
+On error: action not found, or save failure.
 
-**Side effect:** Persists changes to `jobs.json` and wakes the cron scheduler.
-
----
-
-## `cron_remove`
-
-**Source:** `cron.rs` · `CronRemoveTool`
-
-**Description sent to LLM:**
-> Remove a scheduled cron job by ID.
-
-### Input
-
-| Parameter | Type   | Required | Description         |
-|-----------|--------|----------|---------------------|
-| `id`      | string | yes      | Job ID to remove    |
-
-### Output
-
-On success: `"Removed job '{id}'"`
-
-On error: job not found, or save failure.
-
-**Side effect:** Persists removal to `jobs.json` and wakes the cron scheduler.
+**Side effect:** Persists removal to `scheduled_actions.json` and wakes the action scheduler.
 
 ---
 
@@ -634,7 +586,7 @@ When no tasks are running: `"No active background tasks."`
 When tasks are running:
 ```
 {N} active task(s):
-  [{id}] {task_name} — type: {sub_agent|script} — source: {pulse|cron|agent} — running {elapsed}s
+  [{id}] {task_name} — type: {sub_agent|script} — source: {pulse|action|agent} — running {elapsed}s
     preview: {prompt or command preview, up to 120 chars}
 ```
 

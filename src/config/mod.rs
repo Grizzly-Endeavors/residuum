@@ -47,8 +47,6 @@ pub struct Config {
     pub reflector: ProviderSpec,
     /// Fully resolved pulse provider.
     pub pulse: ProviderSpec,
-    /// Fully resolved cron provider.
-    pub cron: ProviderSpec,
     /// Fully resolved embedding provider (None if not configured).
     pub embedding: Option<ProviderSpec>,
     /// Path to the workspace root directory.
@@ -61,8 +59,6 @@ pub struct Config {
     pub memory: MemoryConfig,
     /// Whether the pulse system is enabled.
     pub pulse_enabled: bool,
-    /// Whether the cron system is enabled.
-    pub cron_enabled: bool,
     /// WebSocket gateway configuration.
     pub gateway: GatewayConfig,
     /// IANA timezone for the agent (e.g. `America/New_York`).
@@ -90,14 +86,12 @@ impl fmt::Debug for Config {
             .field("observer", &self.observer)
             .field("reflector", &self.reflector)
             .field("pulse", &self.pulse)
-            .field("cron", &self.cron)
             .field("embedding", &self.embedding)
             .field("workspace_dir", &self.workspace_dir)
             .field("timeout_secs", &self.timeout_secs)
             .field("max_tokens", &self.max_tokens)
             .field("memory", &self.memory)
             .field("pulse_enabled", &self.pulse_enabled)
-            .field("cron_enabled", &self.cron_enabled)
             .field("gateway", &self.gateway)
             .field("timezone", &self.timezone)
             .field("discord", &self.discord.as_ref().map(|_| "[configured]"))

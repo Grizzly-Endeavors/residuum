@@ -1,6 +1,6 @@
 //! Notification routing: NOTIFY.yml-based dispatch to built-in and external channels.
 //!
-//! Background task results (pulse checks, cron jobs) are routed through
+//! Background task results (pulse checks, scheduled actions) are routed through
 //! `NotificationRouter` which reads `NOTIFY.yml` to determine which channels
 //! should receive each task's results.
 //!

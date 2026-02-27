@@ -33,7 +33,6 @@ sqlite-vec = "0.1"
 zerocopy = { version = "0.8", features = ["derive"] }
 rmcp = { version = "0.16", features = ["client", "transport-child-process"] }
 serde_yml = "0.0"
-cron = "0.12"
 tokio-util = { version = "0.7", features = ["rt"] }
 
 # Logging

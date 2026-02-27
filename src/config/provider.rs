@@ -9,7 +9,7 @@ use super::constants::{
 
 /// Resolved provider configuration for a specific role.
 ///
-/// Every role (main, observer, reflector, pulse, cron) gets a fully resolved
+/// Every role (main, observer, reflector, pulse) gets a fully resolved
 /// `ProviderSpec` at config load time — no `Option` chains at use sites.
 #[derive(Clone)]
 pub struct ProviderSpec {

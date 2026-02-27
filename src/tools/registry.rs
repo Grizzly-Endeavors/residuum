@@ -5,9 +5,9 @@ use std::sync::Arc;
 use serde_json::Value;
 use tokio::sync::{Mutex, Notify};
 
+use crate::actions::store::ActionStore;
 use crate::background::BackgroundTaskSpawner;
 use crate::background::spawn_context::SpawnContext;
-use crate::cron::store::CronStore;
 use crate::mcp::SharedMcpRegistry;
 use crate::memory::search::HybridSearcher;
 use crate::models::ToolDefinition;
@@ -16,7 +16,8 @@ use crate::skills::SharedSkillState;
 
 use super::{
     SharedFileTracker, SharedPathPolicy, SharedToolFilter, Tool, ToolError, ToolFilter, ToolResult,
-    background, cron, edit, exec, inbox, memory_get, memory_search, projects, read, skills, write,
+    actions, background, edit, exec, inbox, memory_get, memory_search, projects, read, skills,
+    write,
 };
 
 /// Registry of available tools.
@@ -189,7 +190,7 @@ impl ToolRegistry {
     ///
     /// Includes core tools (read, write, edit, exec), project tools (activate,
     /// deactivate, list — not create or archive), and skill tools (activate,
-    /// deactivate). Excludes cron, inbox, memory, and background management
+    /// deactivate). Excludes actions, inbox, memory, and background management
     /// tools which are not appropriate for isolated sub-agent turns.
     #[must_use]
     pub fn build_subagent_registry(
@@ -230,25 +231,22 @@ impl ToolRegistry {
         registry
     }
 
-    /// Register cron management tools (`cron_add`, `cron_list`, `cron_update`, `cron_remove`).
-    pub fn register_cron_tools(
+    /// Register action scheduling tools (`schedule_action`, `list_actions`, `cancel_action`).
+    pub fn register_action_tools(
         &mut self,
-        store: Arc<Mutex<CronStore>>,
+        store: Arc<Mutex<ActionStore>>,
         notify: Arc<Notify>,
         tz: chrono_tz::Tz,
+        valid_external_channels: HashSet<String>,
     ) {
-        self.register(Box::new(cron::CronAddTool::new(
+        self.register(Box::new(actions::ScheduleActionTool::new(
             Arc::clone(&store),
             Arc::clone(&notify),
             tz,
+            valid_external_channels,
         )));
-        self.register(Box::new(cron::CronListTool::new(Arc::clone(&store))));
-        self.register(Box::new(cron::CronUpdateTool::new(
-            Arc::clone(&store),
-            Arc::clone(&notify),
-            tz,
-        )));
-        self.register(Box::new(cron::CronRemoveTool::new(store, notify)));
+        self.register(Box::new(actions::ListActionsTool::new(Arc::clone(&store))));
+        self.register(Box::new(actions::CancelActionTool::new(store, notify)));
     }
 }
 

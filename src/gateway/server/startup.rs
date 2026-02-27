@@ -6,11 +6,11 @@ use std::sync::Arc;
 
 use tokio::sync::mpsc;
 
+use crate::actions::store::ActionStore;
 use crate::agent::Agent;
 use crate::background::BackgroundTaskSpawner;
 use crate::background::types::BackgroundResult;
 use crate::config::Config;
-use crate::cron::store::CronStore;
 use crate::error::IronclawError;
 use crate::mcp::SharedMcpRegistry;
 use crate::memory::chunk_extractor::read_idx_jsonl;
@@ -54,14 +54,13 @@ pub(super) struct GatewayComponents {
     )]
     pub(super) hybrid_searcher: Arc<HybridSearcher>,
     pub(super) vector_store: Option<Arc<VectorStore>>,
-    pub(super) cron_store: Arc<tokio::sync::Mutex<CronStore>>,
-    pub(super) cron_notify: Arc<tokio::sync::Notify>,
+    pub(super) action_store: Arc<tokio::sync::Mutex<ActionStore>>,
+    pub(super) action_notify: Arc<tokio::sync::Notify>,
     pub(super) mcp_registry: SharedMcpRegistry,
     pub(super) project_state: SharedProjectState,
     pub(super) skill_state: SharedSkillState,
     pub(super) embedding_provider: Option<Arc<dyn EmbeddingProvider>>,
     pub(super) pulse_enabled: bool,
-    pub(super) cron_enabled: bool,
     pub(super) notification_router: NotificationRouter,
     pub(super) background_spawner: Arc<BackgroundTaskSpawner>,
     pub(super) background_result_rx: mpsc::Receiver<BackgroundResult>,
@@ -71,7 +70,7 @@ pub(super) struct GatewayComponents {
 /// Initialize all gateway subsystems from config.
 ///
 /// Bootstraps the workspace, builds model providers, memory components,
-/// search index, cron/project/skill state, tool registry, and agent.
+/// search index, project/skill state, tool registry, and agent.
 ///
 /// # Errors
 /// Returns `IronclawError` if any subsystem fails to initialize.
@@ -267,11 +266,11 @@ pub(super) async fn initialize(cfg: &Config) -> Result<GatewayComponents, Ironcl
         cfg.memory.search.clone(),
     ));
 
-    // Cron store
-    let cron_store = Arc::new(tokio::sync::Mutex::new(
-        CronStore::load(layout.cron_jobs_json()).await?,
+    // Scheduled actions store
+    let action_store = Arc::new(tokio::sync::Mutex::new(
+        ActionStore::load(layout.scheduled_actions_json()).await?,
     ));
-    let cron_notify = Arc::new(tokio::sync::Notify::new());
+    let action_notify = Arc::new(tokio::sync::Notify::new());
 
     // Project + skill state
     let project_index = ProjectIndex::scan(&layout).await?;
@@ -292,7 +291,7 @@ pub(super) async fn initialize(cfg: &Config) -> Result<GatewayComponents, Ironcl
         layout.background_dir(),
     ));
 
-    // SpawnContext for pulse/cron/on-demand background task spawning
+    // SpawnContext for pulse/actions/on-demand background task spawning
     let spawn_context = Arc::new(SpawnContext {
         background_config: cfg.background.clone(),
         main_provider_spec: cfg.main.clone(),
@@ -317,7 +316,18 @@ pub(super) async fn initialize(cfg: &Config) -> Result<GatewayComponents, Ironcl
     tools.register_defaults(file_tracker, Arc::clone(&path_policy));
     tools.register_search_tool(Arc::clone(&hybrid_searcher));
     tools.register_memory_get_tool(layout.episodes_dir());
-    tools.register_cron_tools(Arc::clone(&cron_store), Arc::clone(&cron_notify), tz);
+    let valid_external_channels: std::collections::HashSet<String> = cfg
+        .notifications
+        .channels
+        .iter()
+        .map(|ch| ch.name.clone())
+        .collect();
+    tools.register_action_tools(
+        Arc::clone(&action_store),
+        Arc::clone(&action_notify),
+        tz,
+        valid_external_channels.clone(),
+    );
     tools.register_project_tools(
         Arc::clone(&project_state),
         path_policy,
@@ -329,12 +339,6 @@ pub(super) async fn initialize(cfg: &Config) -> Result<GatewayComponents, Ironcl
     tools.register_skill_tools(Arc::clone(&skill_state));
     tools.register_inbox_tools(layout.inbox_dir(), layout.inbox_archive_dir(), tz);
     tools.register_background_tools(Arc::clone(&background_spawner));
-    let valid_external_channels: std::collections::HashSet<String> = cfg
-        .notifications
-        .channels
-        .iter()
-        .map(|ch| ch.name.clone())
-        .collect();
     tools.register_spawn_tool(
         Arc::clone(&background_spawner),
         Arc::clone(&spawn_context),
@@ -396,14 +400,13 @@ pub(super) async fn initialize(cfg: &Config) -> Result<GatewayComponents, Ironcl
         search_index,
         hybrid_searcher,
         vector_store,
-        cron_store,
-        cron_notify,
+        action_store,
+        action_notify,
         mcp_registry,
         project_state,
         skill_state,
         embedding_provider,
         pulse_enabled: cfg.pulse_enabled,
-        cron_enabled: cfg.cron_enabled,
         notification_router,
         background_spawner,
         background_result_rx: bg_result_rx,

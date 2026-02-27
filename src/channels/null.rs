@@ -1,10 +1,10 @@
-//! No-op display for background turns (pulse, cron).
+//! No-op display for background turns (pulse, actions).
 
 use super::TurnDisplay;
 
 /// A display implementation that discards all output.
 ///
-/// Used for background pulse and cron turns where no user is watching.
+/// Used for background pulse and action turns where no user is watching.
 pub struct NullDisplay;
 
 impl TurnDisplay for NullDisplay {

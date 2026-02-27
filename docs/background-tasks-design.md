@@ -4,12 +4,12 @@
 
 This document describes two related changes that share a common mechanism:
 
-1. **Background tasks** — Pulse evaluations, cron background jobs, and agent-spawned subagents all run on separate threads, decoupled from the main agent.
+1. **Background tasks** — Pulse evaluations, scheduled action background jobs, and agent-spawned subagents all run on separate threads, decoupled from the main agent.
 2. **Turn loop interrupts** — User messages and background task results can be injected into the main agent's turn loop between tool iterations, rather than queuing behind the entire turn.
 
 These solve three concrete problems:
 
-- **Pulse/cron blocks the main agent.** Currently, pulse evaluation and cron execution run as main agent turns. If a pulse fires while the agent is mid-conversation, it waits. If the user sends a message while a pulse is evaluating, it waits. Everything is synchronous.
+- **Pulse/scheduled actions block the main agent.** Currently, pulse evaluation and scheduled action execution run as main agent turns. If a pulse fires while the agent is mid-conversation, it waits. If the user sends a message while a pulse is evaluating, it waits. Everything is synchronous.
 - **The user can't steer mid-turn.** When the agent is in a multi-tool loop (read file → exec → read again → ...), user messages queue behind the entire sequence. The user can't say "actually, use port 8080" until the agent finishes and delivers its response.
 - **No fire-and-forget subagents.** The main agent has no way to delegate a self-contained task to a background worker and continue its conversation.
 
@@ -43,13 +43,13 @@ struct BackgroundTask {
 }
 
 enum ResultRouting {
-    Notify,                          // look up task_name in NOTIFY.yml (pulses, cron)
+    Notify,                          // look up task_name in NOTIFY.yml (pulses, scheduled actions)
     Direct(Vec<String>),             // dispatch to these channels (agent-spawned)
 }
 
 enum TaskSource {
     Pulse { pulse_name: String },
-    Cron { job_id: String },
+    Action { action_id: String },
     Agent { parent_turn_id: String },
 }
 
@@ -77,7 +77,7 @@ The spawner, concurrency control, cancellation token, result routing, and transc
 
 ## Execution: SubAgent
 
-A SubAgent is an LLM-powered execution that runs a simplified turn loop. This is the execution type for pulse evaluations, cron jobs that need reasoning, and agent-spawned work.
+A SubAgent is an LLM-powered execution that runs a simplified turn loop. This is the execution type for pulse evaluations, scheduled actions that need reasoning, and agent-spawned work.
 
 ### Configuration
 
@@ -99,7 +99,7 @@ enum ModelTier {
 
 ### Model tiers
 
-Rather than configuring a model per subsystem (pulse model, cron model, subagent model), background tasks use a tiered model configuration:
+Rather than configuring a model per subsystem (pulse model, action model, subagent model), background tasks use a tiered model configuration:
 
 ```toml
 [background]
@@ -116,7 +116,7 @@ All three are optional. Unset tiers fall back upward: small defaults to medium, 
 | Source | Default tier | Rationale |
 |--------|-------------|-----------|
 | Pulse | `Small` | Extraction, monitoring — not reasoning |
-| Cron (background) | `Medium` | Varies by task |
+| Scheduled action (background) | `Medium` | Varies by task |
 | Agent-spawned | `Medium` | Worker tasks — agent can override to `Large` |
 
 ### Context assembly
@@ -155,7 +155,7 @@ SubAgents have access to the full tool set by default, including project managem
 | `project_activate` | Always | Can activate a project for scoped work |
 | `project_deactivate` | Always | **Must** deactivate before returning |
 | `project_list` | Always | Can browse available projects |
-| `cron_*` | No | SubAgents don't schedule jobs |
+| `action_*` | No | SubAgents don't schedule actions |
 | `skill_*` | Yes | SubAgents can use skills |
 | `subagent_spawn` | No | No sub-to-sub delegation |
 | `stop_agent` | No | SubAgents don't cancel other tasks |
@@ -177,7 +177,7 @@ Each SubAgent runs a simplified turn loop — same structure as the main agent's
 
 ## Execution: Script
 
-A ScriptConfig is a direct command execution with no LLM involvement. This is the execution type for cron jobs that just need to run a command.
+A ScriptConfig is a direct command execution with no LLM involvement. This is the execution type for scheduled actions that just need to run a command.
 
 ### Configuration
 
@@ -197,14 +197,14 @@ struct ScriptConfig {
 3. Wait for completion (or timeout/cancellation).
 4. The `summary` in `BackgroundResult` is the command's stdout (truncated to a reasonable limit). Stderr is included if the exit code is non-zero.
 
-No LLM call, no context assembly, no token cost. A cron job like "run this backup script at 3am" executes directly. The result flows through the same routing as any other BackgroundTask.
+No LLM call, no context assembly, no token cost. A scheduled action like "run this backup script at 3am" executes directly. The result flows through the same routing as any other BackgroundTask.
 
 ### When to use Script vs SubAgent
 
-The distinction maps to the existing cron design's delivery modes:
+The distinction maps to the existing scheduled action design's delivery modes:
 
-- Cron jobs that need judgment (evaluate, summarize, decide) → SubAgent
-- Cron jobs that need execution (run script, call API, invoke command) → Script
+- Scheduled actions that need judgment (evaluate, summarize, decide) → SubAgent
+- Scheduled actions that need execution (run script, call API, invoke command) → Script
 - Pulse tasks → always SubAgent (the whole point is LLM evaluation)
 - Agent-spawned tasks → always SubAgent
 
@@ -536,18 +536,18 @@ Pulse due → BackgroundTaskSpawner.spawn(BackgroundTask {
 
 HEARTBEAT_OK is the only gate. If the SubAgent's summary contains the HEARTBEAT_OK sentinel, the result is logged silently and not routed. Otherwise, the result is dispatched to every channel that lists the pulse name in `NOTIFY.yml`.
 
-### Cron execution (`cron/`)
+### Scheduled action execution (`actions/`)
 
-Cron already has `UserVisible` and `Background` delivery modes:
+Scheduled actions already have `UserVisible` and `Background` delivery modes:
 
 | Mode | Current behavior | New behavior |
 |------|-----------------|--------------|
-| `UserVisible` | Enqueue as system event in main agent turn | Routed via NOTIFY.yml — list the job in `agent_wake` or `agent_feed` |
+| `UserVisible` | Enqueue as system event in main agent turn | Routed via NOTIFY.yml — list the action in `agent_wake` or `agent_feed` |
 | `Background` | Dedicated agent thread (partially implemented) | `BackgroundTaskSpawner.spawn()` — uses Script execution for simple commands, SubAgent for tasks needing judgment. Routing determined by NOTIFY.yml. |
 
 ### Gateway event loop
 
-The `tokio::select!` loop simplifies. Pulse and cron no longer need executor arms that run full agent turns. They spawn background tasks and return immediately.
+The `tokio::select!` loop simplifies. Pulse and scheduled actions no longer need executor arms that run full agent turns. They spawn background tasks and return immediately.
 
 Background results are routed via NOTIFY.yml. Results destined for `agent_wake` or `agent_feed` flow through `interrupt_tx`. If no turn is active, the gateway's idle-state handler picks them up: `agent_feed` results queue for the next turn, `agent_wake` results start a new turn.
 
@@ -724,10 +724,10 @@ Check due pulses (HEARTBEAT.yml + timestamps)
                               listing this pulse name)
 ```
 
-### Cron script execution
+### Scheduled action script execution
 
 ```
-Cron tick (background mode, script)
+Action tick (background mode, script)
       │
       ▼
 BackgroundTaskSpawner.spawn(Script { command, args })
@@ -855,15 +855,15 @@ The highest-impact change: user messages can be injected mid-turn.
 
 **Milestone: SubAgents can work within project contexts.**
 
-### Phase 5: Pulse and cron migration
+### Phase 5: Pulse and scheduled action migration
 
 - Modify pulse executor to spawn BackgroundTask (SubAgent execution) instead of running a main agent turn. Remove `load_alerts()` and Alerts.md concatenation from pulse execution path.
-- Modify cron background-mode executor to use BackgroundTaskSpawner — Script execution for simple commands, SubAgent for reasoning tasks.
-- Remove cron `UserVisible`/`Background` delivery modes — routing is now determined entirely by NOTIFY.yml.
-- Remove pulse and cron executor arms from the gateway event loop that ran full agent turns.
-- Tests: pulse fires → SubAgent → result routed via NOTIFY.yml. Cron script → direct execution → result routed via NOTIFY.yml.
+- Modify scheduled action background-mode executor to use BackgroundTaskSpawner — Script execution for simple commands, SubAgent for reasoning tasks.
+- Remove scheduled action `UserVisible`/`Background` delivery modes — routing is now determined entirely by NOTIFY.yml.
+- Remove pulse and scheduled action executor arms from the gateway event loop that ran full agent turns.
+- Tests: pulse fires → SubAgent → result routed via NOTIFY.yml. Scheduled action script → direct execution → result routed via NOTIFY.yml.
 
-**Milestone: Pulse and cron no longer block the main agent.**
+**Milestone: Pulse and scheduled actions no longer block the main agent.**
 
 ### Phase 6: Agent-facing spawn tool
 

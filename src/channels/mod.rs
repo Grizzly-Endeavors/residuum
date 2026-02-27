@@ -16,7 +16,7 @@ pub mod websocket;
 /// Trait for displaying agent tool activity during a turn.
 ///
 /// Implemented by `BroadcastDisplay` for gateway use and `NullDisplay`
-/// for background pulse/cron turns that run without user interaction.
+/// for background pulse/action turns that run without user interaction.
 pub trait TurnDisplay: Send + Sync {
     /// Display a tool call being made.
     fn show_tool_call(&self, name: &str, args: &serde_json::Value);

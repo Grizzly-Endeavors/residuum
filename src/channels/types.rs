@@ -42,7 +42,7 @@ pub trait ReplyHandle: Send + Sync {
     /// Indicate that the agent is working on a response (e.g. typing indicator).
     async fn send_typing(&self);
 
-    /// Send a system event notification (pulse/cron alerts).
+    /// Send a system event notification (pulse/action alerts).
     async fn send_system_event(&self, source: &str, content: &str);
 
     /// Start a background typing indicator that re-fires periodically.

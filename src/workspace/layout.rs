@@ -123,12 +123,6 @@ impl WorkspaceLayout {
         self.root.join("archive")
     }
 
-    /// Path to the cron directory for scheduled tasks.
-    #[must_use]
-    pub(crate) fn cron_dir(&self) -> PathBuf {
-        self.root.join("cron")
-    }
-
     /// Path to the hooks directory.
     #[must_use]
     pub(crate) fn hooks_dir(&self) -> PathBuf {
@@ -185,10 +179,10 @@ impl WorkspaceLayout {
         self.root.join("memory/background")
     }
 
-    /// Path to cron/jobs.json -- persisted scheduled jobs.
+    /// Path to `scheduled_actions.json` -- persisted one-off scheduled actions.
     #[must_use]
-    pub fn cron_jobs_json(&self) -> PathBuf {
-        self.root.join("cron/jobs.json")
+    pub fn scheduled_actions_json(&self) -> PathBuf {
+        self.root.join("scheduled_actions.json")
     }
 
     /// All directories that should exist in a bootstrapped workspace.
@@ -203,7 +197,6 @@ impl WorkspaceLayout {
             self.subagents_dir(),
             self.projects_dir(),
             self.archive_dir(),
-            self.cron_dir(),
             self.hooks_dir(),
             self.inbox_dir(),
             self.inbox_archive_dir(),
@@ -281,7 +274,7 @@ mod tests {
     }
 
     #[test]
-    fn layout_pulse_cron_paths() {
+    fn layout_pulse_action_paths() {
         let layout = WorkspaceLayout::new("/tmp/ws");
         assert_eq!(
             layout.heartbeat_yml(),
@@ -294,9 +287,9 @@ mod tests {
             "notify_yml path"
         );
         assert_eq!(
-            layout.cron_jobs_json(),
-            PathBuf::from("/tmp/ws/cron/jobs.json"),
-            "cron_jobs_json path"
+            layout.scheduled_actions_json(),
+            PathBuf::from("/tmp/ws/scheduled_actions.json"),
+            "scheduled_actions_json path"
         );
     }
 
@@ -304,7 +297,7 @@ mod tests {
     fn required_dirs_count() {
         let layout = WorkspaceLayout::new("/tmp/ws");
         let dirs = layout.required_dirs();
-        assert_eq!(dirs.len(), 12, "should have all required directories");
+        assert_eq!(dirs.len(), 11, "should have all required directories");
         assert!(
             dirs.contains(&PathBuf::from("/tmp/ws")),
             "root should be included"

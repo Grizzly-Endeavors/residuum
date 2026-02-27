@@ -39,7 +39,7 @@ pub enum Visibility {
     /// Observation came from a user-visible conversation turn.
     #[default]
     User,
-    /// Observation came from a background system turn (pulse, cron).
+    /// Observation came from a background system turn (pulse, actions).
     Background,
 }
 

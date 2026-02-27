@@ -3,7 +3,7 @@
 
 # ── Timezone (REQUIRED) ──────────────────────────────────────────────────────
 # IANA timezone name for all timestamps. Affects daily logs, memory
-# observations, cron scheduling, pulse active hours, and all stored data.
+# observations, pulse active hours, and all stored data.
 #
 # WARNING: Changing this value after initial setup is NOT recommended.
 # Existing timestamps will not be retroactively converted.
@@ -28,14 +28,13 @@ timezone = "America/New_York"
 # and the API key is read from the provider-specific env var or IRONCLAW_API_KEY.
 #
 # Roles: main (required), default (fallback for unset roles), observer,
-#        reflector, pulse, cron
+#        reflector, pulse
 [models]
 main = "anthropic/claude-sonnet-4-6"
 # default = "anthropic/claude-haiku-4-5"
 # observer = "google-api/gemini-3.0-flash"
 # reflector = "google-api/gemini-3.0-flash"
 # pulse = "anthropic/claude-haiku-4-5"
-# cron = "anthropic/claude-haiku-4-5"
 # embedding = "openai/text-embedding-3-small"
 
 # ── General settings ──────────────────────────────────────────────────────────
@@ -68,10 +67,6 @@ observer_force_threshold_tokens = 60000 # hard threshold: observe immediately, b
 
 # ── Pulse (ambient monitoring) ────────────────────────────────────────────────
 [pulse]
-enabled = true
-
-# ── Cron (scheduled tasks) ────────────────────────────────────────────────────
-[cron]
 enabled = true
 
 # ── WebSocket gateway ─────────────────────────────────────────────────────────

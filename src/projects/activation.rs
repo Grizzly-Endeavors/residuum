@@ -12,7 +12,7 @@ use super::manifest::{build_manifest, format_manifest};
 use super::scanner::{ProjectIndex, parse_project_md};
 use super::types::{ActiveProject, ProjectStatus};
 
-/// Shared project state, following the `CronStore` pattern.
+/// Shared project state, following the `ActionStore` pattern.
 pub type SharedProjectState = Arc<tokio::sync::Mutex<ProjectState>>;
 
 /// Project state manager: holds the index and optional active project.

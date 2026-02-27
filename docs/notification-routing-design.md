@@ -60,7 +60,7 @@ Task names in `NOTIFY.yml` correspond to:
 | Source | Task name |
 |--------|-----------|
 | Pulse | The pulse name from `HEARTBEAT.yml` (e.g., `work_check`) |
-| Cron | The job ID from `cron/jobs.json` (e.g., `nightly_backup`) |
+| Scheduled action | The action ID from `actions/scheduled_actions.json` (e.g., `nightly_backup`) |
 
 Agent-spawned subagents do **not** use NOTIFY.yml. Their output channels are specified directly in the `subagent_spawn` tool call (e.g., `channels: ["agent_feed", "ntfy"]`). The gateway validates channel names at spawn time against built-in channels and `config.toml` definitions. This keeps ad-hoc tasks ad-hoc — no need to edit NOTIFY.yml before delegating work.
 
@@ -164,7 +164,7 @@ Background task completes
           │
           ▼
     Determine channels:
-      ├── Pulse/Cron → Look up task name in NOTIFY.yml
+      ├── Pulse/Action → Look up task name in NOTIFY.yml
       └── Agent-spawned → Use channels from subagent_spawn call
           │
           ├── No channels → Done (transcript preserved, not delivered)
@@ -186,13 +186,13 @@ External channel delivery is fire-and-forget from the routing perspective. Failu
 
 ## Script Results
 
-Script-type background tasks (cron jobs running shell commands) follow the same routing:
+Script-type background tasks (scheduled actions running shell commands) follow the same routing:
 
 - The script runs to completion.
 - Exit code 0: the result summary is stdout. Routed normally by task name.
 - Exit code non-zero: the result summary includes stdout + stderr and the exit code. Routed normally by task name — the channels receiving the result see the failure.
 
-There is no automatic escalation based on exit code. If a user wants script failures to go to `agent_wake` and successes to go to `inbox`, they should use two separate cron jobs (one for the command, one for a health check) or route all results to `agent_wake` and let the agent decide what needs attention.
+There is no automatic escalation based on exit code. If a user wants script failures to go to `agent_wake` and successes to go to `inbox`, they should use two separate scheduled actions (one for the command, one for a health check) or route all results to `agent_wake` and let the agent decide what needs attention.
 
 ---
 
@@ -215,15 +215,15 @@ The agent's routing decisions are visible and reversible — the user can always
 
 ### Background tasks
 
-`NOTIFY.yml` is consumed by the `BackgroundTaskSpawner`'s result routing step for pulse and cron results. When a `BackgroundResult` arrives, the spawner checks the task's `ResultRouting`: `Notify` routes look up the task name in NOTIFY.yml, while `Direct` routes (from `subagent_spawn`) dispatch to the channels specified at spawn time.
+`NOTIFY.yml` is consumed by the `BackgroundTaskSpawner`'s result routing step for pulse and scheduled action results. When a `BackgroundResult` arrives, the spawner checks the task's `ResultRouting`: `Notify` routes look up the task name in NOTIFY.yml, while `Direct` routes (from `subagent_spawn`) dispatch to the channels specified at spawn time.
 
 ### Pulse system
 
 Pulse evaluation results are routed by pulse name. The `alert` field on individual pulse tasks in `HEARTBEAT.yml` is removed — it served no purpose once routing is by pulse name, not by urgency level. If different tasks within a pulse need different routing, they should be separate pulses.
 
-### Cron system
+### Scheduled actions system
 
-Cron job results are routed by job ID via NOTIFY.yml. Both `UserVisible` and `Background` delivery modes are replaced by the NOTIFY.yml routing — a job routed to `agent_feed` or `agent_wake` achieves the same effect as `UserVisible`, and a job routed to `inbox` or not listed achieves the same effect as `Background`.
+Scheduled action results are routed by action ID via NOTIFY.yml. Both `UserVisible` and `Background` delivery modes are replaced by the NOTIFY.yml routing — an action routed to `agent_feed` or `agent_wake` achieves the same effect as `UserVisible`, and an action routed to `inbox` or not listed achieves the same effect as `Background`.
 
 ### Agent-spawned subagents
 

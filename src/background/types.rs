@@ -186,7 +186,7 @@ mod tests {
         let result = BackgroundResult {
             id: "bg-001".to_string(),
             task_name: "email_check".to_string(),
-            source: TaskSource::Cron,
+            source: TaskSource::Action,
             summary: "3 new emails found".to_string(),
             transcript_path: None,
             status: TaskStatus::Completed,
@@ -200,7 +200,7 @@ mod tests {
             "should contain task name"
         );
         assert!(formatted.contains("bg-001"), "should contain task id");
-        assert!(formatted.contains("cron"), "should contain source");
+        assert!(formatted.contains("action"), "should contain source");
         assert!(formatted.contains("completed"), "should contain status");
         assert!(
             formatted.contains("3 new emails found"),

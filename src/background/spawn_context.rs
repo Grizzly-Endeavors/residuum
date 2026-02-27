@@ -1,7 +1,8 @@
 //! Spawn context: parameters needed to construct providers and `SubAgentResources`
-//! for background tasks (pulse, cron, and on-demand sub-agents).
+//! for background tasks (pulse, actions, and on-demand sub-agents).
 
 use std::collections::HashSet;
+use std::path::Path;
 
 use crate::config::ProviderSpec;
 use crate::config::{BackgroundConfig, BackgroundModelTier};
@@ -96,4 +97,34 @@ pub(crate) async fn build_spawn_resources(
         build_config,
     )
     .await)
+}
+
+/// Load a sub-agent preset and resolve its model tier.
+///
+/// Returns the resolved tier and the preset frontmatter+body (if loaded successfully).
+/// Used by pulse, scheduled actions, and on-demand spawning.
+///
+/// # Errors
+/// Returns an error if the preset index cannot be scanned or the preset cannot be loaded.
+pub(crate) async fn load_preset_for_spawn(
+    subagents_dir: &Path,
+    preset_name: &str,
+    fallback_tier: BackgroundModelTier,
+) -> Result<
+    (
+        BackgroundModelTier,
+        Option<(SubagentPresetFrontmatter, String)>,
+    ),
+    anyhow::Error,
+> {
+    let index = crate::subagents::SubagentPresetIndex::scan(subagents_dir).await?;
+    let (fm, body) = index.load_preset(preset_name).await?;
+
+    let tier: BackgroundModelTier = fm
+        .model_tier
+        .as_deref()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(fallback_tier);
+
+    Ok((tier, Some((fm, body))))
 }

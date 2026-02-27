@@ -28,8 +28,8 @@ impl NotifyConfig {
 pub enum TaskSource {
     /// Result from a pulse check (HEARTBEAT.yml).
     Pulse,
-    /// Result from a cron job.
-    Cron,
+    /// Result from a scheduled action.
+    Action,
     /// Result from an agent-spawned background task.
     Agent,
 }
@@ -40,7 +40,7 @@ impl TaskSource {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Pulse => "pulse",
-            Self::Cron => "cron",
+            Self::Action => "action",
             Self::Agent => "agent",
         }
     }

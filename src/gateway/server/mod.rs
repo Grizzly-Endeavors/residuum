@@ -4,7 +4,7 @@
 //! through a single agent instance. All messages are forwarded to all clients;
 //! verbose filtering is handled client-side.
 
-mod cron;
+mod actions;
 mod helpers;
 mod memory;
 mod spawn_helpers;
@@ -17,6 +17,7 @@ use axum::routing::get;
 use tokio::sync::{broadcast, mpsc};
 use tokio::time::Duration;
 
+use crate::actions::store::ActionStore;
 use crate::agent::Agent;
 use crate::agent::context::{ProjectsContext, PromptContext, SkillsContext, SubagentsContext};
 use crate::agent::interrupt::Interrupt;
@@ -24,7 +25,6 @@ use crate::background::BackgroundTaskSpawner;
 use crate::background::types::{BackgroundResult, ResultRouting, format_background_result};
 use crate::channels::types::{ReplyHandle, RoutedMessage};
 use crate::config::Config;
-use crate::cron::store::CronStore;
 use crate::error::IronclawError;
 use crate::mcp::SharedMcpRegistry;
 use crate::memory::observer::{ObserveAction, Observer};
@@ -47,7 +47,7 @@ use super::protocol::ServerMessage;
 use crate::agent::context::loading::{
     build_project_context_strings, build_skill_context_strings, build_subagents_context_string,
 };
-use cron::spawn_due_cron_jobs;
+use crate::background::spawn_context::load_preset_for_spawn;
 use helpers::project_context_label;
 use memory::{
     execute_observation, persist_and_check_thresholds, run_forced_observe, run_forced_reflect,
@@ -95,13 +95,12 @@ struct GatewayRuntime {
     search_index: Arc<MemoryIndex>,
     vector_store: Option<Arc<VectorStore>>,
     embedding_provider: Option<Arc<dyn EmbeddingProvider>>,
-    cron_store: Arc<tokio::sync::Mutex<CronStore>>,
-    cron_notify: Arc<tokio::sync::Notify>,
+    action_store: Arc<tokio::sync::Mutex<ActionStore>>,
+    action_notify: Arc<tokio::sync::Notify>,
     mcp_registry: SharedMcpRegistry,
     project_state: SharedProjectState,
     skill_state: SharedSkillState,
     pulse_enabled: bool,
-    cron_enabled: bool,
     notification_router: NotificationRouter,
     background_spawner: Arc<BackgroundTaskSpawner>,
     background_result_rx: mpsc::Receiver<BackgroundResult>,
@@ -251,13 +250,12 @@ pub async fn run_gateway(cfg: Config) -> Result<GatewayExit, IronclawError> {
         search_index: parts.search_index,
         vector_store: parts.vector_store,
         embedding_provider: parts.embedding_provider,
-        cron_store: parts.cron_store,
-        cron_notify: parts.cron_notify,
+        action_store: parts.action_store,
+        action_notify: parts.action_notify,
         mcp_registry: parts.mcp_registry,
         project_state: parts.project_state,
         skill_state: parts.skill_state,
         pulse_enabled: parts.pulse_enabled,
-        cron_enabled: parts.cron_enabled,
         notification_router: parts.notification_router,
         background_spawner: parts.background_spawner,
         background_result_rx: parts.background_result_rx,
@@ -658,9 +656,9 @@ async fn run_wake_turn_handler(
     None
 }
 
-/// Inject cron main-turn prompts and fire a single wake turn if any are due.
-async fn handle_cron_main_turns(
-    main_turns: Vec<cron::CronMainTurn>,
+/// Inject scheduled action main-turn prompts and fire a single wake turn if any are due.
+async fn handle_action_main_turns(
+    main_turns: Vec<actions::ActionMainTurn>,
     rt: &mut GatewayRuntime,
     observe_deadline: &mut Option<tokio::time::Instant>,
 ) -> Option<GatewayExit> {
@@ -669,7 +667,7 @@ async fn handle_cron_main_turns(
     }
 
     for turn in &main_turns {
-        let formatted = format!("[Scheduled cron job: {}]\n{}", turn.job_name, turn.prompt);
+        let formatted = format!("[Scheduled action: {}]\n{}", turn.action_name, turn.prompt);
         rt.agent.inject_system_message(formatted.clone());
         let project_ctx = project_context_label(&rt.project_state, &rt.layout).await;
         let action = persist_and_check_thresholds(
@@ -700,7 +698,7 @@ async fn handle_cron_main_turns(
 
 /// Run the main gateway event loop.
 ///
-/// Processes inbound messages, pulse ticks, cron ticks, and memory pipeline
+/// Processes inbound messages, pulse ticks, action ticks, and memory pipeline
 /// signals until shutdown or reload is requested.
 #[expect(
     clippy::too_many_lines,
@@ -708,7 +706,7 @@ async fn handle_cron_main_turns(
 )]
 async fn run_event_loop(mut rt: GatewayRuntime) -> GatewayExit {
     let mut pulse_tick = tokio::time::interval(Duration::from_secs(60));
-    let mut cron_tick = tokio::time::interval(Duration::from_secs(30));
+    let mut action_tick = tokio::time::interval(Duration::from_secs(30));
     pulse_tick.tick().await; // skip first tick
     let mut observe_deadline: Option<tokio::time::Instant> = None;
 
@@ -907,7 +905,7 @@ async fn run_event_loop(mut rt: GatewayRuntime) -> GatewayExit {
                             wake_requested = true;
                         }
                         PulseExecution::SubAgent { task, preset_name: Some(name) } => {
-                            match cron::load_preset_for_spawn(
+                            match load_preset_for_spawn(
                                 &rt.layout.subagents_dir(), &name,
                                 crate::config::BackgroundModelTier::Small,
                             ).await {
@@ -957,26 +955,26 @@ async fn run_event_loop(mut rt: GatewayRuntime) -> GatewayExit {
                 }
             }
 
-            // ── Cron timer ────────────────────────────────────────────────
-            _ = cron_tick.tick(), if rt.cron_enabled => {
-                let main_turns = spawn_due_cron_jobs(
-                    &rt.cron_store, &rt.layout,
+            // ── Action timer ──────────────────────────────────────────────
+            _ = action_tick.tick() => {
+                let main_turns = actions::spawn_due_actions(
+                    &rt.action_store, &rt.layout,
                     &rt.spawn_context, &rt.project_state, &rt.skill_state,
-                    &rt.mcp_registry, &rt.background_spawner, rt.tz,
+                    &rt.mcp_registry, &rt.background_spawner,
                 ).await;
-                if let Some(exit) = handle_cron_main_turns(main_turns, &mut rt, &mut observe_deadline).await {
+                if let Some(exit) = handle_action_main_turns(main_turns, &mut rt, &mut observe_deadline).await {
                     return exit;
                 }
             }
 
-            // ── Cron notify (tool mutation wakeup) ────────────────────────
-            () = rt.cron_notify.notified(), if rt.cron_enabled => {
-                let main_turns = spawn_due_cron_jobs(
-                    &rt.cron_store, &rt.layout,
+            // ── Action notify (tool mutation wakeup) ─────────────────────
+            () = rt.action_notify.notified() => {
+                let main_turns = actions::spawn_due_actions(
+                    &rt.action_store, &rt.layout,
                     &rt.spawn_context, &rt.project_state, &rt.skill_state,
-                    &rt.mcp_registry, &rt.background_spawner, rt.tz,
+                    &rt.mcp_registry, &rt.background_spawner,
                 ).await;
-                if let Some(exit) = handle_cron_main_turns(main_turns, &mut rt, &mut observe_deadline).await {
+                if let Some(exit) = handle_action_main_turns(main_turns, &mut rt, &mut observe_deadline).await {
                     return exit;
                 }
             }

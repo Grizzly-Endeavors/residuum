@@ -17,7 +17,7 @@ use self::context::{MemoryContext, PromptContext, StatusLine};
 use self::recent_messages::RecentMessages;
 use self::turn::execute_turn;
 
-/// Result of a background system turn (pulse or cron).
+/// Result of a background system turn (pulse or scheduled action).
 pub struct SystemTurnResult {
     /// The assistant's final text response.
     pub response: String,
@@ -264,7 +264,7 @@ impl Agent {
         .await
     }
 
-    /// Run a background agent thread for pulse or cron tasks.
+    /// Run a background agent thread for pulse or scheduled action tasks.
     ///
     /// Creates a temporary message buffer that is not added to the main conversation.
     /// Returns both the response text and the thread messages so the caller

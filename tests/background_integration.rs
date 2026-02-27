@@ -289,7 +289,7 @@ mod background_integration {
         let task = BackgroundTask {
             id: "list-meta-1".to_string(),
             task_name: "metadata_task".to_string(),
-            source: TaskSource::Cron,
+            source: TaskSource::Action,
             execution: Execution::Script(ScriptConfig {
                 command: "sleep".to_string(),
                 args: vec!["30".to_string()],
@@ -314,8 +314,8 @@ mod background_integration {
             "preview should contain command"
         );
         assert!(
-            matches!(info.source, TaskSource::Cron),
-            "source should be Cron"
+            matches!(info.source, TaskSource::Action),
+            "source should be Action"
         );
 
         // Clean up
@@ -411,7 +411,7 @@ mod background_integration {
         let result = ironclaw::background::types::BackgroundResult {
             id: "fmt-1".to_string(),
             task_name: "my_task".to_string(),
-            source: TaskSource::Cron,
+            source: TaskSource::Action,
             summary: "task completed successfully".to_string(),
             transcript_path: Some(PathBuf::from("/tmp/bg-fmt-1.log")),
             status: TaskStatus::Completed,
@@ -422,25 +422,25 @@ mod background_integration {
         let formatted = format_background_result(&result);
         assert!(formatted.contains("my_task"));
         assert!(formatted.contains("fmt-1"));
-        assert!(formatted.contains("cron"));
+        assert!(formatted.contains("action"));
         assert!(formatted.contains("completed"));
         assert!(formatted.contains("task completed successfully"));
         assert!(formatted.contains("/tmp/bg-fmt-1.log"));
     }
 
-    // ── Phase 5: Pulse/cron via background spawner ──────────────────────
+    // ── Phase 5: Pulse/actions via background spawner ───────────────────
 
     #[tokio::test]
-    async fn send_result_delivers_cron_system_event() {
+    async fn send_result_delivers_action_event() {
         let dir = tempdir().unwrap();
         let (tx, mut rx) = mpsc::channel(32);
         let spawner =
             BackgroundTaskSpawner::new(tx, 3, PathBuf::from("/tmp"), dir.path().to_path_buf());
 
         let result = ironclaw::background::types::BackgroundResult {
-            id: "cron-evt-test-1".to_string(),
+            id: "action-evt-test-1".to_string(),
             task_name: "reminder".to_string(),
-            source: TaskSource::Cron,
+            source: TaskSource::Action,
             summary: "time to stretch".to_string(),
             transcript_path: None,
             status: TaskStatus::Completed,
@@ -451,10 +451,10 @@ mod background_integration {
         spawner.send_result(result).await.unwrap();
 
         let received = rx.recv().await.unwrap();
-        assert_eq!(received.id, "cron-evt-test-1");
+        assert_eq!(received.id, "action-evt-test-1");
         assert_eq!(received.task_name, "reminder");
         assert_eq!(received.summary, "time to stretch");
-        assert!(matches!(received.source, TaskSource::Cron));
+        assert!(matches!(received.source, TaskSource::Action));
         assert!(matches!(received.status, TaskStatus::Completed));
     }
 

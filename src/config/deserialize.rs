@@ -27,8 +27,6 @@ pub(super) struct ConfigFile {
     pub(super) memory: Option<MemoryConfigFile>,
     /// Pulse subsystem configuration.
     pub(super) pulse: Option<PulseConfigFile>,
-    /// Cron subsystem configuration.
-    pub(super) cron: Option<CronConfigFile>,
     /// Gateway configuration.
     pub(super) gateway: Option<GatewayConfigFile>,
     /// Discord bot configuration.
@@ -74,8 +72,6 @@ pub(super) struct ModelsConfigFile {
     pub(super) reflector: Option<String>,
     /// Pulse agent model.
     pub(super) pulse: Option<String>,
-    /// Cron agent model.
-    pub(super) cron: Option<String>,
     /// Embedding model (no fallback to default/main).
     pub(super) embedding: Option<String>,
 }
@@ -119,14 +115,6 @@ pub(super) struct SearchConfigFile {
 #[serde(deny_unknown_fields)]
 pub(super) struct PulseConfigFile {
     /// Whether the pulse system is enabled.
-    pub(super) enabled: Option<bool>,
-}
-
-/// Raw TOML `[cron]` section.
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub(super) struct CronConfigFile {
-    /// Whether the cron system is enabled.
     pub(super) enabled: Option<bool>,
 }
 

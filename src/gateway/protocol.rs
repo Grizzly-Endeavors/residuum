@@ -68,9 +68,9 @@ pub enum ServerMessage {
         /// The response content.
         content: String,
     },
-    /// A system event from cron or pulse.
+    /// A system event from a scheduled action or pulse.
     SystemEvent {
-        /// Source of the event (e.g. `"cron: my_job"` or `"pulse: my_check"`).
+        /// Source of the event (e.g. `"action: my_task"` or `"pulse: my_check"`).
         source: String,
         /// The event content.
         content: String,

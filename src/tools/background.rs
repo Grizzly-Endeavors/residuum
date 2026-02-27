@@ -244,7 +244,7 @@ impl Tool for SubAgentSpawnTool {
 
         if preset_name.eq_ignore_ascii_case("main") {
             return Err(ToolError::InvalidArguments(
-                "\"main\" is reserved for scheduled tasks (pulse/cron). Use a named preset instead."
+                "\"main\" is reserved for scheduled tasks (pulse/actions). Use a named preset instead."
                     .to_string(),
             ));
         }
@@ -402,7 +402,7 @@ fn generate_agent_task_id() -> String {
     format!("agent-{rand_part:08x}-{timestamp_ms}")
 }
 
-fn is_valid_channel(name: &str, external: &HashSet<String>) -> bool {
+pub(crate) fn is_valid_channel(name: &str, external: &HashSet<String>) -> bool {
     matches!(name, "agent_wake" | "agent_feed" | "inbox") || external.contains(name)
 }
 
