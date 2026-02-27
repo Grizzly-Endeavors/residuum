@@ -234,3 +234,69 @@ pub enum BackgroundModelTier {
     /// Large model for complex tasks.
     Large,
 }
+
+impl std::fmt::Display for BackgroundModelTier {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Small => f.write_str("small"),
+            Self::Medium => f.write_str("medium"),
+            Self::Large => f.write_str("large"),
+        }
+    }
+}
+
+impl std::str::FromStr for BackgroundModelTier {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "small" => Ok(Self::Small),
+            "medium" => Ok(Self::Medium),
+            "large" => Ok(Self::Large),
+            other => Err(format!(
+                "invalid model tier '{other}': must be small, medium, or large"
+            )),
+        }
+    }
+}
+
+#[cfg(test)]
+#[expect(clippy::unwrap_used, reason = "test code uses unwrap for clarity")]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn from_str_valid_tiers() {
+        assert_eq!(
+            "small".parse::<BackgroundModelTier>().unwrap(),
+            BackgroundModelTier::Small
+        );
+        assert_eq!(
+            "medium".parse::<BackgroundModelTier>().unwrap(),
+            BackgroundModelTier::Medium
+        );
+        assert_eq!(
+            "large".parse::<BackgroundModelTier>().unwrap(),
+            BackgroundModelTier::Large
+        );
+    }
+
+    #[test]
+    fn from_str_invalid() {
+        assert!("invalid".parse::<BackgroundModelTier>().is_err());
+        assert!("SMALL".parse::<BackgroundModelTier>().is_err());
+        assert!("".parse::<BackgroundModelTier>().is_err());
+    }
+
+    #[test]
+    fn display_round_trips() {
+        for tier in [
+            BackgroundModelTier::Small,
+            BackgroundModelTier::Medium,
+            BackgroundModelTier::Large,
+        ] {
+            let s = tier.to_string();
+            assert_eq!(s.parse::<BackgroundModelTier>().unwrap(), tier);
+        }
+    }
+}

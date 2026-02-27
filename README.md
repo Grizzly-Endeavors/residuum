@@ -2,42 +2,117 @@
 
 One Agent, for *You*.
 
-Memory the lasts, capabilities that grow with you, proactivity without the pricetag. Built to be an assistant that learns with you, providing support in the areas you need it. 
+Memory that lasts, capabilities that grow with you, proactivity without the pricetag. Built to be an assistant that learns with you, providing support in the areas you need it.
+
+## Table of Contents
+
+- [What Is IronClaw?](#what-is-ironclaw)
+- [Design Principles](#design-principles)
+- [Why Rust?](#why-rust)
+- [The Workspace](#the-workspace)
+- [Extensibility](#extensibility)
+- [Supported Providers](#supported-providers)
+- [Getting Started](#getting-started)
+- [Configuration Reference](#configuration-reference)
+- [Architecture](#architecture)
+- [Contributing](#contributing)
+- [License](#license)
 
 ## What Is IronClaw?
 
-IronClaw is a *personal* assistant. Not multi-user, not a swarm, not an automation platform. The design explicitly rejects the kitchen sink approach in favor of depth in the areas that matter for an always-on personal assistant. 
+IronClaw is a *personal* assistant. Not multi-user, not a swarm, not an automation platform. The design explicitly rejects the kitchen sink approach in favor of depth in the areas that matter for an always-on personal assistant.
 
 Continuity is the biggest area, most frameworks try to carry context across sessions, and while some approaches almost bridge the gap, it can still feel like you have to re-explain things the agent should know every time a new session starts. IronClaw does not have sessions, it has one feed. Whether you message your agent via the CLI or Discord (or any other platform), it picks up right where you left off. (More on how this works later)
 
-The second area is *efficient* proactivity. Instead of burning frontier tokens to ckeck if there's anything to do every thirty minutes. HEARTBEAT.yml allows the agent or user to define individual Pulses, each with their own schedule and set of tasks. Want the agent to check your email every two hours? Have it create a pulse. Want it to check for action items in your conversations from that day? Make a pulse. If you don't mind the token spend, and like the freeform "is there anything to do?" checks, make a pulse and point it at a markdown file.
+The second area is *efficient* proactivity. Instead of burning frontier tokens to check if there's anything to do every thirty minutes. HEARTBEAT.yml allows the agent or user to define individual Pulses, each with their own schedule and set of tasks. Want the agent to check your email every two hours? Have it create a pulse. Want it to check for action items in your conversations from that day? Make a pulse. If you don't mind the token spend, and like the freeform "is there anything to do?" checks, make a pulse and point it at a markdown file.
 
-Lastly, IronClaw prioritizes giving your agent everything it needs to keep up with the full scope of your life, *without* buring thousands of tokens to do it. Projects allow your agent to always have a lightweight index of the important areas and work in your life. Instead of trying to juggle everything all the time, it can activate a project when it matters, and deactivate it when it doesn't. Your agent never has to guess where to look for important information.
+Lastly, IronClaw prioritizes giving your agent everything it needs to keep up with the full scope of your life, *without* burning thousands of tokens to do it. Projects allow your agent to always have a lightweight index of the important areas and work in your life. Instead of trying to juggle everything all the time, it can activate a project when it matters, and deactivate it when it doesn't. Your agent never has to guess where to look for important information.
 
 ### Key Capabilities
 
-- **Observational Memory** — Two-tier compression system (Observer + Reflector) that keeps a compressed event history always in the agent's context window. No "memory cliff" where yesterday's context disappears.
-- **Projects** — Structured context management with progressive disclosure. The agent sees a lightweight index of all projects, loads full context on activation, and reads specific files on demand. Write-scoped to the active project's workspace.
-- **Pulse Scheduling** — Machine-parseable `HEARTBEAT.yml` replaces freeform heartbeat files. The gateway handles scheduling; the LLM only fires when something is actually due. Zero token cost when idle.
-- **Cron Jobs** — The agent can schedule its own wake-ups: one-shot reminders, recurring tasks, deferred follow-ups.
-- **Skills** — Compatible with the [Agent Skills spec](https://agentskills.io). Dynamic runtime activation — metadata is always visible, full instructions load only when the agent decides a skill is relevant.
-- **MCP** — Native Model Context Protocol client. Connects to tool servers defined globally or per-project. Full lifecycle management.
+**Observational Memory** — Most agent frameworks punt on long-term memory, or try to solve it with RAG over old transcripts. IronClaw runs a two-tier compression pipeline that keeps the agent aware of what's been happening without carrying raw conversation history. The Observer distills recent messages into compact observations, each pointing back to the raw transcript (episode) it came from. These observations stay in the agent's context window permanently. When they accumulate, the Reflector condenses them further — dropping things that are outdated or no longer relevant, merging the rest, preserving episode references throughout. The result: the agent always knows what you've been working on recently, and knows exactly where to find the stuff you haven't touched in a while through RAG-supported memory search.
 
-## Requirements
+**Projects** — Your agent keeps a lightweight index of every project in its context at all times: just a name and a one-liner. When the conversation shifts to something relevant, the agent activates that project — loading the most recent logs, an overview of the project with a light manifest, and scoped tools/MCP servers. When the conversation moves on, it deactivates and logs a session summary. One project active at a time, no token waste carrying context for things that aren't relevant right now. The agent can create, archive, and maintain projects on its own, or you can drop files into a project's `references/` folder and it picks them up automatically.
+
+**Pulse Scheduling** — `HEARTBEAT.yml` defines named groups of tasks on independent schedules. The gateway handles all the timing; the LLM only runs when a pulse is actually due, and only receives the tasks it needs to evaluate. Active hours keep your agent from checking work email at 2am. Results that find nothing actionable are logged silently — zero token cost when there's nothing to do. The agent can create and modify pulses on its own, or you can edit the YAML directly.
+
+**Notifications** — `NOTIFY.yml` controls where results from background work end up. Route a pulse result to `agent_wake` (starts a turn immediately), `agent_feed` (appears passively at the next conversation), `inbox` (stored silently for later), or an external channel like ntfy push notifications. The agent maintains this file — tell it "stop pinging me about PR reviews" and it updates the routing. Everything is human-readable and overridable.
+
+**Inbox** — The agent's "deal with it later" queue. Drop files, notes, or task results here for the agent to pick up when it gets to them. The agent sees an unread count at every turn but never loads the contents unless it needs to, so inbox items don't eat your token budget. Items are individual files on disk, so external tools can drop things in too.
+
+## Design Principles
+
+**File-first transparency.** All agent state lives in plain text files — Markdown, YAML, JSON, TOML. If you can open it in a text editor, the system is working as intended. This isn't just a convenience; it's the trust model. You can always see exactly what your agent knows, what it's scheduled to do, and why it made the decisions it made. The filesystem is the source of truth. There *are* derived indexes — a tantivy search index and an optional sqlite-vec vector store — but they exist to make memory searchable, not to hold state. They're rebuilt from the plain text files on startup and can be deleted without losing anything.
+
+**Right work in the right place.** LLMs are expensive and inconsistent at deterministic tasks. The gateway handles scheduling, file watching, and schema validation — work that a YAML parser and a timestamp comparison can do for free. The LLM handles judgment: what's worth alerting about, which context is relevant, what to write in a project's notes. Most agent frameworks burn tokens to say "nothing to do." IronClaw only wakes the model when there's something worth thinking about.
+
+**Independent systems that compose through shared data.** Memory, Projects, Pulse scheduling, and Notifications are designed independently. They share a data layer — the workspace filesystem and the observation log — which means improvements to one naturally benefit the others, but they don't depend on each other. You can run Observational Memory without Projects. You can run Pulses without Memory. Each system is valuable on its own. Tight coupling creates fragility; shared data creates opportunity without obligation.
+
+**Autonomy with visibility.** The agent should act on its own — activating project contexts, archiving completed work, adjusting notification behavior, creating scheduled tasks. Requiring permission for routine organizational decisions defeats the purpose of having an agent. But every autonomous action is visible: files the user can read, alerts when something gets archived, routing rules in a YAML file instead of buried in code. The agent has broad autonomy; the user has full visibility.
+
+### Why Rust?
+
+> Single binary, no runtime dependencies, lightweight, reliable, blah blah blah. Rust wasn't the right choice for this project. I had to rebuild boilerplate that there are existing libraries for, cut myself off from a lot of extensibility options, and the single user target means it doesn't get most of the benefits of using the language. But I ***Really*** hate Python and Typescript. I've tried both in many projects, but I was cursed by a computer science major who convinced me to write my first coding project in Rust, and now I can't stand anything else. 
+>
+
+## The Workspace
+
+The workspace at `~/.ironclaw/workspace/` is your agent's home. It owns and manages this space — maintaining its own notes, memory, project state, and schedules as it works with you over time.
+
+You provide the guidance: identity files like `SOUL.md` (persona and boundaries), `USER.md` (your preferences and info), and `AGENTS.md` (operating instructions) tell the agent who it is and who you are. You can also drop reference material into project folders. But everything else — memory, observations, project notes, pulse schedules, notification routing — is the agent's domain. It creates, updates, and organizes these files as part of its normal operation.
+
+```
+workspace/
+├── SOUL.md                 # Agent persona, boundaries, and identity
+├── AGENTS.md               # Operating instructions
+├── USER.md                 # User info and preferences
+├── MEMORY.md               # Curated long-term memory
+├── ENVIRONMENT.md          # Local environment notes (optional)
+├── HEARTBEAT.yml           # Pulse schedule definitions
+├── NOTIFY.yml              # Notification routing
+│
+├── memory/                 # Observation log, episodes, search index
+│
+├── projects/
+│   └── my-project/
+│       ├── PROJECT.md      # Frontmatter (name, description, tools, MCP servers)
+│       ├── notes/          # Agent-maintained notes + session logs
+│       ├── references/     # User-provided reference material
+│       ├── workspace/      # Agent work output (write-scoped)
+│       └── skills/         # Project-scoped skills
+│
+├── archive/                # Completed projects
+├── skills/                 # Workspace-global skills
+└── inbox/                  # Queued items for later processing
+```
+
+Every file is plain text, human-readable, and human-editable. That's a transparency guarantee, not an invitation to manually configure everything. You *can* read and edit anything — and sometimes you'll want to — but the intended workflow is telling your agent what you need and letting it manage the details.
+
+## Extensibility
+
+**Skills** — Skills are packaged instructions that extend the agent's capabilities without code changes. Each skill is a Markdown file (`SKILL.md`) with a name, description, activation trigger, and instructions. Skills can live at the workspace level or scoped to a specific project, and the agent activates them dynamically when they're relevant. Want your agent to follow a specific code review process? Write a skill. Want project-specific deployment steps? Drop a skill in that project's `skills/` folder.
+
+**MCP** — IronClaw is a native MCP (Model Context Protocol) client. Configure MCP servers per-project or globally, and their tools are automatically available to the agent alongside built-in tools. This is how IronClaw connects to external services — web search, file systems, APIs, databases — without baking integrations into the core.
+
+**Cron** — The agent can schedule its own one-shot or recurring jobs: reminders, deferred follow-ups, recurring check-ins. Jobs persist across restarts and support cron expressions, fixed times, and interval-based schedules. Unlike Pulses (which are user/agent-defined task groups on a heartbeat), cron jobs are lightweight, individual scheduled actions the agent creates on the fly.
+
+## Supported Providers
+
+| Provider | Example Models |
+|----------|----------------|
+| Anthropic | `claude-sonnet-4-6`, `claude-haiku-4-5` |
+| OpenAI | `gpt-4o`, `gpt-4o-mini` (also any OpenAI-compatible API: vLLM, LM Studio, Cerebras, etc.) |
+| Google Gemini | `gemini-2.5-flash`, `gemini-2.5-pro` |
+| Ollama | `llama3`, `mistral`, any local model |
+
+## Getting Started
+
+### Requirements
 
 - Rust 1.85+ (2024 edition)
-- An API key for at least one supported LLM provider
+- An API key for at least one supported provider
 
-### Supported Providers
-
-| Provider | Protocol | Example models |
-|----------|----------|----------------|
-| Anthropic | Messages API | `claude-sonnet-4-6`, `claude-haiku-4-5` |
-| OpenAI | Chat Completions | `gpt-4o`, `gpt-4o-mini` (also any OpenAI-compatible API: vLLM, LM Studio, Cerebras, etc.) |
-| Google Gemini | generateContent | `gemini-2.5-flash`, `gemini-2.5-pro` |
-| Ollama | Ollama REST API | `llama3`, `mistral`, any local model |
-
-## Quick Start
+### Build & First Run
 
 ```bash
 # Build
@@ -88,7 +163,7 @@ While connected, the following slash commands are available:
 | `/help` | Show available commands |
 | `/quit` | Disconnect |
 
-## Configuration
+## Configuration Reference
 
 Single TOML file at `~/.ironclaw/config.toml`. An annotated example with all options is generated at `~/.ironclaw/config.example.toml` on every boot.
 
@@ -147,95 +222,36 @@ enabled = true
 | `IRONCLAW_WORKSPACE` | Override workspace directory |
 | `RUST_LOG` | Logging level (`debug`, `trace`, etc.) |
 
-## Workspace
-
-All agent state lives in human-readable files under `~/.ironclaw/workspace/`:
-
-```
-workspace/
-├── SOUL.md                 # Agent persona, boundaries, and identity
-├── AGENTS.md               # Operating instructions
-├── USER.md                 # User info and preferences
-├── MEMORY.md               # Curated long-term memory
-├── ENVIRONMENT.md          # Local environment notes (optional)
-├── HEARTBEAT.yml           # Pulse schedule definitions
-├── NOTIFY.yml              # Notification routing
-│
-├── memory/
-│   ├── observations.json           # Compressed event history (always in context)
-│   ├── recent_messages.json        # Unobserved messages (persists across restarts)
-│   ├── recent_context.json         # Latest observer narrative
-│   └── episodes/                   # Raw episode transcripts
-│
-├── projects/
-│   └── my-project/
-│       ├── PROJECT.md              # Frontmatter (name, description, tools, MCP servers)
-│       ├── notes/                  # Agent-maintained notes + session logs
-│       ├── references/             # User-provided reference material
-│       ├── workspace/              # Agent work output (write-scoped)
-│       └── skills/                 # Project-scoped skills
-│
-├── archive/                        # Completed projects
-├── skills/                         # Workspace-global skills (SKILL.md)
-└── cron/
-    └── jobs.json                   # Agent-created scheduled jobs
-```
-
-Every file is plain text (Markdown, JSON, YAML, TOML). If you can open it in a text editor, the system is working as intended.
-
 ## Architecture
 
 ```
-                    ┌──────────────────────────────────────────┐
+                    ┌───────────────────────────────────────────┐
   CLI ──────────┐   │              Gateway Server               │
-  Discord ──────┤   │                                          │
-  Webhook ──────┘   │  ┌─────────┐  ┌──────────┐  ┌────────┐  │
-        ─── WS ───► │  │  Agent  │  │  Memory  │  │ Pulse  │  │
-                    │  │  Turn   │  │ Observer │  │Sched.  │  │
-        ◄── WS ──── │  │  Loop   │  │Reflector │  │        │  │
-                    │  └────┬────┘  └──────────┘  └────────┘  │
-                    │       │                                  │
-                    │  ┌────┴────────────────────────────────┐ │
-                    │  │  Tools   MCP   Projects   Skills    │ │
-                    │  └─────────────────────────────────────┘ │
-                    │                                          │
-                    │  ┌─────────────────────────────────────┐ │
-                    │  │  LLM Providers                      │ │
+  Discord ──────┤   │                                           │
+  Webhook ──────┘   │  ┌─────────┐   ┌──────────┐   ┌────────┐  │
+        ─── WS ───► │  │  Agent  │   │  Memory  │   │ Pulse  │  │
+                    │  │  Turn   │   │ Observer │   │Sched.  │  │
+        ◄── WS ──── │  │  Loop   │   │Reflector │   │        │  │
+                    │  └────┬────┘   └──────────┘   └────────┘  │
+                    │       │                                   │
+                    │  ┌────┴────────────────────────────────┐  │
+                    │  │  Tools   MCP   Projects   Skills    │  │
+                    │  └─────────────────────────────────────┘  │
+                    │                                           │
+                    │  ┌──────────────────────────────────────┐ │
+                    │  │  LLM Providers                       │ │
                     │  │  Anthropic · OpenAI · Gemini · Ollama│ │
-                    │  └─────────────────────────────────────┘ │
-                    └──────────────────────────────────────────┘
+                    │  └──────────────────────────────────────┘ │
+                    └───────────────────────────────────────────┘
 ```
 
 The gateway runs an 8-arm `tokio::select!` event loop handling: inbound messages, pulse timer, cron timer, cron notify, observer cooldown, manual observe/reflect triggers, and reload signals.
 
 Subsystems are independent and compose through shared data — the workspace filesystem and the observation log. Memory doesn't import Projects. Skills doesn't import Pulse. They all compose at the Agent layer.
 
-## Tools
+## Contributing
 
-Built-in tools available to the agent:
-
-| Tool | Description |
-|------|-------------|
-| `read` | Read file contents |
-| `write` | Write files (scoped to active project workspace) |
-| `edit` | String replacement in files |
-| `exec` | Shell command execution (requires project opt-in) |
-| `memory_search` | BM25 search over workspace files |
-| `project_activate` | Activate a project context |
-| `project_deactivate` | Deactivate with mandatory session log |
-| `project_create` | Create a new project |
-| `project_archive` | Archive a completed project |
-| `project_list` | List all projects |
-| `skill_activate` | Load skill instructions into the system prompt |
-| `skill_deactivate` | Remove skill instructions |
-| `cron_add` | Schedule a one-shot or recurring job |
-| `cron_list` | List scheduled jobs |
-| `cron_update` | Modify an existing job |
-| `cron_remove` | Delete a job |
-
-MCP server tools are automatically unioned with built-in tools when servers are connected.
-
-## Testing
+### Testing
 
 ```bash
 # Run all tests (quiet mode — only shows failures and summary)
@@ -248,7 +264,7 @@ cargo test --test gateway_integration --quiet
 
 Pre-commit hooks enforce `cargo fmt --check`, `cargo clippy -- -D warnings`, and `cargo test` on every commit.
 
-## Project Structure
+### Project Structure
 
 ```
 src/
@@ -270,14 +286,14 @@ src/
 └── workspace/           # Layout conventions, identity files, bootstrap
 ```
 
-## Design Documents
+### Design Documents
 
-- [Design Philosophy](design-philosophy.md) — Guiding principles
-- [Architecture Design](ironclaw-design.md) — Full system architecture
-- [Memory & Proactivity](personal-agent-design.md) — Observational Memory and Pulse system design
-- [Projects System](projects-context-design.md) — Context management design
-- [Background Tasks](background-tasks-design.md) — Background task execution and turn loop interrupts
-- [Notification Routing](notification-routing-design.md) — NOTIFY.yml channel-based result delivery
+- [Design Philosophy](docs/design-philosophy.md) — Guiding principles
+- [Architecture Design](docs/ironclaw-design.md) — Full system architecture
+- [Memory & Proactivity](docs/personal-agent-design.md) — Observational Memory and Pulse system design
+- [Projects System](docs/projects-context-design.md) — Context management design
+- [Background Tasks](docs/background-tasks-design.md) — Background task execution and turn loop interrupts
+- [Notification Routing](docs/notification-routing-design.md) — NOTIFY.yml channel-based result delivery
 
 ## License
 

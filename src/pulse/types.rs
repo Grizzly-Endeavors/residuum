@@ -18,6 +18,9 @@ pub struct PulseDef {
     pub enabled: bool,
     pub schedule: String,
     pub active_hours: Option<String>,
+    /// Optional agent routing: `"main"` for a full wake turn, or a preset name.
+    #[serde(default)]
+    pub agent: Option<String>,
     #[serde(default)]
     pub tasks: Vec<PulseTask>,
 }
@@ -271,6 +274,62 @@ pulses:
         assert_eq!(pulse.name, "email_check", "pulse name should match");
         assert!(pulse.enabled, "enabled should default to true");
         assert_eq!(pulse.tasks.len(), 1, "should have one task");
+    }
+
+    #[test]
+    fn pulse_def_agent_field_present() {
+        let yaml = r#"
+pulses:
+  - name: daily_plan
+    schedule: "24h"
+    agent: main
+    tasks:
+      - name: plan
+        prompt: "Plan the day."
+"#;
+        let cfg: HeartbeatConfig = serde_yml::from_str(yaml).unwrap();
+        let pulse = cfg.pulses.first().unwrap();
+        assert_eq!(
+            pulse.agent.as_deref(),
+            Some("main"),
+            "agent should be 'main'"
+        );
+    }
+
+    #[test]
+    fn pulse_def_agent_field_preset_name() {
+        let yaml = r#"
+pulses:
+  - name: email_triage
+    schedule: "30m"
+    agent: memory-agent
+    tasks:
+      - name: check
+        prompt: "Check email."
+"#;
+        let cfg: HeartbeatConfig = serde_yml::from_str(yaml).unwrap();
+        let pulse = cfg.pulses.first().unwrap();
+        assert_eq!(
+            pulse.agent.as_deref(),
+            Some("memory-agent"),
+            "agent should be 'memory-agent'"
+        );
+    }
+
+    #[test]
+    fn pulse_def_agent_field_absent() {
+        let yaml = r#"
+pulses:
+  - name: basic
+    schedule: "1h"
+    tasks: []
+"#;
+        let cfg: HeartbeatConfig = serde_yml::from_str(yaml).unwrap();
+        let pulse = cfg.pulses.first().unwrap();
+        assert!(
+            pulse.agent.is_none(),
+            "agent should default to None when absent"
+        );
     }
 
     #[test]

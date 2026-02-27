@@ -525,6 +525,7 @@ mod background_integration {
             enabled: true,
             schedule: "1h".to_string(),
             active_hours: None,
+            agent: None,
             tasks: vec![PulseTask {
                 name: "check_health".to_string(),
                 prompt: "Check system health.".to_string(),

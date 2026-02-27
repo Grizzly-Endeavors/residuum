@@ -26,7 +26,7 @@ mod proactivity_integration {
         CompletionOptions, Message, ModelError, ModelProvider, ModelResponse, Role, ToolDefinition,
     };
     use ironclaw::notify::types::TaskSource;
-    use ironclaw::pulse::executor::build_pulse_task;
+    use ironclaw::pulse::executor::{PulseExecution, build_pulse_execution, build_pulse_task};
     use ironclaw::pulse::scheduler::PulseScheduler;
     use ironclaw::pulse::types::{PulseDef, PulseTask};
     use ironclaw::tools::{ToolFilter, ToolRegistry};
@@ -88,6 +88,7 @@ mod proactivity_integration {
             enabled: true,
             schedule: "30m".to_string(),
             active_hours: None,
+            agent: None,
             tasks: vec![PulseTask {
                 name: "check_inbox".to_string(),
                 prompt: "Check email.".to_string(),
@@ -187,6 +188,7 @@ mod proactivity_integration {
             enabled: true,
             schedule: "1h".to_string(),
             active_hours: None,
+            agent: None,
             tasks: vec![],
         };
 
@@ -200,6 +202,118 @@ mod proactivity_integration {
             prompt.contains("HEARTBEAT_OK"),
             "should still have HEARTBEAT_OK instruction with no tasks"
         );
+    }
+
+    // ── build_pulse_execution tests ────────────────────────────────────────
+
+    #[test]
+    fn build_pulse_execution_no_agent_returns_subagent() {
+        let pulse = sample_pulse();
+        match build_pulse_execution(&pulse) {
+            PulseExecution::SubAgent { task, preset_name } => {
+                assert!(preset_name.is_none(), "should have no preset");
+                assert_eq!(task.task_name, "email_check");
+                assert!(matches!(task.source, TaskSource::Pulse));
+            }
+            PulseExecution::MainWakeTurn { .. } => panic!("expected SubAgent"),
+        }
+    }
+
+    #[test]
+    fn build_pulse_execution_agent_main_returns_wake_turn() {
+        let mut pulse = sample_pulse();
+        pulse.agent = Some("main".to_string());
+        match build_pulse_execution(&pulse) {
+            PulseExecution::MainWakeTurn { pulse_name, prompt } => {
+                assert_eq!(pulse_name, "email_check");
+                assert!(prompt.contains("check_inbox"));
+                assert!(prompt.contains("HEARTBEAT_OK"));
+            }
+            PulseExecution::SubAgent { .. } => panic!("expected MainWakeTurn"),
+        }
+    }
+
+    #[test]
+    fn build_pulse_execution_agent_preset_returns_subagent_with_preset() {
+        let mut pulse = sample_pulse();
+        pulse.agent = Some("memory-agent".to_string());
+        match build_pulse_execution(&pulse) {
+            PulseExecution::SubAgent { task, preset_name } => {
+                assert_eq!(preset_name.as_deref(), Some("memory-agent"));
+                assert_eq!(task.task_name, "email_check");
+            }
+            PulseExecution::MainWakeTurn { .. } => panic!("expected SubAgent"),
+        }
+    }
+
+    // ── Cron agent field tests ──────────────────────────────────────────
+
+    #[tokio::test]
+    async fn cron_store_round_trip_with_agent_field() {
+        use ironclaw::cron::store::CronStore;
+        use ironclaw::cron::types::{CronJob, CronJobState, CronPayload, CronSchedule};
+
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("jobs.json");
+
+        let now = chrono::Utc::now().naive_utc();
+        let job = CronJob {
+            id: "cron-agent-test".to_string(),
+            name: "agent turn with preset".to_string(),
+            description: None,
+            enabled: true,
+            delete_after_run: false,
+            created_at: now,
+            updated_at: now,
+            schedule: CronSchedule::Every {
+                every_ms: 3_600_000,
+                anchor_ms: 0,
+            },
+            payload: CronPayload::AgentTurn {
+                message: "Run a check.".to_string(),
+                agent: Some("memory-agent".to_string()),
+            },
+            state: CronJobState::default(),
+        };
+
+        let mut store = CronStore::load(&path).await.unwrap();
+        store.add_job(job);
+        store.save().await.unwrap();
+
+        let reloaded = CronStore::load(&path).await.unwrap();
+        let loaded = reloaded.list_jobs().first().unwrap();
+        match &loaded.payload {
+            CronPayload::AgentTurn { message, agent } => {
+                assert_eq!(message, "Run a check.");
+                assert_eq!(agent.as_deref(), Some("memory-agent"));
+            }
+            CronPayload::SystemEvent { .. } => panic!("expected AgentTurn"),
+        }
+    }
+
+    #[tokio::test]
+    async fn cron_store_backward_compat_no_agent_field() {
+        use ironclaw::cron::store::CronStore;
+        use ironclaw::cron::types::CronPayload;
+
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("jobs.json");
+
+        // Write a jobs.json that predates the agent field
+        let legacy_json = r#"[{"id":"cron-legacy","name":"legacy","description":null,"enabled":true,"delete_after_run":false,"created_at":"2026-02-19T12:00","updated_at":"2026-02-19T12:00","schedule":{"type":"every","every_ms":3600000,"anchor_ms":0},"payload":{"type":"agent_turn","message":"do stuff"},"state":{"next_run_at":null,"last_run_at":null,"last_status":null,"last_error":null,"consecutive_errors":0}}]"#;
+        std::fs::write(&path, legacy_json).unwrap();
+
+        let store = CronStore::load(&path).await.unwrap();
+        let loaded = store.list_jobs().first().unwrap();
+        match &loaded.payload {
+            CronPayload::AgentTurn { agent, .. } => {
+                assert!(
+                    agent.is_none(),
+                    "agent should default to None for legacy jobs"
+                );
+            }
+            CronPayload::SystemEvent { .. } => panic!("expected AgentTurn"),
+        }
     }
 
     // ── Scheduler tests ──────────────────────────────────────────────────────
@@ -265,6 +379,7 @@ mod proactivity_integration {
             },
             payload: CronPayload::AgentTurn {
                 message: "Run a check.".to_string(),
+                agent: None,
             },
             state: CronJobState::default(),
         };

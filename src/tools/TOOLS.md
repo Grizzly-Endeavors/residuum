@@ -386,6 +386,7 @@ Required fields: `name`, `schedule_type`, `payload_type`
 | `payload_type`       | string  | yes        | `"system_event"` or `"agent_turn"`                                                  |
 | `payload_text`       | string  | if `system_event` | Text to inject; required when `payload_type="system_event"`                |
 | `payload_message`    | string  | if `agent_turn`   | Prompt for isolated agent turn; required when `payload_type="agent_turn"`  |
+| `agent`              | string  | no         | Agent routing for `agent_turn` payloads: `"main"` runs a full wake turn with conversation context; a preset name (e.g. `"memory-agent"`) spawns a sub-agent using that preset. Omit for default sub-agent behavior. |
 | `description`        | string  | no         | Optional description of what this job does                                          |
 | `enabled`            | boolean | no         | Start the job enabled (default true)                                                |
 | `delete_after_run`   | boolean | no         | Delete the job after it runs once                                                   |
@@ -453,6 +454,7 @@ When no jobs match: `"No cron jobs found."`
 | `payload_type`       | string  | no       | New payload type — replaces existing payload (`"system_event"` / `"agent_turn"`)   |
 | `payload_text`       | string  | no       | Required when updating to `payload_type="system_event"`                            |
 | `payload_message`    | string  | no       | Required when updating to `payload_type="agent_turn"`                              |
+| `agent`              | string  | no       | Agent routing for `agent_turn` payloads: `"main"` for a full wake turn, or a preset name. Can be updated independently of `payload_type`. |
 
 ### Output
 
@@ -652,7 +654,7 @@ The `preview` line is omitted if the task has an empty prompt/command.
 | Parameter        | Type            | Required | Description                                                          |
 |------------------|-----------------|----------|----------------------------------------------------------------------|
 | `task`           | string          | yes      | The prompt/instructions for the sub-agent                            |
-| `agent_name`     | string          | no       | Preset name to use (default: `"general-purpose"`). Must match a known preset or the call fails. |
+| `agent_name`     | string          | no       | Preset name to use (default: `"general-purpose"`). Must match a known preset or the call fails. `"main"` is reserved for scheduled tasks and will be rejected. |
 | `model_override` | string          | no       | Override the preset's model tier: `"small"`, `"medium"`, `"large"`. If omitted, uses the preset's tier (default: `"medium"`). |
 | `channels`       | array\<string\> | no       | Result delivery channels. If omitted, uses the preset's default channels (fallback: `["agent_feed"]`). Only used in async mode. |
 | `wait`           | boolean         | no       | Block until the sub-agent finishes and return its output (default: `false`) |
@@ -699,6 +701,7 @@ On error: `"sub-agent failed: {reason}"` (returned as `is_error = true`).
 ### Errors
 
 - Missing or empty `task` → `InvalidArguments`
+- `agent_name` is `"main"` (reserved, case-insensitive) → `InvalidArguments`
 - Invalid `model_override` value → `InvalidArguments`
 - Unknown `agent_name` (preset not found) → `is_error = true` with available preset list
 - Unknown channel name (async mode only) → `is_error = true` with message

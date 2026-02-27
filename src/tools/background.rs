@@ -181,6 +181,10 @@ impl SubAgentSpawnTool {
 }
 
 #[async_trait]
+#[expect(
+    clippy::too_many_lines,
+    reason = "execute() handles preset validation, sync/async modes, and resource construction in a single flow"
+)]
 impl Tool for SubAgentSpawnTool {
     fn name(&self) -> &'static str {
         "subagent_spawn"
@@ -237,6 +241,13 @@ impl Tool for SubAgentSpawnTool {
             .get("agent_name")
             .and_then(Value::as_str)
             .unwrap_or("general-purpose");
+
+        if preset_name.eq_ignore_ascii_case("main") {
+            return Err(ToolError::InvalidArguments(
+                "\"main\" is reserved for scheduled tasks (pulse/cron). Use a named preset instead."
+                    .to_string(),
+            ));
+        }
         let wait = arguments
             .get("wait")
             .and_then(Value::as_bool)
@@ -381,14 +392,8 @@ async fn resolve_spawn_params(
 }
 
 fn parse_model_tier(s: &str) -> Result<BackgroundModelTier, ToolError> {
-    match s {
-        "small" => Ok(BackgroundModelTier::Small),
-        "medium" => Ok(BackgroundModelTier::Medium),
-        "large" => Ok(BackgroundModelTier::Large),
-        other => Err(ToolError::InvalidArguments(format!(
-            "invalid model_override '{other}': must be small, medium, or large"
-        ))),
-    }
+    s.parse::<BackgroundModelTier>()
+        .map_err(ToolError::InvalidArguments)
 }
 
 fn generate_agent_task_id() -> String {
@@ -704,6 +709,69 @@ mod tests {
                 .unwrap()
                 .contains(&Value::String("task".to_string()))
         );
+    }
+
+    #[tokio::test]
+    async fn main_preset_name_rejected() {
+        let (spawner, _rx) = make_spawner();
+        let project_state = ProjectState::new_shared(
+            ProjectIndex::default(),
+            WorkspaceLayout::new(PathBuf::from("/tmp")),
+        );
+        let skill_state = SkillState::new_shared(SkillIndex::default(), vec![]);
+        let mcp_registry = McpRegistry::new_shared();
+
+        let tool = SubAgentSpawnTool::new(
+            spawner,
+            make_test_spawn_context(),
+            project_state,
+            skill_state,
+            mcp_registry,
+            HashSet::new(),
+        );
+
+        let result = tool
+            .execute(serde_json::json!({
+                "task": "do something",
+                "agent_name": "main"
+            }))
+            .await;
+
+        assert!(result.is_err(), "\"main\" preset should be rejected");
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("reserved"),
+            "error should mention 'reserved', got: {err_msg}"
+        );
+    }
+
+    #[tokio::test]
+    async fn main_preset_name_rejected_case_insensitive() {
+        let (spawner, _rx) = make_spawner();
+        let project_state = ProjectState::new_shared(
+            ProjectIndex::default(),
+            WorkspaceLayout::new(PathBuf::from("/tmp")),
+        );
+        let skill_state = SkillState::new_shared(SkillIndex::default(), vec![]);
+        let mcp_registry = McpRegistry::new_shared();
+
+        let tool = SubAgentSpawnTool::new(
+            spawner,
+            make_test_spawn_context(),
+            project_state,
+            skill_state,
+            mcp_registry,
+            HashSet::new(),
+        );
+
+        let result = tool
+            .execute(serde_json::json!({
+                "task": "do something",
+                "agent_name": "MAIN"
+            }))
+            .await;
+
+        assert!(result.is_err(), "\"MAIN\" should also be rejected");
     }
 
     #[tokio::test]

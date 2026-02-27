@@ -69,6 +69,9 @@ pub enum CronPayload {
     AgentTurn {
         /// The message/prompt for the agent turn.
         message: String,
+        /// Optional agent routing: `"main"` for a full wake turn, or a preset name.
+        #[serde(default)]
+        agent: Option<String>,
     },
 }
 
@@ -103,6 +106,10 @@ pub enum RunStatus {
 
 #[cfg(test)]
 #[expect(clippy::unwrap_used, reason = "test code uses unwrap for clarity")]
+#[expect(
+    clippy::panic,
+    reason = "test assertions use panic for unreachable variants"
+)]
 mod tests {
     use super::*;
 
@@ -168,6 +175,54 @@ mod tests {
         };
         let json = serde_json::to_string(&sched).unwrap();
         assert!(json.contains("\"type\":\"cron\""), "should use 'cron' tag");
+    }
+
+    #[test]
+    fn agent_turn_with_agent_field_roundtrip() {
+        let payload = CronPayload::AgentTurn {
+            message: "check email".to_string(),
+            agent: Some("memory-agent".to_string()),
+        };
+        let json = serde_json::to_string(&payload).unwrap();
+        let back: CronPayload = serde_json::from_str(&json).unwrap();
+        match back {
+            CronPayload::AgentTurn { message, agent } => {
+                assert_eq!(message, "check email");
+                assert_eq!(agent.as_deref(), Some("memory-agent"));
+            }
+            CronPayload::SystemEvent { .. } => panic!("expected AgentTurn"),
+        }
+    }
+
+    #[test]
+    fn agent_turn_with_main_agent_roundtrip() {
+        let payload = CronPayload::AgentTurn {
+            message: "daily plan".to_string(),
+            agent: Some("main".to_string()),
+        };
+        let json = serde_json::to_string(&payload).unwrap();
+        let back: CronPayload = serde_json::from_str(&json).unwrap();
+        match back {
+            CronPayload::AgentTurn { message, agent } => {
+                assert_eq!(message, "daily plan");
+                assert_eq!(agent.as_deref(), Some("main"));
+            }
+            CronPayload::SystemEvent { .. } => panic!("expected AgentTurn"),
+        }
+    }
+
+    #[test]
+    fn agent_turn_without_agent_field_backward_compat() {
+        // Simulates loading a jobs.json that predates the `agent` field
+        let json = r#"{"type":"agent_turn","message":"do something"}"#;
+        let payload: CronPayload = serde_json::from_str(json).unwrap();
+        match payload {
+            CronPayload::AgentTurn { message, agent } => {
+                assert_eq!(message, "do something");
+                assert!(agent.is_none(), "agent should default to None");
+            }
+            CronPayload::SystemEvent { .. } => panic!("expected AgentTurn"),
+        }
     }
 
     #[test]

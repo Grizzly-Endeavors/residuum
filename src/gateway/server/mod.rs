@@ -36,7 +36,7 @@ use crate::models::{EmbeddingProvider, Message};
 use crate::notify::router::NotificationRouter;
 use crate::notify::types::{Notification, TaskSource};
 use crate::projects::activation::SharedProjectState;
-use crate::pulse::executor::build_pulse_task;
+use crate::pulse::executor::{PulseExecution, build_pulse_execution};
 use crate::pulse::scheduler::PulseScheduler;
 use crate::skills::SharedSkillState;
 use crate::workspace::layout::WorkspaceLayout;
@@ -272,7 +272,7 @@ pub async fn run_gateway(cfg: Config) -> Result<GatewayExit, IronclawError> {
         last_reply: None,
     };
 
-    Ok(run_event_loop(rt).await)
+    Ok(Box::pin(run_event_loop(rt)).await)
 }
 
 /// Outcome of handling a background task result.
@@ -658,6 +658,46 @@ async fn run_wake_turn_handler(
     None
 }
 
+/// Inject cron main-turn prompts and fire a single wake turn if any are due.
+async fn handle_cron_main_turns(
+    main_turns: Vec<cron::CronMainTurn>,
+    rt: &mut GatewayRuntime,
+    observe_deadline: &mut Option<tokio::time::Instant>,
+) -> Option<GatewayExit> {
+    if main_turns.is_empty() {
+        return None;
+    }
+
+    for turn in &main_turns {
+        let formatted = format!("[Scheduled cron job: {}]\n{}", turn.job_name, turn.prompt);
+        rt.agent.inject_system_message(formatted.clone());
+        let project_ctx = project_context_label(&rt.project_state, &rt.layout).await;
+        let action = persist_and_check_thresholds(
+            &[crate::models::Message::system(&formatted)],
+            &project_ctx,
+            Visibility::Background,
+            &rt.observer,
+            &rt.layout,
+            rt.tz,
+        )
+        .await;
+        if apply_observe_action(action, observe_deadline, rt.observer.cooldown_secs()) {
+            execute_observation(
+                &rt.observer,
+                &rt.reflector,
+                &rt.search_index,
+                &rt.layout,
+                &mut rt.agent,
+                rt.vector_store.as_ref(),
+                rt.embedding_provider.as_ref(),
+            )
+            .await;
+        }
+    }
+
+    run_wake_turn_handler(rt, observe_deadline).await
+}
+
 /// Run the main gateway event loop.
 ///
 /// Processes inbound messages, pulse ticks, cron ticks, and memory pipeline
@@ -845,45 +885,100 @@ async fn run_event_loop(mut rt: GatewayRuntime) -> GatewayExit {
             _ = pulse_tick.tick(), if rt.pulse_enabled => {
                 let now = crate::time::now_local(rt.tz);
                 let due = rt.pulse_scheduler.due_pulses(now, &rt.layout.heartbeat_yml());
+                let mut wake_requested = false;
 
                 for pulse in &due {
-                    let task = build_pulse_task(pulse);
-                    let tier = match &task.execution {
-                        crate::background::types::Execution::SubAgent(cfg) => cfg.model_tier,
-                        crate::background::types::Execution::Script(_) => crate::config::BackgroundModelTier::Small,
-                    };
-                    match spawn_helpers::build_spawn_resources(
-                        &rt.spawn_context, &tier,
-                        &rt.project_state, &rt.skill_state,
-                        Arc::clone(&rt.mcp_registry),
-                        None,
-                    ).await {
-                        Ok(resources) => {
-                            if let Err(e) = rt.background_spawner.spawn(task, Some(resources)).await {
-                                tracing::warn!(pulse = %pulse.name, error = %e, "failed to spawn pulse task");
+                    match build_pulse_execution(pulse) {
+                        PulseExecution::MainWakeTurn { pulse_name, prompt } => {
+                            let formatted = format!("[Scheduled pulse: {pulse_name}]\n{prompt}");
+                            rt.agent.inject_system_message(formatted.clone());
+                            let project_ctx = project_context_label(&rt.project_state, &rt.layout).await;
+                            let action = persist_and_check_thresholds(
+                                &[crate::models::Message::system(&formatted)],
+                                &project_ctx,
+                                Visibility::Background,
+                                &rt.observer,
+                                &rt.layout,
+                                rt.tz,
+                            ).await;
+                            if apply_observe_action(action, &mut observe_deadline, rt.observer.cooldown_secs()) {
+                                execute_observation(&rt.observer, &rt.reflector, &rt.search_index, &rt.layout, &mut rt.agent, rt.vector_store.as_ref(), rt.embedding_provider.as_ref()).await;
+                            }
+                            wake_requested = true;
+                        }
+                        PulseExecution::SubAgent { task, preset_name: Some(name) } => {
+                            match cron::load_preset_for_spawn(
+                                &rt.layout.subagents_dir(), &name,
+                                crate::config::BackgroundModelTier::Small,
+                            ).await {
+                                Ok((tier, preset)) => {
+                                    let preset_arg = preset.as_ref().map(|(fm, body)| (fm, body.clone()));
+                                    match spawn_helpers::build_spawn_resources(
+                                        &rt.spawn_context, &tier,
+                                        &rt.project_state, &rt.skill_state,
+                                        Arc::clone(&rt.mcp_registry), preset_arg,
+                                    ).await {
+                                        Ok(resources) => {
+                                            if let Err(e) = rt.background_spawner.spawn(task, Some(resources)).await {
+                                                tracing::warn!(pulse = %pulse.name, error = %e, "failed to spawn pulse task with preset");
+                                            }
+                                        }
+                                        Err(e) => tracing::warn!(pulse = %pulse.name, error = %e, "failed to build pulse resources with preset"),
+                                    }
+                                }
+                                Err(e) => tracing::warn!(pulse = %pulse.name, preset = %name, error = %e, "failed to load preset for pulse"),
                             }
                         }
-                        Err(e) => tracing::warn!(pulse = %pulse.name, error = %e, "failed to build pulse resources"),
+                        PulseExecution::SubAgent { task, preset_name: None } => {
+                            let tier = match &task.execution {
+                                crate::background::types::Execution::SubAgent(cfg) => cfg.model_tier,
+                                crate::background::types::Execution::Script(_) => crate::config::BackgroundModelTier::Small,
+                            };
+                            match spawn_helpers::build_spawn_resources(
+                                &rt.spawn_context, &tier,
+                                &rt.project_state, &rt.skill_state,
+                                Arc::clone(&rt.mcp_registry), None,
+                            ).await {
+                                Ok(resources) => {
+                                    if let Err(e) = rt.background_spawner.spawn(task, Some(resources)).await {
+                                        tracing::warn!(pulse = %pulse.name, error = %e, "failed to spawn pulse task");
+                                    }
+                                }
+                                Err(e) => tracing::warn!(pulse = %pulse.name, error = %e, "failed to build pulse resources"),
+                            }
+                        }
                     }
+                }
+
+                if wake_requested
+                    && let Some(exit) = run_wake_turn_handler(&mut rt, &mut observe_deadline).await
+                {
+                    return exit;
                 }
             }
 
             // ── Cron timer ────────────────────────────────────────────────
             _ = cron_tick.tick(), if rt.cron_enabled => {
-                spawn_due_cron_jobs(
+                let main_turns = spawn_due_cron_jobs(
                     &rt.cron_store, &rt.layout,
                     &rt.spawn_context, &rt.project_state, &rt.skill_state,
                     &rt.mcp_registry, &rt.background_spawner, rt.tz,
                 ).await;
+                if let Some(exit) = handle_cron_main_turns(main_turns, &mut rt, &mut observe_deadline).await {
+                    return exit;
+                }
             }
 
             // ── Cron notify (tool mutation wakeup) ────────────────────────
             () = rt.cron_notify.notified(), if rt.cron_enabled => {
-                spawn_due_cron_jobs(
+                let main_turns = spawn_due_cron_jobs(
                     &rt.cron_store, &rt.layout,
                     &rt.spawn_context, &rt.project_state, &rt.skill_state,
                     &rt.mcp_registry, &rt.background_spawner, rt.tz,
                 ).await;
+                if let Some(exit) = handle_cron_main_turns(main_turns, &mut rt, &mut observe_deadline).await {
+                    return exit;
+                }
             }
 
             // ── Observer cooldown deadline ────────────────────────────────

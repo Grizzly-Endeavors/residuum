@@ -87,6 +87,10 @@ impl Tool for CronAddTool {
                         "type": "string",
                         "description": "Prompt for the isolated agent turn, required when payload_type='agent_turn'"
                     },
+                    "agent": {
+                        "type": "string",
+                        "description": "Agent routing for agent_turn payloads: 'main' runs a full wake turn with conversation context; a preset name (e.g. 'memory-agent') spawns a sub-agent using that preset. Omit for default sub-agent behavior."
+                    },
                     "description": {
                         "type": "string",
                         "description": "Optional description of what this job does"
@@ -330,6 +334,10 @@ impl Tool for CronUpdateTool {
                     "payload_message": {
                         "type": "string",
                         "description": "Agent prompt, required when payload_type='agent_turn'"
+                    },
+                    "agent": {
+                        "type": "string",
+                        "description": "Agent routing for agent_turn payloads: 'main' runs a full wake turn; a preset name spawns a sub-agent using that preset. Omit for default."
                     }
                 },
                 "required": ["id"]
@@ -374,6 +382,14 @@ impl Tool for CronUpdateTool {
             }
             if arguments.get("payload_type").is_some() {
                 job.payload = parse_payload(&arguments)?;
+            } else if arguments.get("agent").is_some() {
+                // Update agent routing on an existing AgentTurn payload without rebuilding it
+                if let CronPayload::AgentTurn { ref mut agent, .. } = job.payload {
+                    *agent = arguments
+                        .get("agent")
+                        .and_then(Value::as_str)
+                        .map(String::from);
+                }
             }
 
             job.updated_at = now;
@@ -547,7 +563,8 @@ fn parse_payload(args: &Value) -> Result<CronPayload, ToolError> {
                     )
                 })?
                 .to_string();
-            Ok(CronPayload::AgentTurn { message })
+            let agent = args.get("agent").and_then(Value::as_str).map(String::from);
+            Ok(CronPayload::AgentTurn { message, agent })
         }
         other => Err(ToolError::InvalidArguments(format!(
             "unknown payload type '{other}': expected 'system_event' or 'agent_turn'"
@@ -557,6 +574,10 @@ fn parse_payload(args: &Value) -> Result<CronPayload, ToolError> {
 
 #[cfg(test)]
 #[expect(clippy::unwrap_used, reason = "test code uses unwrap for clarity")]
+#[expect(
+    clippy::panic,
+    reason = "test assertions use panic for unreachable variants"
+)]
 mod tests {
     use super::*;
 
@@ -640,6 +661,55 @@ mod tests {
             matches!(p, CronPayload::AgentTurn { .. }),
             "should parse AgentTurn"
         );
+    }
+
+    #[test]
+    fn parse_payload_agent_turn_with_agent() {
+        let args = serde_json::json!({
+            "payload_type": "agent_turn",
+            "payload_message": "check email",
+            "agent": "memory-agent"
+        });
+        let p = parse_payload(&args).unwrap();
+        match p {
+            CronPayload::AgentTurn { message, agent } => {
+                assert_eq!(message, "check email");
+                assert_eq!(agent.as_deref(), Some("memory-agent"));
+            }
+            CronPayload::SystemEvent { .. } => panic!("expected AgentTurn"),
+        }
+    }
+
+    #[test]
+    fn parse_payload_agent_turn_with_main() {
+        let args = serde_json::json!({
+            "payload_type": "agent_turn",
+            "payload_message": "daily plan",
+            "agent": "main"
+        });
+        let p = parse_payload(&args).unwrap();
+        match p {
+            CronPayload::AgentTurn { message, agent } => {
+                assert_eq!(message, "daily plan");
+                assert_eq!(agent.as_deref(), Some("main"));
+            }
+            CronPayload::SystemEvent { .. } => panic!("expected AgentTurn"),
+        }
+    }
+
+    #[test]
+    fn parse_payload_agent_turn_without_agent() {
+        let args = serde_json::json!({
+            "payload_type": "agent_turn",
+            "payload_message": "do stuff"
+        });
+        let p = parse_payload(&args).unwrap();
+        match p {
+            CronPayload::AgentTurn { agent, .. } => {
+                assert!(agent.is_none(), "agent should be None when omitted");
+            }
+            CronPayload::SystemEvent { .. } => panic!("expected AgentTurn"),
+        }
     }
 
     #[test]
