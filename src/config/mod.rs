@@ -118,6 +118,14 @@ impl Config {
         bootstrap::bootstrap_at(&dir)
     }
 
+    /// Get the default config directory path (`~/.ironclaw/`).
+    ///
+    /// # Errors
+    /// Returns `IronclawError::Config` if the home directory cannot be determined.
+    pub fn config_dir() -> Result<PathBuf, IronclawError> {
+        bootstrap::default_config_dir()
+    }
+
     /// Load configuration from the default config file and environment.
     ///
     /// Priority: env vars > config file > defaults.
@@ -149,5 +157,20 @@ impl Config {
         };
 
         resolve::from_file_and_env(file_config.as_ref())
+    }
+
+    /// Validate a TOML string as a config file without saving it.
+    ///
+    /// Parses the TOML into the raw config structure, then runs full resolution
+    /// to catch semantic errors (bad provider names, missing timezone, etc.).
+    ///
+    /// # Errors
+    /// Returns a human-readable error string if validation fails.
+    pub fn validate_toml(contents: &str) -> Result<(), String> {
+        let file = toml::from_str::<deserialize::ConfigFile>(contents)
+            .map_err(|e| format!("TOML parse error: {e}"))?;
+
+        resolve::from_file_and_env(Some(&file)).map_err(|e| format!("{e}"))?;
+        Ok(())
     }
 }

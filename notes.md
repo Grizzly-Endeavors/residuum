@@ -7,3 +7,4 @@
 - HTTP/SSE transport support for MCP servers.
 - Add a trigger count option for heartbeat pulses that can be provided in place of interval. It would schedule a number of triggers equal to the count across the active period. Triggers would be roughly evenly spaced throughout the active period, with added randomization to make the triggers feel less rigid.
 - Revisit multi-channel wake turn delivery: currently uses `last_reply` (most recent ReplyHandle) so only the last-active channel gets wake output. Consider a channel registry or broadcast subscriber pattern when multiple channels need simultaneous proactive delivery.
+- Config internals cleanup: resolve.rs is `.and_then()` soup, defaults are defined in three places (constants.rs, types.rs Default impls, resolve.rs unwrap_or), 16 deserialize structs for ~30 knobs. Loosely coupled from the web UI — clean up whenever.

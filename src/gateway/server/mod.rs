@@ -7,8 +7,10 @@
 mod actions;
 mod helpers;
 mod memory;
+pub mod setup;
 mod spawn_helpers;
 mod startup;
+pub(crate) mod web;
 mod ws;
 
 use std::sync::Arc;
@@ -162,6 +164,7 @@ pub async fn run_gateway(cfg: Config) -> Result<GatewayExit, IronclawError> {
     let (command_tx, command_rx) = mpsc::channel::<ServerCommand>(32);
 
     // Clone senders for additional adapters before moving into GatewayState
+    let web_reload_sender = reload_sender.clone();
     #[cfg(feature = "discord")]
     let discord_inbound_tx = inbound_tx.clone();
     let webhook_inbound_tx = inbound_tx.clone();
@@ -203,12 +206,25 @@ pub async fn run_gateway(cfg: Config) -> Result<GatewayExit, IronclawError> {
     if let Some(wh) = webhook_router {
         app = app.merge(wh);
     }
+    app = app
+        .merge(web::config_api_router(web::ConfigApiState {
+            config_dir: crate::config::Config::config_dir()?,
+            reload_sender: Some(web_reload_sender),
+            setup_done: None,
+        }))
+        .fallback(web::static_handler);
 
     let addr = cfg.gateway.addr();
     let listener = tokio::net::TcpListener::bind(&addr)
         .await
         .map_err(|e| IronclawError::Gateway(format!("failed to bind to {addr}: {e}")))?;
     tracing::info!(addr = %addr, "gateway listening");
+    if cfg.gateway.bind != "127.0.0.1" && cfg.gateway.bind != "localhost" {
+        tracing::warn!(
+            bind = %cfg.gateway.bind,
+            "web UI is exposed on a non-loopback address with no authentication"
+        );
+    }
 
     let mut shutdown_rx = reload_rx.clone();
     let server_handle = tokio::spawn(async move {

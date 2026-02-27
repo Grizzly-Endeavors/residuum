@@ -49,17 +49,30 @@ async fn run() -> Result<(), IronclawError> {
         Some("serve") | None => {
             loop {
                 Config::bootstrap_config_dir()?;
-                let cfg = Config::load()?;
-                tracing::info!(
-                    model = %cfg.main.model,
-                    provider_url = %cfg.main.provider_url,
-                    workspace = %cfg.workspace_dir.display(),
-                    "configuration loaded"
-                );
-                match Box::pin(ironclaw::gateway::server::run_gateway(cfg)).await? {
-                    ironclaw::gateway::server::GatewayExit::Shutdown => break,
-                    ironclaw::gateway::server::GatewayExit::Reload => {
-                        tracing::info!("configuration reloaded, restarting gateway");
+                match Config::load() {
+                    Ok(cfg) => {
+                        tracing::info!(
+                            model = %cfg.main.model,
+                            provider_url = %cfg.main.provider_url,
+                            workspace = %cfg.workspace_dir.display(),
+                            "configuration loaded"
+                        );
+                        match Box::pin(ironclaw::gateway::server::run_gateway(cfg)).await? {
+                            ironclaw::gateway::server::GatewayExit::Shutdown => break,
+                            ironclaw::gateway::server::GatewayExit::Reload => {
+                                tracing::info!("configuration reloaded, restarting gateway");
+                            }
+                        }
+                    }
+                    Err(err) => {
+                        tracing::warn!(error = %err, "config invalid, starting setup wizard");
+                        match Box::pin(ironclaw::gateway::server::setup::run_setup_server()).await?
+                        {
+                            ironclaw::gateway::server::setup::SetupExit::ConfigSaved => {
+                                tracing::info!("setup complete, loading configuration");
+                            }
+                            ironclaw::gateway::server::setup::SetupExit::Shutdown => break,
+                        }
                     }
                 }
             }

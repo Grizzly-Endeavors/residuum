@@ -18,7 +18,7 @@ const MINIMAL_CONFIG: &str = "# IronClaw configuration. See config.example.toml 
 const EXAMPLE_CONFIG: &str = include_str!("../../assets/config.example.toml");
 
 /// Get the default config directory (`~/.ironclaw/`).
-pub(super) fn default_config_dir() -> Result<PathBuf, IronclawError> {
+pub(crate) fn default_config_dir() -> Result<PathBuf, IronclawError> {
     dirs::home_dir()
         .map(|h| h.join(".ironclaw"))
         .ok_or_else(|| IronclawError::Config("could not determine home directory".to_string()))
