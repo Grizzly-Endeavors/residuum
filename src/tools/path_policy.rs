@@ -4,6 +4,7 @@
 //! and that `archive/` is always read-only. Workspace-level writes (memory/,
 //! MEMORY.md, daily logs, etc.) are unrestricted.
 
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -19,6 +20,8 @@ pub struct PathPolicy {
     /// Root of the currently active project (e.g. `{workspace}/projects/my-proj`).
     /// `None` when no project is active.
     active_project_root: Option<PathBuf>,
+    /// Paths that are unconditionally blocked from writes (e.g. config files).
+    blocked_paths: HashSet<PathBuf>,
 }
 
 impl PathPolicy {
@@ -28,6 +31,21 @@ impl PathPolicy {
         Self {
             workspace_root,
             active_project_root: None,
+            blocked_paths: HashSet::new(),
+        }
+    }
+
+    /// Create a new path policy with blocked paths (e.g. config files).
+    #[must_use]
+    pub fn with_blocked_paths(workspace_root: PathBuf, blocked_paths: HashSet<PathBuf>) -> Self {
+        let canonicalized: HashSet<PathBuf> = blocked_paths
+            .into_iter()
+            .map(|p| canonicalize_for_check(&p))
+            .collect();
+        Self {
+            workspace_root,
+            active_project_root: None,
+            blocked_paths: canonicalized,
         }
     }
 
@@ -35,6 +53,18 @@ impl PathPolicy {
     #[must_use]
     pub fn new_shared(workspace_root: PathBuf) -> SharedPathPolicy {
         Arc::new(RwLock::new(Self::new(workspace_root)))
+    }
+
+    /// Create a new shared path policy with blocked paths.
+    #[must_use]
+    pub fn new_shared_with_blocked(
+        workspace_root: PathBuf,
+        blocked_paths: HashSet<PathBuf>,
+    ) -> SharedPathPolicy {
+        Arc::new(RwLock::new(Self::with_blocked_paths(
+            workspace_root,
+            blocked_paths,
+        )))
     }
 
     /// Set (or clear) the active project root.
@@ -52,6 +82,13 @@ impl PathPolicy {
     /// Returns a descriptive error string if the write is rejected.
     pub fn check_write(&self, path: &Path) -> Result<(), String> {
         let canonical = canonicalize_for_check(path);
+
+        // Rule 0: blocked paths (config files) are never writable
+        if self.blocked_paths.contains(&canonical) {
+            return Err(
+                "writes to config files are not allowed — config.toml is user-managed".to_string(),
+            );
+        }
 
         let projects_dir = self.workspace_root.join("projects");
         let archive_dir = self.workspace_root.join("archive");
@@ -259,6 +296,107 @@ mod tests {
                 .check_write(&ws.join("projects/project-a/new-dir/new-file.md"))
                 .is_ok(),
             "new file in new subdir of active project should be allowed"
+        );
+    }
+
+    fn make_workspace_with_config() -> (tempfile::TempDir, PathBuf, PathBuf) {
+        let dir = tempfile::tempdir().unwrap();
+        let ws = dir.path().join("workspace");
+        std::fs::create_dir_all(ws.join("projects/project-a")).unwrap();
+        std::fs::create_dir_all(ws.join("memory")).unwrap();
+        let config_dir = dir.path().join("config");
+        std::fs::create_dir_all(&config_dir).unwrap();
+        // Create the config files so they can be canonicalized
+        std::fs::write(config_dir.join("config.toml"), "").unwrap();
+        std::fs::write(config_dir.join("config.example.toml"), "").unwrap();
+        let canonical_ws = std::fs::canonicalize(&ws).unwrap();
+        let canonical_cfg = std::fs::canonicalize(&config_dir).unwrap();
+        (dir, canonical_ws, canonical_cfg)
+    }
+
+    #[test]
+    fn blocked_paths_rejected() {
+        let (_dir, ws, cfg_dir) = make_workspace_with_config();
+        let blocked: HashSet<PathBuf> = [
+            cfg_dir.join("config.toml"),
+            cfg_dir.join("config.example.toml"),
+        ]
+        .into_iter()
+        .collect();
+        let policy = PathPolicy::with_blocked_paths(ws, blocked);
+
+        assert!(
+            policy
+                .check_write(&cfg_dir.join("config.toml"))
+                .is_err(),
+            "config.toml should be blocked"
+        );
+        assert!(
+            policy
+                .check_write(&cfg_dir.join("config.example.toml"))
+                .is_err(),
+            "config.example.toml should be blocked"
+        );
+    }
+
+    #[test]
+    fn blocked_paths_allow_workspace_files() {
+        let (_dir, ws, cfg_dir) = make_workspace_with_config();
+        let blocked: HashSet<PathBuf> = [
+            cfg_dir.join("config.toml"),
+            cfg_dir.join("config.example.toml"),
+        ]
+        .into_iter()
+        .collect();
+        let policy = PathPolicy::with_blocked_paths(ws.clone(), blocked);
+
+        assert!(
+            policy.check_write(&ws.join("MEMORY.md")).is_ok(),
+            "MEMORY.md should be writable"
+        );
+        assert!(
+            policy.check_write(&ws.join("memory/notes.md")).is_ok(),
+            "memory files should be writable"
+        );
+    }
+
+    #[test]
+    fn blocked_paths_with_active_project() {
+        let (_dir, ws, cfg_dir) = make_workspace_with_config();
+        let blocked: HashSet<PathBuf> = [cfg_dir.join("config.toml")]
+            .into_iter()
+            .collect();
+        let mut policy = PathPolicy::with_blocked_paths(ws.clone(), blocked);
+        policy.set_active_project(Some(ws.join("projects/project-a")));
+
+        assert!(
+            policy
+                .check_write(&ws.join("projects/project-a/file.md"))
+                .is_ok(),
+            "project writes should still work alongside blocked paths"
+        );
+        assert!(
+            policy
+                .check_write(&cfg_dir.join("config.toml"))
+                .is_err(),
+            "config.toml should still be blocked"
+        );
+    }
+
+    #[test]
+    fn blocked_paths_error_message() {
+        let (_dir, ws, cfg_dir) = make_workspace_with_config();
+        let blocked: HashSet<PathBuf> = [cfg_dir.join("config.toml")]
+            .into_iter()
+            .collect();
+        let policy = PathPolicy::with_blocked_paths(ws, blocked);
+
+        let err = policy
+            .check_write(&cfg_dir.join("config.toml"))
+            .unwrap_err();
+        assert!(
+            err.contains("config files"),
+            "error should mention config files: {err}"
         );
     }
 }

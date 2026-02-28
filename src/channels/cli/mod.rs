@@ -14,6 +14,18 @@ use commands::CommandEffect;
 use indicator::WorkingIndicator;
 use render::MarkdownRenderer;
 
+/// Convert a WebSocket URL to an HTTP URL for display.
+///
+/// Replaces `ws://` → `http://` and `wss://` → `https://`, and strips a
+/// trailing `/ws` path segment if present.
+#[must_use]
+pub fn ws_url_to_http(ws_url: &str) -> String {
+    let url = ws_url
+        .replacen("wss://", "https://", 1)
+        .replacen("ws://", "http://", 1);
+    url.strip_suffix("/ws").unwrap_or(&url).to_string()
+}
+
 /// CLI client that owns the theme, renderer, indicator, and connection state.
 pub struct CliClient {
     theme: Theme,
@@ -63,6 +75,8 @@ impl CliClient {
     pub fn print_banner(&self) {
         let banner = format!("ironclaw v0.1.0 \u{2014} connected to {}", self.url);
         eprintln!("{}", self.theme.format_banner(&banner));
+        let http_url = ws_url_to_http(&self.url);
+        eprintln!("  web UI: {http_url}");
     }
 
     /// Display a server message with appropriate formatting.
@@ -228,6 +242,42 @@ mod tests {
         assert_eq!(
             result, "\u{1f600}\u{1f600}\u{1f600}",
             "should truncate at char boundary, not byte boundary"
+        );
+    }
+
+    #[test]
+    fn ws_url_to_http_basic() {
+        assert_eq!(
+            ws_url_to_http("ws://127.0.0.1:7700/ws"),
+            "http://127.0.0.1:7700",
+            "should convert ws to http and strip /ws"
+        );
+    }
+
+    #[test]
+    fn ws_url_to_http_secure() {
+        assert_eq!(
+            ws_url_to_http("wss://example.com/ws"),
+            "https://example.com",
+            "should convert wss to https and strip /ws"
+        );
+    }
+
+    #[test]
+    fn ws_url_to_http_no_ws_path() {
+        assert_eq!(
+            ws_url_to_http("ws://localhost:8080/other"),
+            "http://localhost:8080/other",
+            "should not strip non-/ws paths"
+        );
+    }
+
+    #[test]
+    fn ws_url_to_http_bare() {
+        assert_eq!(
+            ws_url_to_http("ws://localhost:7700"),
+            "http://localhost:7700",
+            "should handle URLs without path"
         );
     }
 }

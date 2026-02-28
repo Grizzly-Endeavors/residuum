@@ -54,7 +54,7 @@ On error (returned as `is_error = true`):
 On success: `"wrote {N} bytes to {path}"`
 
 On error:
-- `PathPolicy` rejects the write path (path is outside the active project root)
+- `PathPolicy` rejects the write path (path is outside the active project root, or targets a protected config file)
 - File already exists but has not been read via `read_file` first
 - Directory creation fails
 - Write fails
@@ -93,7 +93,7 @@ On error:
 On success: `"edited {path}: {description}"` where description is e.g. `"replaced line(s) 5"` or `"deleted line(s) 2-4"`.
 
 On error:
-- `PathPolicy` rejects the path
+- `PathPolicy` rejects the path (outside active project root, or targets a protected config file)
 - File does not exist
 - File has not been read via `read_file` first
 - Hash mismatch on `start_line` or `end_line` (file changed since last read)
