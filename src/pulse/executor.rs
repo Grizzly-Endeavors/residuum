@@ -109,10 +109,6 @@ fn build_pulse_prompt(pulse: &PulseDef) -> String {
 }
 
 #[cfg(test)]
-#[expect(
-    clippy::panic,
-    reason = "test assertions use panic for unreachable variants"
-)]
 mod tests {
     use super::*;
     use crate::pulse::types::PulseTask;
@@ -168,26 +164,20 @@ mod tests {
     fn execution_is_subagent_small() {
         let pulse = sample_pulse();
         let task = build_pulse_task(&pulse);
-        match &task.execution {
-            Execution::SubAgent(cfg) => {
-                assert_eq!(
-                    cfg.model_tier,
-                    BackgroundModelTier::Small,
-                    "tier should be Small"
-                );
-            }
-            Execution::Script(_) => panic!("expected SubAgent execution"),
-        }
+        let Execution::SubAgent(cfg) = &task.execution;
+        assert_eq!(
+            cfg.model_tier,
+            BackgroundModelTier::Small,
+            "tier should be Small"
+        );
     }
 
     #[test]
     fn prompt_contains_pulse_name_and_tasks() {
         let pulse = sample_pulse();
         let task = build_pulse_task(&pulse);
-        let prompt = match &task.execution {
-            Execution::SubAgent(cfg) => &cfg.prompt,
-            Execution::Script(_) => panic!("expected SubAgent"),
-        };
+        let Execution::SubAgent(cfg) = &task.execution;
+        let prompt = &cfg.prompt;
 
         assert!(
             prompt.contains("email_check"),
@@ -211,10 +201,8 @@ mod tests {
     fn prompt_ends_with_heartbeat_ok_instruction() {
         let pulse = sample_pulse();
         let task = build_pulse_task(&pulse);
-        let prompt = match &task.execution {
-            Execution::SubAgent(cfg) => &cfg.prompt,
-            Execution::Script(_) => panic!("expected SubAgent"),
-        };
+        let Execution::SubAgent(cfg) = &task.execution;
+        let prompt = &cfg.prompt;
 
         assert!(
             prompt.contains("HEARTBEAT_OK"),
@@ -244,10 +232,8 @@ mod tests {
         };
         let task = build_pulse_task(&pulse);
         assert_eq!(task.task_name, "empty");
-        let prompt = match &task.execution {
-            Execution::SubAgent(cfg) => &cfg.prompt,
-            Execution::Script(_) => panic!("expected SubAgent"),
-        };
+        let Execution::SubAgent(cfg) = &task.execution;
+        let prompt = &cfg.prompt;
         assert!(
             prompt.contains("HEARTBEAT_OK"),
             "should still have HEARTBEAT_OK instruction"

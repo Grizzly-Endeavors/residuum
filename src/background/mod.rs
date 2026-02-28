@@ -1,6 +1,5 @@
 //! Background task infrastructure: spawning, execution, and result delivery.
 
-mod script;
 pub(crate) mod spawn_context;
 mod spawner;
 pub mod subagent;

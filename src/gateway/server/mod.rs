@@ -918,10 +918,8 @@ async fn run_event_loop(mut rt: GatewayRuntime) -> GatewayExit {
                             }
                         }
                         PulseExecution::SubAgent { task, preset_name: None } => {
-                            let tier = match &task.execution {
-                                crate::background::types::Execution::SubAgent(cfg) => cfg.model_tier,
-                                crate::background::types::Execution::Script(_) => crate::config::BackgroundModelTier::Small,
-                            };
+                            let crate::background::types::Execution::SubAgent(cfg) = &task.execution;
+                            let tier = cfg.model_tier;
                             match spawn_helpers::build_spawn_resources(
                                 &rt.spawn_context, &tier,
                                 &rt.project_state, &rt.skill_state,

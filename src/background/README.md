@@ -1,6 +1,6 @@
 # Background Tasks Module
 
-Manages spawning, execution, and result delivery of background tasks—SubAgents, scripts, pulse evaluations, and scheduled actions—without blocking the main agent.
+Manages spawning, execution, and result delivery of background tasks—SubAgents, pulse evaluations, and scheduled actions—without blocking the main agent.
 
 ## Overview
 
@@ -12,7 +12,7 @@ The background module decouples background work (pulse evaluation, scheduled act
 
 The module owns:
 - **Task lifecycle management:** spawning, concurrency control (semaphore), cancellation tokens, transcript persistence.
-- **Execution strategies:** SubAgent (LLM-powered turn loop) and Script (direct command execution).
+- **Execution:** SubAgent (LLM-powered turn loop with isolated resources).
 - **Resource isolation:** each background task gets its own `ProjectState`, `SkillState`, `ToolFilter`, and `PathPolicy` so they don't interfere with each other or the main agent.
 - **Context assembly for SubAgents:** minimal system prompt (USER.md + ENVIRONMENT.md + projects index + task prompt + optional presets), excluding SOUL.md and observation logs.
 - **Result routing:** formatting `BackgroundResult` for injection into the main agent's message stream or direct delivery to notification channels.
@@ -31,18 +31,17 @@ The module does **not** handle:
 - `id`: Unique identifier (e.g., `"agent-XXXXXXXX-timestamp"`)
 - `task_name`: Human-readable name used for NOTIFY.yml routing
 - `source`: Where the task came from (`TaskSource::Agent`, `::Pulse`, `::Action`)
-- `execution`: What to run (`Execution::SubAgent` or `Execution::Script`)
+- `execution`: What to run (`Execution::SubAgent`)
 - `routing`: How to deliver the result (`ResultRouting::Notify` for NOTIFY.yml lookup, or `ResultRouting::Direct` for explicit channels)
 
-**Execution Strategies:**
+**Execution:**
 - `SubAgent(SubAgentConfig)`: Runs a simplified agent turn loop with minimal context. The SubAgent gets isolated clones of `ProjectState`, `SkillState`, `ToolFilter`, and `PathPolicy`, so it operates independently of the main agent and other SubAgents. Returns the LLM's final text response as the summary.
-- `Script(ScriptConfig)`: Spawns a child process, captures stdout/stderr, applies timeout. Returns the process's stdout as the summary. No LLM call, no context assembly.
 
 **BackgroundTaskSpawner:** Manages all background task lifecycles:
 - Bounded concurrency: a semaphore (default: 3) caps concurrent tasks.
 - Spawn on Tokio: each task runs as `tokio::spawn(async move {})`.
 - Cancellation: every task has a `CancellationToken`; cancelling stops the task and cleans up active projects.
-- Transcript persistence: output written to `memory/background/YYYY-MM/DD/bg-{id}.log` (or `.jsonl` for SubAgent JSONL, though currently uses text output).
+- Transcript persistence: output written to `memory/background/YYYY-MM/DD/bg-{id}.log`.
 - Result channel: on completion, sends `BackgroundResult` to the result channel.
 
 ### Primary Data Flow
@@ -58,9 +57,7 @@ BackgroundTaskSpawner::spawn()
     ├─ Register in active_tasks (with CancellationToken)
     ├─ Acquire semaphore permit (waits if at capacity)
     └─ tokio::spawn(async move {
-         execute_task(execution)
-           ├── SubAgent: call execute_subagent() → minimal context + turn loop
-           └── Script: call execute_script() → spawn child process
+         execute_subagent() → minimal context + turn loop
          → BackgroundResult { id, summary, status, transcript_path }
          → send to result_tx (mpsc channel)
        })
@@ -96,31 +93,12 @@ When `execute_subagent()` runs:
    - Decrement MCP server ref counts.
    - Clear tool filter state.
 
-#### Script Execution
-
-When `execute_script()` runs:
-
-1. **Spawn child process** with:
-   - Command and args from `ScriptConfig`
-   - Working directory (default: workspace root)
-   - Pipes for stdout/stderr
-   - `kill_on_drop(true)` for automatic cleanup
-
-2. **Wait with timeout:** Use `tokio::time::timeout()` (default: 120s, configurable).
-
-3. **Capture output:**
-   - Success (exit code 0): return stdout (truncated to 10KB).
-   - Failure (exit code != 0): return combined output with exit code and stderr (if any).
-   - Timeout: return error message.
-
-4. **Handle cancellation:** If cancelled while waiting, the child process is killed automatically when the `Command` is dropped.
-
 #### Result Routing
 
 `BackgroundResult` carries the completion envelope:
 - `id`: Task ID
 - `task_name`: For NOTIFY.yml lookup
-- `summary`: SubAgent's final text or script's stdout
+- `summary`: SubAgent's final text response
 - `transcript_path`: Path to disk log
 - `status`: `Completed`, `Cancelled`, or `Failed { error: String }`
 - `routing`: How to deliver it
@@ -153,9 +131,7 @@ This isolation ensures:
 
 **Semaphore-bounded execution:** The spawner maintains an `Arc<Semaphore>` (default capacity: 3). Every spawned task acquires a permit before executing and releases it when done (or dropped). This prevents unbounded task accumulation.
 
-**Cancellation tokens:** Every task has a `CancellationToken`. The spawner stores tokens in `active_tasks` (HashMap). When `cancel(task_id)` is called:
-- SubAgent: checked between tool iterations in the turn loop. On cancel, active project is deactivated with log.
-- Script: checked via `tokio::select!` against the process wait. Child process is killed automatically.
+**Cancellation tokens:** Every task has a `CancellationToken`. The spawner stores tokens in `active_tasks` (HashMap). When `cancel(task_id)` is called, the SubAgent checks the token between tool iterations in the turn loop. On cancel, active project is deactivated with log.
 
 **No blocking or locking:** Cancellation is non-blocking. Checking a `CancellationToken` is just a flag read. Task lifecycle (spawn, cancel, cleanup) uses async-safe primitives (`tokio::sync::Mutex`, channels).
 
@@ -181,21 +157,15 @@ This isolation ensures:
 
 ---
 
-**Decision: Script execution has no context assembly, no LLM call.**
-
-**Why:** A script task is "run this command" — there's nothing to reason about. No LLM call means zero tokens and instant completion. The summary is just stdout. This keeps script overhead minimal and fits the scheduled action `Background` mode for simple, deterministic work.
-
----
-
 **Decision: Transcript written asynchronously after task completes.**
 
-**Why:** Writing happens in the spawned task before returning the result, not on the critical path. The transcript path is included in `BackgroundResult` so the gateway/router can reference it. Full transcripts (SubAgent JSONL turn-by-turn logs) could be added later; currently stored as text output (stdout for scripts, final LLM response + summary for SubAgents).
+**Why:** Writing happens in the spawned task before returning the result, not on the critical path. The transcript path is included in `BackgroundResult` so the gateway/router can reference it.
 
 ---
 
-**Decision: Cancellation is cooperative for SubAgents, forced for scripts.**
+**Decision: Cancellation is cooperative.**
 
-**Why:** SubAgent cancellation is checked between tool iterations, so the worst-case latency is one LLM round-trip. Forced cleanup happens on cancel (project deactivation). Script cancellation kills the child process directly (SIGTERM via `kill_on_drop`). SubAgents run LLM loops that respect cancellation tokens; scripts are external processes that don't.
+**Why:** SubAgent cancellation is checked between tool iterations, so the worst-case latency is one LLM round-trip. Forced cleanup happens on cancel (project deactivation).
 
 ---
 
@@ -231,13 +201,13 @@ This isolation ensures:
 
 - **`crate::tools`** — `ToolRegistry`, `ToolFilter`, `PathPolicy`, `FileTracker`. SubAgents get fresh isolated instances of tool-related state.
 
-- **`crate::workspace`** — `IdentityFiles` (SOUL.md, USER.md, ENVIRONMENT.md), `WorkspaceLayout` (paths to directories). Used for context assembly and to determine workspace root for scripts.
+- **`crate::workspace`** — `IdentityFiles` (SOUL.md, USER.md, ENVIRONMENT.md), `WorkspaceLayout` (paths to directories). Used for context assembly.
 
 - **`crate::notify::types`** — `TaskSource` (Agent, Pulse, Action). Labels where a task originated.
 
 - **`crate::subagents`** — `SubagentPresetFrontmatter` (tool restrictions, model tier, channels). Optional preset metadata passed to `build_spawn_resources()`.
 
-- **`tokio`** — `tokio::sync::{Mutex, Semaphore, mpsc}`, `tokio::process::Command`, `tokio_util::sync::CancellationToken`. Core async primitives for task spawning, concurrency control, and cancellation.
+- **`tokio`** — `tokio::sync::{Mutex, Semaphore, mpsc}`, `tokio_util::sync::CancellationToken`. Core async primitives for task spawning, concurrency control, and cancellation.
 
 - **`anyhow`** — Error handling throughout.
 
@@ -253,7 +223,7 @@ This isolation ensures:
 
 - **`src/gateway/server/startup.rs`** — Initializes the spawner, result channel, and spawn context during gateway startup.
 
-- **`src/gateway/server/actions.rs`** — Spawns scheduled action background tasks (SubAgent or Script depending on action type).
+- **`src/gateway/server/actions.rs`** — Spawns scheduled action background tasks (SubAgent).
 
 - **`src/pulse/executor.rs`** — Spawns pulse evaluation background tasks (SubAgent execution).
 
@@ -273,10 +243,9 @@ This isolation ensures:
 | File | Purpose |
 |------|---------|
 | `mod.rs` | Module exports: re-exports public types and the `BackgroundTaskSpawner`. |
-| `types.rs` | Core types: `BackgroundTask`, `BackgroundResult`, `TaskStatus`, `Execution` (SubAgent/Script configs), `ResultRouting`, `ActiveTaskInfo`. Helper function `execution_info()` and `format_background_result()` for display. |
+| `types.rs` | Core types: `BackgroundTask`, `BackgroundResult`, `TaskStatus`, `Execution` (SubAgent config), `ResultRouting`, `ActiveTaskInfo`. Helper function `execution_info()` and `format_background_result()` for display. |
 | `spawner.rs` | `BackgroundTaskSpawner`: lifecycle management, semaphore concurrency control, cancellation, active task tracking, result channel sending, transcript writing. |
 | `subagent.rs` | SubAgent execution: `SubAgentResources` (isolated state bundle), `build_resources()` (construct resources from main agent state), `execute_subagent()` (run turn loop), project deactivation enforcement. |
-| `script.rs` | Script execution: `execute_script()` spawns child process, captures output, handles timeout, truncates large outputs. |
 | `spawn_context.rs` | `SpawnContext` (gathered at gateway startup): config, provider specs, identity, options, workspace layout. `build_spawn_resources()` resolves model tier and constructs SubAgentResources for a specific task. |
 
 ---
@@ -290,9 +259,7 @@ graph TD
     B --> C["Acquire semaphore permit<br/>(wait if at capacity)"]
     C --> D["tokio::spawn async block"]
 
-    D --> E{Execution type?}
-    E -->|SubAgent| F["execute_subagent"]
-    E -->|Script| G["execute_script"]
+    D --> F["execute_subagent"]
 
     F --> F1["Assemble minimal context<br/>USER.md + ENVIRONMENT.md<br/>+ projects index"]
     F1 --> F2["Build isolated resources<br/>ProjectState, SkillState,<br/>ToolFilter, PathPolicy"]
@@ -300,13 +267,7 @@ graph TD
     F3 --> F4["Check/enforce project<br/>deactivation on exit"]
     F4 --> F5["Return LLM final text<br/>as summary"]
 
-    G --> G1["Spawn child process<br/>with timeout"]
-    G1 --> G2["Capture stdout/stderr"]
-    G2 --> G3["Truncate to 10KB max"]
-    G3 --> G4["Return stdout as summary<br/>or error if exit != 0"]
-
     F5 --> H["Write transcript to disk<br/>memory/background/YYYY-MM/DD/"]
-    G4 --> H
 
     H --> I["BackgroundResult<br/>{id, task_name, summary,<br/>status, transcript_path}"]
     I --> J["Send via result_tx<br/>mpsc channel"]
@@ -326,4 +287,3 @@ graph TD
     Q --> T["Turn loop drains interrupt channel<br/>appends to message stream"]
     T --> U["LLM sees: tool result<br/>+ background context<br/>+ any user amendments"]
 ```
-

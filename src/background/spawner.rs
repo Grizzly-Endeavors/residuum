@@ -8,7 +8,6 @@ use chrono::Utc;
 use tokio::sync::{Mutex, Semaphore, mpsc};
 use tokio_util::sync::CancellationToken;
 
-use super::script::execute_script;
 use super::subagent::{SubAgentResources, execute_subagent};
 use super::types::{
     ActiveTaskInfo, BackgroundResult, BackgroundTask, Execution, TaskStatus, execution_info,
@@ -223,16 +222,12 @@ impl BackgroundTaskSpawner {
 async fn execute_task(
     task: &BackgroundTask,
     resources: Option<&SubAgentResources>,
-    workspace_root: &std::path::Path,
+    _workspace_root: &std::path::Path,
 ) -> Result<String, anyhow::Error> {
-    match &task.execution {
-        Execution::SubAgent(config) => {
-            let res = resources
-                .ok_or_else(|| anyhow::anyhow!("sub-agent task requires SubAgentResources"))?;
-            execute_subagent(&task.id, config, res).await
-        }
-        Execution::Script(config) => execute_script(&task.id, config, workspace_root).await,
-    }
+    let Execution::SubAgent(config) = &task.execution;
+    let res = resources
+        .ok_or_else(|| anyhow::anyhow!("sub-agent task requires SubAgentResources"))?;
+    execute_subagent(&task.id, config, res).await
 }
 
 /// Write a transcript file for the task. Returns the path if successful.
@@ -266,129 +261,9 @@ async fn write_transcript(
 #[expect(clippy::unwrap_used, reason = "test code uses unwrap for clarity")]
 mod tests {
     use super::*;
-    use crate::background::types::{Execution, ResultRouting, ScriptConfig, SubAgentConfig};
+    use crate::background::types::{Execution, ResultRouting, SubAgentConfig};
     use crate::config::BackgroundModelTier;
     use crate::notify::types::TaskSource;
-
-    fn make_echo_task(id: &str) -> BackgroundTask {
-        BackgroundTask {
-            id: id.to_string(),
-            task_name: "test_echo".to_string(),
-            source: TaskSource::Agent,
-            execution: Execution::Script(ScriptConfig {
-                command: "echo".to_string(),
-                args: vec!["hello".to_string()],
-                working_dir: None,
-                timeout_secs: None,
-            }),
-            routing: ResultRouting::Notify,
-        }
-    }
-
-    #[tokio::test]
-    async fn spawn_and_receive_result() {
-        let (tx, mut rx) = mpsc::channel(32);
-        let dir = tempfile::tempdir().unwrap();
-        let spawner =
-            BackgroundTaskSpawner::new(tx, 3, PathBuf::from("/tmp"), dir.path().to_path_buf());
-
-        let task = make_echo_task("t1");
-        let id = spawner.spawn(task, None).await.unwrap();
-        assert_eq!(id, "t1");
-
-        let result = rx.recv().await.unwrap();
-        assert_eq!(result.id, "t1");
-        assert!(
-            matches!(result.status, TaskStatus::Completed),
-            "should be completed"
-        );
-        assert!(
-            result.summary.contains("hello"),
-            "should contain echo output"
-        );
-    }
-
-    #[tokio::test]
-    async fn cancel_returns_correct_bool() {
-        let (tx, mut rx) = mpsc::channel(32);
-        let dir = tempfile::tempdir().unwrap();
-        let spawner =
-            BackgroundTaskSpawner::new(tx, 3, PathBuf::from("/tmp"), dir.path().to_path_buf());
-
-        // Spawn a long-running task
-        let task = BackgroundTask {
-            id: "long-1".to_string(),
-            task_name: "long_task".to_string(),
-            source: TaskSource::Agent,
-            execution: Execution::Script(ScriptConfig {
-                command: "sleep".to_string(),
-                args: vec!["30".to_string()],
-                working_dir: None,
-                timeout_secs: None,
-            }),
-            routing: ResultRouting::Notify,
-        };
-
-        // Task is registered in active_tasks before tokio::spawn, so it is
-        // visible to cancel() as soon as spawn() returns — no sleep needed.
-        spawner.spawn(task, None).await.unwrap();
-
-        let cancelled = spawner.cancel("long-1").await;
-        assert!(cancelled, "should return true for active task");
-
-        let not_found = spawner.cancel("nonexistent").await;
-        assert!(!not_found, "should return false for unknown task");
-
-        // Drain the result
-        let result = rx.recv().await.unwrap();
-        assert!(
-            matches!(result.status, TaskStatus::Cancelled),
-            "should be cancelled"
-        );
-    }
-
-    #[tokio::test]
-    async fn tasks_queued_when_over_limit_all_complete() {
-        let (tx, mut rx) = mpsc::channel(32);
-        let dir = tempfile::tempdir().unwrap();
-        let spawner = BackgroundTaskSpawner::new(
-            tx,
-            2, // max_concurrent
-            PathBuf::from("/tmp"),
-            dir.path().to_path_buf(),
-        );
-
-        // Spawn 3 tasks against a limit of 2 — the 3rd queues behind the semaphore
-        // and must complete once a slot opens. All 3 should eventually succeed.
-        for i in 0..3 {
-            let task = BackgroundTask {
-                id: format!("conc-{i}"),
-                task_name: "echo_task".to_string(),
-                source: TaskSource::Agent,
-                execution: Execution::Script(ScriptConfig {
-                    command: "echo".to_string(),
-                    args: vec![format!("task-{i}")],
-                    working_dir: None,
-                    timeout_secs: None,
-                }),
-                routing: ResultRouting::Notify,
-            };
-            spawner.spawn(task, None).await.unwrap();
-        }
-
-        let mut results = Vec::new();
-        for _ in 0..3 {
-            results.push(rx.recv().await.unwrap());
-        }
-
-        assert_eq!(results.len(), 3, "all 3 tasks should complete");
-        for result in &results {
-            assert!(
-                matches!(result.status, TaskStatus::Completed),
-                "all should be completed"
-            );
-        }
-    }
 
     #[tokio::test]
     async fn send_result_delivers_to_channel() {
@@ -415,23 +290,6 @@ mod tests {
         assert_eq!(received.task_name, "action_event");
         assert_eq!(received.summary, "system alert");
         assert!(matches!(received.source, TaskSource::Action));
-    }
-
-    #[tokio::test]
-    async fn transcript_written_after_successful_task() {
-        let (tx, mut rx) = mpsc::channel(32);
-        let dir = tempfile::tempdir().unwrap();
-        let spawner =
-            BackgroundTaskSpawner::new(tx, 3, PathBuf::from("/tmp"), dir.path().to_path_buf());
-
-        let task = make_echo_task("ch-1");
-        spawner.spawn(task, None).await.unwrap();
-
-        let result = rx.recv().await.unwrap();
-        assert!(result.transcript_path.is_some(), "should write transcript");
-        // Verify the transcript file actually exists on disk
-        let path = result.transcript_path.unwrap();
-        assert!(path.exists(), "transcript file should exist at {path:?}");
     }
 
     #[tokio::test]

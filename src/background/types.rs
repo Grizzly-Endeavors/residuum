@@ -37,8 +37,6 @@ pub enum ResultRouting {
 pub enum Execution {
     /// Run a sub-agent LLM turn.
     SubAgent(SubAgentConfig),
-    /// Run a shell script/command.
-    Script(ScriptConfig),
 }
 
 /// Configuration for a sub-agent background task.
@@ -50,19 +48,6 @@ pub struct SubAgentConfig {
     pub context: Option<String>,
     /// Which model tier to use.
     pub model_tier: BackgroundModelTier,
-}
-
-/// Configuration for a script background task.
-#[derive(Debug, Clone)]
-pub struct ScriptConfig {
-    /// Command to execute.
-    pub command: String,
-    /// Arguments to pass.
-    pub args: Vec<String>,
-    /// Working directory (defaults to workspace root).
-    pub working_dir: Option<PathBuf>,
-    /// Timeout in seconds (defaults to 120).
-    pub timeout_secs: Option<u64>,
 }
 
 /// The result of a completed background task.
@@ -93,7 +78,7 @@ pub struct ActiveTaskInfo {
     pub task_name: String,
     /// Where this task originated.
     pub source: TaskSource,
-    /// Execution variant label: `"sub_agent"` or `"script"`.
+    /// Execution variant label (always `"sub_agent"`).
     pub execution_type: &'static str,
     /// Truncated prompt or command preview (at most 120 chars).
     pub prompt_preview: String,
@@ -103,20 +88,9 @@ pub struct ActiveTaskInfo {
 
 /// Extract display info from an `Execution` config.
 pub(crate) fn execution_info(execution: &Execution) -> (&'static str, String) {
-    match execution {
-        Execution::SubAgent(cfg) => {
-            let preview = cfg.prompt.chars().take(120).collect();
-            ("sub_agent", preview)
-        }
-        Execution::Script(cfg) => {
-            let mut s = cfg.command.clone();
-            if !cfg.args.is_empty() {
-                s.push(' ');
-                s.push_str(&cfg.args.join(" "));
-            }
-            ("script", s.chars().take(120).collect())
-        }
-    }
+    let Execution::SubAgent(cfg) = execution;
+    let preview = cfg.prompt.chars().take(120).collect();
+    ("sub_agent", preview)
 }
 
 /// Completion status of a background task.
@@ -272,33 +246,6 @@ mod tests {
         let (exec_type, preview) = execution_info(&Execution::SubAgent(config));
         assert_eq!(exec_type, "sub_agent");
         assert_eq!(preview.len(), 120, "preview should be capped at 120 chars");
-    }
-
-    #[test]
-    fn execution_info_script_joins_args() {
-        use std::path::PathBuf;
-        let config = crate::background::types::ScriptConfig {
-            command: "echo".to_string(),
-            args: vec!["hello".to_string(), "world".to_string()],
-            working_dir: Some(PathBuf::from("/tmp")),
-            timeout_secs: None,
-        };
-        let (exec_type, preview) = execution_info(&Execution::Script(config));
-        assert_eq!(exec_type, "script");
-        assert_eq!(preview, "echo hello world");
-    }
-
-    #[test]
-    fn execution_info_script_no_args() {
-        use std::path::PathBuf;
-        let config = crate::background::types::ScriptConfig {
-            command: "pwd".to_string(),
-            args: vec![],
-            working_dir: Some(PathBuf::from("/tmp")),
-            timeout_secs: None,
-        };
-        let (_exec_type, preview) = execution_info(&Execution::Script(config));
-        assert_eq!(preview, "pwd", "no trailing space when args is empty");
     }
 
     #[test]

@@ -1,14 +1,9 @@
 //! End-to-end integration tests for the background task subsystem (Phase 2 + 4).
 //!
-//! Tests script execution, sub-agent execution, spawner concurrency, result
-//! routing through the notification system, and Phase 4 isolated project/skill
-//! state for sub-agents.
+//! Tests sub-agent execution, spawner concurrency, result routing through the
+//! notification system, and Phase 4 isolated project/skill state for sub-agents.
 
 #[expect(clippy::unwrap_used, reason = "test code uses unwrap for clarity")]
-#[expect(
-    clippy::panic,
-    reason = "test assertions use panic for unreachable variants"
-)]
 #[expect(
     clippy::tests_outside_test_module,
     reason = "integration tests live in tests/ directory, not inside #[cfg(test)] modules"
@@ -23,117 +18,13 @@ mod background_integration {
 
     use ironclaw::background::BackgroundTaskSpawner;
     use ironclaw::background::types::{
-        BackgroundTask, Execution, ResultRouting, ScriptConfig, TaskStatus,
+        BackgroundTask, Execution, ResultRouting, SubAgentConfig, TaskStatus,
         format_background_result,
     };
+    use ironclaw::config::BackgroundModelTier;
     use ironclaw::notify::channels::InboxChannel;
     use ironclaw::notify::router::NotificationRouter;
     use ironclaw::notify::types::TaskSource;
-
-    fn make_script_task(id: &str, command: &str, args: &[&str]) -> BackgroundTask {
-        BackgroundTask {
-            id: id.to_string(),
-            task_name: "test_script".to_string(),
-            source: TaskSource::Agent,
-            execution: Execution::Script(ScriptConfig {
-                command: command.to_string(),
-                args: args.iter().map(|s| (*s).to_string()).collect(),
-                working_dir: None,
-                timeout_secs: None,
-            }),
-            routing: ResultRouting::Notify,
-        }
-    }
-
-    // ── Script end-to-end ──────────────────────────────────────────────
-
-    #[tokio::test]
-    async fn script_echo_end_to_end() {
-        let dir = tempdir().unwrap();
-        let (tx, mut rx) = mpsc::channel(32);
-        let spawner =
-            BackgroundTaskSpawner::new(tx, 3, PathBuf::from("/tmp"), dir.path().to_path_buf());
-
-        let task = make_script_task("e2e-1", "echo", &["hello world"]);
-        spawner.spawn(task, None).await.unwrap();
-
-        let result = rx.recv().await.unwrap();
-        assert_eq!(result.id, "e2e-1");
-        assert!(matches!(result.status, TaskStatus::Completed));
-        assert!(
-            result.summary.contains("hello world"),
-            "output should contain echo text"
-        );
-        assert!(
-            result.transcript_path.is_some(),
-            "should write transcript file"
-        );
-    }
-
-    #[tokio::test]
-    async fn script_failure_end_to_end() {
-        let dir = tempdir().unwrap();
-        let (tx, mut rx) = mpsc::channel(32);
-        let spawner =
-            BackgroundTaskSpawner::new(tx, 3, PathBuf::from("/tmp"), dir.path().to_path_buf());
-
-        let task = BackgroundTask {
-            id: "fail-1".to_string(),
-            task_name: "test_fail".to_string(),
-            source: TaskSource::Agent,
-            execution: Execution::Script(ScriptConfig {
-                command: "false".to_string(),
-                args: Vec::new(),
-                working_dir: None,
-                timeout_secs: None,
-            }),
-            routing: ResultRouting::Notify,
-        };
-
-        spawner.spawn(task, None).await.unwrap();
-
-        let result = rx.recv().await.unwrap();
-        assert_eq!(result.id, "fail-1");
-        assert!(
-            matches!(result.status, TaskStatus::Failed { .. }),
-            "non-zero exit should be recorded as failed"
-        );
-        assert!(
-            result.summary.contains("exit code"),
-            "should contain exit code info"
-        );
-    }
-
-    // ── Concurrency limit ──────────────────────────────────────────────
-
-    #[tokio::test]
-    async fn concurrency_limit_queues_excess() {
-        let dir = tempdir().unwrap();
-        let max = 2;
-        let (tx, mut rx) = mpsc::channel(32);
-        let spawner =
-            BackgroundTaskSpawner::new(tx, max, PathBuf::from("/tmp"), dir.path().to_path_buf());
-
-        // Spawn max + 1 tasks
-        for i in 0..=max {
-            let task = make_script_task(&format!("conc-{i}"), "echo", &[&format!("task-{i}")]);
-            spawner.spawn(task, None).await.unwrap();
-        }
-
-        // All should eventually complete
-        let mut results = Vec::new();
-        for _ in 0..=max {
-            results.push(rx.recv().await.unwrap());
-        }
-
-        assert_eq!(results.len(), max + 1, "all tasks should complete");
-        for result in &results {
-            assert!(
-                matches!(result.status, TaskStatus::Completed),
-                "all should complete successfully"
-            );
-        }
-    }
 
     // ── Result routing through NOTIFY.yml to inbox ─────────────────────
 
@@ -220,108 +111,7 @@ mod background_integration {
         assert!(result.transcript_path.is_some());
     }
 
-    // ── Phase 3: list_active_tasks and cancel ─────────────────────
-
-    #[tokio::test]
-    async fn cancel_long_running_script_produces_cancelled_result() {
-        let dir = tempdir().unwrap();
-        let (tx, mut rx) = mpsc::channel(32);
-        let spawner = Arc::new(BackgroundTaskSpawner::new(
-            tx,
-            3,
-            PathBuf::from("/tmp"),
-            dir.path().to_path_buf(),
-        ));
-
-        let task = BackgroundTask {
-            id: "cancel-e2e-1".to_string(),
-            task_name: "long_task".to_string(),
-            source: TaskSource::Agent,
-            execution: Execution::Script(ScriptConfig {
-                command: "sleep".to_string(),
-                args: vec!["30".to_string()],
-                working_dir: None,
-                timeout_secs: None,
-            }),
-            routing: ResultRouting::Notify,
-        };
-
-        spawner.spawn(task, None).await.unwrap();
-
-        // Give it time to register and start
-        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
-
-        assert_eq!(
-            spawner.active_task_ids().await.len(),
-            1,
-            "should have 1 active task"
-        );
-
-        let cancelled = spawner.cancel("cancel-e2e-1").await;
-        assert!(cancelled, "cancel should return true for active task");
-
-        let result = rx.recv().await.unwrap();
-        assert!(
-            matches!(result.status, TaskStatus::Cancelled),
-            "status should be Cancelled"
-        );
-
-        // Wait briefly for cleanup then verify task removed
-        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
-        assert_eq!(
-            spawner.active_task_ids().await.len(),
-            0,
-            "active_task_ids should be empty after cancel"
-        );
-    }
-
-    #[tokio::test]
-    async fn list_active_tasks_returns_metadata_for_running_task() {
-        let dir = tempdir().unwrap();
-        let (tx, mut rx) = mpsc::channel(32);
-        let spawner = Arc::new(BackgroundTaskSpawner::new(
-            tx,
-            3,
-            PathBuf::from("/tmp"),
-            dir.path().to_path_buf(),
-        ));
-
-        let task = BackgroundTask {
-            id: "list-meta-1".to_string(),
-            task_name: "metadata_task".to_string(),
-            source: TaskSource::Action,
-            execution: Execution::Script(ScriptConfig {
-                command: "sleep".to_string(),
-                args: vec!["30".to_string()],
-                working_dir: None,
-                timeout_secs: None,
-            }),
-            routing: ResultRouting::Notify,
-        };
-
-        spawner.spawn(task, None).await.unwrap();
-        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
-
-        let tasks = spawner.list_active_tasks().await;
-        assert_eq!(tasks.len(), 1, "should list 1 active task");
-
-        let (id, info) = tasks.first().unwrap();
-        assert_eq!(id, "list-meta-1");
-        assert_eq!(info.task_name, "metadata_task");
-        assert_eq!(info.execution_type, "script");
-        assert!(
-            info.prompt_preview.contains("sleep"),
-            "preview should contain command"
-        );
-        assert!(
-            matches!(info.source, TaskSource::Action),
-            "source should be Action"
-        );
-
-        // Clean up
-        spawner.cancel("list-meta-1").await;
-        rx.recv().await.unwrap();
-    }
+    // ── Phase 3: cancel ─────────────────────────────────────────────
 
     #[tokio::test]
     async fn cancel_nonexistent_task_returns_false() {
@@ -539,13 +329,9 @@ mod background_integration {
         assert!(matches!(task.source, TaskSource::Pulse));
         assert!(matches!(task.routing, ResultRouting::Notify));
 
-        match &task.execution {
-            Execution::SubAgent(cfg) => {
-                assert_eq!(cfg.model_tier, BackgroundModelTier::Small);
-                assert!(cfg.prompt.contains("status_check"));
-                assert!(cfg.prompt.contains("HEARTBEAT_OK"));
-            }
-            Execution::Script(_) => panic!("expected SubAgent"),
-        }
+        let Execution::SubAgent(cfg) = &task.execution;
+        assert_eq!(cfg.model_tier, BackgroundModelTier::Small);
+        assert!(cfg.prompt.contains("status_check"));
+        assert!(cfg.prompt.contains("HEARTBEAT_OK"));
     }
 }

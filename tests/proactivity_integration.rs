@@ -4,10 +4,6 @@
 
 #[expect(clippy::unwrap_used, reason = "test code uses unwrap for clarity")]
 #[expect(
-    clippy::panic,
-    reason = "test assertions use panic for unreachable variants"
-)]
-#[expect(
     clippy::tests_outside_test_module,
     reason = "integration tests live in tests/ directory, not inside #[cfg(test)] modules"
 )]
@@ -132,26 +128,20 @@ mod proactivity_integration {
     fn build_pulse_task_execution_is_subagent_small() {
         let pulse = sample_pulse();
         let task = build_pulse_task(&pulse);
-        match &task.execution {
-            Execution::SubAgent(cfg) => {
-                assert_eq!(
-                    cfg.model_tier,
-                    BackgroundModelTier::Small,
-                    "tier should be Small"
-                );
-            }
-            Execution::Script(_) => panic!("expected SubAgent execution"),
-        }
+        let Execution::SubAgent(cfg) = &task.execution;
+        assert_eq!(
+            cfg.model_tier,
+            BackgroundModelTier::Small,
+            "tier should be Small"
+        );
     }
 
     #[test]
     fn build_pulse_task_prompt_contains_pulse_name_and_heartbeat_ok() {
         let pulse = sample_pulse();
         let task = build_pulse_task(&pulse);
-        let prompt = match &task.execution {
-            Execution::SubAgent(cfg) => &cfg.prompt,
-            Execution::Script(_) => panic!("expected SubAgent"),
-        };
+        let Execution::SubAgent(cfg) = &task.execution;
+        let prompt = &cfg.prompt;
 
         assert!(
             prompt.contains("email_check"),
@@ -194,10 +184,8 @@ mod proactivity_integration {
 
         let task = build_pulse_task(&pulse);
         assert_eq!(task.task_name, "empty_test");
-        let prompt = match &task.execution {
-            Execution::SubAgent(cfg) => &cfg.prompt,
-            Execution::Script(_) => panic!("expected SubAgent"),
-        };
+        let Execution::SubAgent(cfg) = &task.execution;
+        let prompt = &cfg.prompt;
         assert!(
             prompt.contains("HEARTBEAT_OK"),
             "should still have HEARTBEAT_OK instruction with no tasks"
