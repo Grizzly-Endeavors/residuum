@@ -99,6 +99,7 @@ const ModelFetcher = {
     /**
      * Populate a <select> element with models from the given provider.
      * Shows a loading state while fetching. Selects `currentValue` if present.
+     * Appends an "Other..." option that reveals a text input for custom model IDs.
      */
     async populateSelect(selectEl, provider, apiKey, url, currentValue) {
         if (!selectEl) return;
@@ -106,6 +107,7 @@ const ModelFetcher = {
         // Show loading state
         selectEl.innerHTML = '<option value="">Loading models...</option>';
         selectEl.disabled = true;
+        this._hideOtherInput(selectEl);
 
         const result = await this.fetch(provider, apiKey, url);
 
@@ -113,30 +115,94 @@ const ModelFetcher = {
         if (result.models.length === 0) {
             selectEl.innerHTML = '<option value="">No models available</option>';
             selectEl.disabled = false;
+            this._appendOtherOption(selectEl);
             return;
         }
 
         const defaultModel = this.defaultModels[provider];
         const selected = currentValue || defaultModel || '';
 
+        let foundInList = false;
         for (const model of result.models) {
             const opt = document.createElement('option');
             opt.value = model.id;
             opt.textContent = model.name || model.id;
-            if (model.id === selected) opt.selected = true;
+            if (model.id === selected) {
+                opt.selected = true;
+                foundInList = true;
+            }
             selectEl.appendChild(opt);
         }
 
-        // If nothing was selected and we have a value, add it as an option
-        if (selected && !selectEl.value) {
-            const opt = document.createElement('option');
-            opt.value = selected;
-            opt.textContent = selected;
-            opt.selected = true;
-            selectEl.prepend(opt);
+        this._appendOtherOption(selectEl);
+
+        // If the current value isn't in the list, activate "Other" with it pre-filled
+        if (selected && !foundInList) {
+            selectEl.value = '__other__';
+            this._showOtherInput(selectEl, selected);
         }
 
         selectEl.disabled = false;
+    },
+
+    /** Append the "Other..." option and wire up its toggle behavior. */
+    _appendOtherOption(selectEl) {
+        const opt = document.createElement('option');
+        opt.value = '__other__';
+        opt.textContent = 'Other...';
+        selectEl.appendChild(opt);
+
+        // Avoid double-binding
+        if (selectEl._otherBound) return;
+        selectEl._otherBound = true;
+
+        selectEl.addEventListener('change', () => {
+            if (selectEl.value === '__other__') {
+                this._showOtherInput(selectEl, '');
+            } else {
+                this._hideOtherInput(selectEl);
+            }
+        });
+    },
+
+    /** Show the custom model text input below the select. */
+    _showOtherInput(selectEl, prefill) {
+        const wrap = selectEl.closest('.model-select-wrap') || selectEl.parentElement;
+        let input = wrap.querySelector('.model-other-input');
+        if (!input) {
+            input = document.createElement('input');
+            input.type = 'text';
+            input.className = 'model-other-input';
+            input.placeholder = 'Enter model ID...';
+            wrap.appendChild(input);
+        }
+        input.value = prefill || '';
+        input.style.display = '';
+        input.focus();
+    },
+
+    /** Hide the custom model text input. */
+    _hideOtherInput(selectEl) {
+        const wrap = selectEl.closest('.model-select-wrap') || selectEl.parentElement;
+        const input = wrap.querySelector('.model-other-input');
+        if (input) {
+            input.style.display = 'none';
+            input.value = '';
+        }
+    },
+
+    /**
+     * Get the effective model ID from a select that may have "Other" active.
+     * Use this instead of reading selectEl.value directly.
+     */
+    getSelectedModel(selectEl) {
+        if (!selectEl) return '';
+        if (selectEl.value === '__other__') {
+            const wrap = selectEl.closest('.model-select-wrap') || selectEl.parentElement;
+            const input = wrap.querySelector('.model-other-input');
+            return input ? input.value.trim() : '';
+        }
+        return selectEl.value;
     },
 
     /**

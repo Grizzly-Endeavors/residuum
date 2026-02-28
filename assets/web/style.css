@@ -1216,6 +1216,29 @@ html, body {
     to { transform: rotate(360deg); }
 }
 
+.model-other-input {
+    width: 100%;
+    margin-top: 6px;
+    padding: 8px 12px;
+    font-family: var(--font-mono);
+    font-size: 13px;
+    color: var(--text);
+    background: var(--bg-input);
+    border: 1px solid var(--ember-dim);
+    border-radius: var(--radius-sm);
+    outline: none;
+    transition: border-color 0.15s, box-shadow 0.15s;
+}
+
+.model-other-input:focus {
+    border-color: var(--ember);
+    box-shadow: 0 0 0 1px rgba(232, 100, 32, 0.12);
+}
+
+.model-other-input::placeholder {
+    color: var(--text-dim);
+}
+
 .model-error {
     font-size: 11px;
     color: var(--error);

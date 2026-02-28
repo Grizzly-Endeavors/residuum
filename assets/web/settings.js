@@ -807,15 +807,29 @@ const Settings = {
                 }
                 const { type, apiKey, url } = this.getProviderCredentials(provName);
                 ModelFetcher.populateSelect(modelSelect, type, apiKey || null, url || null, null).then(() => {
-                    this.updateModelPath(role, provName, modelSelect.value);
+                    this.updateModelPath(role, provName, ModelFetcher.getSelectedModel(modelSelect));
                 });
             });
 
-            // On model change, update config (use provider name, not type)
+            // On model change (select or "other" text input), update config
             modelSelect.addEventListener('change', () => {
                 const provName = provSelect.value;
-                this.updateModelPath(role, provName, modelSelect.value);
+                this.updateModelPath(role, provName, ModelFetcher.getSelectedModel(modelSelect));
             });
+
+            // Listen for typing in the "other" text input
+            const wrap = modelSelect.closest('.model-select-wrap') || modelSelect.parentElement;
+            const observer = new MutationObserver(() => {
+                const otherInput = wrap.querySelector('.model-other-input');
+                if (otherInput && !otherInput._settingsBound) {
+                    otherInput._settingsBound = true;
+                    otherInput.addEventListener('input', () => {
+                        const provName = provSelect.value;
+                        this.updateModelPath(role, provName, otherInput.value.trim());
+                    });
+                }
+            });
+            observer.observe(wrap, { childList: true });
 
             // Populate on initial load if provider is selected
             const currentProvName = provSelect.value;

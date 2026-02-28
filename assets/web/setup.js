@@ -416,7 +416,7 @@ const Setup = {
             const keyInp = document.querySelector(`[data-role-field="apiKey"][data-role="${role}"]`);
 
             if (provSel) this.roles[role].provider = provSel.value;
-            if (modelSel) this.roles[role].model = modelSel.value;
+            if (modelSel) this.roles[role].model = ModelFetcher.getSelectedModel(modelSel);
             if (keyInp) this.roles[role].apiKey = keyInp.value;
         }
     },
@@ -440,7 +440,7 @@ const Setup = {
                 const keyEl = document.getElementById('setup-apikey');
                 if (keyEl) this.apiKey = keyEl.value;
                 const modelEl = document.getElementById('setup-model');
-                if (modelEl) this.model = modelEl.value;
+                if (modelEl) this.model = ModelFetcher.getSelectedModel(modelEl);
                 break;
             }
             case 2:
