@@ -355,8 +355,15 @@ pub(super) async fn initialize(cfg: &Config) -> Result<GatewayComponents, Ironcl
         tz,
     });
 
-    // Tool registry
-    let path_policy = crate::tools::PathPolicy::new_shared(layout.root().to_path_buf());
+    // Tool registry — block writes to config files (user-managed)
+    let blocked: std::collections::HashSet<std::path::PathBuf> = [
+        cfg.config_dir.join("config.toml"),
+        cfg.config_dir.join("config.example.toml"),
+    ]
+    .into_iter()
+    .collect();
+    let path_policy =
+        crate::tools::PathPolicy::new_shared_with_blocked(layout.root().to_path_buf(), blocked);
     let tool_filter = crate::tools::ToolFilter::new_shared(std::collections::HashSet::new());
     let mcp_registry = crate::mcp::McpRegistry::new_shared();
     let mut tools = ToolRegistry::new();
