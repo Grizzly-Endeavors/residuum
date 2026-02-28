@@ -9,11 +9,7 @@ use crate::models::retry::RetryConfig;
 
 use super::Config;
 use super::bootstrap::default_workspace_dir;
-use super::constants::{
-    DEFAULT_GATEWAY_BIND, DEFAULT_GATEWAY_PORT, DEFAULT_MAX_TOKENS, DEFAULT_OBSERVER_COOLDOWN_SECS,
-    DEFAULT_OBSERVER_FORCE_THRESHOLD, DEFAULT_OBSERVER_THRESHOLD, DEFAULT_REFLECTOR_THRESHOLD,
-    DEFAULT_TIMEOUT_SECS,
-};
+use super::constants::{DEFAULT_MAX_TOKENS, DEFAULT_TIMEOUT_SECS};
 use super::deserialize::{
     BackgroundConfigFile, ConfigFile, DiscordConfigFile, GatewayConfigFile, McpConfigFile,
     NotificationsConfigFile, ProviderEntryFile, SearchConfigFile, SkillsConfigFile,
@@ -22,9 +18,8 @@ use super::deserialize::{
 use super::provider::{ModelSpec, ProviderKind, ProviderSpec};
 use super::secrets::SecretStore;
 use super::types::{
-    BackgroundConfig, BackgroundModelsConfig, DiscordConfig, ExternalChannelConfig,
-    ExternalChannelKind, GatewayConfig, McpConfig, MemoryConfig, NotificationsConfig, SearchConfig,
-    SkillsConfig, WebhookConfig,
+    BackgroundConfig, DiscordConfig, ExternalChannelConfig, ExternalChannelKind, GatewayConfig,
+    McpConfig, MemoryConfig, NotificationsConfig, SearchConfig, SkillsConfig, WebhookConfig,
 };
 
 /// Build a `Config` from an optional config file and environment variables.
@@ -116,22 +111,25 @@ pub(super) fn from_file_and_env(
         .and_then(|f| f.max_tokens)
         .unwrap_or(DEFAULT_MAX_TOKENS);
 
-    let mem_section = file.and_then(|f| f.memory.as_ref());
-    let search = resolve_search_config(mem_section.and_then(|m| m.search.as_ref()));
-    let memory = MemoryConfig {
-        observer_threshold_tokens: mem_section
-            .and_then(|m| m.observer_threshold_tokens)
-            .unwrap_or(DEFAULT_OBSERVER_THRESHOLD),
-        reflector_threshold_tokens: mem_section
-            .and_then(|m| m.reflector_threshold_tokens)
-            .unwrap_or(DEFAULT_REFLECTOR_THRESHOLD),
-        observer_cooldown_secs: mem_section
-            .and_then(|m| m.observer_cooldown_secs)
-            .unwrap_or(DEFAULT_OBSERVER_COOLDOWN_SECS),
-        observer_force_threshold_tokens: mem_section
-            .and_then(|m| m.observer_force_threshold_tokens)
-            .unwrap_or(DEFAULT_OBSERVER_FORCE_THRESHOLD),
-        search,
+    let memory = {
+        let mem_section = file.and_then(|f| f.memory.as_ref());
+        let mut mem = MemoryConfig::default();
+        if let Some(s) = mem_section {
+            if let Some(v) = s.observer_threshold_tokens {
+                mem.observer_threshold_tokens = v;
+            }
+            if let Some(v) = s.reflector_threshold_tokens {
+                mem.reflector_threshold_tokens = v;
+            }
+            if let Some(v) = s.observer_cooldown_secs {
+                mem.observer_cooldown_secs = v;
+            }
+            if let Some(v) = s.observer_force_threshold_tokens {
+                mem.observer_force_threshold_tokens = v;
+            }
+        }
+        mem.search = resolve_search_config(mem_section.and_then(|m| m.search.as_ref()));
+        mem
     };
 
     let pulse_enabled = file
@@ -322,27 +320,31 @@ fn resolve_role(
 
 /// Resolve gateway configuration from TOML section and environment variables.
 fn resolve_gateway_config(section: Option<&GatewayConfigFile>) -> GatewayConfig {
-    let bind = std::env::var("IRONCLAW_GATEWAY_BIND")
-        .ok()
-        .or_else(|| section.and_then(|s| s.bind.clone()))
-        .unwrap_or_else(|| DEFAULT_GATEWAY_BIND.to_string());
+    let mut cfg = GatewayConfig::default();
 
-    let port_from_env = match std::env::var("IRONCLAW_GATEWAY_PORT") {
+    // Env > file > default for bind
+    if let Ok(val) = std::env::var("IRONCLAW_GATEWAY_BIND") {
+        cfg.bind = val;
+    } else if let Some(val) = section.and_then(|s| s.bind.clone()) {
+        cfg.bind = val;
+    }
+
+    // Env > file > default for port
+    match std::env::var("IRONCLAW_GATEWAY_PORT") {
         Ok(val) => match val.parse::<u16>() {
-            Ok(p) => Some(p),
+            Ok(p) => cfg.port = p,
             Err(e) => {
                 eprintln!("warning: IRONCLAW_GATEWAY_PORT '{val}' is not a valid port: {e}");
-                None
             }
         },
-        Err(_) => None,
-    };
+        Err(_) => {
+            if let Some(p) = section.and_then(|s| s.port) {
+                cfg.port = p;
+            }
+        }
+    }
 
-    let port = port_from_env
-        .or_else(|| section.and_then(|s| s.port))
-        .unwrap_or(DEFAULT_GATEWAY_PORT);
-
-    GatewayConfig { bind, port }
+    cfg
 }
 
 /// Resolve Discord configuration from TOML section and environment.
@@ -407,16 +409,17 @@ fn resolve_webhook_config(
     section: Option<&WebhookConfigFile>,
     secrets: &SecretStore,
 ) -> WebhookConfig {
-    match section {
-        Some(s) => WebhookConfig {
-            enabled: s.enabled.unwrap_or(false),
-            secret: s
-                .secret
-                .as_deref()
-                .and_then(|raw| resolve_secret_value(raw, secrets)),
-        },
-        None => WebhookConfig::default(),
+    let mut cfg = WebhookConfig::default();
+    if let Some(s) = section {
+        if let Some(v) = s.enabled {
+            cfg.enabled = v;
+        }
+        cfg.secret = s
+            .secret
+            .as_deref()
+            .and_then(|raw| resolve_secret_value(raw, secrets));
     }
+    cfg
 }
 
 /// Resolve skills configuration from TOML section.
@@ -464,40 +467,36 @@ fn resolve_mcp_config(section: Option<&McpConfigFile>) -> McpConfig {
 
 /// Resolve hybrid search configuration from TOML section with defaults.
 fn resolve_search_config(section: Option<&SearchConfigFile>) -> SearchConfig {
-    let defaults = SearchConfig::default();
+    let mut cfg = SearchConfig::default();
 
-    let half_life = section
-        .and_then(|s| s.temporal_decay_half_life_days)
-        .unwrap_or(defaults.temporal_decay_half_life_days);
-    let half_life = if half_life <= 0.0 {
-        eprintln!(
-            "warning: [memory.search] temporal_decay_half_life_days must be positive, \
-             got {half_life}; using default {}",
-            defaults.temporal_decay_half_life_days
-        );
-        defaults.temporal_decay_half_life_days
-    } else {
-        half_life
-    };
-
-    let cfg = SearchConfig {
-        vector_weight: section
-            .and_then(|s| s.vector_weight)
-            .unwrap_or(defaults.vector_weight),
-        text_weight: section
-            .and_then(|s| s.text_weight)
-            .unwrap_or(defaults.text_weight),
-        min_score: section
-            .and_then(|s| s.min_score)
-            .unwrap_or(defaults.min_score),
-        candidate_multiplier: section
-            .and_then(|s| s.candidate_multiplier)
-            .unwrap_or(defaults.candidate_multiplier),
-        temporal_decay: section
-            .and_then(|s| s.temporal_decay)
-            .unwrap_or(defaults.temporal_decay),
-        temporal_decay_half_life_days: half_life,
-    };
+    if let Some(s) = section {
+        if let Some(v) = s.vector_weight {
+            cfg.vector_weight = v;
+        }
+        if let Some(v) = s.text_weight {
+            cfg.text_weight = v;
+        }
+        if let Some(v) = s.min_score {
+            cfg.min_score = v;
+        }
+        if let Some(v) = s.candidate_multiplier {
+            cfg.candidate_multiplier = v;
+        }
+        if let Some(v) = s.temporal_decay {
+            cfg.temporal_decay = v;
+        }
+        if let Some(v) = s.temporal_decay_half_life_days {
+            if v <= 0.0 {
+                eprintln!(
+                    "warning: [memory.search] temporal_decay_half_life_days must be positive, \
+                     got {v}; using default {}",
+                    cfg.temporal_decay_half_life_days
+                );
+            } else {
+                cfg.temporal_decay_half_life_days = v;
+            }
+        }
+    }
 
     let sum = cfg.vector_weight + cfg.text_weight;
     if (sum - 1.0).abs() > 0.01 {
@@ -606,38 +605,38 @@ fn resolve_background_config(
     providers_map: Option<&HashMap<String, ProviderEntryFile>>,
     secrets: &SecretStore,
 ) -> Result<BackgroundConfig, IronclawError> {
+    let mut cfg = BackgroundConfig::default();
+
     let Some(section) = section else {
-        return Ok(BackgroundConfig::default());
+        return Ok(cfg);
     };
 
-    let models_section = section.models.as_ref();
+    if let Some(v) = section.max_concurrent {
+        cfg.max_concurrent = v;
+    }
+    if let Some(v) = section.transcript_retention_days {
+        cfg.transcript_retention_days = v;
+    }
 
-    let small = models_section
-        .and_then(|m| m.small.as_deref())
-        .map(|s| resolve_model_string(s, providers_map, secrets))
-        .transpose()?;
-    let medium = models_section
-        .and_then(|m| m.medium.as_deref())
-        .map(|s| resolve_model_string(s, providers_map, secrets))
-        .transpose()?;
-    let large = models_section
-        .and_then(|m| m.large.as_deref())
-        .map(|s| resolve_model_string(s, providers_map, secrets))
-        .transpose()?;
+    if let Some(models_section) = section.models.as_ref() {
+        cfg.models.small = models_section
+            .small
+            .as_deref()
+            .map(|s| resolve_model_string(s, providers_map, secrets))
+            .transpose()?;
+        cfg.models.medium = models_section
+            .medium
+            .as_deref()
+            .map(|s| resolve_model_string(s, providers_map, secrets))
+            .transpose()?;
+        cfg.models.large = models_section
+            .large
+            .as_deref()
+            .map(|s| resolve_model_string(s, providers_map, secrets))
+            .transpose()?;
+    }
 
-    Ok(BackgroundConfig {
-        max_concurrent: section
-            .max_concurrent
-            .unwrap_or(super::constants::DEFAULT_MAX_CONCURRENT_BACKGROUND),
-        transcript_retention_days: section
-            .transcript_retention_days
-            .unwrap_or(super::constants::DEFAULT_TRANSCRIPT_RETENTION_DAYS),
-        models: BackgroundModelsConfig {
-            small,
-            medium,
-            large,
-        },
-    })
+    Ok(cfg)
 }
 
 /// Warn on deprecated environment variables that no longer have effect.
@@ -676,7 +675,10 @@ fn provider_api_key_env(kind: ProviderKind) -> Option<String> {
     reason = "std::env::set_var/remove_var require unsafe in edition 2024"
 )]
 mod tests {
-    use super::super::constants::DEFAULT_ANTHROPIC_URL;
+    use super::super::constants::{
+        DEFAULT_ANTHROPIC_URL, DEFAULT_OBSERVER_COOLDOWN_SECS, DEFAULT_OBSERVER_FORCE_THRESHOLD,
+        DEFAULT_OBSERVER_THRESHOLD, DEFAULT_REFLECTOR_THRESHOLD,
+    };
     use super::*;
 
     /// Create an empty `SecretStore` for tests that don't need real secrets.
