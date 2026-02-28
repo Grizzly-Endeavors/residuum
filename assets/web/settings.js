@@ -12,17 +12,17 @@ const Settings = {
     catalog: [],
     mode: 'form', // 'form' | 'advanced'
 
-    // Section definitions — consolidated into 5 logical groups
+    // Section definitions — sidebar navigation order
     sections: [
+        { key: 'runtime',          title: 'Runtime',            icon: '\u2699\uFE0F' },
         { key: 'providers-models', title: 'Providers & Models', icon: '\u26A1' },
         { key: 'memory',           title: 'Memory',             icon: '\u{1F9E0}' },
         { key: 'integrations',     title: 'Integrations',       icon: '\u{1F310}' },
-        { key: 'runtime',          title: 'Runtime',             icon: '\u2699' },
-        { key: 'mcp',              title: 'MCP Servers',         icon: '\u{1F50C}' },
+        { key: 'mcp',              title: 'MCP Servers',        icon: '\u{1F50C}' },
     ],
 
-    // Which sections are expanded
-    openSections: new Set(['providers-models']),
+    // Currently active sidebar section
+    activeSection: 'runtime',
 
     async init() {
         if (this.initialized) return;
@@ -39,6 +39,12 @@ const Settings = {
         this.currentToml = tomlRes;
         this.catalog = catalogRes;
         this.parseToml();
+
+        const sidebar = document.getElementById('settings-sidebar');
+        if (sidebar) {
+            sidebar.innerHTML = this.renderSidebar();
+            this.bindSidebar();
+        }
 
         inner.innerHTML = this.render();
         this.bind();
@@ -78,9 +84,9 @@ const Settings = {
     },
 
     renderForm() {
-        const sections = this.sections.map(s => this.renderSection(s)).join('');
+        const body = this.renderSectionBody(this.activeSection);
         return `
-            ${sections}
+            ${body}
             <div class="settings-actions">
                 <button class="btn btn-primary" id="settings-save">Save</button>
                 <button class="btn btn-secondary" id="settings-refresh">Refresh</button>
@@ -112,26 +118,40 @@ const Settings = {
         `;
     },
 
-    // ── Section renderer ─────────────────────────────────────────────
+    // ── Sidebar ───────────────────────────────────────────────────────
 
-    renderSection(section) {
-        const isOpen = this.openSections.has(section.key);
-        const openCls = isOpen ? ' open' : '';
-        const body = this.renderSectionBody(section.key);
-        const badge = this.getSectionBadge(section.key);
+    renderSidebar() {
+        return this.sections.map(s => {
+            const isActive = this.mode === 'form' && this.activeSection === s.key;
+            const badge = this.getSectionBadge(s.key);
+            return `
+                <div class="settings-sidebar-item${isActive ? ' active' : ''}" data-sidebar="${s.key}">
+                    <span class="settings-sidebar-icon">${s.icon}</span>
+                    <span class="settings-sidebar-label">${s.title}</span>
+                    ${badge ? `<span class="settings-sidebar-badge" title="${escAttr(badge)}">${escAttr(badge)}</span>` : ''}
+                </div>
+            `;
+        }).join('');
+    },
 
-        return `
-            <div class="config-section${openCls}" data-section="${section.key}">
-                <div class="config-section-header" data-section="${section.key}">
-                    <span class="config-section-chevron">&#9654;</span>
-                    <span class="config-section-title">${section.title}</span>
-                    ${badge ? `<span class="config-section-badge">${badge}</span>` : ''}
-                </div>
-                <div class="config-section-body">
-                    ${body}
-                </div>
-            </div>
-        `;
+    bindSidebar() {
+        document.querySelectorAll('.settings-sidebar-item').forEach(item => {
+            item.addEventListener('click', () => {
+                const key = item.dataset.sidebar;
+                if (this.mode === 'advanced') {
+                    // Parse current TOML before switching to form
+                    const editor = document.getElementById('settings-toml');
+                    if (editor) this.currentToml = editor.value;
+                    this.parseToml();
+                    this.mode = 'form';
+                    document.querySelectorAll('.mode-toggle button').forEach(btn => {
+                        btn.classList.toggle('active', btn.dataset.mode === 'form');
+                    });
+                }
+                this.activeSection = key;
+                this.rerender();
+            });
+        });
     },
 
     getSectionBadge(key) {
@@ -139,14 +159,20 @@ const Settings = {
         switch (key) {
             case 'providers-models':
                 return obj.models?.main || '';
+            case 'runtime': {
+                const parts = [];
+                if (obj.gateway?.port || obj.gateway?.bind) parts.push('Gateway');
+                return parts.length > 0 ? parts.join(', ') : '';
+            }
             case 'integrations': {
                 const parts = [];
-                if (obj.gateway) parts.push('Gateway');
                 if (obj.discord?.token) parts.push('Discord');
                 if (obj.webhook?.enabled) parts.push('Webhook');
                 const channels = obj.notifications?.channels || {};
                 const chCount = Object.keys(channels).length;
                 if (chCount > 0) parts.push(`${chCount} notif`);
+                const skillDirs = obj.skills?.dirs || [];
+                if (skillDirs.length > 0) parts.push(`${skillDirs.length} skills`);
                 return parts.length > 0 ? parts.join(', ') : '';
             }
             case 'mcp': {
@@ -432,16 +458,15 @@ const Settings = {
     // ── Integrations (composite) ─────────────────────────────────────
 
     renderIntegrations(obj) {
-        const gw = obj.gateway || {};
         const discord = obj.discord || {};
         const wh = obj.webhook || {};
         const notifs = obj.notifications || {};
 
         return `
-            ${this.renderGatewaySubsection(gw)}
             ${this.renderDiscordSubsection(discord)}
             ${this.renderWebhookSubsection(wh)}
             ${this.renderNotificationsSubsection(notifs)}
+            ${this.renderSkillsSubsection(obj.skills || {})}
         `;
     },
 
@@ -566,7 +591,7 @@ const Settings = {
     renderRuntime(obj) {
         return `
             ${this.renderGeneralSubsection(obj)}
-            ${this.renderSkillsSubsection(obj.skills || {})}
+            ${this.renderGatewaySubsection(obj.gateway || {})}
             ${this.renderPulseSubsection(obj.pulse || {})}
             ${this.renderBackgroundOpsSubsection(obj.background || {})}
             ${this.renderRetrySubsection(obj.retry || {})}
@@ -811,21 +836,6 @@ const Settings = {
                 const newMode = btn.dataset.mode;
                 if (newMode === this.mode) return;
                 this.switchMode(newMode);
-            });
-        });
-
-        // Section collapse/expand
-        document.querySelectorAll('.config-section-header').forEach(hdr => {
-            hdr.addEventListener('click', () => {
-                const section = hdr.closest('.config-section');
-                const key = section.dataset.section;
-                if (this.openSections.has(key)) {
-                    this.openSections.delete(key);
-                    section.classList.remove('open');
-                } else {
-                    this.openSections.add(key);
-                    section.classList.add('open');
-                }
             });
         });
 
@@ -1366,6 +1376,11 @@ const Settings = {
     },
 
     rerender() {
+        const sidebar = document.getElementById('settings-sidebar');
+        if (sidebar) {
+            sidebar.innerHTML = this.renderSidebar();
+            this.bindSidebar();
+        }
         const inner = document.getElementById('settings-inner');
         if (inner) {
             inner.innerHTML = this.render();
