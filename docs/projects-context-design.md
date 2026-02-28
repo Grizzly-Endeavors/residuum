@@ -109,6 +109,10 @@ Global skills (in `~/.ironclaw/skills/` or `~/.ironclaw/workspace/skills/`) are 
 
 Examples: `skills/ansible-playbooks/SKILL.md`, `skills/ap-diagnostics/SKILL.md`
 
+### Directory name sanitization
+
+Directory names are derived from the project name: lowercased, spaces and special characters replaced with hyphens, multiple hyphens collapsed, leading/trailing hyphens trimmed. For example, `"AeroHive Setup v2.0!"` becomes `aerohive-setup-v2-0`.
+
 ### Full layout
 
 ```
@@ -117,12 +121,17 @@ Examples: `skills/ansible-playbooks/SKILL.md`, `skills/ap-diagnostics/SKILL.md`
 ├── USER.md
 ├── AGENTS.md
 ├── MEMORY.md
+├── ENVIRONMENT.md
+├── PRESENCE.toml
 ├── HEARTBEAT.yml
 ├── NOTIFY.yml
+├── scheduled_actions.json
 ├── memory/
 │   ├── observations.json
-│   ├── episodes/
-│   └── YYYY-MM-DD.md
+│   └── episodes/
+│       └── YYYY-MM/DD/
+├── inbox/
+├── subagents/
 ├── projects/
 │   ├── aerohive-setup/
 │   │   ├── PROJECT.md          ← frontmatter + overview body
@@ -159,13 +168,11 @@ Examples: `skills/ansible-playbooks/SKILL.md`, `skills/ap-diagnostics/SKILL.md`
 │       │   └── final-state.md
 │       ├── references/
 │       └── workspace/
-├── skills/
-│   └── my-skill/
-│       ├── SKILL.md
-│       ├── scripts/
-│       └── references/
-└── cron/
-    └── jobs.json
+└── skills/
+    └── my-skill/
+        ├── SKILL.md
+        ├── scripts/
+        └── references/
 ```
 
 ---
@@ -190,13 +197,14 @@ The frontmatter is a few lines of YAML each, so scanning is cheap. The body of `
 
 The agent autonomously decides which project to activate based on the current conversation.
 
-**Active context** means:
-- `PROJECT.md` is read and included in context — the frontmatter metadata plus the agent-maintained overview body.
-- Files from `notes/` are accessible (agent's knowledge about this project).
-- Files from `references/` are accessible (user-provided material).
-- Files from `workspace/` are accessible.
-- Any `tools` and `mcp_servers` specified in `PROJECT.md` frontmatter are loaded.
-- Any skills in the project's `skills/` subdirectory are discovered and added to the available set.
+**Activation steps** (in order):
+
+1. `PROJECT.md` frontmatter and body are loaded into context.
+2. A manifest is built by scanning subdirectories (`notes/`, `references/`, `workspace/`, `skills/`). The manifest lists what files exist — file contents are NOT loaded. The agent reads specific files on demand via `read_file`.
+3. The tool filter is updated to the project's listed tools (plus always-allowed tools like `read`, `project_deactivate`, etc.).
+4. MCP servers declared in the frontmatter are started (with reference counting — see below).
+5. The path policy is scoped to the project directory: writes are restricted to the active project's subtree. The agent can still read from any directory freely. Writes to `projects/` outside the active project, and all writes to `archive/`, are rejected.
+6. Project-scoped skills (in the project's `skills/` subdirectory) are discovered and added to the available skill index.
 
 **Inactive** means the agent knows the entry exists (name and description from the scan) but none of its contents or capabilities are loaded.
 
@@ -207,6 +215,12 @@ The agent uses conversational cues to decide activation:
 - User mentions a project by name or describes related work → activate
 - Conversation shifts away from a topic → deactivate the current project
 
+### Write scoping
+
+When a project is active, the path policy restricts file writes to the active project's directory subtree. Reads are unrestricted — the agent can read from any directory in the workspace (or outside it) at any time. This scoping prevents accidental writes to other projects or archived content.
+
+Workspace-level files (`MEMORY.md`, `memory/`, `scheduled_actions.json`, etc.) remain writable regardless of which project is active. Only the `projects/` and `archive/` directories are subject to write restrictions.
+
 ### Deactivation
 
 The active project deactivates when the agent determines it's no longer relevant to the current conversation. Files are simply not included in the next context assembly, and tools/MCP servers/project-scoped skills exclusive to that context are unloaded. Nothing is deleted or modified.
@@ -215,7 +229,7 @@ The active project deactivates when the agent determines it's no longer relevant
 
 ### project_log
 
-Project logging uses the same date-based file structure as `daily_log`. Entries are written to `notes/log/YYYY-MM/log-DD.md` within the active project's folder — one file per day, accumulated across sessions. The format is identical to daily logs: a `**HH:MM**` timestamp prefix per entry, with the date as a section header.
+Entries are written to `notes/log/YYYY-MM/log-DD.md` within the active project's folder — one file per day, accumulated across sessions. Each entry has a `**HH:MM**` timestamp prefix, with the date as a section header.
 
 ```markdown
 # 2026-02-23
@@ -234,7 +248,47 @@ Projects can specify `tools` and `mcp_servers` in their `PROJECT.md` frontmatter
 
 **Tool resolution**: When a project is active, its tools are available. Deactivating a project removes tools that no other active context still needs.
 
+**MCP server reference counting**: MCP servers defined in `PROJECT.md` use reference counting. Multiple agents (main agent + sub-agents, or multiple sub-agents) can have the same project active simultaneously without premature teardown. A server starts on the first activation (count 0 to 1) and tears down only when the last deactivation drops the count to zero.
+
+**Background task force-deactivation**: If a sub-agent's turn loop ends with a project still active, the gateway force-deactivates the project with an auto-generated log entry: `"[auto] SubAgent {id} completed without deactivating."` This ensures every sub-agent interaction with a project gets logged, maintaining session log continuity.
+
 **Security note**: Tool auto-loading follows the same trust model as the rest of the workspace — the agent manages `PROJECT.md` but the user can edit it directly to restrict or adjust which tool permissions an entry carries.
+
+### Project tools
+
+Five tools manage the project lifecycle:
+
+**`project_create`** — Create a new project with the standard directory structure and `PROJECT.md`.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `name` | string | yes | Human-readable project name |
+| `description` | string | yes | Brief summary of what this project covers |
+| `tools` | array of strings | no | Tool names to associate with this project |
+
+**`project_activate`** — Activate a project context. Loads the project's overview, manifest, and configuration.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `name` | string | yes | Name of the project to activate (case-insensitive) |
+
+**`project_deactivate`** — Deactivate the current project context. Requires a non-empty session summary.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `log` | string | yes | Session summary log entry (must not be empty) |
+
+**`project_archive`** — Archive a completed project. Updates frontmatter to archived status and moves to `archive/`.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `name` | string | yes | Name of the project to archive |
+
+**`project_list`** — List all projects and their status. No required parameters.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `include_archived` | boolean | no | Include archived projects in the list (default false) |
 
 ---
 
@@ -263,7 +317,7 @@ Creation is self-contained: make the folder, write `PROJECT.md`, create subfolde
 
 ## Archive & Search
 
-Archived entries are never loaded into active context. They're accessed exclusively through the existing hybrid search system (BM25 + vector). When the agent searches memory and gets hits from archived projects, it can reference that information in its response.
+Archived projects are moved to `archive/` and are not loaded into active context by default. They can be reactivated — the scanner indexes both `projects/` and `archive/`, so archived entries appear in `project_list` (with an `archived` status). Reactivation would move the project back to `projects/` and update its status. Archived content is also searchable through the memory search system (BM25).
 
 Archived content is indexed by the memory search system. The `archive/` directory is included in the memory search paths so that notes, references, and workspace contents from completed work remain searchable.
 

@@ -1,10 +1,18 @@
 - Nothing the LLM or user (via an external channel) does should be able to disrupt/break/otherwise disable the gateway in any way shape or form.
 - Disallow the LLM from editing the main config files under any circumstance.
-- Improve the bootstrapper code to better give the agent context about the workspace it inhabits. Mostly in AGENTS.md, it should have detailed information about how the Memory, Heartbeat, cron, and projects systems work.
-- `/context` command to show how many tokens are being used by observations/system prompts/message history.
 - `/inbox` command for sending a message or file directly to the agent's inbox without triggering a new agent turn.
 - `send_file` tool for the agent to send attachments to the user.
 - HTTP/SSE transport support for MCP servers.
 - Add a trigger count option for heartbeat pulses that can be provided in place of interval. It would schedule a number of triggers equal to the count across the active period. Triggers would be roughly evenly spaced throughout the active period, with added randomization to make the triggers feel less rigid.
-- Revisit multi-channel wake turn delivery: currently uses `last_reply` (most recent ReplyHandle) so only the last-active channel gets wake output. Consider a channel registry or broadcast subscriber pattern when multiple channels need simultaneous proactive delivery.
+- Persist pulse `last_run` timestamps to disk (e.g. `pulse_state.json`). Currently in-memory only — every pulse fires on gateway restart and every new pulse fires immediately on creation. Timestamps should survive restarts so pulses resume their schedule.
+- Vestigial script execution code in `src/background/` (script.rs, ScriptConfig, Execution::Script) should be removed. Scripts are handled by the agent via write_file/exec.
+- `memory_search` source filter values in code (`"observation"`, `"chunk"`) don't match design doc (`"observations"`, `"episodes"`, `"both"`). Fix code to match design doc.
+- Sub-agent context should include active skills (currently excluded).
+- ~~Remove `docs/plugin-system-design.md` (plugin system abandoned).~~ DONE
+- Remove `hooks/` directory from workspace layout and bootstrap (artifact, never used).
+- Background task transcripts only capture the final text response, not the full turn. `execute_subagent` returns `texts.last()` and `write_transcript` writes that single string. The full conversation (tool calls, tool results, intermediate messages) accumulates in `RecentMessages` during the turn but is dropped without serialization. Fix: serialize `recent_messages` to the transcript file instead of (or in addition to) the summary.
+- Add `tracing::warn!` when a notification routes to zero channels (pulse name not in any NOTIFY.yml entry). Currently silent — result is discarded with no log line.
 - Config internals cleanup: resolve.rs is `.and_then()` soup, defaults are defined in three places (constants.rs, types.rs Default impls, resolve.rs unwrap_or), 16 deserialize structs for ~30 knobs. Loosely coupled from the web UI — clean up whenever.
+- Skill priority is wrong. Project skills > Workspace >  User-global > Bundled
+- Implement model failover: primary model → ordered fallback chain on rate limit or error. Design doc describes a `failover` module and auth profile rotation (multiple API keys per provider). Currently each role gets a single provider/model with no fallback beyond the `default` role in `[models]`.
+- Auto-load most recent project logs on activation. Currently only PROJECT.md (frontmatter + body) is loaded; notes/logs/references require explicit `read_file`. The intended behavior is that recent session logs are loaded automatically so the agent has immediate context about where things left off.

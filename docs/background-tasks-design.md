@@ -13,7 +13,7 @@ These solve three concrete problems:
 - **The user can't steer mid-turn.** When the agent is in a multi-tool loop (read file → exec → read again → ...), user messages queue behind the entire sequence. The user can't say "actually, use port 8080" until the agent finishes and delivers its response.
 - **No fire-and-forget subagents.** The main agent has no way to delegate a self-contained task to a background worker and continue its conversation.
 
-The solution is two primitives: a **BackgroundTask** (the lifecycle and routing envelope) and a **SubAgent** (the LLM-powered execution engine). BackgroundTask handles spawning, concurrency, cancellation, and result routing. SubAgent is one kind of thing a BackgroundTask runs — but not the only kind.
+The solution is two primitives: a **BackgroundTask** (the lifecycle and routing envelope) and a **SubAgent** (the LLM-powered execution engine). BackgroundTask handles spawning, concurrency, cancellation, and result routing. SubAgent is the execution model — all background tasks are LLM-powered. Shell commands and scripts are not a separate execution type; agents handle those directly using their `write_file` and `exec` tools.
 
 ---
 
@@ -21,7 +21,7 @@ The solution is two primitives: a **BackgroundTask** (the lifecycle and routing 
 
 Same principles as the rest of IronClaw:
 
-1. **Put the right work in the right place.** Background scheduling is gateway work. Background evaluation is LLM work on a cheap model. Routing results is gateway work. The main agent only sees outcomes. And if the task doesn't need an LLM at all — just run it directly.
+1. **Put the right work in the right place.** Background scheduling is gateway work. Background evaluation is LLM work on a cheap model. Routing results is gateway work. The main agent only sees outcomes.
 2. **Independent systems that compose through shared data.** Background tasks write transcripts to disk and deliver results through a channel. The main agent's observer compresses them naturally. No direct coupling between subsystems.
 3. **Simplicity that stays practical.** One envelope (BackgroundTask), one result channel (interrupt_tx), one injection point (between turn loop iterations). Three problem sources, one mechanism.
 
@@ -43,8 +43,8 @@ struct BackgroundTask {
 }
 
 enum ResultRouting {
-    Notify,                          // look up task_name in NOTIFY.yml (pulses, scheduled actions)
-    Direct(Vec<String>),             // dispatch to these channels (agent-spawned)
+    Notify,                          // look up task_name in NOTIFY.yml (pulses only)
+    Direct(Vec<String>),             // dispatch to these channels (agent-spawned, scheduled actions)
 }
 
 enum TaskSource {
@@ -55,29 +55,28 @@ enum TaskSource {
 
 enum Execution {
     SubAgent(SubAgentConfig),
-    Script(ScriptConfig),
 }
 ```
 
 ### Lifecycle
 
-Every BackgroundTask, regardless of execution type, follows the same lifecycle:
+Every BackgroundTask follows the same lifecycle:
 
 1. **Acquire** a semaphore permit (bounded concurrency).
 2. **Spawn** on a tokio task.
-3. **Execute** (SubAgent turn loop, script invocation, etc.).
+3. **Execute** (SubAgent turn loop).
 4. **Write** transcript/output to disk.
 5. **Produce** a `BackgroundResult`.
 6. **Send** to the interrupt channel.
 7. **Release** permit on drop.
 
-The spawner, concurrency control, cancellation token, result routing, and transcript storage are all properties of BackgroundTask. They work identically whether the task runs an LLM turn or a shell script.
+The spawner, concurrency control, cancellation token, result routing, and transcript storage are all properties of BackgroundTask.
 
 ---
 
 ## Execution: SubAgent
 
-A SubAgent is an LLM-powered execution that runs a simplified turn loop. This is the execution type for pulse evaluations, scheduled actions that need reasoning, and agent-spawned work.
+A SubAgent is an LLM-powered execution that runs a simplified turn loop. This is the execution model for pulse evaluations, scheduled actions, and agent-spawned work.
 
 ### Configuration
 
@@ -119,6 +118,42 @@ All three are optional. Unset tiers fall back upward: small defaults to medium, 
 | Scheduled action (background) | `Medium` | Varies by task |
 | Agent-spawned | `Medium` | Worker tasks — agent can override to `Large` |
 
+### SubAgent presets
+
+Presets are markdown files in the `subagents/` directory that define reusable SubAgent configurations. Filenames are kebab-case matching the preset name (e.g., `memory-agent.md`).
+
+Each preset file has YAML frontmatter followed by a system prompt body:
+
+```markdown
+---
+name: memory-agent
+description: Handles memory maintenance and consolidation
+model_tier: small
+channels:
+  - agent_feed
+denied_tools:
+  - subagent_spawn
+allowed_tools: []
+---
+
+You are a memory maintenance agent. Your job is to...
+```
+
+Frontmatter fields:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `name` | string | Preset identifier (must match filename) |
+| `description` | string | Human-readable description of the preset's purpose |
+| `model_tier` | string | Default model tier: `small`, `medium`, or `large` |
+| `channels` | string[] | Default result routing channels |
+| `denied_tools` | string[] | Tools explicitly denied to this preset |
+| `allowed_tools` | string[] | If non-empty, only these tools are available (overrides default set) |
+
+One preset is built-in: `general-purpose`. This preset provides a generic worker configuration and is used as the default when no preset is specified. Users can override it by placing their own `general-purpose.md` in the `subagents/` directory.
+
+The `subagent_spawn` tool's `agent_name` parameter defaults to `"general-purpose"`. The value `"main"` is rejected — spawning the main agent as a subagent is not permitted.
+
 ### Context assembly
 
 SubAgents get minimal context by default:
@@ -131,12 +166,12 @@ SubAgents get minimal context by default:
 | Projects index | SubAgents can activate/deactivate projects |
 | `context` (if provided) | Inline context from the spawner |
 | `context_files` (if provided) | Explicit file references from the spawner |
+| Active skills | Specialized knowledge relevant to the task |
 
 | Excluded | Rationale |
 |----------|-----------|
 | SOUL.md | Worker, not conversationalist |
 | Observation log | No need for history — task is self-contained |
-| Skills metadata | Not activating skills (can read files directly if needed) |
 | MEMORY.md | Curated memory is for the main agent's judgment |
 | Recent messages | Not part of the conversation |
 
@@ -175,46 +210,11 @@ Each SubAgent runs a simplified turn loop — same structure as the main agent's
 
 ---
 
-## Execution: Script
-
-A ScriptConfig is a direct command execution with no LLM involvement. This is the execution type for scheduled actions that just need to run a command.
-
-### Configuration
-
-```rust
-struct ScriptConfig {
-    command: String,
-    args: Vec<String>,
-    working_dir: Option<PathBuf>,
-    timeout_secs: u64,
-}
-```
-
-### Execution
-
-1. Spawn the command as a child process.
-2. Capture stdout and stderr.
-3. Wait for completion (or timeout/cancellation).
-4. The `summary` in `BackgroundResult` is the command's stdout (truncated to a reasonable limit). Stderr is included if the exit code is non-zero.
-
-No LLM call, no context assembly, no token cost. A scheduled action like "run this backup script at 3am" executes directly. The result flows through the same routing as any other BackgroundTask.
-
-### When to use Script vs SubAgent
-
-The distinction maps to the existing scheduled action design's delivery modes:
-
-- Scheduled actions that need judgment (evaluate, summarize, decide) → SubAgent
-- Scheduled actions that need execution (run script, call API, invoke command) → Script
-- Pulse tasks → always SubAgent (the whole point is LLM evaluation)
-- Agent-spawned tasks → always SubAgent
-
----
-
 ## Task Spawning and Lifecycle
 
 ### BackgroundTaskSpawner
 
-The spawner manages the lifecycle of all background tasks regardless of execution type:
+The spawner manages the lifecycle of all background tasks:
 
 ```rust
 struct BackgroundTaskSpawner {
@@ -257,16 +257,14 @@ impl BackgroundTaskSpawner {
 }
 
 async fn execute_task(task: BackgroundTask) -> BackgroundResult {
-    match task.execution {
-        Execution::SubAgent(config) => execute_subagent(task.id, task.source, config).await,
-        Execution::Script(config) => execute_script(task.id, task.source, config).await,
-    }
+    let Execution::SubAgent(config) = task.execution;
+    execute_subagent(task.id, task.source, config).await
 }
 ```
 
 ### Concurrency limit
 
-A bounded semaphore (default: 3) caps concurrent background tasks of any type. SubAgents and scripts share the same pool.
+A bounded semaphore (default: 3) caps concurrent background tasks.
 
 ```toml
 [background]
@@ -277,14 +275,7 @@ max_concurrent = 3
 
 Any running background task can be cancelled by the main agent via the `stop_agent` tool or by the gateway on shutdown.
 
-The cancellation token is checked at different granularities depending on execution type:
-
-| Execution type | Check point | Cleanup on cancel |
-|---------------|-------------|-------------------|
-| SubAgent | Between tool iterations | Force-deactivate any active project with log: `"[cancelled] SubAgent {id} was stopped."` Write partial transcript. |
-| Script | Periodically during process wait | Kill child process (SIGTERM → SIGKILL). Capture partial output. |
-
-Cancellation is cooperative for SubAgents — the worst-case delay is one LLM round-trip. For scripts, the child process is killed directly.
+Cancellation is cooperative — the cancellation token is checked between tool iterations. The worst-case delay is one LLM round-trip. On cancellation, any active project is force-deactivated with a log entry: `"[cancelled] SubAgent {id} was stopped."` A partial transcript is written to disk.
 
 ### Transcript storage
 
@@ -294,13 +285,12 @@ All background task output is written to a dedicated directory:
 memory/
 ├── episodes/              # conversation episodes (observer output)
 │   └── YYYY-MM/DD/
-└── background/            # background task transcripts and output
+└── background/            # background task transcripts
     └── YYYY-MM/DD/
-        ├── bg-{id}.jsonl  # SubAgent transcripts (same format as episodes)
-        └── bg-{id}.log    # Script output (stdout + stderr)
+        └── bg-{id}.log    # SubAgent transcript
 ```
 
-These are not episodes in the OM sense — the observer does not compress them directly. When background results are injected into the main agent's message stream, the observer captures the summaries naturally alongside regular conversation. The full transcript/output on disk serves as a retrieval target.
+All background transcripts are `.log` files. These are not episodes in the OM sense — the observer does not compress them directly. When background results are injected into the main agent's message stream, the observer captures the summaries naturally alongside regular conversation. The full transcript on disk serves as a retrieval target.
 
 Background transcripts are indexed by the memory search system alongside episode transcripts. The `source_type` in the search index distinguishes them.
 
@@ -313,9 +303,9 @@ A background task produces a `BackgroundResult` when it completes:
 ```rust
 struct BackgroundResult {
     id: String,
-    task_name: String,             // used for NOTIFY.yml routing lookup
+    task_name: String,             // used for NOTIFY.yml lookup (pulses) or display
     source: TaskSource,
-    summary: String,               // SubAgent: LLM's final text. Script: stdout.
+    summary: String,               // SubAgent's final text
     transcript_path: PathBuf,
     status: TaskStatus,
     timestamp: DateTime<Utc>,
@@ -328,11 +318,15 @@ enum TaskStatus {
 }
 ```
 
-### Routing via NOTIFY.yml
+### Result routing
 
-Results are routed by task name, not by urgency level. When a `BackgroundResult` arrives, the gateway looks up `task_name` in `NOTIFY.yml` and dispatches to every channel that lists it.
+Results are routed differently depending on their source:
 
-See [Notification Routing Design](notification-routing-design.md) for the full NOTIFY.yml specification. Summary:
+- **Pulse results** are routed via NOTIFY.yml — the gateway looks up `task_name` in NOTIFY.yml and dispatches to every channel that lists it. See [Notification Routing Design](notification-routing-design.md) for the full NOTIFY.yml specification.
+- **Scheduled action results** are routed to the channels specified at creation time via the `channels` parameter on `schedule_action`.
+- **Agent-spawned subagent results** are routed to the channels specified in the `subagent_spawn` tool call.
+
+Available channels:
 
 - **`agent_wake`** — Inject into message feed. Start a turn if idle.
 - **`agent_feed`** — Inject into message feed. Wait for next interaction.
@@ -349,16 +343,16 @@ Results routed to the `inbox` channel produce inbox items:
 ```rust
 struct InboxItem {
     id: String,
-    source: TaskSource,
     title: String,
-    summary: String, // Truncated contents
-    content_path: PathBuf,
+    body: String,
+    source: String,                  // freeform source label (e.g., "pulse:work_check", "action:backup")
     timestamp: DateTime<Utc>,
     read: bool,
+    attachments: Vec<PathBuf>,       // currently unused, reserved for future use
 }
 ```
 
-Inbox items are persisted to `workspace/inbox/inbox.json` — a simple JSON array. The agent has `inbox_list` and `inbox_clear` tools for management. Unread inbox items are surfaced in context assembly as a count: `"You have 3 unread inbox items."` — not their contents, so they don't consume token budget.
+Inbox items are persisted as individual JSON files in the workspace `inbox/` directory. Each item is a separate file with an auto-generated filename derived from the date and a sanitized title (e.g., `2026-02-28-work-check-results.json`). The agent has `inbox_list`, `inbox_read`, `inbox_add`, and `inbox_archive` tools for management. Unread inbox items are surfaced in context assembly as a count: `"You have 3 unread inbox items."` — not their contents, so they don't consume token budget.
 
 ### What the main agent sees
 
@@ -367,12 +361,6 @@ For results routed to `agent_wake` or `agent_feed`:
 ```
 [Background: work_check] Found 2 urgent emails requiring response.
 PR #421 from @alice has been waiting 3 days for review.
-```
-
-For script results:
-
-```
-[Background: nightly_backup] Exit 0. Backup completed: 2.3GB written to /mnt/backup/2026-02-25.tar.gz
 ```
 
 ### Subagent results from `subagent_spawn`
@@ -411,7 +399,7 @@ for iteration in 0..MAX_ITERATIONS {
                 messages.push(Message::user(msg.content));
             }
             Interrupt::BackgroundResult(result) => {
-                // NOTIFY.yml routing already dispatched to external channels
+                // Routing already dispatched to external channels
                 // and inbox. Only agent_wake and agent_feed results arrive here.
                 messages.push(Message::system(format_background_result(&result)));
             }
@@ -433,7 +421,7 @@ for iteration in 0..MAX_ITERATIONS {
 
 `try_recv()` is non-blocking. If nothing is pending, the loop continues without delay. If multiple interrupts have accumulated, they're all drained and injected before the next LLM call.
 
-Only results routed to `agent_wake` or `agent_feed` via NOTIFY.yml are sent through the interrupt channel. Inbox items and external channel deliveries are handled at the routing step and never enter the turn loop.
+Only results routed to `agent_wake` or `agent_feed` are sent through the interrupt channel. Inbox items and external channel deliveries are handled at the routing step and never enter the turn loop.
 
 ### What the LLM sees
 
@@ -534,6 +522,14 @@ Pulse due → BackgroundTaskSpawner.spawn(BackgroundTask {
 })
 ```
 
+Each pulse has an `agent` field that controls how it executes:
+
+| Value | Behavior |
+|-------|----------|
+| `~` (null) | SubAgent with small tier (default) |
+| `"main"` | Main agent wake turn |
+| `"<preset>"` | Named subagent preset |
+
 HEARTBEAT_OK is the only gate. If the SubAgent's summary contains the HEARTBEAT_OK sentinel, the result is logged silently and not routed. Otherwise, the result is dispatched to every channel that lists the pulse name in `NOTIFY.yml`.
 
 ### Scheduled action execution (`actions/`)
@@ -542,14 +538,24 @@ Scheduled actions already have `UserVisible` and `Background` delivery modes:
 
 | Mode | Current behavior | New behavior |
 |------|-----------------|--------------|
-| `UserVisible` | Enqueue as system event in main agent turn | Routed via NOTIFY.yml — list the action in `agent_wake` or `agent_feed` |
-| `Background` | Dedicated agent thread (partially implemented) | `BackgroundTaskSpawner.spawn()` — uses Script execution for simple commands, SubAgent for tasks needing judgment. Routing determined by NOTIFY.yml. |
+| `UserVisible` | Enqueue as system event in main agent turn | Direct channel routing — the `channels` parameter on `schedule_action` determines delivery (e.g., `["agent_wake"]`) |
+| `Background` | Dedicated agent thread (partially implemented) | `BackgroundTaskSpawner.spawn()` — SubAgent execution. Result routed to channels specified at action creation time via `schedule_action`'s `channels` parameter. |
+
+Scheduled actions do not use NOTIFY.yml. Their routing is specified directly when the action is created via the `channels` parameter on `schedule_action`, and stored with the action definition.
+
+The `schedule_action` tool accepts these background-relevant parameters:
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `agent_name` | string \| null | Which agent executes the action. `null` = default sub-agent, `"main"` = wake turn on the main agent, `"<preset>"` = named subagent preset. |
+| `model_tier` | string | Model tier for SubAgent execution: `"small"`, `"medium"`, or `"large"`. |
+| `channels` | string[] | Result routing channels. Defaults to `["agent_feed"]`. Mutually exclusive with `agent_name: "main"` (wake turns deliver directly). |
 
 ### Gateway event loop
 
 The `tokio::select!` loop simplifies. Pulse and scheduled actions no longer need executor arms that run full agent turns. They spawn background tasks and return immediately.
 
-Background results are routed via NOTIFY.yml. Results destined for `agent_wake` or `agent_feed` flow through `interrupt_tx`. If no turn is active, the gateway's idle-state handler picks them up: `agent_feed` results queue for the next turn, `agent_wake` results start a new turn.
+Background results are routed to their configured channels — via NOTIFY.yml for pulses, or via the direct channels specified at creation time for scheduled actions and agent-spawned tasks. Results destined for `agent_wake` or `agent_feed` flow through `interrupt_tx`. If no turn is active, the gateway's idle-state handler picks them up: `agent_feed` results queue for the next turn, `agent_wake` results start a new turn.
 
 ### Agent state tracking
 
@@ -580,7 +586,7 @@ When a turn starts, the gateway transitions to `Busy` and holds the sender half.
         },
         "agent_name": {
             "type": "string",
-            "description": "Name of agent to call. Default: None."
+            "description": "Name of subagent preset to use. Default: \"general-purpose\". The value \"main\" is rejected."
         },
         "model_override": {
             "type": "string",
@@ -633,7 +639,7 @@ Returns `"Cancelled task {id}."` if the task was running, or `"No active task wi
 }
 ```
 
-Returns a list of active background tasks with their IDs, sources, execution types, prompts (truncated), and how long they've been running.
+Returns a list of active background tasks with their IDs, sources, prompts (truncated), and how long they've been running.
 
 ### inbox_list
 
@@ -643,24 +649,62 @@ Returns a list of active background tasks with their IDs, sources, execution typ
     "parameters": {
         "unread_only": {
             "type": "boolean",
-            "description": "Only show unread items. Default: true."
+            "description": "Only show unread items. Default: false."
         }
     }
 }
 ```
 
-### inbox_clear
+### inbox_read
 
 ```json
 {
-    "name": "inbox_clear",
+    "name": "inbox_read",
     "parameters": {
-        "item_ids": {
-            "type": "array",
-            "items": { "type": "string" },
-            "description": "Specific item IDs to clear. If omitted, clears all read items."
+        "item_id": {
+            "type": "string",
+            "description": "ID of the inbox item to read. Marks the item as read."
         }
-    }
+    },
+    "required": ["item_id"]
+}
+```
+
+### inbox_add
+
+```json
+{
+    "name": "inbox_add",
+    "parameters": {
+        "title": {
+            "type": "string",
+            "description": "Short title for the inbox item."
+        },
+        "body": {
+            "type": "string",
+            "description": "Full content of the inbox item."
+        },
+        "source": {
+            "type": "string",
+            "description": "Freeform source label (e.g., \"user\", \"pulse:work_check\")."
+        }
+    },
+    "required": ["title", "body", "source"]
+}
+```
+
+### inbox_archive
+
+```json
+{
+    "name": "inbox_archive",
+    "parameters": {
+        "item_id": {
+            "type": "string",
+            "description": "ID of the inbox item to archive. Moves the item to archive/inbox/."
+        }
+    },
+    "required": ["item_id"]
 }
 ```
 
@@ -670,7 +714,7 @@ Returns a list of active background tasks with their IDs, sources, execution typ
 
 Background results flow into the observation log through the standard path:
 
-1. Background task completes → result routed via NOTIFY.yml.
+1. Background task completes → result routed to configured channels.
 2. Results routed to `agent_wake` or `agent_feed` are injected into the main agent's message stream as system messages.
 3. The main agent processes them. The observer eventually compresses this exchange into an episode, tagged with `Background` visibility.
 4. Results routed only to `inbox` or external channels enter the observation stream when the agent reviews them (e.g., via `inbox_list`).
@@ -722,24 +766,6 @@ Check due pulses (HEARTBEAT.yml + timestamps)
               Log silently   Route via NOTIFY.yml
                              (dispatch to all channels
                               listing this pulse name)
-```
-
-### Scheduled action script execution
-
-```
-Action tick (background mode, script)
-      │
-      ▼
-BackgroundTaskSpawner.spawn(Script { command, args })
-      │
-      ▼
-Child process executes (no LLM, zero tokens)
-      │
-      ▼
-BackgroundResult { summary: stdout }
-      │
-      ▼
-Route via NOTIFY.yml (same as any background task)
 ```
 
 ### User message mid-turn
@@ -826,22 +852,21 @@ The highest-impact change: user messages can be injected mid-turn.
 
 - Define `BackgroundTask`, `BackgroundResult`, `TaskSource`, `TaskStatus`, `Execution`, `ModelTier`.
 - Implement `BackgroundTaskSpawner` with semaphore-bounded `tokio::spawn` and `CancellationToken`.
-- Implement SubAgent execution: minimal context assembly (USER.md + ENVIRONMENT.md + projects index + task prompt), simplified turn loop, transcript writing.
-- Implement Script execution: child process spawning, output capture, timeout.
-- NOTIFY.yml parsing and routing: load routing config, dispatch results to listed channels by task name.
+- Implement SubAgent execution: minimal context assembly (USER.md + ENVIRONMENT.md + projects index + task prompt + active skills), simplified turn loop, transcript writing.
+- NOTIFY.yml parsing and routing: load routing config, dispatch pulse results to listed channels by task name.
 - `NotificationChannel` trait and built-in channel implementations (`agent_wake`, `agent_feed`, `inbox`).
-- `InboxItem` struct and `inbox.json` persistence.
+- `InboxItem` struct and individual-file inbox persistence.
 - Inbox item count note in context assembly.
-- Tests: spawn both execution types, verify result delivery via NOTIFY.yml routing, verify concurrency limit.
+- Tests: spawn SubAgent, verify result delivery via routing, verify concurrency limit.
 
 **Milestone: Background tasks run independently and deliver results.**
 
 ### Phase 3: Cancellation and management tools
 
-- Implement cancellation via `CancellationToken` (SubAgent) and process kill (Script).
+- Implement cancellation via `CancellationToken`.
 - Implement `stop_agent` tool.
 - Implement `list_agents` tool.
-- Tests: cancel running SubAgent mid-turn, cancel running script, verify cleanup.
+- Tests: cancel running SubAgent mid-turn, verify cleanup.
 
 **Milestone: Main agent can monitor and cancel background work.**
 
@@ -858,10 +883,10 @@ The highest-impact change: user messages can be injected mid-turn.
 ### Phase 5: Pulse and scheduled action migration
 
 - Modify pulse executor to spawn BackgroundTask (SubAgent execution) instead of running a main agent turn. Remove `load_alerts()` and Alerts.md concatenation from pulse execution path.
-- Modify scheduled action background-mode executor to use BackgroundTaskSpawner — Script execution for simple commands, SubAgent for reasoning tasks.
-- Remove scheduled action `UserVisible`/`Background` delivery modes — routing is now determined entirely by NOTIFY.yml.
+- Modify scheduled action background-mode executor to use BackgroundTaskSpawner with SubAgent execution.
+- Remove scheduled action `UserVisible`/`Background` delivery modes — routing is now determined by the `channels` parameter on `schedule_action`.
 - Remove pulse and scheduled action executor arms from the gateway event loop that ran full agent turns.
-- Tests: pulse fires → SubAgent → result routed via NOTIFY.yml. Scheduled action script → direct execution → result routed via NOTIFY.yml.
+- Tests: pulse fires → SubAgent → result routed via NOTIFY.yml. Scheduled action → SubAgent → result routed to specified channels.
 
 **Milestone: Pulse and scheduled actions no longer block the main agent.**
 

@@ -16,8 +16,6 @@ OpenClaw's current memory has a day-boundary cliff. Identity files (SOUL.md, USE
 
 The result: context from even the previous day can get dropped if it wasn't promoted to MEMORY.md or if the agent doesn't recognize it should search. Users end up building workarounds like scheduled summarization jobs to maintain continuity.
 
-The pre-compaction memory flush helps prevent loss during long sessions, but it's a single-shot, model-dependent save under token pressure — not a systematic solution for continuity across restarts.
-
 ### Solution: Observational Memory Layer
 
 Integrate an Observational Memory (OM) system on top of the existing workspace file structure. OM maintains a compressed, chronological event log that stays in the context window at all times, eliminating the retrieval dependency for recent-to-medium-term history.
@@ -31,11 +29,10 @@ Reference: [Mastra Observational Memory](https://mastra.ai/research/observationa
 - **Identity layer**: SOUL.md, USER.md, AGENTS.md, ENVIRONMENT.md — stable, curated, auto-loaded at startup. These define who the agent is and who the user is. OM does not touch these.
 - **MEMORY.md**: Long-term curated facts and preferences. Still loaded in private contexts. Still manually maintained by the agent and user.
 - **Hybrid search**: BM25 + vector retrieval over workspace files. Still available for deep retrieval beyond the observation window.
-- **Pre-compaction flush**: Still fires as a safety net. OM reduces its importance but doesn't replace it.
 
 #### What changes
 
-The `memory/YYYY-MM-DD.md` daily log system is supplemented (and for context loading purposes, largely replaced) by the OM observation log.
+The `memory/YYYY-MM-DD.md` daily log system has been fully replaced by the OM observation log. Daily logs were removed once the observer was running — the agent stopped using them organically, as the observation log covered the same continuity needs with better compression and structure.
 
 #### Context window structure
 
@@ -51,8 +48,14 @@ The `memory/YYYY-MM-DD.md` daily log system is supplemented (and for context loa
 │ - Chronological, dated entries      │
 │ - Maintained by Observer/Reflector  │
 ├─────────────────────────────────────┤
+│ Recent context (recent_context.json)│
+│ - Narrative from latest observation │
+│ - Bridges restarts / context gaps   │
+├─────────────────────────────────────┤
+│ Unread inbox count                  │
+├─────────────────────────────────────┤
 │ Raw message history                 │
-│ (unobserved, verbatim)         │
+│ (unobserved, verbatim)              │
 └─────────────────────────────────────┘
 ```
 
@@ -60,7 +63,12 @@ The `memory/YYYY-MM-DD.md` daily log system is supplemented (and for context loa
 
 #### Tier 1: Observer
 
-A background agent that watches the active conversation. When unobserved messages accumulate past a configurable token threshold (default ~30k tokens), the Observer compresses them into dated, structured observations.
+A background agent that watches the active conversation. The Observer uses a dual-threshold model to decide when to fire:
+
+- **Soft threshold** (default ~30k tokens): When unobserved messages cross this level, a cooldown timer starts. If the cooldown expires without further activity, the Observer fires. This batches rapid exchanges into a single compression run rather than firing after every turn.
+- **Force threshold** (default ~60k tokens): When unobserved messages reach this level, the Observer fires immediately, bypassing the cooldown. This prevents unbounded accumulation during long, continuous sessions.
+
+When triggered, the Observer compresses unobserved messages into dated, structured observations.
 
 **Input**: Raw messages, tool calls, tool results, corrections, decisions.
 
@@ -86,67 +94,53 @@ A background agent that watches the active conversation. When unobserved message
 }
 ```
 
-After compression, the raw messages are dropped from context but **persisted as an episode transcript** under `memory/episodes/<id>.md`. The observations append to the global observation log. The episode transcript contains the full raw messages, tool calls, and results — everything the Observer compressed from. This gives the agent a trail to follow: the observation log tells it what happened, the episode ID tells it where to look for the full record.
+After compression, the raw messages are dropped from context but **persisted as episode artifacts** under `memory/episodes/YYYY-MM/DD/`. Each episode produces three files:
 
-Episode IDs are monotonic within the global log. The ID is derived from the current max in the log, not from a separate counter file.
+- **`ep-NNN.jsonl`** — The transcript. Line 1 is a JSON meta object (episode ID, date, context tag); subsequent lines are serialized messages. Contains the full raw messages, tool calls, and results — everything the Observer compressed from.
+- **`ep-NNN.obs.json`** — A JSON array of the extracted observations, archived alongside the transcript for independent retrieval.
+- **`ep-NNN.idx.jsonl`** — JSONL of interaction-pair chunks extracted from the transcript, used by the search index.
+
+The observations also append to the global observation log (`observations.json`). This gives the agent a trail to follow: the observation log tells it what happened, the episode ID tells it where to look for the full record.
+
+Episode IDs are zero-padded to three digits (e.g., `ep-001`, `ep-012`) and monotonic within the global log. The ID is derived from the current max in the episodes directory, not from a separate counter file.
 
 **Key properties:**
-- Frequent, small-batch compression (every ~30k tokens, not at context overflow)
+- Frequent, small-batch compression (soft threshold triggers cooldown, force threshold fires immediately — not at context overflow)
 - Event-based structure preserved — reads like a decision log, not documentation
-- Each compression run produces a discrete episode with a unique ID and persisted raw transcript
+- Each compression run produces a discrete episode with a unique ID and persisted artifacts (transcript, observations archive, index chunks)
 - Observation prefix stays stable between Observer runs, enabling prompt cache hits
 - Observer can be run by a cheap, high-throughput model (e.g., Gemini Flash) since the work is extraction, not reasoning
 
 #### Tier 2: Reflector
 
-When the observation log itself grows past a second threshold (default ~40k tokens), the Reflector condenses it. It reorganizes, merges related items, drops superseded information, and finds connections — but preserves the episode-based, chronological structure.
+When the observation log itself grows past a second threshold (default ~40k tokens), the Reflector condenses it. It reads the full `observations.json`, sends it to an LLM for reorganization, and writes the compressed result back to `observations.json`. The structure stays the same — a flat array of observation objects with timestamps, project contexts, and content — it just gets denser.
 
-Reflected episodes include a `source_episodes` field listing the IDs of the episodes that were compacted into them. This preserves the trail — the agent can follow source episode IDs back to their persisted transcripts for full detail.
+The Reflector merges related observations, deduplicates overlapping entries, and drops superseded information (e.g., "decided to use Nginx" followed later by "switched to Traefik" — the Nginx entry can go). Original observations are backed up to `observations.json.bak` before replacement. If the LLM returns an empty result, the reflector rejects it and preserves the original log — this prevents a bad model response from wiping history.
 
-```json
-{
-  "episodes": [
-    {
-      "id": "ep-010",
-      "date": "2026-02-18",
-      "start": "12:10",
-      "end": "15:30",
-      "source_episodes": ["ep-001", "ep-002", "ep-003", "ep-004"],
-      "observations": [
-        "Completed AeroHive AP configuration for all APs using Ansible with host_vars",
-        "Key correction: AeroHive uses HiveManager CLI, not aoscli",
-        "Added SNMP-based monitoring for AP health"
-      ]
-    }
-  ]
-}
-```
-
-The observation log never becomes a narrative blob. Even after reflection, it remains a structured series of dated episodes. It just gets denser.
+The observation log never becomes a narrative blob. Even after reflection, it remains a structured series of dated observations. It just gets denser.
 
 **Key properties:**
 - Runs infrequently (only when observation log exceeds threshold)
-- Does not summarize — reorganizes and compresses while maintaining episode structure
-- Reflected episodes carry `source_episodes` references, preserving the retrieval trail
+- Operates in-place on `observations.json` — reads, compresses, writes back. Same format, fewer entries.
+- Original log is backed up before replacement; empty LLM responses are rejected
 - Only operation that fully invalidates prompt cache (acceptable given infrequency)
-- Superseded information is dropped (e.g., "decided to use Nginx" followed later by "switched to Traefik" — the Nginx entry can go)
+- Superseded information is dropped during merging
 - Original episode transcripts remain in `memory/episodes/` — the Reflector compresses the observation log, not the raw record
 
 **Threshold tuning:** The ~40k token default for Reflector triggering interacts with the target model's context window size and should be configurable relative to it rather than treated as a fixed constant. A model with a 200k context can afford a larger observation log before reflection is needed; a model with 100k may need a lower threshold. The config should express this as either an absolute token count or a percentage of the model's context budget allocated to the observation log.
 
 ### Interaction with Existing Systems
 
-- **Daily logs**: Can still be written to for explicit note-taking. But the primary continuity mechanism is the observation log, not daily file auto-loading.
-- **Hybrid search**: Episode transcripts persisted under `memory/episodes/` are indexed for hybrid search. When the Reflector compresses episodes out of the active log, the agent can still retrieve the full detail by following the `source_episodes` trail or searching directly. This provides deep retrieval for older history without the agent needing to guess that it should look.
-- **Compaction**: OM dramatically reduces compaction pressure by keeping the effective context window small. The pre-compaction flush becomes a secondary safety net rather than the primary continuity mechanism.
-- **Restarts**: The observation log carries across restarts. A new run loads the existing observation block, so context from last week is present without requiring a search decision.
+- **Hybrid search**: Episode artifacts persisted under `memory/episodes/YYYY-MM/DD/` are indexed for search. The `.idx.jsonl` chunks feed the BM25 index, and the `.obs.json` archives provide per-episode observation retrieval. When the Reflector compresses observations out of the active log, the agent can still retrieve the full detail by searching episode transcripts directly. This provides deep retrieval for older history without the agent needing to guess that it should look.
+- **Restarts**: The observation log and recent context carry across restarts. A new run loads the existing observation block and `recent_context.json` (narrative from the latest observation), so context from last week is present without requiring a search decision.
 
 ### Model Selection
 
-The Observer and Reflector don't require frontier-level reasoning. Their job is structured extraction and reorganization — work well-suited to fast, cheap models. Recommended defaults:
+The Observer, Reflector, and pulse evaluation don't require frontier-level reasoning. Their jobs are structured extraction, reorganization, and quick checks — work well-suited to fast, cheap models. Recommended defaults:
 
 - **Observer**: High-throughput model (e.g., Gemini Flash, GPT-5-mini, local model with sufficient context)
 - **Reflector**: Same tier — slightly more nuanced work, but still extraction, not generation
+- **Pulse evaluation**: Small model tier by default (cheap/fast). Pulses are ambient checks, not complex reasoning — most return HEARTBEAT_OK. The `agent` field on a pulse can override this when a specific pulse needs a different tier or the main agent.
 
 Token cost per Observer run is modest relative to the tokens saved by not carrying raw history. The system is specifically designed to be a net cost reduction.
 
@@ -188,6 +182,7 @@ pulses:
     enabled: true
     schedule: "24h"
     active_hours: "08:00-09:00"
+    agent: main
     tasks:
       - name: morning_brief
         prompt: "Summarize today's calendar and top priorities"
@@ -223,6 +218,7 @@ The LLM is no longer a scheduler. It only receives focused task groups when ther
 | `enabled` | bool | Whether the pulse is active. Defaults to `true`. Allows disabling a pulse without deleting its configuration. |
 | `schedule` | duration string | How often the pulse fires (e.g., `30m`, `2h`, `24h`) |
 | `active_hours` | time range | Window during which the pulse is eligible (respects user timezone from USER.md) |
+| `agent` | string or null | Controls execution routing. `~` (null/omitted) = sub-agent with small model tier. `"main"` = main agent wake turn. `"<preset-name>"` = sub-agent with named preset from `subagents/`. |
 | `tasks` | list | Tasks the LLM evaluates when the pulse fires |
 
 #### Task fields
@@ -271,7 +267,7 @@ Following the existing workspace pattern (mirroring SOUL.md's "this file is your
 
 ### Interaction with Existing Systems
 
-- **Scheduled actions**: Unchanged. Scheduled actions handle deterministic work ("run this backup script at 3am"). Pulses handle ambient awareness ("is anything worth my attention right now?"). These are complementary, not overlapping. Both route results through NOTIFY.yml.
+- **Scheduled actions**: Unchanged. Scheduled actions handle deterministic work ("run this backup script at 3am"). Pulses handle ambient awareness ("is anything worth my attention right now?"). These are complementary, not overlapping. Heartbeat pulses route results through NOTIFY.yml. Scheduled actions use direct `channels` routing specified at creation time — the agent (or user) specifies which channels receive the result when the action is created, rather than relying on a central routing table.
 - **HEARTBEAT_OK**: Still used as the ack signal when a pulse evaluation finds nothing actionable. HEARTBEAT_OK results are never routed.
 - **Observation log**: Findings from pulse evaluations feed into the OM observation log when they're routed to `agent_wake` or `agent_feed` and processed by the main agent. Results routed only to external channels or inbox enter the observation stream when the agent reviews them.
 

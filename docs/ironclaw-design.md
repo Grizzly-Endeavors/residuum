@@ -16,7 +16,7 @@ Carried forward from the existing design work, restated here as project-wide con
 2. **Simplicity that stays practical.** Directory scanning over registries. Flat files over knowledge graphs. If you can understand the system by looking at the filesystem, it's working.
 3. **Put the right work in the right place.** The gateway handles scheduling, file watching, schema validation, and protocol mechanics. The LLM handles judgment — what's relevant, what to alert on, what to write.
 4. **Independent systems that compose through shared data.** Memory, proactivity, Projects, and skills are designed independently. They share the workspace filesystem and observation log. Each is valuable on its own.
-5. **File-first, always.** System state lives in files the user can inspect, edit, and version control. No databases, no opaque embeddings. The filesystem is the source of truth.
+5. **File-first, always.** System state lives in files the user can inspect, edit, and version control. No databases, no opaque embeddings (exception: `vectors.db` — a SQLite + sqlite-vec store for vector embeddings, since raw vectors aren't human-parsable). The filesystem is the source of truth.
 
 ---
 
@@ -56,7 +56,7 @@ ironclaw/
 │   │   ├── mod.rs                    # Memory system coordination
 │   │   ├── observer.rs               # Tier 1: conversation → observations
 │   │   ├── reflector.rs              # Tier 2: observation compaction
-│   │   ├── search.rs                 # Hybrid BM25 + vector retrieval
+│   │   ├── search.rs                 # BM25 full-text retrieval (tantivy)
 │   │   ├── index.rs                  # Search index management
 │   │   └── episode_store.rs           # Episode transcript persistence
 │   │
@@ -76,8 +76,7 @@ ironclaw/
 │   ├── actions/
 │   │   ├── mod.rs                    # Scheduled actions coordination
 │   │   ├── store.rs                  # Action persistence (scheduled_actions.json)
-│   │   ├── scheduler.rs              # Schedule evaluation (at/every/cron expression)
-│   │   └── executor.rs              # Action execution & delivery
+│   │   └── types.rs                  # Action types and serialization
 │   │
 │   ├── skills/
 │   │   ├── mod.rs                    # Skills system coordination
@@ -89,7 +88,7 @@ ironclaw/
 │   ├── mcp/
 │   │   ├── mod.rs                    # MCP system coordination
 │   │   ├── client.rs                 # JSON-RPC 2.0 client
-│   │   ├── transport.rs              # stdio & HTTP/SSE transports
+│   │   ├── transport.rs              # stdio transport (HTTP/SSE planned)
 │   │   ├── registry.rs               # Active server tracking & tool union
 │   │   └── lifecycle.rs              # Server spawn, health check, teardown
 │   │
@@ -98,9 +97,8 @@ ironclaw/
 │   │   ├── exec.rs                   # Shell command execution
 │   │   ├── read.rs                   # File reading
 │   │   ├── write.rs                  # File writing
-│   │   ├── web_search.rs             # Web search
-│   │   ├── web_fetch.rs              # URL fetching
-│   │   ├── browser.rs                # Browser automation (headless)
+│   │   ├── actions.rs                # Scheduled action tools
+│   │   ├── memory_search.rs          # Memory search tool
 │   │   └── policy.rs                 # Tool allow/deny + write scope enforcement
 │   │
 │   └── workspace/
@@ -141,37 +139,47 @@ A single TOML configuration file replaces OpenClaw's `openclaw.json`. TOML over 
 ```toml
 # ~/.ironclaw/config.toml
 
-[identity]
+# Top-level user settings
 name = "Samantha"
-emoji = "🦥"
-theme = "helpful sloth"
+timezone = "America/New_York"
+workspace_dir = "~/.ironclaw/workspace"
 
-[agent]
-workspace = "~/.ironclaw/workspace"
-model = "anthropic/claude-sonnet-4-5"
+# Named provider definitions
+[providers.anthropic]
+type = "anthropic"
+api_key = "${ANTHROPIC_API_KEY}"
 
-[agent.fallbacks]
-models = ["anthropic/claude-haiku-4-5", "ollama/llama3"]
+[providers.gemini]
+type = "openai"               # Gemini uses OpenAI-compatible endpoint
+api_key = "${GEMINI_API_KEY}"
+url = "https://generativelanguage.googleapis.com/v1beta/openai"
 
-[channels.discord]
-token = "${DISCORD_BOT_TOKEN}"
-guild_id = "123456789"
+# Role → model assignments
+[models]
+main = "anthropic/claude-sonnet-4-6"
+default = "anthropic/claude-haiku-4-5"   # fallback for unset roles
+observer = "gemini/gemini-2.5-flash"
+# reflector, pulse default to `default` if unset
+# embedding = "openai/text-embedding-3-small"  # optional, enables vector search
 
-[channels.cli]
-enabled = true                # Always-available local CLI for dev/debug
-
+# Memory thresholds (provider assignments come from [models])
 [memory]
-observer_model = "ollama/gemma3"
 observer_threshold_tokens = 30000
 reflector_threshold_tokens = 40000
+observer_cooldown_secs = 120             # cooldown after soft threshold
+observer_force_threshold_tokens = 60000  # bypasses cooldown
 
 [memory.search]
-provider = "local"            # "local" | "openai" | "voyage"
+vector_weight = 0.7
+text_weight = 0.3
+min_score = 0.35
+
+[discord]
+token = "${DISCORD_BOT_TOKEN}"
 
 [pulse]
 enabled = true
 # Pulse definitions live in HEARTBEAT.yml, not here.
-# This just controls whether the scheduler runs.
 
 [mcp]
 # MCP server definitions can live here or in project PROJECT.md frontmatter.
@@ -180,15 +188,28 @@ command = "mcp-server-filesystem"
 args = ["/home/user/documents"]
 
 [skills]
-dirs = ["~/.ironclaw/skills", "~/.ironclaw/workspace/skills"]
+dirs = ["~/.ironclaw/skills"]
 
 [notifications.channels.ntfy]
 type = "ntfy"
-url = "https://ntfy.example.com/ironclaw"
+url = "https://ntfy.sh"
+topic = "ironclaw"
 
 # External notification channels are defined here.
 # Built-in channels (agent_wake, agent_feed, inbox) need no config.
-# NOTIFY.yml in the workspace maps pulse/action task names to channels.
+# NOTIFY.yml in the workspace maps pulse names to channels.
+
+[background]
+max_concurrent = 3
+
+[background.models]
+small = "gemini/gemini-2.5-flash"
+medium = "anthropic/claude-haiku-4-5"
+# large defaults to main agent model
+
+[retry]
+max_retries = 3
+initial_delay_ms = 500
 ```
 
 Validation happens at startup via serde + custom validators. Invalid config prevents boot with clear error messages.
@@ -213,11 +234,13 @@ The gateway watches `config.toml`, workspace identity files, `HEARTBEAT.yml`, `N
 ├── ENVIRONMENT.md                # Local environment notes
 ├── HEARTBEAT.yml                 # Structured pulse schedule
 ├── NOTIFY.yml                    # Notification routing
+├── PRESENCE.toml                 # Hot-reloadable Discord presence
 │
 ├── memory/
 │   ├── observations.json         # Global observation log (episode-based timeline)
-│   ├── episodes/                 # Raw episode transcripts (persisted by Observer)
-│   └── YYYY-MM-DD.md             # Daily logs (for explicit note-taking)
+│   ├── recent_messages.json      # Unobserved messages persisted across restarts
+│   └── episodes/                 # Episode storage (persisted by Observer)
+│       └── YYYY-MM/DD/           # Date-organized episode files
 │
 ├── projects/
 │   └── aerohive-setup/
@@ -241,10 +264,11 @@ The gateway watches `config.toml`, workspace identity files, `HEARTBEAT.yml`, `N
 │       ├── scripts/
 │       └── references/
 │
-├── actions/
-│   └── scheduled_actions.json    # Agent-created scheduled actions
+├── scheduled_actions.json        # Agent-created scheduled actions
 │
-└── hooks/                        # Optional user-defined hooks
+├── inbox/                        # Incoming attachments and files
+│
+└── subagents/                    # Sub-agent working directories
 ```
 
 ### Files the gateway parses structurally
@@ -256,7 +280,7 @@ These are YAML/TOML files the Rust gateway validates and acts on:
 | `config.toml` | TOML | Full gateway configuration |
 | `HEARTBEAT.yml` | YAML | Pulse scheduling, task definitions |
 | `projects/**/PROJECT.md` | Markdown+YAML frontmatter | Project entry metadata, tool/MCP resolution |
-| `actions/scheduled_actions.json` | JSON | Agent-created scheduled actions |
+| `scheduled_actions.json` | JSON | Agent-created scheduled actions |
 | `memory/observations.json` | JSON | Global observation log (episode-based) |
 
 ### Files injected as system prompt content
@@ -283,7 +307,7 @@ These files are never auto-loaded into context. The agent knows they exist (via 
 | `projects/<n>/workspace/*` | When project is active (listed in manifest) |
 | `projects/<n>/skills/**/SKILL.md` (body) | When project is active (agent activates via `skill_activate`) |
 | `skills/**/SKILL.md` (body) | When skill metadata is in prompt (agent reads to activate) |
-| `memory/episodes/*.md` | Always (via `read` tool or `memory_search`) |
+| `memory/episodes/YYYY-MM/DD/*` | Always (via `read` tool or `memory_search`) |
 | `skills/**/scripts/*` | After agent has read the SKILL.md |
 | `skills/**/references/*` | After agent has read the SKILL.md |
 
@@ -369,9 +393,13 @@ pub trait ModelProvider: Send + Sync {
 - **Ollama** — Ollama REST API. Existing Rust connector.
 - **Gemini** — Google Gemini API. Existing Rust connector.
 
-**Failover:**
+**Retry:**
 
-The `failover` module wraps providers with retry logic. Configuration defines a primary model and ordered fallbacks. On rate limit or error, the next provider in the chain is tried. Auth profile rotation (multiple API keys for the same provider) is handled within each provider adapter.
+Each provider is wrapped with configurable retry logic (`[retry]` config section): exponential backoff with max retries, initial delay, max delay, and backoff multiplier. Retries handle transient failures (rate limits, network errors) transparently.
+
+**Failover** (not yet implemented):
+
+Model failover (primary → ordered fallback chain) and auth profile rotation (multiple API keys per provider) are planned but not yet built. Currently, each role (main, observer, reflector, pulse) is assigned a single provider/model via the `[models]` config section, with a `default` fallback for unset roles.
 
 **Model selection for subsystems:**
 
@@ -382,7 +410,7 @@ Different subsystems can use different models:
 | Agent (main conversation) | User-configured primary | Frontier reasoning |
 | Observer | Cheap/fast (e.g., Gemini Flash, local) | Extraction, not reasoning |
 | Reflector | Cheap/fast | Reorganization, not generation |
-| Pulse evaluation | User-configured primary | Needs judgment |
+| Pulse evaluation | Small model tier (cheap/fast) | Extraction, not reasoning |
 
 ### 3. Agent Runtime (`agent/`)
 
@@ -462,7 +490,7 @@ A background task that watches accumulated raw messages. When unobserved tokens 
 1. Collect all unobserved messages, tool calls, and results.
 2. Send to the observer model with extraction instructions.
 3. Receive a dated, structured episode — an ID, time range, and extracted observations.
-4. Persist the raw transcript as an episode file under `memory/episodes/<id>.md`.
+4. Persist the episode files under `memory/episodes/YYYY-MM/DD/` (`.jsonl` transcript, `.obs.json` observations, `.idx.jsonl` index chunks).
 5. Append the episode to `memory/observations.json`.
 6. Mark processed messages as observed.
 
@@ -470,70 +498,66 @@ The Observer always writes to the single global observation log. If a project is
 
 The observer model is configured separately from the main agent model. Default: cheap, fast, high-throughput.
 
-**Observation format** (appended to `observations.json`):
+**Observation format** (`observations.json` is a flat list of individual observations):
 
 ```json
 {
-  "id": "ep-001",
-  "date": "2026-02-18",
-  "start": "12:10",
-  "end": "12:45",
-  "context": "aerohive-setup",
   "observations": [
-    "Working on Ansible playbook for AeroHive AP configuration",
-    "Decided to use host_vars over group_vars for per-AP channel assignment",
-    "Hit issue: aoscli module not recognizing enable mode — workaround using raw shell",
-    "User correction: AeroHive uses HiveManager CLI, not aoscli"
+    {
+      "timestamp": "2026-02-18 12:15",
+      "project_context": "aerohive-setup",
+      "source_episodes": ["ep-001"],
+      "visibility": "user",
+      "content": "Decided to use host_vars over group_vars for per-AP channel assignment"
+    },
+    {
+      "timestamp": "2026-02-18 12:30",
+      "project_context": "aerohive-setup",
+      "source_episodes": ["ep-001"],
+      "visibility": "user",
+      "content": "User correction: AeroHive uses HiveManager CLI, not aoscli"
+    }
   ]
 }
 ```
 
-The `context` field is optional — episodes generated outside any active project have no context tag. This lets the agent filter the observation log and episode transcripts by project when searching for project-specific history.
+Each observation is self-describing: `timestamp`, `project_context` (active project or workspace label), `source_episodes` (which episode transcripts produced it), `visibility` (`"user"` or `"background"`), and `content` (a single concise sentence). The `project_context` field enables filtered search by project via the `project_context` parameter on `memory_search`.
 
-**Episode transcript** (persisted to `memory/episodes/ep-001.md`):
+**Episode files** (persisted to `memory/episodes/YYYY-MM/DD/`):
 
-Episode transcripts use markdown with YAML frontmatter, consistent with skills and other human-facing files in the workspace. The frontmatter carries the episode metadata; the body contains the raw messages, tool calls, and results that were compressed into this episode.
+Each episode produces three files in a date-organized directory:
 
-```markdown
----
-id: ep-001
-date: 2026-02-18
-start: "12:10"
-end: "12:45"
-context: aerohive-setup
----
+- **`ep-NNN.jsonl`** — The raw episode transcript. Line 1 is meta JSON (id, date, time range, context tag). Subsequent lines are the serialized messages, tool calls, and results that were compressed into this episode.
+- **`ep-NNN.obs.json`** — The extracted observations for this episode, indexed individually by the search system.
+- **`ep-NNN.idx.jsonl`** — Interaction-pair chunks extracted from the episode, indexed individually for fine-grained retrieval.
 
-## Messages
-
-[Raw conversation transcript, tool calls, and results...]
-```
-
-This is the full record the agent can retrieve via `read` tool or `memory_search` when the observation log's compressed view isn't enough detail. The `observations.json` log itself remains JSON since the gateway parses it structurally, but the persisted transcripts benefit from the more readable format.
+This is the full record the agent can retrieve via `read` tool or `memory_search` when the observation log's compressed view isn't enough detail.
 
 **Prompt cache optimization:** The observation log is a prefix that grows append-only between Observer runs. This enables prompt cache hits on the stable prefix across turns within a run.
 
 #### Reflector (`reflector.rs`)
 
-When the global observation log exceeds its threshold (~40k tokens default):
+When `observations.json` exceeds its token threshold (~40k default):
 
-1. Send the full observation log to the reflector model.
-2. Receive a reorganized, compressed version — still dated, still episode-based, but denser. Each reflected episode includes a `source_episodes` field listing the IDs of the episodes it was compacted from. The `context` tags from source episodes are preserved on reflected episodes.
-3. Replace the observation log contents. Original episode transcripts remain in `memory/episodes/` — the Reflector compresses the log, not the raw record.
+1. Back up the current `observations.json` to `observations.json.bak`.
+2. Send the full observation list to the reflector model.
+3. Receive a compressed version — same flat `Observation` structure, just denser. The reflector merges related observations, drops superseded information, and deduplicates.
+4. Write the compressed result back to `observations.json`. Empty LLM responses are rejected (the reflector will not destroy existing content).
 
-The Reflector operates on the single global observation log. There are no per-project logs to manage independently.
+**Critical**: The reflector reads from and writes to `observations.json` only. It does **not** touch `MEMORY.md`. These are completely separate systems. Original episode transcripts remain in `memory/episodes/` — the reflector compresses the observation log, not the raw record.
 
 The Reflector is the only operation that fully invalidates the prompt cache for the observation prefix. Acceptable given its infrequency.
 
-**Key constraint:** The Reflector does not summarize. It reorganizes, merges related items, and drops superseded information while preserving the chronological episode-based structure. The `source_episodes` field on reflected episodes preserves the retrieval trail back to the original transcripts.
+**Key constraint:** The Reflector does not summarize into prose. It reorganizes, merges, and compresses while preserving the same per-observation structure. The `source_episodes` fields on observations preserve the retrieval trail back to original episode transcripts.
 
 #### Search (`search.rs`)
 
 Hybrid retrieval over workspace files using BM25 + vector similarity:
 
-- Indexes `memory/` daily logs, `memory/episodes/` episode transcripts, project notes and references, archived entries.
-- Episode transcripts are a primary search target — they contain the full raw detail that the observation log compressed away. The agent can follow episode IDs from the observation log to retrieve specific transcripts, or search across all transcripts when the observation log doesn't have enough context.
+- Indexes observations (from `.obs.json` files) and interaction-pair chunks (from `.idx.jsonl` files) individually, not raw episode transcripts as bulk blobs. Also indexes project notes and references, and archived entries.
+- Observations and interaction-pair chunks are the primary search targets — they provide fine-grained retrieval into the detail that the observation log compressed away. The agent can follow episode IDs from the observation log to retrieve specific transcripts, or search across indexed chunks when the observation log doesn't have enough context.
 - Available as a tool the agent can invoke for deep retrieval beyond the observation window.
-- Vector embeddings stored as local files (no external database).
+- Vector embeddings stored in `vectors.db` (SQLite + sqlite-vec).
 
 ### 5. Projects Context Management (`projects/`)
 
@@ -663,13 +687,11 @@ Result routing is handled by the gateway based on `NOTIFY.yml`. When a pulse eva
 
 ### 7. Scheduled Actions System (`actions/`)
 
-A direct port of OpenClaw's cron job system. Scheduled actions give the agent the ability to schedule its own wake-ups — one-shot reminders, recurring tasks, deferred follow-ups. Where pulses are user-defined ambient monitoring (declarative YAML, LLM-evaluated), scheduled actions are agent-created (created via tool calls, persisted as JSON, executed by the gateway).
+Scheduled actions give the agent the ability to schedule its own wake-ups — one-shot reminders and deferred follow-ups. Where pulses are user-defined ambient monitoring (declarative YAML, LLM-evaluated), scheduled actions are agent-created (created via tool calls, persisted as JSON, executed by the gateway).
 
-Three schedule types: `at` (one-shot at a timestamp), `every` (fixed interval), and `cron` (standard 5-field cron expressions with optional timezone). Actions persist under the workspace at `actions/scheduled_actions.json` and survive gateway restarts.
+Scheduled actions are fire-once: each action fires at a specified timestamp and is then removed. For recurring tasks, use heartbeat pulses instead. Actions persist at the workspace root as `scheduled_actions.json` and survive gateway restarts.
 
-Two execution modes: **user-visible** (enqueue a system event picked up on the next pulse/heartbeat — agent has full context) and **background** (dedicated agent thread — can use a different model, supports delivery to a channel or webhook). The agent manages actions via `action_add`, `action_update`, `action_remove`, and `action_list` tool calls.
-
-This is architecturally identical to OpenClaw's implementation. The design details are documented in [OpenClaw's cron docs](https://docs.openclaw.ai/automation/cron-jobs) and don't need to be restated here.
+The agent manages actions via `schedule_action`, `list_actions`, and `cancel_action` tool calls. There is no update operation — cancel and re-create instead.
 
 ### 8. Skills System (`skills/`)
 
@@ -729,10 +751,11 @@ JSON-RPC 2.0 client that communicates with MCP servers:
 
 #### Transport (`transport.rs`)
 
-Two transport mechanisms:
+Currently supports one transport mechanism:
 
-- **stdio**: Spawn MCP server as child process, communicate over stdin/stdout. Default for local servers.
-- **HTTP/SSE**: Connect to remote MCP servers via HTTP with Server-Sent Events for streaming. For hosted/remote servers.
+- **stdio**: Spawn MCP server as child process, communicate over stdin/stdout. Used for all local servers.
+
+HTTP/SSE transport for remote MCP servers is planned but not yet implemented.
 
 #### Lifecycle (`lifecycle.rs`)
 
@@ -769,14 +792,10 @@ Built-in tools the agent can invoke directly.
 | `read` | Read file contents |
 | `write` | Write/create files |
 | `edit` | String replacement in files |
-| `web_search` | Search the web |
-| `web_fetch` | Fetch URL contents |
-| `browser` | Headless browser automation |
 | `memory_search` | Hybrid retrieval over workspace |
-| `action_add` | Schedule a one-shot or recurring agent wake-up |
-| `action_update` | Modify an existing scheduled action |
-| `action_remove` | Delete a scheduled action |
-| `action_list` | List scheduled actions |
+| `schedule_action` | Schedule a one-shot agent wake-up at a specific timestamp |
+| `cancel_action` | Cancel a scheduled action |
+| `list_actions` | List scheduled actions |
 | `skill_activate` | Load a skill's full instructions into the system prompt |
 | `skill_deactivate` | Remove a skill's instructions from the system prompt |
 | `project_activate` | Activate a project context |
@@ -784,6 +803,8 @@ Built-in tools the agent can invoke directly.
 | `project_create` | Create a new project entry |
 | `project_archive` | Archive a completed project |
 | `project_list` | List all projects and their status |
+
+**Web capabilities** (search, fetch, browser automation) are not built-in tools. They are provided through MCP servers configured by the user. This keeps the core tool set focused on workspace operations while allowing flexible web access via the MCP ecosystem.
 
 #### Policy (`policy.rs`)
 
@@ -874,8 +895,8 @@ Observer model extracts episode
 (id, date, time range, context tag, observations)
             │
             ▼
-Persist raw transcript
-to memory/episodes/<id>.md
+Persist episode files
+to memory/episodes/YYYY-MM/DD/
             │
             ▼
 Append episode to
@@ -896,7 +917,7 @@ Raw messages marked as observed
 | `tokio` | Async runtime |
 | `serde` / `serde_yaml` / `toml` | Serialization for configs |
 | `serenity` | Discord gateway & API |
-| `reqwest` | HTTP client for model APIs and web tools |
+| `reqwest` | HTTP client for model APIs |
 | `notify` | Filesystem watching |
 | `walkdir` | Directory traversal for projects/skills scanning |
 | `tantivy` | BM25 full-text search for memory |
@@ -915,7 +936,7 @@ Things deliberately scoped out of the initial implementation:
 - **Canvas / A2UI** — No visual workspace. Text-only interactions.
 - **Voice** — No TTS/STT integration. Text channels only.
 - **ClawHub integration** — Skills are loaded from local directories. No registry API client.
-- **Plugin system** — Channels, providers, and tools are compiled in. A dynamic plugin system (WASM or subprocess) can be added later if extensibility is needed.
+- **Plugin system** — Channels, providers, and tools are compiled in. A dynamic plugin system was explored and abandoned; the design doc (`docs/plugin-system-design.md`) is being deleted. MCP servers and skills cover the extensibility use cases adequately.
 - **Migration tooling** — No automated migration from an existing OpenClaw workspace. Manual setup or a one-time script.
 
 ---
@@ -976,7 +997,7 @@ Guild channels, mention gating, and threads are deferred to Phase 5+.
 24. `skills/resolver` — Skill activation and prompt injection.
 25. `mcp/client` — JSON-RPC client, stdio transport.
 26. `mcp/lifecycle` — Server spawn and teardown.
-27. `mcp/transport` — HTTP/SSE transport for remote servers.
+27. `mcp/transport` — HTTP/SSE transport for remote servers (planned).
 28. Integration: project `skills/` subdirectory discovery on activation, MCP server activation from frontmatter.
 
 **Milestone: Agent can use OpenClaw-compatible skills and connect to MCP servers.**

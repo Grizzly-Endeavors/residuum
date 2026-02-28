@@ -10,7 +10,7 @@ This project is a derivative of OpenClaw, and coopts much of its architecture. Y
 - [Background Tasks](./docs/background-tasks-design.md)
 - [Memory Search](./docs/memory-search-design.md)
 - [Notification Routing](./docs/notification-routing-design.md)
-- [Plugin System](./docs/plugin-system-design.md)
+- [Systems Usage](./docs/systems-usage/) (authoritative reference for how systems are intended to work)
 
 ## Commit Requirements, Linting, and Formatting
 

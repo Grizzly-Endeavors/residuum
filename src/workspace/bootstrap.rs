@@ -56,39 +56,47 @@ const DEFAULT_AGENTS: &str = "\
 ## Systems Overview
 
 You have access to several operational systems. For detailed reference on any \
-system, activate the ironclaw-system skill: `skill_activate ironclaw-system`
+system, activate the ironclaw-system skill.
 
 - **Memory**: Automatic observation pipeline + searchable episode index. \
-Your MEMORY.md is a persistent scratchpad you control.
+Your MEMORY.md is a persistent scratchpad you control — the observer and \
+reflector never touch it. They operate on observations.json only.
 - **Projects**: Scoped workspaces for ongoing tasks. Each project gets its \
-own tools, MCP servers, skills, and context.
+own tools, MCP servers, skills, and context. When a project is active, you \
+can read from anywhere but can only write within the project directory.
 - **Heartbeats**: Ambient monitoring via HEARTBEAT.yml. Checks run on \
-schedules during active hours.
+schedules during active hours as sub-agents (or main wake turns).
 - **Inbox**: Capture items for later. Background task results can route here. \
 Unread count appears in your status line.
 - **Scheduled Actions**: One-off future tasks. Fire once at a specified time, \
-then auto-remove.
+then auto-remove. Results route to channels specified at creation time.
 - **Skills**: Loadable knowledge packs. Activate with `skill_activate`, \
 deactivate with `skill_deactivate`. Create new ones in skills/.
-- **Notifications**: NOTIFY.yml routes background task results to channels \
-(agent_feed, inbox, or external services like ntfy).
-- **Background Tasks**: Spawn sub-agents or scripts for work that shouldn't \
+- **Notifications**: NOTIFY.yml routes heartbeat pulse results to channels \
+(agent_feed, inbox, or external services like ntfy). Scheduled actions and \
+sub-agents specify their channels directly.
+- **Background Tasks**: Spawn sub-agents for work that shouldn't \
 block the conversation.
 
 ## Workspace File Ownership
 
 Files you own and should actively maintain:
-- `MEMORY.md` — update with important context across conversations
+- `MEMORY.md` — persistent scratchpad, update with important cross-session context
+- `USER.md` — user preferences, communication style, interests
 - `ENVIRONMENT.md` — document local environment details you discover
 - `HEARTBEAT.yml` — evolve monitoring based on user needs
-- `NOTIFY.yml` — adjust routing based on what the user wants to see
+- `NOTIFY.yml` — adjust pulse routing based on what the user wants to see
+- `PRESENCE.toml` — Discord status configuration
+- `memory/OBSERVER.md` — controls what the observer extracts (improve via self-analysis)
+- `memory/REFLECTOR.md` — controls how the reflector compresses observations
 - `scheduled_actions.json` — managed via tools, not direct editing
 
-Files the user owns (edit only when asked):
-- `SOUL.md` — your personality and values
-- `AGENTS.md` — your behavior rules
-- `USER.md` — user preferences
-- `PRESENCE.toml` — Discord status configuration
+Files you own but should rarely change:
+- `SOUL.md` — foundational identity. Refine wording over time, but don't \
+overhaul without user input.
+- `AGENTS.md` — behavioral rules. Same — low churn, foundational.
+
+The only user-owned file is `config.toml`, which lives outside the workspace.
 ";
 
 /// Default content for USER.md when creating a new workspace.
@@ -102,7 +110,7 @@ Add your preferences here. This file is loaded into the agent's context.
 const DEFAULT_MEMORY: &str = "\
 # Memory
 
-Persistent notes across restarts. The agent can update this file.
+Persistent notes across restarts. You should update this file frequently.
 ";
 
 /// Default content for BOOTSTRAP.md -- first-run guidance.
@@ -110,14 +118,14 @@ Persistent notes across restarts. The agent can update this file.
 /// This file is written once during workspace creation and should be deleted
 /// by the agent after the first conversation.
 const DEFAULT_BOOTSTRAP: &str = "\
-# First Run
+# First Run - Fresh Out of the Forge 🔨
 
 This is your first conversation with your user. The file you're reading \
 (BOOTSTRAP.md) exists only for this moment — delete it before the conversation ends.
 
 ## What To Do
 
-1. Activate the getting-started skill: `skill_activate ironclaw-getting-started`
+1. Activate the ironclaw-getting-started skill.
 2. Introduce yourself briefly — name, what you can do, that you're ready to help
 3. Ask what they need. Don't list every feature. Listen first.
 4. Start helping. Demonstrate by doing, not by explaining.
@@ -170,7 +178,7 @@ const DEFAULT_HEARTBEAT: &str = "\
 # HEARTBEAT.yml — Pulse monitoring configuration
 #
 # Define ambient checks the agent performs on a schedule.
-# The agent runs these checks in the background and alerts you to findings.
+# The agent runs these in the background and routes findings via NOTIFY.yml.
 #
 # Example:
 #
@@ -179,12 +187,16 @@ const DEFAULT_HEARTBEAT: &str = "\
 #     enabled: true
 #     schedule: \"30m\"
 #     active_hours: \"08:00-18:00\"
+#     agent: ~                        # null = sub-agent (small tier)
 #     tasks:
 #       - name: check_inbox
-#         prompt: \"Check my email for urgent messages. Report anything requiring action.\"
+#         prompt: \"Check my email for urgent messages.\"
 #
-# schedule: duration string — \"30m\", \"2h\", \"24h\"
-# active_hours: optional time window — \"HH:MM-HH:MM\" (UTC)
+# Fields:
+#   schedule: duration string — \"30m\", \"2h\", \"24h\"
+#   active_hours: optional — \"HH:MM-HH:MM\" in configured timezone
+#                 supports overnight windows (e.g. \"22:00-06:00\")
+#   agent: ~ (sub-agent, small) | \"main\" (wake turn) | \"preset-name\"
 
 pulses: []
 ";
@@ -205,10 +217,10 @@ const DEFAULT_PRESENCE: &str = "\
 
 /// Default content for NOTIFY.yml when creating a new workspace.
 const DEFAULT_NOTIFY: &str = "\
-# NOTIFY.yml — Notification routing
-# Maps channels to the background tasks they receive.
-# Edit this file to control where background task results are delivered.
-# The agent will also evolve this file based on your preferences.
+# NOTIFY.yml — Heartbeat pulse routing
+# Maps channels to the pulse names whose results they receive.
+# Only heartbeat pulses route through this file. Scheduled actions and
+# agent-spawned sub-agents specify their channels directly.
 #
 # Built-in channels:
 #   agent_wake  — inject into agent feed, start a turn if idle

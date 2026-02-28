@@ -253,32 +253,27 @@ When no embedding provider is configured, the vector search branch is skipped an
       "type": "integer",
       "description": "Maximum results to return (default: 5, max: 20)"
     },
-    "filters": {
-      "type": "object",
-      "properties": {
-        "source": {
-          "type": "string",
-          "enum": ["observations", "episodes", "both"],
-          "description": "Search observations, episode chunks, or both (default: both)"
-        },
-        "date_from": {
-          "type": "string",
-          "description": "Earliest date to include (YYYY-MM-DD)"
-        },
-        "date_to": {
-          "type": "string",
-          "description": "Latest date to include (YYYY-MM-DD)"
-        },
-        "project_context": {
-          "type": "string",
-          "description": "Filter to a specific project context"
-        },
-        "episode_ids": {
-          "type": "array",
-          "items": { "type": "string" },
-          "description": "Filter to specific episodes (e.g. [\"ep-001\", \"ep-003\"])"
-        }
-      }
+    "source": {
+      "type": "string",
+      "enum": ["observations", "episodes", "both"],
+      "description": "Search observations, episode chunks, or both (default: both)"
+    },
+    "date_from": {
+      "type": "string",
+      "description": "Earliest date to include (YYYY-MM-DD)"
+    },
+    "date_to": {
+      "type": "string",
+      "description": "Latest date to include (YYYY-MM-DD)"
+    },
+    "project_context": {
+      "type": "string",
+      "description": "Filter to a specific project context"
+    },
+    "episode_ids": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Filter to specific episodes (e.g. [\"ep-001\", \"ep-003\"])"
     }
   },
   "required": ["query"]

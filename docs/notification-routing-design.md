@@ -8,8 +8,8 @@ The previous design used a three-tier alert level (high/medium/low) baked into e
 
 The new design separates concerns cleanly:
 
-1. **Actionability** — The SubAgent (or script exit code) makes one binary judgment: is this result worth reporting, or is it HEARTBEAT_OK? This is the only gate.
-2. **Routing** — `NOTIFY.yml` maps channel names to task name lists. The gateway dispatches results to every channel that lists the task. No urgency assessment, no alert levels.
+1. **Actionability** — The SubAgent makes one binary judgment: is this result worth reporting, or is it HEARTBEAT_OK? This is the only gate.
+2. **Routing** — `NOTIFY.yml` maps channel names to pulse name lists (for heartbeat pulses). Scheduled actions and agent-spawned subagents specify channels directly at creation time. The gateway dispatches results to the resolved channels. No urgency assessment, no alert levels.
 3. **Channel infrastructure** — `config.toml` defines what channels exist and how to reach them. This is user-managed infrastructure config, not agent-editable policy.
 
 ---
@@ -20,11 +20,11 @@ A workspace file at `~/.ironclaw/workspace/NOTIFY.yml`. The agent reads and edit
 
 ### Structure
 
-Channels are top-level keys. Each channel lists the task names whose results it should receive.
+Channels are top-level keys. Each channel lists the heartbeat pulse names whose results it should receive.
 
 ```yaml
 # NOTIFY.yml — Notification routing
-# Maps channels to the background tasks they receive.
+# Maps channels to the heartbeat pulses they receive.
 # This file is yours to evolve based on user preferences.
 
 agent_wake:
@@ -40,29 +40,29 @@ ntfy:
   - github_prs
 
 inbox:
-  - nightly_backup
+  - system_health
 ```
 
 ### Reading the file
 
 The file answers one question per channel: "what will this channel send me?"
 
-- `agent_wake` will start a turn for `work_check` and `deploy_check` results.
-- `ntfy` will push-notify for `work_check`, `deploy_check`, and `github_prs`.
-- `nightly_backup` results go to the inbox and nowhere else.
+- `agent_wake` will start a turn for `work_check` and `deploy_check` pulse results.
+- `ntfy` will push-notify for `work_check`, `deploy_check`, and `github_prs` pulse results.
+- `system_health` pulse results go to the inbox and nowhere else.
 
-A task can appear in multiple channels. A task not listed in any channel is not routed — its result is silently discarded after transcript storage.
+A pulse can appear in multiple channels. A pulse not listed in any channel is not routed — its result is silently discarded after transcript storage.
 
 ### Task name resolution
 
-Task names in `NOTIFY.yml` correspond to:
+Task names in `NOTIFY.yml` correspond to pulse names from `HEARTBEAT.yml` (e.g., `work_check`). NOTIFY.yml is exclusively for heartbeat pulse routing.
 
-| Source | Task name |
-|--------|-----------|
-| Pulse | The pulse name from `HEARTBEAT.yml` (e.g., `work_check`) |
-| Scheduled action | The action ID from `actions/scheduled_actions.json` (e.g., `nightly_backup`) |
+Scheduled actions and agent-spawned subagents do **not** use NOTIFY.yml. Both specify their output channels directly at creation time:
 
-Agent-spawned subagents do **not** use NOTIFY.yml. Their output channels are specified directly in the `subagent_spawn` tool call (e.g., `channels: ["agent_feed", "ntfy"]`). The gateway validates channel names at spawn time against built-in channels and `config.toml` definitions. This keeps ad-hoc tasks ad-hoc — no need to edit NOTIFY.yml before delegating work.
+- **Scheduled actions**: `channels` parameter on `schedule_action` (defaults to `["agent_feed"]`)
+- **Agent-spawned subagents**: `channels` parameter on `subagent_spawn` (defaults to `["agent_feed"]`)
+
+The gateway validates channel names at spawn time against built-in channels and `config.toml` definitions.
 
 ---
 
@@ -84,7 +84,7 @@ Use for results the agent should see at the next natural interaction point.
 
 ### `inbox`
 
-Creates an `InboxItem` — a lightweight record stored in `workspace/inbox/inbox.json`. Never enters the message feed. The agent sees an unread count in its context ("You have 3 unread inbox items") and can review items via the `inbox_list` tool.
+Creates an `InboxItem` — a lightweight record stored as an individual JSON file in the `inbox/` directory. Never enters the message feed. The agent sees an unread count in its context ("You have 3 unread inbox items") and can review items via the `inbox_list` tool.
 
 Use for results that should be recorded but don't need immediate attention.
 
@@ -96,7 +96,7 @@ A task not listed in any channel produces its result, writes the transcript to d
 
 ## External Channels
 
-External channels deliver results outside the gateway — push notifications, webhooks, or any service that accepts a message. They are defined in `config.toml` and referenced by name in `NOTIFY.yml`.
+External channels deliver results outside the gateway — push notifications, webhooks, or any service that accepts a message. They are defined in `config.toml` and referenced by name in `NOTIFY.yml` or in the `channels` parameter of `schedule_action` / `subagent_spawn`.
 
 ### Configuration
 
@@ -112,7 +112,7 @@ url = "https://hooks.example.com/ironclaw"
 method = "POST"
 ```
 
-Channel names in `config.toml` must match the keys used in `NOTIFY.yml`. If `NOTIFY.yml` references a channel name not defined in `config.toml` and not a built-in, the gateway logs a warning at startup and skips that channel during dispatch.
+Channel names in `config.toml` must match the keys used in `NOTIFY.yml`. If `NOTIFY.yml` references a channel name not defined in `config.toml` and not a built-in, the gateway logs a warning and skips that channel during dispatch.
 
 ### Channel types
 
@@ -140,7 +140,6 @@ struct Notification {
     pub task_name: String,
     pub summary: String,
     pub source: TaskSource,
-    pub transcript_path: PathBuf,
     pub timestamp: DateTime<Utc>,
 }
 ```
@@ -157,15 +156,16 @@ Background task completes
       ├── SubAgent returned HEARTBEAT_OK
       │   └── Log silently, no routing. Done.
       │
-      └── SubAgent returned a result (or script produced output)
+      └── SubAgent returned a result
           │
           ▼
     Write transcript to disk
           │
           ▼
     Determine channels:
-      ├── Pulse/Action → Look up task name in NOTIFY.yml
-      └── Agent-spawned → Use channels from subagent_spawn call
+      ├── Pulse → Look up pulse name in NOTIFY.yml
+      ├── Action → Use channels from schedule_action call (direct routing)
+      └── Agent-spawned → Use channels from subagent_spawn call (direct routing)
           │
           ├── No channels → Done (transcript preserved, not delivered)
           │
@@ -176,7 +176,7 @@ Background task completes
               │
               ├── agent_wake → Interrupt channel (Interrupt::BackgroundResult), wake if idle
               ├── agent_feed → Interrupt channel (Interrupt::BackgroundResult), passive
-              ├── inbox → Write InboxItem to inbox.json
+              ├── inbox → Write InboxItem to inbox/ directory
               └── ntfy/webhook/... → HTTP request to external service
 ```
 
@@ -184,21 +184,9 @@ External channel delivery is fire-and-forget from the routing perspective. Failu
 
 ---
 
-## Script Results
-
-Script-type background tasks (scheduled actions running shell commands) follow the same routing:
-
-- The script runs to completion.
-- Exit code 0: the result summary is stdout. Routed normally by task name.
-- Exit code non-zero: the result summary includes stdout + stderr and the exit code. Routed normally by task name — the channels receiving the result see the failure.
-
-There is no automatic escalation based on exit code. If a user wants script failures to go to `agent_wake` and successes to go to `inbox`, they should use two separate scheduled actions (one for the command, one for a health check) or route all results to `agent_wake` and let the agent decide what needs attention.
-
----
-
 ## Agent Self-Evolution
 
-The agent edits `NOTIFY.yml` the same way it edits `HEARTBEAT.yml` — using the `write` or `edit` tool. The gateway hot-reloads the file on change.
+The agent edits `NOTIFY.yml` the same way it edits `HEARTBEAT.yml` — using the `write` or `edit` tool. Since the file is re-read from disk on every `route()` call, changes take effect immediately.
 
 Examples of agent-driven routing changes:
 
@@ -215,7 +203,7 @@ The agent's routing decisions are visible and reversible — the user can always
 
 ### Background tasks
 
-`NOTIFY.yml` is consumed by the `BackgroundTaskSpawner`'s result routing step for pulse and scheduled action results. When a `BackgroundResult` arrives, the spawner checks the task's `ResultRouting`: `Notify` routes look up the task name in NOTIFY.yml, while `Direct` routes (from `subagent_spawn`) dispatch to the channels specified at spawn time.
+`NOTIFY.yml` is consumed by the gateway's result routing step for pulse results. When a `BackgroundResult` arrives, the gateway checks the task's `ResultRouting`: `Notify` routes (pulses) look up the pulse name in NOTIFY.yml, while `Direct` routes (scheduled actions and agent-spawned subagents) dispatch to the channels specified at creation time.
 
 ### Pulse system
 
@@ -223,7 +211,7 @@ Pulse evaluation results are routed by pulse name. The `alert` field on individu
 
 ### Scheduled actions system
 
-Scheduled action results are routed by action ID via NOTIFY.yml. Both `UserVisible` and `Background` delivery modes are replaced by the NOTIFY.yml routing — an action routed to `agent_feed` or `agent_wake` achieves the same effect as `UserVisible`, and an action routed to `inbox` or not listed achieves the same effect as `Background`.
+Scheduled action results use direct channel routing specified at creation time via the `channels` parameter on `schedule_action` (defaults to `["agent_feed"]`). They do not route through NOTIFY.yml. The `agent_name` parameter controls execution mode: omitted for a default sub-agent, `"main"` for a full wake turn with conversation context, or a named preset for a specialized sub-agent. The `model_tier` parameter (`"small"`, `"medium"`, `"large"`) controls the model used for sub-agent actions.
 
 ### Agent-spawned subagents
 
@@ -235,7 +223,7 @@ Background results enter the observation log through the standard path: results 
 
 ### Hot reload
 
-The gateway watches `NOTIFY.yml` for changes (same `notify` watcher as other workspace files). Changes are hot-applicable — no gateway restart needed. The routing config is re-parsed and the in-memory dispatch table is rebuilt.
+NOTIFY.yml is re-read from disk on every `route()` call. There is no filesystem watcher or cached dispatch table — the file is loaded fresh each time a notification needs routing. Changes take effect immediately without gateway restart.
 
 ---
 
@@ -245,8 +233,8 @@ Bootstrapped on workspace creation with sensible defaults:
 
 ```yaml
 # NOTIFY.yml — Notification routing
-# Maps channels to the background tasks they receive.
-# Edit this file to control where background task results are delivered.
+# Maps channels to the heartbeat pulses they receive.
+# Edit this file to control where pulse results are delivered.
 # The agent will also evolve this file based on your preferences.
 #
 # Built-in channels:
