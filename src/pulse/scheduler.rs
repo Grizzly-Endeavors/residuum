@@ -1,18 +1,28 @@
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use chrono::NaiveDateTime;
+use serde::{Deserialize, Serialize};
 
 use super::types::{
     HeartbeatConfig, PulseDef, is_within_active_hours, parse_active_hours, parse_schedule_duration,
 };
 
+/// On-disk format for `pulse_state.json`.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+struct PulseState {
+    #[serde(default)]
+    last_run: HashMap<String, NaiveDateTime>,
+}
+
 /// Tracks per-pulse last-run times and determines which pulses are due.
 ///
-/// Timestamps are in-memory only and reset on restart, so pulses fire
-/// immediately on first run after startup.
+/// When constructed with `with_state_path`, timestamps are persisted to
+/// `pulse_state.json` and survive restarts. Without a state path, timestamps
+/// are in-memory only (backward-compatible).
 pub struct PulseScheduler {
     last_run: HashMap<String, NaiveDateTime>,
+    state_path: Option<PathBuf>,
 }
 
 impl Default for PulseScheduler {
@@ -22,11 +32,25 @@ impl Default for PulseScheduler {
 }
 
 impl PulseScheduler {
-    /// Create a new scheduler with no run history.
+    /// Create a new scheduler with no run history and no persistence.
     #[must_use]
     pub fn new() -> Self {
         Self {
             last_run: HashMap::new(),
+            state_path: None,
+        }
+    }
+
+    /// Create a scheduler that persists state to the given path.
+    ///
+    /// Loads existing state from disk if the file exists. Missing or corrupt
+    /// files are treated as empty state (logged as a warning for corrupt files).
+    #[must_use]
+    pub fn with_state_path(path: &Path) -> Self {
+        let state = load_state(path);
+        Self {
+            last_run: state.last_run,
+            state_path: Some(path.to_path_buf()),
         }
     }
 
@@ -68,7 +92,7 @@ impl PulseScheduler {
     /// - Either it has never run, or `now - last_run >= schedule_duration`
     /// - If `active_hours` is set, `now` falls within the window
     ///
-    /// Due pulses have their `last_run` updated to `now`.
+    /// Due pulses have their `last_run` updated to `now` and persisted (if a state path is set).
     #[must_use]
     pub fn due_pulses(&mut self, now: NaiveDateTime, heartbeat_path: &Path) -> Vec<PulseDef> {
         let Some(heartbeat) = Self::load_heartbeat(heartbeat_path) else {
@@ -127,7 +151,72 @@ impl PulseScheduler {
             }
         }
 
+        if !due.is_empty() {
+            self.save_state();
+        }
+
         due
+    }
+
+    /// Persist current state to disk (no-op if no state path is configured).
+    fn save_state(&self) {
+        let Some(ref path) = self.state_path else {
+            return;
+        };
+
+        let state = PulseState {
+            last_run: self.last_run.clone(),
+        };
+
+        match serde_json::to_string_pretty(&state) {
+            Ok(json) => {
+                let tmp = path.with_extension("json.tmp");
+                if let Err(err) = std::fs::write(&tmp, &json) {
+                    tracing::warn!(
+                        path = %tmp.display(),
+                        error = %err,
+                        "failed to write pulse state temp file"
+                    );
+                    return;
+                }
+                if let Err(err) = std::fs::rename(&tmp, path) {
+                    tracing::warn!(
+                        path = %path.display(),
+                        error = %err,
+                        "failed to rename pulse state file"
+                    );
+                }
+            }
+            Err(err) => {
+                tracing::warn!(error = %err, "failed to serialize pulse state");
+            }
+        }
+    }
+}
+
+/// Load pulse state from disk; returns default on missing or corrupt file.
+fn load_state(path: &Path) -> PulseState {
+    match std::fs::read_to_string(path) {
+        Ok(contents) => match serde_json::from_str::<PulseState>(&contents) {
+            Ok(state) => state,
+            Err(err) => {
+                tracing::warn!(
+                    path = %path.display(),
+                    error = %err,
+                    "corrupt pulse_state.json, starting with empty state"
+                );
+                PulseState::default()
+            }
+        },
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => PulseState::default(),
+        Err(err) => {
+            tracing::warn!(
+                path = %path.display(),
+                error = %err,
+                "failed to read pulse_state.json, starting with empty state"
+            );
+            PulseState::default()
+        }
     }
 }
 
@@ -273,6 +362,89 @@ pulses:
         assert!(
             PulseScheduler::load_heartbeat(&path).is_none(),
             "invalid YAML should return None"
+        );
+    }
+
+    // ── Persistence tests ─────────────────────────────────────────────
+
+    #[test]
+    fn persistence_round_trip() {
+        let dir = tempdir().unwrap();
+        let hb_path = write_heartbeat(dir.path(), SIMPLE_HEARTBEAT);
+        let state_path = dir.path().join("pulse_state.json");
+
+        let now = chrono::NaiveDate::from_ymd_opt(2026, 2, 19)
+            .unwrap()
+            .and_hms_opt(12, 0, 0)
+            .unwrap();
+
+        // First scheduler fires and persists
+        {
+            let mut sched = PulseScheduler::with_state_path(&state_path);
+            let due = sched.due_pulses(now, &hb_path);
+            assert_eq!(due.len(), 1, "should fire on first run");
+        }
+
+        // Second scheduler loads persisted state — should NOT re-fire
+        {
+            let mut sched = PulseScheduler::with_state_path(&state_path);
+            let thirty_min_later = chrono::NaiveDate::from_ymd_opt(2026, 2, 19)
+                .unwrap()
+                .and_hms_opt(12, 30, 0)
+                .unwrap();
+            let due = sched.due_pulses(thirty_min_later, &hb_path);
+            assert!(due.is_empty(), "should not re-fire from persisted state");
+        }
+    }
+
+    #[test]
+    fn persistence_missing_file_starts_empty() {
+        let dir = tempdir().unwrap();
+        let state_path = dir.path().join("pulse_state.json");
+
+        // No file exists yet — should start with empty state
+        let sched = PulseScheduler::with_state_path(&state_path);
+        assert!(sched.last_run.is_empty(), "missing file means empty state");
+    }
+
+    #[test]
+    fn persistence_corrupt_file_recovers() {
+        let dir = tempdir().unwrap();
+        let state_path = dir.path().join("pulse_state.json");
+        std::fs::write(&state_path, "not valid json {{{").unwrap();
+
+        // Corrupt file — should recover with empty state
+        let sched = PulseScheduler::with_state_path(&state_path);
+        assert!(
+            sched.last_run.is_empty(),
+            "corrupt file should recover to empty state"
+        );
+    }
+
+    #[test]
+    fn state_file_format_matches_spec() {
+        let dir = tempdir().unwrap();
+        let hb_path = write_heartbeat(dir.path(), SIMPLE_HEARTBEAT);
+        let state_path = dir.path().join("pulse_state.json");
+
+        let now = chrono::NaiveDate::from_ymd_opt(2026, 2, 28)
+            .unwrap()
+            .and_hms_opt(14, 30, 0)
+            .unwrap();
+
+        let mut sched = PulseScheduler::with_state_path(&state_path);
+        let _due = sched.due_pulses(now, &hb_path);
+
+        let contents = std::fs::read_to_string(&state_path).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&contents).unwrap();
+        assert!(
+            parsed.get("last_run").is_some(),
+            "state file should have last_run key"
+        );
+        let last_run = parsed.get("last_run").unwrap().as_object().unwrap();
+        assert!(
+            last_run.contains_key("test_pulse"),
+            "should contain the pulse name"
         );
     }
 }

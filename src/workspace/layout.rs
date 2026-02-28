@@ -191,6 +191,12 @@ impl WorkspaceLayout {
         self.root.join("memory/background")
     }
 
+    /// Path to `pulse_state.json` -- persisted pulse scheduler state (last_run, run_counts).
+    #[must_use]
+    pub fn pulse_state_json(&self) -> PathBuf {
+        self.root.join("pulse_state.json")
+    }
+
     /// Path to `scheduled_actions.json` -- persisted one-off scheduled actions.
     #[must_use]
     pub fn scheduled_actions_json(&self) -> PathBuf {
@@ -311,6 +317,11 @@ mod tests {
             layout.notify_yml(),
             PathBuf::from("/tmp/ws/NOTIFY.yml"),
             "notify_yml path"
+        );
+        assert_eq!(
+            layout.pulse_state_json(),
+            PathBuf::from("/tmp/ws/pulse_state.json"),
+            "pulse_state_json path"
         );
         assert_eq!(
             layout.scheduled_actions_json(),
