@@ -8,10 +8,11 @@ use chrono::Utc;
 use tokio::sync::{Mutex, Semaphore, mpsc};
 use tokio_util::sync::CancellationToken;
 
-use super::subagent::{SubAgentResources, execute_subagent};
+use super::subagent::{SubAgentOutput, SubAgentResources, execute_subagent};
 use super::types::{
     ActiveTaskInfo, BackgroundResult, BackgroundTask, Execution, TaskStatus, execution_info,
 };
+use crate::models::Message;
 
 /// Spawns and manages background tasks with bounded concurrency.
 pub struct BackgroundTaskSpawner {
@@ -138,16 +139,18 @@ impl BackgroundTaskSpawner {
                     }
                 }
                 outcome = execute_task(&task, resources.as_ref(), &workspace_root) => {
-                    let (status, summary) = match outcome {
-                        Ok(output) => (TaskStatus::Completed, output),
+                    let (status, summary, messages) = match outcome {
+                        Ok(SubAgentOutput { summary, messages }) => {
+                            (TaskStatus::Completed, summary, Some(messages))
+                        }
                         Err(e) => {
                             let error_msg = e.to_string();
-                            (TaskStatus::Failed { error: error_msg.clone() }, format!("[FAILED] {error_msg}"))
+                            (TaskStatus::Failed { error: error_msg.clone() }, format!("[FAILED] {error_msg}"), None)
                         }
                     };
 
                     let transcript_path = write_transcript(
-                        &background_dir, &task.id, &summary,
+                        &background_dir, &task.id, &summary, messages.as_deref(),
                     ).await;
 
                     BackgroundResult {
@@ -223,7 +226,7 @@ async fn execute_task(
     task: &BackgroundTask,
     resources: Option<&SubAgentResources>,
     _workspace_root: &std::path::Path,
-) -> Result<String, anyhow::Error> {
+) -> Result<SubAgentOutput, anyhow::Error> {
     let Execution::SubAgent(config) = &task.execution;
     let res = resources
         .ok_or_else(|| anyhow::anyhow!("sub-agent task requires SubAgentResources"))?;
@@ -231,10 +234,15 @@ async fn execute_task(
 }
 
 /// Write a transcript file for the task. Returns the path if successful.
+///
+/// When `messages` is provided, the transcript is serialized as JSON with both
+/// a summary and the full message history. Falls back to plain summary on
+/// serialization error.
 async fn write_transcript(
     background_dir: &std::path::Path,
     task_id: &str,
-    content: &str,
+    summary: &str,
+    messages: Option<&[Message]>,
 ) -> Option<PathBuf> {
     let now = Utc::now();
     let month_dir = background_dir.join(now.format("%Y-%m").to_string());
@@ -247,6 +255,20 @@ async fn write_transcript(
 
     let filename = format!("bg-{task_id}.log");
     let path = day_dir.join(&filename);
+
+    let content = match messages {
+        Some(msgs) => {
+            let transcript = serde_json::json!({
+                "summary": summary,
+                "messages": msgs,
+            });
+            serde_json::to_string_pretty(&transcript).unwrap_or_else(|err| {
+                tracing::warn!(error = %err, "failed to serialize transcript, falling back to plain summary");
+                summary.to_string()
+            })
+        }
+        None => summary.to_string(),
+    };
 
     match tokio::fs::write(&path, content).await {
         Ok(()) => Some(path),
@@ -331,6 +353,16 @@ mod tests {
         assert!(
             result.transcript_path.is_some(),
             "failed task should still write transcript"
+        );
+
+        // Failed tasks write plain summary (no messages), so content is the raw error string
+        let transcript_content =
+            tokio::fs::read_to_string(result.transcript_path.as_ref().unwrap())
+                .await
+                .unwrap();
+        assert!(
+            transcript_content.contains("[FAILED]"),
+            "transcript should contain the failure summary"
         );
     }
 }

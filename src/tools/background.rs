@@ -566,7 +566,7 @@ mod tests {
         let result = execute_subagent("test-sync-1", &config, &resources)
             .await
             .unwrap();
-        assert_eq!(result, "analysis complete");
+        assert_eq!(result.summary, "analysis complete");
     }
 
     #[tokio::test]

@@ -20,6 +20,14 @@ use crate::workspace::layout::WorkspaceLayout;
 
 use super::types::SubAgentConfig;
 
+/// Output from a completed sub-agent execution.
+pub(crate) struct SubAgentOutput {
+    /// The final text response (last assistant message).
+    pub summary: String,
+    /// Full conversation transcript (all messages exchanged during the turn).
+    pub messages: Vec<Message>,
+}
+
 /// Everything needed to run a sub-agent turn, gathered at spawn time.
 pub struct SubAgentResources {
     pub(crate) provider: Box<dyn ModelProvider>,
@@ -176,7 +184,7 @@ pub(crate) async fn execute_subagent(
     task_id: &str,
     config: &SubAgentConfig,
     resources: &SubAgentResources,
-) -> Result<String, anyhow::Error> {
+) -> Result<SubAgentOutput, anyhow::Error> {
     let projects_ctx = ProjectsContext {
         index: resources.projects_ctx_index.as_deref(),
         active_context: None,
@@ -257,7 +265,9 @@ pub(crate) async fn execute_subagent(
     )
     .await;
 
-    Ok(texts.last().cloned().unwrap_or_default())
+    let summary = texts.last().cloned().unwrap_or_default();
+    let messages = recent_messages.messages().to_vec();
+    Ok(SubAgentOutput { summary, messages })
 }
 
 /// If a project is still active after the main turn, give the sub-agent one
@@ -414,10 +424,10 @@ mod tests {
             model_tier: crate::config::BackgroundModelTier::Medium,
         };
 
-        let result = execute_subagent("bg-001", &config, &resources)
+        let output = execute_subagent("bg-001", &config, &resources)
             .await
             .unwrap();
-        assert_eq!(result, "3 new emails found");
+        assert_eq!(output.summary, "3 new emails found");
     }
 
     #[test]
@@ -515,6 +525,28 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn subagent_captures_full_transcript() {
+        let resources = make_resources("done");
+
+        let config = SubAgentConfig {
+            prompt: "do work".to_string(),
+            context: None,
+            model_tier: crate::config::BackgroundModelTier::Small,
+        };
+
+        let output = execute_subagent("bg-002", &config, &resources)
+            .await
+            .unwrap();
+        assert_eq!(output.summary, "done");
+        // At minimum: the initial user message + the assistant response
+        assert!(
+            output.messages.len() >= 2,
+            "transcript should contain at least user + assistant messages, got {}",
+            output.messages.len()
+        );
+    }
+
+    #[tokio::test]
     async fn subagent_no_active_project_no_cleanup_needed() {
         // Run a sub-agent with no active project — verify it completes cleanly
         let resources = make_resources("finished");
@@ -524,10 +556,10 @@ mod tests {
             model_tier: crate::config::BackgroundModelTier::Small,
         };
 
-        let result = execute_subagent("bg-003", &config, &resources)
+        let output = execute_subagent("bg-003", &config, &resources)
             .await
             .unwrap();
-        assert_eq!(result, "finished");
+        assert_eq!(output.summary, "finished");
         // After the turn, project state should still have no active project
         assert!(
             resources
