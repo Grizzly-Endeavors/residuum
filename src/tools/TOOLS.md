@@ -599,7 +599,7 @@ The `preview` line is omitted if the task has an empty prompt/command.
 **Source:** `background.rs` · `SubAgentSpawnTool`
 
 **Description sent to LLM:**
-> Spawn a background sub-agent to handle a task. The agent_name selects a preset that configures the sub-agent's instructions, model tier, and tool restrictions. Unknown preset names fail immediately with a list of available presets. By default runs asynchronously and delivers the result to the specified channels. Set wait=true to block until the sub-agent finishes and return its output directly.
+> Spawn a background sub-agent to handle a task. The agent_name selects a preset that configures the sub-agent's instructions, model tier, and tool restrictions. Unknown preset names fail immediately with a list of available presets. Runs asynchronously and delivers the result to the specified channels.
 
 ### Input
 
@@ -608,8 +608,7 @@ The `preview` line is omitted if the task has an empty prompt/command.
 | `task`           | string          | yes      | The prompt/instructions for the sub-agent                            |
 | `agent_name`     | string          | no       | Preset name to use (default: `"general-purpose"`). Must match a known preset or the call fails. `"main"` is reserved for scheduled tasks and will be rejected. |
 | `model_override` | string          | no       | Override the preset's model tier: `"small"`, `"medium"`, `"large"`. If omitted, uses the preset's tier (default: `"medium"`). |
-| `channels`       | array\<string\> | no       | Result delivery channels. If omitted, uses the preset's default channels (fallback: `["agent_feed"]`). Only used in async mode. |
-| `wait`           | boolean         | no       | Block until the sub-agent finishes and return its output (default: `false`) |
+| `channels`       | array\<string\> | no       | Result delivery channels. If omitted, uses the preset's default channels (fallback: `["agent_feed"]`). |
 
 Valid channel names: `agent_wake`, `agent_feed`, `inbox`, or any configured external notification channel.
 
@@ -640,15 +639,9 @@ information. Always cite sources.
 
 ### Output
 
-**Async mode** (`wait: false`, default):
 On success: `"Subagent spawned: {task_id}"`
 
 The sub-agent runs in the background. When it completes, the result is delivered to the specified `channels` via `ResultRouting::Direct`.
-
-**Sync mode** (`wait: true`):
-On success: the sub-agent's final text output.
-
-On error: `"sub-agent failed: {reason}"` (returned as `is_error = true`).
 
 ### Errors
 
@@ -656,11 +649,9 @@ On error: `"sub-agent failed: {reason}"` (returned as `is_error = true`).
 - `agent_name` is `"main"` (reserved, case-insensitive) → `InvalidArguments`
 - Invalid `model_override` value → `InvalidArguments`
 - Unknown `agent_name` (preset not found) → `is_error = true` with available preset list
-- Unknown channel name (async mode only) → `is_error = true` with message
+- Unknown channel name → `is_error = true` with message
 - Provider construction failure → `Execution` error
 
-**Side effects:**
-- Async: registers a background task in the spawner (visible via `list_agents`, cancellable via `stop_agent`). Result delivered through the notification/channel system.
-- Sync: runs a full sub-agent turn inline (not tracked by spawner). Any project activated during the turn is force-deactivated on completion.
+**Side effects:** Registers a background task in the spawner (visible via `list_agents`, cancellable via `stop_agent`). Result delivered through the notification/channel system.
 
 **Not available to sub-agents:** this tool is only registered in the main agent's registry, not in `build_subagent_registry()`.

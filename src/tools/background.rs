@@ -11,7 +11,6 @@ use serde_json::Value;
 
 use crate::background::BackgroundTaskSpawner;
 use crate::background::spawn_context::{SpawnContext, build_spawn_resources};
-use crate::background::subagent::execute_subagent;
 use crate::background::types::{BackgroundTask, Execution, ResultRouting, SubAgentConfig};
 use crate::config::BackgroundModelTier;
 use crate::mcp::SharedMcpRegistry;
@@ -183,7 +182,7 @@ impl SubAgentSpawnTool {
 #[async_trait]
 #[expect(
     clippy::too_many_lines,
-    reason = "execute() handles preset validation, sync/async modes, and resource construction in a single flow"
+    reason = "execute() handles preset validation, channel validation, and resource construction in a single flow"
 )]
 impl Tool for SubAgentSpawnTool {
     fn name(&self) -> &'static str {
@@ -193,7 +192,7 @@ impl Tool for SubAgentSpawnTool {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: "subagent_spawn".to_string(),
-            description: "Spawn a background sub-agent to handle a task. The agent_name selects a preset that configures the sub-agent's instructions, model tier, and tool restrictions. Unknown preset names fail immediately with a list of available presets. By default runs asynchronously and delivers the result to the specified channels. Set wait=true to block until the sub-agent finishes and return its output directly.".to_string(),
+            description: "Spawn a background sub-agent to handle a task. The agent_name selects a preset that configures the sub-agent's instructions, model tier, and tool restrictions. Unknown preset names fail immediately with a list of available presets. Runs asynchronously and delivers the result to the specified channels.".to_string(),
             parameters: serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -213,11 +212,7 @@ impl Tool for SubAgentSpawnTool {
                     "channels": {
                         "type": "array",
                         "items": { "type": "string" },
-                        "description": "Result delivery channels. If omitted, uses the preset's default channels (fallback: [\"agent_feed\"]). Only used in async mode."
-                    },
-                    "wait": {
-                        "type": "boolean",
-                        "description": "If true, block until the sub-agent finishes and return its output (default: false)"
+                        "description": "Result delivery channels. If omitted, uses the preset's default channels (fallback: [\"agent_feed\"])."
                     }
                 },
                 "required": ["task"]
@@ -248,10 +243,6 @@ impl Tool for SubAgentSpawnTool {
                     .to_string(),
             ));
         }
-        let wait = arguments
-            .get("wait")
-            .and_then(Value::as_bool)
-            .unwrap_or(false);
         let explicit_model_override = arguments.get("model_override").and_then(Value::as_str);
         let explicit_channels: Option<Vec<String>> = arguments
             .get("channels")
@@ -275,13 +266,11 @@ impl Tool for SubAgentSpawnTool {
             Err(tool_result) => return Ok(tool_result),
         };
 
-        if !wait {
-            for ch in &resolved.channels {
-                if !is_valid_channel(ch, &self.valid_external_channels) {
-                    return Ok(ToolResult::error(format!(
-                        "unknown channel '{ch}'. Valid: agent_wake, agent_feed, inbox, or configured external channels."
-                    )));
-                }
+        for ch in &resolved.channels {
+            if !is_valid_channel(ch, &self.valid_external_channels) {
+                return Ok(ToolResult::error(format!(
+                    "unknown channel '{ch}'. Valid: agent_wake, agent_feed, inbox, or configured external channels."
+                )));
             }
         }
 
@@ -293,55 +282,33 @@ impl Tool for SubAgentSpawnTool {
         };
         let preset_arg = Some((&resolved.preset_fm, resolved.preset_body.clone()));
 
-        if wait {
-            // Sync mode: run directly, no spawner
-            let resources = build_spawn_resources(
-                &self.spawn_context,
-                &resolved.tier,
-                &self.project_state,
-                &self.skill_state,
-                Arc::clone(&self.mcp_registry),
-                preset_arg,
-            )
+        let resources = build_spawn_resources(
+            &self.spawn_context,
+            &resolved.tier,
+            &self.project_state,
+            &self.skill_state,
+            Arc::clone(&self.mcp_registry),
+            preset_arg,
+        )
+        .await
+        .map_err(|err| {
+            ToolError::Execution(format!("failed to build sub-agent resources: {err}"))
+        })?;
+
+        let task = BackgroundTask {
+            id: task_id.clone(),
+            task_name: resolved.preset_name,
+            source: TaskSource::Agent,
+            execution: Execution::SubAgent(config),
+            routing: ResultRouting::Direct(resolved.channels),
+        };
+
+        self.spawner
+            .spawn(task, Some(resources))
             .await
-            .map_err(|err| {
-                ToolError::Execution(format!("failed to build sub-agent resources: {err}"))
-            })?;
+            .map_err(|err| ToolError::Execution(format!("failed to spawn sub-agent: {err}")))?;
 
-            match execute_subagent(&task_id, &config, &resources).await {
-                Ok(output) => Ok(ToolResult::success(output)),
-                Err(err) => Ok(ToolResult::error(format!("sub-agent failed: {err}"))),
-            }
-        } else {
-            // Async mode: spawn via BackgroundTaskSpawner
-            let resources = build_spawn_resources(
-                &self.spawn_context,
-                &resolved.tier,
-                &self.project_state,
-                &self.skill_state,
-                Arc::clone(&self.mcp_registry),
-                preset_arg,
-            )
-            .await
-            .map_err(|err| {
-                ToolError::Execution(format!("failed to build sub-agent resources: {err}"))
-            })?;
-
-            let task = BackgroundTask {
-                id: task_id.clone(),
-                task_name: resolved.preset_name,
-                source: TaskSource::Agent,
-                execution: Execution::SubAgent(config),
-                routing: ResultRouting::Direct(resolved.channels),
-            };
-
-            self.spawner
-                .spawn(task, Some(resources))
-                .await
-                .map_err(|err| ToolError::Execution(format!("failed to spawn sub-agent: {err}")))?;
-
-            Ok(ToolResult::success(format!("Subagent spawned: {task_id}")))
-        }
+        Ok(ToolResult::success(format!("Subagent spawned: {task_id}")))
     }
 }
 
@@ -412,18 +379,14 @@ mod tests {
     use std::path::PathBuf;
 
     use super::*;
-    use crate::background::subagent::SubAgentResources;
     use crate::mcp::McpRegistry;
-    use crate::models::{CompletionOptions, Message, ModelError, ModelProvider, ModelResponse};
+    use crate::models::CompletionOptions;
     use crate::projects::activation::ProjectState;
     use crate::projects::scanner::ProjectIndex;
     use crate::skills::{SkillIndex, SkillState};
-    use crate::tools::path_policy::PathPolicy;
-    use crate::tools::{ToolFilter, ToolRegistry};
     use crate::workspace::identity::IdentityFiles;
     use crate::workspace::layout::WorkspaceLayout;
 
-    use async_trait::async_trait;
     use tokio::sync::mpsc;
 
     fn make_test_spawn_context() -> Arc<SpawnContext> {
@@ -449,53 +412,6 @@ mod tests {
             layout: WorkspaceLayout::new(PathBuf::from("/tmp")),
             tz: chrono_tz::UTC,
         })
-    }
-
-    struct MockSpawnProvider {
-        response: String,
-    }
-
-    #[async_trait]
-    impl ModelProvider for MockSpawnProvider {
-        async fn complete(
-            &self,
-            _messages: &[Message],
-            _tools: &[ToolDefinition],
-            _options: &CompletionOptions,
-        ) -> Result<ModelResponse, ModelError> {
-            Ok(ModelResponse::new(self.response.clone(), vec![]))
-        }
-
-        fn model_name(&self) -> &'static str {
-            "mock-spawn"
-        }
-    }
-
-    fn make_test_resources(response: &str) -> SubAgentResources {
-        let project_state = ProjectState::new_shared(
-            ProjectIndex::default(),
-            WorkspaceLayout::new(PathBuf::from("/tmp")),
-        );
-        let skill_state = SkillState::new_shared(SkillIndex::default(), vec![]);
-        let path_policy = PathPolicy::new_shared(PathBuf::from("/tmp"));
-        let tool_filter = ToolFilter::new_shared(HashSet::new());
-        let mcp_registry = McpRegistry::new_shared();
-        SubAgentResources {
-            provider: Box::new(MockSpawnProvider {
-                response: response.to_string(),
-            }),
-            tools: ToolRegistry::new(),
-            tool_filter,
-            mcp_registry,
-            project_state,
-            skill_state,
-            path_policy,
-            identity: IdentityFiles::default(),
-            options: CompletionOptions::default(),
-            projects_ctx_index: None,
-            skills_index: None,
-            preset_instructions: None,
-        }
     }
 
     fn make_spawner() -> (
@@ -555,21 +471,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn spawn_sync_returns_output() {
-        let resources = make_test_resources("analysis complete");
-        let config = SubAgentConfig {
-            prompt: "analyze logs".to_string(),
-            context: None,
-            model_tier: BackgroundModelTier::Medium,
-        };
-
-        let result = execute_subagent("test-sync-1", &config, &resources)
-            .await
-            .unwrap();
-        assert_eq!(result.summary, "analysis complete");
-    }
-
-    #[tokio::test]
     async fn invalid_channel_rejected() {
         let (spawner, _rx) = make_spawner();
         let project_state = ProjectState::new_shared(
@@ -598,59 +499,6 @@ mod tests {
 
         assert!(result.is_error, "should reject unknown channel");
         assert!(result.output.contains("unknown channel"));
-    }
-
-    #[tokio::test]
-    async fn channels_ignored_in_sync_mode() {
-        // In sync/wait mode, invalid channels should not cause errors
-        let (spawner, _rx) = make_spawner();
-        let project_state = ProjectState::new_shared(
-            ProjectIndex::default(),
-            WorkspaceLayout::new(PathBuf::from("/tmp")),
-        );
-        let skill_state = SkillState::new_shared(SkillIndex::default(), vec![]);
-        let mcp_registry = McpRegistry::new_shared();
-
-        let tool = SubAgentSpawnTool::new(
-            spawner,
-            make_test_spawn_context(),
-            project_state,
-            skill_state,
-            mcp_registry,
-            HashSet::new(),
-        );
-
-        // This would fail in async mode (invalid channel), but sync mode skips validation
-        // NOTE: this test will fail with a provider error since we can't construct a real
-        // provider from a default ProviderSpec, but the important thing is it does NOT fail
-        // with a channel validation error
-        let result = tool
-            .execute(serde_json::json!({
-                "task": "do something",
-                "channels": ["nonexistent_channel"],
-                "wait": true
-            }))
-            .await;
-
-        // The error should NOT be about channel validation
-        match result {
-            Ok(res) => {
-                // If it's an error it should be about provider, not channels
-                if res.is_error {
-                    assert!(
-                        !res.output.contains("unknown channel"),
-                        "sync mode should not validate channels"
-                    );
-                }
-            }
-            Err(err) => {
-                let msg = err.to_string();
-                assert!(
-                    !msg.contains("unknown channel"),
-                    "sync mode should not validate channels"
-                );
-            }
-        }
     }
 
     #[tokio::test]
