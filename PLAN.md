@@ -2,29 +2,6 @@
 
 Two AI developers (A and B) working simultaneously. Dev A works directly on `main`. Dev B works in the `worktree-backlog` worktree (`.claude/worktrees/backlog/`). Between sprints, the coordinator merges Dev B's branch into `main`, runs tests, and resets the worktree to the updated main.
 
-## Workflow
-
-```
-# Dev A (session on main):
-"You are Dev A. Read BACKLOG.md and PLAN.md. Complete your Sprint N items.
- Commit each item separately. Do not push."
-
-# Dev B (session in .claude/worktrees/backlog/):
-"You are Dev B. Read BACKLOG.md and PLAN.md. Complete your Sprint N items.
- Commit each item separately. Do not push."
-
-# After both finish (from the main repo root):
-git checkout main
-git merge worktree-backlog
-cargo test --quiet
-git push
-
-# Reset worktree for next sprint (from .claude/worktrees/backlog/):
-git reset --hard main
-```
-
----
-
 ## Sprint 1 — Immediate (no dependencies)
 
 All items touch completely disjoint files. Both devs start at the same time.
