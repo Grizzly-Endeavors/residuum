@@ -8,6 +8,7 @@ use super::provider::ProviderKind;
 use crate::error::IronclawError;
 
 /// Answers collected from the setup wizard (interactive or flags).
+#[derive(Debug)]
 pub struct WizardAnswers {
     /// IANA timezone (e.g. `"America/New_York"`).
     pub timezone: String,
@@ -117,8 +118,8 @@ pub fn from_flags(
         .ok_or_else(|| IronclawError::Config("--timezone is required in non-interactive mode".to_string()))?;
 
     // Validate timezone
-    chrono_tz::Tz::from_str(timezone).map_err(|_| {
-        IronclawError::Config(format!("invalid timezone '{timezone}'"))
+    chrono_tz::Tz::from_str(timezone).map_err(|err| {
+        IronclawError::Config(format!("invalid timezone '{timezone}': {err}"))
     })?;
 
     let provider_str = provider
@@ -157,7 +158,7 @@ pub fn write_config(dir: &Path, answers: &WizardAnswers) -> Result<(), IronclawE
         lines.push(String::new());
         lines.push(format!("[providers.{}]", answers.provider));
         lines.push(format!("type = \"{}\"", answers.provider));
-        lines.push(format!("api_key = \"{}\"", key));
+        lines.push(format!("api_key = \"{key}\""));
     }
 
     lines.push(String::new());
@@ -246,13 +247,19 @@ mod tests {
     }
 
     #[test]
-    fn from_flags_default_model() {
+    fn from_flags_default_model_ollama() {
         let answers = from_flags(Some("UTC"), Some("ollama"), None, None).unwrap();
         assert_eq!(answers.model, "llama3", "ollama should default to llama3");
+    }
 
+    #[test]
+    fn from_flags_default_model_openai() {
         let answers = from_flags(Some("UTC"), Some("openai"), None, None).unwrap();
         assert_eq!(answers.model, "gpt-4o", "openai should default to gpt-4o");
+    }
 
+    #[test]
+    fn from_flags_default_model_gemini() {
         let answers = from_flags(Some("UTC"), Some("gemini"), None, None).unwrap();
         assert_eq!(
             answers.model, "gemini-2.0-flash",
