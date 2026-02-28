@@ -1,14 +1,18 @@
-- Nothing the LLM or user (via an external channel) does should be able to disrupt/break/otherwise disable the gateway in any way shape or form.
-- Disallow the LLM from editing the main config files under any circumstance.
-- `/inbox` command for sending a message or file directly to the agent's inbox without triggering a new agent turn.
-- `send_file` tool for the agent to send attachments to the user.
+- CLI onboarding improvements, logs make running `ironclaw serve` look bad, save to a debug log on disk, potentially add an `ironclaw logs` to view, -w/watch flag for stream. Add a welcome message for first launch with a clickable http: link (currently just shows ip:port, ctrl-c shuts down gateway so trying to copy is bad UX).
+- CLI-based config/onboarding wizard for headless environments. Both interactive (for users) and non-interactive (for coding agents)
+- Disallow the LLM from editing the main config files under any circumstance. Enforce at gateway.
+- Improve secret handling so keys are not exposed in a plain file.
+- Unified slash command interface for integrating web/discord/other channel support. Including proper error message handling.
+- Improve clarity and interface for sending items to the agent's inbox and supporting external channels.
+- `/inbox` command for sending a message or file directly to the agent's inbox without triggering a new agent turn. (implemented for cli/ws not discord)
+- Stronger differentiation between internal channels (agent_wake, agent_feed, inbox), and external (outbound webhook, ntfy, http endpoints)
+- `send_message` tool for the agent to send a message to one of the configured channels in NOTIFY.yml, including file attachments if the channel supports it.
 - HTTP/SSE transport support for MCP servers.
 - Add a trigger count option for heartbeat pulses that can be provided in place of interval. It would schedule a number of triggers equal to the count across the active period. Triggers would be roughly evenly spaced throughout the active period, with added randomization to make the triggers feel less rigid.
 - Persist pulse `last_run` timestamps to disk (e.g. `pulse_state.json`). Currently in-memory only — every pulse fires on gateway restart and every new pulse fires immediately on creation. Timestamps should survive restarts so pulses resume their schedule.
 - Vestigial script execution code in `src/background/` (script.rs, ScriptConfig, Execution::Script) should be removed. Scripts are handled by the agent via write_file/exec.
 - `memory_search` source filter values in code (`"observation"`, `"chunk"`) don't match design doc (`"observations"`, `"episodes"`, `"both"`). Fix code to match design doc.
 - Sub-agent context should include active skills (currently excluded).
-- ~~Remove `docs/plugin-system-design.md` (plugin system abandoned).~~ DONE
 - Remove `hooks/` directory from workspace layout and bootstrap (artifact, never used).
 - Background task transcripts only capture the final text response, not the full turn. `execute_subagent` returns `texts.last()` and `write_transcript` writes that single string. The full conversation (tool calls, tool results, intermediate messages) accumulates in `RecentMessages` during the turn but is dropped without serialization. Fix: serialize `recent_messages` to the transcript file instead of (or in addition to) the summary.
 - Add `tracing::warn!` when a notification routes to zero channels (pulse name not in any NOTIFY.yml entry). Currently silent — result is discarded with no log line.

@@ -99,6 +99,9 @@ async fn run() -> Result<(), IronclawError> {
                 return Ok(());
             }
 
+            let config_dir = Config::config_dir()?;
+            let mut is_first_boot = true;
+
             loop {
                 Config::bootstrap_config_dir()?;
                 match Config::load() {
@@ -109,14 +112,82 @@ async fn run() -> Result<(), IronclawError> {
                             workspace = %cfg.workspace_dir.display(),
                             "configuration loaded"
                         );
-                        match Box::pin(ironclaw::gateway::server::run_gateway(cfg)).await? {
-                            ironclaw::gateway::server::GatewayExit::Shutdown => break,
-                            ironclaw::gateway::server::GatewayExit::Reload => {
+                        let bind_addr = Some(cfg.gateway.addr());
+                        match Box::pin(ironclaw::gateway::server::run_gateway(cfg)).await {
+                            Ok(ironclaw::gateway::server::GatewayExit::Shutdown) => break,
+                            Ok(ironclaw::gateway::server::GatewayExit::Reload) => {
                                 tracing::info!("configuration reloaded, restarting gateway");
+                                is_first_boot = false;
+                                backup_config(&config_dir);
+                            }
+                            Err(err) if is_first_boot => return Err(err),
+                            Err(err) => {
+                                // Reload failed — try rolling back config
+                                tracing::warn!(error = %err, "gateway initialization failed after reload");
+                                if rollback_config(&config_dir) {
+                                    match Config::load() {
+                                        Ok(_) => {
+                                            eprintln!("warning: reload failed, rolled back to previous config: {err}");
+                                            tracing::warn!("rolled back to previous config, retrying");
+                                            continue;
+                                        }
+                                        Err(rollback_err) => {
+                                            tracing::warn!(error = %rollback_err, "rollback config also failed to load");
+                                        }
+                                    }
+                                }
+                                // Rollback failed or rolled-back config also broke — degraded mode
+                                let error_msg = format!(
+                                    "gateway entered degraded mode: {err}\n\n\
+                                     To fix this:\n\
+                                     1. Open the config editor at http://127.0.0.1:7700/ and correct the issue\n\
+                                     2. Or edit ~/.ironclaw/config.toml directly\n\
+                                     3. Then run /reload to retry"
+                                );
+                                match ironclaw::gateway::server::degraded::run_degraded_gateway(
+                                    error_msg,
+                                    config_dir.clone(),
+                                    bind_addr,
+                                ).await {
+                                    ironclaw::gateway::server::GatewayExit::Reload => {
+                                        tracing::info!("degraded mode: reload requested, retrying full initialization");
+                                        continue;
+                                    }
+                                    ironclaw::gateway::server::GatewayExit::Shutdown => break,
+                                }
                             }
                         }
                     }
+                    Err(err) if !is_first_boot => {
+                        // Config parse failed on reload — try rollback
+                        tracing::warn!(error = %err, "config invalid after reload");
+                        if rollback_config(&config_dir) {
+                            eprintln!("warning: config invalid after reload, rolled back to previous config: {err}");
+                            tracing::warn!("rolled back to previous config, retrying");
+                            continue;
+                        }
+                        // Rollback failed — degraded mode
+                        let error_msg = format!(
+                            "gateway entered degraded mode: config error: {err}\n\n\
+                             To fix this:\n\
+                             1. Open the config editor at http://127.0.0.1:7700/ and correct the issue\n\
+                             2. Or edit ~/.ironclaw/config.toml directly\n\
+                             3. Then run /reload to retry"
+                        );
+                        match ironclaw::gateway::server::degraded::run_degraded_gateway(
+                            error_msg,
+                            config_dir.clone(),
+                            None,
+                        ).await {
+                            ironclaw::gateway::server::GatewayExit::Reload => {
+                                tracing::info!("degraded mode: reload requested, retrying full initialization");
+                                continue;
+                            }
+                            ironclaw::gateway::server::GatewayExit::Shutdown => break,
+                        }
+                    }
                     Err(err) => {
+                        // First boot — setup wizard (existing behavior)
                         tracing::warn!(error = %err, "config invalid, starting setup wizard");
                         match Box::pin(ironclaw::gateway::server::setup::run_setup_server()).await?
                         {
@@ -298,6 +369,41 @@ async fn run_connect(url: &str, verbose: bool) -> Result<(), IronclawError> {
     }
 
     Ok(())
+}
+
+/// Back up `config.toml` → `config.toml.bak` before a reload attempt.
+///
+/// Best-effort: logs a warning on failure but never panics.
+fn backup_config(config_dir: &std::path::Path) {
+    let src = config_dir.join("config.toml");
+    let dst = config_dir.join("config.toml.bak");
+    if let Err(err) = std::fs::copy(&src, &dst) {
+        tracing::warn!(error = %err, "failed to back up config.toml before reload");
+    } else {
+        tracing::debug!("config.toml backed up to config.toml.bak");
+    }
+}
+
+/// Restore `config.toml.bak` → `config.toml` after a failed reload.
+///
+/// Returns `true` if the rollback succeeded.
+fn rollback_config(config_dir: &std::path::Path) -> bool {
+    let backup = config_dir.join("config.toml.bak");
+    let target = config_dir.join("config.toml");
+    if !backup.exists() {
+        tracing::warn!("no config backup found, cannot rollback");
+        return false;
+    }
+    match std::fs::copy(&backup, &target) {
+        Ok(_) => {
+            tracing::info!("config.toml restored from backup");
+            true
+        }
+        Err(err) => {
+            tracing::warn!(error = %err, "failed to restore config.toml from backup");
+            false
+        }
+    }
 }
 
 /// Serialize and send a `ClientMessage` over the WebSocket.

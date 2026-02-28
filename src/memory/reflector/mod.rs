@@ -49,6 +49,21 @@ impl Reflector {
         Self { provider, config }
     }
 
+    /// Create a disabled reflector that never triggers.
+    ///
+    /// Uses a `NullProvider` and `usize::MAX` threshold so reflection
+    /// never fires. Used when memory subsystem initialization fails.
+    #[must_use]
+    pub fn disabled(tz: Tz) -> Self {
+        Self {
+            provider: Box::new(crate::models::null::NullProvider),
+            config: ReflectorConfig {
+                threshold_tokens: usize::MAX,
+                tz,
+            },
+        }
+    }
+
     /// Check whether the observation log exceeds the reflection threshold.
     #[must_use]
     pub fn should_reflect(&self, log: &ObservationLog) -> bool {

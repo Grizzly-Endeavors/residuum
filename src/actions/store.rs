@@ -100,8 +100,8 @@ impl ActionStore {
 
     /// Create an in-memory store backed by the given path (not yet saved).
     ///
-    /// Useful for tests where a live file is not needed.
-    #[cfg(test)]
+    /// Used as a fallback when the actions file cannot be loaded, and in tests.
+    #[must_use]
     pub fn new_empty(path: impl Into<PathBuf>) -> Self {
         Self {
             actions: Vec::new(),

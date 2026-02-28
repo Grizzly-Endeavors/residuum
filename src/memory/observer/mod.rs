@@ -92,6 +92,23 @@ impl Observer {
         Self { provider, config }
     }
 
+    /// Create a disabled observer that never triggers.
+    ///
+    /// Uses a `NullProvider` and `usize::MAX` thresholds so observation
+    /// never fires. Used when memory subsystem initialization fails.
+    #[must_use]
+    pub fn disabled(tz: Tz) -> Self {
+        Self {
+            provider: Box::new(crate::models::null::NullProvider),
+            config: ObserverConfig {
+                threshold_tokens: usize::MAX,
+                cooldown_secs: u64::MAX,
+                force_threshold_tokens: usize::MAX,
+                tz,
+            },
+        }
+    }
+
     /// The configured cooldown period in seconds.
     #[must_use]
     pub fn cooldown_secs(&self) -> u64 {

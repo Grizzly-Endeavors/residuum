@@ -10,6 +10,7 @@ mod memory;
 pub mod setup;
 mod spawn_helpers;
 mod startup;
+pub mod degraded;
 pub(crate) mod web;
 mod ws;
 

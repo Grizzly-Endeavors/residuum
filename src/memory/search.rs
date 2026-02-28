@@ -155,6 +155,49 @@ impl MemoryIndex {
         })
     }
 
+    /// Create an empty in-RAM search index (no disk directory).
+    ///
+    /// Used as a fallback when the on-disk index cannot be created or
+    /// opened during degraded startup.
+    ///
+    /// # Errors
+    /// Returns an error if the in-memory index cannot be created.
+    pub fn empty() -> Result<Self, IronclawError> {
+        let mut builder = Schema::builder();
+        let id_field = builder.add_text_field("id", STRING | STORED);
+        let source_type_field = builder.add_text_field("source_type", STRING | STORED);
+        let episode_id_field = builder.add_text_field("episode_id", STRING | STORED);
+        let date_field = builder.add_text_field("date", STRING | STORED);
+        let ctx_field = builder.add_text_field("context", STRING | STORED);
+        let content_field = builder.add_text_field("content", TEXT | STORED);
+        let line_start_field = builder.add_text_field("line_start", STRING | STORED);
+        let line_end_field = builder.add_text_field("line_end", STRING | STORED);
+        let schema = builder.build();
+
+        let index = Index::create_in_ram(schema);
+
+        let reader: IndexReader = index
+            .reader_builder()
+            .reload_policy(ReloadPolicy::OnCommitWithDelay)
+            .try_into()
+            .map_err(|e| {
+                IronclawError::Memory(format!("failed to create in-ram index reader: {e}"))
+            })?;
+
+        Ok(Self {
+            index,
+            reader,
+            id_field,
+            source_type_field,
+            episode_id_field,
+            date_field,
+            ctx_field,
+            content_field,
+            line_start_field,
+            line_end_field,
+        })
+    }
+
     /// Index observations from an episode.
     ///
     /// Returns the list of document IDs that were indexed.

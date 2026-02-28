@@ -7,6 +7,7 @@ pub(crate) mod gemini;
 mod http;
 pub(crate) mod ollama;
 pub(crate) mod openai;
+pub(crate) mod null;
 pub(crate) mod retry;
 
 pub(crate) use embedding::build_embedding_provider;

@@ -100,6 +100,11 @@ pub enum ServerMessage {
         /// Human-readable result message.
         message: String,
     },
+    /// The gateway is running in degraded mode due to a reload failure.
+    DegradedMode {
+        /// Human-readable explanation of what went wrong and how to fix it.
+        message: String,
+    },
 }
 
 #[cfg(test)]
@@ -309,6 +314,22 @@ mod tests {
         assert!(
             json.contains("\"body\":\"hello world\""),
             "should have body field"
+        );
+    }
+
+    #[test]
+    fn server_message_serialize_degraded_mode() {
+        let msg = ServerMessage::DegradedMode {
+            message: "config error: missing API key".to_string(),
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(
+            json.contains("\"type\":\"degraded_mode\""),
+            "should have type tag"
+        );
+        assert!(
+            json.contains("\"message\":\"config error: missing API key\""),
+            "should have message field"
         );
     }
 

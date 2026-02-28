@@ -106,22 +106,43 @@ pub(super) async fn initialize(cfg: &Config) -> Result<GatewayComponents, Ironcl
     )?;
     tracing::info!(model = provider.model_name(), "model provider ready");
 
-    let (observer, reflector) = build_memory_components(cfg, tz, http.clone())?;
-    let embedding_provider: Option<Arc<dyn EmbeddingProvider>> = cfg
+    let (observer, reflector) = match build_memory_components(cfg, tz, http.clone()) {
+        Ok(pair) => pair,
+        Err(err) => {
+            eprintln!("warning: memory subsystem failed to initialize, running without observer/reflector: {err}");
+            tracing::warn!(error = %err, "memory subsystem degraded: observer and reflector disabled");
+            (Observer::disabled(tz), Reflector::disabled(tz))
+        }
+    };
+    let embedding_provider: Option<Arc<dyn EmbeddingProvider>> = match cfg
         .embedding
         .as_ref()
         .map(|spec| build_embedding_provider(spec, http.clone(), cfg.retry.clone()))
-        .transpose()?
-        .map(Arc::from);
-    if let Some(ref ep) = embedding_provider {
-        tracing::info!(model = ep.model_name(), "embedding provider ready");
-    }
+        .transpose()
+    {
+        Ok(ep) => {
+            if let Some(ref e) = ep {
+                tracing::info!(model = e.model_name(), "embedding provider ready");
+            }
+            ep.map(Arc::from)
+        }
+        Err(err) => {
+            eprintln!("warning: embedding provider failed to initialize: {err}");
+            tracing::warn!(error = %err, "embedding provider degraded");
+            None
+        }
+    };
 
     // Search index — schema migration + incremental sync
     let manifest_path = layout.index_manifest_json();
-    let manifest = IndexManifest::load(&manifest_path)
-        .await
-        .map_err(|e| IronclawError::Memory(format!("failed to load index manifest: {e}")))?;
+    let manifest = match IndexManifest::load(&manifest_path).await {
+        Ok(m) => m,
+        Err(err) => {
+            eprintln!("warning: failed to load index manifest, starting fresh: {err}");
+            tracing::warn!(error = %err, "index manifest degraded: starting with empty manifest");
+            IndexManifest::default()
+        }
+    };
 
     // If no manifest exists but old index dir does, clear it (schema migration)
     if manifest.files.is_empty()
@@ -131,7 +152,14 @@ pub(super) async fn initialize(cfg: &Config) -> Result<GatewayComponents, Ironcl
         tracing::warn!(error = %migration_err, "failed to clear old search index for schema migration");
     }
 
-    let search_index = create_shared_index(&layout.search_index_dir())?;
+    let search_index = match create_shared_index(&layout.search_index_dir()) {
+        Ok(idx) => idx,
+        Err(err) => {
+            eprintln!("warning: failed to create on-disk search index, using in-memory fallback: {err}");
+            tracing::warn!(error = %err, "search index degraded: using empty in-memory index");
+            Arc::new(MemoryIndex::empty()?)
+        }
+    };
 
     if manifest.files.is_empty() {
         // Full rebuild
@@ -267,18 +295,38 @@ pub(super) async fn initialize(cfg: &Config) -> Result<GatewayComponents, Ironcl
     ));
 
     // Scheduled actions store
-    let action_store = Arc::new(tokio::sync::Mutex::new(
-        ActionStore::load(layout.scheduled_actions_json()).await?,
-    ));
+    let actions_path = layout.scheduled_actions_json();
+    let action_store = match ActionStore::load(&actions_path).await {
+        Ok(store) => Arc::new(tokio::sync::Mutex::new(store)),
+        Err(err) => {
+            eprintln!("warning: failed to load scheduled actions, starting with empty store: {err}");
+            tracing::warn!(error = %err, "action store degraded: starting empty");
+            Arc::new(tokio::sync::Mutex::new(ActionStore::new_empty(actions_path)))
+        }
+    };
     let action_notify = Arc::new(tokio::sync::Notify::new());
 
     // Project + skill state
-    let project_index = ProjectIndex::scan(&layout).await?;
+    let project_index = match ProjectIndex::scan(&layout).await {
+        Ok(idx) => idx,
+        Err(err) => {
+            eprintln!("warning: failed to scan projects, starting with empty index: {err}");
+            tracing::warn!(error = %err, "project index degraded: starting empty");
+            ProjectIndex::default()
+        }
+    };
     let project_state: SharedProjectState = Arc::new(tokio::sync::Mutex::new(ProjectState::new(
         project_index,
         layout.clone(),
     )));
-    let skill_index = SkillIndex::scan(&cfg.skills.dirs, None).await?;
+    let skill_index = match SkillIndex::scan(&cfg.skills.dirs, None).await {
+        Ok(idx) => idx,
+        Err(err) => {
+            eprintln!("warning: failed to scan skills, starting with empty index: {err}");
+            tracing::warn!(error = %err, "skill index degraded: starting empty");
+            SkillIndex::default()
+        }
+    };
     let skill_state: SharedSkillState =
         SkillState::new_shared(skill_index, cfg.skills.dirs.clone());
 
@@ -375,18 +423,31 @@ pub(super) async fn initialize(cfg: &Config) -> Result<GatewayComponents, Ironcl
         tz,
         layout.inbox_dir(),
     );
-    agent.reload_observations(&layout).await?;
-    agent.reload_recent_context(&layout).await?;
-
-    let restore = load_messages_for_agent(&layout.recent_messages_json()).await?;
-    if !restore.messages.is_empty() {
-        tracing::info!(
-            count = restore.messages.len(),
-            "restoring recent messages from previous run"
-        );
-        agent.restore_messages(restore.messages);
+    if let Err(err) = agent.reload_observations(&layout).await {
+        eprintln!("warning: failed to load observations, continuing without observation context: {err}");
+        tracing::warn!(error = %err, "observation loading degraded");
     }
-    agent.set_last_user_message_at(restore.last_user_message_at);
+    if let Err(err) = agent.reload_recent_context(&layout).await {
+        eprintln!("warning: failed to load recent context, continuing without recent context: {err}");
+        tracing::warn!(error = %err, "recent context loading degraded");
+    }
+
+    match load_messages_for_agent(&layout.recent_messages_json()).await {
+        Ok(restore) => {
+            if !restore.messages.is_empty() {
+                tracing::info!(
+                    count = restore.messages.len(),
+                    "restoring recent messages from previous run"
+                );
+                agent.restore_messages(restore.messages);
+            }
+            agent.set_last_user_message_at(restore.last_user_message_at);
+        }
+        Err(err) => {
+            eprintln!("warning: failed to load recent messages, starting with empty history: {err}");
+            tracing::warn!(error = %err, "message restore degraded: starting with empty history");
+        }
+    }
 
     // Notification router
     let notification_router = build_notification_router(cfg, &layout);
