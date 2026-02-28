@@ -79,6 +79,8 @@ pub struct Config {
     pub notifications: NotificationsConfig,
     /// Background task configuration.
     pub background: BackgroundConfig,
+    /// Directory this config was loaded from.
+    pub config_dir: PathBuf,
 }
 
 impl fmt::Debug for Config {
@@ -104,6 +106,7 @@ impl fmt::Debug for Config {
             .field("retry", &self.retry)
             .field("notifications", &self.notifications)
             .field("background", &self.background)
+            .field("config_dir", &self.config_dir)
             .finish()
     }
 }
@@ -149,7 +152,9 @@ impl Config {
     /// read or parsed, or if required values are missing.
     pub fn load() -> Result<Self, IronclawError> {
         let config_dir = bootstrap::default_config_dir()?;
-        Self::load_at(&config_dir)
+        let mut cfg = Self::load_at(&config_dir)?;
+        cfg.config_dir = config_dir;
+        Ok(cfg)
     }
 
     /// Load configuration from a specific directory.
@@ -182,7 +187,9 @@ impl Config {
             None
         };
 
-        resolve::from_file_and_env(file_config.as_ref())
+        let mut cfg = resolve::from_file_and_env(file_config.as_ref())?;
+        cfg.config_dir = config_dir.to_path_buf();
+        Ok(cfg)
     }
 
     /// Validate a TOML string as a config file without saving it.

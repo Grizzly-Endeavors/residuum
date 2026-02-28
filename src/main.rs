@@ -18,6 +18,10 @@ async fn main() {
     }
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "sequential setup/serve/connect dispatch with reload loop; splitting would obscure the flow"
+)]
 async fn run() -> Result<(), IronclawError> {
     // Init tracing
     tracing_subscriber::fmt()
@@ -77,7 +81,8 @@ async fn run() -> Result<(), IronclawError> {
 
                 // Load the config written by the wizard and run the gateway
                 loop {
-                    let cfg = Config::load_at(&tmp_dir)?;
+                    let mut cfg = Config::load_at(&tmp_dir)?;
+                    cfg.workspace_dir = tmp_dir.join("workspace");
                     tracing::info!(
                         model = %cfg.main.model,
                         provider_url = %cfg.main.provider_url,

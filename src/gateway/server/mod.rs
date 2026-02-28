@@ -208,7 +208,7 @@ pub async fn run_gateway(cfg: Config) -> Result<GatewayExit, IronclawError> {
     }
     app = app
         .merge(web::config_api_router(web::ConfigApiState {
-            config_dir: crate::config::Config::config_dir()?,
+            config_dir: cfg.config_dir.clone(),
             memory_dir: Some(parts.layout.memory_dir()),
             reload_sender: Some(web_reload_sender),
             setup_done: None,

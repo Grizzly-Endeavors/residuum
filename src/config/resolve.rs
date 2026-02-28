@@ -198,6 +198,7 @@ pub(super) fn from_file_and_env(file: Option<&ConfigFile>) -> Result<Config, Iro
         retry,
         notifications,
         background,
+        config_dir: PathBuf::new(),
     })
 }
 
