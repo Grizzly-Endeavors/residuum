@@ -1184,6 +1184,89 @@ html, body {
     color: var(--text-muted);
 }
 
+.provider-check {
+    width: 20px;
+    height: 20px;
+    border-radius: var(--radius-sm);
+    border: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 13px;
+    color: var(--ember);
+    flex-shrink: 0;
+    transition: all 0.15s;
+}
+
+.provider-option.selected .provider-check {
+    background: var(--ember-glow);
+    border-color: var(--ember);
+}
+
+/* ── Provider config sections (setup wizard) ─────────────────────────── */
+
+#provider-configs {
+    margin-top: 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+}
+
+.provider-config-section {
+    padding: 14px;
+    background: var(--bg-deep);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-sm);
+}
+
+.provider-config-header {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text);
+    margin-bottom: 10px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+}
+
+.provider-main-label {
+    font-size: 11px !important;
+    font-weight: 500 !important;
+    color: var(--text-muted) !important;
+    display: flex !important;
+    align-items: center !important;
+    gap: 5px !important;
+    margin-bottom: 0 !important;
+    cursor: pointer;
+}
+
+.provider-main-label input[type="radio"] {
+    width: auto;
+    accent-color: var(--ember);
+}
+
+/* ── Embedding warning ────────────────────────────────────────────────── */
+
+.provider-warning {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    padding: 10px 12px;
+    margin-top: 12px;
+    font-size: 12px;
+    line-height: 1.5;
+    color: var(--ember-bright);
+    background: rgba(232, 100, 32, 0.06);
+    border: 1px solid rgba(232, 100, 32, 0.2);
+    border-radius: var(--radius-sm);
+}
+
+.provider-warning-icon {
+    font-size: 15px;
+    flex-shrink: 0;
+    line-height: 1.3;
+}
+
 /* ── MCP catalog items ─────────────────────────────────────────────────── */
 
 .mcp-item {

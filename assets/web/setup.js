@@ -9,10 +9,20 @@ const Setup = {
 
     // Collected state
     timezone: '',
-    providerType: 'anthropic',
-    apiKey: '',
-    model: '',
-    providerUrl: '',
+    // Multi-provider: track which providers are selected and their per-provider config
+    selectedProviders: ['anthropic'],  // list of selected provider keys
+    providerConfigs: {
+        anthropic: { apiKey: '', model: '', url: '' },
+        openai: { apiKey: '', model: '', url: '' },
+        gemini: { apiKey: '', model: '', url: '' },
+        ollama: { apiKey: '', model: '', url: '' }
+    },
+    mainProvider: 'anthropic',  // which selected provider is the "main" one
+    // Legacy compat — keep providerType/apiKey/model as derived getters
+    get providerType() { return this.mainProvider; },
+    get apiKey() { return this.providerConfigs[this.mainProvider]?.apiKey || ''; },
+    get model() { return this.providerConfigs[this.mainProvider]?.model || ''; },
+    get providerUrl() { return this.providerConfigs[this.mainProvider]?.url || ''; },
     useDefaultRoles: true,
     // Per-role state: { provider, apiKey, url, model }
     roles: {
@@ -20,6 +30,9 @@ const Setup = {
         reflector: { provider: '', apiKey: '', url: '', model: '' },
         pulse: { provider: '', apiKey: '', url: '', model: '' }
     },
+
+    // Providers that support embedding models
+    embeddingProviders: ['openai', 'gemini', 'ollama'],
     mcpServers: [],  // [{name, command, args, env}]
     catalog: [],
 
@@ -95,41 +108,78 @@ const Setup = {
         `;
     },
 
-    // ── Step 1: Provider ──────────────────────────────────────────────
+    // ── Step 1: Providers ─────────────────────────────────────────────
 
     renderProvider() {
-        const options = Object.entries(this.providers).map(([key, p]) => `
-            <div class="provider-option ${this.providerType === key ? 'selected' : ''}" data-provider="${key}">
+        const options = Object.entries(this.providers).map(([key, p]) => {
+            const isSelected = this.selectedProviders.includes(key);
+            return `
+            <div class="provider-option ${isSelected ? 'selected' : ''}" data-provider="${key}">
+                <div class="provider-check">${isSelected ? '&#10003;' : ''}</div>
                 <div>
                     <div class="provider-name">${p.name}</div>
                     <div class="provider-desc">${p.desc}</div>
                 </div>
             </div>
-        `).join('');
+            `;
+        }).join('');
 
-        const p = this.providers[this.providerType];
-        const keyField = this.providerType !== 'ollama' ? `
-            <div class="settings-field">
-                <label>API Key${p.keyEnv ? ` (or set ${p.keyEnv} env var)` : ''}</label>
-                <input type="password" id="setup-apikey" value="${esc(this.apiKey)}"
-                    placeholder="sk-...">
-                <div class="model-error" id="setup-key-error" style="display:none"></div>
+        // Build per-provider config sections for each selected provider
+        const configSections = this.selectedProviders.map(key => {
+            const p = this.providers[key];
+            const cfg = this.providerConfigs[key];
+            const isMain = key === this.mainProvider;
+
+            const keyField = key !== 'ollama' ? `
+                <div class="settings-field">
+                    <label>API Key${p.keyEnv ? ` (or set ${p.keyEnv} env var)` : ''}</label>
+                    <input type="password" class="provider-apikey" data-provider="${key}"
+                        value="${esc(cfg.apiKey)}" placeholder="sk-...">
+                    <div class="model-error" data-provider-error="${key}" style="display:none"></div>
+                </div>
+            ` : '';
+
+            const mainRadio = this.selectedProviders.length > 1 ? `
+                <label class="provider-main-label">
+                    <input type="radio" name="main-provider" value="${key}" ${isMain ? 'checked' : ''}>
+                    Use as main provider
+                </label>
+            ` : '';
+
+            return `
+                <div class="provider-config-section" data-provider="${key}">
+                    <div class="provider-config-header">${p.name}${mainRadio}</div>
+                    ${keyField}
+                    <div class="settings-field">
+                        <label>Model</label>
+                        <div class="model-select-wrap" data-provider-model-wrap="${key}">
+                            <select class="provider-model-select" data-provider="${key}">
+                                <option value="">Select a model...</option>
+                            </select>
+                        </div>
+                    </div>
+                </div>
+            `;
+        }).join('');
+
+        // Embedding warning: check if any selected provider supports embeddings
+        const hasEmbeddingProvider = this.selectedProviders.some(
+            p => this.embeddingProviders.includes(p)
+        );
+        const embeddingWarning = !hasEmbeddingProvider && this.selectedProviders.length > 0 ? `
+            <div class="provider-warning">
+                <span class="provider-warning-icon">&#9888;</span>
+                <span>None of the selected providers offer an embedding API.
+                Memory search requires embeddings — add OpenAI, Gemini, or Ollama to enable it.</span>
             </div>
         ` : '';
 
         return `
-            <h2>Choose a Provider</h2>
-            <p class="subtitle">Select the LLM provider for your main agent.</p>
+            <h2>Add Providers</h2>
+            <p class="subtitle">Select one or more LLM providers. You can mix providers across roles.</p>
             <div id="provider-list">${options}</div>
-            ${keyField}
-            <div class="settings-field">
-                <label>Model</label>
-                <div class="model-select-wrap" id="setup-model-wrap">
-                    <select id="setup-model">
-                        <option value="">Select a model...</option>
-                    </select>
-                </div>
-            </div>
+            ${embeddingWarning}
+            ${configSections ? `<div id="provider-configs">${configSections}</div>` : ''}
             <div class="setup-nav">
                 <button class="btn btn-secondary" id="setup-back">Back</button>
                 <button class="btn btn-primary" id="setup-next">Next</button>
@@ -145,8 +195,9 @@ const Setup = {
 
         const roleRows = Object.entries(roleNames).map(([key, label]) => {
             const r = this.roles[key];
-            const prov = r.provider || this.providerType;
-            const needsKey = prov !== 'ollama' && prov !== this.providerType;
+            const prov = r.provider || this.mainProvider;
+            // Only show API key field if the role uses a provider not in selectedProviders
+            const needsKey = prov !== 'ollama' && !this.selectedProviders.includes(prov);
 
             return `
                 <div class="role-row" data-role="${key}">
@@ -295,50 +346,69 @@ const Setup = {
     },
 
     bindProviderStep() {
-        // Provider selection
+        // Provider toggle (multi-select)
         document.querySelectorAll('.provider-option').forEach(el => {
             el.addEventListener('click', () => {
-                this.providerType = el.dataset.provider;
-                this.model = '';
-                this.apiKey = '';
-                ModelFetcher.invalidate(this.providerType);
+                const key = el.dataset.provider;
+                const idx = this.selectedProviders.indexOf(key);
+                if (idx >= 0) {
+                    // Don't allow deselecting the last provider
+                    if (this.selectedProviders.length <= 1) return;
+                    this.selectedProviders.splice(idx, 1);
+                    // If we removed the main provider, pick the first remaining
+                    if (this.mainProvider === key) {
+                        this.mainProvider = this.selectedProviders[0];
+                    }
+                } else {
+                    this.selectedProviders.push(key);
+                }
                 this.render();
             });
         });
 
-        // API key debounced input — fetch models after typing
-        const keyEl = document.getElementById('setup-apikey');
-        if (keyEl) {
-            const debouncedFetch = ModelFetcher.debounce(() => {
-                this.apiKey = keyEl.value;
-                this.fetchMainModels();
-            }, 500);
-            keyEl.addEventListener('input', debouncedFetch);
-        }
+        // Main provider radio buttons
+        document.querySelectorAll('input[name="main-provider"]').forEach(radio => {
+            radio.addEventListener('change', () => {
+                this.mainProvider = radio.value;
+            });
+        });
 
-        // Fetch models on render
-        this.fetchMainModels();
+        // Per-provider API key inputs (debounced)
+        document.querySelectorAll('.provider-apikey').forEach(inp => {
+            const prov = inp.dataset.provider;
+            const debouncedFetch = ModelFetcher.debounce(() => {
+                this.providerConfigs[prov].apiKey = inp.value;
+                this.fetchProviderModels(prov);
+            }, 500);
+            inp.addEventListener('input', debouncedFetch);
+        });
+
+        // Fetch models for all selected providers on render
+        for (const prov of this.selectedProviders) {
+            this.fetchProviderModels(prov);
+        }
     },
 
-    async fetchMainModels() {
-        const selectEl = document.getElementById('setup-model');
-        const errorEl = document.getElementById('setup-key-error');
-        const wrapEl = document.getElementById('setup-model-wrap');
+    async fetchProviderModels(provider) {
+        const selectEl = document.querySelector(`.provider-model-select[data-provider="${provider}"]`);
+        const errorEl = document.querySelector(`[data-provider-error="${provider}"]`);
+        const wrapEl = document.querySelector(`[data-provider-model-wrap="${provider}"]`);
 
+        if (!selectEl) return;
         if (wrapEl) wrapEl.classList.add('loading');
 
-        const key = this.providerType !== 'ollama' ? this.apiKey : null;
-        await ModelFetcher.populateSelect(selectEl, this.providerType, key, this.providerUrl || null, this.model);
+        const cfg = this.providerConfigs[provider];
+        const key = provider !== 'ollama' ? cfg.apiKey : null;
+        await ModelFetcher.populateSelect(selectEl, provider, key, cfg.url || null, cfg.model);
 
         if (wrapEl) wrapEl.classList.remove('loading');
 
         // Show API key error if applicable
         if (errorEl) {
-            const cacheKey = ModelFetcher._cacheKey(this.providerType, key, this.providerUrl || null);
+            const cacheKey = ModelFetcher._cacheKey(provider, key, cfg.url || null);
             const cached = ModelFetcher.cache[cacheKey];
             if (!cached && key) {
-                // Fetch didn't cache (meaning it returned fallbacks with error)
-                const result = await ModelFetcher.fetch(this.providerType, key, this.providerUrl || null);
+                const result = await ModelFetcher.fetch(provider, key, cfg.url || null);
                 if (result.error) {
                     errorEl.textContent = result.error;
                     errorEl.style.display = 'block';
@@ -399,11 +469,12 @@ const Setup = {
         if (!selectEl) return;
 
         const r = this.roles[role];
-        const prov = r.provider || this.providerType;
-        // Use role's own key if different provider, otherwise main key
+        const prov = r.provider || this.mainProvider;
+        // Use provider config key if we have it, otherwise role's own key
         let key = null;
         if (prov !== 'ollama') {
-            key = prov === this.providerType ? this.apiKey : r.apiKey;
+            const provCfg = this.providerConfigs[prov];
+            key = provCfg ? provCfg.apiKey : r.apiKey;
         }
 
         await ModelFetcher.populateSelect(selectEl, prov, key, r.url || null, r.model);
@@ -437,10 +508,16 @@ const Setup = {
                 this.timezone = (document.getElementById('setup-tz') || {}).value || this.timezone;
                 break;
             case 1: {
-                const keyEl = document.getElementById('setup-apikey');
-                if (keyEl) this.apiKey = keyEl.value;
-                const modelEl = document.getElementById('setup-model');
-                if (modelEl) this.model = ModelFetcher.getSelectedModel(modelEl);
+                // Collect per-provider fields
+                for (const prov of this.selectedProviders) {
+                    const keyEl = document.querySelector(`.provider-apikey[data-provider="${prov}"]`);
+                    if (keyEl) this.providerConfigs[prov].apiKey = keyEl.value;
+                    const modelEl = document.querySelector(`.provider-model-select[data-provider="${prov}"]`);
+                    if (modelEl) this.providerConfigs[prov].model = ModelFetcher.getSelectedModel(modelEl);
+                }
+                // Collect main provider radio
+                const mainRadio = document.querySelector('input[name="main-provider"]:checked');
+                if (mainRadio) this.mainProvider = mainRadio.value;
                 break;
             }
             case 2:
@@ -478,26 +555,28 @@ const Setup = {
         // Collect which providers we need entries for
         const providerEntries = {};
 
-        // Main provider
-        if (this.apiKey && this.providerType !== 'ollama') {
-            providerEntries[this.providerType] = {
-                type: this.providerType,
-                api_key: this.apiKey,
-            };
+        // All selected providers
+        for (const prov of this.selectedProviders) {
+            const cfg = this.providerConfigs[prov];
+            if (prov !== 'ollama' && cfg.apiKey) {
+                providerEntries[prov] = {
+                    type: prov,
+                    api_key: cfg.apiKey,
+                    url: cfg.url || null,
+                };
+            }
         }
 
-        // Role providers (if different from main)
+        // Role providers (if different from selected ones)
         if (!this.useDefaultRoles) {
             for (const role of ['observer', 'reflector', 'pulse']) {
                 const r = this.roles[role];
-                const prov = r.provider || this.providerType;
-                if (prov !== this.providerType && prov !== 'ollama' && r.apiKey) {
-                    if (!providerEntries[prov]) {
-                        providerEntries[prov] = {
-                            type: prov,
-                            api_key: r.apiKey,
-                        };
-                    }
+                const prov = r.provider || this.mainProvider;
+                if (!providerEntries[prov] && prov !== 'ollama' && r.apiKey) {
+                    providerEntries[prov] = {
+                        type: prov,
+                        api_key: r.apiKey,
+                    };
                 }
             }
         }
@@ -511,14 +590,15 @@ const Setup = {
             lines.push('');
         }
 
-        const defaultModel = ModelFetcher.defaultModels[this.providerType] || '';
+        const mainCfg = this.providerConfigs[this.mainProvider];
+        const mainModel = mainCfg.model || ModelFetcher.defaultModels[this.mainProvider] || '';
         lines.push('[models]');
-        lines.push(`main = "${this.providerType}/${this.model || defaultModel}"`);
+        lines.push(`main = "${this.mainProvider}/${mainModel}"`);
 
         if (!this.useDefaultRoles) {
             for (const role of ['observer', 'reflector', 'pulse']) {
                 const r = this.roles[role];
-                const prov = r.provider || this.providerType;
+                const prov = r.provider || this.mainProvider;
                 const model = r.model;
                 if (model) {
                     lines.push(`${role} = "${prov}/${model}"`);
