@@ -55,6 +55,47 @@ impl ReplyHandle for WsReplyHandle {
             tracing::trace!("no broadcast receivers for system event");
         }
     }
+
+    async fn send_tool_call(&self, id: &str, name: &str, arguments: &serde_json::Value) {
+        if self
+            .broadcast_tx
+            .send(ServerMessage::ToolCall {
+                id: id.to_string(),
+                name: name.to_string(),
+                arguments: arguments.clone(),
+            })
+            .is_err()
+        {
+            tracing::trace!("no broadcast receivers for tool_call event");
+        }
+    }
+
+    async fn send_tool_result(&self, id: &str, name: &str, output: &str, is_error: bool) {
+        if self
+            .broadcast_tx
+            .send(ServerMessage::ToolResult {
+                tool_call_id: id.to_string(),
+                name: name.to_string(),
+                output: output.to_string(),
+                is_error,
+            })
+            .is_err()
+        {
+            tracing::trace!("no broadcast receivers for tool_result event");
+        }
+    }
+
+    async fn send_intermediate(&self, content: &str) {
+        if self
+            .broadcast_tx
+            .send(ServerMessage::BroadcastResponse {
+                content: content.to_string(),
+            })
+            .is_err()
+        {
+            tracing::trace!("no broadcast receivers for intermediate response");
+        }
+    }
 }
 
 #[cfg(test)]
@@ -95,6 +136,64 @@ mod tests {
                     if source == "cron: test" && content == "event text"
             ),
             "should broadcast system event, got: {msg:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn send_tool_call_broadcasts() {
+        let (tx, mut rx) = broadcast::channel::<ServerMessage>(16);
+        let handle = WsReplyHandle::new(tx, "msg-1".to_string());
+
+        handle
+            .send_tool_call("tc-1", "exec", &serde_json::json!({"command": "echo hi"}))
+            .await;
+
+        let msg = rx.recv().await.unwrap();
+        assert!(
+            matches!(
+                &msg,
+                ServerMessage::ToolCall { id, name, .. }
+                    if id == "tc-1" && name == "exec"
+            ),
+            "should broadcast tool call, got: {msg:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn send_tool_result_broadcasts() {
+        let (tx, mut rx) = broadcast::channel::<ServerMessage>(16);
+        let handle = WsReplyHandle::new(tx, "msg-1".to_string());
+
+        handle
+            .send_tool_result("tc-1", "exec", "hello", false)
+            .await;
+
+        let msg = rx.recv().await.unwrap();
+        assert!(
+            matches!(
+                &msg,
+                ServerMessage::ToolResult { tool_call_id, name, output, is_error }
+                    if tool_call_id == "tc-1" && name == "exec" && output == "hello" && !is_error
+            ),
+            "should broadcast tool result, got: {msg:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn send_intermediate_broadcasts() {
+        let (tx, mut rx) = broadcast::channel::<ServerMessage>(16);
+        let handle = WsReplyHandle::new(tx, "msg-1".to_string());
+
+        handle.send_intermediate("thinking...").await;
+
+        let msg = rx.recv().await.unwrap();
+        assert!(
+            matches!(
+                &msg,
+                ServerMessage::BroadcastResponse { content }
+                    if content == "thinking..."
+            ),
+            "should broadcast intermediate response, got: {msg:?}"
         );
     }
 

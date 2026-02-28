@@ -20,7 +20,7 @@ mod proactivity_integration {
     use ironclaw::agent::Agent;
     use ironclaw::agent::context::PromptContext;
     use ironclaw::background::types::{Execution, ResultRouting};
-    use ironclaw::channels::null::NullDisplay;
+    use ironclaw::channels::null::NullReplyHandle;
     use ironclaw::config::BackgroundModelTier;
     use ironclaw::models::{
         CompletionOptions, Message, ModelError, ModelProvider, ModelResponse, Role, ToolDefinition,
@@ -411,12 +411,12 @@ mod proactivity_integration {
     #[tokio::test]
     async fn run_system_turn_does_not_modify_main_history() {
         let agent = make_agent(vec!["I ran a background check.".to_string()]);
-        let display = NullDisplay;
+        let reply = NullReplyHandle;
 
         let result = agent
             .run_system_turn(
                 "background check prompt",
-                &display,
+                &reply,
                 None,
                 &PromptContext::none(),
             )

@@ -1,16 +1,20 @@
-//! No-op display for background turns (pulse, actions).
+//! No-op reply handle for background turns (pulse, actions, sub-agents).
 
-use super::TurnDisplay;
+use async_trait::async_trait;
 
-/// A display implementation that discards all output.
+use super::types::ReplyHandle;
+
+/// A reply handle that discards all output.
 ///
-/// Used for background pulse and action turns where no user is watching.
-pub struct NullDisplay;
+/// Used for background pulse and action turns where no user is watching,
+/// and for sub-agent turns that run without a connected channel.
+pub struct NullReplyHandle;
 
-impl TurnDisplay for NullDisplay {
-    fn show_tool_call(&self, _id: &str, _name: &str, _args: &serde_json::Value) {}
+#[async_trait]
+impl ReplyHandle for NullReplyHandle {
+    async fn send_response(&self, _content: &str) {}
 
-    fn show_tool_result(&self, _id: &str, _name: &str, _output: &str, _is_error: bool) {}
+    async fn send_typing(&self) {}
 
-    fn show_response(&self, _content: &str) {}
+    async fn send_system_event(&self, _source: &str, _content: &str) {}
 }

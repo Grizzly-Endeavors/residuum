@@ -53,6 +53,22 @@ pub trait ReplyHandle: Send + Sync {
     fn start_typing(&self) -> TypingGuard {
         TypingGuard::no_op()
     }
+
+    /// Notify the channel that a tool was invoked during the agent turn.
+    ///
+    /// Default is a no-op — channels that don't display tool events
+    /// (webhook, Discord) need no changes.
+    async fn send_tool_call(&self, _id: &str, _name: &str, _args: &serde_json::Value) {}
+
+    /// Notify the channel that a tool call completed.
+    ///
+    /// Default is a no-op.
+    async fn send_tool_result(&self, _id: &str, _name: &str, _output: &str, _is_error: bool) {}
+
+    /// Send intermediate text the model emitted alongside tool calls.
+    ///
+    /// Default is a no-op.
+    async fn send_intermediate(&self, _content: &str) {}
 }
 
 /// A message paired with its reply handle, ready for the main loop.

@@ -5,8 +5,7 @@ pub mod interrupt;
 pub mod recent_messages;
 pub(crate) mod turn;
 
-use crate::channels::TurnDisplay;
-use crate::channels::types::MessageOrigin;
+use crate::channels::types::{MessageOrigin, ReplyHandle};
 use crate::error::IronclawError;
 use crate::mcp::SharedMcpRegistry;
 use crate::models::{CompletionOptions, Message, ModelProvider};
@@ -172,7 +171,7 @@ impl Agent {
     /// are unrecoverable.
     pub async fn run_wake_turn(
         &mut self,
-        display: &dyn TurnDisplay,
+        reply: &dyn ReplyHandle,
         prompt_ctx: &PromptContext<'_>,
         interrupt_rx: &mut tokio::sync::mpsc::Receiver<interrupt::Interrupt>,
     ) -> Result<Vec<String>, IronclawError> {
@@ -206,7 +205,7 @@ impl Agent {
             &memory_ctx,
             prompt_ctx,
             &mut self.recent_messages,
-            display,
+            reply,
             Some(&status_line),
             interrupt_rx,
         )
@@ -216,8 +215,8 @@ impl Agent {
     /// Process a user message through the model, executing tool calls as needed.
     ///
     /// Returns a vec containing the final text-only response. Intermediate texts
-    /// emitted alongside tool calls are broadcast via `display` in real-time but
-    /// not included in the return value.
+    /// emitted alongside tool calls are sent via `reply` in real-time but not
+    /// included in the return value.
     ///
     /// # Errors
     /// Returns `IronclawError` if the model call fails or tool execution errors
@@ -225,7 +224,7 @@ impl Agent {
     pub async fn process_message(
         &mut self,
         user_input: &str,
-        display: &dyn TurnDisplay,
+        reply: &dyn ReplyHandle,
         origin: Option<&MessageOrigin>,
         prompt_ctx: &PromptContext<'_>,
         interrupt_rx: &mut tokio::sync::mpsc::Receiver<interrupt::Interrupt>,
@@ -257,7 +256,7 @@ impl Agent {
             &memory_ctx,
             prompt_ctx,
             &mut self.recent_messages,
-            display,
+            reply,
             Some(&status_line),
             interrupt_rx,
         )
@@ -278,7 +277,7 @@ impl Agent {
     pub async fn run_system_turn(
         &self,
         prompt: &str,
-        display: &dyn TurnDisplay,
+        reply: &dyn ReplyHandle,
         provider_override: Option<&dyn ModelProvider>,
         prompt_ctx: &PromptContext<'_>,
     ) -> Result<SystemTurnResult, IronclawError> {
@@ -306,7 +305,7 @@ impl Agent {
             &memory_ctx,
             prompt_ctx,
             &mut thread_messages,
-            display,
+            reply,
             None,
             &mut sys_interrupt_rx,
         )
@@ -377,7 +376,7 @@ impl Agent {
 mod tests {
     use super::turn::MAX_TOOL_ITERATIONS;
     use super::*;
-    use crate::channels::null::NullDisplay;
+    use crate::channels::null::NullReplyHandle;
     use crate::mcp::McpRegistry;
     use crate::models::{ModelError, ModelResponse, ToolCall, ToolDefinition};
     use crate::tools::{FileTracker, PathPolicy, ToolFilter};
@@ -448,10 +447,10 @@ mod tests {
             std::path::PathBuf::from("/tmp/ironclaw-test-inbox"),
         );
 
-        let display = NullDisplay;
+        let reply = NullReplyHandle;
         let mut irx = interrupt::dead_interrupt_rx();
         let result = agent
-            .process_message("hi", &display, None, &PromptContext::none(), &mut irx)
+            .process_message("hi", &reply, None, &PromptContext::none(), &mut irx)
             .await
             .unwrap();
         assert_eq!(result, vec!["hello there"], "should return model text");
@@ -488,12 +487,12 @@ mod tests {
             std::path::PathBuf::from("/tmp/ironclaw-test-inbox"),
         );
 
-        let display = NullDisplay;
+        let reply = NullReplyHandle;
         let mut irx = interrupt::dead_interrupt_rx();
         let result = agent
             .process_message(
                 "run echo test",
-                &display,
+                &reply,
                 None,
                 &PromptContext::none(),
                 &mut irx,
@@ -539,12 +538,12 @@ mod tests {
             std::path::PathBuf::from("/tmp/ironclaw-test-inbox"),
         );
 
-        let display = NullDisplay;
+        let reply = NullReplyHandle;
         let mut irx = interrupt::dead_interrupt_rx();
         let result = agent
             .process_message(
                 "what does echo test print?",
-                &display,
+                &reply,
                 None,
                 &PromptContext::none(),
                 &mut irx,
@@ -554,7 +553,7 @@ mod tests {
         assert_eq!(
             result,
             vec!["Done! The output was: test"],
-            "should return only final text, intermediate is broadcast via display"
+            "should return only final text, intermediate is sent via reply handle"
         );
     }
 
@@ -591,12 +590,12 @@ mod tests {
             std::path::PathBuf::from("/tmp/ironclaw-test-inbox"),
         );
 
-        let display = NullDisplay;
+        let reply = NullReplyHandle;
         let mut irx = interrupt::dead_interrupt_rx();
         let result = agent
             .process_message(
                 "loop forever",
-                &display,
+                &reply,
                 None,
                 &PromptContext::none(),
                 &mut irx,
@@ -621,9 +620,9 @@ mod tests {
             std::path::PathBuf::from("/tmp/ironclaw-test-inbox"),
         );
 
-        let display = NullDisplay;
+        let reply = NullReplyHandle;
         let result = agent
-            .run_system_turn("check status", &display, None, &PromptContext::none())
+            .run_system_turn("check status", &reply, None, &PromptContext::none())
             .await
             .unwrap();
         assert_eq!(result.response, "HEARTBEAT_OK", "response should match");
@@ -694,10 +693,10 @@ mod tests {
         // Inject a background result first (simulates what the gateway does)
         agent.inject_system_message("bg result: task completed");
 
-        let display = NullDisplay;
+        let reply = NullReplyHandle;
         let mut irx = interrupt::dead_interrupt_rx();
         let result = agent
-            .run_wake_turn(&display, &PromptContext::none(), &mut irx)
+            .run_wake_turn(&reply, &PromptContext::none(), &mut irx)
             .await
             .unwrap();
         assert_eq!(result, vec!["I'll handle it"]);
@@ -967,11 +966,11 @@ mod tests {
             std::path::PathBuf::from("/tmp/ironclaw-test-inbox"),
         );
 
-        let display = NullDisplay;
+        let reply = NullReplyHandle;
         let result = agent
             .process_message(
                 "hello",
-                &display,
+                &reply,
                 None,
                 &PromptContext::none(),
                 &mut interrupt_rx,
@@ -1036,11 +1035,11 @@ mod tests {
             std::path::PathBuf::from("/tmp/ironclaw-test-inbox"),
         );
 
-        let display = NullDisplay;
+        let reply = NullReplyHandle;
         agent
             .process_message(
                 "hello",
-                &display,
+                &reply,
                 None,
                 &PromptContext::none(),
                 &mut interrupt_rx,
@@ -1093,11 +1092,11 @@ mod tests {
             std::path::PathBuf::from("/tmp/ironclaw-test-inbox"),
         );
 
-        let display = NullDisplay;
+        let reply = NullReplyHandle;
         let result = agent
             .process_message(
                 "hello",
-                &display,
+                &reply,
                 None,
                 &PromptContext::none(),
                 &mut interrupt_rx,
@@ -1129,10 +1128,10 @@ mod tests {
             std::path::PathBuf::from("/tmp/ironclaw-test-inbox"),
         );
 
-        let display = NullDisplay;
+        let reply = NullReplyHandle;
         let mut irx = interrupt::dead_interrupt_rx();
         let result = agent
-            .process_message("hello", &display, None, &PromptContext::none(), &mut irx)
+            .process_message("hello", &reply, None, &PromptContext::none(), &mut irx)
             .await;
         assert!(result.is_err(), "empty response should return error");
 
@@ -1197,11 +1196,11 @@ mod tests {
             std::path::PathBuf::from("/tmp/ironclaw-test-inbox"),
         );
 
-        let display = NullDisplay;
+        let reply = NullReplyHandle;
         agent
             .process_message(
                 "hello",
-                &display,
+                &reply,
                 None,
                 &PromptContext::none(),
                 &mut interrupt_rx,

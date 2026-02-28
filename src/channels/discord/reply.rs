@@ -55,6 +55,15 @@ impl ReplyHandle for DiscordReplyHandle {
         }
     }
 
+    async fn send_intermediate(&self, content: &str) {
+        let chunks = chunk_text(content, DISCORD_MAX_CHARS);
+        for chunk in chunks {
+            if let Err(e) = self.channel_id.say(&self.http, &chunk).await {
+                tracing::warn!(error = %e, "failed to send discord intermediate text");
+            }
+        }
+    }
+
     fn start_typing(&self) -> TypingGuard {
         let http = Arc::clone(&self.http);
         let channel_id = self.channel_id;

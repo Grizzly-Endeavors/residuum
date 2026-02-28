@@ -43,7 +43,6 @@ use crate::pulse::scheduler::PulseScheduler;
 use crate::skills::SharedSkillState;
 use crate::workspace::layout::WorkspaceLayout;
 
-use super::display::{BroadcastDisplay, ChannelAwareDisplay};
 use super::protocol::ServerMessage;
 
 use crate::agent::context::loading::{
@@ -110,7 +109,6 @@ struct GatewayRuntime {
     // Runtime channels + handles
     inbound_rx: mpsc::Receiver<RoutedMessage>,
     broadcast_tx: broadcast::Sender<ServerMessage>,
-    broadcast_display: BroadcastDisplay,
     reload_rx: tokio::sync::watch::Receiver<bool>,
     command_rx: mpsc::Receiver<ServerCommand>,
     server_handle: tokio::task::JoinHandle<()>,
@@ -160,7 +158,6 @@ pub async fn run_gateway(cfg: Config) -> Result<GatewayExit, IronclawError> {
     let (inbound_tx, inbound_rx) = mpsc::channel::<RoutedMessage>(32);
     let (broadcast_tx, _broadcast_rx) = broadcast::channel::<ServerMessage>(256);
     let (reload_sender, reload_rx) = tokio::sync::watch::channel(false);
-    let broadcast_display = BroadcastDisplay::new(broadcast_tx.clone());
     let (command_tx, command_rx) = mpsc::channel::<ServerCommand>(32);
 
     // Clone senders for additional adapters before moving into GatewayState
@@ -279,7 +276,6 @@ pub async fn run_gateway(cfg: Config) -> Result<GatewayExit, IronclawError> {
         spawn_context: parts.spawn_context,
         inbound_rx,
         broadcast_tx,
-        broadcast_display,
         reload_rx,
         command_rx,
         server_handle,
@@ -531,13 +527,12 @@ async fn run_wake_turn_handler(
     };
 
     let typing_guard = reply.start_typing();
-    let turn_display = BroadcastDisplay::new(rt.broadcast_display.sender());
 
     let (interrupt_tx, mut interrupt_rx) = mpsc::channel::<Interrupt>(32);
 
     let turn_result = {
         let mut turn = std::pin::pin!(rt.agent.run_wake_turn(
-            &turn_display,
+            &*reply,
             &prompt_ctx,
             &mut interrupt_rx,
         ));
@@ -739,22 +734,17 @@ async fn run_event_loop(mut rt: GatewayRuntime) -> GatewayExit {
                 let reply_id = routed.message.id.clone();
                 let origin = routed.message.origin.clone();
 
-                if rt.broadcast_tx.send(ServerMessage::TurnStarted {
-                    reply_to: reply_id.clone(),
-                }).is_err() {
+                // TurnStarted is WS-specific protocol sugar — only broadcast for WS turns
+                if origin.channel == "websocket"
+                    && rt.broadcast_tx.send(ServerMessage::TurnStarted {
+                        reply_to: reply_id.clone(),
+                    }).is_err()
+                {
                     tracing::trace!("no broadcast receivers for turn_started");
                 }
 
                 rt.last_reply = Some(Arc::clone(&routed.reply));
                 let typing_guard = routed.reply.start_typing();
-                let turn_display: Box<dyn crate::channels::TurnDisplay> = if origin.channel == "websocket" {
-                    Box::new(BroadcastDisplay::new(rt.broadcast_display.sender()))
-                } else {
-                    Box::new(ChannelAwareDisplay::new(
-                        rt.broadcast_display.sender(),
-                        Arc::clone(&routed.reply),
-                    ))
-                };
 
                 let before = rt.agent.message_count();
 
@@ -781,7 +771,7 @@ async fn run_event_loop(mut rt: GatewayRuntime) -> GatewayExit {
                     let mut turn = std::pin::pin!(
                         rt.agent.process_message(
                             &routed.message.content,
-                            &*turn_display,
+                            &*routed.reply,
                             Some(&origin),
                             &prompt_ctx,
                             &mut interrupt_rx,
@@ -829,16 +819,6 @@ async fn run_event_loop(mut rt: GatewayRuntime) -> GatewayExit {
                         drop(typing_guard);
                         for text in &texts {
                             routed.reply.send_response(text).await;
-                        }
-                        if origin.channel != "websocket" {
-                            for text in texts {
-                                if rt.broadcast_tx.send(ServerMessage::Response {
-                                    reply_to: reply_id.clone(),
-                                    content: text,
-                                }).is_err() {
-                                    tracing::trace!("no broadcast receivers for response");
-                                }
-                            }
                         }
                     }
                     Err(e) => {

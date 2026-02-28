@@ -8,7 +8,7 @@ use crate::agent::context::{
 use crate::agent::interrupt::dead_interrupt_rx;
 use crate::agent::recent_messages::RecentMessages;
 use crate::agent::turn::execute_turn;
-use crate::channels::null::NullDisplay;
+use crate::channels::null::NullReplyHandle;
 use crate::mcp::SharedMcpRegistry;
 use crate::models::{CompletionOptions, Message, ModelProvider};
 use crate::projects::activation::{ProjectState, SharedProjectState};
@@ -216,7 +216,7 @@ pub(crate) async fn execute_subagent(
     let mut recent_messages = RecentMessages::new();
     recent_messages.push(Message::user(combined_prompt));
 
-    let display = NullDisplay;
+    let reply = NullReplyHandle;
     let mut interrupt_rx = dead_interrupt_rx();
 
     let memory_ctx = crate::agent::context::MemoryContext {
@@ -240,7 +240,7 @@ pub(crate) async fn execute_subagent(
         &memory_ctx,
         &prompt_ctx,
         &mut recent_messages,
-        &display,
+        &reply,
         None,
         &mut interrupt_rx,
     )
@@ -253,7 +253,7 @@ pub(crate) async fn execute_subagent(
         &memory_ctx,
         &prompt_ctx,
         &mut recent_messages,
-        &display,
+        &reply,
     )
     .await;
 
@@ -270,7 +270,7 @@ async fn ensure_project_deactivated(
     memory_ctx: &crate::agent::context::MemoryContext<'_>,
     prompt_ctx: &PromptContext<'_>,
     recent_messages: &mut RecentMessages,
-    display: &dyn crate::channels::TurnDisplay,
+    reply: &dyn crate::channels::types::ReplyHandle,
 ) {
     let active_name = resources
         .project_state
@@ -307,7 +307,7 @@ async fn ensure_project_deactivated(
         memory_ctx,
         prompt_ctx,
         recent_messages,
-        display,
+        reply,
         None,
         &mut deactivation_interrupt_rx,
     )

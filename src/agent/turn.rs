@@ -2,7 +2,7 @@
 
 use tokio::sync::mpsc;
 
-use crate::channels::TurnDisplay;
+use crate::channels::types::ReplyHandle;
 use crate::error::IronclawError;
 use crate::mcp::SharedMcpRegistry;
 use crate::models::{CompletionOptions, Message, ModelProvider, ModelResponse};
@@ -25,8 +25,8 @@ pub(crate) const MAX_TOOL_ITERATIONS: usize = 50;
 /// fall back to MCP servers when no built-in tool matches.
 ///
 /// Returns a vec containing the final text-only response. Intermediate texts
-/// emitted alongside tool calls are broadcast via `display` in real-time but
-/// not included in the return value.
+/// emitted alongside tool calls are sent via `reply` in real-time but not
+/// included in the return value.
 #[expect(
     clippy::too_many_arguments,
     reason = "threading context through the turn loop; grouping into a struct would obscure the call site"
@@ -41,7 +41,7 @@ pub(crate) async fn execute_turn(
     memory_ctx: &MemoryContext<'_>,
     prompt_ctx: &PromptContext<'_>,
     recent_messages: &mut RecentMessages,
-    display: &dyn TurnDisplay,
+    reply: &dyn ReplyHandle,
     status_line: Option<&StatusLine>,
     interrupt_rx: &mut mpsc::Receiver<Interrupt>,
 ) -> Result<Vec<String>, IronclawError> {
@@ -115,9 +115,9 @@ pub(crate) async fn execute_turn(
             "processing tool calls"
         );
 
-        // Broadcast any text the model emitted alongside tool calls in real-time.
+        // Send any text the model emitted alongside tool calls in real-time.
         if !response.content.is_empty() {
-            display.show_response(&response.content);
+            reply.send_intermediate(&response.content).await;
         }
 
         recent_messages.push(Message::assistant(
@@ -127,7 +127,9 @@ pub(crate) async fn execute_turn(
 
         // TODO(phase-4): add security boundary before Discord integration
         for tool_call in &response.tool_calls {
-            display.show_tool_call(&tool_call.id, &tool_call.name, &tool_call.arguments);
+            reply
+                .send_tool_call(&tool_call.id, &tool_call.name, &tool_call.arguments)
+                .await;
 
             // Try built-in tools first, fall back to MCP servers
             let result = match tools
@@ -149,7 +151,9 @@ pub(crate) async fn execute_turn(
                 Err(e) => (e.to_string(), true),
             };
 
-            display.show_tool_result(&tool_call.id, &tool_call.name, &output, is_error);
+            reply
+                .send_tool_result(&tool_call.id, &tool_call.name, &output, is_error)
+                .await;
 
             recent_messages.push(Message::tool(output, tool_call.id.clone()));
         }

@@ -12,18 +12,3 @@ pub mod presence;
 pub mod types;
 pub mod webhook;
 pub mod websocket;
-
-/// Trait for displaying agent tool activity during a turn.
-///
-/// Implemented by `BroadcastDisplay` for gateway use and `NullDisplay`
-/// for background pulse/action turns that run without user interaction.
-pub trait TurnDisplay: Send + Sync {
-    /// Display a tool call being made.
-    fn show_tool_call(&self, id: &str, name: &str, args: &serde_json::Value);
-
-    /// Display the result of a tool call.
-    fn show_tool_result(&self, id: &str, name: &str, output: &str, is_error: bool);
-
-    /// Display an intermediate text response emitted alongside tool calls.
-    fn show_response(&self, content: &str);
-}

@@ -26,7 +26,7 @@ mod gateway_integration {
     use ironclaw::agent::Agent;
     use ironclaw::agent::context::PromptContext;
     use ironclaw::agent::interrupt;
-    use ironclaw::gateway::display::BroadcastDisplay;
+    use ironclaw::channels::websocket::WsReplyHandle;
     use ironclaw::gateway::protocol::{ClientMessage, ServerMessage};
     use ironclaw::models::{
         CompletionOptions, Message, ModelError, ModelProvider, ModelResponse, ToolDefinition,
@@ -101,8 +101,6 @@ mod gateway_integration {
         let (inbound_tx, mut inbound_rx) = mpsc::channel::<InboundMessage>(32);
         let (broadcast_tx, _) = broadcast::channel::<ServerMessage>(256);
 
-        let broadcast_display = BroadcastDisplay::new(broadcast_tx.clone());
-
         let state = TestGatewayState {
             inbound_tx: inbound_tx.clone(),
             broadcast_tx: broadcast_tx.clone(),
@@ -124,6 +122,7 @@ mod gateway_integration {
             let mut agent = agent;
             while let Some(inbound) = inbound_rx.recv().await {
                 let reply_id = inbound.id.clone();
+                let reply = WsReplyHandle::new(loop_broadcast_tx.clone(), reply_id.clone());
 
                 if loop_broadcast_tx
                     .send(ServerMessage::TurnStarted {
@@ -138,7 +137,7 @@ mod gateway_integration {
                 match agent
                     .process_message(
                         &inbound.content,
-                        &broadcast_display,
+                        &reply,
                         None,
                         &PromptContext::none(),
                         &mut irx,
