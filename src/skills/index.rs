@@ -29,15 +29,7 @@ impl SkillIndex {
         let mut entries = Vec::new();
         let mut seen_names: Vec<String> = Vec::new();
 
-        for dir in dirs {
-            let source = if dirs.first().is_some_and(|first| first == dir) {
-                SkillSource::Workspace
-            } else {
-                SkillSource::UserGlobal
-            };
-            scan_skill_directory(dir, source, &mut entries, &mut seen_names).await?;
-        }
-
+        // Project skills have highest priority — scan first
         if let Some(project_dir) = project_skills_dir {
             scan_skill_directory(
                 project_dir,
@@ -46,6 +38,16 @@ impl SkillIndex {
                 &mut seen_names,
             )
             .await?;
+        }
+
+        // Then workspace and user-global (workspace is dirs[0], user-global are the rest)
+        for dir in dirs {
+            let source = if dirs.first().is_some_and(|first| first == dir) {
+                SkillSource::Workspace
+            } else {
+                SkillSource::UserGlobal
+            };
+            scan_skill_directory(dir, source, &mut entries, &mut seen_names).await?;
         }
 
         Ok(Self { entries })
@@ -305,6 +307,44 @@ mod tests {
 
         let proj_entry = index.find_by_name("proj-skill").unwrap();
         assert_eq!(proj_entry.source, SkillSource::Project);
+    }
+
+    #[tokio::test]
+    async fn project_skill_shadows_workspace_on_name_collision() {
+        let ws_dir = tempfile::tempdir().unwrap();
+        let proj_dir = tempfile::tempdir().unwrap();
+
+        // Workspace skill named "shared"
+        let ws_skill = ws_dir.path().join("shared");
+        tokio::fs::create_dir(&ws_skill).await.unwrap();
+        tokio::fs::write(
+            ws_skill.join("SKILL.md"),
+            "---\nname: shared\ndescription: \"Workspace version\"\n---\n",
+        )
+        .await
+        .unwrap();
+
+        // Project skill with same name "shared"
+        let proj_skill = proj_dir.path().join("shared");
+        tokio::fs::create_dir(&proj_skill).await.unwrap();
+        tokio::fs::write(
+            proj_skill.join("SKILL.md"),
+            "---\nname: shared\ndescription: \"Project version\"\n---\n",
+        )
+        .await
+        .unwrap();
+
+        let index = SkillIndex::scan(&[ws_dir.path().to_path_buf()], Some(proj_dir.path()))
+            .await
+            .unwrap();
+        assert_eq!(index.entries().len(), 1, "should deduplicate by name");
+
+        let entry = index.find_by_name("shared").unwrap();
+        assert_eq!(
+            entry.description, "Project version",
+            "project skill should shadow workspace skill"
+        );
+        assert_eq!(entry.source, SkillSource::Project);
     }
 
     #[tokio::test]
