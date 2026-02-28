@@ -38,7 +38,6 @@ For shell commands and scripts, the agent uses its own `write_file` and `exec` t
 | `agent_name` | string | no | Preset name from `subagents/`. Default: `"general-purpose"`. `"main"` is rejected — you cannot spawn main as a sub-agent. |
 | `model_override` | string enum | no | `"small"`, `"medium"`, `"large"`. Overrides the preset's tier. |
 | `channels` | string[] | no | Result delivery channels. Defaults to `["agent_feed"]` (or the preset's `channels` if defined). |
-| `wait` | boolean | no | Default `false`. If `true`, blocks until the sub-agent finishes and returns the result inline. Channel validation is skipped in sync mode. |
 
 ### `list_agents`
 
@@ -114,7 +113,7 @@ See [notifications.md](notifications.md) for the full routing model.
 
 Every background task writes a transcript to `memory/background/YYYY-MM/DD/bg-<task-id>.log`. The directory is created on-demand (not at bootstrap).
 
-Transcripts should contain the full turn history: tool calls, tool results, intermediate messages, and the final response. This provides an auditable record of everything the sub-agent did. *(Currently only captures the final text response — full serialization is a pending code change.)*
+Transcripts contain the full turn history: tool calls, tool results, intermediate messages, and the final response, serialized as JSON. This provides an auditable record of everything the sub-agent did.
 
 ## Task Lifecycle
 
@@ -128,10 +127,4 @@ Spawn → Acquire semaphore permit → Execute → Complete → Route result →
 - If a sub-agent ends with a project still active, the gateway force-deactivates with an auto-generated log entry
 - Cancellation also triggers force-deactivation
 
-### Synchronous Mode
-
-When `wait: true`:
-- Blocks the main agent's turn loop until the sub-agent completes
-- Result returned directly as the tool response
-- `channels` parameter is ignored
-- Other interrupts (user messages, other background results) queue during the block
+All spawns are asynchronous — `subagent_spawn` returns immediately with a task ID. Results are delivered to the specified channels when the sub-agent completes.

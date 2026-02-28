@@ -84,8 +84,6 @@ A SubAgent is an LLM-powered execution that runs a simplified turn loop. This is
 struct SubAgentConfig {
     prompt: String,                  // the task instructions
     context: Option<String>,         // optional inline context from the spawner
-    context_files: Vec<PathBuf>,     // optional files to include in context
-    tools: Option<Vec<ToolName>>,    // tool restriction (None = full default set)
     model_tier: ModelTier,           // small, medium, or large
 }
 
@@ -165,7 +163,6 @@ SubAgents get minimal context by default:
 | ENVIRONMENT.md | Local environment notes |
 | Projects index | SubAgents can activate/deactivate projects |
 | `context` (if provided) | Inline context from the spawner |
-| `context_files` (if provided) | Explicit file references from the spawner |
 | Active skills | Specialized knowledge relevant to the task |
 
 | Excluded | Rationale |
@@ -205,8 +202,8 @@ Each SubAgent runs a simplified turn loop — same structure as the main agent's
 2. Call model provider.
 3. Execute tool calls if any, loop back.
 4. Check cancellation token between iterations.
-5. On final response: verify no project is still active. If one is, force deactivation with auto-generated log.
-6. Return summary text.
+5. On final response: verify no project is still active. If one is, prompt a deactivation turn; if that also fails, force deactivation manually.
+6. Return `SubAgentOutput` containing both the summary text and the full message transcript.
 
 ---
 
@@ -290,7 +287,7 @@ memory/
         └── bg-{id}.log    # SubAgent transcript
 ```
 
-All background transcripts are `.log` files. These are not episodes in the OM sense — the observer does not compress them directly. When background results are injected into the main agent's message stream, the observer captures the summaries naturally alongside regular conversation. The full transcript on disk serves as a retrieval target.
+All background transcripts are `.log` files containing the full message history (all tool calls, tool results, intermediate messages, and the final response) serialized as JSON when available, with a plain-text fallback. These are not episodes in the OM sense — the observer does not compress them directly. When background results are injected into the main agent's message stream, the observer captures the summaries naturally alongside regular conversation. The full transcript on disk serves as an auditable record and retrieval target.
 
 Background transcripts are indexed by the memory search system alongside episode transcripts. The `source_type` in the search index distinguishes them.
 
@@ -366,8 +363,6 @@ PR #421 from @alice has been waiting 3 days for review.
 ### Subagent results from `subagent_spawn`
 
 Agent-spawned subagent results are routed to the channels specified in the `subagent_spawn` tool call (default: `["agent_feed"]`). This bypasses NOTIFY.yml — the main agent decides at spawn time where the result goes, and the gateway validates the channel names against built-in channels and `config.toml`.
-
-The exception is `wait: true` mode: the main agent's turn loop blocks at that tool call until the subagent completes, then returns the result as the tool response. This is the synchronous escape hatch for "compute this before I respond."
 
 ---
 
@@ -597,21 +592,13 @@ When a turn starts, the gateway transitions to `Busy` and holds the sender half.
             "type": "array",
             "items": { "type": "string" },
             "description": "Notification channels for the result (e.g., [\"agent_feed\", \"ntfy\"]). Must be built-in or defined in config.toml. Default: [\"agent_feed\"]."
-        },
-        "wait": {
-            "type": "boolean",
-            "description": "If true, block until subagent completes and return its result. Default: false."
         }
     },
     "required": ["task"]
 }
 ```
 
-**Synchronous mode** (`wait: true`): The tool call blocks the main agent's turn loop until the SubAgent finishes. The SubAgent's summary is returned as the tool result. The `channels` parameter is ignored — the result is returned directly as the tool response.
-
-Note: while blocked on a synchronous subagent, the main turn loop is not draining interrupts. User messages that arrive during this window are queued and injected after the subagent result is processed. If this becomes a pain point, the wait can be restructured to poll both the subagent completion and the interrupt channel.
-
-**Asynchronous mode** (`wait: false`, default): Returns immediately with `"Subagent spawned: {id}."` The result is dispatched to the channels specified in the `channels` parameter. The gateway validates that each channel name is either built-in (`agent_wake`, `agent_feed`, `inbox`) or defined in `config.toml` — invalid channel names are rejected at spawn time with an error.
+All spawns are asynchronous — returns immediately with `"Subagent spawned: {id}."` The result is dispatched to the channels specified in the `channels` parameter. The gateway validates that each channel name is either built-in (`agent_wake`, `agent_feed`, `inbox`) or defined in `config.toml` — invalid channel names are rejected at spawn time with an error.
 
 ### stop_agent
 
@@ -892,11 +879,9 @@ The highest-impact change: user messages can be injected mid-turn.
 
 ### Phase 6: Agent-facing spawn tool
 
-- Implement `subagent_spawn` tool with sync (`wait: true`) and async (`wait: false`) modes.
-- Sync mode: block the tool call, run the SubAgent, return result as tool response.
-- Async mode: spawn and return immediately, result flows through interrupt channel.
-- Wire `model_tier`, `context`, `files`, and `tools` parameters.
-- Tests: both spawn modes, context passing, tool restriction.
+- Implement `subagent_spawn` tool (async-only — spawns and returns immediately, result flows through interrupt channel).
+- Wire `model_tier`, `agent_name` (preset selection), and `channels` parameters.
+- Tests: spawn, preset resolution, channel validation, tool restriction.
 
 **Milestone: Main agent can delegate work to background workers.**
 
@@ -905,5 +890,6 @@ The highest-impact change: user messages can be injected mid-turn.
 ## What's Not Included
 
 - **Sub-to-sub delegation.** SubAgents cannot spawn their own SubAgents. Orchestration chains are a complexity nightmare. If a task needs decomposition, the main agent does the decomposition and spawns multiple tasks itself.
+- **Synchronous subagent execution.** All subagent spawns are asynchronous. The `wait` parameter was removed — the async model with channel-based result delivery covers all use cases without blocking the main turn loop.
 - **Streaming background results.** Background tasks run to completion before delivering results.
 - **Priority queuing.** All background tasks compete equally for semaphore permits. No task preempts a running task regardless of routing configuration.

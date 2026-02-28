@@ -21,12 +21,13 @@ Everything inside the workspace directory is **agent-owned by default**. The age
 | `memory/OBSERVER.md` | Low | Observer extraction prompt. Agent can improve over time via self-analysis. |
 | `memory/REFLECTOR.md` | Low | Reflector compression prompt. Same — agent self-improves. |
 | `scheduled_actions.json` | Managed via tools | Never edited directly. Created/removed by `schedule_action` / `cancel_action`. |
+| `pulse_state.json` | Managed by gateway | Pulse last-run timestamps and run counts. Persisted across restarts. Never edited directly. |
 
 ### User-owned files
 
 | File | Notes |
 |------|-------|
-| `config.toml` | Lives outside the workspace directory. Agent cannot and should not modify it. |
+| `config.toml` | Lives outside the workspace directory. Agent writes are blocked by `PathPolicy` — the gateway enforces this at the tool level, not by prompt instruction. |
 
 ### Key principle
 
@@ -57,7 +58,7 @@ These are drawn from [design-philosophy.md](../design-philosophy.md) and inform 
 | [Scheduled Actions](scheduled-actions.md) | One-off future tasks | `schedule_action`, `list_actions`, `cancel_action` | `scheduled_actions.json` |
 | [Skills](skills.md) | Loadable instruction modules | `skill_activate`, `skill_deactivate` | per-skill `SKILL.md` |
 | [Notifications](notifications.md) | Result routing from background tasks | *(automatic — no tools)* | `NOTIFY.yml`, `config.toml` channels |
-| [Background Tasks](background-tasks.md) | Sub-agents and scripts | `subagent_spawn`, `list_agents`, `stop_agent` | `[background]` in `config.toml`, `subagents/` presets |
+| [Background Tasks](background-tasks.md) | Sub-agent background workers | `subagent_spawn`, `list_agents`, `stop_agent` | `[background]` in `config.toml`, `subagents/` presets |
 
 ## What This Is Not
 

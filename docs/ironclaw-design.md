@@ -265,10 +265,11 @@ The gateway watches `config.toml`, workspace identity files, `HEARTBEAT.yml`, `N
 │       └── references/
 │
 ├── scheduled_actions.json        # Agent-created scheduled actions
+├── pulse_state.json              # Pulse last-run timestamps and run counts
 │
 ├── inbox/                        # Incoming attachments and files
 │
-└── subagents/                    # Sub-agent working directories
+└── subagents/                    # Sub-agent preset definitions
 ```
 
 ### Files the gateway parses structurally
@@ -279,8 +280,10 @@ These are YAML/TOML files the Rust gateway validates and acts on:
 |------|--------|---------------|
 | `config.toml` | TOML | Full gateway configuration |
 | `HEARTBEAT.yml` | YAML | Pulse scheduling, task definitions |
+| `NOTIFY.yml` | YAML | Notification routing (hot-reloaded on every route call) |
 | `projects/**/PROJECT.md` | Markdown+YAML frontmatter | Project entry metadata, tool/MCP resolution |
 | `scheduled_actions.json` | JSON | Agent-created scheduled actions |
+| `pulse_state.json` | JSON | Pulse last-run timestamps and run counts (persisted across restarts) |
 | `memory/observations.json` | JSON | Global observation log (episode-based) |
 
 ### Files injected as system prompt content
@@ -617,11 +620,12 @@ When a project is active, project output stays within the project's `workspace/`
 
 2. **On activation** — When the agent activates a project (via tool call or conversational cue), the gateway:
    - Loads the entry's **manifest**: a listing of what files exist in `notes/`, `references/`, `skills/`, and `workspace/` (filenames and sizes, not contents).
+   - Loads the **recent session log** (~2000 tokens from the most recent `notes/log/` entries) to give the agent immediate continuity context for the project.
    - Starts any **MCP servers** defined in the entry's `PROJECT.md` frontmatter.
    - Adds any **tools** defined in the entry's `PROJECT.md` frontmatter to the active tool set.
    - Discovers any **skills** in the project's `skills/` subdirectory and adds their metadata to the available skills list (not full SKILL.md bodies).
 
-   The manifest tells the agent "here's what's in this project folder." Contents are not loaded.
+   The manifest tells the agent "here's what's in this project folder." Full file contents are not loaded, but the recent log provides immediate context about what the agent was last doing in this project.
 
 3. **On agent request** — The agent reads specific files by invoking the `read` tool. This applies to:
    - Notes files (`notes/decisions.md`, `notes/current-state.md`)
@@ -1001,3 +1005,22 @@ Guild channels, mention gating, and threads are deferred to Phase 5+.
 28. Integration: project `skills/` subdirectory discovery on activation, MCP server activation from frontmatter.
 
 **Milestone: Agent can use OpenClaw-compatible skills and connect to MCP servers.**
+
+### Phase 7: Background tasks & sub-agents (COMPLETE)
+29. `background/types` — `BackgroundTask`, `SubAgentConfig`, `BackgroundResult`, `Execution::SubAgent`.
+30. `background/subagent` — Sub-agent execution with minimal context, project-aware forced deactivation, full message transcript capture.
+31. `background/spawner` — Semaphore-bounded concurrency, cancellation tokens, result routing.
+32. `background/spawn_context` — Resource gathering at spawn time (provider, tools, filter, MCP, identity).
+33. Pulse and scheduled action migration to `BackgroundTaskSpawner`.
+34. Agent-facing tools: `subagent_spawn` (async-only), `list_agents`, `stop_agent`.
+35. Sub-agent presets: `subagents/` directory, YAML frontmatter, built-in `general-purpose` preset.
+
+**Milestone: Background work runs independently; main agent can delegate and manage tasks.**
+
+### Phase 8: CLI & UX (COMPLETE)
+36. CLI subcommands: `serve` (default), `connect`, `logs` (with `--watch`), `setup`.
+37. CLI logging: dual stderr + daily rolling file appender via `tracing-appender`.
+38. Config setup wizard: interactive terminal wizard (`run_interactive`) and flag-driven mode (`from_flags`).
+39. First-launch welcome message when `config.toml` doesn't exist.
+40. Config file protection: `PathPolicy.blocked_paths` prevents agent writes to `config.toml`.
+41. Gateway resilience: config backup/rollback on reload failure, degraded mode with config editor.

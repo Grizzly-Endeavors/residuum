@@ -586,8 +586,8 @@ When no tasks are running: `"No active background tasks."`
 When tasks are running:
 ```
 {N} active task(s):
-  [{id}] {task_name} — type: {sub_agent|script} — source: {pulse|action|agent} — running {elapsed}s
-    preview: {prompt or command preview, up to 120 chars}
+  [{id}] {task_name} — type: sub_agent — source: {pulse|action|agent} — running {elapsed}s
+    preview: {prompt preview, up to 120 chars}
 ```
 
 The `preview` line is omitted if the task has an empty prompt/command.

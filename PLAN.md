@@ -2,40 +2,36 @@
 
 Two AI developers (A and B) working simultaneously. Dev A works directly on `main`. Dev B works in the `worktree-backlog` worktree (`.claude/worktrees/backlog/`). Between sprints, the coordinator merges Dev B's branch into `main`, runs tests, and resets the worktree to the updated main.
 
-## Sprint 1 — Immediate (no dependencies)
-
-All items touch completely disjoint files. Both devs start at the same time.
+## Sprint 1 — COMPLETE ✓
 
 ### Dev A (main): Groups 1a + 4 + 9
-1. **#13** — Remove vestigial script execution
-2. **#16** — Remove `hooks/` from workspace layout and bootstrap
-3. **#20** — Fix skill priority order
-4. **#22** — Auto-load recent project logs on activation
+1. ~~**#13** — Remove vestigial script execution~~
+2. ~~**#16** — Remove `hooks/` from workspace layout and bootstrap~~
+3. ~~**#20** — Fix skill priority order~~
+4. ~~**#22** — Auto-load recent project logs on activation~~
 
 ### Dev B (.claude/worktrees/backlog/): Groups 1b + 3
-1. **#18** — Warn on zero-channel notification routing
-2. **#14** — Fix `memory_search` source filter values
-3. **#12** — Persist pulse `last_run` timestamps to disk
-4. **#11** — Add trigger count option for heartbeat pulses
+1. ~~**#18** — Warn on zero-channel notification routing~~
+2. ~~**#14** — Fix `memory_search` source filter values~~
+3. ~~**#12** — Persist pulse `last_run` timestamps to disk~~
+4. ~~**#11** — Add trigger count option for heartbeat pulses~~
 
-**Merge → test → push.**
+**Merged, tested, pushed.**
 
 ---
 
-## Sprint 2 — After Sprint 1
-
-Group 1 is done, unlocking Group 2 (background/). Group 3 is done, reducing conflict surface.
+## Sprint 2 — COMPLETE ✓
 
 ### Dev A (main): Group 2 (background/subagent)
-1. **#17** — Full transcript capture for background tasks
-2. **#24** — Remove `wait` parameter from `subagent_spawn`
+1. ~~**#17** — Full transcript capture for background tasks~~
+2. ~~**#24** — Remove `wait` parameter from `subagent_spawn`~~
 
 ### Dev B (.claude/worktrees/backlog/): Group 5 (CLI/UX) + Group 7.3
-1. **#1** — CLI onboarding and logging
-2. **#2** — CLI config/onboarding wizard
-3. **#3** — Disallow LLM from editing config files
+1. ~~**#1** — CLI onboarding and logging~~
+2. ~~**#2** — CLI config/onboarding wizard~~
+3. ~~**#3** — Disallow LLM from editing config files~~
 
-**Merge → test → push.**
+**Merged, tested, pushed.**
 
 ---
 
@@ -93,11 +89,11 @@ Depends on #21 (model failover) from Sprint 3.
 ## Timeline
 
 ```
-Sprint 1  ██ Dev A (main) ██  ██ Dev B (backlog) ██
+Sprint 1  ██ COMPLETE ██████  ██ COMPLETE ████████
                     merge ↓
-Sprint 2  ██ Dev A (main) ██  ██ Dev B (backlog) ██
+Sprint 2  ██ COMPLETE ██████  ██ COMPLETE ████████
                     merge ↓
-Sprint 3  ██ Dev A (main) ██  ██ Dev B (backlog) ██
+Sprint 3  ██ Dev A (main) ██  ██ Dev B (backlog) ██  ← NEXT
                     merge ↓
 Sprint 4  ██ Dev A (main) ██  ██ Dev B (backlog) ██
                     merge ↓

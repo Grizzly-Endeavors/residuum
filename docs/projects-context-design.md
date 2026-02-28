@@ -201,10 +201,11 @@ The agent autonomously decides which project to activate based on the current co
 
 1. `PROJECT.md` frontmatter and body are loaded into context.
 2. A manifest is built by scanning subdirectories (`notes/`, `references/`, `workspace/`, `skills/`). The manifest lists what files exist — file contents are NOT loaded. The agent reads specific files on demand via `read_file`.
-3. The tool filter is updated to the project's listed tools (plus always-allowed tools like `read`, `project_deactivate`, etc.).
-4. MCP servers declared in the frontmatter are started (with reference counting — see below).
-5. The path policy is scoped to the project directory: writes are restricted to the active project's subtree. The agent can still read from any directory freely. Writes to `projects/` outside the active project, and all writes to `archive/`, are rejected.
-6. Project-scoped skills (in the project's `skills/` subdirectory) are discovered and added to the available skill index.
+3. Recent session logs (~2000 tokens from the most recent `notes/log/` entries) are loaded to give the agent immediate continuity context.
+4. The tool filter is updated to the project's listed tools (plus always-allowed tools like `read`, `project_deactivate`, etc.).
+5. MCP servers declared in the frontmatter are started (with reference counting — see below).
+6. The path policy is scoped to the project directory: writes are restricted to the active project's subtree. The agent can still read from any directory freely. Writes to `projects/` outside the active project, and all writes to `archive/`, are rejected.
+7. Project-scoped skills (in the project's `skills/` subdirectory) are discovered and added to the available skill index.
 
 **Inactive** means the agent knows the entry exists (name and description from the scan) but none of its contents or capabilities are loaded.
 

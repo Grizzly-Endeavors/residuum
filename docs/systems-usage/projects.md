@@ -18,10 +18,11 @@ Activation is agent-autonomous. The agent decides to activate a project based on
 **What happens on activation:**
 1. PROJECT.md frontmatter and body loaded
 2. Manifest built by scanning subdirectories
-3. Tool filter updated to the project's listed tools (plus always-allowed tools)
-4. MCP servers from frontmatter started
-5. Path policy scoped to the project directory
-6. Project skills added to the skill index
+3. Recent session logs (~2000 tokens from `notes/log/`) loaded for immediate continuity context
+4. Tool filter updated to the project's listed tools (plus always-allowed tools)
+5. MCP servers from frontmatter started
+6. Path policy scoped to the project directory
+7. Project skills added to the skill index
 
 Note: Files beyond PROJECT.md are NOT loaded, they must be read by the agent.
 
@@ -76,6 +77,6 @@ This ensures the agent always records what it was working on and what state thin
 ## Interaction with Other Systems
 
 - **Memory**: Episodes carry a `context` field tagging the active project, enabling filtered search by project via `project_context` on `memory_search`.
-- **Skills**: Project skills (in `projects/<name>/skills/`) are discovered during activation and removed when the project deactivates. Project-source skills have lowest priority in deduplication.
+- **Skills**: Project skills (in `projects/<name>/skills/`) are discovered during activation and removed when the project deactivates. Project-source skills have **highest** priority in deduplication (project > workspace > user-global > bundled).
 - **MCP**: MCP servers defined in PROJECT.md frontmatter use reference counting — multiple sub-agents can have the same project active simultaneously without premature teardown.
 - **Background tasks**: If a sub-agent's turn loop ends with a project still active, the gateway force-deactivates with an auto-generated log entry.
