@@ -4,4 +4,5 @@ Cargo.lock
 .DS_Store
 .env
 .vscode/
+.claude/worktrees/
 reference-mats/
