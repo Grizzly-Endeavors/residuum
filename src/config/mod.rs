@@ -10,6 +10,7 @@ mod constants;
 mod deserialize;
 mod provider;
 mod resolve;
+mod secrets;
 mod types;
 pub mod wizard;
 
@@ -26,6 +27,7 @@ pub(crate) use constants::{
     DEFAULT_REFLECTOR_THRESHOLD,
 };
 pub use provider::{ModelSpec, ProviderKind, ProviderSpec};
+pub use secrets::SecretStore;
 pub use types::{
     BackgroundConfig, BackgroundModelTier, BackgroundModelsConfig, DiscordConfig,
     ExternalChannelConfig, ExternalChannelKind, GatewayConfig, McpConfig, MemoryConfig,
@@ -188,7 +190,7 @@ impl Config {
             None
         };
 
-        let mut cfg = resolve::from_file_and_env(file_config.as_ref())?;
+        let mut cfg = resolve::from_file_and_env(file_config.as_ref(), config_dir)?;
         cfg.config_dir = config_dir.to_path_buf();
         Ok(cfg)
     }
@@ -197,6 +199,7 @@ impl Config {
     ///
     /// Parses the TOML into the raw config structure, then runs full resolution
     /// to catch semantic errors (bad provider names, missing timezone, etc.).
+    /// Uses an empty secret store since validation doesn't need real secrets.
     ///
     /// # Errors
     /// Returns a human-readable error string if validation fails.
@@ -204,7 +207,9 @@ impl Config {
         let file = toml::from_str::<deserialize::ConfigFile>(contents)
             .map_err(|e| format!("TOML parse error: {e}"))?;
 
-        resolve::from_file_and_env(Some(&file)).map_err(|e| format!("{e}"))?;
+        // Use a temp dir for validation — secrets aren't needed for structural checks
+        let temp_dir = std::env::temp_dir().join("ironclaw-validate");
+        resolve::from_file_and_env(Some(&file), &temp_dir).map_err(|e| format!("{e}"))?;
         Ok(())
     }
 }

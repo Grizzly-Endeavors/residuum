@@ -20,6 +20,7 @@ use super::deserialize::{
     WebhookConfigFile,
 };
 use super::provider::{ModelSpec, ProviderKind, ProviderSpec};
+use super::secrets::SecretStore;
 use super::types::{
     BackgroundConfig, BackgroundModelsConfig, DiscordConfig, ExternalChannelConfig,
     ExternalChannelKind, GatewayConfig, McpConfig, MemoryConfig, NotificationsConfig, SearchConfig,
@@ -35,9 +36,13 @@ use super::types::{
     clippy::too_many_lines,
     reason = "config resolution is a single sequential pipeline; splitting would obscure the precedence chain"
 )]
-pub(super) fn from_file_and_env(file: Option<&ConfigFile>) -> Result<Config, IronclawError> {
+pub(super) fn from_file_and_env(
+    file: Option<&ConfigFile>,
+    config_dir: &Path,
+) -> Result<Config, IronclawError> {
     warn_deprecated_env_vars();
 
+    let secrets = SecretStore::load(config_dir)?;
     let providers_map = file.and_then(|f| f.providers.as_ref());
     let models = file.and_then(|f| f.models.as_ref());
 
@@ -47,7 +52,7 @@ pub(super) fn from_file_and_env(file: Option<&ConfigFile>) -> Result<Config, Iro
         .or_else(|| models.and_then(|m| m.main.clone()))
         .unwrap_or_else(|| "anthropic/claude-sonnet-4-6".to_string());
 
-    let mut main = resolve_model_string(&main_model_str, providers_map)?;
+    let mut main = resolve_model_string(&main_model_str, providers_map, &secrets)?;
 
     // IRONCLAW_PROVIDER_URL overrides main provider URL only
     if let Ok(url) = std::env::var("IRONCLAW_PROVIDER_URL") {
@@ -62,23 +67,26 @@ pub(super) fn from_file_and_env(file: Option<&ConfigFile>) -> Result<Config, Iro
         default_str.as_deref(),
         &main,
         providers_map,
+        &secrets,
     )?;
     let reflector = resolve_role(
         models.and_then(|m| m.reflector.as_deref()),
         default_str.as_deref(),
         &main,
         providers_map,
+        &secrets,
     )?;
     let pulse_spec = resolve_role(
         models.and_then(|m| m.pulse.as_deref()),
         default_str.as_deref(),
         &main,
         providers_map,
+        &secrets,
     )?;
     // Resolve embedding: models.embedding only, no fallback to default or main
     let embedding = models
         .and_then(|m| m.embedding.as_deref())
-        .map(|s| resolve_model_string(s, providers_map))
+        .map(|s| resolve_model_string(s, providers_map, &secrets))
         .transpose()?;
     if let Some(ref spec) = embedding
         && spec.model.kind == ProviderKind::Anthropic
@@ -132,14 +140,18 @@ pub(super) fn from_file_and_env(file: Option<&ConfigFile>) -> Result<Config, Iro
         .unwrap_or(true);
 
     let gateway = resolve_gateway_config(file.and_then(|f| f.gateway.as_ref()));
-    let discord = resolve_discord_config(file.and_then(|f| f.discord.as_ref()));
-    let webhook = resolve_webhook_config(file.and_then(|f| f.webhook.as_ref()));
+    let discord = resolve_discord_config(file.and_then(|f| f.discord.as_ref()), &secrets);
+    let webhook = resolve_webhook_config(file.and_then(|f| f.webhook.as_ref()), &secrets);
     let skills = resolve_skills_config(file.and_then(|f| f.skills.as_ref()), &workspace_dir);
     let mcp = resolve_mcp_config(file.and_then(|f| f.mcp.as_ref()));
 
-    let notifications = resolve_notifications_config(file.and_then(|f| f.notifications.as_ref()));
-    let background =
-        resolve_background_config(file.and_then(|f| f.background.as_ref()), providers_map)?;
+    let notifications =
+        resolve_notifications_config(file.and_then(|f| f.notifications.as_ref()), &secrets);
+    let background = resolve_background_config(
+        file.and_then(|f| f.background.as_ref()),
+        providers_map,
+        &secrets,
+    )?;
 
     let retry = {
         let r = file.and_then(|f| f.retry.as_ref());
@@ -218,6 +230,7 @@ pub(super) fn from_file_and_env(file: Option<&ConfigFile>) -> Result<Config, Iro
 fn resolve_model_string(
     model_str: &str,
     providers_map: Option<&HashMap<String, ProviderEntryFile>>,
+    secrets: &SecretStore,
 ) -> Result<ProviderSpec, IronclawError> {
     let (provider_part, model_name) = model_str.split_once('/').ok_or_else(|| {
         IronclawError::Config(format!(
@@ -247,7 +260,8 @@ fn resolve_model_string(
 
         let api_key = entry
             .api_key
-            .clone()
+            .as_deref()
+            .and_then(|raw| resolve_secret_value(raw, secrets))
             .or_else(|| provider_api_key_env(kind))
             .or_else(|| std::env::var("IRONCLAW_API_KEY").ok());
 
@@ -295,12 +309,13 @@ fn resolve_role(
     default_str: Option<&str>,
     main: &ProviderSpec,
     providers_map: Option<&HashMap<String, ProviderEntryFile>>,
+    secrets: &SecretStore,
 ) -> Result<ProviderSpec, IronclawError> {
     if let Some(s) = role_str {
-        return resolve_model_string(s, providers_map);
+        return resolve_model_string(s, providers_map, secrets);
     }
     if let Some(s) = default_str {
-        return resolve_model_string(s, providers_map);
+        return resolve_model_string(s, providers_map, secrets);
     }
     Ok(main.clone())
 }
@@ -333,14 +348,17 @@ fn resolve_gateway_config(section: Option<&GatewayConfigFile>) -> GatewayConfig 
 /// Resolve Discord configuration from TOML section and environment.
 ///
 /// Token resolution: `IRONCLAW_DISCORD_TOKEN` env > `token` field in TOML (with
-/// `${ENV_VAR}` expansion) > `None` if section is absent or no token found.
-fn resolve_discord_config(section: Option<&DiscordConfigFile>) -> Option<DiscordConfig> {
+/// `${ENV_VAR}` / `secret:name` expansion) > `None` if section is absent or no token found.
+fn resolve_discord_config(
+    section: Option<&DiscordConfigFile>,
+    secrets: &SecretStore,
+) -> Option<DiscordConfig> {
     let token = std::env::var("IRONCLAW_DISCORD_TOKEN")
         .ok()
         .or_else(|| {
             section
                 .and_then(|s| s.token.as_ref())
-                .and_then(|t| expand_env_token(t))
+                .and_then(|t| resolve_secret_value(t, secrets))
         })
         .filter(|t| !t.is_empty());
 
@@ -373,12 +391,29 @@ fn expand_env_token(raw: &str) -> Option<String> {
     }
 }
 
+/// Resolve a secret reference. Supports three modes:
+/// - `${ENV_VAR}` → environment variable lookup
+/// - `secret:name` → encrypted secrets file lookup
+/// - Anything else → literal string passthrough
+fn resolve_secret_value(raw: &str, secrets: &SecretStore) -> Option<String> {
+    if let Some(name) = raw.strip_prefix("secret:") {
+        return secrets.get(name).map(String::from);
+    }
+    expand_env_token(raw)
+}
+
 /// Resolve webhook configuration from TOML section.
-fn resolve_webhook_config(section: Option<&WebhookConfigFile>) -> WebhookConfig {
+fn resolve_webhook_config(
+    section: Option<&WebhookConfigFile>,
+    secrets: &SecretStore,
+) -> WebhookConfig {
     match section {
         Some(s) => WebhookConfig {
             enabled: s.enabled.unwrap_or(false),
-            secret: s.secret.clone(),
+            secret: s
+                .secret
+                .as_deref()
+                .and_then(|raw| resolve_secret_value(raw, secrets)),
         },
         None => WebhookConfig::default(),
     }
@@ -476,7 +511,10 @@ fn resolve_search_config(section: Option<&SearchConfigFile>) -> SearchConfig {
 }
 
 /// Resolve notification channel configuration from TOML section.
-fn resolve_notifications_config(section: Option<&NotificationsConfigFile>) -> NotificationsConfig {
+fn resolve_notifications_config(
+    section: Option<&NotificationsConfigFile>,
+    secrets: &SecretStore,
+) -> NotificationsConfig {
     let Some(section) = section else {
         return NotificationsConfig::default();
     };
@@ -489,7 +527,11 @@ fn resolve_notifications_config(section: Option<&NotificationsConfigFile>) -> No
     for (name, entry) in channels_map {
         match entry.kind.as_str() {
             "ntfy" => {
-                let Some(url) = entry.url.clone() else {
+                let Some(url) = entry
+                    .url
+                    .as_deref()
+                    .and_then(|raw| resolve_secret_value(raw, secrets))
+                else {
                     eprintln!(
                         "warning: [notifications.channels.{name}] type=ntfy requires 'url' field, skipping"
                     );
@@ -511,7 +553,11 @@ fn resolve_notifications_config(section: Option<&NotificationsConfigFile>) -> No
                 });
             }
             "webhook" => {
-                let Some(url) = entry.url.clone() else {
+                let Some(url) = entry
+                    .url
+                    .as_deref()
+                    .and_then(|raw| resolve_secret_value(raw, secrets))
+                else {
                     eprintln!(
                         "warning: [notifications.channels.{name}] type=webhook requires 'url' field, skipping"
                     );
@@ -520,7 +566,15 @@ fn resolve_notifications_config(section: Option<&NotificationsConfigFile>) -> No
                 let headers: Vec<(String, String)> = entry
                     .headers
                     .as_ref()
-                    .map(|h| h.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
+                    .map(|h| {
+                        h.iter()
+                            .map(|(k, v)| {
+                                let resolved =
+                                    resolve_secret_value(v, secrets).unwrap_or_else(|| v.clone());
+                                (k.clone(), resolved)
+                            })
+                            .collect()
+                    })
                     .unwrap_or_default();
                 channels.push(ExternalChannelConfig {
                     name: name.clone(),
@@ -550,6 +604,7 @@ fn resolve_notifications_config(section: Option<&NotificationsConfigFile>) -> No
 fn resolve_background_config(
     section: Option<&BackgroundConfigFile>,
     providers_map: Option<&HashMap<String, ProviderEntryFile>>,
+    secrets: &SecretStore,
 ) -> Result<BackgroundConfig, IronclawError> {
     let Some(section) = section else {
         return Ok(BackgroundConfig::default());
@@ -559,15 +614,15 @@ fn resolve_background_config(
 
     let small = models_section
         .and_then(|m| m.small.as_deref())
-        .map(|s| resolve_model_string(s, providers_map))
+        .map(|s| resolve_model_string(s, providers_map, secrets))
         .transpose()?;
     let medium = models_section
         .and_then(|m| m.medium.as_deref())
-        .map(|s| resolve_model_string(s, providers_map))
+        .map(|s| resolve_model_string(s, providers_map, secrets))
         .transpose()?;
     let large = models_section
         .and_then(|m| m.large.as_deref())
-        .map(|s| resolve_model_string(s, providers_map))
+        .map(|s| resolve_model_string(s, providers_map, secrets))
         .transpose()?;
 
     Ok(BackgroundConfig {
@@ -616,15 +671,31 @@ fn provider_api_key_env(kind: ProviderKind) -> Option<String> {
 
 #[cfg(test)]
 #[expect(clippy::unwrap_used, reason = "test code uses unwrap for clarity")]
+#[expect(
+    unsafe_code,
+    reason = "std::env::set_var/remove_var require unsafe in edition 2024"
+)]
 mod tests {
     use super::super::constants::DEFAULT_ANTHROPIC_URL;
     use super::*;
+
+    /// Create an empty `SecretStore` for tests that don't need real secrets.
+    fn empty_secrets() -> SecretStore {
+        let dir = std::env::temp_dir().join("ironclaw-test-empty-secrets");
+        SecretStore::load(&dir).unwrap()
+    }
+
+    /// Create a temp dir for `from_file_and_env` calls.
+    fn test_config_dir() -> std::path::PathBuf {
+        std::env::temp_dir().join("ironclaw-test-config")
+    }
 
     // ── Provider / model resolution ───────────────────────────────────────────
 
     #[test]
     fn implicit_provider_resolution() {
-        let spec = resolve_model_string("anthropic/claude-sonnet-4-6", None).unwrap();
+        let secrets = empty_secrets();
+        let spec = resolve_model_string("anthropic/claude-sonnet-4-6", None, &secrets).unwrap();
         assert_eq!(spec.model.kind, ProviderKind::Anthropic);
         assert_eq!(spec.model.model, "claude-sonnet-4-6");
         assert_eq!(spec.provider_url, DEFAULT_ANTHROPIC_URL);
@@ -633,6 +704,7 @@ mod tests {
 
     #[test]
     fn explicit_provider_resolution() {
+        let secrets = empty_secrets();
         let mut providers = HashMap::new();
         providers.insert(
             "my-claude".to_string(),
@@ -643,7 +715,8 @@ mod tests {
             },
         );
 
-        let spec = resolve_model_string("my-claude/claude-sonnet-4-6", Some(&providers)).unwrap();
+        let spec = resolve_model_string("my-claude/claude-sonnet-4-6", Some(&providers), &secrets)
+            .unwrap();
         assert_eq!(spec.model.kind, ProviderKind::Anthropic);
         assert_eq!(spec.model.model, "claude-sonnet-4-6");
         assert_eq!(spec.name, "my-claude");
@@ -653,7 +726,8 @@ mod tests {
 
     #[test]
     fn unknown_implicit_provider_errors() {
-        let result = resolve_model_string("foobar/some-model", None);
+        let secrets = empty_secrets();
+        let result = resolve_model_string("foobar/some-model", None, &secrets);
         assert!(result.is_err(), "unknown implicit provider should error");
         let err = result.unwrap_err().to_string();
         assert!(
@@ -664,6 +738,7 @@ mod tests {
 
     #[test]
     fn explicit_provider_url_override() {
+        let secrets = empty_secrets();
         let mut providers = HashMap::new();
         providers.insert(
             "cerebras".to_string(),
@@ -674,7 +749,7 @@ mod tests {
             },
         );
 
-        let spec = resolve_model_string("cerebras/llama-4", Some(&providers)).unwrap();
+        let spec = resolve_model_string("cerebras/llama-4", Some(&providers), &secrets).unwrap();
         assert_eq!(spec.model.kind, ProviderKind::OpenAi);
         assert_eq!(spec.provider_url, "https://api.cerebras.ai/v1");
     }
@@ -691,7 +766,7 @@ main = "anthropic/claude-sonnet-4-6"
 default = "anthropic/claude-haiku-4-5"
 "#;
         let file: ConfigFile = toml::from_str(toml_str).unwrap();
-        let cfg = from_file_and_env(Some(&file)).unwrap();
+        let cfg = from_file_and_env(Some(&file), &test_config_dir()).unwrap();
         // observer was not set, so it falls back to default
         assert_eq!(cfg.observer.model.model, "claude-haiku-4-5");
         assert_eq!(cfg.reflector.model.model, "claude-haiku-4-5");
@@ -711,7 +786,7 @@ default = "anthropic/claude-haiku-4-5"
 observer = "gemini/gemini-3.0-flash"
 "#;
         let file: ConfigFile = toml::from_str(toml_str).unwrap();
-        let cfg = from_file_and_env(Some(&file)).unwrap();
+        let cfg = from_file_and_env(Some(&file), &test_config_dir()).unwrap();
         assert_eq!(
             cfg.observer.model.model, "gemini-3.0-flash",
             "explicit observer should override default"
@@ -731,7 +806,7 @@ timezone = "UTC"
 main = "anthropic/claude-sonnet-4-6"
 "#;
         let file: ConfigFile = toml::from_str(toml_str).unwrap();
-        let cfg = from_file_and_env(Some(&file)).unwrap();
+        let cfg = from_file_and_env(Some(&file), &test_config_dir()).unwrap();
         assert_eq!(cfg.main.model.model, "claude-sonnet-4-6");
         assert_eq!(cfg.observer.model.model, "claude-sonnet-4-6");
         assert_eq!(cfg.reflector.model.model, "claude-sonnet-4-6");
@@ -786,7 +861,7 @@ url = "https://api.cerebras.ai/v1"
 main = "cerebras/llama-4"
 "#;
         let file: ConfigFile = toml::from_str(toml_str).unwrap();
-        let cfg = from_file_and_env(Some(&file)).unwrap();
+        let cfg = from_file_and_env(Some(&file), &test_config_dir()).unwrap();
         assert_eq!(cfg.main.model.kind, ProviderKind::OpenAi);
         assert_eq!(cfg.main.provider_url, "https://api.cerebras.ai/v1");
     }
@@ -804,7 +879,7 @@ observer_threshold_tokens = 20000
 reflector_threshold_tokens = 50000
 "#;
         let file: ConfigFile = toml::from_str(toml_str).unwrap();
-        let cfg = from_file_and_env(Some(&file)).unwrap();
+        let cfg = from_file_and_env(Some(&file), &test_config_dir()).unwrap();
         assert_eq!(cfg.memory.observer_threshold_tokens, 20000);
         assert_eq!(cfg.memory.reflector_threshold_tokens, 50000);
     }
@@ -818,7 +893,7 @@ timezone = "UTC"
 main = "anthropic/claude-sonnet-4-6"
 "#;
         let file: ConfigFile = toml::from_str(toml_str).unwrap();
-        let cfg = from_file_and_env(Some(&file)).unwrap();
+        let cfg = from_file_and_env(Some(&file), &test_config_dir()).unwrap();
         assert_eq!(
             cfg.memory.observer_threshold_tokens,
             DEFAULT_OBSERVER_THRESHOLD
@@ -831,7 +906,7 @@ main = "anthropic/claude-sonnet-4-6"
 
     #[test]
     fn config_no_timezone_errors() {
-        let result = from_file_and_env(None);
+        let result = from_file_and_env(None, &test_config_dir());
         assert!(result.is_err(), "missing timezone should error");
         let err = result.unwrap_err().to_string();
         assert!(
@@ -845,7 +920,7 @@ main = "anthropic/claude-sonnet-4-6"
         let toml_str =
             "timezone = \"America/New_York\"\n\n[models]\nmain = \"anthropic/claude-sonnet-4-6\"\n";
         let file: ConfigFile = toml::from_str(toml_str).unwrap();
-        let cfg = from_file_and_env(Some(&file)).unwrap();
+        let cfg = from_file_and_env(Some(&file), &test_config_dir()).unwrap();
         assert_eq!(
             cfg.timezone.name(),
             "America/New_York",
@@ -858,7 +933,7 @@ main = "anthropic/claude-sonnet-4-6"
         let toml_str =
             "timezone = \"Not/A/Timezone\"\n\n[models]\nmain = \"anthropic/claude-sonnet-4-6\"\n";
         let file: ConfigFile = toml::from_str(toml_str).unwrap();
-        let result = from_file_and_env(Some(&file));
+        let result = from_file_and_env(Some(&file), &test_config_dir());
         assert!(result.is_err(), "invalid timezone should error");
     }
 
@@ -871,7 +946,7 @@ timezone = "UTC"
 main = "anthropic/claude-sonnet-4-6"
 "#;
         let file: ConfigFile = toml::from_str(toml_str).unwrap();
-        let cfg = from_file_and_env(Some(&file)).unwrap();
+        let cfg = from_file_and_env(Some(&file), &test_config_dir()).unwrap();
         assert!(cfg.pulse_enabled, "pulse should default to enabled");
     }
 
@@ -884,7 +959,7 @@ timezone = "UTC"
 main = "anthropic/claude-sonnet-4-6"
 "#;
         let file: ConfigFile = toml::from_str(toml_str).unwrap();
-        let cfg = from_file_and_env(Some(&file)).unwrap();
+        let cfg = from_file_and_env(Some(&file), &test_config_dir()).unwrap();
         assert!(
             cfg.discord.is_none(),
             "no [discord] section should yield None"
@@ -902,7 +977,7 @@ main = "anthropic/claude-sonnet-4-6"
 [discord]
 "#;
         let file: ConfigFile = toml::from_str(toml_str).unwrap();
-        let cfg = from_file_and_env(Some(&file)).unwrap();
+        let cfg = from_file_and_env(Some(&file), &test_config_dir()).unwrap();
         assert!(
             cfg.discord.is_none(),
             "[discord] with no token should yield None"
@@ -921,7 +996,7 @@ main = "anthropic/claude-sonnet-4-6"
 token = "my-bot-token"
 "#;
         let file: ConfigFile = toml::from_str(toml_str).unwrap();
-        let cfg = from_file_and_env(Some(&file)).unwrap();
+        let cfg = from_file_and_env(Some(&file), &test_config_dir()).unwrap();
         assert!(cfg.discord.is_some(), "[discord] with token should be Some");
         assert_eq!(
             cfg.discord.as_ref().map(|d| d.token.as_str()),
@@ -939,7 +1014,7 @@ timezone = "UTC"
 main = "anthropic/claude-sonnet-4-6"
 "#;
         let file: ConfigFile = toml::from_str(toml_str).unwrap();
-        let cfg = from_file_and_env(Some(&file)).unwrap();
+        let cfg = from_file_and_env(Some(&file), &test_config_dir()).unwrap();
         assert!(!cfg.webhook.enabled, "webhook should default to disabled");
         assert!(
             cfg.webhook.secret.is_none(),
@@ -960,7 +1035,7 @@ enabled = true
 secret = "my-secret"
 "#;
         let file: ConfigFile = toml::from_str(toml_str).unwrap();
-        let cfg = from_file_and_env(Some(&file)).unwrap();
+        let cfg = from_file_and_env(Some(&file), &test_config_dir()).unwrap();
         assert!(cfg.webhook.enabled, "webhook should be enabled");
         assert_eq!(
             cfg.webhook.secret.as_deref(),
@@ -978,7 +1053,7 @@ timezone = "UTC"
 main = "anthropic/claude-sonnet-4-6"
 "#;
         let file: ConfigFile = toml::from_str(toml_str).unwrap();
-        let cfg = from_file_and_env(Some(&file)).unwrap();
+        let cfg = from_file_and_env(Some(&file), &test_config_dir()).unwrap();
         assert_eq!(
             cfg.memory.observer_cooldown_secs, DEFAULT_OBSERVER_COOLDOWN_SECS,
             "cooldown should default"
@@ -1002,7 +1077,7 @@ observer_cooldown_secs = 60
 observer_force_threshold_tokens = 50000
 "#;
         let file: ConfigFile = toml::from_str(toml_str).unwrap();
-        let cfg = from_file_and_env(Some(&file)).unwrap();
+        let cfg = from_file_and_env(Some(&file), &test_config_dir()).unwrap();
         assert_eq!(
             cfg.memory.observer_cooldown_secs, 60,
             "cooldown should be custom"
@@ -1025,7 +1100,7 @@ main = "anthropic/claude-sonnet-4-6"
 enabled = false
 "#;
         let file: ConfigFile = toml::from_str(toml_str).unwrap();
-        let cfg = from_file_and_env(Some(&file)).unwrap();
+        let cfg = from_file_and_env(Some(&file), &test_config_dir()).unwrap();
         assert!(!cfg.pulse_enabled);
     }
 
@@ -1040,7 +1115,7 @@ timezone = "UTC"
 main = "anthropic/claude-sonnet-4-6"
 "#;
         let file: ConfigFile = toml::from_str(toml_str).unwrap();
-        let cfg = from_file_and_env(Some(&file)).unwrap();
+        let cfg = from_file_and_env(Some(&file), &test_config_dir()).unwrap();
         assert!(
             cfg.mcp.servers.is_empty(),
             "mcp servers should default to empty"
@@ -1064,7 +1139,7 @@ env = { MCP_LOG = "debug" }
 command = "mcp-server-git"
 "#;
         let file: ConfigFile = toml::from_str(toml_str).unwrap();
-        let cfg = from_file_and_env(Some(&file)).unwrap();
+        let cfg = from_file_and_env(Some(&file), &test_config_dir()).unwrap();
         assert_eq!(cfg.mcp.servers.len(), 2, "should have two mcp servers");
 
         let fs_server = cfg.mcp.servers.iter().find(|s| s.name == "filesystem");
@@ -1116,7 +1191,7 @@ main = "anthropic/claude-sonnet-4-6"
 [mcp]
 "#;
         let file: ConfigFile = toml::from_str(toml_str).unwrap();
-        let cfg = from_file_and_env(Some(&file)).unwrap();
+        let cfg = from_file_and_env(Some(&file), &test_config_dir()).unwrap();
         assert!(
             cfg.mcp.servers.is_empty(),
             "empty [mcp] section should yield no servers"
@@ -1135,7 +1210,7 @@ main = "anthropic/claude-sonnet-4-6"
 embedding = "openai/text-embedding-3-small"
 "#;
         let file: ConfigFile = toml::from_str(toml_str).unwrap();
-        let cfg = from_file_and_env(Some(&file)).unwrap();
+        let cfg = from_file_and_env(Some(&file), &test_config_dir()).unwrap();
         let emb = cfg.embedding.as_ref();
         assert!(emb.is_some(), "embedding should be resolved");
         let emb = emb.unwrap();
@@ -1153,7 +1228,7 @@ main = "anthropic/claude-sonnet-4-6"
 embedding = "anthropic/some-model"
 "#;
         let file: ConfigFile = toml::from_str(toml_str).unwrap();
-        let result = from_file_and_env(Some(&file));
+        let result = from_file_and_env(Some(&file), &test_config_dir());
         assert!(result.is_err(), "anthropic embedding should be rejected");
         let err = result.unwrap_err().to_string();
         assert!(
@@ -1171,7 +1246,7 @@ timezone = "UTC"
 main = "anthropic/claude-sonnet-4-6"
 "#;
         let file: ConfigFile = toml::from_str(toml_str).unwrap();
-        let cfg = from_file_and_env(Some(&file)).unwrap();
+        let cfg = from_file_and_env(Some(&file), &test_config_dir()).unwrap();
         assert!(
             cfg.embedding.is_none(),
             "missing embedding should yield None"
@@ -1188,7 +1263,7 @@ main = "anthropic/claude-sonnet-4-6"
 default = "openai/gpt-4o"
 "#;
         let file: ConfigFile = toml::from_str(toml_str).unwrap();
-        let cfg = from_file_and_env(Some(&file)).unwrap();
+        let cfg = from_file_and_env(Some(&file), &test_config_dir()).unwrap();
         assert!(
             cfg.embedding.is_none(),
             "embedding should not fall back to default"
@@ -1206,7 +1281,7 @@ timezone = "UTC"
 main = "anthropic/claude-sonnet-4-6"
 "#;
         let file: ConfigFile = toml::from_str(toml_str).unwrap();
-        let cfg = from_file_and_env(Some(&file)).unwrap();
+        let cfg = from_file_and_env(Some(&file), &test_config_dir()).unwrap();
         let search = &cfg.memory.search;
         assert!(
             (search.vector_weight - 0.7).abs() < f64::EPSILON,
@@ -1241,7 +1316,7 @@ min_score = 0.2
 candidate_multiplier = 8
 "#;
         let file: ConfigFile = toml::from_str(toml_str).unwrap();
-        let cfg = from_file_and_env(Some(&file)).unwrap();
+        let cfg = from_file_and_env(Some(&file), &test_config_dir()).unwrap();
         let search = &cfg.memory.search;
         assert!(
             (search.vector_weight - 0.5).abs() < f64::EPSILON,
@@ -1277,5 +1352,150 @@ typo_field = 0.5
             result.is_err(),
             "unknown field in [memory.search] should be rejected"
         );
+    }
+
+    // ── Secret / env expansion ──────────────────────────────────────────────
+
+    #[test]
+    fn expand_env_token_literal() {
+        assert_eq!(
+            expand_env_token("plain-string"),
+            Some("plain-string".to_string()),
+            "literal should pass through"
+        );
+    }
+
+    #[test]
+    fn expand_env_token_present() {
+        // SAFETY: test-only, single-threaded test environment
+        unsafe { std::env::set_var("IRONCLAW_TEST_SECRET_PRESENT", "found-it") };
+        let result = expand_env_token("${IRONCLAW_TEST_SECRET_PRESENT}");
+        assert_eq!(
+            result,
+            Some("found-it".to_string()),
+            "should resolve env var"
+        );
+        unsafe { std::env::remove_var("IRONCLAW_TEST_SECRET_PRESENT") };
+    }
+
+    #[test]
+    fn expand_env_token_missing() {
+        // SAFETY: test-only, single-threaded test environment
+        unsafe { std::env::remove_var("IRONCLAW_TEST_SECRET_MISSING") };
+        let result = expand_env_token("${IRONCLAW_TEST_SECRET_MISSING}");
+        assert!(result.is_none(), "missing env var should return None");
+    }
+
+    #[test]
+    fn resolve_secret_value_env() {
+        let secrets = empty_secrets();
+        // SAFETY: test-only, single-threaded test environment
+        unsafe { std::env::set_var("IRONCLAW_TEST_RSV_ENV", "env-val") };
+        let result = resolve_secret_value("${IRONCLAW_TEST_RSV_ENV}", &secrets);
+        assert_eq!(
+            result,
+            Some("env-val".to_string()),
+            "should dispatch to env expansion"
+        );
+        unsafe { std::env::remove_var("IRONCLAW_TEST_RSV_ENV") };
+    }
+
+    #[test]
+    fn resolve_secret_value_secret_store() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = SecretStore::load(dir.path()).unwrap();
+        store.set("test_key", "secret-val", dir.path()).unwrap();
+
+        let result = resolve_secret_value("secret:test_key", &store);
+        assert_eq!(
+            result,
+            Some("secret-val".to_string()),
+            "should dispatch to secret store"
+        );
+    }
+
+    #[test]
+    fn resolve_secret_value_literal() {
+        let secrets = empty_secrets();
+        let result = resolve_secret_value("plain-api-key", &secrets);
+        assert_eq!(
+            result,
+            Some("plain-api-key".to_string()),
+            "literal should pass through"
+        );
+    }
+
+    #[test]
+    fn provider_api_key_env_expansion() {
+        let secrets = empty_secrets();
+        // SAFETY: test-only, single-threaded test environment
+        unsafe { std::env::set_var("IRONCLAW_TEST_PROVIDER_KEY", "expanded-key") };
+
+        let mut providers = HashMap::new();
+        providers.insert(
+            "test-prov".to_string(),
+            ProviderEntryFile {
+                kind: "openai".to_string(),
+                api_key: Some("${IRONCLAW_TEST_PROVIDER_KEY}".to_string()),
+                url: None,
+            },
+        );
+
+        let spec = resolve_model_string("test-prov/gpt-4o", Some(&providers), &secrets).unwrap();
+        assert_eq!(
+            spec.api_key.as_deref(),
+            Some("expanded-key"),
+            "env var in api_key should expand"
+        );
+        unsafe { std::env::remove_var("IRONCLAW_TEST_PROVIDER_KEY") };
+    }
+
+    #[test]
+    fn provider_api_key_secret_ref() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = SecretStore::load(dir.path()).unwrap();
+        store.set("my_openai", "sk-from-store", dir.path()).unwrap();
+
+        let mut providers = HashMap::new();
+        providers.insert(
+            "test-prov".to_string(),
+            ProviderEntryFile {
+                kind: "openai".to_string(),
+                api_key: Some("secret:my_openai".to_string()),
+                url: None,
+            },
+        );
+
+        let spec = resolve_model_string("test-prov/gpt-4o", Some(&providers), &store).unwrap();
+        assert_eq!(
+            spec.api_key.as_deref(),
+            Some("sk-from-store"),
+            "secret:name in api_key should resolve from store"
+        );
+    }
+
+    #[test]
+    fn provider_api_key_missing_secret_falls_back() {
+        let secrets = empty_secrets();
+        // SAFETY: test-only, single-threaded test environment
+        unsafe { std::env::set_var("OPENAI_API_KEY", "fallback-env-key") };
+
+        let mut providers = HashMap::new();
+        providers.insert(
+            "test-prov".to_string(),
+            ProviderEntryFile {
+                kind: "openai".to_string(),
+                api_key: Some("secret:nonexistent".to_string()),
+                url: None,
+            },
+        );
+
+        let spec = resolve_model_string("test-prov/gpt-4o", Some(&providers), &secrets).unwrap();
+        assert_eq!(
+            spec.api_key.as_deref(),
+            Some("fallback-env-key"),
+            "missing secret should fall back to provider env var"
+        );
+        unsafe { std::env::remove_var("OPENAI_API_KEY") };
     }
 }

@@ -20,10 +20,17 @@ timezone = "America/New_York"
 # can reference in [models]. The `type` field selects the protocol:
 #   anthropic, openai, ollama, gemini
 #
+# API keys support three formats:
+#   Plaintext:     api_key = "sk-ant-..."
+#   Env var:       api_key = "${ANTHROPIC_API_KEY}"
+#   Secret store:  api_key = "secret:anthropic_key"
+#
+# Use 'ironclaw secret set anthropic_key' to store encrypted secrets.
+#
 # [providers]
 # cerebras = { type = "openai", api_key = "csk-...", url = "https://api.cerebras.ai/v1" }
-# claude-max = { type = "anthropic", api_key = "sk-ant-..." }
-# google-api = { type = "gemini", api_key = "AIza..." }
+# claude-max = { type = "anthropic", api_key = "${ANTHROPIC_API_KEY}" }
+# google-api = { type = "gemini", api_key = "secret:gemini_key" }
 
 # ── Models (role assignments) ─────────────────────────────────────────────────
 # Format: "provider_or_type/model_name"

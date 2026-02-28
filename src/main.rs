@@ -38,6 +38,7 @@ async fn run() -> Result<(), IronclawError> {
     let subcommand = args.get(1).map(String::as_str);
 
     match subcommand {
+        Some("secret") => run_secret_command(&args),
         Some("connect") => {
             init_cli_tracing();
             let url = args.get(2).map_or("ws://127.0.0.1:7700/ws", String::as_str);
@@ -219,7 +220,7 @@ async fn run() -> Result<(), IronclawError> {
             Ok(())
         }
         Some(other) => Err(IronclawError::Config(format!(
-            "unknown subcommand '{other}', expected one of: serve, connect, logs, setup"
+            "unknown subcommand '{other}', expected one of: serve, connect, logs, setup, secret"
         ))),
     }
 }
@@ -636,6 +637,71 @@ fn run_setup_command(args: &[String]) -> Result<(), IronclawError> {
         Err(err) => {
             eprintln!("warning: config was written but validation failed: {err}");
             eprintln!("you may need to edit {} manually", config_path.display());
+        }
+    }
+
+    Ok(())
+}
+
+/// Run the `secret` subcommand — manage encrypted secret storage.
+///
+/// Subcommands:
+/// - `ironclaw secret set <name> [value]` — store a secret (prompts for value if omitted)
+/// - `ironclaw secret list` — list stored secret names
+/// - `ironclaw secret delete <name>` — remove a secret
+fn run_secret_command(args: &[String]) -> Result<(), IronclawError> {
+    use ironclaw::config::SecretStore;
+
+    let config_dir = Config::config_dir()?;
+    let sub = args.get(2).map(String::as_str);
+
+    match sub {
+        Some("set") => {
+            let Some(name) = args.get(3) else {
+                eprintln!("usage: ironclaw secret set <name> [value]");
+                return Ok(());
+            };
+
+            let value = if let Some(v) = args.get(4) {
+                v.clone()
+            } else {
+                // Prompt for value with masked input
+                rpassword::prompt_password(format!("value for '{name}': ")).map_err(|e| {
+                    IronclawError::Config(format!("failed to read secret value: {e}"))
+                })?
+            };
+
+            let mut store = SecretStore::load(&config_dir)?;
+            store.set(name, &value, &config_dir)?;
+            eprintln!("secret '{name}' saved");
+        }
+        Some("list") => {
+            let store = SecretStore::load(&config_dir)?;
+            let names = store.names();
+            if names.is_empty() {
+                eprintln!("no secrets stored");
+            } else {
+                for name in &names {
+                    println!("{name}");
+                }
+            }
+        }
+        Some("delete") => {
+            let Some(name) = args.get(3) else {
+                eprintln!("usage: ironclaw secret delete <name>");
+                return Ok(());
+            };
+
+            let mut store = SecretStore::load(&config_dir)?;
+            store.delete(name, &config_dir)?;
+            eprintln!("secret '{name}' deleted");
+        }
+        _ => {
+            eprintln!("usage: ironclaw secret <set|list|delete>");
+            eprintln!();
+            eprintln!("  set <name> [value]  store a secret (prompts if value omitted)");
+            eprintln!("  list                list stored secret names");
+            eprintln!("  delete <name>       remove a secret");
         }
     }
 
