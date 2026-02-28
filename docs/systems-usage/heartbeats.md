@@ -44,6 +44,7 @@ pulses:
 | `schedule` | string | yes | Duration: `"30s"`, `"5m"`, `"2h"`, `"1d"` |
 | `active_hours` | string | no | `"HH:MM-HH:MM"` in configured timezone. Supports overnight windows (e.g. `"22:00-06:00"`). |
 | `agent` | string or null | no | See agent routing table below. |
+| `trigger_count` | integer or null | no | Max firings per active period. When set, firings are spaced evenly across the `active_hours` window. Omit for unlimited. |
 | `tasks` | array of objects | yes | Each task has `name` (string) and `prompt` (string). |
 
 ### Agent Routing
@@ -64,13 +65,37 @@ Sub-agent pulses include an instruction: if nothing actionable was found, return
 
 - The scheduler runs on a **60-second tick**, so precision is at best ~1 minute
 - HEARTBEAT.yml is **hot-reloaded** on every tick — changes take effect without restarting the gateway
-- Last-run timestamps should be persisted to disk so pulses resume their schedule across gateway restarts *(currently in-memory only — persistence is a pending code change)*
+- Last-run timestamps and run counts are persisted to `pulse_state.json` in the workspace, so pulses resume their schedule across gateway restarts. Missing or corrupt state files are treated as empty state (logged at warn level).
 - Multiple due pulses all fire simultaneously (subject to `max_concurrent` from `[background]` config)
+
+## Trigger Count
+
+The `trigger_count` field limits how many times a pulse fires within its `active_hours` window. When set, the scheduler spaces firings evenly across the active period with ±15% jitter (deterministic per pulse name and date).
+
+```yaml
+pulses:
+  - name: standup_check
+    enabled: true
+    schedule: "10m"           # minimum interval between fires
+    active_hours: "09:00-17:00"
+    trigger_count: 3          # fire at most 3 times across the 8h window
+    tasks:
+      - name: check
+        prompt: "Any blockers or updates?"
+```
+
+In this example, the 8-hour window divided by 3 gives ~2h40m spacing. The `schedule` field acts as a floor — the effective interval is `max(schedule, spacing_with_jitter)`.
+
+**Behavior:**
+- Run counts are tracked per-pulse in `pulse_state.json` alongside last-run timestamps
+- Counts reset when the active period rolls over (new calendar day, or last run was outside the current window)
+- If `trigger_count` is set without `active_hours`, the active period defaults to 24 hours
+- Omitting `trigger_count` (or setting it to null) means the pulse fires on its `schedule` interval with no cap
 
 ## Result Routing
 
 Pulse results are routed through NOTIFY.yml by **pulse name**. A pulse named `email_check` routes to whichever channels list `email_check` in their NOTIFY.yml entries.
 
-If a pulse name doesn't appear in any NOTIFY.yml channel, its results are silently dropped (in addition to HEARTBEAT_OK results).
+If a pulse name doesn't appear in any NOTIFY.yml channel, its results are dropped and a warn-level log is emitted to surface the misconfiguration.
 
 See [notifications.md](notifications.md) for the full routing model.

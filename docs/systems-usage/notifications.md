@@ -21,7 +21,7 @@ agent_wake:
   - urgent_alerts
 ```
 
-A single pulse name can appear in multiple channels — results are delivered to all of them. If a pulse name doesn't appear in any channel, results are silently dropped.
+A single pulse name can appear in multiple channels — results are delivered to all of them. If a pulse name doesn't appear in any channel, the result is dropped and a warn-level log is emitted (`"notification routed to zero channels"`) to surface the misconfiguration.
 
 NOTIFY.yml is re-read from disk on every `route()` call — changes take effect immediately without restart.
 

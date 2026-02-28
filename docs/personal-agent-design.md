@@ -255,7 +255,7 @@ inbox:
 
 Built-in channels: `agent_wake` (inject into feed + start turn if idle), `agent_feed` (inject into feed passively), `inbox` (store silently). External channels (ntfy, webhook, etc.) are defined in `config.toml` under `[notifications.channels]`.
 
-A task not listed in any channel is not routed — its result is silently discarded after transcript storage. HEARTBEAT_OK results (nothing actionable) are never routed regardless of channel configuration.
+A task not listed in any channel is not routed — the result is dropped after transcript storage and a warn-level log is emitted to surface the misconfiguration. HEARTBEAT_OK results (nothing actionable) are never routed regardless of channel configuration.
 
 #### Self-evolution
 

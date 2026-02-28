@@ -51,7 +51,7 @@ The file answers one question per channel: "what will this channel send me?"
 - `ntfy` will push-notify for `work_check`, `deploy_check`, and `github_prs` pulse results.
 - `system_health` pulse results go to the inbox and nowhere else.
 
-A pulse can appear in multiple channels. A pulse not listed in any channel is not routed — its result is silently discarded after transcript storage.
+A pulse can appear in multiple channels. A pulse not listed in any channel is not routed — the result is dropped after transcript storage and a warn-level log is emitted to surface the misconfiguration.
 
 ### Task name resolution
 
