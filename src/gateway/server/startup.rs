@@ -530,6 +530,8 @@ async fn backfill_embeddings(
 }
 
 /// Embed a single `.obs.json` file and insert into the vector store.
+///
+/// Skips the embedding API call if vectors already exist in the store.
 async fn backfill_obs_file(
     vs: &VectorStore,
     ep: &dyn EmbeddingProvider,
@@ -537,6 +539,13 @@ async fn backfill_obs_file(
 ) -> Result<(), IronclawError> {
     let (episode_id, date, observations) = parse_obs_file(path)?;
     if observations.is_empty() {
+        return Ok(());
+    }
+
+    // Check if vectors already exist (e.g. embedded inline but manifest wasn't updated)
+    let first_id = format!("{episode_id}-o0");
+    if vs.has_observation(&first_id)? {
+        tracing::debug!(episode_id, "skipping obs backfill — vectors already exist");
         return Ok(());
     }
 
@@ -551,6 +560,8 @@ async fn backfill_obs_file(
 }
 
 /// Embed a single `.idx.jsonl` file and insert into the vector store.
+///
+/// Skips the embedding API call if vectors already exist in the store.
 async fn backfill_idx_file(
     vs: &VectorStore,
     ep: &dyn EmbeddingProvider,
@@ -558,6 +569,17 @@ async fn backfill_idx_file(
 ) -> Result<(), IronclawError> {
     let chunks = read_idx_jsonl(path);
     if chunks.is_empty() {
+        return Ok(());
+    }
+
+    // Check if vectors already exist (e.g. embedded inline but manifest wasn't updated)
+    if let Some(first) = chunks.first()
+        && vs.has_chunk(&first.chunk_id)?
+    {
+        tracing::debug!(
+            chunk_id = first.chunk_id,
+            "skipping idx backfill — vectors already exist"
+        );
         return Ok(());
     }
 

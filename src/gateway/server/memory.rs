@@ -16,10 +16,18 @@ use crate::memory::recent_messages::{
 };
 use crate::memory::reflector::{Reflector, ReflectorConfig};
 use crate::memory::search::MemoryIndex;
-use crate::memory::types::Visibility;
+use crate::memory::types::{IndexManifest, ManifestFileEntry, Visibility};
 use crate::memory::vector_store::VectorStore;
 use crate::models::{EmbeddingProvider, SharedHttpClient, build_provider_from_provider_spec};
 use crate::workspace::layout::WorkspaceLayout;
+
+/// Date format for episode file paths: `YYYY-MM/DD`.
+fn episode_date_dir(date: &str) -> Option<String> {
+    // date is "YYYY-MM-DD" → "YYYY-MM/DD"
+    let year_month = date.get(..7)?;
+    let day = date.get(8..10)?;
+    Some(format!("{year_month}/{day}"))
+}
 
 /// Build observer and reflector from fully-resolved provider specs on `Config`.
 ///
@@ -154,7 +162,11 @@ pub(super) async fn execute_observation(
             }
 
             // Embed and store in vector index
-            embed_observation_result(&result, vector_store, embedding_provider).await;
+            let embedded =
+                embed_observation_result(&result, vector_store, embedding_provider).await;
+            if embedded {
+                mark_episode_embedded(layout, &result).await;
+            }
 
             run_reflector_if_needed(reflector, layout).await;
 
@@ -198,16 +210,19 @@ async fn run_reflector_if_needed(reflector: &Reflector, layout: &WorkspaceLayout
 
 /// Embed observations and chunks from an observer result into the vector store.
 ///
-/// Silently returns if no embedding provider or vector store is configured.
+/// Silently returns `false` if no embedding provider or vector store is configured.
 /// Embedding failures are reported as warnings, never fatal.
+/// Returns `true` if all embedding inserts succeeded.
 async fn embed_observation_result(
     result: &ObserveResult,
     vector_store: Option<&Arc<VectorStore>>,
     embedding_provider: Option<&Arc<dyn EmbeddingProvider>>,
-) {
+) -> bool {
     let (Some(vs), Some(ep)) = (vector_store, embedding_provider) else {
-        return;
+        return false;
     };
+
+    let mut all_ok = true;
 
     // Embed observations
     if !result.observations.is_empty() {
@@ -228,13 +243,20 @@ async fn embed_observation_result(
                 })
                 .await
                 {
-                    Ok(Err(e)) => eprintln!("warning: failed to insert observation vectors: {e}"),
-                    Err(e) => eprintln!("warning: observation vector insert task panicked: {e}"),
+                    Ok(Err(e)) => {
+                        eprintln!("warning: failed to insert observation vectors: {e}");
+                        all_ok = false;
+                    }
+                    Err(e) => {
+                        eprintln!("warning: observation vector insert task panicked: {e}");
+                        all_ok = false;
+                    }
                     Ok(Ok(_)) => {}
                 }
             }
             Err(e) => {
                 eprintln!("warning: failed to embed observations: {e}");
+                all_ok = false;
             }
         }
     }
@@ -250,16 +272,25 @@ async fn embed_observation_result(
                 match tokio::task::spawn_blocking(move || vs.insert_chunks(&chunks, &embeddings))
                     .await
                 {
-                    Ok(Err(e)) => eprintln!("warning: failed to insert chunk vectors: {e}"),
-                    Err(e) => eprintln!("warning: chunk vector insert task panicked: {e}"),
+                    Ok(Err(e)) => {
+                        eprintln!("warning: failed to insert chunk vectors: {e}");
+                        all_ok = false;
+                    }
+                    Err(e) => {
+                        eprintln!("warning: chunk vector insert task panicked: {e}");
+                        all_ok = false;
+                    }
                     Ok(Ok(_)) => {}
                 }
             }
             Err(e) => {
                 eprintln!("warning: failed to embed chunks: {e}");
+                all_ok = false;
             }
         }
     }
+
+    all_ok
 }
 
 /// Force an observation cycle regardless of token threshold.
@@ -357,7 +388,10 @@ pub(super) async fn run_forced_observe(
     }
 
     // Embed and store in vector index
-    embed_observation_result(&result, vector_store, embedding_provider).await;
+    let embedded = embed_observation_result(&result, vector_store, embedding_provider).await;
+    if embedded {
+        mark_episode_embedded(layout, &result).await;
+    }
 
     let reflected = match load_observation_log(&layout.observations_json()).await {
         Ok(log) if reflector.should_reflect(&log) => match reflector.reflect(layout).await {
@@ -395,6 +429,66 @@ pub(super) async fn run_forced_observe(
         .is_err()
     {
         tracing::trace!("no broadcast receivers for notice");
+    }
+}
+
+/// Mark an episode's `.obs.json` and `.idx.jsonl` as embedded in the manifest.
+///
+/// If a manifest entry already exists for the file, sets `embedded = true`.
+/// If no entry exists, creates one with the file's mtime, empty `doc_ids`, and `embedded = true`.
+/// Empty `doc_ids` is safe: the next startup `incremental_sync` will fill them in.
+async fn mark_episode_embedded(layout: &WorkspaceLayout, result: &ObserveResult) {
+    let manifest_path = layout.index_manifest_json();
+    let mut manifest = match IndexManifest::load(&manifest_path).await {
+        Ok(m) => m,
+        Err(e) => {
+            eprintln!("warning: failed to load manifest to mark embedded: {e}");
+            return;
+        }
+    };
+
+    let Some(date_dir) = episode_date_dir(&result.date) else {
+        eprintln!(
+            "warning: invalid date format in episode result: {}",
+            result.date
+        );
+        return;
+    };
+
+    let rel_paths = [
+        format!("episodes/{date_dir}/{}.obs.json", result.id),
+        format!("episodes/{date_dir}/{}.idx.jsonl", result.id),
+    ];
+
+    let memory_dir = layout.memory_dir();
+
+    for rel_path in &rel_paths {
+        if let Some(entry) = manifest.files.get_mut(rel_path.as_str()) {
+            entry.embedded = true;
+        } else {
+            // File was just created — read mtime from disk
+            let abs_path = memory_dir.join(rel_path);
+            let mtime = match std::fs::metadata(&abs_path) {
+                Ok(meta) => {
+                    let modified = meta.modified().unwrap_or(std::time::SystemTime::now());
+                    let dt: chrono::DateTime<chrono::Utc> = modified.into();
+                    dt.format("%Y-%m-%dT%H:%M:%S").to_string()
+                }
+                Err(_) => chrono::Utc::now().format("%Y-%m-%dT%H:%M:%S").to_string(),
+            };
+            manifest.files.insert(
+                rel_path.clone(),
+                ManifestFileEntry {
+                    mtime,
+                    doc_ids: Vec::new(),
+                    embedded: true,
+                },
+            );
+        }
+    }
+
+    if let Err(e) = manifest.save(&manifest_path).await {
+        eprintln!("warning: failed to save manifest after marking embedded: {e}");
     }
 }
 

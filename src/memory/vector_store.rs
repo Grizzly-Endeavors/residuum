@@ -158,17 +158,24 @@ impl VectorStore {
         for (i, (obs, emb)) in observations.iter().zip(embeddings.iter()).enumerate() {
             self.check_dim(emb)?;
             let doc_id = format!("{episode_id}-o{i}");
-            stmt.execute(rusqlite::params![
+            match stmt.execute(rusqlite::params![
                 doc_id,
                 episode_id,
                 date,
                 obs.project_context,
                 obs.content,
                 emb.as_bytes(),
-            ])
-            .map_err(|e| {
-                IronclawError::Memory(format!("failed to insert observation vector {doc_id}: {e}"))
-            })?;
+            ]) {
+                Ok(_) => {}
+                Err(ref e) if is_unique_violation(e) => {
+                    tracing::debug!(doc_id, "observation vector already exists, skipping");
+                }
+                Err(e) => {
+                    return Err(IronclawError::Memory(format!(
+                        "failed to insert observation vector {doc_id}: {e}"
+                    )));
+                }
+            }
             doc_ids.push(doc_id);
         }
 
@@ -209,7 +216,7 @@ impl VectorStore {
             self.check_dim(emb)?;
             let line_start_i64 = i64::try_from(chunk.line_start).unwrap_or(i64::MAX);
             let line_end_i64 = i64::try_from(chunk.line_end).unwrap_or(i64::MAX);
-            stmt.execute(rusqlite::params![
+            match stmt.execute(rusqlite::params![
                 chunk.chunk_id,
                 chunk.episode_id,
                 chunk.date,
@@ -218,13 +225,21 @@ impl VectorStore {
                 line_start_i64,
                 line_end_i64,
                 emb.as_bytes(),
-            ])
-            .map_err(|e| {
-                IronclawError::Memory(format!(
-                    "failed to insert chunk vector {}: {e}",
-                    chunk.chunk_id
-                ))
-            })?;
+            ]) {
+                Ok(_) => {}
+                Err(ref e) if is_unique_violation(e) => {
+                    tracing::debug!(
+                        chunk_id = chunk.chunk_id,
+                        "chunk vector already exists, skipping"
+                    );
+                }
+                Err(e) => {
+                    return Err(IronclawError::Memory(format!(
+                        "failed to insert chunk vector {}: {e}",
+                        chunk.chunk_id
+                    )));
+                }
+            }
             doc_ids.push(chunk.chunk_id.clone());
         }
 
@@ -292,6 +307,40 @@ impl VectorStore {
         Ok(())
     }
 
+    /// Check if an observation vector exists by its doc ID.
+    ///
+    /// # Errors
+    /// Returns an error if the query fails.
+    pub fn has_observation(&self, obs_id: &str) -> Result<bool, IronclawError> {
+        let conn = self.lock_conn()?;
+        let mut stmt = conn
+            .prepare_cached("SELECT 1 FROM obs_vectors WHERE obs_id = ?1 LIMIT 1")
+            .map_err(|e| {
+                IronclawError::Memory(format!("failed to prepare obs existence check: {e}"))
+            })?;
+        let exists = stmt
+            .exists(rusqlite::params![obs_id])
+            .map_err(|e| IronclawError::Memory(format!("obs existence check failed: {e}")))?;
+        Ok(exists)
+    }
+
+    /// Check if a chunk vector exists by its doc ID.
+    ///
+    /// # Errors
+    /// Returns an error if the query fails.
+    pub fn has_chunk(&self, chunk_id: &str) -> Result<bool, IronclawError> {
+        let conn = self.lock_conn()?;
+        let mut stmt = conn
+            .prepare_cached("SELECT 1 FROM chunk_vectors WHERE chunk_id = ?1 LIMIT 1")
+            .map_err(|e| {
+                IronclawError::Memory(format!("failed to prepare chunk existence check: {e}"))
+            })?;
+        let exists = stmt
+            .exists(rusqlite::params![chunk_id])
+            .map_err(|e| IronclawError::Memory(format!("chunk existence check failed: {e}")))?;
+        Ok(exists)
+    }
+
     /// Drop and recreate both tables, clearing all vector data.
     ///
     /// # Errors
@@ -322,6 +371,21 @@ impl VectorStore {
         }
         Ok(())
     }
+}
+
+/// Check if a rusqlite error is a UNIQUE constraint violation.
+///
+/// Handles both standard `SQLite` constraint errors and vec0 virtual table
+/// errors which report UNIQUE violations via extended error codes.
+fn is_unique_violation(err: &rusqlite::Error) -> bool {
+    // vec0 virtual tables use ConstraintViolation with a "UNIQUE constraint" message
+    if let rusqlite::Error::SqliteFailure(ffi_err, msg) = err {
+        return ffi_err.code == rusqlite::ffi::ErrorCode::ConstraintViolation
+            || msg
+                .as_deref()
+                .is_some_and(|m| m.contains("UNIQUE constraint"));
+    }
+    false
 }
 
 /// Create the vec0 virtual tables if they don't exist.
@@ -767,5 +831,104 @@ mod tests {
     fn delete_empty_ids_ok() {
         let (_dir, store) = create_test_store();
         store.delete_by_doc_ids(&[]).unwrap();
+    }
+
+    #[test]
+    fn has_observation_returns_false_when_missing() {
+        let (_dir, store) = create_test_store();
+        assert!(!store.has_observation("nonexistent").unwrap());
+    }
+
+    #[test]
+    fn has_observation_returns_true_when_present() {
+        let (_dir, store) = create_test_store();
+        let obs = vec![sample_observation("test content")];
+        let embeddings = vec![sample_embedding(0.1)];
+        store
+            .insert_observations("ep-001", "2026-02-19", &obs, &embeddings)
+            .unwrap();
+        assert!(store.has_observation("ep-001-o0").unwrap());
+    }
+
+    #[test]
+    fn has_chunk_returns_false_when_missing() {
+        let (_dir, store) = create_test_store();
+        assert!(!store.has_chunk("nonexistent").unwrap());
+    }
+
+    #[test]
+    fn has_chunk_returns_true_when_present() {
+        let (_dir, store) = create_test_store();
+        let chunks = vec![IndexChunk {
+            chunk_id: "ep-001-c0".to_string(),
+            episode_id: "ep-001".to_string(),
+            date: "2026-02-19".to_string(),
+            context: "ironclaw".to_string(),
+            line_start: 1,
+            line_end: 2,
+            content: "test content".to_string(),
+        }];
+        let embeddings = vec![sample_embedding(0.3)];
+        store.insert_chunks(&chunks, &embeddings).unwrap();
+        assert!(store.has_chunk("ep-001-c0").unwrap());
+    }
+
+    #[test]
+    fn duplicate_insert_observations_is_idempotent() {
+        let (_dir, store) = create_test_store();
+        let obs = vec![sample_observation("test content")];
+        let embeddings = vec![sample_embedding(0.1)];
+
+        let ids1 = store
+            .insert_observations("ep-001", "2026-02-19", &obs, &embeddings)
+            .unwrap();
+        // Second insert with same IDs should succeed (INSERT OR IGNORE)
+        let ids2 = store
+            .insert_observations("ep-001", "2026-02-19", &obs, &embeddings)
+            .unwrap();
+
+        assert_eq!(ids1, ids2, "should return same doc IDs");
+
+        // Should still only have one result when searching
+        let query = sample_embedding(0.1);
+        let results = store
+            .search(&query, 10, &VectorSearchFilters::default())
+            .unwrap();
+        assert_eq!(
+            results.len(),
+            1,
+            "duplicate insert should not create extra rows"
+        );
+    }
+
+    #[test]
+    fn duplicate_insert_chunks_is_idempotent() {
+        let (_dir, store) = create_test_store();
+        let chunks = vec![IndexChunk {
+            chunk_id: "ep-001-c0".to_string(),
+            episode_id: "ep-001".to_string(),
+            date: "2026-02-19".to_string(),
+            context: "ironclaw".to_string(),
+            line_start: 1,
+            line_end: 2,
+            content: "test content".to_string(),
+        }];
+        let embeddings = vec![sample_embedding(0.3)];
+
+        let ids1 = store.insert_chunks(&chunks, &embeddings).unwrap();
+        // Second insert with same IDs should succeed (INSERT OR IGNORE)
+        let ids2 = store.insert_chunks(&chunks, &embeddings).unwrap();
+
+        assert_eq!(ids1, ids2, "should return same doc IDs");
+
+        let query = sample_embedding(0.3);
+        let results = store
+            .search(&query, 10, &VectorSearchFilters::default())
+            .unwrap();
+        assert_eq!(
+            results.len(),
+            1,
+            "duplicate insert should not create extra rows"
+        );
     }
 }
