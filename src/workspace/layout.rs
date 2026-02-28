@@ -105,10 +105,28 @@ impl WorkspaceLayout {
         self.root.join("skills")
     }
 
+    /// Path to BOOTSTRAP.md -- first-run guidance, deleted after first conversation.
+    #[must_use]
+    pub fn bootstrap_md(&self) -> PathBuf {
+        self.root.join("BOOTSTRAP.md")
+    }
+
     /// Path to the subagent presets directory.
     #[must_use]
     pub fn subagents_dir(&self) -> PathBuf {
         self.root.join("subagents")
+    }
+
+    /// Path to the bundled `ironclaw-system` skill directory.
+    #[must_use]
+    pub fn ironclaw_system_skill_dir(&self) -> PathBuf {
+        self.root.join("skills/ironclaw-system")
+    }
+
+    /// Path to the bundled `ironclaw-getting-started` skill directory.
+    #[must_use]
+    pub fn ironclaw_getting_started_skill_dir(&self) -> PathBuf {
+        self.root.join("skills/ironclaw-getting-started")
     }
 
     /// Path to the projects directory for active project contexts.
@@ -270,6 +288,21 @@ mod tests {
             layout.subagents_dir(),
             PathBuf::from("/tmp/ws/subagents"),
             "subagents_dir path"
+        );
+        assert_eq!(
+            layout.bootstrap_md(),
+            PathBuf::from("/tmp/ws/BOOTSTRAP.md"),
+            "bootstrap_md path"
+        );
+        assert_eq!(
+            layout.ironclaw_system_skill_dir(),
+            PathBuf::from("/tmp/ws/skills/ironclaw-system"),
+            "ironclaw_system_skill_dir path"
+        );
+        assert_eq!(
+            layout.ironclaw_getting_started_skill_dir(),
+            PathBuf::from("/tmp/ws/skills/ironclaw-getting-started"),
+            "ironclaw_getting_started_skill_dir path"
         );
     }
 

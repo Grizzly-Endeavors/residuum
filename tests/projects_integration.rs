@@ -49,7 +49,7 @@ mod projects_integration {
     async fn setup() -> (tempfile::TempDir, WorkspaceLayout, SharedProjectState) {
         let dir = tempfile::tempdir().unwrap();
         let layout = WorkspaceLayout::new(dir.path().join("workspace"));
-        ensure_workspace(&layout, None).await.unwrap();
+        ensure_workspace(&layout, None, None).await.unwrap();
         let index = ProjectIndex::scan(&layout).await.unwrap();
         let state = Arc::new(tokio::sync::Mutex::new(ProjectState::new(
             index,

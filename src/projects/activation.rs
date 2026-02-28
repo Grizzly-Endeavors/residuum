@@ -245,7 +245,7 @@ mod tests {
     async fn setup_workspace_with_project() -> (tempfile::TempDir, WorkspaceLayout) {
         let dir = tempfile::tempdir().unwrap();
         let layout = WorkspaceLayout::new(dir.path().join("workspace"));
-        ensure_workspace(&layout, None).await.unwrap();
+        ensure_workspace(&layout, None, None).await.unwrap();
 
         let project_dir = layout.projects_dir().join("test-proj");
         tokio::fs::create_dir_all(project_dir.join("notes"))

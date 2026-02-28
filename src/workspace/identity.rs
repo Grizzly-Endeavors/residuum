@@ -19,6 +19,8 @@ pub struct IdentityFiles {
     pub memory: Option<String>,
     /// ENVIRONMENT.md -- local environment notes (optional).
     pub environment: Option<String>,
+    /// BOOTSTRAP.md -- first-run guidance (present only on first conversation).
+    pub bootstrap: Option<String>,
 }
 
 impl IdentityFiles {
@@ -36,6 +38,7 @@ impl IdentityFiles {
             user: read_optional(&layout.user_md()).await?,
             memory: read_optional(&layout.memory_md()).await?,
             environment: read_optional(&layout.environment_md()).await?,
+            bootstrap: read_optional(&layout.bootstrap_md()).await?,
         })
     }
 }
@@ -69,7 +72,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let layout = WorkspaceLayout::new(dir.path().join("workspace"));
 
-        ensure_workspace(&layout, None).await.unwrap();
+        ensure_workspace(&layout, None, None).await.unwrap();
         let identity = IdentityFiles::load(&layout).await.unwrap();
 
         assert!(identity.soul.is_some(), "soul should be loaded");
@@ -79,6 +82,25 @@ mod tests {
         assert!(
             identity.environment.is_none(),
             "environment should be None (not created by bootstrap)"
+        );
+        assert!(
+            identity.bootstrap.is_some(),
+            "bootstrap should be loaded on first run"
+        );
+    }
+
+    #[tokio::test]
+    async fn load_bootstrap_none_after_deletion() {
+        let dir = tempfile::tempdir().unwrap();
+        let layout = WorkspaceLayout::new(dir.path().join("workspace"));
+
+        ensure_workspace(&layout, None, None).await.unwrap();
+        tokio::fs::remove_file(layout.bootstrap_md()).await.unwrap();
+
+        let identity = IdentityFiles::load(&layout).await.unwrap();
+        assert!(
+            identity.bootstrap.is_none(),
+            "bootstrap should be None after file deletion"
         );
     }
 

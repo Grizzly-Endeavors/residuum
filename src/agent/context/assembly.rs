@@ -20,6 +20,7 @@ pub(in crate::agent) fn compute_context_breakdown(
     let identity_tokens = [
         identity.soul.as_deref(),
         identity.agents.as_deref(),
+        identity.bootstrap.as_deref(),
         identity.environment.as_deref(),
         identity.user.as_deref(),
         identity.memory.as_deref(),

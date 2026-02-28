@@ -103,20 +103,21 @@ pub(crate) fn build_subagent_system_content(
 /// Assembly order (designed to maximize prompt caching efficiency):
 /// 1. `SOUL.md`
 /// 2. `AGENTS.md`
-/// 3. `ENVIRONMENT.md`
-/// 4. `USER.md`
-/// 5. `MEMORY.md`
-/// 6. `OBSERVATION_LOG` (if present)
-/// 7. `RECENT_CONTEXT` (if present)
-/// 8. `SUBAGENTS_INDEX` (available presets listing)
-/// 9. `PROJECTS_INDEX` (always present after bootstrap)
-/// 10. `SKILLS_INDEX` (available skills listing)
-/// 11. `ACTIVE_PROJECT` (when a project is active)
-/// 12. `ACTIVE_SKILLS` (when skills are loaded)
+/// 3. `BOOTSTRAP.md` (first-run only, deleted after first conversation)
+/// 4. `ENVIRONMENT.md`
+/// 5. `USER.md`
+/// 6. `MEMORY.md`
+/// 7. `OBSERVATION_LOG` (if present)
+/// 8. `RECENT_CONTEXT` (if present)
+/// 9. `SUBAGENTS_INDEX` (available presets listing)
+/// 10. `PROJECTS_INDEX` (always present after bootstrap)
+/// 11. `SKILLS_INDEX` (available skills listing)
+/// 12. `ACTIVE_PROJECT` (when a project is active)
+/// 13. `ACTIVE_SKILLS` (when skills are loaded)
 ///
-/// Static sections (1-4) form a stable cache prefix shared across all conversations.
-/// Dynamic sections (5-7) update as memory changes. Indices (8-10) appear before
-/// active sections (11-12) to maximize cache reuse as projects/skills change.
+/// Static sections (1-5) form a stable cache prefix shared across all conversations.
+/// Dynamic sections (6-8) update as memory changes. Indices (9-11) appear before
+/// active sections (12-13) to maximize cache reuse as projects/skills change.
 pub(super) fn build_system_content(
     identity: &IdentityFiles,
     memory_ctx: &MemoryContext<'_>,
@@ -132,6 +133,10 @@ pub(super) fn build_system_content(
 
     if let Some(agents) = &identity.agents {
         parts.push(format!("<AGENTS.md>\n{agents}\n</AGENTS.md>"));
+    }
+
+    if let Some(bootstrap) = &identity.bootstrap {
+        parts.push(format!("<BOOTSTRAP.md>\n{bootstrap}\n</BOOTSTRAP.md>"));
     }
 
     if let Some(environment_md) = &identity.environment {
@@ -430,6 +435,62 @@ mod tests {
         assert!(
             obs_close < ctx_open,
             "observation log should close before recent context opens"
+        );
+    }
+
+    // ── Bootstrap context tests ───────────────────────────────────────────────
+
+    #[test]
+    fn bootstrap_injected_between_agents_and_environment() {
+        let identity = IdentityFiles {
+            agents: Some("agent rules".to_string()),
+            bootstrap: Some("first run guidance".to_string()),
+            environment: Some("env notes".to_string()),
+            ..IdentityFiles::default()
+        };
+        let content = build_system_content(
+            &identity,
+            &no_memory(),
+            &ProjectsContext::none(),
+            &SkillsContext::none(),
+            &SubagentsContext::none(),
+        );
+
+        assert!(
+            content.contains("<BOOTSTRAP.md>\nfirst run guidance\n</BOOTSTRAP.md>"),
+            "bootstrap should be wrapped in BOOTSTRAP.md tags"
+        );
+
+        let agents_close = content.find("</AGENTS.md>").unwrap();
+        let bootstrap_open = content.find("<BOOTSTRAP.md>").unwrap();
+        let env_open = content.find("<ENVIRONMENT.md>").unwrap();
+        assert!(
+            agents_close < bootstrap_open,
+            "AGENTS.md should close before BOOTSTRAP.md opens"
+        );
+        assert!(
+            bootstrap_open < env_open,
+            "BOOTSTRAP.md should open before ENVIRONMENT.md"
+        );
+    }
+
+    #[test]
+    fn bootstrap_none_skipped() {
+        let identity = IdentityFiles {
+            agents: Some("agent rules".to_string()),
+            ..IdentityFiles::default()
+        };
+        let content = build_system_content(
+            &identity,
+            &no_memory(),
+            &ProjectsContext::none(),
+            &SkillsContext::none(),
+            &SubagentsContext::none(),
+        );
+
+        assert!(
+            !content.contains("BOOTSTRAP.md"),
+            "None bootstrap should not appear in prompt"
         );
     }
 

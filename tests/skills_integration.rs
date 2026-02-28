@@ -22,7 +22,7 @@ mod skills_integration {
     async fn setup_workspace() -> (tempfile::TempDir, WorkspaceLayout) {
         let dir = tempfile::tempdir().unwrap();
         let layout = WorkspaceLayout::new(dir.path().join("workspace"));
-        ensure_workspace(&layout, None).await.unwrap();
+        ensure_workspace(&layout, None, None).await.unwrap();
         (dir, layout)
     }
 
@@ -44,15 +44,19 @@ mod skills_integration {
 
     // ── Scanning ─────────────────────────────────────────────────────────────
 
+    /// Number of bundled skills created by `ensure_workspace`.
+    const BUNDLED_SKILL_COUNT: usize = 2;
+
     #[tokio::test]
     async fn scan_empty_workspace() {
         let (_dir, layout) = setup_workspace().await;
         let index = SkillIndex::scan(&[layout.skills_dir()], None)
             .await
             .unwrap();
-        assert!(
-            index.entries().is_empty(),
-            "empty skills dir should have no skills"
+        assert_eq!(
+            index.entries().len(),
+            BUNDLED_SKILL_COUNT,
+            "bootstrapped workspace should have only the bundled skills"
         );
     }
 
@@ -71,8 +75,11 @@ mod skills_integration {
         let index = SkillIndex::scan(&[layout.skills_dir()], None)
             .await
             .unwrap();
-        assert_eq!(index.entries().len(), 1);
-        assert_eq!(index.entries().first().unwrap().name, "code-review");
+        assert_eq!(index.entries().len(), BUNDLED_SKILL_COUNT + 1);
+        assert!(
+            index.find_by_name("code-review").is_some(),
+            "should discover code-review skill"
+        );
         assert_eq!(
             index.entries().first().unwrap().source,
             SkillSource::Workspace
@@ -113,8 +120,15 @@ mod skills_integration {
         let index = SkillIndex::scan(&[layout.skills_dir()], None)
             .await
             .unwrap();
-        assert_eq!(index.entries().len(), 1, "should only find the valid skill");
-        assert_eq!(index.entries().first().unwrap().name, "good-skill");
+        assert_eq!(
+            index.entries().len(),
+            BUNDLED_SKILL_COUNT + 1,
+            "should find only the valid skill plus bundled skills"
+        );
+        assert!(
+            index.find_by_name("good-skill").is_some(),
+            "should find the valid skill"
+        );
     }
 
     #[tokio::test]
@@ -157,10 +171,10 @@ mod skills_integration {
         let index = SkillIndex::scan(&dirs, None).await.unwrap();
         let state = SkillState::new_shared(index, dirs);
 
-        // Verify index
+        // Verify index (bundled skills + test-skill)
         {
             let s = state.lock().await;
-            assert_eq!(s.index().entries().len(), 1);
+            assert_eq!(s.index().entries().len(), BUNDLED_SKILL_COUNT + 1);
             assert!(s.active_skill_names().is_empty());
         }
 
@@ -315,14 +329,14 @@ mod skills_integration {
         let index = SkillIndex::scan(&dirs, None).await.unwrap();
         let mut state = SkillState::new(index, dirs);
 
-        // Before rescan: only workspace skill
-        assert_eq!(state.index().entries().len(), 1);
+        // Before rescan: bundled skills + workspace skill
+        assert_eq!(state.index().entries().len(), BUNDLED_SKILL_COUNT + 1);
 
         // Rescan with project skills dir
         state.rescan(Some(&project_skills_dir)).await.unwrap();
 
-        // After rescan: both skills
-        assert_eq!(state.index().entries().len(), 2);
+        // After rescan: bundled skills + workspace skill + project skill
+        assert_eq!(state.index().entries().len(), BUNDLED_SKILL_COUNT + 2);
         assert!(state.index().find_by_name("proj-skill").is_some());
         assert_eq!(
             state.index().find_by_name("proj-skill").unwrap().source,
