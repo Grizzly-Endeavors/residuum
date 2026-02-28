@@ -47,6 +47,29 @@ async fn run() -> Result<(), IronclawError> {
         }
         // "serve" or no subcommand → start gateway
         Some("serve") | None => {
+            // --setup: run the onboarding wizard in an isolated temp directory
+            if args.iter().any(|a| a == "--setup") {
+                let tmp_dir = std::env::temp_dir().join("ironclaw-setup");
+                if tmp_dir.exists() {
+                    std::fs::remove_dir_all(&tmp_dir).map_err(|e| {
+                        IronclawError::Config(format!(
+                            "failed to clean setup directory {}: {e}",
+                            tmp_dir.display()
+                        ))
+                    })?;
+                }
+                ironclaw::config::Config::bootstrap_at_dir(&tmp_dir)?;
+                eprintln!(
+                    "setup mode: config will be written to {}",
+                    tmp_dir.display()
+                );
+                Box::pin(ironclaw::gateway::server::setup::run_setup_server_at(
+                    tmp_dir,
+                ))
+                .await?;
+                return Ok(());
+            }
+
             loop {
                 Config::bootstrap_config_dir()?;
                 match Config::load() {

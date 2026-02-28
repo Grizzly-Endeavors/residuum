@@ -4,6 +4,7 @@
 //! minimal HTTP server with the config API and static web UI. Once the
 //! user completes setup, it signals the main loop to retry loading config.
 
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use axum::routing::get;
@@ -24,6 +25,7 @@ pub enum SetupExit {
 /// Run the setup-mode HTTP server (config API + static files only).
 ///
 /// Blocks until the user completes setup or the server is shut down.
+/// Uses the default config directory (`~/.ironclaw/`).
 ///
 /// # Errors
 ///
@@ -31,6 +33,15 @@ pub enum SetupExit {
 /// directory cannot be determined.
 pub async fn run_setup_server() -> Result<SetupExit, IronclawError> {
     let config_dir = Config::config_dir()?;
+    run_setup_server_at(config_dir).await
+}
+
+/// Run the setup-mode HTTP server writing config to `config_dir`.
+///
+/// # Errors
+///
+/// Returns `IronclawError::Gateway` if the server cannot bind.
+pub async fn run_setup_server_at(config_dir: PathBuf) -> Result<SetupExit, IronclawError> {
     let (setup_done_tx, mut setup_done_rx) = tokio::sync::watch::channel(false);
     let setup_done_tx = Arc::new(setup_done_tx);
 

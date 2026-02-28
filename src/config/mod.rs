@@ -13,7 +13,7 @@ mod resolve;
 mod types;
 
 use std::fmt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crate::error::IronclawError;
 use crate::models::retry::RetryConfig;
@@ -116,6 +116,17 @@ impl Config {
     pub fn bootstrap_config_dir() -> Result<(), IronclawError> {
         let dir = bootstrap::default_config_dir()?;
         bootstrap::bootstrap_at(&dir)
+    }
+
+    /// Write default config files to an arbitrary directory.
+    ///
+    /// Same as [`bootstrap_config_dir`](Self::bootstrap_config_dir) but targets
+    /// a caller-specified path instead of `~/.ironclaw/`.
+    ///
+    /// # Errors
+    /// Returns `IronclawError::Config` if the directory or files cannot be written.
+    pub fn bootstrap_at_dir(dir: &Path) -> Result<(), IronclawError> {
+        bootstrap::bootstrap_at(dir)
     }
 
     /// Get the default config directory path (`~/.ironclaw/`).
