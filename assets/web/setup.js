@@ -42,6 +42,7 @@ const Setup = {
     // Providers that support embedding models
     embeddingProviders: ['openai', 'gemini', 'ollama'],
     mcpServers: [],  // [{name, command, args, env}]
+    mcpPendingIdx: null,  // catalog index currently showing inline input fields
     catalog: [],
 
     providers: {
@@ -353,13 +354,41 @@ const Setup = {
     renderMcp() {
         const items = this.catalog.map((srv, i) => {
             const added = this.mcpServers.some(s => s.name === srv.name);
+            const isPending = this.mcpPendingIdx === i;
+            const needsInput = srv.requires_input && srv.requires_input.length > 0;
+
+            let inputFields = '';
+            if (isPending && needsInput) {
+                const fields = srv.requires_input.map(req => `
+                    <div class="settings-field mcp-input-field">
+                        <label>${esc(req.label)}</label>
+                        <input type="text" class="mcp-required-input"
+                            data-field="${esc(req.field)}" data-idx="${i}"
+                            placeholder="${esc(req.label)}">
+                    </div>
+                `).join('');
+                inputFields = `
+                    <div class="mcp-inline-inputs">
+                        ${fields}
+                        <div class="mcp-inline-actions">
+                            <button class="btn btn-primary btn-sm mcp-confirm-btn" data-idx="${i}">Add</button>
+                            <button class="btn btn-secondary btn-sm mcp-cancel-btn" data-idx="${i}">Cancel</button>
+                        </div>
+                    </div>
+                `;
+            }
+
+            const btnLabel = added ? 'Added' : (isPending ? '' : 'Add');
+            const btnHidden = isPending ? 'style="display:none"' : '';
+
             return `
-                <div class="mcp-item ${added ? 'added' : ''}" data-idx="${i}">
+                <div class="mcp-item ${added ? 'added' : ''} ${isPending ? 'pending' : ''}" data-idx="${i}">
                     <div class="mcp-info">
                         <div class="mcp-name">${esc(srv.name)}</div>
                         <div class="mcp-desc">${esc(srv.description)}</div>
                     </div>
-                    <button class="mcp-add-btn" data-idx="${i}">${added ? 'Added' : 'Add'}</button>
+                    <button class="mcp-add-btn" data-idx="${i}" ${btnHidden}>${btnLabel}</button>
+                    ${inputFields}
                 </div>
             `;
         }).join('');
@@ -412,34 +441,7 @@ const Setup = {
         }
 
         if (this.step === 3) {
-            document.querySelectorAll('.mcp-add-btn').forEach(btn => {
-                btn.addEventListener('click', () => {
-                    const idx = parseInt(btn.dataset.idx, 10);
-                    const srv = this.catalog[idx];
-                    if (!srv) return;
-
-                    const exists = this.mcpServers.findIndex(s => s.name === srv.name);
-                    if (exists >= 0) {
-                        this.mcpServers.splice(exists, 1);
-                    } else {
-                        // Check if server needs input
-                        if (srv.requires_input && srv.requires_input.length > 0) {
-                            for (const req of srv.requires_input) {
-                                const val = prompt(`${req.label}:`);
-                                if (val === null) return; // cancelled
-                                this.setNestedField(srv, req.field, val);
-                            }
-                        }
-                        this.mcpServers.push({
-                            name: srv.name,
-                            command: srv.command,
-                            args: srv.args || [],
-                            env: srv.env || {}
-                        });
-                    }
-                    this.render();
-                });
-            });
+            this.bindMcpStep();
         }
     },
 
@@ -477,6 +479,79 @@ const Setup = {
             const prov = inp.dataset.provider;
             inp.addEventListener('input', () => {
                 this.providerConfigs[prov].url = inp.value;
+            });
+        });
+    },
+
+    bindMcpStep() {
+        // Add/remove buttons (for items without required input, or toggling off)
+        document.querySelectorAll('.mcp-add-btn').forEach(btn => {
+            btn.addEventListener('click', () => {
+                const idx = parseInt(btn.dataset.idx, 10);
+                const srv = this.catalog[idx];
+                if (!srv) return;
+
+                const exists = this.mcpServers.findIndex(s => s.name === srv.name);
+                if (exists >= 0) {
+                    // Toggle off — remove
+                    this.mcpServers.splice(exists, 1);
+                    this.mcpPendingIdx = null;
+                    this.render();
+                } else if (srv.requires_input && srv.requires_input.length > 0) {
+                    // Show inline input fields
+                    this.mcpPendingIdx = idx;
+                    this.render();
+                    // Focus the first input
+                    const first = document.querySelector(`.mcp-required-input[data-idx="${idx}"]`);
+                    if (first) first.focus();
+                } else {
+                    // No input needed — add directly
+                    this.mcpServers.push({
+                        name: srv.name,
+                        command: srv.command,
+                        args: srv.args || [],
+                        env: srv.env || {}
+                    });
+                    this.render();
+                }
+            });
+        });
+
+        // Confirm button — collect inline inputs and add the server
+        document.querySelectorAll('.mcp-confirm-btn').forEach(btn => {
+            btn.addEventListener('click', () => {
+                const idx = parseInt(btn.dataset.idx, 10);
+                const srv = this.catalog[idx];
+                if (!srv) return;
+
+                // Collect values from inline inputs
+                const inputs = document.querySelectorAll(`.mcp-required-input[data-idx="${idx}"]`);
+                for (const inp of inputs) {
+                    const val = inp.value.trim();
+                    if (!val) {
+                        inp.focus();
+                        inp.classList.add('input-error');
+                        return;
+                    }
+                    this.setNestedField(srv, inp.dataset.field, val);
+                }
+
+                this.mcpServers.push({
+                    name: srv.name,
+                    command: srv.command,
+                    args: srv.args || [],
+                    env: srv.env || {}
+                });
+                this.mcpPendingIdx = null;
+                this.render();
+            });
+        });
+
+        // Cancel button — collapse the inline inputs
+        document.querySelectorAll('.mcp-cancel-btn').forEach(btn => {
+            btn.addEventListener('click', () => {
+                this.mcpPendingIdx = null;
+                this.render();
             });
         });
     },

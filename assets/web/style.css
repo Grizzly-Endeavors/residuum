@@ -1263,6 +1263,7 @@ html, body {
 
 .mcp-item {
     display: flex;
+    flex-wrap: wrap;
     align-items: center;
     gap: 12px;
     padding: 10px 14px;
@@ -1276,6 +1277,7 @@ html, body {
 .mcp-item:hover { border-color: var(--border); background: var(--bg-raised); }
 
 .mcp-item.added { border-color: var(--ember-dim); background: var(--ember-glow); }
+.mcp-item.pending { border-color: var(--ember-dim); }
 
 .mcp-info { flex: 1; }
 
@@ -1303,6 +1305,44 @@ html, body {
 
 .mcp-add-btn:hover { background: var(--bg-raised); color: var(--text); }
 .mcp-item.added .mcp-add-btn { color: var(--ember); border-color: var(--ember-dim); }
+
+/* Inline input fields for MCP servers that require configuration */
+.mcp-inline-inputs {
+    width: 100%;
+    padding-top: 8px;
+    border-top: 1px solid var(--border);
+    margin-top: 4px;
+}
+
+.mcp-inline-inputs .mcp-input-field {
+    margin-bottom: 8px;
+}
+
+.mcp-inline-inputs .mcp-input-field label {
+    font-size: 11px;
+    color: var(--text-muted);
+    margin-bottom: 2px;
+}
+
+.mcp-inline-inputs .mcp-input-field input {
+    font-size: 12px;
+    padding: 5px 8px;
+}
+
+.mcp-inline-inputs .mcp-input-field input.input-error {
+    border-color: var(--error, #e55);
+}
+
+.mcp-inline-actions {
+    display: flex;
+    gap: 8px;
+    justify-content: flex-end;
+}
+
+.btn-sm {
+    padding: 3px 10px;
+    font-size: 11px;
+}
 
 /* ── Model select loading state ────────────────────────────────────────── */
 
