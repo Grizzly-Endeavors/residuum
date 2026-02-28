@@ -16,3 +16,37 @@
 - Skill priority is wrong. Project skills > Workspace >  User-global > Bundled
 - Implement model failover: primary model → ordered fallback chain on rate limit or error. Design doc describes a `failover` module and auth profile rotation (multiple API keys per provider). Currently each role gets a single provider/model with no fallback beyond the `default` role in `[models]`.
 - Auto-load most recent project logs on activation. Currently only PROJECT.md (frontmatter + body) is loaded; notes/logs/references require explicit `read_file`. The intended behavior is that recent session logs are loaded automatically so the agent has immediate context about where things left off.
+
+## OAuth Provider Support (OpenAI Codex & Google Gemini)
+
+Both OpenAI and Google have subscriber-level OAuth flows that OpenClaw supports. Unlike Anthropic's OAuth (simple header swap, same endpoint), both require new providers — different endpoints and API formats.
+
+### OpenAI Codex OAuth
+- **Endpoint:** `https://chatgpt.com/backend-api/codex/responses` (NOT `api.openai.com`)
+- **API format:** OpenAI Responses API (not Chat Completions)
+- **Auth:** Bearer JWT + `chatgpt-account-id` (extracted from JWT claims) + `OpenAI-Beta: responses=experimental`
+- **OAuth flow:** PKCE via `auth.openai.com`, callback on `localhost:1455`, refresh via `auth.openai.com/oauth/token`
+- **Tied to:** ChatGPT Plus/Pro subscription credits, not OpenAI Platform billing
+- **Reference code:** `~/Projects/pi-mono/packages/ai/src/providers/openai-codex-responses.ts` (HTTP layer), `~/Projects/pi-mono/packages/ai/src/utils/oauth/openai-codex.ts` (OAuth flow)
+
+### Google Gemini CLI OAuth
+- **Endpoint:** `https://cloudcode-pa.googleapis.com/v1internal:streamGenerateContent?alt=sse` (internal Cloud Code Assist, NOT public `generativelanguage.googleapis.com`)
+- **API format:** Gemini content generation format with Cloud Code Assist wrapper
+- **Auth:** Bearer `ya29.*` token + `projectId` (auto-provisioned during OAuth), spoofed IDE user-agent headers
+- **OAuth flow:** Standard Google OAuth with PKCE, callback on `localhost:8085`, auto-discovers/provisions GCP project
+- **Reference code:** `~/Projects/pi-mono/packages/ai/src/providers/google-gemini-cli.ts` (HTTP layer), `~/Projects/pi-mono/packages/ai/src/utils/oauth/google-gemini-cli.ts` (OAuth flow)
+
+### Anthropic OAuth — Consider Adopting pi-ai's Approach
+Our current Anthropic OAuth is minimal: prefix detection (`sk-ant-oat01-`) + header swap. pi-ai's implementation is significantly more complete:
+- **Full PKCE login flow** via `claude.ai/oauth/authorize` + token exchange at `console.anthropic.com/v1/oauth/token`
+- **Automatic token refresh** (short-lived access tokens + refresh tokens, 5-min expiry buffer)
+- **Additional headers** we're missing: `claude-code-20250219` beta, `user-agent: claude-cli/{version}`, `x-app: cli`
+- **Anthropic SDK** uses `authToken` (Bearer) vs `apiKey` (x-api-key) — cleaner than our manual header swap
+- Reference: `~/Projects/pi-mono/packages/ai/src/utils/oauth/anthropic.ts` (OAuth flow), `~/Projects/pi-mono/packages/ai/src/providers/anthropic.ts:546-565` (client creation)
+
+### Implementation Notes
+- Each would need a **new provider** in `src/models/`, not just auth header detection
+- OpenAI Codex uses a completely different request/response format (Responses API vs Chat Completions)
+- Google Gemini CLI uses an internal Google endpoint with a custom request wrapper, not the public Gemini API
+- All three (including Anthropic) need proper token refresh logic (short-lived access tokens + refresh tokens)
+- OpenClaw's full OAuth registry is in `~/Projects/pi-mono/packages/ai/src/utils/oauth/index.ts` — supports anthropic, github-copilot, google-gemini-cli, google-antigravity, openai-codex
