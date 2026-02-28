@@ -1,7 +1,9 @@
 use std::collections::HashMap;
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 
-use chrono::NaiveDateTime;
+use chrono::{Duration, NaiveDateTime, NaiveTime};
 use serde::{Deserialize, Serialize};
 
 use super::types::{
@@ -13,6 +15,8 @@ use super::types::{
 struct PulseState {
     #[serde(default)]
     last_run: HashMap<String, NaiveDateTime>,
+    #[serde(default)]
+    run_counts: HashMap<String, u32>,
 }
 
 /// Tracks per-pulse last-run times and determines which pulses are due.
@@ -22,6 +26,7 @@ struct PulseState {
 /// are in-memory only (backward-compatible).
 pub struct PulseScheduler {
     last_run: HashMap<String, NaiveDateTime>,
+    run_counts: HashMap<String, u32>,
     state_path: Option<PathBuf>,
 }
 
@@ -37,6 +42,7 @@ impl PulseScheduler {
     pub fn new() -> Self {
         Self {
             last_run: HashMap::new(),
+            run_counts: HashMap::new(),
             state_path: None,
         }
     }
@@ -50,6 +56,7 @@ impl PulseScheduler {
         let state = load_state(path);
         Self {
             last_run: state.last_run,
+            run_counts: state.run_counts,
             state_path: Some(path.to_path_buf()),
         }
     }
@@ -89,8 +96,9 @@ impl PulseScheduler {
     /// A pulse is due when all of the following hold:
     /// - `enabled == true`
     /// - Its schedule duration can be parsed
-    /// - Either it has never run, or `now - last_run >= schedule_duration`
+    /// - Either it has never run, or `now - last_run >= effective_interval`
     /// - If `active_hours` is set, `now` falls within the window
+    /// - If `trigger_count` is set, the count has not been exhausted in the current active period
     ///
     /// Due pulses have their `last_run` updated to `now` and persisted (if a state path is set).
     #[must_use]
@@ -119,14 +127,10 @@ impl PulseScheduler {
                 }
             };
 
-            // Check active hours if configured
-            if let Some(ref hours_str) = pulse.active_hours {
+            // Parse active hours window (needed for trigger_count spacing)
+            let active_window = pulse.active_hours.as_ref().and_then(|hours_str| {
                 match parse_active_hours(hours_str) {
-                    Ok((start, end)) => {
-                        if !is_within_active_hours(now, start, end) {
-                            continue;
-                        }
-                    }
+                    Ok(window) => Some(window),
                     Err(e) => {
                         tracing::warn!(
                             pulse = %pulse.name,
@@ -134,19 +138,60 @@ impl PulseScheduler {
                             error = %e,
                             "invalid active_hours, skipping pulse"
                         );
+                        None
+                    }
+                }
+            });
+
+            // Skip if active_hours was set but failed to parse
+            if pulse.active_hours.is_some() && active_window.is_none() {
+                continue;
+            }
+
+            // Check active hours if configured
+            if let Some((start, end)) = active_window {
+                if !is_within_active_hours(now, start, end) {
+                    continue;
+                }
+
+                // Reset run_count when active period rolls over
+                if let Some(trigger_count) = pulse.trigger_count {
+                    self.maybe_reset_run_count(&pulse.name, now, start, end);
+
+                    // Check if trigger_count exhausted
+                    let current_count = self.run_counts.get(&pulse.name).copied().unwrap_or(0);
+                    if current_count >= trigger_count {
                         continue;
                     }
                 }
             }
 
-            // Check if due: fire immediately if never run, otherwise after the schedule period
+            // Compute effective interval: if trigger_count is set, space evenly across active period
+            let effective_interval = match pulse.trigger_count {
+                Some(tc) if tc > 0 => {
+                    let active_duration = active_window
+                        .map(|(start, end)| active_period_duration(start, end))
+                        .unwrap_or_else(|| Duration::hours(24));
+                    let spacing = active_duration / i32::from(tc as u16);
+                    let jittered = apply_jitter(spacing, &pulse.name, now);
+                    // Effective interval is max(schedule_duration, spacing_with_jitter)
+                    if jittered > duration { jittered } else { duration }
+                }
+                _ => duration,
+            };
+
+            // Check if due: fire immediately if never run, otherwise after the effective interval
             let is_due = match self.last_run.get(&pulse.name) {
                 None => true,
-                Some(last) => (now - *last) >= duration,
+                Some(last) => (now - *last) >= effective_interval,
             };
 
             if is_due {
                 self.last_run.insert(pulse.name.clone(), now);
+                if pulse.trigger_count.is_some() {
+                    let count = self.run_counts.entry(pulse.name.clone()).or_insert(0);
+                    *count += 1;
+                }
                 due.push(pulse);
             }
         }
@@ -158,6 +203,28 @@ impl PulseScheduler {
         due
     }
 
+    /// Reset run count if the current active window start differs from
+    /// the window that contained the last run.
+    fn maybe_reset_run_count(
+        &mut self,
+        pulse_name: &str,
+        now: NaiveDateTime,
+        window_start: NaiveTime,
+        window_end: NaiveTime,
+    ) {
+        let Some(last) = self.last_run.get(pulse_name) else {
+            return;
+        };
+
+        // If the last run was outside the current active window, or on a different
+        // calendar day (for non-overnight windows), reset the count.
+        if !is_within_active_hours(*last, window_start, window_end)
+            || now.date() != last.date()
+        {
+            self.run_counts.remove(pulse_name);
+        }
+    }
+
     /// Persist current state to disk (no-op if no state path is configured).
     fn save_state(&self) {
         let Some(ref path) = self.state_path else {
@@ -166,6 +233,7 @@ impl PulseScheduler {
 
         let state = PulseState {
             last_run: self.last_run.clone(),
+            run_counts: self.run_counts.clone(),
         };
 
         match serde_json::to_string_pretty(&state) {
@@ -218,6 +286,32 @@ fn load_state(path: &Path) -> PulseState {
             PulseState::default()
         }
     }
+}
+
+/// Compute the duration of an active-hours window.
+fn active_period_duration(start: NaiveTime, end: NaiveTime) -> Duration {
+    if end > start {
+        end - start
+    } else {
+        // Overnight window (e.g. 22:00-06:00): 24h - (start - end)
+        Duration::hours(24) - (start - end)
+    }
+}
+
+/// Apply ±15% jitter to a duration using a deterministic seed from
+/// pulse name and current date (for reproducibility in tests).
+fn apply_jitter(base: Duration, pulse_name: &str, now: NaiveDateTime) -> Duration {
+    let mut hasher = DefaultHasher::new();
+    pulse_name.hash(&mut hasher);
+    now.date().hash(&mut hasher);
+    let hash = hasher.finish();
+
+    // Map hash to [-0.15, +0.15] range
+    let fraction = (hash % 3001) as f64 / 10000.0 - 0.15;
+    let base_secs = base.num_seconds() as f64;
+    let jittered = base_secs * (1.0 + fraction);
+
+    Duration::seconds(jittered as i64)
 }
 
 #[cfg(test)]
@@ -445,6 +539,209 @@ pulses:
         assert!(
             last_run.contains_key("test_pulse"),
             "should contain the pulse name"
+        );
+    }
+
+    // ── Trigger count tests ───────────────────────────────────────────
+
+    #[test]
+    fn trigger_count_limits_firings() {
+        let yaml = r#"
+pulses:
+  - name: limited_pulse
+    enabled: true
+    schedule: "10m"
+    active_hours: "09:00-17:00"
+    trigger_count: 2
+    tasks: []
+"#;
+        let dir = tempdir().unwrap();
+        let path = write_heartbeat(dir.path(), yaml);
+        let mut scheduler = PulseScheduler::new();
+
+        // 8h window, trigger_count=2 → spacing ~4h (with jitter)
+        // Fire 1: 09:00
+        let t1 = chrono::NaiveDate::from_ymd_opt(2026, 2, 19)
+            .unwrap()
+            .and_hms_opt(9, 0, 0)
+            .unwrap();
+        let due = scheduler.due_pulses(t1, &path);
+        assert_eq!(due.len(), 1, "first firing should succeed");
+        assert_eq!(scheduler.run_counts.get("limited_pulse").copied(), Some(1));
+
+        // Fire 2: well after spacing (~5h later)
+        let t2 = chrono::NaiveDate::from_ymd_opt(2026, 2, 19)
+            .unwrap()
+            .and_hms_opt(14, 0, 0)
+            .unwrap();
+        let due = scheduler.due_pulses(t2, &path);
+        assert_eq!(due.len(), 1, "second firing should succeed");
+        assert_eq!(scheduler.run_counts.get("limited_pulse").copied(), Some(2));
+
+        // Fire 3: should be blocked (count exhausted)
+        let t3 = chrono::NaiveDate::from_ymd_opt(2026, 2, 19)
+            .unwrap()
+            .and_hms_opt(16, 0, 0)
+            .unwrap();
+        let due = scheduler.due_pulses(t3, &path);
+        assert!(due.is_empty(), "should not fire after trigger_count exhausted");
+    }
+
+    #[test]
+    fn trigger_count_spacing_enforced() {
+        let yaml = r#"
+pulses:
+  - name: spaced_pulse
+    enabled: true
+    schedule: "1m"
+    active_hours: "09:00-17:00"
+    trigger_count: 2
+    tasks: []
+"#;
+        let dir = tempdir().unwrap();
+        let path = write_heartbeat(dir.path(), yaml);
+        let mut scheduler = PulseScheduler::new();
+
+        // 8h window / 2 = 4h spacing (schedule is only 1m, so spacing dominates)
+        let t1 = chrono::NaiveDate::from_ymd_opt(2026, 2, 19)
+            .unwrap()
+            .and_hms_opt(9, 0, 0)
+            .unwrap();
+        let due = scheduler.due_pulses(t1, &path);
+        assert_eq!(due.len(), 1, "first should fire");
+
+        // 30 minutes later — spacing should block even though schedule (1m) has passed
+        let t2 = chrono::NaiveDate::from_ymd_opt(2026, 2, 19)
+            .unwrap()
+            .and_hms_opt(9, 30, 0)
+            .unwrap();
+        let due = scheduler.due_pulses(t2, &path);
+        assert!(due.is_empty(), "spacing should prevent early re-fire");
+    }
+
+    #[test]
+    fn trigger_count_resets_on_period_rollover() {
+        let yaml = r#"
+pulses:
+  - name: daily_pulse
+    enabled: true
+    schedule: "10m"
+    active_hours: "09:00-17:00"
+    trigger_count: 1
+    tasks: []
+"#;
+        let dir = tempdir().unwrap();
+        let path = write_heartbeat(dir.path(), yaml);
+        let mut scheduler = PulseScheduler::new();
+
+        // Day 1: fire once
+        let day1 = chrono::NaiveDate::from_ymd_opt(2026, 2, 19)
+            .unwrap()
+            .and_hms_opt(12, 0, 0)
+            .unwrap();
+        let due = scheduler.due_pulses(day1, &path);
+        assert_eq!(due.len(), 1, "should fire on day 1");
+
+        // Day 1 later: exhausted
+        let day1_later = chrono::NaiveDate::from_ymd_opt(2026, 2, 19)
+            .unwrap()
+            .and_hms_opt(15, 0, 0)
+            .unwrap();
+        let due = scheduler.due_pulses(day1_later, &path);
+        assert!(due.is_empty(), "should be exhausted on day 1");
+
+        // Day 2: count should reset
+        let day2 = chrono::NaiveDate::from_ymd_opt(2026, 2, 20)
+            .unwrap()
+            .and_hms_opt(12, 0, 0)
+            .unwrap();
+        let due = scheduler.due_pulses(day2, &path);
+        assert_eq!(due.len(), 1, "should fire again after period rollover");
+    }
+
+    #[test]
+    fn trigger_count_persisted_in_state_file() {
+        let yaml = r#"
+pulses:
+  - name: counted_pulse
+    enabled: true
+    schedule: "10m"
+    active_hours: "09:00-17:00"
+    trigger_count: 3
+    tasks: []
+"#;
+        let dir = tempdir().unwrap();
+        let hb_path = write_heartbeat(dir.path(), yaml);
+        let state_path = dir.path().join("pulse_state.json");
+
+        let now = chrono::NaiveDate::from_ymd_opt(2026, 2, 19)
+            .unwrap()
+            .and_hms_opt(9, 0, 0)
+            .unwrap();
+
+        let mut sched = PulseScheduler::with_state_path(&state_path);
+        let _due = sched.due_pulses(now, &hb_path);
+
+        let contents = std::fs::read_to_string(&state_path).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&contents).unwrap();
+        assert!(
+            parsed.get("run_counts").is_some(),
+            "state file should have run_counts key"
+        );
+        let counts = parsed.get("run_counts").unwrap().as_object().unwrap();
+        assert_eq!(
+            counts.get("counted_pulse").and_then(|v| v.as_u64()),
+            Some(1),
+            "run count should be 1 after first fire"
+        );
+    }
+
+    // ── Helper function tests ─────────────────────────────────────────
+
+    #[test]
+    fn active_period_duration_normal_window() {
+        let start = NaiveTime::from_hms_opt(9, 0, 0).unwrap();
+        let end = NaiveTime::from_hms_opt(17, 0, 0).unwrap();
+        assert_eq!(
+            active_period_duration(start, end),
+            Duration::hours(8),
+            "09:00-17:00 should be 8h"
+        );
+    }
+
+    #[test]
+    fn active_period_duration_overnight_window() {
+        let start = NaiveTime::from_hms_opt(22, 0, 0).unwrap();
+        let end = NaiveTime::from_hms_opt(6, 0, 0).unwrap();
+        assert_eq!(
+            active_period_duration(start, end),
+            Duration::hours(8),
+            "22:00-06:00 should be 8h"
+        );
+    }
+
+    #[test]
+    fn apply_jitter_deterministic() {
+        let base = Duration::hours(4);
+        let now = chrono::NaiveDate::from_ymd_opt(2026, 2, 19)
+            .unwrap()
+            .and_hms_opt(12, 0, 0)
+            .unwrap();
+        let j1 = apply_jitter(base, "test_pulse", now);
+        let j2 = apply_jitter(base, "test_pulse", now);
+        assert_eq!(j1, j2, "same inputs should produce same jitter");
+
+        // Jitter should be within ±15% of base (4h = 14400s)
+        let base_secs = base.num_seconds();
+        let min_secs = (base_secs as f64 * 0.85) as i64;
+        let max_secs = (base_secs as f64 * 1.15) as i64;
+        assert!(
+            j1.num_seconds() >= min_secs && j1.num_seconds() <= max_secs,
+            "jittered duration {} should be within ±15% of {} (range {}-{})",
+            j1.num_seconds(),
+            base_secs,
+            min_secs,
+            max_secs,
         );
     }
 }

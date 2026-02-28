@@ -85,6 +85,7 @@ mod proactivity_integration {
             schedule: "30m".to_string(),
             active_hours: None,
             agent: None,
+            trigger_count: None,
             tasks: vec![PulseTask {
                 name: "check_inbox".to_string(),
                 prompt: "Check email.".to_string(),
@@ -179,6 +180,7 @@ mod proactivity_integration {
             schedule: "1h".to_string(),
             active_hours: None,
             agent: None,
+            trigger_count: None,
             tasks: vec![],
         };
 

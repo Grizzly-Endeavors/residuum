@@ -21,6 +21,10 @@ pub struct PulseDef {
     /// Optional agent routing: `"main"` for a full wake turn, or a preset name.
     #[serde(default)]
     pub agent: Option<String>,
+    /// Maximum number of times this pulse fires within its active period.
+    /// When set, firings are spaced evenly across the active window.
+    #[serde(default)]
+    pub trigger_count: Option<u32>,
     #[serde(default)]
     pub tasks: Vec<PulseTask>,
 }
@@ -329,6 +333,37 @@ pulses:
         assert!(
             pulse.agent.is_none(),
             "agent should default to None when absent"
+        );
+    }
+
+    #[test]
+    fn pulse_def_trigger_count_present() {
+        let yaml = r#"
+pulses:
+  - name: limited
+    schedule: "1h"
+    active_hours: "09:00-17:00"
+    trigger_count: 3
+    tasks: []
+"#;
+        let cfg: HeartbeatConfig = serde_yml::from_str(yaml).unwrap();
+        let pulse = cfg.pulses.first().unwrap();
+        assert_eq!(pulse.trigger_count, Some(3), "trigger_count should be 3");
+    }
+
+    #[test]
+    fn pulse_def_trigger_count_absent() {
+        let yaml = r#"
+pulses:
+  - name: unlimited
+    schedule: "1h"
+    tasks: []
+"#;
+        let cfg: HeartbeatConfig = serde_yml::from_str(yaml).unwrap();
+        let pulse = cfg.pulses.first().unwrap();
+        assert!(
+            pulse.trigger_count.is_none(),
+            "trigger_count should default to None"
         );
     }
 
