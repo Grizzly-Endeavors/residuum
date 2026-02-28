@@ -12,25 +12,17 @@ const Settings = {
     catalog: [],
     mode: 'form', // 'form' | 'advanced'
 
-    // Section definitions — each maps to a TOML table
+    // Section definitions — consolidated into 5 logical groups
     sections: [
-        { key: 'general', title: 'General', icon: '\u2699' },
-        { key: 'providers', title: 'Providers', icon: '\u26A1' },
-        { key: 'models', title: 'Models', icon: '\u2B22' },
-        { key: 'memory', title: 'Memory', icon: '\u{1F9E0}' },
-        { key: 'pulse', title: 'Pulse', icon: '\u2764' },
-        { key: 'gateway', title: 'Gateway', icon: '\u{1F310}' },
-        { key: 'discord', title: 'Discord', icon: '\u{1F4AC}' },
-        { key: 'webhook', title: 'Webhook', icon: '\u{1F517}' },
-        { key: 'skills', title: 'Skills', icon: '\u{1F4C1}' },
-        { key: 'retry', title: 'Retry', icon: '\u21BA' },
-        { key: 'background', title: 'Background', icon: '\u23F3' },
-        { key: 'notifications', title: 'Notifications', icon: '\u{1F514}' },
-        { key: 'mcp', title: 'MCP Servers', icon: '\u{1F50C}' },
+        { key: 'providers-models', title: 'Providers & Models', icon: '\u26A1' },
+        { key: 'memory',           title: 'Memory',             icon: '\u{1F9E0}' },
+        { key: 'integrations',     title: 'Integrations',       icon: '\u{1F310}' },
+        { key: 'runtime',          title: 'Runtime',             icon: '\u2699' },
+        { key: 'mcp',              title: 'MCP Servers',         icon: '\u{1F50C}' },
     ],
 
     // Which sections are expanded
-    openSections: new Set(['general', 'models']),
+    openSections: new Set(['providers-models']),
 
     async init() {
         if (this.initialized) return;
@@ -145,28 +137,22 @@ const Settings = {
     getSectionBadge(key) {
         const obj = this.configObj;
         switch (key) {
-            case 'providers': {
-                const p = obj.providers || {};
-                const count = Object.keys(p).length;
-                return count > 0 ? `${count} configured` : '';
-            }
-            case 'models':
+            case 'providers-models':
                 return obj.models?.main || '';
-            case 'pulse':
-                return obj.pulse?.enabled === false ? 'disabled' : obj.pulse ? 'enabled' : '';
-            case 'gateway':
-                return obj.gateway ? `${obj.gateway.bind || '127.0.0.1'}:${obj.gateway.port || 7700}` : '';
-            case 'discord':
-                return obj.discord?.token ? 'configured' : '';
+            case 'integrations': {
+                const parts = [];
+                if (obj.gateway) parts.push('Gateway');
+                if (obj.discord?.token) parts.push('Discord');
+                if (obj.webhook?.enabled) parts.push('Webhook');
+                const channels = obj.notifications?.channels || {};
+                const chCount = Object.keys(channels).length;
+                if (chCount > 0) parts.push(`${chCount} notif`);
+                return parts.length > 0 ? parts.join(', ') : '';
+            }
             case 'mcp': {
                 const servers = obj.mcp?.servers || {};
                 const count = Object.keys(servers).length;
                 return count > 0 ? `${count} servers` : '';
-            }
-            case 'notifications': {
-                const channels = obj.notifications?.channels || {};
-                const count = Object.keys(channels).length;
-                return count > 0 ? `${count} channels` : '';
             }
             default:
                 return '';
@@ -178,30 +164,14 @@ const Settings = {
     renderSectionBody(key) {
         const obj = this.configObj;
         switch (key) {
-            case 'general':
-                return this.renderGeneral(obj);
-            case 'providers':
-                return this.renderProviders(obj.providers || {});
-            case 'models':
-                return this.renderModels(obj.models || {});
+            case 'providers-models':
+                return this.renderProvidersAndModels(obj);
             case 'memory':
                 return this.renderMemory(obj.memory || {});
-            case 'pulse':
-                return this.renderPulse(obj.pulse || {});
-            case 'gateway':
-                return this.renderGateway(obj.gateway || {});
-            case 'discord':
-                return this.renderDiscord(obj.discord || {});
-            case 'webhook':
-                return this.renderWebhook(obj.webhook || {});
-            case 'skills':
-                return this.renderSkills(obj.skills || {});
-            case 'retry':
-                return this.renderRetry(obj.retry || {});
-            case 'background':
-                return this.renderBackground(obj.background || {});
-            case 'notifications':
-                return this.renderNotifications(obj.notifications || {});
+            case 'integrations':
+                return this.renderIntegrations(obj);
+            case 'runtime':
+                return this.renderRuntime(obj);
             case 'mcp':
                 return this.renderMcp(obj.mcp || {});
             default:
@@ -209,39 +179,30 @@ const Settings = {
         }
     },
 
-    renderGeneral(obj) {
+    // ── Providers & Models (composite) ───────────────────────────────
+
+    renderProvidersAndModels(obj) {
+        const providers = obj.providers || {};
+        const models = obj.models || {};
+        const bg = obj.background || {};
+
         return `
-            <div class="settings-field">
-                <label>Timezone (IANA format)</label>
-                <input type="text" data-path="timezone" value="${escAttr(obj.timezone || '')}"
-                    placeholder="America/New_York">
-            </div>
-            <div class="field-row">
-                <div class="settings-field">
-                    <label>Timeout (seconds)</label>
-                    <input type="number" data-path="timeout_secs" value="${obj.timeout_secs ?? ''}"
-                        placeholder="120">
-                </div>
-                <div class="settings-field">
-                    <label>Max tokens</label>
-                    <input type="number" data-path="max_tokens" value="${obj.max_tokens ?? ''}"
-                        placeholder="8192">
-                </div>
-            </div>
-            <div class="settings-field">
-                <label>Workspace directory</label>
-                <input type="text" data-path="workspace_dir" value="${escAttr(obj.workspace_dir || '')}"
-                    placeholder="~/.ironclaw/workspace">
-            </div>
+            ${this.renderProvidersSubsection(providers)}
+            ${this.renderMainModelSubsection(models)}
+            ${this.renderMemoryModelsSubsection(models)}
+            ${this.renderBackgroundModelTiersSubsection(bg)}
         `;
     },
 
-    renderProviders(providers) {
+    renderProvidersSubsection(providers) {
         const entries = Object.entries(providers);
         const rows = entries.map(([name, cfg]) => this.renderProviderRow(name, cfg)).join('');
         return `
-            <div id="provider-entries">${rows}</div>
-            <button class="add-entry-btn" data-add="provider">+ Add provider</button>
+            <div class="config-subsection">
+                <div class="config-subsection-title">Providers</div>
+                <div id="provider-entries">${rows}</div>
+                <button class="add-entry-btn" data-add="provider">+ Add provider</button>
+            </div>
         `;
     },
 
@@ -277,48 +238,46 @@ const Settings = {
         `;
     },
 
-    /** Parse a "provider/model" string into { provider, model }. */
-    parseModelSpec(spec) {
-        if (!spec) return { provider: '', model: '' };
-        const idx = spec.indexOf('/');
-        if (idx < 0) return { provider: '', model: spec };
-        return { provider: spec.substring(0, idx), model: spec.substring(idx + 1) };
+    /** Render the Main Model role-row prominently at the top. */
+    renderMainModelSubsection(models) {
+        const providerNames = this.getConfiguredProviders();
+        const spec = this.parseModelSpec(models.main || '');
+        const provOptions = providerNames.map(name =>
+            `<option value="${escAttr(name)}" ${name === spec.provider ? 'selected' : ''}>${escAttr(name)}</option>`
+        ).join('');
+
+        return `
+            <div class="config-subsection">
+                <div class="config-subsection-title">Main Model</div>
+                <div class="role-row" data-model-role="main">
+                    <div class="role-row-fields">
+                        <div class="settings-field">
+                            <label>Provider</label>
+                            <select data-model-provider="main">
+                                <option value="" ${!spec.provider ? 'selected' : ''}>Select...</option>
+                                ${provOptions}
+                            </select>
+                        </div>
+                        <div class="settings-field">
+                            <label>Model</label>
+                            <div class="model-select-wrap" data-model-wrap="main">
+                                <select data-model-select="main">
+                                    ${spec.model ? `<option value="${escAttr(spec.model)}" selected>${escAttr(spec.model)}</option>` : '<option value="">Select provider first</option>'}
+                                </select>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        `;
     },
 
-    /** Build a "provider/model" string from a provider and model. */
-    buildModelSpec(provider, model) {
-        if (!provider || !model) return '';
-        return `${provider}/${model}`;
-    },
-
-    /** Get configured provider names (keys from [providers] table). */
-    getConfiguredProviders() {
-        const providers = this.configObj.providers || {};
-        return Object.keys(providers).sort();
-    },
-
-    /** Look up a configured provider by name, returning its type, API key, and URL. */
-    getProviderCredentials(providerName) {
-        const providers = this.configObj.providers || {};
-        const cfg = providers[providerName];
-        if (cfg) {
-            return {
-                type: cfg.type || providerName,
-                apiKey: cfg.api_key || '',
-                url: cfg.url || '',
-            };
-        }
-        return { type: providerName, apiKey: '', url: '' };
-    },
-
-    renderModels(models) {
+    /** Render Memory Models sub-section: observer, reflector, embedding. */
+    renderMemoryModelsSubsection(models) {
         const providerNames = this.getConfiguredProviders();
         const roles = [
-            { key: 'main', label: 'Main model (required)', required: true },
-            { key: 'default', label: 'Default (fallback for unset roles)' },
             { key: 'observer', label: 'Observer' },
             { key: 'reflector', label: 'Reflector' },
-            { key: 'pulse', label: 'Pulse' },
             { key: 'embedding', label: 'Embedding' },
         ];
 
@@ -335,7 +294,7 @@ const Settings = {
                         <div class="settings-field">
                             <label>Provider</label>
                             <select data-model-provider="${role.key}">
-                                <option value="" ${!spec.provider ? 'selected' : ''}>${role.required ? 'Select...' : 'Inherit'}</option>
+                                <option value="" ${!spec.provider ? 'selected' : ''}>Inherit</option>
                                 ${provOptions}
                             </select>
                         </div>
@@ -352,217 +311,207 @@ const Settings = {
             `;
         }).join('');
 
-        return roleRows;
+        return `
+            <div class="config-subsection">
+                <div class="config-subsection-title">Memory Models</div>
+                ${roleRows}
+            </div>
+        `;
     },
+
+    /** Render Background Model Tiers sub-section with provider/model dropdowns. */
+    renderBackgroundModelTiersSubsection(bg) {
+        const bgModels = bg.models || {};
+        const providerNames = this.getConfiguredProviders();
+        const tiers = [
+            { key: 'bg-small', configKey: 'small', label: 'Small', hint: 'Falls back to medium \u2192 main' },
+            { key: 'bg-medium', configKey: 'medium', label: 'Medium', hint: 'Falls back to large \u2192 main' },
+            { key: 'bg-large', configKey: 'large', label: 'Large', hint: 'Falls back to main' },
+        ];
+
+        const tierRows = tiers.map(tier => {
+            const spec = this.parseModelSpec(bgModels[tier.configKey] || '');
+            const provOptions = providerNames.map(name =>
+                `<option value="${escAttr(name)}" ${name === spec.provider ? 'selected' : ''}>${escAttr(name)}</option>`
+            ).join('');
+
+            return `
+                <div class="role-row" data-model-role="${tier.key}">
+                    <div class="role-row-label">${tier.label}</div>
+                    <div class="role-row-fields">
+                        <div class="settings-field">
+                            <label>Provider</label>
+                            <select data-model-provider="${tier.key}">
+                                <option value="" ${!spec.provider ? 'selected' : ''}>Inherit</option>
+                                ${provOptions}
+                            </select>
+                        </div>
+                        <div class="settings-field">
+                            <label>Model</label>
+                            <div class="model-select-wrap" data-model-wrap="${tier.key}">
+                                <select data-model-select="${tier.key}">
+                                    ${spec.model ? `<option value="${escAttr(spec.model)}" selected>${escAttr(spec.model)}</option>` : '<option value="">Select provider first</option>'}
+                                </select>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            `;
+        }).join('');
+
+        return `
+            <div class="config-subsection">
+                <div class="config-subsection-title">Background Model Tiers</div>
+                ${tierRows}
+            </div>
+        `;
+    },
+
+    // ── Memory ───────────────────────────────────────────────────────
 
     renderMemory(mem) {
         const search = mem.search || {};
         return `
-            <div class="field-row">
-                <div class="settings-field">
-                    <label>Observer threshold (tokens)</label>
-                    <input type="number" data-path="memory.observer_threshold_tokens"
-                        value="${mem.observer_threshold_tokens ?? ''}" placeholder="30000">
+            <div class="config-subsection">
+                <div class="config-subsection-title">Observer &amp; Reflector</div>
+                <div class="field-row">
+                    <div class="settings-field">
+                        <label>Observer threshold (tokens)</label>
+                        <input type="number" data-path="memory.observer_threshold_tokens"
+                            value="${mem.observer_threshold_tokens ?? ''}" placeholder="30000">
+                    </div>
+                    <div class="settings-field">
+                        <label>Reflector threshold (tokens)</label>
+                        <input type="number" data-path="memory.reflector_threshold_tokens"
+                            value="${mem.reflector_threshold_tokens ?? ''}" placeholder="40000">
+                    </div>
                 </div>
-                <div class="settings-field">
-                    <label>Reflector threshold (tokens)</label>
-                    <input type="number" data-path="memory.reflector_threshold_tokens"
-                        value="${mem.reflector_threshold_tokens ?? ''}" placeholder="40000">
-                </div>
-            </div>
-            <div class="field-row">
-                <div class="settings-field">
-                    <label>Observer cooldown (seconds)</label>
-                    <input type="number" data-path="memory.observer_cooldown_secs"
-                        value="${mem.observer_cooldown_secs ?? ''}" placeholder="120">
-                </div>
-                <div class="settings-field">
-                    <label>Force threshold (tokens)</label>
-                    <input type="number" data-path="memory.observer_force_threshold_tokens"
-                        value="${mem.observer_force_threshold_tokens ?? ''}" placeholder="60000">
-                </div>
-            </div>
-            <div style="margin-top:8px;margin-bottom:6px;font-size:12px;color:var(--text-muted);font-weight:600;text-transform:uppercase;letter-spacing:0.05em">Search</div>
-            <div class="field-row">
-                <div class="settings-field">
-                    <label>Vector weight</label>
-                    <input type="number" step="0.1" data-path="memory.search.vector_weight"
-                        value="${search.vector_weight ?? ''}" placeholder="0.7">
-                </div>
-                <div class="settings-field">
-                    <label>Text weight</label>
-                    <input type="number" step="0.1" data-path="memory.search.text_weight"
-                        value="${search.text_weight ?? ''}" placeholder="0.3">
+                <div class="field-row">
+                    <div class="settings-field">
+                        <label>Observer cooldown (seconds)</label>
+                        <input type="number" data-path="memory.observer_cooldown_secs"
+                            value="${mem.observer_cooldown_secs ?? ''}" placeholder="120">
+                    </div>
+                    <div class="settings-field">
+                        <label>Force threshold (tokens)</label>
+                        <input type="number" data-path="memory.observer_force_threshold_tokens"
+                            value="${mem.observer_force_threshold_tokens ?? ''}" placeholder="60000">
+                    </div>
                 </div>
             </div>
-            <div class="field-row">
-                <div class="settings-field">
-                    <label>Min score</label>
-                    <input type="number" step="0.05" data-path="memory.search.min_score"
-                        value="${search.min_score ?? ''}" placeholder="0.35">
+            <div class="config-subsection">
+                <div class="config-subsection-title">Search</div>
+                <div class="field-row">
+                    <div class="settings-field">
+                        <label>Vector weight</label>
+                        <input type="number" step="0.1" data-path="memory.search.vector_weight"
+                            value="${search.vector_weight ?? ''}" placeholder="0.7">
+                    </div>
+                    <div class="settings-field">
+                        <label>Text weight</label>
+                        <input type="number" step="0.1" data-path="memory.search.text_weight"
+                            value="${search.text_weight ?? ''}" placeholder="0.3">
+                    </div>
                 </div>
-                <div class="settings-field">
-                    <label>Candidate multiplier</label>
-                    <input type="number" data-path="memory.search.candidate_multiplier"
-                        value="${search.candidate_multiplier ?? ''}" placeholder="4">
+                <div class="field-row">
+                    <div class="settings-field">
+                        <label>Min score</label>
+                        <input type="number" step="0.05" data-path="memory.search.min_score"
+                            value="${search.min_score ?? ''}" placeholder="0.35">
+                    </div>
+                    <div class="settings-field">
+                        <label>Candidate multiplier</label>
+                        <input type="number" data-path="memory.search.candidate_multiplier"
+                            value="${search.candidate_multiplier ?? ''}" placeholder="4">
+                    </div>
                 </div>
             </div>
         `;
     },
 
-    renderPulse(pulse) {
-        const checked = pulse.enabled !== false;
+    // ── Integrations (composite) ─────────────────────────────────────
+
+    renderIntegrations(obj) {
+        const gw = obj.gateway || {};
+        const discord = obj.discord || {};
+        const wh = obj.webhook || {};
+        const notifs = obj.notifications || {};
+
         return `
-            <div class="settings-field">
-                <label>
-                    Enabled
-                    <label class="toggle-switch">
-                        <input type="checkbox" data-path="pulse.enabled" ${checked ? 'checked' : ''}>
-                        <span class="slider"></span>
-                    </label>
-                </label>
-            </div>
+            ${this.renderGatewaySubsection(gw)}
+            ${this.renderDiscordSubsection(discord)}
+            ${this.renderWebhookSubsection(wh)}
+            ${this.renderNotificationsSubsection(notifs)}
         `;
     },
 
-    renderGateway(gw) {
+    renderGatewaySubsection(gw) {
         return `
-            <div class="field-row">
-                <div class="settings-field">
-                    <label>Bind address</label>
-                    <input type="text" data-path="gateway.bind" value="${escAttr(gw.bind || '')}"
-                        placeholder="127.0.0.1">
-                </div>
-                <div class="settings-field">
-                    <label>Port</label>
-                    <input type="number" data-path="gateway.port" value="${gw.port ?? ''}"
-                        placeholder="7700">
+            <div class="config-subsection">
+                <div class="config-subsection-title">Gateway</div>
+                <div class="field-row">
+                    <div class="settings-field">
+                        <label>Bind address</label>
+                        <input type="text" data-path="gateway.bind" value="${escAttr(gw.bind || '')}"
+                            placeholder="127.0.0.1">
+                    </div>
+                    <div class="settings-field">
+                        <label>Port</label>
+                        <input type="number" data-path="gateway.port" value="${gw.port ?? ''}"
+                            placeholder="7700">
+                    </div>
                 </div>
             </div>
         `;
     },
 
-    renderDiscord(discord) {
+    renderDiscordSubsection(discord) {
         return `
-            <div class="settings-field">
-                <label>Bot token</label>
-                <input type="password" data-path="discord.token" value="${escAttr(discord.token || '')}"
-                    placeholder="\${IRONCLAW_DISCORD_TOKEN}">
-                <div class="field-hint">Supports \${ENV_VAR} syntax for environment variable references</div>
+            <div class="config-subsection">
+                <div class="config-subsection-title">Discord</div>
+                <div class="settings-field">
+                    <label>Bot token</label>
+                    <input type="password" data-path="discord.token" value="${escAttr(discord.token || '')}"
+                        placeholder="\${IRONCLAW_DISCORD_TOKEN}">
+                    <div class="field-hint">Supports \${ENV_VAR} syntax for environment variable references</div>
+                </div>
             </div>
         `;
     },
 
-    renderWebhook(wh) {
+    renderWebhookSubsection(wh) {
         const checked = wh.enabled === true;
         return `
-            <div class="settings-field">
-                <label>
-                    Enabled
-                    <label class="toggle-switch">
-                        <input type="checkbox" data-path="webhook.enabled" ${checked ? 'checked' : ''}>
-                        <span class="slider"></span>
+            <div class="config-subsection">
+                <div class="config-subsection-title">Webhook</div>
+                <div class="settings-field">
+                    <label>
+                        Enabled
+                        <label class="toggle-switch">
+                            <input type="checkbox" data-path="webhook.enabled" ${checked ? 'checked' : ''}>
+                            <span class="slider"></span>
+                        </label>
                     </label>
-                </label>
-            </div>
-            <div class="settings-field">
-                <label>Secret</label>
-                <input type="password" data-path="webhook.secret" value="${escAttr(wh.secret || '')}"
-                    placeholder="Authorization bearer token">
-            </div>
-        `;
-    },
-
-    renderSkills(skills) {
-        const dirs = skills.dirs || [];
-        const items = dirs.map((d, i) => `
-            <div class="list-editor-item" data-list-idx="${i}">
-                <input type="text" data-list="skills.dirs" data-list-idx="${i}" value="${escAttr(d)}">
-                <button class="entry-remove-btn" data-remove-list="skills.dirs" data-list-idx="${i}">&times;</button>
-            </div>
-        `).join('');
-        return `
-            <div class="settings-field">
-                <label>Extra scan directories</label>
-                <div class="field-hint" style="margin-bottom:6px">The workspace skills/ directory is always scanned. Add extra directories here.</div>
-                <div id="skills-dirs-list">${items}</div>
-                <button class="add-entry-btn" data-add="skills-dir">+ Add directory</button>
-            </div>
-        `;
-    },
-
-    renderRetry(retry) {
-        return `
-            <div class="field-row">
-                <div class="settings-field">
-                    <label>Max retries</label>
-                    <input type="number" data-path="retry.max_retries" value="${retry.max_retries ?? ''}"
-                        placeholder="3">
                 </div>
                 <div class="settings-field">
-                    <label>Initial delay (ms)</label>
-                    <input type="number" data-path="retry.initial_delay_ms" value="${retry.initial_delay_ms ?? ''}"
-                        placeholder="500">
-                </div>
-            </div>
-            <div class="field-row">
-                <div class="settings-field">
-                    <label>Max delay (ms)</label>
-                    <input type="number" data-path="retry.max_delay_ms" value="${retry.max_delay_ms ?? ''}"
-                        placeholder="30000">
-                </div>
-                <div class="settings-field">
-                    <label>Backoff multiplier</label>
-                    <input type="number" step="0.1" data-path="retry.backoff_multiplier"
-                        value="${retry.backoff_multiplier ?? ''}" placeholder="2.0">
+                    <label>Secret</label>
+                    <input type="password" data-path="webhook.secret" value="${escAttr(wh.secret || '')}"
+                        placeholder="Authorization bearer token">
                 </div>
             </div>
         `;
     },
 
-    renderBackground(bg) {
-        const models = bg.models || {};
-        return `
-            <div class="field-row">
-                <div class="settings-field">
-                    <label>Max concurrent</label>
-                    <input type="number" data-path="background.max_concurrent"
-                        value="${bg.max_concurrent ?? ''}" placeholder="3">
-                </div>
-                <div class="settings-field">
-                    <label>Transcript retention (days)</label>
-                    <input type="number" data-path="background.transcript_retention_days"
-                        value="${bg.transcript_retention_days ?? ''}" placeholder="30">
-                </div>
-            </div>
-            <div style="margin-top:8px;margin-bottom:6px;font-size:12px;color:var(--text-muted);font-weight:600;text-transform:uppercase;letter-spacing:0.05em">Model tiers</div>
-            <div class="settings-field">
-                <label>Small</label>
-                <input type="text" data-path="background.models.small" value="${escAttr(models.small || '')}"
-                    placeholder="Falls back to medium \u2192 main">
-            </div>
-            <div class="field-row">
-                <div class="settings-field">
-                    <label>Medium</label>
-                    <input type="text" data-path="background.models.medium" value="${escAttr(models.medium || '')}"
-                        placeholder="Falls back to large \u2192 main">
-                </div>
-                <div class="settings-field">
-                    <label>Large</label>
-                    <input type="text" data-path="background.models.large" value="${escAttr(models.large || '')}"
-                        placeholder="Falls back to main">
-                </div>
-            </div>
-        `;
-    },
-
-    renderNotifications(notifs) {
+    renderNotificationsSubsection(notifs) {
         const channels = notifs.channels || {};
         const entries = Object.entries(channels);
         const rows = entries.map(([name, cfg]) => this.renderNotificationRow(name, cfg)).join('');
         return `
-            <div id="notification-entries">${rows}</div>
-            <button class="add-entry-btn" data-add="notification">+ Add channel</button>
+            <div class="config-subsection">
+                <div class="config-subsection-title">Notification Channels</div>
+                <div id="notification-entries">${rows}</div>
+                <button class="add-entry-btn" data-add="notification">+ Add channel</button>
+            </div>
         `;
     },
 
@@ -612,48 +561,245 @@ const Settings = {
         `;
     },
 
+    // ── Runtime (composite) ──────────────────────────────────────────
+
+    renderRuntime(obj) {
+        return `
+            ${this.renderGeneralSubsection(obj)}
+            ${this.renderSkillsSubsection(obj.skills || {})}
+            ${this.renderPulseSubsection(obj.pulse || {})}
+            ${this.renderBackgroundOpsSubsection(obj.background || {})}
+            ${this.renderRetrySubsection(obj.retry || {})}
+        `;
+    },
+
+    renderGeneralSubsection(obj) {
+        return `
+            <div class="config-subsection">
+                <div class="config-subsection-title">General</div>
+                <div class="settings-field">
+                    <label>Timezone (IANA format)</label>
+                    <input type="text" data-path="timezone" value="${escAttr(obj.timezone || '')}"
+                        placeholder="America/New_York">
+                </div>
+                <div class="settings-field">
+                    <label>Workspace directory</label>
+                    <input type="text" data-path="workspace_dir" value="${escAttr(obj.workspace_dir || '')}"
+                        placeholder="~/.ironclaw/workspace">
+                </div>
+                <div class="field-row">
+                    <div class="settings-field">
+                        <label>Timeout (seconds)</label>
+                        <input type="number" data-path="timeout_secs" value="${obj.timeout_secs ?? ''}"
+                            placeholder="120">
+                    </div>
+                    <div class="settings-field">
+                        <label>Max tokens</label>
+                        <input type="number" data-path="max_tokens" value="${obj.max_tokens ?? ''}"
+                            placeholder="8192">
+                    </div>
+                </div>
+            </div>
+        `;
+    },
+
+    renderSkillsSubsection(skills) {
+        const dirs = skills.dirs || [];
+        const items = dirs.map((d, i) => `
+            <div class="list-editor-item" data-list-idx="${i}">
+                <input type="text" data-list="skills.dirs" data-list-idx="${i}" value="${escAttr(d)}">
+                <button class="entry-remove-btn" data-remove-list="skills.dirs" data-list-idx="${i}">&times;</button>
+            </div>
+        `).join('');
+        return `
+            <div class="config-subsection">
+                <div class="config-subsection-title">Skills</div>
+                <div class="settings-field">
+                    <label>Extra scan directories</label>
+                    <div class="field-hint" style="margin-bottom:6px">The workspace skills/ directory is always scanned. Add extra directories here.</div>
+                    <div id="skills-dirs-list">${items}</div>
+                    <button class="add-entry-btn" data-add="skills-dir">+ Add directory</button>
+                </div>
+            </div>
+        `;
+    },
+
+    renderPulseSubsection(pulse) {
+        const checked = pulse.enabled !== false;
+        return `
+            <div class="config-subsection">
+                <div class="config-subsection-title">Pulse</div>
+                <div class="settings-field">
+                    <label>
+                        Enabled
+                        <label class="toggle-switch">
+                            <input type="checkbox" data-path="pulse.enabled" ${checked ? 'checked' : ''}>
+                            <span class="slider"></span>
+                        </label>
+                    </label>
+                </div>
+            </div>
+        `;
+    },
+
+    renderBackgroundOpsSubsection(bg) {
+        return `
+            <div class="config-subsection">
+                <div class="config-subsection-title">Background Tasks</div>
+                <div class="field-row">
+                    <div class="settings-field">
+                        <label>Max concurrent</label>
+                        <input type="number" data-path="background.max_concurrent"
+                            value="${bg.max_concurrent ?? ''}" placeholder="3">
+                    </div>
+                    <div class="settings-field">
+                        <label>Transcript retention (days)</label>
+                        <input type="number" data-path="background.transcript_retention_days"
+                            value="${bg.transcript_retention_days ?? ''}" placeholder="30">
+                    </div>
+                </div>
+            </div>
+        `;
+    },
+
+    renderRetrySubsection(retry) {
+        return `
+            <div class="config-subsection">
+                <div class="config-subsection-title">Retry Policy</div>
+                <div class="field-row">
+                    <div class="settings-field">
+                        <label>Max retries</label>
+                        <input type="number" data-path="retry.max_retries" value="${retry.max_retries ?? ''}"
+                            placeholder="3">
+                    </div>
+                    <div class="settings-field">
+                        <label>Initial delay (ms)</label>
+                        <input type="number" data-path="retry.initial_delay_ms" value="${retry.initial_delay_ms ?? ''}"
+                            placeholder="500">
+                    </div>
+                </div>
+                <div class="field-row">
+                    <div class="settings-field">
+                        <label>Max delay (ms)</label>
+                        <input type="number" data-path="retry.max_delay_ms" value="${retry.max_delay_ms ?? ''}"
+                            placeholder="30000">
+                    </div>
+                    <div class="settings-field">
+                        <label>Backoff multiplier</label>
+                        <input type="number" step="0.1" data-path="retry.backoff_multiplier"
+                            value="${retry.backoff_multiplier ?? ''}" placeholder="2.0">
+                    </div>
+                </div>
+            </div>
+        `;
+    },
+
+    // ── MCP Servers ──────────────────────────────────────────────────
+
     renderMcp(mcp) {
         const servers = mcp.servers || {};
         const entries = Object.entries(servers);
 
-        const serverRows = entries.map(([name, cfg]) => `
-            <div class="entry-row" data-mcp-name="${escAttr(name)}">
+        const serverRows = entries.map(([name, cfg]) => this.renderMcpServerRow(name, cfg)).join('');
+
+        const catalogHtml = this.catalog.length > 0 ? `
+            <div class="config-subsection">
+                <div class="config-subsection-title">Catalog</div>
+                ${this.catalog.map((srv, i) => {
+                    const added = servers[srv.name] !== undefined;
+                    return `
+                        <div class="mcp-item ${added ? 'added' : ''}" data-idx="${i}">
+                            <div class="mcp-info">
+                                <div class="mcp-name">${escAttr(srv.name)}</div>
+                                <div class="mcp-desc">${escAttr(srv.description)}</div>
+                            </div>
+                            <button class="mcp-add-btn" data-idx="${i}">${added ? 'Added' : 'Add'}</button>
+                        </div>
+                    `;
+                }).join('')}
+            </div>
+        ` : '';
+
+        return `
+            <div class="config-subsection">
+                <div class="config-subsection-title">Configured Servers</div>
+                <div id="mcp-server-entries">${serverRows}</div>
+                <button class="add-entry-btn" data-add="mcp-server">+ Add server</button>
+            </div>
+            ${catalogHtml}
+        `;
+    },
+
+    renderMcpServerRow(name, cfg) {
+        const isManual = cfg._manual === true;
+        const readonlyAttr = isManual ? '' : 'readonly';
+        const readonlyStyle = isManual ? '' : 'style="opacity:0.7;cursor:default"';
+        const argsStr = Array.isArray(cfg.args) ? cfg.args.join(' ') : '';
+        const envStr = cfg.env ? Object.entries(cfg.env).map(([k, v]) => `${k}=${v}`).join(', ') : '';
+
+        return `
+            <div class="entry-row" data-mcp-name="${escAttr(name)}" ${isManual ? 'data-mcp-manual="true"' : ''}>
                 <div class="entry-row-fields">
                     <div class="settings-field">
                         <label>Name</label>
-                        <input type="text" data-mcp-field="name" value="${escAttr(name)}" readonly
-                            style="opacity:0.7;cursor:default">
+                        <input type="text" data-mcp-field="name" value="${escAttr(name)}"
+                            ${readonlyAttr} ${readonlyStyle}>
                     </div>
                     <div class="settings-field">
                         <label>Command</label>
-                        <input type="text" data-mcp-field="command" value="${escAttr(cfg.command || '')}" readonly
-                            style="opacity:0.7;cursor:default">
+                        <input type="text" data-mcp-field="command" value="${escAttr(cfg.command || '')}"
+                            ${readonlyAttr} ${readonlyStyle}>
+                    </div>
+                    <div class="settings-field">
+                        <label>Args</label>
+                        <input type="text" data-mcp-field="args" value="${escAttr(argsStr)}"
+                            ${readonlyAttr} ${readonlyStyle} placeholder="space-separated">
+                    </div>
+                    <div class="settings-field">
+                        <label>Env</label>
+                        <input type="text" data-mcp-field="env" value="${escAttr(envStr)}"
+                            ${readonlyAttr} ${readonlyStyle} placeholder="KEY=value, KEY2=value2">
                     </div>
                 </div>
                 <button class="entry-remove-btn" data-remove-mcp="${escAttr(name)}">&times;</button>
             </div>
-        `).join('');
-
-        const catalogHtml = this.catalog.length > 0 ? `
-            <div style="margin-top:12px;margin-bottom:6px;font-size:12px;color:var(--text-muted);font-weight:600;text-transform:uppercase;letter-spacing:0.05em">Catalog</div>
-            ${this.catalog.map((srv, i) => {
-                const added = servers[srv.name] !== undefined;
-                return `
-                    <div class="mcp-item ${added ? 'added' : ''}" data-idx="${i}">
-                        <div class="mcp-info">
-                            <div class="mcp-name">${escAttr(srv.name)}</div>
-                            <div class="mcp-desc">${escAttr(srv.description)}</div>
-                        </div>
-                        <button class="mcp-add-btn" data-idx="${i}">${added ? 'Added' : 'Add'}</button>
-                    </div>
-                `;
-            }).join('')}
-        ` : '';
-
-        return `
-            <div id="mcp-server-entries">${serverRows}</div>
-            ${catalogHtml}
         `;
+    },
+
+    // ── Helpers ───────────────────────────────────────────────────────
+
+    /** Parse a "provider/model" string into { provider, model }. */
+    parseModelSpec(spec) {
+        if (!spec) return { provider: '', model: '' };
+        const idx = spec.indexOf('/');
+        if (idx < 0) return { provider: '', model: spec };
+        return { provider: spec.substring(0, idx), model: spec.substring(idx + 1) };
+    },
+
+    /** Build a "provider/model" string from a provider and model. */
+    buildModelSpec(provider, model) {
+        if (!provider || !model) return '';
+        return `${provider}/${model}`;
+    },
+
+    /** Get configured provider names (keys from [providers] table). */
+    getConfiguredProviders() {
+        const providers = this.configObj.providers || {};
+        return Object.keys(providers).sort();
+    },
+
+    /** Look up a configured provider by name, returning its type, API key, and URL. */
+    getProviderCredentials(providerName) {
+        const providers = this.configObj.providers || {};
+        const cfg = providers[providerName];
+        if (cfg) {
+            return {
+                type: cfg.type || providerName,
+                apiKey: cfg.api_key || '',
+                url: cfg.url || '',
+            };
+        }
+        return { type: providerName, apiKey: '', url: '' };
     },
 
     // ── Binding ──────────────────────────────────────────────────────
@@ -773,6 +919,19 @@ const Settings = {
             });
         });
 
+        // MCP manual server add
+        const addMcpBtn = document.querySelector('[data-add="mcp-server"]');
+        if (addMcpBtn) {
+            addMcpBtn.addEventListener('click', () => this.addMcpServer());
+        }
+
+        // MCP manual server field changes
+        document.querySelectorAll('.entry-row[data-mcp-manual="true"]').forEach(row => {
+            row.querySelectorAll('input').forEach(el => {
+                el.addEventListener('change', () => this.collectMcpServers());
+            });
+        });
+
         // MCP catalog add
         document.querySelectorAll('.mcp-add-btn').forEach(btn => {
             btn.addEventListener('click', () => {
@@ -789,7 +948,7 @@ const Settings = {
 
     /** Bind model provider selectors and populate model dropdowns. */
     bindModelSelectors() {
-        const roles = ['main', 'default', 'observer', 'reflector', 'pulse', 'embedding'];
+        const roles = ['main', 'observer', 'reflector', 'embedding', 'bg-small', 'bg-medium', 'bg-large'];
 
         for (const role of roles) {
             const provSelect = document.querySelector(`[data-model-provider="${role}"]`);
@@ -834,21 +993,40 @@ const Settings = {
             // Populate on initial load if provider is selected
             const currentProvName = provSelect.value;
             if (currentProvName) {
-                const models = this.configObj.models || {};
-                const spec = this.parseModelSpec(models[role] || '');
+                const currentModel = this._getModelForRole(role);
+                const spec = this.parseModelSpec(currentModel);
                 const { type, apiKey, url } = this.getProviderCredentials(currentProvName);
                 ModelFetcher.populateSelect(modelSelect, type, apiKey || null, url || null, spec.model);
             }
         }
     },
 
+    /** Get the current model spec string for a given role key (handles bg-* mapping). */
+    _getModelForRole(role) {
+        if (role.startsWith('bg-')) {
+            const tier = role.substring(3); // 'small', 'medium', 'large'
+            return (this.configObj.background?.models || {})[tier] || '';
+        }
+        return (this.configObj.models || {})[role] || '';
+    },
+
     /** Update the configObj models path from a provider+model dropdown change. */
     updateModelPath(role, provider, model) {
         const spec = this.buildModelSpec(provider, model);
-        if (spec) {
-            this.setAtPath(['models', role], spec);
+
+        if (role.startsWith('bg-')) {
+            const tier = role.substring(3); // 'small', 'medium', 'large'
+            if (spec) {
+                this.setAtPath(['background', 'models', tier], spec);
+            } else {
+                this.removeAtPath(['background', 'models', tier]);
+            }
         } else {
-            this.removeAtPath(['models', role]);
+            if (spec) {
+                this.setAtPath(['models', role], spec);
+            } else {
+                this.removeAtPath(['models', role]);
+            }
         }
         this.syncTomlFromObj();
     },
@@ -1080,6 +1258,66 @@ const Settings = {
         this.rerender();
     },
 
+    addMcpServer() {
+        if (!this.configObj.mcp) this.configObj.mcp = {};
+        if (!this.configObj.mcp.servers) this.configObj.mcp.servers = {};
+        let name = 'new-server';
+        let n = 1;
+        while (this.configObj.mcp.servers[name]) {
+            name = `new-server-${n++}`;
+        }
+        this.configObj.mcp.servers[name] = { command: '', _manual: true };
+        this.syncTomlFromObj();
+        this.rerender();
+    },
+
+    /** Collect MCP servers from manually-editable rows back into configObj. */
+    collectMcpServers() {
+        document.querySelectorAll('.entry-row[data-mcp-manual="true"]').forEach(row => {
+            const origName = row.dataset.mcpName;
+            const nameInput = row.querySelector('[data-mcp-field="name"]');
+            const cmdInput = row.querySelector('[data-mcp-field="command"]');
+            const argsInput = row.querySelector('[data-mcp-field="args"]');
+            const envInput = row.querySelector('[data-mcp-field="env"]');
+
+            const newName = nameInput?.value?.trim();
+            const command = cmdInput?.value?.trim() || '';
+            if (!newName) return;
+
+            // Build the server entry
+            const entry = { command, _manual: true };
+
+            // Parse args from space-separated string
+            const argsStr = argsInput?.value?.trim() || '';
+            if (argsStr) {
+                entry.args = argsStr.split(/\s+/);
+            }
+
+            // Parse env from "KEY=value, KEY2=value2" string
+            const envStr = envInput?.value?.trim() || '';
+            if (envStr) {
+                const env = {};
+                for (const pair of envStr.split(',')) {
+                    const eqIdx = pair.indexOf('=');
+                    if (eqIdx > 0) {
+                        env[pair.substring(0, eqIdx).trim()] = pair.substring(eqIdx + 1).trim();
+                    }
+                }
+                if (Object.keys(env).length > 0) entry.env = env;
+            }
+
+            // If name changed, remove old entry
+            if (origName !== newName && this.configObj.mcp?.servers) {
+                delete this.configObj.mcp.servers[origName];
+            }
+
+            if (!this.configObj.mcp) this.configObj.mcp = {};
+            if (!this.configObj.mcp.servers) this.configObj.mcp.servers = {};
+            this.configObj.mcp.servers[newName] = entry;
+        });
+        this.syncTomlFromObj();
+    },
+
     addMcpFromCatalog(srv) {
         if (!this.configObj.mcp) this.configObj.mcp = {};
         if (!this.configObj.mcp.servers) this.configObj.mcp.servers = {};
@@ -1143,6 +1381,8 @@ const Settings = {
             const editor = document.getElementById('settings-toml');
             toml = editor ? editor.value : this.currentToml;
         } else {
+            // Strip internal _manual markers before saving
+            this._stripInternalMarkers();
             this.syncTomlFromObj();
             toml = this.currentToml;
         }
@@ -1168,6 +1408,15 @@ const Settings = {
             this.showValidation('error', 'Network error: ' + err.message);
         }
         if (saveBtn) saveBtn.disabled = false;
+    },
+
+    /** Remove internal _manual markers from MCP server entries before serialization. */
+    _stripInternalMarkers() {
+        const servers = this.configObj.mcp?.servers;
+        if (!servers) return;
+        for (const cfg of Object.values(servers)) {
+            delete cfg._manual;
+        }
     },
 
     async validateOnly() {
