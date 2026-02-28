@@ -258,7 +258,8 @@ impl ModelProvider for AnthropicClient {
                     .header("content-type", "application/json");
 
                 // OAuth tokens (sk-ant-oat01-*) use Bearer auth + beta header;
-                // standard API keys use x-api-key
+                // standard API keys use x-api-key.
+                // NOTE: this logic is duplicated in gateway::server::web::fetch_anthropic_models
                 if api_key.starts_with("sk-ant-oat01-") {
                     req_builder = req_builder
                         .header("Authorization", format!("Bearer {api_key}"))

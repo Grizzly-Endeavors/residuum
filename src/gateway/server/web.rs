@@ -325,10 +325,19 @@ async fn fetch_anthropic_models(
     let base = base_url.unwrap_or("https://api.anthropic.com");
     let url = format!("{base}/v1/models?limit=1000");
 
-    let resp = client
-        .get(&url)
-        .header("X-Api-Key", key)
-        .header("anthropic-version", "2023-06-01")
+    let mut req_builder = client.get(&url).header("anthropic-version", "2023-06-01");
+
+    // OAuth tokens use Bearer auth + beta header; standard keys use x-api-key.
+    // NOTE: this logic is duplicated in models::anthropic::AnthropicClient::complete
+    if key.starts_with("sk-ant-oat01-") {
+        req_builder = req_builder
+            .header("Authorization", format!("Bearer {key}"))
+            .header("anthropic-beta", "oauth-2025-04-20");
+    } else {
+        req_builder = req_builder.header("X-Api-Key", key);
+    }
+
+    let resp = req_builder
         .send()
         .await
         .map_err(|err| format!("request failed: {err}"))?;
