@@ -60,21 +60,45 @@ pub(super) struct ProviderEntryFile {
     pub(super) url: Option<String>,
 }
 
+/// A model string that can be either a single string or a list (for failover).
+///
+/// Accepts both `main = "anthropic/claude-sonnet-4-6"` and
+/// `main = ["anthropic/claude-sonnet-4-6", "openai/gpt-4o"]`.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(untagged)]
+pub(super) enum ModelStringOrList {
+    /// Single model string.
+    Single(String),
+    /// Ordered list of model strings (failover chain).
+    List(Vec<String>),
+}
+
+impl ModelStringOrList {
+    /// Convert into a `Vec<String>` regardless of variant.
+    #[must_use]
+    pub(super) fn into_vec(self) -> Vec<String> {
+        match self {
+            Self::Single(s) => vec![s],
+            Self::List(v) => v,
+        }
+    }
+}
+
 /// Raw TOML `[models]` section — maps roles to `"provider/model"` strings.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct ModelsConfigFile {
-    /// Main agent model (required for operation).
-    pub(super) main: Option<String>,
-    /// Default fallback for unset roles.
-    pub(super) default: Option<String>,
-    /// Memory observer model.
-    pub(super) observer: Option<String>,
-    /// Memory reflector model.
-    pub(super) reflector: Option<String>,
-    /// Pulse agent model.
-    pub(super) pulse: Option<String>,
-    /// Embedding model (no fallback to default/main).
+    /// Main agent model (required for operation). Supports failover arrays.
+    pub(super) main: Option<ModelStringOrList>,
+    /// Default fallback for unset roles. Supports failover arrays.
+    pub(super) default: Option<ModelStringOrList>,
+    /// Memory observer model. Supports failover arrays.
+    pub(super) observer: Option<ModelStringOrList>,
+    /// Memory reflector model. Supports failover arrays.
+    pub(super) reflector: Option<ModelStringOrList>,
+    /// Pulse agent model. Supports failover arrays.
+    pub(super) pulse: Option<ModelStringOrList>,
+    /// Embedding model (no failover — single string only).
     pub(super) embedding: Option<String>,
 }
 
@@ -221,12 +245,12 @@ pub(super) struct BackgroundConfigFile {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct BackgroundModelsFile {
-    /// Small/fast model for simple tasks.
-    pub(super) small: Option<String>,
-    /// Medium model for typical tasks (default tier).
-    pub(super) medium: Option<String>,
-    /// Large model for complex tasks.
-    pub(super) large: Option<String>,
+    /// Small/fast model for simple tasks. Supports failover arrays.
+    pub(super) small: Option<ModelStringOrList>,
+    /// Medium model for typical tasks (default tier). Supports failover arrays.
+    pub(super) medium: Option<ModelStringOrList>,
+    /// Large model for complex tasks. Supports failover arrays.
+    pub(super) large: Option<ModelStringOrList>,
 }
 
 /// A single MCP server entry under `[mcp.servers.<name>]`.

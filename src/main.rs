@@ -90,8 +90,8 @@ async fn run() -> Result<(), IronclawError> {
                     let mut cfg = Config::load_at(&tmp_dir)?;
                     cfg.workspace_dir = tmp_dir.join("workspace");
                     tracing::info!(
-                        model = %cfg.main.model,
-                        provider_url = %cfg.main.provider_url,
+                        model = cfg.main.first().map_or("(none)", |s| s.model.model.as_str()),
+                        provider_url = cfg.main.first().map_or("(none)", |s| s.provider_url.as_str()),
                         workspace = %cfg.workspace_dir.display(),
                         "setup-mode: configuration loaded, starting gateway"
                     );
@@ -113,8 +113,8 @@ async fn run() -> Result<(), IronclawError> {
                 match Config::load() {
                     Ok(cfg) => {
                         tracing::info!(
-                            model = %cfg.main.model,
-                            provider_url = %cfg.main.provider_url,
+                            model = cfg.main.first().map_or("(none)", |s| s.model.model.as_str()),
+                            provider_url = cfg.main.first().map_or("(none)", |s| s.provider_url.as_str()),
                             workspace = %cfg.workspace_dir.display(),
                             "configuration loaded"
                         );
@@ -630,7 +630,7 @@ fn run_setup_command(args: &[String]) -> Result<(), IronclawError> {
             eprintln!("configuration saved to {}", config_path.display());
             eprintln!("  timezone: {}", answers.timezone);
             eprintln!("  model: {}/{}", answers.provider, answers.model);
-            if cfg.main.api_key.is_some() {
+            if cfg.main.first().and_then(|s| s.api_key.as_ref()).is_some() {
                 eprintln!("  api key: configured");
             }
         }

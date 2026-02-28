@@ -40,6 +40,10 @@ timezone = "America/New_York"
 #
 # Roles: main (required), default (fallback for unset roles), observer,
 #        reflector, pulse
+#
+# Failover: use an array to specify fallback providers. If the primary fails
+# (after retries), the next provider in the list is tried:
+#   main = ["anthropic/claude-sonnet-4-6", "openai/gpt-4o"]
 [models]
 main = "anthropic/claude-sonnet-4-6"
 # default = "anthropic/claude-haiku-4-5"
@@ -134,7 +138,7 @@ port = 7700
 # [background.models]
 # small = "anthropic/claude-haiku-4-5"
 # medium = "anthropic/claude-sonnet-4-6"
-# large = "anthropic/claude-sonnet-4-6"
+# large = ["anthropic/claude-sonnet-4-6", "openai/gpt-4o"]
 
 # ── MCP servers (optional, always-on tool servers) ───────────────────────
 # Servers defined here start on gateway boot and stay running.

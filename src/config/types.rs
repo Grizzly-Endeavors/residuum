@@ -188,37 +188,41 @@ impl Default for BackgroundConfig {
 
 /// Model tier assignments for background tasks.
 ///
-/// Each tier can be explicitly assigned a model. Unset tiers fall back
-/// to the next tier up, ultimately falling back to main.
+/// Each tier can be explicitly assigned a model chain (failover). Unset tiers
+/// fall back to the next tier up, ultimately falling back to main.
 #[derive(Debug, Clone, Default)]
 pub struct BackgroundModelsConfig {
-    /// Small/fast model for simple tasks.
-    pub small: Option<ProviderSpec>,
-    /// Medium model for typical tasks (default tier).
-    pub medium: Option<ProviderSpec>,
-    /// Large model for complex tasks.
-    pub large: Option<ProviderSpec>,
+    /// Small/fast model chain for simple tasks.
+    pub small: Option<Vec<ProviderSpec>>,
+    /// Medium model chain for typical tasks (default tier).
+    pub medium: Option<Vec<ProviderSpec>>,
+    /// Large model chain for complex tasks.
+    pub large: Option<Vec<ProviderSpec>>,
 }
 
 impl BackgroundModelsConfig {
-    /// Resolve a specific tier to a concrete `ProviderSpec`.
+    /// Resolve a specific tier to a concrete provider chain.
     ///
     /// Fallback chain: tier → next tier up → main.
     #[must_use]
-    pub fn resolve_tier(&self, tier: &BackgroundModelTier, main: &ProviderSpec) -> ProviderSpec {
+    pub fn resolve_tier(
+        &self,
+        tier: &BackgroundModelTier,
+        main: &[ProviderSpec],
+    ) -> Vec<ProviderSpec> {
         match tier {
             BackgroundModelTier::Small => self
                 .small
                 .clone()
                 .or_else(|| self.medium.clone())
                 .or_else(|| self.large.clone())
-                .unwrap_or_else(|| main.clone()),
+                .unwrap_or_else(|| main.to_vec()),
             BackgroundModelTier::Medium => self
                 .medium
                 .clone()
                 .or_else(|| self.large.clone())
-                .unwrap_or_else(|| main.clone()),
-            BackgroundModelTier::Large => self.large.clone().unwrap_or_else(|| main.clone()),
+                .unwrap_or_else(|| main.to_vec()),
+            BackgroundModelTier::Large => self.large.clone().unwrap_or_else(|| main.to_vec()),
         }
     }
 }

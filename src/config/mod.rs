@@ -44,14 +44,14 @@ pub use types::{
 pub struct Config {
     /// User's display name (what the agent calls them).
     pub name: Option<String>,
-    /// Fully resolved main agent provider.
-    pub main: ProviderSpec,
-    /// Fully resolved observer provider.
-    pub observer: ProviderSpec,
-    /// Fully resolved reflector provider.
-    pub reflector: ProviderSpec,
-    /// Fully resolved pulse provider.
-    pub pulse: ProviderSpec,
+    /// Fully resolved main agent provider chain (failover).
+    pub main: Vec<ProviderSpec>,
+    /// Fully resolved observer provider chain (failover).
+    pub observer: Vec<ProviderSpec>,
+    /// Fully resolved reflector provider chain (failover).
+    pub reflector: Vec<ProviderSpec>,
+    /// Fully resolved pulse provider chain (failover).
+    pub pulse: Vec<ProviderSpec>,
     /// Fully resolved embedding provider (None if not configured).
     pub embedding: Option<ProviderSpec>,
     /// Path to the workspace root directory.

@@ -4,6 +4,7 @@ use crate::config::{ModelSpec, ProviderKind, ProviderSpec};
 use crate::error::IronclawError;
 
 use super::anthropic::AnthropicClient;
+use super::failover::FailoverProvider;
 use super::gemini::GeminiClient;
 use super::ollama::OllamaClient;
 use super::openai::OpenAiClient;
@@ -104,4 +105,35 @@ fn build_provider_from_spec(
             }
         }
     }
+}
+
+/// Build a provider from a chain of specs.
+///
+/// Single spec → direct provider. Multiple specs → `FailoverProvider`.
+///
+/// # Errors
+/// Returns `IronclawError::Config` if any provider in the chain cannot be built.
+pub(crate) fn build_provider_chain(
+    specs: &[ProviderSpec],
+    max_tokens: u32,
+    http: SharedHttpClient,
+    retry: RetryConfig,
+) -> Result<Box<dyn ModelProvider>, IronclawError> {
+    if specs.len() == 1
+        && let Some(spec) = specs.first()
+    {
+        return build_provider_from_provider_spec(spec, max_tokens, http, retry);
+    }
+
+    let mut providers = Vec::with_capacity(specs.len());
+    for spec in specs {
+        providers.push(build_provider_from_provider_spec(
+            spec,
+            max_tokens,
+            http.clone(),
+            retry.clone(),
+        )?);
+    }
+
+    Ok(Box::new(FailoverProvider::new(providers)))
 }

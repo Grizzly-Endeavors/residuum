@@ -18,7 +18,7 @@ use crate::memory::reflector::{Reflector, ReflectorConfig};
 use crate::memory::search::MemoryIndex;
 use crate::memory::types::{IndexManifest, ManifestFileEntry, Visibility};
 use crate::memory::vector_store::VectorStore;
-use crate::models::{EmbeddingProvider, SharedHttpClient, build_provider_from_provider_spec};
+use crate::models::{EmbeddingProvider, SharedHttpClient, build_provider_chain};
 use crate::workspace::layout::WorkspaceLayout;
 
 /// Date format for episode file paths: `YYYY-MM/DD`.
@@ -38,14 +38,14 @@ pub(super) fn build_memory_components(
     tz: chrono_tz::Tz,
     http: SharedHttpClient,
 ) -> Result<(Observer, Reflector), IronclawError> {
-    let observer_provider = build_provider_from_provider_spec(
+    let observer_provider = build_provider_chain(
         &cfg.observer,
         cfg.max_tokens,
         http.clone(),
         cfg.retry.clone(),
     )?;
     let reflector_provider =
-        build_provider_from_provider_spec(&cfg.reflector, cfg.max_tokens, http, cfg.retry.clone())?;
+        build_provider_chain(&cfg.reflector, cfg.max_tokens, http, cfg.retry.clone())?;
 
     let observer = Observer::new(
         observer_provider,

@@ -3,6 +3,7 @@
 pub(crate) mod anthropic;
 pub(crate) mod embedding;
 pub(crate) mod factory;
+pub(crate) mod failover;
 pub(crate) mod gemini;
 mod http;
 pub(crate) mod null;
@@ -12,7 +13,7 @@ pub(crate) mod retry;
 
 pub(crate) use embedding::build_embedding_provider;
 pub use embedding::{EmbeddingProvider, EmbeddingResponse};
-pub(crate) use factory::build_provider_from_provider_spec;
+pub(crate) use factory::build_provider_chain;
 pub use http::{HttpClientConfig, SharedHttpClient};
 
 use async_trait::async_trait;

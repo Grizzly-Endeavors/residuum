@@ -388,7 +388,7 @@ mod tests {
     fn make_test_spawn_context() -> Arc<SpawnContext> {
         Arc::new(SpawnContext {
             background_config: crate::config::BackgroundConfig::default(),
-            main_provider_spec: crate::config::ProviderSpec {
+            main_provider_specs: vec![crate::config::ProviderSpec {
                 name: "test".to_string(),
                 model: crate::config::ModelSpec {
                     kind: crate::config::ProviderKind::Ollama,
@@ -396,7 +396,7 @@ mod tests {
                 },
                 provider_url: "http://localhost:11434".to_string(),
                 api_key: None,
-            },
+            }],
             http_client: crate::models::SharedHttpClient::new(
                 &crate::models::HttpClientConfig::with_timeout(30),
             )

@@ -8,7 +8,7 @@ use crate::config::ProviderSpec;
 use crate::config::{BackgroundConfig, BackgroundModelTier};
 use crate::mcp::SharedMcpRegistry;
 use crate::models::retry::RetryConfig;
-use crate::models::{CompletionOptions, SharedHttpClient, build_provider_from_provider_spec};
+use crate::models::{CompletionOptions, SharedHttpClient, build_provider_chain};
 use crate::projects::activation::SharedProjectState;
 use crate::skills::SharedSkillState;
 use crate::workspace::identity::IdentityFiles;
@@ -23,7 +23,7 @@ use super::subagent::{
 /// Everything needed to spawn background tasks from the gateway event loop.
 pub(crate) struct SpawnContext {
     pub(crate) background_config: BackgroundConfig,
-    pub(crate) main_provider_spec: ProviderSpec,
+    pub(crate) main_provider_specs: Vec<ProviderSpec>,
     pub(crate) http_client: SharedHttpClient,
     pub(crate) max_tokens: u32,
     pub(crate) retry_config: RetryConfig,
@@ -50,13 +50,13 @@ pub(crate) async fn build_spawn_resources(
     mcp_registry: SharedMcpRegistry,
     preset: Option<(&SubagentPresetFrontmatter, String)>,
 ) -> Result<SubAgentResources, anyhow::Error> {
-    let spec = ctx
+    let specs = ctx
         .background_config
         .models
-        .resolve_tier(tier, &ctx.main_provider_spec);
+        .resolve_tier(tier, &ctx.main_provider_specs);
 
-    let provider = build_provider_from_provider_spec(
-        &spec,
+    let provider = build_provider_chain(
+        &specs,
         ctx.max_tokens,
         ctx.http_client.clone(),
         ctx.retry_config.clone(),

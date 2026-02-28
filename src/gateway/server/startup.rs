@@ -24,7 +24,7 @@ use crate::memory::types::IndexManifest;
 use crate::memory::vector_store::VectorStore;
 use crate::models::{
     CompletionOptions, EmbeddingProvider, HttpClientConfig, SharedHttpClient,
-    build_embedding_provider, build_provider_from_provider_spec,
+    build_embedding_provider, build_provider_chain,
 };
 use crate::notify::channels::{InboxChannel, NotificationChannel};
 use crate::notify::external::{NtfyChannel, WebhookChannel};
@@ -98,12 +98,8 @@ pub(super) async fn initialize(cfg: &Config) -> Result<GatewayComponents, Ironcl
         .map_err(|e| IronclawError::Config(format!("failed to build HTTP client: {e}")))?;
 
     // Model providers
-    let provider = build_provider_from_provider_spec(
-        &cfg.main,
-        cfg.max_tokens,
-        http.clone(),
-        cfg.retry.clone(),
-    )?;
+    let provider =
+        build_provider_chain(&cfg.main, cfg.max_tokens, http.clone(), cfg.retry.clone())?;
     tracing::info!(model = provider.model_name(), "model provider ready");
 
     let (observer, reflector) = match build_memory_components(cfg, tz, http.clone()) {
@@ -350,7 +346,7 @@ pub(super) async fn initialize(cfg: &Config) -> Result<GatewayComponents, Ironcl
     // SpawnContext for pulse/actions/on-demand background task spawning
     let spawn_context = Arc::new(SpawnContext {
         background_config: cfg.background.clone(),
-        main_provider_spec: cfg.main.clone(),
+        main_provider_specs: cfg.main.clone(),
         http_client: http,
         max_tokens: cfg.max_tokens,
         retry_config: cfg.retry.clone(),

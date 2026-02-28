@@ -12,8 +12,8 @@ use super::bootstrap::default_workspace_dir;
 use super::constants::{DEFAULT_MAX_TOKENS, DEFAULT_TIMEOUT_SECS};
 use super::deserialize::{
     BackgroundConfigFile, ConfigFile, DiscordConfigFile, GatewayConfigFile, McpConfigFile,
-    NotificationsConfigFile, ProviderEntryFile, SearchConfigFile, SkillsConfigFile,
-    WebhookConfigFile,
+    ModelStringOrList, NotificationsConfigFile, ProviderEntryFile, SearchConfigFile,
+    SkillsConfigFile, WebhookConfigFile,
 };
 use super::provider::{ModelSpec, ProviderKind, ProviderSpec};
 use super::secrets::SecretStore;
@@ -42,38 +42,49 @@ pub(super) fn from_file_and_env(
     let models = file.and_then(|f| f.models.as_ref());
 
     // Resolve main: IRONCLAW_MODEL env > models.main > default
-    let main_model_str = std::env::var("IRONCLAW_MODEL")
-        .ok()
-        .or_else(|| models.and_then(|m| m.main.clone()))
-        .unwrap_or_else(|| "anthropic/claude-sonnet-4-6".to_string());
+    let main = if let Ok(env_model) = std::env::var("IRONCLAW_MODEL") {
+        vec![resolve_model_string(&env_model, providers_map, &secrets)?]
+    } else if let Some(main_spec) = models.and_then(|m| m.main.clone()) {
+        resolve_model_chain(main_spec, providers_map, &secrets)?
+    } else {
+        vec![resolve_model_string(
+            "anthropic/claude-sonnet-4-6",
+            providers_map,
+            &secrets,
+        )?]
+    };
 
-    let mut main = resolve_model_string(&main_model_str, providers_map, &secrets)?;
-
-    // IRONCLAW_PROVIDER_URL overrides main provider URL only
-    if let Ok(url) = std::env::var("IRONCLAW_PROVIDER_URL") {
-        main.provider_url = url;
-    }
+    // IRONCLAW_PROVIDER_URL overrides first provider in main chain only
+    let main = if let Ok(url) = std::env::var("IRONCLAW_PROVIDER_URL") {
+        let mut chain = main;
+        if let Some(first) = chain.first_mut() {
+            first.provider_url = url;
+        }
+        chain
+    } else {
+        main
+    };
 
     // Resolve each role: models.<role> > models.default > main
-    let default_str = models.and_then(|m| m.default.clone());
+    let default_chain = models.and_then(|m| m.default.clone());
 
-    let observer = resolve_role(
-        models.and_then(|m| m.observer.as_deref()),
-        default_str.as_deref(),
+    let observer = resolve_role_chain(
+        models.and_then(|m| m.observer.clone()),
+        default_chain.as_ref(),
         &main,
         providers_map,
         &secrets,
     )?;
-    let reflector = resolve_role(
-        models.and_then(|m| m.reflector.as_deref()),
-        default_str.as_deref(),
+    let reflector = resolve_role_chain(
+        models.and_then(|m| m.reflector.clone()),
+        default_chain.as_ref(),
         &main,
         providers_map,
         &secrets,
     )?;
-    let pulse_spec = resolve_role(
-        models.and_then(|m| m.pulse.as_deref()),
-        default_str.as_deref(),
+    let pulse_spec = resolve_role_chain(
+        models.and_then(|m| m.pulse.clone()),
+        default_chain.as_ref(),
         &main,
         providers_map,
         &secrets,
@@ -298,24 +309,39 @@ fn resolve_model_string(
     })
 }
 
-/// Resolve a role's provider: explicit role string > default string > clone of main.
+/// Resolve a `ModelStringOrList` into a `Vec<ProviderSpec>` (failover chain).
 ///
 /// # Errors
-/// Returns `IronclawError::Config` if the model string cannot be resolved.
-fn resolve_role(
-    role_str: Option<&str>,
-    default_str: Option<&str>,
-    main: &ProviderSpec,
+/// Returns `IronclawError::Config` if any model string in the list cannot be resolved.
+fn resolve_model_chain(
+    spec: ModelStringOrList,
     providers_map: Option<&HashMap<String, ProviderEntryFile>>,
     secrets: &SecretStore,
-) -> Result<ProviderSpec, IronclawError> {
-    if let Some(s) = role_str {
-        return resolve_model_string(s, providers_map, secrets);
+) -> Result<Vec<ProviderSpec>, IronclawError> {
+    spec.into_vec()
+        .iter()
+        .map(|s| resolve_model_string(s, providers_map, secrets))
+        .collect()
+}
+
+/// Resolve a role's provider chain: explicit role > default > clone of main chain.
+///
+/// # Errors
+/// Returns `IronclawError::Config` if any model string cannot be resolved.
+fn resolve_role_chain(
+    role_spec: Option<ModelStringOrList>,
+    default_spec: Option<&ModelStringOrList>,
+    main: &[ProviderSpec],
+    providers_map: Option<&HashMap<String, ProviderEntryFile>>,
+    secrets: &SecretStore,
+) -> Result<Vec<ProviderSpec>, IronclawError> {
+    if let Some(spec) = role_spec {
+        return resolve_model_chain(spec, providers_map, secrets);
     }
-    if let Some(s) = default_str {
-        return resolve_model_string(s, providers_map, secrets);
+    if let Some(spec) = default_spec {
+        return resolve_model_chain(spec.clone(), providers_map, secrets);
     }
-    Ok(main.clone())
+    Ok(main.to_vec())
 }
 
 /// Resolve gateway configuration from TOML section and environment variables.
@@ -621,18 +647,18 @@ fn resolve_background_config(
     if let Some(models_section) = section.models.as_ref() {
         cfg.models.small = models_section
             .small
-            .as_deref()
-            .map(|s| resolve_model_string(s, providers_map, secrets))
+            .clone()
+            .map(|spec| resolve_model_chain(spec, providers_map, secrets))
             .transpose()?;
         cfg.models.medium = models_section
             .medium
-            .as_deref()
-            .map(|s| resolve_model_string(s, providers_map, secrets))
+            .clone()
+            .map(|spec| resolve_model_chain(spec, providers_map, secrets))
             .transpose()?;
         cfg.models.large = models_section
             .large
-            .as_deref()
-            .map(|s| resolve_model_string(s, providers_map, secrets))
+            .clone()
+            .map(|spec| resolve_model_chain(spec, providers_map, secrets))
             .transpose()?;
     }
 
@@ -670,6 +696,10 @@ fn provider_api_key_env(kind: ProviderKind) -> Option<String> {
 
 #[cfg(test)]
 #[expect(clippy::unwrap_used, reason = "test code uses unwrap for clarity")]
+#[expect(
+    clippy::indexing_slicing,
+    reason = "test code indexes into known-length vecs for clarity"
+)]
 #[expect(
     unsafe_code,
     reason = "std::env::set_var/remove_var require unsafe in edition 2024"
@@ -770,11 +800,11 @@ default = "anthropic/claude-haiku-4-5"
         let file: ConfigFile = toml::from_str(toml_str).unwrap();
         let cfg = from_file_and_env(Some(&file), &test_config_dir()).unwrap();
         // observer was not set, so it falls back to default
-        assert_eq!(cfg.observer.model.model, "claude-haiku-4-5");
-        assert_eq!(cfg.reflector.model.model, "claude-haiku-4-5");
-        assert_eq!(cfg.pulse.model.model, "claude-haiku-4-5");
+        assert_eq!(cfg.observer[0].model.model, "claude-haiku-4-5");
+        assert_eq!(cfg.reflector[0].model.model, "claude-haiku-4-5");
+        assert_eq!(cfg.pulse[0].model.model, "claude-haiku-4-5");
         // main is still the explicit main
-        assert_eq!(cfg.main.model.model, "claude-sonnet-4-6");
+        assert_eq!(cfg.main[0].model.model, "claude-sonnet-4-6");
     }
 
     #[test]
@@ -790,11 +820,11 @@ observer = "gemini/gemini-3.0-flash"
         let file: ConfigFile = toml::from_str(toml_str).unwrap();
         let cfg = from_file_and_env(Some(&file), &test_config_dir()).unwrap();
         assert_eq!(
-            cfg.observer.model.model, "gemini-3.0-flash",
+            cfg.observer[0].model.model, "gemini-3.0-flash",
             "explicit observer should override default"
         );
         assert_eq!(
-            cfg.reflector.model.model, "claude-haiku-4-5",
+            cfg.reflector[0].model.model, "claude-haiku-4-5",
             "unset reflector should still use default"
         );
     }
@@ -809,10 +839,85 @@ main = "anthropic/claude-sonnet-4-6"
 "#;
         let file: ConfigFile = toml::from_str(toml_str).unwrap();
         let cfg = from_file_and_env(Some(&file), &test_config_dir()).unwrap();
-        assert_eq!(cfg.main.model.model, "claude-sonnet-4-6");
-        assert_eq!(cfg.observer.model.model, "claude-sonnet-4-6");
-        assert_eq!(cfg.reflector.model.model, "claude-sonnet-4-6");
-        assert_eq!(cfg.pulse.model.model, "claude-sonnet-4-6");
+        assert_eq!(cfg.main[0].model.model, "claude-sonnet-4-6");
+        assert_eq!(cfg.observer[0].model.model, "claude-sonnet-4-6");
+        assert_eq!(cfg.reflector[0].model.model, "claude-sonnet-4-6");
+        assert_eq!(cfg.pulse[0].model.model, "claude-sonnet-4-6");
+    }
+
+    // ── Failover chain resolution ──────────────────────────────────────────
+
+    #[test]
+    fn model_chain_single_string() {
+        let toml_str = r#"
+timezone = "UTC"
+
+[models]
+main = "anthropic/claude-sonnet-4-6"
+"#;
+        let file: ConfigFile = toml::from_str(toml_str).unwrap();
+        let cfg = from_file_and_env(Some(&file), &test_config_dir()).unwrap();
+        assert_eq!(
+            cfg.main.len(),
+            1,
+            "single string should produce 1-element chain"
+        );
+        assert_eq!(cfg.main[0].model.model, "claude-sonnet-4-6");
+    }
+
+    #[test]
+    fn model_chain_array() {
+        let toml_str = r#"
+timezone = "UTC"
+
+[models]
+main = ["anthropic/claude-sonnet-4-6", "openai/gpt-4o"]
+"#;
+        let file: ConfigFile = toml::from_str(toml_str).unwrap();
+        let cfg = from_file_and_env(Some(&file), &test_config_dir()).unwrap();
+        assert_eq!(cfg.main.len(), 2, "array should produce 2-element chain");
+        assert_eq!(cfg.main[0].model.kind, ProviderKind::Anthropic);
+        assert_eq!(cfg.main[0].model.model, "claude-sonnet-4-6");
+        assert_eq!(cfg.main[1].model.kind, ProviderKind::OpenAi);
+        assert_eq!(cfg.main[1].model.model, "gpt-4o");
+    }
+
+    #[test]
+    fn role_chain_inherits_main_chain() {
+        let toml_str = r#"
+timezone = "UTC"
+
+[models]
+main = ["anthropic/claude-sonnet-4-6", "openai/gpt-4o"]
+"#;
+        let file: ConfigFile = toml::from_str(toml_str).unwrap();
+        let cfg = from_file_and_env(Some(&file), &test_config_dir()).unwrap();
+        assert_eq!(
+            cfg.observer.len(),
+            2,
+            "observer should inherit main chain length"
+        );
+        assert_eq!(cfg.observer[0].model.model, "claude-sonnet-4-6");
+        assert_eq!(cfg.observer[1].model.model, "gpt-4o");
+    }
+
+    #[test]
+    fn role_chain_overrides_main_chain() {
+        let toml_str = r#"
+timezone = "UTC"
+
+[models]
+main = ["anthropic/claude-sonnet-4-6", "openai/gpt-4o"]
+observer = "gemini/gemini-3.0-flash"
+"#;
+        let file: ConfigFile = toml::from_str(toml_str).unwrap();
+        let cfg = from_file_and_env(Some(&file), &test_config_dir()).unwrap();
+        assert_eq!(
+            cfg.observer.len(),
+            1,
+            "explicit observer should override main chain"
+        );
+        assert_eq!(cfg.observer[0].model.model, "gemini-3.0-flash");
     }
 
     #[test]
@@ -864,8 +969,8 @@ main = "cerebras/llama-4"
 "#;
         let file: ConfigFile = toml::from_str(toml_str).unwrap();
         let cfg = from_file_and_env(Some(&file), &test_config_dir()).unwrap();
-        assert_eq!(cfg.main.model.kind, ProviderKind::OpenAi);
-        assert_eq!(cfg.main.provider_url, "https://api.cerebras.ai/v1");
+        assert_eq!(cfg.main[0].model.kind, ProviderKind::OpenAi);
+        assert_eq!(cfg.main[0].provider_url, "https://api.cerebras.ai/v1");
     }
 
     #[test]
