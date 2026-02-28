@@ -75,11 +75,14 @@ impl ProjectState {
         let (frontmatter, body) = parse_project_md(&content)?;
         let manifest = build_manifest(&project_root).await?;
 
+        let recent_log = read_recent_logs(&project_root).await;
+
         let active = ActiveProject {
             name: frontmatter.name.clone(),
             dir_name,
             frontmatter,
             body,
+            recent_log,
             manifest,
             project_root,
         };
@@ -152,6 +155,10 @@ impl ProjectState {
 
         if !active.body.is_empty() {
             parts.push(active.body.clone());
+        }
+
+        if let Some(log) = &active.recent_log {
+            parts.push(format!("**Recent Session Log:**\n{log}"));
         }
 
         parts.push(format!("\n**Files:**\n{manifest_text}"));
@@ -234,6 +241,92 @@ async fn write_deactivation_log(
     })?;
 
     Ok(())
+}
+
+/// Read the most recent project session logs, returning up to ~2000 tokens
+/// (~8000 chars) of content with the most recent entries first.
+///
+/// Scans `notes/log/` for the most recent month directory, then reads the
+/// most recent day files. Returns `None` if no logs exist or all reads fail.
+async fn read_recent_logs(project_root: &Path) -> Option<String> {
+    let log_dir = project_root.join("notes/log");
+
+    let mut months = match tokio::fs::read_dir(&log_dir).await {
+        Ok(rd) => rd,
+        Err(_) => return None,
+    };
+
+    // Collect month directories and sort descending
+    let mut month_dirs: Vec<PathBuf> = Vec::new();
+    loop {
+        match months.next_entry().await {
+            Ok(Some(entry)) => {
+                if entry.file_type().await.is_ok_and(|ft| ft.is_dir()) {
+                    month_dirs.push(entry.path());
+                }
+            }
+            Ok(None) => break,
+            Err(_) => continue,
+        }
+    }
+    month_dirs.sort_unstable();
+    month_dirs.reverse();
+
+    const MAX_CHARS: usize = 8000;
+    let mut collected = String::new();
+
+    for month_path in &month_dirs {
+        if collected.len() >= MAX_CHARS {
+            break;
+        }
+
+        let mut day_rd = match tokio::fs::read_dir(month_path).await {
+            Ok(rd) => rd,
+            Err(_) => continue,
+        };
+
+        let mut day_files: Vec<PathBuf> = Vec::new();
+        loop {
+            match day_rd.next_entry().await {
+                Ok(Some(entry)) => {
+                    let path = entry.path();
+                    if path.extension().is_some_and(|ext| ext == "md") {
+                        day_files.push(path);
+                    }
+                }
+                Ok(None) => break,
+                Err(_) => continue,
+            }
+        }
+        day_files.sort_unstable();
+        day_files.reverse();
+
+        for day_file in &day_files {
+            if collected.len() >= MAX_CHARS {
+                break;
+            }
+
+            if let Ok(content) = tokio::fs::read_to_string(day_file).await {
+                if !collected.is_empty() {
+                    collected.push('\n');
+                }
+                let remaining = MAX_CHARS.saturating_sub(collected.len());
+                if content.len() <= remaining {
+                    collected.push_str(&content);
+                } else {
+                    // Truncate at a char boundary
+                    let truncated: String = content.chars().take(remaining).collect();
+                    collected.push_str(&truncated);
+                }
+            }
+        }
+    }
+
+    if collected.is_empty() {
+        None
+    } else {
+        Some(collected)
+    }
 }
 
 #[cfg(test)]
@@ -411,6 +504,55 @@ mod tests {
         assert!(
             ctx.contains("Overview body text"),
             "context should contain body"
+        );
+    }
+
+    #[tokio::test]
+    async fn recent_log_loaded_on_activation() {
+        let (_dir, layout) = setup_workspace_with_project().await;
+        let index = ProjectIndex::scan(&layout).await.unwrap();
+        let mut state = ProjectState::new(index, layout.clone());
+
+        // First activate + deactivate to create a log file
+        state.activate("Test Project").await.unwrap();
+        let now = make_datetime(2026, 2, 25, 10, 0);
+        state.deactivate("Set up CI pipeline.", now).await.unwrap();
+
+        // Rescan and re-activate — recent_log should be populated
+        state.rescan().await.unwrap();
+        let active = state.activate("Test Project").await.unwrap();
+        assert!(
+            active.recent_log.is_some(),
+            "recent_log should be populated after prior session"
+        );
+        let log = active.recent_log.as_ref().unwrap();
+        assert!(
+            log.contains("Set up CI pipeline"),
+            "recent_log should contain the deactivation entry"
+        );
+
+        // Verify it appears in prompt context
+        let ctx = state.format_active_context_for_prompt().unwrap();
+        assert!(
+            ctx.contains("Recent Session Log"),
+            "prompt context should contain recent session log header"
+        );
+        assert!(
+            ctx.contains("Set up CI pipeline"),
+            "prompt context should contain log content"
+        );
+    }
+
+    #[tokio::test]
+    async fn recent_log_none_without_logs() {
+        let (_dir, layout) = setup_workspace_with_project().await;
+        let index = ProjectIndex::scan(&layout).await.unwrap();
+        let mut state = ProjectState::new(index, layout);
+
+        let active = state.activate("Test Project").await.unwrap();
+        assert!(
+            active.recent_log.is_none(),
+            "recent_log should be None when no log files exist"
         );
     }
 

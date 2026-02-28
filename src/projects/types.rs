@@ -79,6 +79,8 @@ pub struct ActiveProject {
     pub frontmatter: ProjectFrontmatter,
     /// Markdown body from PROJECT.md (below the frontmatter).
     pub body: String,
+    /// Recent session log content loaded on activation (most recent first).
+    pub recent_log: Option<String>,
     /// File manifest of the project directory.
     pub manifest: ProjectManifest,
     /// Absolute path to the project root directory.
