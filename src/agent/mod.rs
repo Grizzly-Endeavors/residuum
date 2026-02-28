@@ -1179,7 +1179,9 @@ mod tests {
                     transcript_path: None,
                     status: crate::background::types::TaskStatus::Completed,
                     timestamp: chrono::Utc::now(),
-                    routing: crate::background::types::ResultRouting::Notify,
+                    routing: crate::background::types::ResultRouting::Direct(vec![
+                        "agent_feed".to_string(),
+                    ]),
                 },
             )],
         );

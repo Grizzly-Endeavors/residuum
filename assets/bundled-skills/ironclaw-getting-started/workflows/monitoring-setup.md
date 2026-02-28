@@ -42,7 +42,7 @@ pulses:
 ```
 
 Explain the key fields:
-- `name` -- identifies this pulse (used in NOTIFY.yml for routing)
+- `name` -- identifies this pulse
 - `schedule` -- how often to run (e.g., `"30m"`, `"2h"`, `"1d"`)
 - `active_hours` -- optional window to restrict when the pulse fires (respects configured timezone)
 - `tasks` -- one or more prompts that are executed when the pulse fires
@@ -50,17 +50,20 @@ Explain the key fields:
 
 ## Step 3: Set Up Notification Routing
 
-Explain: "When a heartbeat check finds something worth reporting, the result needs to go somewhere. NOTIFY.yml controls where results are delivered."
+Explain: "When a heartbeat check finds something worth reporting, the result needs to go somewhere. The `channels` field on each pulse in HEARTBEAT.yml controls where results are delivered."
 
-Edit `NOTIFY.yml` to route the pulse the user just created. Use `edit_file` or `write_file`.
+Add the `channels` field to the pulse the user just created in HEARTBEAT.yml. Use `edit_file` or `write_file`.
 
-Example configuration:
+Example — add `channels` to the pulse:
 ```yaml
-agent_feed:
-  - server_health
-
-inbox:
-  - server_health
+pulses:
+  - name: server_health
+    schedule: "30m"
+    active_hours: "08:00-22:00"
+    channels: [agent_feed, inbox]
+    tasks:
+      - name: check_server
+        prompt: "Run 'curl -s -o /dev/null -w \"%{http_code}\" https://example.com' and report if the status code is not 200."
 ```
 
 Explain the built-in channels:
@@ -82,17 +85,22 @@ url = "https://ntfy.sh"
 topic = "my-ironclaw"
 ```
 
-After adding the channel to config.toml, reference it by name in NOTIFY.yml:
+After adding the channel to config.toml, add it to the pulse's `channels` list in HEARTBEAT.yml:
 ```yaml
-ntfy:
-  - server_health
+pulses:
+  - name: server_health
+    schedule: "30m"
+    channels: [agent_feed, inbox, ntfy]
+    tasks:
+      - name: check_server
+        prompt: "..."
 ```
 
 If the user is not ready for external notifications, skip this step. They can add it later.
 
 ## Step 5: Verify and Wrap Up
 
-Tell the user that HEARTBEAT.yml and NOTIFY.yml are hot-reloaded -- changes take effect without restarting the gateway.
+Tell the user that HEARTBEAT.yml and CHANNELS.yml are hot-reloaded -- changes take effect without restarting the gateway.
 
 Summarize what was configured:
 - Which pulse is running and how often
@@ -101,7 +109,7 @@ Summarize what was configured:
 
 Suggest next steps:
 - "You can add more pulses to HEARTBEAT.yml as you think of things to monitor."
-- "I will evolve NOTIFY.yml over time based on what you pay attention to and what you ignore."
+- "I will evolve pulse routing in HEARTBEAT.yml over time based on what you pay attention to and what you ignore."
 - "If you want to connect to external services like email or calendars, ask about MCP server setup."
 - "For scheduled one-off tasks instead of recurring checks, I can use `schedule_action`."
 

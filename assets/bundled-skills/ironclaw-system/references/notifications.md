@@ -4,32 +4,33 @@ The notification system routes background task results to one or more channels. 
 
 ## Routing Modes
 
-### NOTIFY.yml (heartbeat pulses only)
+### CHANNELS.yml and Pulse Routing (heartbeats)
 
-Heartbeat pulse results are routed by looking up the **pulse name** in NOTIFY.yml. The file maps channel names to lists of pulse names:
+`CHANNELS.yml` defines the channel registry. Pulse routing is declared on each pulse in `HEARTBEAT.yml` via the `channels:` field:
 
 ```yaml
-# Maps channel names to pulse names whose results they receive.
-agent_wake:
-  - daily-review
-  - urgent-alerts
+# In HEARTBEAT.yml:
+pulses:
+  - name: daily-review
+    schedule: "24h"
+    channels: [agent_wake]
+    tasks:
+      - name: review
+        prompt: "Review the day."
 
-agent_feed:
-  - check-inbox
-
-inbox:
-  - deploy-watcher
-  - monitor-health
-
-ntfy:
-  - critical-alerts
+  - name: deploy-watcher
+    schedule: "5m"
+    channels: [inbox, ntfy]
+    tasks:
+      - name: check
+        prompt: "Check deployments."
 ```
 
-A single pulse name can appear in multiple channels — results will be delivered to all of them.
+A single pulse can list multiple channels — results will be delivered to all of them.
 
 ### Direct routing (scheduled actions and agent-spawned tasks)
 
-Scheduled actions and agent-spawned sub-agents specify their channels at creation time via the `channels` parameter. They bypass NOTIFY.yml entirely.
+Scheduled actions and agent-spawned sub-agents specify their channels at creation time via the `channels` parameter. They use direct routing, same as pulses.
 
 - `schedule_action`: `channels` parameter (defaults to `["agent_feed"]`)
 - `subagent_spawn`: `channels` parameter (defaults to `["agent_feed"]`)
@@ -57,11 +58,11 @@ External channel delivery failures are logged at warn level. They do not retry o
 
 ## Hot Reload
 
-`NOTIFY.yml` is re-read from disk on every `route()` call. Edits take effect immediately without restart.
+`CHANNELS.yml` is re-read from disk on every `route()` call. Edits take effect immediately without restart.
 
 ## Gotchas
 
-- Pulse names in NOTIFY.yml must match exactly (case-sensitive) the pulse `name` field in HEARTBEAT.yml.
-- If a pulse name is not found in any channel mapping, the result is silently dropped.
+- Channel names in a pulse's `channels:` field must match exactly (case-sensitive) a built-in channel or a channel defined in `config.toml` / `CHANNELS.yml`.
+- If a pulse has no `channels:` field, the result is silently dropped.
 - The `inbox` channel creates a new inbox item every time — it does not deduplicate.
-- For scheduled actions, specify channels in the `schedule_action` tool call. For heartbeats, routing goes through NOTIFY.yml by pulse name.
+- For scheduled actions, specify channels in the `schedule_action` tool call. For heartbeats, declare channels on the pulse in HEARTBEAT.yml.

@@ -56,7 +56,7 @@ Explain: "I can do things without you asking, through two mechanisms."
 **Heartbeats** (recurring):
 - Defined in `HEARTBEAT.yml` with a schedule like "every 30 minutes" or "every 2 hours"
 - Each pulse runs one or more task prompts
-- Results are routed through `NOTIFY.yml` to channels like inbox, agent feed, or external notifications
+- Results are routed to channels declared on each pulse (via the `channels:` field in HEARTBEAT.yml) — channels like inbox, agent feed, or external notifications
 - Think of them as scheduled tasks, but instead of running scripts, they run agent prompts
 
 **Scheduled Actions** (one-off):

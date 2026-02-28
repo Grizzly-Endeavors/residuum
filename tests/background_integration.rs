@@ -4,7 +4,6 @@
 //! notification system, and Phase 4 isolated project/skill state for sub-agents.
 
 #[expect(clippy::unwrap_used, reason = "test code uses unwrap for clarity")]
-#[expect(clippy::panic, reason = "test code panics on unexpected match arm")]
 #[expect(
     clippy::tests_outside_test_module,
     reason = "integration tests live in tests/ directory, not inside #[cfg(test)] modules"
@@ -25,22 +24,18 @@ mod background_integration {
     use ironclaw::notify::router::NotificationRouter;
     use ironclaw::notify::types::TaskSource;
 
-    // ── Result routing through NOTIFY.yml to inbox ─────────────────────
+    // ── Result routing to inbox via channels ───────────────────────────
 
     #[tokio::test]
-    async fn result_routes_to_inbox_via_notify_yml() {
+    async fn result_routes_to_inbox_via_channels() {
         let dir = tempdir().unwrap();
         let inbox_dir = dir.path().join("inbox");
         std::fs::create_dir_all(&inbox_dir).unwrap();
 
-        // Write NOTIFY.yml that routes test_script to inbox
-        let notify_path = dir.path().join("NOTIFY.yml");
-        std::fs::write(&notify_path, "inbox:\n  - test_script\n").unwrap();
-
         let inbox_channel = InboxChannel::new(&inbox_dir, chrono_tz::UTC);
         let router = NotificationRouter::new(HashMap::new(), Some(inbox_channel));
 
-        // Simulate a background result
+        // Simulate a background result with direct inbox routing
         let result = ironclaw::background::types::BackgroundResult {
             id: "route-1".to_string(),
             task_name: "test_script".to_string(),
@@ -49,7 +44,7 @@ mod background_integration {
             transcript_path: None,
             status: TaskStatus::Completed,
             timestamp: chrono::Utc::now(),
-            routing: ResultRouting::Notify,
+            routing: ResultRouting::Direct(vec!["inbox".to_string()]),
         };
 
         let notification = ironclaw::notify::types::Notification {
@@ -59,8 +54,8 @@ mod background_integration {
             timestamp: result.timestamp,
         };
 
-        let outcome = router.route(&notification, &notify_path).await;
-        assert!(outcome.inbox, "should route to inbox");
+        let delivered = router.deliver_to_inbox(&notification).await;
+        assert!(delivered, "should deliver to inbox");
 
         // Verify inbox item was created
         let items: Vec<_> = std::fs::read_dir(&inbox_dir)
@@ -76,12 +71,8 @@ mod background_integration {
     #[tokio::test]
     async fn unrouted_task_has_transcript_but_no_delivery() {
         let dir = tempdir().unwrap();
-        let notify_path = dir.path().join("NOTIFY.yml");
-        // Write NOTIFY.yml with no entries for our task
-        std::fs::write(&notify_path, "agent_feed:\n  - other_task\n").unwrap();
 
-        let router = NotificationRouter::empty();
-
+        // Empty channels = unrouted
         let result = ironclaw::background::types::BackgroundResult {
             id: "unrouted-1".to_string(),
             task_name: "nobody_listens".to_string(),
@@ -90,21 +81,11 @@ mod background_integration {
             transcript_path: Some(dir.path().join("bg-unrouted-1.log")),
             status: TaskStatus::Completed,
             timestamp: chrono::Utc::now(),
-            routing: ResultRouting::Notify,
+            routing: ResultRouting::Direct(vec![]),
         };
 
-        let notification = ironclaw::notify::types::Notification {
-            task_name: result.task_name.clone(),
-            summary: result.summary.clone(),
-            source: result.source,
-            timestamp: result.timestamp,
-        };
-
-        let outcome = router.route(&notification, &notify_path).await;
-        assert!(!outcome.agent_wake);
-        assert!(!outcome.agent_feed);
-        assert!(!outcome.inbox);
-        assert!(outcome.external_dispatched.is_empty());
+        let ResultRouting::Direct(channels) = &result.routing;
+        assert!(channels.is_empty(), "should have no channels");
 
         // Transcript path was set (would have been written by spawner)
         assert!(result.transcript_path.is_some());
@@ -206,7 +187,7 @@ mod background_integration {
             transcript_path: Some(PathBuf::from("/tmp/bg-fmt-1.log")),
             status: TaskStatus::Completed,
             timestamp: chrono::Utc::now(),
-            routing: ResultRouting::Notify,
+            routing: ResultRouting::Direct(vec!["agent_feed".to_string()]),
         };
 
         let formatted = format_background_result(&result);
@@ -235,7 +216,7 @@ mod background_integration {
             transcript_path: None,
             status: TaskStatus::Completed,
             timestamp: chrono::Utc::now(),
-            routing: ResultRouting::Notify,
+            routing: ResultRouting::Direct(vec!["agent_feed".to_string()]),
         };
 
         spawner.send_result(result).await.unwrap();
@@ -293,14 +274,10 @@ mod background_integration {
             "should fail without resources"
         );
         // Routing should be preserved on the result
-        match &result.routing {
-            ResultRouting::Direct(channels) => {
-                assert_eq!(channels.len(), 2);
-                assert!(channels.contains(&"agent_feed".to_string()));
-                assert!(channels.contains(&"inbox".to_string()));
-            }
-            ResultRouting::Notify => panic!("expected Direct routing"),
-        }
+        let ResultRouting::Direct(channels) = &result.routing;
+        assert_eq!(channels.len(), 2);
+        assert!(channels.contains(&"agent_feed".to_string()));
+        assert!(channels.contains(&"inbox".to_string()));
     }
 
     #[test]
@@ -317,6 +294,7 @@ mod background_integration {
             active_hours: None,
             agent: None,
             trigger_count: None,
+            channels: vec!["agent_feed".to_string()],
             tasks: vec![PulseTask {
                 name: "check_health".to_string(),
                 prompt: "Check system health.".to_string(),
@@ -328,7 +306,8 @@ mod background_integration {
         assert_eq!(task.task_name, "status_check");
         assert!(task.id.starts_with("pulse-status_check-"));
         assert!(matches!(task.source, TaskSource::Pulse));
-        assert!(matches!(task.routing, ResultRouting::Notify));
+        let ResultRouting::Direct(channels) = &task.routing;
+        assert_eq!(channels, &["agent_feed"], "should route to default channel");
 
         let Execution::SubAgent(cfg) = &task.execution;
         assert_eq!(cfg.model_tier, BackgroundModelTier::Small);

@@ -18,7 +18,7 @@ The module owns:
 - **Result routing:** formatting `BackgroundResult` for injection into the main agent's message stream or direct delivery to notification channels.
 
 The module does **not** handle:
-- **Notification routing/delivery.** The gateway (via `SpawnContext` and `NotificationRouter`) determines where results go (NOTIFY.yml lookup, inbox, external channels).
+- **Notification routing/delivery.** The gateway (via `SpawnContext` and `NotificationRouter`) determines where results go (inbox, external channels).
 - **Preset discovery or validation.** The `subagent_spawn` tool (in `tools/background.rs`) loads and validates presets; this module just receives preset metadata if provided.
 - **Interrupt channel mechanics.** The gateway owns the interrupt channel; the spawner just sends results through it.
 - **Model tier fallback logic.** The `SpawnContext` resolves tier → provider spec (with fallback: small → medium → large → main agent model).
@@ -29,10 +29,10 @@ The module does **not** handle:
 
 **BackgroundTask:** The envelope for any background work. Contains:
 - `id`: Unique identifier (e.g., `"agent-XXXXXXXX-timestamp"`)
-- `task_name`: Human-readable name used for NOTIFY.yml routing
+- `task_name`: Human-readable name for logging and display
 - `source`: Where the task came from (`TaskSource::Agent`, `::Pulse`, `::Action`)
 - `execution`: What to run (`Execution::SubAgent`)
-- `routing`: How to deliver the result (`ResultRouting::Notify` for NOTIFY.yml lookup, or `ResultRouting::Direct` for explicit channels)
+- `routing`: How to deliver the result (`ResultRouting::Direct` with explicit channel names)
 
 **Execution:**
 - `SubAgent(SubAgentConfig)`: Runs a simplified agent turn loop with minimal context. The SubAgent gets isolated clones of `ProjectState`, `SkillState`, `ToolFilter`, and `PathPolicy`, so it operates independently of the main agent and other SubAgents. Returns the LLM's final text response as the summary.
@@ -97,15 +97,13 @@ When `execute_subagent()` runs:
 
 `BackgroundResult` carries the completion envelope:
 - `id`: Task ID
-- `task_name`: For NOTIFY.yml lookup
+- `task_name`: Human-readable task name
 - `summary`: SubAgent's final text response
 - `transcript_path`: Path to disk log
 - `status`: `Completed`, `Cancelled`, or `Failed { error: String }`
 - `routing`: How to deliver it
 
-The gateway receives the result and:
-- If `routing` is `Notify`: looks up `task_name` in NOTIFY.yml, dispatches to all listed channels.
-- If `routing` is `Direct`: sends directly to specified channels (used by `subagent_spawn`).
+The gateway receives the result and routes to the channels listed in `ResultRouting::Direct`. Channels are specified at task creation time (e.g., by the pulse definition's `channels` field, or by the `subagent_spawn` tool).
 
 Results routed to `agent_wake` or `agent_feed` are injected into the main agent's message stream as system messages (via the interrupt channel). Results routed to `inbox` become inbox items. External channel results (ntfy, webhook) are delivered via HTTP.
 
@@ -217,7 +215,7 @@ This isolation ensures:
 
 ### Used By
 
-- **`src/gateway/server/mod.rs`** — The main gateway owns the `BackgroundTaskSpawner` and `mpsc` result channel. Creates spawn context, handles background results, routes via NOTIFY.yml, manages interrupt flow.
+- **`src/gateway/server/mod.rs`** — The main gateway owns the `BackgroundTaskSpawner` and `mpsc` result channel. Creates spawn context, handles background results, routes to channels, manages interrupt flow.
 
 - **`src/gateway/server/spawn_helpers.rs`** — `build_spawn_resources()` function. Used by gateway and `subagent_spawn` tool to construct isolated SubAgentResources.
 
@@ -274,12 +272,7 @@ graph TD
     J --> K["Remove from active_tasks<br/>Release semaphore permit"]
 
     K --> L["Gateway receives result"]
-    L --> M{Routing type?}
-    M -->|Notify| N["Lookup task_name in NOTIFY.yml<br/>Dispatch to all listed channels"]
-    M -->|Direct| O["Send to specified channels<br/>bypassing NOTIFY.yml"]
-
-    N --> P{Destination channel?}
-    O --> P
+    L --> P{Destination channel?}
     P -->|agent_wake/agent_feed| Q["Inject into interrupt channel<br/>→ turn loop receives it"]
     P -->|inbox| R["Create InboxItem<br/>in memory/inbox/"]
     P -->|external| S["Deliver via HTTP<br/>to ntfy/webhook"]

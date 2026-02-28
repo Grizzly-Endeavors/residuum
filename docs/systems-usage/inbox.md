@@ -5,7 +5,7 @@ The inbox is a capture system for items the agent or background tasks want to sa
 ## How Items Arrive
 
 - The agent creates items directly with `inbox_add`
-- Background task results routed to the `inbox` channel via NOTIFY.yml
+- Background task results routed to the `inbox` channel via the pulse's `channels` field in HEARTBEAT.yml
 - Background task results routed to `inbox` via direct channel specification on `subagent_spawn` or `schedule_action`
 
 ## Unread Count in Context

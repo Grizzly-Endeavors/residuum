@@ -30,7 +30,7 @@ Scheduled actions are one-off future tasks persisted in `scheduled_actions.json`
 - **`run_at`**: ISO 8601 datetime. Naive datetimes (without timezone) are interpreted in the configured workspace timezone.
 - **`agent_name`**: Routing control. `null` → SubAgent, `"main"` → main agent turn, `"<preset>"` → SubAgent with named preset.
 - **`model_tier`**: `"small"`, `"medium"`, or `"large"`. Defaults to medium for SubAgent execution.
-- **`channels`**: Array of notification channel names (built-in or from config.toml). Results are routed directly to these channels after execution — scheduled actions do **not** route through NOTIFY.yml. Defaults to `["agent_feed"]`. **Mutually exclusive with `agent_name: "main"`** — main-turn actions inject directly into the conversation.
+- **`channels`**: Array of notification channel names (built-in or from config.toml). Results are routed directly to these channels after execution. Defaults to `["agent_feed"]`. **Mutually exclusive with `agent_name: "main"`** — main-turn actions inject directly into the conversation.
 
 ## Execution
 

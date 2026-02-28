@@ -177,10 +177,10 @@ impl WorkspaceLayout {
         self.root.join("HEARTBEAT.yml")
     }
 
-    /// Path to NOTIFY.yml -- notification routing configuration.
+    /// Path to CHANNELS.yml -- channel registry.
     #[must_use]
-    pub fn notify_yml(&self) -> PathBuf {
-        self.root.join("NOTIFY.yml")
+    pub fn channels_yml(&self) -> PathBuf {
+        self.root.join("CHANNELS.yml")
     }
 
     /// Path to the background task transcript directory.
@@ -314,9 +314,9 @@ mod tests {
             "heartbeat_yml path"
         );
         assert_eq!(
-            layout.notify_yml(),
-            PathBuf::from("/tmp/ws/NOTIFY.yml"),
-            "notify_yml path"
+            layout.channels_yml(),
+            PathBuf::from("/tmp/ws/CHANNELS.yml"),
+            "channels_yml path"
         );
         assert_eq!(
             layout.pulse_state_json(),

@@ -295,7 +295,7 @@ struct BackgroundResultOutcome {
     wake_requested: bool,
 }
 
-/// Handle a background task result: route through NOTIFY.yml or direct channels.
+/// Handle a background task result: route to channels.
 ///
 /// When a result targets the agent feed or wake, the formatted message is persisted to
 /// `recent_messages.json` and injected into the agent's conversation history
@@ -327,58 +327,36 @@ async fn handle_background_result(
 
     let formatted = format_background_result(&result);
 
-    let (should_inject, wake) = match &result.routing {
-        ResultRouting::Notify => {
-            let notification = Notification {
-                task_name: result.task_name.clone(),
-                summary: result.summary.clone(),
-                source: result.source,
-                timestamp: result.timestamp,
-            };
-
-            let outcome = router.route(&notification, &layout.notify_yml()).await;
-
-            tracing::info!(
-                task = %result.task_name,
-                agent_wake = outcome.agent_wake,
-                agent_feed = outcome.agent_feed,
-                inbox = outcome.inbox,
-                external_count = outcome.external_dispatched.len(),
-                "background result routed via NOTIFY.yml"
-            );
-
-            (outcome.agent_wake || outcome.agent_feed, outcome.agent_wake)
-        }
-        ResultRouting::Direct(channels) => {
-            let mut agent_inject = false;
-            let mut wake_requested = false;
-            for channel_name in channels {
-                match channel_name.as_str() {
-                    "agent_wake" => {
-                        agent_inject = true;
-                        wake_requested = true;
-                    }
-                    "agent_feed" => agent_inject = true,
-                    "inbox" => {
-                        let notification = Notification {
-                            task_name: result.task_name.clone(),
-                            summary: result.summary.clone(),
-                            source: result.source,
-                            timestamp: result.timestamp,
-                        };
-                        router.deliver_to_inbox(&notification).await;
-                    }
-                    _ => {
-                        tracing::debug!(
-                            channel = channel_name,
-                            task = %result.task_name,
-                            "direct channel routing (external channels not yet supported for direct)"
-                        );
-                    }
+    let ResultRouting::Direct(channels) = &result.routing;
+    let (should_inject, wake) = {
+        let mut agent_inject = false;
+        let mut wake_requested = false;
+        for channel_name in channels {
+            match channel_name.as_str() {
+                "agent_wake" => {
+                    agent_inject = true;
+                    wake_requested = true;
+                }
+                "agent_feed" => agent_inject = true,
+                "inbox" => {
+                    let notification = Notification {
+                        task_name: result.task_name.clone(),
+                        summary: result.summary.clone(),
+                        source: result.source,
+                        timestamp: result.timestamp,
+                    };
+                    router.deliver_to_inbox(&notification).await;
+                }
+                _ => {
+                    tracing::debug!(
+                        channel = channel_name,
+                        task = %result.task_name,
+                        "direct channel routing (external channels not yet supported for direct)"
+                    );
                 }
             }
-            (agent_inject, wake_requested)
         }
+        (agent_inject, wake_requested)
     };
 
     if !should_inject {

@@ -43,8 +43,7 @@ struct BackgroundTask {
 }
 
 enum ResultRouting {
-    Notify,                          // look up task_name in NOTIFY.yml (pulses only)
-    Direct(Vec<String>),             // dispatch to these channels (agent-spawned, scheduled actions)
+    Direct(Vec<String>),             // dispatch to these channels (all task types)
 }
 
 enum TaskSource {
@@ -300,7 +299,7 @@ A background task produces a `BackgroundResult` when it completes:
 ```rust
 struct BackgroundResult {
     id: String,
-    task_name: String,             // used for NOTIFY.yml lookup (pulses) or display
+    task_name: String,             // used for display and logging
     source: TaskSource,
     summary: String,               // SubAgent's final text
     transcript_path: PathBuf,
@@ -319,7 +318,7 @@ enum TaskStatus {
 
 Results are routed differently depending on their source:
 
-- **Pulse results** are routed via NOTIFY.yml — the gateway looks up `task_name` in NOTIFY.yml and dispatches to every channel that lists it. See [Notification Routing Design](notification-routing-design.md) for the full NOTIFY.yml specification.
+- **Pulse results** are routed to the channels declared on the pulse in HEARTBEAT.yml via the `channels:` field. See [Notification Routing Design](notification-routing-design.md) for the full specification.
 - **Scheduled action results** are routed to the channels specified at creation time via the `channels` parameter on `schedule_action`.
 - **Agent-spawned subagent results** are routed to the channels specified in the `subagent_spawn` tool call.
 
@@ -362,7 +361,7 @@ PR #421 from @alice has been waiting 3 days for review.
 
 ### Subagent results from `subagent_spawn`
 
-Agent-spawned subagent results are routed to the channels specified in the `subagent_spawn` tool call (default: `["agent_feed"]`). This bypasses NOTIFY.yml — the main agent decides at spawn time where the result goes, and the gateway validates the channel names against built-in channels and `config.toml`.
+Agent-spawned subagent results are routed to the channels specified in the `subagent_spawn` tool call (default: `["agent_feed"]`). The main agent decides at spawn time where the result goes, and the gateway validates the channel names against built-in channels and `config.toml`.
 
 ---
 
@@ -525,7 +524,7 @@ Each pulse has an `agent` field that controls how it executes:
 | `"main"` | Main agent wake turn |
 | `"<preset>"` | Named subagent preset |
 
-HEARTBEAT_OK is the only gate. If the SubAgent's summary contains the HEARTBEAT_OK sentinel, the result is logged silently and not routed. Otherwise, the result is dispatched to every channel that lists the pulse name in `NOTIFY.yml`.
+HEARTBEAT_OK is the only gate. If the SubAgent's summary contains the HEARTBEAT_OK sentinel, the result is logged silently and not routed. Otherwise, the result is dispatched to every channel declared on the pulse via its `channels:` field in `HEARTBEAT.yml`.
 
 ### Scheduled action execution (`actions/`)
 
@@ -536,7 +535,7 @@ Scheduled actions already have `UserVisible` and `Background` delivery modes:
 | `UserVisible` | Enqueue as system event in main agent turn | Direct channel routing — the `channels` parameter on `schedule_action` determines delivery (e.g., `["agent_wake"]`) |
 | `Background` | Dedicated agent thread (partially implemented) | `BackgroundTaskSpawner.spawn()` — SubAgent execution. Result routed to channels specified at action creation time via `schedule_action`'s `channels` parameter. |
 
-Scheduled actions do not use NOTIFY.yml. Their routing is specified directly when the action is created via the `channels` parameter on `schedule_action`, and stored with the action definition.
+Scheduled actions use direct channel routing, same as all other task types. Their routing is specified when the action is created via the `channels` parameter on `schedule_action`, and stored with the action definition.
 
 The `schedule_action` tool accepts these background-relevant parameters:
 
@@ -550,7 +549,7 @@ The `schedule_action` tool accepts these background-relevant parameters:
 
 The `tokio::select!` loop simplifies. Pulse and scheduled actions no longer need executor arms that run full agent turns. They spawn background tasks and return immediately.
 
-Background results are routed to their configured channels — via NOTIFY.yml for pulses, or via the direct channels specified at creation time for scheduled actions and agent-spawned tasks. Results destined for `agent_wake` or `agent_feed` flow through `interrupt_tx`. If no turn is active, the gateway's idle-state handler picks them up: `agent_feed` results queue for the next turn, `agent_wake` results start a new turn.
+Background results are routed to their configured channels — all task types use direct channel routing (pulses via the `channels` field in HEARTBEAT.yml, scheduled actions and agent-spawned tasks via channels specified at creation time). Results destined for `agent_wake` or `agent_feed` flow through `interrupt_tx`. If no turn is active, the gateway's idle-state handler picks them up: `agent_feed` results queue for the next turn, `agent_wake` results start a new turn.
 
 ### Agent state tracking
 
@@ -750,9 +749,9 @@ Check due pulses (HEARTBEAT.yml + timestamps)
                     │            │
               HEARTBEAT_OK    Result
                     │            │
-              Log silently   Route via NOTIFY.yml
+              Log silently   Route via pulse channels
                              (dispatch to all channels
-                              listing this pulse name)
+                              declared on this pulse)
 ```
 
 ### User message mid-turn
@@ -821,7 +820,7 @@ BackgroundTaskSpawner.spawn(SubAgent, routing: Direct(["agent_feed", "ntfy"]))
 
 ## Implementation Phases
 
-Prereqs: Inbox system, NOTIFY.yml parsing and routing (see [Notification Routing Design](notification-routing-design.md)).
+Prereqs: Inbox system, CHANNELS.yml parsing and routing (see [Notification Routing Design](notification-routing-design.md)).
 
 ### Phase 1: Interrupt channel and turn loop check points
 
@@ -840,7 +839,7 @@ The highest-impact change: user messages can be injected mid-turn.
 - Define `BackgroundTask`, `BackgroundResult`, `TaskSource`, `TaskStatus`, `Execution`, `ModelTier`.
 - Implement `BackgroundTaskSpawner` with semaphore-bounded `tokio::spawn` and `CancellationToken`.
 - Implement SubAgent execution: minimal context assembly (USER.md + ENVIRONMENT.md + projects index + task prompt + active skills), simplified turn loop, transcript writing.
-- NOTIFY.yml parsing and routing: load routing config, dispatch pulse results to listed channels by task name.
+- CHANNELS.yml parsing and routing: load channel registry, dispatch pulse results to channels declared on the pulse.
 - `NotificationChannel` trait and built-in channel implementations (`agent_wake`, `agent_feed`, `inbox`).
 - `InboxItem` struct and individual-file inbox persistence.
 - Inbox item count note in context assembly.
@@ -873,7 +872,7 @@ The highest-impact change: user messages can be injected mid-turn.
 - Modify scheduled action background-mode executor to use BackgroundTaskSpawner with SubAgent execution.
 - Remove scheduled action `UserVisible`/`Background` delivery modes — routing is now determined by the `channels` parameter on `schedule_action`.
 - Remove pulse and scheduled action executor arms from the gateway event loop that ran full agent turns.
-- Tests: pulse fires → SubAgent → result routed via NOTIFY.yml. Scheduled action → SubAgent → result routed to specified channels.
+- Tests: pulse fires → SubAgent → result routed via pulse channels. Scheduled action → SubAgent → result routed to specified channels.
 
 **Milestone: Pulse and scheduled actions no longer block the main agent.**
 

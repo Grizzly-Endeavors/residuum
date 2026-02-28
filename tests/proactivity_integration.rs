@@ -87,6 +87,7 @@ mod proactivity_integration {
             active_hours: None,
             agent: None,
             trigger_count: None,
+            channels: vec!["agent_feed".to_string()],
             tasks: vec![PulseTask {
                 name: "check_inbox".to_string(),
                 prompt: "Check email.".to_string(),
@@ -164,13 +165,11 @@ mod proactivity_integration {
     }
 
     #[test]
-    fn build_pulse_task_routing_is_notify() {
+    fn build_pulse_task_routing_defaults_to_agent_feed() {
         let pulse = sample_pulse();
         let task = build_pulse_task(&pulse);
-        assert!(
-            matches!(task.routing, ResultRouting::Notify),
-            "routing should be Notify"
-        );
+        let ResultRouting::Direct(channels) = &task.routing;
+        assert_eq!(channels, &["agent_feed"], "should route to default channel");
     }
 
     #[test]
@@ -182,6 +181,7 @@ mod proactivity_integration {
             active_hours: None,
             agent: None,
             trigger_count: None,
+            channels: vec!["agent_feed".to_string()],
             tasks: vec![],
         };
 

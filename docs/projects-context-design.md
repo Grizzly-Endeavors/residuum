@@ -124,7 +124,7 @@ Directory names are derived from the project name: lowercased, spaces and specia
 ├── ENVIRONMENT.md
 ├── PRESENCE.toml
 ├── HEARTBEAT.yml
-├── NOTIFY.yml
+├── CHANNELS.yml
 ├── scheduled_actions.json
 ├── memory/
 │   ├── observations.json

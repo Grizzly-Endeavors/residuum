@@ -11,6 +11,7 @@ pulses:
     schedule: 30m            # Duration: "30s", "5m", "2h", "1d"
     active_hours: "09:00-17:00"  # Optional — HH:MM-HH:MM window
     agent: ~                 # null → SubAgent (Small tier)
+    channels: [agent_feed]   # Where results are delivered
     tasks:
       - name: check_inbox
         prompt: "Check inbox for new items and summarize anything unread."
@@ -20,6 +21,7 @@ pulses:
     schedule: 1d
     active_hours: "08:00-09:00"
     agent: main              # "main" → MainWakeTurn (runs on main agent)
+    channels: [agent_wake]
     tasks:
       - name: morning_plan
         prompt: "Review memory and plan for today."
@@ -28,6 +30,7 @@ pulses:
     enabled: true
     schedule: 1h
     agent: deploy-watcher    # Any other string → SubAgent with named preset from subagents/
+    channels: [inbox, ntfy]
     tasks:
       - name: check_status
         prompt: "Check deployment status."
@@ -68,6 +71,7 @@ The `agent` field controls how the pulse executes:
 - Disabled pulses (`enabled: false`) are skipped entirely.
 - Each task in `tasks` is an object with `name` (string) and `prompt` (string). Task prompts are joined into the SubAgent prompt.
 - SubAgent pulses include a `"HEARTBEAT_OK"` instruction: the agent should respond with just that phrase if there is nothing to report.
+- The `channels` field declares where results are delivered (e.g. `[agent_feed, inbox]`). If omitted, results are dropped with a warning.
 
 ## Gotchas
 

@@ -40,4 +40,4 @@ But every autonomous action should be visible. Files the user can read and edit.
 
 If the system state lives in files the user can inspect, edit, and version control, the system is trustworthy. If it lives in a database or opaque embeddings, trust requires faith. These designs never introduce storage that can't be opened in a text editor.
 
-context.yml over a database table. notes/ over a knowledge graph. NOTIFY.yml over a notification rules engine. The filesystem is the source of truth.
+context.yml over a database table. notes/ over a knowledge graph. CHANNELS.yml over a notification rules engine. The filesystem is the source of truth.

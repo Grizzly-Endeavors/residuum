@@ -1,10 +1,8 @@
-//! Notification router: loads NOTIFY.yml and dispatches to channels.
+//! Notification router: dispatches to channels.
 
 use std::collections::HashMap;
-use std::path::Path;
 
 use super::channels::{InboxChannel, NotificationChannel};
-use super::loader::load_notify_config;
 use super::types::{Notification, RouteOutcome};
 
 /// Well-known built-in channel names.
@@ -12,7 +10,7 @@ const AGENT_WAKE: &str = "agent_wake";
 const AGENT_FEED: &str = "agent_feed";
 const INBOX: &str = "inbox";
 
-/// Routes notifications to configured channels based on NOTIFY.yml.
+/// Routes notifications to configured channels.
 ///
 /// Holds external channel implementations (ntfy, webhook). Built-in channels
 /// (`agent_wake`, `agent_feed`) are signaled via flags on `RouteOutcome` — the
@@ -44,7 +42,7 @@ impl NotificationRouter {
         }
     }
 
-    /// Deliver a notification directly to the inbox channel, bypassing NOTIFY.yml.
+    /// Deliver a notification directly to the inbox channel, bypassing routing.
     ///
     /// Returns `true` if delivery succeeded, `false` if no inbox is configured
     /// or delivery failed.
@@ -68,24 +66,13 @@ impl NotificationRouter {
         }
     }
 
-    /// Route a notification based on NOTIFY.yml.
+    /// Route a notification to the given channels.
     ///
-    /// Loads NOTIFY.yml fresh each call (hot-reload pattern). Resolves which
-    /// channels list this notification's task name, then:
+    /// Resolves which channels to dispatch to, then:
     /// - Sets `agent_wake`/`agent_feed` flags on the outcome
     /// - Delivers to inbox directly
     /// - Dispatches to external channels in sequence (errors logged, not propagated)
-    pub async fn route(&self, notification: &Notification, notify_path: &Path) -> RouteOutcome {
-        let config = match load_notify_config(notify_path) {
-            Ok(cfg) => cfg,
-            Err(e) => {
-                tracing::warn!(error = %e, "failed to load NOTIFY.yml, skipping routing");
-                return RouteOutcome::default();
-            }
-        };
-
-        let channels = config.channels_for_task(&notification.task_name);
-
+    pub async fn route(&self, notification: &Notification, channels: &[String]) -> RouteOutcome {
         if channels.is_empty() {
             tracing::warn!(
                 task = %notification.task_name,
@@ -96,7 +83,7 @@ impl NotificationRouter {
         let mut outcome = RouteOutcome::default();
 
         for channel_name in channels {
-            match channel_name {
+            match channel_name.as_str() {
                 AGENT_WAKE => outcome.agent_wake = true,
                 AGENT_FEED => outcome.agent_feed = true,
                 INBOX => {
@@ -113,7 +100,7 @@ impl NotificationRouter {
                     } else {
                         tracing::warn!(
                             task = %notification.task_name,
-                            "inbox channel referenced in NOTIFY.yml but no inbox configured"
+                            "inbox channel referenced but no inbox configured"
                         );
                     }
                 }
@@ -136,7 +123,7 @@ impl NotificationRouter {
                         tracing::warn!(
                             channel = ext_name,
                             task = %notification.task_name,
-                            "unknown channel in NOTIFY.yml, skipping"
+                            "unknown channel, skipping"
                         );
                     }
                 }
@@ -164,13 +151,10 @@ mod tests {
 
     #[tokio::test]
     async fn route_agent_wake_sets_flag() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("NOTIFY.yml");
-        std::fs::write(&path, "agent_wake:\n  - my_task\n").unwrap();
-
         let router = NotificationRouter::empty();
         let notif = make_notification("my_task");
-        let outcome = router.route(&notif, &path).await;
+        let channels = vec!["agent_wake".to_string()];
+        let outcome = router.route(&notif, &channels).await;
 
         assert!(outcome.agent_wake, "should set agent_wake flag");
         assert!(!outcome.agent_feed);
@@ -179,13 +163,10 @@ mod tests {
 
     #[tokio::test]
     async fn route_agent_feed_sets_flag() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("NOTIFY.yml");
-        std::fs::write(&path, "agent_feed:\n  - my_task\n").unwrap();
-
         let router = NotificationRouter::empty();
         let notif = make_notification("my_task");
-        let outcome = router.route(&notif, &path).await;
+        let channels = vec!["agent_feed".to_string()];
+        let outcome = router.route(&notif, &channels).await;
 
         assert!(!outcome.agent_wake);
         assert!(outcome.agent_feed, "should set agent_feed flag");
@@ -194,9 +175,6 @@ mod tests {
     #[tokio::test]
     async fn route_inbox_delivers_item() {
         let dir = tempfile::tempdir().unwrap();
-        let notify_path = dir.path().join("NOTIFY.yml");
-        std::fs::write(&notify_path, "inbox:\n  - backup_task\n").unwrap();
-
         let inbox_dir = dir.path().join("inbox");
         std::fs::create_dir_all(&inbox_dir).unwrap();
 
@@ -204,7 +182,8 @@ mod tests {
         let router = NotificationRouter::new(HashMap::new(), Some(inbox_channel));
 
         let notif = make_notification("backup_task");
-        let outcome = router.route(&notif, &notify_path).await;
+        let channels = vec!["inbox".to_string()];
+        let outcome = router.route(&notif, &channels).await;
 
         assert!(outcome.inbox, "should set inbox flag");
 
@@ -216,17 +195,14 @@ mod tests {
         assert_eq!(items.len(), 1, "should create one inbox item");
     }
 
-    /// When a task matches zero channels, `route()` returns an empty outcome
+    /// When channels is empty, `route()` returns an empty outcome
     /// and emits a `tracing::warn` to surface the misconfiguration.
     #[tokio::test]
     async fn route_unrouted_task_returns_empty() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("NOTIFY.yml");
-        std::fs::write(&path, "agent_feed:\n  - other_task\n").unwrap();
-
         let router = NotificationRouter::empty();
         let notif = make_notification("unknown_task");
-        let outcome = router.route(&notif, &path).await;
+        let channels: Vec<String> = vec![];
+        let outcome = router.route(&notif, &channels).await;
 
         assert!(!outcome.agent_wake);
         assert!(!outcome.agent_feed);
@@ -235,30 +211,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn route_missing_notify_yml_returns_default() {
-        let path = std::path::Path::new("/tmp/nonexistent_notify_route_test.yml");
-        let router = NotificationRouter::empty();
-        let notif = make_notification("any_task");
-        let outcome = router.route(&notif, path).await;
-
-        assert!(!outcome.agent_wake);
-        assert!(!outcome.agent_feed);
-        assert!(!outcome.inbox);
-    }
-
-    #[tokio::test]
     async fn route_multiple_channels() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("NOTIFY.yml");
-        std::fs::write(
-            &path,
-            "agent_wake:\n  - my_task\nagent_feed:\n  - my_task\n",
-        )
-        .unwrap();
-
         let router = NotificationRouter::empty();
         let notif = make_notification("my_task");
-        let outcome = router.route(&notif, &path).await;
+        let channels = vec!["agent_wake".to_string(), "agent_feed".to_string()];
+        let outcome = router.route(&notif, &channels).await;
 
         assert!(outcome.agent_wake);
         assert!(outcome.agent_feed);
@@ -294,13 +251,10 @@ mod tests {
 
     #[tokio::test]
     async fn route_unknown_external_channel_logged_not_error() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("NOTIFY.yml");
-        std::fs::write(&path, "nonexistent_channel:\n  - my_task\n").unwrap();
-
         let router = NotificationRouter::empty();
         let notif = make_notification("my_task");
-        let outcome = router.route(&notif, &path).await;
+        let channels = vec!["nonexistent_channel".to_string()];
+        let outcome = router.route(&notif, &channels).await;
 
         // Should not panic and should return empty
         assert!(outcome.external_dispatched.is_empty());

@@ -36,7 +36,7 @@ Each item is a JSON file in `inbox/`:
 
 ## Integration with Notifications
 
-When `NOTIFY.yml` routes a task to the `inbox` channel, the notification system automatically creates an inbox item with the task result as the body and the task name as the source. See [notifications](notifications.md).
+When a task's `channels` configuration includes `inbox`, the notification system automatically creates an inbox item with the task result as the body and the task name as the source. See [notifications](notifications.md).
 
 ## Gotchas
 

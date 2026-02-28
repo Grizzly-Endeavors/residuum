@@ -158,7 +158,7 @@ Additionally, the agent has no structured framework for deciding where results s
 
 ### Solution: Structured Pulse Scheduling + Channel-Based Notification Routing
 
-Replace HEARTBEAT.md with **HEARTBEAT.yml** for machine-parseable scheduling, and add **NOTIFY.yml** for channel-based result routing. See [Notification Routing Design](notification-routing-design.md) for the full NOTIFY.yml specification.
+Replace HEARTBEAT.md with **HEARTBEAT.yml** for machine-parseable scheduling, and add **CHANNELS.yml** for channel registry. Pulse routing is declared on each pulse in HEARTBEAT.yml via a `channels:` field. See [Notification Routing Design](notification-routing-design.md) for the full specification.
 
 ### HEARTBEAT.yml
 
@@ -232,42 +232,44 @@ The LLM is no longer a scheduler. It only receives focused task groups when ther
 
 The agent can add, remove, or modify pulses and tasks by editing HEARTBEAT.yml, consistent with the existing self-evolving workspace pattern. Example: "Add a pulse that checks my GitHub notifications every hour during work hours."
 
-### NOTIFY.yml
+### CHANNELS.yml
 
-A YAML file defining where background task results are delivered. Channels are top-level keys; each lists the task names whose results it should receive.
+A YAML file defining the channel registry — what channels exist. Pulse routing is declared on each pulse in HEARTBEAT.yml via the `channels:` field:
 
 ```yaml
-# NOTIFY.yml — Notification routing
+# In HEARTBEAT.yml:
+pulses:
+  - name: work_check
+    schedule: "30m"
+    channels: [agent_wake, ntfy]
+    tasks:
+      - name: inbox_scan
+        prompt: "Check for urgent unread emails"
 
-agent_wake:
-  - work_check
-
-agent_feed:
-  - daily_review
-
-ntfy:
-  - work_check
-  - daily_review
-
-inbox:
-  - evening_wind_down
+  - name: daily_review
+    schedule: "24h"
+    channels: [agent_feed, ntfy]
+    agent: main
+    tasks:
+      - name: morning_brief
+        prompt: "Summarize today's calendar and top priorities"
 ```
 
 Built-in channels: `agent_wake` (inject into feed + start turn if idle), `agent_feed` (inject into feed passively), `inbox` (store silently). External channels (ntfy, webhook, etc.) are defined in `config.toml` under `[notifications.channels]`.
 
-A task not listed in any channel is not routed — the result is dropped after transcript storage and a warn-level log is emitted to surface the misconfiguration. HEARTBEAT_OK results (nothing actionable) are never routed regardless of channel configuration.
+A pulse with no `channels` field has its results dropped after transcript storage and a warn-level log is emitted to surface the misconfiguration. HEARTBEAT_OK results (nothing actionable) are never routed regardless of channel configuration.
 
 #### Self-evolution
 
-Following the existing workspace pattern (mirroring SOUL.md's "this file is yours to evolve"), the agent refines NOTIFY.yml over time based on user feedback:
+Following the existing workspace pattern (mirroring SOUL.md's "this file is yours to evolve"), the agent refines pulse routing in HEARTBEAT.yml over time based on user feedback:
 
-- User consistently ignores a pulse's results → agent removes it from `agent_feed`, moves to `inbox` or drops it
-- User responds urgently to a specific type of finding → agent adds the task to `agent_wake`
-- User explicitly says "don't bother me with PR reviews from the docs repo" → agent removes the relevant task from notification channels
+- User consistently ignores a pulse's results → agent changes its channels from `agent_feed` to `inbox` or removes the channel entirely
+- User responds urgently to a specific type of finding → agent adds `agent_wake` to the pulse's channels
+- User explicitly says "don't bother me with PR reviews from the docs repo" → agent removes the relevant channel from the pulse
 
 ### Interaction with Existing Systems
 
-- **Scheduled actions**: Unchanged. Scheduled actions handle deterministic work ("run this backup script at 3am"). Pulses handle ambient awareness ("is anything worth my attention right now?"). These are complementary, not overlapping. Heartbeat pulses route results through NOTIFY.yml. Scheduled actions use direct `channels` routing specified at creation time — the agent (or user) specifies which channels receive the result when the action is created, rather than relying on a central routing table.
+- **Scheduled actions**: Unchanged. Scheduled actions handle deterministic work ("run this backup script at 3am"). Pulses handle ambient awareness ("is anything worth my attention right now?"). These are complementary, not overlapping. Both heartbeat pulses and scheduled actions use direct channel routing — pulses declare channels in HEARTBEAT.yml, and scheduled actions specify channels at creation time via the `channels` parameter.
 - **HEARTBEAT_OK**: Still used as the ack signal when a pulse evaluation finds nothing actionable. HEARTBEAT_OK results are never routed.
 - **Observation log**: Findings from pulse evaluations feed into the OM observation log when they're routed to `agent_wake` or `agent_feed` and processed by the main agent. Results routed only to external channels or inbox enter the observation stream when the agent reviews them.
 
@@ -289,13 +291,13 @@ The user and agent can deepen this integration over time (e.g., pulses that spec
 
 ### Priorities
 1. HEARTBEAT.yml + gateway-level scheduling (highest impact-to-effort ratio)
-2. NOTIFY.yml routing + notification channel infrastructure
+2. CHANNELS.yml registry + notification channel infrastructure
 3. Observer integration
 4. Reflector integration
 
 ### Considerations
 - Observer/Reflector model selection should be configurable but default to cheap/fast
 - HEARTBEAT.yml schema should be validated at gateway startup with clear error messages
-- NOTIFY.yml should ship with minimal defaults (empty channel lists) to avoid surprising behavior on first run
+- CHANNELS.yml should ship with minimal defaults (empty channel registry) to avoid surprising behavior on first run
 - Observation log storage location should be consistent with existing workspace layout
 - Migration path from existing HEARTBEAT.md should be documented (or automated)

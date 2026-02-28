@@ -4,7 +4,7 @@ use crate::background::types::{BackgroundTask, Execution, ResultRouting, SubAgen
 use crate::config::BackgroundModelTier;
 use crate::notify::types::TaskSource;
 
-use super::types::PulseDef;
+use super::types::{PulseDef, default_channels};
 
 /// The execution strategy for a pulse.
 #[derive(Debug)]
@@ -35,10 +35,18 @@ pub fn build_pulse_execution(pulse: &PulseDef) -> PulseExecution {
     let prompt = build_pulse_prompt(pulse);
 
     match pulse.agent.as_deref() {
-        Some("main") => PulseExecution::MainWakeTurn {
-            pulse_name: pulse.name.clone(),
-            prompt,
-        },
+        Some("main") => {
+            if pulse.channels != default_channels() {
+                tracing::warn!(
+                    pulse = %pulse.name,
+                    "channels field is ignored for main-turn pulses"
+                );
+            }
+            PulseExecution::MainWakeTurn {
+                pulse_name: pulse.name.clone(),
+                prompt,
+            }
+        }
         Some(preset) => {
             let task = build_background_task(pulse, prompt, BackgroundModelTier::Small);
             PulseExecution::SubAgent {
@@ -58,7 +66,7 @@ pub fn build_pulse_execution(pulse: &PulseDef) -> PulseExecution {
 
 /// Build a `BackgroundTask` from a pulse definition (backward-compat wrapper).
 ///
-/// Always produces a `SubAgent` at `Small` tier with `ResultRouting::Notify`.
+/// Always produces a `SubAgent` at `Small` tier with `ResultRouting::Direct` using the pulse's channels.
 #[must_use]
 pub fn build_pulse_task(pulse: &PulseDef) -> BackgroundTask {
     let prompt = build_pulse_prompt(pulse);
@@ -81,7 +89,7 @@ fn build_background_task(
             context: None,
             model_tier: tier,
         }),
-        routing: ResultRouting::Notify,
+        routing: ResultRouting::Direct(pulse.channels.clone()),
     }
 }
 
@@ -122,6 +130,7 @@ mod tests {
             active_hours: None,
             agent: None,
             trigger_count: None,
+            channels: vec!["agent_feed".to_string()],
             tasks: vec![
                 PulseTask {
                     name: "check_inbox".to_string(),
@@ -213,13 +222,11 @@ mod tests {
     }
 
     #[test]
-    fn routing_is_notify() {
+    fn routing_defaults_to_agent_feed() {
         let pulse = sample_pulse();
         let task = build_pulse_task(&pulse);
-        assert!(
-            matches!(task.routing, ResultRouting::Notify),
-            "routing should be Notify"
-        );
+        let ResultRouting::Direct(channels) = &task.routing;
+        assert_eq!(channels, &["agent_feed"], "should route to default channel");
     }
 
     #[test]
@@ -231,6 +238,7 @@ mod tests {
             active_hours: None,
             agent: None,
             trigger_count: None,
+            channels: vec!["agent_feed".to_string()],
             tasks: vec![],
         };
         let task = build_pulse_task(&pulse);

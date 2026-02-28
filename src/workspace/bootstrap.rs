@@ -72,9 +72,8 @@ Unread count appears in your status line.
 then auto-remove. Results route to channels specified at creation time.
 - **Skills**: Loadable knowledge packs. Activate with `skill_activate`, \
 deactivate with `skill_deactivate`. Create new ones in skills/.
-- **Notifications**: NOTIFY.yml routes heartbeat pulse results to channels \
-(agent_feed, inbox, or external services like ntfy). Scheduled actions and \
-sub-agents specify their channels directly.
+- **Notifications**: Pulse results route to channels declared on each pulse in HEARTBEAT.yml. \
+Scheduled actions and sub-agents specify their channels directly.
 - **Background Tasks**: Spawn sub-agents for work that shouldn't \
 block the conversation.
 
@@ -85,7 +84,7 @@ Files you own and should actively maintain:
 - `USER.md` — user preferences, communication style, interests
 - `ENVIRONMENT.md` — document local environment details you discover
 - `HEARTBEAT.yml` — evolve monitoring based on user needs
-- `NOTIFY.yml` — adjust pulse routing based on what the user wants to see
+- `CHANNELS.yml` — channel registry
 - `PRESENCE.toml` — Discord status configuration
 - `memory/OBSERVER.md` — controls what the observer extracts (improve via self-analysis)
 - `memory/REFLECTOR.md` — controls how the reflector compresses observations
@@ -178,7 +177,7 @@ const DEFAULT_HEARTBEAT: &str = "\
 # HEARTBEAT.yml — Pulse monitoring configuration
 #
 # Define ambient checks the agent performs on a schedule.
-# The agent runs these in the background and routes findings via NOTIFY.yml.
+# Results route to channels declared on each pulse (defaults to agent_feed).
 #
 # Example:
 #
@@ -188,6 +187,7 @@ const DEFAULT_HEARTBEAT: &str = "\
 #     schedule: \"30m\"
 #     active_hours: \"08:00-18:00\"
 #     agent: ~                        # null = sub-agent (small tier)
+#     channels: [agent_feed, ntfy]      # where to route results (default: [agent_feed])
 #     tasks:
 #       - name: check_inbox
 #         prompt: \"Check my email for urgent messages.\"
@@ -215,14 +215,12 @@ const DEFAULT_PRESENCE: &str = "\
 # activity_text = \"DMs\"
 ";
 
-/// Default content for NOTIFY.yml when creating a new workspace.
-const DEFAULT_NOTIFY: &str = "\
-# NOTIFY.yml — Heartbeat pulse routing
-# Maps channels to the pulse names whose results they receive.
-# Only heartbeat pulses route through this file. Scheduled actions and
-# agent-spawned sub-agents specify their channels directly.
+/// Default content for CHANNELS.yml when creating a new workspace.
+const DEFAULT_CHANNELS: &str = "\
+# CHANNELS.yml — Channel registry
+# Lists channels available for notification routing.
 #
-# Built-in channels:
+# Built-in channels (always available):
 #   agent_wake  — inject into agent feed, start a turn if idle
 #   agent_feed  — inject into agent feed, wait for next interaction
 #   inbox       — store silently, surface as unread count
@@ -230,9 +228,9 @@ const DEFAULT_NOTIFY: &str = "\
 # External channels (ntfy, webhook, etc.) are defined in config.toml
 # under [notifications.channels].
 
-agent_feed: []
-
-inbox: []
+channels:
+  - agent_feed
+  - inbox
 ";
 
 // ── Bundled skill content (embedded at compile time from assets/) ────────────
@@ -310,7 +308,7 @@ pub async fn ensure_workspace(
     write_if_missing(&layout.observer_md(), DEFAULT_OBSERVER_PROMPT).await?;
     write_if_missing(&layout.reflector_md(), DEFAULT_REFLECTOR_PROMPT).await?;
     write_if_missing(&layout.heartbeat_yml(), DEFAULT_HEARTBEAT).await?;
-    write_if_missing(&layout.notify_yml(), DEFAULT_NOTIFY).await?;
+    write_if_missing(&layout.channels_yml(), DEFAULT_CHANNELS).await?;
     write_if_missing(&layout.presence_toml(), DEFAULT_PRESENCE).await?;
 
     // Write bundled skills
@@ -469,7 +467,7 @@ mod tests {
             layout.heartbeat_yml().exists(),
             "HEARTBEAT.yml should exist"
         );
-        assert!(layout.notify_yml().exists(), "NOTIFY.yml should exist");
+        assert!(layout.channels_yml().exists(), "CHANNELS.yml should exist");
         assert!(
             layout.presence_toml().exists(),
             "PRESENCE.toml should exist"

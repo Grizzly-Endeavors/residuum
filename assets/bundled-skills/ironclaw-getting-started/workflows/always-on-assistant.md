@@ -67,20 +67,33 @@ Explain the `HEARTBEAT_OK` convention: when a sub-agent returns this exact strin
 
 ## Step 3: Notification Routing
 
-Configure `NOTIFY.yml` so results reach the user appropriately. Tier the notifications by urgency:
+Configure each pulse's `channels` field in `HEARTBEAT.yml` so results reach the user appropriately. Tier the notifications by urgency:
 
 ```yaml
-agent_wake:
-  - email_check
+pulses:
+  - name: email_check
+    schedule: "30m"
+    active_hours: "08:00-22:00"
+    channels: [agent_wake, inbox]
+    tasks:
+      - name: check_inbox
+        prompt: "Check for unread emails. Summarize any that need attention. Report HEARTBEAT_OK if nothing new."
 
-agent_feed:
-  - github_activity
-  - calendar_review
+  - name: calendar_review
+    schedule: "4h"
+    active_hours: "07:00-20:00"
+    channels: [agent_feed, inbox]
+    tasks:
+      - name: upcoming_events
+        prompt: "Review my calendar for the next 4 hours. Highlight any upcoming meetings or deadlines."
 
-inbox:
-  - email_check
-  - github_activity
-  - calendar_review
+  - name: github_activity
+    schedule: "2h"
+    active_hours: "09:00-18:00"
+    channels: [agent_feed, inbox]
+    tasks:
+      - name: check_prs
+        prompt: "Check for open PRs that need my review or PRs I authored that have new comments. Report HEARTBEAT_OK if nothing needs attention."
 ```
 
 Explain the routing strategy:
@@ -96,10 +109,12 @@ url = "https://ntfy.sh"
 topic = "my-assistant"
 ```
 
-Then add it to NOTIFY.yml for the most important pulses:
+Then add `ntfy` to the most important pulses' `channels` lists in HEARTBEAT.yml:
 ```yaml
-ntfy:
-  - email_check
+  - name: email_check
+    schedule: "30m"
+    channels: [agent_wake, inbox, ntfy]
+    # ...
 ```
 
 ## Step 4: Scheduled Actions for Time-Based Tasks
@@ -152,7 +167,7 @@ Summarize the complete setup:
 - Projects organizing ongoing work areas
 
 This is a living system. Explain that:
-- "I will evolve HEARTBEAT.yml and NOTIFY.yml based on what works. If you consistently ignore a notification, I will suggest moving it to inbox or removing it."
+- "I will evolve HEARTBEAT.yml based on what works. If you consistently ignore a notification, I will suggest moving it to inbox or removing it."
 - "You can add new pulses, adjust schedules, and change routing at any time. Both files are hot-reloaded."
 - "As you use the system, I will learn your patterns and suggest improvements."
 

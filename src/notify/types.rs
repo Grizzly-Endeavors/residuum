@@ -1,17 +1,17 @@
-//! Notification routing types.
+//! Notification types and channel registry.
 
 use std::collections::HashMap;
 
 use chrono::{DateTime, Utc};
 use serde::Deserialize;
 
-/// Notification routing configuration loaded from NOTIFY.yml.
+/// Channel registry loaded from CHANNELS.yml.
 ///
 /// Maps channel names to lists of task names that should be routed there.
 #[derive(Debug, Clone, Default, Deserialize)]
-pub struct NotifyConfig(pub HashMap<String, Vec<String>>);
+pub struct ChannelsConfig(pub HashMap<String, Vec<String>>);
 
-impl NotifyConfig {
+impl ChannelsConfig {
     /// Return all channel names that list the given task name.
     #[must_use]
     pub fn channels_for_task(&self, task_name: &str) -> Vec<&str> {
@@ -48,7 +48,7 @@ impl TaskSource {
 
 /// A notification to be routed to channels.
 pub struct Notification {
-    /// Task name used for NOTIFY.yml lookup.
+    /// Task name for identification.
     pub task_name: String,
     /// Human-readable summary of the result.
     pub summary: String,
@@ -58,7 +58,7 @@ pub struct Notification {
     pub timestamp: DateTime<Utc>,
 }
 
-/// Outcome of routing a notification through NOTIFY.yml.
+/// Outcome of routing a notification through channels.
 #[derive(Debug, Default)]
 pub struct RouteOutcome {
     /// Whether the result should wake the agent (start a turn if idle).
@@ -87,7 +87,7 @@ mod tests {
             "ntfy".to_string(),
             vec!["email_check".to_string(), "backup".to_string()],
         );
-        let cfg = NotifyConfig(map);
+        let cfg = ChannelsConfig(map);
 
         let mut channels = cfg.channels_for_task("email_check");
         channels.sort_unstable();
@@ -98,7 +98,7 @@ mod tests {
     fn channels_for_task_no_matches() {
         let mut map = HashMap::new();
         map.insert("agent_feed".to_string(), vec!["email_check".to_string()]);
-        let cfg = NotifyConfig(map);
+        let cfg = ChannelsConfig(map);
 
         let channels = cfg.channels_for_task("unknown_task");
         assert!(channels.is_empty(), "unrouted task should return empty");
@@ -106,7 +106,7 @@ mod tests {
 
     #[test]
     fn empty_config_returns_no_channels() {
-        let cfg = NotifyConfig::default();
+        let cfg = ChannelsConfig::default();
         let channels = cfg.channels_for_task("anything");
         assert!(channels.is_empty());
     }

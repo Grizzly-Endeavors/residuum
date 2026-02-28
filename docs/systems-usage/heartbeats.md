@@ -39,12 +39,13 @@ pulses:
 
 | Field | Type | Required | Notes |
 |-------|------|----------|-------|
-| `name` | string | yes | Identifies the pulse for NOTIFY.yml routing |
+| `name` | string | yes | Identifies the pulse |
 | `enabled` | boolean | no | Default `true`. Set `false` to pause without deleting. |
 | `schedule` | string | yes | Duration: `"30s"`, `"5m"`, `"2h"`, `"1d"` |
 | `active_hours` | string | no | `"HH:MM-HH:MM"` in configured timezone. Supports overnight windows (e.g. `"22:00-06:00"`). |
 | `agent` | string or null | no | See agent routing table below. |
 | `trigger_count` | integer or null | no | Max firings per active period. When set, firings are spaced evenly across the `active_hours` window. Omit for unlimited. |
+| `channels` | array of strings | no | Notification channels to receive results (e.g. `[agent_feed, inbox]`). If omitted, results are dropped with a warning. |
 | `tasks` | array of objects | yes | Each task has `name` (string) and `prompt` (string). |
 
 ### Agent Routing
@@ -59,7 +60,7 @@ pulses:
 
 ### HEARTBEAT_OK Convention
 
-Sub-agent pulses include an instruction: if nothing actionable was found, return the exact string `HEARTBEAT_OK`. Results containing this string are silently discarded and never routed, regardless of NOTIFY.yml configuration.
+Sub-agent pulses include an instruction: if nothing actionable was found, return the exact string `HEARTBEAT_OK`. Results containing this string are silently discarded and never routed, regardless of the pulse's `channels` configuration.
 
 ## Scheduling Behavior
 
@@ -94,8 +95,24 @@ In this example, the 8-hour window divided by 3 gives ~2h40m spacing. The `sched
 
 ## Result Routing
 
-Pulse results are routed through NOTIFY.yml by **pulse name**. A pulse named `email_check` routes to whichever channels list `email_check` in their NOTIFY.yml entries.
+Pulse results are routed to the channels declared on the pulse via the `channels:` field in HEARTBEAT.yml. For example, a pulse with `channels: [agent_feed, inbox]` delivers results to both `agent_feed` and `inbox`.
 
-If a pulse name doesn't appear in any NOTIFY.yml channel, its results are dropped and a warn-level log is emitted to surface the misconfiguration.
+If a pulse has no `channels:` field, its results are dropped and a warn-level log is emitted to surface the misconfiguration.
 
 See [notifications.md](notifications.md) for the full routing model.
+
+### Channels Field
+
+Each pulse can declare a `channels` field — an array of channel names to receive the pulse's results:
+
+```yaml
+pulses:
+  - name: email_check
+    schedule: "30m"
+    channels: [agent_feed, inbox]
+    tasks:
+      - name: check
+        prompt: "Check email."
+```
+
+Channel names must correspond to built-in channels (`agent_wake`, `agent_feed`, `inbox`) or external channels defined in `config.toml` and registered in `CHANNELS.yml`.

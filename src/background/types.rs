@@ -13,7 +13,7 @@ use crate::notify::types::TaskSource;
 pub struct BackgroundTask {
     /// Unique task identifier.
     pub id: String,
-    /// Human-readable task name (used for NOTIFY.yml routing).
+    /// Human-readable task name.
     pub task_name: String,
     /// Where this task originated.
     pub source: TaskSource,
@@ -26,9 +26,7 @@ pub struct BackgroundTask {
 /// How to route a background task result.
 #[derive(Debug, Clone)]
 pub enum ResultRouting {
-    /// Route through NOTIFY.yml based on `task_name`.
-    Notify,
-    /// Dispatch directly to the named channels (bypasses NOTIFY.yml).
+    /// Dispatch to the named channels.
     Direct(Vec<String>),
 }
 
@@ -165,7 +163,7 @@ mod tests {
             transcript_path: None,
             status: TaskStatus::Completed,
             timestamp: Utc::now(),
-            routing: ResultRouting::Notify,
+            routing: ResultRouting::Direct(vec!["agent_feed".to_string()]),
         };
 
         let formatted = format_background_result(&result);
@@ -219,7 +217,7 @@ mod tests {
             transcript_path: None,
             status: TaskStatus::Cancelled,
             timestamp: Utc::now(),
-            routing: ResultRouting::Notify,
+            routing: ResultRouting::Direct(vec!["agent_feed".to_string()]),
         };
 
         let formatted = format_background_result(&result);

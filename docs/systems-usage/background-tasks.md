@@ -103,7 +103,7 @@ One built-in preset exists: `general-purpose`. A user-created file with `name: g
 
 | Source | Routing Mode |
 |--------|-------------|
-| Heartbeat pulses | NOTIFY.yml by pulse name |
+| Heartbeat pulses | Direct — `channels` from pulse definition in HEARTBEAT.yml |
 | Scheduled actions | Direct — `channels` from `schedule_action` |
 | Agent-spawned tasks | Direct — `channels` from `subagent_spawn` |
 

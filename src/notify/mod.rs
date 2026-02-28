@@ -1,8 +1,7 @@
-//! Notification routing: NOTIFY.yml-based dispatch to built-in and external channels.
+//! Notification routing: dispatch to built-in and external channels.
 //!
 //! Background task results (pulse checks, scheduled actions) are routed through
-//! `NotificationRouter` which reads `NOTIFY.yml` to determine which channels
-//! should receive each task's results.
+//! `NotificationRouter` which dispatches to channels specified by the caller.
 //!
 //! Built-in channels:
 //! - `agent_wake` — inject into agent feed, start a turn if idle

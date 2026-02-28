@@ -37,10 +37,10 @@ No parameters. Returns all pending actions.
 
 ## Routing
 
-Scheduled actions use **direct channel routing** specified in the `channels` field of `schedule_action`. They do **not** route through NOTIFY.yml. This is different from heartbeat pulses, which route exclusively through NOTIFY.yml by pulse name.
+Scheduled actions use **direct channel routing** specified in the `channels` field of `schedule_action`. Heartbeat pulses also use direct routing, with channels declared on each pulse in HEARTBEAT.yml via the `channels:` field.
 
 This means:
-- Heartbeats: agent controls routing by editing NOTIFY.yml
+- Heartbeats: agent controls routing by editing the `channels` field on each pulse in HEARTBEAT.yml
 - Scheduled actions: routing is set at creation time via the `channels` parameter
 
 ## Persistence

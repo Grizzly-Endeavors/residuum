@@ -71,7 +71,7 @@ ironclaw/
 │   │   ├── mod.rs                    # Pulse system coordination
 │   │   ├── scheduler.rs              # HEARTBEAT.yml parsing & pulse scheduling
 │   │   ├── executor.rs               # Pulse task execution
-│   │   └── router.rs                 # NOTIFY.yml parsing & channel dispatch
+│   │   └── router.rs                 # CHANNELS.yml parsing & channel dispatch
 │   │
 │   ├── actions/
 │   │   ├── mod.rs                    # Scheduled actions coordination
@@ -197,7 +197,7 @@ topic = "ironclaw"
 
 # External notification channels are defined here.
 # Built-in channels (agent_wake, agent_feed, inbox) need no config.
-# NOTIFY.yml in the workspace maps pulse names to channels.
+# CHANNELS.yml in the workspace defines the channel registry.
 
 [background]
 max_concurrent = 3
@@ -216,7 +216,7 @@ Validation happens at startup via serde + custom validators. Invalid config prev
 
 ### Hot Reload
 
-The gateway watches `config.toml`, workspace identity files, `HEARTBEAT.yml`, `NOTIFY.yml`, and the `projects/` directory tree using `notify`. Changes are classified as:
+The gateway watches `config.toml`, workspace identity files, `HEARTBEAT.yml`, `CHANNELS.yml`, and the `projects/` directory tree using `notify`. Changes are classified as:
 
 - **Hot-applicable**: Identity file changes, HEARTBEAT.yml updates, skill additions, project entry changes. Applied without restart.
 - **Infrastructure**: Channel config changes, model provider changes, MCP server config. Require gateway restart (or a targeted subsystem restart).
@@ -233,7 +233,7 @@ The gateway watches `config.toml`, workspace identity files, `HEARTBEAT.yml`, `N
 ├── MEMORY.md                     # Curated long-term memory
 ├── ENVIRONMENT.md                # Local environment notes
 ├── HEARTBEAT.yml                 # Structured pulse schedule
-├── NOTIFY.yml                    # Notification routing
+├── CHANNELS.yml                  # Channel registry
 ├── PRESENCE.toml                 # Hot-reloadable Discord presence
 │
 ├── memory/
@@ -680,14 +680,14 @@ The scheduler runs on a tokio interval timer. Each tick:
 1. Check which pulses are due based on schedule, active_hours, `enabled` flag, and last-run timestamps.
 2. If a pulse is due, invoke the agent with the pulse's tasks as context.
 3. Track the result. If HEARTBEAT_OK (nothing actionable), log silently.
-4. If actionable, route result via NOTIFY.yml to listed channels.
+4. If actionable, route result to the channels declared on the pulse in HEARTBEAT.yml.
 5. Update last-run timestamp.
 
 **Zero cost when idle.** If no pulses are due, no LLM invocation happens.
 
 #### Notification routing
 
-Result routing is handled by the gateway based on `NOTIFY.yml`. When a pulse evaluation produces a result (not HEARTBEAT_OK), the gateway looks up the pulse name in `NOTIFY.yml` and dispatches to every channel that lists it. See [Notification Routing Design](notification-routing-design.md) for the full specification.
+Result routing is handled by the gateway based on the `channels` field declared on each pulse in `HEARTBEAT.yml`. When a pulse evaluation produces a result (not HEARTBEAT_OK), the gateway dispatches to every channel listed on the pulse. See [Notification Routing Design](notification-routing-design.md) for the full specification.
 
 ### 7. Scheduled Actions System (`actions/`)
 
@@ -881,9 +881,9 @@ Check due pulses (HEARTBEAT.yml + timestamps)
                     │            │
               HEARTBEAT_OK   Findings
                     │            │
-              Log silently   Route via NOTIFY.yml
+              Log silently   Route via pulse channels
                              (dispatch to all channels
-                              listing this pulse name)
+                              declared on this pulse)
 ```
 
 ### Observer compression
@@ -970,7 +970,7 @@ Ordered by "what gets you a usable agent fastest":
 ### Phase 3: Proactivity (COMPLETE)
 12. `pulse/scheduler` — HEARTBEAT.yml parsing, scheduling loop.
 13. `pulse/executor` — Pulse task execution via agent runtime.
-14. `notifications/` — NOTIFY.yml parsing, channel dispatch, `NotificationChannel` trait.
+14. `notifications/` — CHANNELS.yml parsing, channel dispatch, `NotificationChannel` trait.
 15. `actions/store` — Action persistence, `actions/scheduler` — schedule evaluation.
 16. `actions/executor` — Action execution, background threads, delivery.
 

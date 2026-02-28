@@ -36,7 +36,7 @@ Lastly, IronClaw prioritizes giving your agent everything it needs to keep up wi
 
 **Pulse Scheduling** — `HEARTBEAT.yml` defines named groups of tasks on independent schedules. The gateway handles all the timing; the LLM only runs when a pulse is actually due, and only receives the tasks it needs to evaluate. Active hours keep your agent from checking work email at 2am. Results that find nothing actionable are logged silently — zero token cost when there's nothing to do. The agent can create and modify pulses on its own, or you can edit the YAML directly.
 
-**Notifications** — `NOTIFY.yml` controls where results from background work end up. Route a pulse result to `agent_wake` (starts a turn immediately), `agent_feed` (appears passively at the next conversation), `inbox` (stored silently for later), or an external channel like ntfy push notifications. The agent maintains this file — tell it "stop pinging me about PR reviews" and it updates the routing. Everything is human-readable and overridable.
+**Notifications** — `CHANNELS.yml` defines the channel registry, and each pulse in `HEARTBEAT.yml` declares its output channels via a `channels:` field. Route a pulse result to `agent_wake` (starts a turn immediately), `agent_feed` (appears passively at the next conversation), `inbox` (stored silently for later), or an external channel like ntfy push notifications. The agent maintains routing — tell it "stop pinging me about PR reviews" and it updates the pulse's channels. Everything is human-readable and overridable.
 
 **Inbox** — The agent's "deal with it later" queue. Drop files, notes, or task results here for the agent to pick up when it gets to them. The agent sees an unread count at every turn but never loads the contents unless it needs to, so inbox items don't eat your token budget. Items are individual files on disk, so external tools can drop things in too.
 
@@ -69,7 +69,7 @@ workspace/
 ├── MEMORY.md               # Curated long-term memory (agent scratchpad)
 ├── ENVIRONMENT.md          # Local environment notes
 ├── HEARTBEAT.yml           # Pulse schedule definitions
-├── NOTIFY.yml              # Pulse result routing
+├── CHANNELS.yml            # Channel registry
 ├── PRESENCE.toml           # Discord presence configuration
 ├── scheduled_actions.json  # One-off future tasks (managed via tools)
 │
@@ -281,7 +281,7 @@ src/
 ├── gateway/             # WebSocket server and main event loop
 ├── inbox/               # Inbox item persistence and tools
 ├── memory/              # Observer, Reflector, search, episode store
-├── notify/              # NOTIFY.yml routing and notification channels
+├── notify/              # CHANNELS.yml registry and notification channels
 ├── projects/            # Project scanning, activation, lifecycle
 ├── pulse/               # HEARTBEAT.yml scheduling and execution
 ├── actions/             # Scheduled action persistence and scheduling
@@ -300,7 +300,7 @@ src/
 - [Projects System](docs/projects-context-design.md) — Context management design
 - [Background Tasks](docs/background-tasks-design.md) — Background task execution and turn loop interrupts
 - [Memory Search](docs/memory-search-design.md) — Hybrid BM25 + vector search design
-- [Notification Routing](docs/notification-routing-design.md) — NOTIFY.yml channel-based result delivery
+- [Notification Routing](docs/notification-routing-design.md) — CHANNELS.yml channel-based result delivery
 
 ## License
 

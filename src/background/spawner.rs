@@ -302,7 +302,7 @@ mod tests {
             transcript_path: None,
             status: super::TaskStatus::Completed,
             timestamp: chrono::Utc::now(),
-            routing: ResultRouting::Notify,
+            routing: ResultRouting::Direct(vec!["agent_feed".to_string()]),
         };
 
         spawner.send_result(result).await.unwrap();
@@ -331,7 +331,7 @@ mod tests {
                 context: None,
                 model_tier: BackgroundModelTier::Medium,
             }),
-            routing: ResultRouting::Notify,
+            routing: ResultRouting::Direct(vec!["agent_feed".to_string()]),
         };
 
         spawner.spawn(task, None).await.unwrap();
