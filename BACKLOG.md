@@ -16,6 +16,8 @@
 - Skill priority is wrong. Project skills > Workspace >  User-global > Bundled
 - Implement model failover: primary model → ordered fallback chain on rate limit or error. Design doc describes a `failover` module and auth profile rotation (multiple API keys per provider). Currently each role gets a single provider/model with no fallback beyond the `default` role in `[models]`.
 - Auto-load most recent project logs on activation. Currently only PROJECT.md (frontmatter + body) is loaded; notes/logs/references require explicit `read_file`. The intended behavior is that recent session logs are loaded automatically so the agent has immediate context about where things left off.
+- Rename NOTIFY.yml → CHANNELS.yml and move pulse routing into HEARTBEAT.yml. Currently NOTIFY.yml serves double duty as both a channel registry (what channels exist) and pulse routing config (which pulses go where). Split these concerns: CHANNELS.yml becomes the source of truth for available channels (built-in + external, referenced by subagent_spawn, schedule_action, and heartbeat pulses). Each pulse in HEARTBEAT.yml gets a `channels: [...]` array for its own routing, co-located with its schedule and tasks. This eliminates the indirect pulse-name-to-channel mapping and makes pulse config self-contained.
+- remove the wait parameter on the `subagent_spawn` tool, setting the channel to `agent_wake` does the same thing.
 
 ## OAuth Provider Support (OpenAI Codex & Google Gemini)
 

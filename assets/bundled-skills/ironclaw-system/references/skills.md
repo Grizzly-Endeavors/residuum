@@ -18,15 +18,16 @@ The entire body below the frontmatter is injected into the system prompt when ac
 
 ## Skill Sources
 
-Skills are discovered from three locations, scanned in this order:
+Skills are discovered from multiple locations, scanned in priority order:
 
 | Source | Directory | Priority |
 |--------|-----------|----------|
-| Workspace | `skills/` | Highest |
+| Project | `projects/<name>/skills/` (only when project is active) | Highest |
+| Workspace | `skills/` | High |
 | User Global | Extra directories from config (`[skills]` section) | Middle |
-| Project | `projects/<name>/skills/` (only when project is active) | Lowest |
+| Bundled | Shipped with the binary (e.g., `ironclaw-system`, `ironclaw-getting-started`) | Lowest |
 
-**Deduplication**: If multiple skills share the same name, the first one found wins (highest priority source).
+**Deduplication**: If multiple skills share the same name, the highest-priority source wins. Lookup is case-insensitive by name.
 
 ## Tools
 
@@ -67,5 +68,5 @@ Detailed instructions, workflows, and reference material.
 
 - The skill body is injected verbatim — there is no templating or variable substitution.
 - Project skills only appear in the index while that project is active. Deactivating the project removes them from the index and deactivates any that were active.
-- Bundled skills (like `ironclaw-system` and `ironclaw-getting-started`) live under `skills/` in the workspace and follow the same format.
-- Skill names must be unique across all sources. If you create a workspace skill with the same name as a user-global skill, the workspace version wins.
+- Bundled skills (like `ironclaw-system` and `ironclaw-getting-started`) are written to `skills/` during workspace creation and follow the same format.
+- Skill names must be unique across all sources. Project skills override workspace skills of the same name, workspace overrides user-global, and so on down the priority chain.

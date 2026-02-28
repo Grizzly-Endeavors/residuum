@@ -27,7 +27,7 @@ workspace/
 ├── SOUL.md                  # Core identity and personality
 ├── AGENTS.md                # Agent behavior rules
 ├── USER.md                  # User preferences
-├── MEMORY.md                # Persistent memory (reflector output)
+├── MEMORY.md                # Persistent scratchpad (agent-maintained)
 ├── ENVIRONMENT.md           # Local environment notes
 ├── BOOTSTRAP.md             # First-run guidance (deleted after first conversation)
 ├── PRESENCE.toml            # Discord presence configuration
@@ -38,8 +38,8 @@ workspace/
 │   ├── observations.json    # Flat observation log
 │   ├── recent_messages.json # Unobserved messages buffer
 │   ├── recent_context.json  # Narrative context from latest observation
-│   ├── OBSERVER.md          # Observer extraction guidance (optional)
-│   ├── REFLECTOR.md         # Reflector compression guidance (optional)
+│   ├── OBSERVER.md          # Observer extraction guidance (customizable)
+│   ├── REFLECTOR.md         # Reflector compression guidance (customizable)
 │   ├── vectors.db           # sqlite-vec vector database (optional)
 │   ├── .index/              # Tantivy BM25 search index
 │   ├── .index_manifest.json # Index file tracking
@@ -50,6 +50,5 @@ workspace/
 ├── projects/                # Active project contexts
 ├── archive/                 # Archived projects + inbox
 │   └── inbox/               # Archived inbox items
-├── inbox/                   # Active inbox items
-└── hooks/                   # Lifecycle hooks
+└── inbox/                   # Active inbox items
 ```

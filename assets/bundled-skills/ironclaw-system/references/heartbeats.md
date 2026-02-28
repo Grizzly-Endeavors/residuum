@@ -12,7 +12,8 @@ pulses:
     active_hours: "09:00-17:00"  # Optional — HH:MM-HH:MM window
     agent: ~                 # null → SubAgent (Small tier)
     tasks:
-      - "Check inbox for new items and summarize anything unread."
+      - name: check_inbox
+        prompt: "Check inbox for new items and summarize anything unread."
 
   - name: daily-review
     enabled: true
@@ -20,14 +21,16 @@ pulses:
     active_hours: "08:00-09:00"
     agent: main              # "main" → MainWakeTurn (runs on main agent)
     tasks:
-      - "Review memory and plan for today."
+      - name: morning_plan
+        prompt: "Review memory and plan for today."
 
   - name: monitor-deploys
     enabled: true
     schedule: 1h
     agent: deploy-watcher    # Any other string → SubAgent with named preset from subagents/
     tasks:
-      - "Check deployment status."
+      - name: check_status
+        prompt: "Check deployment status."
 ```
 
 ## Schedule Parsing
@@ -63,7 +66,7 @@ The `agent` field controls how the pulse executes:
 - A pulse fires **immediately on first run** after startup (no wait for the first interval).
 - Last-run timestamps are in-memory only; they reset on restart.
 - Disabled pulses (`enabled: false`) are skipped entirely.
-- Each task string in `tasks` is joined into the SubAgent prompt.
+- Each task in `tasks` is an object with `name` (string) and `prompt` (string). Task prompts are joined into the SubAgent prompt.
 - SubAgent pulses include a `"HEARTBEAT_OK"` instruction: the agent should respond with just that phrase if there is nothing to report.
 
 ## Gotchas

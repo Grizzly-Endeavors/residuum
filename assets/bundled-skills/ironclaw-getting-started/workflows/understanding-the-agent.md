@@ -31,7 +31,7 @@ Walk through the context stack:
 2. **AGENTS.md** -- My behavioral rules and capabilities. Defines what I can do and how I should act. Usually left as-is.
 3. **USER.md** -- What I know about you. Your preferences, timezone, context about your work and life. I update this as I learn about you, and you can edit it directly.
 4. **Memory** -- Recent conversation context and narrative from past observations. Gives me continuity across sessions.
-5. **Projects** -- If a project is active, its overview, notes, and configuration are loaded. This scopes my knowledge to what is relevant.
+5. **Projects** -- If a project is active, its overview, file manifest, and scoped tools are loaded. I read specific notes and references on demand as needed.
 6. **Skills** -- If any skills are activated, their instructions are included. Skills teach me how to handle specific types of tasks.
 7. **Tools** -- The list of tools available to me, including any from MCP servers or the active project.
 
@@ -57,7 +57,7 @@ Explain: "I can do things without you asking, through two mechanisms."
 - Defined in `HEARTBEAT.yml` with a schedule like "every 30 minutes" or "every 2 hours"
 - Each pulse runs one or more task prompts
 - Results are routed through `NOTIFY.yml` to channels like inbox, agent feed, or external notifications
-- Think of them as cron jobs, but instead of running scripts, they run agent prompts
+- Think of them as scheduled tasks, but instead of running scripts, they run agent prompts
 
 **Scheduled Actions** (one-off):
 - Created with `schedule_action` to fire at a specific future time
@@ -83,7 +83,7 @@ Be straightforward about capabilities and limitations.
 
 **Cannot do:**
 - Browse the web or fetch URLs (unless an MCP server provides this)
-- Send emails or messages to external platforms (unless connected via MCP or channel plugins)
+- Send emails or messages to external platforms (unless connected via MCP or configured channels)
 - Monitor things in real-time (heartbeats are periodic, not continuous)
 - Undo actions after they are taken (file writes, shell commands are permanent)
 - Access systems it does not have credentials or network access for

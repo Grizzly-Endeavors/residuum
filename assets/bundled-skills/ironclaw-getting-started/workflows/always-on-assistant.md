@@ -140,7 +140,7 @@ project_create with:
   tools: ["exec", "read", "write"]
 ```
 
-Explain that when they mention "homelab" in conversation, the agent will recognize it and activate the project context, loading relevant notes and tools automatically.
+Explain that when they mention "homelab" in conversation, the agent will recognize it and activate the project context, loading the overview, file manifest, and scoped tools automatically.
 
 ## Wrap Up
 

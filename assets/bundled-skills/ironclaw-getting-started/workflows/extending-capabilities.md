@@ -80,7 +80,7 @@ Sub-agents use presets that configure their behavior. The default is `general-pu
 
 If the user has a recurring type of delegated task, offer to create a preset for it.
 
-Create a file in `subagents/` with a `PRESET.md` containing frontmatter and instructions:
+Create a file in `subagents/` with a kebab-case filename matching the preset name (e.g., `code-reviewer.md`):
 ```markdown
 ---
 name: code-reviewer

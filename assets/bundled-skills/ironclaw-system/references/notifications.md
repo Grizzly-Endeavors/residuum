@@ -1,11 +1,15 @@
 # Notifications
 
-The notification system routes task results to one or more channels based on mappings in `NOTIFY.yml`. It handles output from heartbeat pulses, scheduled actions, and agent-spawned background tasks.
+The notification system routes background task results to one or more channels. There are two routing modes depending on the task source.
 
-## NOTIFY.yml Format
+## Routing Modes
+
+### NOTIFY.yml (heartbeat pulses only)
+
+Heartbeat pulse results are routed by looking up the **pulse name** in NOTIFY.yml. The file maps channel names to lists of pulse names:
 
 ```yaml
-# Maps channel names to lists of task names that route to that channel.
+# Maps channel names to pulse names whose results they receive.
 agent_wake:
   - daily-review
   - urgent-alerts
@@ -19,37 +23,37 @@ inbox:
 
 ntfy:
   - critical-alerts
-
-webhook:
-  - ci-notifications
 ```
 
-A single task name can appear in multiple channels — results will be delivered to all of them.
+A single pulse name can appear in multiple channels — results will be delivered to all of them.
+
+### Direct routing (scheduled actions and agent-spawned tasks)
+
+Scheduled actions and agent-spawned sub-agents specify their channels at creation time via the `channels` parameter. They bypass NOTIFY.yml entirely.
+
+- `schedule_action`: `channels` parameter (defaults to `["agent_feed"]`)
+- `subagent_spawn`: `channels` parameter (defaults to `["agent_feed"]`)
 
 ## Built-in Channels
 
 | Channel | Behavior |
 |---------|----------|
-| `agent_wake` | Sets a flag to wake the main agent for a new turn. |
-| `agent_feed` | Sets a flag to inject the result into the main agent's conversation feed. |
-| `inbox` | Creates an inbox item with the task result as body and task name as source. |
+| `agent_wake` | Injects result into the agent's feed and starts a turn if idle. If the agent is busy, the result is injected at the next interrupt checkpoint. |
+| `agent_feed` | Injects result into the agent's feed passively. If idle, queued for the next user interaction. Does not start a turn. |
+| `inbox` | Creates an inbox item with the task result as body and task name as source. Never enters the message feed. |
+
+Results delivered to `agent_wake` or `agent_feed` are not dropped if the agent is busy — they are injected at the next interrupt checkpoint.
 
 ## External Channels
 
-| Channel | Behavior |
-|---------|----------|
-| `ntfy` | Dispatches via the ntfy notification service. |
-| `webhook` | Sends an HTTP POST to a configured webhook URL. |
+External channels are configured in `config.toml` under `[notifications.channels.<name>]`:
 
-External channels are dispatched through the `NotificationChannel` trait, which provides `name()` and `deliver()` methods.
+| Type | Description |
+|------|-------------|
+| `ntfy` | Push notification via ntfy-compatible server. |
+| `webhook` | HTTP POST to a configured URL. |
 
-## Routing Flow
-
-1. A background task completes and produces a `BackgroundResult`.
-2. If routing is `Notify`: the router loads `NOTIFY.yml`, looks up the task name, and resolves matching channels.
-3. If routing is `Direct(channels)`: the specified channel list is used directly (bypasses NOTIFY.yml).
-4. Each matched channel processes the result according to its type.
-5. The `RouteOutcome` reports which flags were set and which external channels were dispatched.
+External channel delivery failures are logged at warn level. They do not retry or block other channels.
 
 ## Hot Reload
 
@@ -57,8 +61,7 @@ External channels are dispatched through the `NotificationChannel` trait, which 
 
 ## Gotchas
 
-- Task names in NOTIFY.yml must match exactly (case-sensitive) the `task_name` field on the background task.
-- If a task name is not found in any channel mapping, the result is silently dropped (no error, but nothing happens).
-- `agent_wake` and `agent_feed` are flags, not queues — if the agent is already awake, the flag is a no-op until the next check cycle.
+- Pulse names in NOTIFY.yml must match exactly (case-sensitive) the pulse `name` field in HEARTBEAT.yml.
+- If a pulse name is not found in any channel mapping, the result is silently dropped.
 - The `inbox` channel creates a new inbox item every time — it does not deduplicate.
-- For scheduled actions, specify channels in the `schedule_action` tool call. For heartbeats, routing goes through NOTIFY.yml based on the pulse name.
+- For scheduled actions, specify channels in the `schedule_action` tool call. For heartbeats, routing goes through NOTIFY.yml by pulse name.

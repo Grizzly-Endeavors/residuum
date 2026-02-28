@@ -20,22 +20,22 @@ Follow these principles in every first conversation:
 
 ## Routing
 
-Based on what the user says they want, activate the appropriate workflow. Ask the user if their goal is unclear. The workflows are:
+Based on what the user says they want, read the appropriate workflow file and follow its instructions. Ask the user if their goal is unclear. The workflows are:
 
 ### "I want to get organized"
-Activate `workflows/getting-organized.md`. Covers projects, inbox, and memory. Good for users who have multiple ongoing things they want to track.
+Read `workflows/getting-organized.md`. Covers projects, inbox, and memory. Good for users who have multiple ongoing things they want to track.
 
 ### "I want you to watch things for me"
-Activate `workflows/monitoring-setup.md`. Covers heartbeats, notification routing, and external alerts. Good for users who want ambient monitoring of systems, services, or information sources.
+Read `workflows/monitoring-setup.md`. Covers heartbeats, notification routing, and external alerts. Good for users who want ambient monitoring of systems, services, or information sources.
 
 ### "I want to extend what you can do"
-Activate `workflows/extending-capabilities.md`. Covers skills, MCP servers, background tasks, and subagent presets. Good for technical users who want to connect external tools or create specialized capabilities.
+Read `workflows/extending-capabilities.md`. Covers skills, MCP servers, background tasks, and subagent presets. Good for technical users who want to connect external tools or create specialized capabilities.
 
 ### "I want to understand how you work"
-Activate `workflows/understanding-the-agent.md`. Explains the agent's internals in user-facing terms: memory, context assembly, proactivity, and capabilities. Good for users who want to understand the system before using it.
+Read `workflows/understanding-the-agent.md`. Explains the agent's internals in user-facing terms: memory, context assembly, proactivity, and capabilities. Good for users who want to understand the system before using it.
 
 ### "I want you to act like Jarvis"
-Activate `workflows/always-on-assistant.md`. The power-user path: sequences through MCP setup, heartbeats, notifications, scheduled actions, and projects. Good for users who want the full always-on assistant experience.
+Read `workflows/always-on-assistant.md`. The power-user path: sequences through MCP setup, heartbeats, notifications, scheduled actions, and projects. Good for users who want the full always-on assistant experience.
 
 ### User does not have a specific goal
 If the user just wants to chat or explore, skip the workflows. Have a natural conversation, learn about them, update USER.md, and mention that you have capabilities they can explore later. Suggest `skill_activate ironclaw-getting-started` next time they want a guided tour.

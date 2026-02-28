@@ -17,13 +17,14 @@ Required frontmatter: `name` and `description`. The description is shown in the 
 
 ## Skill Sources
 
-Skills are discovered from three locations, scanned in priority order:
+Skills are discovered from multiple locations, scanned in priority order:
 
 | Source | Directory | Priority |
 |--------|-----------|----------|
-| Workspace | `skills/` | Highest |
+| Project | `projects/<name>/skills/` (only when project active) | Highest |
+| Workspace | `skills/` | High |
 | User Global | Extra dirs from `[skills]` config section | Middle |
-| Project | `projects/<name>/skills/` (only when project active) | Lowest |
+| Bundled | Shipped with the binary | Lowest |
 
 If multiple skills share the same name, the highest-priority source wins. Lookup is case-insensitive by name.
 

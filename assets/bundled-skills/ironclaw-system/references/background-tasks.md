@@ -1,22 +1,18 @@
 # Background Tasks
 
-Background tasks run concurrently with the main agent conversation. They support two execution types — LLM-driven sub-agents and shell scripts — with result routing through the notification system.
+Background tasks let the agent run work without blocking the main conversation. The execution model is sub-agents — ephemeral LLM turn loops that run independently and deliver results through notification channels.
 
-## Execution Types
+For shell commands and scripts, the agent uses its own `write_file` and `exec` tools directly — there is no separate "script task" type.
 
-### SubAgent
+## Sub-Agents
 
-An ephemeral LLM turn loop with a minimal system prompt. The prompt includes only `ENVIRONMENT.md`, `USER.md`, the project index, and active skills. It explicitly **excludes** SOUL.md, AGENTS.md, MEMORY.md, and the observation log to keep context small.
+An ephemeral LLM turn loop with a minimal system prompt. The prompt includes `ENVIRONMENT.md`, `USER.md`, the project index, and active skills. It explicitly **excludes** SOUL.md, AGENTS.md, MEMORY.md, and the observation log to keep context small.
 
-SubAgents receive an isolated copy of project state, skill state, path policy, and tool filter. They share the MCP registry with the main agent.
-
-### Script
-
-A child process with a configurable timeout. Defined by `command`, `args`, `working_dir`, and `timeout_secs`.
+Sub-agents share the MCP registry with the main agent.
 
 ## Model Tiers
 
-SubAgent tasks specify a model tier that maps to configured models in `[background]`:
+Sub-agent tasks specify a model tier that maps to configured models in `[background]`:
 
 | Tier | Default Use | Fallback |
 |------|-------------|----------|
@@ -26,27 +22,33 @@ SubAgent tasks specify a model tier that maps to configured models in `[backgrou
 
 The fallback chain walks up tiers. If no background model is configured at any tier, the main model is used.
 
+## Subagent Presets
+
+Presets are markdown files in `subagents/` with kebab-case filenames matching the preset name (e.g., `memory-agent.md`). YAML frontmatter can define: `name`, `description`, `model_tier`, `channels`, `denied_tools`, `allowed_tools`. One built-in preset exists: `general-purpose`.
+
 ## Tools
 
 | Tool | Key Parameters | Description |
 |------|---------------|-------------|
-| `subagent_spawn` | `preset`, `prompt`, `wait`, `channels` | Spawn a sub-agent task. |
+| `subagent_spawn` | `task`, `agent_name`, `wait`, `channels`, `model_override` | Spawn a sub-agent task. |
 | `list_agents` | *(none)* | List active background tasks with elapsed time and prompt preview. |
 | `stop_agent` | `task_id` | Cancel an active task by ID. |
 
 ### `subagent_spawn` Details
 
-- **`preset`**: Name of a preset from `subagents/`. Optional — if omitted, uses default configuration.
-- **`prompt`**: The task prompt for the sub-agent.
+- **`task`**: The prompt/instructions for the sub-agent. Required.
+- **`agent_name`**: Preset name from `subagents/`. Default: `"general-purpose"`. `"main"` is rejected.
+- **`model_override`**: `"small"`, `"medium"`, or `"large"`. Overrides the preset's tier.
 - **`wait`**: If `true`, blocks until the sub-agent completes and returns the result directly (synchronous mode). Default `false`.
-- **`channels`**: Notification channel names for result routing in async mode. Required when `wait: false` and not using `Notify` routing. Validated against known channels.
+- **`channels`**: Notification channel names for result delivery in async mode. Defaults to `["agent_feed"]` (or the preset's `channels` if defined).
 
 ## Result Routing
 
-| Mode | Behavior |
-|------|----------|
-| `Notify` | Routes through NOTIFY.yml by task name. Used by heartbeats and scheduled actions. |
-| `Direct(channels)` | Routes to specified channels, bypassing NOTIFY.yml. Used by agent-spawned tasks with explicit channels. |
+| Source | Routing Mode |
+|--------|-------------|
+| Heartbeat pulses | NOTIFY.yml by pulse name |
+| Scheduled actions | Direct — `channels` from `schedule_action` |
+| Agent-spawned tasks | Direct — `channels` from `subagent_spawn` |
 
 ## Concurrency
 
@@ -62,19 +64,9 @@ memory/background/YYYY-MM/DD/bg-<task-id>.log
 
 The directory is created on-demand when the first transcript is written.
 
-## Task Lifecycle
-
-1. **Spawn**: Task is registered with a unique ID and CancellationToken.
-2. **Acquire**: Waits for a semaphore slot (respects concurrency limit).
-3. **Execute**: Runs SubAgent turn loop or Script process, racing against cancellation.
-4. **Complete**: Produces a `BackgroundResult` with status (`Completed`, `Cancelled`, `Failed`), summary, and transcript path.
-5. **Route**: Result is sent through the notification system.
-6. **Cleanup**: Task is removed from the active tasks map.
-
 ## Gotchas
 
-- SubAgents have a **minimal system prompt** — they do not have access to the main agent's full identity or memory context.
-- `wait: true` blocks the calling agent's turn until the sub-agent finishes. Use for short tasks only.
-- If a project is active in a sub-agent, it is force-deactivated before the sub-agent exits (with a retry turn and manual fallback).
-- Script tasks that exceed their timeout are killed.
+- Sub-agents have a **minimal system prompt** — they do not have access to the main agent's full identity or memory context.
+- If a project is active in a sub-agent when it exits, the gateway force-deactivates with an auto-generated log entry.
+- Tools excluded from sub-agents: `schedule_action`, `list_actions`, `cancel_action`, `subagent_spawn`, `stop_agent` (no sub-to-sub delegation, no action scheduling from background).
 - The `memory/background/` directory is not created at bootstrap — it appears only after the first background task runs.

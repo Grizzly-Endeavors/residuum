@@ -65,9 +65,12 @@ When a project is activated:
 2. A manifest is built by scanning subdirectories (`notes`, `references`, `workspace`, `skills`).
 3. The tool filter is updated to include only the tools listed in `tools:` (plus always-allowed tools).
 4. Any `mcp_servers` entries are registered.
-5. The path policy is scoped to the project directory.
+5. The path policy is scoped to the project directory — the agent can read from anywhere but can only write within the project directory.
+6. Project skills are added to the skill index.
 
 Only one project can be active at a time. Activating a new project requires deactivating the current one first.
+
+**Note**: Only PROJECT.md is loaded into context on activation. Notes, references, and workspace files appear in the manifest but must be read explicitly by the agent via `read_file`.
 
 ## Gotchas
 

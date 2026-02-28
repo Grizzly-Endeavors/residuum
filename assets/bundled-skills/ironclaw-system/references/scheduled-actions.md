@@ -21,16 +21,16 @@ Scheduled actions are one-off future tasks persisted in `scheduled_actions.json`
 
 | Tool | Key Parameters | Description |
 |------|---------------|-------------|
-| `schedule_action` | `name`, `prompt`, `run_at`, `agent`, `model_tier`, `channels` | Schedule a new one-off action. |
+| `schedule_action` | `name`, `prompt`, `run_at`, `agent_name`, `model_tier`, `channels` | Schedule a new one-off action. |
 | `list_actions` | *(none)* | List all pending actions with name, ID, fire time, agent routing, and channels. |
 | `cancel_action` | `id` | Cancel a pending action by ID. |
 
 ## `schedule_action` Details
 
 - **`run_at`**: ISO 8601 datetime. Naive datetimes (without timezone) are interpreted in the configured workspace timezone.
-- **`agent`**: Routing control. `null` → SubAgent, `"main"` → main agent turn, `"<preset>"` → SubAgent with named preset.
+- **`agent_name`**: Routing control. `null` → SubAgent, `"main"` → main agent turn, `"<preset>"` → SubAgent with named preset.
 - **`model_tier`**: `"small"`, `"medium"`, or `"large"`. Defaults to medium for SubAgent execution.
-- **`channels`**: Array of notification channel names from `NOTIFY.yml`. Results are routed to these channels after execution. **Mutually exclusive with `agent: "main"`** — main-turn actions cannot also route to channels.
+- **`channels`**: Array of notification channel names (built-in or from config.toml). Results are routed directly to these channels after execution — scheduled actions do **not** route through NOTIFY.yml. Defaults to `["agent_feed"]`. **Mutually exclusive with `agent_name: "main"`** — main-turn actions inject directly into the conversation.
 
 ## Execution
 
