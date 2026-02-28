@@ -291,46 +291,41 @@ const Settings = {
         return `${provider}/${model}`;
     },
 
-    /** Get the available provider types from the config. */
+    /** Get configured provider names (keys from [providers] table). */
     getConfiguredProviders() {
         const providers = this.configObj.providers || {};
-        const types = new Set();
-        for (const cfg of Object.values(providers)) {
-            if (cfg.type) types.add(cfg.type);
-        }
-        // Always include all four types
-        types.add('anthropic');
-        types.add('openai');
-        types.add('gemini');
-        types.add('ollama');
-        return [...types].sort();
+        return Object.keys(providers).sort();
     },
 
-    /** Find API key and URL for a provider type from config. */
-    getProviderCredentials(providerType) {
+    /** Look up a configured provider by name, returning its type, API key, and URL. */
+    getProviderCredentials(providerName) {
         const providers = this.configObj.providers || {};
-        for (const cfg of Object.values(providers)) {
-            if (cfg.type === providerType) {
-                return { apiKey: cfg.api_key || '', url: cfg.url || '' };
-            }
+        const cfg = providers[providerName];
+        if (cfg) {
+            return {
+                type: cfg.type || providerName,
+                apiKey: cfg.api_key || '',
+                url: cfg.url || '',
+            };
         }
-        return { apiKey: '', url: '' };
+        return { type: providerName, apiKey: '', url: '' };
     },
 
     renderModels(models) {
-        const providerTypes = this.getConfiguredProviders();
+        const providerNames = this.getConfiguredProviders();
         const roles = [
             { key: 'main', label: 'Main model (required)', required: true },
             { key: 'default', label: 'Default (fallback for unset roles)' },
             { key: 'observer', label: 'Observer' },
             { key: 'reflector', label: 'Reflector' },
             { key: 'pulse', label: 'Pulse' },
+            { key: 'embedding', label: 'Embedding' },
         ];
 
         const roleRows = roles.map(role => {
             const spec = this.parseModelSpec(models[role.key] || '');
-            const provOptions = providerTypes.map(pt =>
-                `<option value="${pt}" ${pt === spec.provider ? 'selected' : ''}>${pt}</option>`
+            const provOptions = providerNames.map(name =>
+                `<option value="${escAttr(name)}" ${name === spec.provider ? 'selected' : ''}>${escAttr(name)}</option>`
             ).join('');
 
             return `
@@ -357,15 +352,7 @@ const Settings = {
             `;
         }).join('');
 
-        return `
-            ${roleRows}
-            <div class="settings-field" style="margin-top:8px">
-                <label>Embedding</label>
-                <input type="text" data-path="models.embedding" value="${escAttr(models.embedding || '')}"
-                    placeholder="openai/text-embedding-3-small">
-                <div class="field-hint">Format: provider/model-name</div>
-            </div>
-        `;
+        return roleRows;
     },
 
     renderMemory(mem) {
@@ -802,7 +789,7 @@ const Settings = {
 
     /** Bind model provider selectors and populate model dropdowns. */
     bindModelSelectors() {
-        const roles = ['main', 'default', 'observer', 'reflector', 'pulse'];
+        const roles = ['main', 'default', 'observer', 'reflector', 'pulse', 'embedding'];
 
         for (const role of roles) {
             const provSelect = document.querySelector(`[data-model-provider="${role}"]`);
@@ -810,33 +797,33 @@ const Settings = {
 
             if (!provSelect || !modelSelect) continue;
 
-            // On provider change, fetch models
+            // On provider change, fetch models using the provider's type
             provSelect.addEventListener('change', () => {
-                const prov = provSelect.value;
-                if (!prov) {
+                const provName = provSelect.value;
+                if (!provName) {
                     modelSelect.innerHTML = '<option value="">Select provider first</option>';
                     this.updateModelPath(role, '', '');
                     return;
                 }
-                const { apiKey, url } = this.getProviderCredentials(prov);
-                ModelFetcher.populateSelect(modelSelect, prov, apiKey || null, url || null, null).then(() => {
-                    this.updateModelPath(role, prov, modelSelect.value);
+                const { type, apiKey, url } = this.getProviderCredentials(provName);
+                ModelFetcher.populateSelect(modelSelect, type, apiKey || null, url || null, null).then(() => {
+                    this.updateModelPath(role, provName, modelSelect.value);
                 });
             });
 
-            // On model change, update config
+            // On model change, update config (use provider name, not type)
             modelSelect.addEventListener('change', () => {
-                const prov = provSelect.value;
-                this.updateModelPath(role, prov, modelSelect.value);
+                const provName = provSelect.value;
+                this.updateModelPath(role, provName, modelSelect.value);
             });
 
             // Populate on initial load if provider is selected
-            const currentProv = provSelect.value;
-            if (currentProv) {
+            const currentProvName = provSelect.value;
+            if (currentProvName) {
                 const models = this.configObj.models || {};
                 const spec = this.parseModelSpec(models[role] || '');
-                const { apiKey, url } = this.getProviderCredentials(currentProv);
-                ModelFetcher.populateSelect(modelSelect, currentProv, apiKey || null, url || null, spec.model);
+                const { type, apiKey, url } = this.getProviderCredentials(currentProvName);
+                ModelFetcher.populateSelect(modelSelect, type, apiKey || null, url || null, spec.model);
             }
         }
     },
