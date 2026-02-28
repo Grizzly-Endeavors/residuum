@@ -149,6 +149,18 @@ impl Config {
     /// read or parsed, or if required values are missing.
     pub fn load() -> Result<Self, IronclawError> {
         let config_dir = bootstrap::default_config_dir()?;
+        Self::load_at(&config_dir)
+    }
+
+    /// Load configuration from a specific directory.
+    ///
+    /// Same as [`load`](Self::load) but reads `config.toml` from the given
+    /// directory instead of the default `~/.ironclaw/`.
+    ///
+    /// # Errors
+    /// Returns `IronclawError::Config` if the config file exists but cannot be
+    /// read or parsed, or if required values are missing.
+    pub fn load_at(config_dir: &std::path::Path) -> Result<Self, IronclawError> {
         let config_path = config_dir.join("config.toml");
 
         let file_config = if config_path.exists() {

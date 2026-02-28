@@ -47,7 +47,8 @@ async fn run() -> Result<(), IronclawError> {
         }
         // "serve" or no subcommand → start gateway
         Some("serve") | None => {
-            // --setup: run the onboarding wizard in an isolated temp directory
+            // --setup: run the onboarding wizard in an isolated temp directory,
+            // then boot the gateway with the resulting config for end-to-end testing
             if args.iter().any(|a| a == "--setup") {
                 let tmp_dir = std::env::temp_dir().join("ironclaw-setup");
                 if tmp_dir.exists() {
@@ -63,10 +64,33 @@ async fn run() -> Result<(), IronclawError> {
                     "setup mode: config will be written to {}",
                     tmp_dir.display()
                 );
-                Box::pin(ironclaw::gateway::server::setup::run_setup_server_at(
-                    tmp_dir,
+                match Box::pin(ironclaw::gateway::server::setup::run_setup_server_at(
+                    tmp_dir.clone(),
                 ))
-                .await?;
+                .await?
+                {
+                    ironclaw::gateway::server::setup::SetupExit::ConfigSaved => {
+                        tracing::info!("setup complete, loading config from temp directory");
+                    }
+                    ironclaw::gateway::server::setup::SetupExit::Shutdown => return Ok(()),
+                }
+
+                // Load the config written by the wizard and run the gateway
+                loop {
+                    let cfg = Config::load_at(&tmp_dir)?;
+                    tracing::info!(
+                        model = %cfg.main.model,
+                        provider_url = %cfg.main.provider_url,
+                        workspace = %cfg.workspace_dir.display(),
+                        "setup-mode: configuration loaded, starting gateway"
+                    );
+                    match Box::pin(ironclaw::gateway::server::run_gateway(cfg)).await? {
+                        ironclaw::gateway::server::GatewayExit::Shutdown => break,
+                        ironclaw::gateway::server::GatewayExit::Reload => {
+                            tracing::info!("configuration reloaded, restarting gateway");
+                        }
+                    }
+                }
                 return Ok(());
             }
 
