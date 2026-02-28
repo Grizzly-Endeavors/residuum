@@ -1,11 +1,14 @@
 //! `IronClaw`: personal AI agent gateway.
 //!
-//! Entrypoint with two subcommands:
+//! Entrypoint with subcommands:
 //! - `serve` (default): starts the WebSocket gateway server
 //! - `connect [url]`: connects a CLI client to a running gateway
+//! - `logs [--watch]`: display CLI log files
+//! - `setup`: interactive configuration wizard
 
 use ironclaw::channels::cli::CliClient;
 use ironclaw::channels::cli::commands::CommandEffect;
+use ironclaw::channels::cli::ws_url_to_http;
 use ironclaw::config::Config;
 use ironclaw::error::IronclawError;
 use ironclaw::gateway::protocol::{ClientMessage, ServerMessage};
@@ -23,20 +26,11 @@ async fn main() {
     reason = "sequential setup/serve/connect dispatch with reload loop; splitting would obscure the flow"
 )]
 async fn run() -> Result<(), IronclawError> {
-    // Init tracing
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
-        )
-        .with_target(false)
-        .init();
-
-    // Load .env (ignore if missing, warn on parse errors)
+    // Load .env early (ignore if missing, warn on parse errors)
     if let Err(e) = dotenvy::dotenv()
         && !e.not_found()
     {
-        tracing::warn!(error = %e, "failed to parse .env file");
+        eprintln!("warning: failed to parse .env file: {e}");
     }
 
     // Parse subcommand from argv
@@ -45,12 +39,23 @@ async fn run() -> Result<(), IronclawError> {
 
     match subcommand {
         Some("connect") => {
+            init_cli_tracing();
             let url = args.get(2).map_or("ws://127.0.0.1:7700/ws", String::as_str);
             let verbose = args.iter().any(|a| a == "--verbose" || a == "-v");
             run_connect(url, verbose).await
         }
+        Some("logs") => {
+            init_default_tracing();
+            let watch = args.iter().any(|a| a == "--watch" || a == "-w");
+            run_logs_command(watch).await
+        }
+        Some("setup") => {
+            init_default_tracing();
+            run_setup_command(&args).await
+        }
         // "serve" or no subcommand → start gateway
         Some("serve") | None => {
+            init_default_tracing();
             // --setup: run the onboarding wizard in an isolated temp directory,
             // then boot the gateway with the resulting config for end-to-end testing
             if args.iter().any(|a| a == "--setup") {
@@ -202,7 +207,7 @@ async fn run() -> Result<(), IronclawError> {
             Ok(())
         }
         Some(other) => Err(IronclawError::Config(format!(
-            "unknown subcommand '{other}', expected 'serve' or 'connect'"
+            "unknown subcommand '{other}', expected one of: serve, connect, logs, setup"
         ))),
     }
 }
@@ -223,6 +228,18 @@ async fn run_connect(url: &str, verbose: bool) -> Result<(), IronclawError> {
     use futures_util::{SinkExt, StreamExt};
     use ironclaw::channels::cli::CliReader;
     use tokio_tungstenite::tungstenite::Message as TungsteniteMessage;
+
+    // First-launch welcome if no config exists yet
+    let config_dir = Config::config_dir()?;
+    if !config_dir.join("config.toml").exists() {
+        let http_url = ws_url_to_http(url);
+        eprintln!("welcome to ironclaw!");
+        eprintln!();
+        eprintln!("  it looks like this is your first time running ironclaw.");
+        eprintln!("  configure your agent at: {http_url}");
+        eprintln!("  or run: ironclaw setup");
+        eprintln!();
+    }
 
     let (ws_stream, _response) = tokio_tungstenite::connect_async(url)
         .await
@@ -404,6 +421,169 @@ fn rollback_config(config_dir: &std::path::Path) -> bool {
             false
         }
     }
+}
+
+/// Initialize tracing with stderr-only output (default for serve/logs/setup).
+fn init_default_tracing() {
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
+        )
+        .with_target(false)
+        .init();
+}
+
+/// Initialize tracing with both stderr and a daily rolling file appender.
+///
+/// Log files are written to `~/.ironclaw/logs/cli.YYYY-MM-DD.log`.
+fn init_cli_tracing() {
+    use tracing_subscriber::layer::SubscriberExt;
+    use tracing_subscriber::util::SubscriberInitExt;
+
+    let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
+
+    let stderr_layer = tracing_subscriber::fmt::layer()
+        .with_target(false)
+        .with_writer(std::io::stderr);
+
+    let log_dir = dirs::home_dir()
+        .map(|h| h.join(".ironclaw").join("logs"))
+        .unwrap_or_else(|| std::path::PathBuf::from("logs"));
+
+    let file_appender = tracing_appender::rolling::RollingFileAppender::builder()
+        .filename_prefix("cli")
+        .filename_suffix("log")
+        .rotation(tracing_appender::rolling::Rotation::DAILY)
+        .max_log_files(30)
+        .build(&log_dir)
+        .unwrap_or_else(|e| {
+            eprintln!("warning: failed to create log file appender: {e}");
+            // Fall back to writing to /dev/null-equivalent temp dir
+            tracing_appender::rolling::RollingFileAppender::builder()
+                .filename_prefix("cli")
+                .filename_suffix("log")
+                .rotation(tracing_appender::rolling::Rotation::DAILY)
+                .build(std::env::temp_dir())
+                .unwrap_or_else(|e2| {
+                    eprintln!("warning: fallback log appender also failed: {e2}");
+                    // Last resort: same as daily to temp dir with never rotation
+                    tracing_appender::rolling::daily(std::env::temp_dir(), "cli.log")
+                })
+        });
+
+    let file_layer = tracing_subscriber::fmt::layer()
+        .with_target(false)
+        .with_ansi(false)
+        .with_writer(file_appender);
+
+    tracing_subscriber::registry()
+        .with(env_filter)
+        .with(stderr_layer)
+        .with(file_layer)
+        .init();
+}
+
+/// Display CLI log files.
+///
+/// Finds the most recent log file in `~/.ironclaw/logs/` and prints its
+/// contents. With `--watch`, polls for new lines every 500ms.
+async fn run_logs_command(watch: bool) -> Result<(), IronclawError> {
+    let log_dir = dirs::home_dir()
+        .map(|h| h.join(".ironclaw").join("logs"))
+        .ok_or_else(|| IronclawError::Config("could not determine home directory".to_string()))?;
+
+    if !log_dir.exists() {
+        eprintln!("no log files found (directory does not exist: {})", log_dir.display());
+        return Ok(());
+    }
+
+    // Find the most recent log file
+    let mut entries: Vec<_> = std::fs::read_dir(&log_dir)
+        .map_err(|e| IronclawError::Config(format!("failed to read log directory: {e}")))?
+        .filter_map(|entry| entry.ok())
+        .filter(|entry| {
+            entry
+                .path()
+                .extension()
+                .is_some_and(|ext| ext == "log")
+        })
+        .collect();
+
+    if entries.is_empty() {
+        eprintln!("no log files found in {}", log_dir.display());
+        return Ok(());
+    }
+
+    // Sort by modification time, most recent last
+    entries.sort_by_key(|e| e.metadata().and_then(|m| m.modified()).unwrap_or(std::time::SystemTime::UNIX_EPOCH));
+
+    let latest = entries.last().map(std::fs::DirEntry::path).ok_or_else(|| {
+        IronclawError::Config("no log files found".to_string())
+    })?;
+
+    eprintln!("showing: {}", latest.display());
+    eprintln!();
+
+    let content = std::fs::read_to_string(&latest)
+        .map_err(|e| IronclawError::Config(format!("failed to read log file: {e}")))?;
+    print!("{content}");
+
+    if watch {
+        use tokio::io::{AsyncBufReadExt, AsyncSeekExt};
+
+        let file = tokio::fs::File::open(&latest)
+            .await
+            .map_err(|e| IronclawError::Config(format!("failed to open log file for watch: {e}")))?;
+        let mut reader = tokio::io::BufReader::new(file);
+
+        // Seek to current end
+        let metadata = std::fs::metadata(&latest)
+            .map_err(|e| IronclawError::Config(format!("failed to stat log file: {e}")))?;
+        let file_len = metadata.len();
+        reader.seek(std::io::SeekFrom::Start(file_len)).await.map_err(|e| {
+            IronclawError::Config(format!("failed to seek log file: {e}"))
+        })?;
+
+        let mut line_buf = String::new();
+        loop {
+            line_buf.clear();
+            match reader.read_line(&mut line_buf).await {
+                Ok(0) => {
+                    // No new data yet
+                    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                }
+                Ok(_) => {
+                    print!("{line_buf}");
+                }
+                Err(e) => {
+                    eprintln!("error reading log file: {e}");
+                    break;
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/// Run the `setup` subcommand — placeholder until commit 2 adds the wizard.
+async fn run_setup_command(args: &[String]) -> Result<(), IronclawError> {
+    let _ = args;
+    let config_dir = Config::config_dir()?;
+    let config_path = config_dir.join("config.toml");
+
+    if config_path.exists() {
+        eprintln!("config.toml already exists at {}", config_path.display());
+        eprintln!("edit it directly or delete it to re-run setup");
+        return Ok(());
+    }
+
+    Config::bootstrap_config_dir()?;
+    eprintln!("created default config at {}", config_path.display());
+    eprintln!("edit ~/.ironclaw/config.toml to configure your agent");
+    Ok(())
 }
 
 /// Serialize and send a `ClientMessage` over the WebSocket.
