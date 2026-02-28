@@ -37,6 +37,12 @@ const ModelFetcher = {
         ollama: 'llama3.1'
     },
 
+    defaultEmbeddingModels: {
+        openai: 'text-embedding-3-small',
+        gemini: 'gemini-embedding-001',
+        ollama: 'nomic-embed-text'
+    },
+
     /** Cache key for a provider+key+url combo. */
     _cacheKey(provider, apiKey, url) {
         return `${provider}:${apiKey || ''}:${url || ''}`;
@@ -100,8 +106,9 @@ const ModelFetcher = {
      * Populate a <select> element with models from the given provider.
      * Shows a loading state while fetching. Selects `currentValue` if present.
      * Appends an "Other..." option that reveals a text input for custom model IDs.
+     * Optional `defaultOverride` replaces the built-in default for this provider.
      */
-    async populateSelect(selectEl, provider, apiKey, url, currentValue) {
+    async populateSelect(selectEl, provider, apiKey, url, currentValue, defaultOverride) {
         if (!selectEl) return;
 
         // Show loading state
@@ -119,7 +126,7 @@ const ModelFetcher = {
             return;
         }
 
-        const defaultModel = this.defaultModels[provider];
+        const defaultModel = defaultOverride !== undefined ? defaultOverride : this.defaultModels[provider];
         const selected = currentValue || defaultModel || '';
 
         let foundInList = false;

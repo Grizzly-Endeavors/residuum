@@ -22,7 +22,7 @@ mod skills_integration {
     async fn setup_workspace() -> (tempfile::TempDir, WorkspaceLayout) {
         let dir = tempfile::tempdir().unwrap();
         let layout = WorkspaceLayout::new(dir.path().join("workspace"));
-        ensure_workspace(&layout).await.unwrap();
+        ensure_workspace(&layout, None).await.unwrap();
         (dir, layout)
     }
 

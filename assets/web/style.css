@@ -1147,8 +1147,16 @@ html, body {
 .setup-nav {
     display: flex;
     justify-content: space-between;
+    align-items: center;
     margin-top: 24px;
     gap: 8px;
+}
+
+.setup-nav-hint {
+    font-size: 11px;
+    color: var(--text-dim);
+    text-align: center;
+    flex: 1;
 }
 
 .provider-option {
@@ -1227,22 +1235,6 @@ html, body {
     display: flex;
     align-items: center;
     justify-content: space-between;
-}
-
-.provider-main-label {
-    font-size: 11px !important;
-    font-weight: 500 !important;
-    color: var(--text-muted) !important;
-    display: flex !important;
-    align-items: center !important;
-    gap: 5px !important;
-    margin-bottom: 0 !important;
-    cursor: pointer;
-}
-
-.provider-main-label input[type="radio"] {
-    width: auto;
-    accent-color: var(--ember);
 }
 
 /* ── Embedding warning ────────────────────────────────────────────────── */
@@ -1368,6 +1360,30 @@ html, body {
     font-size: 11px;
     color: var(--error);
     margin-top: 3px;
+}
+
+/* ── Roles sections (model assignment step) ──────────────────────────── */
+
+.roles-section {
+    margin-bottom: 18px;
+}
+
+.roles-section-label {
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--ember);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    margin-bottom: 6px;
+    padding-bottom: 4px;
+    border-bottom: 1px solid var(--border-subtle);
+}
+
+.roles-section-hint {
+    font-size: 11px;
+    color: var(--text-dim);
+    margin-bottom: 8px;
+    line-height: 1.4;
 }
 
 /* ── Role provider row ────────────────────────────────────────────────── */

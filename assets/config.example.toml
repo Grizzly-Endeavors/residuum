@@ -1,6 +1,10 @@
 # IronClaw example configuration — all options with defaults shown.
 # Copy to config.toml and edit as needed.
 
+# ── User name (optional) ─────────────────────────────────────────────────────
+# What the agent should call you. Stored in USER.md on first run.
+# name = "Alex"
+
 # ── Timezone (REQUIRED) ──────────────────────────────────────────────────────
 # IANA timezone name for all timestamps. Affects daily logs, memory
 # observations, pulse active hours, and all stored data.

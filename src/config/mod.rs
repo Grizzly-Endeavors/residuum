@@ -39,6 +39,8 @@ pub use types::{
 /// directly — no fallback chains needed.
 #[derive(Clone)]
 pub struct Config {
+    /// User's display name (what the agent calls them).
+    pub name: Option<String>,
     /// Fully resolved main agent provider.
     pub main: ProviderSpec,
     /// Fully resolved observer provider.
@@ -82,6 +84,7 @@ pub struct Config {
 impl fmt::Debug for Config {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Config")
+            .field("name", &self.name)
             .field("main", &self.main)
             .field("observer", &self.observer)
             .field("reflector", &self.reflector)

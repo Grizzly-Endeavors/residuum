@@ -69,7 +69,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let layout = WorkspaceLayout::new(dir.path().join("workspace"));
 
-        ensure_workspace(&layout).await.unwrap();
+        ensure_workspace(&layout, None).await.unwrap();
         let identity = IdentityFiles::load(&layout).await.unwrap();
 
         assert!(identity.soul.is_some(), "soul should be loaded");

@@ -228,7 +228,7 @@ mod tests {
     async fn create_produces_correct_structure() {
         let dir = tempfile::tempdir().unwrap();
         let layout = WorkspaceLayout::new(dir.path().join("workspace"));
-        ensure_workspace(&layout).await.unwrap();
+        ensure_workspace(&layout, None).await.unwrap();
 
         let today = NaiveDate::from_ymd_opt(2026, 2, 23).unwrap();
         let path = create_project(&layout, "Test Project", "A test", vec![], today)
@@ -264,7 +264,7 @@ mod tests {
     async fn create_duplicate_rejected() {
         let dir = tempfile::tempdir().unwrap();
         let layout = WorkspaceLayout::new(dir.path().join("workspace"));
-        ensure_workspace(&layout).await.unwrap();
+        ensure_workspace(&layout, None).await.unwrap();
 
         let today = NaiveDate::from_ymd_opt(2026, 2, 23).unwrap();
         create_project(&layout, "Test", "First", vec![], today)
@@ -279,7 +279,7 @@ mod tests {
     async fn archive_moves_and_updates_frontmatter() {
         let dir = tempfile::tempdir().unwrap();
         let layout = WorkspaceLayout::new(dir.path().join("workspace"));
-        ensure_workspace(&layout).await.unwrap();
+        ensure_workspace(&layout, None).await.unwrap();
 
         let created = NaiveDate::from_ymd_opt(2026, 2, 20).unwrap();
         create_project(&layout, "Archive Me", "To archive", vec![], created)

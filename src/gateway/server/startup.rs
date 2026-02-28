@@ -82,7 +82,7 @@ pub(super) async fn initialize(cfg: &Config) -> Result<GatewayComponents, Ironcl
     // Workspace
     let layout = WorkspaceLayout::new(&cfg.workspace_dir);
     let tz = cfg.timezone;
-    ensure_workspace(&layout).await?;
+    ensure_workspace(&layout, cfg.name.as_deref()).await?;
 
     std::env::set_current_dir(&cfg.workspace_dir).map_err(|e| {
         IronclawError::Config(format!(

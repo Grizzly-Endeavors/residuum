@@ -11,6 +11,8 @@ use serde::Deserialize;
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct ConfigFile {
+    /// User's display name (what the agent calls them).
+    pub(super) name: Option<String>,
     /// IANA timezone name (e.g. `"America/New_York"`).
     pub(super) timezone: Option<String>,
     /// Named provider definitions.

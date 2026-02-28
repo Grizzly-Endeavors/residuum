@@ -310,7 +310,7 @@ Some overview body text here.
     async fn scan_empty_dirs() {
         let dir = tempfile::tempdir().unwrap();
         let layout = WorkspaceLayout::new(dir.path().join("workspace"));
-        ensure_workspace(&layout).await.unwrap();
+        ensure_workspace(&layout, None).await.unwrap();
 
         let index = ProjectIndex::scan(&layout).await.unwrap();
         assert!(
@@ -323,7 +323,7 @@ Some overview body text here.
     async fn scan_with_projects() {
         let dir = tempfile::tempdir().unwrap();
         let layout = WorkspaceLayout::new(dir.path().join("workspace"));
-        ensure_workspace(&layout).await.unwrap();
+        ensure_workspace(&layout, None).await.unwrap();
 
         // Create a project
         let project_dir = layout.projects_dir().join("test-proj");
@@ -352,7 +352,7 @@ Some overview body text here.
     async fn scan_with_archived_project() {
         let dir = tempfile::tempdir().unwrap();
         let layout = WorkspaceLayout::new(dir.path().join("workspace"));
-        ensure_workspace(&layout).await.unwrap();
+        ensure_workspace(&layout, None).await.unwrap();
 
         let archive_dir = layout.archive_dir().join("old-proj");
         tokio::fs::create_dir(&archive_dir).await.unwrap();
@@ -375,7 +375,7 @@ Some overview body text here.
     async fn scan_skips_invalid_yaml() {
         let dir = tempfile::tempdir().unwrap();
         let layout = WorkspaceLayout::new(dir.path().join("workspace"));
-        ensure_workspace(&layout).await.unwrap();
+        ensure_workspace(&layout, None).await.unwrap();
 
         // Create project with invalid YAML
         let bad_dir = layout.projects_dir().join("bad-proj");

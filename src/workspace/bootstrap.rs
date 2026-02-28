@@ -130,12 +130,18 @@ inbox: []
 
 /// Ensure the workspace directory structure exists with default identity files.
 ///
+/// When `user_name` is provided and `USER.md` does not yet exist, the default
+/// content is personalised with the user's name.
+///
 /// This is idempotent: existing files and directories are not modified.
 ///
 /// # Errors
 /// Returns `IronclawError::Workspace` if directories cannot be created or
 /// default files cannot be written.
-pub async fn ensure_workspace(layout: &WorkspaceLayout) -> Result<(), IronclawError> {
+pub async fn ensure_workspace(
+    layout: &WorkspaceLayout,
+    user_name: Option<&str>,
+) -> Result<(), IronclawError> {
     // Create all required directories
     for dir in layout.required_dirs() {
         tokio::fs::create_dir_all(&dir).await.map_err(|e| {
@@ -146,7 +152,17 @@ pub async fn ensure_workspace(layout: &WorkspaceLayout) -> Result<(), IronclawEr
     // Create default identity files if they don't exist
     write_if_missing(&layout.soul_md(), DEFAULT_SOUL).await?;
     write_if_missing(&layout.agents_md(), DEFAULT_AGENTS).await?;
-    write_if_missing(&layout.user_md(), DEFAULT_USER).await?;
+
+    let user_content = match user_name {
+        Some(name) if !name.is_empty() => format!(
+            "# User Preferences\n\n\
+             **Name**: {name}\n\n\
+             Add your preferences here. This file is loaded into the agent's context.\n"
+        ),
+        _ => DEFAULT_USER.to_string(),
+    };
+    write_if_missing(&layout.user_md(), &user_content).await?;
+
     write_if_missing(&layout.memory_md(), DEFAULT_MEMORY).await?;
     write_if_missing(&layout.observer_md(), DEFAULT_OBSERVER_PROMPT).await?;
     write_if_missing(&layout.reflector_md(), DEFAULT_REFLECTOR_PROMPT).await?;
@@ -183,7 +199,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let layout = WorkspaceLayout::new(dir.path().join("workspace"));
 
-        ensure_workspace(&layout).await.unwrap();
+        ensure_workspace(&layout, None).await.unwrap();
 
         assert!(layout.root().exists(), "root should exist");
         assert!(layout.memory_dir().exists(), "memory dir should exist");
@@ -220,7 +236,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let layout = WorkspaceLayout::new(dir.path().join("workspace"));
 
-        ensure_workspace(&layout).await.unwrap();
+        ensure_workspace(&layout, None).await.unwrap();
 
         // Modify SOUL.md
         tokio::fs::write(layout.soul_md(), "custom soul content")
@@ -228,13 +244,41 @@ mod tests {
             .unwrap();
 
         // Run again
-        ensure_workspace(&layout).await.unwrap();
+        ensure_workspace(&layout, None).await.unwrap();
 
         // Custom content should be preserved
         let content = tokio::fs::read_to_string(layout.soul_md()).await.unwrap();
         assert_eq!(
             content, "custom soul content",
             "existing files should not be overwritten"
+        );
+    }
+
+    #[tokio::test]
+    async fn bootstrap_personalises_user_md_with_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let layout = WorkspaceLayout::new(dir.path().join("workspace"));
+
+        ensure_workspace(&layout, Some("Alex")).await.unwrap();
+
+        let content = tokio::fs::read_to_string(layout.user_md()).await.unwrap();
+        assert!(
+            content.contains("**Name**: Alex"),
+            "USER.md should contain the user's name"
+        );
+    }
+
+    #[tokio::test]
+    async fn bootstrap_default_user_md_without_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let layout = WorkspaceLayout::new(dir.path().join("workspace"));
+
+        ensure_workspace(&layout, None).await.unwrap();
+
+        let content = tokio::fs::read_to_string(layout.user_md()).await.unwrap();
+        assert_eq!(
+            content, DEFAULT_USER,
+            "USER.md should use default content when no name is provided"
         );
     }
 }

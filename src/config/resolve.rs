@@ -175,7 +175,10 @@ pub(super) fn from_file_and_env(file: Option<&ConfigFile>) -> Result<Config, Iro
         ))
     })?;
 
+    let name = file.and_then(|f| f.name.clone());
+
     Ok(Config {
+        name,
         main,
         observer,
         reflector,

@@ -508,7 +508,7 @@ mod tests {
     async fn setup() -> (tempfile::TempDir, SharedProjectState) {
         let dir = tempfile::tempdir().unwrap();
         let layout = WorkspaceLayout::new(dir.path().join("workspace"));
-        ensure_workspace(&layout).await.unwrap();
+        ensure_workspace(&layout, None).await.unwrap();
         let index = ProjectIndex::scan(&layout).await.unwrap();
         let state = Arc::new(tokio::sync::Mutex::new(ProjectState::new(index, layout)));
         (dir, state)
