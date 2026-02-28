@@ -466,6 +466,7 @@ mod tests {
             command: command.to_string(),
             args: vec![],
             env: std::collections::HashMap::new(),
+            transport: crate::projects::types::McpTransport::default(),
         }
     }
 

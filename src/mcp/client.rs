@@ -10,10 +10,13 @@ use rmcp::RoleClient;
 use rmcp::model::{CallToolRequestParams, CallToolResult, Content};
 use rmcp::service::{RunningService, ServiceExt};
 use rmcp::transport::TokioChildProcess;
+use rmcp::transport::streamable_http_client::{
+    StreamableHttpClientTransport, StreamableHttpClientTransportConfig,
+};
 use serde_json::Value;
 
 use crate::models::ToolDefinition;
-use crate::projects::types::McpServerEntry;
+use crate::projects::types::{McpServerEntry, McpTransport};
 use crate::tools::{ToolError, ToolResult};
 
 /// Default timeout for MCP tool calls (seconds).
@@ -26,12 +29,23 @@ pub struct McpClient {
 }
 
 impl McpClient {
-    /// Spawn an MCP server process and complete the protocol handshake.
+    /// Connect to an MCP server and complete the protocol handshake.
+    ///
+    /// Dispatches on the transport type:
+    /// - **Stdio**: spawns a child process and communicates over stdin/stdout
+    /// - **Http**: connects to a remote server via Streamable HTTP
     ///
     /// # Errors
-    /// Returns an error if the process cannot be spawned or the MCP
+    /// Returns an error if the connection cannot be established or the MCP
     /// handshake fails.
     pub async fn connect(entry: &McpServerEntry) -> Result<Self, anyhow::Error> {
+        match entry.transport {
+            McpTransport::Stdio => Self::connect_stdio(entry).await,
+            McpTransport::Http => Self::connect_http(entry).await,
+        }
+    }
+
+    async fn connect_stdio(entry: &McpServerEntry) -> Result<Self, anyhow::Error> {
         let mut cmd = tokio::process::Command::new(&entry.command);
         cmd.args(&entry.args);
         for (key, val) in &entry.env {
@@ -43,6 +57,24 @@ impl McpClient {
 
         let service = ().serve(transport).await.map_err(|e| {
             anyhow::anyhow!("mcp handshake failed for server '{}': {e}", entry.name)
+        })?;
+
+        Ok(Self {
+            service,
+            server_name: entry.name.clone(),
+        })
+    }
+
+    async fn connect_http(entry: &McpServerEntry) -> Result<Self, anyhow::Error> {
+        let config = StreamableHttpClientTransportConfig::with_uri(entry.command.as_str());
+        let transport = StreamableHttpClientTransport::<reqwest::Client>::from_config(config);
+
+        let service = ().serve(transport).await.map_err(|e| {
+            anyhow::anyhow!(
+                "mcp http connection failed for server '{}' at {}: {e}",
+                entry.name,
+                entry.command
+            )
         })?;
 
         Ok(Self {
@@ -148,5 +180,53 @@ impl std::fmt::Debug for McpClient {
         f.debug_struct("McpClient")
             .field("server_name", &self.server_name)
             .finish_non_exhaustive()
+    }
+}
+
+#[cfg(test)]
+#[expect(clippy::unwrap_used, reason = "test code uses unwrap for clarity")]
+mod tests {
+    use super::*;
+    use std::collections::HashMap;
+
+    #[tokio::test]
+    async fn connect_http_invalid_url_returns_error() {
+        let entry = McpServerEntry {
+            name: "bad-http".to_string(),
+            command: "http://127.0.0.1:1/nonexistent".to_string(),
+            args: vec![],
+            env: HashMap::new(),
+            transport: McpTransport::Http,
+        };
+
+        let result = McpClient::connect(&entry).await;
+        assert!(result.is_err(), "http connect to invalid URL should fail");
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("bad-http"),
+            "error should mention server name: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn connect_stdio_nonexistent_binary_returns_error() {
+        let entry = McpServerEntry {
+            name: "bad-stdio".to_string(),
+            command: "/nonexistent/binary".to_string(),
+            args: vec![],
+            env: HashMap::new(),
+            transport: McpTransport::Stdio,
+        };
+
+        let result = McpClient::connect(&entry).await;
+        assert!(
+            result.is_err(),
+            "stdio connect to nonexistent binary should fail"
+        );
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("bad-stdio"),
+            "error should mention server name: {err}"
+        );
     }
 }

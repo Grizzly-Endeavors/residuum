@@ -38,19 +38,41 @@ pub enum ProjectStatus {
     Archived,
 }
 
+/// Transport type for MCP server connections.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum McpTransport {
+    /// Stdio transport: spawn a child process and communicate over stdin/stdout.
+    #[default]
+    Stdio,
+    /// HTTP transport: connect to a remote MCP server over Streamable HTTP.
+    Http,
+}
+
 /// MCP server entry in project frontmatter.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct McpServerEntry {
     /// Server name.
     pub name: String,
-    /// Command to start the server.
+    /// Command (stdio) or URL (http) for the server.
     pub command: String,
-    /// Command-line arguments.
+    /// Command-line arguments (only used for stdio transport).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub args: Vec<String>,
-    /// Environment variables to pass to the server process.
+    /// Environment variables to pass to the server process (only used for stdio transport).
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub env: HashMap<String, String>,
+    /// Transport type (defaults to stdio).
+    #[serde(default, skip_serializing_if = "is_default_transport")]
+    pub transport: McpTransport,
+}
+
+#[expect(
+    clippy::trivially_copy_pass_by_ref,
+    reason = "serde skip_serializing_if requires &T signature"
+)]
+fn is_default_transport(t: &McpTransport) -> bool {
+    matches!(*t, McpTransport::Stdio)
 }
 
 /// Lightweight index entry for a project (frontmatter only, no body).
@@ -208,6 +230,78 @@ mcp_servers:
             fm.mcp_servers.first().unwrap().args.len(),
             1,
             "should have one arg"
+        );
+    }
+
+    #[test]
+    fn mcp_transport_serde_round_trip_stdio() {
+        let yaml = serde_yml::to_string(&McpTransport::Stdio).unwrap();
+        assert!(yaml.contains("stdio"), "Stdio should serialize as 'stdio'");
+        let parsed: McpTransport = serde_yml::from_str(&yaml).unwrap();
+        assert_eq!(parsed, McpTransport::Stdio, "should round-trip Stdio");
+    }
+
+    #[test]
+    fn mcp_transport_serde_round_trip_http() {
+        let yaml = serde_yml::to_string(&McpTransport::Http).unwrap();
+        assert!(yaml.contains("http"), "Http should serialize as 'http'");
+        let parsed: McpTransport = serde_yml::from_str(&yaml).unwrap();
+        assert_eq!(parsed, McpTransport::Http, "should round-trip Http");
+    }
+
+    #[test]
+    fn mcp_transport_defaults_to_stdio() {
+        assert_eq!(
+            McpTransport::default(),
+            McpTransport::Stdio,
+            "default transport should be Stdio"
+        );
+    }
+
+    #[test]
+    fn frontmatter_with_http_mcp_server() {
+        let yaml = r#"
+name: with-http-mcp
+description: "Has HTTP MCP server"
+status: active
+created: 2026-02-20
+mcp_servers:
+  - name: remote-api
+    command: "http://10.0.0.5:8080/mcp"
+    transport: http
+"#;
+        let fm: ProjectFrontmatter = serde_yml::from_str(yaml).unwrap();
+        assert_eq!(fm.mcp_servers.len(), 1, "should have one MCP server");
+        let server = fm.mcp_servers.first().unwrap();
+        assert_eq!(server.name, "remote-api", "server name should match");
+        assert_eq!(
+            server.command, "http://10.0.0.5:8080/mcp",
+            "URL should match"
+        );
+        assert_eq!(
+            server.transport,
+            McpTransport::Http,
+            "transport should be Http"
+        );
+    }
+
+    #[test]
+    fn frontmatter_mcp_server_transport_defaults_stdio() {
+        let yaml = r#"
+name: with-stdio-mcp
+description: "Has stdio MCP server"
+status: active
+created: 2026-02-20
+mcp_servers:
+  - name: filesystem
+    command: mcp-server-filesystem
+"#;
+        let fm: ProjectFrontmatter = serde_yml::from_str(yaml).unwrap();
+        let server = fm.mcp_servers.first().unwrap();
+        assert_eq!(
+            server.transport,
+            McpTransport::Stdio,
+            "transport should default to Stdio"
         );
     }
 

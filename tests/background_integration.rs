@@ -132,7 +132,7 @@ mod background_integration {
     #[tokio::test]
     async fn mcp_ref_counting_two_activations_one_deactivation_keeps_servers() {
         use ironclaw::mcp::McpRegistry;
-        use ironclaw::projects::types::McpServerEntry;
+        use ironclaw::projects::types::{McpServerEntry, McpTransport};
 
         let mut registry = McpRegistry::new();
         let entry = McpServerEntry {
@@ -141,6 +141,7 @@ mod background_integration {
             command: "/nonexistent/mcp-shared-svc".to_string(),
             args: vec![],
             env: std::collections::HashMap::new(),
+            transport: McpTransport::default(),
         };
 
         // First activation: starts (fails) the server but records ref count = 1

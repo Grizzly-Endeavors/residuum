@@ -471,6 +471,8 @@ fn resolve_skills_config(section: Option<&SkillsConfigFile>, workspace_dir: &Pat
 /// Converts named server entries into `McpServerEntry` values with the
 /// map key used as the server name.
 fn resolve_mcp_config(section: Option<&McpConfigFile>) -> McpConfig {
+    use crate::projects::types::McpTransport;
+
     let Some(section) = section else {
         return McpConfig::default();
     };
@@ -480,11 +482,25 @@ fn resolve_mcp_config(section: Option<&McpConfigFile>) -> McpConfig {
 
     let servers = servers_map
         .iter()
-        .map(|(name, entry)| crate::projects::types::McpServerEntry {
-            name: name.clone(),
-            command: entry.command.clone(),
-            args: entry.args.clone().unwrap_or_default(),
-            env: entry.env.clone().unwrap_or_default(),
+        .map(|(name, entry)| {
+            let transport = match entry.transport.as_deref() {
+                Some("stdio") | None => McpTransport::Stdio,
+                Some("http") => McpTransport::Http,
+                Some(other) => {
+                    eprintln!(
+                        "warning: [mcp.servers.{name}] unknown transport '{other}', \
+                         expected 'stdio' or 'http'; defaulting to stdio"
+                    );
+                    McpTransport::Stdio
+                }
+            };
+            crate::projects::types::McpServerEntry {
+                name: name.clone(),
+                command: entry.command.clone(),
+                args: entry.args.clone().unwrap_or_default(),
+                env: entry.env.clone().unwrap_or_default(),
+                transport,
+            }
         })
         .collect();
 
@@ -1302,6 +1318,75 @@ main = "anthropic/claude-sonnet-4-6"
         assert!(
             cfg.mcp.servers.is_empty(),
             "empty [mcp] section should yield no servers"
+        );
+    }
+
+    #[test]
+    fn mcp_transport_defaults_to_stdio() {
+        let toml_str = r#"
+timezone = "UTC"
+
+[models]
+main = "anthropic/claude-sonnet-4-6"
+
+[mcp.servers.filesystem]
+command = "mcp-server-filesystem"
+"#;
+        let file: ConfigFile = toml::from_str(toml_str).unwrap();
+        let cfg = from_file_and_env(Some(&file)).unwrap();
+        let server = cfg.mcp.servers.first().unwrap();
+        assert_eq!(
+            server.transport,
+            crate::projects::types::McpTransport::Stdio,
+            "transport should default to Stdio"
+        );
+    }
+
+    #[test]
+    fn mcp_transport_explicit_http() {
+        let toml_str = r#"
+timezone = "UTC"
+
+[models]
+main = "anthropic/claude-sonnet-4-6"
+
+[mcp.servers.remote-search]
+command = "http://10.0.0.5:8080/mcp"
+transport = "http"
+"#;
+        let file: ConfigFile = toml::from_str(toml_str).unwrap();
+        let cfg = from_file_and_env(Some(&file)).unwrap();
+        let server = cfg.mcp.servers.first().unwrap();
+        assert_eq!(
+            server.transport,
+            crate::projects::types::McpTransport::Http,
+            "transport should be Http"
+        );
+        assert_eq!(
+            server.command, "http://10.0.0.5:8080/mcp",
+            "URL should be stored in command"
+        );
+    }
+
+    #[test]
+    fn mcp_transport_explicit_stdio() {
+        let toml_str = r#"
+timezone = "UTC"
+
+[models]
+main = "anthropic/claude-sonnet-4-6"
+
+[mcp.servers.local]
+command = "mcp-fs"
+transport = "stdio"
+"#;
+        let file: ConfigFile = toml::from_str(toml_str).unwrap();
+        let cfg = from_file_and_env(Some(&file)).unwrap();
+        let server = cfg.mcp.servers.first().unwrap();
+        assert_eq!(
+            server.transport,
+            crate::projects::types::McpTransport::Stdio,
+            "explicit stdio should work"
         );
     }
 

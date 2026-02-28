@@ -257,10 +257,12 @@ pub(super) struct BackgroundModelsFile {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct McpServerConfigEntry {
-    /// Command to start the server.
+    /// Command (stdio) or URL (http) for the server.
     pub(super) command: String,
-    /// Command-line arguments.
+    /// Command-line arguments (only used for stdio transport).
     pub(super) args: Option<Vec<String>>,
-    /// Environment variables to pass to the server process.
+    /// Environment variables to pass to the server process (only used for stdio transport).
     pub(super) env: Option<HashMap<String, String>>,
+    /// Transport type: `"stdio"` (default) or `"http"`.
+    pub(super) transport: Option<String>,
 }

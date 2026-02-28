@@ -19,7 +19,7 @@ mod mcp_integration {
     use std::collections::HashMap;
 
     use ironclaw::mcp::{McpRegistry, McpStatus};
-    use ironclaw::projects::types::McpServerEntry;
+    use ironclaw::projects::types::{McpServerEntry, McpTransport};
 
     fn echo_server_entry() -> McpServerEntry {
         McpServerEntry {
@@ -30,6 +30,7 @@ mod mcp_integration {
                 "@modelcontextprotocol/server-everything".to_string(),
             ],
             env: HashMap::new(),
+            transport: McpTransport::default(),
         }
     }
 
@@ -115,6 +116,7 @@ mod mcp_integration {
             command: "/definitely/not/a/real/binary".to_string(),
             args: vec![],
             env: HashMap::new(),
+            transport: McpTransport::default(),
         };
 
         let mut registry = McpRegistry::new();
@@ -155,12 +157,14 @@ mod mcp_integration {
             command: "/no/such/binary".to_string(),
             args: vec![],
             env: HashMap::new(),
+            transport: McpTransport::default(),
         };
         let also_missing = McpServerEntry {
             name: "also-bad".to_string(),
             command: "/also/missing".to_string(),
             args: vec![],
             env: HashMap::new(),
+            transport: McpTransport::default(),
         };
 
         let mut registry = McpRegistry::new();

@@ -32,7 +32,7 @@ tantivy = "0.22"
 rusqlite = { version = "0.32", features = ["bundled"] }
 sqlite-vec = "0.1"
 zerocopy = { version = "0.8", features = ["derive"] }
-rmcp = { version = "0.16", features = ["client", "transport-child-process"] }
+rmcp = { version = "0.16", features = ["client", "transport-child-process", "transport-streamable-http-client-reqwest"] }
 serde_yml = "0.0"
 tokio-util = { version = "0.7", features = ["rt"] }
 
