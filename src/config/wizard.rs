@@ -80,19 +80,19 @@ pub fn run_interactive() -> Result<WizardAnswers, IronclawError> {
         eprintln!();
         eprint!("  api key (press enter to skip, set via env var later): ");
         std::io::stderr().flush().ok();
-        let key = rpassword::read_password().map_err(|e| {
-            IronclawError::Config(format!("failed to read api key: {e}"))
-        })?;
-        if key.trim().is_empty() { None } else { Some(key.trim().to_string()) }
+        let key = rpassword::read_password()
+            .map_err(|e| IronclawError::Config(format!("failed to read api key: {e}")))?;
+        if key.trim().is_empty() {
+            None
+        } else {
+            Some(key.trim().to_string())
+        }
     };
 
     // 4. Model
     let default_model = default_model_for_provider(provider);
     eprintln!();
-    let model = prompt_with_default(
-        &format!("model [{default_model}]"),
-        default_model,
-    )?;
+    let model = prompt_with_default(&format!("model [{default_model}]"), default_model)?;
 
     eprintln!();
     Ok(WizardAnswers {
@@ -114,19 +114,18 @@ pub fn from_flags(
     api_key: Option<&str>,
     model: Option<&str>,
 ) -> Result<WizardAnswers, IronclawError> {
-    let timezone = timezone
-        .ok_or_else(|| IronclawError::Config("--timezone is required in non-interactive mode".to_string()))?;
+    let timezone = timezone.ok_or_else(|| {
+        IronclawError::Config("--timezone is required in non-interactive mode".to_string())
+    })?;
 
     // Validate timezone
-    chrono_tz::Tz::from_str(timezone).map_err(|err| {
-        IronclawError::Config(format!("invalid timezone '{timezone}': {err}"))
-    })?;
+    chrono_tz::Tz::from_str(timezone)
+        .map_err(|err| IronclawError::Config(format!("invalid timezone '{timezone}': {err}")))?;
 
-    let provider_str = provider
-        .ok_or_else(|| IronclawError::Config("--provider is required in non-interactive mode".to_string()))?;
-    let provider_kind = ProviderKind::from_str(provider_str).map_err(|e| {
-        IronclawError::Config(e)
+    let provider_str = provider.ok_or_else(|| {
+        IronclawError::Config("--provider is required in non-interactive mode".to_string())
     })?;
+    let provider_kind = ProviderKind::from_str(provider_str).map_err(IronclawError::Config)?;
 
     let default_model = default_model_for_provider(provider_kind);
     let model = model.unwrap_or(default_model).to_string();
@@ -191,9 +190,9 @@ fn prompt_with_default(prompt: &str, default: &str) -> Result<String, IronclawEr
     std::io::stderr().flush().ok();
 
     let mut input = String::new();
-    std::io::stdin().read_line(&mut input).map_err(|e| {
-        IronclawError::Config(format!("failed to read input: {e}"))
-    })?;
+    std::io::stdin()
+        .read_line(&mut input)
+        .map_err(|e| IronclawError::Config(format!("failed to read input: {e}")))?;
 
     let trimmed = input.trim();
     if trimmed.is_empty() {
@@ -219,8 +218,16 @@ mod tests {
         .unwrap();
 
         assert_eq!(answers.timezone, "UTC", "timezone should match");
-        assert_eq!(answers.provider, ProviderKind::Anthropic, "provider should match");
-        assert_eq!(answers.api_key.as_deref(), Some("sk-test"), "api key should match");
+        assert_eq!(
+            answers.provider,
+            ProviderKind::Anthropic,
+            "provider should match"
+        );
+        assert_eq!(
+            answers.api_key.as_deref(),
+            Some("sk-test"),
+            "api key should match"
+        );
         assert_eq!(answers.model, "claude-sonnet-4-6", "model should match");
     }
 

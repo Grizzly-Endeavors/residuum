@@ -326,9 +326,7 @@ mod tests {
         let policy = PathPolicy::with_blocked_paths(ws, blocked);
 
         assert!(
-            policy
-                .check_write(&cfg_dir.join("config.toml"))
-                .is_err(),
+            policy.check_write(&cfg_dir.join("config.toml")).is_err(),
             "config.toml should be blocked"
         );
         assert!(
@@ -363,9 +361,7 @@ mod tests {
     #[test]
     fn blocked_paths_with_active_project() {
         let (_dir, ws, cfg_dir) = make_workspace_with_config();
-        let blocked: HashSet<PathBuf> = [cfg_dir.join("config.toml")]
-            .into_iter()
-            .collect();
+        let blocked: HashSet<PathBuf> = [cfg_dir.join("config.toml")].into_iter().collect();
         let mut policy = PathPolicy::with_blocked_paths(ws.clone(), blocked);
         policy.set_active_project(Some(ws.join("projects/project-a")));
 
@@ -376,9 +372,7 @@ mod tests {
             "project writes should still work alongside blocked paths"
         );
         assert!(
-            policy
-                .check_write(&cfg_dir.join("config.toml"))
-                .is_err(),
+            policy.check_write(&cfg_dir.join("config.toml")).is_err(),
             "config.toml should still be blocked"
         );
     }
@@ -386,9 +380,7 @@ mod tests {
     #[test]
     fn blocked_paths_error_message() {
         let (_dir, ws, cfg_dir) = make_workspace_with_config();
-        let blocked: HashSet<PathBuf> = [cfg_dir.join("config.toml")]
-            .into_iter()
-            .collect();
+        let blocked: HashSet<PathBuf> = [cfg_dir.join("config.toml")].into_iter().collect();
         let policy = PathPolicy::with_blocked_paths(ws, blocked);
 
         let err = policy

@@ -51,7 +51,7 @@ async fn run() -> Result<(), IronclawError> {
         }
         Some("setup") => {
             init_default_tracing();
-            run_setup_command(&args).await
+            run_setup_command(&args)
         }
         // "serve" or no subcommand → start gateway
         Some("serve") | None => {
@@ -460,9 +460,10 @@ fn init_cli_tracing() {
         .with_target(false)
         .with_writer(std::io::stderr);
 
-    let log_dir = dirs::home_dir()
-        .map(|h| h.join(".ironclaw").join("logs"))
-        .unwrap_or_else(|| std::path::PathBuf::from("logs"));
+    let log_dir = dirs::home_dir().map_or_else(
+        || std::path::PathBuf::from("logs"),
+        |h| h.join(".ironclaw").join("logs"),
+    );
 
     let file_appender = tracing_appender::rolling::RollingFileAppender::builder()
         .filename_prefix("cli")
@@ -507,20 +508,18 @@ async fn run_logs_command(watch: bool) -> Result<(), IronclawError> {
         .ok_or_else(|| IronclawError::Config("could not determine home directory".to_string()))?;
 
     if !log_dir.exists() {
-        eprintln!("no log files found (directory does not exist: {})", log_dir.display());
+        eprintln!(
+            "no log files found (directory does not exist: {})",
+            log_dir.display()
+        );
         return Ok(());
     }
 
     // Find the most recent log file
     let mut entries: Vec<_> = std::fs::read_dir(&log_dir)
         .map_err(|e| IronclawError::Config(format!("failed to read log directory: {e}")))?
-        .filter_map(|entry| entry.ok())
-        .filter(|entry| {
-            entry
-                .path()
-                .extension()
-                .is_some_and(|ext| ext == "log")
-        })
+        .filter_map(std::result::Result::ok)
+        .filter(|entry| entry.path().extension().is_some_and(|ext| ext == "log"))
         .collect();
 
     if entries.is_empty() {
@@ -529,11 +528,16 @@ async fn run_logs_command(watch: bool) -> Result<(), IronclawError> {
     }
 
     // Sort by modification time, most recent last
-    entries.sort_by_key(|e| e.metadata().and_then(|m| m.modified()).unwrap_or(std::time::SystemTime::UNIX_EPOCH));
+    entries.sort_by_key(|e| {
+        e.metadata()
+            .and_then(|m| m.modified())
+            .unwrap_or(std::time::SystemTime::UNIX_EPOCH)
+    });
 
-    let latest = entries.last().map(std::fs::DirEntry::path).ok_or_else(|| {
-        IronclawError::Config("no log files found".to_string())
-    })?;
+    let latest = entries
+        .last()
+        .map(std::fs::DirEntry::path)
+        .ok_or_else(|| IronclawError::Config("no log files found".to_string()))?;
 
     eprintln!("showing: {}", latest.display());
     eprintln!();
@@ -545,18 +549,19 @@ async fn run_logs_command(watch: bool) -> Result<(), IronclawError> {
     if watch {
         use tokio::io::{AsyncBufReadExt, AsyncSeekExt};
 
-        let file = tokio::fs::File::open(&latest)
-            .await
-            .map_err(|e| IronclawError::Config(format!("failed to open log file for watch: {e}")))?;
+        let file = tokio::fs::File::open(&latest).await.map_err(|e| {
+            IronclawError::Config(format!("failed to open log file for watch: {e}"))
+        })?;
         let mut reader = tokio::io::BufReader::new(file);
 
         // Seek to current end
         let metadata = std::fs::metadata(&latest)
             .map_err(|e| IronclawError::Config(format!("failed to stat log file: {e}")))?;
         let file_len = metadata.len();
-        reader.seek(std::io::SeekFrom::Start(file_len)).await.map_err(|e| {
-            IronclawError::Config(format!("failed to seek log file: {e}"))
-        })?;
+        reader
+            .seek(std::io::SeekFrom::Start(file_len))
+            .await
+            .map_err(|e| IronclawError::Config(format!("failed to seek log file: {e}")))?;
 
         let mut line_buf = String::new();
         loop {
@@ -581,7 +586,7 @@ async fn run_logs_command(watch: bool) -> Result<(), IronclawError> {
 }
 
 /// Run the `setup` subcommand — interactive or flag-driven config wizard.
-async fn run_setup_command(args: &[String]) -> Result<(), IronclawError> {
+fn run_setup_command(args: &[String]) -> Result<(), IronclawError> {
     use ironclaw::config::wizard;
 
     let config_dir = Config::config_dir()?;
@@ -599,10 +604,8 @@ async fn run_setup_command(args: &[String]) -> Result<(), IronclawError> {
     let key_flag = extract_flag_value(args, "--api-key");
     let model_flag = extract_flag_value(args, "--model");
 
-    let has_flags = tz_flag.is_some()
-        || provider_flag.is_some()
-        || key_flag.is_some()
-        || model_flag.is_some();
+    let has_flags =
+        tz_flag.is_some() || provider_flag.is_some() || key_flag.is_some() || model_flag.is_some();
 
     let answers = if has_flags {
         wizard::from_flags(
