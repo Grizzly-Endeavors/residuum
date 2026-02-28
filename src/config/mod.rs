@@ -11,6 +11,7 @@ mod deserialize;
 mod provider;
 mod resolve;
 mod types;
+pub mod wizard;
 
 use std::fmt;
 use std::path::{Path, PathBuf};

@@ -568,9 +568,10 @@ async fn run_logs_command(watch: bool) -> Result<(), IronclawError> {
     Ok(())
 }
 
-/// Run the `setup` subcommand — placeholder until commit 2 adds the wizard.
+/// Run the `setup` subcommand — interactive or flag-driven config wizard.
 async fn run_setup_command(args: &[String]) -> Result<(), IronclawError> {
-    let _ = args;
+    use ironclaw::config::wizard;
+
     let config_dir = Config::config_dir()?;
     let config_path = config_dir.join("config.toml");
 
@@ -580,10 +581,58 @@ async fn run_setup_command(args: &[String]) -> Result<(), IronclawError> {
         return Ok(());
     }
 
-    Config::bootstrap_config_dir()?;
-    eprintln!("created default config at {}", config_path.display());
-    eprintln!("edit ~/.ironclaw/config.toml to configure your agent");
+    // Check if any flags are present → non-interactive mode
+    let tz_flag = extract_flag_value(args, "--timezone");
+    let provider_flag = extract_flag_value(args, "--provider");
+    let key_flag = extract_flag_value(args, "--api-key");
+    let model_flag = extract_flag_value(args, "--model");
+
+    let has_flags = tz_flag.is_some()
+        || provider_flag.is_some()
+        || key_flag.is_some()
+        || model_flag.is_some();
+
+    let answers = if has_flags {
+        wizard::from_flags(
+            tz_flag.as_deref(),
+            provider_flag.as_deref(),
+            key_flag.as_deref(),
+            model_flag.as_deref(),
+        )?
+    } else {
+        wizard::run_interactive()?
+    };
+
+    // Bootstrap creates the directory + example config
+    Config::bootstrap_at_dir(&config_dir)?;
+    // Write the wizard-generated config (overwrites the minimal template)
+    wizard::write_config(&config_dir, &answers)?;
+
+    // Validate the result
+    match Config::load_at(&config_dir) {
+        Ok(cfg) => {
+            eprintln!("configuration saved to {}", config_path.display());
+            eprintln!("  timezone: {}", answers.timezone);
+            eprintln!("  model: {}/{}", answers.provider, answers.model);
+            if cfg.main.api_key.is_some() {
+                eprintln!("  api key: configured");
+            }
+        }
+        Err(err) => {
+            eprintln!("warning: config was written but validation failed: {err}");
+            eprintln!("you may need to edit {} manually", config_path.display());
+        }
+    }
+
     Ok(())
+}
+
+/// Extract a `--flag value` pair from args.
+fn extract_flag_value(args: &[String], flag: &str) -> Option<String> {
+    args.iter()
+        .position(|a| a == flag)
+        .and_then(|i| args.get(i + 1))
+        .cloned()
 }
 
 /// Serialize and send a `ClientMessage` over the WebSocket.

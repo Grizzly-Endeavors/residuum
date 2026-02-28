@@ -1,0 +1,328 @@
+//! Terminal setup wizard for first-time configuration.
+
+use std::io::Write;
+use std::path::Path;
+use std::str::FromStr;
+
+use super::provider::ProviderKind;
+use crate::error::IronclawError;
+
+/// Answers collected from the setup wizard (interactive or flags).
+pub struct WizardAnswers {
+    /// IANA timezone (e.g. `"America/New_York"`).
+    pub timezone: String,
+    /// Selected provider kind.
+    pub provider: ProviderKind,
+    /// API key (None for Ollama or if user prefers env vars).
+    pub api_key: Option<String>,
+    /// Model name (e.g. `"claude-sonnet-4-6"`).
+    pub model: String,
+}
+
+/// Run the interactive terminal wizard.
+///
+/// Prompts the user for timezone, provider, API key, and model. Returns
+/// the collected answers for config generation.
+///
+/// # Errors
+/// Returns `IronclawError::Config` if stdin/stdout interaction fails or
+/// input validation fails.
+pub fn run_interactive() -> Result<WizardAnswers, IronclawError> {
+    eprintln!("ironclaw setup");
+    eprintln!("==============");
+    eprintln!();
+
+    // 1. Timezone
+    let system_tz = iana_time_zone::get_timezone().unwrap_or_default();
+    let default_tz = if chrono_tz::Tz::from_str(&system_tz).is_ok() {
+        system_tz
+    } else {
+        String::from("UTC")
+    };
+    let timezone = loop {
+        let input = prompt_with_default(&format!("timezone [{default_tz}]"), &default_tz)?;
+        if chrono_tz::Tz::from_str(&input).is_ok() {
+            break input;
+        }
+        eprintln!("  invalid timezone, please enter an IANA timezone (e.g. America/New_York)");
+    };
+
+    // 2. Provider
+    eprintln!();
+    eprintln!("  providers:");
+    eprintln!("    1. anthropic");
+    eprintln!("    2. openai");
+    eprintln!("    3. ollama");
+    eprintln!("    4. gemini");
+    let provider = loop {
+        let input = prompt_with_default("provider [1]", "1")?;
+        match input.as_str() {
+            "1" | "anthropic" => break ProviderKind::Anthropic,
+            "2" | "openai" => break ProviderKind::OpenAi,
+            "3" | "ollama" => break ProviderKind::Ollama,
+            "4" | "gemini" => break ProviderKind::Gemini,
+            other => {
+                if let Ok(kind) = ProviderKind::from_str(other) {
+                    break kind;
+                }
+                eprintln!("  invalid choice, enter 1-4 or a provider name");
+            }
+        }
+    };
+
+    // 3. API key (skip for Ollama)
+    let api_key = if provider == ProviderKind::Ollama {
+        eprintln!();
+        eprintln!("  ollama runs locally, no API key needed");
+        None
+    } else {
+        eprintln!();
+        eprint!("  api key (press enter to skip, set via env var later): ");
+        std::io::stderr().flush().ok();
+        let key = rpassword::read_password().map_err(|e| {
+            IronclawError::Config(format!("failed to read api key: {e}"))
+        })?;
+        if key.trim().is_empty() { None } else { Some(key.trim().to_string()) }
+    };
+
+    // 4. Model
+    let default_model = default_model_for_provider(provider);
+    eprintln!();
+    let model = prompt_with_default(
+        &format!("model [{default_model}]"),
+        default_model,
+    )?;
+
+    eprintln!();
+    Ok(WizardAnswers {
+        timezone,
+        provider,
+        api_key,
+        model,
+    })
+}
+
+/// Build answers from CLI flags (non-interactive mode).
+///
+/// # Errors
+/// Returns `IronclawError::Config` if required fields are missing or
+/// timezone validation fails.
+pub fn from_flags(
+    timezone: Option<&str>,
+    provider: Option<&str>,
+    api_key: Option<&str>,
+    model: Option<&str>,
+) -> Result<WizardAnswers, IronclawError> {
+    let timezone = timezone
+        .ok_or_else(|| IronclawError::Config("--timezone is required in non-interactive mode".to_string()))?;
+
+    // Validate timezone
+    chrono_tz::Tz::from_str(timezone).map_err(|_| {
+        IronclawError::Config(format!("invalid timezone '{timezone}'"))
+    })?;
+
+    let provider_str = provider
+        .ok_or_else(|| IronclawError::Config("--provider is required in non-interactive mode".to_string()))?;
+    let provider_kind = ProviderKind::from_str(provider_str).map_err(|e| {
+        IronclawError::Config(e)
+    })?;
+
+    let default_model = default_model_for_provider(provider_kind);
+    let model = model.unwrap_or(default_model).to_string();
+
+    Ok(WizardAnswers {
+        timezone: timezone.to_string(),
+        provider: provider_kind,
+        api_key: api_key.map(ToString::to_string),
+        model,
+    })
+}
+
+/// Write a minimal `config.toml` from wizard answers.
+///
+/// # Errors
+/// Returns `IronclawError::Config` if writing the file fails.
+pub fn write_config(dir: &Path, answers: &WizardAnswers) -> Result<(), IronclawError> {
+    let config_path = dir.join("config.toml");
+
+    let mut lines = Vec::new();
+    lines.push("# IronClaw configuration — generated by setup wizard".to_string());
+    lines.push(String::new());
+    lines.push(format!("timezone = \"{}\"", answers.timezone));
+    lines.push(String::new());
+    lines.push("[models]".to_string());
+    lines.push(format!("main = \"{}/{}\"", answers.provider, answers.model));
+
+    if let Some(ref key) = answers.api_key {
+        lines.push(String::new());
+        lines.push(format!("[providers.{}]", answers.provider));
+        lines.push(format!("type = \"{}\"", answers.provider));
+        lines.push(format!("api_key = \"{}\"", key));
+    }
+
+    lines.push(String::new());
+
+    let content = lines.join("\n");
+    std::fs::write(&config_path, &content).map_err(|e| {
+        IronclawError::Config(format!(
+            "failed to write config.toml at {}: {e}",
+            config_path.display()
+        ))
+    })?;
+
+    Ok(())
+}
+
+/// Default model name for a given provider.
+#[must_use]
+fn default_model_for_provider(provider: ProviderKind) -> &'static str {
+    match provider {
+        ProviderKind::Anthropic => "claude-sonnet-4-6",
+        ProviderKind::OpenAi => "gpt-4o",
+        ProviderKind::Ollama => "llama3",
+        ProviderKind::Gemini => "gemini-2.0-flash",
+    }
+}
+
+/// Prompt the user with a default value, returning the default on empty input.
+fn prompt_with_default(prompt: &str, default: &str) -> Result<String, IronclawError> {
+    eprint!("  {prompt}: ");
+    std::io::stderr().flush().ok();
+
+    let mut input = String::new();
+    std::io::stdin().read_line(&mut input).map_err(|e| {
+        IronclawError::Config(format!("failed to read input: {e}"))
+    })?;
+
+    let trimmed = input.trim();
+    if trimmed.is_empty() {
+        Ok(default.to_string())
+    } else {
+        Ok(trimmed.to_string())
+    }
+}
+
+#[cfg(test)]
+#[expect(clippy::unwrap_used, reason = "test code uses unwrap for clarity")]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn from_flags_all_present() {
+        let answers = from_flags(
+            Some("UTC"),
+            Some("anthropic"),
+            Some("sk-test"),
+            Some("claude-sonnet-4-6"),
+        )
+        .unwrap();
+
+        assert_eq!(answers.timezone, "UTC", "timezone should match");
+        assert_eq!(answers.provider, ProviderKind::Anthropic, "provider should match");
+        assert_eq!(answers.api_key.as_deref(), Some("sk-test"), "api key should match");
+        assert_eq!(answers.model, "claude-sonnet-4-6", "model should match");
+    }
+
+    #[test]
+    fn from_flags_missing_timezone() {
+        let result = from_flags(None, Some("anthropic"), None, None);
+        assert!(result.is_err(), "should require timezone");
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("timezone"),
+            "error should mention timezone: {err}"
+        );
+    }
+
+    #[test]
+    fn from_flags_missing_provider() {
+        let result = from_flags(Some("UTC"), None, None, None);
+        assert!(result.is_err(), "should require provider");
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("provider"),
+            "error should mention provider: {err}"
+        );
+    }
+
+    #[test]
+    fn from_flags_default_model() {
+        let answers = from_flags(Some("UTC"), Some("ollama"), None, None).unwrap();
+        assert_eq!(answers.model, "llama3", "ollama should default to llama3");
+
+        let answers = from_flags(Some("UTC"), Some("openai"), None, None).unwrap();
+        assert_eq!(answers.model, "gpt-4o", "openai should default to gpt-4o");
+
+        let answers = from_flags(Some("UTC"), Some("gemini"), None, None).unwrap();
+        assert_eq!(
+            answers.model, "gemini-2.0-flash",
+            "gemini should default to gemini-2.0-flash"
+        );
+    }
+
+    #[test]
+    fn from_flags_invalid_timezone() {
+        let result = from_flags(Some("Not/A/Timezone"), Some("anthropic"), None, None);
+        assert!(result.is_err(), "should reject invalid timezone");
+    }
+
+    #[test]
+    fn from_flags_invalid_provider() {
+        let result = from_flags(Some("UTC"), Some("notreal"), None, None);
+        assert!(result.is_err(), "should reject invalid provider");
+    }
+
+    #[test]
+    fn write_config_basic() {
+        let dir = tempfile::tempdir().unwrap();
+        let answers = WizardAnswers {
+            timezone: "America/New_York".to_string(),
+            provider: ProviderKind::Anthropic,
+            api_key: Some("sk-test-key".to_string()),
+            model: "claude-sonnet-4-6".to_string(),
+        };
+
+        write_config(dir.path(), &answers).unwrap();
+
+        let content = std::fs::read_to_string(dir.path().join("config.toml")).unwrap();
+        assert!(
+            content.contains("timezone = \"America/New_York\""),
+            "should contain timezone: {content}"
+        );
+        assert!(
+            content.contains("main = \"anthropic/claude-sonnet-4-6\""),
+            "should contain model spec: {content}"
+        );
+        assert!(
+            content.contains("[providers.anthropic]"),
+            "should contain provider section: {content}"
+        );
+        assert!(
+            content.contains("api_key = \"sk-test-key\""),
+            "should contain api key: {content}"
+        );
+    }
+
+    #[test]
+    fn write_config_no_api_key() {
+        let dir = tempfile::tempdir().unwrap();
+        let answers = WizardAnswers {
+            timezone: "UTC".to_string(),
+            provider: ProviderKind::Ollama,
+            api_key: None,
+            model: "llama3".to_string(),
+        };
+
+        write_config(dir.path(), &answers).unwrap();
+
+        let content = std::fs::read_to_string(dir.path().join("config.toml")).unwrap();
+        assert!(
+            content.contains("main = \"ollama/llama3\""),
+            "should contain model spec: {content}"
+        );
+        assert!(
+            !content.contains("[providers"),
+            "should not have provider section without api key: {content}"
+        );
+    }
+}
