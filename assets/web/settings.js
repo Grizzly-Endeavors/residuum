@@ -277,42 +277,93 @@ const Settings = {
         `;
     },
 
+    /** Parse a "provider/model" string into { provider, model }. */
+    parseModelSpec(spec) {
+        if (!spec) return { provider: '', model: '' };
+        const idx = spec.indexOf('/');
+        if (idx < 0) return { provider: '', model: spec };
+        return { provider: spec.substring(0, idx), model: spec.substring(idx + 1) };
+    },
+
+    /** Build a "provider/model" string from a provider and model. */
+    buildModelSpec(provider, model) {
+        if (!provider || !model) return '';
+        return `${provider}/${model}`;
+    },
+
+    /** Get the available provider types from the config. */
+    getConfiguredProviders() {
+        const providers = this.configObj.providers || {};
+        const types = new Set();
+        for (const cfg of Object.values(providers)) {
+            if (cfg.type) types.add(cfg.type);
+        }
+        // Always include all four types
+        types.add('anthropic');
+        types.add('openai');
+        types.add('gemini');
+        types.add('ollama');
+        return [...types].sort();
+    },
+
+    /** Find API key and URL for a provider type from config. */
+    getProviderCredentials(providerType) {
+        const providers = this.configObj.providers || {};
+        for (const cfg of Object.values(providers)) {
+            if (cfg.type === providerType) {
+                return { apiKey: cfg.api_key || '', url: cfg.url || '' };
+            }
+        }
+        return { apiKey: '', url: '' };
+    },
+
     renderModels(models) {
+        const providerTypes = this.getConfiguredProviders();
+        const roles = [
+            { key: 'main', label: 'Main model (required)', required: true },
+            { key: 'default', label: 'Default (fallback for unset roles)' },
+            { key: 'observer', label: 'Observer' },
+            { key: 'reflector', label: 'Reflector' },
+            { key: 'pulse', label: 'Pulse' },
+        ];
+
+        const roleRows = roles.map(role => {
+            const spec = this.parseModelSpec(models[role.key] || '');
+            const provOptions = providerTypes.map(pt =>
+                `<option value="${pt}" ${pt === spec.provider ? 'selected' : ''}>${pt}</option>`
+            ).join('');
+
+            return `
+                <div class="role-row" data-model-role="${role.key}">
+                    <div class="role-row-label">${role.label}</div>
+                    <div class="role-row-fields">
+                        <div class="settings-field">
+                            <label>Provider</label>
+                            <select data-model-provider="${role.key}">
+                                <option value="" ${!spec.provider ? 'selected' : ''}>${role.required ? 'Select...' : 'Inherit'}</option>
+                                ${provOptions}
+                            </select>
+                        </div>
+                        <div class="settings-field">
+                            <label>Model</label>
+                            <div class="model-select-wrap" data-model-wrap="${role.key}">
+                                <select data-model-select="${role.key}">
+                                    ${spec.model ? `<option value="${escAttr(spec.model)}" selected>${escAttr(spec.model)}</option>` : '<option value="">Select provider first</option>'}
+                                </select>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            `;
+        }).join('');
+
         return `
-            <div class="settings-field">
-                <label>Main model (required)</label>
-                <input type="text" data-path="models.main" value="${escAttr(models.main || '')}"
-                    placeholder="anthropic/claude-sonnet-4-6">
-                <div class="field-hint">Format: provider/model-name</div>
-            </div>
-            <div class="field-row">
-                <div class="settings-field">
-                    <label>Default (fallback for unset roles)</label>
-                    <input type="text" data-path="models.default" value="${escAttr(models.default || '')}"
-                        placeholder="Uses main if empty">
-                </div>
-                <div class="settings-field">
-                    <label>Observer</label>
-                    <input type="text" data-path="models.observer" value="${escAttr(models.observer || '')}"
-                        placeholder="Uses default/main">
-                </div>
-            </div>
-            <div class="field-row">
-                <div class="settings-field">
-                    <label>Reflector</label>
-                    <input type="text" data-path="models.reflector" value="${escAttr(models.reflector || '')}"
-                        placeholder="Uses default/main">
-                </div>
-                <div class="settings-field">
-                    <label>Pulse</label>
-                    <input type="text" data-path="models.pulse" value="${escAttr(models.pulse || '')}"
-                        placeholder="Uses default/main">
-                </div>
-            </div>
-            <div class="settings-field">
+            ${roleRows}
+            <div class="settings-field" style="margin-top:8px">
                 <label>Embedding</label>
                 <input type="text" data-path="models.embedding" value="${escAttr(models.embedding || '')}"
                     placeholder="openai/text-embedding-3-small">
+                <div class="field-hint">Format: provider/model-name</div>
             </div>
         `;
     },
@@ -744,6 +795,61 @@ const Settings = {
                 this.addMcpFromCatalog(srv);
             });
         });
+
+        // Model role provider/model dropdowns
+        this.bindModelSelectors();
+    },
+
+    /** Bind model provider selectors and populate model dropdowns. */
+    bindModelSelectors() {
+        const roles = ['main', 'default', 'observer', 'reflector', 'pulse'];
+
+        for (const role of roles) {
+            const provSelect = document.querySelector(`[data-model-provider="${role}"]`);
+            const modelSelect = document.querySelector(`[data-model-select="${role}"]`);
+
+            if (!provSelect || !modelSelect) continue;
+
+            // On provider change, fetch models
+            provSelect.addEventListener('change', () => {
+                const prov = provSelect.value;
+                if (!prov) {
+                    modelSelect.innerHTML = '<option value="">Select provider first</option>';
+                    this.updateModelPath(role, '', '');
+                    return;
+                }
+                const { apiKey, url } = this.getProviderCredentials(prov);
+                ModelFetcher.populateSelect(modelSelect, prov, apiKey || null, url || null, null).then(() => {
+                    this.updateModelPath(role, prov, modelSelect.value);
+                });
+            });
+
+            // On model change, update config
+            modelSelect.addEventListener('change', () => {
+                const prov = provSelect.value;
+                this.updateModelPath(role, prov, modelSelect.value);
+            });
+
+            // Populate on initial load if provider is selected
+            const currentProv = provSelect.value;
+            if (currentProv) {
+                const models = this.configObj.models || {};
+                const spec = this.parseModelSpec(models[role] || '');
+                const { apiKey, url } = this.getProviderCredentials(currentProv);
+                ModelFetcher.populateSelect(modelSelect, currentProv, apiKey || null, url || null, spec.model);
+            }
+        }
+    },
+
+    /** Update the configObj models path from a provider+model dropdown change. */
+    updateModelPath(role, provider, model) {
+        const spec = this.buildModelSpec(provider, model);
+        if (spec) {
+            this.setAtPath(['models', role], spec);
+        } else {
+            this.removeAtPath(['models', role]);
+        }
+        this.syncTomlFromObj();
     },
 
     // ── Field change handler ─────────────────────────────────────────
@@ -857,6 +963,8 @@ const Settings = {
         } else {
             delete this.configObj.providers;
         }
+        // Invalidate model cache when providers change
+        ModelFetcher.invalidateAll();
         this.syncTomlFromObj();
     },
 

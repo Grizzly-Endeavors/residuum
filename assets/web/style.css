@@ -1187,6 +1187,74 @@ html, body {
 .mcp-add-btn:hover { background: var(--bg-raised); color: var(--text); }
 .mcp-item.added .mcp-add-btn { color: var(--ember); border-color: var(--ember-dim); }
 
+/* ── Model select loading state ────────────────────────────────────────── */
+
+.model-select-wrap {
+    position: relative;
+}
+
+.model-select-wrap select {
+    width: 100%;
+}
+
+.model-select-wrap.loading::after {
+    content: '';
+    position: absolute;
+    right: 10px;
+    top: 50%;
+    margin-top: -6px;
+    width: 12px;
+    height: 12px;
+    border: 2px solid var(--border);
+    border-top-color: var(--ember);
+    border-radius: 50%;
+    animation: model-spin 0.6s linear infinite;
+    pointer-events: none;
+}
+
+@keyframes model-spin {
+    to { transform: rotate(360deg); }
+}
+
+.model-error {
+    font-size: 11px;
+    color: var(--error);
+    margin-top: 3px;
+}
+
+/* ── Role provider row ────────────────────────────────────────────────── */
+
+.role-row {
+    padding: 10px;
+    margin-bottom: 8px;
+    background: var(--bg-deep);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-sm);
+}
+
+.role-row-label {
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--text-muted);
+    margin-bottom: 8px;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+}
+
+.role-row-fields {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+}
+
+.role-row-fields .settings-field {
+    margin-bottom: 0;
+}
+
+@media (max-width: 600px) {
+    .role-row-fields { grid-template-columns: 1fr; }
+}
+
 /* ── Scrollbar ─────────────────────────────────────────────────────────── */
 
 ::-webkit-scrollbar { width: 6px; }

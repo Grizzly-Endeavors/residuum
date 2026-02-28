@@ -12,10 +12,14 @@ const Setup = {
     providerType: 'anthropic',
     apiKey: '',
     model: '',
+    providerUrl: '',
     useDefaultRoles: true,
-    observerModel: '',
-    reflectorModel: '',
-    pulseModel: '',
+    // Per-role state: { provider, apiKey, url, model }
+    roles: {
+        observer: { provider: '', apiKey: '', url: '', model: '' },
+        reflector: { provider: '', apiKey: '', url: '', model: '' },
+        pulse: { provider: '', apiKey: '', url: '', model: '' }
+    },
     mcpServers: [],  // [{name, command, args, env}]
     catalog: [],
 
@@ -23,30 +27,22 @@ const Setup = {
         anthropic: {
             name: 'Anthropic',
             desc: 'Claude models (Sonnet, Haiku, Opus)',
-            defaultModel: 'claude-sonnet-4-6',
-            keyEnv: 'ANTHROPIC_API_KEY',
-            models: ['claude-sonnet-4-6', 'claude-haiku-4-5', 'claude-opus-4-6']
+            keyEnv: 'ANTHROPIC_API_KEY'
         },
         openai: {
             name: 'OpenAI',
             desc: 'GPT and o-series models',
-            defaultModel: 'gpt-4o',
-            keyEnv: 'OPENAI_API_KEY',
-            models: ['gpt-4o', 'gpt-4o-mini', 'o3-mini']
+            keyEnv: 'OPENAI_API_KEY'
         },
         gemini: {
             name: 'Google Gemini',
             desc: 'Gemini models via Google AI',
-            defaultModel: 'gemini-2.5-flash',
-            keyEnv: 'GEMINI_API_KEY',
-            models: ['gemini-2.5-pro', 'gemini-2.5-flash', 'gemini-2.0-flash']
+            keyEnv: 'GEMINI_API_KEY'
         },
         ollama: {
             name: 'Ollama',
             desc: 'Local models (no API key needed)',
-            defaultModel: 'llama3.1',
-            keyEnv: '',
-            models: ['llama3.1', 'mistral', 'qwen2.5']
+            keyEnv: ''
         }
     },
 
@@ -117,12 +113,9 @@ const Setup = {
                 <label>API Key${p.keyEnv ? ` (or set ${p.keyEnv} env var)` : ''}</label>
                 <input type="password" id="setup-apikey" value="${esc(this.apiKey)}"
                     placeholder="sk-...">
+                <div class="model-error" id="setup-key-error" style="display:none"></div>
             </div>
         ` : '';
-
-        const modelOptions = p.models.map(m =>
-            `<option value="${m}" ${m === (this.model || p.defaultModel) ? 'selected' : ''}>${m}</option>`
-        ).join('');
 
         return `
             <h2>Choose a Provider</h2>
@@ -131,7 +124,11 @@ const Setup = {
             ${keyField}
             <div class="settings-field">
                 <label>Model</label>
-                <select id="setup-model">${modelOptions}</select>
+                <div class="model-select-wrap" id="setup-model-wrap">
+                    <select id="setup-model">
+                        <option value="">Select a model...</option>
+                    </select>
+                </div>
             </div>
             <div class="setup-nav">
                 <button class="btn btn-secondary" id="setup-back">Back</button>
@@ -144,7 +141,45 @@ const Setup = {
 
     renderRoles() {
         const checked = this.useDefaultRoles ? 'checked' : '';
-        const disabled = this.useDefaultRoles ? 'disabled' : '';
+        const roleNames = { observer: 'Observer (memory extraction)', reflector: 'Reflector (memory compression)', pulse: 'Pulse (scheduled wake turns)' };
+
+        const roleRows = Object.entries(roleNames).map(([key, label]) => {
+            const r = this.roles[key];
+            const prov = r.provider || this.providerType;
+            const needsKey = prov !== 'ollama' && prov !== this.providerType;
+
+            return `
+                <div class="role-row" data-role="${key}">
+                    <div class="role-row-label">${label}</div>
+                    <div class="role-row-fields">
+                        <div class="settings-field">
+                            <label>Provider</label>
+                            <select data-role-field="provider" data-role="${key}">
+                                ${Object.entries(this.providers).map(([pk, pp]) =>
+                                    `<option value="${pk}" ${pk === prov ? 'selected' : ''}>${pp.name}</option>`
+                                ).join('')}
+                            </select>
+                        </div>
+                        <div class="settings-field">
+                            <label>Model</label>
+                            <div class="model-select-wrap">
+                                <select data-role-field="model" data-role="${key}">
+                                    <option value="">Loading...</option>
+                                </select>
+                            </div>
+                        </div>
+                    </div>
+                    ${needsKey ? `
+                        <div class="settings-field" style="margin-top:8px">
+                            <label>API Key</label>
+                            <input type="password" data-role-field="apiKey" data-role="${key}"
+                                value="${esc(r.apiKey || '')}" placeholder="Key for ${this.providers[prov]?.name || prov}">
+                        </div>
+                    ` : ''}
+                </div>
+            `;
+        }).join('');
+
         return `
             <h2>Model Roles</h2>
             <p class="subtitle">Assign models for memory and proactivity subsystems. Defaults to the same as your main model.</p>
@@ -154,22 +189,8 @@ const Setup = {
                     Use main model for all roles
                 </label>
             </div>
-            <div id="role-fields" style="${this.useDefaultRoles ? 'opacity:0.4;pointer-events:none' : ''}">
-                <div class="settings-field">
-                    <label>Observer (memory extraction)</label>
-                    <input type="text" id="setup-observer" value="${esc(this.observerModel)}"
-                        placeholder="${this.providerType}/${this.providers[this.providerType].defaultModel}" ${disabled}>
-                </div>
-                <div class="settings-field">
-                    <label>Reflector (memory compression)</label>
-                    <input type="text" id="setup-reflector" value="${esc(this.reflectorModel)}"
-                        placeholder="${this.providerType}/${this.providers[this.providerType].defaultModel}" ${disabled}>
-                </div>
-                <div class="settings-field">
-                    <label>Pulse (scheduled wake turns)</label>
-                    <input type="text" id="setup-pulse" value="${esc(this.pulseModel)}"
-                        placeholder="${this.providerType}/${this.providers[this.providerType].defaultModel}" ${disabled}>
-                </div>
+            <div id="role-fields" style="${this.useDefaultRoles ? 'display:none' : ''}">
+                ${roleRows}
             </div>
             <div class="setup-nav">
                 <button class="btn btn-secondary" id="setup-back">Back</button>
@@ -234,31 +255,11 @@ const Setup = {
 
         // Step-specific bindings
         if (this.step === 1) {
-            document.querySelectorAll('.provider-option').forEach(el => {
-                el.addEventListener('click', () => {
-                    this.providerType = el.dataset.provider;
-                    const p = this.providers[this.providerType];
-                    this.model = p.defaultModel;
-                    this.render();
-                });
-            });
+            this.bindProviderStep();
         }
 
         if (this.step === 2) {
-            const cb = document.getElementById('setup-use-defaults');
-            if (cb) {
-                cb.addEventListener('change', () => {
-                    this.useDefaultRoles = cb.checked;
-                    const fields = document.getElementById('role-fields');
-                    if (fields) {
-                        fields.style.opacity = cb.checked ? '0.4' : '1';
-                        fields.style.pointerEvents = cb.checked ? 'none' : '';
-                    }
-                    document.querySelectorAll('#role-fields input').forEach(inp => {
-                        inp.disabled = cb.checked;
-                    });
-                });
-            }
+            this.bindRolesStep();
         }
 
         if (this.step === 3) {
@@ -293,6 +294,133 @@ const Setup = {
         }
     },
 
+    bindProviderStep() {
+        // Provider selection
+        document.querySelectorAll('.provider-option').forEach(el => {
+            el.addEventListener('click', () => {
+                this.providerType = el.dataset.provider;
+                this.model = '';
+                this.apiKey = '';
+                ModelFetcher.invalidate(this.providerType);
+                this.render();
+            });
+        });
+
+        // API key debounced input — fetch models after typing
+        const keyEl = document.getElementById('setup-apikey');
+        if (keyEl) {
+            const debouncedFetch = ModelFetcher.debounce(() => {
+                this.apiKey = keyEl.value;
+                this.fetchMainModels();
+            }, 500);
+            keyEl.addEventListener('input', debouncedFetch);
+        }
+
+        // Fetch models on render
+        this.fetchMainModels();
+    },
+
+    async fetchMainModels() {
+        const selectEl = document.getElementById('setup-model');
+        const errorEl = document.getElementById('setup-key-error');
+        const wrapEl = document.getElementById('setup-model-wrap');
+
+        if (wrapEl) wrapEl.classList.add('loading');
+
+        const key = this.providerType !== 'ollama' ? this.apiKey : null;
+        await ModelFetcher.populateSelect(selectEl, this.providerType, key, this.providerUrl || null, this.model);
+
+        if (wrapEl) wrapEl.classList.remove('loading');
+
+        // Show API key error if applicable
+        if (errorEl) {
+            const cacheKey = ModelFetcher._cacheKey(this.providerType, key, this.providerUrl || null);
+            const cached = ModelFetcher.cache[cacheKey];
+            if (!cached && key) {
+                // Fetch didn't cache (meaning it returned fallbacks with error)
+                const result = await ModelFetcher.fetch(this.providerType, key, this.providerUrl || null);
+                if (result.error) {
+                    errorEl.textContent = result.error;
+                    errorEl.style.display = 'block';
+                } else {
+                    errorEl.style.display = 'none';
+                }
+            } else {
+                errorEl.style.display = 'none';
+            }
+        }
+    },
+
+    bindRolesStep() {
+        const cb = document.getElementById('setup-use-defaults');
+        if (cb) {
+            cb.addEventListener('change', () => {
+                this.useDefaultRoles = cb.checked;
+                const fields = document.getElementById('role-fields');
+                if (fields) {
+                    fields.style.display = cb.checked ? 'none' : '';
+                }
+            });
+        }
+
+        // Provider change per role — refetch models
+        document.querySelectorAll('[data-role-field="provider"]').forEach(sel => {
+            sel.addEventListener('change', () => {
+                const role = sel.dataset.role;
+                this.roles[role].provider = sel.value;
+                this.roles[role].model = '';
+                this.roles[role].apiKey = '';
+                // Re-render to show/hide API key field
+                this.collectRoleFields();
+                this.render();
+            });
+        });
+
+        // API key debounced input per role
+        document.querySelectorAll('[data-role-field="apiKey"]').forEach(inp => {
+            const role = inp.dataset.role;
+            const debouncedFetch = ModelFetcher.debounce(() => {
+                this.roles[role].apiKey = inp.value;
+                this.fetchRoleModels(role);
+            }, 500);
+            inp.addEventListener('input', debouncedFetch);
+        });
+
+        // Populate model dropdowns for each role
+        if (!this.useDefaultRoles) {
+            for (const role of ['observer', 'reflector', 'pulse']) {
+                this.fetchRoleModels(role);
+            }
+        }
+    },
+
+    async fetchRoleModels(role) {
+        const selectEl = document.querySelector(`[data-role-field="model"][data-role="${role}"]`);
+        if (!selectEl) return;
+
+        const r = this.roles[role];
+        const prov = r.provider || this.providerType;
+        // Use role's own key if different provider, otherwise main key
+        let key = null;
+        if (prov !== 'ollama') {
+            key = prov === this.providerType ? this.apiKey : r.apiKey;
+        }
+
+        await ModelFetcher.populateSelect(selectEl, prov, key, r.url || null, r.model);
+    },
+
+    collectRoleFields() {
+        for (const role of ['observer', 'reflector', 'pulse']) {
+            const provSel = document.querySelector(`[data-role-field="provider"][data-role="${role}"]`);
+            const modelSel = document.querySelector(`[data-role-field="model"][data-role="${role}"]`);
+            const keyInp = document.querySelector(`[data-role-field="apiKey"][data-role="${role}"]`);
+
+            if (provSel) this.roles[role].provider = provSel.value;
+            if (modelSel) this.roles[role].model = modelSel.value;
+            if (keyInp) this.roles[role].apiKey = keyInp.value;
+        }
+    },
+
     setNestedField(obj, path, value) {
         const parts = path.split('.');
         let target = obj;
@@ -318,9 +446,7 @@ const Setup = {
             case 2:
                 this.useDefaultRoles = (document.getElementById('setup-use-defaults') || {}).checked !== false;
                 if (!this.useDefaultRoles) {
-                    this.observerModel = (document.getElementById('setup-observer') || {}).value || '';
-                    this.reflectorModel = (document.getElementById('setup-reflector') || {}).value || '';
-                    this.pulseModel = (document.getElementById('setup-pulse') || {}).value || '';
+                    this.collectRoleFields();
                 }
                 break;
         }
@@ -349,21 +475,55 @@ const Setup = {
         lines.push(`timezone = "${this.timezone}"`);
         lines.push('');
 
-        // Provider entry if API key provided
+        // Collect which providers we need entries for
+        const providerEntries = {};
+
+        // Main provider
         if (this.apiKey && this.providerType !== 'ollama') {
-            lines.push(`[providers.${this.providerType}]`);
-            lines.push(`type = "${this.providerType}"`);
-            lines.push(`api_key = "${this.apiKey}"`);
+            providerEntries[this.providerType] = {
+                type: this.providerType,
+                api_key: this.apiKey,
+            };
+        }
+
+        // Role providers (if different from main)
+        if (!this.useDefaultRoles) {
+            for (const role of ['observer', 'reflector', 'pulse']) {
+                const r = this.roles[role];
+                const prov = r.provider || this.providerType;
+                if (prov !== this.providerType && prov !== 'ollama' && r.apiKey) {
+                    if (!providerEntries[prov]) {
+                        providerEntries[prov] = {
+                            type: prov,
+                            api_key: r.apiKey,
+                        };
+                    }
+                }
+            }
+        }
+
+        // Write provider entries
+        for (const [name, cfg] of Object.entries(providerEntries)) {
+            lines.push(`[providers.${name}]`);
+            lines.push(`type = "${cfg.type}"`);
+            lines.push(`api_key = "${cfg.api_key}"`);
+            if (cfg.url) lines.push(`url = "${cfg.url}"`);
             lines.push('');
         }
 
+        const defaultModel = ModelFetcher.defaultModels[this.providerType] || '';
         lines.push('[models]');
-        lines.push(`main = "${this.providerType}/${this.model || this.providers[this.providerType].defaultModel}"`);
+        lines.push(`main = "${this.providerType}/${this.model || defaultModel}"`);
 
         if (!this.useDefaultRoles) {
-            if (this.observerModel) lines.push(`observer = "${this.observerModel}"`);
-            if (this.reflectorModel) lines.push(`reflector = "${this.reflectorModel}"`);
-            if (this.pulseModel) lines.push(`pulse = "${this.pulseModel}"`);
+            for (const role of ['observer', 'reflector', 'pulse']) {
+                const r = this.roles[role];
+                const prov = r.provider || this.providerType;
+                const model = r.model;
+                if (model) {
+                    lines.push(`${role} = "${prov}/${model}"`);
+                }
+            }
         }
 
         // MCP servers
