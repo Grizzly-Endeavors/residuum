@@ -85,6 +85,14 @@ impl NotificationRouter {
         };
 
         let channels = config.channels_for_task(&notification.task_name);
+
+        if channels.is_empty() {
+            tracing::warn!(
+                task = %notification.task_name,
+                "notification routed to zero channels"
+            );
+        }
+
         let mut outcome = RouteOutcome::default();
 
         for channel_name in channels {
@@ -208,6 +216,8 @@ mod tests {
         assert_eq!(items.len(), 1, "should create one inbox item");
     }
 
+    /// When a task matches zero channels, route() returns an empty outcome
+    /// and emits a tracing::warn to surface the misconfiguration.
     #[tokio::test]
     async fn route_unrouted_task_returns_empty() {
         let dir = tempfile::tempdir().unwrap();
