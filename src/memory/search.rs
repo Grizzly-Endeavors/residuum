@@ -26,7 +26,7 @@ const WRITER_MEMORY_BUDGET_BYTES: usize = 50_000_000;
 pub struct SearchResult {
     /// Document identifier (obs or chunk ID).
     pub id: String,
-    /// Source type: `"observation"` or `"chunk"`.
+    /// Source type stored in the index: `"observation"` or `"chunk"` (internal values).
     pub source_type: String,
     /// Parent episode identifier.
     pub episode_id: String,
@@ -47,7 +47,8 @@ pub struct SearchResult {
 /// Filters for narrowing search results.
 #[derive(Debug, Clone, Default)]
 pub struct SearchFilters {
-    /// Filter by source type: `"observation"` or `"chunk"`.
+    /// Filter by internal source type value: `"observation"` or `"chunk"`.
+    /// The tool layer translates user-facing names before setting this.
     pub source: Option<String>,
     /// Filter results on or after this date (YYYY-MM-DD, inclusive).
     pub date_from: Option<String>,

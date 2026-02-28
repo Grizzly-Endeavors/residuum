@@ -56,8 +56,8 @@ impl Tool for MemorySearchTool {
                     },
                     "source": {
                         "type": "string",
-                        "description": "Filter by source type: 'observation' or 'chunk'",
-                        "enum": ["observation", "chunk"]
+                        "description": "Filter by source type: 'observations', 'episodes', or 'both'",
+                        "enum": ["observations", "episodes", "both"]
                     },
                     "date_from": {
                         "type": "string",
@@ -99,11 +99,20 @@ impl Tool for MemorySearchTool {
             None => 5,
         };
 
+        // Map tool-facing values to internal index values:
+        // "observations" → "observation", "episodes" → "chunk", "both"/omitted → None
+        let source_filter = arguments
+            .get("source")
+            .and_then(Value::as_str)
+            .and_then(|s| match s {
+                "observations" => Some("observation".to_string()),
+                "episodes" => Some("chunk".to_string()),
+                "both" => None,
+                _ => None,
+            });
+
         let filters = SearchFilters {
-            source: arguments
-                .get("source")
-                .and_then(Value::as_str)
-                .map(String::from),
+            source: source_filter,
             date_from: arguments
                 .get("date_from")
                 .and_then(Value::as_str)
@@ -256,10 +265,11 @@ mod tests {
     #[tokio::test]
     async fn search_tool_with_source_filter() {
         let (_dir, tool) = create_test_tool();
+        // Tool accepts "observations" (design-doc value), mapped to internal "observation"
         let result = tool
             .execute(serde_json::json!({
                 "query": "rust memory",
-                "source": "observation"
+                "source": "observations"
             }))
             .await
             .unwrap();
