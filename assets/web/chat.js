@@ -8,7 +8,7 @@ const Chat = {
     msgCounter: 0,
     reconnectDelay: 1000,
     reconnectTimer: null,
-    pendingToolCalls: new Map(), // name -> tool-item element
+    pendingToolCalls: new Map(), // id -> tool-item element
     thinkingEl: null,
     isProcessing: false,
 
@@ -277,12 +277,12 @@ const Chat = {
         item.appendChild(body);
         group.appendChild(item);
 
-        this.pendingToolCalls.set(msg.name, item);
+        this.pendingToolCalls.set(msg.id, item);
         this.scrollToBottom();
     },
 
     handleToolResult(msg) {
-        const item = this.pendingToolCalls.get(msg.name);
+        const item = this.pendingToolCalls.get(msg.tool_call_id);
         if (item) {
             const status = item.querySelector('.tool-status');
             if (msg.is_error) {
@@ -297,7 +297,7 @@ const Chat = {
             if (msg.output) {
                 body.textContent += '\n─── result ───\n' + msg.output;
             }
-            this.pendingToolCalls.delete(msg.name);
+            this.pendingToolCalls.delete(msg.tool_call_id);
         }
         this.scrollToBottom();
     },

@@ -72,7 +72,9 @@ impl CliClient {
                 self.turn_has_header = false;
                 self.indicator.start();
             }
-            ServerMessage::ToolCall { name, arguments } => {
+            ServerMessage::ToolCall {
+                name, arguments, ..
+            } => {
                 self.indicator.on_tool_call();
                 if self.verbose {
                     let line = format!("[tool: {name}] {arguments}");
@@ -83,6 +85,7 @@ impl CliClient {
                 name,
                 output,
                 is_error,
+                ..
             } => {
                 if self.verbose {
                     if *is_error {

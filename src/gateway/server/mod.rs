@@ -531,7 +531,7 @@ async fn run_wake_turn_handler(
     };
 
     let typing_guard = reply.start_typing();
-    let turn_display = ChannelAwareDisplay::new(rt.broadcast_display.sender(), Arc::clone(&reply));
+    let turn_display = BroadcastDisplay::new(rt.broadcast_display.sender());
 
     let (interrupt_tx, mut interrupt_rx) = mpsc::channel::<Interrupt>(32);
 
@@ -580,18 +580,6 @@ async fn run_wake_turn_handler(
             drop(typing_guard);
             for text in &texts {
                 reply.send_response(text).await;
-            }
-            for text in texts {
-                if rt
-                    .broadcast_tx
-                    .send(ServerMessage::Response {
-                        reply_to: "wake".to_string(),
-                        content: text,
-                    })
-                    .is_err()
-                {
-                    tracing::trace!("no broadcast receivers for wake response");
-                }
             }
         }
         Err(e) => {
@@ -759,10 +747,14 @@ async fn run_event_loop(mut rt: GatewayRuntime) -> GatewayExit {
 
                 rt.last_reply = Some(Arc::clone(&routed.reply));
                 let typing_guard = routed.reply.start_typing();
-                let turn_display = ChannelAwareDisplay::new(
-                    rt.broadcast_display.sender(),
-                    Arc::clone(&routed.reply),
-                );
+                let turn_display: Box<dyn crate::channels::TurnDisplay> = if origin.channel == "websocket" {
+                    Box::new(BroadcastDisplay::new(rt.broadcast_display.sender()))
+                } else {
+                    Box::new(ChannelAwareDisplay::new(
+                        rt.broadcast_display.sender(),
+                        Arc::clone(&routed.reply),
+                    ))
+                };
 
                 let before = rt.agent.message_count();
 
@@ -789,7 +781,7 @@ async fn run_event_loop(mut rt: GatewayRuntime) -> GatewayExit {
                     let mut turn = std::pin::pin!(
                         rt.agent.process_message(
                             &routed.message.content,
-                            &turn_display,
+                            &*turn_display,
                             Some(&origin),
                             &prompt_ctx,
                             &mut interrupt_rx,

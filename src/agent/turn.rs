@@ -127,7 +127,7 @@ pub(crate) async fn execute_turn(
 
         // TODO(phase-4): add security boundary before Discord integration
         for tool_call in &response.tool_calls {
-            display.show_tool_call(&tool_call.name, &tool_call.arguments);
+            display.show_tool_call(&tool_call.id, &tool_call.name, &tool_call.arguments);
 
             // Try built-in tools first, fall back to MCP servers
             let result = match tools
@@ -149,7 +149,7 @@ pub(crate) async fn execute_turn(
                 Err(e) => (e.to_string(), true),
             };
 
-            display.show_tool_result(&tool_call.name, &output, is_error);
+            display.show_tool_result(&tool_call.id, &tool_call.name, &output, is_error);
 
             recent_messages.push(Message::tool(output, tool_call.id.clone()));
         }

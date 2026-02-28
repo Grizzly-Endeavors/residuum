@@ -47,6 +47,8 @@ pub enum ServerMessage {
     },
     /// A tool was invoked during the agent turn (verbose only).
     ToolCall {
+        /// Unique tool call ID for correlating with results.
+        id: String,
         /// Name of the tool.
         name: String,
         /// Tool arguments as JSON.
@@ -54,6 +56,8 @@ pub enum ServerMessage {
     },
     /// A tool completed execution (verbose only).
     ToolResult {
+        /// Correlation ID matching the original tool call.
+        tool_call_id: String,
         /// Name of the tool.
         name: String,
         /// Tool output text.

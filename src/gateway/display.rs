@@ -34,8 +34,9 @@ impl BroadcastDisplay {
 }
 
 impl TurnDisplay for BroadcastDisplay {
-    fn show_tool_call(&self, name: &str, arguments: &serde_json::Value) {
+    fn show_tool_call(&self, id: &str, name: &str, arguments: &serde_json::Value) {
         let msg = ServerMessage::ToolCall {
+            id: id.to_string(),
             name: name.to_string(),
             arguments: arguments.clone(),
         };
@@ -44,8 +45,9 @@ impl TurnDisplay for BroadcastDisplay {
         }
     }
 
-    fn show_tool_result(&self, name: &str, output: &str, is_error: bool) {
+    fn show_tool_result(&self, id: &str, name: &str, output: &str, is_error: bool) {
         let msg = ServerMessage::ToolResult {
+            tool_call_id: id.to_string(),
             name: name.to_string(),
             output: output.to_string(),
             is_error,
@@ -87,12 +89,12 @@ impl ChannelAwareDisplay {
 }
 
 impl TurnDisplay for ChannelAwareDisplay {
-    fn show_tool_call(&self, name: &str, arguments: &serde_json::Value) {
-        self.broadcast.show_tool_call(name, arguments);
+    fn show_tool_call(&self, id: &str, name: &str, arguments: &serde_json::Value) {
+        self.broadcast.show_tool_call(id, name, arguments);
     }
 
-    fn show_tool_result(&self, name: &str, output: &str, is_error: bool) {
-        self.broadcast.show_tool_result(name, output, is_error);
+    fn show_tool_result(&self, id: &str, name: &str, output: &str, is_error: bool) {
+        self.broadcast.show_tool_result(id, name, output, is_error);
     }
 
     fn show_response(&self, content: &str) {
@@ -177,8 +179,8 @@ mod tests {
         let mock: Arc<dyn ReplyHandle> = Arc::new(MockReplyHandle::new(Arc::clone(&buf)));
         let display = ChannelAwareDisplay::new(tx, mock);
 
-        display.show_tool_call("read_file", &serde_json::json!({"path": "foo.rs"}));
-        display.show_tool_result("read_file", "contents", false);
+        display.show_tool_call("tc-1", "read_file", &serde_json::json!({"path": "foo.rs"}));
+        display.show_tool_result("tc-1", "read_file", "contents", false);
 
         tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
 

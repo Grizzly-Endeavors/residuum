@@ -384,6 +384,7 @@ mod gateway_integration {
         assert!(
             broadcast_tx
                 .send(ServerMessage::ToolCall {
+                    id: "tc-1".to_string(),
                     name: "exec".to_string(),
                     arguments: serde_json::json!({"command": "echo test"}),
                 })
@@ -408,6 +409,7 @@ mod gateway_integration {
         assert!(
             broadcast_tx
                 .send(ServerMessage::ToolResult {
+                    tool_call_id: "tc-1".to_string(),
                     name: "exec".to_string(),
                     output: "test output".to_string(),
                     is_error: false,

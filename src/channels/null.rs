@@ -8,9 +8,9 @@ use super::TurnDisplay;
 pub struct NullDisplay;
 
 impl TurnDisplay for NullDisplay {
-    fn show_tool_call(&self, _name: &str, _args: &serde_json::Value) {}
+    fn show_tool_call(&self, _id: &str, _name: &str, _args: &serde_json::Value) {}
 
-    fn show_tool_result(&self, _name: &str, _output: &str, _is_error: bool) {}
+    fn show_tool_result(&self, _id: &str, _name: &str, _output: &str, _is_error: bool) {}
 
     fn show_response(&self, _content: &str) {}
 }

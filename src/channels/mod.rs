@@ -19,10 +19,10 @@ pub mod websocket;
 /// for background pulse/action turns that run without user interaction.
 pub trait TurnDisplay: Send + Sync {
     /// Display a tool call being made.
-    fn show_tool_call(&self, name: &str, args: &serde_json::Value);
+    fn show_tool_call(&self, id: &str, name: &str, args: &serde_json::Value);
 
     /// Display the result of a tool call.
-    fn show_tool_result(&self, name: &str, output: &str, is_error: bool);
+    fn show_tool_result(&self, id: &str, name: &str, output: &str, is_error: bool);
 
     /// Display an intermediate text response emitted alongside tool calls.
     fn show_response(&self, content: &str);
