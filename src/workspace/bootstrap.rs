@@ -458,7 +458,6 @@ mod tests {
         assert!(layout.skills_dir().exists(), "skills dir should exist");
         assert!(layout.projects_dir().exists(), "projects dir should exist");
         assert!(layout.archive_dir().exists(), "archive dir should exist");
-        assert!(layout.hooks_dir().exists(), "hooks dir should exist");
         assert!(layout.soul_md().exists(), "SOUL.md should exist");
         assert!(layout.agents_md().exists(), "AGENTS.md should exist");
         assert!(layout.user_md().exists(), "USER.md should exist");

@@ -141,12 +141,6 @@ impl WorkspaceLayout {
         self.root.join("archive")
     }
 
-    /// Path to the hooks directory.
-    #[must_use]
-    pub(crate) fn hooks_dir(&self) -> PathBuf {
-        self.root.join("hooks")
-    }
-
     /// Path to PRESENCE.toml — hot-reloadable Discord presence configuration.
     #[must_use]
     pub fn presence_toml(&self) -> PathBuf {
@@ -215,7 +209,6 @@ impl WorkspaceLayout {
             self.subagents_dir(),
             self.projects_dir(),
             self.archive_dir(),
-            self.hooks_dir(),
             self.inbox_dir(),
             self.inbox_archive_dir(),
         ]
@@ -330,7 +323,7 @@ mod tests {
     fn required_dirs_count() {
         let layout = WorkspaceLayout::new("/tmp/ws");
         let dirs = layout.required_dirs();
-        assert_eq!(dirs.len(), 11, "should have all required directories");
+        assert_eq!(dirs.len(), 10, "should have all required directories");
         assert!(
             dirs.contains(&PathBuf::from("/tmp/ws")),
             "root should be included"
