@@ -127,8 +127,12 @@ async fn run() -> Result<(), IronclawError> {
                                 if rollback_config(&config_dir) {
                                     match Config::load() {
                                         Ok(_) => {
-                                            eprintln!("warning: reload failed, rolled back to previous config: {err}");
-                                            tracing::warn!("rolled back to previous config, retrying");
+                                            eprintln!(
+                                                "warning: reload failed, rolled back to previous config: {err}"
+                                            );
+                                            tracing::warn!(
+                                                "rolled back to previous config, retrying"
+                                            );
                                             continue;
                                         }
                                         Err(rollback_err) => {
@@ -148,10 +152,13 @@ async fn run() -> Result<(), IronclawError> {
                                     error_msg,
                                     config_dir.clone(),
                                     bind_addr,
-                                ).await {
+                                )
+                                .await
+                                {
                                     ironclaw::gateway::server::GatewayExit::Reload => {
-                                        tracing::info!("degraded mode: reload requested, retrying full initialization");
-                                        continue;
+                                        tracing::info!(
+                                            "degraded mode: reload requested, retrying full initialization"
+                                        );
                                     }
                                     ironclaw::gateway::server::GatewayExit::Shutdown => break,
                                 }
@@ -162,7 +169,9 @@ async fn run() -> Result<(), IronclawError> {
                         // Config parse failed on reload — try rollback
                         tracing::warn!(error = %err, "config invalid after reload");
                         if rollback_config(&config_dir) {
-                            eprintln!("warning: config invalid after reload, rolled back to previous config: {err}");
+                            eprintln!(
+                                "warning: config invalid after reload, rolled back to previous config: {err}"
+                            );
                             tracing::warn!("rolled back to previous config, retrying");
                             continue;
                         }
@@ -178,10 +187,13 @@ async fn run() -> Result<(), IronclawError> {
                             error_msg,
                             config_dir.clone(),
                             None,
-                        ).await {
+                        )
+                        .await
+                        {
                             ironclaw::gateway::server::GatewayExit::Reload => {
-                                tracing::info!("degraded mode: reload requested, retrying full initialization");
-                                continue;
+                                tracing::info!(
+                                    "degraded mode: reload requested, retrying full initialization"
+                                );
                             }
                             ironclaw::gateway::server::GatewayExit::Shutdown => break,
                         }

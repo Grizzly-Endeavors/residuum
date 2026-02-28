@@ -228,8 +228,8 @@ async fn execute_task(
     _workspace_root: &std::path::Path,
 ) -> Result<SubAgentOutput, anyhow::Error> {
     let Execution::SubAgent(config) = &task.execution;
-    let res = resources
-        .ok_or_else(|| anyhow::anyhow!("sub-agent task requires SubAgentResources"))?;
+    let res =
+        resources.ok_or_else(|| anyhow::anyhow!("sub-agent task requires SubAgentResources"))?;
     execute_subagent(&task.id, config, res).await
 }
 

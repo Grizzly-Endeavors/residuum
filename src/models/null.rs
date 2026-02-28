@@ -23,7 +23,7 @@ impl ModelProvider for NullProvider {
         ))
     }
 
-    fn model_name(&self) -> &str {
+    fn model_name(&self) -> &'static str {
         "null"
     }
 }
@@ -56,10 +56,6 @@ mod tests {
     #[test]
     fn model_name_returns_null() {
         let provider = NullProvider;
-        assert_eq!(
-            provider.model_name(),
-            "null",
-            "model name should be 'null'"
-        );
+        assert_eq!(provider.model_name(), "null", "model name should be 'null'");
     }
 }

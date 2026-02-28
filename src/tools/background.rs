@@ -180,10 +180,6 @@ impl SubAgentSpawnTool {
 }
 
 #[async_trait]
-#[expect(
-    clippy::too_many_lines,
-    reason = "execute() handles preset validation, channel validation, and resource construction in a single flow"
-)]
 impl Tool for SubAgentSpawnTool {
     fn name(&self) -> &'static str {
         "subagent_spawn"

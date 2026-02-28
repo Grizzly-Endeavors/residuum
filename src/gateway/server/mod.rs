@@ -5,12 +5,12 @@
 //! verbose filtering is handled client-side.
 
 mod actions;
+pub mod degraded;
 mod helpers;
 mod memory;
 pub mod setup;
 mod spawn_helpers;
 mod startup;
-pub mod degraded;
 pub(crate) mod web;
 mod ws;
 

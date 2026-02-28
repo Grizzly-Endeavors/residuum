@@ -109,7 +109,9 @@ pub(super) async fn initialize(cfg: &Config) -> Result<GatewayComponents, Ironcl
     let (observer, reflector) = match build_memory_components(cfg, tz, http.clone()) {
         Ok(pair) => pair,
         Err(err) => {
-            eprintln!("warning: memory subsystem failed to initialize, running without observer/reflector: {err}");
+            eprintln!(
+                "warning: memory subsystem failed to initialize, running without observer/reflector: {err}"
+            );
             tracing::warn!(error = %err, "memory subsystem degraded: observer and reflector disabled");
             (Observer::disabled(tz), Reflector::disabled(tz))
         }
@@ -155,7 +157,9 @@ pub(super) async fn initialize(cfg: &Config) -> Result<GatewayComponents, Ironcl
     let search_index = match create_shared_index(&layout.search_index_dir()) {
         Ok(idx) => idx,
         Err(err) => {
-            eprintln!("warning: failed to create on-disk search index, using in-memory fallback: {err}");
+            eprintln!(
+                "warning: failed to create on-disk search index, using in-memory fallback: {err}"
+            );
             tracing::warn!(error = %err, "search index degraded: using empty in-memory index");
             Arc::new(MemoryIndex::empty()?)
         }
@@ -299,9 +303,13 @@ pub(super) async fn initialize(cfg: &Config) -> Result<GatewayComponents, Ironcl
     let action_store = match ActionStore::load(&actions_path).await {
         Ok(store) => Arc::new(tokio::sync::Mutex::new(store)),
         Err(err) => {
-            eprintln!("warning: failed to load scheduled actions, starting with empty store: {err}");
+            eprintln!(
+                "warning: failed to load scheduled actions, starting with empty store: {err}"
+            );
             tracing::warn!(error = %err, "action store degraded: starting empty");
-            Arc::new(tokio::sync::Mutex::new(ActionStore::new_empty(actions_path)))
+            Arc::new(tokio::sync::Mutex::new(ActionStore::new_empty(
+                actions_path,
+            )))
         }
     };
     let action_notify = Arc::new(tokio::sync::Notify::new());
@@ -424,11 +432,15 @@ pub(super) async fn initialize(cfg: &Config) -> Result<GatewayComponents, Ironcl
         layout.inbox_dir(),
     );
     if let Err(err) = agent.reload_observations(&layout).await {
-        eprintln!("warning: failed to load observations, continuing without observation context: {err}");
+        eprintln!(
+            "warning: failed to load observations, continuing without observation context: {err}"
+        );
         tracing::warn!(error = %err, "observation loading degraded");
     }
     if let Err(err) = agent.reload_recent_context(&layout).await {
-        eprintln!("warning: failed to load recent context, continuing without recent context: {err}");
+        eprintln!(
+            "warning: failed to load recent context, continuing without recent context: {err}"
+        );
         tracing::warn!(error = %err, "recent context loading degraded");
     }
 
@@ -444,7 +456,9 @@ pub(super) async fn initialize(cfg: &Config) -> Result<GatewayComponents, Ironcl
             agent.set_last_user_message_at(restore.last_user_message_at);
         }
         Err(err) => {
-            eprintln!("warning: failed to load recent messages, starting with empty history: {err}");
+            eprintln!(
+                "warning: failed to load recent messages, starting with empty history: {err}"
+            );
             tracing::warn!(error = %err, "message restore degraded: starting with empty history");
         }
     }

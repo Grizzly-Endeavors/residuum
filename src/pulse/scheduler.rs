@@ -169,13 +169,18 @@ impl PulseScheduler {
             // Compute effective interval: if trigger_count is set, space evenly across active period
             let effective_interval = match pulse.trigger_count {
                 Some(tc) if tc > 0 => {
-                    let active_duration = active_window
-                        .map(|(start, end)| active_period_duration(start, end))
-                        .unwrap_or_else(|| Duration::hours(24));
-                    let spacing = active_duration / i32::from(tc as u16);
+                    let active_duration = active_window.map_or_else(
+                        || Duration::hours(24),
+                        |(start, end)| active_period_duration(start, end),
+                    );
+                    let spacing = active_duration / i32::try_from(tc).unwrap_or(i32::MAX);
                     let jittered = apply_jitter(spacing, &pulse.name, now);
                     // Effective interval is max(schedule_duration, spacing_with_jitter)
-                    if jittered > duration { jittered } else { duration }
+                    if jittered > duration {
+                        jittered
+                    } else {
+                        duration
+                    }
                 }
                 _ => duration,
             };
@@ -218,9 +223,7 @@ impl PulseScheduler {
 
         // If the last run was outside the current active window, or on a different
         // calendar day (for non-overnight windows), reset the count.
-        if !is_within_active_hours(*last, window_start, window_end)
-            || now.date() != last.date()
-        {
+        if !is_within_active_hours(*last, window_start, window_end) || now.date() != last.date() {
             self.run_counts.remove(pulse_name);
         }
     }
@@ -300,6 +303,11 @@ fn active_period_duration(start: NaiveTime, end: NaiveTime) -> Duration {
 
 /// Apply ±15% jitter to a duration using a deterministic seed from
 /// pulse name and current date (for reproducibility in tests).
+#[expect(
+    clippy::cast_precision_loss,
+    clippy::cast_possible_truncation,
+    reason = "intentional float arithmetic for jitter; precision loss is acceptable for scheduling"
+)]
 fn apply_jitter(base: Duration, pulse_name: &str, now: NaiveDateTime) -> Duration {
     let mut hasher = DefaultHasher::new();
     pulse_name.hash(&mut hasher);
@@ -316,6 +324,10 @@ fn apply_jitter(base: Duration, pulse_name: &str, now: NaiveDateTime) -> Duratio
 
 #[cfg(test)]
 #[expect(clippy::unwrap_used, reason = "test code uses unwrap for clarity")]
+#[expect(
+    clippy::shadow_unrelated,
+    reason = "test code reuses 'due' across sequential assertions in the same test"
+)]
 mod tests {
     use super::*;
     use tempfile::tempdir;
@@ -584,7 +596,10 @@ pulses:
             .and_hms_opt(16, 0, 0)
             .unwrap();
         let due = scheduler.due_pulses(t3, &path);
-        assert!(due.is_empty(), "should not fire after trigger_count exhausted");
+        assert!(
+            due.is_empty(),
+            "should not fire after trigger_count exhausted"
+        );
     }
 
     #[test]
@@ -690,7 +705,9 @@ pulses:
         );
         let counts = parsed.get("run_counts").unwrap().as_object().unwrap();
         assert_eq!(
-            counts.get("counted_pulse").and_then(|v| v.as_u64()),
+            counts
+                .get("counted_pulse")
+                .and_then(serde_json::Value::as_u64),
             Some(1),
             "run count should be 1 after first fire"
         );
@@ -733,8 +750,8 @@ pulses:
 
         // Jitter should be within ±15% of base (4h = 14400s)
         let base_secs = base.num_seconds();
-        let min_secs = (base_secs as f64 * 0.85) as i64;
-        let max_secs = (base_secs as f64 * 1.15) as i64;
+        let min_secs = base_secs * 85 / 100;
+        let max_secs = base_secs * 115 / 100;
         assert!(
             j1.num_seconds() >= min_secs && j1.num_seconds() <= max_secs,
             "jittered duration {} should be within ±15% of {} (range {}-{})",

@@ -216,8 +216,8 @@ mod tests {
         assert_eq!(items.len(), 1, "should create one inbox item");
     }
 
-    /// When a task matches zero channels, route() returns an empty outcome
-    /// and emits a tracing::warn to surface the misconfiguration.
+    /// When a task matches zero channels, `route()` returns an empty outcome
+    /// and emits a `tracing::warn` to surface the misconfiguration.
     #[tokio::test]
     async fn route_unrouted_task_returns_empty() {
         let dir = tempfile::tempdir().unwrap();

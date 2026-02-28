@@ -107,7 +107,6 @@ impl Tool for MemorySearchTool {
             .and_then(|s| match s {
                 "observations" => Some("observation".to_string()),
                 "episodes" => Some("chunk".to_string()),
-                "both" => None,
                 _ => None,
             });
 

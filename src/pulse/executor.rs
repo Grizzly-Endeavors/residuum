@@ -109,6 +109,7 @@ fn build_pulse_prompt(pulse: &PulseDef) -> String {
 }
 
 #[cfg(test)]
+#[expect(clippy::panic, reason = "test code panics on unexpected match arm")]
 mod tests {
     use super::*;
     use crate::pulse::types::PulseTask;

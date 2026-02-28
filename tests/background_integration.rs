@@ -4,6 +4,7 @@
 //! notification system, and Phase 4 isolated project/skill state for sub-agents.
 
 #[expect(clippy::unwrap_used, reason = "test code uses unwrap for clarity")]
+#[expect(clippy::panic, reason = "test code panics on unexpected match arm")]
 #[expect(
     clippy::tests_outside_test_module,
     reason = "integration tests live in tests/ directory, not inside #[cfg(test)] modules"
@@ -18,10 +19,8 @@ mod background_integration {
 
     use ironclaw::background::BackgroundTaskSpawner;
     use ironclaw::background::types::{
-        BackgroundTask, Execution, ResultRouting, SubAgentConfig, TaskStatus,
-        format_background_result,
+        BackgroundTask, ResultRouting, TaskStatus, format_background_result,
     };
-    use ironclaw::config::BackgroundModelTier;
     use ironclaw::notify::channels::InboxChannel;
     use ironclaw::notify::router::NotificationRouter;
     use ironclaw::notify::types::TaskSource;

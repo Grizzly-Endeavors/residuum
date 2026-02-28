@@ -249,11 +249,12 @@ async fn write_deactivation_log(
 /// Scans `notes/log/` for the most recent month directory, then reads the
 /// most recent day files. Returns `None` if no logs exist or all reads fail.
 async fn read_recent_logs(project_root: &Path) -> Option<String> {
+    const MAX_CHARS: usize = 8000;
+
     let log_dir = project_root.join("notes/log");
 
-    let mut months = match tokio::fs::read_dir(&log_dir).await {
-        Ok(rd) => rd,
-        Err(_) => return None,
+    let Ok(mut months) = tokio::fs::read_dir(&log_dir).await else {
+        return None;
     };
 
     // Collect month directories and sort descending
@@ -266,13 +267,12 @@ async fn read_recent_logs(project_root: &Path) -> Option<String> {
                 }
             }
             Ok(None) => break,
-            Err(_) => continue,
+            Err(_) => {}
         }
     }
     month_dirs.sort_unstable();
     month_dirs.reverse();
 
-    const MAX_CHARS: usize = 8000;
     let mut collected = String::new();
 
     for month_path in &month_dirs {
@@ -280,9 +280,8 @@ async fn read_recent_logs(project_root: &Path) -> Option<String> {
             break;
         }
 
-        let mut day_rd = match tokio::fs::read_dir(month_path).await {
-            Ok(rd) => rd,
-            Err(_) => continue,
+        let Ok(mut day_rd) = tokio::fs::read_dir(month_path).await else {
+            continue;
         };
 
         let mut day_files: Vec<PathBuf> = Vec::new();
@@ -295,7 +294,7 @@ async fn read_recent_logs(project_root: &Path) -> Option<String> {
                     }
                 }
                 Ok(None) => break,
-                Err(_) => continue,
+                Err(_) => {}
             }
         }
         day_files.sort_unstable();

@@ -68,20 +68,19 @@ pub async fn run_degraded_gateway(
         Err(err) => {
             // If we can't even bind, try the default fallback
             tracing::error!(addr = %addr, error = %err, "degraded mode: failed to bind");
-            if addr != "127.0.0.1:7700" {
-                match tokio::net::TcpListener::bind("127.0.0.1:7700").await {
-                    Ok(l) => {
-                        tracing::info!("degraded mode: bound to fallback 127.0.0.1:7700");
-                        l
-                    }
-                    Err(fallback_err) => {
-                        tracing::error!(error = %fallback_err, "degraded mode: fallback bind also failed, cannot recover");
-                        return GatewayExit::Shutdown;
-                    }
-                }
-            } else {
+            if addr == "127.0.0.1:7700" {
                 tracing::error!("degraded mode: cannot bind, shutting down");
                 return GatewayExit::Shutdown;
+            }
+            match tokio::net::TcpListener::bind("127.0.0.1:7700").await {
+                Ok(l) => {
+                    tracing::info!("degraded mode: bound to fallback 127.0.0.1:7700");
+                    l
+                }
+                Err(fallback_err) => {
+                    tracing::error!(error = %fallback_err, "degraded mode: fallback bind also failed, cannot recover");
+                    return GatewayExit::Shutdown;
+                }
             }
         }
     };
@@ -155,9 +154,8 @@ async fn degraded_handle_connection(socket: WebSocket, state: DegradedState) {
     while let Some(frame) = ws_rx.next().await {
         let raw = match frame {
             Ok(WsMessage::Text(txt)) => txt,
-            Ok(WsMessage::Close(_)) => break,
+            Ok(WsMessage::Close(_)) | Err(_) => break,
             Ok(_) => continue,
-            Err(_) => break,
         };
 
         let client_msg: ClientMessage = match serde_json::from_str(&raw) {
@@ -174,7 +172,10 @@ async fn degraded_handle_connection(socket: WebSocket, state: DegradedState) {
             ClientMessage::Ping => {
                 state.broadcast_tx.send(ServerMessage::Pong).ok();
             }
-            _ => {
+            ClientMessage::SendMessage { .. }
+            | ClientMessage::SetVerbose { .. }
+            | ClientMessage::ServerCommand { .. }
+            | ClientMessage::InboxAdd { .. } => {
                 // For any other message, respond with the error
                 state
                     .broadcast_tx
