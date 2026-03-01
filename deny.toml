@@ -4,7 +4,9 @@
 [advisories]
 db-path = "~/.cargo/advisory-db"
 db-urls = ["https://github.com/rustsec/advisory-db"]
-ignore = []
+ignore = [
+    "RUSTSEC-2024-0384", # `instant` is unmaintained — transitive dep, recommend `web-time`
+]
 
 [licenses]
 allow = [
@@ -17,6 +19,10 @@ allow = [
     "Zlib",
     "Unicode-3.0",
     "Unicode-DFS-2016",
+    "OpenSSL",
+    "BSL-1.0",
+    "MPL-2.0",
+    "CDLA-Permissive-2.0",
 ]
 confidence-threshold = 0.8
 
