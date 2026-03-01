@@ -106,12 +106,27 @@ pub async fn run_degraded_gateway(
         }
     });
 
-    // Wait for reload signal
-    reload_rx.wait_for(|v| *v).await.ok();
-    server_handle.abort();
+    // Wait for reload signal or SIGTERM
+    let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+        .ok();
 
-    tracing::info!("degraded mode: reload requested, retrying full initialization");
-    GatewayExit::Reload
+    tokio::select! {
+        _ = reload_rx.wait_for(|v| *v) => {
+            server_handle.abort();
+            tracing::info!("degraded mode: reload requested, retrying full initialization");
+            return GatewayExit::Reload;
+        }
+        _ = async {
+            match sigterm.as_mut() {
+                Some(s) => { s.recv().await; }
+                None => std::future::pending().await,
+            }
+        } => {
+            server_handle.abort();
+            tracing::info!("degraded mode: received SIGTERM, shutting down");
+            return GatewayExit::Shutdown;
+        }
+    }
 }
 
 /// Axum handler for WebSocket upgrades in degraded mode.

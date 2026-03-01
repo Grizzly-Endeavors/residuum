@@ -3,6 +3,7 @@ pub mod agent;
 pub mod background;
 pub mod channels;
 pub mod config;
+pub mod daemon;
 pub mod error;
 pub mod gateway;
 pub mod inbox;

@@ -35,6 +35,7 @@ zerocopy = { version = "0.8", features = ["derive"] }
 rmcp = { version = "0.16", features = ["client", "transport-child-process", "transport-streamable-http-client-reqwest"] }
 serde_yml = "0.0"
 tokio-util = { version = "0.7", features = ["rt"] }
+nix = { version = "0.29", default-features = false, features = ["signal", "process"] }
 
 # Logging
 tracing = "0.1"

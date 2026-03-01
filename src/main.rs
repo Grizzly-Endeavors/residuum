@@ -1,14 +1,15 @@
 //! `IronClaw`: personal AI agent gateway.
 //!
 //! Entrypoint with subcommands:
-//! - `serve` (default): starts the WebSocket gateway server
+//! - `serve` (default): starts the gateway as a background daemon
+//! - `serve --foreground`: runs the gateway in the foreground
+//! - `stop`: stops a running gateway daemon
 //! - `connect [url]`: connects a CLI client to a running gateway
 //! - `logs [--watch]`: display CLI log files
 //! - `setup`: interactive configuration wizard
 
 use ironclaw::channels::cli::CliClient;
 use ironclaw::channels::cli::commands::CommandEffect;
-use ironclaw::channels::cli::ws_url_to_http;
 use ironclaw::config::Config;
 use ironclaw::error::IronclawError;
 use ironclaw::gateway::protocol::{ClientMessage, ServerMessage};
@@ -21,10 +22,6 @@ async fn main() {
     }
 }
 
-#[expect(
-    clippy::too_many_lines,
-    reason = "sequential setup/serve/connect dispatch with reload loop; splitting would obscure the flow"
-)]
 async fn run() -> Result<(), IronclawError> {
     // Load .env early (ignore if missing, warn on parse errors)
     if let Err(e) = dotenvy::dotenv()
@@ -54,136 +51,131 @@ async fn run() -> Result<(), IronclawError> {
             init_default_tracing();
             run_setup_command(&args)
         }
+        Some("stop") => run_stop_command(),
         // "serve" or no subcommand → start gateway
         Some("serve") | None => {
-            init_default_tracing();
-            // --setup: run the onboarding wizard in an isolated temp directory,
-            // then boot the gateway with the resulting config for end-to-end testing
-            if args.iter().any(|a| a == "--setup") {
-                let tmp_dir = std::env::temp_dir().join("ironclaw-setup");
-                if tmp_dir.exists() {
-                    std::fs::remove_dir_all(&tmp_dir).map_err(|e| {
-                        IronclawError::Config(format!(
-                            "failed to clean setup directory {}: {e}",
-                            tmp_dir.display()
-                        ))
-                    })?;
-                }
-                ironclaw::config::Config::bootstrap_at_dir(&tmp_dir)?;
-                eprintln!(
-                    "setup mode: config will be written to {}",
-                    tmp_dir.display()
-                );
-                match Box::pin(ironclaw::gateway::server::setup::run_setup_server_at(
-                    tmp_dir.clone(),
-                ))
-                .await?
-                {
-                    ironclaw::gateway::server::setup::SetupExit::ConfigSaved => {
-                        tracing::info!("setup complete, loading config from temp directory");
-                    }
-                    ironclaw::gateway::server::setup::SetupExit::Shutdown => return Ok(()),
-                }
+            let foreground = args.iter().any(|a| a == "--foreground");
 
-                // Load the config written by the wizard and run the gateway
-                loop {
-                    let mut cfg = Config::load_at(&tmp_dir)?;
-                    cfg.workspace_dir = tmp_dir.join("workspace");
-                    tracing::info!(
-                        model = cfg.main.first().map_or("(none)", |s| s.model.model.as_str()),
-                        provider_url = cfg.main.first().map_or("(none)", |s| s.provider_url.as_str()),
-                        workspace = %cfg.workspace_dir.display(),
-                        "setup-mode: configuration loaded, starting gateway"
-                    );
-                    match Box::pin(ironclaw::gateway::server::run_gateway(cfg)).await? {
-                        ironclaw::gateway::server::GatewayExit::Shutdown => break,
-                        ironclaw::gateway::server::GatewayExit::Reload => {
-                            tracing::info!("configuration reloaded, restarting gateway");
-                        }
-                    }
-                }
-                return Ok(());
+            if foreground {
+                // Foreground mode: file-only logging, run gateway directly
+                ironclaw::daemon::init_daemon_tracing();
+                run_serve_foreground(&args).await
+            } else {
+                // Daemon mode: spawn foreground child, poll for PID file, exit
+                run_daemonize(&args)
             }
+        }
+        Some(other) => Err(IronclawError::Config(format!(
+            "unknown subcommand '{other}', expected one of: serve, connect, logs, setup, secret, stop"
+        ))),
+    }
+}
 
-            let config_dir = Config::config_dir()?;
-            let mut is_first_boot = true;
+/// Run the gateway in foreground mode (called as `ironclaw serve --foreground`).
+///
+/// This is the current behavior — runs the gateway event loop directly.
+/// Used by the daemon spawner as the child process, or for debugging.
+///
+/// # Errors
+///
+/// Returns `IronclawError` if initialization or the gateway loop fails.
+#[expect(
+    clippy::too_many_lines,
+    reason = "sequential setup/serve dispatch with reload loop; splitting would obscure the flow"
+)]
+async fn run_serve_foreground(args: &[String]) -> Result<(), IronclawError> {
+    // --setup: run the onboarding wizard in an isolated temp directory,
+    // then boot the gateway with the resulting config for end-to-end testing
+    if args.iter().any(|a| a == "--setup") {
+        let tmp_dir = std::env::temp_dir().join("ironclaw-setup");
+        if tmp_dir.exists() {
+            std::fs::remove_dir_all(&tmp_dir).map_err(|e| {
+                IronclawError::Config(format!(
+                    "failed to clean setup directory {}: {e}",
+                    tmp_dir.display()
+                ))
+            })?;
+        }
+        ironclaw::config::Config::bootstrap_at_dir(&tmp_dir)?;
+        eprintln!(
+            "setup mode: config will be written to {}",
+            tmp_dir.display()
+        );
+        match Box::pin(ironclaw::gateway::server::setup::run_setup_server_at(
+            tmp_dir.clone(),
+        ))
+        .await?
+        {
+            ironclaw::gateway::server::setup::SetupExit::ConfigSaved => {
+                tracing::info!("setup complete, loading config from temp directory");
+            }
+            ironclaw::gateway::server::setup::SetupExit::Shutdown => return Ok(()),
+        }
 
-            loop {
-                Config::bootstrap_config_dir()?;
-                match Config::load() {
-                    Ok(cfg) => {
-                        tracing::info!(
-                            model = cfg.main.first().map_or("(none)", |s| s.model.model.as_str()),
-                            provider_url = cfg.main.first().map_or("(none)", |s| s.provider_url.as_str()),
-                            workspace = %cfg.workspace_dir.display(),
-                            "configuration loaded"
-                        );
-                        let bind_addr = Some(cfg.gateway.addr());
-                        match Box::pin(ironclaw::gateway::server::run_gateway(cfg)).await {
-                            Ok(ironclaw::gateway::server::GatewayExit::Shutdown) => break,
-                            Ok(ironclaw::gateway::server::GatewayExit::Reload) => {
-                                tracing::info!("configuration reloaded, restarting gateway");
-                                is_first_boot = false;
-                                backup_config(&config_dir);
-                            }
-                            Err(err) if is_first_boot => return Err(err),
-                            Err(err) => {
-                                // Reload failed — try rolling back config
-                                tracing::warn!(error = %err, "gateway initialization failed after reload");
-                                if rollback_config(&config_dir) {
-                                    match Config::load() {
-                                        Ok(_) => {
-                                            eprintln!(
-                                                "warning: reload failed, rolled back to previous config: {err}"
-                                            );
-                                            tracing::warn!(
-                                                "rolled back to previous config, retrying"
-                                            );
-                                            continue;
-                                        }
-                                        Err(rollback_err) => {
-                                            tracing::warn!(error = %rollback_err, "rollback config also failed to load");
-                                        }
-                                    }
-                                }
-                                // Rollback failed or rolled-back config also broke — degraded mode
-                                let error_msg = format!(
-                                    "gateway entered degraded mode: {err}\n\n\
-                                     To fix this:\n\
-                                     1. Open the config editor at http://127.0.0.1:7700/ and correct the issue\n\
-                                     2. Or edit ~/.ironclaw/config.toml directly\n\
-                                     3. Then run /reload to retry"
-                                );
-                                match ironclaw::gateway::server::degraded::run_degraded_gateway(
-                                    error_msg,
-                                    config_dir.clone(),
-                                    bind_addr,
-                                )
-                                .await
-                                {
-                                    ironclaw::gateway::server::GatewayExit::Reload => {
-                                        tracing::info!(
-                                            "degraded mode: reload requested, retrying full initialization"
-                                        );
-                                    }
-                                    ironclaw::gateway::server::GatewayExit::Shutdown => break,
-                                }
-                            }
-                        }
+        // Load the config written by the wizard and run the gateway
+        loop {
+            let mut cfg = Config::load_at(&tmp_dir)?;
+            cfg.workspace_dir = tmp_dir.join("workspace");
+            tracing::info!(
+                model = cfg.main.first().map_or("(none)", |s| s.model.model.as_str()),
+                provider_url = cfg.main.first().map_or("(none)", |s| s.provider_url.as_str()),
+                workspace = %cfg.workspace_dir.display(),
+                "setup-mode: configuration loaded, starting gateway"
+            );
+            match Box::pin(ironclaw::gateway::server::run_gateway(cfg)).await? {
+                ironclaw::gateway::server::GatewayExit::Shutdown => break,
+                ironclaw::gateway::server::GatewayExit::Reload => {
+                    tracing::info!("configuration reloaded, restarting gateway");
+                }
+            }
+        }
+        return Ok(());
+    }
+
+    let config_dir = Config::config_dir()?;
+    let mut is_first_boot = true;
+
+    loop {
+        Config::bootstrap_config_dir()?;
+        match Config::load() {
+            Ok(cfg) => {
+                tracing::info!(
+                    model = cfg.main.first().map_or("(none)", |s| s.model.model.as_str()),
+                    provider_url = cfg.main.first().map_or("(none)", |s| s.provider_url.as_str()),
+                    workspace = %cfg.workspace_dir.display(),
+                    "configuration loaded"
+                );
+                let bind_addr = Some(cfg.gateway.addr());
+                match Box::pin(ironclaw::gateway::server::run_gateway(cfg)).await {
+                    Ok(ironclaw::gateway::server::GatewayExit::Shutdown) => break,
+                    Ok(ironclaw::gateway::server::GatewayExit::Reload) => {
+                        tracing::info!("configuration reloaded, restarting gateway");
+                        is_first_boot = false;
+                        backup_config(&config_dir);
                     }
-                    Err(err) if !is_first_boot => {
-                        // Config parse failed on reload — try rollback
-                        tracing::warn!(error = %err, "config invalid after reload");
+                    Err(err) if is_first_boot => return Err(err),
+                    Err(err) => {
+                        // Reload failed — try rolling back config
+                        tracing::warn!(error = %err, "gateway initialization failed after reload");
                         if rollback_config(&config_dir) {
-                            eprintln!(
-                                "warning: config invalid after reload, rolled back to previous config: {err}"
-                            );
-                            tracing::warn!("rolled back to previous config, retrying");
-                            continue;
+                            match Config::load() {
+                                Ok(_) => {
+                                    eprintln!(
+                                        "warning: reload failed, rolled back to previous config: {err}"
+                                    );
+                                    tracing::warn!(
+                                        "rolled back to previous config, retrying"
+                                    );
+                                    continue;
+                                }
+                                Err(rollback_err) => {
+                                    tracing::warn!(error = %rollback_err, "rollback config also failed to load");
+                                }
+                            }
                         }
-                        // Rollback failed — degraded mode
+                        // Rollback failed or rolled-back config also broke — degraded mode
                         let error_msg = format!(
-                            "gateway entered degraded mode: config error: {err}\n\n\
+                            "gateway entered degraded mode: {err}\n\n\
                              To fix this:\n\
                              1. Open the config editor at http://127.0.0.1:7700/ and correct the issue\n\
                              2. Or edit ~/.ironclaw/config.toml directly\n\
@@ -192,7 +184,7 @@ async fn run() -> Result<(), IronclawError> {
                         match ironclaw::gateway::server::degraded::run_degraded_gateway(
                             error_msg,
                             config_dir.clone(),
-                            None,
+                            bind_addr,
                         )
                         .await
                         {
@@ -204,24 +196,195 @@ async fn run() -> Result<(), IronclawError> {
                             ironclaw::gateway::server::GatewayExit::Shutdown => break,
                         }
                     }
-                    Err(err) => {
-                        // First boot — setup wizard (existing behavior)
-                        tracing::warn!(error = %err, "config invalid, starting setup wizard");
-                        match Box::pin(ironclaw::gateway::server::setup::run_setup_server()).await?
-                        {
-                            ironclaw::gateway::server::setup::SetupExit::ConfigSaved => {
-                                tracing::info!("setup complete, loading configuration");
-                            }
-                            ironclaw::gateway::server::setup::SetupExit::Shutdown => break,
-                        }
-                    }
                 }
             }
-            Ok(())
+            Err(err) if !is_first_boot => {
+                // Config parse failed on reload — try rollback
+                tracing::warn!(error = %err, "config invalid after reload");
+                if rollback_config(&config_dir) {
+                    eprintln!(
+                        "warning: config invalid after reload, rolled back to previous config: {err}"
+                    );
+                    tracing::warn!("rolled back to previous config, retrying");
+                    continue;
+                }
+                // Rollback failed — degraded mode
+                let error_msg = format!(
+                    "gateway entered degraded mode: config error: {err}\n\n\
+                     To fix this:\n\
+                     1. Open the config editor at http://127.0.0.1:7700/ and correct the issue\n\
+                     2. Or edit ~/.ironclaw/config.toml directly\n\
+                     3. Then run /reload to retry"
+                );
+                match ironclaw::gateway::server::degraded::run_degraded_gateway(
+                    error_msg,
+                    config_dir.clone(),
+                    None,
+                )
+                .await
+                {
+                    ironclaw::gateway::server::GatewayExit::Reload => {
+                        tracing::info!(
+                            "degraded mode: reload requested, retrying full initialization"
+                        );
+                    }
+                    ironclaw::gateway::server::GatewayExit::Shutdown => break,
+                }
+            }
+            Err(err) => {
+                // First boot — setup wizard (existing behavior)
+                tracing::warn!(error = %err, "config invalid, starting setup wizard");
+                match Box::pin(ironclaw::gateway::server::setup::run_setup_server()).await?
+                {
+                    ironclaw::gateway::server::setup::SetupExit::ConfigSaved => {
+                        tracing::info!("setup complete, loading configuration");
+                    }
+                    ironclaw::gateway::server::setup::SetupExit::Shutdown => break,
+                }
+            }
         }
-        Some(other) => Err(IronclawError::Config(format!(
-            "unknown subcommand '{other}', expected one of: serve, connect, logs, setup, secret"
-        ))),
+    }
+    Ok(())
+}
+
+/// Spawn the gateway as a background daemon process.
+///
+/// Launches `ironclaw serve --foreground` as a detached child, polls for the
+/// PID file to confirm startup, then exits. Prints a first-launch welcome
+/// message if no config exists yet.
+///
+/// # Errors
+///
+/// Returns `IronclawError` if the child process cannot be spawned or
+/// startup times out.
+fn run_daemonize(args: &[String]) -> Result<(), IronclawError> {
+    use ironclaw::daemon::{is_process_running, pid_file_path, read_pid_file};
+
+    let pid_path = pid_file_path()?;
+
+    // Check for an already-running instance
+    if let Ok(existing_pid) = read_pid_file(&pid_path) {
+        if is_process_running(existing_pid) {
+            eprintln!("ironclaw: gateway is already running (pid {existing_pid})");
+            return Ok(());
+        }
+    }
+
+    // First-launch welcome if no config exists yet
+    let config_dir = Config::config_dir()?;
+    if !config_dir.join("config.toml").exists() {
+        eprintln!("welcome to ironclaw!");
+        eprintln!();
+        eprintln!("  it looks like this is your first time running ironclaw.");
+        eprintln!("  configure your agent at: http://127.0.0.1:7700");
+        eprintln!("  or run: ironclaw setup");
+        eprintln!();
+    }
+
+    // Build child args: forward any extra flags (like --setup) plus --foreground
+    let exe = std::env::current_exe().map_err(|e| {
+        IronclawError::Gateway(format!("failed to determine current executable: {e}"))
+    })?;
+
+    let mut child_args = vec!["serve".to_string(), "--foreground".to_string()];
+    // Forward flags from the original invocation (skip argv[0] and "serve")
+    let skip = if args.get(1).is_some_and(|a| a == "serve") {
+        2
+    } else {
+        1
+    };
+    for arg in args.iter().skip(skip) {
+        if arg != "--foreground" {
+            child_args.push(arg.clone());
+        }
+    }
+
+    let _child = std::process::Command::new(&exe)
+        .args(&child_args)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .map_err(|e| {
+            IronclawError::Gateway(format!("failed to spawn daemon process: {e}"))
+        })?;
+
+    // Poll for PID file to confirm startup (100ms intervals, 10s timeout)
+    let start = std::time::Instant::now();
+    let timeout = std::time::Duration::from_secs(10);
+    let poll_interval = std::time::Duration::from_millis(100);
+
+    loop {
+        if start.elapsed() > timeout {
+            eprintln!("ironclaw: gateway did not start within 10 seconds");
+            eprintln!("  check logs: ironclaw logs");
+            return Err(IronclawError::Gateway(
+                "daemon startup timed out".to_string(),
+            ));
+        }
+
+        if let Ok(pid) = read_pid_file(&pid_path) {
+            if is_process_running(pid) {
+                eprintln!("ironclaw: gateway started (pid {pid})");
+                return Ok(());
+            }
+        }
+
+        std::thread::sleep(poll_interval);
+    }
+}
+
+/// Stop a running gateway daemon.
+///
+/// Reads the PID file, verifies the process is running, sends SIGTERM,
+/// and polls for the process to exit.
+///
+/// # Errors
+///
+/// Returns `IronclawError` if the PID file cannot be read or the signal
+/// cannot be sent.
+fn run_stop_command() -> Result<(), IronclawError> {
+    use ironclaw::daemon::{is_process_running, pid_file_path, read_pid_file, remove_pid_file, send_sigterm};
+
+    let pid_path = pid_file_path()?;
+
+    let pid = match read_pid_file(&pid_path) {
+        Ok(pid) => pid,
+        Err(_) => {
+            eprintln!("ironclaw: no gateway running (no pid file)");
+            return Ok(());
+        }
+    };
+
+    if !is_process_running(pid) {
+        eprintln!("ironclaw: no gateway running (stale pid file for pid {pid})");
+        remove_pid_file(&pid_path)?;
+        return Ok(());
+    }
+
+    send_sigterm(pid)?;
+
+    // Poll for process exit (200ms intervals, 5s timeout)
+    let start = std::time::Instant::now();
+    let timeout = std::time::Duration::from_secs(5);
+    let poll_interval = std::time::Duration::from_millis(200);
+
+    loop {
+        if !is_process_running(pid) {
+            // Process exited; clean up PID file if still present
+            remove_pid_file(&pid_path)?;
+            eprintln!("ironclaw: gateway stopped (pid {pid})");
+            return Ok(());
+        }
+
+        if start.elapsed() > timeout {
+            eprintln!("ironclaw: gateway (pid {pid}) did not stop within 5 seconds");
+            return Err(IronclawError::Gateway(format!(
+                "gateway pid {pid} did not exit after SIGTERM"
+            )));
+        }
+
+        std::thread::sleep(poll_interval);
     }
 }
 
@@ -241,18 +404,6 @@ async fn run_connect(url: &str, verbose: bool) -> Result<(), IronclawError> {
     use futures_util::{SinkExt, StreamExt};
     use ironclaw::channels::cli::CliReader;
     use tokio_tungstenite::tungstenite::Message as TungsteniteMessage;
-
-    // First-launch welcome if no config exists yet
-    let config_dir = Config::config_dir()?;
-    if !config_dir.join("config.toml").exists() {
-        let http_url = ws_url_to_http(url);
-        eprintln!("welcome to ironclaw!");
-        eprintln!();
-        eprintln!("  it looks like this is your first time running ironclaw.");
-        eprintln!("  configure your agent at: {http_url}");
-        eprintln!("  or run: ironclaw setup");
-        eprintln!();
-    }
 
     let (ws_stream, _response) = tokio_tungstenite::connect_async(url)
         .await

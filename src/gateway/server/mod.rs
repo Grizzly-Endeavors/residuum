@@ -116,6 +116,8 @@ struct GatewayRuntime {
     command_rx: mpsc::Receiver<ServerCommand>,
     server_handle: tokio::task::JoinHandle<()>,
     pulse_scheduler: PulseScheduler,
+    /// SIGTERM signal listener for daemon stop support.
+    sigterm: tokio::signal::unix::Signal,
     /// Most recent reply handle from a user message. Used by wake turns to
     /// deliver responses to the channel the user last interacted from.
     last_reply: Option<Arc<dyn ReplyHandle>>,
@@ -215,11 +217,27 @@ pub async fn run_gateway(cfg: Config) -> Result<GatewayExit, IronclawError> {
         }))
         .fallback(web::static_handler);
 
+    // Check for an already-running instance via PID file
+    let pid_path = crate::daemon::pid_file_path()?;
+    if let Ok(existing_pid) = crate::daemon::read_pid_file(&pid_path) {
+        if crate::daemon::is_process_running(existing_pid) {
+            return Err(IronclawError::Gateway(format!(
+                "another gateway is already running (pid {existing_pid})"
+            )));
+        }
+        // Stale PID file — clean it up
+        tracing::warn!(pid = existing_pid, "removing stale pid file");
+        crate::daemon::remove_pid_file(&pid_path)?;
+    }
+
     let addr = cfg.gateway.addr();
     let listener = tokio::net::TcpListener::bind(&addr)
         .await
         .map_err(|e| IronclawError::Gateway(format!("failed to bind to {addr}: {e}")))?;
     tracing::info!(addr = %addr, "gateway listening");
+
+    // Write PID file now that we've bound successfully
+    crate::daemon::write_pid_file(&pid_path, std::process::id())?;
     if cfg.gateway.bind != "127.0.0.1" && cfg.gateway.bind != "localhost" {
         tracing::warn!(
             bind = %cfg.gateway.bind,
@@ -258,6 +276,9 @@ pub async fn run_gateway(cfg: Config) -> Result<GatewayExit, IronclawError> {
         tracing::info!("discord channel started (DM-only mode)");
     }
 
+    let sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+        .map_err(|e| IronclawError::Gateway(format!("failed to register SIGTERM handler: {e}")))?;
+
     let rt = GatewayRuntime {
         layout: parts.layout,
         tz: parts.tz,
@@ -283,10 +304,18 @@ pub async fn run_gateway(cfg: Config) -> Result<GatewayExit, IronclawError> {
         command_rx,
         server_handle,
         pulse_scheduler: PulseScheduler::new(),
+        sigterm,
         last_reply: None,
     };
 
-    Ok(Box::pin(run_event_loop(rt)).await)
+    let exit = Box::pin(run_event_loop(rt)).await;
+
+    // Clean up PID file on exit (covers both Shutdown and Reload)
+    if let Err(e) = crate::daemon::remove_pid_file(&pid_path) {
+        tracing::warn!(error = %e, "failed to remove pid file on exit");
+    }
+
+    Ok(exit)
 }
 
 /// Outcome of handling a background task result.
@@ -696,6 +725,14 @@ async fn run_event_loop(mut rt: GatewayRuntime) -> GatewayExit {
 
     loop {
         tokio::select! {
+            // ── SIGTERM (daemon stop) ────────────────────────────────────
+            _ = rt.sigterm.recv() => {
+                tracing::info!("received SIGTERM, shutting down");
+                rt.mcp_registry.write().await.disconnect_all().await;
+                rt.server_handle.abort();
+                break;
+            }
+
             // ── Reload signal ─────────────────────────────────────────────
             _ = rt.reload_rx.changed() => {
                 tracing::info!("reloading configuration");
