@@ -1547,7 +1547,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "ironclaw"
+name = "residuum"
 version = "0.1.0"
 dependencies = [
  "aes-gcm-siv",

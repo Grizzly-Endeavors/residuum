@@ -4,7 +4,7 @@ use std::path::PathBuf;
 
 use chrono::NaiveDate;
 
-use crate::error::IronclawError;
+use crate::error::ResiduumError;
 use crate::workspace::layout::WorkspaceLayout;
 
 use super::scanner::write_project_md_content;
@@ -15,7 +15,7 @@ use super::types::{ProjectFrontmatter, ProjectStatus};
 /// Returns the path to the newly created project directory.
 ///
 /// # Errors
-/// Returns `IronclawError::Projects` if the name is invalid, a project with
+/// Returns `ResiduumError::Projects` if the name is invalid, a project with
 /// the same dir name already exists, or filesystem operations fail.
 pub async fn create_project(
     layout: &WorkspaceLayout,
@@ -23,11 +23,11 @@ pub async fn create_project(
     description: &str,
     tools: Vec<String>,
     today: NaiveDate,
-) -> Result<PathBuf, IronclawError> {
+) -> Result<PathBuf, ResiduumError> {
     let dir_name = sanitize_dir_name(name);
 
     if dir_name.is_empty() {
-        return Err(IronclawError::Projects(format!(
+        return Err(ResiduumError::Projects(format!(
             "project name '{name}' produces an empty directory name"
         )));
     }
@@ -35,7 +35,7 @@ pub async fn create_project(
     let project_dir = layout.projects_dir().join(&dir_name);
 
     if project_dir.exists() {
-        return Err(IronclawError::Projects(format!(
+        return Err(ResiduumError::Projects(format!(
             "project directory '{dir_name}' already exists"
         )));
     }
@@ -45,7 +45,7 @@ pub async fn create_project(
         tokio::fs::create_dir_all(project_dir.join(subdir))
             .await
             .map_err(|e| {
-                IronclawError::Projects(format!(
+                ResiduumError::Projects(format!(
                     "failed to create directory {}: {e}",
                     project_dir.join(subdir).display()
                 ))
@@ -67,7 +67,7 @@ pub async fn create_project(
     tokio::fs::write(project_dir.join("PROJECT.md"), &content)
         .await
         .map_err(|e| {
-            IronclawError::Projects(format!(
+            ResiduumError::Projects(format!(
                 "failed to write PROJECT.md at {}: {e}",
                 project_dir.display()
             ))
@@ -81,17 +81,17 @@ pub async fn create_project(
 /// Archive a project: update its frontmatter and move from projects/ to archive/.
 ///
 /// # Errors
-/// Returns `IronclawError::Projects` if the project doesn't exist, can't be
+/// Returns `ResiduumError::Projects` if the project doesn't exist, can't be
 /// read, or the move fails.
 pub async fn archive_project(
     layout: &WorkspaceLayout,
     dir_name: &str,
     today: NaiveDate,
-) -> Result<(), IronclawError> {
+) -> Result<(), ResiduumError> {
     let source = layout.projects_dir().join(dir_name);
 
     if !source.exists() {
-        return Err(IronclawError::Projects(format!(
+        return Err(ResiduumError::Projects(format!(
             "project directory '{dir_name}' not found in projects/"
         )));
     }
@@ -99,7 +99,7 @@ pub async fn archive_project(
     // Read and update PROJECT.md
     let project_md = source.join("PROJECT.md");
     let content = tokio::fs::read_to_string(&project_md).await.map_err(|e| {
-        IronclawError::Projects(format!(
+        ResiduumError::Projects(format!(
             "failed to read PROJECT.md at {}: {e}",
             project_md.display()
         ))
@@ -111,7 +111,7 @@ pub async fn archive_project(
 
     let updated = write_project_md_content(&frontmatter, &body)?;
     tokio::fs::write(&project_md, &updated).await.map_err(|e| {
-        IronclawError::Projects(format!(
+        ResiduumError::Projects(format!(
             "failed to update PROJECT.md at {}: {e}",
             project_md.display()
         ))
@@ -120,7 +120,7 @@ pub async fn archive_project(
     // Move to archive
     let dest = layout.archive_dir().join(dir_name);
     tokio::fs::rename(&source, &dest).await.map_err(|e| {
-        IronclawError::Projects(format!(
+        ResiduumError::Projects(format!(
             "failed to move project from {} to {}: {e}",
             source.display(),
             dest.display()

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Pre-push hook for ironclaw
+# Pre-push hook for residuum
 # Final safety check before pushing
 
 set -e

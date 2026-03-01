@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use chrono::NaiveDateTime;
 
-use crate::error::IronclawError;
+use crate::error::ResiduumError;
 use crate::workspace::layout::WorkspaceLayout;
 
 use super::manifest::{build_manifest, format_manifest};
@@ -45,16 +45,16 @@ impl ProjectState {
     /// the manifest, and stores it as the active project.
     ///
     /// # Errors
-    /// Returns `IronclawError::Projects` if the project is not found, cannot
+    /// Returns `ResiduumError::Projects` if the project is not found, cannot
     /// be read, or is archived.
-    pub async fn activate(&mut self, name: &str) -> Result<&ActiveProject, IronclawError> {
+    pub async fn activate(&mut self, name: &str) -> Result<&ActiveProject, ResiduumError> {
         let entry = self
             .index
             .find_by_name(name)
-            .ok_or_else(|| IronclawError::Projects(format!("project '{name}' not found")))?;
+            .ok_or_else(|| ResiduumError::Projects(format!("project '{name}' not found")))?;
 
         if entry.status == ProjectStatus::Archived {
-            return Err(IronclawError::Projects(format!(
+            return Err(ResiduumError::Projects(format!(
                 "project '{}' is archived and cannot be activated",
                 entry.name
             )));
@@ -66,7 +66,7 @@ impl ProjectState {
         let content = tokio::fs::read_to_string(project_root.join("PROJECT.md"))
             .await
             .map_err(|e| {
-                IronclawError::Projects(format!(
+                ResiduumError::Projects(format!(
                     "failed to read PROJECT.md for '{}': {e}",
                     entry.name
                 ))
@@ -91,7 +91,7 @@ impl ProjectState {
 
         // Safe: we just set it to Some
         self.active.as_ref().ok_or_else(|| {
-            IronclawError::Projects("unexpected: active project not set after activation".into())
+            ResiduumError::Projects("unexpected: active project not set after activation".into())
         })
     }
 
@@ -100,16 +100,16 @@ impl ProjectState {
     /// Rejects empty log entries. Writes the log to `notes/log/YYYY-MM/log-DD.md`.
     ///
     /// # Errors
-    /// Returns `IronclawError::Projects` if no project is active, the log is empty,
+    /// Returns `ResiduumError::Projects` if no project is active, the log is empty,
     /// or the log file cannot be written.
     pub async fn deactivate(
         &mut self,
         log_entry: &str,
         now: NaiveDateTime,
-    ) -> Result<String, IronclawError> {
+    ) -> Result<String, ResiduumError> {
         let trimmed = log_entry.trim();
         if trimmed.is_empty() {
-            return Err(IronclawError::Projects(
+            return Err(ResiduumError::Projects(
                 "deactivation requires a non-empty log entry".to_string(),
             ));
         }
@@ -117,7 +117,7 @@ impl ProjectState {
         let active = self
             .active
             .as_ref()
-            .ok_or_else(|| IronclawError::Projects("no project is currently active".to_string()))?;
+            .ok_or_else(|| ResiduumError::Projects("no project is currently active".to_string()))?;
 
         let name = active.name.clone();
         write_deactivation_log(&active.project_root, trimmed, now).await?;
@@ -130,8 +130,8 @@ impl ProjectState {
     /// Rescan the project directories to rebuild the index.
     ///
     /// # Errors
-    /// Returns `IronclawError::Projects` if scanning fails.
-    pub async fn rescan(&mut self) -> Result<(), IronclawError> {
+    /// Returns `ResiduumError::Projects` if scanning fails.
+    pub async fn rescan(&mut self) -> Result<(), ResiduumError> {
         self.index = ProjectIndex::scan(&self.layout).await?;
         Ok(())
     }
@@ -205,7 +205,7 @@ async fn write_deactivation_log(
     project_root: &Path,
     log_text: &str,
     now: NaiveDateTime,
-) -> Result<(), IronclawError> {
+) -> Result<(), ResiduumError> {
     let date_dir = now.format("%Y-%m").to_string();
     let day_file = now.format("log-%d").to_string();
     let date_header = now.format("%Y-%m-%d").to_string();
@@ -213,7 +213,7 @@ async fn write_deactivation_log(
 
     let log_dir = project_root.join("notes/log").join(&date_dir);
     tokio::fs::create_dir_all(&log_dir).await.map_err(|e| {
-        IronclawError::Projects(format!(
+        ResiduumError::Projects(format!(
             "failed to create log directory {}: {e}",
             log_dir.display()
         ))
@@ -234,7 +234,7 @@ async fn write_deactivation_log(
     };
 
     tokio::fs::write(&log_file, &content).await.map_err(|e| {
-        IronclawError::Projects(format!(
+        ResiduumError::Projects(format!(
             "failed to write log file {}: {e}",
             log_file.display()
         ))

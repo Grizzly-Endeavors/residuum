@@ -4,7 +4,7 @@ use super::{
     parser::parse_skill_md,
     types::{SkillIndexEntry, SkillSource},
 };
-use crate::error::IronclawError;
+use crate::error::ResiduumError;
 
 /// In-memory index of discovered skills.
 #[derive(Debug, Clone, Default)]
@@ -20,12 +20,12 @@ impl SkillIndex {
     /// skipped. Duplicate names keep the first found.
     ///
     /// # Errors
-    /// Returns `IronclawError::Skills` if a directory cannot be read (except
+    /// Returns `ResiduumError::Skills` if a directory cannot be read (except
     /// `NotFound`, which is silently skipped).
     pub async fn scan(
         dirs: &[PathBuf],
         project_skills_dir: Option<&Path>,
-    ) -> Result<Self, IronclawError> {
+    ) -> Result<Self, ResiduumError> {
         let mut entries = Vec::new();
         let mut seen_names: Vec<String> = Vec::new();
 
@@ -97,12 +97,12 @@ async fn scan_skill_directory(
     source: SkillSource,
     entries: &mut Vec<SkillIndexEntry>,
     seen_names: &mut Vec<String>,
-) -> Result<(), IronclawError> {
+) -> Result<(), ResiduumError> {
     let mut read_dir = match tokio::fs::read_dir(dir).await {
         Ok(rd) => rd,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
         Err(e) => {
-            return Err(IronclawError::Skills(format!(
+            return Err(ResiduumError::Skills(format!(
                 "failed to read skills directory {}: {e}",
                 dir.display()
             )));

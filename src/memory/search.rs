@@ -12,7 +12,7 @@ use tantivy::schema::{Field, OwnedValue, STORED, STRING, Schema, TEXT};
 use tantivy::{Index, IndexReader, IndexWriter, ReloadPolicy, TantivyDocument, Term};
 
 use crate::config::SearchConfig;
-use crate::error::IronclawError;
+use crate::error::ResiduumError;
 use crate::memory::chunk_extractor::read_idx_jsonl;
 use crate::memory::types::{IndexChunk, IndexManifest, ManifestFileEntry, Observation};
 use crate::memory::vector_store::{VectorSearchFilters, VectorStore};
@@ -103,9 +103,9 @@ impl MemoryIndex {
     ///
     /// # Errors
     /// Returns an error if the directory is inaccessible or the index is corrupt.
-    pub fn open_or_create(index_dir: &Path) -> Result<Self, IronclawError> {
+    pub fn open_or_create(index_dir: &Path) -> Result<Self, ResiduumError> {
         std::fs::create_dir_all(index_dir).map_err(|e| {
-            IronclawError::Memory(format!(
+            ResiduumError::Memory(format!(
                 "failed to create search index directory at {}: {e}",
                 index_dir.display()
             ))
@@ -123,14 +123,14 @@ impl MemoryIndex {
         let schema = builder.build();
 
         let mmap_dir = MmapDirectory::open(index_dir).map_err(|e| {
-            IronclawError::Memory(format!(
+            ResiduumError::Memory(format!(
                 "failed to open mmap directory at {}: {e}",
                 index_dir.display()
             ))
         })?;
 
         let index = Index::open_or_create(mmap_dir, schema).map_err(|e| {
-            IronclawError::Memory(format!(
+            ResiduumError::Memory(format!(
                 "failed to open search index at {}: {e}",
                 index_dir.display()
             ))
@@ -140,7 +140,7 @@ impl MemoryIndex {
             .reader_builder()
             .reload_policy(ReloadPolicy::OnCommitWithDelay)
             .try_into()
-            .map_err(|e| IronclawError::Memory(format!("failed to create index reader: {e}")))?;
+            .map_err(|e| ResiduumError::Memory(format!("failed to create index reader: {e}")))?;
 
         Ok(Self {
             index,
@@ -163,7 +163,7 @@ impl MemoryIndex {
     ///
     /// # Errors
     /// Returns an error if the in-memory index cannot be created.
-    pub fn empty() -> Result<Self, IronclawError> {
+    pub fn empty() -> Result<Self, ResiduumError> {
         let mut builder = Schema::builder();
         let id_field = builder.add_text_field("id", STRING | STORED);
         let source_type_field = builder.add_text_field("source_type", STRING | STORED);
@@ -182,7 +182,7 @@ impl MemoryIndex {
             .reload_policy(ReloadPolicy::OnCommitWithDelay)
             .try_into()
             .map_err(|e| {
-                IronclawError::Memory(format!("failed to create in-ram index reader: {e}"))
+                ResiduumError::Memory(format!("failed to create in-ram index reader: {e}"))
             })?;
 
         Ok(Self {
@@ -210,7 +210,7 @@ impl MemoryIndex {
         episode_id: &str,
         date: &str,
         observations: &[Observation],
-    ) -> Result<Vec<String>, IronclawError> {
+    ) -> Result<Vec<String>, ResiduumError> {
         if observations.is_empty() {
             return Ok(Vec::new());
         }
@@ -231,7 +231,7 @@ impl MemoryIndex {
             doc.add_text(self.line_end_field, "");
 
             writer.add_document(doc).map_err(|e| {
-                IronclawError::Memory(format!("failed to add observation to search index: {e}"))
+                ResiduumError::Memory(format!("failed to add observation to search index: {e}"))
             })?;
             doc_ids.push(doc_id);
         }
@@ -246,7 +246,7 @@ impl MemoryIndex {
     ///
     /// # Errors
     /// Returns an error if the index writer fails.
-    pub fn index_chunks(&self, chunks: &[IndexChunk]) -> Result<Vec<String>, IronclawError> {
+    pub fn index_chunks(&self, chunks: &[IndexChunk]) -> Result<Vec<String>, ResiduumError> {
         if chunks.is_empty() {
             return Ok(Vec::new());
         }
@@ -266,7 +266,7 @@ impl MemoryIndex {
             doc.add_text(self.line_end_field, chunk.line_end.to_string());
 
             writer.add_document(doc).map_err(|e| {
-                IronclawError::Memory(format!("failed to add chunk to search index: {e}"))
+                ResiduumError::Memory(format!("failed to add chunk to search index: {e}"))
             })?;
             doc_ids.push(chunk.chunk_id.clone());
         }
@@ -279,7 +279,7 @@ impl MemoryIndex {
     ///
     /// # Errors
     /// Returns an error if the index writer fails.
-    pub fn delete_documents(&self, ids: &[String]) -> Result<(), IronclawError> {
+    pub fn delete_documents(&self, ids: &[String]) -> Result<(), ResiduumError> {
         if ids.is_empty() {
             return Ok(());
         }
@@ -301,7 +301,7 @@ impl MemoryIndex {
         query_str: &str,
         limit: usize,
         filters: &SearchFilters,
-    ) -> Result<Vec<SearchResult>, IronclawError> {
+    ) -> Result<Vec<SearchResult>, ResiduumError> {
         if query_str.trim().is_empty() {
             return Ok(Vec::new());
         }
@@ -338,7 +338,7 @@ impl MemoryIndex {
 
         let top_docs = searcher
             .search(&*query, &TopDocs::with_limit(fetch_limit))
-            .map_err(|e| IronclawError::Memory(format!("search failed: {e}")))?;
+            .map_err(|e| ResiduumError::Memory(format!("search failed: {e}")))?;
 
         let mut results = Vec::with_capacity(limit);
         for (score, doc_address) in &top_docs {
@@ -348,7 +348,7 @@ impl MemoryIndex {
 
             let doc: TantivyDocument = searcher
                 .doc(*doc_address)
-                .map_err(|e| IronclawError::Memory(format!("failed to fetch document: {e}")))?;
+                .map_err(|e| ResiduumError::Memory(format!("failed to fetch document: {e}")))?;
 
             let date = get_text(&doc, self.date_field);
             let ctx = get_text(&doc, self.ctx_field);
@@ -404,12 +404,12 @@ impl MemoryIndex {
     ///
     /// # Errors
     /// Returns an error if files cannot be read or the index cannot be written.
-    pub fn rebuild(&self, memory_dir: &Path) -> Result<RebuildResult, IronclawError> {
+    pub fn rebuild(&self, memory_dir: &Path) -> Result<RebuildResult, ResiduumError> {
         let mut writer = self.writer()?;
 
         writer
             .delete_all_documents()
-            .map_err(|e| IronclawError::Memory(format!("failed to clear search index: {e}")))?;
+            .map_err(|e| ResiduumError::Memory(format!("failed to clear search index: {e}")))?;
 
         let mut result = RebuildResult {
             obs_count: 0,
@@ -434,7 +434,7 @@ impl MemoryIndex {
         &self,
         memory_dir: &Path,
         manifest: &IndexManifest,
-    ) -> Result<(IndexManifest, SyncStats), IronclawError> {
+    ) -> Result<(IndexManifest, SyncStats), ResiduumError> {
         let mut stats = SyncStats {
             added: 0,
             updated: 0,
@@ -502,19 +502,19 @@ impl MemoryIndex {
     }
 
     /// Create an index writer with a reasonable memory budget.
-    fn writer(&self) -> Result<IndexWriter, IronclawError> {
+    fn writer(&self) -> Result<IndexWriter, ResiduumError> {
         self.index
             .writer(WRITER_MEMORY_BUDGET_BYTES)
-            .map_err(|e| IronclawError::Memory(format!("failed to create index writer: {e}")))
+            .map_err(|e| ResiduumError::Memory(format!("failed to create index writer: {e}")))
     }
 
     /// Commit the writer and reload the reader.
-    fn commit_and_reload(&self, writer: &mut IndexWriter) -> Result<(), IronclawError> {
+    fn commit_and_reload(&self, writer: &mut IndexWriter) -> Result<(), ResiduumError> {
         writer
             .commit()
-            .map_err(|e| IronclawError::Memory(format!("failed to commit search index: {e}")))?;
+            .map_err(|e| ResiduumError::Memory(format!("failed to commit search index: {e}")))?;
         self.reader.reload().map_err(|e| {
-            IronclawError::Memory(format!("failed to reload search index reader: {e}"))
+            ResiduumError::Memory(format!("failed to reload search index reader: {e}"))
         })?;
         Ok(())
     }
@@ -526,14 +526,14 @@ impl MemoryIndex {
         dir: &Path,
         memory_dir: &Path,
         result: &mut RebuildResult,
-    ) -> Result<(), IronclawError> {
+    ) -> Result<(), ResiduumError> {
         let entries = std::fs::read_dir(dir).map_err(|e| {
-            IronclawError::Memory(format!("failed to read directory {}: {e}", dir.display()))
+            ResiduumError::Memory(format!("failed to read directory {}: {e}", dir.display()))
         })?;
 
         for entry in entries {
             let entry = entry.map_err(|e| {
-                IronclawError::Memory(format!("failed to read directory entry: {e}"))
+                ResiduumError::Memory(format!("failed to read directory entry: {e}"))
             })?;
             let path = entry.path();
 
@@ -607,7 +607,7 @@ impl MemoryIndex {
         writer: &mut IndexWriter,
         abs_path: &Path,
         rel_path: &str,
-    ) -> Result<Vec<String>, IronclawError> {
+    ) -> Result<Vec<String>, ResiduumError> {
         let mut doc_ids = Vec::new();
 
         if rel_path.ends_with(".obs.json") {
@@ -646,7 +646,7 @@ fn add_obs_document(
     date: &str,
     ctx: &str,
     content: &str,
-) -> Result<(), IronclawError> {
+) -> Result<(), ResiduumError> {
     let mut doc = TantivyDocument::default();
     doc.add_text(idx.id_field, doc_id);
     doc.add_text(idx.source_type_field, "observation");
@@ -658,7 +658,7 @@ fn add_obs_document(
     doc.add_text(idx.line_end_field, "");
 
     writer.add_document(doc).map_err(|e| {
-        IronclawError::Memory(format!("failed to add observation to search index: {e}"))
+        ResiduumError::Memory(format!("failed to add observation to search index: {e}"))
     })?;
     Ok(())
 }
@@ -668,7 +668,7 @@ fn add_chunk_document(
     writer: &mut IndexWriter,
     idx: &MemoryIndex,
     chunk: &IndexChunk,
-) -> Result<(), IronclawError> {
+) -> Result<(), ResiduumError> {
     let mut doc = TantivyDocument::default();
     doc.add_text(idx.id_field, &chunk.chunk_id);
     doc.add_text(idx.source_type_field, "chunk");
@@ -681,7 +681,7 @@ fn add_chunk_document(
 
     writer
         .add_document(doc)
-        .map_err(|e| IronclawError::Memory(format!("failed to add chunk to search index: {e}")))?;
+        .map_err(|e| ResiduumError::Memory(format!("failed to add chunk to search index: {e}")))?;
     Ok(())
 }
 
@@ -720,12 +720,12 @@ fn parse_line_num(doc: &TantivyDocument, field: Field) -> Option<usize> {
 /// lives under `episodes/YYYY-MM/DD/`.
 pub(crate) fn parse_obs_file(
     path: &Path,
-) -> Result<(String, String, Vec<Observation>), IronclawError> {
+) -> Result<(String, String, Vec<Observation>), ResiduumError> {
     let content = std::fs::read_to_string(path)
-        .map_err(|e| IronclawError::Memory(format!("failed to read {}: {e}", path.display())))?;
+        .map_err(|e| ResiduumError::Memory(format!("failed to read {}: {e}", path.display())))?;
 
     let observations: Vec<Observation> = serde_json::from_str(&content).map_err(|e| {
-        IronclawError::Memory(format!(
+        ResiduumError::Memory(format!(
             "failed to parse obs file at {}: {e}",
             path.display()
         ))
@@ -794,14 +794,14 @@ fn collect_indexable_files(
     dir: &Path,
     base: &Path,
     out: &mut Vec<(String, String)>,
-) -> Result<(), IronclawError> {
+) -> Result<(), ResiduumError> {
     let entries = std::fs::read_dir(dir).map_err(|e| {
-        IronclawError::Memory(format!("failed to read directory {}: {e}", dir.display()))
+        ResiduumError::Memory(format!("failed to read directory {}: {e}", dir.display()))
     })?;
 
     for entry in entries {
         let entry = entry
-            .map_err(|e| IronclawError::Memory(format!("failed to read directory entry: {e}")))?;
+            .map_err(|e| ResiduumError::Memory(format!("failed to read directory entry: {e}")))?;
         let path = entry.path();
 
         if path.is_dir() {
@@ -823,7 +823,7 @@ fn collect_indexable_files(
 ///
 /// # Errors
 /// Returns an error if the index cannot be opened.
-pub fn create_shared_index(index_dir: &Path) -> Result<Arc<MemoryIndex>, IronclawError> {
+pub fn create_shared_index(index_dir: &Path) -> Result<Arc<MemoryIndex>, ResiduumError> {
     let index = MemoryIndex::open_or_create(index_dir)?;
     Ok(Arc::new(index))
 }
@@ -873,7 +873,7 @@ impl HybridSearcher {
         query: &str,
         limit: usize,
         filters: &SearchFilters,
-    ) -> Result<Vec<SearchResult>, IronclawError> {
+    ) -> Result<Vec<SearchResult>, ResiduumError> {
         let candidates = limit * self.cfg.candidate_multiplier;
 
         // BM25 search
@@ -900,13 +900,13 @@ impl HybridSearcher {
         let embed_response = ep
             .embed(&[query])
             .await
-            .map_err(|e| IronclawError::Memory(format!("failed to embed search query: {e}")))?;
+            .map_err(|e| ResiduumError::Memory(format!("failed to embed search query: {e}")))?;
         let query_vec = embed_response
             .embeddings
             .into_iter()
             .next()
             .ok_or_else(|| {
-                IronclawError::Memory("embedding provider returned no embeddings".to_string())
+                ResiduumError::Memory("embedding provider returned no embeddings".to_string())
             })?;
 
         // Vector search (sync, so use spawn_blocking)
@@ -921,7 +921,7 @@ impl HybridSearcher {
             vs_clone.search(&query_vec, vec_limit, &vec_filters)
         })
         .await
-        .map_err(|e| IronclawError::Memory(format!("vector search task failed: {e}")))??;
+        .map_err(|e| ResiduumError::Memory(format!("vector search task failed: {e}")))??;
 
         // Merge results
         let mut merged = merge_hybrid_results(&bm25_results, &vec_results, &self.cfg, limit);
@@ -1140,7 +1140,7 @@ mod tests {
     fn sample_observation(text: &str) -> Observation {
         Observation {
             timestamp: chrono::Utc::now().naive_utc(),
-            project_context: "ironclaw".to_string(),
+            project_context: "residuum".to_string(),
             source_episodes: vec!["ep-001".to_string()],
             visibility: Visibility::User,
             content: text.to_string(),
@@ -1185,7 +1185,7 @@ mod tests {
             chunk_id: "ep-001-c0".to_string(),
             episode_id: "ep-001".to_string(),
             date: "2026-02-19".to_string(),
-            context: "ironclaw".to_string(),
+            context: "residuum".to_string(),
             line_start: 2,
             line_end: 3,
             content: "user: how does the observer work?\nassistant: it monitors token counts"
@@ -1216,7 +1216,7 @@ mod tests {
             chunk_id: "ep-001-c0".to_string(),
             episode_id: "ep-001".to_string(),
             date: "2026-02-19".to_string(),
-            context: "ironclaw".to_string(),
+            context: "residuum".to_string(),
             line_start: 2,
             line_end: 3,
             content: "user: tell me about rust memory safety\nassistant: rust uses ownership"
@@ -1289,7 +1289,7 @@ mod tests {
     fn filter_by_project_context() {
         let (_dir, index) = create_test_index();
 
-        let obs1 = vec![sample_observation("ironclaw observation about testing")];
+        let obs1 = vec![sample_observation("residuum observation about testing")];
         index
             .index_observations("ep-001", "2026-02-19", &obs1)
             .unwrap();
@@ -1307,14 +1307,14 @@ mod tests {
                 "testing",
                 10,
                 &SearchFilters {
-                    project_context: Some("ironclaw".to_string()),
+                    project_context: Some("residuum".to_string()),
                     ..Default::default()
                 },
             )
             .unwrap();
         assert!(
-            filtered.iter().all(|r| r.context == "ironclaw"),
-            "all results should have ironclaw context"
+            filtered.iter().all(|r| r.context == "residuum"),
+            "all results should have residuum context"
         );
     }
 
@@ -1439,7 +1439,7 @@ mod tests {
             chunk_id: "ep-001-c0".to_string(),
             episode_id: "ep-001".to_string(),
             date: "2026-02-19".to_string(),
-            context: "ironclaw".to_string(),
+            context: "residuum".to_string(),
             line_start: 2,
             line_end: 3,
             content: "user: describe the layout\nassistant: it is flat".to_string(),
@@ -1558,7 +1558,7 @@ mod tests {
             chunk_id: "ep-001-c0".to_string(),
             episode_id: "ep-001".to_string(),
             date: "2026-02-19".to_string(),
-            context: "ironclaw".to_string(),
+            context: "residuum".to_string(),
             line_start: 5,
             line_end: 8,
             content: "user: question about line ranges\nassistant: answer about ranges".to_string(),
@@ -1606,14 +1606,14 @@ mod tests {
 
         // Index diverse data
         let obs1 = vec![sample_observation(
-            "early ironclaw observation about search",
+            "early residuum observation about search",
         )];
         index
             .index_observations("ep-001", "2026-02-15", &obs1)
             .unwrap();
 
         let obs2 = vec![sample_observation(
-            "later ironclaw observation about search",
+            "later residuum observation about search",
         )];
         index
             .index_observations("ep-002", "2026-02-20", &obs2)
@@ -1627,13 +1627,13 @@ mod tests {
             .index_observations("ep-003", "2026-02-20", &obs3)
             .unwrap();
 
-        // Filter: ironclaw + after 2026-02-18
+        // Filter: residuum + after 2026-02-18
         let results = index
             .search(
                 "search",
                 10,
                 &SearchFilters {
-                    project_context: Some("ironclaw".to_string()),
+                    project_context: Some("residuum".to_string()),
                     date_from: Some("2026-02-18".to_string()),
                     ..Default::default()
                 },
@@ -1724,7 +1724,7 @@ mod tests {
             source_type: "observation".to_string(),
             episode_id: "ep-001".to_string(),
             date: "2026-02-19".to_string(),
-            context: "ironclaw".to_string(),
+            context: "residuum".to_string(),
             line_start: None,
             line_end: None,
             snippet: format!("bm25 content for {id}"),
@@ -1738,7 +1738,7 @@ mod tests {
             source_type: "observation".to_string(),
             episode_id: "ep-001".to_string(),
             date: "2026-02-19".to_string(),
-            context: "ironclaw".to_string(),
+            context: "residuum".to_string(),
             content: format!("vec content for {id}"),
             line_start: None,
             line_end: None,

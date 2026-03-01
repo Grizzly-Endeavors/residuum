@@ -9,7 +9,7 @@ use std::sync::Mutex;
 use rusqlite::Connection;
 use zerocopy::IntoBytes;
 
-use crate::error::IronclawError;
+use crate::error::ResiduumError;
 use crate::memory::types::{IndexChunk, Observation};
 
 /// A vector search result from either the observation or chunk table.
@@ -84,12 +84,12 @@ impl VectorStore {
     ///
     /// # Errors
     /// Returns an error if the database cannot be opened or schema creation fails.
-    pub fn open_or_create(db_path: &Path, dim: usize) -> Result<Self, IronclawError> {
+    pub fn open_or_create(db_path: &Path, dim: usize) -> Result<Self, ResiduumError> {
         register_sqlite_vec_extension();
 
         if let Some(parent) = db_path.parent() {
             std::fs::create_dir_all(parent).map_err(|e| {
-                IronclawError::Memory(format!(
+                ResiduumError::Memory(format!(
                     "failed to create vector store directory at {}: {e}",
                     parent.display()
                 ))
@@ -97,7 +97,7 @@ impl VectorStore {
         }
 
         let conn = Connection::open(db_path).map_err(|e| {
-            IronclawError::Memory(format!(
+            ResiduumError::Memory(format!(
                 "failed to open vector store at {}: {e}",
                 db_path.display()
             ))
@@ -105,7 +105,7 @@ impl VectorStore {
 
         conn.pragma_update(None, "journal_mode", "WAL")
             .map_err(|e| {
-                IronclawError::Memory(format!("failed to set WAL mode for vector store: {e}"))
+                ResiduumError::Memory(format!("failed to set WAL mode for vector store: {e}"))
             })?;
 
         create_tables(&conn, dim)?;
@@ -134,12 +134,12 @@ impl VectorStore {
         date: &str,
         observations: &[Observation],
         embeddings: &[Vec<f32>],
-    ) -> Result<Vec<String>, IronclawError> {
+    ) -> Result<Vec<String>, ResiduumError> {
         if observations.is_empty() {
             return Ok(Vec::new());
         }
         if observations.len() != embeddings.len() {
-            return Err(IronclawError::Memory(format!(
+            return Err(ResiduumError::Memory(format!(
                 "observation count ({}) does not match embedding count ({})",
                 observations.len(),
                 embeddings.len()
@@ -152,7 +152,7 @@ impl VectorStore {
                 "INSERT INTO obs_vectors(obs_id, episode_id, date, context, content, embedding)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
             )
-            .map_err(|e| IronclawError::Memory(format!("failed to prepare obs insert: {e}")))?;
+            .map_err(|e| ResiduumError::Memory(format!("failed to prepare obs insert: {e}")))?;
 
         let mut doc_ids = Vec::with_capacity(observations.len());
         for (i, (obs, emb)) in observations.iter().zip(embeddings.iter()).enumerate() {
@@ -171,7 +171,7 @@ impl VectorStore {
                     tracing::debug!(doc_id, "observation vector already exists, skipping");
                 }
                 Err(e) => {
-                    return Err(IronclawError::Memory(format!(
+                    return Err(ResiduumError::Memory(format!(
                         "failed to insert observation vector {doc_id}: {e}"
                     )));
                 }
@@ -190,12 +190,12 @@ impl VectorStore {
         &self,
         chunks: &[IndexChunk],
         embeddings: &[Vec<f32>],
-    ) -> Result<Vec<String>, IronclawError> {
+    ) -> Result<Vec<String>, ResiduumError> {
         if chunks.is_empty() {
             return Ok(Vec::new());
         }
         if chunks.len() != embeddings.len() {
-            return Err(IronclawError::Memory(format!(
+            return Err(ResiduumError::Memory(format!(
                 "chunk count ({}) does not match embedding count ({})",
                 chunks.len(),
                 embeddings.len()
@@ -209,7 +209,7 @@ impl VectorStore {
                  line_start, line_end, embedding)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
             )
-            .map_err(|e| IronclawError::Memory(format!("failed to prepare chunk insert: {e}")))?;
+            .map_err(|e| ResiduumError::Memory(format!("failed to prepare chunk insert: {e}")))?;
 
         let mut doc_ids = Vec::with_capacity(chunks.len());
         for (chunk, emb) in chunks.iter().zip(embeddings.iter()) {
@@ -234,7 +234,7 @@ impl VectorStore {
                     );
                 }
                 Err(e) => {
-                    return Err(IronclawError::Memory(format!(
+                    return Err(ResiduumError::Memory(format!(
                         "failed to insert chunk vector {}: {e}",
                         chunk.chunk_id
                     )));
@@ -257,7 +257,7 @@ impl VectorStore {
         query_embedding: &[f32],
         limit: usize,
         filters: &VectorSearchFilters,
-    ) -> Result<Vec<VectorSearchResult>, IronclawError> {
+    ) -> Result<Vec<VectorSearchResult>, ResiduumError> {
         self.check_dim(query_embedding)?;
         let conn = self.lock_conn()?;
 
@@ -286,7 +286,7 @@ impl VectorStore {
     ///
     /// # Errors
     /// Returns an error if the delete fails.
-    pub fn delete_by_doc_ids(&self, ids: &[String]) -> Result<(), IronclawError> {
+    pub fn delete_by_doc_ids(&self, ids: &[String]) -> Result<(), ResiduumError> {
         if ids.is_empty() {
             return Ok(());
         }
@@ -296,11 +296,11 @@ impl VectorStore {
             // Try both tables — a given ID only exists in one
             conn.execute("DELETE FROM obs_vectors WHERE obs_id = ?1", [id])
                 .map_err(|e| {
-                    IronclawError::Memory(format!("failed to delete from obs_vectors: {e}"))
+                    ResiduumError::Memory(format!("failed to delete from obs_vectors: {e}"))
                 })?;
             conn.execute("DELETE FROM chunk_vectors WHERE chunk_id = ?1", [id])
                 .map_err(|e| {
-                    IronclawError::Memory(format!("failed to delete from chunk_vectors: {e}"))
+                    ResiduumError::Memory(format!("failed to delete from chunk_vectors: {e}"))
                 })?;
         }
 
@@ -311,16 +311,16 @@ impl VectorStore {
     ///
     /// # Errors
     /// Returns an error if the query fails.
-    pub fn has_observation(&self, obs_id: &str) -> Result<bool, IronclawError> {
+    pub fn has_observation(&self, obs_id: &str) -> Result<bool, ResiduumError> {
         let conn = self.lock_conn()?;
         let mut stmt = conn
             .prepare_cached("SELECT 1 FROM obs_vectors WHERE obs_id = ?1 LIMIT 1")
             .map_err(|e| {
-                IronclawError::Memory(format!("failed to prepare obs existence check: {e}"))
+                ResiduumError::Memory(format!("failed to prepare obs existence check: {e}"))
             })?;
         let exists = stmt
             .exists(rusqlite::params![obs_id])
-            .map_err(|e| IronclawError::Memory(format!("obs existence check failed: {e}")))?;
+            .map_err(|e| ResiduumError::Memory(format!("obs existence check failed: {e}")))?;
         Ok(exists)
     }
 
@@ -328,16 +328,16 @@ impl VectorStore {
     ///
     /// # Errors
     /// Returns an error if the query fails.
-    pub fn has_chunk(&self, chunk_id: &str) -> Result<bool, IronclawError> {
+    pub fn has_chunk(&self, chunk_id: &str) -> Result<bool, ResiduumError> {
         let conn = self.lock_conn()?;
         let mut stmt = conn
             .prepare_cached("SELECT 1 FROM chunk_vectors WHERE chunk_id = ?1 LIMIT 1")
             .map_err(|e| {
-                IronclawError::Memory(format!("failed to prepare chunk existence check: {e}"))
+                ResiduumError::Memory(format!("failed to prepare chunk existence check: {e}"))
             })?;
         let exists = stmt
             .exists(rusqlite::params![chunk_id])
-            .map_err(|e| IronclawError::Memory(format!("chunk existence check failed: {e}")))?;
+            .map_err(|e| ResiduumError::Memory(format!("chunk existence check failed: {e}")))?;
         Ok(exists)
     }
 
@@ -345,25 +345,25 @@ impl VectorStore {
     ///
     /// # Errors
     /// Returns an error if the tables cannot be recreated.
-    pub fn clear(&self) -> Result<(), IronclawError> {
+    pub fn clear(&self) -> Result<(), ResiduumError> {
         let conn = self.lock_conn()?;
         conn.execute_batch("DROP TABLE IF EXISTS obs_vectors; DROP TABLE IF EXISTS chunk_vectors;")
-            .map_err(|e| IronclawError::Memory(format!("failed to drop vector tables: {e}")))?;
+            .map_err(|e| ResiduumError::Memory(format!("failed to drop vector tables: {e}")))?;
         create_tables(&conn, self.dim)?;
         Ok(())
     }
 
     /// Lock the connection mutex.
-    fn lock_conn(&self) -> Result<std::sync::MutexGuard<'_, Connection>, IronclawError> {
+    fn lock_conn(&self) -> Result<std::sync::MutexGuard<'_, Connection>, ResiduumError> {
         self.conn
             .lock()
-            .map_err(|e| IronclawError::Memory(format!("vector store lock poisoned: {e}")))
+            .map_err(|e| ResiduumError::Memory(format!("vector store lock poisoned: {e}")))
     }
 
     /// Validate that an embedding has the expected dimension.
-    fn check_dim(&self, embedding: &[f32]) -> Result<(), IronclawError> {
+    fn check_dim(&self, embedding: &[f32]) -> Result<(), ResiduumError> {
         if embedding.len() != self.dim {
-            return Err(IronclawError::Memory(format!(
+            return Err(ResiduumError::Memory(format!(
                 "embedding dimension mismatch: expected {}, got {}",
                 self.dim,
                 embedding.len()
@@ -389,7 +389,7 @@ fn is_unique_violation(err: &rusqlite::Error) -> bool {
 }
 
 /// Create the vec0 virtual tables if they don't exist.
-fn create_tables(conn: &Connection, dim: usize) -> Result<(), IronclawError> {
+fn create_tables(conn: &Connection, dim: usize) -> Result<(), ResiduumError> {
     conn.execute_batch(&format!(
         "CREATE VIRTUAL TABLE IF NOT EXISTS obs_vectors USING vec0(
             obs_id TEXT PRIMARY KEY,
@@ -411,7 +411,7 @@ fn create_tables(conn: &Connection, dim: usize) -> Result<(), IronclawError> {
             embedding FLOAT[{dim}] DISTANCE_METRIC=cosine
         );"
     ))
-    .map_err(|e| IronclawError::Memory(format!("failed to create vector tables: {e}")))?;
+    .map_err(|e| ResiduumError::Memory(format!("failed to create vector tables: {e}")))?;
     Ok(())
 }
 
@@ -421,7 +421,7 @@ fn search_obs_table(
     query_embedding: &[f32],
     limit: usize,
     filters: &VectorSearchFilters,
-) -> Result<Vec<VectorSearchResult>, IronclawError> {
+) -> Result<Vec<VectorSearchResult>, ResiduumError> {
     let (where_clause, params) = build_filter_clauses(filters);
 
     let sql = format!(
@@ -438,7 +438,7 @@ fn search_obs_table(
     let conn_ref = conn;
     let mut stmt = conn_ref
         .prepare_cached(&sql)
-        .map_err(|e| IronclawError::Memory(format!("failed to prepare obs search: {e}")))?;
+        .map_err(|e| ResiduumError::Memory(format!("failed to prepare obs search: {e}")))?;
 
     // Build parameter list: embedding bytes, limit, then filter values
     let mut all_params: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
@@ -463,12 +463,12 @@ fn search_obs_table(
                 distance: row.get(5)?,
             })
         })
-        .map_err(|e| IronclawError::Memory(format!("obs vector search failed: {e}")))?;
+        .map_err(|e| ResiduumError::Memory(format!("obs vector search failed: {e}")))?;
 
     let mut results = Vec::new();
     for row in rows {
         results.push(
-            row.map_err(|e| IronclawError::Memory(format!("failed to read obs search row: {e}")))?,
+            row.map_err(|e| ResiduumError::Memory(format!("failed to read obs search row: {e}")))?,
         );
     }
     Ok(results)
@@ -480,7 +480,7 @@ fn search_chunk_table(
     query_embedding: &[f32],
     limit: usize,
     filters: &VectorSearchFilters,
-) -> Result<Vec<VectorSearchResult>, IronclawError> {
+) -> Result<Vec<VectorSearchResult>, ResiduumError> {
     let (where_clause, params) = build_filter_clauses(filters);
 
     let sql = format!(
@@ -496,7 +496,7 @@ fn search_chunk_table(
 
     let mut stmt = conn
         .prepare_cached(&sql)
-        .map_err(|e| IronclawError::Memory(format!("failed to prepare chunk search: {e}")))?;
+        .map_err(|e| ResiduumError::Memory(format!("failed to prepare chunk search: {e}")))?;
 
     let mut all_params: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
     all_params.push(Box::new(query_embedding.as_bytes().to_vec()));
@@ -522,13 +522,13 @@ fn search_chunk_table(
                 distance: row.get(7)?,
             })
         })
-        .map_err(|e| IronclawError::Memory(format!("chunk vector search failed: {e}")))?;
+        .map_err(|e| ResiduumError::Memory(format!("chunk vector search failed: {e}")))?;
 
     let mut results = Vec::new();
     for row in rows {
         results.push(
             row.map_err(|e| {
-                IronclawError::Memory(format!("failed to read chunk search row: {e}"))
+                ResiduumError::Memory(format!("failed to read chunk search row: {e}"))
             })?,
         );
     }
@@ -582,7 +582,7 @@ mod tests {
     fn sample_observation(text: &str) -> Observation {
         Observation {
             timestamp: chrono::Utc::now().naive_utc(),
-            project_context: "ironclaw".to_string(),
+            project_context: "residuum".to_string(),
             source_episodes: vec!["ep-001".to_string()],
             visibility: Visibility::User,
             content: text.to_string(),
@@ -637,7 +637,7 @@ mod tests {
             chunk_id: "ep-001-c0".to_string(),
             episode_id: "ep-001".to_string(),
             date: "2026-02-19".to_string(),
-            context: "ironclaw".to_string(),
+            context: "residuum".to_string(),
             line_start: 2,
             line_end: 3,
             content: "user: hello\nassistant: hi there".to_string(),
@@ -768,7 +768,7 @@ mod tests {
     fn search_with_context_filter() {
         let (_dir, store) = create_test_store();
 
-        let obs1 = vec![sample_observation("ironclaw data")];
+        let obs1 = vec![sample_observation("residuum data")];
         let emb1 = vec![sample_embedding(0.1)];
         store
             .insert_observations("ep-001", "2026-02-19", &obs1, &emb1)
@@ -789,15 +789,15 @@ mod tests {
                 &query,
                 5,
                 &VectorSearchFilters {
-                    project_context: Some("ironclaw".to_string()),
+                    project_context: Some("residuum".to_string()),
                     ..Default::default()
                 },
             )
             .unwrap();
 
         assert!(
-            results.iter().all(|r| r.context == "ironclaw"),
-            "all results should have ironclaw context"
+            results.iter().all(|r| r.context == "residuum"),
+            "all results should have residuum context"
         );
     }
 
@@ -863,7 +863,7 @@ mod tests {
             chunk_id: "ep-001-c0".to_string(),
             episode_id: "ep-001".to_string(),
             date: "2026-02-19".to_string(),
-            context: "ironclaw".to_string(),
+            context: "residuum".to_string(),
             line_start: 1,
             line_end: 2,
             content: "test content".to_string(),
@@ -908,7 +908,7 @@ mod tests {
             chunk_id: "ep-001-c0".to_string(),
             episode_id: "ep-001".to_string(),
             date: "2026-02-19".to_string(),
-            context: "ironclaw".to_string(),
+            context: "residuum".to_string(),
             line_start: 1,
             line_end: 2,
             content: "test content".to_string(),

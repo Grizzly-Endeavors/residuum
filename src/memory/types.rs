@@ -7,7 +7,7 @@ use std::path::Path;
 use chrono::NaiveDateTime;
 use serde::{Deserialize, Serialize};
 
-use crate::error::IronclawError;
+use crate::error::ResiduumError;
 
 /// A compressed episode extracted from a conversation segment.
 ///
@@ -203,16 +203,16 @@ impl IndexManifest {
     ///
     /// # Errors
     /// Returns an error if the file exists but cannot be read or parsed.
-    pub async fn load(path: &Path) -> Result<Self, IronclawError> {
+    pub async fn load(path: &Path) -> Result<Self, ResiduumError> {
         match tokio::fs::read_to_string(path).await {
             Ok(contents) => serde_json::from_str(&contents).map_err(|e| {
-                IronclawError::Memory(format!(
+                ResiduumError::Memory(format!(
                     "failed to parse index manifest at {}: {e}",
                     path.display()
                 ))
             }),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Self::new()),
-            Err(e) => Err(IronclawError::Memory(format!(
+            Err(e) => Err(ResiduumError::Memory(format!(
                 "failed to read index manifest at {}: {e}",
                 path.display()
             ))),
@@ -223,13 +223,13 @@ impl IndexManifest {
     ///
     /// # Errors
     /// Returns an error if the file cannot be written.
-    pub async fn save(&self, path: &Path) -> Result<(), IronclawError> {
+    pub async fn save(&self, path: &Path) -> Result<(), ResiduumError> {
         let json = serde_json::to_string_pretty(self).map_err(|e| {
-            IronclawError::Memory(format!("failed to serialize index manifest: {e}"))
+            ResiduumError::Memory(format!("failed to serialize index manifest: {e}"))
         })?;
 
         let dir = path.parent().ok_or_else(|| {
-            IronclawError::Memory(format!(
+            ResiduumError::Memory(format!(
                 "index manifest path has no parent directory: {}",
                 path.display()
             ))
@@ -238,14 +238,14 @@ impl IndexManifest {
         let tmp_path = dir.join(".index_manifest.json.tmp");
 
         tokio::fs::write(&tmp_path, &json).await.map_err(|e| {
-            IronclawError::Memory(format!(
+            ResiduumError::Memory(format!(
                 "failed to write temporary index manifest at {}: {e}",
                 tmp_path.display()
             ))
         })?;
 
         tokio::fs::rename(&tmp_path, path).await.map_err(|e| {
-            IronclawError::Memory(format!(
+            ResiduumError::Memory(format!(
                 "failed to rename index manifest from {} to {}: {e}",
                 tmp_path.display(),
                 path.display()
@@ -277,7 +277,7 @@ mod tests {
                 .unwrap()
                 .and_hms_opt(0, 0, 0)
                 .unwrap(),
-            project_context: "ironclaw/memory".to_string(),
+            project_context: "residuum/memory".to_string(),
             source_episodes: vec!["ep-001".to_string()],
             visibility: Visibility::User,
             content: "tantivy provides BM25 search without C dependencies".to_string(),
@@ -295,7 +295,7 @@ mod tests {
             "content should round-trip"
         );
         assert_eq!(
-            deserialized.project_context, "ironclaw/memory",
+            deserialized.project_context, "residuum/memory",
             "project_context should round-trip"
         );
         assert_eq!(
@@ -361,7 +361,7 @@ mod tests {
         let formatted = obs.to_string();
         assert_eq!(
             formatted,
-            "[2024-02-19T00:00] | [ep-001] | ironclaw/memory | user\n  tantivy provides BM25 search without C dependencies"
+            "[2024-02-19T00:00] | [ep-001] | residuum/memory | user\n  tantivy provides BM25 search without C dependencies"
         );
     }
 
@@ -374,7 +374,7 @@ mod tests {
         let formatted = obs.to_string();
         assert_eq!(
             formatted,
-            "[2024-02-19T00:00] | ironclaw/memory | user\n  tantivy provides BM25 search without C dependencies"
+            "[2024-02-19T00:00] | residuum/memory | user\n  tantivy provides BM25 search without C dependencies"
         );
     }
 
@@ -423,7 +423,7 @@ mod tests {
             chunk_id: "ep-001-c0".to_string(),
             episode_id: "ep-001".to_string(),
             date: "2026-02-19".to_string(),
-            context: "ironclaw".to_string(),
+            context: "residuum".to_string(),
             line_start: 2,
             line_end: 3,
             content: "user: hello\nassistant: hi there".to_string(),

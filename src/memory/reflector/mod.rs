@@ -9,7 +9,7 @@ mod prompt;
 use chrono_tz::Tz;
 
 use crate::config::DEFAULT_REFLECTOR_THRESHOLD;
-use crate::error::IronclawError;
+use crate::error::ResiduumError;
 use crate::memory::log_store::{load_observation_log, save_observation_log};
 use crate::memory::tokens::estimate_tokens;
 use crate::memory::types::ObservationLog;
@@ -84,7 +84,7 @@ impl Reflector {
     ///
     /// # Errors
     /// Returns an error if the LLM call fails or file persistence fails.
-    pub async fn reflect(&self, layout: &WorkspaceLayout) -> Result<ObservationLog, IronclawError> {
+    pub async fn reflect(&self, layout: &WorkspaceLayout) -> Result<ObservationLog, ResiduumError> {
         let log = load_observation_log(&layout.observations_json()).await?;
 
         if log.is_empty() {
@@ -101,7 +101,7 @@ impl Reflector {
         // Serialize the flat observations for the LLM prompt — keep full objects
         // so the model has project_context and timestamp info for intelligent merging.
         let serialized = serde_json::to_string_pretty(&log.observations)
-            .map_err(|e| IronclawError::Memory(format!("failed to serialize observations: {e}")))?;
+            .map_err(|e| ResiduumError::Memory(format!("failed to serialize observations: {e}")))?;
 
         let messages = build_reflection_prompt(&serialized, &content_guidance);
 
@@ -117,13 +117,13 @@ impl Reflector {
             .provider
             .complete(&messages, &[], &options)
             .await
-            .map_err(IronclawError::Model)?;
+            .map_err(ResiduumError::Model)?;
 
         // Parse the object-array response into a compressed log.
         let compressed = parse_reflection_response(&response.content, self.config.tz)?;
 
         if compressed.is_empty() {
-            return Err(IronclawError::Memory(
+            return Err(ResiduumError::Memory(
                 "reflector returned empty observations, refusing to replace observation log".into(),
             ));
         }
@@ -169,8 +169,8 @@ mod tests {
 
     const COMPRESSED_RESPONSE: &str = r#"{
         "observations": [
-            {"content": "workspace uses flat layout", "timestamp": "2026-02-21T14:30", "project_context": "ironclaw/workspace", "visibility": "user"},
-            {"content": "identity files loaded at startup", "timestamp": "2026-02-21T14:31", "project_context": "ironclaw/workspace", "visibility": "user"}
+            {"content": "workspace uses flat layout", "timestamp": "2026-02-21T14:30", "project_context": "residuum/workspace", "visibility": "user"},
+            {"content": "identity files loaded at startup", "timestamp": "2026-02-21T14:31", "project_context": "residuum/workspace", "visibility": "user"}
         ]
     }"#;
 
@@ -225,7 +225,7 @@ mod tests {
         );
         assert_eq!(
             log.observations.first().map(|o| o.project_context.as_str()),
-            Some("ironclaw/workspace"),
+            Some("residuum/workspace"),
             "project_context should be preserved from JSON"
         );
         // Reflector observations have empty source_episodes
@@ -247,7 +247,7 @@ mod tests {
     #[test]
     fn parse_reflection_preserves_project_context() {
         let response = r#"[
-            {"content": "obs from ironclaw", "timestamp": "2026-02-21T14:30", "project_context": "ironclaw/memory", "visibility": "user"},
+            {"content": "obs from residuum", "timestamp": "2026-02-21T14:30", "project_context": "residuum/memory", "visibility": "user"},
             {"content": "obs from devops", "timestamp": "2026-02-21T14:31", "project_context": "devops/k8s", "visibility": "user"}
         ]"#;
         let log = parse_reflection_response(response, chrono_tz::UTC).unwrap();
@@ -255,7 +255,7 @@ mod tests {
         assert_eq!(log.len(), 2, "should have two observations");
         assert_eq!(
             log.observations.first().map(|o| o.project_context.as_str()),
-            Some("ironclaw/memory"),
+            Some("residuum/memory"),
             "first project_context should round-trip"
         );
         assert_eq!(
@@ -321,8 +321,8 @@ mod tests {
 
         // Write initial log with 2 observations
         let mut initial_log = ObservationLog::new();
-        initial_log.push(sample_observation("ep-001", "ironclaw/workspace"));
-        initial_log.push(sample_observation("ep-002", "ironclaw/workspace"));
+        initial_log.push(sample_observation("ep-001", "residuum/workspace"));
+        initial_log.push(sample_observation("ep-002", "residuum/workspace"));
         save_observation_log(&layout.observations_json(), &initial_log)
             .await
             .unwrap();
@@ -409,8 +409,8 @@ mod tests {
             .unwrap();
 
         let mut initial_log = ObservationLog::new();
-        initial_log.push(sample_observation("ep-001", "ironclaw/workspace"));
-        initial_log.push(sample_observation("ep-002", "ironclaw/workspace"));
+        initial_log.push(sample_observation("ep-001", "residuum/workspace"));
+        initial_log.push(sample_observation("ep-002", "residuum/workspace"));
         save_observation_log(&layout.observations_json(), &initial_log)
             .await
             .unwrap();

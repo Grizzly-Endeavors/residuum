@@ -9,7 +9,7 @@ use std::path::Path;
 use chrono::NaiveDateTime;
 use serde::{Deserialize, Serialize};
 
-use crate::error::IronclawError;
+use crate::error::ResiduumError;
 use crate::memory::types::Visibility;
 use crate::models::Message;
 
@@ -40,17 +40,17 @@ pub struct RecentMessage {
 ///
 /// # Errors
 /// Returns an error if the file exists but cannot be read or parsed.
-pub async fn load_recent_messages(path: &Path) -> Result<Vec<RecentMessage>, IronclawError> {
+pub async fn load_recent_messages(path: &Path) -> Result<Vec<RecentMessage>, ResiduumError> {
     match tokio::fs::read_to_string(path).await {
         Ok(contents) if contents.trim().is_empty() => Ok(Vec::new()),
         Ok(contents) => serde_json::from_str(&contents).map_err(|e| {
-            IronclawError::Memory(format!(
+            ResiduumError::Memory(format!(
                 "failed to parse recent messages at {}: {e}",
                 path.display()
             ))
         }),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
-        Err(e) => Err(IronclawError::Memory(format!(
+        Err(e) => Err(ResiduumError::Memory(format!(
             "failed to read recent messages at {}: {e}",
             path.display()
         ))),
@@ -73,7 +73,7 @@ pub struct AgentRestore {
 ///
 /// # Errors
 /// Returns an error if the file exists but cannot be read or parsed.
-pub async fn load_messages_for_agent(path: &Path) -> Result<AgentRestore, IronclawError> {
+pub async fn load_messages_for_agent(path: &Path) -> Result<AgentRestore, ResiduumError> {
     let recent = load_recent_messages(path).await?;
 
     let last_user_message_at = recent
@@ -99,12 +99,12 @@ pub async fn load_messages_for_agent(path: &Path) -> Result<AgentRestore, Ironcl
 async fn save_recent_messages(
     path: &Path,
     messages: &[RecentMessage],
-) -> Result<(), IronclawError> {
+) -> Result<(), ResiduumError> {
     let json = serde_json::to_string_pretty(messages)
-        .map_err(|e| IronclawError::Memory(format!("failed to serialize recent messages: {e}")))?;
+        .map_err(|e| ResiduumError::Memory(format!("failed to serialize recent messages: {e}")))?;
 
     let dir = path.parent().ok_or_else(|| {
-        IronclawError::Memory(format!(
+        ResiduumError::Memory(format!(
             "recent messages path has no parent directory: {}",
             path.display()
         ))
@@ -113,14 +113,14 @@ async fn save_recent_messages(
     let tmp_path = dir.join(".recent_messages.json.tmp");
 
     tokio::fs::write(&tmp_path, &json).await.map_err(|e| {
-        IronclawError::Memory(format!(
+        ResiduumError::Memory(format!(
             "failed to write temporary recent messages at {}: {e}",
             tmp_path.display()
         ))
     })?;
 
     tokio::fs::rename(&tmp_path, path).await.map_err(|e| {
-        IronclawError::Memory(format!(
+        ResiduumError::Memory(format!(
             "failed to rename recent messages from {} to {}: {e}",
             tmp_path.display(),
             path.display()
@@ -143,7 +143,7 @@ pub async fn append_recent_messages(
     project_context: &str,
     visibility: Visibility,
     tz: chrono_tz::Tz,
-) -> Result<(), IronclawError> {
+) -> Result<(), ResiduumError> {
     if new_messages.is_empty() {
         return Ok(());
     }
@@ -162,7 +162,7 @@ pub async fn append_recent_messages(
 ///
 /// # Errors
 /// Returns an error if the file cannot be written.
-pub async fn clear_recent_messages(path: &Path) -> Result<(), IronclawError> {
+pub async fn clear_recent_messages(path: &Path) -> Result<(), ResiduumError> {
     save_recent_messages(path, &[]).await
 }
 

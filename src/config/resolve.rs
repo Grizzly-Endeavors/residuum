@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
-use crate::error::IronclawError;
+use crate::error::ResiduumError;
 use crate::models::retry::RetryConfig;
 
 use super::Config;
@@ -26,7 +26,7 @@ use super::types::{
 /// Build a `Config` from an optional config file and environment variables.
 ///
 /// # Errors
-/// Returns `IronclawError::Config` if the model spec cannot be parsed or
+/// Returns `ResiduumError::Config` if the model spec cannot be parsed or
 /// the workspace directory cannot be determined.
 #[expect(
     clippy::too_many_lines,
@@ -35,15 +35,15 @@ use super::types::{
 pub(super) fn from_file_and_env(
     file: Option<&ConfigFile>,
     config_dir: &Path,
-) -> Result<Config, IronclawError> {
+) -> Result<Config, ResiduumError> {
     warn_deprecated_env_vars();
 
     let secrets = SecretStore::load(config_dir)?;
     let providers_map = file.and_then(|f| f.providers.as_ref());
     let models = file.and_then(|f| f.models.as_ref());
 
-    // Resolve main: IRONCLAW_MODEL env > models.main > default
-    let main = if let Ok(env_model) = std::env::var("IRONCLAW_MODEL") {
+    // Resolve main: RESIDUUM_MODEL env > models.main > default
+    let main = if let Ok(env_model) = std::env::var("RESIDUUM_MODEL") {
         vec![resolve_model_string(&env_model, providers_map, &secrets)?]
     } else if let Some(main_spec) = models.and_then(|m| m.main.clone()) {
         resolve_model_chain(main_spec, providers_map, &secrets)?
@@ -55,8 +55,8 @@ pub(super) fn from_file_and_env(
         )?]
     };
 
-    // IRONCLAW_PROVIDER_URL overrides first provider in main chain only
-    let main = if let Ok(url) = std::env::var("IRONCLAW_PROVIDER_URL") {
+    // RESIDUUM_PROVIDER_URL overrides first provider in main chain only
+    let main = if let Ok(url) = std::env::var("RESIDUUM_PROVIDER_URL") {
         let mut chain = main;
         if let Some(first) = chain.first_mut() {
             first.provider_url = url;
@@ -98,7 +98,7 @@ pub(super) fn from_file_and_env(
     if let Some(ref spec) = embedding
         && spec.model.kind == ProviderKind::Anthropic
     {
-        return Err(IronclawError::Config(
+        return Err(ResiduumError::Config(
             "anthropic does not offer an embeddings API; \
              use openai, ollama, or gemini for models.embedding"
                 .to_string(),
@@ -106,7 +106,7 @@ pub(super) fn from_file_and_env(
     }
 
     // Workspace dir: env > file > default
-    let workspace_dir = std::env::var("IRONCLAW_WORKSPACE")
+    let workspace_dir = std::env::var("RESIDUUM_WORKSPACE")
         .ok()
         .or_else(|| file.and_then(|f| f.workspace_dir.clone()))
         .map(|s| {
@@ -182,18 +182,18 @@ pub(super) fn from_file_and_env(
         cfg
     };
 
-    let timezone_str = std::env::var("IRONCLAW_TIMEZONE")
+    let timezone_str = std::env::var("RESIDUUM_TIMEZONE")
         .ok()
         .or_else(|| file.and_then(|f| f.timezone.clone()));
     let tz_name = timezone_str.ok_or_else(|| {
-        IronclawError::Config(
-            "timezone is required: set IRONCLAW_TIMEZONE env var or 'timezone' in config.toml \
+        ResiduumError::Config(
+            "timezone is required: set RESIDUUM_TIMEZONE env var or 'timezone' in config.toml \
              (IANA name, e.g. \"America/New_York\")"
                 .to_string(),
         )
     })?;
     let timezone: chrono_tz::Tz = tz_name.parse().map_err(|_err| {
-        IronclawError::Config(format!(
+        ResiduumError::Config(format!(
             "invalid timezone '{tz_name}': expected IANA name like 'America/New_York' or 'UTC'"
         ))
     })?;
@@ -233,25 +233,25 @@ pub(super) fn from_file_and_env(
 ///   `url`, and `api_key` are used.
 /// - Otherwise `provider_part` is treated as an implicit `ProviderKind` name
 ///   (e.g. `"anthropic"`). API key falls back to provider-specific env var,
-///   then `IRONCLAW_API_KEY`.
+///   then `RESIDUUM_API_KEY`.
 ///
 /// # Errors
-/// Returns `IronclawError::Config` if the model string format is invalid,
+/// Returns `ResiduumError::Config` if the model string format is invalid,
 /// the provider is unknown, or an explicit provider entry references an
 /// unknown type.
 fn resolve_model_string(
     model_str: &str,
     providers_map: Option<&HashMap<String, ProviderEntryFile>>,
     secrets: &SecretStore,
-) -> Result<ProviderSpec, IronclawError> {
+) -> Result<ProviderSpec, ResiduumError> {
     let (provider_part, model_name) = model_str.split_once('/').ok_or_else(|| {
-        IronclawError::Config(format!(
+        ResiduumError::Config(format!(
             "expected 'provider/model' format, got '{model_str}'"
         ))
     })?;
 
     if model_name.is_empty() {
-        return Err(IronclawError::Config(
+        return Err(ResiduumError::Config(
             "model name cannot be empty".to_string(),
         ));
     }
@@ -259,7 +259,7 @@ fn resolve_model_string(
     // Check if provider_part matches a named [providers] entry
     if let Some(entry) = providers_map.and_then(|p| p.get(provider_part)) {
         let kind = ProviderKind::from_str(&entry.kind).map_err(|e| {
-            IronclawError::Config(format!(
+            ResiduumError::Config(format!(
                 "provider '{provider_part}' has invalid type '{}': {e}",
                 entry.kind
             ))
@@ -275,7 +275,7 @@ fn resolve_model_string(
             .as_deref()
             .and_then(|raw| resolve_secret_value(raw, secrets))
             .or_else(|| provider_api_key_env(kind))
-            .or_else(|| std::env::var("IRONCLAW_API_KEY").ok());
+            .or_else(|| std::env::var("RESIDUUM_API_KEY").ok());
 
         return Ok(ProviderSpec {
             name: provider_part.to_owned(),
@@ -290,7 +290,7 @@ fn resolve_model_string(
 
     // Treat provider_part as an implicit ProviderKind
     let kind = ProviderKind::from_str(provider_part).map_err(|_parse_err| {
-        IronclawError::Config(format!(
+        ResiduumError::Config(format!(
             "'{provider_part}' is not a known provider name or type \
              (expected one of: anthropic, gemini, ollama, openai, \
              or a key from [providers])"
@@ -299,7 +299,7 @@ fn resolve_model_string(
 
     let provider_url = kind.default_url().to_string();
 
-    let api_key = provider_api_key_env(kind).or_else(|| std::env::var("IRONCLAW_API_KEY").ok());
+    let api_key = provider_api_key_env(kind).or_else(|| std::env::var("RESIDUUM_API_KEY").ok());
 
     Ok(ProviderSpec {
         name: provider_part.to_owned(),
@@ -315,12 +315,12 @@ fn resolve_model_string(
 /// Resolve a `ModelStringOrList` into a `Vec<ProviderSpec>` (failover chain).
 ///
 /// # Errors
-/// Returns `IronclawError::Config` if any model string in the list cannot be resolved.
+/// Returns `ResiduumError::Config` if any model string in the list cannot be resolved.
 fn resolve_model_chain(
     spec: ModelStringOrList,
     providers_map: Option<&HashMap<String, ProviderEntryFile>>,
     secrets: &SecretStore,
-) -> Result<Vec<ProviderSpec>, IronclawError> {
+) -> Result<Vec<ProviderSpec>, ResiduumError> {
     spec.into_vec()
         .iter()
         .map(|s| resolve_model_string(s, providers_map, secrets))
@@ -330,14 +330,14 @@ fn resolve_model_chain(
 /// Resolve a role's provider chain: explicit role > default > clone of main chain.
 ///
 /// # Errors
-/// Returns `IronclawError::Config` if any model string cannot be resolved.
+/// Returns `ResiduumError::Config` if any model string cannot be resolved.
 fn resolve_role_chain(
     role_spec: Option<ModelStringOrList>,
     default_spec: Option<&ModelStringOrList>,
     main: &[ProviderSpec],
     providers_map: Option<&HashMap<String, ProviderEntryFile>>,
     secrets: &SecretStore,
-) -> Result<Vec<ProviderSpec>, IronclawError> {
+) -> Result<Vec<ProviderSpec>, ResiduumError> {
     if let Some(spec) = role_spec {
         return resolve_model_chain(spec, providers_map, secrets);
     }
@@ -352,18 +352,18 @@ fn resolve_gateway_config(section: Option<&GatewayConfigFile>) -> GatewayConfig 
     let mut cfg = GatewayConfig::default();
 
     // Env > file > default for bind
-    if let Ok(val) = std::env::var("IRONCLAW_GATEWAY_BIND") {
+    if let Ok(val) = std::env::var("RESIDUUM_GATEWAY_BIND") {
         cfg.bind = val;
     } else if let Some(val) = section.and_then(|s| s.bind.clone()) {
         cfg.bind = val;
     }
 
     // Env > file > default for port
-    match std::env::var("IRONCLAW_GATEWAY_PORT") {
+    match std::env::var("RESIDUUM_GATEWAY_PORT") {
         Ok(val) => match val.parse::<u16>() {
             Ok(p) => cfg.port = p,
             Err(e) => {
-                eprintln!("warning: IRONCLAW_GATEWAY_PORT '{val}' is not a valid port: {e}");
+                eprintln!("warning: RESIDUUM_GATEWAY_PORT '{val}' is not a valid port: {e}");
             }
         },
         Err(_) => {
@@ -378,13 +378,13 @@ fn resolve_gateway_config(section: Option<&GatewayConfigFile>) -> GatewayConfig 
 
 /// Resolve Discord configuration from TOML section and environment.
 ///
-/// Token resolution: `IRONCLAW_DISCORD_TOKEN` env > `token` field in TOML (with
+/// Token resolution: `RESIDUUM_DISCORD_TOKEN` env > `token` field in TOML (with
 /// `${ENV_VAR}` / `secret:name` expansion) > `None` if section is absent or no token found.
 fn resolve_discord_config(
     section: Option<&DiscordConfigFile>,
     secrets: &SecretStore,
 ) -> Option<DiscordConfig> {
-    let token = std::env::var("IRONCLAW_DISCORD_TOKEN")
+    let token = std::env::var("RESIDUUM_DISCORD_TOKEN")
         .ok()
         .or_else(|| {
             section
@@ -398,7 +398,7 @@ fn resolve_discord_config(
         (Some(_), None) => {
             eprintln!(
                 "warning: [discord] section present but no token found; \
-                 set IRONCLAW_DISCORD_TOKEN or token in config"
+                 set RESIDUUM_DISCORD_TOKEN or token in config"
             );
             None
         }
@@ -408,13 +408,13 @@ fn resolve_discord_config(
 
 /// Resolve Telegram configuration from TOML section and environment.
 ///
-/// Token resolution: `IRONCLAW_TELEGRAM_TOKEN` env > `token` field in TOML (with
+/// Token resolution: `RESIDUUM_TELEGRAM_TOKEN` env > `token` field in TOML (with
 /// `${ENV_VAR}` / `secret:name` expansion) > `None` if section is absent or no token found.
 fn resolve_telegram_config(
     section: Option<&TelegramConfigFile>,
     secrets: &SecretStore,
 ) -> Option<TelegramConfig> {
-    let token = std::env::var("IRONCLAW_TELEGRAM_TOKEN")
+    let token = std::env::var("RESIDUUM_TELEGRAM_TOKEN")
         .ok()
         .or_else(|| {
             section
@@ -428,7 +428,7 @@ fn resolve_telegram_config(
         (Some(_), None) => {
             eprintln!(
                 "warning: [telegram] section present but no token found; \
-                 set IRONCLAW_TELEGRAM_TOKEN or token in config"
+                 set RESIDUUM_TELEGRAM_TOKEN or token in config"
             );
             None
         }
@@ -674,12 +674,12 @@ fn resolve_notifications_config(
 /// Resolve background task configuration from TOML section.
 ///
 /// # Errors
-/// Returns `IronclawError::Config` if a model tier string cannot be resolved.
+/// Returns `ResiduumError::Config` if a model tier string cannot be resolved.
 fn resolve_background_config(
     section: Option<&BackgroundConfigFile>,
     providers_map: Option<&HashMap<String, ProviderEntryFile>>,
     secrets: &SecretStore,
-) -> Result<BackgroundConfig, IronclawError> {
+) -> Result<BackgroundConfig, ResiduumError> {
     let mut cfg = BackgroundConfig::default();
 
     let Some(section) = section else {
@@ -717,10 +717,10 @@ fn resolve_background_config(
 /// Warn on deprecated environment variables that no longer have effect.
 fn warn_deprecated_env_vars() {
     let deprecated = [
-        "IRONCLAW_OBSERVER_MODEL",
-        "IRONCLAW_REFLECTOR_MODEL",
-        "IRONCLAW_OBSERVER_API_KEY",
-        "IRONCLAW_REFLECTOR_API_KEY",
+        "RESIDUUM_OBSERVER_MODEL",
+        "RESIDUUM_REFLECTOR_MODEL",
+        "RESIDUUM_OBSERVER_API_KEY",
+        "RESIDUUM_REFLECTOR_API_KEY",
     ];
 
     for var in &deprecated {
@@ -762,13 +762,13 @@ mod tests {
 
     /// Create an empty `SecretStore` for tests that don't need real secrets.
     fn empty_secrets() -> SecretStore {
-        let dir = std::env::temp_dir().join("ironclaw-test-empty-secrets");
+        let dir = std::env::temp_dir().join("residuum-test-empty-secrets");
         SecretStore::load(&dir).unwrap()
     }
 
     /// Create a temp dir for `from_file_and_env` calls.
     fn test_config_dir() -> std::path::PathBuf {
-        std::env::temp_dir().join("ironclaw-test-config")
+        std::env::temp_dir().join("residuum-test-config")
     }
 
     // ── Provider / model resolution ───────────────────────────────────────────
@@ -1596,21 +1596,21 @@ typo_field = 0.5
     #[test]
     fn expand_env_token_present() {
         // SAFETY: test-only, single-threaded test environment
-        unsafe { std::env::set_var("IRONCLAW_TEST_SECRET_PRESENT", "found-it") };
-        let result = expand_env_token("${IRONCLAW_TEST_SECRET_PRESENT}");
+        unsafe { std::env::set_var("RESIDUUM_TEST_SECRET_PRESENT", "found-it") };
+        let result = expand_env_token("${RESIDUUM_TEST_SECRET_PRESENT}");
         assert_eq!(
             result,
             Some("found-it".to_string()),
             "should resolve env var"
         );
-        unsafe { std::env::remove_var("IRONCLAW_TEST_SECRET_PRESENT") };
+        unsafe { std::env::remove_var("RESIDUUM_TEST_SECRET_PRESENT") };
     }
 
     #[test]
     fn expand_env_token_missing() {
         // SAFETY: test-only, single-threaded test environment
-        unsafe { std::env::remove_var("IRONCLAW_TEST_SECRET_MISSING") };
-        let result = expand_env_token("${IRONCLAW_TEST_SECRET_MISSING}");
+        unsafe { std::env::remove_var("RESIDUUM_TEST_SECRET_MISSING") };
+        let result = expand_env_token("${RESIDUUM_TEST_SECRET_MISSING}");
         assert!(result.is_none(), "missing env var should return None");
     }
 
@@ -1618,14 +1618,14 @@ typo_field = 0.5
     fn resolve_secret_value_env() {
         let secrets = empty_secrets();
         // SAFETY: test-only, single-threaded test environment
-        unsafe { std::env::set_var("IRONCLAW_TEST_RSV_ENV", "env-val") };
-        let result = resolve_secret_value("${IRONCLAW_TEST_RSV_ENV}", &secrets);
+        unsafe { std::env::set_var("RESIDUUM_TEST_RSV_ENV", "env-val") };
+        let result = resolve_secret_value("${RESIDUUM_TEST_RSV_ENV}", &secrets);
         assert_eq!(
             result,
             Some("env-val".to_string()),
             "should dispatch to env expansion"
         );
-        unsafe { std::env::remove_var("IRONCLAW_TEST_RSV_ENV") };
+        unsafe { std::env::remove_var("RESIDUUM_TEST_RSV_ENV") };
     }
 
     #[test]
@@ -1657,14 +1657,14 @@ typo_field = 0.5
     fn provider_api_key_env_expansion() {
         let secrets = empty_secrets();
         // SAFETY: test-only, single-threaded test environment
-        unsafe { std::env::set_var("IRONCLAW_TEST_PROVIDER_KEY", "expanded-key") };
+        unsafe { std::env::set_var("RESIDUUM_TEST_PROVIDER_KEY", "expanded-key") };
 
         let mut providers = HashMap::new();
         providers.insert(
             "test-prov".to_string(),
             ProviderEntryFile {
                 kind: "openai".to_string(),
-                api_key: Some("${IRONCLAW_TEST_PROVIDER_KEY}".to_string()),
+                api_key: Some("${RESIDUUM_TEST_PROVIDER_KEY}".to_string()),
                 url: None,
             },
         );
@@ -1675,7 +1675,7 @@ typo_field = 0.5
             Some("expanded-key"),
             "env var in api_key should expand"
         );
-        unsafe { std::env::remove_var("IRONCLAW_TEST_PROVIDER_KEY") };
+        unsafe { std::env::remove_var("RESIDUUM_TEST_PROVIDER_KEY") };
     }
 
     #[test]

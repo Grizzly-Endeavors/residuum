@@ -1,6 +1,6 @@
 //! Identity file loading for agent context assembly.
 
-use crate::error::IronclawError;
+use crate::error::ResiduumError;
 
 use super::layout::WorkspaceLayout;
 
@@ -30,8 +30,8 @@ impl IdentityFiles {
     /// are created during bootstrap; ENVIRONMENT.md is always optional).
     ///
     /// # Errors
-    /// Returns `IronclawError::Workspace` if a file exists but cannot be read.
-    pub async fn load(layout: &WorkspaceLayout) -> Result<Self, IronclawError> {
+    /// Returns `ResiduumError::Workspace` if a file exists but cannot be read.
+    pub async fn load(layout: &WorkspaceLayout) -> Result<Self, ResiduumError> {
         Ok(Self {
             soul: read_optional(&layout.soul_md()).await?,
             agents: read_optional(&layout.agents_md()).await?,
@@ -44,7 +44,7 @@ impl IdentityFiles {
 }
 
 /// Read a file if it exists, returning `None` if missing.
-async fn read_optional(path: &std::path::Path) -> Result<Option<String>, IronclawError> {
+async fn read_optional(path: &std::path::Path) -> Result<Option<String>, ResiduumError> {
     match tokio::fs::read_to_string(path).await {
         Ok(content) => {
             if content.trim().is_empty() {
@@ -54,7 +54,7 @@ async fn read_optional(path: &std::path::Path) -> Result<Option<String>, Ironcla
             }
         }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(e) => Err(IronclawError::Workspace(format!(
+        Err(e) => Err(ResiduumError::Workspace(format!(
             "failed to read {}: {e}",
             path.display()
         ))),

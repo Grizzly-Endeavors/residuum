@@ -17,7 +17,7 @@ mod inbox_integration {
     use chrono::NaiveDate;
     use tempfile::tempdir;
 
-    use ironclaw::inbox::{
+    use residuum::inbox::{
         self, InboxItem, archive_item, count_unread, generate_filename, list_items, load_item,
         mark_read, save_item,
     };

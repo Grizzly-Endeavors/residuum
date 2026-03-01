@@ -1,10 +1,10 @@
-# Ironclaw
+# Residuum
 
 This project is a derivative of OpenClaw, and coopts much of its architecture. You can review its code locally at ~/Projects/openclaw
 
 **Important docs:**
 - [Design Philosophy](./docs/design-philosophy.md)
-- [Ironclaw Design](./docs/ironclaw-design.md)
+- [Residuum Design](./docs/residuum-design.md)
 - [Projects Context](./docs/projects-context-design.md)
 - [Personal Agent](./docs/personal-agent-design.md)
 - [Background Tasks](./docs/background-tasks-design.md)

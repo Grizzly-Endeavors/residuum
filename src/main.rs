@@ -1,4 +1,4 @@
-//! `IronClaw`: personal AI agent gateway.
+//! `Residuum`: personal AI agent gateway.
 //!
 //! Entrypoint with subcommands:
 //! - `serve` (default): starts the gateway as a background daemon
@@ -8,11 +8,11 @@
 //! - `logs [--watch]`: display CLI log files
 //! - `setup`: interactive configuration wizard
 
-use ironclaw::channels::cli::CliClient;
-use ironclaw::channels::cli::commands::CommandEffect;
-use ironclaw::config::Config;
-use ironclaw::error::IronclawError;
-use ironclaw::gateway::protocol::{ClientMessage, ServerMessage};
+use residuum::channels::cli::CliClient;
+use residuum::channels::cli::commands::CommandEffect;
+use residuum::config::Config;
+use residuum::error::ResiduumError;
+use residuum::gateway::protocol::{ClientMessage, ServerMessage};
 
 #[tokio::main]
 async fn main() {
@@ -22,7 +22,7 @@ async fn main() {
     }
 }
 
-async fn run() -> Result<(), IronclawError> {
+async fn run() -> Result<(), ResiduumError> {
     // Load .env early (ignore if missing, warn on parse errors)
     if let Err(e) = dotenvy::dotenv()
         && !e.not_found()
@@ -58,37 +58,37 @@ async fn run() -> Result<(), IronclawError> {
 
             if foreground {
                 // Foreground mode: file-only logging, run gateway directly
-                ironclaw::daemon::init_daemon_tracing();
+                residuum::daemon::init_daemon_tracing();
                 run_serve_foreground(&args).await
             } else {
                 // Daemon mode: spawn foreground child, poll for PID file, exit
                 run_daemonize(&args)
             }
         }
-        Some(other) => Err(IronclawError::Config(format!(
+        Some(other) => Err(ResiduumError::Config(format!(
             "unknown subcommand '{other}', expected one of: serve, connect, logs, setup, secret, stop"
         ))),
     }
 }
 
-/// Run the gateway in foreground mode (called as `ironclaw serve --foreground`).
+/// Run the gateway in foreground mode (called as `residuum serve --foreground`).
 ///
 /// This is the current behavior — runs the gateway event loop directly.
 /// Used by the daemon spawner as the child process, or for debugging.
 ///
 /// # Errors
 ///
-/// Returns `IronclawError` if initialization or the gateway loop fails.
-async fn run_serve_foreground(args: &[String]) -> Result<(), IronclawError> {
-    // Write PID file early so the daemon parent (and `ironclaw stop`) can find us,
+/// Returns `ResiduumError` if initialization or the gateway loop fails.
+async fn run_serve_foreground(args: &[String]) -> Result<(), ResiduumError> {
+    // Write PID file early so the daemon parent (and `residuum stop`) can find us,
     // even during setup wizard before the gateway starts.
-    let pid_path = ironclaw::daemon::pid_file_path()?;
-    ironclaw::daemon::write_pid_file(&pid_path, std::process::id())?;
+    let pid_path = residuum::daemon::pid_file_path()?;
+    residuum::daemon::write_pid_file(&pid_path, std::process::id())?;
 
     let result = run_serve_foreground_inner(args).await;
 
     // Always clean up PID file on exit
-    if let Err(e) = ironclaw::daemon::remove_pid_file(&pid_path) {
+    if let Err(e) = residuum::daemon::remove_pid_file(&pid_path) {
         tracing::warn!(error = %e, "failed to remove pid file on exit");
     }
 
@@ -100,33 +100,33 @@ async fn run_serve_foreground(args: &[String]) -> Result<(), IronclawError> {
     clippy::too_many_lines,
     reason = "sequential setup/serve dispatch with reload loop; splitting would obscure the flow"
 )]
-async fn run_serve_foreground_inner(args: &[String]) -> Result<(), IronclawError> {
+async fn run_serve_foreground_inner(args: &[String]) -> Result<(), ResiduumError> {
     // --setup: run the onboarding wizard in an isolated temp directory,
     // then boot the gateway with the resulting config for end-to-end testing
     if args.iter().any(|a| a == "--setup") {
-        let tmp_dir = std::env::temp_dir().join("ironclaw-setup");
+        let tmp_dir = std::env::temp_dir().join("residuum-setup");
         if tmp_dir.exists() {
             std::fs::remove_dir_all(&tmp_dir).map_err(|e| {
-                IronclawError::Config(format!(
+                ResiduumError::Config(format!(
                     "failed to clean setup directory {}: {e}",
                     tmp_dir.display()
                 ))
             })?;
         }
-        ironclaw::config::Config::bootstrap_at_dir(&tmp_dir)?;
+        residuum::config::Config::bootstrap_at_dir(&tmp_dir)?;
         eprintln!(
             "setup mode: config will be written to {}",
             tmp_dir.display()
         );
-        match Box::pin(ironclaw::gateway::server::setup::run_setup_server_at(
+        match Box::pin(residuum::gateway::server::setup::run_setup_server_at(
             tmp_dir.clone(),
         ))
         .await?
         {
-            ironclaw::gateway::server::setup::SetupExit::ConfigSaved => {
+            residuum::gateway::server::setup::SetupExit::ConfigSaved => {
                 tracing::info!("setup complete, loading config from temp directory");
             }
-            ironclaw::gateway::server::setup::SetupExit::Shutdown => return Ok(()),
+            residuum::gateway::server::setup::SetupExit::Shutdown => return Ok(()),
         }
 
         // Load the config written by the wizard and run the gateway
@@ -139,9 +139,9 @@ async fn run_serve_foreground_inner(args: &[String]) -> Result<(), IronclawError
                 workspace = %cfg.workspace_dir.display(),
                 "setup-mode: configuration loaded, starting gateway"
             );
-            match Box::pin(ironclaw::gateway::server::run_gateway(cfg)).await? {
-                ironclaw::gateway::server::GatewayExit::Shutdown => break,
-                ironclaw::gateway::server::GatewayExit::Reload => {
+            match Box::pin(residuum::gateway::server::run_gateway(cfg)).await? {
+                residuum::gateway::server::GatewayExit::Shutdown => break,
+                residuum::gateway::server::GatewayExit::Reload => {
                     tracing::info!("configuration reloaded, restarting gateway");
                 }
             }
@@ -163,9 +163,9 @@ async fn run_serve_foreground_inner(args: &[String]) -> Result<(), IronclawError
                     "configuration loaded"
                 );
                 let bind_addr = Some(cfg.gateway.addr());
-                match Box::pin(ironclaw::gateway::server::run_gateway(cfg)).await {
-                    Ok(ironclaw::gateway::server::GatewayExit::Shutdown) => break,
-                    Ok(ironclaw::gateway::server::GatewayExit::Reload) => {
+                match Box::pin(residuum::gateway::server::run_gateway(cfg)).await {
+                    Ok(residuum::gateway::server::GatewayExit::Shutdown) => break,
+                    Ok(residuum::gateway::server::GatewayExit::Reload) => {
                         tracing::info!("configuration reloaded, restarting gateway");
                         is_first_boot = false;
                         backup_config(&config_dir);
@@ -193,22 +193,22 @@ async fn run_serve_foreground_inner(args: &[String]) -> Result<(), IronclawError
                             "gateway entered degraded mode: {err}\n\n\
                              To fix this:\n\
                              1. Open the config editor at http://127.0.0.1:7700/ and correct the issue\n\
-                             2. Or edit ~/.ironclaw/config.toml directly\n\
+                             2. Or edit ~/.residuum/config.toml directly\n\
                              3. Then run /reload to retry"
                         );
-                        match ironclaw::gateway::server::degraded::run_degraded_gateway(
+                        match residuum::gateway::server::degraded::run_degraded_gateway(
                             error_msg,
                             config_dir.clone(),
                             bind_addr,
                         )
                         .await
                         {
-                            ironclaw::gateway::server::GatewayExit::Reload => {
+                            residuum::gateway::server::GatewayExit::Reload => {
                                 tracing::info!(
                                     "degraded mode: reload requested, retrying full initialization"
                                 );
                             }
-                            ironclaw::gateway::server::GatewayExit::Shutdown => break,
+                            residuum::gateway::server::GatewayExit::Shutdown => break,
                         }
                     }
                 }
@@ -228,32 +228,32 @@ async fn run_serve_foreground_inner(args: &[String]) -> Result<(), IronclawError
                     "gateway entered degraded mode: config error: {err}\n\n\
                      To fix this:\n\
                      1. Open the config editor at http://127.0.0.1:7700/ and correct the issue\n\
-                     2. Or edit ~/.ironclaw/config.toml directly\n\
+                     2. Or edit ~/.residuum/config.toml directly\n\
                      3. Then run /reload to retry"
                 );
-                match ironclaw::gateway::server::degraded::run_degraded_gateway(
+                match residuum::gateway::server::degraded::run_degraded_gateway(
                     error_msg,
                     config_dir.clone(),
                     None,
                 )
                 .await
                 {
-                    ironclaw::gateway::server::GatewayExit::Reload => {
+                    residuum::gateway::server::GatewayExit::Reload => {
                         tracing::info!(
                             "degraded mode: reload requested, retrying full initialization"
                         );
                     }
-                    ironclaw::gateway::server::GatewayExit::Shutdown => break,
+                    residuum::gateway::server::GatewayExit::Shutdown => break,
                 }
             }
             Err(err) => {
                 // First boot — setup wizard (existing behavior)
                 tracing::warn!(error = %err, "config invalid, starting setup wizard");
-                match Box::pin(ironclaw::gateway::server::setup::run_setup_server()).await? {
-                    ironclaw::gateway::server::setup::SetupExit::ConfigSaved => {
+                match Box::pin(residuum::gateway::server::setup::run_setup_server()).await? {
+                    residuum::gateway::server::setup::SetupExit::ConfigSaved => {
                         tracing::info!("setup complete, loading configuration");
                     }
-                    ironclaw::gateway::server::setup::SetupExit::Shutdown => break,
+                    residuum::gateway::server::setup::SetupExit::Shutdown => break,
                 }
             }
         }
@@ -263,17 +263,17 @@ async fn run_serve_foreground_inner(args: &[String]) -> Result<(), IronclawError
 
 /// Spawn the gateway as a background daemon process.
 ///
-/// Launches `ironclaw serve --foreground` as a detached child, polls for the
+/// Launches `residuum serve --foreground` as a detached child, polls for the
 /// PID file to confirm startup, then exits. Prints a first-launch welcome
 /// message if no config exists yet.
 ///
 /// # Errors
 ///
-/// Returns `IronclawError` if the child process cannot be spawned or
+/// Returns `ResiduumError` if the child process cannot be spawned or
 /// startup times out.
-fn run_daemonize(args: &[String]) -> Result<(), IronclawError> {
-    use ironclaw::config::GatewayConfig;
-    use ironclaw::daemon::{is_process_running, pid_file_path, read_pid_file};
+fn run_daemonize(args: &[String]) -> Result<(), ResiduumError> {
+    use residuum::config::GatewayConfig;
+    use residuum::daemon::{is_process_running, pid_file_path, read_pid_file};
 
     let pid_path = pid_file_path()?;
 
@@ -281,7 +281,7 @@ fn run_daemonize(args: &[String]) -> Result<(), IronclawError> {
     if let Ok(existing_pid) = read_pid_file(&pid_path)
         && is_process_running(existing_pid)
     {
-        eprintln!("ironclaw: gateway is already running (pid {existing_pid})");
+        eprintln!("residuum: gateway is already running (pid {existing_pid})");
         return Ok(());
     }
 
@@ -298,17 +298,17 @@ fn run_daemonize(args: &[String]) -> Result<(), IronclawError> {
 
     // First-launch welcome (or --setup which mimics it)
     if needs_setup {
-        eprintln!("welcome to ironclaw!");
+        eprintln!("welcome to residuum!");
         eprintln!();
-        eprintln!("  it looks like this is your first time running ironclaw.");
+        eprintln!("  it looks like this is your first time running residuum.");
         eprintln!("  configure your agent at: http://{gateway_addr}");
-        eprintln!("  or run: ironclaw setup");
+        eprintln!("  or run: residuum setup");
         eprintln!();
     }
 
     // Build child args: forward any extra flags (like --setup) plus --foreground
     let exe = std::env::current_exe().map_err(|e| {
-        IronclawError::Gateway(format!("failed to determine current executable: {e}"))
+        ResiduumError::Gateway(format!("failed to determine current executable: {e}"))
     })?;
 
     let mut child_args = vec!["serve".to_string(), "--foreground".to_string()];
@@ -330,7 +330,7 @@ fn run_daemonize(args: &[String]) -> Result<(), IronclawError> {
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .spawn()
-        .map_err(|e| IronclawError::Gateway(format!("failed to spawn daemon process: {e}")))?;
+        .map_err(|e| ResiduumError::Gateway(format!("failed to spawn daemon process: {e}")))?;
 
     // When setup is needed, the setup wizard runs before the gateway and
     // no PID file is written until setup completes. Just verify the child
@@ -340,16 +340,16 @@ fn run_daemonize(args: &[String]) -> Result<(), IronclawError> {
         std::thread::sleep(std::time::Duration::from_millis(500));
         match child.try_wait() {
             Ok(Some(status)) => {
-                return Err(IronclawError::Gateway(format!(
+                return Err(ResiduumError::Gateway(format!(
                     "daemon exited immediately with {status}"
                 )));
             }
             Ok(None) => {
-                eprintln!("ironclaw: setup server starting at http://{gateway_addr}");
+                eprintln!("residuum: setup server starting at http://{gateway_addr}");
                 return Ok(());
             }
             Err(e) => {
-                return Err(IronclawError::Gateway(format!(
+                return Err(ResiduumError::Gateway(format!(
                     "failed to check daemon status: {e}"
                 )));
             }
@@ -363,9 +363,9 @@ fn run_daemonize(args: &[String]) -> Result<(), IronclawError> {
 
     loop {
         if start.elapsed() > timeout {
-            eprintln!("ironclaw: gateway did not start within 10 seconds");
-            eprintln!("  check logs: ironclaw logs");
-            return Err(IronclawError::Gateway(
+            eprintln!("residuum: gateway did not start within 10 seconds");
+            eprintln!("  check logs: residuum logs");
+            return Err(ResiduumError::Gateway(
                 "daemon startup timed out".to_string(),
             ));
         }
@@ -373,7 +373,7 @@ fn run_daemonize(args: &[String]) -> Result<(), IronclawError> {
         if let Ok(pid) = read_pid_file(&pid_path)
             && is_process_running(pid)
         {
-            eprintln!("ironclaw: gateway started at http://{gateway_addr} (pid {pid})");
+            eprintln!("residuum: gateway started at http://{gateway_addr} (pid {pid})");
             return Ok(());
         }
 
@@ -388,22 +388,22 @@ fn run_daemonize(args: &[String]) -> Result<(), IronclawError> {
 ///
 /// # Errors
 ///
-/// Returns `IronclawError` if the PID file cannot be read or the signal
+/// Returns `ResiduumError` if the PID file cannot be read or the signal
 /// cannot be sent.
-fn run_stop_command() -> Result<(), IronclawError> {
-    use ironclaw::daemon::{
+fn run_stop_command() -> Result<(), ResiduumError> {
+    use residuum::daemon::{
         is_process_running, pid_file_path, read_pid_file, remove_pid_file, send_sigterm,
     };
 
     let pid_path = pid_file_path()?;
 
     let Ok(pid) = read_pid_file(&pid_path) else {
-        eprintln!("ironclaw: no gateway running (no pid file)");
+        eprintln!("residuum: no gateway running (no pid file)");
         return Ok(());
     };
 
     if !is_process_running(pid) {
-        eprintln!("ironclaw: no gateway running (stale pid file for pid {pid})");
+        eprintln!("residuum: no gateway running (stale pid file for pid {pid})");
         remove_pid_file(&pid_path)?;
         return Ok(());
     }
@@ -419,13 +419,13 @@ fn run_stop_command() -> Result<(), IronclawError> {
         if !is_process_running(pid) {
             // Process exited; clean up PID file if still present
             remove_pid_file(&pid_path)?;
-            eprintln!("ironclaw: gateway stopped (pid {pid})");
+            eprintln!("residuum: gateway stopped (pid {pid})");
             return Ok(());
         }
 
         if start.elapsed() > timeout {
-            eprintln!("ironclaw: gateway (pid {pid}) did not stop within 5 seconds");
-            return Err(IronclawError::Gateway(format!(
+            eprintln!("residuum: gateway (pid {pid}) did not stop within 5 seconds");
+            return Err(ResiduumError::Gateway(format!(
                 "gateway pid {pid} did not exit after SIGTERM"
             )));
         }
@@ -441,19 +441,19 @@ fn run_stop_command() -> Result<(), IronclawError> {
 ///
 /// # Errors
 ///
-/// Returns `IronclawError::Gateway` if the WebSocket connection fails.
+/// Returns `ResiduumError::Gateway` if the WebSocket connection fails.
 #[expect(
     clippy::too_many_lines,
     reason = "CLI connect loop wires up readline, WS, and indicator; splitting would obscure the event flow"
 )]
-async fn run_connect(url: &str, verbose: bool) -> Result<(), IronclawError> {
+async fn run_connect(url: &str, verbose: bool) -> Result<(), ResiduumError> {
     use futures_util::{SinkExt, StreamExt};
-    use ironclaw::channels::cli::CliReader;
+    use residuum::channels::cli::CliReader;
     use tokio_tungstenite::tungstenite::Message as TungsteniteMessage;
 
     let (ws_stream, _response) = tokio_tungstenite::connect_async(url)
         .await
-        .map_err(|e| IronclawError::Gateway(format!("failed to connect to {url}: {e}")))?;
+        .map_err(|e| ResiduumError::Gateway(format!("failed to connect to {url}: {e}")))?;
 
     let mut client = CliClient::new(url, verbose);
     client.print_banner();
@@ -536,7 +536,7 @@ async fn run_connect(url: &str, verbose: bool) -> Result<(), IronclawError> {
                     content: line,
                 };
                 let json = serde_json::to_string(&client_msg).map_err(|e| {
-                    IronclawError::Gateway(format!("failed to serialize message: {e}"))
+                    ResiduumError::Gateway(format!("failed to serialize message: {e}"))
                 })?;
                 if ws_tx.send(TungsteniteMessage::text(json)).await.is_err() {
                     eprintln!("connection closed");
@@ -646,7 +646,7 @@ fn init_default_tracing() {
 
 /// Initialize tracing with both stderr and a daily rolling file appender.
 ///
-/// Log files are written to `~/.ironclaw/logs/cli.YYYY-MM-DD.log`.
+/// Log files are written to `~/.residuum/logs/cli.YYYY-MM-DD.log`.
 fn init_cli_tracing() {
     use tracing_subscriber::layer::SubscriberExt;
     use tracing_subscriber::util::SubscriberInitExt;
@@ -660,7 +660,7 @@ fn init_cli_tracing() {
 
     let log_dir = dirs::home_dir().map_or_else(
         || std::path::PathBuf::from("logs"),
-        |h| h.join(".ironclaw").join("logs"),
+        |h| h.join(".residuum").join("logs"),
     );
 
     let file_appender = tracing_appender::rolling::RollingFileAppender::builder()
@@ -698,12 +698,12 @@ fn init_cli_tracing() {
 
 /// Display CLI log files.
 ///
-/// Finds the most recent log file in `~/.ironclaw/logs/` and prints its
+/// Finds the most recent log file in `~/.residuum/logs/` and prints its
 /// contents. With `--watch`, polls for new lines every 500ms.
-async fn run_logs_command(watch: bool) -> Result<(), IronclawError> {
+async fn run_logs_command(watch: bool) -> Result<(), ResiduumError> {
     let log_dir = dirs::home_dir()
-        .map(|h| h.join(".ironclaw").join("logs"))
-        .ok_or_else(|| IronclawError::Config("could not determine home directory".to_string()))?;
+        .map(|h| h.join(".residuum").join("logs"))
+        .ok_or_else(|| ResiduumError::Config("could not determine home directory".to_string()))?;
 
     if !log_dir.exists() {
         eprintln!(
@@ -715,7 +715,7 @@ async fn run_logs_command(watch: bool) -> Result<(), IronclawError> {
 
     // Find the most recent log file
     let mut entries: Vec<_> = std::fs::read_dir(&log_dir)
-        .map_err(|e| IronclawError::Config(format!("failed to read log directory: {e}")))?
+        .map_err(|e| ResiduumError::Config(format!("failed to read log directory: {e}")))?
         .filter_map(std::result::Result::ok)
         .filter(|entry| entry.path().extension().is_some_and(|ext| ext == "log"))
         .collect();
@@ -735,31 +735,31 @@ async fn run_logs_command(watch: bool) -> Result<(), IronclawError> {
     let latest = entries
         .last()
         .map(std::fs::DirEntry::path)
-        .ok_or_else(|| IronclawError::Config("no log files found".to_string()))?;
+        .ok_or_else(|| ResiduumError::Config("no log files found".to_string()))?;
 
     eprintln!("showing: {}", latest.display());
     eprintln!();
 
     let content = std::fs::read_to_string(&latest)
-        .map_err(|e| IronclawError::Config(format!("failed to read log file: {e}")))?;
+        .map_err(|e| ResiduumError::Config(format!("failed to read log file: {e}")))?;
     print!("{content}");
 
     if watch {
         use tokio::io::{AsyncBufReadExt, AsyncSeekExt};
 
         let file = tokio::fs::File::open(&latest).await.map_err(|e| {
-            IronclawError::Config(format!("failed to open log file for watch: {e}"))
+            ResiduumError::Config(format!("failed to open log file for watch: {e}"))
         })?;
         let mut reader = tokio::io::BufReader::new(file);
 
         // Seek to current end
         let metadata = std::fs::metadata(&latest)
-            .map_err(|e| IronclawError::Config(format!("failed to stat log file: {e}")))?;
+            .map_err(|e| ResiduumError::Config(format!("failed to stat log file: {e}")))?;
         let file_len = metadata.len();
         reader
             .seek(std::io::SeekFrom::Start(file_len))
             .await
-            .map_err(|e| IronclawError::Config(format!("failed to seek log file: {e}")))?;
+            .map_err(|e| ResiduumError::Config(format!("failed to seek log file: {e}")))?;
 
         let mut line_buf = String::new();
         loop {
@@ -784,8 +784,8 @@ async fn run_logs_command(watch: bool) -> Result<(), IronclawError> {
 }
 
 /// Run the `setup` subcommand — interactive or flag-driven config wizard.
-fn run_setup_command(args: &[String]) -> Result<(), IronclawError> {
-    use ironclaw::config::wizard;
+fn run_setup_command(args: &[String]) -> Result<(), ResiduumError> {
+    use residuum::config::wizard;
 
     let config_dir = Config::config_dir()?;
     let config_path = config_dir.join("config.toml");
@@ -843,11 +843,11 @@ fn run_setup_command(args: &[String]) -> Result<(), IronclawError> {
 /// Run the `secret` subcommand — manage encrypted secret storage.
 ///
 /// Subcommands:
-/// - `ironclaw secret set <name> [value]` — store a secret (prompts for value if omitted)
-/// - `ironclaw secret list` — list stored secret names
-/// - `ironclaw secret delete <name>` — remove a secret
-fn run_secret_command(args: &[String]) -> Result<(), IronclawError> {
-    use ironclaw::config::SecretStore;
+/// - `residuum secret set <name> [value]` — store a secret (prompts for value if omitted)
+/// - `residuum secret list` — list stored secret names
+/// - `residuum secret delete <name>` — remove a secret
+fn run_secret_command(args: &[String]) -> Result<(), ResiduumError> {
+    use residuum::config::SecretStore;
 
     let config_dir = Config::config_dir()?;
     let sub = args.get(2).map(String::as_str);
@@ -855,7 +855,7 @@ fn run_secret_command(args: &[String]) -> Result<(), IronclawError> {
     match sub {
         Some("set") => {
             let Some(name) = args.get(3) else {
-                eprintln!("usage: ironclaw secret set <name> [value]");
+                eprintln!("usage: residuum secret set <name> [value]");
                 return Ok(());
             };
 
@@ -864,7 +864,7 @@ fn run_secret_command(args: &[String]) -> Result<(), IronclawError> {
             } else {
                 // Prompt for value with masked input
                 rpassword::prompt_password(format!("value for '{name}': ")).map_err(|e| {
-                    IronclawError::Config(format!("failed to read secret value: {e}"))
+                    ResiduumError::Config(format!("failed to read secret value: {e}"))
                 })?
             };
 
@@ -885,7 +885,7 @@ fn run_secret_command(args: &[String]) -> Result<(), IronclawError> {
         }
         Some("delete") => {
             let Some(name) = args.get(3) else {
-                eprintln!("usage: ironclaw secret delete <name>");
+                eprintln!("usage: residuum secret delete <name>");
                 return Ok(());
             };
 
@@ -894,7 +894,7 @@ fn run_secret_command(args: &[String]) -> Result<(), IronclawError> {
             eprintln!("secret '{name}' deleted");
         }
         _ => {
-            eprintln!("usage: ironclaw secret <set|list|delete>");
+            eprintln!("usage: residuum secret <set|list|delete>");
             eprintln!();
             eprintln!("  set <name> [value]  store a secret (prompts if value omitted)");
             eprintln!("  list                list stored secret names");
@@ -917,8 +917,8 @@ fn extract_flag_value(args: &[String], flag: &str) -> Option<String> {
 ///
 /// # Errors
 ///
-/// Returns `IronclawError::Gateway` on serialization or send failure.
-async fn send_client_message<S>(ws_tx: &mut S, msg: &ClientMessage) -> Result<(), IronclawError>
+/// Returns `ResiduumError::Gateway` on serialization or send failure.
+async fn send_client_message<S>(ws_tx: &mut S, msg: &ClientMessage) -> Result<(), ResiduumError>
 where
     S: futures_util::Sink<
             tokio_tungstenite::tungstenite::Message,
@@ -929,10 +929,10 @@ where
     use tokio_tungstenite::tungstenite::Message as TungsteniteMessage;
 
     let json = serde_json::to_string(msg)
-        .map_err(|e| IronclawError::Gateway(format!("failed to serialize message: {e}")))?;
+        .map_err(|e| ResiduumError::Gateway(format!("failed to serialize message: {e}")))?;
     ws_tx
         .send(TungsteniteMessage::text(json))
         .await
-        .map_err(|e| IronclawError::Gateway(format!("failed to send message: {e}")))?;
+        .map_err(|e| ResiduumError::Gateway(format!("failed to send message: {e}")))?;
     Ok(())
 }

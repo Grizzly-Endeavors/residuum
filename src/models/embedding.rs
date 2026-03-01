@@ -9,7 +9,7 @@ use super::ModelError;
 use super::SharedHttpClient;
 use super::retry::RetryConfig;
 use crate::config::{ProviderKind, ProviderSpec};
-use crate::error::IronclawError;
+use crate::error::ResiduumError;
 
 /// Trait for model providers that generate vector embeddings.
 #[async_trait]
@@ -38,16 +38,16 @@ pub struct EmbeddingResponse {
 /// Build an embedding provider from a resolved `ProviderSpec`.
 ///
 /// # Errors
-/// Returns `IronclawError::Config` if:
+/// Returns `ResiduumError::Config` if:
 /// - The provider is Anthropic (no embeddings API)
 /// - A required API key is missing
 pub(crate) fn build_embedding_provider(
     spec: &ProviderSpec,
     http: SharedHttpClient,
     retry: RetryConfig,
-) -> Result<Box<dyn EmbeddingProvider>, IronclawError> {
+) -> Result<Box<dyn EmbeddingProvider>, ResiduumError> {
     match spec.model.kind {
-        ProviderKind::Anthropic => Err(IronclawError::Config(
+        ProviderKind::Anthropic => Err(ResiduumError::Config(
             "anthropic does not offer an embeddings API; \
              use openai, ollama, or gemini for models.embedding"
                 .to_string(),
@@ -82,7 +82,7 @@ pub(crate) fn build_embedding_provider(
         }
         ProviderKind::Gemini => {
             let key = spec.api_key.as_ref().ok_or_else(|| {
-                IronclawError::Config(
+                ResiduumError::Config(
                     "gemini embeddings require an API key \
                      (set GEMINI_API_KEY or api_key in config)"
                         .to_string(),

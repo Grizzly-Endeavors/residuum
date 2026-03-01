@@ -32,7 +32,7 @@ struct DegradedState {
 ///
 /// # Errors
 ///
-/// Returns `IronclawError` if the server cannot bind.
+/// Returns `ResiduumError` if the server cannot bind.
 pub async fn run_degraded_gateway(
     error_message: String,
     config_dir: std::path::PathBuf,

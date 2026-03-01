@@ -1,4 +1,4 @@
-// ── IronClaw Web UI — Settings Panel ──────────────────────────────────
+// ── Residuum Web UI — Settings Panel ──────────────────────────────────
 //
 // Form-based config editing with raw TOML advanced mode.
 // Uses smol-toml (window.TOML) for client-side parse/stringify.
@@ -506,7 +506,7 @@ const Settings = {
                     ${(() => {
                         const isSecret = (discord.token || '').startsWith('secret:');
                         const tokenDisplay = isSecret ? '' : escAttr(discord.token || '');
-                        const tokenPlaceholder = isSecret ? `Encrypted (${discord.token})` : '${IRONCLAW_DISCORD_TOKEN}';
+                        const tokenPlaceholder = isSecret ? `Encrypted (${discord.token})` : '${RESIDUUM_DISCORD_TOKEN}';
                         const secretRef = isSecret ? escAttr(discord.token) : '';
                         return `<input type="password" data-path="discord.token" value="${tokenDisplay}"
                             placeholder="${tokenPlaceholder}" data-secret-ref="${secretRef}">`;
@@ -629,7 +629,7 @@ const Settings = {
                 <div class="settings-field">
                     <label>Workspace directory</label>
                     <input type="text" data-path="workspace_dir" value="${escAttr(obj.workspace_dir || '')}"
-                        placeholder="~/.ironclaw/workspace">
+                        placeholder="~/.residuum/workspace">
                 </div>
                 <div class="field-row">
                     <div class="settings-field">

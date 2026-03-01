@@ -2,7 +2,7 @@
 //!
 //! Secrets are stored in `secrets.toml.enc` (encrypted TOML) alongside a machine
 //! key in `secrets.key` (mode 0600, 256-bit random). Both files live in the
-//! ironclaw config directory (typically `~/.ironclaw/`).
+//! residuum config directory (typically `~/.residuum/`).
 //!
 //! The plaintext format before encryption:
 //! ```toml
@@ -17,7 +17,7 @@ use std::path::Path;
 use aes_gcm_siv::aead::Aead;
 use aes_gcm_siv::{Aes256GcmSiv, KeyInit, Nonce};
 
-use crate::error::IronclawError;
+use crate::error::ResiduumError;
 
 /// File names within the config directory.
 const KEY_FILE: &str = "secrets.key";
@@ -35,9 +35,9 @@ impl SecretStore {
     /// Load from the encrypted file. Returns an empty store if the file doesn't exist.
     ///
     /// # Errors
-    /// Returns `IronclawError::Config` if the key or encrypted file cannot be
+    /// Returns `ResiduumError::Config` if the key or encrypted file cannot be
     /// read, or if decryption or TOML parsing fails.
-    pub fn load(config_dir: &Path) -> Result<Self, IronclawError> {
+    pub fn load(config_dir: &Path) -> Result<Self, ResiduumError> {
         let enc_path = config_dir.join(ENCRYPTED_FILE);
         if !enc_path.exists() {
             return Ok(Self {
@@ -47,7 +47,7 @@ impl SecretStore {
 
         let key = load_key(config_dir)?;
         let ciphertext = std::fs::read(&enc_path).map_err(|e| {
-            IronclawError::Config(format!(
+            ResiduumError::Config(format!(
                 "failed to read secrets file at {}: {e}",
                 enc_path.display()
             ))
@@ -70,8 +70,8 @@ impl SecretStore {
     /// Creates the key file if it doesn't exist yet.
     ///
     /// # Errors
-    /// Returns `IronclawError::Config` if the store cannot be saved.
-    pub fn set(&mut self, name: &str, value: &str, config_dir: &Path) -> Result<(), IronclawError> {
+    /// Returns `ResiduumError::Config` if the store cannot be saved.
+    pub fn set(&mut self, name: &str, value: &str, config_dir: &Path) -> Result<(), ResiduumError> {
         self.secrets.insert(name.to_owned(), value.to_owned());
         self.save(config_dir)
     }
@@ -79,8 +79,8 @@ impl SecretStore {
     /// Delete a secret and persist. No-op if the secret doesn't exist.
     ///
     /// # Errors
-    /// Returns `IronclawError::Config` if the store cannot be saved.
-    pub fn delete(&mut self, name: &str, config_dir: &Path) -> Result<(), IronclawError> {
+    /// Returns `ResiduumError::Config` if the store cannot be saved.
+    pub fn delete(&mut self, name: &str, config_dir: &Path) -> Result<(), ResiduumError> {
         self.secrets.remove(name);
         self.save(config_dir)
     }
@@ -94,14 +94,14 @@ impl SecretStore {
     }
 
     /// Serialize and encrypt the store to disk.
-    fn save(&self, config_dir: &Path) -> Result<(), IronclawError> {
+    fn save(&self, config_dir: &Path) -> Result<(), ResiduumError> {
         let key = load_or_create_key(config_dir)?;
         let plaintext = serialize_secrets_toml(&self.secrets);
         let ciphertext = encrypt(&plaintext, &key)?;
 
         let enc_path = config_dir.join(ENCRYPTED_FILE);
         std::fs::write(&enc_path, &ciphertext).map_err(|e| {
-            IronclawError::Config(format!(
+            ResiduumError::Config(format!(
                 "failed to write secrets file at {}: {e}",
                 enc_path.display()
             ))
@@ -110,17 +110,17 @@ impl SecretStore {
 }
 
 /// Load an existing key file, or return an error if it doesn't exist.
-fn load_key(config_dir: &Path) -> Result<[u8; 32], IronclawError> {
+fn load_key(config_dir: &Path) -> Result<[u8; 32], ResiduumError> {
     let key_path = config_dir.join(KEY_FILE);
     let bytes = std::fs::read(&key_path).map_err(|e| {
-        IronclawError::Config(format!(
+        ResiduumError::Config(format!(
             "failed to read secret key at {}: {e}",
             key_path.display()
         ))
     })?;
 
     <[u8; 32]>::try_from(bytes.as_slice()).map_err(|err| {
-        IronclawError::Config(format!(
+        ResiduumError::Config(format!(
             "secret key at {} has invalid length (expected 32 bytes, got {}): {err}",
             key_path.display(),
             bytes.len()
@@ -129,7 +129,7 @@ fn load_key(config_dir: &Path) -> Result<[u8; 32], IronclawError> {
 }
 
 /// Load an existing key or generate a new one on first use.
-fn load_or_create_key(config_dir: &Path) -> Result<[u8; 32], IronclawError> {
+fn load_or_create_key(config_dir: &Path) -> Result<[u8; 32], ResiduumError> {
     let key_path = config_dir.join(KEY_FILE);
     if key_path.exists() {
         return load_key(config_dir);
@@ -140,14 +140,14 @@ fn load_or_create_key(config_dir: &Path) -> Result<[u8; 32], IronclawError> {
 
     // Ensure config dir exists
     std::fs::create_dir_all(config_dir).map_err(|e| {
-        IronclawError::Config(format!(
+        ResiduumError::Config(format!(
             "failed to create config directory {}: {e}",
             config_dir.display()
         ))
     })?;
 
     std::fs::write(&key_path, key).map_err(|e| {
-        IronclawError::Config(format!(
+        ResiduumError::Config(format!(
             "failed to write secret key at {}: {e}",
             key_path.display()
         ))
@@ -161,11 +161,11 @@ fn load_or_create_key(config_dir: &Path) -> Result<[u8; 32], IronclawError> {
 
 /// Set file permissions to 0600 (Unix only).
 #[cfg(unix)]
-fn set_file_mode_600(path: &Path) -> Result<(), IronclawError> {
+fn set_file_mode_600(path: &Path) -> Result<(), ResiduumError> {
     use std::os::unix::fs::PermissionsExt;
     let perms = std::fs::Permissions::from_mode(0o600);
     std::fs::set_permissions(path, perms).map_err(|e| {
-        IronclawError::Config(format!(
+        ResiduumError::Config(format!(
             "failed to set permissions on {}: {e}",
             path.display()
         ))
@@ -173,7 +173,7 @@ fn set_file_mode_600(path: &Path) -> Result<(), IronclawError> {
 }
 
 #[cfg(not(unix))]
-fn set_file_mode_600(_path: &Path) -> Result<(), IronclawError> {
+fn set_file_mode_600(_path: &Path) -> Result<(), ResiduumError> {
     // No-op on non-Unix platforms
     Ok(())
 }
@@ -181,14 +181,14 @@ fn set_file_mode_600(_path: &Path) -> Result<(), IronclawError> {
 /// Encrypt plaintext using AES-256-GCM-SIV with a random nonce.
 ///
 /// Output format: nonce (12 bytes) || ciphertext + auth tag.
-fn encrypt(plaintext: &str, key: &[u8; 32]) -> Result<Vec<u8>, IronclawError> {
+fn encrypt(plaintext: &str, key: &[u8; 32]) -> Result<Vec<u8>, ResiduumError> {
     let cipher = Aes256GcmSiv::new(key.into());
     let nonce_bytes: [u8; NONCE_SIZE] = rand::random();
     let nonce = Nonce::from_slice(&nonce_bytes);
 
     let ciphertext = cipher
         .encrypt(nonce, plaintext.as_bytes())
-        .map_err(|e| IronclawError::Config(format!("failed to encrypt secrets: {e}")))?;
+        .map_err(|e| ResiduumError::Config(format!("failed to encrypt secrets: {e}")))?;
 
     let mut output = Vec::with_capacity(NONCE_SIZE + ciphertext.len());
     output.extend_from_slice(&nonce_bytes);
@@ -197,9 +197,9 @@ fn encrypt(plaintext: &str, key: &[u8; 32]) -> Result<Vec<u8>, IronclawError> {
 }
 
 /// Decrypt ciphertext produced by [`encrypt`].
-fn decrypt(data: &[u8], key: &[u8; 32]) -> Result<String, IronclawError> {
+fn decrypt(data: &[u8], key: &[u8; 32]) -> Result<String, ResiduumError> {
     if data.len() < NONCE_SIZE {
-        return Err(IronclawError::Config(
+        return Err(ResiduumError::Config(
             "encrypted secrets file is too short (missing nonce)".to_string(),
         ));
     }
@@ -210,14 +210,14 @@ fn decrypt(data: &[u8], key: &[u8; 32]) -> Result<String, IronclawError> {
 
     let plaintext = cipher
         .decrypt(nonce, ciphertext)
-        .map_err(|e| IronclawError::Config(format!("failed to decrypt secrets: {e}")))?;
+        .map_err(|e| ResiduumError::Config(format!("failed to decrypt secrets: {e}")))?;
 
     String::from_utf8(plaintext)
-        .map_err(|e| IronclawError::Config(format!("decrypted secrets contain invalid UTF-8: {e}")))
+        .map_err(|e| ResiduumError::Config(format!("decrypted secrets contain invalid UTF-8: {e}")))
 }
 
 /// Parse the decrypted TOML into a flat key→value map.
-fn parse_secrets_toml(toml_str: &str) -> Result<HashMap<String, String>, IronclawError> {
+fn parse_secrets_toml(toml_str: &str) -> Result<HashMap<String, String>, ResiduumError> {
     #[derive(serde::Deserialize)]
     struct SecretsFile {
         #[serde(default)]
@@ -225,7 +225,7 @@ fn parse_secrets_toml(toml_str: &str) -> Result<HashMap<String, String>, Ironcla
     }
 
     let file: SecretsFile = toml::from_str(toml_str).map_err(|e| {
-        IronclawError::Config(format!("failed to parse decrypted secrets TOML: {e}"))
+        ResiduumError::Config(format!("failed to parse decrypted secrets TOML: {e}"))
     })?;
 
     Ok(file.secrets)

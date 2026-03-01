@@ -1,4 +1,4 @@
-# IronClaw — Personal AI Agent Gateway
+# Residuum — Personal AI Agent Gateway
 
 ## What This Is
 
@@ -23,7 +23,7 @@ Carried forward from the existing design work, restated here as project-wide con
 ## Project Structure
 
 ```
-ironclaw/
+residuum/
 ├── Cargo.toml
 ├── src/
 │   ├── main.rs                       # Entry point, CLI arg parsing
@@ -137,12 +137,12 @@ If any module later needs to become a standalone library (e.g., the MCP client i
 A single TOML configuration file replaces OpenClaw's `openclaw.json`. TOML over JSON5 because Rust's serde ecosystem handles it cleanly and it supports comments natively.
 
 ```toml
-# ~/.ironclaw/config.toml
+# ~/.residuum/config.toml
 
 # Top-level user settings
 name = "Samantha"
 timezone = "America/New_York"
-workspace_dir = "~/.ironclaw/workspace"
+workspace_dir = "~/.residuum/workspace"
 
 # Named provider definitions
 [providers.anthropic]
@@ -188,12 +188,12 @@ command = "mcp-server-filesystem"
 args = ["/home/user/documents"]
 
 [skills]
-dirs = ["~/.ironclaw/skills"]
+dirs = ["~/.residuum/skills"]
 
 [notifications.channels.ntfy]
 type = "ntfy"
 url = "https://ntfy.sh"
-topic = "ironclaw"
+topic = "residuum"
 
 # External notification channels are defined here.
 # Built-in channels (agent_wake, agent_feed, inbox) need no config.
@@ -226,7 +226,7 @@ The gateway watches `config.toml`, workspace identity files, `HEARTBEAT.yml`, `C
 ## Workspace Layout
 
 ```
-~/.ironclaw/workspace/
+~/.residuum/workspace/
 ├── SOUL.md                       # Agent persona, tone, boundaries
 ├── AGENTS.md                     # Operating instructions for the agent
 ├── USER.md                       # User info & preferences
@@ -713,8 +713,8 @@ Discovers skills from configured directories:
 **Skill sources** (precedence, highest first):
 
 1. Project-scoped skills: `projects/<active>/skills/` (only when project is active)
-2. Workspace skills: `~/.ironclaw/workspace/skills/`
-3. User-global skills: `~/.ironclaw/skills/`
+2. Workspace skills: `~/.residuum/workspace/skills/`
+3. User-global skills: `~/.residuum/skills/`
 4. Bundled skills (shipped with the binary)
 
 #### Resolver (`resolver.rs`)

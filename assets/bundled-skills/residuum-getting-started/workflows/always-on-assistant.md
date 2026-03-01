@@ -165,4 +165,4 @@ This is a living system. Explain that:
 - "If you want to add new checks, adjust schedules, or change where notifications go, just tell me and I will update things."
 - "As you use the system, I will learn your patterns and suggest improvements."
 
-For the complete technical reference, activate `ironclaw-system`.
+For the complete technical reference, activate `residuum-system`.

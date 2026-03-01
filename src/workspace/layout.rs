@@ -117,16 +117,16 @@ impl WorkspaceLayout {
         self.root.join("subagents")
     }
 
-    /// Path to the bundled `ironclaw-system` skill directory.
+    /// Path to the bundled `residuum-system` skill directory.
     #[must_use]
-    pub fn ironclaw_system_skill_dir(&self) -> PathBuf {
-        self.root.join("skills/ironclaw-system")
+    pub fn residuum_system_skill_dir(&self) -> PathBuf {
+        self.root.join("skills/residuum-system")
     }
 
-    /// Path to the bundled `ironclaw-getting-started` skill directory.
+    /// Path to the bundled `residuum-getting-started` skill directory.
     #[must_use]
-    pub fn ironclaw_getting_started_skill_dir(&self) -> PathBuf {
-        self.root.join("skills/ironclaw-getting-started")
+    pub fn residuum_getting_started_skill_dir(&self) -> PathBuf {
+        self.root.join("skills/residuum-getting-started")
     }
 
     /// Path to the projects directory for active project contexts.
@@ -294,14 +294,14 @@ mod tests {
             "bootstrap_md path"
         );
         assert_eq!(
-            layout.ironclaw_system_skill_dir(),
-            PathBuf::from("/tmp/ws/skills/ironclaw-system"),
-            "ironclaw_system_skill_dir path"
+            layout.residuum_system_skill_dir(),
+            PathBuf::from("/tmp/ws/skills/residuum-system"),
+            "residuum_system_skill_dir path"
         );
         assert_eq!(
-            layout.ironclaw_getting_started_skill_dir(),
-            PathBuf::from("/tmp/ws/skills/ironclaw-getting-started"),
-            "ironclaw_getting_started_skill_dir path"
+            layout.residuum_getting_started_skill_dir(),
+            PathBuf::from("/tmp/ws/skills/residuum-getting-started"),
+            "residuum_getting_started_skill_dir path"
         );
     }
 

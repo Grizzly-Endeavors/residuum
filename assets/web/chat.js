@@ -1,6 +1,6 @@
-// ── IronClaw Web UI — Chat Client ─────────────────────────────────────
+// ── Residuum Web UI — Chat Client ─────────────────────────────────────
 //
-// WebSocket client that speaks the IronClaw gateway protocol.
+// WebSocket client that speaks the Residuum gateway protocol.
 // Handles all ServerMessage variants and renders them into the feed.
 
 const Chat = {

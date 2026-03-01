@@ -10,7 +10,7 @@ use std::sync::Arc;
 use axum::routing::get;
 
 use crate::config::Config;
-use crate::error::IronclawError;
+use crate::error::ResiduumError;
 
 use super::web::{self, ConfigApiState};
 
@@ -25,13 +25,13 @@ pub enum SetupExit {
 /// Run the setup-mode HTTP server (config API + static files only).
 ///
 /// Blocks until the user completes setup or the server is shut down.
-/// Uses the default config directory (`~/.ironclaw/`).
+/// Uses the default config directory (`~/.residuum/`).
 ///
 /// # Errors
 ///
-/// Returns `IronclawError::Gateway` if the server cannot bind or the config
+/// Returns `ResiduumError::Gateway` if the server cannot bind or the config
 /// directory cannot be determined.
-pub async fn run_setup_server() -> Result<SetupExit, IronclawError> {
+pub async fn run_setup_server() -> Result<SetupExit, ResiduumError> {
     let config_dir = Config::config_dir()?;
     run_setup_server_at(config_dir).await
 }
@@ -40,8 +40,8 @@ pub async fn run_setup_server() -> Result<SetupExit, IronclawError> {
 ///
 /// # Errors
 ///
-/// Returns `IronclawError::Gateway` if the server cannot bind.
-pub async fn run_setup_server_at(config_dir: PathBuf) -> Result<SetupExit, IronclawError> {
+/// Returns `ResiduumError::Gateway` if the server cannot bind.
+pub async fn run_setup_server_at(config_dir: PathBuf) -> Result<SetupExit, ResiduumError> {
     let (setup_done_tx, mut setup_done_rx) = tokio::sync::watch::channel(false);
     let setup_done_tx = Arc::new(setup_done_tx);
 
@@ -57,7 +57,7 @@ pub async fn run_setup_server_at(config_dir: PathBuf) -> Result<SetupExit, Ironc
     // Use the default gateway address
     let addr = "127.0.0.1:7700";
     let listener = tokio::net::TcpListener::bind(addr).await.map_err(|e| {
-        IronclawError::Gateway(format!("failed to bind setup server to {addr}: {e}"))
+        ResiduumError::Gateway(format!("failed to bind setup server to {addr}: {e}"))
     })?;
 
     eprintln!("Setup wizard available at http://{addr}");

@@ -49,7 +49,7 @@ jobs:
       - name: Verify Cargo.toml version matches tag
         run: |
           CARGO_VERSION=$(cargo metadata --no-deps --format-version 1 \
-            | jq -r '.packages[] | select(.name == "ironclaw") | .version')
+            | jq -r '.packages[] | select(.name == "residuum") | .version')
           TAG_VERSION="${{ steps.version.outputs.version }}"
           if [ "$CARGO_VERSION" != "$TAG_VERSION" ]; then
             echo "::error::Cargo.toml version ($CARGO_VERSION) does not match tag ($TAG_VERSION)"
@@ -63,7 +63,7 @@ jobs:
         run: |
           mkdir -p release-artifacts
           cargo build --release
-          cp target/release/ironclaw release-artifacts/ironclaw-linux-x86_64
+          cp target/release/residuum release-artifacts/residuum-linux-x86_64
 
       # --- Publish release ---
 
@@ -71,7 +71,7 @@ jobs:
         run: |
           gh release create "${{ steps.version.outputs.tag }}" \
             --generate-notes \
-            release-artifacts/ironclaw-linux-x86_64
+            release-artifacts/residuum-linux-x86_64
 
       - name: Cleanup
         if: always()

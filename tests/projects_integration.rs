@@ -14,20 +14,20 @@ mod projects_integration {
     use std::collections::HashSet;
     use std::path::PathBuf;
 
-    use ironclaw::agent::context::ProjectsContext;
-    use ironclaw::mcp::{McpRegistry, SharedMcpRegistry};
-    use ironclaw::projects::activation::{ProjectState, SharedProjectState};
-    use ironclaw::projects::lifecycle;
-    use ironclaw::projects::scanner::ProjectIndex;
-    use ironclaw::skills::{SharedSkillState, SkillIndex, SkillState};
-    use ironclaw::tools::path_policy::{PathPolicy, SharedPathPolicy};
-    use ironclaw::tools::projects::{
+    use residuum::agent::context::ProjectsContext;
+    use residuum::mcp::{McpRegistry, SharedMcpRegistry};
+    use residuum::projects::activation::{ProjectState, SharedProjectState};
+    use residuum::projects::lifecycle;
+    use residuum::projects::scanner::ProjectIndex;
+    use residuum::skills::{SharedSkillState, SkillIndex, SkillState};
+    use residuum::tools::path_policy::{PathPolicy, SharedPathPolicy};
+    use residuum::tools::projects::{
         ProjectActivateTool, ProjectArchiveTool, ProjectCreateTool, ProjectDeactivateTool,
         ProjectListTool,
     };
-    use ironclaw::tools::{SharedToolFilter, Tool, ToolFilter};
-    use ironclaw::workspace::bootstrap::ensure_workspace;
-    use ironclaw::workspace::layout::WorkspaceLayout;
+    use residuum::tools::{SharedToolFilter, Tool, ToolFilter};
+    use residuum::workspace::bootstrap::ensure_workspace;
+    use residuum::workspace::layout::WorkspaceLayout;
 
     fn permissive_policy() -> SharedPathPolicy {
         PathPolicy::new_shared(PathBuf::from("/tmp"))

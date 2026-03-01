@@ -1,4 +1,4 @@
-// ── IronClaw Web UI — Model Fetcher ──────────────────────────────────
+// ── Residuum Web UI — Model Fetcher ──────────────────────────────────
 //
 // Shared utility for fetching available models from provider APIs.
 // Used by both setup.js and settings.js to populate model dropdowns.

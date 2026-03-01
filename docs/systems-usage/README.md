@@ -1,6 +1,6 @@
 # Systems Usage — Intent & Ownership
 
-This directory documents how each Ironclaw system is **intended to be used**, by both the agent and the user. It serves as the authoritative reference when writing onboarding content, reference skills, or default workspace files.
+This directory documents how each Residuum system is **intended to be used**, by both the agent and the user. It serves as the authoritative reference when writing onboarding content, reference skills, or default workspace files.
 
 ## Ownership Model
 
@@ -63,5 +63,5 @@ These are drawn from [design-philosophy.md](../design-philosophy.md) and inform 
 ## What This Is Not
 
 - Not API documentation. Tool parameter schemas live in the code.
-- Not onboarding content. The `ironclaw-getting-started` skill handles first-run UX.
+- Not onboarding content. The `residuum-getting-started` skill handles first-run UX.
 - Not a design rationale. The `docs/*.md` design docs explain *why* decisions were made. This directory explains *how things are meant to work*.

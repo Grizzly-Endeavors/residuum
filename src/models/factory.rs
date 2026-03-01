@@ -1,7 +1,7 @@
 //! Provider factory functions for constructing `ModelProvider` instances from config.
 
 use crate::config::{ModelSpec, ProviderKind, ProviderSpec};
-use crate::error::IronclawError;
+use crate::error::ResiduumError;
 
 use super::anthropic::AnthropicClient;
 use super::failover::FailoverProvider;
@@ -14,14 +14,14 @@ use super::{ModelProvider, SharedHttpClient};
 /// Build a model provider from a resolved `ProviderSpec`.
 ///
 /// # Errors
-/// Returns `IronclawError::Config` if the API key is missing for providers
+/// Returns `ResiduumError::Config` if the API key is missing for providers
 /// that require it.
 pub(crate) fn build_provider_from_provider_spec(
     spec: &ProviderSpec,
     max_tokens: u32,
     http: SharedHttpClient,
     retry: RetryConfig,
-) -> Result<Box<dyn ModelProvider>, IronclawError> {
+) -> Result<Box<dyn ModelProvider>, ResiduumError> {
     build_provider_from_spec(
         &spec.model,
         &spec.provider_url,
@@ -35,7 +35,7 @@ pub(crate) fn build_provider_from_provider_spec(
 /// Build a model provider from explicit parameters.
 ///
 /// # Errors
-/// Returns `IronclawError::Config` if the API key is missing for providers
+/// Returns `ResiduumError::Config` if the API key is missing for providers
 /// that require it.
 fn build_provider_from_spec(
     spec: &ModelSpec,
@@ -44,11 +44,11 @@ fn build_provider_from_spec(
     max_tokens: u32,
     http: SharedHttpClient,
     retry: RetryConfig,
-) -> Result<Box<dyn ModelProvider>, IronclawError> {
+) -> Result<Box<dyn ModelProvider>, ResiduumError> {
     match spec.kind {
         ProviderKind::Anthropic => {
             let key = api_key.ok_or_else(|| {
-                IronclawError::Config(
+                ResiduumError::Config(
                     "anthropic requires an API key (set ANTHROPIC_API_KEY or api_key in config)"
                         .to_string(),
                 )
@@ -65,7 +65,7 @@ fn build_provider_from_spec(
         }
         ProviderKind::Gemini => {
             let key = api_key.ok_or_else(|| {
-                IronclawError::Config(
+                ResiduumError::Config(
                     "gemini requires an API key (set GEMINI_API_KEY or api_key in config)"
                         .to_string(),
                 )
@@ -112,13 +112,13 @@ fn build_provider_from_spec(
 /// Single spec → direct provider. Multiple specs → `FailoverProvider`.
 ///
 /// # Errors
-/// Returns `IronclawError::Config` if any provider in the chain cannot be built.
+/// Returns `ResiduumError::Config` if any provider in the chain cannot be built.
 pub(crate) fn build_provider_chain(
     specs: &[ProviderSpec],
     max_tokens: u32,
     http: SharedHttpClient,
     retry: RetryConfig,
-) -> Result<Box<dyn ModelProvider>, IronclawError> {
+) -> Result<Box<dyn ModelProvider>, ResiduumError> {
     if specs.len() == 1
         && let Some(spec) = specs.first()
     {

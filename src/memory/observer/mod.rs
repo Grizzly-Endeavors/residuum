@@ -11,7 +11,7 @@ use chrono_tz::Tz;
 use crate::config::{
     DEFAULT_OBSERVER_COOLDOWN_SECS, DEFAULT_OBSERVER_FORCE_THRESHOLD, DEFAULT_OBSERVER_THRESHOLD,
 };
-use crate::error::IronclawError;
+use crate::error::ResiduumError;
 use crate::memory::chunk_extractor::{extract_chunks, write_idx_jsonl};
 use crate::memory::episode_store::{episode_idx_path, episode_obs_path, write_episode_transcript};
 use crate::memory::log_store::{append_observations, next_episode_id, save_episode_observations};
@@ -167,9 +167,9 @@ impl Observer {
         &self,
         recent_messages: &[RecentMessage],
         layout: &WorkspaceLayout,
-    ) -> Result<ObserveResult, IronclawError> {
+    ) -> Result<ObserveResult, ResiduumError> {
         if recent_messages.is_empty() {
-            return Err(IronclawError::Memory(
+            return Err(ResiduumError::Memory(
                 "no recent messages to extract from".to_string(),
             ));
         }
@@ -200,7 +200,7 @@ impl Observer {
             .provider
             .complete(&extraction_messages, &[], &options)
             .await
-            .map_err(IronclawError::Model)?;
+            .map_err(ResiduumError::Model)?;
 
         // Parse the response into extraction results and optional narrative.
         let parsed = parse_observer_response(&response, self.config.tz)?;
@@ -244,7 +244,7 @@ async fn build_episode_and_persist(
     recent_messages: &[RecentMessage],
     layout: &WorkspaceLayout,
     tz: Tz,
-) -> Result<ObserveResult, IronclawError> {
+) -> Result<ObserveResult, ResiduumError> {
     // Extract inner messages for the episode transcript.
     let messages: Vec<Message> = recent_messages
         .iter()
@@ -342,8 +342,8 @@ mod tests {
 
     const SAMPLE_RESPONSE: &str = r#"{
         "observations": [
-            {"content": "workspace uses a flat directory layout", "timestamp": "2026-02-21T14:30", "visibility": "user", "project_context": "ironclaw/workspace"},
-            {"content": "identity files are loaded at startup", "timestamp": "2026-02-21T14:31", "visibility": "user", "project_context": "ironclaw/workspace"}
+            {"content": "workspace uses a flat directory layout", "timestamp": "2026-02-21T14:30", "visibility": "user", "project_context": "residuum/workspace"},
+            {"content": "identity files are loaded at startup", "timestamp": "2026-02-21T14:31", "visibility": "user", "project_context": "residuum/workspace"}
         ],
         "narrative": ""
     }"#;
@@ -356,7 +356,7 @@ mod tests {
                     "a".repeat(100)
                 )),
                 timestamp: chrono::Utc::now().naive_utc(),
-                project_context: "ironclaw/workspace".to_string(),
+                project_context: "residuum/workspace".to_string(),
                 visibility: Visibility::User,
             })
             .collect()
@@ -401,7 +401,7 @@ mod tests {
     fn parse_observer_response_new_format() {
         let json = r#"{
             "observations": [
-                {"content": "user prefers Rust", "timestamp": "2026-02-21T14:30", "visibility": "user", "project_context": "ironclaw"}
+                {"content": "user prefers Rust", "timestamp": "2026-02-21T14:30", "visibility": "user", "project_context": "residuum"}
             ],
             "narrative": "We were discussing language preferences."
         }"#;
@@ -446,7 +446,7 @@ mod tests {
     fn parse_observer_response_empty_narrative_is_none() {
         let json = r#"{
             "observations": [
-                {"content": "user prefers Rust", "timestamp": "2026-02-21T14:30", "visibility": "user", "project_context": "ironclaw"}
+                {"content": "user prefers Rust", "timestamp": "2026-02-21T14:30", "visibility": "user", "project_context": "residuum"}
             ],
             "narrative": ""
         }"#;
@@ -697,7 +697,7 @@ mod tests {
                 }]),
             ),
             timestamp: chrono::Utc::now().naive_utc(),
-            project_context: "ironclaw/memory".to_string(),
+            project_context: "residuum/memory".to_string(),
             visibility: Visibility::User,
         };
 
@@ -718,7 +718,7 @@ mod tests {
         let rm = RecentMessage {
             message: Message::tool("file contents", "call_abc"),
             timestamp: chrono::Utc::now().naive_utc(),
-            project_context: "ironclaw/memory".to_string(),
+            project_context: "residuum/memory".to_string(),
             visibility: Visibility::User,
         };
 
@@ -738,7 +738,7 @@ mod tests {
         let rm = RecentMessage {
             message: Message::user("hello"),
             timestamp,
-            project_context: "ironclaw/memory".to_string(),
+            project_context: "residuum/memory".to_string(),
             visibility: Visibility::User,
         };
 
@@ -748,7 +748,7 @@ mod tests {
             "should include ISO date in timestamp"
         );
         assert!(
-            formatted.contains("ironclaw/memory"),
+            formatted.contains("residuum/memory"),
             "should include project context"
         );
         assert!(
@@ -760,12 +760,12 @@ mod tests {
     #[test]
     fn majority_context_picks_most_common() {
         let contexts = vec![
-            "ironclaw/memory".to_string(),
-            "ironclaw/memory".to_string(),
+            "residuum/memory".to_string(),
+            "residuum/memory".to_string(),
             "devops/k8s".to_string(),
         ];
         let ctx = majority_context(&contexts);
-        assert_eq!(ctx, "ironclaw/memory", "should use most common context");
+        assert_eq!(ctx, "residuum/memory", "should use most common context");
     }
 
     #[test]

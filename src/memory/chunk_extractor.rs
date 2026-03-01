@@ -6,7 +6,7 @@
 
 use std::path::Path;
 
-use crate::error::IronclawError;
+use crate::error::ResiduumError;
 use crate::memory::recent_messages::RecentMessage;
 use crate::memory::types::IndexChunk;
 use crate::models::Role;
@@ -80,12 +80,12 @@ pub(crate) fn extract_chunks(
 pub(crate) async fn write_idx_jsonl(
     path: &Path,
     chunks: &[IndexChunk],
-) -> Result<(), IronclawError> {
+) -> Result<(), ResiduumError> {
     let mut lines = Vec::with_capacity(chunks.len());
     for chunk in chunks {
         lines.push(
             serde_json::to_string(chunk).map_err(|e| {
-                IronclawError::Memory(format!("failed to serialize index chunk: {e}"))
+                ResiduumError::Memory(format!("failed to serialize index chunk: {e}"))
             })?,
         );
     }
@@ -96,7 +96,7 @@ pub(crate) async fn write_idx_jsonl(
     };
 
     let dir = path.parent().ok_or_else(|| {
-        IronclawError::Memory(format!(
+        ResiduumError::Memory(format!(
             "idx.jsonl path has no parent directory: {}",
             path.display()
         ))
@@ -104,14 +104,14 @@ pub(crate) async fn write_idx_jsonl(
 
     let tmp_path = dir.join(".idx.jsonl.tmp");
     tokio::fs::write(&tmp_path, &content).await.map_err(|e| {
-        IronclawError::Memory(format!(
+        ResiduumError::Memory(format!(
             "failed to write idx.jsonl at {}: {e}",
             tmp_path.display()
         ))
     })?;
 
     tokio::fs::rename(&tmp_path, path).await.map_err(|e| {
-        IronclawError::Memory(format!(
+        ResiduumError::Memory(format!(
             "failed to rename idx.jsonl from {} to {}: {e}",
             tmp_path.display(),
             path.display()
@@ -163,7 +163,7 @@ mod tests {
         RecentMessage {
             message: Message::user(text),
             timestamp: chrono::Utc::now().naive_utc(),
-            project_context: "ironclaw".to_string(),
+            project_context: "residuum".to_string(),
             visibility: Visibility::User,
         }
     }
@@ -172,7 +172,7 @@ mod tests {
         RecentMessage {
             message: Message::assistant(text.to_string(), None),
             timestamp: chrono::Utc::now().naive_utc(),
-            project_context: "ironclaw".to_string(),
+            project_context: "residuum".to_string(),
             visibility: Visibility::User,
         }
     }
@@ -188,7 +188,7 @@ mod tests {
                 }]),
             ),
             timestamp: chrono::Utc::now().naive_utc(),
-            project_context: "ironclaw".to_string(),
+            project_context: "residuum".to_string(),
             visibility: Visibility::User,
         }
     }
@@ -197,7 +197,7 @@ mod tests {
         RecentMessage {
             message: Message::tool("file contents here", "call_1"),
             timestamp: chrono::Utc::now().naive_utc(),
-            project_context: "ironclaw".to_string(),
+            project_context: "residuum".to_string(),
             visibility: Visibility::User,
         }
     }
@@ -206,7 +206,7 @@ mod tests {
         RecentMessage {
             message: Message::system("you are a helpful assistant"),
             timestamp: chrono::Utc::now().naive_utc(),
-            project_context: "ironclaw".to_string(),
+            project_context: "residuum".to_string(),
             visibility: Visibility::User,
         }
     }
@@ -265,7 +265,7 @@ mod tests {
             RecentMessage {
                 message: Message::assistant("   ".to_string(), None),
                 timestamp: chrono::Utc::now().naive_utc(),
-                project_context: "ironclaw".to_string(),
+                project_context: "residuum".to_string(),
                 visibility: Visibility::User,
             },
         ];
@@ -329,9 +329,9 @@ mod tests {
     fn per_chunk_project_context() {
         let msgs = vec![
             RecentMessage {
-                message: Message::user("how is ironclaw?"),
+                message: Message::user("how is residuum?"),
                 timestamp: chrono::Utc::now().naive_utc(),
-                project_context: "ironclaw".to_string(),
+                project_context: "residuum".to_string(),
                 visibility: Visibility::User,
             },
             recent_assistant("it's great"),
@@ -345,7 +345,7 @@ mod tests {
         ];
         let chunks = extract_chunks(&msgs, "ep-001", "2026-02-19", 2);
         assert_eq!(chunks.len(), 2);
-        assert_eq!(chunks[0].context, "ironclaw");
+        assert_eq!(chunks[0].context, "residuum");
         assert_eq!(chunks[1].context, "devops");
     }
 
@@ -359,7 +359,7 @@ mod tests {
                 chunk_id: "ep-001-c0".to_string(),
                 episode_id: "ep-001".to_string(),
                 date: "2026-02-19".to_string(),
-                context: "ironclaw".to_string(),
+                context: "residuum".to_string(),
                 line_start: 2,
                 line_end: 3,
                 content: "user: hello\nassistant: hi".to_string(),
@@ -368,7 +368,7 @@ mod tests {
                 chunk_id: "ep-001-c1".to_string(),
                 episode_id: "ep-001".to_string(),
                 date: "2026-02-19".to_string(),
-                context: "ironclaw".to_string(),
+                context: "residuum".to_string(),
                 line_start: 4,
                 line_end: 5,
                 content: "user: what\nassistant: that".to_string(),

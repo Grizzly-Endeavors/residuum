@@ -1,5 +1,5 @@
 ---
-name: ironclaw-getting-started
+name: residuum-getting-started
 description: "First-conversation guidance: quick setup that gets the agent doing real work immediately, then deeper exploration workflows"
 ---
 
@@ -115,5 +115,5 @@ When the conversation winds down:
 
 1. Make sure `BOOTSTRAP.md` is deleted.
 2. Update `MEMORY.md` with a summary of what was set up and what you learned.
-3. Deactivate this skill with `skill_deactivate ironclaw-getting-started`.
+3. Deactivate this skill with `skill_deactivate residuum-getting-started`.
 4. Tell the user what's now running in the background (if anything) and what they can do next.

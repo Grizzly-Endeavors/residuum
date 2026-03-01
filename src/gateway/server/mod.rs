@@ -28,7 +28,7 @@ use crate::background::BackgroundTaskSpawner;
 use crate::background::types::{BackgroundResult, ResultRouting, format_background_result};
 use crate::channels::types::{ReplyHandle, RoutedMessage};
 use crate::config::Config;
-use crate::error::IronclawError;
+use crate::error::ResiduumError;
 use crate::mcp::SharedMcpRegistry;
 use crate::memory::observer::{ObserveAction, Observer};
 use crate::memory::reflector::Reflector;
@@ -152,12 +152,12 @@ fn apply_observe_action(
 ///
 /// # Errors
 ///
-/// Returns `IronclawError` if initialization fails or the server cannot bind.
+/// Returns `ResiduumError` if initialization fails or the server cannot bind.
 #[expect(
     clippy::too_many_lines,
     reason = "wires channels, server spawn, discord adapter, and GatewayRuntime assembly; each section is a distinct setup step"
 )]
-pub async fn run_gateway(cfg: Config) -> Result<GatewayExit, IronclawError> {
+pub async fn run_gateway(cfg: Config) -> Result<GatewayExit, ResiduumError> {
     let parts = startup::initialize(&cfg).await?;
 
     let (inbound_tx, inbound_rx) = mpsc::channel::<RoutedMessage>(32);
@@ -220,7 +220,7 @@ pub async fn run_gateway(cfg: Config) -> Result<GatewayExit, IronclawError> {
     let addr = cfg.gateway.addr();
     let listener = tokio::net::TcpListener::bind(&addr)
         .await
-        .map_err(|e| IronclawError::Gateway(format!("failed to bind to {addr}: {e}")))?;
+        .map_err(|e| ResiduumError::Gateway(format!("failed to bind to {addr}: {e}")))?;
     tracing::info!(addr = %addr, "gateway listening");
     if cfg.gateway.bind != "127.0.0.1" && cfg.gateway.bind != "localhost" {
         tracing::warn!(
@@ -278,7 +278,7 @@ pub async fn run_gateway(cfg: Config) -> Result<GatewayExit, IronclawError> {
     }
 
     let sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
-        .map_err(|e| IronclawError::Gateway(format!("failed to register SIGTERM handler: {e}")))?;
+        .map_err(|e| ResiduumError::Gateway(format!("failed to register SIGTERM handler: {e}")))?;
 
     let rt = GatewayRuntime {
         layout: parts.layout,

@@ -3,7 +3,7 @@
 use chrono_tz::Tz;
 use serde::Deserialize;
 
-use crate::error::IronclawError;
+use crate::error::ResiduumError;
 use crate::memory::types::{Observation, ObservationLog, Visibility};
 use crate::time::now_local;
 
@@ -32,7 +32,7 @@ struct ReflectorItem {
 pub(super) fn parse_reflection_response(
     content: &str,
     tz: Tz,
-) -> Result<ObservationLog, IronclawError> {
+) -> Result<ObservationLog, ResiduumError> {
     let trimmed = content.trim();
     let json_str = crate::memory::strip_code_fences(trimmed);
 
@@ -62,13 +62,13 @@ pub(super) fn parse_reflection_response(
 
     // Fallback: Value-based parsing for legacy bare arrays
     let value: serde_json::Value = serde_json::from_str(json_str).map_err(|e| {
-        IronclawError::Memory(format!(
+        ResiduumError::Memory(format!(
             "failed to parse reflector response as JSON: {e}\nresponse: {trimmed}"
         ))
     })?;
 
     let items = value.as_array().ok_or_else(|| {
-        IronclawError::Memory(format!(
+        ResiduumError::Memory(format!(
             "reflector response is not a JSON array or object\nresponse: {trimmed}"
         ))
     })?;

@@ -12,11 +12,11 @@
 mod skills_integration {
     use std::sync::Arc;
 
-    use ironclaw::skills::{SkillIndex, SkillSource, SkillState};
-    use ironclaw::tools::Tool;
-    use ironclaw::tools::skills::{SkillActivateTool, SkillDeactivateTool};
-    use ironclaw::workspace::bootstrap::ensure_workspace;
-    use ironclaw::workspace::layout::WorkspaceLayout;
+    use residuum::skills::{SkillIndex, SkillSource, SkillState};
+    use residuum::tools::Tool;
+    use residuum::tools::skills::{SkillActivateTool, SkillDeactivateTool};
+    use residuum::workspace::bootstrap::ensure_workspace;
+    use residuum::workspace::layout::WorkspaceLayout;
 
     /// Set up a workspace with skills directory and optional skill files.
     async fn setup_workspace() -> (tempfile::TempDir, WorkspaceLayout) {

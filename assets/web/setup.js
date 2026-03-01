@@ -1,4 +1,4 @@
-// ── IronClaw Web UI — Setup Wizard ────────────────────────────────────
+// ── Residuum Web UI — Setup Wizard ────────────────────────────────────
 //
 // Multi-step wizard for first-run configuration. Generates a valid
 // config.toml and POSTs it to /api/config/complete-setup.
@@ -105,7 +105,7 @@ const Setup = {
 
     renderWelcome() {
         return `
-            <h2>Welcome to IronClaw</h2>
+            <h2>Welcome to Residuum</h2>
             <p class="subtitle">Let's get your agent configured. This will only take a minute.</p>
             <div class="settings-field">
                 <label>Your Name</label>
@@ -411,7 +411,7 @@ const Setup = {
         const toml = this.generateToml();
         return `
             <h2>Review Configuration</h2>
-            <p class="subtitle">Here's your generated config. Edit if needed, then save to start IronClaw.</p>
+            <p class="subtitle">Here's your generated config. Edit if needed, then save to start Residuum.</p>
             <textarea class="toml-editor" id="setup-toml">${esc(toml)}</textarea>
             <div class="validation-msg" id="setup-validation"></div>
             <div class="setup-nav">

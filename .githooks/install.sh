@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Install git hooks for ironclaw
+# Install git hooks for residuum
 # Run this once after cloning the repository
 
 set -e

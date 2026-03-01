@@ -1,11 +1,11 @@
-//! Crate-level error types for `IronClaw`.
+//! Crate-level error types for `Residuum`.
 
 use crate::models::ModelError;
 use crate::tools::ToolError;
 
-/// Top-level error type for the `IronClaw` agent gateway.
+/// Top-level error type for the `Residuum` agent gateway.
 #[derive(Debug, thiserror::Error)]
-pub enum IronclawError {
+pub enum ResiduumError {
     /// Configuration loading or validation failed
     #[error("config error: {0}")]
     Config(String),

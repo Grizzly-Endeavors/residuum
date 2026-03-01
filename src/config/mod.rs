@@ -17,7 +17,7 @@ pub mod wizard;
 use std::fmt;
 use std::path::{Path, PathBuf};
 
-use crate::error::IronclawError;
+use crate::error::ResiduumError;
 use crate::models::retry::RetryConfig;
 
 // ── Public re-exports ─────────────────────────────────────────────────────────
@@ -118,14 +118,14 @@ impl fmt::Debug for Config {
 }
 
 impl Config {
-    /// Write default config files to `~/.ironclaw/` if not already present.
+    /// Write default config files to `~/.residuum/` if not already present.
     ///
     /// - `config.toml` is created only if absent (minimal template for the user to edit).
     /// - `config.example.toml` is always regenerated (kept in sync with the current schema).
     ///
     /// # Errors
-    /// Returns `IronclawError::Config` if the config directory or files cannot be written.
-    pub fn bootstrap_config_dir() -> Result<(), IronclawError> {
+    /// Returns `ResiduumError::Config` if the config directory or files cannot be written.
+    pub fn bootstrap_config_dir() -> Result<(), ResiduumError> {
         let dir = bootstrap::default_config_dir()?;
         bootstrap::bootstrap_at(&dir)
     }
@@ -133,19 +133,19 @@ impl Config {
     /// Write default config files to an arbitrary directory.
     ///
     /// Same as [`bootstrap_config_dir`](Self::bootstrap_config_dir) but targets
-    /// a caller-specified path instead of `~/.ironclaw/`.
+    /// a caller-specified path instead of `~/.residuum/`.
     ///
     /// # Errors
-    /// Returns `IronclawError::Config` if the directory or files cannot be written.
-    pub fn bootstrap_at_dir(dir: &Path) -> Result<(), IronclawError> {
+    /// Returns `ResiduumError::Config` if the directory or files cannot be written.
+    pub fn bootstrap_at_dir(dir: &Path) -> Result<(), ResiduumError> {
         bootstrap::bootstrap_at(dir)
     }
 
-    /// Get the default config directory path (`~/.ironclaw/`).
+    /// Get the default config directory path (`~/.residuum/`).
     ///
     /// # Errors
-    /// Returns `IronclawError::Config` if the home directory cannot be determined.
-    pub fn config_dir() -> Result<PathBuf, IronclawError> {
+    /// Returns `ResiduumError::Config` if the home directory cannot be determined.
+    pub fn config_dir() -> Result<PathBuf, ResiduumError> {
         bootstrap::default_config_dir()
     }
 
@@ -154,9 +154,9 @@ impl Config {
     /// Priority: env vars > config file > defaults.
     ///
     /// # Errors
-    /// Returns `IronclawError::Config` if the config file exists but cannot be
+    /// Returns `ResiduumError::Config` if the config file exists but cannot be
     /// read or parsed, or if required values are missing.
-    pub fn load() -> Result<Self, IronclawError> {
+    pub fn load() -> Result<Self, ResiduumError> {
         let config_dir = bootstrap::default_config_dir()?;
         let mut cfg = Self::load_at(&config_dir)?;
         cfg.config_dir = config_dir;
@@ -166,24 +166,24 @@ impl Config {
     /// Load configuration from a specific directory.
     ///
     /// Same as [`load`](Self::load) but reads `config.toml` from the given
-    /// directory instead of the default `~/.ironclaw/`.
+    /// directory instead of the default `~/.residuum/`.
     ///
     /// # Errors
-    /// Returns `IronclawError::Config` if the config file exists but cannot be
+    /// Returns `ResiduumError::Config` if the config file exists but cannot be
     /// read or parsed, or if required values are missing.
-    pub fn load_at(config_dir: &std::path::Path) -> Result<Self, IronclawError> {
+    pub fn load_at(config_dir: &std::path::Path) -> Result<Self, ResiduumError> {
         let config_path = config_dir.join("config.toml");
 
         let file_config = if config_path.exists() {
             let contents = std::fs::read_to_string(&config_path).map_err(|e| {
-                IronclawError::Config(format!(
+                ResiduumError::Config(format!(
                     "failed to read config at {}: {e}",
                     config_path.display()
                 ))
             })?;
             Some(
                 toml::from_str::<deserialize::ConfigFile>(&contents).map_err(|e| {
-                    IronclawError::Config(format!(
+                    ResiduumError::Config(format!(
                         "failed to parse config at {}: {e}",
                         config_path.display()
                     ))
@@ -211,7 +211,7 @@ impl Config {
             .map_err(|e| format!("TOML parse error: {e}"))?;
 
         // Use a temp dir for validation — secrets aren't needed for structural checks
-        let temp_dir = std::env::temp_dir().join("ironclaw-validate");
+        let temp_dir = std::env::temp_dir().join("residuum-validate");
         resolve::from_file_and_env(Some(&file), &temp_dir).map_err(|e| format!("{e}"))?;
         Ok(())
     }

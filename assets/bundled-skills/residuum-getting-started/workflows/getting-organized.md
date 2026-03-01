@@ -72,4 +72,4 @@ Suggest next steps:
 - "If you want me to monitor things for you, ask about heartbeat setup."
 - "You can always add more projects as new work comes up -- just tell me what you are starting."
 
-For deeper technical detail on projects, activate `ironclaw-system`.
+For deeper technical detail on projects, activate `residuum-system`.

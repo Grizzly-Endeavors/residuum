@@ -1,4 +1,4 @@
-# IronClaw example configuration — all options with defaults shown.
+# Residuum example configuration — all options with defaults shown.
 # Copy to config.toml and edit as needed.
 
 # ── User name (optional) ─────────────────────────────────────────────────────
@@ -25,7 +25,7 @@ timezone = "America/New_York"
 #   Env var:       api_key = "${ANTHROPIC_API_KEY}"
 #   Secret store:  api_key = "secret:anthropic_key"
 #
-# Use 'ironclaw secret set anthropic_key' to store encrypted secrets.
+# Use 'residuum secret set anthropic_key' to store encrypted secrets.
 #
 # [providers]
 # cerebras = { type = "openai", api_key = "csk-...", url = "https://api.cerebras.ai/v1" }
@@ -36,7 +36,7 @@ timezone = "America/New_York"
 # Format: "provider_or_type/model_name"
 # If the part before / matches a [providers] entry, that connection is used.
 # Otherwise it is treated as an implicit provider type (anthropic, openai, etc.)
-# and the API key is read from the provider-specific env var or IRONCLAW_API_KEY.
+# and the API key is read from the provider-specific env var or RESIDUUM_API_KEY.
 #
 # Roles: main (required), default (fallback for unset roles), observer,
 #        reflector, pulse
@@ -53,7 +53,7 @@ main = "anthropic/claude-sonnet-4-6"
 # embedding = "openai/text-embedding-3-small"
 
 # ── General settings ──────────────────────────────────────────────────────────
-# workspace_dir = "~/.ironclaw/workspace"
+# workspace_dir = "~/.residuum/workspace"
 timeout_secs = 120
 max_tokens = 8192
 
@@ -90,20 +90,20 @@ bind = "127.0.0.1"
 port = 7700
 
 # ── Discord bot (optional) ────────────────────────────────────────────────────
-# Bot token can be set here or via IRONCLAW_DISCORD_TOKEN env var.
+# Bot token can be set here or via RESIDUUM_DISCORD_TOKEN env var.
 # Supports ${ENV_VAR} syntax for referencing environment variables.
 # Currently DM-only; guild channels, slash commands, and presence are planned.
 #
 # [discord]
-# token = "${IRONCLAW_DISCORD_TOKEN}"
+# token = "${RESIDUUM_DISCORD_TOKEN}"
 
 # ── Telegram bot (optional) ──────────────────────────────────────────────────
-# Bot token can be set here or via IRONCLAW_TELEGRAM_TOKEN env var.
+# Bot token can be set here or via RESIDUUM_TELEGRAM_TOKEN env var.
 # Supports ${ENV_VAR} syntax for referencing environment variables.
 # Currently DM-only; group messages are ignored.
 #
 # [telegram]
-# token = "${IRONCLAW_TELEGRAM_TOKEN}"
+# token = "${RESIDUUM_TELEGRAM_TOKEN}"
 
 # ── Skills (optional, extra scan directories) ────────────────────────────────
 # The workspace skills/ directory is always scanned. Add extra directories here.

@@ -14,20 +14,20 @@ mod proactivity_integration {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use tempfile::tempdir;
 
-    use ironclaw::agent::Agent;
-    use ironclaw::agent::context::PromptContext;
-    use ironclaw::background::types::{Execution, ResultRouting};
-    use ironclaw::channels::null::NullReplyHandle;
-    use ironclaw::config::BackgroundModelTier;
-    use ironclaw::models::{
+    use residuum::agent::Agent;
+    use residuum::agent::context::PromptContext;
+    use residuum::background::types::{Execution, ResultRouting};
+    use residuum::channels::null::NullReplyHandle;
+    use residuum::config::BackgroundModelTier;
+    use residuum::models::{
         CompletionOptions, Message, ModelError, ModelProvider, ModelResponse, Role, ToolDefinition,
     };
-    use ironclaw::notify::types::TaskSource;
-    use ironclaw::pulse::executor::{PulseExecution, build_pulse_execution, build_pulse_task};
-    use ironclaw::pulse::scheduler::PulseScheduler;
-    use ironclaw::pulse::types::{PulseDef, PulseTask};
-    use ironclaw::tools::{ToolFilter, ToolRegistry};
-    use ironclaw::workspace::identity::IdentityFiles;
+    use residuum::notify::types::TaskSource;
+    use residuum::pulse::executor::{PulseExecution, build_pulse_execution, build_pulse_task};
+    use residuum::pulse::scheduler::PulseScheduler;
+    use residuum::pulse::types::{PulseDef, PulseTask};
+    use residuum::tools::{ToolFilter, ToolRegistry};
+    use residuum::workspace::identity::IdentityFiles;
 
     /// Mock provider that returns configurable responses in sequence.
     struct MockProvider {
@@ -71,11 +71,11 @@ mod proactivity_integration {
             Box::new(MockProvider::new(responses)),
             ToolRegistry::new(),
             ToolFilter::new_shared(std::collections::HashSet::new()),
-            ironclaw::mcp::McpRegistry::new_shared(),
+            residuum::mcp::McpRegistry::new_shared(),
             IdentityFiles::default(),
             CompletionOptions::default(),
             chrono_tz::UTC,
-            std::path::PathBuf::from("/tmp/ironclaw-test-inbox"),
+            std::path::PathBuf::from("/tmp/residuum-test-inbox"),
         )
     }
 
@@ -279,8 +279,8 @@ mod proactivity_integration {
 
     #[tokio::test]
     async fn action_store_round_trip() {
-        use ironclaw::actions::store::ActionStore;
-        use ironclaw::actions::types::ScheduledAction;
+        use residuum::actions::store::ActionStore;
+        use residuum::actions::types::ScheduledAction;
 
         let dir = tempdir().unwrap();
         let path = dir.path().join("scheduled_actions.json");
@@ -327,8 +327,8 @@ mod proactivity_integration {
 
     #[tokio::test]
     async fn action_store_take_due() {
-        use ironclaw::actions::store::ActionStore;
-        use ironclaw::actions::types::ScheduledAction;
+        use residuum::actions::store::ActionStore;
+        use residuum::actions::types::ScheduledAction;
 
         let dir = tempdir().unwrap();
         let path = dir.path().join("scheduled_actions.json");
@@ -367,8 +367,8 @@ mod proactivity_integration {
 
     #[tokio::test]
     async fn action_store_remove() {
-        use ironclaw::actions::store::ActionStore;
-        use ironclaw::actions::types::ScheduledAction;
+        use residuum::actions::store::ActionStore;
+        use residuum::actions::types::ScheduledAction;
 
         let dir = tempdir().unwrap();
         let path = dir.path().join("scheduled_actions.json");

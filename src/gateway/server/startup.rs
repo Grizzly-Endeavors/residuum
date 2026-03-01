@@ -11,7 +11,7 @@ use crate::agent::Agent;
 use crate::background::BackgroundTaskSpawner;
 use crate::background::types::BackgroundResult;
 use crate::config::Config;
-use crate::error::IronclawError;
+use crate::error::ResiduumError;
 use crate::mcp::SharedMcpRegistry;
 use crate::memory::chunk_extractor::read_idx_jsonl;
 use crate::memory::observer::Observer;
@@ -73,19 +73,19 @@ pub(super) struct GatewayComponents {
 /// search index, project/skill state, tool registry, and agent.
 ///
 /// # Errors
-/// Returns `IronclawError` if any subsystem fails to initialize.
+/// Returns `ResiduumError` if any subsystem fails to initialize.
 #[expect(
     clippy::too_many_lines,
     reason = "sequential initialization pipeline; splitting would obscure the boot order"
 )]
-pub(super) async fn initialize(cfg: &Config) -> Result<GatewayComponents, IronclawError> {
+pub(super) async fn initialize(cfg: &Config) -> Result<GatewayComponents, ResiduumError> {
     // Workspace
     let layout = WorkspaceLayout::new(&cfg.workspace_dir);
     let tz = cfg.timezone;
     ensure_workspace(&layout, cfg.name.as_deref(), Some(cfg.timezone.name())).await?;
 
     std::env::set_current_dir(&cfg.workspace_dir).map_err(|e| {
-        IronclawError::Config(format!(
+        ResiduumError::Config(format!(
             "failed to change to workspace directory {}: {e}",
             cfg.workspace_dir.display()
         ))
@@ -95,7 +95,7 @@ pub(super) async fn initialize(cfg: &Config) -> Result<GatewayComponents, Ironcl
     // Identity + HTTP client
     let identity = IdentityFiles::load(&layout).await?;
     let http = SharedHttpClient::new(&HttpClientConfig::with_timeout(cfg.timeout_secs))
-        .map_err(|e| IronclawError::Config(format!("failed to build HTTP client: {e}")))?;
+        .map_err(|e| ResiduumError::Config(format!("failed to build HTTP client: {e}")))?;
 
     // Model providers
     let provider =
@@ -615,7 +615,7 @@ async fn backfill_obs_file(
     vs: &VectorStore,
     ep: &dyn EmbeddingProvider,
     path: &Path,
-) -> Result<(), IronclawError> {
+) -> Result<(), ResiduumError> {
     let (episode_id, date, observations) = parse_obs_file(path)?;
     if observations.is_empty() {
         return Ok(());
@@ -630,7 +630,7 @@ async fn backfill_obs_file(
 
     let texts: Vec<&str> = observations.iter().map(|o| o.content.as_str()).collect();
     let response = ep.embed(&texts).await.map_err(|e| {
-        IronclawError::Memory(format!("embedding failed for {}: {e}", path.display()))
+        ResiduumError::Memory(format!("embedding failed for {}: {e}", path.display()))
     })?;
 
     let embeddings = response.embeddings;
@@ -645,7 +645,7 @@ async fn backfill_idx_file(
     vs: &VectorStore,
     ep: &dyn EmbeddingProvider,
     path: &Path,
-) -> Result<(), IronclawError> {
+) -> Result<(), ResiduumError> {
     let chunks = read_idx_jsonl(path);
     if chunks.is_empty() {
         return Ok(());
@@ -664,7 +664,7 @@ async fn backfill_idx_file(
 
     let texts: Vec<&str> = chunks.iter().map(|c| c.content.as_str()).collect();
     let response = ep.embed(&texts).await.map_err(|e| {
-        IronclawError::Memory(format!("embedding failed for {}: {e}", path.display()))
+        ResiduumError::Memory(format!("embedding failed for {}: {e}", path.display()))
     })?;
 
     let embeddings = response.embeddings;

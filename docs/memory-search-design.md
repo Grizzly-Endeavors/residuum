@@ -117,8 +117,8 @@ memory/
 Each line is a self-contained chunk with metadata:
 
 ```jsonl
-{"chunk_id":"ep-001-c0","episode_id":"ep-001","date":"2026-02-19","context":"ironclaw","line_start":2,"line_end":14,"content":"user: How do I configure the memory system?\nassistant: The memory system uses..."}
-{"chunk_id":"ep-001-c1","episode_id":"ep-001","date":"2026-02-19","context":"ironclaw","line_start":15,"line_end":38,"content":"user: What about the reflector?\nassistant: The reflector compresses..."}
+{"chunk_id":"ep-001-c0","episode_id":"ep-001","date":"2026-02-19","context":"residuum","line_start":2,"line_end":14,"content":"user: How do I configure the memory system?\nassistant: The memory system uses..."}
+{"chunk_id":"ep-001-c1","episode_id":"ep-001","date":"2026-02-19","context":"residuum","line_start":15,"line_end":38,"content":"user: What about the reflector?\nassistant: The reflector compresses..."}
 ```
 
 Fields:
@@ -312,14 +312,14 @@ Without `from_line`, returns from the start of the transcript (meta line + first
 ```
 Found 3 result(s):
 
-1. [observation] ep-001 | 2026-02-19 | ironclaw (score: 0.87)
+1. [observation] ep-001 | 2026-02-19 | residuum (score: 0.87)
    The memory system uses a two-tier compression model with observer and reflector stages.
 
-2. [chunk] ep-003-c2 | 2026-02-21 | ironclaw | lines 15-38 (score: 0.72)
+2. [chunk] ep-003-c2 | 2026-02-21 | residuum | lines 15-38 (score: 0.72)
    user: How does the observer decide when to fire?
    assistant: The observer tracks token accumulation across messages...
 
-3. [observation] ep-005 | 2026-02-23 | ironclaw (score: 0.65)
+3. [observation] ep-005 | 2026-02-23 | residuum (score: 0.65)
    Observer threshold was increased to 40k tokens after testing showed premature triggers.
 ```
 

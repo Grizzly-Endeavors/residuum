@@ -2,10 +2,10 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::error::IronclawError;
+use crate::error::ResiduumError;
 
 /// Minimal config.toml written on first run — user edits this.
-const MINIMAL_CONFIG: &str = "# IronClaw configuration. See config.example.toml for all options.\n\
+const MINIMAL_CONFIG: &str = "# Residuum configuration. See config.example.toml for all options.\n\
     \n\
     # timezone = \"America/New_York\"  # REQUIRED: IANA timezone name\n\
     \n\
@@ -17,15 +17,15 @@ const MINIMAL_CONFIG: &str = "# IronClaw configuration. See config.example.toml 
 /// Every option is shown with its default and a brief comment.
 const EXAMPLE_CONFIG: &str = include_str!("../../assets/config.example.toml");
 
-/// Get the default config directory (`~/.ironclaw/`).
-pub(crate) fn default_config_dir() -> Result<PathBuf, IronclawError> {
+/// Get the default config directory (`~/.residuum/`).
+pub(crate) fn default_config_dir() -> Result<PathBuf, ResiduumError> {
     dirs::home_dir()
-        .map(|h| h.join(".ironclaw"))
-        .ok_or_else(|| IronclawError::Config("could not determine home directory".to_string()))
+        .map(|h| h.join(".residuum"))
+        .ok_or_else(|| ResiduumError::Config("could not determine home directory".to_string()))
 }
 
-/// Get the default workspace directory (`~/.ironclaw/workspace/`).
-pub(super) fn default_workspace_dir() -> Result<PathBuf, IronclawError> {
+/// Get the default workspace directory (`~/.residuum/workspace/`).
+pub(super) fn default_workspace_dir() -> Result<PathBuf, ResiduumError> {
     default_config_dir().map(|d| d.join("workspace"))
 }
 
@@ -35,11 +35,11 @@ pub(super) fn default_workspace_dir() -> Result<PathBuf, IronclawError> {
 /// and always regenerates `config.example.toml`.
 ///
 /// # Errors
-/// Returns `IronclawError::Config` if the directory or files cannot be written.
-pub(super) fn bootstrap_at(dir: &Path) -> Result<(), IronclawError> {
+/// Returns `ResiduumError::Config` if the directory or files cannot be written.
+pub(super) fn bootstrap_at(dir: &Path) -> Result<(), ResiduumError> {
     if !dir.exists() {
         std::fs::create_dir_all(dir).map_err(|e| {
-            IronclawError::Config(format!(
+            ResiduumError::Config(format!(
                 "failed to create config directory {}: {e}",
                 dir.display()
             ))
@@ -49,7 +49,7 @@ pub(super) fn bootstrap_at(dir: &Path) -> Result<(), IronclawError> {
     let config_path = dir.join("config.toml");
     if !config_path.exists() {
         std::fs::write(&config_path, MINIMAL_CONFIG).map_err(|e| {
-            IronclawError::Config(format!(
+            ResiduumError::Config(format!(
                 "failed to write config.toml at {}: {e}",
                 config_path.display()
             ))
@@ -59,7 +59,7 @@ pub(super) fn bootstrap_at(dir: &Path) -> Result<(), IronclawError> {
 
     let example_path = dir.join("config.example.toml");
     std::fs::write(&example_path, EXAMPLE_CONFIG).map_err(|e| {
-        IronclawError::Config(format!(
+        ResiduumError::Config(format!(
             "failed to write config.example.toml at {}: {e}",
             example_path.display()
         ))

@@ -105,7 +105,7 @@ Project-scoped skills that are only relevant when this project is active. Each s
 
 This keeps project-specific skills colocated with the project they belong to — no need to pollute global skill directories with skills only one project uses. The project folder remains fully self-contained and portable.
 
-Global skills (in `~/.ironclaw/skills/` or `~/.ironclaw/workspace/skills/`) are always visible regardless of which project is active. The `skills/` subfolder is for skills that only make sense in this project's context.
+Global skills (in `~/.residuum/skills/` or `~/.residuum/workspace/skills/`) are always visible regardless of which project is active. The `skills/` subfolder is for skills that only make sense in this project's context.
 
 Examples: `skills/ansible-playbooks/SKILL.md`, `skills/ap-diagnostics/SKILL.md`
 
@@ -116,7 +116,7 @@ Directory names are derived from the project name: lowercased, spaces and specia
 ### Full layout
 
 ```
-~/.ironclaw/workspace/
+~/.residuum/workspace/
 ├── SOUL.md
 ├── USER.md
 ├── AGENTS.md

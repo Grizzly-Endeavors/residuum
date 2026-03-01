@@ -16,13 +16,13 @@ mod background_integration {
     use tempfile::tempdir;
     use tokio::sync::mpsc;
 
-    use ironclaw::background::BackgroundTaskSpawner;
-    use ironclaw::background::types::{
+    use residuum::background::BackgroundTaskSpawner;
+    use residuum::background::types::{
         BackgroundTask, ResultRouting, TaskStatus, format_background_result,
     };
-    use ironclaw::notify::channels::InboxChannel;
-    use ironclaw::notify::router::NotificationRouter;
-    use ironclaw::notify::types::TaskSource;
+    use residuum::notify::channels::InboxChannel;
+    use residuum::notify::router::NotificationRouter;
+    use residuum::notify::types::TaskSource;
 
     // ── Result routing to inbox via channels ───────────────────────────
 
@@ -36,7 +36,7 @@ mod background_integration {
         let router = NotificationRouter::new(HashMap::new(), Some(inbox_channel));
 
         // Simulate a background result with direct inbox routing
-        let result = ironclaw::background::types::BackgroundResult {
+        let result = residuum::background::types::BackgroundResult {
             id: "route-1".to_string(),
             task_name: "test_script".to_string(),
             source: TaskSource::Agent,
@@ -47,7 +47,7 @@ mod background_integration {
             routing: ResultRouting::Direct(vec!["inbox".to_string()]),
         };
 
-        let notification = ironclaw::notify::types::Notification {
+        let notification = residuum::notify::types::Notification {
             task_name: result.task_name.clone(),
             summary: result.summary.clone(),
             source: result.source,
@@ -73,7 +73,7 @@ mod background_integration {
         let dir = tempdir().unwrap();
 
         // Empty channels = unrouted
-        let result = ironclaw::background::types::BackgroundResult {
+        let result = residuum::background::types::BackgroundResult {
             id: "unrouted-1".to_string(),
             task_name: "nobody_listens".to_string(),
             source: TaskSource::Agent,
@@ -112,8 +112,8 @@ mod background_integration {
 
     #[tokio::test]
     async fn mcp_ref_counting_two_activations_one_deactivation_keeps_servers() {
-        use ironclaw::mcp::McpRegistry;
-        use ironclaw::projects::types::{McpServerEntry, McpTransport};
+        use residuum::mcp::McpRegistry;
+        use residuum::projects::types::{McpServerEntry, McpTransport};
 
         let mut registry = McpRegistry::new();
         let entry = McpServerEntry {
@@ -179,7 +179,7 @@ mod background_integration {
 
     #[test]
     fn format_result_contains_all_fields() {
-        let result = ironclaw::background::types::BackgroundResult {
+        let result = residuum::background::types::BackgroundResult {
             id: "fmt-1".to_string(),
             task_name: "my_task".to_string(),
             source: TaskSource::Action,
@@ -208,7 +208,7 @@ mod background_integration {
         let spawner =
             BackgroundTaskSpawner::new(tx, 3, PathBuf::from("/tmp"), dir.path().to_path_buf());
 
-        let result = ironclaw::background::types::BackgroundResult {
+        let result = residuum::background::types::BackgroundResult {
             id: "action-evt-test-1".to_string(),
             task_name: "reminder".to_string(),
             source: TaskSource::Action,
@@ -233,8 +233,8 @@ mod background_integration {
 
     #[tokio::test]
     async fn subagent_spawn_async_result_delivery() {
-        use ironclaw::background::types::{Execution, SubAgentConfig};
-        use ironclaw::config::BackgroundModelTier;
+        use residuum::background::types::{Execution, SubAgentConfig};
+        use residuum::config::BackgroundModelTier;
 
         let dir = tempdir().unwrap();
         let (tx, mut rx) = mpsc::channel(32);
@@ -282,10 +282,10 @@ mod background_integration {
 
     #[test]
     fn build_pulse_task_creates_correct_structure() {
-        use ironclaw::background::types::Execution;
-        use ironclaw::config::BackgroundModelTier;
-        use ironclaw::pulse::executor::build_pulse_task;
-        use ironclaw::pulse::types::{PulseDef, PulseTask};
+        use residuum::background::types::Execution;
+        use residuum::config::BackgroundModelTier;
+        use residuum::pulse::executor::build_pulse_task;
+        use residuum::pulse::types::{PulseDef, PulseTask};
 
         let pulse = PulseDef {
             name: "status_check".to_string(),

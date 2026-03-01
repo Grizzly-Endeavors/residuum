@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Pre-commit hook for ironclaw
+# Pre-commit hook for residuum
 # Enforces code quality before commits are created
 
 set -e

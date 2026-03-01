@@ -33,7 +33,7 @@ If multiple skills share the same name, the highest-priority source wins. Lookup
 - **Available skills**: listed in an `<available_skills>` block with name and description. The agent always sees this index and can decide to activate skills based on the current task.
 - **Active skills**: full body injected in `<active_skill name="...">` blocks.
 
-**Only SKILL.md is injected.** A skill directory may contain additional files (subdirectories, reference docs, workflow guides, etc.), but these are not automatically loaded. The SKILL.md body should instruct the agent to read those files using `read_file` when needed. For example, `ironclaw-getting-started` has a `workflows/` subdirectory — the SKILL.md body tells the agent which workflow file to read based on the user's goal.
+**Only SKILL.md is injected.** A skill directory may contain additional files (subdirectories, reference docs, workflow guides, etc.), but these are not automatically loaded. The SKILL.md body should instruct the agent to read those files using `read_file` when needed. For example, `residuum-getting-started` has a `workflows/` subdirectory — the SKILL.md body tells the agent which workflow file to read based on the user's goal.
 
 ## Tools
 
@@ -46,8 +46,8 @@ If multiple skills share the same name, the highest-priority source wins. Lookup
 
 Two skills are bundled with every workspace:
 
-- **`ironclaw-system`**: Quick reference for all systems — tool names, config files, workspace layout. The agent activates this when it needs to look up operational details.
-- **`ironclaw-getting-started`**: First-conversation onboarding. Routes the user into one of several guided workflows. Deactivates itself after the first conversation.
+- **`residuum-system`**: Quick reference for all systems — tool names, config files, workspace layout. The agent activates this when it needs to look up operational details.
+- **`residuum-getting-started`**: First-conversation onboarding. Routes the user into one of several guided workflows. Deactivates itself after the first conversation.
 
 Bundled skills live under `skills/` in the workspace and follow the same format. They are written once during workspace creation and are not overwritten if the user (or agent) edits them.
 

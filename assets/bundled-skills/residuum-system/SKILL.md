@@ -1,9 +1,9 @@
 ---
-name: ironclaw-system
-description: Reference documentation for all Ironclaw workspace systems — memory, projects, heartbeats, inbox, actions, skills, notifications, and background tasks.
+name: residuum-system
+description: Reference documentation for all Residuum workspace systems — memory, projects, heartbeats, inbox, actions, skills, notifications, and background tasks.
 ---
 
-# Ironclaw System Reference
+# Residuum System Reference
 
 This skill provides reference documentation for every major workspace system. Activate it when you need to understand how a system works, what tools are available, or what file formats to use.
 

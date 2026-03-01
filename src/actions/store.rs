@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use chrono::{DateTime, Utc};
 use rand::Rng;
 
-use crate::error::IronclawError;
+use crate::error::ResiduumError;
 
 use super::types::ScheduledAction;
 
@@ -23,15 +23,15 @@ impl ActionStore {
     /// Returns an empty store if the file does not exist.
     ///
     /// # Errors
-    /// Returns `IronclawError::Scheduling` if the file exists but cannot be
+    /// Returns `ResiduumError::Scheduling` if the file exists but cannot be
     /// read or is not valid JSON.
-    pub async fn load(path: impl Into<PathBuf>) -> Result<Self, IronclawError> {
+    pub async fn load(path: impl Into<PathBuf>) -> Result<Self, ResiduumError> {
         let path = path.into();
         match tokio::fs::read_to_string(&path).await {
             Ok(contents) => {
                 let actions: Vec<ScheduledAction> =
                     serde_json::from_str(&contents).map_err(|e| {
-                        IronclawError::Scheduling(format!(
+                        ResiduumError::Scheduling(format!(
                             "failed to parse scheduled actions at {}: {e}",
                             path.display()
                         ))
@@ -42,7 +42,7 @@ impl ActionStore {
                 actions: Vec::new(),
                 path,
             }),
-            Err(e) => Err(IronclawError::Scheduling(format!(
+            Err(e) => Err(ResiduumError::Scheduling(format!(
                 "failed to read scheduled actions at {}: {e}",
                 path.display()
             ))),
@@ -52,14 +52,14 @@ impl ActionStore {
     /// Save the store to disk atomically (write temp file, then rename).
     ///
     /// # Errors
-    /// Returns `IronclawError::Scheduling` if serialization or writing fails.
-    pub async fn save(&self) -> Result<(), IronclawError> {
+    /// Returns `ResiduumError::Scheduling` if serialization or writing fails.
+    pub async fn save(&self) -> Result<(), ResiduumError> {
         let json = serde_json::to_string_pretty(&self.actions).map_err(|e| {
-            IronclawError::Scheduling(format!("failed to serialize scheduled actions: {e}"))
+            ResiduumError::Scheduling(format!("failed to serialize scheduled actions: {e}"))
         })?;
 
         let dir = self.path.parent().ok_or_else(|| {
-            IronclawError::Scheduling(format!(
+            ResiduumError::Scheduling(format!(
                 "scheduled actions path has no parent directory: {}",
                 self.path.display()
             ))
@@ -69,7 +69,7 @@ impl ActionStore {
         // which should already exist, but be defensive)
         if !dir.exists() {
             tokio::fs::create_dir_all(dir).await.map_err(|e| {
-                IronclawError::Scheduling(format!(
+                ResiduumError::Scheduling(format!(
                     "failed to create directory for scheduled actions at {}: {e}",
                     dir.display()
                 ))
@@ -79,7 +79,7 @@ impl ActionStore {
         let tmp_path = dir.join(".scheduled_actions.json.tmp");
 
         tokio::fs::write(&tmp_path, &json).await.map_err(|e| {
-            IronclawError::Scheduling(format!(
+            ResiduumError::Scheduling(format!(
                 "failed to write temporary scheduled actions at {}: {e}",
                 tmp_path.display()
             ))
@@ -88,7 +88,7 @@ impl ActionStore {
         tokio::fs::rename(&tmp_path, &self.path)
             .await
             .map_err(|e| {
-                IronclawError::Scheduling(format!(
+                ResiduumError::Scheduling(format!(
                     "failed to rename scheduled actions from {} to {}: {e}",
                     tmp_path.display(),
                     self.path.display()

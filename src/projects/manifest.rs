@@ -2,7 +2,7 @@
 
 use std::path::Path;
 
-use crate::error::IronclawError;
+use crate::error::ResiduumError;
 
 use super::types::{ManifestEntry, ProjectManifest};
 
@@ -11,8 +11,8 @@ use super::types::{ManifestEntry, ProjectManifest};
 /// Non-existent subdirectories are treated as empty.
 ///
 /// # Errors
-/// Returns `IronclawError::Projects` if a directory cannot be read.
-pub async fn build_manifest(project_root: &Path) -> Result<ProjectManifest, IronclawError> {
+/// Returns `ResiduumError::Projects` if a directory cannot be read.
+pub async fn build_manifest(project_root: &Path) -> Result<ProjectManifest, ResiduumError> {
     Ok(ProjectManifest {
         notes: list_files_recursive(&project_root.join("notes"), project_root).await?,
         references: list_files_recursive(&project_root.join("references"), project_root).await?,
@@ -78,7 +78,7 @@ fn format_size(bytes: u64) -> String {
 async fn list_files_recursive(
     dir: &Path,
     project_root: &Path,
-) -> Result<Vec<ManifestEntry>, IronclawError> {
+) -> Result<Vec<ManifestEntry>, ResiduumError> {
     let mut entries = Vec::new();
     collect_files(dir, project_root, &mut entries).await?;
     entries.sort_by(|a, b| a.relative_path.cmp(&b.relative_path));
@@ -90,12 +90,12 @@ async fn collect_files(
     dir: &Path,
     project_root: &Path,
     entries: &mut Vec<ManifestEntry>,
-) -> Result<(), IronclawError> {
+) -> Result<(), ResiduumError> {
     let mut read_dir = match tokio::fs::read_dir(dir).await {
         Ok(rd) => rd,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
         Err(e) => {
-            return Err(IronclawError::Projects(format!(
+            return Err(ResiduumError::Projects(format!(
                 "failed to read directory {}: {e}",
                 dir.display()
             )));

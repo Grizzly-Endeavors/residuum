@@ -2,7 +2,7 @@
 
 use std::path::Path;
 
-use crate::error::IronclawError;
+use crate::error::ResiduumError;
 
 use super::types::ChannelsConfig;
 
@@ -12,17 +12,17 @@ use super::types::ChannelsConfig;
 ///
 /// # Errors
 ///
-/// Returns `IronclawError::Workspace` if the file exists but cannot be read or parsed.
-pub fn load_channels_config(path: &Path) -> Result<ChannelsConfig, IronclawError> {
+/// Returns `ResiduumError::Workspace` if the file exists but cannot be read or parsed.
+pub fn load_channels_config(path: &Path) -> Result<ChannelsConfig, ResiduumError> {
     match std::fs::read_to_string(path) {
         Ok(content) => serde_yml::from_str(&content).map_err(|e| {
-            IronclawError::Workspace(format!(
+            ResiduumError::Workspace(format!(
                 "failed to parse CHANNELS.yml at {}: {e}",
                 path.display()
             ))
         }),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(ChannelsConfig::default()),
-        Err(e) => Err(IronclawError::Workspace(format!(
+        Err(e) => Err(ResiduumError::Workspace(format!(
             "failed to read CHANNELS.yml at {}: {e}",
             path.display()
         ))),

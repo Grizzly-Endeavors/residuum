@@ -13,7 +13,7 @@ Usage:
     python3 scripts/backfill_idx.py <memory_dir>
 
 Example:
-    python3 scripts/backfill_idx.py ~/.ironclaw/workspace/memory
+    python3 scripts/backfill_idx.py ~/.residuum/workspace/memory
 """
 
 import json

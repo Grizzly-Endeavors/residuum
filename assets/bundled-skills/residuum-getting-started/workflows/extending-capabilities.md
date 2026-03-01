@@ -9,8 +9,8 @@ Walk the user through skills, MCP servers, background tasks, and subagent preset
 Explain: "Skills are instruction modules I can load on demand. Each skill teaches me how to handle a specific type of task. I see a lightweight index of all available skills and can activate the right one when a task matches."
 
 Show the user the skill concept by referencing the built-in skills:
-- `ironclaw-system` -- technical reference for workspace configuration files
-- `ironclaw-getting-started` -- the skill currently active (this one)
+- `residuum-system` -- technical reference for workspace configuration files
+- `residuum-getting-started` -- the skill currently active (this one)
 
 Explain that the user can ask you to create custom skills for recurring types of tasks. For example: "Create a skill for Ansible playbook review" and you will set it up. Skills can be workspace-wide or scoped to a specific project.
 
@@ -75,4 +75,4 @@ Suggest next steps:
 - "For tasks that take a while, I can run them in the background and notify you when they finish."
 - "If you want me to run checks on a schedule, ask about heartbeat setup."
 
-For full reference documentation, activate `ironclaw-system`.
+For full reference documentation, activate `residuum-system`.

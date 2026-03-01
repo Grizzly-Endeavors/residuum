@@ -92,4 +92,4 @@ Be straightforward about your capabilities and limitations.
 
 Wrap up by asking if the user has questions about any of these systems. Offer to set up any capability they find interesting -- point them to the appropriate workflow.
 
-For the full technical reference, activate `ironclaw-system`.
+For the full technical reference, activate `residuum-system`.

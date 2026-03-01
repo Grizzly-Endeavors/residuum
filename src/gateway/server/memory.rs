@@ -6,7 +6,7 @@ use tokio::sync::broadcast;
 
 use crate::agent::Agent;
 use crate::config::Config;
-use crate::error::IronclawError;
+use crate::error::ResiduumError;
 use crate::gateway::protocol::ServerMessage;
 use crate::memory::log_store::load_observation_log;
 use crate::memory::observer::{ObserveAction, ObserveResult, Observer, ObserverConfig};
@@ -32,12 +32,12 @@ fn episode_date_dir(date: &str) -> Option<String> {
 /// Build observer and reflector from fully-resolved provider specs on `Config`.
 ///
 /// # Errors
-/// Returns `IronclawError::Config` if either provider cannot be built.
+/// Returns `ResiduumError::Config` if either provider cannot be built.
 pub(super) fn build_memory_components(
     cfg: &Config,
     tz: chrono_tz::Tz,
     http: SharedHttpClient,
-) -> Result<(Observer, Reflector), IronclawError> {
+) -> Result<(Observer, Reflector), ResiduumError> {
     let observer_provider = build_provider_chain(
         &cfg.observer,
         cfg.max_tokens,

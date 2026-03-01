@@ -23,16 +23,16 @@ mod gateway_integration {
     use tokio::sync::{broadcast, mpsc};
     use tokio_tungstenite::tungstenite::Message as TungsteniteMessage;
 
-    use ironclaw::agent::Agent;
-    use ironclaw::agent::context::PromptContext;
-    use ironclaw::agent::interrupt;
-    use ironclaw::channels::websocket::WsReplyHandle;
-    use ironclaw::gateway::protocol::{ClientMessage, ServerMessage};
-    use ironclaw::models::{
+    use residuum::agent::Agent;
+    use residuum::agent::context::PromptContext;
+    use residuum::agent::interrupt;
+    use residuum::channels::websocket::WsReplyHandle;
+    use residuum::gateway::protocol::{ClientMessage, ServerMessage};
+    use residuum::models::{
         CompletionOptions, Message, ModelError, ModelProvider, ModelResponse, ToolDefinition,
     };
-    use ironclaw::tools::{ToolFilter, ToolRegistry};
-    use ironclaw::workspace::identity::IdentityFiles;
+    use residuum::tools::{ToolFilter, ToolRegistry};
+    use residuum::workspace::identity::IdentityFiles;
 
     /// Mock provider that returns configurable responses in sequence.
     struct MockProvider {
@@ -76,11 +76,11 @@ mod gateway_integration {
             Box::new(MockProvider::new(responses)),
             ToolRegistry::new(),
             ToolFilter::new_shared(std::collections::HashSet::new()),
-            ironclaw::mcp::McpRegistry::new_shared(),
+            residuum::mcp::McpRegistry::new_shared(),
             IdentityFiles::default(),
             CompletionOptions::default(),
             chrono_tz::UTC,
-            std::path::PathBuf::from("/tmp/ironclaw-test-inbox"),
+            std::path::PathBuf::from("/tmp/residuum-test-inbox"),
         )
     }
 

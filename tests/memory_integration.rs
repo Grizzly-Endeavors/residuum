@@ -14,21 +14,21 @@ mod memory_integration {
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
-    use ironclaw::memory::log_store::{load_observation_log, next_episode_id};
-    use ironclaw::memory::observer::{ObserveAction, ObserveResult, Observer, ObserverConfig};
-    use ironclaw::memory::recent_context::{
+    use residuum::memory::log_store::{load_observation_log, next_episode_id};
+    use residuum::memory::observer::{ObserveAction, ObserveResult, Observer, ObserverConfig};
+    use residuum::memory::recent_context::{
         RecentContext, load_recent_context, save_recent_context,
     };
-    use ironclaw::memory::recent_messages::{
+    use residuum::memory::recent_messages::{
         append_recent_messages, clear_recent_messages, load_recent_messages,
     };
-    use ironclaw::memory::reflector::{Reflector, ReflectorConfig};
-    use ironclaw::memory::search::{MemoryIndex, SearchFilters};
-    use ironclaw::memory::types::{IndexManifest, Visibility};
-    use ironclaw::models::{
+    use residuum::memory::reflector::{Reflector, ReflectorConfig};
+    use residuum::memory::search::{MemoryIndex, SearchFilters};
+    use residuum::memory::types::{IndexManifest, Visibility};
+    use residuum::models::{
         CompletionOptions, Message, ModelError, ModelProvider, ModelResponse, ToolDefinition,
     };
-    use ironclaw::workspace::layout::WorkspaceLayout;
+    use residuum::workspace::layout::WorkspaceLayout;
 
     /// Mock provider that returns configurable JSON responses.
     struct MockProvider {
@@ -70,9 +70,9 @@ mod memory_integration {
     fn observer_response() -> String {
         r#"{
             "observations": [
-                {"content": "workspace uses a flat directory layout with identity files at root", "timestamp": "2026-02-21T14:30Z", "visibility": "user", "project_context": "ironclaw/workspace"},
-                {"content": "bootstrap creates 10 required directories on first run", "timestamp": "2026-02-21T14:31Z", "visibility": "user", "project_context": "ironclaw/workspace"},
-                {"content": "SOUL.md defines the agent personality and is loaded at startup", "timestamp": "2026-02-21T14:32Z", "visibility": "user", "project_context": "ironclaw/workspace"}
+                {"content": "workspace uses a flat directory layout with identity files at root", "timestamp": "2026-02-21T14:30Z", "visibility": "user", "project_context": "residuum/workspace"},
+                {"content": "bootstrap creates 10 required directories on first run", "timestamp": "2026-02-21T14:31Z", "visibility": "user", "project_context": "residuum/workspace"},
+                {"content": "SOUL.md defines the agent personality and is loaded at startup", "timestamp": "2026-02-21T14:32Z", "visibility": "user", "project_context": "residuum/workspace"}
             ],
             "narrative": "We were discussing the workspace layout and how identity files are organized. The bootstrap process creates the required directory structure."
         }"#
@@ -81,9 +81,9 @@ mod memory_integration {
 
     fn observer_response_legacy() -> String {
         r#"[
-            {"content": "workspace uses a flat directory layout with identity files at root", "timestamp": "2026-02-21T14:30Z", "visibility": "user", "project_context": "ironclaw/workspace"},
-            {"content": "bootstrap creates 10 required directories on first run", "timestamp": "2026-02-21T14:31Z", "visibility": "user", "project_context": "ironclaw/workspace"},
-            {"content": "SOUL.md defines the agent personality and is loaded at startup", "timestamp": "2026-02-21T14:32Z", "visibility": "user", "project_context": "ironclaw/workspace"}
+            {"content": "workspace uses a flat directory layout with identity files at root", "timestamp": "2026-02-21T14:30Z", "visibility": "user", "project_context": "residuum/workspace"},
+            {"content": "bootstrap creates 10 required directories on first run", "timestamp": "2026-02-21T14:31Z", "visibility": "user", "project_context": "residuum/workspace"},
+            {"content": "SOUL.md defines the agent personality and is loaded at startup", "timestamp": "2026-02-21T14:32Z", "visibility": "user", "project_context": "residuum/workspace"}
         ]"#
         .to_string()
     }
@@ -91,8 +91,8 @@ mod memory_integration {
     fn reflector_response() -> String {
         r#"{
             "observations": [
-                {"content": "workspace uses flat layout with identity files at root", "timestamp": "2026-02-21T14:32Z", "project_context": "ironclaw/workspace", "visibility": "user"},
-                {"content": "bootstrap creates required directories on first run", "timestamp": "2026-02-21T14:31Z", "project_context": "ironclaw/workspace", "visibility": "user"}
+                {"content": "workspace uses flat layout with identity files at root", "timestamp": "2026-02-21T14:32Z", "project_context": "residuum/workspace", "visibility": "user"},
+                {"content": "bootstrap creates required directories on first run", "timestamp": "2026-02-21T14:31Z", "project_context": "residuum/workspace", "visibility": "user"}
             ]
         }"#
         .to_string()
@@ -149,7 +149,7 @@ mod memory_integration {
         append_recent_messages(
             &recent_path,
             &messages,
-            "ironclaw/workspace",
+            "residuum/workspace",
             Visibility::User,
             chrono_tz::UTC,
         )
@@ -183,7 +183,7 @@ mod memory_integration {
             "observations vec should have 3 items"
         );
         assert!(!date.is_empty(), "date should not be empty");
-        assert_eq!(context, "ironclaw/workspace", "context should match");
+        assert_eq!(context, "residuum/workspace", "context should match");
 
         // Verify transcript file was created
         assert!(transcript_path.exists(), "transcript file should exist");
@@ -223,7 +223,7 @@ mod memory_integration {
         );
         assert_eq!(
             log.observations.first().map(|o| o.project_context.as_str()),
-            Some("ironclaw/workspace"),
+            Some("residuum/workspace"),
             "project_context should be preserved"
         );
         assert_eq!(
@@ -252,7 +252,7 @@ mod memory_integration {
         append_recent_messages(
             &recent_path,
             &more_messages,
-            "ironclaw/workspace",
+            "residuum/workspace",
             Visibility::User,
             chrono_tz::UTC,
         )
@@ -378,7 +378,7 @@ mod memory_integration {
         append_recent_messages(
             &recent_path,
             &run1_msgs,
-            "ironclaw",
+            "residuum",
             Visibility::User,
             chrono_tz::UTC,
         )
@@ -394,7 +394,7 @@ mod memory_integration {
         append_recent_messages(
             &recent_path,
             &run2_msgs,
-            "ironclaw",
+            "residuum",
             Visibility::User,
             chrono_tz::UTC,
         )
@@ -432,9 +432,9 @@ mod memory_integration {
         let index_dir = dir.path().join(".index");
         let index = MemoryIndex::open_or_create(&index_dir).unwrap();
 
-        let obs = vec![ironclaw::memory::types::Observation {
+        let obs = vec![residuum::memory::types::Observation {
             timestamp: chrono::Utc::now().naive_utc(),
-            project_context: "ironclaw".to_string(),
+            project_context: "residuum".to_string(),
             source_episodes: vec!["ep-001".to_string()],
             visibility: Visibility::User,
             content: "the agent uses SOUL.md for personality".to_string(),
@@ -467,7 +467,7 @@ mod memory_integration {
             },
         );
 
-        let messages = vec![ironclaw::memory::recent_messages::RecentMessage {
+        let messages = vec![residuum::memory::recent_messages::RecentMessage {
             message: Message::user("hello"),
             timestamp: chrono::Utc::now().naive_utc(),
             project_context: "test".to_string(),
@@ -492,7 +492,7 @@ mod memory_integration {
         );
 
         // Below soft threshold — single short message is ~2 tokens
-        let few_recent = vec![ironclaw::memory::recent_messages::RecentMessage {
+        let few_recent = vec![residuum::memory::recent_messages::RecentMessage {
             message: Message::user("hello"),
             timestamp: chrono::Utc::now().naive_utc(),
             project_context: "test".to_string(),
@@ -507,9 +507,9 @@ mod memory_integration {
 
         // Above soft threshold but below force — make_messages(10) produces ~1250+ tokens
         let many = make_messages(10);
-        let many_recent: Vec<ironclaw::memory::recent_messages::RecentMessage> = many
+        let many_recent: Vec<residuum::memory::recent_messages::RecentMessage> = many
             .into_iter()
-            .map(|m| ironclaw::memory::recent_messages::RecentMessage {
+            .map(|m| residuum::memory::recent_messages::RecentMessage {
                 message: m,
                 timestamp: chrono::Utc::now().naive_utc(),
                 project_context: "test".to_string(),
@@ -644,9 +644,9 @@ mod memory_integration {
         let day_dir = layout.episodes_dir().join("2026-02/19");
         tokio::fs::create_dir_all(&day_dir).await.unwrap();
 
-        let obs1 = vec![ironclaw::memory::types::Observation {
+        let obs1 = vec![residuum::memory::types::Observation {
             timestamp: chrono::Utc::now().naive_utc(),
-            project_context: "ironclaw".to_string(),
+            project_context: "residuum".to_string(),
             source_episodes: vec!["ep-001".to_string()],
             visibility: Visibility::User,
             content: "first observation about workspace".to_string(),
@@ -658,11 +658,11 @@ mod memory_integration {
         .await
         .unwrap();
 
-        let chunk1 = ironclaw::memory::types::IndexChunk {
+        let chunk1 = residuum::memory::types::IndexChunk {
             chunk_id: "ep-001-c0".to_string(),
             episode_id: "ep-001".to_string(),
             date: "2026-02-19".to_string(),
-            context: "ironclaw".to_string(),
+            context: "residuum".to_string(),
             line_start: 2,
             line_end: 3,
             content: "user: what about workspace?\nassistant: it uses flat layout".to_string(),
@@ -688,9 +688,9 @@ mod memory_integration {
         }
 
         // Add a second episode
-        let obs2 = vec![ironclaw::memory::types::Observation {
+        let obs2 = vec![residuum::memory::types::Observation {
             timestamp: chrono::Utc::now().naive_utc(),
-            project_context: "ironclaw".to_string(),
+            project_context: "residuum".to_string(),
             source_episodes: vec!["ep-002".to_string()],
             visibility: Visibility::User,
             content: "second observation about testing".to_string(),
@@ -730,13 +730,13 @@ mod memory_integration {
         std::fs::create_dir_all(&day_dir_1).unwrap();
         std::fs::create_dir_all(&day_dir_2).unwrap();
 
-        // Early ironclaw observation
-        let obs1 = vec![ironclaw::memory::types::Observation {
+        // Early residuum observation
+        let obs1 = vec![residuum::memory::types::Observation {
             timestamp: chrono::Utc::now().naive_utc(),
-            project_context: "ironclaw".to_string(),
+            project_context: "residuum".to_string(),
             source_episodes: vec!["ep-001".to_string()],
             visibility: Visibility::User,
-            content: "ironclaw uses tantivy for search".to_string(),
+            content: "residuum uses tantivy for search".to_string(),
         }];
         std::fs::write(
             day_dir_1.join("ep-001.obs.json"),
@@ -745,7 +745,7 @@ mod memory_integration {
         .unwrap();
 
         // Later devops observation
-        let obs2 = vec![ironclaw::memory::types::Observation {
+        let obs2 = vec![residuum::memory::types::Observation {
             timestamp: chrono::Utc::now().naive_utc(),
             project_context: "devops".to_string(),
             source_episodes: vec!["ep-002".to_string()],
@@ -759,11 +759,11 @@ mod memory_integration {
         .unwrap();
 
         // Chunk from ep-001
-        let chunk = ironclaw::memory::types::IndexChunk {
+        let chunk = residuum::memory::types::IndexChunk {
             chunk_id: "ep-001-c0".to_string(),
             episode_id: "ep-001".to_string(),
             date: "2026-02-15".to_string(),
-            context: "ironclaw".to_string(),
+            context: "residuum".to_string(),
             line_start: 2,
             line_end: 3,
             content: "user: how does search work?\nassistant: we use tantivy BM25".to_string(),
@@ -818,14 +818,14 @@ mod memory_integration {
                 "search",
                 10,
                 &SearchFilters {
-                    project_context: Some("ironclaw".to_string()),
+                    project_context: Some("residuum".to_string()),
                     ..Default::default()
                 },
             )
             .unwrap();
         assert!(
-            ctx_filtered.iter().all(|r| r.context == "ironclaw"),
-            "should only return ironclaw results"
+            ctx_filtered.iter().all(|r| r.context == "residuum"),
+            "should only return residuum results"
         );
     }
 }

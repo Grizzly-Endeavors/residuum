@@ -6,7 +6,7 @@ pub mod recent_messages;
 pub(crate) mod turn;
 
 use crate::channels::types::{MessageOrigin, ReplyHandle};
-use crate::error::IronclawError;
+use crate::error::ResiduumError;
 use crate::mcp::SharedMcpRegistry;
 use crate::models::{CompletionOptions, Message, ModelProvider};
 use crate::tools::{SharedToolFilter, ToolRegistry};
@@ -90,7 +90,7 @@ impl Agent {
     pub async fn reload_observations(
         &mut self,
         layout: &crate::workspace::layout::WorkspaceLayout,
-    ) -> Result<(), IronclawError> {
+    ) -> Result<(), ResiduumError> {
         self.observations =
             context::loading::load_observations(&layout.observations_json()).await?;
         Ok(())
@@ -103,7 +103,7 @@ impl Agent {
     pub async fn reload_recent_context(
         &mut self,
         layout: &crate::workspace::layout::WorkspaceLayout,
-    ) -> Result<(), IronclawError> {
+    ) -> Result<(), ResiduumError> {
         self.recent_context =
             context::loading::load_recent_context_narrative(&layout.recent_context_json()).await?;
         Ok(())
@@ -167,14 +167,14 @@ impl Agent {
     /// assistant prefill) so the agent reviews injected background results.
     ///
     /// # Errors
-    /// Returns `IronclawError` if the model call fails or tool execution errors
+    /// Returns `ResiduumError` if the model call fails or tool execution errors
     /// are unrecoverable.
     pub async fn run_wake_turn(
         &mut self,
         reply: &dyn ReplyHandle,
         prompt_ctx: &PromptContext<'_>,
         interrupt_rx: &mut tokio::sync::mpsc::Receiver<interrupt::Interrupt>,
-    ) -> Result<Vec<String>, IronclawError> {
+    ) -> Result<Vec<String>, ResiduumError> {
         let now = crate::time::now_local(self.tz);
         let unread = crate::inbox::count_unread(&self.inbox_dir);
         let status_line = StatusLine {
@@ -219,7 +219,7 @@ impl Agent {
     /// included in the return value.
     ///
     /// # Errors
-    /// Returns `IronclawError` if the model call fails or tool execution errors
+    /// Returns `ResiduumError` if the model call fails or tool execution errors
     /// are unrecoverable.
     pub async fn process_message(
         &mut self,
@@ -228,7 +228,7 @@ impl Agent {
         origin: Option<&MessageOrigin>,
         prompt_ctx: &PromptContext<'_>,
         interrupt_rx: &mut tokio::sync::mpsc::Receiver<interrupt::Interrupt>,
-    ) -> Result<Vec<String>, IronclawError> {
+    ) -> Result<Vec<String>, ResiduumError> {
         let now = crate::time::now_local(self.tz);
         let unread = crate::inbox::count_unread(&self.inbox_dir);
         let status_line = StatusLine {
@@ -273,14 +273,14 @@ impl Agent {
     /// agent's default provider for this turn only.
     ///
     /// # Errors
-    /// Returns `IronclawError` if the model call fails.
+    /// Returns `ResiduumError` if the model call fails.
     pub async fn run_system_turn(
         &self,
         prompt: &str,
         reply: &dyn ReplyHandle,
         provider_override: Option<&dyn ModelProvider>,
         prompt_ctx: &PromptContext<'_>,
-    ) -> Result<SystemTurnResult, IronclawError> {
+    ) -> Result<SystemTurnResult, ResiduumError> {
         let mut thread_messages = RecentMessages::new();
         thread_messages.push(Message::user(prompt));
 
@@ -444,7 +444,7 @@ mod tests {
             IdentityFiles::default(),
             CompletionOptions::default(),
             chrono_tz::UTC,
-            std::path::PathBuf::from("/tmp/ironclaw-test-inbox"),
+            std::path::PathBuf::from("/tmp/residuum-test-inbox"),
         );
 
         let reply = NullReplyHandle;
@@ -484,7 +484,7 @@ mod tests {
             IdentityFiles::default(),
             CompletionOptions::default(),
             chrono_tz::UTC,
-            std::path::PathBuf::from("/tmp/ironclaw-test-inbox"),
+            std::path::PathBuf::from("/tmp/residuum-test-inbox"),
         );
 
         let reply = NullReplyHandle;
@@ -535,7 +535,7 @@ mod tests {
             IdentityFiles::default(),
             CompletionOptions::default(),
             chrono_tz::UTC,
-            std::path::PathBuf::from("/tmp/ironclaw-test-inbox"),
+            std::path::PathBuf::from("/tmp/residuum-test-inbox"),
         );
 
         let reply = NullReplyHandle;
@@ -587,7 +587,7 @@ mod tests {
             IdentityFiles::default(),
             CompletionOptions::default(),
             chrono_tz::UTC,
-            std::path::PathBuf::from("/tmp/ironclaw-test-inbox"),
+            std::path::PathBuf::from("/tmp/residuum-test-inbox"),
         );
 
         let reply = NullReplyHandle;
@@ -617,7 +617,7 @@ mod tests {
             IdentityFiles::default(),
             CompletionOptions::default(),
             chrono_tz::UTC,
-            std::path::PathBuf::from("/tmp/ironclaw-test-inbox"),
+            std::path::PathBuf::from("/tmp/residuum-test-inbox"),
         );
 
         let reply = NullReplyHandle;
@@ -647,7 +647,7 @@ mod tests {
             IdentityFiles::default(),
             CompletionOptions::default(),
             chrono_tz::UTC,
-            std::path::PathBuf::from("/tmp/ironclaw-test-inbox"),
+            std::path::PathBuf::from("/tmp/residuum-test-inbox"),
         );
 
         agent.inject_user_message("leftover interrupt message");
@@ -680,7 +680,7 @@ mod tests {
             IdentityFiles::default(),
             CompletionOptions::default(),
             chrono_tz::UTC,
-            std::path::PathBuf::from("/tmp/ironclaw-test-inbox"),
+            std::path::PathBuf::from("/tmp/residuum-test-inbox"),
         );
 
         // Set a known timestamp so we can verify it doesn't change
@@ -732,7 +732,7 @@ mod tests {
             IdentityFiles::default(),
             CompletionOptions::default(),
             chrono_tz::UTC,
-            std::path::PathBuf::from("/tmp/ironclaw-test-inbox"),
+            std::path::PathBuf::from("/tmp/residuum-test-inbox"),
         );
 
         agent.inject_system_message("background task completed: report-gen");
@@ -760,7 +760,7 @@ mod tests {
             IdentityFiles::default(),
             CompletionOptions::default(),
             chrono_tz::UTC,
-            std::path::PathBuf::from("/tmp/ironclaw-test-inbox"),
+            std::path::PathBuf::from("/tmp/residuum-test-inbox"),
         );
 
         // Inject a background message before the "turn"
@@ -797,7 +797,7 @@ mod tests {
             IdentityFiles::default(),
             CompletionOptions::default(),
             chrono_tz::UTC,
-            std::path::PathBuf::from("/tmp/ironclaw-test-inbox"),
+            std::path::PathBuf::from("/tmp/residuum-test-inbox"),
         );
 
         // Simulate a conversation with 5 exchanges
@@ -963,7 +963,7 @@ mod tests {
             IdentityFiles::default(),
             CompletionOptions::default(),
             chrono_tz::UTC,
-            std::path::PathBuf::from("/tmp/ironclaw-test-inbox"),
+            std::path::PathBuf::from("/tmp/residuum-test-inbox"),
         );
 
         let reply = NullReplyHandle;
@@ -1032,7 +1032,7 @@ mod tests {
             IdentityFiles::default(),
             CompletionOptions::default(),
             chrono_tz::UTC,
-            std::path::PathBuf::from("/tmp/ironclaw-test-inbox"),
+            std::path::PathBuf::from("/tmp/residuum-test-inbox"),
         );
 
         let reply = NullReplyHandle;
@@ -1089,7 +1089,7 @@ mod tests {
             IdentityFiles::default(),
             CompletionOptions::default(),
             chrono_tz::UTC,
-            std::path::PathBuf::from("/tmp/ironclaw-test-inbox"),
+            std::path::PathBuf::from("/tmp/residuum-test-inbox"),
         );
 
         let reply = NullReplyHandle;
@@ -1125,7 +1125,7 @@ mod tests {
             IdentityFiles::default(),
             CompletionOptions::default(),
             chrono_tz::UTC,
-            std::path::PathBuf::from("/tmp/ironclaw-test-inbox"),
+            std::path::PathBuf::from("/tmp/residuum-test-inbox"),
         );
 
         let reply = NullReplyHandle;
@@ -1195,7 +1195,7 @@ mod tests {
             IdentityFiles::default(),
             CompletionOptions::default(),
             chrono_tz::UTC,
-            std::path::PathBuf::from("/tmp/ironclaw-test-inbox"),
+            std::path::PathBuf::from("/tmp/residuum-test-inbox"),
         );
 
         let reply = NullReplyHandle;
@@ -1233,7 +1233,7 @@ mod tests {
             IdentityFiles::default(),
             CompletionOptions::default(),
             chrono_tz::UTC,
-            std::path::PathBuf::from("/tmp/ironclaw-test-inbox"),
+            std::path::PathBuf::from("/tmp/residuum-test-inbox"),
         );
 
         // Only 2 exchanges — fewer than the 3-exchange retention window
@@ -1266,7 +1266,7 @@ mod tests {
             IdentityFiles::default(),
             CompletionOptions::default(),
             chrono_tz::UTC,
-            std::path::PathBuf::from("/tmp/ironclaw-test-inbox"),
+            std::path::PathBuf::from("/tmp/residuum-test-inbox"),
         );
 
         let messages = vec![

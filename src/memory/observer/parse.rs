@@ -4,7 +4,7 @@ use chrono::NaiveDateTime;
 use chrono_tz::Tz;
 use serde::Deserialize;
 
-use crate::error::IronclawError;
+use crate::error::ResiduumError;
 use crate::memory::types::Visibility;
 use crate::models::ModelResponse;
 use crate::time::now_local;
@@ -49,7 +49,7 @@ pub(super) struct ObserverParseResult {
 pub(super) fn parse_observer_response(
     response: &ModelResponse,
     tz: Tz,
-) -> Result<ObserverParseResult, IronclawError> {
+) -> Result<ObserverParseResult, ResiduumError> {
     let content = response.content.trim();
     let json_str = crate::memory::strip_code_fences(content);
 
@@ -58,7 +58,7 @@ pub(super) fn parse_observer_response(
         let extractions = typed_items_to_extractions(&typed.observations, tz);
 
         if extractions.is_empty() {
-            return Err(IronclawError::Memory(
+            return Err(ResiduumError::Memory(
                 "observer returned empty observations array".to_string(),
             ));
         }
@@ -77,7 +77,7 @@ pub(super) fn parse_observer_response(
 
     // Fallback: Value-based parsing for legacy bare arrays and malformed objects
     let value: serde_json::Value = serde_json::from_str(json_str).map_err(|e| {
-        IronclawError::Memory(format!(
+        ResiduumError::Memory(format!(
             "failed to parse observer response as JSON: {e}\nresponse: {content}"
         ))
     })?;
@@ -89,7 +89,7 @@ pub(super) fn parse_observer_response(
             .get("observations")
             .and_then(serde_json::Value::as_array)
             .ok_or_else(|| {
-                IronclawError::Memory(format!(
+                ResiduumError::Memory(format!(
                     "observer response object missing 'observations' array\nresponse: {content}"
                 ))
             })?
@@ -103,7 +103,7 @@ pub(super) fn parse_observer_response(
 
         (obs_array, narr)
     } else {
-        return Err(IronclawError::Memory(format!(
+        return Err(ResiduumError::Memory(format!(
             "observer response is not a JSON array or object\nresponse: {content}"
         )));
     };
@@ -111,7 +111,7 @@ pub(super) fn parse_observer_response(
     let extractions = parse_extraction_items(&items, tz);
 
     if extractions.is_empty() {
-        return Err(IronclawError::Memory(
+        return Err(ResiduumError::Memory(
             "observer returned empty observations array".to_string(),
         ));
     }

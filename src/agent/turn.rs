@@ -3,7 +3,7 @@
 use tokio::sync::mpsc;
 
 use crate::channels::types::ReplyHandle;
-use crate::error::IronclawError;
+use crate::error::ResiduumError;
 use crate::mcp::SharedMcpRegistry;
 use crate::models::{CompletionOptions, Message, ModelProvider, ModelResponse};
 use crate::tools::{SharedToolFilter, ToolError, ToolRegistry};
@@ -44,7 +44,7 @@ pub(crate) async fn execute_turn(
     reply: &dyn ReplyHandle,
     status_line: Option<&StatusLine>,
     interrupt_rx: &mut mpsc::Receiver<Interrupt>,
-) -> Result<Vec<String>, IronclawError> {
+) -> Result<Vec<String>, ResiduumError> {
     let mut texts: Vec<String> = Vec::new();
 
     for iteration in 0..MAX_TOOL_ITERATIONS {
@@ -92,7 +92,7 @@ pub(crate) async fn execute_turn(
         let response = provider
             .complete(&messages, &tool_definitions, options)
             .await
-            .map_err(IronclawError::Model)?;
+            .map_err(ResiduumError::Model)?;
 
         if response.tool_calls.is_empty() {
             recent_messages.push(Message::assistant(response.content.clone(), None));
@@ -100,7 +100,7 @@ pub(crate) async fn execute_turn(
 
             if response.content.is_empty() {
                 tracing::warn!("model returned empty response with no tool calls");
-                return Err(IronclawError::Other(anyhow::anyhow!(
+                return Err(ResiduumError::Other(anyhow::anyhow!(
                     "model returned empty response with no tool calls"
                 )));
             }
@@ -161,7 +161,7 @@ pub(crate) async fn execute_turn(
         log_usage(&response);
     }
 
-    Err(IronclawError::Other(anyhow::anyhow!(
+    Err(ResiduumError::Other(anyhow::anyhow!(
         "agent exceeded maximum tool iterations ({MAX_TOOL_ITERATIONS})"
     )))
 }

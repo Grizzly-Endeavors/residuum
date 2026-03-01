@@ -26,7 +26,7 @@ impl Theme {
         self.color_enabled
     }
 
-    /// Format the agent response prefix (e.g. "ironclaw:") in cyan.
+    /// Format the agent response prefix (e.g. "residuum:") in cyan.
     #[must_use]
     pub fn format_prefix(&self, label: &str) -> String {
         if self.color_enabled {
@@ -111,8 +111,8 @@ mod tests {
             color_enabled: false,
         };
         assert_eq!(
-            theme.format_prefix("IronClaw:"),
-            "IronClaw:",
+            theme.format_prefix("Residuum:"),
+            "Residuum:",
             "plain theme should return unmodified text"
         );
         assert_eq!(
@@ -137,7 +137,7 @@ mod tests {
         let theme = Theme {
             color_enabled: true,
         };
-        let styled = theme.format_prefix("IronClaw:");
+        let styled = theme.format_prefix("Residuum:");
         assert!(
             !styled.is_empty(),
             "colored theme should return non-empty string"

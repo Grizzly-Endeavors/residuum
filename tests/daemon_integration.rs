@@ -8,7 +8,7 @@
 mod daemon_integration {
     use tempfile::tempdir;
 
-    use ironclaw::daemon::{is_process_running, read_pid_file, remove_pid_file, write_pid_file};
+    use residuum::daemon::{is_process_running, read_pid_file, remove_pid_file, write_pid_file};
 
     #[test]
     fn pid_file_write_read_round_trip() {

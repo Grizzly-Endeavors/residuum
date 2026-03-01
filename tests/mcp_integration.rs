@@ -18,8 +18,8 @@
 mod mcp_integration {
     use std::collections::HashMap;
 
-    use ironclaw::mcp::{McpRegistry, McpStatus};
-    use ironclaw::projects::types::{McpServerEntry, McpTransport};
+    use residuum::mcp::{McpRegistry, McpStatus};
+    use residuum::projects::types::{McpServerEntry, McpTransport};
 
     fn echo_server_entry() -> McpServerEntry {
         McpServerEntry {
@@ -96,7 +96,7 @@ mod mcp_integration {
         );
 
         let result = registry
-            .call_tool("echo", serde_json::json!({"message": "hello ironclaw"}))
+            .call_tool("echo", serde_json::json!({"message": "hello residuum"}))
             .await;
         assert!(result.is_ok(), "echo tool call should succeed: {result:?}");
         let tool_result = result.unwrap();

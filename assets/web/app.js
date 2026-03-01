@@ -1,11 +1,11 @@
-// ── IronClaw Web UI — Entry Point ─────────────────────────────────────
+// ── Residuum Web UI — Entry Point ─────────────────────────────────────
 //
 // Fetches /api/status to determine mode (setup vs running), then
 // initializes the appropriate view.
 
 const App = {
     mode: null,
-    verbose: localStorage.getItem('ironclaw-verbose') === 'true',
+    verbose: localStorage.getItem('residuum-verbose') === 'true',
 
     async init() {
         try {
@@ -74,7 +74,7 @@ const App = {
 
         verboseBtn.addEventListener('click', () => {
             this.verbose = !this.verbose;
-            localStorage.setItem('ironclaw-verbose', this.verbose);
+            localStorage.setItem('residuum-verbose', this.verbose);
             verboseBtn.classList.toggle('active', this.verbose);
             Chat.setVerbose(this.verbose);
         });

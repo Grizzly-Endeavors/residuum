@@ -19,7 +19,7 @@ The solution is two primitives: a **BackgroundTask** (the lifecycle and routing 
 
 ## Design Philosophy
 
-Same principles as the rest of IronClaw:
+Same principles as the rest of Residuum:
 
 1. **Put the right work in the right place.** Background scheduling is gateway work. Background evaluation is LLM work on a cheap model. Routing results is gateway work. The main agent only sees outcomes.
 2. **Independent systems that compose through shared data.** Background tasks write transcripts to disk and deliver results through a channel. The main agent's observer compresses them naturally. No direct coupling between subsystems.
@@ -424,7 +424,7 @@ After interrupt injection, the message sequence looks like:
 ```
 ... (previous messages)
 assistant: [tool_call: exec("cargo build --release")]
-tool: "Compiling ironclaw v0.1.0 ..."
+tool: "Compiling residuum v0.1.0 ..."
 user: "Actually, can you add the --features discord flag?"        ← injected
 system: "[Background: inbox_scan] 2 urgent emails found."        ← injected (medium/high)
 assistant: (next LLM response — sees the amendment and background context)

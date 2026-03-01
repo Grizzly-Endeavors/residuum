@@ -39,7 +39,7 @@ use embedded::WebAssets;
 /// Shared state for the config API.
 #[derive(Clone)]
 pub(super) struct ConfigApiState {
-    /// Path to the ironclaw config directory (`~/.ironclaw/`).
+    /// Path to the residuum config directory (`~/.residuum/`).
     pub config_dir: PathBuf,
     /// Path to the workspace memory directory (None in setup mode).
     pub memory_dir: Option<PathBuf>,
@@ -752,7 +752,7 @@ mod tests {
     #[tokio::test]
     async fn chat_history_returns_empty_when_no_memory_dir() {
         let state = ConfigApiState {
-            config_dir: PathBuf::from("/tmp/ironclaw-test-nonexistent"),
+            config_dir: PathBuf::from("/tmp/residuum-test-nonexistent"),
             memory_dir: None,
             reload_sender: None,
             setup_done: None,
@@ -767,8 +767,8 @@ mod tests {
     #[tokio::test]
     async fn chat_history_returns_empty_when_file_missing() {
         let state = ConfigApiState {
-            config_dir: PathBuf::from("/tmp/ironclaw-test-nonexistent"),
-            memory_dir: Some(PathBuf::from("/tmp/ironclaw-test-nonexistent-memory")),
+            config_dir: PathBuf::from("/tmp/residuum-test-nonexistent"),
+            memory_dir: Some(PathBuf::from("/tmp/residuum-test-nonexistent-memory")),
             reload_sender: None,
             setup_done: None,
         };

@@ -16,7 +16,7 @@ The new design separates concerns cleanly:
 
 ## CHANNELS.yml
 
-A workspace file at `~/.ironclaw/workspace/CHANNELS.yml`. This file defines the channel registry — what channels exist and any channel-specific configuration. The agent reads and edits this file autonomously, following the same self-evolution pattern as `HEARTBEAT.yml`.
+A workspace file at `~/.residuum/workspace/CHANNELS.yml`. This file defines the channel registry — what channels exist and any channel-specific configuration. The agent reads and edits this file autonomously, following the same self-evolution pattern as `HEARTBEAT.yml`.
 
 ### Structure
 
@@ -105,11 +105,11 @@ External channels deliver results outside the gateway — push notifications, we
 [notifications.channels.ntfy]
 type = "ntfy"
 url = "https://ntfy.sh"
-topic = "ironclaw"
+topic = "residuum"
 
 [notifications.channels.ops_webhook]
 type = "webhook"
-url = "https://hooks.example.com/ironclaw"
+url = "https://hooks.example.com/residuum"
 method = "POST"
 ```
 

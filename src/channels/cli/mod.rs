@@ -73,7 +73,7 @@ impl CliClient {
 
     /// Print the startup banner to stderr.
     pub fn print_banner(&self) {
-        let banner = format!("ironclaw v0.1.0 \u{2014} connected to {}", self.url);
+        let banner = format!("residuum v0.1.0 \u{2014} connected to {}", self.url);
         eprintln!("{}", self.theme.format_banner(&banner));
         let http_url = ws_url_to_http(&self.url);
         eprintln!("  web UI: {http_url}");
@@ -122,7 +122,7 @@ impl CliClient {
                     String::new()
                 } else {
                     self.turn_has_header = true;
-                    format!("\n{}\n", self.theme.format_prefix("IronClaw:"))
+                    format!("\n{}\n", self.theme.format_prefix("Residuum:"))
                 };
                 let rendered = self.renderer.render(content);
                 println!("{header}{rendered}");
@@ -132,7 +132,7 @@ impl CliClient {
                 let header = if self.turn_has_header {
                     String::new()
                 } else {
-                    format!("\n{}\n", self.theme.format_prefix("IronClaw:"))
+                    format!("\n{}\n", self.theme.format_prefix("Residuum:"))
                 };
                 self.turn_has_header = false;
                 let rendered = self.renderer.render(content);

@@ -79,7 +79,7 @@ If yes, explain that external channels like `ntfy` need to be added to `config.t
 [notifications.channels.ntfy]
 type = "ntfy"
 url = "https://ntfy.sh"
-topic = "my-ironclaw"
+topic = "my-residuum"
 ```
 
 After the user adds the channel to config.toml, update the pulse's routing to include it.
@@ -101,4 +101,4 @@ Suggest next steps:
 - "If you want to connect to external services like email or calendars, ask about MCP server setup."
 - "For scheduled one-off tasks instead of recurring checks, I can use `schedule_action`."
 
-For full heartbeat and notification reference, activate `ironclaw-system`.
+For full heartbeat and notification reference, activate `residuum-system`.

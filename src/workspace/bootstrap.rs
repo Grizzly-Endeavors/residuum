@@ -1,6 +1,6 @@
 //! Workspace bootstrapping: creates required directories and default identity files.
 
-use crate::error::IronclawError;
+use crate::error::ResiduumError;
 
 use super::layout::WorkspaceLayout;
 
@@ -8,7 +8,7 @@ use super::layout::WorkspaceLayout;
 const DEFAULT_SOUL: &str = "\
 # Soul
 
-You are IronClaw, a personal AI agent. You live in a workspace you own and operate \
+You are Residuum, a personal AI agent. You live in a workspace you own and operate \
 autonomously between conversations.
 
 ## Core Truths
@@ -31,7 +31,7 @@ actions), only surface what matters. Route noise to the inbox, not to the user.
 
 ## Identity
 
-- **Name**: IronClaw
+- **Name**: Residuum
 - **Archetype**: Personal agent — part assistant, part collaborator, part automation layer
 - **Tone**: Direct, grounded, slightly informal. Explain when needed, don't lecture. Skip the bullet points, just talk.
 ";
@@ -48,7 +48,7 @@ const DEFAULT_AGENTS: &str = "\
 ## Systems Overview
 
 You have access to several operational systems. For detailed reference on any \
-system, activate the ironclaw-system skill.
+system, activate the residuum-system skill.
 
 - **Memory**: Automatic observation pipeline + searchable episode index. \
 Your MEMORY.md is a persistent scratchpad you control — the observer and \
@@ -116,7 +116,7 @@ This is your first conversation with your user. The file you're reading \
 
 ## What To Do
 
-1. Activate the `ironclaw-getting-started` skill.
+1. Activate the `residuum-getting-started` skill.
 2. Greet the user by name. Introduce yourself — who you are, what you're about. \
 Be warm, be yourself, but keep it brief. You're meeting someone new, not giving a keynote.
 3. Move into the Quick Setup sequence from the skill. This is how you show the user \
@@ -257,42 +257,42 @@ channels:
 
 // ── Bundled skill content (embedded at compile time from assets/) ────────────
 
-// ironclaw-system skill
-const SYSTEM_SKILL_MD: &str = include_str!("../../assets/bundled-skills/ironclaw-system/SKILL.md");
+// residuum-system skill
+const SYSTEM_SKILL_MD: &str = include_str!("../../assets/bundled-skills/residuum-system/SKILL.md");
 const SYSTEM_REF_MEMORY: &str =
-    include_str!("../../assets/bundled-skills/ironclaw-system/references/memory-system.md");
+    include_str!("../../assets/bundled-skills/residuum-system/references/memory-system.md");
 const SYSTEM_REF_PROJECTS: &str =
-    include_str!("../../assets/bundled-skills/ironclaw-system/references/projects.md");
+    include_str!("../../assets/bundled-skills/residuum-system/references/projects.md");
 const SYSTEM_REF_HEARTBEATS: &str =
-    include_str!("../../assets/bundled-skills/ironclaw-system/references/heartbeats.md");
+    include_str!("../../assets/bundled-skills/residuum-system/references/heartbeats.md");
 const SYSTEM_REF_INBOX: &str =
-    include_str!("../../assets/bundled-skills/ironclaw-system/references/inbox.md");
+    include_str!("../../assets/bundled-skills/residuum-system/references/inbox.md");
 const SYSTEM_REF_ACTIONS: &str =
-    include_str!("../../assets/bundled-skills/ironclaw-system/references/scheduled-actions.md");
+    include_str!("../../assets/bundled-skills/residuum-system/references/scheduled-actions.md");
 const SYSTEM_REF_SKILLS: &str =
-    include_str!("../../assets/bundled-skills/ironclaw-system/references/skills.md");
+    include_str!("../../assets/bundled-skills/residuum-system/references/skills.md");
 const SYSTEM_REF_NOTIFICATIONS: &str =
-    include_str!("../../assets/bundled-skills/ironclaw-system/references/notifications.md");
+    include_str!("../../assets/bundled-skills/residuum-system/references/notifications.md");
 const SYSTEM_REF_BACKGROUND: &str =
-    include_str!("../../assets/bundled-skills/ironclaw-system/references/background-tasks.md");
+    include_str!("../../assets/bundled-skills/residuum-system/references/background-tasks.md");
 
-// ironclaw-getting-started skill
+// residuum-getting-started skill
 const GETTING_STARTED_SKILL_MD: &str =
-    include_str!("../../assets/bundled-skills/ironclaw-getting-started/SKILL.md");
+    include_str!("../../assets/bundled-skills/residuum-getting-started/SKILL.md");
 const GETTING_STARTED_ORGANIZED: &str = include_str!(
-    "../../assets/bundled-skills/ironclaw-getting-started/workflows/getting-organized.md"
+    "../../assets/bundled-skills/residuum-getting-started/workflows/getting-organized.md"
 );
 const GETTING_STARTED_MONITORING: &str = include_str!(
-    "../../assets/bundled-skills/ironclaw-getting-started/workflows/monitoring-setup.md"
+    "../../assets/bundled-skills/residuum-getting-started/workflows/monitoring-setup.md"
 );
 const GETTING_STARTED_EXTENDING: &str = include_str!(
-    "../../assets/bundled-skills/ironclaw-getting-started/workflows/extending-capabilities.md"
+    "../../assets/bundled-skills/residuum-getting-started/workflows/extending-capabilities.md"
 );
 const GETTING_STARTED_UNDERSTANDING: &str = include_str!(
-    "../../assets/bundled-skills/ironclaw-getting-started/workflows/understanding-the-agent.md"
+    "../../assets/bundled-skills/residuum-getting-started/workflows/understanding-the-agent.md"
 );
 const GETTING_STARTED_ALWAYS_ON: &str = include_str!(
-    "../../assets/bundled-skills/ironclaw-getting-started/workflows/always-on-assistant.md"
+    "../../assets/bundled-skills/residuum-getting-started/workflows/always-on-assistant.md"
 );
 
 /// Ensure the workspace directory structure exists with default identity files.
@@ -304,17 +304,17 @@ const GETTING_STARTED_ALWAYS_ON: &str = include_str!(
 /// This is idempotent: existing files and directories are not modified.
 ///
 /// # Errors
-/// Returns `IronclawError::Workspace` if directories cannot be created or
+/// Returns `ResiduumError::Workspace` if directories cannot be created or
 /// default files cannot be written.
 pub async fn ensure_workspace(
     layout: &WorkspaceLayout,
     user_name: Option<&str>,
     timezone: Option<&str>,
-) -> Result<(), IronclawError> {
+) -> Result<(), ResiduumError> {
     // Create all required directories
     for dir in layout.required_dirs() {
         tokio::fs::create_dir_all(&dir).await.map_err(|e| {
-            IronclawError::Workspace(format!("failed to create directory {}: {e}", dir.display()))
+            ResiduumError::Workspace(format!("failed to create directory {}: {e}", dir.display()))
         })?;
     }
 
@@ -374,12 +374,12 @@ fn build_user_content(user_name: Option<&str>, timezone: Option<&str>) -> String
 ///
 /// Each file is written with `write_if_missing`, so user edits are preserved
 /// and files are only recreated if deleted.
-async fn write_bundled_skills(layout: &WorkspaceLayout) -> Result<(), IronclawError> {
-    // ironclaw-system skill
-    let system_dir = layout.ironclaw_system_skill_dir();
+async fn write_bundled_skills(layout: &WorkspaceLayout) -> Result<(), ResiduumError> {
+    // residuum-system skill
+    let system_dir = layout.residuum_system_skill_dir();
     let system_refs = system_dir.join("references");
     tokio::fs::create_dir_all(&system_refs).await.map_err(|e| {
-        IronclawError::Workspace(format!(
+        ResiduumError::Workspace(format!(
             "failed to create skill directory {}: {e}",
             system_refs.display()
         ))
@@ -407,13 +407,13 @@ async fn write_bundled_skills(layout: &WorkspaceLayout) -> Result<(), IronclawEr
     )
     .await?;
 
-    // ironclaw-getting-started skill
-    let started_dir = layout.ironclaw_getting_started_skill_dir();
+    // residuum-getting-started skill
+    let started_dir = layout.residuum_getting_started_skill_dir();
     let started_workflows = started_dir.join("workflows");
     tokio::fs::create_dir_all(&started_workflows)
         .await
         .map_err(|e| {
-            IronclawError::Workspace(format!(
+            ResiduumError::Workspace(format!(
                 "failed to create skill directory {}: {e}",
                 started_workflows.display()
             ))
@@ -450,10 +450,10 @@ async fn write_bundled_skills(layout: &WorkspaceLayout) -> Result<(), IronclawEr
 }
 
 /// Write content to a file only if it does not already exist.
-async fn write_if_missing(path: &std::path::Path, content: &str) -> Result<(), IronclawError> {
+async fn write_if_missing(path: &std::path::Path, content: &str) -> Result<(), ResiduumError> {
     if !path.exists() {
         tokio::fs::write(path, content).await.map_err(|e| {
-            IronclawError::Workspace(format!("failed to write default {}: {e}", path.display()))
+            ResiduumError::Workspace(format!("failed to write default {}: {e}", path.display()))
         })?;
         tracing::debug!(path = %path.display(), "created default identity file");
     }
@@ -508,8 +508,8 @@ mod tests {
 
         ensure_workspace(&layout, None, None).await.unwrap();
 
-        // ironclaw-system skill tree
-        let system_dir = layout.ironclaw_system_skill_dir();
+        // residuum-system skill tree
+        let system_dir = layout.residuum_system_skill_dir();
         assert!(system_dir.join("SKILL.md").exists(), "system SKILL.md");
         assert!(
             system_dir.join("references/memory-system.md").exists(),
@@ -541,8 +541,8 @@ mod tests {
             "background-tasks.md"
         );
 
-        // ironclaw-getting-started skill tree
-        let started_dir = layout.ironclaw_getting_started_skill_dir();
+        // residuum-getting-started skill tree
+        let started_dir = layout.residuum_getting_started_skill_dir();
         assert!(
             started_dir.join("SKILL.md").exists(),
             "getting-started SKILL.md"
@@ -588,7 +588,7 @@ mod tests {
             .unwrap();
 
         // Modify a skill file
-        let system_skill = layout.ironclaw_system_skill_dir().join("SKILL.md");
+        let system_skill = layout.residuum_system_skill_dir().join("SKILL.md");
         tokio::fs::write(&system_skill, "user-edited skill")
             .await
             .unwrap();
