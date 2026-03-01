@@ -3,12 +3,7 @@
 use std::collections::HashMap;
 
 use super::channels::{InboxChannel, NotificationChannel};
-use super::types::{Notification, RouteOutcome};
-
-/// Well-known built-in channel names.
-const AGENT_WAKE: &str = "agent_wake";
-const AGENT_FEED: &str = "agent_feed";
-const INBOX: &str = "inbox";
+use super::types::{BuiltinChannel, ChannelTarget, Notification, RouteOutcome};
 
 /// Routes notifications to configured channels.
 ///
@@ -72,7 +67,11 @@ impl NotificationRouter {
     /// - Sets `agent_wake`/`agent_feed` flags on the outcome
     /// - Delivers to inbox directly
     /// - Dispatches to external channels in sequence (errors logged, not propagated)
-    pub async fn route(&self, notification: &Notification, channels: &[String]) -> RouteOutcome {
+    pub async fn route(
+        &self,
+        notification: &Notification,
+        channels: &[ChannelTarget],
+    ) -> RouteOutcome {
         if channels.is_empty() {
             tracing::warn!(
                 task = %notification.task_name,
@@ -82,11 +81,11 @@ impl NotificationRouter {
 
         let mut outcome = RouteOutcome::default();
 
-        for channel_name in channels {
-            match channel_name.as_str() {
-                AGENT_WAKE => outcome.agent_wake = true,
-                AGENT_FEED => outcome.agent_feed = true,
-                INBOX => {
+        for target in channels {
+            match target {
+                ChannelTarget::Builtin(BuiltinChannel::AgentWake) => outcome.agent_wake = true,
+                ChannelTarget::Builtin(BuiltinChannel::AgentFeed) => outcome.agent_feed = true,
+                ChannelTarget::Builtin(BuiltinChannel::Inbox) => {
                     outcome.inbox = true;
                     if let Some(ref inbox) = self.inbox_channel {
                         if let Err(e) = inbox.deliver(notification).await {
@@ -104,15 +103,15 @@ impl NotificationRouter {
                         );
                     }
                 }
-                ext_name => {
-                    if let Some(channel) = self.external_channels.get(ext_name) {
+                ChannelTarget::External(ext_name) => {
+                    if let Some(channel) = self.external_channels.get(ext_name.as_str()) {
                         match channel.deliver(notification).await {
                             Ok(()) => {
-                                outcome.external_dispatched.push(ext_name.to_string());
+                                outcome.external_dispatched.push(ext_name.clone());
                             }
                             Err(e) => {
                                 tracing::warn!(
-                                    channel = ext_name,
+                                    channel = %ext_name,
                                     task = %notification.task_name,
                                     error = %e,
                                     "external channel delivery failed"
@@ -121,7 +120,7 @@ impl NotificationRouter {
                         }
                     } else {
                         tracing::warn!(
-                            channel = ext_name,
+                            channel = %ext_name,
                             task = %notification.task_name,
                             "unknown channel, skipping"
                         );
@@ -131,6 +130,18 @@ impl NotificationRouter {
         }
 
         outcome
+    }
+
+    /// Check if a named external channel is configured.
+    #[must_use]
+    pub fn has_external_channel(&self, name: &str) -> bool {
+        self.external_channels.contains_key(name)
+    }
+
+    /// List the names of all configured external channels.
+    #[must_use]
+    pub fn external_channel_names(&self) -> Vec<&str> {
+        self.external_channels.keys().map(String::as_str).collect()
     }
 }
 
@@ -153,7 +164,7 @@ mod tests {
     async fn route_agent_wake_sets_flag() {
         let router = NotificationRouter::empty();
         let notif = make_notification("my_task");
-        let channels = vec!["agent_wake".to_string()];
+        let channels = vec![ChannelTarget::Builtin(BuiltinChannel::AgentWake)];
         let outcome = router.route(&notif, &channels).await;
 
         assert!(outcome.agent_wake, "should set agent_wake flag");
@@ -165,7 +176,7 @@ mod tests {
     async fn route_agent_feed_sets_flag() {
         let router = NotificationRouter::empty();
         let notif = make_notification("my_task");
-        let channels = vec!["agent_feed".to_string()];
+        let channels = vec![ChannelTarget::Builtin(BuiltinChannel::AgentFeed)];
         let outcome = router.route(&notif, &channels).await;
 
         assert!(!outcome.agent_wake);
@@ -182,7 +193,7 @@ mod tests {
         let router = NotificationRouter::new(HashMap::new(), Some(inbox_channel));
 
         let notif = make_notification("backup_task");
-        let channels = vec!["inbox".to_string()];
+        let channels = vec![ChannelTarget::Builtin(BuiltinChannel::Inbox)];
         let outcome = router.route(&notif, &channels).await;
 
         assert!(outcome.inbox, "should set inbox flag");
@@ -201,7 +212,7 @@ mod tests {
     async fn route_unrouted_task_returns_empty() {
         let router = NotificationRouter::empty();
         let notif = make_notification("unknown_task");
-        let channels: Vec<String> = vec![];
+        let channels: Vec<ChannelTarget> = vec![];
         let outcome = router.route(&notif, &channels).await;
 
         assert!(!outcome.agent_wake);
@@ -214,7 +225,10 @@ mod tests {
     async fn route_multiple_channels() {
         let router = NotificationRouter::empty();
         let notif = make_notification("my_task");
-        let channels = vec!["agent_wake".to_string(), "agent_feed".to_string()];
+        let channels = vec![
+            ChannelTarget::Builtin(BuiltinChannel::AgentWake),
+            ChannelTarget::Builtin(BuiltinChannel::AgentFeed),
+        ];
         let outcome = router.route(&notif, &channels).await;
 
         assert!(outcome.agent_wake);
@@ -253,10 +267,22 @@ mod tests {
     async fn route_unknown_external_channel_logged_not_error() {
         let router = NotificationRouter::empty();
         let notif = make_notification("my_task");
-        let channels = vec!["nonexistent_channel".to_string()];
+        let channels = vec![ChannelTarget::External("nonexistent_channel".to_string())];
         let outcome = router.route(&notif, &channels).await;
 
         // Should not panic and should return empty
         assert!(outcome.external_dispatched.is_empty());
+    }
+
+    #[test]
+    fn has_external_channel_empty_router() {
+        let router = NotificationRouter::empty();
+        assert!(!router.has_external_channel("ntfy"));
+    }
+
+    #[test]
+    fn external_channel_names_empty() {
+        let router = NotificationRouter::empty();
+        assert!(router.external_channel_names().is_empty());
     }
 }

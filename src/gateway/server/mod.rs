@@ -37,7 +37,9 @@ use crate::memory::types::Visibility;
 use crate::memory::vector_store::VectorStore;
 use crate::models::{EmbeddingProvider, Message};
 use crate::notify::router::NotificationRouter;
-use crate::notify::types::{Notification, TaskSource};
+use crate::notify::types::{
+    BuiltinChannel, ChannelTarget, Notification, TaskSource, parse_channel_list,
+};
 use crate::projects::activation::SharedProjectState;
 use crate::pulse::executor::{PulseExecution, build_pulse_execution};
 use crate::pulse::scheduler::PulseScheduler;
@@ -328,17 +330,18 @@ async fn handle_background_result(
     let formatted = format_background_result(&result);
 
     let ResultRouting::Direct(channels) = &result.routing;
+    let targets = parse_channel_list(channels);
     let (should_inject, wake) = {
         let mut agent_inject = false;
         let mut wake_requested = false;
-        for channel_name in channels {
-            match channel_name.as_str() {
-                "agent_wake" => {
+        for target in &targets {
+            match target {
+                ChannelTarget::Builtin(BuiltinChannel::AgentWake) => {
                     agent_inject = true;
                     wake_requested = true;
                 }
-                "agent_feed" => agent_inject = true,
-                "inbox" => {
+                ChannelTarget::Builtin(BuiltinChannel::AgentFeed) => agent_inject = true,
+                ChannelTarget::Builtin(BuiltinChannel::Inbox) => {
                     let notification = Notification {
                         task_name: result.task_name.clone(),
                         summary: result.summary.clone(),
@@ -347,9 +350,9 @@ async fn handle_background_result(
                     };
                     router.deliver_to_inbox(&notification).await;
                 }
-                _ => {
+                ChannelTarget::External(ext_name) => {
                     tracing::debug!(
-                        channel = channel_name,
+                        channel = %ext_name,
                         task = %result.task_name,
                         "direct channel routing (external channels not yet supported for direct)"
                     );
