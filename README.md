@@ -9,7 +9,7 @@
 </p>
 
 <p align="center">
-  <a href="https://residuum.dev">Website</a> &middot;
+  <a href="https://residuum.bearflinn.com">Website</a> &middot;
   <a href="docs/">Docs</a> &middot;
   <a href="#quick-start">Quick Start</a> &middot;
   <a href="#contributing">Contributing</a>
