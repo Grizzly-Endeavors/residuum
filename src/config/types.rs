@@ -103,6 +103,13 @@ pub struct DiscordConfig {
     pub token: String,
 }
 
+/// Validated Telegram bot configuration.
+#[derive(Debug, Clone)]
+pub struct TelegramConfig {
+    /// Bot token for the Telegram API.
+    pub token: String,
+}
+
 /// Validated webhook endpoint configuration.
 #[derive(Debug, Clone, Default)]
 pub struct WebhookConfig {

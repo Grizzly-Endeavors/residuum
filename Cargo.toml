@@ -57,12 +57,11 @@ rust-embed = "8"
 mime_guess = "2"
 iana-time-zone = "0.1"
 
-# Discord (optional, feature-gated)
-serenity = { version = "0.12", default-features = false, features = ["client", "gateway", "http", "model", "rustls_backend"], optional = true }
+# Discord
+serenity = { version = "0.12", default-features = false, features = ["client", "gateway", "http", "model", "rustls_backend"] }
 
-[features]
-default = []
-discord = ["dep:serenity"]
+# Telegram
+teloxide = { version = "0.17", default-features = false, features = ["rustls"] }
 
 [dev-dependencies]
 tempfile = "3"

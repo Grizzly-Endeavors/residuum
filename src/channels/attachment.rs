@@ -1,7 +1,7 @@
-//! Attachment downloading and metadata formatting for Discord messages.
+//! Attachment downloading and metadata formatting for channel messages.
 //!
-//! Feature-gated behind `--features discord`. Downloads attachments to the
-//! workspace inbox directory and formats metadata lines for the agent.
+//! Downloads attachments to the workspace inbox directory and formats metadata
+//! lines for the agent.
 
 use std::path::{Path, PathBuf};
 

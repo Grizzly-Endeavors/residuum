@@ -33,6 +33,8 @@ pub(super) struct ConfigFile {
     pub(super) gateway: Option<GatewayConfigFile>,
     /// Discord bot configuration.
     pub(super) discord: Option<DiscordConfigFile>,
+    /// Telegram bot configuration.
+    pub(super) telegram: Option<TelegramConfigFile>,
     /// Webhook endpoint configuration.
     pub(super) webhook: Option<WebhookConfigFile>,
     /// Skills subsystem configuration.
@@ -158,6 +160,14 @@ pub(super) struct GatewayConfigFile {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct DiscordConfigFile {
+    /// Bot token (supports `${ENV_VAR}` syntax).
+    pub(super) token: Option<String>,
+}
+
+/// Raw TOML `[telegram]` section.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct TelegramConfigFile {
     /// Bot token (supports `${ENV_VAR}` syntax).
     pub(super) token: Option<String>,
 }

@@ -102,7 +102,6 @@ impl TypingGuard {
     }
 
     /// Create a guard backed by a stop signal and background task handle.
-    #[cfg(any(feature = "discord", test))]
     #[must_use]
     pub(crate) fn new(stop_tx: tokio::sync::watch::Sender<bool>, handle: JoinHandle<()>) -> Self {
         Self {

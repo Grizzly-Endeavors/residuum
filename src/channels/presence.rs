@@ -1,7 +1,7 @@
 //! Hot-reloadable Discord presence from a workspace TOML file.
 //!
-//! Feature-gated behind `--features discord`. Reads `PRESENCE.toml` from the
-//! workspace root and converts it to serenity presence types.
+//! Reads `PRESENCE.toml` from the workspace root and converts it to serenity
+//! presence types.
 
 use std::path::Path;
 

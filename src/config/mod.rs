@@ -31,7 +31,7 @@ pub use secrets::SecretStore;
 pub use types::{
     BackgroundConfig, BackgroundModelTier, BackgroundModelsConfig, DiscordConfig,
     ExternalChannelConfig, ExternalChannelKind, GatewayConfig, McpConfig, MemoryConfig,
-    NotificationsConfig, SearchConfig, SkillsConfig, WebhookConfig,
+    NotificationsConfig, SearchConfig, SkillsConfig, TelegramConfig, WebhookConfig,
 };
 
 // ── Config struct ─────────────────────────────────────────────────────────────
@@ -70,6 +70,8 @@ pub struct Config {
     pub timezone: chrono_tz::Tz,
     /// Discord bot configuration (None if `[discord]` section absent or no token).
     pub discord: Option<DiscordConfig>,
+    /// Telegram bot configuration (None if `[telegram]` section absent or no token).
+    pub telegram: Option<TelegramConfig>,
     /// Webhook endpoint configuration.
     pub webhook: WebhookConfig,
     /// Skills subsystem configuration.
@@ -103,6 +105,7 @@ impl fmt::Debug for Config {
             .field("gateway", &self.gateway)
             .field("timezone", &self.timezone)
             .field("discord", &self.discord.as_ref().map(|_| "[configured]"))
+            .field("telegram", &self.telegram.as_ref().map(|_| "[configured]"))
             .field("webhook", &self.webhook)
             .field("skills", &self.skills)
             .field("mcp", &self.mcp)

@@ -1,10 +1,4 @@
 //! Code-fence-aware text chunking for channels with message size limits.
-// Chunking is currently only called by the discord adapter but is shared infrastructure
-// that additional channel providers (websocket, webhook, etc.) will use in the future.
-#![allow(
-    dead_code,
-    reason = "shared chunking infrastructure for future channel providers"
-)]
 
 /// Split text into chunks that fit within `max_chars`, preserving code fence integrity.
 ///

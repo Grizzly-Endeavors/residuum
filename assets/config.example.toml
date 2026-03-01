@@ -89,13 +89,21 @@ enabled = true
 bind = "127.0.0.1"
 port = 7700
 
-# ── Discord bot (optional, requires --features discord) ──────────────────────
+# ── Discord bot (optional) ────────────────────────────────────────────────────
 # Bot token can be set here or via IRONCLAW_DISCORD_TOKEN env var.
 # Supports ${ENV_VAR} syntax for referencing environment variables.
 # Currently DM-only; guild channels, slash commands, and presence are planned.
 #
 # [discord]
 # token = "${IRONCLAW_DISCORD_TOKEN}"
+
+# ── Telegram bot (optional) ──────────────────────────────────────────────────
+# Bot token can be set here or via IRONCLAW_TELEGRAM_TOKEN env var.
+# Supports ${ENV_VAR} syntax for referencing environment variables.
+# Currently DM-only; group messages are ignored.
+#
+# [telegram]
+# token = "${IRONCLAW_TELEGRAM_TOKEN}"
 
 # ── Skills (optional, extra scan directories) ────────────────────────────────
 # The workspace skills/ directory is always scanned. Add extra directories here.

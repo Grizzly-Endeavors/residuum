@@ -75,7 +75,7 @@ impl ReplyHandle for DiscordReplyHandle {
                     tracing::trace!(error = %e, "typing indicator send failed");
                 }
                 tokio::select! {
-                    _ = tokio::time::sleep(tokio::time::Duration::from_secs(TYPING_INTERVAL_SECS)) => {}
+                    () = tokio::time::sleep(tokio::time::Duration::from_secs(TYPING_INTERVAL_SECS)) => {}
                     _ = stop_rx.changed() => break,
                 }
             }

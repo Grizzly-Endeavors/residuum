@@ -167,13 +167,13 @@ pub async fn run_gateway(cfg: Config) -> Result<GatewayExit, IronclawError> {
 
     // Clone senders for additional adapters before moving into GatewayState
     let web_reload_sender = reload_sender.clone();
-    #[cfg(feature = "discord")]
     let discord_inbound_tx = inbound_tx.clone();
     let webhook_inbound_tx = inbound_tx.clone();
-    #[cfg(feature = "discord")]
     let discord_reload_sender = reload_sender.clone();
-    #[cfg(feature = "discord")]
     let discord_command_tx = command_tx.clone();
+    let telegram_inbound_tx = inbound_tx.clone();
+    let telegram_reload_sender = reload_sender.clone();
+    let telegram_command_tx = command_tx.clone();
 
     let state = GatewayState {
         inbound_tx,
@@ -242,7 +242,6 @@ pub async fn run_gateway(cfg: Config) -> Result<GatewayExit, IronclawError> {
     });
 
     // Spawn Discord adapter if configured
-    #[cfg(feature = "discord")]
     if let Some(ref discord_cfg) = cfg.discord {
         let discord = crate::channels::discord::DiscordChannel::new(
             discord_cfg.clone(),
@@ -258,6 +257,24 @@ pub async fn run_gateway(cfg: Config) -> Result<GatewayExit, IronclawError> {
             }
         });
         tracing::info!("discord channel started (DM-only mode)");
+    }
+
+    // Spawn Telegram adapter if configured
+    if let Some(ref telegram_cfg) = cfg.telegram {
+        let telegram = crate::channels::telegram::TelegramChannel::new(
+            telegram_cfg.clone(),
+            telegram_inbound_tx,
+            cfg.workspace_dir.clone(),
+            telegram_reload_sender,
+            telegram_command_tx,
+            parts.tz,
+        );
+        tokio::spawn(async move {
+            if let Err(e) = telegram.start().await {
+                tracing::error!(error = %e, "telegram channel failed");
+            }
+        });
+        tracing::info!("telegram channel started (DM-only mode)");
     }
 
     let sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())

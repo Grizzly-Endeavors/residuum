@@ -168,7 +168,7 @@ impl EventHandler for DiscordHandler {
         };
 
         // Extract optional text argument from Discord interaction options
-        let args = cmd
+        let cmd_args = cmd
             .data
             .options
             .first()
@@ -181,7 +181,7 @@ impl EventHandler for DiscordHandler {
             channel_name: "discord",
         };
 
-        let result = execute_command(cmd.data.name.as_str(), args.as_deref(), &command_ctx);
+        let result = execute_command(cmd.data.name.as_str(), cmd_args.as_deref(), &command_ctx);
 
         // Handle side effects
         let response_text = match result.side_effect {

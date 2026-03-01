@@ -13,13 +13,14 @@ use super::constants::{DEFAULT_MAX_TOKENS, DEFAULT_TIMEOUT_SECS};
 use super::deserialize::{
     BackgroundConfigFile, ConfigFile, DiscordConfigFile, GatewayConfigFile, McpConfigFile,
     ModelStringOrList, NotificationsConfigFile, ProviderEntryFile, SearchConfigFile,
-    SkillsConfigFile, WebhookConfigFile,
+    SkillsConfigFile, TelegramConfigFile, WebhookConfigFile,
 };
 use super::provider::{ModelSpec, ProviderKind, ProviderSpec};
 use super::secrets::SecretStore;
 use super::types::{
     BackgroundConfig, DiscordConfig, ExternalChannelConfig, ExternalChannelKind, GatewayConfig,
-    McpConfig, MemoryConfig, NotificationsConfig, SearchConfig, SkillsConfig, WebhookConfig,
+    McpConfig, MemoryConfig, NotificationsConfig, SearchConfig, SkillsConfig, TelegramConfig,
+    WebhookConfig,
 };
 
 /// Build a `Config` from an optional config file and environment variables.
@@ -150,6 +151,7 @@ pub(super) fn from_file_and_env(
 
     let gateway = resolve_gateway_config(file.and_then(|f| f.gateway.as_ref()));
     let discord = resolve_discord_config(file.and_then(|f| f.discord.as_ref()), &secrets);
+    let telegram = resolve_telegram_config(file.and_then(|f| f.telegram.as_ref()), &secrets);
     let webhook = resolve_webhook_config(file.and_then(|f| f.webhook.as_ref()), &secrets);
     let skills = resolve_skills_config(file.and_then(|f| f.skills.as_ref()), &workspace_dir);
     let mcp = resolve_mcp_config(file.and_then(|f| f.mcp.as_ref()));
@@ -213,6 +215,7 @@ pub(super) fn from_file_and_env(
         gateway,
         timezone,
         discord,
+        telegram,
         webhook,
         skills,
         mcp,
@@ -396,6 +399,36 @@ fn resolve_discord_config(
             eprintln!(
                 "warning: [discord] section present but no token found; \
                  set IRONCLAW_DISCORD_TOKEN or token in config"
+            );
+            None
+        }
+        (None, None) => None,
+    }
+}
+
+/// Resolve Telegram configuration from TOML section and environment.
+///
+/// Token resolution: `IRONCLAW_TELEGRAM_TOKEN` env > `token` field in TOML (with
+/// `${ENV_VAR}` / `secret:name` expansion) > `None` if section is absent or no token found.
+fn resolve_telegram_config(
+    section: Option<&TelegramConfigFile>,
+    secrets: &SecretStore,
+) -> Option<TelegramConfig> {
+    let token = std::env::var("IRONCLAW_TELEGRAM_TOKEN")
+        .ok()
+        .or_else(|| {
+            section
+                .and_then(|s| s.token.as_ref())
+                .and_then(|t| resolve_secret_value(t, secrets))
+        })
+        .filter(|t| !t.is_empty());
+
+    match (section, token) {
+        (_, Some(tok)) => Some(TelegramConfig { token: tok }),
+        (Some(_), None) => {
+            eprintln!(
+                "warning: [telegram] section present but no token found; \
+                 set IRONCLAW_TELEGRAM_TOKEN or token in config"
             );
             None
         }
@@ -1692,5 +1725,63 @@ typo_field = 0.5
             "missing secret should fall back to provider env var"
         );
         unsafe { std::env::remove_var("OPENAI_API_KEY") };
+    }
+
+    #[test]
+    fn telegram_absent_returns_none() {
+        let toml_str = r#"
+timezone = "UTC"
+
+[models]
+main = "anthropic/claude-sonnet-4-6"
+"#;
+        let file: ConfigFile = toml::from_str(toml_str).unwrap();
+        let cfg = from_file_and_env(Some(&file), &test_config_dir()).unwrap();
+        assert!(
+            cfg.telegram.is_none(),
+            "no [telegram] section should yield None"
+        );
+    }
+
+    #[test]
+    fn telegram_section_without_token_returns_none() {
+        let toml_str = r#"
+timezone = "UTC"
+
+[models]
+main = "anthropic/claude-sonnet-4-6"
+
+[telegram]
+"#;
+        let file: ConfigFile = toml::from_str(toml_str).unwrap();
+        let cfg = from_file_and_env(Some(&file), &test_config_dir()).unwrap();
+        assert!(
+            cfg.telegram.is_none(),
+            "[telegram] with no token should yield None"
+        );
+    }
+
+    #[test]
+    fn telegram_section_with_token() {
+        let toml_str = r#"
+timezone = "UTC"
+
+[models]
+main = "anthropic/claude-sonnet-4-6"
+
+[telegram]
+token = "123456789:ABCdefGHIjklmnop"
+"#;
+        let file: ConfigFile = toml::from_str(toml_str).unwrap();
+        let cfg = from_file_and_env(Some(&file), &test_config_dir()).unwrap();
+        assert!(
+            cfg.telegram.is_some(),
+            "[telegram] with token should be Some"
+        );
+        assert_eq!(
+            cfg.telegram.as_ref().map(|t| t.token.as_str()),
+            Some("123456789:ABCdefGHIjklmnop"),
+            "token should match"
+        );
     }
 }

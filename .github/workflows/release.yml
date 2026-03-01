@@ -64,8 +64,6 @@ jobs:
           mkdir -p release-artifacts
           cargo build --release
           cp target/release/ironclaw release-artifacts/ironclaw-linux-x86_64
-          cargo build --release --features discord
-          cp target/release/ironclaw release-artifacts/ironclaw-discord-linux-x86_64
 
       # --- Publish release ---
 
@@ -73,8 +71,7 @@ jobs:
         run: |
           gh release create "${{ steps.version.outputs.tag }}" \
             --generate-notes \
-            release-artifacts/ironclaw-linux-x86_64 \
-            release-artifacts/ironclaw-discord-linux-x86_64
+            release-artifacts/ironclaw-linux-x86_64
 
       - name: Cleanup
         if: always()

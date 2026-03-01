@@ -1,7 +1,7 @@
 //! Discord channel adapter (DM-only).
 //!
-//! Feature-gated behind `--features discord`. Implements the serenity `EventHandler`
-//! trait to receive DMs and route them through the standard `RoutedMessage` pipeline.
+//! Implements the serenity `EventHandler` trait to receive DMs and route them
+//! through the standard `RoutedMessage` pipeline.
 //!
 //! Supports:
 //! - Hot-reloadable presence via `PRESENCE.toml`
