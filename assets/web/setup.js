@@ -43,6 +43,7 @@ const Setup = {
     embeddingProviders: ['openai', 'gemini', 'ollama'],
     mcpServers: [],  // [{name, command, args, env}]
     mcpPendingIdx: null,  // catalog index currently showing inline input fields
+    secretRefs: {},   // { name: "secret:name" } — populated by storeAllSecrets()
     catalog: [],
 
     providers: {
@@ -757,7 +758,8 @@ const Setup = {
         for (const [name, cfg] of Object.entries(providerEntries)) {
             lines.push(`[providers.${name}]`);
             lines.push(`type = "${cfg.type}"`);
-            lines.push(`api_key = "${cfg.api_key}"`);
+            const keyRef = this.secretRefs[name] || cfg.api_key;
+            lines.push(`api_key = "${keyRef}"`);
             if (cfg.url) lines.push(`url = "${cfg.url}"`);
             lines.push('');
         }
@@ -823,11 +825,24 @@ const Setup = {
     },
 
     async saveConfig() {
-        const toml = (document.getElementById('setup-toml') || {}).value || this.generateToml();
         const validationEl = document.getElementById('setup-validation');
         const saveBtn = document.getElementById('setup-save');
 
         if (saveBtn) saveBtn.disabled = true;
+
+        try {
+            // Store secrets before generating TOML
+            await this.storeAllSecrets();
+        } catch (err) {
+            if (validationEl) {
+                validationEl.className = 'validation-msg error';
+                validationEl.textContent = 'Failed to store secrets: ' + err.message;
+            }
+            if (saveBtn) saveBtn.disabled = false;
+            return;
+        }
+
+        const toml = (document.getElementById('setup-toml') || {}).value || this.generateToml();
 
         try {
             const res = await fetch('/api/config/complete-setup', {
@@ -858,6 +873,53 @@ const Setup = {
             }
             if (saveBtn) saveBtn.disabled = false;
         }
+    },
+
+    /** Store a single secret via the API and return the secret reference. */
+    async storeSecret(name, value) {
+        const res = await fetch('/api/secrets', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name, value })
+        });
+        if (!res.ok) {
+            const text = await res.text();
+            throw new Error(`failed to store secret "${name}": ${text}`);
+        }
+        const data = await res.json();
+        return data.reference;
+    },
+
+    /** Store all non-empty API keys as secrets and populate secretRefs. */
+    async storeAllSecrets() {
+        this.secretRefs = {};
+        const promises = [];
+
+        // Provider API keys
+        for (const prov of this.selectedProviders) {
+            const cfg = this.providerConfigs[prov];
+            if (prov !== 'ollama' && cfg.apiKey) {
+                promises.push(
+                    this.storeSecret(prov, cfg.apiKey)
+                        .then(ref => { this.secretRefs[prov] = ref; })
+                );
+            }
+        }
+
+        // Role-specific API keys (only if different from the provider config key)
+        for (const role of ['observer', 'reflector', 'pulse']) {
+            const r = this.roles[role];
+            const prov = r.provider || this.mainProvider;
+            if (r.apiKey && r.apiKey !== (this.providerConfigs[prov]?.apiKey || '')) {
+                const name = `${role}_${prov}`;
+                promises.push(
+                    this.storeSecret(name, r.apiKey)
+                        .then(ref => { this.secretRefs[name] = ref; })
+                );
+            }
+        }
+
+        await Promise.all(promises);
     }
 };
 

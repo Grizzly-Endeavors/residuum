@@ -10,7 +10,7 @@ mod constants;
 mod deserialize;
 mod provider;
 mod resolve;
-mod secrets;
+pub(crate) mod secrets;
 mod types;
 pub mod wizard;
 

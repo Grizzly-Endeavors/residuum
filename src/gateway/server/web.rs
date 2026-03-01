@@ -9,14 +9,15 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use axum::body::Body;
-use axum::extract::State;
+use axum::extract::{Path, State};
 use axum::http::{HeaderValue, StatusCode, Uri, header};
 use axum::response::{Json, Response};
-use axum::routing::{get, post, put};
+use axum::routing::{delete, get, post, put};
 use serde::{Deserialize, Serialize};
 use tokio::sync::watch;
 
 use crate::config::Config;
+use crate::config::secrets::SecretStore;
 use crate::memory::recent_messages::load_recent_messages;
 
 mod embedded {
@@ -66,6 +67,9 @@ pub(super) fn config_api_router(state: ConfigApiState) -> axum::Router {
         .route("/api/mcp-catalog", get(api_mcp_catalog))
         .route("/api/chat/history", get(api_chat_history))
         .route("/api/providers/models", post(api_provider_models))
+        .route("/api/secrets", post(api_secrets_set))
+        .route("/api/secrets", get(api_secrets_list))
+        .route("/api/secrets/{name}", delete(api_secrets_delete))
         .with_state(state)
 }
 
@@ -280,11 +284,59 @@ struct ModelsResponse {
     error: Option<String>,
 }
 
+/// Request body for `POST /api/secrets`.
+#[derive(Deserialize)]
+struct SetSecretRequest {
+    name: String,
+    value: String,
+}
+
+/// Response from `POST /api/secrets`.
+#[derive(Serialize)]
+struct SetSecretResponse {
+    reference: String,
+}
+
+/// Response from `GET /api/secrets`.
+#[derive(Serialize)]
+struct ListSecretsResponse {
+    names: Vec<String>,
+}
+
+/// Response from `DELETE /api/secrets/:name`.
+#[derive(Serialize)]
+struct DeleteSecretResponse {
+    deleted: bool,
+}
+
 /// `POST /api/providers/models` — fetch available models from a provider API.
 ///
 /// Used by the setup wizard and settings page to populate model dropdowns.
 /// Takes provider type, optional API key, and optional base URL.
-async fn api_provider_models(Json(req): Json<ModelsRequest>) -> Json<ModelsResponse> {
+async fn api_provider_models(
+    State(state): State<ConfigApiState>,
+    Json(req): Json<ModelsRequest>,
+) -> Json<ModelsResponse> {
+    // Resolve secret: prefixed API keys via the encrypted store
+    let resolved_key = if let Some(name) = req
+        .api_key
+        .as_deref()
+        .and_then(|raw| raw.strip_prefix("secret:"))
+    {
+        let dir = state.config_dir.clone();
+        let name_owned = name.to_owned();
+        tokio::task::spawn_blocking(move || -> Option<String> {
+            SecretStore::load(&dir)
+                .ok()
+                .and_then(|s| s.get(&name_owned).map(String::from))
+        })
+        .await
+        .ok()
+        .flatten()
+    } else {
+        req.api_key
+    };
+
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(10))
         .build()
@@ -292,10 +344,10 @@ async fn api_provider_models(Json(req): Json<ModelsRequest>) -> Json<ModelsRespo
 
     let result = match req.provider.as_str() {
         "anthropic" => {
-            fetch_anthropic_models(&client, req.api_key.as_deref(), req.url.as_deref()).await
+            fetch_anthropic_models(&client, resolved_key.as_deref(), req.url.as_deref()).await
         }
-        "openai" => fetch_openai_models(&client, req.api_key.as_deref(), req.url.as_deref()).await,
-        "gemini" => fetch_gemini_models(&client, req.api_key.as_deref(), req.url.as_deref()).await,
+        "openai" => fetch_openai_models(&client, resolved_key.as_deref(), req.url.as_deref()).await,
+        "gemini" => fetch_gemini_models(&client, resolved_key.as_deref(), req.url.as_deref()).await,
         "ollama" => fetch_ollama_models(&client, req.url.as_deref()).await,
         other => Err(format!("unknown provider: {other}")),
     };
@@ -313,6 +365,97 @@ async fn api_provider_models(Json(req): Json<ModelsRequest>) -> Json<ModelsRespo
             error: Some(err),
         }),
     }
+}
+
+/// `POST /api/secrets` — store a named secret in the encrypted store.
+async fn api_secrets_set(
+    State(state): State<ConfigApiState>,
+    Json(req): Json<SetSecretRequest>,
+) -> Result<Json<SetSecretResponse>, (StatusCode, String)> {
+    let config_dir = state.config_dir.clone();
+    let name = req.name;
+    let value = req.value;
+
+    tokio::task::spawn_blocking(move || {
+        let mut store = SecretStore::load(&config_dir).map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("failed to load secret store: {e}"),
+            )
+        })?;
+        store.set(&name, &value, &config_dir).map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("failed to store secret: {e}"),
+            )
+        })?;
+        Ok(Json(SetSecretResponse {
+            reference: format!("secret:{name}"),
+        }))
+    })
+    .await
+    .map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("task join error: {e}"),
+        )
+    })?
+}
+
+/// `GET /api/secrets` — list stored secret names (not values).
+async fn api_secrets_list(
+    State(state): State<ConfigApiState>,
+) -> Result<Json<ListSecretsResponse>, (StatusCode, String)> {
+    let config_dir = state.config_dir.clone();
+
+    tokio::task::spawn_blocking(move || {
+        let store = SecretStore::load(&config_dir).map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("failed to load secret store: {e}"),
+            )
+        })?;
+        let names = store.names().into_iter().map(String::from).collect();
+        Ok(Json(ListSecretsResponse { names }))
+    })
+    .await
+    .map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("task join error: {e}"),
+        )
+    })?
+}
+
+/// `DELETE /api/secrets/{name}` — remove a named secret.
+async fn api_secrets_delete(
+    State(state): State<ConfigApiState>,
+    Path(name): Path<String>,
+) -> Result<Json<DeleteSecretResponse>, (StatusCode, String)> {
+    let config_dir = state.config_dir.clone();
+
+    tokio::task::spawn_blocking(move || {
+        let mut store = SecretStore::load(&config_dir).map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("failed to load secret store: {e}"),
+            )
+        })?;
+        store.delete(&name, &config_dir).map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("failed to delete secret: {e}"),
+            )
+        })?;
+        Ok(Json(DeleteSecretResponse { deleted: true }))
+    })
+    .await
+    .map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("task join error: {e}"),
+        )
+    })?
 }
 
 /// Fetch models from Anthropic's `/v1/models` endpoint.
@@ -634,5 +777,42 @@ mod tests {
             messages.is_empty(),
             "missing file should return empty history"
         );
+    }
+
+    #[tokio::test]
+    async fn secrets_set_list_delete_roundtrip() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = ConfigApiState {
+            config_dir: dir.path().to_path_buf(),
+            memory_dir: None,
+            reload_sender: None,
+            setup_done: None,
+        };
+
+        // Set a secret
+        let set_result = api_secrets_set(
+            State(state.clone()),
+            Json(SetSecretRequest {
+                name: "test_key".to_string(),
+                value: "test_value".to_string(),
+            }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(set_result.0.reference, "secret:test_key");
+
+        // List secrets
+        let list_result = api_secrets_list(State(state.clone())).await.unwrap();
+        assert_eq!(list_result.0.names, vec!["test_key"]);
+
+        // Delete the secret
+        let delete_result = api_secrets_delete(State(state.clone()), Path("test_key".to_string()))
+            .await
+            .unwrap();
+        assert!(delete_result.0.deleted);
+
+        // Verify it's gone
+        let after_delete = api_secrets_list(State(state)).await.unwrap();
+        assert!(after_delete.0.names.is_empty());
     }
 }

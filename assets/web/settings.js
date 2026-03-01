@@ -251,7 +251,14 @@ const Settings = {
                     </div>
                     <div class="settings-field">
                         <label>API Key</label>
-                        <input type="password" data-provider-field="api_key" value="${escAttr(cfg.api_key || '')}">
+                        ${(() => {
+                            const isSecret = (cfg.api_key || '').startsWith('secret:');
+                            const keyDisplay = isSecret ? '' : escAttr(cfg.api_key || '');
+                            const keyPlaceholder = isSecret ? `Encrypted (${cfg.api_key})` : 'sk-...';
+                            const secretRef = isSecret ? escAttr(cfg.api_key) : '';
+                            return `<input type="password" data-provider-field="api_key" value="${keyDisplay}"
+                                placeholder="${keyPlaceholder}" data-secret-ref="${secretRef}">`;
+                        })()}
                     </div>
                     <div class="settings-field">
                         <label>URL (optional)</label>
@@ -496,8 +503,14 @@ const Settings = {
                 <div class="config-subsection-title">Discord</div>
                 <div class="settings-field">
                     <label>Bot token</label>
-                    <input type="password" data-path="discord.token" value="${escAttr(discord.token || '')}"
-                        placeholder="\${IRONCLAW_DISCORD_TOKEN}">
+                    ${(() => {
+                        const isSecret = (discord.token || '').startsWith('secret:');
+                        const tokenDisplay = isSecret ? '' : escAttr(discord.token || '');
+                        const tokenPlaceholder = isSecret ? `Encrypted (${discord.token})` : '${IRONCLAW_DISCORD_TOKEN}';
+                        const secretRef = isSecret ? escAttr(discord.token) : '';
+                        return `<input type="password" data-path="discord.token" value="${tokenDisplay}"
+                            placeholder="${tokenPlaceholder}" data-secret-ref="${secretRef}">`;
+                    })()}
                     <div class="field-hint">Supports \${ENV_VAR} syntax for environment variable references</div>
                 </div>
             </div>
@@ -520,8 +533,14 @@ const Settings = {
                 </div>
                 <div class="settings-field">
                     <label>Secret</label>
-                    <input type="password" data-path="webhook.secret" value="${escAttr(wh.secret || '')}"
-                        placeholder="Authorization bearer token">
+                    ${(() => {
+                        const isSecret = (wh.secret || '').startsWith('secret:');
+                        const secretDisplay = isSecret ? '' : escAttr(wh.secret || '');
+                        const secretPlaceholder = isSecret ? `Encrypted (${wh.secret})` : 'Authorization bearer token';
+                        const secretRef = isSecret ? escAttr(wh.secret) : '';
+                        return `<input type="password" data-path="webhook.secret" value="${secretDisplay}"
+                            placeholder="${secretPlaceholder}" data-secret-ref="${secretRef}">`;
+                    })()}
                 </div>
             </div>
         `;
@@ -1062,9 +1081,14 @@ const Settings = {
         } else {
             value = el.value;
             if (value === '') {
-                this.removeAtPath(parts);
-                this.syncTomlFromObj();
-                return;
+                // Preserve secret: references when field is empty (user didn't change it)
+                if (el.dataset?.secretRef) {
+                    value = el.dataset.secretRef;
+                } else {
+                    this.removeAtPath(parts);
+                    this.syncTomlFromObj();
+                    return;
+                }
             }
         }
 
@@ -1143,7 +1167,11 @@ const Settings = {
             const name = nameInput?.value?.trim();
             if (!name) return;
             const cfg = { type: typeInput?.value || 'anthropic' };
-            if (apiKeyInput?.value) cfg.api_key = apiKeyInput.value;
+            if (apiKeyInput?.value) {
+                cfg.api_key = apiKeyInput.value;
+            } else if (apiKeyInput?.dataset?.secretRef) {
+                cfg.api_key = apiKeyInput.dataset.secretRef;
+            }
             if (urlInput?.value) cfg.url = urlInput.value;
             newProviders[name] = cfg;
         });
@@ -1388,6 +1416,58 @@ const Settings = {
         }
     },
 
+    /** Store any new raw API keys (not already secret: or ${) as encrypted secrets. */
+    async storeNewSecrets() {
+        const promises = [];
+
+        // Provider API keys
+        const providers = this.configObj.providers || {};
+        for (const [name, cfg] of Object.entries(providers)) {
+            if (cfg.api_key && !cfg.api_key.startsWith('secret:') && !cfg.api_key.startsWith('${')) {
+                promises.push(
+                    fetch('/api/secrets', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ name, value: cfg.api_key })
+                    })
+                    .then(r => r.json())
+                    .then(data => { cfg.api_key = data.reference; })
+                );
+            }
+        }
+
+        // Discord token
+        const discordToken = this.configObj.discord?.token;
+        if (discordToken && !discordToken.startsWith('secret:') && !discordToken.startsWith('${')) {
+            promises.push(
+                fetch('/api/secrets', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ name: 'discord_token', value: discordToken })
+                })
+                .then(r => r.json())
+                .then(data => { this.configObj.discord.token = data.reference; })
+            );
+        }
+
+        // Webhook secret
+        const webhookSecret = this.configObj.webhook?.secret;
+        if (webhookSecret && !webhookSecret.startsWith('secret:') && !webhookSecret.startsWith('${')) {
+            promises.push(
+                fetch('/api/secrets', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ name: 'webhook_secret', value: webhookSecret })
+                })
+                .then(r => r.json())
+                .then(data => { this.configObj.webhook.secret = data.reference; })
+            );
+        }
+
+        await Promise.all(promises);
+        this.syncTomlFromObj();
+    },
+
     // ── Save / validate / refresh ────────────────────────────────────
 
     async save() {
@@ -1398,7 +1478,13 @@ const Settings = {
         } else {
             // Strip internal _manual markers before saving
             this._stripInternalMarkers();
-            this.syncTomlFromObj();
+            // Store new raw keys as encrypted secrets
+            try {
+                await this.storeNewSecrets();
+            } catch (err) {
+                this.showValidation('error', 'Failed to store secrets: ' + err.message);
+                return;
+            }
             toml = this.currentToml;
         }
 
