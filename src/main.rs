@@ -258,6 +258,7 @@ async fn run_serve_foreground(args: &[String]) -> Result<(), IronclawError> {
 /// Returns `IronclawError` if the child process cannot be spawned or
 /// startup times out.
 fn run_daemonize(args: &[String]) -> Result<(), IronclawError> {
+    use ironclaw::config::GatewayConfig;
     use ironclaw::daemon::{is_process_running, pid_file_path, read_pid_file};
 
     let pid_path = pid_file_path()?;
@@ -270,13 +271,21 @@ fn run_daemonize(args: &[String]) -> Result<(), IronclawError> {
         }
     }
 
-    // First-launch welcome if no config exists yet
+    // Resolve gateway address from config or defaults
+    let gateway_addr = Config::load()
+        .map_or_else(|_| GatewayConfig::default().addr(), |cfg| cfg.gateway.addr());
+
+    // Detect whether the child will enter setup mode (no PID file until setup completes)
     let config_dir = Config::config_dir()?;
+    let needs_setup =
+        args.iter().any(|a| a == "--setup") || !config_dir.join("config.toml").exists();
+
+    // First-launch welcome if no config exists yet
     if !config_dir.join("config.toml").exists() {
         eprintln!("welcome to ironclaw!");
         eprintln!();
         eprintln!("  it looks like this is your first time running ironclaw.");
-        eprintln!("  configure your agent at: http://127.0.0.1:7700");
+        eprintln!("  configure your agent at: http://{gateway_addr}");
         eprintln!("  or run: ironclaw setup");
         eprintln!();
     }
@@ -299,7 +308,7 @@ fn run_daemonize(args: &[String]) -> Result<(), IronclawError> {
         }
     }
 
-    let _child = std::process::Command::new(&exe)
+    let mut child = std::process::Command::new(&exe)
         .args(&child_args)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
@@ -308,6 +317,30 @@ fn run_daemonize(args: &[String]) -> Result<(), IronclawError> {
         .map_err(|e| {
             IronclawError::Gateway(format!("failed to spawn daemon process: {e}"))
         })?;
+
+    // When setup is needed, the setup wizard runs before the gateway and
+    // no PID file is written until setup completes. Just verify the child
+    // is alive and direct the user to the web UI.
+    if needs_setup {
+        // Brief pause to catch immediate crashes
+        std::thread::sleep(std::time::Duration::from_millis(500));
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                return Err(IronclawError::Gateway(format!(
+                    "daemon exited immediately with {status}"
+                )));
+            }
+            Ok(None) => {
+                eprintln!("ironclaw: setup server starting at http://{gateway_addr}");
+                return Ok(());
+            }
+            Err(e) => {
+                return Err(IronclawError::Gateway(format!(
+                    "failed to check daemon status: {e}"
+                )));
+            }
+        }
+    }
 
     // Poll for PID file to confirm startup (100ms intervals, 10s timeout)
     let start = std::time::Instant::now();
@@ -325,7 +358,7 @@ fn run_daemonize(args: &[String]) -> Result<(), IronclawError> {
 
         if let Ok(pid) = read_pid_file(&pid_path) {
             if is_process_running(pid) {
-                eprintln!("ironclaw: gateway started (pid {pid})");
+                eprintln!("ironclaw: gateway started at http://{gateway_addr} (pid {pid})");
                 return Ok(());
             }
         }
