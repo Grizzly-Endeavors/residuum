@@ -17,16 +17,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install build dependencies
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq build-essential
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt, clippy
-
       - name: Check formatting
         id: fmt
         run: cargo fmt --check
@@ -38,9 +28,6 @@ jobs:
       - name: Tests
         id: test
         run: cargo test --quiet
-
-      - name: Install cargo-deny
-        run: cargo install cargo-deny --locked
 
       - name: Dependency audit
         id: deny
