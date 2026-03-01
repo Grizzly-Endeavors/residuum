@@ -1,6 +1,8 @@
 # Workflow: Extending Capabilities
 
-Walk the user through skills, MCP servers, background tasks, and subagent presets. By the end, they should understand how to expand what the agent can do.
+Walk the user through skills, MCP servers, background tasks, and subagent presets. By the end, the user should understand how to ask you to expand your capabilities.
+
+**Remember**: Write to `USER.md` and `MEMORY.md` as you learn things throughout this workflow — don't save it all for the end.
 
 ## Step 1: Explain Skills
 
@@ -10,24 +12,11 @@ Show the user the skill concept by referencing the built-in skills:
 - `ironclaw-system` -- technical reference for workspace configuration files
 - `ironclaw-getting-started` -- the skill currently active (this one)
 
-Explain how to create a custom skill:
-1. Create a directory under the workspace `skills/` folder (e.g., `skills/my-skill/`)
-2. Add a `SKILL.md` file with YAML frontmatter and a markdown body
+Explain that the user can ask you to create custom skills for recurring types of tasks. For example: "Create a skill for Ansible playbook review" and you will set it up. Skills can be workspace-wide or scoped to a specific project.
 
-Example `SKILL.md`:
-```markdown
----
-name: ansible-helper
-description: "Guides Ansible playbook creation and troubleshooting"
----
+Give an example of what a skill looks like so they understand the concept, but frame it as something you create for them:
 
-When the user asks about Ansible playbooks, follow these guidelines:
-- Always use YAML syntax with proper indentation
-- Prefer roles over inline tasks for reusable configurations
-- Check for common pitfalls: missing become, wrong module names
-```
-
-The frontmatter needs `name` and `description`. The body contains the instructions that are loaded into the system prompt when the skill is activated via `skill_activate`.
+"If you asked me to create an Ansible helper skill, I would set up something like this -- a name, a description, and instructions I follow when the skill is active."
 
 Skills can also live inside a project's `skills/` subdirectory, making them available only when that project is active.
 
@@ -42,17 +31,9 @@ Ask what external services the user wants to connect to. Common examples:
 - GitHub operations beyond what `gh` CLI provides
 - Smart home APIs, calendar services, email
 
-MCP servers are configured in a project's `PROJECT.md` frontmatter:
-```yaml
-mcp_servers:
-  - name: filesystem
-    command: "mcp-server-filesystem"
-    args: ["/home/user/documents"]
-```
+You configure MCP servers in a project's `PROJECT.md` frontmatter, or the user can add them globally in `config.toml`. When a project with MCP servers is activated, the servers start automatically. When the project deactivates, they stop.
 
-Or globally in `config.toml` if they should always be available. When a project with MCP servers is activated via `project_activate`, the servers start automatically. When the project deactivates, they stop.
-
-Help the user set up one MCP server for a real use case if they have one. If not, explain that they can add servers later when the need arises.
+Help the user set up one MCP server for a real use case if they have one. If not, explain that they can ask you to set one up later when the need arises.
 
 ## Step 3: Background Tasks and Subagents
 
@@ -68,49 +49,30 @@ Demonstrate by spawning a simple sub-agent:
 subagent_spawn with task: "List the files in the current workspace's projects directory and summarize what projects exist."
 ```
 
-Explain the `wait` parameter: set `wait: true` to block and get the result inline, or omit it (default `false`) for async execution with result delivery via channels.
+You can run sub-agents in the foreground (wait for the result inline) or in the background (results delivered via notification channels). Demonstrate both.
 
-Sub-agents use presets that configure their behavior. The default is `general-purpose`. Presets live in the workspace `subagents/` directory and control:
-- System prompt instructions
-- Model tier (small, medium, large)
-- Default delivery channels
-- Tool restrictions
+Sub-agents use presets that you manage. The default is `general-purpose`, but you can create specialized presets for recurring types of work.
 
 ## Step 4: Creating a Subagent Preset
 
-If the user has a recurring type of delegated task, offer to create a preset for it.
+If the user has a recurring type of delegated task, offer to create a preset for it. For example: "If you want me to always review code a certain way, I can create a code-reviewer preset that I will use whenever you ask for a review."
 
-Create a file in `subagents/` with a kebab-case filename matching the preset name (e.g., `code-reviewer.md`):
-```markdown
----
-name: code-reviewer
-description: "Reviews code changes for quality and correctness"
-model_tier: medium
-channels:
-  - agent_feed
----
+Create the preset on their behalf. You decide the appropriate system prompt, model tier, delivery channels, and tool access based on the task. Explain what you created and why. The user does not need to know the file format — just that the preset exists and what it does.
 
-You are a code review assistant. When given code or diffs:
-- Check for correctness, edge cases, and error handling
-- Flag potential security issues
-- Suggest improvements to readability and maintainability
-- Keep feedback concise and actionable
-```
-
-The user can then spawn this preset with `subagent_spawn` using `agent_name: "code-reviewer"`.
+After creating it, show them how it works: "Now when you want a code review, I can spin up my code-reviewer to handle it in the background."
 
 ## Step 5: Wrap Up
 
 Summarize what was covered:
-- Skills for teaching the agent new instruction sets
-- MCP servers for connecting to external tools
+- Skills for teaching you new instruction sets
+- MCP servers for connecting you to external tools
 - Background sub-agents for parallel task execution
 - Presets for recurring delegated work
 
 Suggest next steps:
-- "Create skills for workflows you repeat often."
-- "Set up MCP servers for services you want me to interact with."
-- "Use sub-agents for tasks that take a while -- I will notify you when they finish."
+- "If you have workflows you repeat often, tell me and I will create a skill for them."
+- "If there are services you want me to interact with, let me know and I will set up the connection."
+- "For tasks that take a while, I can run them in the background and notify you when they finish."
 - "If you want me to run checks on a schedule, ask about heartbeat setup."
 
-For full reference documentation, mention: "For complete technical details on all workspace files, see `skill_activate ironclaw-system`."
+For full reference documentation, activate `ironclaw-system`.

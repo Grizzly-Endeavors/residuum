@@ -1,6 +1,10 @@
 # Workflow: Always-On Assistant (Jarvis Mode)
 
-This is the power-user path. Walk the user through a full setup that turns the agent into an always-on personal assistant. Each step builds on the previous one. Take it at the user's pace -- this can span multiple conversations.
+This is the power-user path. Walk the user through a full setup that turns you into an always-on personal assistant. Each step builds on the previous one. Take it at the user's pace — this can span multiple conversations.
+
+**Remember**: Write to `USER.md` and `MEMORY.md` as you learn things throughout this workflow — don't save it all for the end.
+
+**Build on Quick Setup**: The user already has starter pulses configured and you know their proactivity level and communication preferences. Don't re-cover ground — acknowledge what's running and expand from there.
 
 ## Step 1: MCP Server Setup for Integrations
 
@@ -20,7 +24,7 @@ Create a project for the integration work:
 project_create with name: "Personal Integrations" and description: "MCP servers and automation for daily services"
 ```
 
-Then activate it with `project_activate` and configure MCP servers in its `PROJECT.md`:
+Then activate it with `project_activate` and configure MCP servers in the project's `PROJECT.md`:
 ```yaml
 mcp_servers:
   - name: filesystem
@@ -36,9 +40,9 @@ Help the user install any MCP server binaries they need. Common ones are availab
 
 ## Step 2: Heartbeat Configuration
 
-Now that external services are connected, set up recurring checks. For each MCP server the user configured, suggest a corresponding heartbeat pulse.
+Now that external services are connected, set up recurring checks for them. The user may already have starter pulses running from Quick Setup (inbox_check, morning_briefing, nightly_review). Build on those — don't overwrite them.
 
-Write `HEARTBEAT.yml` with pulses tailored to their integrations:
+For each MCP server the user configured, suggest a corresponding heartbeat pulse. Add new pulses to `HEARTBEAT.yml` alongside any existing ones:
 ```yaml
 pulses:
   - name: email_check
@@ -98,7 +102,7 @@ pulses:
 
 Explain the routing strategy:
 - Email goes to `agent_wake` because new emails might need immediate response. Also goes to `inbox` as a backup record.
-- GitHub and calendar go to `agent_feed` -- the agent sees them at the next interaction but does not interrupt.
+- GitHub and calendar go to `agent_feed` -- you see them at the next interaction but do not interrupt.
 - Everything also goes to `inbox` so nothing is lost.
 
 If the user wants phone notifications, help set up an ntfy channel in `config.toml`:
@@ -109,13 +113,7 @@ url = "https://ntfy.sh"
 topic = "my-assistant"
 ```
 
-Then add `ntfy` to the most important pulses' `channels` lists in HEARTBEAT.yml:
-```yaml
-  - name: email_check
-    schedule: "30m"
-    channels: [agent_wake, inbox, ntfy]
-    # ...
-```
+Then update the most important pulses' routing to include the ntfy channel.
 
 ## Step 4: Scheduled Actions for Time-Based Tasks
 
@@ -132,11 +130,7 @@ schedule_action with:
 
 Using `agent_name: "main"` makes the action run as a full agent turn with conversation context, which is appropriate for briefings.
 
-Show them how to manage actions:
-- `list_actions` -- see all pending scheduled actions
-- `cancel_action` -- cancel one by ID
-
-Mention that actions fire once and are removed. For recurring tasks, heartbeats are the right tool.
+Tell the user they can ask you to list or cancel scheduled actions at any time. Mention that actions fire once and are removed. For recurring tasks, heartbeats are the right tool.
 
 ## Step 5: Projects for Ongoing Automation
 
@@ -155,7 +149,7 @@ project_create with:
   tools: ["exec", "read", "write"]
 ```
 
-Explain that when they mention "homelab" in conversation, the agent will recognize it and activate the project context, loading the overview, file manifest, and scoped tools automatically.
+Explain that when they mention "homelab" in conversation, you will recognize it and activate the project context, loading the relevant knowledge and tools automatically.
 
 ## Wrap Up
 
@@ -167,8 +161,8 @@ Summarize the complete setup:
 - Projects organizing ongoing work areas
 
 This is a living system. Explain that:
-- "I will evolve HEARTBEAT.yml based on what works. If you consistently ignore a notification, I will suggest moving it to inbox or removing it."
-- "You can add new pulses, adjust schedules, and change routing at any time. Both files are hot-reloaded."
+- "I will evolve monitoring based on what works. If you consistently ignore a notification, I will suggest moving it to inbox or removing it."
+- "If you want to add new checks, adjust schedules, or change where notifications go, just tell me and I will update things."
 - "As you use the system, I will learn your patterns and suggest improvements."
 
-For the complete technical reference on all configuration files, mention: "For detailed format specifications, see `skill_activate ironclaw-system`."
+For the complete technical reference, activate `ironclaw-system`.

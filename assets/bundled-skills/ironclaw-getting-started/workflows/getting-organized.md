@@ -1,6 +1,8 @@
 # Workflow: Getting Organized
 
-Walk the user through projects, inbox, and memory. By the end, they should have at least one project created and understand how ongoing work is tracked.
+Walk the user through projects, inbox, and memory. By the end, you should have created at least one project for them and they should understand how ongoing work is tracked.
+
+**Remember**: Write to `USER.md` and `MEMORY.md` as you learn things throughout this workflow — don't save it all for the end. If the user mentions a preference, a tool they use, or context about their life, write it down immediately.
 
 ## Step 1: Understand What They Are Working On
 
@@ -25,11 +27,11 @@ Create the project using `project_create` with:
 
 After creation, activate the project with `project_activate` so the user can see what it looks like in practice.
 
-Show the user the project structure by explaining what each subfolder is for:
-- `notes/` -- where you keep your notes about this project (decisions, current state, blockers)
-- `references/` -- where either of you can put relevant files, configs, docs, or images
+Explain the project structure to the user in terms of what you do with each part:
+- `notes/` -- where you keep notes about this project (decisions, current state, blockers)
+- `references/` -- where you or the user can put relevant files, configs, docs, or images
 - `workspace/` -- where you produce output (drafts, code, configs, generated files)
-- `skills/` -- for project-specific skills (they can skip this for now)
+- `skills/` -- for project-specific skills (skip this for now)
 
 ## Step 3: Introduce the Inbox
 
@@ -49,11 +51,11 @@ Explain: "You do not need to do anything special for memory. I automatically rem
 
 Key points to convey:
 - Memory is passive. The user does not need to tell you to remember things.
-- Observations are extracted after enough conversation accumulates (token threshold).
-- You can search past observations with `memory_search` on the user's behalf if they want to find something specific.
+- Observations are extracted after enough conversation accumulates.
+- You can search past observations with `memory_search` if they want to find something specific.
 - USER.md stores stable preferences (timezone, communication style, context about them). Memory stores episodic information (what happened, what was discussed).
 
-Do not go deep into observer/reflector internals. The user does not need to know about token thresholds or episodes unless they ask.
+Do not go deep into observer/reflector internals unless the user asks.
 
 ## Step 5: Wrap Up
 
@@ -70,4 +72,4 @@ Suggest next steps:
 - "If you want me to monitor things for you, ask about heartbeat setup."
 - "You can always add more projects as new work comes up -- just tell me what you are starting."
 
-For deeper technical detail on projects, mention: "For the full project format specification, see `skill_activate ironclaw-system`."
+For deeper technical detail on projects, activate `ironclaw-system`.

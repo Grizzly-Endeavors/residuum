@@ -38,8 +38,8 @@ workspace/
 │   ├── observations.json    # Flat observation log
 │   ├── recent_messages.json # Unobserved messages buffer
 │   ├── recent_context.json  # Narrative context from latest observation
-│   ├── OBSERVER.md          # Observer extraction guidance (customizable)
-│   ├── REFLECTOR.md         # Reflector compression guidance (customizable)
+│   ├── OBSERVER.md          # Observer extraction guidance (agent-maintained)
+│   ├── REFLECTOR.md         # Reflector compression guidance (agent-maintained)
 │   ├── vectors.db           # sqlite-vec vector database (optional)
 │   ├── .index/              # Tantivy BM25 search index
 │   ├── .index_manifest.json # Index file tracking
