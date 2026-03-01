@@ -92,57 +92,78 @@ impl DiscordChannel {
 
 #[cfg(test)]
 mod tests {
-    use super::handler::{help_text, status_text};
-    use super::*;
+    use crate::channels::cli::commands::{
+        CommandContext, CommandSideEffect, all_commands, execute_command,
+    };
 
-    #[test]
-    fn help_text_contains_commands() {
-        let text = help_text();
-        assert!(text.contains("/help"), "should mention /help");
-        assert!(text.contains("/status"), "should mention /status");
-        assert!(text.contains("/reload"), "should mention /reload");
-        assert!(text.contains("/observe"), "should mention /observe");
-        assert!(text.contains("/reflect"), "should mention /reflect");
+    fn discord_ctx() -> CommandContext<'static> {
+        CommandContext {
+            url: "",
+            verbose: false,
+            channel_name: "discord",
+        }
     }
 
     #[test]
-    fn status_text_contains_version() {
-        let text = status_text();
+    fn execute_help_returns_command_list() {
+        let result = execute_command("help", None, &discord_ctx());
         assert!(
-            text.contains(env!("CARGO_PKG_VERSION")),
-            "should contain package version"
+            result.response.contains("help"),
+            "should mention help: {}",
+            result.response
         );
-        assert!(text.contains("Online"), "should show online status");
+        assert!(
+            result.response.contains("observe"),
+            "should mention observe: {}",
+            result.response
+        );
+        assert!(result.side_effect.is_none(), "help has no side effect");
     }
 
     #[test]
-    fn slash_command_names() {
-        // Platform-specific commands always present
-        let platform_cmds = ["help", "status", "reload"];
-        for name in platform_cmds {
-            let text = match name {
-                "help" => help_text(),
-                "status" => status_text(),
-                "reload" => "Reloading configuration...".to_string(),
-                _ => "Unknown".to_string(),
-            };
-            assert!(
-                !text.contains("Unknown"),
-                "command '{name}' should have a known handler"
-            );
-        }
-
-        // Server commands derived from shared registry
-        let server_cmds: Vec<_> = crate::channels::cli::commands::server_commands().collect();
+    fn execute_status_returns_text() {
+        let result = execute_command("status", None, &discord_ctx());
         assert!(
-            !server_cmds.is_empty(),
-            "should have at least one server command"
+            result.response.contains("verbose"),
+            "should contain status info: {}",
+            result.response
         );
-        for info in &server_cmds {
-            assert!(
-                !info.name.is_empty(),
-                "server command name should not be empty"
-            );
-        }
+        assert!(result.side_effect.is_none());
+    }
+
+    #[test]
+    fn execute_reload_returns_side_effect() {
+        let result = execute_command("reload", None, &discord_ctx());
+        assert_eq!(result.side_effect, Some(CommandSideEffect::Reload));
+    }
+
+    #[test]
+    fn execute_observe_returns_server_command() {
+        let result = execute_command("observe", None, &discord_ctx());
+        assert_eq!(
+            result.side_effect,
+            Some(CommandSideEffect::ServerCommand {
+                name: "observe",
+                args: None
+            })
+        );
+    }
+
+    #[test]
+    fn execute_inbox_with_text() {
+        let result = execute_command("inbox", Some("remember this"), &discord_ctx());
+        assert_eq!(
+            result.side_effect,
+            Some(CommandSideEffect::InboxAdd("remember this".to_string()))
+        );
+    }
+
+    #[test]
+    fn all_commands_includes_inbox() {
+        let cmds: Vec<_> = all_commands().collect();
+        let names: Vec<_> = cmds.iter().map(|c| c.name).collect();
+        assert!(names.contains(&"help"), "should include help");
+        assert!(names.contains(&"observe"), "should include observe");
+        assert!(names.contains(&"inbox"), "should include inbox");
     }
 }

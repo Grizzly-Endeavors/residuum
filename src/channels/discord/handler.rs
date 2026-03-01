@@ -17,6 +17,9 @@ use tokio::sync::mpsc;
 use crate::channels::attachment::{
     AttachmentInfo, download_attachment, format_attachment_line, format_failed_attachment_line,
 };
+use crate::channels::cli::commands::{
+    CommandContext, CommandSideEffect, all_commands, execute_command,
+};
 use crate::channels::presence::{load_presence, to_activity, to_online_status};
 use crate::channels::types::{InboundMessage, MessageOrigin, RoutedMessage};
 use crate::gateway::server::ServerCommand;
@@ -164,29 +167,60 @@ impl EventHandler for DiscordHandler {
             return;
         };
 
-        let response_text = match cmd.data.name.as_str() {
-            "help" => help_text(),
-            "status" => status_text(),
-            "reload" => {
+        // Extract optional text argument from Discord interaction options
+        let args = cmd
+            .data
+            .options
+            .first()
+            .and_then(|opt| opt.value.as_str())
+            .map(str::to_string);
+
+        let command_ctx = CommandContext {
+            url: "",
+            verbose: false,
+            channel_name: "discord",
+        };
+
+        let result = execute_command(
+            cmd.data.name.as_str(),
+            args.as_deref(),
+            &command_ctx,
+        );
+
+        // Handle side effects
+        let response_text = match result.side_effect {
+            Some(CommandSideEffect::Reload) => {
                 tracing::info!("reload requested via discord slash command");
                 self.reload_sender.send(true).ok();
-                "Reloading configuration...".to_string()
+                result.response
             }
-            name => {
+            Some(CommandSideEffect::ServerCommand { name, args }) => {
                 tracing::info!(command = %name, "server command via discord slash command");
                 let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
                 self.command_tx
                     .try_send(ServerCommand {
                         name: name.to_string(),
-                        args: None,
+                        args,
                         reply_tx: Some(reply_tx),
                     })
                     .ok();
                 match tokio::time::timeout(Duration::from_secs(10), reply_rx).await {
                     Ok(Ok(msg)) => msg,
-                    _ => format!("{name} triggered."),
+                    _ => result.response,
                 }
             }
+            Some(CommandSideEffect::InboxAdd(body)) => {
+                let source = format!("discord:{}", cmd.user.name);
+                match inbox::quick_add(&self.inbox_dir, &body, &body, &source, self.tz).await {
+                    Ok(_) => result.response,
+                    Err(e) => format!("failed to add inbox item: {e}"),
+                }
+            }
+            Some(CommandSideEffect::Quit | CommandSideEffect::ToggleVerbose) => {
+                // Not applicable to Discord
+                result.response
+            }
+            None => result.response,
         };
 
         let msg = CreateInteractionResponseMessage::new().content(response_text);
@@ -201,20 +235,30 @@ impl EventHandler for DiscordHandler {
     }
 }
 
-/// Register global slash commands with Discord.
+/// Register global slash commands with Discord from the shared command registry.
+///
+/// Commands that take arguments (like `/inbox`) get a `text` string option.
+/// Client-only commands (quit, verbose) are skipped — they don't apply to Discord.
 async fn register_slash_commands(ctx: &Context) -> Result<(), serenity::Error> {
-    let mut commands = vec![
-        CreateCommand::new("help").description("Show available commands and usage info"),
-        CreateCommand::new("status").description("Show bot status and version info"),
-        CreateCommand::new("reload").description("Reload the agent configuration"),
-    ];
+    let skip = ["quit", "exit", "q", "verbose", "v"];
 
-    // Derive server commands from the shared CLI registry
-    for info in crate::channels::cli::commands::server_commands() {
-        commands.push(CreateCommand::new(info.name).description(info.help));
-    }
+    for info in all_commands() {
+        if skip.contains(&info.name) {
+            continue;
+        }
 
-    for cmd in commands {
+        let mut cmd = CreateCommand::new(info.name).description(info.help);
+        if info.takes_arg {
+            cmd = cmd.add_option(
+                serenity::builder::CreateCommandOption::new(
+                    serenity::all::CommandOptionType::String,
+                    "text",
+                    "Text argument",
+                )
+                .required(true),
+            );
+        }
+
         serenity::model::application::Command::create_global_command(&ctx.http, cmd).await?;
     }
 
@@ -248,31 +292,3 @@ fn file_mtime(path: &std::path::Path) -> Option<std::time::SystemTime> {
     std::fs::metadata(path).ok().and_then(|m| m.modified().ok())
 }
 
-/// Generate help text for the `/help` slash command.
-#[must_use]
-pub(super) fn help_text() -> String {
-    let mut lines = vec![
-        "**IronClaw Bot Commands**".to_string(),
-        String::new(),
-        "`/help` \u{2014} Show this help text".to_string(),
-        "`/status` \u{2014} Show bot status info".to_string(),
-        "`/reload` \u{2014} Reload configuration".to_string(),
-    ];
-
-    for info in crate::channels::cli::commands::server_commands() {
-        lines.push(format!("`/{}` \u{2014} {}", info.name, info.help));
-    }
-
-    lines.push(String::new());
-    lines.push("**Messaging**: Send a DM to interact with the agent directly.".to_string());
-    lines.join("\n")
-}
-
-/// Generate status text for the `/status` slash command.
-#[must_use]
-pub(super) fn status_text() -> String {
-    format!(
-        "**IronClaw** v{}\nStatus: Online\nMode: DM-only",
-        env!("CARGO_PKG_VERSION"),
-    )
-}

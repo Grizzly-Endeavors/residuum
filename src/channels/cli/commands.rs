@@ -1,4 +1,7 @@
 //! Data-driven slash command registry for the CLI client.
+//!
+//! Provides a shared command registry used by CLI, Discord, and any future channels.
+//! Each channel handles `CommandSideEffect` according to its own transport.
 
 /// What the main loop should do after a slash command.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -28,6 +31,54 @@ pub struct ServerCommandInfo {
     pub name: &'static str,
     /// Human-readable help text.
     pub help: &'static str,
+}
+
+/// Metadata about any command, for cross-channel registration.
+pub struct CommandInfo {
+    /// The primary command name (e.g. "help", "observe").
+    pub name: &'static str,
+    /// Human-readable help text.
+    pub help: &'static str,
+    /// Whether the command takes a text argument.
+    pub takes_arg: bool,
+}
+
+/// Context for executing a command from any channel.
+pub struct CommandContext<'a> {
+    /// Connection URL (for status display).
+    pub url: &'a str,
+    /// Whether verbose mode is enabled.
+    pub verbose: bool,
+    /// Name of the channel dispatching the command (e.g. "cli", "discord", "websocket").
+    pub channel_name: &'a str,
+}
+
+/// Result of executing a command through the shared registry.
+pub struct CommandResult {
+    /// Text response to display to the user.
+    pub response: String,
+    /// Optional side effect the channel handler must apply.
+    pub side_effect: Option<CommandSideEffect>,
+}
+
+/// Side effects that channel handlers must apply after a command.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CommandSideEffect {
+    /// Reload server configuration.
+    Reload,
+    /// Add text to the agent's inbox.
+    InboxAdd(String),
+    /// Dispatch a named server command.
+    ServerCommand {
+        /// Command name.
+        name: &'static str,
+        /// Optional argument text.
+        args: Option<String>,
+    },
+    /// Exit the client (CLI-only; other channels ignore this).
+    Quit,
+    /// Toggle verbose mode (CLI-only; other channels ignore this).
+    ToggleVerbose,
 }
 
 struct CommandDef {
@@ -133,6 +184,56 @@ pub fn parse_command(input: &str, url: &str, verbose: bool) -> Option<CommandEff
     )))
 }
 
+/// Execute a command by name with optional arguments.
+///
+/// Separates the response text from the side effect so that each channel
+/// (CLI, Discord, WebSocket) only needs to handle transport-specific
+/// actions. Unknown commands return an error response with no side effect.
+#[must_use]
+pub fn execute_command(name: &str, args: Option<&str>, ctx: &CommandContext<'_>) -> CommandResult {
+    for def in COMMANDS {
+        if def.names.contains(&name) {
+            let effect = (def.effect)(args, ctx.url, ctx.verbose);
+            return effect_to_result(effect);
+        }
+    }
+
+    CommandResult {
+        response: format!("unknown command: /{name} (try /help)"),
+        side_effect: None,
+    }
+}
+
+/// Convert a `CommandEffect` into a `CommandResult`.
+fn effect_to_result(effect: CommandEffect) -> CommandResult {
+    match effect {
+        CommandEffect::PrintLocal(text) => CommandResult {
+            response: text,
+            side_effect: None,
+        },
+        CommandEffect::ToggleVerbose => CommandResult {
+            response: "verbose mode toggled".to_string(),
+            side_effect: Some(CommandSideEffect::ToggleVerbose),
+        },
+        CommandEffect::ServerCommand { name, args } => CommandResult {
+            response: format!("{name} triggered."),
+            side_effect: Some(CommandSideEffect::ServerCommand { name, args }),
+        },
+        CommandEffect::Reload => CommandResult {
+            response: "Reloading configuration...".to_string(),
+            side_effect: Some(CommandSideEffect::Reload),
+        },
+        CommandEffect::InboxAdd(body) => CommandResult {
+            response: "Item added to inbox.".to_string(),
+            side_effect: Some(CommandSideEffect::InboxAdd(body)),
+        },
+        CommandEffect::Quit => CommandResult {
+            response: "Disconnecting...".to_string(),
+            side_effect: Some(CommandSideEffect::Quit),
+        },
+    }
+}
+
 /// Iterate over commands that produce `ServerCommand` effects.
 ///
 /// Used by Discord (and potentially other channels) to auto-register
@@ -144,6 +245,18 @@ pub fn server_commands() -> impl Iterator<Item = ServerCommandInfo> {
             name: def.names.first().copied().unwrap_or(""),
             help: def.help,
         })
+    })
+}
+
+/// Iterate over all commands in the registry.
+///
+/// Used by channels that want to register the full command set
+/// (not just server commands).
+pub fn all_commands() -> impl Iterator<Item = CommandInfo> {
+    COMMANDS.iter().map(|def| CommandInfo {
+        name: def.names.first().copied().unwrap_or(""),
+        help: def.help,
+        takes_arg: def.takes_arg,
     })
 }
 
@@ -373,5 +486,86 @@ mod tests {
             !names.contains(&"quit"),
             "quit is local, not a server command"
         );
+    }
+
+    // ── execute_command tests ─────────────────────────────────────────
+
+    fn cli_ctx() -> CommandContext<'static> {
+        CommandContext {
+            url: "ws://localhost/ws",
+            verbose: false,
+            channel_name: "cli",
+        }
+    }
+
+    #[test]
+    fn execute_help_returns_text() {
+        let result = execute_command("help", None, &cli_ctx());
+        assert!(
+            result.response.contains("Available"),
+            "should return help text: {}",
+            result.response
+        );
+        assert!(result.side_effect.is_none(), "help has no side effect");
+    }
+
+    #[test]
+    fn execute_observe_returns_server_command() {
+        let result = execute_command("observe", None, &cli_ctx());
+        assert_eq!(
+            result.side_effect,
+            Some(CommandSideEffect::ServerCommand {
+                name: "observe",
+                args: None
+            })
+        );
+    }
+
+    #[test]
+    fn execute_inbox_with_text_returns_inbox_add() {
+        let result = execute_command("inbox", Some("remember this"), &cli_ctx());
+        assert_eq!(
+            result.side_effect,
+            Some(CommandSideEffect::InboxAdd("remember this".to_string()))
+        );
+    }
+
+    #[test]
+    fn execute_inbox_empty_returns_usage() {
+        let result = execute_command("inbox", None, &cli_ctx());
+        assert!(
+            result.response.contains("usage"),
+            "should show usage: {}",
+            result.response
+        );
+        assert!(result.side_effect.is_none());
+    }
+
+    #[test]
+    fn execute_unknown_returns_error() {
+        let result = execute_command("foobar", None, &cli_ctx());
+        assert!(
+            result.response.contains("unknown command"),
+            "should report unknown: {}",
+            result.response
+        );
+        assert!(result.side_effect.is_none());
+    }
+
+    #[test]
+    fn execute_reload_returns_side_effect() {
+        let result = execute_command("reload", None, &cli_ctx());
+        assert_eq!(result.side_effect, Some(CommandSideEffect::Reload));
+    }
+
+    #[test]
+    fn all_commands_includes_everything() {
+        let cmds: Vec<_> = all_commands().collect();
+        let names: Vec<_> = cmds.iter().map(|c| c.name).collect();
+        assert!(names.contains(&"help"), "should include help");
+        assert!(names.contains(&"status"), "should include status");
+        assert!(names.contains(&"observe"), "should include observe");
+        assert!(names.contains(&"inbox"), "should include inbox");
+        assert!(names.contains(&"quit"), "should include quit");
     }
 }
