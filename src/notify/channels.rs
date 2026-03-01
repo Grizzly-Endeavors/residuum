@@ -14,6 +14,9 @@ pub trait NotificationChannel: Send + Sync {
     /// Channel name as configured.
     fn name(&self) -> &str;
 
+    /// Channel type identifier (e.g. `"ntfy"`, `"webhook"`, `"inbox"`).
+    fn channel_kind(&self) -> &'static str;
+
     /// Deliver a notification.
     ///
     /// Errors are logged, not propagated — a failed channel should not block
@@ -47,6 +50,10 @@ impl InboxChannel {
 #[async_trait]
 impl NotificationChannel for InboxChannel {
     fn name(&self) -> &'static str {
+        "inbox"
+    }
+
+    fn channel_kind(&self) -> &'static str {
         "inbox"
     }
 

@@ -134,25 +134,15 @@ async fn handle_connection(socket: WebSocket, state: GatewayState) {
                 let tz = state.tz;
                 let tx = state.broadcast_tx.clone();
                 tokio::spawn(async move {
-                    let title = body
+                    let title: String = body
                         .lines()
                         .next()
                         .unwrap_or("Inbox message")
                         .chars()
                         .take(60)
-                        .collect::<String>();
-                    let timestamp = crate::time::now_local(tz);
-                    let item = crate::inbox::InboxItem {
-                        title: title.clone(),
-                        body,
-                        source: "cli".to_string(),
-                        timestamp,
-                        read: false,
-                        attachments: Vec::new(),
-                    };
-                    let filename = crate::inbox::generate_filename(&title, tz);
-                    match crate::inbox::save_item(&dir, &filename, &item).await {
-                        Ok(()) => {
+                        .collect();
+                    match crate::inbox::quick_add(&dir, &title, &body, "cli", tz).await {
+                        Ok(_filename) => {
                             tx.send(ServerMessage::Notice {
                                 message: "[inbox] item added".to_string(),
                             })

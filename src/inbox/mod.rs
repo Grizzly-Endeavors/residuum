@@ -64,6 +64,33 @@ pub fn generate_filename(title: &str, tz: chrono_tz::Tz) -> String {
     format!("{date}_{truncated}.json")
 }
 
+/// Add an inbox item in one call: generates a filename, builds the item, and saves.
+///
+/// Returns the filename for confirmation messages.
+///
+/// # Errors
+/// Returns an error if the item cannot be saved.
+pub async fn quick_add(
+    inbox_dir: &Path,
+    title: &str,
+    body: &str,
+    source: &str,
+    tz: chrono_tz::Tz,
+) -> anyhow::Result<String> {
+    let now = crate::time::now_local(tz);
+    let filename = generate_filename(title, tz);
+    let item = InboxItem {
+        title: title.to_string(),
+        body: body.to_string(),
+        source: source.to_string(),
+        timestamp: now,
+        read: false,
+        attachments: Vec::new(),
+    };
+    save_item(inbox_dir, &filename, &item).await?;
+    Ok(filename)
+}
+
 /// Save an inbox item atomically (write to `.tmp`, then rename).
 ///
 /// # Errors
@@ -289,6 +316,28 @@ mod tests {
             title_part,
             title_part.len()
         );
+    }
+
+    #[tokio::test]
+    async fn quick_add_creates_item() {
+        let dir = tempfile::tempdir().unwrap();
+
+        let filename = quick_add(dir.path(), "test note", "body text", "cli", chrono_tz::UTC)
+            .await
+            .unwrap();
+
+        assert!(filename.ends_with(".json"), "should end with .json");
+        assert!(
+            filename.contains("test_note"),
+            "should contain sanitized title: {filename}"
+        );
+
+        let item = load_item(&dir.path().join(&filename)).await.unwrap();
+        assert_eq!(item.title, "test note");
+        assert_eq!(item.body, "body text");
+        assert_eq!(item.source, "cli");
+        assert!(!item.read);
+        assert!(item.attachments.is_empty());
     }
 
     #[tokio::test]

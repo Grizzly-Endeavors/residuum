@@ -216,19 +216,7 @@ impl Tool for InboxAddTool {
             .and_then(|v| v.as_str())
             .unwrap_or("agent");
 
-        let now = crate::time::now_local(self.tz);
-        let filename = inbox::generate_filename(title, self.tz);
-
-        let item = InboxItem {
-            title: title.to_string(),
-            body: body.to_string(),
-            source: source.to_string(),
-            timestamp: now,
-            read: false,
-            attachments: Vec::new(),
-        };
-
-        inbox::save_item(&self.inbox_dir, &filename, &item)
+        let filename = inbox::quick_add(&self.inbox_dir, title, body, source, self.tz)
             .await
             .map_err(|e| ToolError::Execution(format!("failed to save inbox item: {e}")))?;
 

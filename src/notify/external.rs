@@ -41,6 +41,10 @@ impl NotificationChannel for NtfyChannel {
         &self.channel_name
     }
 
+    fn channel_kind(&self) -> &'static str {
+        "ntfy"
+    }
+
     async fn deliver(&self, notification: &Notification) -> anyhow::Result<()> {
         let endpoint = format!("{}/{}", self.url.trim_end_matches('/'), self.topic);
         let title = format!(
@@ -103,6 +107,10 @@ impl WebhookChannel {
 impl NotificationChannel for WebhookChannel {
     fn name(&self) -> &str {
         &self.channel_name
+    }
+
+    fn channel_kind(&self) -> &'static str {
+        "webhook"
     }
 
     async fn deliver(&self, notification: &Notification) -> anyhow::Result<()> {
