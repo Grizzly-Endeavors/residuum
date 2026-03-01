@@ -10,7 +10,7 @@ permissions:
 jobs:
   release:
     name: Release
-    runs-on: [self-hosted, kubernetes, lab, rust]
+    runs-on: [self-hosted, kubernetes, lab]
 
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

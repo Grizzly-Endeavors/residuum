@@ -12,7 +12,7 @@ permissions:
 jobs:
   check:
     name: Check
-    runs-on: [self-hosted, kubernetes, lab, rust]
+    runs-on: [self-hosted, kubernetes, lab]
 
     steps:
       - uses: actions/checkout@v4
