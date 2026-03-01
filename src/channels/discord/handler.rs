@@ -181,11 +181,7 @@ impl EventHandler for DiscordHandler {
             channel_name: "discord",
         };
 
-        let result = execute_command(
-            cmd.data.name.as_str(),
-            args.as_deref(),
-            &command_ctx,
-        );
+        let result = execute_command(cmd.data.name.as_str(), args.as_deref(), &command_ctx);
 
         // Handle side effects
         let response_text = match result.side_effect {
@@ -298,4 +294,3 @@ async fn presence_watcher(presence_path: PathBuf, shard: serenity::gateway::Shar
 fn file_mtime(path: &std::path::Path) -> Option<std::time::SystemTime> {
     std::fs::metadata(path).ok().and_then(|m| m.modified().ok())
 }
-

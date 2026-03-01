@@ -409,11 +409,7 @@ pub(super) async fn initialize(cfg: &Config) -> Result<GatewayComponents, Ironcl
 
     // Notification router (built before agent so the tool can hold a reference)
     let notification_router = Arc::new(build_notification_router(cfg, &layout));
-    tools.register_send_message_tool(
-        Arc::clone(&notification_router),
-        layout.inbox_dir(),
-        tz,
-    );
+    tools.register_send_message_tool(Arc::clone(&notification_router), layout.inbox_dir(), tz);
 
     // Connect global MCP servers from config
     if !cfg.mcp.servers.is_empty() {

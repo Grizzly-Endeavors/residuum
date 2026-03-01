@@ -86,12 +86,15 @@ impl Tool for SendMessageTool {
                     || message.chars().take(60).collect::<String>(),
                     str::to_string,
                 );
-                let filename =
-                    crate::inbox::quick_add(&self.inbox_dir, &inbox_title, message, "agent", self.tz)
-                        .await
-                        .map_err(|e| {
-                            ToolError::Execution(format!("failed to add inbox item: {e}"))
-                        })?;
+                let filename = crate::inbox::quick_add(
+                    &self.inbox_dir,
+                    &inbox_title,
+                    message,
+                    "agent",
+                    self.tz,
+                )
+                .await
+                .map_err(|e| ToolError::Execution(format!("failed to add inbox item: {e}")))?;
                 Ok(ToolResult::success(format!(
                     "Message saved to inbox as {filename}"
                 )))
@@ -99,7 +102,7 @@ impl Tool for SendMessageTool {
             ChannelTarget::Builtin(BuiltinChannel::AgentWake | BuiltinChannel::AgentFeed) => {
                 Ok(ToolResult::error(
                     "send_message cannot target internal routing channels (agent_wake, agent_feed); \
-                     use inbox or an external channel"
+                     use inbox or an external channel",
                 ))
             }
             ChannelTarget::External(ext_name) => {
@@ -188,11 +191,7 @@ mod tests {
         let items: Vec<_> = std::fs::read_dir(&inbox_dir)
             .unwrap()
             .filter_map(Result::ok)
-            .filter(|e| {
-                e.path()
-                    .extension()
-                    .is_some_and(|ext| ext == "json")
-            })
+            .filter(|e| e.path().extension().is_some_and(|ext| ext == "json"))
             .collect();
         assert_eq!(items.len(), 1, "should create one inbox item");
     }

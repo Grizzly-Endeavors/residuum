@@ -107,8 +107,8 @@ pub async fn run_degraded_gateway(
     });
 
     // Wait for reload signal or SIGTERM
-    let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
-        .ok();
+    let mut sigterm =
+        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()).ok();
 
     tokio::select! {
         _ = reload_rx.wait_for(|v| *v) => {

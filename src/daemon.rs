@@ -35,10 +35,7 @@ pub fn write_pid_file(path: &Path, pid: u32) -> Result<(), IronclawError> {
         })?;
     }
     std::fs::write(path, pid.to_string()).map_err(|e| {
-        IronclawError::Gateway(format!(
-            "failed to write pid file {}: {e}",
-            path.display()
-        ))
+        IronclawError::Gateway(format!("failed to write pid file {}: {e}", path.display()))
     })
 }
 
@@ -49,17 +46,12 @@ pub fn write_pid_file(path: &Path, pid: u32) -> Result<(), IronclawError> {
 /// Returns `IronclawError::Gateway` if the file cannot be read or parsed.
 pub fn read_pid_file(path: &Path) -> Result<u32, IronclawError> {
     let content = std::fs::read_to_string(path).map_err(|e| {
-        IronclawError::Gateway(format!(
-            "failed to read pid file {}: {e}",
-            path.display()
-        ))
+        IronclawError::Gateway(format!("failed to read pid file {}: {e}", path.display()))
     })?;
-    content.trim().parse::<u32>().map_err(|e| {
-        IronclawError::Gateway(format!(
-            "invalid pid in {}: {e}",
-            path.display()
-        ))
-    })
+    content
+        .trim()
+        .parse::<u32>()
+        .map_err(|e| IronclawError::Gateway(format!("invalid pid in {}: {e}", path.display())))
 }
 
 /// Remove the PID file at the given path.
@@ -98,13 +90,13 @@ pub fn send_sigterm(pid: u32) -> Result<(), IronclawError> {
     use nix::sys::signal::{Signal, kill};
     use nix::unistd::Pid;
 
-    let nix_pid = Pid::from_raw(i32::try_from(pid).map_err(|e| {
-        IronclawError::Gateway(format!("pid {pid} out of range for signal: {e}"))
-    })?);
+    let nix_pid =
+        Pid::from_raw(i32::try_from(pid).map_err(|e| {
+            IronclawError::Gateway(format!("pid {pid} out of range for signal: {e}"))
+        })?);
 
-    kill(nix_pid, Signal::SIGTERM).map_err(|e| {
-        IronclawError::Gateway(format!("failed to send SIGTERM to pid {pid}: {e}"))
-    })
+    kill(nix_pid, Signal::SIGTERM)
+        .map_err(|e| IronclawError::Gateway(format!("failed to send SIGTERM to pid {pid}: {e}")))
 }
 
 /// Initialize tracing with file-only output for daemonized operation.

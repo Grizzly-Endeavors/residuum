@@ -180,9 +180,7 @@ async fn run_serve_foreground_inner(args: &[String]) -> Result<(), IronclawError
                                     eprintln!(
                                         "warning: reload failed, rolled back to previous config: {err}"
                                     );
-                                    tracing::warn!(
-                                        "rolled back to previous config, retrying"
-                                    );
+                                    tracing::warn!("rolled back to previous config, retrying");
                                     continue;
                                 }
                                 Err(rollback_err) => {
@@ -251,8 +249,7 @@ async fn run_serve_foreground_inner(args: &[String]) -> Result<(), IronclawError
             Err(err) => {
                 // First boot — setup wizard (existing behavior)
                 tracing::warn!(error = %err, "config invalid, starting setup wizard");
-                match Box::pin(ironclaw::gateway::server::setup::run_setup_server()).await?
-                {
+                match Box::pin(ironclaw::gateway::server::setup::run_setup_server()).await? {
                     ironclaw::gateway::server::setup::SetupExit::ConfigSaved => {
                         tracing::info!("setup complete, loading configuration");
                     }
@@ -289,8 +286,10 @@ fn run_daemonize(args: &[String]) -> Result<(), IronclawError> {
     }
 
     // Resolve gateway address from config or defaults
-    let gateway_addr = Config::load()
-        .map_or_else(|_| GatewayConfig::default().addr(), |cfg| cfg.gateway.addr());
+    let gateway_addr = Config::load().map_or_else(
+        |_| GatewayConfig::default().addr(),
+        |cfg| cfg.gateway.addr(),
+    );
 
     // Detect whether the child will enter setup mode (no PID file until setup completes)
     let config_dir = Config::config_dir()?;
@@ -331,9 +330,7 @@ fn run_daemonize(args: &[String]) -> Result<(), IronclawError> {
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .spawn()
-        .map_err(|e| {
-            IronclawError::Gateway(format!("failed to spawn daemon process: {e}"))
-        })?;
+        .map_err(|e| IronclawError::Gateway(format!("failed to spawn daemon process: {e}")))?;
 
     // When setup is needed, the setup wizard runs before the gateway and
     // no PID file is written until setup completes. Just verify the child
@@ -394,7 +391,9 @@ fn run_daemonize(args: &[String]) -> Result<(), IronclawError> {
 /// Returns `IronclawError` if the PID file cannot be read or the signal
 /// cannot be sent.
 fn run_stop_command() -> Result<(), IronclawError> {
-    use ironclaw::daemon::{is_process_running, pid_file_path, read_pid_file, remove_pid_file, send_sigterm};
+    use ironclaw::daemon::{
+        is_process_running, pid_file_path, read_pid_file, remove_pid_file, send_sigterm,
+    };
 
     let pid_path = pid_file_path()?;
 

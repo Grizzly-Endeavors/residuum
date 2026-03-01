@@ -196,14 +196,8 @@ mod tests {
             targets[0],
             ChannelTarget::Builtin(BuiltinChannel::AgentWake)
         );
-        assert_eq!(
-            targets[1],
-            ChannelTarget::External("ntfy".to_string())
-        );
-        assert_eq!(
-            targets[2],
-            ChannelTarget::Builtin(BuiltinChannel::Inbox)
-        );
+        assert_eq!(targets[1], ChannelTarget::External("ntfy".to_string()));
+        assert_eq!(targets[2], ChannelTarget::Builtin(BuiltinChannel::Inbox));
     }
 
     #[test]
