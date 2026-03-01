@@ -1333,7 +1333,8 @@ main = "anthropic/claude-sonnet-4-6"
 command = "mcp-server-filesystem"
 "#;
         let file: ConfigFile = toml::from_str(toml_str).unwrap();
-        let cfg = from_file_and_env(Some(&file)).unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = from_file_and_env(Some(&file), dir.path()).unwrap();
         let server = cfg.mcp.servers.first().unwrap();
         assert_eq!(
             server.transport,
@@ -1355,7 +1356,8 @@ command = "http://10.0.0.5:8080/mcp"
 transport = "http"
 "#;
         let file: ConfigFile = toml::from_str(toml_str).unwrap();
-        let cfg = from_file_and_env(Some(&file)).unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = from_file_and_env(Some(&file), dir.path()).unwrap();
         let server = cfg.mcp.servers.first().unwrap();
         assert_eq!(
             server.transport,
@@ -1381,7 +1383,8 @@ command = "mcp-fs"
 transport = "stdio"
 "#;
         let file: ConfigFile = toml::from_str(toml_str).unwrap();
-        let cfg = from_file_and_env(Some(&file)).unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = from_file_and_env(Some(&file), dir.path()).unwrap();
         let server = cfg.mcp.servers.first().unwrap();
         assert_eq!(
             server.transport,
