@@ -217,27 +217,11 @@ pub async fn run_gateway(cfg: Config) -> Result<GatewayExit, IronclawError> {
         }))
         .fallback(web::static_handler);
 
-    // Check for an already-running instance via PID file
-    let pid_path = crate::daemon::pid_file_path()?;
-    if let Ok(existing_pid) = crate::daemon::read_pid_file(&pid_path) {
-        if crate::daemon::is_process_running(existing_pid) {
-            return Err(IronclawError::Gateway(format!(
-                "another gateway is already running (pid {existing_pid})"
-            )));
-        }
-        // Stale PID file — clean it up
-        tracing::warn!(pid = existing_pid, "removing stale pid file");
-        crate::daemon::remove_pid_file(&pid_path)?;
-    }
-
     let addr = cfg.gateway.addr();
     let listener = tokio::net::TcpListener::bind(&addr)
         .await
         .map_err(|e| IronclawError::Gateway(format!("failed to bind to {addr}: {e}")))?;
     tracing::info!(addr = %addr, "gateway listening");
-
-    // Write PID file now that we've bound successfully
-    crate::daemon::write_pid_file(&pid_path, std::process::id())?;
     if cfg.gateway.bind != "127.0.0.1" && cfg.gateway.bind != "localhost" {
         tracing::warn!(
             bind = %cfg.gateway.bind,
@@ -308,14 +292,7 @@ pub async fn run_gateway(cfg: Config) -> Result<GatewayExit, IronclawError> {
         last_reply: None,
     };
 
-    let exit = Box::pin(run_event_loop(rt)).await;
-
-    // Clean up PID file on exit (covers both Shutdown and Reload)
-    if let Err(e) = crate::daemon::remove_pid_file(&pid_path) {
-        tracing::warn!(error = %e, "failed to remove pid file on exit");
-    }
-
-    Ok(exit)
+    Ok(Box::pin(run_event_loop(rt)).await)
 }
 
 /// Outcome of handling a background task result.

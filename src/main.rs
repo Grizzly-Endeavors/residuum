@@ -79,11 +79,28 @@ async fn run() -> Result<(), IronclawError> {
 /// # Errors
 ///
 /// Returns `IronclawError` if initialization or the gateway loop fails.
+async fn run_serve_foreground(args: &[String]) -> Result<(), IronclawError> {
+    // Write PID file early so the daemon parent (and `ironclaw stop`) can find us,
+    // even during setup wizard before the gateway starts.
+    let pid_path = ironclaw::daemon::pid_file_path()?;
+    ironclaw::daemon::write_pid_file(&pid_path, std::process::id())?;
+
+    let result = run_serve_foreground_inner(args).await;
+
+    // Always clean up PID file on exit
+    if let Err(e) = ironclaw::daemon::remove_pid_file(&pid_path) {
+        tracing::warn!(error = %e, "failed to remove pid file on exit");
+    }
+
+    result
+}
+
+/// Inner implementation of foreground serve, wrapped by PID file lifecycle.
 #[expect(
     clippy::too_many_lines,
     reason = "sequential setup/serve dispatch with reload loop; splitting would obscure the flow"
 )]
-async fn run_serve_foreground(args: &[String]) -> Result<(), IronclawError> {
+async fn run_serve_foreground_inner(args: &[String]) -> Result<(), IronclawError> {
     // --setup: run the onboarding wizard in an isolated temp directory,
     // then boot the gateway with the resulting config for end-to-end testing
     if args.iter().any(|a| a == "--setup") {
@@ -280,8 +297,8 @@ fn run_daemonize(args: &[String]) -> Result<(), IronclawError> {
     let needs_setup =
         args.iter().any(|a| a == "--setup") || !config_dir.join("config.toml").exists();
 
-    // First-launch welcome if no config exists yet
-    if !config_dir.join("config.toml").exists() {
+    // First-launch welcome (or --setup which mimics it)
+    if needs_setup {
         eprintln!("welcome to ironclaw!");
         eprintln!();
         eprintln!("  it looks like this is your first time running ironclaw.");
