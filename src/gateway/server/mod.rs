@@ -169,6 +169,7 @@ pub async fn run_gateway(cfg: Config) -> Result<GatewayExit, ResiduumError> {
     let web_reload_sender = reload_sender.clone();
     let discord_inbound_tx = inbound_tx.clone();
     let webhook_inbound_tx = inbound_tx.clone();
+    let a2a_inbound_tx = inbound_tx.clone();
     let discord_reload_sender = reload_sender.clone();
     let discord_command_tx = command_tx.clone();
     let telegram_inbound_tx = inbound_tx.clone();
@@ -202,11 +203,68 @@ pub async fn run_gateway(cfg: Config) -> Result<GatewayExit, ResiduumError> {
         None
     };
 
+    let a2a_router = if cfg.a2a.enabled {
+        let agent_name = cfg
+            .name
+            .clone()
+            .unwrap_or_else(|| "Residuum".to_string());
+        let description = cfg
+            .a2a
+            .description
+            .clone()
+            .unwrap_or_else(|| "A personal AI agent gateway".to_string());
+        let agent_card = crate::a2a::types::AgentCard {
+            name: agent_name,
+            description,
+            url: format!("http://{}/a2a", cfg.gateway.addr()),
+            version: "0.2".to_string(),
+            capabilities: Some(crate::a2a::types::AgentCapabilities {
+                streaming: false,
+                push_notifications: false,
+                state_transition_history: false,
+            }),
+            skills: vec![crate::a2a::types::AgentSkill {
+                id: "general".to_string(),
+                name: "General Assistant".to_string(),
+                description: "General-purpose AI assistant that can help with a wide range of tasks".to_string(),
+                tags: vec!["general".to_string(), "assistant".to_string()],
+                examples: vec!["Help me with a task".to_string()],
+                input_modes: vec!["text/plain".to_string()],
+                output_modes: vec!["text/plain".to_string()],
+            }],
+            default_input_modes: vec!["text/plain".to_string()],
+            default_output_modes: vec!["text/plain".to_string()],
+            authentication: cfg.a2a.secret.as_ref().map(|_| {
+                crate::a2a::types::AgentAuthentication {
+                    schemes: vec![crate::a2a::types::AuthScheme {
+                        scheme_type: "http".to_string(),
+                        scheme: Some("bearer".to_string()),
+                    }],
+                }
+            }),
+        };
+
+        let a2a_state = crate::a2a::server::A2aState {
+            agent_card: Arc::new(agent_card),
+            inbound_tx: a2a_inbound_tx,
+            task_store: Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
+            secret: cfg.a2a.secret.clone(),
+        };
+        tracing::info!("a2a endpoint enabled");
+        Some(crate::a2a::server::a2a_router(a2a_state))
+    } else {
+        drop(a2a_inbound_tx);
+        None
+    };
+
     let mut app = axum::Router::new()
         .route("/ws", get(ws_handler))
         .with_state(state);
     if let Some(wh) = webhook_router {
         app = app.merge(wh);
+    }
+    if let Some(a2a) = a2a_router {
+        app = app.merge(a2a);
     }
     app = app
         .merge(web::config_api_router(web::ConfigApiState {

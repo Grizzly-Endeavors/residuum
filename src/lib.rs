@@ -1,3 +1,4 @@
+pub mod a2a;
 pub mod actions;
 pub mod agent;
 pub mod background;

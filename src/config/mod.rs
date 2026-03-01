@@ -29,7 +29,7 @@ pub(crate) use constants::{
 pub use provider::{ModelSpec, ProviderKind, ProviderSpec};
 pub use secrets::SecretStore;
 pub use types::{
-    BackgroundConfig, BackgroundModelTier, BackgroundModelsConfig, DiscordConfig,
+    A2aConfig, BackgroundConfig, BackgroundModelTier, BackgroundModelsConfig, DiscordConfig,
     ExternalChannelConfig, ExternalChannelKind, GatewayConfig, McpConfig, MemoryConfig,
     NotificationsConfig, SearchConfig, SkillsConfig, TelegramConfig, WebhookConfig,
 };
@@ -74,6 +74,8 @@ pub struct Config {
     pub telegram: Option<TelegramConfig>,
     /// Webhook endpoint configuration.
     pub webhook: WebhookConfig,
+    /// A2A (Agent-to-Agent) protocol configuration.
+    pub a2a: A2aConfig,
     /// Skills subsystem configuration.
     pub skills: SkillsConfig,
     /// MCP server configuration (global servers).
@@ -107,6 +109,7 @@ impl fmt::Debug for Config {
             .field("discord", &self.discord.as_ref().map(|_| "[configured]"))
             .field("telegram", &self.telegram.as_ref().map(|_| "[configured]"))
             .field("webhook", &self.webhook)
+            .field("a2a", &self.a2a)
             .field("skills", &self.skills)
             .field("mcp", &self.mcp)
             .field("retry", &self.retry)

@@ -37,6 +37,8 @@ pub(super) struct ConfigFile {
     pub(super) telegram: Option<TelegramConfigFile>,
     /// Webhook endpoint configuration.
     pub(super) webhook: Option<WebhookConfigFile>,
+    /// A2A (Agent-to-Agent) protocol configuration.
+    pub(super) a2a: Option<A2aConfigFile>,
     /// Skills subsystem configuration.
     pub(super) skills: Option<SkillsConfigFile>,
     /// MCP server configuration.
@@ -180,6 +182,18 @@ pub(super) struct WebhookConfigFile {
     pub(super) enabled: Option<bool>,
     /// Optional bearer token for authentication.
     pub(super) secret: Option<String>,
+}
+
+/// Raw TOML `[a2a]` section.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct A2aConfigFile {
+    /// Whether the A2A endpoint is enabled.
+    pub(super) enabled: Option<bool>,
+    /// Optional bearer token for authentication.
+    pub(super) secret: Option<String>,
+    /// Agent description for the Agent Card.
+    pub(super) description: Option<String>,
 }
 
 /// Raw TOML `[skills]` section.

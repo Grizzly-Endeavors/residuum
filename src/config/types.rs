@@ -119,6 +119,17 @@ pub struct WebhookConfig {
     pub secret: Option<String>,
 }
 
+/// Validated A2A (Agent-to-Agent) protocol configuration.
+#[derive(Debug, Clone, Default)]
+pub struct A2aConfig {
+    /// Whether the A2A endpoint is enabled.
+    pub enabled: bool,
+    /// Optional bearer token for authenticating incoming requests.
+    pub secret: Option<String>,
+    /// Agent description shown in the Agent Card.
+    pub description: Option<String>,
+}
+
 /// Validated skills subsystem configuration.
 #[derive(Debug, Clone)]
 pub struct SkillsConfig {

@@ -11,16 +11,16 @@ use super::Config;
 use super::bootstrap::default_workspace_dir;
 use super::constants::{DEFAULT_MAX_TOKENS, DEFAULT_TIMEOUT_SECS};
 use super::deserialize::{
-    BackgroundConfigFile, ConfigFile, DiscordConfigFile, GatewayConfigFile, McpConfigFile,
-    ModelStringOrList, NotificationsConfigFile, ProviderEntryFile, SearchConfigFile,
-    SkillsConfigFile, TelegramConfigFile, WebhookConfigFile,
+    A2aConfigFile, BackgroundConfigFile, ConfigFile, DiscordConfigFile, GatewayConfigFile,
+    McpConfigFile, ModelStringOrList, NotificationsConfigFile, ProviderEntryFile,
+    SearchConfigFile, SkillsConfigFile, TelegramConfigFile, WebhookConfigFile,
 };
 use super::provider::{ModelSpec, ProviderKind, ProviderSpec};
 use super::secrets::SecretStore;
 use super::types::{
-    BackgroundConfig, DiscordConfig, ExternalChannelConfig, ExternalChannelKind, GatewayConfig,
-    McpConfig, MemoryConfig, NotificationsConfig, SearchConfig, SkillsConfig, TelegramConfig,
-    WebhookConfig,
+    A2aConfig, BackgroundConfig, DiscordConfig, ExternalChannelConfig, ExternalChannelKind,
+    GatewayConfig, McpConfig, MemoryConfig, NotificationsConfig, SearchConfig, SkillsConfig,
+    TelegramConfig, WebhookConfig,
 };
 
 /// Build a `Config` from an optional config file and environment variables.
@@ -153,6 +153,7 @@ pub(super) fn from_file_and_env(
     let discord = resolve_discord_config(file.and_then(|f| f.discord.as_ref()), &secrets);
     let telegram = resolve_telegram_config(file.and_then(|f| f.telegram.as_ref()), &secrets);
     let webhook = resolve_webhook_config(file.and_then(|f| f.webhook.as_ref()), &secrets);
+    let a2a = resolve_a2a_config(file.and_then(|f| f.a2a.as_ref()), &secrets);
     let skills = resolve_skills_config(file.and_then(|f| f.skills.as_ref()), &workspace_dir);
     let mcp = resolve_mcp_config(file.and_then(|f| f.mcp.as_ref()));
 
@@ -217,6 +218,7 @@ pub(super) fn from_file_and_env(
         discord,
         telegram,
         webhook,
+        a2a,
         skills,
         mcp,
         retry,
@@ -477,6 +479,22 @@ fn resolve_webhook_config(
             .secret
             .as_deref()
             .and_then(|raw| resolve_secret_value(raw, secrets));
+    }
+    cfg
+}
+
+/// Resolve A2A (Agent-to-Agent) protocol configuration from TOML section.
+fn resolve_a2a_config(section: Option<&A2aConfigFile>, secrets: &SecretStore) -> A2aConfig {
+    let mut cfg = A2aConfig::default();
+    if let Some(s) = section {
+        if let Some(v) = s.enabled {
+            cfg.enabled = v;
+        }
+        cfg.secret = s
+            .secret
+            .as_deref()
+            .and_then(|raw| resolve_secret_value(raw, secrets));
+        cfg.description = s.description.clone();
     }
     cfg
 }
