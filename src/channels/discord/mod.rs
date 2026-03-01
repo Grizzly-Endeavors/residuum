@@ -166,4 +166,25 @@ mod tests {
         assert!(names.contains(&"observe"), "should include observe");
         assert!(names.contains(&"inbox"), "should include inbox");
     }
+
+    #[test]
+    fn inbox_command_takes_argument() {
+        let inbox_cmd = all_commands().find(|c| c.name == "inbox");
+        assert!(inbox_cmd.is_some(), "/inbox should be in the registry");
+        assert!(
+            inbox_cmd.is_some_and(|c| c.takes_arg),
+            "/inbox should accept a text argument"
+        );
+    }
+
+    #[test]
+    fn inbox_without_text_returns_usage() {
+        let result = execute_command("inbox", None, &discord_ctx());
+        assert!(
+            result.response.contains("usage"),
+            "empty /inbox should show usage: {}",
+            result.response
+        );
+        assert!(result.side_effect.is_none());
+    }
 }

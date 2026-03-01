@@ -210,8 +210,15 @@ impl EventHandler for DiscordHandler {
                 }
             }
             Some(CommandSideEffect::InboxAdd(body)) => {
+                let title: String = body
+                    .lines()
+                    .next()
+                    .unwrap_or("Inbox message")
+                    .chars()
+                    .take(60)
+                    .collect();
                 let source = format!("discord:{}", cmd.user.name);
-                match inbox::quick_add(&self.inbox_dir, &body, &body, &source, self.tz).await {
+                match inbox::quick_add(&self.inbox_dir, &title, &body, &source, self.tz).await {
                     Ok(_) => result.response,
                     Err(e) => format!("failed to add inbox item: {e}"),
                 }
