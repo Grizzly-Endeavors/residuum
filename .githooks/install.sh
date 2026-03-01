@@ -6,17 +6,18 @@ set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(dirname "$SCRIPT_DIR")"
+HOOK_DIR="$REPO_ROOT/.git/hooks"
 
-echo "Configuring git to use .githooks directory..."
-git -C "$REPO_ROOT" config core.hooksPath .githooks
+echo "Symlinking .githooks into .git/hooks..."
 
+for hook in "$SCRIPT_DIR"/pre-commit "$SCRIPT_DIR"/commit-msg "$SCRIPT_DIR"/pre-push; do
+    name="$(basename "$hook")"
+    ln -sf "$hook" "$HOOK_DIR/$name"
+    echo "  $name -> .githooks/$name"
+done
+
+# Clear core.hooksPath if set — symlinks make it unnecessary
+git -C "$REPO_ROOT" config --unset core.hooksPath 2>/dev/null || true
+
+echo ""
 echo "Git hooks installed successfully!"
-echo ""
-echo "Hooks enabled:"
-echo "  - pre-commit: formatting, clippy, tests"
-echo "  - commit-msg: message validation"
-echo "  - pre-push: full test suite"
-echo ""
-echo "To bypass hooks temporarily (not recommended):"
-echo "  git commit --no-verify"
-echo "  git push --no-verify"
