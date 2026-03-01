@@ -29,7 +29,7 @@ impl BuiltinChannel {
 
     /// Parse a string into a built-in channel, if it matches.
     #[must_use]
-    pub fn from_str(s: &str) -> Option<Self> {
+    pub fn parse_name(s: &str) -> Option<Self> {
         match s {
             "agent_wake" => Some(Self::AgentWake),
             "agent_feed" => Some(Self::AgentFeed),
@@ -51,10 +51,10 @@ pub enum ChannelTarget {
 impl ChannelTarget {
     /// Parse a channel name into a `ChannelTarget`.
     ///
-    /// Tries `BuiltinChannel::from_str` first, falls back to `External`.
+    /// Tries `BuiltinChannel::parse_name` first, falls back to `External`.
     #[must_use]
     pub fn parse(name: &str) -> Self {
-        match BuiltinChannel::from_str(name) {
+        match BuiltinChannel::parse_name(name) {
             Some(builtin) => Self::Builtin(builtin),
             None => Self::External(name.to_string()),
         }
@@ -134,6 +134,10 @@ pub struct RouteOutcome {
 }
 
 #[cfg(test)]
+#[expect(
+    clippy::indexing_slicing,
+    reason = "test code uses indexing for clarity"
+)]
 mod tests {
     use super::*;
 
@@ -146,7 +150,7 @@ mod tests {
         ] {
             let s = builtin.as_str();
             assert_eq!(
-                BuiltinChannel::from_str(s),
+                BuiltinChannel::parse_name(s),
                 Some(builtin),
                 "roundtrip failed for {s}"
             );
@@ -155,8 +159,8 @@ mod tests {
 
     #[test]
     fn builtin_channel_from_str_unknown() {
-        assert_eq!(BuiltinChannel::from_str("ntfy"), None);
-        assert_eq!(BuiltinChannel::from_str(""), None);
+        assert_eq!(BuiltinChannel::parse_name("ntfy"), None);
+        assert_eq!(BuiltinChannel::parse_name(""), None);
     }
 
     #[test]

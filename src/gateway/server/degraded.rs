@@ -114,9 +114,9 @@ pub async fn run_degraded_gateway(
         _ = reload_rx.wait_for(|v| *v) => {
             server_handle.abort();
             tracing::info!("degraded mode: reload requested, retrying full initialization");
-            return GatewayExit::Reload;
+            GatewayExit::Reload
         }
-        _ = async {
+        () = async {
             match sigterm.as_mut() {
                 Some(s) => { s.recv().await; }
                 None => std::future::pending().await,
@@ -124,7 +124,7 @@ pub async fn run_degraded_gateway(
         } => {
             server_handle.abort();
             tracing::info!("degraded mode: received SIGTERM, shutting down");
-            return GatewayExit::Shutdown;
+            GatewayExit::Shutdown
         }
     }
 }

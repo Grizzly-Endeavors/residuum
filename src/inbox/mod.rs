@@ -326,7 +326,12 @@ mod tests {
             .await
             .unwrap();
 
-        assert!(filename.ends_with(".json"), "should end with .json");
+        assert!(
+            std::path::Path::new(&filename)
+                .extension()
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("json")),
+            "should end with .json"
+        );
         assert!(
             filename.contains("test_note"),
             "should contain sanitized title: {filename}"

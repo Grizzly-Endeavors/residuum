@@ -278,11 +278,11 @@ fn run_daemonize(args: &[String]) -> Result<(), IronclawError> {
     let pid_path = pid_file_path()?;
 
     // Check for an already-running instance
-    if let Ok(existing_pid) = read_pid_file(&pid_path) {
-        if is_process_running(existing_pid) {
-            eprintln!("ironclaw: gateway is already running (pid {existing_pid})");
-            return Ok(());
-        }
+    if let Ok(existing_pid) = read_pid_file(&pid_path)
+        && is_process_running(existing_pid)
+    {
+        eprintln!("ironclaw: gateway is already running (pid {existing_pid})");
+        return Ok(());
     }
 
     // Resolve gateway address from config or defaults
@@ -370,11 +370,11 @@ fn run_daemonize(args: &[String]) -> Result<(), IronclawError> {
             ));
         }
 
-        if let Ok(pid) = read_pid_file(&pid_path) {
-            if is_process_running(pid) {
-                eprintln!("ironclaw: gateway started at http://{gateway_addr} (pid {pid})");
-                return Ok(());
-            }
+        if let Ok(pid) = read_pid_file(&pid_path)
+            && is_process_running(pid)
+        {
+            eprintln!("ironclaw: gateway started at http://{gateway_addr} (pid {pid})");
+            return Ok(());
         }
 
         std::thread::sleep(poll_interval);
@@ -397,12 +397,9 @@ fn run_stop_command() -> Result<(), IronclawError> {
 
     let pid_path = pid_file_path()?;
 
-    let pid = match read_pid_file(&pid_path) {
-        Ok(pid) => pid,
-        Err(_) => {
-            eprintln!("ironclaw: no gateway running (no pid file)");
-            return Ok(());
-        }
+    let Ok(pid) = read_pid_file(&pid_path) else {
+        eprintln!("ironclaw: no gateway running (no pid file)");
+        return Ok(());
     };
 
     if !is_process_running(pid) {
