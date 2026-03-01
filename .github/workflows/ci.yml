@@ -1,0 +1,52 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: Check
+    runs-on: [self-hosted, kubernetes, lab, rust]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Update Rust toolchain
+        run: rustup update stable
+
+      - name: Check formatting
+        id: fmt
+        run: cargo fmt --check
+
+      - name: Clippy
+        id: clippy
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: Tests
+        id: test
+        run: cargo test --quiet
+
+      - name: Install cargo-deny
+        run: cargo install cargo-deny --locked
+
+      - name: Dependency audit
+        id: deny
+        run: cargo deny check
+
+      - name: Build summary
+        if: always()
+        run: |
+          echo '## CI Results' >> "$GITHUB_STEP_SUMMARY"
+          echo '' >> "$GITHUB_STEP_SUMMARY"
+          echo '| Check | Status |' >> "$GITHUB_STEP_SUMMARY"
+          echo '|-------|--------|' >> "$GITHUB_STEP_SUMMARY"
+          echo "| Format | ${{ steps.fmt.outcome }} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Clippy | ${{ steps.clippy.outcome }} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Tests | ${{ steps.test.outcome }} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Deny | ${{ steps.deny.outcome }} |" >> "$GITHUB_STEP_SUMMARY"

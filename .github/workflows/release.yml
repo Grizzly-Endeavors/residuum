@@ -1,0 +1,102 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Release
+    runs-on: [self-hosted, kubernetes, lab, rust]
+
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Update Rust toolchain
+        run: rustup update stable
+
+      - name: Extract version
+        id: version
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          VERSION="${TAG#v}"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      # --- CI checks (same as ci.yml) ---
+
+      - name: Check formatting
+        id: fmt
+        run: cargo fmt --check
+
+      - name: Clippy
+        id: clippy
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: Tests
+        id: test
+        run: cargo test --quiet
+
+      - name: Install cargo-deny
+        run: cargo install cargo-deny --locked
+
+      - name: Dependency audit
+        id: deny
+        run: cargo deny check
+
+      # --- Version consistency ---
+
+      - name: Verify Cargo.toml version matches tag
+        run: |
+          CARGO_VERSION=$(cargo metadata --no-deps --format-version 1 \
+            | jq -r '.packages[] | select(.name == "ironclaw") | .version')
+          TAG_VERSION="${{ steps.version.outputs.version }}"
+          if [ "$CARGO_VERSION" != "$TAG_VERSION" ]; then
+            echo "::error::Cargo.toml version ($CARGO_VERSION) does not match tag ($TAG_VERSION)"
+            exit 1
+          fi
+          echo "Version match confirmed: $CARGO_VERSION"
+
+      # --- Build binaries ---
+
+      - name: Build and stage binaries
+        run: |
+          mkdir -p release-artifacts
+          cargo build --release
+          cp target/release/ironclaw release-artifacts/ironclaw-linux-x86_64
+          cargo build --release --features discord
+          cp target/release/ironclaw release-artifacts/ironclaw-discord-linux-x86_64
+
+      # --- Publish release ---
+
+      - name: Create GitHub Release
+        run: |
+          gh release create "${{ steps.version.outputs.tag }}" \
+            --generate-notes \
+            release-artifacts/ironclaw-linux-x86_64 \
+            release-artifacts/ironclaw-discord-linux-x86_64
+
+      - name: Cleanup
+        if: always()
+        run: rm -rf release-artifacts
+
+      - name: Build summary
+        if: always()
+        run: |
+          echo '## Release Results' >> "$GITHUB_STEP_SUMMARY"
+          echo '' >> "$GITHUB_STEP_SUMMARY"
+          echo "**Tag:** ${{ steps.version.outputs.tag }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "**Version:** ${{ steps.version.outputs.version }}" >> "$GITHUB_STEP_SUMMARY"
+          echo '' >> "$GITHUB_STEP_SUMMARY"
+          echo '| Check | Status |' >> "$GITHUB_STEP_SUMMARY"
+          echo '|-------|--------|' >> "$GITHUB_STEP_SUMMARY"
+          echo "| Format | ${{ steps.fmt.outcome }} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Clippy | ${{ steps.clippy.outcome }} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Tests | ${{ steps.test.outcome }} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Deny | ${{ steps.deny.outcome }} |" >> "$GITHUB_STEP_SUMMARY"
