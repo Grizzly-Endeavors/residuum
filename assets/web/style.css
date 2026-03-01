@@ -1,46 +1,46 @@
-/* ── Residuum Web UI — Forge Theme ─────────────────────────────────────── */
+/* ── Residuum Web UI — Stone + Vein Theme ─────────────────────────────── */
 
-@import url('https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,300..700;1,9..40,300..700&family=Oxanium:wght@400;600;700&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Cinzel:wght@400;600;700&family=JetBrains+Mono:wght@400;500&family=Literata:ital,opsz,wght@0,7..72,300..700;1,7..72,300..700&display=swap');
 
 :root {
-    /* Forge palette */
-    --bg-deep: #0c0c0f;
-    --bg-surface: #151518;
-    --bg-raised: #1e1e24;
-    --bg-input: #18181d;
+    /* Stone + Vein palette */
+    --bg-deep: #0e0e10;
+    --bg-surface: #161618;
+    --bg-raised: #1c1c1f;
+    --bg-input: #141416;
 
-    --border: #3a3530;
-    --border-subtle: #28262c;
+    --border: #2a2a2e;
+    --border-subtle: #222225;
 
-    --text: #e8e0d8;
-    --text-muted: #8a8078;
-    --text-dim: #5a554e;
+    --text: #e8e8ea;
+    --text-muted: #9a9a9f;
+    --text-dim: #6a6a6f;
 
-    --ember: #e86420;
-    --ember-bright: #ff8c42;
-    --ember-glow: rgba(232, 100, 32, 0.15);
-    --ember-dim: #a04818;
+    --ember: #3b8bdb;
+    --ember-bright: #5aa3f0;
+    --ember-glow: rgba(59, 139, 219, 0.15);
+    --ember-dim: #2a6cb5;
 
-    --steel: #6888a0;
-    --steel-dim: #4a6070;
+    --steel: #6b7a4a;
+    --steel-dim: #7a7d6e;
 
     --error: #c0392b;
     --error-bg: rgba(192, 57, 43, 0.1);
     --success: #2ecc71;
 
     /* Card tints */
-    --card-user: rgba(104, 136, 160, 0.14);
-    --card-assistant: rgba(232, 100, 32, 0.10);
+    --card-user: rgba(107, 122, 74, 0.14);
+    --card-assistant: rgba(59, 139, 219, 0.10);
     --card-shadow: 0 1px 4px rgba(0, 0, 0, 0.25), 0 0 1px rgba(0, 0, 0, 0.15);
     --card-shadow-hover: 0 2px 8px rgba(0, 0, 0, 0.35), 0 0 1px rgba(0, 0, 0, 0.2);
 
     /* Glow effects */
-    --ember-ring: 0 0 0 1px rgba(232, 100, 32, 0.2), 0 0 0 3px rgba(232, 100, 32, 0.07);
+    --ember-ring: 0 0 0 1px rgba(59, 139, 219, 0.2), 0 0 0 3px rgba(59, 139, 219, 0.07);
     --input-inset: inset 0 1px 3px rgba(0, 0, 0, 0.3);
 
     /* Typography */
-    --font-display: 'Oxanium', 'Inter', system-ui, sans-serif;
-    --font-body: 'DM Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+    --font-display: 'Cinzel', 'Georgia', serif;
+    --font-body: 'Literata', 'Georgia', serif;
     --font-mono: 'JetBrains Mono', 'Fira Code', 'SF Mono', 'Cascadia Code', 'Consolas', monospace;
 
     /* Sizing */
@@ -61,12 +61,25 @@
 html, body {
     height: 100%;
     font-family: var(--font-body);
-    font-size: 15.4px;
-    font-weight: 450;
-    line-height: 1.55;
+    font-size: 15px;
+    font-weight: 400;
+    line-height: 1.6;
     color: var(--text);
     background: var(--bg-deep);
     -webkit-font-smoothing: antialiased;
+}
+
+/* ── Grain texture overlay ─────────────────────────────────────────────── */
+
+body::before {
+    content: '';
+    position: fixed;
+    inset: 0;
+    pointer-events: none;
+    z-index: 9999;
+    opacity: 0.025;
+    background: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+    background-size: 256px 256px;
 }
 
 /* ── Layout ────────────────────────────────────────────────────────────── */
@@ -85,8 +98,8 @@ html, body {
     height: var(--header-height);
     padding: 0 16px;
     border-bottom: 1px solid var(--border-subtle);
-    background: linear-gradient(180deg, #1a1a1f 0%, var(--bg-surface) 100%);
-    box-shadow: 0 1px 6px rgba(0, 0, 0, 0.3);
+    background: linear-gradient(180deg, #1a1a1e 0%, var(--bg-surface) 100%);
+    box-shadow: 0 1px 6px rgba(0, 0, 0, 0.3), 0 1px 0 rgba(59, 139, 219, 0.08);
     flex-shrink: 0;
     gap: 10px;
     position: relative;
@@ -131,7 +144,7 @@ html, body {
 
 .header-status.connected { color: var(--success); border-color: rgba(46, 204, 113, 0.3); }
 .header-status.disconnected { color: var(--error); border-color: rgba(192, 57, 43, 0.3); }
-.header-status.connecting { color: var(--ember); border-color: rgba(232, 100, 32, 0.3); }
+.header-status.connecting { color: var(--ember); border-color: rgba(59, 139, 219, 0.3); }
 
 .header-actions {
     display: flex;
@@ -198,14 +211,14 @@ html, body {
     max-width: 100%;
     word-wrap: break-word;
     overflow-wrap: break-word;
-    animation: msg-enter 0.3s var(--ease-out-expo) both;
+    animation: msg-enter 0.35s var(--ease-out-expo) both;
     position: relative;
 }
 
 @keyframes msg-enter {
     from {
         opacity: 0;
-        transform: translateY(8px);
+        transform: translateY(6px);
     }
     to {
         opacity: 1;
@@ -215,7 +228,7 @@ html, body {
 
 .msg-user {
     background: var(--card-user);
-    border: 1px solid rgba(104, 136, 160, 0.25);
+    border: 1px solid rgba(107, 122, 74, 0.25);
     margin-top: 10px;
     box-shadow: var(--card-shadow);
     align-self: flex-end;
@@ -225,7 +238,7 @@ html, body {
 
 .msg-assistant {
     background: var(--card-assistant);
-    border: 1px solid rgba(232, 100, 32, 0.18);
+    border: 1px solid rgba(59, 139, 219, 0.18);
     box-shadow: var(--card-shadow);
     align-self: flex-start;
     border-radius: 18px 18px 18px 4px;
@@ -325,7 +338,7 @@ html, body {
     padding: 6px 12px;
     margin: 8px 0;
     color: var(--text-muted);
-    background: rgba(232, 100, 32, 0.03);
+    background: rgba(59, 139, 219, 0.03);
     border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
 }
 
@@ -424,7 +437,7 @@ html, body {
 
 .tool-item.open .tool-body { display: block; }
 
-/* ── Thinking indicator (forge-heat bars) ─────────────────────────────── */
+/* ── Thinking indicator (vein-pulse bars) ─────────────────────────────── */
 
 .thinking {
     display: flex;
@@ -448,7 +461,7 @@ html, body {
     width: 3px;
     border-radius: 1.5px;
     background: var(--ember);
-    animation: forge-heat 1.2s ease-in-out infinite;
+    animation: vein-pulse 1.2s ease-in-out infinite;
 }
 
 .thinking-bars span:nth-child(1) {
@@ -466,7 +479,7 @@ html, body {
     height: 10px;
 }
 
-@keyframes forge-heat {
+@keyframes vein-pulse {
     0%, 100% {
         opacity: 0.35;
         height: 4px;
@@ -540,20 +553,20 @@ html, body {
     border: none;
     border-radius: 12px;
     cursor: pointer;
-    box-shadow: 0 2px 6px rgba(232, 100, 32, 0.25);
+    box-shadow: 0 2px 6px rgba(59, 139, 219, 0.25);
     transition: all 0.2s var(--ease-out-expo);
     white-space: nowrap;
 }
 
 .send-btn:hover {
     background: var(--ember-bright);
-    box-shadow: 0 4px 12px rgba(232, 100, 32, 0.35);
+    box-shadow: 0 4px 12px rgba(59, 139, 219, 0.35);
     transform: translateY(-1px);
 }
 
 .send-btn:active {
     transform: translateY(0);
-    box-shadow: 0 1px 3px rgba(232, 100, 32, 0.2);
+    box-shadow: 0 1px 3px rgba(59, 139, 219, 0.2);
 }
 
 .send-btn:disabled {
@@ -584,7 +597,7 @@ html, body {
     padding: 12px 16px;
     gap: 12px;
     border-bottom: 1px solid var(--border-subtle);
-    background: linear-gradient(180deg, #1a1a1f 0%, var(--bg-surface) 100%);
+    background: linear-gradient(180deg, #1a1a1e 0%, var(--bg-surface) 100%);
     box-shadow: 0 1px 6px rgba(0, 0, 0, 0.3);
     position: relative;
     z-index: 10;
@@ -816,7 +829,7 @@ html, body {
 .settings-field input:focus,
 .settings-field select:focus {
     border-color: var(--ember-dim);
-    box-shadow: 0 0 0 1px rgba(232, 100, 32, 0.12);
+    box-shadow: 0 0 0 1px rgba(59, 139, 219, 0.15), 0 0 8px rgba(59, 139, 219, 0.06);
 }
 
 .settings-field input[type="password"] {
@@ -953,7 +966,7 @@ html, body {
 .add-entry-btn:hover {
     color: var(--ember);
     border-color: var(--ember-dim);
-    background: rgba(232, 100, 32, 0.04);
+    background: rgba(59, 139, 219, 0.04);
 }
 
 /* ── List editor (skills dirs, etc.) ──────────────────────────────────── */
@@ -994,7 +1007,7 @@ html, body {
 
 .toml-editor:focus {
     border-color: var(--ember-dim);
-    box-shadow: var(--input-inset), 0 0 0 1px rgba(232, 100, 32, 0.12);
+    box-shadow: var(--input-inset), 0 0 0 1px rgba(59, 139, 219, 0.15), 0 0 8px rgba(59, 139, 219, 0.06);
 }
 
 .settings-actions {
@@ -1013,8 +1026,8 @@ html, body {
     margin-bottom: 12px;
     font-size: 12px;
     color: var(--ember-bright);
-    background: rgba(232, 100, 32, 0.06);
-    border: 1px solid rgba(232, 100, 32, 0.15);
+    background: rgba(59, 139, 219, 0.06);
+    border: 1px solid rgba(59, 139, 219, 0.15);
     border-radius: var(--radius-sm);
 }
 
@@ -1248,8 +1261,8 @@ html, body {
     font-size: 12px;
     line-height: 1.5;
     color: var(--ember-bright);
-    background: rgba(232, 100, 32, 0.06);
-    border: 1px solid rgba(232, 100, 32, 0.2);
+    background: rgba(59, 139, 219, 0.06);
+    border: 1px solid rgba(59, 139, 219, 0.2);
     border-radius: var(--radius-sm);
 }
 
@@ -1389,7 +1402,7 @@ html, body {
 
 .model-other-input:focus {
     border-color: var(--ember);
-    box-shadow: 0 0 0 1px rgba(232, 100, 32, 0.12);
+    box-shadow: 0 0 0 1px rgba(59, 139, 219, 0.15), 0 0 8px rgba(59, 139, 219, 0.06);
 }
 
 .model-other-input::placeholder {
