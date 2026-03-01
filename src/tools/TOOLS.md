@@ -547,6 +547,38 @@ On total failure: error with failure details.
 
 ---
 
+## `send_message`
+
+**Source:** `send_message.rs` · `SendMessageTool`
+
+**Description sent to LLM:**
+> Send a message to an external notification channel or the inbox. Use this to proactively notify the user via configured channels (ntfy, webhook) or to save a message to the inbox for later review.
+
+### Input
+
+| Parameter | Type   | Required | Description                                                                    |
+|-----------|--------|----------|--------------------------------------------------------------------------------|
+| `channel` | string | yes      | Target channel name: `"inbox"` or any configured external channel             |
+| `message` | string | yes      | The message body to send                                                       |
+| `title`   | string | no       | Optional title (used for inbox items; defaults to first 60 chars of message)  |
+
+### Output
+
+On success (inbox): `"Message saved to inbox as {filename}"`
+
+On success (external): `"Message sent to channel '{name}'"`
+
+On error:
+- Channel is `agent_wake` or `agent_feed` → `"send_message cannot target internal routing channels..."`
+- Unknown external channel → `"unknown external channel '{name}'; available: {list}"`
+- Delivery failure → execution error with details
+
+**Side effects:**
+- Inbox: creates a new `.json` file in the inbox directory with source `"agent"`
+- External: sends the message via the configured channel transport (HTTP POST, etc.)
+
+---
+
 ## `stop_agent`
 
 **Source:** `background.rs` · `StopAgentTool`

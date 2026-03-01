@@ -11,13 +11,14 @@ use crate::background::spawn_context::SpawnContext;
 use crate::mcp::SharedMcpRegistry;
 use crate::memory::search::HybridSearcher;
 use crate::models::ToolDefinition;
+use crate::notify::router::NotificationRouter;
 use crate::projects::activation::SharedProjectState;
 use crate::skills::SharedSkillState;
 
 use super::{
     SharedFileTracker, SharedPathPolicy, SharedToolFilter, Tool, ToolError, ToolFilter, ToolResult,
-    actions, background, edit, exec, inbox, memory_get, memory_search, projects, read, skills,
-    write,
+    actions, background, edit, exec, inbox, memory_get, memory_search, projects, read,
+    send_message, skills, write,
 };
 
 /// Registry of available tools.
@@ -155,6 +156,18 @@ impl ToolRegistry {
         self.register(Box::new(inbox::InboxArchiveTool::new(
             inbox_dir,
             archive_dir,
+        )));
+    }
+
+    /// Register the `send_message` tool for proactive message delivery.
+    pub fn register_send_message_tool(
+        &mut self,
+        router: Arc<NotificationRouter>,
+        inbox_dir: PathBuf,
+        tz: chrono_tz::Tz,
+    ) {
+        self.register(Box::new(send_message::SendMessageTool::new(
+            router, inbox_dir, tz,
         )));
     }
 

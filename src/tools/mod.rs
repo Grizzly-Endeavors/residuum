@@ -13,6 +13,7 @@ pub mod path_policy;
 pub mod projects;
 mod read;
 mod registry;
+pub mod send_message;
 pub mod skills;
 mod write;
 

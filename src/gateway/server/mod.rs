@@ -105,7 +105,7 @@ struct GatewayRuntime {
     project_state: SharedProjectState,
     skill_state: SharedSkillState,
     pulse_enabled: bool,
-    notification_router: NotificationRouter,
+    notification_router: Arc<NotificationRouter>,
     background_spawner: Arc<BackgroundTaskSpawner>,
     background_result_rx: mpsc::Receiver<BackgroundResult>,
     spawn_context: Arc<SpawnContext>,

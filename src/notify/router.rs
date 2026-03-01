@@ -132,6 +132,24 @@ impl NotificationRouter {
         outcome
     }
 
+    /// Deliver a notification to a specific external channel by name.
+    ///
+    /// Unlike `route()`, this propagates errors so the caller can report success/failure.
+    ///
+    /// # Errors
+    /// Returns an error if the channel is not found or delivery fails.
+    pub async fn deliver_to_external(
+        &self,
+        channel_name: &str,
+        notification: &Notification,
+    ) -> anyhow::Result<()> {
+        let channel = self
+            .external_channels
+            .get(channel_name)
+            .ok_or_else(|| anyhow::anyhow!("unknown external channel: {channel_name}"))?;
+        channel.deliver(notification).await
+    }
+
     /// Check if a named external channel is configured.
     #[must_use]
     pub fn has_external_channel(&self, name: &str) -> bool {

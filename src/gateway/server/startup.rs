@@ -61,7 +61,7 @@ pub(super) struct GatewayComponents {
     pub(super) skill_state: SharedSkillState,
     pub(super) embedding_provider: Option<Arc<dyn EmbeddingProvider>>,
     pub(super) pulse_enabled: bool,
-    pub(super) notification_router: NotificationRouter,
+    pub(super) notification_router: Arc<NotificationRouter>,
     pub(super) background_spawner: Arc<BackgroundTaskSpawner>,
     pub(super) background_result_rx: mpsc::Receiver<BackgroundResult>,
     pub(super) spawn_context: Arc<SpawnContext>,
@@ -407,6 +407,14 @@ pub(super) async fn initialize(cfg: &Config) -> Result<GatewayComponents, Ironcl
         valid_external_channels,
     );
 
+    // Notification router (built before agent so the tool can hold a reference)
+    let notification_router = Arc::new(build_notification_router(cfg, &layout));
+    tools.register_send_message_tool(
+        Arc::clone(&notification_router),
+        layout.inbox_dir(),
+        tz,
+    );
+
     // Connect global MCP servers from config
     if !cfg.mcp.servers.is_empty() {
         let mut reg = mcp_registry.write().await;
@@ -465,9 +473,6 @@ pub(super) async fn initialize(cfg: &Config) -> Result<GatewayComponents, Ironcl
             tracing::warn!(error = %err, "message restore degraded: starting with empty history");
         }
     }
-
-    // Notification router
-    let notification_router = build_notification_router(cfg, &layout);
 
     Ok(GatewayComponents {
         layout,
