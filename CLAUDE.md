@@ -21,6 +21,13 @@ Pre-commit hooks enforce quality gates:
 
 Bypass is **FORBIDDEN**.
 
+### Cross-Platform Targets
+
+Release builds target Linux x86_64, Linux aarch64, and macOS aarch64 (Apple Silicon). Keep platform differences in mind:
+- **`c_char`**: `i8` on x86_64, `u8` on aarch64-linux — always use `std::ffi::c_char` in FFI signatures, never hardcode `i8`/`u8`
+- **Path separators, endianness, pointer width**: use `std` abstractions, not platform-specific assumptions
+- **FFI code**: test against the aarch64 target when touching unsafe/FFI boundaries
+
 ### Lint Rules
 
 Clippy pedantic is enabled with strict error handling:
