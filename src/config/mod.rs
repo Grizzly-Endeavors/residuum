@@ -31,7 +31,8 @@ pub use secrets::SecretStore;
 pub use types::{
     A2aConfig, BackgroundConfig, BackgroundModelTier, BackgroundModelsConfig, DiscordConfig,
     ExternalChannelConfig, ExternalChannelKind, GatewayConfig, McpConfig, MemoryConfig,
-    NotificationsConfig, SearchConfig, SkillsConfig, TelegramConfig, WebhookConfig,
+    NotificationsConfig, RemoteAgentConfig, SearchConfig, SkillsConfig, TelegramConfig,
+    WebhookConfig,
 };
 
 // ── Config struct ─────────────────────────────────────────────────────────────

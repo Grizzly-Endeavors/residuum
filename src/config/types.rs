@@ -128,6 +128,19 @@ pub struct A2aConfig {
     pub secret: Option<String>,
     /// Agent description shown in the Agent Card.
     pub description: Option<String>,
+    /// Remote agents configured for client-side A2A delegation.
+    pub agents: Vec<RemoteAgentConfig>,
+}
+
+/// Configuration for a single remote A2A agent.
+#[derive(Debug, Clone)]
+pub struct RemoteAgentConfig {
+    /// Logical name (key from `[a2a.agents.<name>]`).
+    pub name: String,
+    /// Base URL of the remote agent.
+    pub url: String,
+    /// Optional bearer token for authentication.
+    pub secret: Option<String>,
 }
 
 /// Validated skills subsystem configuration.

@@ -19,8 +19,8 @@ use super::provider::{ModelSpec, ProviderKind, ProviderSpec};
 use super::secrets::SecretStore;
 use super::types::{
     A2aConfig, BackgroundConfig, DiscordConfig, ExternalChannelConfig, ExternalChannelKind,
-    GatewayConfig, McpConfig, MemoryConfig, NotificationsConfig, SearchConfig, SkillsConfig,
-    TelegramConfig, WebhookConfig,
+    GatewayConfig, McpConfig, MemoryConfig, NotificationsConfig, RemoteAgentConfig, SearchConfig,
+    SkillsConfig, TelegramConfig, WebhookConfig,
 };
 
 /// Build a `Config` from an optional config file and environment variables.
@@ -495,6 +495,25 @@ fn resolve_a2a_config(section: Option<&A2aConfigFile>, secrets: &SecretStore) ->
             .as_deref()
             .and_then(|raw| resolve_secret_value(raw, secrets));
         cfg.description = s.description.clone();
+
+        if let Some(agents_map) = &s.agents {
+            for (name, entry) in agents_map {
+                let url = entry.url.trim_end_matches('/').to_string();
+                if url.is_empty() {
+                    eprintln!("warning: [a2a.agents.{name}] has empty url, skipping");
+                    continue;
+                }
+                let secret = entry
+                    .secret
+                    .as_deref()
+                    .and_then(|raw| resolve_secret_value(raw, secrets));
+                cfg.agents.push(RemoteAgentConfig {
+                    name: name.clone(),
+                    url,
+                    secret,
+                });
+            }
+        }
     }
     cfg
 }

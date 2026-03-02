@@ -194,6 +194,18 @@ pub(super) struct A2aConfigFile {
     pub(super) secret: Option<String>,
     /// Agent description for the Agent Card.
     pub(super) description: Option<String>,
+    /// Named remote agent definitions for client-side A2A.
+    pub(super) agents: Option<HashMap<String, A2aAgentEntry>>,
+}
+
+/// A single remote agent entry under `[a2a.agents.<name>]`.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct A2aAgentEntry {
+    /// Base URL of the remote agent (e.g. `"http://other-agent:8080"`).
+    pub(super) url: String,
+    /// Optional bearer token for authenticating with the remote agent.
+    pub(super) secret: Option<String>,
 }
 
 /// Raw TOML `[skills]` section.

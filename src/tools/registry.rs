@@ -5,6 +5,8 @@ use std::sync::Arc;
 use serde_json::Value;
 use tokio::sync::{Mutex, Notify};
 
+use crate::a2a::client::A2aClient;
+use crate::a2a::registry::SharedA2aRegistry;
 use crate::actions::store::ActionStore;
 use crate::background::BackgroundTaskSpawner;
 use crate::background::spawn_context::SpawnContext;
@@ -17,8 +19,8 @@ use crate::skills::SharedSkillState;
 
 use super::{
     SharedFileTracker, SharedPathPolicy, SharedToolFilter, Tool, ToolError, ToolFilter, ToolResult,
-    actions, background, edit, exec, inbox, memory_get, memory_search, projects, read,
-    send_message, skills, write,
+    a2a as a2a_tools, actions, background, edit, exec, inbox, memory_get, memory_search, projects,
+    read, send_message, skills, write,
 };
 
 /// Registry of available tools.
@@ -242,6 +244,23 @@ impl ToolRegistry {
         registry.register_skill_tools(skill_state);
 
         registry
+    }
+
+    /// Register A2A client tools (`a2a_discover`, `a2a_delegate`, `a2a_list_agents`).
+    pub fn register_a2a_tools(
+        &mut self,
+        registry: SharedA2aRegistry,
+        client: Arc<A2aClient>,
+    ) {
+        self.register(Box::new(a2a_tools::A2aDiscoverTool::new(
+            Arc::clone(&registry),
+            Arc::clone(&client),
+        )));
+        self.register(Box::new(a2a_tools::A2aDelegateTool::new(
+            Arc::clone(&registry),
+            Arc::clone(&client),
+        )));
+        self.register(Box::new(a2a_tools::A2aListAgentsTool::new(registry)));
     }
 
     /// Register action scheduling tools (`schedule_action`, `list_actions`, `cancel_action`).

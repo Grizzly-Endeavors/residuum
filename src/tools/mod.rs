@@ -1,5 +1,6 @@
 //! Tool system for agent-invoked operations.
 
+pub mod a2a;
 pub mod actions;
 pub mod background;
 mod edit;

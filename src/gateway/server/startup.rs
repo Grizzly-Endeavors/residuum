@@ -411,6 +411,22 @@ pub(super) async fn initialize(cfg: &Config) -> Result<GatewayComponents, Residu
     let notification_router = Arc::new(build_notification_router(cfg, &layout));
     tools.register_send_message_tool(Arc::clone(&notification_router), layout.inbox_dir(), tz);
 
+    // A2A client tools (discover, delegate, list remote agents)
+    if let Ok(a2a_client) = crate::a2a::client::A2aClient::new() {
+        let a2a_client = Arc::new(a2a_client);
+        let a2a_registry =
+            crate::a2a::registry::A2aRegistry::from_config_shared(&cfg.a2a.agents);
+        if !cfg.a2a.agents.is_empty() {
+            tracing::info!(
+                count = cfg.a2a.agents.len(),
+                "loaded remote a2a agents from config"
+            );
+        }
+        tools.register_a2a_tools(a2a_registry, a2a_client);
+    } else {
+        eprintln!("warning: failed to create A2A HTTP client, a2a tools unavailable");
+    }
+
     // Connect global MCP servers from config
     if !cfg.mcp.servers.is_empty() {
         let mut reg = mcp_registry.write().await;
