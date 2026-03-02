@@ -66,6 +66,12 @@ These are denied project-wide and will not be relaxed:
 
 Any `#[allow]` must be `#[expect]` with a reason string.
 
+## Releases
+
+Releases use [CalVer](https://calver.org/) with the format `YYYY.0M.0D` (e.g., `v2026.03.02`). If multiple releases happen on the same day, a suffix is added: `v2026.03.02-2`.
+
+Releases are automated — pushing a tag matching this format triggers the CI pipeline, which builds cross-platform binaries and creates a GitHub release. Cargo.toml version is not tied to release tags.
+
 ## Architecture
 
 See [docs/residuum-design.md](docs/residuum-design.md) for system architecture and design decisions. The `docs/` directory covers individual subsystems in detail.

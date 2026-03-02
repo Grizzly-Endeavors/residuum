@@ -117,6 +117,10 @@ Use prefixed branch names:
 - `ci/` — CI/CD changes
 - `chore/` — maintenance, dependency updates
 
+### Releases
+
+Releases use **CalVer** (`YYYY.0M.0D`), not SemVer. Tags like `v2026.03.02`, with `-N` suffix for same-day follow-ups (`v2026.03.02-2`). Cargo.toml version is independent and not tied to release tags.
+
 ## Misc Notes
 - Testing is a first class operation, NEVER skip test implementation.
 - Commits should be made frequently, especially for large multi-phase tasks.

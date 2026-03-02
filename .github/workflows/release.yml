@@ -19,10 +19,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Extract version
+      - name: Extract and validate version
         id: version
         run: |
           TAG="${GITHUB_REF_NAME}"
+          if ! echo "$TAG" | grep -qE '^v[0-9]{4}\.[0-9]{2}\.[0-9]{2}(-[0-9]+)?$'; then
+            echo "::error::Tag '$TAG' does not match CalVer format vYYYY.0M.0D(-N)"
+            exit 1
+          fi
           VERSION="${TAG#v}"
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
@@ -42,17 +46,6 @@ jobs:
       - name: Dependency audit
         id: deny
         run: cargo deny check
-
-      - name: Verify Cargo.toml version matches tag
-        run: |
-          CARGO_VERSION=$(cargo metadata --no-deps --format-version 1 \
-            | jq -r '.packages[] | select(.name == "residuum") | .version')
-          TAG_VERSION="${{ steps.version.outputs.version }}"
-          if [ "$CARGO_VERSION" != "$TAG_VERSION" ]; then
-            echo "::error::Cargo.toml version ($CARGO_VERSION) does not match tag ($TAG_VERSION)"
-            exit 1
-          fi
-          echo "Version match confirmed: $CARGO_VERSION"
 
       - name: Build summary
         if: always()
