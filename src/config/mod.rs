@@ -202,17 +202,97 @@ impl Config {
     ///
     /// Parses the TOML into the raw config structure, then runs full resolution
     /// to catch semantic errors (bad provider names, missing timezone, etc.).
-    /// Uses an empty secret store since validation doesn't need real secrets.
+    /// Resolves against the real config directory so that `secret:name`
+    /// references are validated against the actual encrypted secret store.
     ///
     /// # Errors
     /// Returns a human-readable error string if validation fails.
-    pub fn validate_toml(contents: &str) -> Result<(), String> {
+    pub fn validate_toml(contents: &str, config_dir: &std::path::Path) -> Result<(), String> {
         let file = toml::from_str::<deserialize::ConfigFile>(contents)
             .map_err(|e| format!("TOML parse error: {e}"))?;
 
-        // Use a temp dir for validation — secrets aren't needed for structural checks
-        let temp_dir = std::env::temp_dir().join("residuum-validate");
-        resolve::from_file_and_env(Some(&file), &temp_dir).map_err(|e| format!("{e}"))?;
+        resolve::from_file_and_env(Some(&file), config_dir).map_err(|e| format!("{e}"))?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+#[expect(clippy::unwrap_used, reason = "test code uses unwrap for clarity")]
+mod tests {
+    use super::*;
+
+    /// Valid minimal config TOML used across tests.
+    const VALID_CONFIG: &str = r#"
+timezone = "UTC"
+
+[models]
+main = "anthropic/claude-sonnet-4-6"
+"#;
+
+    #[test]
+    fn validate_toml_accepts_valid_config() {
+        let dir = tempfile::tempdir().unwrap();
+        let result = Config::validate_toml(VALID_CONFIG, dir.path());
+        assert!(result.is_ok(), "valid config should pass: {result:?}");
+    }
+
+    #[test]
+    fn validate_toml_rejects_mcp_env_integer_value() {
+        let dir = tempfile::tempdir().unwrap();
+        let bad_config = r#"
+timezone = "UTC"
+
+[models]
+main = "anthropic/claude-sonnet-4-6"
+
+[mcp.servers.test]
+command = "mcp-server"
+env = { PORT = 8080 }
+"#;
+        let result = Config::validate_toml(bad_config, dir.path());
+        assert!(result.is_err(), "integer env value should fail TOML parse");
+    }
+
+    #[test]
+    fn validate_toml_rejects_missing_timezone() {
+        let dir = tempfile::tempdir().unwrap();
+        let bad_config = r#"
+[models]
+main = "anthropic/claude-sonnet-4-6"
+"#;
+        let result = Config::validate_toml(bad_config, dir.path());
+        assert!(result.is_err(), "missing timezone should fail validation");
+        let err = result.unwrap_err();
+        assert!(
+            err.contains("timezone"),
+            "error should mention timezone: {err}"
+        );
+    }
+
+    #[test]
+    fn validate_toml_resolves_secrets_from_real_store() {
+        let dir = tempfile::tempdir().unwrap();
+        // Store a secret in the temp dir's secret store
+        let mut store = secrets::SecretStore::load(dir.path()).unwrap();
+        store
+            .set("test_api_key", "sk-test-123", dir.path())
+            .unwrap();
+
+        // Config that references the secret
+        let config_with_secret = r#"
+timezone = "UTC"
+
+[providers.my-provider]
+type = "anthropic"
+api_key = "secret:test_api_key"
+
+[models]
+main = "my-provider/claude-sonnet-4-6"
+"#;
+        let result = Config::validate_toml(config_with_secret, dir.path());
+        assert!(
+            result.is_ok(),
+            "secret reference should resolve with real store: {result:?}"
+        );
     }
 }
