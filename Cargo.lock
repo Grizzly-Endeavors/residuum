@@ -1547,54 +1547,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "residuum"
-version = "0.1.0"
-dependencies = [
- "aes-gcm-siv",
- "anyhow",
- "async-trait",
- "axum",
- "chrono",
- "chrono-tz",
- "dirs 5.0.1",
- "dotenvy",
- "futures-util",
- "iana-time-zone",
- "mime_guess",
- "nix 0.29.0",
- "owo-colors",
- "rand 0.8.5",
- "reqwest 0.13.2",
- "rmcp",
- "rpassword",
- "rusqlite",
- "rust-embed",
- "rustyline",
- "serde",
- "serde_json",
- "serde_yml",
- "serenity",
- "shellexpand",
- "sqlite-vec",
- "tantivy",
- "teloxide",
- "tempfile",
- "termimad",
- "thiserror 2.0.18",
- "tokio",
- "tokio-tungstenite 0.26.2",
- "tokio-util",
- "toml",
- "tower",
- "tracing",
- "tracing-appender",
- "tracing-subscriber",
- "uuid",
- "wiremock",
- "zerocopy",
-]
-
-[[package]]
 name = "is-terminal"
 version = "0.4.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2589,6 +2541,54 @@ dependencies = [
  "wasm-bindgen-futures",
  "wasm-streams 0.5.0",
  "web-sys",
+]
+
+[[package]]
+name = "residuum"
+version = "0.1.0"
+dependencies = [
+ "aes-gcm-siv",
+ "anyhow",
+ "async-trait",
+ "axum",
+ "chrono",
+ "chrono-tz",
+ "dirs 5.0.1",
+ "dotenvy",
+ "futures-util",
+ "iana-time-zone",
+ "mime_guess",
+ "nix 0.29.0",
+ "owo-colors",
+ "rand 0.8.5",
+ "reqwest 0.13.2",
+ "rmcp",
+ "rpassword",
+ "rusqlite",
+ "rust-embed",
+ "rustyline",
+ "serde",
+ "serde_json",
+ "serde_yml",
+ "serenity",
+ "shellexpand",
+ "sqlite-vec",
+ "tantivy",
+ "teloxide",
+ "tempfile",
+ "termimad",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-tungstenite 0.26.2",
+ "tokio-util",
+ "toml",
+ "tower",
+ "tracing",
+ "tracing-appender",
+ "tracing-subscriber",
+ "uuid",
+ "wiremock",
+ "zerocopy",
 ]
 
 [[package]]
