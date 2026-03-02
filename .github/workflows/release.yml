@@ -8,12 +8,13 @@ permissions:
   contents: write
 
 jobs:
-  release:
-    name: Release
+  checks:
+    name: CI Checks
     runs-on: [self-hosted, kubernetes, lab]
 
-    env:
-      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    outputs:
+      tag: ${{ steps.version.outputs.tag }}
+      version: ${{ steps.version.outputs.version }}
 
     steps:
       - uses: actions/checkout@v4
@@ -25,8 +26,6 @@ jobs:
           VERSION="${TAG#v}"
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-
-      # --- CI checks (same as ci.yml) ---
 
       - name: Check formatting
         id: fmt
@@ -44,8 +43,6 @@ jobs:
         id: deny
         run: cargo deny check
 
-      # --- Version consistency ---
-
       - name: Verify Cargo.toml version matches tag
         run: |
           CARGO_VERSION=$(cargo metadata --no-deps --format-version 1 \
@@ -57,30 +54,10 @@ jobs:
           fi
           echo "Version match confirmed: $CARGO_VERSION"
 
-      # --- Build binaries ---
-
-      - name: Build and stage binaries
-        run: |
-          mkdir -p release-artifacts
-          cargo build --release
-          cp target/release/residuum release-artifacts/residuum-linux-x86_64
-
-      # --- Publish release ---
-
-      - name: Create GitHub Release
-        run: |
-          gh release create "${{ steps.version.outputs.tag }}" \
-            --generate-notes \
-            release-artifacts/residuum-linux-x86_64
-
-      - name: Cleanup
-        if: always()
-        run: rm -rf release-artifacts
-
       - name: Build summary
         if: always()
         run: |
-          echo '## Release Results' >> "$GITHUB_STEP_SUMMARY"
+          echo '## CI Check Results' >> "$GITHUB_STEP_SUMMARY"
           echo '' >> "$GITHUB_STEP_SUMMARY"
           echo "**Tag:** ${{ steps.version.outputs.tag }}" >> "$GITHUB_STEP_SUMMARY"
           echo "**Version:** ${{ steps.version.outputs.version }}" >> "$GITHUB_STEP_SUMMARY"
@@ -91,3 +68,96 @@ jobs:
           echo "| Clippy | ${{ steps.clippy.outcome }} |" >> "$GITHUB_STEP_SUMMARY"
           echo "| Tests | ${{ steps.test.outcome }} |" >> "$GITHUB_STEP_SUMMARY"
           echo "| Deny | ${{ steps.deny.outcome }} |" >> "$GITHUB_STEP_SUMMARY"
+
+  build:
+    name: Build (${{ matrix.artifact }})
+    needs: checks
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            runner: '["self-hosted","kubernetes","lab"]'
+            artifact: residuum-linux-x86_64
+          - target: aarch64-unknown-linux-gnu
+            runner: '["self-hosted","kubernetes","lab"]'
+            artifact: residuum-linux-aarch64
+            cross: true
+          - target: x86_64-apple-darwin
+            runner: macos-13
+            artifact: residuum-macos-x86_64
+          - target: aarch64-apple-darwin
+            runner: macos-14
+            artifact: residuum-macos-aarch64
+
+    runs-on: ${{ fromJSON(matrix.runner) }}
+
+    env:
+      CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain (macOS)
+        if: runner.os == 'macOS'
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Add target
+        if: matrix.cross
+        run: rustup target add ${{ matrix.target }}
+
+      - name: Build release binary
+        run: cargo build --release --target ${{ matrix.target }}
+
+      - name: Stage artifact
+        run: cp target/${{ matrix.target }}/release/residuum ${{ matrix.artifact }}
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: ${{ matrix.artifact }}
+
+  release:
+    name: Create Release
+    needs: [checks, build]
+    runs-on: [self-hosted, kubernetes, lab]
+
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release-artifacts
+
+      - name: Create GitHub Release
+        run: |
+          gh release create "${{ needs.checks.outputs.tag }}" \
+            --generate-notes \
+            release-artifacts/residuum-linux-x86_64/residuum-linux-x86_64 \
+            release-artifacts/residuum-linux-aarch64/residuum-linux-aarch64 \
+            release-artifacts/residuum-macos-x86_64/residuum-macos-x86_64 \
+            release-artifacts/residuum-macos-aarch64/residuum-macos-aarch64
+
+      - name: Build summary
+        if: always()
+        run: |
+          echo '## Release Results' >> "$GITHUB_STEP_SUMMARY"
+          echo '' >> "$GITHUB_STEP_SUMMARY"
+          echo "**Tag:** ${{ needs.checks.outputs.tag }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "**Version:** ${{ needs.checks.outputs.version }}" >> "$GITHUB_STEP_SUMMARY"
+          echo '' >> "$GITHUB_STEP_SUMMARY"
+          echo '| Artifact | Status |' >> "$GITHUB_STEP_SUMMARY"
+          echo '|----------|--------|' >> "$GITHUB_STEP_SUMMARY"
+          for artifact in release-artifacts/*/; do
+            name=$(basename "$artifact")
+            if [ -f "$artifact/$name" ]; then
+              echo "| $name | uploaded |" >> "$GITHUB_STEP_SUMMARY"
+            else
+              echo "| $name | missing |" >> "$GITHUB_STEP_SUMMARY"
+            fi
+          done
