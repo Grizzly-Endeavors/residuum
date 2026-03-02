@@ -35,6 +35,14 @@ AI agent frameworks are built on sessions. Start a conversation, do some work, c
 
 **No dependencies on anyone else.** Single binary, your machine, your API keys. No accounts, no telemetry, no cloud.
 
+## It Grows
+
+**Skills & MCP** | Integrate with the tools and workflows you're already using.
+
+**Self-evolution** | Baked in presets to periodically improve itself, how it responds, and how it integrates into your life. (Can be disabled, just ask your agent)
+
+**Background work** | Delegate tasks and walk away. Your agent works independently and pings you when there's something worth knowing.
+
 ## Quick Start
 
 ```bash
@@ -49,14 +57,6 @@ residuum setup  # terminal alternative
 ```
 
 Once running, just talk to it.
-
-## It Grows
-
-**Skills & MCP** | Integrate with the tools and workflows you're already using.
-
-**Self-evolution** | Baked in presets to periodically improve itself, how it responds, and how it integrates into your life. (Can be disabled, just ask your agent)
-
-**Background work** | Delegate tasks and walk away. Your agent works independently and pings you when there's something worth knowing.
 
 ## Building
 
