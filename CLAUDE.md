@@ -1,6 +1,4 @@
-# Residuum
-
-This project is a derivative of OpenClaw, and coopts much of its architecture. You can review its code locally at ~/Projects/openclaw
+# CLAUDE.md | Residuum - Personal Agent Framework
 
 **Important docs:**
 - [Design Philosophy](./docs/design-philosophy.md)
@@ -33,10 +31,6 @@ Clippy pedantic is enabled with strict error handling:
 Test modules have `#[expect(clippy::unwrap_used, reason = "test code uses unwrap for clarity")]` for readability.
 
 DO NOT, under any circumstance, change this config without explicit approval from the user.
-
-### Verification Steps
-
-Tests, linting, and formatting are handled by the git hooks. Start by attempting to commit the changes, instead of re-running all checks constantly. 
 
 ## Style Guidelines
 

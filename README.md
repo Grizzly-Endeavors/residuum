@@ -45,7 +45,7 @@ residuum serve
 First run handles API key setup and preferences. Web interface or terminal — web is better for initial config.
 
 ```bash
-residuum init  # terminal alternative
+residuum setup  # terminal alternative
 ```
 
 Once running, just talk to it.

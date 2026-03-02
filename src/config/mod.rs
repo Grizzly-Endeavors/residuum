@@ -250,10 +250,7 @@ command = "mcp-server"
 env = { PORT = 8080 }
 "#;
         let result = Config::validate_toml(bad_config, dir.path());
-        assert!(
-            result.is_err(),
-            "integer env value should fail TOML parse"
-        );
+        assert!(result.is_err(), "integer env value should fail TOML parse");
     }
 
     #[test]
@@ -277,7 +274,9 @@ main = "anthropic/claude-sonnet-4-6"
         let dir = tempfile::tempdir().unwrap();
         // Store a secret in the temp dir's secret store
         let mut store = secrets::SecretStore::load(dir.path()).unwrap();
-        store.set("test_api_key", "sk-test-123", dir.path()).unwrap();
+        store
+            .set("test_api_key", "sk-test-123", dir.path())
+            .unwrap();
 
         // Config that references the secret
         let config_with_secret = r#"

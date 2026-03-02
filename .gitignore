@@ -3,5 +3,5 @@
 .DS_Store
 .env
 .vscode/
-.claude/worktrees/
+.claude/
 reference-mats/

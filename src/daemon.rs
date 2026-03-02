@@ -75,10 +75,20 @@ pub fn remove_pid_file(path: &Path) -> Result<(), ResiduumError> {
 
 /// Check whether a process with the given PID is currently running.
 ///
-/// Uses `/proc/{pid}` existence on Linux.
+/// Uses POSIX signal 0 via `kill(pid, None)`, which works on both Linux and macOS.
 #[must_use]
 pub fn is_process_running(pid: u32) -> bool {
-    Path::new(&format!("/proc/{pid}")).exists()
+    use nix::sys::signal::kill;
+    use nix::unistd::Pid;
+
+    let Ok(nix_pid) = i32::try_from(pid).map(Pid::from_raw) else {
+        return false;
+    };
+    // Signal 0 checks process existence without sending a signal.
+    // Returns Ok if the process exists and we have permission to signal it.
+    // Returns ESRCH if no such process, EPERM if it exists but we lack permission.
+    // EPERM means the process is running, but since we own the daemon this shouldn't occur.
+    kill(nix_pid, None).is_ok()
 }
 
 /// Send `SIGTERM` to the process with the given PID.
@@ -143,4 +153,31 @@ pub fn init_daemon_tracing() {
         .with(env_filter)
         .with(file_layer)
         .init();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn current_process_is_detected_as_running() {
+        let pid = std::process::id();
+        assert!(is_process_running(pid));
+    }
+
+    #[test]
+    fn nonexistent_pid_is_not_running() {
+        // Use a high PID within i32 range that almost certainly doesn't exist.
+        // /proc/sys/kernel/pid_max defaults to 4194304 on 64-bit Linux, and
+        // macOS uses similar ranges, so i32::MAX won't be a real process.
+        let fake_pid = i32::MAX as u32;
+        assert!(!is_process_running(fake_pid));
+    }
+
+    #[test]
+    fn pid_overflow_returns_false() {
+        // u32::MAX cannot be converted to i32, so this should return false
+        // via the try_from guard rather than panicking.
+        assert!(!is_process_running(u32::MAX));
+    }
 }
