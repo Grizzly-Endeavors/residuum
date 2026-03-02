@@ -29,6 +29,14 @@ AI agent frameworks are built on sessions. Start a conversation, do some work, c
 
 **No wasted tokens.** Proactivity doesn't mean burning frontier-model calls to ask "is there anything to do?" every thirty minutes. Residuum uses structured pulse scheduling — you define what to check, when, and where to send results. The LLM fires when a check is due, runs on a cheap model, stays silent when there's nothing to report. Email scans, deployment checks, daily reviews — each one is a few lines of YAML.
 
+## It Grows
+
+**Skills & MCP** | Integrate with the tools and workflows you're already using.
+
+**Self-evolution** | Baked in presets to periodically improve itself, how it responds, and how it integrates into your life. (Can be disabled, just ask your agent)
+
+**Background work** | Delegate tasks and walk away. Your agent works independently and pings you when there's something worth knowing.
+
 ## Quick Start
 
 ```bash
@@ -43,14 +51,6 @@ residuum setup  # terminal alternative
 ```
 
 Once running, just talk to it.
-
-## It Grows
-
-**Skills & MCP** | Integrate with the tools and workflows you're already using.
-
-**Self-evolution** | Baked in presets to periodically improve itself, how it responds, and how it integrates into your life. (Can be disabled, just ask your agent)
-
-**Background work** | Delegate tasks and walk away. Your agent works independently and pings you when there's something worth knowing.
 
 ## Building
 
