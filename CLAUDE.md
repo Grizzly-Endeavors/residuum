@@ -97,6 +97,7 @@ The orchestrating agent is responsible for running `cargo fmt`, `cargo clippy`, 
 ## Misc Notes
 - Testing is a first class operation, NEVER skip test implementation.
 - Commits should be made frequently, especially for large multi-phase tasks.
-- All changes must be pushed before giving the user a completion summary.
+- All changes must be commited before giving the user a completion summary.
+- Do not push to main unless explicitly requested by the user.
 - **Never** use `git -C` — the shell is already in the project root; use plain `git` commands.
 - Always run `cargo test --quiet` — never plain `cargo test`. The `--quiet` flag suppresses per-test noise and only shows failures and the summary.
