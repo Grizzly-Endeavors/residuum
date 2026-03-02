@@ -12,7 +12,7 @@
   <a href="https://residuum.bearflinn.com">Website</a> &middot;
   <a href="docs/">Docs</a> &middot;
   <a href="#quick-start">Quick Start</a> &middot;
-  <a href="#contributing">Contributing</a>
+  <a href="CONTRIBUTING.md">Contributing</a>
 </p>
 
 ---
