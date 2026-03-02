@@ -110,8 +110,8 @@ async fn api_config_raw_put(
     State(state): State<ConfigApiState>,
     body: String,
 ) -> Result<Json<ValidateResponse>, (StatusCode, Json<ValidateResponse>)> {
-    // Validate first
-    if let Err(e) = Config::validate_toml(&body) {
+    // Validate first (use real config dir so secret:name references are checked)
+    if let Err(e) = Config::validate_toml(&body, &state.config_dir) {
         return Err((
             StatusCode::BAD_REQUEST,
             Json(ValidateResponse {
@@ -153,8 +153,11 @@ struct ValidateResponse {
 }
 
 /// `POST /api/config/validate` — validate TOML body without saving.
-async fn api_config_validate(body: String) -> Json<ValidateResponse> {
-    match Config::validate_toml(&body) {
+async fn api_config_validate(
+    State(state): State<ConfigApiState>,
+    body: String,
+) -> Json<ValidateResponse> {
+    match Config::validate_toml(&body, &state.config_dir) {
         Ok(()) => Json(ValidateResponse {
             valid: true,
             error: None,
@@ -171,8 +174,8 @@ async fn api_complete_setup(
     State(state): State<ConfigApiState>,
     body: String,
 ) -> Result<Json<ValidateResponse>, (StatusCode, Json<ValidateResponse>)> {
-    // Validate
-    if let Err(e) = Config::validate_toml(&body) {
+    // Validate (use real config dir so secret:name references are checked)
+    if let Err(e) = Config::validate_toml(&body, &state.config_dir) {
         return Err((
             StatusCode::BAD_REQUEST,
             Json(ValidateResponse {
