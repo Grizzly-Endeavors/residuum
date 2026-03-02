@@ -94,10 +94,32 @@ This prevents agents from:
 
 The orchestrating agent is responsible for running `cargo fmt`, `cargo clippy`, and `cargo test` after all sub-agent work is complete, then creating a single commit.
 
+## Git Workflow
+
+**All changes go through pull requests.** Direct pushes to `main` are blocked by branch protection.
+
+### Branch & PR Process
+
+1. **Create a feature branch** from `main` with a descriptive name (e.g., `feat/add-telegram-retry`, `fix/memory-search-ranking`)
+2. **Commit frequently** with clear messages — pre-commit hooks enforce fmt, clippy, and tests on every commit
+3. **Push the branch** and open a PR against `main`
+4. **CI must pass** — the `Check` workflow (fmt, clippy, tests, dependency audit) is a required status check
+5. **1 approval required** for contributor PRs (admins may merge without review)
+6. **Stale reviews are dismissed** when new commits are pushed
+
+### Branch Naming
+
+Use prefixed branch names:
+- `feat/` — new features
+- `fix/` — bug fixes
+- `refactor/` — code restructuring without behavior changes
+- `docs/` — documentation only
+- `ci/` — CI/CD changes
+- `chore/` — maintenance, dependency updates
+
 ## Misc Notes
 - Testing is a first class operation, NEVER skip test implementation.
 - Commits should be made frequently, especially for large multi-phase tasks.
-- All changes must be commited before giving the user a completion summary.
-- Do not push to main unless explicitly requested by the user.
+- All changes must be committed before giving the user a completion summary.
 - **Never** use `git -C` — the shell is already in the project root; use plain `git` commands.
 - Always run `cargo test --quiet` — never plain `cargo test`. The `--quiet` flag suppresses per-test noise and only shows failures and the summary.
