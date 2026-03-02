@@ -150,7 +150,12 @@ async fn run_serve_foreground_inner(args: &[String]) -> Result<(), ResiduumError
     }
 
     let config_dir = Config::config_dir()?;
-    let mut is_first_boot = true;
+    // Determine first-boot from disk state: if a backup exists, the gateway
+    // has previously loaded a valid config, so failures should go to degraded
+    // mode (not the setup wizard).  An in-memory flag alone resets on every
+    // process restart, which would erroneously re-enter setup after a crash
+    // when the config has been successfully used before.
+    let mut is_first_boot = !config_dir.join("config.toml.bak").exists();
 
     loop {
         Config::bootstrap_config_dir()?;
@@ -162,13 +167,18 @@ async fn run_serve_foreground_inner(args: &[String]) -> Result<(), ResiduumError
                     workspace = %cfg.workspace_dir.display(),
                     "configuration loaded"
                 );
+                // Back up the successfully-loaded config BEFORE running the
+                // gateway.  The web API may overwrite config.toml while the
+                // gateway is running (triggering a reload), so the backup must
+                // capture the last-known-good state *now*, not after the
+                // reload signal arrives.
+                backup_config(&config_dir);
                 let bind_addr = Some(cfg.gateway.addr());
                 match Box::pin(residuum::gateway::server::run_gateway(cfg)).await {
                     Ok(residuum::gateway::server::GatewayExit::Shutdown) => break,
                     Ok(residuum::gateway::server::GatewayExit::Reload) => {
                         tracing::info!("configuration reloaded, restarting gateway");
                         is_first_boot = false;
-                        backup_config(&config_dir);
                     }
                     Err(err) if is_first_boot => return Err(err),
                     Err(err) => {
@@ -217,13 +227,23 @@ async fn run_serve_foreground_inner(args: &[String]) -> Result<(), ResiduumError
                 // Config parse failed on reload — try rollback
                 tracing::warn!(error = %err, "config invalid after reload");
                 if rollback_config(&config_dir) {
-                    eprintln!(
-                        "warning: config invalid after reload, rolled back to previous config: {err}"
-                    );
-                    tracing::warn!("rolled back to previous config, retrying");
-                    continue;
+                    match Config::load() {
+                        Ok(_) => {
+                            eprintln!(
+                                "warning: config invalid after reload, rolled back to previous config: {err}"
+                            );
+                            tracing::warn!("rolled back to previous config, retrying");
+                            continue;
+                        }
+                        Err(rollback_err) => {
+                            tracing::warn!(
+                                error = %rollback_err,
+                                "rollback config also failed to load"
+                            );
+                        }
+                    }
                 }
-                // Rollback failed — degraded mode
+                // Rollback failed or rolled-back config also broke — degraded mode
                 let error_msg = format!(
                     "gateway entered degraded mode: config error: {err}\n\n\
                      To fix this:\n\
@@ -935,4 +955,73 @@ where
         .await
         .map_err(|e| ResiduumError::Gateway(format!("failed to send message: {e}")))?;
     Ok(())
+}
+
+#[cfg(test)]
+#[expect(clippy::unwrap_used, reason = "test code uses unwrap for clarity")]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn first_boot_detected_when_no_backup_exists() {
+        let dir = tempfile::tempdir().unwrap();
+        let is_first = !dir.path().join("config.toml.bak").exists();
+        assert!(is_first, "no backup file should indicate first boot");
+    }
+
+    #[test]
+    fn not_first_boot_when_backup_exists() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("config.toml.bak"), "# previous config").unwrap();
+        let is_first = !dir.path().join("config.toml.bak").exists();
+        assert!(
+            !is_first,
+            "existing backup should indicate prior successful boot"
+        );
+    }
+
+    #[test]
+    fn backup_config_creates_bak_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = dir.path().join("config.toml");
+        std::fs::write(&config, "timezone = \"UTC\"\n").unwrap();
+
+        backup_config(dir.path());
+
+        let bak = dir.path().join("config.toml.bak");
+        assert!(bak.exists(), "backup should create config.toml.bak");
+        assert_eq!(
+            std::fs::read_to_string(&bak).unwrap(),
+            "timezone = \"UTC\"\n",
+            "backup content should match original"
+        );
+    }
+
+    #[test]
+    fn rollback_restores_backup() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = dir.path().join("config.toml");
+        let bak = dir.path().join("config.toml.bak");
+
+        std::fs::write(&bak, "timezone = \"UTC\"\n").unwrap();
+        std::fs::write(&config, "BROKEN").unwrap();
+
+        assert!(rollback_config(dir.path()), "rollback should succeed");
+        assert_eq!(
+            std::fs::read_to_string(&config).unwrap(),
+            "timezone = \"UTC\"\n",
+            "config should be restored from backup"
+        );
+    }
+
+    #[test]
+    fn rollback_fails_without_backup() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("config.toml"), "BROKEN").unwrap();
+
+        assert!(
+            !rollback_config(dir.path()),
+            "rollback should fail when no backup exists"
+        );
+    }
 }
