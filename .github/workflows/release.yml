@@ -76,9 +76,6 @@ jobs:
             runner: '["self-hosted","kubernetes","lab"]'
             artifact: residuum-linux-aarch64
             cross: true
-          - target: x86_64-apple-darwin
-            runner: '"macos-15-large"'
-            artifact: residuum-macos-x86_64
           - target: aarch64-apple-darwin
             runner: '"macos-15"'
             artifact: residuum-macos-aarch64
@@ -133,7 +130,6 @@ jobs:
             --generate-notes \
             release-artifacts/residuum-linux-x86_64/residuum-linux-x86_64 \
             release-artifacts/residuum-linux-aarch64/residuum-linux-aarch64 \
-            release-artifacts/residuum-macos-x86_64/residuum-macos-x86_64 \
             release-artifacts/residuum-macos-aarch64/residuum-macos-aarch64
 
       - name: Build summary
