@@ -105,6 +105,8 @@ The orchestrating agent is responsible for running `cargo fmt`, `cargo clippy`, 
 
 **All changes go through pull requests.** Direct pushes to `main` are blocked by branch protection.
 
+**Exception: docs-only changes** (markdown, LICENSE, `docs/` directory) can be committed and pushed directly to `main` — no branch or PR required. CI is configured with `paths-ignore` so these pushes won't trigger the workflow.
+
 ### Branch & PR Process
 
 1. **Create a feature branch** from `main` with a descriptive name (e.g., `feat/add-telegram-retry`, `fix/memory-search-ranking`)
