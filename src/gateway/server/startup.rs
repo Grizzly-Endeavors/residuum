@@ -27,7 +27,6 @@ use crate::models::{
     build_embedding_provider, build_provider_chain,
 };
 use crate::notify::channels::{InboxChannel, NotificationChannel};
-use crate::notify::external::{NtfyChannel, WebhookChannel};
 use crate::notify::router::NotificationRouter;
 use crate::projects::activation::{ProjectState, SharedProjectState};
 use crate::projects::scanner::ProjectIndex;
@@ -324,6 +323,8 @@ pub(super) async fn initialize(cfg: &Config) -> Result<GatewayComponents, Residu
     let blocked: std::collections::HashSet<std::path::PathBuf> = [
         cfg.config_dir.join("config.toml"),
         cfg.config_dir.join("config.example.toml"),
+        cfg.config_dir.join("providers.toml"),
+        cfg.config_dir.join("providers.example.toml"),
     ]
     .into_iter()
     .collect();
@@ -336,12 +337,8 @@ pub(super) async fn initialize(cfg: &Config) -> Result<GatewayComponents, Residu
     tools.register_defaults(file_tracker, Arc::clone(&path_policy));
     tools.register_search_tool(Arc::clone(&mem.hybrid_searcher));
     tools.register_memory_get_tool(layout.episodes_dir());
-    let valid_external_channels: std::collections::HashSet<String> = cfg
-        .notifications
-        .channels
-        .iter()
-        .map(|ch| ch.name.clone())
-        .collect();
+    let valid_external_channels: std::collections::HashSet<String> =
+        std::collections::HashSet::new();
     tools.register_action_tools(
         Arc::clone(&action_store),
         Arc::clone(&action_notify),
@@ -371,18 +368,6 @@ pub(super) async fn initialize(cfg: &Config) -> Result<GatewayComponents, Residu
     // Notification router (built before agent so the tool can hold a reference)
     let notification_router = Arc::new(build_notification_router(cfg, &layout));
     tools.register_send_message_tool(Arc::clone(&notification_router), layout.inbox_dir(), tz);
-
-    // Connect global MCP servers from config
-    if !cfg.mcp.servers.is_empty() {
-        let mut reg = mcp_registry.write().await;
-        let report = reg.reconcile_and_connect(&cfg.mcp.servers).await;
-        for (name, err) in &report.failures {
-            eprintln!("warning: global mcp server '{name}' failed to start: {err}");
-        }
-        if report.started > 0 {
-            tracing::info!(connected = report.started, "global mcp servers ready");
-        }
-    }
 
     // Agent
     let options = CompletionOptions {
@@ -454,39 +439,11 @@ pub(super) async fn initialize(cfg: &Config) -> Result<GatewayComponents, Residu
     })
 }
 
-/// Build a `NotificationRouter` from config channel definitions.
+/// Build a `NotificationRouter` with inbox only (no external channels).
+///
+/// External channels will be loaded from workspace config in Phase 3.
 fn build_notification_router(cfg: &Config, layout: &WorkspaceLayout) -> NotificationRouter {
-    let http_client = reqwest::Client::new();
-    let mut external_channels: HashMap<String, Box<dyn NotificationChannel>> = HashMap::new();
-
-    for channel_cfg in &cfg.notifications.channels {
-        let channel: Box<dyn NotificationChannel> = match &channel_cfg.kind {
-            crate::config::ExternalChannelKind::Ntfy {
-                url,
-                topic,
-                priority,
-            } => Box::new(NtfyChannel::new(
-                channel_cfg.name.clone(),
-                http_client.clone(),
-                url.clone(),
-                topic.clone(),
-                priority.clone(),
-            )),
-            crate::config::ExternalChannelKind::Webhook {
-                url,
-                method,
-                headers,
-            } => Box::new(WebhookChannel::new(
-                channel_cfg.name.clone(),
-                http_client.clone(),
-                url.clone(),
-                method.clone(),
-                headers.clone(),
-            )),
-        };
-        external_channels.insert(channel_cfg.name.clone(), channel);
-    }
-
+    let external_channels: HashMap<String, Box<dyn NotificationChannel>> = HashMap::new();
     let inbox_channel = InboxChannel::new(layout.inbox_dir(), cfg.timezone);
     NotificationRouter::new(external_channels, Some(inbox_channel))
 }

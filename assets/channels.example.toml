@@ -1,0 +1,16 @@
+# Notification channel configuration.
+# External channels for routing background task results and alerts.
+
+# ── Ntfy push notifications ──────────────────────────────────────────────────
+# [channels.push-notify]
+# type = "ntfy"
+# url = "https://ntfy.sh"
+# topic = "my-alerts"
+# priority = "high"                # optional, default: "default"
+
+# ── Webhook channels ─────────────────────────────────────────────────────────
+# [channels.slack-webhook]
+# type = "webhook"
+# url = "https://hooks.slack.com/services/..."
+# method = "POST"                  # optional, default: "POST"
+# headers = { Authorization = "Bearer token" }

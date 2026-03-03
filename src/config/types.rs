@@ -3,11 +3,12 @@
 use std::path::PathBuf;
 
 use super::constants::{
-    DEFAULT_GATEWAY_BIND, DEFAULT_GATEWAY_PORT, DEFAULT_MAX_CONCURRENT_BACKGROUND,
-    DEFAULT_OBSERVER_COOLDOWN_SECS, DEFAULT_OBSERVER_FORCE_THRESHOLD, DEFAULT_OBSERVER_THRESHOLD,
-    DEFAULT_REFLECTOR_THRESHOLD, DEFAULT_SEARCH_CANDIDATE_MULTIPLIER, DEFAULT_SEARCH_MIN_SCORE,
-    DEFAULT_SEARCH_TEMPORAL_DECAY, DEFAULT_SEARCH_TEMPORAL_DECAY_HALF_LIFE_DAYS,
-    DEFAULT_SEARCH_TEXT_WEIGHT, DEFAULT_SEARCH_VECTOR_WEIGHT, DEFAULT_TRANSCRIPT_RETENTION_DAYS,
+    DEFAULT_AGENT_MODIFY_CHANNELS, DEFAULT_AGENT_MODIFY_MCP, DEFAULT_GATEWAY_BIND,
+    DEFAULT_GATEWAY_PORT, DEFAULT_MAX_CONCURRENT_BACKGROUND, DEFAULT_OBSERVER_COOLDOWN_SECS,
+    DEFAULT_OBSERVER_FORCE_THRESHOLD, DEFAULT_OBSERVER_THRESHOLD, DEFAULT_REFLECTOR_THRESHOLD,
+    DEFAULT_SEARCH_CANDIDATE_MULTIPLIER, DEFAULT_SEARCH_MIN_SCORE, DEFAULT_SEARCH_TEMPORAL_DECAY,
+    DEFAULT_SEARCH_TEMPORAL_DECAY_HALF_LIFE_DAYS, DEFAULT_SEARCH_TEXT_WEIGHT,
+    DEFAULT_SEARCH_VECTOR_WEIGHT, DEFAULT_TRANSCRIPT_RETENTION_DAYS,
 };
 use super::provider::ProviderSpec;
 
@@ -126,50 +127,24 @@ pub struct SkillsConfig {
     pub dirs: Vec<PathBuf>,
 }
 
-/// Validated MCP server configuration.
-#[derive(Debug, Clone, Default)]
-pub struct McpConfig {
-    /// Global MCP servers to start on gateway boot.
-    pub servers: Vec<crate::projects::types::McpServerEntry>,
-}
-
-/// Validated notification channel configuration.
-#[derive(Debug, Clone, Default)]
-pub struct NotificationsConfig {
-    /// External channel definitions resolved from config.
-    pub channels: Vec<ExternalChannelConfig>,
-}
-
-/// A single resolved external channel configuration.
+/// Validated agent ability gates.
+///
+/// Controls what the agent is allowed to modify at runtime.
 #[derive(Debug, Clone)]
-pub struct ExternalChannelConfig {
-    /// Channel name (key from `[notifications.channels.<name>]`).
-    pub name: String,
-    /// Channel type and type-specific settings.
-    pub kind: ExternalChannelKind,
+pub struct AgentAbilitiesConfig {
+    /// Whether the agent can add/remove MCP servers.
+    pub modify_mcp: bool,
+    /// Whether the agent can add/remove notification channels.
+    pub modify_channels: bool,
 }
 
-/// Channel type with type-specific configuration.
-#[derive(Debug, Clone)]
-pub enum ExternalChannelKind {
-    /// Ntfy push notification channel.
-    Ntfy {
-        /// Ntfy server URL.
-        url: String,
-        /// Topic to publish to.
-        topic: String,
-        /// Message priority (default: `"default"`).
-        priority: Option<String>,
-    },
-    /// Webhook HTTP channel.
-    Webhook {
-        /// Endpoint URL.
-        url: String,
-        /// HTTP method (default: `"POST"`).
-        method: Option<String>,
-        /// Additional headers.
-        headers: Vec<(String, String)>,
-    },
+impl Default for AgentAbilitiesConfig {
+    fn default() -> Self {
+        Self {
+            modify_mcp: DEFAULT_AGENT_MODIFY_MCP,
+            modify_channels: DEFAULT_AGENT_MODIFY_CHANNELS,
+        }
+    }
 }
 
 /// Validated background task configuration.
