@@ -152,11 +152,6 @@ impl CliClient {
                 self.indicator.finish();
                 println!("\n{}\n", self.theme.format_notice(message));
             }
-            ServerMessage::DegradedMode { message } => {
-                self.indicator.finish();
-                let line = format!("WARNING: {message}");
-                eprintln!("{}", self.theme.format_error(&line));
-            }
             // Reloading is intercepted in run_connect before display() is called
             ServerMessage::Pong | ServerMessage::Reloading => {}
         }

@@ -134,7 +134,9 @@ If any module later needs to become a standalone library (e.g., the MCP client i
 
 ## Gateway Configuration
 
-A single TOML configuration file replaces OpenClaw's `openclaw.json`. TOML over JSON5 because Rust's serde ecosystem handles it cleanly and it supports comments natively.
+Configuration is split across multiple files under `~/.residuum/`, each owning a distinct concern. TOML over JSON5 because Rust's serde ecosystem handles it cleanly and it supports comments natively. MCP uses JSON for Claude Code compatibility.
+
+### `config.toml` — General settings
 
 ```toml
 # ~/.residuum/config.toml
@@ -143,6 +145,54 @@ A single TOML configuration file replaces OpenClaw's `openclaw.json`. TOML over 
 name = "Samantha"
 timezone = "America/New_York"
 workspace_dir = "~/.residuum/workspace"
+
+[discord]
+token = "${DISCORD_BOT_TOKEN}"
+
+# Agent ability controls
+[agent]
+modify_mcp = false      # whether the agent can modify mcp.json
+modify_channels = false  # whether the agent can modify channels.toml
+
+# Memory thresholds (provider assignments come from providers.toml [models])
+[memory]
+observer_threshold_tokens = 30000
+reflector_threshold_tokens = 40000
+observer_cooldown_secs = 120             # cooldown after soft threshold
+observer_force_threshold_tokens = 60000  # bypasses cooldown
+
+[memory.search]
+vector_weight = 0.7
+text_weight = 0.3
+min_score = 0.35
+
+[gateway]
+# Gateway-level settings (timeouts, concurrency, etc.)
+
+[pulse]
+enabled = true
+# Pulse definitions live in HEARTBEAT.yml, not here.
+
+[skills]
+dirs = ["~/.residuum/skills"]
+
+[background]
+max_concurrent = 3
+
+[background.models]
+small = "gemini/gemini-2.5-flash"
+medium = "anthropic/claude-haiku-4-5"
+# large defaults to main agent model
+
+[retry]
+max_retries = 3
+initial_delay_ms = 500
+```
+
+### `providers.toml` — Provider definitions + model roles
+
+```toml
+# ~/.residuum/providers.toml
 
 # Named provider definitions
 [providers.anthropic]
@@ -161,36 +211,37 @@ default = "anthropic/claude-haiku-4-5"   # fallback for unset roles
 observer = "gemini/gemini-2.5-flash"
 # reflector, pulse default to `default` if unset
 # embedding = "openai/text-embedding-3-small"  # optional, enables vector search
+```
 
-# Memory thresholds (provider assignments come from [models])
-[memory]
-observer_threshold_tokens = 30000
-reflector_threshold_tokens = 40000
-observer_cooldown_secs = 120             # cooldown after soft threshold
-observer_force_threshold_tokens = 60000  # bypasses cooldown
+### `workspace/config/mcp.json` — MCP servers
 
-[memory.search]
-vector_weight = 0.7
-text_weight = 0.3
-min_score = 0.35
+Uses Claude Code-compatible JSON format so MCP definitions can be shared across tools.
 
-[discord]
-token = "${DISCORD_BOT_TOKEN}"
+```json
+{
+  "mcpServers": {
+    "filesystem": {
+      "command": "mcp-server-filesystem",
+      "args": ["/home/user/documents"]
+    },
+    "github": {
+      "command": "mcp-server-github",
+      "env": {
+        "GITHUB_TOKEN": "${GITHUB_TOKEN}"
+      }
+    }
+  }
+}
+```
 
-[pulse]
-enabled = true
-# Pulse definitions live in HEARTBEAT.yml, not here.
+Per-project MCP servers are declared as name references (`Vec<String>`) in `PROJECT.md` frontmatter, resolved against this file at runtime — not inline `McpServerEntry` definitions.
 
-[mcp]
-# MCP server definitions can live here or in project PROJECT.md frontmatter.
-[mcp.servers.filesystem]
-command = "mcp-server-filesystem"
-args = ["/home/user/documents"]
+### `workspace/config/channels.toml` — Notification channels
 
-[skills]
-dirs = ["~/.residuum/skills"]
+```toml
+# ~/.residuum/workspace/config/channels.toml
 
-[notifications.channels.ntfy]
+[channels.ntfy]
 type = "ntfy"
 url = "https://ntfy.sh"
 topic = "residuum"
@@ -198,28 +249,16 @@ topic = "residuum"
 # External notification channels are defined here.
 # Built-in channels (agent_wake, agent_feed, inbox) need no config.
 # CHANNELS.yml in the workspace defines the channel registry.
-
-[background]
-max_concurrent = 3
-
-[background.models]
-small = "gemini/gemini-2.5-flash"
-medium = "anthropic/claude-haiku-4-5"
-# large defaults to main agent model
-
-[retry]
-max_retries = 3
-initial_delay_ms = 500
 ```
 
-Validation happens at startup via serde + custom validators. Invalid config prevents boot with clear error messages.
+Validation happens at startup via serde + custom validators. Invalid config on restart triggers rollback from backup or fails with a clear error message — there is no degraded mode.
 
 ### Hot Reload
 
-The gateway watches `config.toml`, workspace identity files, `HEARTBEAT.yml`, `CHANNELS.yml`, and the `projects/` directory tree using `notify`. Changes are classified as:
+The gateway watches `config.toml`, `providers.toml`, workspace identity files, `HEARTBEAT.yml`, `workspace/config/mcp.json`, `workspace/config/channels.toml`, and the `projects/` directory tree using `notify`. Changes trigger in-place reloads via two signal types:
 
-- **Hot-applicable**: Identity file changes, HEARTBEAT.yml updates, skill additions, project entry changes. Applied without restart.
-- **Infrastructure**: Channel config changes, model provider changes, MCP server config. Require gateway restart (or a targeted subsystem restart).
+- **`ReloadSignal::Root`**: Fired on `config.toml` or `providers.toml` changes. The gateway diffs subsystem configs and only restarts affected subsystems (e.g., provider/model changes re-initialize adapters; memory threshold changes update the observer). No gateway restart required.
+- **`ReloadSignal::Workspace`**: Fired on `mcp.json`, `channels.toml`, identity file, `HEARTBEAT.yml`, skill, or project entry changes. Applied without restart — MCP servers are re-resolved, notification channels are re-registered, etc.
 
 ---
 
@@ -278,10 +317,13 @@ These are YAML/TOML files the Rust gateway validates and acts on:
 
 | File | Format | Gateway action |
 |------|--------|---------------|
-| `config.toml` | TOML | Full gateway configuration |
+| `config.toml` | TOML | General settings, interface tokens, agent abilities, memory, gateway, pulse, background, skills, retry |
+| `providers.toml` | TOML | Provider definitions and model role assignments |
+| `workspace/config/mcp.json` | JSON | MCP server definitions (Claude Code compatible format) |
+| `workspace/config/channels.toml` | TOML | Notification channel definitions (ntfy, webhooks) |
 | `HEARTBEAT.yml` | YAML | Pulse scheduling, task definitions |
-| `NOTIFY.yml` | YAML | Notification routing (hot-reloaded on every route call) |
-| `projects/**/PROJECT.md` | Markdown+YAML frontmatter | Project entry metadata, tool/MCP resolution |
+| `CHANNELS.yml` | YAML | Notification routing (hot-reloaded on every route call) |
+| `projects/**/PROJECT.md` | Markdown+YAML frontmatter | Project entry metadata, MCP name references |
 | `scheduled_actions.json` | JSON | Agent-created scheduled actions |
 | `pulse_state.json` | JSON | Pulse last-run timestamps and run counts (persisted across restarts) |
 | `memory/observations.json` | JSON | Global observation log (episode-based) |
@@ -781,8 +823,8 @@ Maintains the set of active MCP servers and their combined tool lists:
 
 MCP servers can be configured at two levels:
 
-1. **Global** (`config.toml` `[mcp.servers]`): Always available.
-2. **Project-scoped** (`PROJECT.md` frontmatter `mcp_servers`): Available only when the project is active.
+1. **Global** (`workspace/config/mcp.json`): Always available. Uses Claude Code-compatible JSON format.
+2. **Project-scoped** (`PROJECT.md` frontmatter `mcp_servers`): A `Vec<String>` of server names resolved against `mcp.json`. Available only when the project is active.
 
 ### 10. Tool System (`tools/`)
 
@@ -1022,5 +1064,5 @@ Guild channels, mention gating, and threads are deferred to Phase 5+.
 37. CLI logging: dual stderr + daily rolling file appender via `tracing-appender`.
 38. Config setup wizard: interactive terminal wizard (`run_interactive`) and flag-driven mode (`from_flags`).
 39. First-launch welcome message when `config.toml` doesn't exist.
-40. Config file protection: `PathPolicy.blocked_paths` prevents agent writes to `config.toml`.
-41. Gateway resilience: config backup/rollback on reload failure, degraded mode with config editor.
+40. Config file protection: `PathPolicy.blocked_paths` prevents agent writes to `config.toml` and `providers.toml`. Agent access to `mcp.json` and `channels.toml` is gated by `[agent] modify_mcp` and `modify_channels` booleans.
+41. Gateway resilience: config backup/rollback on reload failure. Failed config on restart rolls back from backup or fails with a clear error.

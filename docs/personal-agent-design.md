@@ -255,7 +255,7 @@ pulses:
         prompt: "Summarize today's calendar and top priorities"
 ```
 
-Built-in channels: `agent_wake` (inject into feed + start turn if idle), `agent_feed` (inject into feed passively), `inbox` (store silently). External channels (ntfy, webhook, etc.) are defined in `config.toml` under `[notifications.channels]`.
+Built-in channels: `agent_wake` (inject into feed + start turn if idle), `agent_feed` (inject into feed passively), `inbox` (store silently). External channels (ntfy, webhook, etc.) are defined in `channels.toml` under `[channels.<name>]`.
 
 A pulse with no `channels` field has its results dropped after transcript storage and a warn-level log is emitted to surface the misconfiguration. HEARTBEAT_OK results (nothing actionable) are never routed regardless of channel configuration.
 
