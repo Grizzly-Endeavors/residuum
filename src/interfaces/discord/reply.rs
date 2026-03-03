@@ -5,8 +5,8 @@ use std::sync::Arc;
 use serenity::async_trait;
 use serenity::model::id::ChannelId;
 
-use crate::channels::chunking::chunk_text;
-use crate::channels::types::{ReplyHandle, TypingGuard};
+use crate::interfaces::chunking::chunk_text;
+use crate::interfaces::types::{ReplyHandle, TypingGuard};
 
 /// Maximum message length for Discord.
 const DISCORD_MAX_CHARS: usize = 2000;

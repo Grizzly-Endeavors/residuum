@@ -1,4 +1,4 @@
-//! Discord channel adapter (DM-only).
+//! Discord interface adapter (DM-only).
 //!
 //! Implements the serenity `EventHandler` trait to receive DMs and route them
 //! through the standard `RoutedMessage` pipeline.
@@ -17,14 +17,14 @@ use std::sync::Arc;
 use serenity::prelude::*;
 use tokio::sync::mpsc;
 
-use crate::channels::types::RoutedMessage;
 use crate::config::DiscordConfig;
 use crate::gateway::server::{ReloadSignal, ServerCommand};
+use crate::interfaces::types::RoutedMessage;
 
 use self::handler::DiscordHandler;
 
-/// Discord channel adapter that routes DMs to the agent inbound channel.
-pub struct DiscordChannel {
+/// Discord interface adapter that routes DMs to the agent inbound channel.
+pub struct DiscordInterface {
     cfg: DiscordConfig,
     inbound_tx: mpsc::Sender<RoutedMessage>,
     workspace_dir: PathBuf,
@@ -34,8 +34,8 @@ pub struct DiscordChannel {
     shutdown_rx: tokio::sync::watch::Receiver<bool>,
 }
 
-impl DiscordChannel {
-    /// Create a new Discord channel adapter.
+impl DiscordInterface {
+    /// Create a new Discord interface adapter.
     ///
     /// # Arguments
     /// - `cfg`: Discord bot configuration (token).
@@ -108,7 +108,7 @@ impl DiscordChannel {
 
 #[cfg(test)]
 mod tests {
-    use crate::channels::cli::commands::{
+    use crate::interfaces::cli::commands::{
         CommandContext, CommandSideEffect, all_commands, execute_command,
     };
 
@@ -116,7 +116,7 @@ mod tests {
         CommandContext {
             url: "",
             verbose: false,
-            channel_name: "discord",
+            interface_name: "discord",
         }
     }
 

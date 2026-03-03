@@ -8,7 +8,7 @@ pub struct StatusLine {
     pub now: NaiveDateTime,
     /// When the previous user message was sent (if any).
     pub last_message_at: Option<NaiveDateTime>,
-    /// Which channel this message arrived from (e.g. `"websocket"`, `"discord"`).
+    /// Which interface this message arrived from (e.g. `"websocket"`, `"discord"`).
     pub message_source: Option<String>,
     /// Number of unread inbox items (0 → tag omitted).
     pub unread_inbox_count: usize,

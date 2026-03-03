@@ -14,16 +14,16 @@ use serenity::model::gateway::Ready;
 use serenity::prelude::*;
 use tokio::sync::mpsc;
 
-use crate::channels::attachment::{
-    AttachmentInfo, download_attachment, format_attachment_line, format_failed_attachment_line,
-};
-use crate::channels::cli::commands::{
-    CommandContext, CommandSideEffect, all_commands, execute_command,
-};
-use crate::channels::presence::{load_presence, to_activity, to_online_status};
-use crate::channels::types::{InboundMessage, MessageOrigin, RoutedMessage};
 use crate::gateway::server::{ReloadSignal, ServerCommand};
 use crate::inbox;
+use crate::interfaces::attachment::{
+    AttachmentInfo, download_attachment, format_attachment_line, format_failed_attachment_line,
+};
+use crate::interfaces::cli::commands::{
+    CommandContext, CommandSideEffect, all_commands, execute_command,
+};
+use crate::interfaces::presence::{load_presence, to_activity, to_online_status};
+use crate::interfaces::types::{InboundMessage, MessageOrigin, RoutedMessage};
 
 use super::reply::DiscordReplyHandle;
 
@@ -135,7 +135,7 @@ impl EventHandler for DiscordHandler {
         }
 
         let origin = MessageOrigin {
-            channel: "discord".to_string(),
+            interface: "discord".to_string(),
             sender_name: msg.author.name.clone(),
             sender_id: msg.author.id.to_string(),
         };
@@ -178,7 +178,7 @@ impl EventHandler for DiscordHandler {
         let command_ctx = CommandContext {
             url: "",
             verbose: false,
-            channel_name: "discord",
+            interface_name: "discord",
         };
 
         let result = execute_command(cmd.data.name.as_str(), cmd_args.as_deref(), &command_ctx);

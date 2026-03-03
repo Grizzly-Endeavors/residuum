@@ -31,11 +31,11 @@ residuum/
 │   ├── server.rs                     # WebSocket/HTTP server
 │   ├── shutdown.rs                   # Graceful shutdown coordination
 │   │
-│   ├── channels/
-│   │   ├── mod.rs                    # Channel trait definition
+│   ├── interfaces/
+│   │   ├── mod.rs                    # Interface trait definition
 │   │   ├── discord.rs                # Serenity-based Discord adapter
-│   │   ├── webhook.rs                # Generic incoming webhook channel
-│   │   └── cli.rs                    # Local CLI channel (dev/debug)
+│   │   ├── webhook.rs                # Generic incoming webhook interface
+│   │   └── cli.rs                    # Local CLI interface (dev/debug)
 │   │
 │   ├── agent/
 │   │   ├── mod.rs                    # Agent runtime orchestration
@@ -362,9 +362,9 @@ The distinction matters: parsed files have schemas and validation. Prompt files 
 
 ## Subsystem Designs
 
-### 1. Channel System (`channels/`)
+### 1. Interface System (`interfaces/`)
 
-Channels are the inbound/outbound message interface. Each channel adapter implements a trait:
+Interfaces are the inbound/outbound message adapters. Each interface adapter implements a trait:
 
 ```rust
 #[async_trait]
@@ -383,13 +383,13 @@ pub trait Channel: Send + Sync {
 }
 ```
 
-**Initial channels:**
+**Initial interfaces:**
 
-- **Discord** — via serenity. Primary channel. Supports rich embeds, threads, reactions.
-- **CLI** — stdin/stdout local channel. Always available. Essential for development and debugging.
+- **Discord** — via serenity. Primary interface. Supports rich embeds, threads, reactions.
+- **CLI** — stdin/stdout local interface. Always available. Essential for development and debugging.
 - **Webhook** — HTTP endpoint for incoming messages. Enables integration with arbitrary services.
 
-Additional channels (Telegram, Signal, etc.) can be added later as separate adapter implementations. The trait boundary means the gateway doesn't care.
+Additional interfaces (Telegram, Signal, etc.) can be added later as separate adapter implementations. The trait boundary means the gateway doesn't care.
 
 **Message normalization:**
 
@@ -995,7 +995,7 @@ Ordered by "what gets you a usable agent fastest":
 1. Shared types — Message types, config types, error handling (crate-root modules).
 2. `workspace` — Layout conventions, identity file loading, bootstrap.
 3. `models` — Anthropic + Ollama providers (use existing connectors).
-4. `channels/cli` — Local CLI channel.
+4. `interfaces/cli` — Local CLI interface.
 5. `agent` — Basic runtime: context assembly from identity files + recent messages, model call, tool execution loop.
 6. `tools` — `read`, `write`, `exec` (minimum viable tool set).
 7. `main.rs` + `config.rs` — Config loading, startup, wire everything together.
@@ -1018,10 +1018,10 @@ Ordered by "what gets you a usable agent fastest":
 
 **Milestone: Agent proactively checks on things, notifies you, and can schedule its own wake-ups.**
 
-### Phase 4: Discord & channels (COMPLETE)
-17. `channels/discord` — Serenity integration, DM support, message chunking.
-18. `channels/webhook` — Incoming webhook support.
-19. Channel abstraction — `ReplyHandle` trait, `RoutedMessage`, message source injection.
+### Phase 4: Discord & interfaces (COMPLETE)
+17. `interfaces/discord` — Serenity integration, DM support, message chunking.
+18. `interfaces/webhook` — Incoming webhook support.
+19. Interface abstraction — `ReplyHandle` trait, `RoutedMessage`, message source injection.
 20. `channels/presence` — Hot-reloadable Discord presence via PRESENCE.toml.
 21. `channels/discord` — Slash commands (help, status, reload, observe, reflect).
 22. `channels/attachment` — Attachment downloading to inbox with metadata injection.

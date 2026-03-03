@@ -8,11 +8,11 @@
 //! - `logs [--watch]`: display CLI log files
 //! - `setup`: interactive configuration wizard
 
-use residuum::channels::cli::CliClient;
-use residuum::channels::cli::commands::CommandEffect;
 use residuum::config::Config;
 use residuum::error::ResiduumError;
 use residuum::gateway::protocol::{ClientMessage, ServerMessage};
+use residuum::interfaces::cli::CliClient;
+use residuum::interfaces::cli::commands::CommandEffect;
 
 #[tokio::main]
 async fn main() {
@@ -384,7 +384,7 @@ fn run_stop_command() -> Result<(), ResiduumError> {
 )]
 async fn run_connect(url: &str, verbose: bool) -> Result<(), ResiduumError> {
     use futures_util::{SinkExt, StreamExt};
-    use residuum::channels::cli::CliReader;
+    use residuum::interfaces::cli::CliReader;
     use tokio_tungstenite::tungstenite::Message as TungsteniteMessage;
 
     let (ws_stream, _response) = tokio_tungstenite::connect_async(url)

@@ -10,10 +10,10 @@ use teloxide::requests::Requester;
 use teloxide::types::{ChatId, UpdateKind};
 use tokio::sync::mpsc;
 
-use crate::channels::cli::commands::{CommandContext, CommandSideEffect, execute_command};
-use crate::channels::types::{InboundMessage, MessageOrigin, RoutedMessage};
 use crate::gateway::server::{ReloadSignal, ServerCommand};
 use crate::inbox;
+use crate::interfaces::cli::commands::{CommandContext, CommandSideEffect, execute_command};
+use crate::interfaces::types::{InboundMessage, MessageOrigin, RoutedMessage};
 
 use super::reply::TelegramReplyHandle;
 
@@ -236,7 +236,7 @@ async fn dispatch_message(
     let sender_name = build_sender_name(from);
 
     let origin = MessageOrigin {
-        channel: "telegram".to_string(),
+        interface: "telegram".to_string(),
         sender_name,
         sender_id: from.id.to_string(),
     };
@@ -287,7 +287,7 @@ async fn handle_command(
     let command_ctx = CommandContext {
         url: "",
         verbose: false,
-        channel_name: "telegram",
+        interface_name: "telegram",
     };
 
     let result = execute_command(cmd_name, cmd_args, &command_ctx);
@@ -355,7 +355,7 @@ async fn handle_attachment(
     from: &teloxide::types::User,
     tz: chrono_tz::Tz,
 ) {
-    use crate::channels::attachment::{
+    use crate::interfaces::attachment::{
         AttachmentInfo, SavedAttachment, format_attachment_line, format_failed_attachment_line,
     };
     use teloxide::net::Download;

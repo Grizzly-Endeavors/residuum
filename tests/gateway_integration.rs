@@ -26,8 +26,8 @@ mod gateway_integration {
     use residuum::agent::Agent;
     use residuum::agent::context::PromptContext;
     use residuum::agent::interrupt;
-    use residuum::channels::websocket::WsReplyHandle;
     use residuum::gateway::protocol::{ClientMessage, ServerMessage};
+    use residuum::interfaces::websocket::WsReplyHandle;
     use residuum::models::{
         CompletionOptions, Message, ModelError, ModelProvider, ModelResponse, ToolDefinition,
     };

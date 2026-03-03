@@ -1,12 +1,12 @@
 pub mod actions;
 pub mod agent;
 pub mod background;
-pub mod channels;
 pub mod config;
 pub mod daemon;
 pub mod error;
 pub mod gateway;
 pub mod inbox;
+pub mod interfaces;
 pub mod mcp;
 pub mod memory;
 pub mod models;

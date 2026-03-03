@@ -1,4 +1,4 @@
-//! Normalized message types and reply routing for all channels.
+//! Normalized message types and reply routing for all interfaces.
 
 use std::sync::Arc;
 
@@ -9,15 +9,15 @@ use tokio::task::JoinHandle;
 /// Where a message originated from.
 #[derive(Debug, Clone)]
 pub struct MessageOrigin {
-    /// Channel name (e.g. `"websocket"`, `"discord"`, `"webhook"`).
-    pub channel: String,
+    /// Interface name (e.g. `"websocket"`, `"discord"`, `"webhook"`).
+    pub interface: String,
     /// Human-readable sender name.
     pub sender_name: String,
     /// Unique sender identifier (user ID, IP, etc.).
     pub sender_id: String,
 }
 
-/// A normalized inbound message from any channel.
+/// A normalized inbound message from any interface.
 #[derive(Debug, Clone)]
 pub struct InboundMessage {
     /// Correlation ID for reply routing.
@@ -30,9 +30,9 @@ pub struct InboundMessage {
     pub timestamp: DateTime<Utc>,
 }
 
-/// Trait for sending responses back to the originating channel.
+/// Trait for sending responses back to the originating interface.
 ///
-/// Each channel adapter implements this to route replies to the correct
+/// Each interface adapter implements this to route replies to the correct
 /// destination (WebSocket broadcast, Discord DM, webhook log, etc.).
 #[async_trait]
 pub trait ReplyHandle: Send + Sync {
@@ -48,19 +48,19 @@ pub trait ReplyHandle: Send + Sync {
     /// Start a background typing indicator that re-fires periodically.
     ///
     /// Returns a guard that cancels the indicator on drop. The default
-    /// implementation returns a no-op guard suitable for channels without
+    /// implementation returns a no-op guard suitable for interfaces without
     /// typing indicators.
     fn start_typing(&self) -> TypingGuard {
         TypingGuard::no_op()
     }
 
-    /// Notify the channel that a tool was invoked during the agent turn.
+    /// Notify the interface that a tool was invoked during the agent turn.
     ///
-    /// Default is a no-op — channels that don't display tool events
+    /// Default is a no-op — interfaces that don't display tool events
     /// (webhook, Discord) need no changes.
     async fn send_tool_call(&self, _id: &str, _name: &str, _args: &serde_json::Value) {}
 
-    /// Notify the channel that a tool call completed.
+    /// Notify the interface that a tool call completed.
     ///
     /// Default is a no-op.
     async fn send_tool_result(&self, _id: &str, _name: &str, _output: &str, _is_error: bool) {}
@@ -75,7 +75,7 @@ pub trait ReplyHandle: Send + Sync {
 pub struct RoutedMessage {
     /// The normalized inbound message.
     pub message: InboundMessage,
-    /// Handle for sending responses back to the originating channel.
+    /// Handle for sending responses back to the originating interface.
     pub reply: Arc<dyn ReplyHandle>,
 }
 
@@ -87,7 +87,7 @@ struct TypingCancel {
 
 /// RAII guard that keeps a typing indicator alive until dropped.
 ///
-/// For channels that support typing indicators (e.g. Discord), this spawns a
+/// For interfaces that support typing indicators (e.g. Discord), this spawns a
 /// background task that re-sends the indicator periodically. Dropping the guard
 /// signals the task to stop and aborts it.
 pub struct TypingGuard {

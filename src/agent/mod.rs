@@ -5,8 +5,8 @@ pub mod interrupt;
 pub mod recent_messages;
 pub(crate) mod turn;
 
-use crate::channels::types::{MessageOrigin, ReplyHandle};
 use crate::error::ResiduumError;
+use crate::interfaces::types::{MessageOrigin, ReplyHandle};
 use crate::mcp::SharedMcpRegistry;
 use crate::models::{CompletionOptions, Message, ModelProvider};
 use crate::tools::{SharedToolFilter, ToolRegistry};
@@ -244,7 +244,7 @@ impl Agent {
         let status_line = StatusLine {
             now,
             last_message_at: self.last_user_message_at,
-            message_source: origin.map(|o| o.channel.clone()),
+            message_source: origin.map(|o| o.interface.clone()),
             unread_inbox_count: unread,
         };
         self.last_user_message_at = Some(now);
@@ -386,7 +386,7 @@ impl Agent {
 mod tests {
     use super::turn::MAX_TOOL_ITERATIONS;
     use super::*;
-    use crate::channels::null::NullReplyHandle;
+    use crate::interfaces::null::NullReplyHandle;
     use crate::mcp::McpRegistry;
     use crate::models::{ModelError, ModelResponse, ToolCall, ToolDefinition};
     use crate::tools::{FileTracker, PathPolicy, ToolFilter};
@@ -917,12 +917,12 @@ mod tests {
         }
     }
 
-    fn make_inbound(id: &str, content: &str) -> crate::channels::types::InboundMessage {
-        crate::channels::types::InboundMessage {
+    fn make_inbound(id: &str, content: &str) -> crate::interfaces::types::InboundMessage {
+        crate::interfaces::types::InboundMessage {
             id: id.to_string(),
             content: content.to_string(),
-            origin: crate::channels::types::MessageOrigin {
-                channel: "test".to_string(),
+            origin: crate::interfaces::types::MessageOrigin {
+                interface: "test".to_string(),
                 sender_name: "tester".to_string(),
                 sender_id: "t1".to_string(),
             },

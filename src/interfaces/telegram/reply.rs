@@ -5,8 +5,8 @@ use teloxide::Bot;
 use teloxide::requests::Requester;
 use teloxide::types::{ChatAction, ChatId};
 
-use crate::channels::chunking::chunk_text;
-use crate::channels::types::{ReplyHandle, TypingGuard};
+use crate::interfaces::chunking::chunk_text;
+use crate::interfaces::types::{ReplyHandle, TypingGuard};
 
 /// Maximum message length for Telegram.
 const TELEGRAM_MAX_CHARS: usize = 4096;
