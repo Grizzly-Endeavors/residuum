@@ -83,6 +83,16 @@ impl Agent {
         &self.mcp_registry
     }
 
+    /// Replace the model provider in-place (e.g. after a config reload).
+    pub fn swap_provider(&mut self, provider: Box<dyn ModelProvider>) {
+        tracing::info!(
+            old_model = self.provider.model_name(),
+            new_model = provider.model_name(),
+            "swapping model provider"
+        );
+        self.provider = provider;
+    }
+
     /// Reload observations from the observation log file.
     ///
     /// # Errors
@@ -295,7 +305,7 @@ impl Agent {
         let mut sys_interrupt_rx = interrupt::dead_interrupt_rx();
 
         // System turns don't inject time context (no user-facing timestamps)
-        let texts = execute_turn(
+        let mut texts = execute_turn(
             provider,
             &self.tools,
             &self.tool_filter,
@@ -311,7 +321,7 @@ impl Agent {
         )
         .await?;
 
-        let response = texts.last().cloned().unwrap_or_default();
+        let response = texts.pop().unwrap_or_default();
 
         Ok(SystemTurnResult {
             response,
@@ -1286,5 +1296,77 @@ mod tests {
             "restored content should match"
         );
         assert_eq!(agent.messages_since(0)[1].content, "persisted answer");
+    }
+
+    /// Mock provider with a configurable model name for `swap_provider` tests.
+    struct NamedMockProvider {
+        name: &'static str,
+    }
+
+    #[async_trait]
+    impl ModelProvider for NamedMockProvider {
+        async fn complete(
+            &self,
+            _messages: &[Message],
+            _tools: &[ToolDefinition],
+            _options: &CompletionOptions,
+        ) -> Result<ModelResponse, ModelError> {
+            Ok(ModelResponse::new("ok".to_string(), vec![]))
+        }
+
+        fn model_name(&self) -> &'static str {
+            self.name
+        }
+    }
+
+    #[test]
+    fn swap_provider_changes_model() {
+        let mut agent = Agent::new(
+            Box::new(NamedMockProvider { name: "model-a" }),
+            ToolRegistry::new(),
+            no_filter(),
+            empty_mcp(),
+            IdentityFiles::default(),
+            CompletionOptions::default(),
+            chrono_tz::UTC,
+            std::path::PathBuf::from("/tmp/residuum-test-inbox"),
+        );
+
+        assert_eq!(agent.provider.model_name(), "model-a");
+
+        agent.swap_provider(Box::new(NamedMockProvider { name: "model-b" }));
+
+        assert_eq!(agent.provider.model_name(), "model-b");
+    }
+
+    #[test]
+    fn swap_provider_preserves_message_history() {
+        let mut agent = Agent::new(
+            Box::new(NamedMockProvider { name: "model-a" }),
+            ToolRegistry::new(),
+            no_filter(),
+            empty_mcp(),
+            IdentityFiles::default(),
+            CompletionOptions::default(),
+            chrono_tz::UTC,
+            std::path::PathBuf::from("/tmp/residuum-test-inbox"),
+        );
+
+        // Inject some messages into history
+        agent.inject_system_message("system context".to_string());
+        agent.inject_user_message("user question".to_string());
+        let before_count = agent.message_count();
+        assert!(before_count >= 2, "should have at least 2 messages");
+
+        // Swap the provider
+        agent.swap_provider(Box::new(NamedMockProvider { name: "model-b" }));
+
+        // History should be preserved
+        assert_eq!(
+            agent.message_count(),
+            before_count,
+            "message count should not change after swap"
+        );
+        assert_eq!(agent.provider.model_name(), "model-b");
     }
 }

@@ -64,6 +64,22 @@ impl Reflector {
         }
     }
 
+    /// Replace the reflector's configuration (e.g. after a config reload).
+    pub fn update_config(&mut self, config: ReflectorConfig) {
+        tracing::info!(
+            old_threshold = self.config.threshold_tokens,
+            new_threshold = config.threshold_tokens,
+            "updating reflector config"
+        );
+        self.config = config;
+    }
+
+    /// Replace the model provider (e.g. after a provider config change).
+    pub fn swap_provider(&mut self, provider: Box<dyn ModelProvider>) {
+        tracing::info!("swapping reflector model provider");
+        self.provider = provider;
+    }
+
     /// Check whether the observation log exceeds the reflection threshold.
     #[must_use]
     pub fn should_reflect(&self, log: &ObservationLog) -> bool {
@@ -475,5 +491,49 @@ mod tests {
             1,
             "original observation log should be preserved"
         );
+    }
+
+    #[test]
+    fn update_config_changes_threshold() {
+        let mut reflector = Reflector::new(
+            Box::new(MockMemoryProvider::new(COMPRESSED_RESPONSE)),
+            ReflectorConfig {
+                threshold_tokens: 1000,
+                tz: chrono_tz::UTC,
+            },
+        );
+
+        // Small log should NOT trigger at threshold=1000
+        let mut log = ObservationLog::new();
+        log.push(sample_observation("ep-001", "test"));
+        assert!(!reflector.should_reflect(&log));
+
+        // Lower the threshold
+        reflector.update_config(ReflectorConfig {
+            threshold_tokens: 10,
+            tz: chrono_tz::US::Eastern,
+        });
+
+        // Same log should now trigger at threshold=10
+        assert!(reflector.should_reflect(&log));
+    }
+
+    #[test]
+    fn swap_provider_changes_model() {
+        let mut reflector = Reflector::new(
+            Box::new(MockMemoryProvider::new(COMPRESSED_RESPONSE)),
+            ReflectorConfig::default(),
+        );
+
+        let new_response = r#"{
+            "observations": [
+                {"content": "from new provider", "timestamp": "2026-02-21T14:30", "project_context": "test", "visibility": "user"}
+            ]
+        }"#;
+        reflector.swap_provider(Box::new(MockMemoryProvider::new(new_response)));
+
+        // Verify the provider was swapped without panic
+        let log = ObservationLog::new();
+        assert!(!reflector.should_reflect(&log));
     }
 }

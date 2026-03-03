@@ -120,6 +120,38 @@ pub struct Notification {
     pub timestamp: DateTime<Utc>,
 }
 
+/// A single resolved external channel configuration.
+#[derive(Debug, Clone)]
+pub struct ExternalChannelConfig {
+    /// Channel name (key from channel definitions).
+    pub name: String,
+    /// Channel type and type-specific settings.
+    pub kind: ExternalChannelKind,
+}
+
+/// Channel type with type-specific configuration.
+#[derive(Debug, Clone)]
+pub enum ExternalChannelKind {
+    /// Ntfy push notification channel.
+    Ntfy {
+        /// Ntfy server URL.
+        url: String,
+        /// Topic to publish to.
+        topic: String,
+        /// Message priority (default: `"default"`).
+        priority: Option<String>,
+    },
+    /// Webhook HTTP channel.
+    Webhook {
+        /// Endpoint URL.
+        url: String,
+        /// HTTP method (default: `"POST"`).
+        method: Option<String>,
+        /// Additional headers.
+        headers: Vec<(String, String)>,
+    },
+}
+
 /// Outcome of routing a notification through channels.
 #[derive(Debug, Default)]
 pub struct RouteOutcome {

@@ -1,0 +1,39 @@
+# Residuum provider configuration — model assignments and provider connections.
+# Copy to providers.toml and edit as needed.
+
+# ── Providers (optional, define named connections) ────────────────────────────
+# Each entry specifies a connection to a model API. The key becomes a name you
+# can reference in [models]. The `type` field selects the protocol:
+#   anthropic, openai, ollama, gemini
+#
+# API keys support three formats:
+#   Plaintext:     api_key = "sk-ant-..."
+#   Env var:       api_key = "${ANTHROPIC_API_KEY}"
+#   Secret store:  api_key = "secret:anthropic_key"
+#
+# Use 'residuum secret set anthropic_key' to store encrypted secrets.
+#
+# [providers]
+# cerebras = { type = "openai", api_key = "csk-...", url = "https://api.cerebras.ai/v1" }
+# claude-max = { type = "anthropic", api_key = "${ANTHROPIC_API_KEY}" }
+# google-api = { type = "gemini", api_key = "secret:gemini_key" }
+
+# ── Models (role assignments) ─────────────────────────────────────────────────
+# Format: "provider_or_type/model_name"
+# If the part before / matches a [providers] entry, that connection is used.
+# Otherwise it is treated as an implicit provider type (anthropic, openai, etc.)
+# and the API key is read from the provider-specific env var or RESIDUUM_API_KEY.
+#
+# Roles: main (required), default (fallback for unset roles), observer,
+#        reflector, pulse
+#
+# Failover: use an array to specify fallback providers. If the primary fails
+# (after retries), the next provider in the list is tried:
+#   main = ["anthropic/claude-sonnet-4-6", "openai/gpt-4o"]
+[models]
+main = "anthropic/claude-sonnet-4-6"
+# default = "anthropic/claude-haiku-4-5"
+# observer = "google-api/gemini-3.0-flash"
+# reflector = "google-api/gemini-3.0-flash"
+# pulse = "anthropic/claude-haiku-4-5"
+# embedding = "openai/text-embedding-3-small"

@@ -238,7 +238,7 @@ pub(crate) async fn execute_subagent(
         subagents: SubagentsContext::none(),
     };
 
-    let texts: Vec<String> = execute_turn(
+    let mut texts: Vec<String> = execute_turn(
         &*resources.provider,
         &resources.tools,
         &resources.tool_filter,
@@ -265,7 +265,7 @@ pub(crate) async fn execute_subagent(
     )
     .await;
 
-    let summary = texts.last().cloned().unwrap_or_default();
+    let summary = texts.pop().unwrap_or_default();
     let messages = recent_messages.messages().to_vec();
     Ok(SubAgentOutput { summary, messages })
 }

@@ -3,16 +3,17 @@
 use std::path::PathBuf;
 
 use super::constants::{
-    DEFAULT_GATEWAY_BIND, DEFAULT_GATEWAY_PORT, DEFAULT_MAX_CONCURRENT_BACKGROUND,
-    DEFAULT_OBSERVER_COOLDOWN_SECS, DEFAULT_OBSERVER_FORCE_THRESHOLD, DEFAULT_OBSERVER_THRESHOLD,
-    DEFAULT_REFLECTOR_THRESHOLD, DEFAULT_SEARCH_CANDIDATE_MULTIPLIER, DEFAULT_SEARCH_MIN_SCORE,
-    DEFAULT_SEARCH_TEMPORAL_DECAY, DEFAULT_SEARCH_TEMPORAL_DECAY_HALF_LIFE_DAYS,
-    DEFAULT_SEARCH_TEXT_WEIGHT, DEFAULT_SEARCH_VECTOR_WEIGHT, DEFAULT_TRANSCRIPT_RETENTION_DAYS,
+    DEFAULT_AGENT_MODIFY_CHANNELS, DEFAULT_AGENT_MODIFY_MCP, DEFAULT_GATEWAY_BIND,
+    DEFAULT_GATEWAY_PORT, DEFAULT_MAX_CONCURRENT_BACKGROUND, DEFAULT_OBSERVER_COOLDOWN_SECS,
+    DEFAULT_OBSERVER_FORCE_THRESHOLD, DEFAULT_OBSERVER_THRESHOLD, DEFAULT_REFLECTOR_THRESHOLD,
+    DEFAULT_SEARCH_CANDIDATE_MULTIPLIER, DEFAULT_SEARCH_MIN_SCORE, DEFAULT_SEARCH_TEMPORAL_DECAY,
+    DEFAULT_SEARCH_TEMPORAL_DECAY_HALF_LIFE_DAYS, DEFAULT_SEARCH_TEXT_WEIGHT,
+    DEFAULT_SEARCH_VECTOR_WEIGHT, DEFAULT_TRANSCRIPT_RETENTION_DAYS,
 };
 use super::provider::ProviderSpec;
 
 /// Validated gateway configuration.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct GatewayConfig {
     /// Address to bind the WebSocket server to.
     pub bind: String,
@@ -40,7 +41,7 @@ impl GatewayConfig {
 /// Validated memory subsystem configuration (thresholds only).
 ///
 /// Provider assignments for observer/reflector are on `Config` directly.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct MemoryConfig {
     /// Token threshold before the observer fires.
     pub observer_threshold_tokens: usize,
@@ -67,7 +68,7 @@ impl Default for MemoryConfig {
 }
 
 /// Validated hybrid search configuration.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct SearchConfig {
     /// Weight for vector similarity scores in hybrid merge (0.0–1.0).
     pub vector_weight: f64,
@@ -97,21 +98,21 @@ impl Default for SearchConfig {
 }
 
 /// Validated Discord bot configuration.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct DiscordConfig {
     /// Bot token for the Discord API.
     pub token: String,
 }
 
 /// Validated Telegram bot configuration.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct TelegramConfig {
     /// Bot token for the Telegram API.
     pub token: String,
 }
 
 /// Validated webhook endpoint configuration.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct WebhookConfig {
     /// Whether the webhook endpoint is enabled.
     pub enabled: bool,
@@ -120,60 +121,34 @@ pub struct WebhookConfig {
 }
 
 /// Validated skills subsystem configuration.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct SkillsConfig {
     /// Directories to scan for skills (resolved, expanded paths).
     pub dirs: Vec<PathBuf>,
 }
 
-/// Validated MCP server configuration.
-#[derive(Debug, Clone, Default)]
-pub struct McpConfig {
-    /// Global MCP servers to start on gateway boot.
-    pub servers: Vec<crate::projects::types::McpServerEntry>,
+/// Validated agent ability gates.
+///
+/// Controls what the agent is allowed to modify at runtime.
+#[derive(Debug, Clone, PartialEq)]
+pub struct AgentAbilitiesConfig {
+    /// Whether the agent can add/remove MCP servers.
+    pub modify_mcp: bool,
+    /// Whether the agent can add/remove notification channels.
+    pub modify_channels: bool,
 }
 
-/// Validated notification channel configuration.
-#[derive(Debug, Clone, Default)]
-pub struct NotificationsConfig {
-    /// External channel definitions resolved from config.
-    pub channels: Vec<ExternalChannelConfig>,
-}
-
-/// A single resolved external channel configuration.
-#[derive(Debug, Clone)]
-pub struct ExternalChannelConfig {
-    /// Channel name (key from `[notifications.channels.<name>]`).
-    pub name: String,
-    /// Channel type and type-specific settings.
-    pub kind: ExternalChannelKind,
-}
-
-/// Channel type with type-specific configuration.
-#[derive(Debug, Clone)]
-pub enum ExternalChannelKind {
-    /// Ntfy push notification channel.
-    Ntfy {
-        /// Ntfy server URL.
-        url: String,
-        /// Topic to publish to.
-        topic: String,
-        /// Message priority (default: `"default"`).
-        priority: Option<String>,
-    },
-    /// Webhook HTTP channel.
-    Webhook {
-        /// Endpoint URL.
-        url: String,
-        /// HTTP method (default: `"POST"`).
-        method: Option<String>,
-        /// Additional headers.
-        headers: Vec<(String, String)>,
-    },
+impl Default for AgentAbilitiesConfig {
+    fn default() -> Self {
+        Self {
+            modify_mcp: DEFAULT_AGENT_MODIFY_MCP,
+            modify_channels: DEFAULT_AGENT_MODIFY_CHANNELS,
+        }
+    }
 }
 
 /// Validated background task configuration.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct BackgroundConfig {
     /// Maximum number of concurrent background tasks.
     pub max_concurrent: usize,
@@ -197,7 +172,7 @@ impl Default for BackgroundConfig {
 ///
 /// Each tier can be explicitly assigned a model chain (failover). Unset tiers
 /// fall back to the next tier up, ultimately falling back to main.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct BackgroundModelsConfig {
     /// Small/fast model chain for simple tasks.
     pub small: Option<Vec<ProviderSpec>>,
@@ -220,14 +195,16 @@ impl BackgroundModelsConfig {
         match tier {
             BackgroundModelTier::Small => self
                 .small
-                .clone()
-                .or_else(|| self.medium.clone())
-                .or_else(|| self.large.clone())
+                .as_ref()
+                .or(self.medium.as_ref())
+                .or(self.large.as_ref())
+                .cloned()
                 .unwrap_or_else(|| main.to_vec()),
             BackgroundModelTier::Medium => self
                 .medium
-                .clone()
-                .or_else(|| self.large.clone())
+                .as_ref()
+                .or(self.large.as_ref())
+                .cloned()
                 .unwrap_or_else(|| main.to_vec()),
             BackgroundModelTier::Large => self.large.clone().unwrap_or_else(|| main.to_vec()),
         }
@@ -309,5 +286,109 @@ mod tests {
             let s = tier.to_string();
             assert_eq!(s.parse::<BackgroundModelTier>().unwrap(), tier);
         }
+    }
+
+    #[test]
+    fn resolve_tier_tests() {
+        use super::super::provider::{ModelSpec, ProviderKind};
+
+        let p_small = ProviderSpec {
+            name: "dummy-small".to_string(),
+            model: ModelSpec {
+                kind: ProviderKind::OpenAi,
+                model: "small-model".to_string(),
+            },
+            provider_url: "http://dummy".to_string(),
+            api_key: None,
+        };
+        let p_medium = ProviderSpec {
+            name: "dummy-medium".to_string(),
+            model: ModelSpec {
+                kind: ProviderKind::OpenAi,
+                model: "medium-model".to_string(),
+            },
+            provider_url: "http://dummy".to_string(),
+            api_key: None,
+        };
+        let p_large = ProviderSpec {
+            name: "dummy-large".to_string(),
+            model: ModelSpec {
+                kind: ProviderKind::OpenAi,
+                model: "large-model".to_string(),
+            },
+            provider_url: "http://dummy".to_string(),
+            api_key: None,
+        };
+        let p_main = ProviderSpec {
+            name: "dummy-main".to_string(),
+            model: ModelSpec {
+                kind: ProviderKind::OpenAi,
+                model: "main-model".to_string(),
+            },
+            provider_url: "http://dummy".to_string(),
+            api_key: None,
+        };
+
+        let main_slice = std::slice::from_ref(&p_main);
+
+        // All present -> resolves to specific tier
+        let config_full = BackgroundModelsConfig {
+            small: Some(vec![p_small.clone()]),
+            medium: Some(vec![p_medium.clone()]),
+            large: Some(vec![p_large.clone()]),
+        };
+        assert_eq!(
+            config_full.resolve_tier(&BackgroundModelTier::Small, main_slice),
+            vec![p_small.clone()]
+        );
+        assert_eq!(
+            config_full.resolve_tier(&BackgroundModelTier::Medium, main_slice),
+            vec![p_medium.clone()]
+        );
+        assert_eq!(
+            config_full.resolve_tier(&BackgroundModelTier::Large, main_slice),
+            vec![p_large.clone()]
+        );
+
+        // Missing small -> small falls back to medium
+        let config_no_small = BackgroundModelsConfig {
+            small: None,
+            medium: Some(vec![p_medium.clone()]),
+            large: Some(vec![p_large.clone()]),
+        };
+        assert_eq!(
+            config_no_small.resolve_tier(&BackgroundModelTier::Small, main_slice),
+            vec![p_medium.clone()]
+        );
+
+        // Missing small and medium -> small and medium fall back to large
+        let config_only_large = BackgroundModelsConfig {
+            small: None,
+            medium: None,
+            large: Some(vec![p_large.clone()]),
+        };
+        assert_eq!(
+            config_only_large.resolve_tier(&BackgroundModelTier::Small, main_slice),
+            vec![p_large.clone()]
+        );
+        assert_eq!(
+            config_only_large.resolve_tier(&BackgroundModelTier::Medium, main_slice),
+            vec![p_large.clone()]
+        );
+
+        // Empty config -> all fall back to main
+        let config_empty = BackgroundModelsConfig::default();
+        assert_eq!(
+            config_empty.resolve_tier(&BackgroundModelTier::Small, main_slice),
+            vec![p_main.clone()]
+        );
+        assert_eq!(
+            config_empty.resolve_tier(&BackgroundModelTier::Medium, main_slice),
+            vec![p_main.clone()]
+        );
+        assert_eq!(
+            config_empty.resolve_tier(&BackgroundModelTier::Large, main_slice),
+            vec![p_main.clone()]
+        );
     }
 }

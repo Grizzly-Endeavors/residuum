@@ -12,7 +12,7 @@ use tokio::sync::mpsc;
 
 use crate::channels::cli::commands::{CommandContext, CommandSideEffect, execute_command};
 use crate::channels::types::{InboundMessage, MessageOrigin, RoutedMessage};
-use crate::gateway::server::ServerCommand;
+use crate::gateway::server::{ReloadSignal, ServerCommand};
 use crate::inbox;
 
 use super::reply::TelegramReplyHandle;
@@ -20,7 +20,8 @@ use super::reply::TelegramReplyHandle;
 /// Run the Telegram long-polling loop.
 ///
 /// Connects to the Telegram API, verifies the bot token, then enters an
-/// infinite polling loop that dispatches messages to the agent.
+/// infinite polling loop that dispatches messages to the agent. Returns
+/// cleanly when the shutdown signal fires.
 ///
 /// # Errors
 /// Returns an error if the initial `get_me` verification fails.
@@ -28,9 +29,10 @@ pub(super) async fn run_telegram_polling(
     token: &str,
     inbound_tx: mpsc::Sender<RoutedMessage>,
     workspace_dir: std::path::PathBuf,
-    reload_sender: tokio::sync::watch::Sender<bool>,
+    reload_tx: tokio::sync::watch::Sender<ReloadSignal>,
     command_tx: mpsc::Sender<ServerCommand>,
     tz: chrono_tz::Tz,
+    mut shutdown_rx: tokio::sync::watch::Receiver<bool>,
 ) -> anyhow::Result<()> {
     let bot = Bot::new(token);
     let inbox_dir = workspace_dir.join("inbox");
@@ -46,12 +48,20 @@ pub(super) async fn run_telegram_polling(
     let mut offset: i32 = 0;
 
     loop {
-        let updates = match bot.get_updates().offset(offset).timeout(30).await {
-            Ok(updates) => updates,
-            Err(e) => {
-                tracing::warn!(error = %e, "telegram polling error, retrying in 5s");
-                tokio::time::sleep(Duration::from_secs(5)).await;
-                continue;
+        let updates = tokio::select! {
+            result = bot.get_updates().offset(offset).timeout(30) => {
+                match result {
+                    Ok(updates) => updates,
+                    Err(e) => {
+                        tracing::warn!(error = %e, "telegram polling error, retrying in 5s");
+                        tokio::time::sleep(Duration::from_secs(5)).await;
+                        continue;
+                    }
+                }
+            }
+            _ = shutdown_rx.changed() => {
+                tracing::info!("telegram adapter received shutdown signal");
+                return Ok(());
             }
         };
 
@@ -84,7 +94,7 @@ pub(super) async fn run_telegram_polling(
                 from,
                 &inbound_tx,
                 &inbox_dir,
-                &reload_sender,
+                &reload_tx,
                 &command_tx,
                 tz,
             )
@@ -108,7 +118,7 @@ async fn dispatch_message(
     from: &teloxide::types::User,
     inbound_tx: &mpsc::Sender<RoutedMessage>,
     inbox_dir: &Path,
-    reload_sender: &tokio::sync::watch::Sender<bool>,
+    reload_tx: &tokio::sync::watch::Sender<ReloadSignal>,
     command_tx: &mpsc::Sender<ServerCommand>,
     tz: chrono_tz::Tz,
 ) {
@@ -127,15 +137,7 @@ async fn dispatch_message(
         let cmd_name = cmd_name.split('@').next().unwrap_or(cmd_name);
 
         handle_command(
-            bot,
-            chat_id,
-            from,
-            cmd_name,
-            cmd_args,
-            inbox_dir,
-            reload_sender,
-            command_tx,
-            tz,
+            bot, chat_id, from, cmd_name, cmd_args, inbox_dir, reload_tx, command_tx, tz,
         )
         .await;
         return;
@@ -278,7 +280,7 @@ async fn handle_command(
     cmd_name: &str,
     cmd_args: Option<&str>,
     inbox_dir: &Path,
-    reload_sender: &tokio::sync::watch::Sender<bool>,
+    reload_tx: &tokio::sync::watch::Sender<ReloadSignal>,
     command_tx: &mpsc::Sender<ServerCommand>,
     tz: chrono_tz::Tz,
 ) {
@@ -293,7 +295,7 @@ async fn handle_command(
     let response_text = match result.side_effect {
         Some(CommandSideEffect::Reload) => {
             tracing::info!("reload requested via telegram command");
-            reload_sender.send(true).ok();
+            reload_tx.send(ReloadSignal::Root).ok();
             result.response
         }
         Some(CommandSideEffect::ServerCommand { name, args }) => {

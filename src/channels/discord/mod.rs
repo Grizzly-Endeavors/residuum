@@ -12,13 +12,14 @@ mod handler;
 mod reply;
 
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use serenity::prelude::*;
 use tokio::sync::mpsc;
 
 use crate::channels::types::RoutedMessage;
 use crate::config::DiscordConfig;
-use crate::gateway::server::ServerCommand;
+use crate::gateway::server::{ReloadSignal, ServerCommand};
 
 use self::handler::DiscordHandler;
 
@@ -27,9 +28,10 @@ pub struct DiscordChannel {
     cfg: DiscordConfig,
     inbound_tx: mpsc::Sender<RoutedMessage>,
     workspace_dir: PathBuf,
-    reload_sender: tokio::sync::watch::Sender<bool>,
+    reload_tx: tokio::sync::watch::Sender<ReloadSignal>,
     command_tx: mpsc::Sender<ServerCommand>,
     tz: chrono_tz::Tz,
+    shutdown_rx: tokio::sync::watch::Receiver<bool>,
 }
 
 impl DiscordChannel {
@@ -39,35 +41,39 @@ impl DiscordChannel {
     /// - `cfg`: Discord bot configuration (token).
     /// - `inbound_tx`: Channel for routing messages to the agent.
     /// - `workspace_dir`: Path to the workspace root (for PRESENCE.toml and inbox).
-    /// - `reload_sender`: Watch channel to trigger config reload.
+    /// - `reload_tx`: Watch channel to trigger config reload.
     /// - `command_tx`: Channel for dispatching named server commands.
     /// - `tz`: Timezone for inbox item timestamps.
+    /// - `shutdown_rx`: Watch channel signalling graceful shutdown.
     #[must_use]
-    pub fn new(
+    pub(crate) fn new(
         cfg: DiscordConfig,
         inbound_tx: mpsc::Sender<RoutedMessage>,
         workspace_dir: PathBuf,
-        reload_sender: tokio::sync::watch::Sender<bool>,
+        reload_tx: tokio::sync::watch::Sender<ReloadSignal>,
         command_tx: mpsc::Sender<ServerCommand>,
         tz: chrono_tz::Tz,
+        shutdown_rx: tokio::sync::watch::Receiver<bool>,
     ) -> Self {
         Self {
             cfg,
             inbound_tx,
             workspace_dir,
-            reload_sender,
+            reload_tx,
             command_tx,
             tz,
+            shutdown_rx,
         }
     }
 
     /// Start the Discord gateway connection.
     ///
-    /// This blocks until the connection is closed or an error occurs.
+    /// This blocks until the connection is closed, a shutdown signal is
+    /// received, or an error occurs.
     ///
     /// # Errors
     /// Returns an error if the serenity client cannot be built or the connection fails.
-    pub async fn start(self) -> Result<(), serenity::Error> {
+    pub(crate) async fn start(self) -> Result<(), serenity::Error> {
         let intents = GatewayIntents::DIRECT_MESSAGES | GatewayIntents::MESSAGE_CONTENT;
 
         let presence_path = self.workspace_dir.join("PRESENCE.toml");
@@ -77,7 +83,7 @@ impl DiscordChannel {
             inbound_tx: self.inbound_tx,
             presence_path,
             inbox_dir,
-            reload_sender: self.reload_sender,
+            reload_tx: self.reload_tx,
             command_tx: self.command_tx,
             tz: self.tz,
         };
@@ -85,6 +91,16 @@ impl DiscordChannel {
         let mut client = Client::builder(&self.cfg.token, intents)
             .event_handler(handler)
             .await?;
+
+        // Monitor shutdown signal and cleanly disconnect shards
+        let shard_manager = Arc::clone(&client.shard_manager);
+        let mut shutdown_rx = self.shutdown_rx;
+        tokio::spawn(async move {
+            if shutdown_rx.wait_for(|v| *v).await.is_ok() {
+                tracing::info!("discord adapter received shutdown signal");
+                shard_manager.shutdown_all().await;
+            }
+        });
 
         client.start().await
     }

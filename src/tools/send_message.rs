@@ -106,8 +106,8 @@ impl Tool for SendMessageTool {
                 ))
             }
             ChannelTarget::External(ext_name) => {
-                if !self.router.has_external_channel(&ext_name) {
-                    let available = self.router.external_channel_names();
+                if !self.router.has_external_channel(&ext_name).await {
+                    let available = self.router.external_channel_names().await;
                     return Ok(ToolResult::error(format!(
                         "unknown external channel '{ext_name}'; available: {}",
                         if available.is_empty() {

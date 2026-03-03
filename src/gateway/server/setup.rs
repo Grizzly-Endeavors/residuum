@@ -48,7 +48,7 @@ pub async fn run_setup_server_at(config_dir: PathBuf) -> Result<SetupExit, Resid
     let api_state = ConfigApiState {
         config_dir,
         memory_dir: None,
-        reload_sender: None,
+        reload_tx: None,
         setup_done: Some(Arc::clone(&setup_done_tx)),
     };
 

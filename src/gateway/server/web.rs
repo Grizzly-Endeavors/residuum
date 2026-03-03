@@ -20,6 +20,8 @@ use crate::config::Config;
 use crate::config::secrets::SecretStore;
 use crate::memory::recent_messages::load_recent_messages;
 
+use super::ReloadSignal;
+
 mod embedded {
     //! Module boundary isolates `rust-embed` derive from clippy `same_name_method`.
     #![expect(
@@ -44,7 +46,7 @@ pub(super) struct ConfigApiState {
     /// Path to the workspace memory directory (None in setup mode).
     pub memory_dir: Option<PathBuf>,
     /// Signal the running gateway to reload (None in setup mode).
-    pub reload_sender: Option<watch::Sender<bool>>,
+    pub reload_tx: Option<watch::Sender<ReloadSignal>>,
     /// Signal the setup server that config is saved (None in running mode).
     pub setup_done: Option<Arc<watch::Sender<bool>>>,
 }
@@ -134,8 +136,8 @@ async fn api_config_raw_put(
     })?;
 
     // Trigger reload if in running mode
-    if let Some(reload_sender) = &state.reload_sender {
-        reload_sender.send(true).ok();
+    if let Some(reload_tx) = &state.reload_tx {
+        reload_tx.send(ReloadSignal::Root).ok();
     }
 
     Ok(Json(ValidateResponse {
@@ -757,7 +759,7 @@ mod tests {
         let state = ConfigApiState {
             config_dir: PathBuf::from("/tmp/residuum-test-nonexistent"),
             memory_dir: None,
-            reload_sender: None,
+            reload_tx: None,
             setup_done: None,
         };
         let Json(messages) = api_chat_history(State(state)).await;
@@ -772,7 +774,7 @@ mod tests {
         let state = ConfigApiState {
             config_dir: PathBuf::from("/tmp/residuum-test-nonexistent"),
             memory_dir: Some(PathBuf::from("/tmp/residuum-test-nonexistent-memory")),
-            reload_sender: None,
+            reload_tx: None,
             setup_done: None,
         };
         let Json(messages) = api_chat_history(State(state)).await;
@@ -788,7 +790,7 @@ mod tests {
         let state = ConfigApiState {
             config_dir: dir.path().to_path_buf(),
             memory_dir: None,
-            reload_sender: None,
+            reload_tx: None,
             setup_done: None,
         };
 

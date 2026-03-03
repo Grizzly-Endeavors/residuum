@@ -96,10 +96,6 @@ async fn run_serve_foreground(args: &[String]) -> Result<(), ResiduumError> {
 }
 
 /// Inner implementation of foreground serve, wrapped by PID file lifecycle.
-#[expect(
-    clippy::too_many_lines,
-    reason = "sequential setup/serve dispatch with reload loop; splitting would obscure the flow"
-)]
 async fn run_serve_foreground_inner(args: &[String]) -> Result<(), ResiduumError> {
     // --setup: run the onboarding wizard in an isolated temp directory,
     // then boot the gateway with the resulting config for end-to-end testing
@@ -130,32 +126,22 @@ async fn run_serve_foreground_inner(args: &[String]) -> Result<(), ResiduumError
         }
 
         // Load the config written by the wizard and run the gateway
-        loop {
-            let mut cfg = Config::load_at(&tmp_dir)?;
-            cfg.workspace_dir = tmp_dir.join("workspace");
-            tracing::info!(
-                model = cfg.main.first().map_or("(none)", |s| s.model.model.as_str()),
-                provider_url = cfg.main.first().map_or("(none)", |s| s.provider_url.as_str()),
-                workspace = %cfg.workspace_dir.display(),
-                "setup-mode: configuration loaded, starting gateway"
-            );
-            match Box::pin(residuum::gateway::server::run_gateway(cfg)).await? {
-                residuum::gateway::server::GatewayExit::Shutdown => break,
-                residuum::gateway::server::GatewayExit::Reload => {
-                    tracing::info!("configuration reloaded, restarting gateway");
-                }
-            }
-        }
+        let mut cfg = Config::load_at(&tmp_dir)?;
+        cfg.workspace_dir = tmp_dir.join("workspace");
+        tracing::info!(
+            model = cfg.main.first().map_or("(none)", |s| s.model.model.as_str()),
+            provider_url = cfg.main.first().map_or("(none)", |s| s.provider_url.as_str()),
+            workspace = %cfg.workspace_dir.display(),
+            "setup-mode: configuration loaded, starting gateway"
+        );
+        Box::pin(residuum::gateway::server::run_gateway(cfg)).await?;
         return Ok(());
     }
 
     let config_dir = Config::config_dir()?;
     // Determine first-boot from disk state: if a backup exists, the gateway
-    // has previously loaded a valid config, so failures should go to degraded
-    // mode (not the setup wizard).  An in-memory flag alone resets on every
-    // process restart, which would erroneously re-enter setup after a crash
-    // when the config has been successfully used before.
-    let mut is_first_boot = !config_dir.join("config.toml.bak").exists();
+    // has previously loaded a valid config, so this is a restart.
+    let is_first_boot = !config_dir.join("config.toml.bak").exists();
 
     loop {
         Config::bootstrap_config_dir()?;
@@ -167,107 +153,37 @@ async fn run_serve_foreground_inner(args: &[String]) -> Result<(), ResiduumError
                     workspace = %cfg.workspace_dir.display(),
                     "configuration loaded"
                 );
-                // Back up the successfully-loaded config BEFORE running the
-                // gateway.  The web API may overwrite config.toml while the
-                // gateway is running (triggering a reload), so the backup must
-                // capture the last-known-good state *now*, not after the
-                // reload signal arrives.
-                backup_config(&config_dir);
-                let bind_addr = Some(cfg.gateway.addr());
-                match Box::pin(residuum::gateway::server::run_gateway(cfg)).await {
-                    Ok(residuum::gateway::server::GatewayExit::Shutdown) => break,
-                    Ok(residuum::gateway::server::GatewayExit::Reload) => {
-                        tracing::info!("configuration reloaded, restarting gateway");
-                        is_first_boot = false;
-                    }
-                    Err(err) if is_first_boot => return Err(err),
-                    Err(err) => {
-                        // Reload failed — try rolling back config
-                        tracing::warn!(error = %err, "gateway initialization failed after reload");
-                        if rollback_config(&config_dir) {
-                            match Config::load() {
-                                Ok(_) => {
-                                    eprintln!(
-                                        "warning: reload failed, rolled back to previous config: {err}"
-                                    );
-                                    tracing::warn!("rolled back to previous config, retrying");
-                                    continue;
-                                }
-                                Err(rollback_err) => {
-                                    tracing::warn!(error = %rollback_err, "rollback config also failed to load");
-                                }
-                            }
-                        }
-                        // Rollback failed or rolled-back config also broke — degraded mode
-                        let error_msg = format!(
-                            "gateway entered degraded mode: {err}\n\n\
-                             To fix this:\n\
-                             1. Open the config editor at http://127.0.0.1:7700/ and correct the issue\n\
-                             2. Or edit ~/.residuum/config.toml directly\n\
-                             3. Then run /reload to retry"
-                        );
-                        match residuum::gateway::server::degraded::run_degraded_gateway(
-                            error_msg,
-                            config_dir.clone(),
-                            bind_addr,
-                        )
-                        .await
-                        {
-                            residuum::gateway::server::GatewayExit::Reload => {
-                                tracing::info!(
-                                    "degraded mode: reload requested, retrying full initialization"
-                                );
-                            }
-                            residuum::gateway::server::GatewayExit::Shutdown => break,
-                        }
-                    }
-                }
+                // Gateway handles reloads in-place and only returns on shutdown
+                // or fatal error. Backup is created inside run_gateway().
+                Box::pin(residuum::gateway::server::run_gateway(cfg)).await?;
+                break;
             }
             Err(err) if !is_first_boot => {
-                // Config parse failed on reload — try rollback
-                tracing::warn!(error = %err, "config invalid after reload");
-                if rollback_config(&config_dir) {
+                // Config broken on restart — try restoring from backup
+                tracing::warn!(error = %err, "config invalid, attempting rollback from backup");
+                if residuum::gateway::server::rollback_config(&config_dir) {
+                    // Backup restored — retry loading
                     match Config::load() {
-                        Ok(_) => {
-                            eprintln!(
-                                "warning: config invalid after reload, rolled back to previous config: {err}"
-                            );
-                            tracing::warn!("rolled back to previous config, retrying");
-                            continue;
+                        Ok(cfg) => {
+                            tracing::info!("config restored from backup, starting gateway");
+                            Box::pin(residuum::gateway::server::run_gateway(cfg)).await?;
+                            break;
                         }
-                        Err(rollback_err) => {
-                            tracing::warn!(
-                                error = %rollback_err,
-                                "rollback config also failed to load"
-                            );
+                        Err(retry_err) => {
+                            return Err(ResiduumError::Config(format!(
+                                "config invalid after rollback: {retry_err}\n\n\
+                                 fix ~/.residuum/config.toml and ~/.residuum/providers.toml manually, then restart"
+                            )));
                         }
                     }
                 }
-                // Rollback failed or rolled-back config also broke — degraded mode
-                let error_msg = format!(
-                    "gateway entered degraded mode: config error: {err}\n\n\
-                     To fix this:\n\
-                     1. Open the config editor at http://127.0.0.1:7700/ and correct the issue\n\
-                     2. Or edit ~/.residuum/config.toml directly\n\
-                     3. Then run /reload to retry"
-                );
-                match residuum::gateway::server::degraded::run_degraded_gateway(
-                    error_msg,
-                    config_dir.clone(),
-                    None,
-                )
-                .await
-                {
-                    residuum::gateway::server::GatewayExit::Reload => {
-                        tracing::info!(
-                            "degraded mode: reload requested, retrying full initialization"
-                        );
-                    }
-                    residuum::gateway::server::GatewayExit::Shutdown => break,
-                }
+                return Err(ResiduumError::Config(format!(
+                    "config invalid and no backup available: {err}\n\n\
+                     fix ~/.residuum/config.toml and ~/.residuum/providers.toml manually, then restart"
+                )));
             }
             Err(err) => {
-                // First boot — setup wizard (existing behavior)
+                // First boot — setup wizard
                 tracing::warn!(error = %err, "config invalid, starting setup wizard");
                 match Box::pin(residuum::gateway::server::setup::run_setup_server()).await? {
                     residuum::gateway::server::setup::SetupExit::ConfigSaved => {
@@ -587,8 +503,8 @@ async fn run_connect(url: &str, verbose: bool) -> Result<(), ResiduumError> {
 
                 match serde_json::from_str::<ServerMessage>(&raw) {
                     Ok(ServerMessage::Reloading) => {
-                        eprintln!("server is reloading, reconnect when ready");
-                        break;
+                        // In-place reload: server stays up, no need to disconnect
+                        eprintln!("server is reloading configuration...");
                     }
                     Ok(ref server_msg @ ServerMessage::Response { ref reply_to, .. })
                         if turn_active && !reply_to.is_empty() =>
@@ -616,41 +532,6 @@ async fn run_connect(url: &str, verbose: bool) -> Result<(), ResiduumError> {
     }
 
     Ok(())
-}
-
-/// Back up `config.toml` → `config.toml.bak` before a reload attempt.
-///
-/// Best-effort: logs a warning on failure but never panics.
-fn backup_config(config_dir: &std::path::Path) {
-    let src = config_dir.join("config.toml");
-    let dst = config_dir.join("config.toml.bak");
-    if let Err(err) = std::fs::copy(&src, &dst) {
-        tracing::warn!(error = %err, "failed to back up config.toml before reload");
-    } else {
-        tracing::debug!("config.toml backed up to config.toml.bak");
-    }
-}
-
-/// Restore `config.toml.bak` → `config.toml` after a failed reload.
-///
-/// Returns `true` if the rollback succeeded.
-fn rollback_config(config_dir: &std::path::Path) -> bool {
-    let backup = config_dir.join("config.toml.bak");
-    let target = config_dir.join("config.toml");
-    if !backup.exists() {
-        tracing::warn!("no config backup found, cannot rollback");
-        return false;
-    }
-    match std::fs::copy(&backup, &target) {
-        Ok(_) => {
-            tracing::info!("config.toml restored from backup");
-            true
-        }
-        Err(err) => {
-            tracing::warn!(error = %err, "failed to restore config.toml from backup");
-            false
-        }
-    }
 }
 
 /// Initialize tracing with stderr-only output (default for serve/logs/setup).
@@ -960,8 +841,6 @@ where
 #[cfg(test)]
 #[expect(clippy::unwrap_used, reason = "test code uses unwrap for clarity")]
 mod tests {
-    use super::*;
-
     #[test]
     fn first_boot_detected_when_no_backup_exists() {
         let dir = tempfile::tempdir().unwrap();
@@ -982,6 +861,8 @@ mod tests {
 
     #[test]
     fn backup_config_creates_bak_file() {
+        use residuum::gateway::server::backup_config;
+
         let dir = tempfile::tempdir().unwrap();
         let config = dir.path().join("config.toml");
         std::fs::write(&config, "timezone = \"UTC\"\n").unwrap();
@@ -999,6 +880,8 @@ mod tests {
 
     #[test]
     fn rollback_restores_backup() {
+        use residuum::gateway::server::rollback_config;
+
         let dir = tempfile::tempdir().unwrap();
         let config = dir.path().join("config.toml");
         let bak = dir.path().join("config.toml.bak");
@@ -1016,6 +899,8 @@ mod tests {
 
     #[test]
     fn rollback_fails_without_backup() {
+        use residuum::gateway::server::rollback_config;
+
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("config.toml"), "BROKEN").unwrap();
 

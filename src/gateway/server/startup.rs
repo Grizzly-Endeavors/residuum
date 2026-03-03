@@ -1,6 +1,5 @@
 //! Gateway initialization: builds all subsystems before the event loop starts.
 
-use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
 
@@ -26,8 +25,7 @@ use crate::models::{
     CompletionOptions, EmbeddingProvider, HttpClientConfig, SharedHttpClient,
     build_embedding_provider, build_provider_chain,
 };
-use crate::notify::channels::{InboxChannel, NotificationChannel};
-use crate::notify::external::{NtfyChannel, WebhookChannel};
+use crate::notify::channels::InboxChannel;
 use crate::notify::router::NotificationRouter;
 use crate::projects::activation::{ProjectState, SharedProjectState};
 use crate::projects::scanner::ProjectIndex;
@@ -62,24 +60,34 @@ pub(super) struct GatewayComponents {
     pub(super) embedding_provider: Option<Arc<dyn EmbeddingProvider>>,
     pub(super) pulse_enabled: bool,
     pub(super) notification_router: Arc<NotificationRouter>,
+    pub(super) http_client: SharedHttpClient,
     pub(super) background_spawner: Arc<BackgroundTaskSpawner>,
     pub(super) background_result_rx: mpsc::Receiver<BackgroundResult>,
     pub(super) spawn_context: Arc<SpawnContext>,
 }
 
-/// Initialize all gateway subsystems from config.
-///
-/// Bootstraps the workspace, builds model providers, memory components,
-/// search index, project/skill state, tool registry, and agent.
+/// Model providers and memory pipeline observers built from config.
+pub(super) struct ProviderComponents {
+    pub provider: Box<dyn crate::models::ModelProvider>,
+    pub observer: Observer,
+    pub reflector: Reflector,
+    pub embedding_provider: Option<Arc<dyn EmbeddingProvider>>,
+}
+
+/// Search index and vector store built during initialization.
+pub(super) struct MemoryComponents {
+    pub search_index: Arc<MemoryIndex>,
+    pub hybrid_searcher: Arc<HybridSearcher>,
+    pub vector_store: Option<Arc<VectorStore>>,
+}
+
+/// Bootstrap the workspace directory and return the layout and timezone.
 ///
 /// # Errors
-/// Returns `ResiduumError` if any subsystem fails to initialize.
-#[expect(
-    clippy::too_many_lines,
-    reason = "sequential initialization pipeline; splitting would obscure the boot order"
-)]
-pub(super) async fn initialize(cfg: &Config) -> Result<GatewayComponents, ResiduumError> {
-    // Workspace
+/// Returns `ResiduumError` if workspace bootstrapping fails.
+pub(super) async fn init_workspace(
+    cfg: &Config,
+) -> Result<(WorkspaceLayout, chrono_tz::Tz), ResiduumError> {
     let layout = WorkspaceLayout::new(&cfg.workspace_dir);
     let tz = cfg.timezone;
     ensure_workspace(&layout, cfg.name.as_deref(), Some(cfg.timezone.name())).await?;
@@ -92,12 +100,32 @@ pub(super) async fn initialize(cfg: &Config) -> Result<GatewayComponents, Residu
     })?;
     tracing::info!(workspace = %cfg.workspace_dir.display(), "changed to workspace directory");
 
-    // Identity + HTTP client
-    let identity = IdentityFiles::load(&layout).await?;
+    Ok((layout, tz))
+}
+
+/// Load identity files and build the shared HTTP client.
+///
+/// # Errors
+/// Returns `ResiduumError` if identity loading or HTTP client construction fails.
+pub(super) async fn init_identity_and_http(
+    layout: &WorkspaceLayout,
+    cfg: &Config,
+) -> Result<(IdentityFiles, SharedHttpClient), ResiduumError> {
+    let identity = IdentityFiles::load(layout).await?;
     let http = SharedHttpClient::new(&HttpClientConfig::with_timeout(cfg.timeout_secs))
         .map_err(|e| ResiduumError::Config(format!("failed to build HTTP client: {e}")))?;
+    Ok((identity, http))
+}
 
-    // Model providers
+/// Build model providers, observer, reflector, and embedding provider.
+///
+/// # Errors
+/// Returns `ResiduumError` if the main model provider fails to build.
+pub(super) fn init_providers(
+    cfg: &Config,
+    tz: chrono_tz::Tz,
+    http: SharedHttpClient,
+) -> Result<ProviderComponents, ResiduumError> {
     let provider =
         build_provider_chain(&cfg.main, cfg.max_tokens, http.clone(), cfg.retry.clone())?;
     tracing::info!(model = provider.model_name(), "model provider ready");
@@ -112,10 +140,11 @@ pub(super) async fn initialize(cfg: &Config) -> Result<GatewayComponents, Residu
             (Observer::disabled(tz), Reflector::disabled(tz))
         }
     };
+
     let embedding_provider: Option<Arc<dyn EmbeddingProvider>> = match cfg
         .embedding
         .as_ref()
-        .map(|spec| build_embedding_provider(spec, http.clone(), cfg.retry.clone()))
+        .map(|spec| build_embedding_provider(spec, http, cfg.retry.clone()))
         .transpose()
     {
         Ok(ep) => {
@@ -131,6 +160,23 @@ pub(super) async fn initialize(cfg: &Config) -> Result<GatewayComponents, Residu
         }
     };
 
+    Ok(ProviderComponents {
+        provider,
+        observer,
+        reflector,
+        embedding_provider,
+    })
+}
+
+/// Build the search index, vector store, and hybrid searcher.
+///
+/// # Errors
+/// Returns `ResiduumError` if the search index cannot be created.
+pub(super) async fn init_memory(
+    cfg: &Config,
+    layout: &WorkspaceLayout,
+    embedding_provider: Option<&Arc<dyn EmbeddingProvider>>,
+) -> Result<MemoryComponents, ResiduumError> {
     // Search index — schema migration + incremental sync
     let manifest_path = layout.index_manifest_json();
     let manifest = match IndexManifest::load(&manifest_path).await {
@@ -161,138 +207,52 @@ pub(super) async fn initialize(cfg: &Config) -> Result<GatewayComponents, Residu
         }
     };
 
-    if manifest.files.is_empty() {
-        // Full rebuild
-        match search_index.rebuild(&layout.memory_dir()) {
-            Ok(result) => {
-                let total = result.obs_count + result.chunk_count;
-                tracing::info!(
-                    observations = result.obs_count,
-                    chunks = result.chunk_count,
-                    "search index rebuilt ({total} documents)"
-                );
-                let rebuilt = build_manifest_from_rebuild(result);
-                if let Err(save_err) = rebuilt.save(&manifest_path).await {
-                    eprintln!("warning: failed to save index manifest after rebuild: {save_err}");
-                }
-            }
-            Err(rebuild_err) => eprintln!("warning: failed to rebuild search index: {rebuild_err}"),
-        }
-    } else {
-        // Incremental sync
-        match search_index.incremental_sync(&layout.memory_dir(), &manifest) {
-            Ok((synced_manifest, stats)) => {
-                tracing::info!(
-                    added = stats.added,
-                    updated = stats.updated,
-                    removed = stats.removed,
-                    unchanged = stats.unchanged,
-                    "search index synced incrementally"
-                );
-                if let Err(save_err) = synced_manifest.save(&manifest_path).await {
-                    eprintln!("warning: failed to save index manifest after sync: {save_err}");
-                }
-            }
-            Err(sync_err) => {
-                eprintln!(
-                    "warning: incremental sync failed, falling back to full rebuild: {sync_err}"
-                );
-                match search_index.rebuild(&layout.memory_dir()) {
-                    Ok(result) => {
-                        let total = result.obs_count + result.chunk_count;
-                        tracing::info!(
-                            observations = result.obs_count,
-                            chunks = result.chunk_count,
-                            "search index rebuilt after sync failure ({total} documents)"
-                        );
-                        let rebuilt = build_manifest_from_rebuild(result);
-                        if let Err(save_err) = rebuilt.save(&manifest_path).await {
-                            eprintln!(
-                                "warning: failed to save index manifest after fallback rebuild: {save_err}"
-                            );
-                        }
-                    }
-                    Err(rebuild_err) => {
-                        eprintln!("warning: fallback rebuild also failed: {rebuild_err}");
-                    }
-                }
-            }
-        }
-    }
+    sync_search_index(&search_index, &manifest, layout, &manifest_path).await;
 
     // Vector store (only if embedding provider is configured)
-    let vector_store: Option<Arc<VectorStore>> = if let Some(ref ep) = embedding_provider {
-        match ep.embed(&["dimension probe"]).await {
-            Ok(probe) => {
-                let dim = probe.dimensions;
-                let model_name = ep.model_name().to_string();
-
-                // Check if model changed — clear vector store and reset embedded flags
-                let model_changed = manifest
-                    .embedding_model
-                    .as_ref()
-                    .is_some_and(|m| *m != model_name);
-                if model_changed {
-                    tracing::info!(
-                        old_model = manifest.embedding_model.as_deref().unwrap_or("none"),
-                        new_model = model_name.as_str(),
-                        "embedding model changed, clearing vector store"
-                    );
-                    if let Err(e) = std::fs::remove_file(layout.vectors_db())
-                        && e.kind() != std::io::ErrorKind::NotFound
-                    {
-                        eprintln!("warning: failed to remove old vector store: {e}");
-                    }
-                }
-
-                match VectorStore::open_or_create(&layout.vectors_db(), dim) {
-                    Ok(vs) => {
-                        tracing::info!(dim, model = model_name.as_str(), "vector store ready");
-
-                        // Update manifest with embedding info
-                        let mut updated_manifest = IndexManifest::load(&manifest_path)
-                            .await
-                            .unwrap_or_default();
-                        updated_manifest.embedding_model = Some(model_name);
-                        updated_manifest.embedding_dim = Some(dim);
-                        if model_changed {
-                            for entry in updated_manifest.files.values_mut() {
-                                entry.embedded = false;
-                            }
-                        }
-                        if let Err(e) = updated_manifest.save(&manifest_path).await {
-                            eprintln!("warning: failed to save manifest with embedding info: {e}");
-                        }
-
-                        Some(Arc::new(vs))
-                    }
-                    Err(e) => {
-                        eprintln!("warning: failed to open vector store: {e}");
-                        None
-                    }
-                }
-            }
-            Err(e) => {
-                eprintln!("warning: embedding dimension probe failed: {e}");
-                None
-            }
-        }
+    let vector_store: Option<Arc<VectorStore>> = if let Some(ep) = embedding_provider {
+        build_vector_store(ep.as_ref(), layout, &manifest, &manifest_path).await
     } else {
         None
     };
 
     // Backfill embeddings for any unembedded files
-    if let (Some(vs), Some(ep)) = (&vector_store, &embedding_provider) {
-        backfill_embeddings(vs, ep.as_ref(), &layout, &manifest_path).await;
+    if let (Some(vs), Some(ep)) = (&vector_store, embedding_provider) {
+        backfill_embeddings(vs, ep.as_ref(), layout, &manifest_path).await;
     }
 
     // Hybrid searcher
     let hybrid_searcher = Arc::new(HybridSearcher::new(
         Arc::clone(&search_index),
         vector_store.clone(),
-        embedding_provider.clone(),
+        embedding_provider.cloned(),
         cfg.memory.search.clone(),
     ));
+
+    Ok(MemoryComponents {
+        search_index,
+        hybrid_searcher,
+        vector_store,
+    })
+}
+
+/// Initialize all gateway subsystems from config.
+///
+/// Delegates to `init_workspace`, `init_identity_and_http`, `init_providers`,
+/// and `init_memory` for the first stages, then wires up tools, the agent,
+/// and remaining subsystems.
+///
+/// # Errors
+/// Returns `ResiduumError` if any subsystem fails to initialize.
+#[expect(
+    clippy::too_many_lines,
+    reason = "sequential initialization pipeline; each section is a distinct setup step"
+)]
+pub(super) async fn initialize(cfg: &Config) -> Result<GatewayComponents, ResiduumError> {
+    let (layout, tz) = init_workspace(cfg).await?;
+    let (identity, http) = init_identity_and_http(&layout, cfg).await?;
+    let providers = init_providers(cfg, tz, http.clone())?;
+    let mem = init_memory(cfg, &layout, providers.embedding_provider.as_ref()).await?;
 
     // Scheduled actions store
     let actions_path = layout.scheduled_actions_json();
@@ -343,6 +303,9 @@ pub(super) async fn initialize(cfg: &Config) -> Result<GatewayComponents, Residu
         layout.background_dir(),
     ));
 
+    // Clone HTTP client for later use (channel building, reload handler)
+    let http_for_channels = http.clone();
+
     // SpawnContext for pulse/actions/on-demand background task spawning
     let spawn_context = Arc::new(SpawnContext {
         background_config: cfg.background.clone(),
@@ -359,28 +322,80 @@ pub(super) async fn initialize(cfg: &Config) -> Result<GatewayComponents, Residu
         tz,
     });
 
+    // Load workspace MCP servers
+    let mcp_registry = crate::mcp::McpRegistry::new_shared();
+    match crate::workspace::config::load_mcp_servers(&layout.mcp_json()) {
+        Ok(servers) => {
+            if !servers.is_empty() {
+                let report = mcp_registry
+                    .write()
+                    .await
+                    .reconcile_and_connect(&servers)
+                    .await;
+                tracing::info!(
+                    started = report.started,
+                    stopped = report.stopped,
+                    failures = report.failures.len(),
+                    "workspace MCP servers loaded"
+                );
+            }
+        }
+        Err(err) => {
+            eprintln!(
+                "warning: failed to load mcp.json, starting without workspace MCP servers: {err}"
+            );
+            tracing::warn!(error = %err, "workspace MCP servers degraded");
+        }
+    }
+
+    // Load workspace notification channels
+    let channel_configs = match crate::workspace::config::load_channel_configs(
+        &layout.channels_toml(),
+    ) {
+        Ok(configs) => configs,
+        Err(err) => {
+            eprintln!(
+                "warning: failed to load channels.toml, starting without external channels: {err}"
+            );
+            tracing::warn!(error = %err, "workspace channels degraded");
+            Vec::new()
+        }
+    };
+    let valid_external_channels: std::collections::HashSet<String> =
+        channel_configs.iter().map(|c| c.name.clone()).collect();
+    let external_channels = crate::workspace::config::build_external_channels(
+        &channel_configs,
+        http_for_channels.client(),
+    );
+    let inbox_channel = InboxChannel::new(layout.inbox_dir(), cfg.timezone);
+    let notification_router = Arc::new(NotificationRouter::new(
+        external_channels,
+        Some(inbox_channel),
+    ));
+
     // Tool registry — block writes to config files (user-managed)
-    let blocked: std::collections::HashSet<std::path::PathBuf> = [
+    let mut blocked_paths: Vec<std::path::PathBuf> = vec![
         cfg.config_dir.join("config.toml"),
         cfg.config_dir.join("config.example.toml"),
-    ]
-    .into_iter()
-    .collect();
+        cfg.config_dir.join("providers.toml"),
+        cfg.config_dir.join("providers.example.toml"),
+    ];
+    if !cfg.agent.modify_mcp {
+        blocked_paths.push(layout.mcp_json());
+    }
+    if !cfg.agent.modify_channels {
+        blocked_paths.push(layout.channels_toml());
+    }
+    let blocked: std::collections::HashSet<std::path::PathBuf> =
+        blocked_paths.into_iter().collect();
     let path_policy =
         crate::tools::PathPolicy::new_shared_with_blocked(layout.root().to_path_buf(), blocked);
     let tool_filter = crate::tools::ToolFilter::new_shared(std::collections::HashSet::new());
-    let mcp_registry = crate::mcp::McpRegistry::new_shared();
     let mut tools = ToolRegistry::new();
     let file_tracker = crate::tools::FileTracker::new_shared();
     tools.register_defaults(file_tracker, Arc::clone(&path_policy));
-    tools.register_search_tool(Arc::clone(&hybrid_searcher));
+    tools.register_search_tool(Arc::clone(&mem.hybrid_searcher));
     tools.register_memory_get_tool(layout.episodes_dir());
-    let valid_external_channels: std::collections::HashSet<String> = cfg
-        .notifications
-        .channels
-        .iter()
-        .map(|ch| ch.name.clone())
-        .collect();
     tools.register_action_tools(
         Arc::clone(&action_store),
         Arc::clone(&action_notify),
@@ -407,21 +422,7 @@ pub(super) async fn initialize(cfg: &Config) -> Result<GatewayComponents, Residu
         valid_external_channels,
     );
 
-    // Notification router (built before agent so the tool can hold a reference)
-    let notification_router = Arc::new(build_notification_router(cfg, &layout));
     tools.register_send_message_tool(Arc::clone(&notification_router), layout.inbox_dir(), tz);
-
-    // Connect global MCP servers from config
-    if !cfg.mcp.servers.is_empty() {
-        let mut reg = mcp_registry.write().await;
-        let report = reg.reconcile_and_connect(&cfg.mcp.servers).await;
-        for (name, err) in &report.failures {
-            eprintln!("warning: global mcp server '{name}' failed to start: {err}");
-        }
-        if report.started > 0 {
-            tracing::info!(connected = report.started, "global mcp servers ready");
-        }
-    }
 
     // Agent
     let options = CompletionOptions {
@@ -429,7 +430,7 @@ pub(super) async fn initialize(cfg: &Config) -> Result<GatewayComponents, Residu
         ..CompletionOptions::default()
     };
     let mut agent = Agent::new(
-        provider,
+        providers.provider,
         tools,
         tool_filter,
         Arc::clone(&mcp_registry),
@@ -474,60 +475,149 @@ pub(super) async fn initialize(cfg: &Config) -> Result<GatewayComponents, Residu
         layout,
         tz,
         agent,
-        observer,
-        reflector,
-        search_index,
-        hybrid_searcher,
-        vector_store,
+        observer: providers.observer,
+        reflector: providers.reflector,
+        search_index: mem.search_index,
+        hybrid_searcher: mem.hybrid_searcher,
+        vector_store: mem.vector_store,
         action_store,
         action_notify,
         mcp_registry,
         project_state,
         skill_state,
-        embedding_provider,
+        embedding_provider: providers.embedding_provider,
         pulse_enabled: cfg.pulse_enabled,
         notification_router,
+        http_client: http_for_channels,
         background_spawner,
         background_result_rx: bg_result_rx,
         spawn_context,
     })
 }
 
-/// Build a `NotificationRouter` from config channel definitions.
-fn build_notification_router(cfg: &Config, layout: &WorkspaceLayout) -> NotificationRouter {
-    let http_client = reqwest::Client::new();
-    let mut external_channels: HashMap<String, Box<dyn NotificationChannel>> = HashMap::new();
+/// Synchronize the search index (full rebuild or incremental sync).
+async fn sync_search_index(
+    search_index: &MemoryIndex,
+    manifest: &IndexManifest,
+    layout: &WorkspaceLayout,
+    manifest_path: &std::path::Path,
+) {
+    if manifest.files.is_empty() {
+        match search_index.rebuild(&layout.memory_dir()) {
+            Ok(result) => {
+                let total = result.obs_count + result.chunk_count;
+                tracing::info!(
+                    observations = result.obs_count,
+                    chunks = result.chunk_count,
+                    "search index rebuilt ({total} documents)"
+                );
+                let rebuilt = build_manifest_from_rebuild(result);
+                if let Err(save_err) = rebuilt.save(manifest_path).await {
+                    eprintln!("warning: failed to save index manifest after rebuild: {save_err}");
+                }
+            }
+            Err(rebuild_err) => eprintln!("warning: failed to rebuild search index: {rebuild_err}"),
+        }
+    } else {
+        match search_index.incremental_sync(&layout.memory_dir(), manifest) {
+            Ok((synced_manifest, stats)) => {
+                tracing::info!(
+                    added = stats.added,
+                    updated = stats.updated,
+                    removed = stats.removed,
+                    unchanged = stats.unchanged,
+                    "search index synced incrementally"
+                );
+                if let Err(save_err) = synced_manifest.save(manifest_path).await {
+                    eprintln!("warning: failed to save index manifest after sync: {save_err}");
+                }
+            }
+            Err(sync_err) => {
+                eprintln!(
+                    "warning: incremental sync failed, falling back to full rebuild: {sync_err}"
+                );
+                match search_index.rebuild(&layout.memory_dir()) {
+                    Ok(result) => {
+                        let total = result.obs_count + result.chunk_count;
+                        tracing::info!(
+                            observations = result.obs_count,
+                            chunks = result.chunk_count,
+                            "search index rebuilt after sync failure ({total} documents)"
+                        );
+                        let rebuilt = build_manifest_from_rebuild(result);
+                        if let Err(save_err) = rebuilt.save(manifest_path).await {
+                            eprintln!(
+                                "warning: failed to save index manifest after fallback rebuild: {save_err}"
+                            );
+                        }
+                    }
+                    Err(rebuild_err) => {
+                        eprintln!("warning: fallback rebuild also failed: {rebuild_err}");
+                    }
+                }
+            }
+        }
+    }
+}
 
-    for channel_cfg in &cfg.notifications.channels {
-        let channel: Box<dyn NotificationChannel> = match &channel_cfg.kind {
-            crate::config::ExternalChannelKind::Ntfy {
-                url,
-                topic,
-                priority,
-            } => Box::new(NtfyChannel::new(
-                channel_cfg.name.clone(),
-                http_client.clone(),
-                url.clone(),
-                topic.clone(),
-                priority.clone(),
-            )),
-            crate::config::ExternalChannelKind::Webhook {
-                url,
-                method,
-                headers,
-            } => Box::new(WebhookChannel::new(
-                channel_cfg.name.clone(),
-                http_client.clone(),
-                url.clone(),
-                method.clone(),
-                headers.clone(),
-            )),
-        };
-        external_channels.insert(channel_cfg.name.clone(), channel);
+/// Build the vector store, probing for embedding dimensions.
+async fn build_vector_store(
+    ep: &dyn EmbeddingProvider,
+    layout: &WorkspaceLayout,
+    manifest: &IndexManifest,
+    manifest_path: &std::path::Path,
+) -> Option<Arc<VectorStore>> {
+    let probe = match ep.embed(&["dimension probe"]).await {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("warning: embedding dimension probe failed: {e}");
+            return None;
+        }
+    };
+
+    let dim = probe.dimensions;
+    let model_name = ep.model_name().to_string();
+
+    let model_changed = manifest
+        .embedding_model
+        .as_ref()
+        .is_some_and(|m| *m != model_name);
+    if model_changed {
+        tracing::info!(
+            old_model = manifest.embedding_model.as_deref().unwrap_or("none"),
+            new_model = model_name.as_str(),
+            "embedding model changed, clearing vector store"
+        );
+        if let Err(e) = std::fs::remove_file(layout.vectors_db())
+            && e.kind() != std::io::ErrorKind::NotFound
+        {
+            eprintln!("warning: failed to remove old vector store: {e}");
+        }
     }
 
-    let inbox_channel = InboxChannel::new(layout.inbox_dir(), cfg.timezone);
-    NotificationRouter::new(external_channels, Some(inbox_channel))
+    match VectorStore::open_or_create(&layout.vectors_db(), dim) {
+        Ok(vs) => {
+            tracing::info!(dim, model = model_name.as_str(), "vector store ready");
+
+            let mut updated_manifest = IndexManifest::load(manifest_path).await.unwrap_or_default();
+            updated_manifest.embedding_model = Some(model_name);
+            updated_manifest.embedding_dim = Some(dim);
+            if model_changed {
+                for entry in updated_manifest.files.values_mut() {
+                    entry.embedded = false;
+                }
+            }
+            if let Err(e) = updated_manifest.save(manifest_path).await {
+                eprintln!("warning: failed to save manifest with embedding info: {e}");
+            }
+
+            Some(Arc::new(vs))
+        }
+        Err(e) => {
+            eprintln!("warning: failed to open vector store: {e}");
+            None
+        }
+    }
 }
 
 /// Build an `IndexManifest` from a full rebuild result.
