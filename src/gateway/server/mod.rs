@@ -5,7 +5,6 @@
 //! verbose filtering is handled client-side.
 
 mod actions;
-pub mod degraded;
 mod helpers;
 mod memory;
 mod reload;
@@ -77,8 +76,6 @@ pub(crate) enum ReloadSignal {
 pub enum GatewayExit {
     /// Clean shutdown (inbound channel closed).
     Shutdown,
-    /// Reload requested; caller should re-run with fresh config.
-    Reload,
 }
 
 /// A named command dispatched from any client channel to the server event loop.
@@ -270,6 +267,10 @@ fn build_gateway_app(
     reason = "wires channels, server spawn, discord adapter, and GatewayRuntime assembly; each section is a distinct setup step"
 )]
 pub async fn run_gateway(cfg: Config) -> Result<GatewayExit, ResiduumError> {
+    // Back up config files before running so backup exists for reload rollback
+    // and first-boot detection on subsequent starts.
+    backup_config(&cfg.config_dir);
+
     let parts = startup::initialize(&cfg).await?;
 
     // Create long-lived channels via GatewayCore

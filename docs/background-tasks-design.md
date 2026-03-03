@@ -361,7 +361,7 @@ PR #421 from @alice has been waiting 3 days for review.
 
 ### Subagent results from `subagent_spawn`
 
-Agent-spawned subagent results are routed to the channels specified in the `subagent_spawn` tool call (default: `["agent_feed"]`). The main agent decides at spawn time where the result goes, and the gateway validates the channel names against built-in channels and `config.toml`.
+Agent-spawned subagent results are routed to the channels specified in the `subagent_spawn` tool call (default: `["agent_feed"]`). The main agent decides at spawn time where the result goes, and the gateway validates the channel names against built-in channels and `channels.toml`.
 
 ---
 
@@ -590,14 +590,14 @@ When a turn starts, the gateway transitions to `Busy` and holds the sender half.
         "channels": {
             "type": "array",
             "items": { "type": "string" },
-            "description": "Notification channels for the result (e.g., [\"agent_feed\", \"ntfy\"]). Must be built-in or defined in config.toml. Default: [\"agent_feed\"]."
+            "description": "Notification channels for the result (e.g., [\"agent_feed\", \"ntfy\"]). Must be built-in or defined in channels.toml. Default: [\"agent_feed\"]."
         }
     },
     "required": ["task"]
 }
 ```
 
-All spawns are asynchronous — returns immediately with `"Subagent spawned: {id}."` The result is dispatched to the channels specified in the `channels` parameter. The gateway validates that each channel name is either built-in (`agent_wake`, `agent_feed`, `inbox`) or defined in `config.toml` — invalid channel names are rejected at spawn time with an error.
+All spawns are asynchronous — returns immediately with `"Subagent spawned: {id}."` The result is dispatched to the channels specified in the `channels` parameter. The gateway validates that each channel name is either built-in (`agent_wake`, `agent_feed`, `inbox`) or defined in `channels.toml` — invalid channel names are rejected at spawn time with an error.
 
 ### stop_agent
 

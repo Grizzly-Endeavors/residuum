@@ -53,14 +53,14 @@ Results delivered to `agent_wake` or `agent_feed` are not dropped if the agent i
 
 ## External Channels
 
-Configured in `config.toml` under `[notifications.channels.<name>]`, then referenced by name in CHANNELS.yml or in `channels` parameters on pulses, scheduled actions, and subagent spawns.
+Configured in `channels.toml` under `[channels.<name>]`, then referenced by name in CHANNELS.yml or in `channels` parameters on pulses, scheduled actions, and subagent spawns.
 
 ### ntfy
 
 Push notifications via any ntfy-compatible server.
 
 ```toml
-[notifications.channels.phone]
+[channels.phone]
 type = "ntfy"
 url = "https://ntfy.sh"
 topic = "my-agent-alerts"
@@ -71,7 +71,7 @@ topic = "my-agent-alerts"
 Generic HTTP POST to a configured endpoint. Intended for users to connect whatever external services they want (Slack, Discord webhooks, custom integrations).
 
 ```toml
-[notifications.channels.ops_hook]
+[channels.ops_hook]
 type = "webhook"
 url = "https://hooks.example.com/agent"
 method = "POST"                     # optional, default POST

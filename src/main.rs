@@ -96,10 +96,6 @@ async fn run_serve_foreground(args: &[String]) -> Result<(), ResiduumError> {
 }
 
 /// Inner implementation of foreground serve, wrapped by PID file lifecycle.
-#[expect(
-    clippy::too_many_lines,
-    reason = "sequential setup/serve dispatch with reload loop; splitting would obscure the flow"
-)]
 async fn run_serve_foreground_inner(args: &[String]) -> Result<(), ResiduumError> {
     // --setup: run the onboarding wizard in an isolated temp directory,
     // then boot the gateway with the resulting config for end-to-end testing
@@ -144,10 +140,7 @@ async fn run_serve_foreground_inner(args: &[String]) -> Result<(), ResiduumError
 
     let config_dir = Config::config_dir()?;
     // Determine first-boot from disk state: if a backup exists, the gateway
-    // has previously loaded a valid config, so failures should go to degraded
-    // mode (not the setup wizard).  An in-memory flag alone resets on every
-    // process restart, which would erroneously re-enter setup after a crash
-    // when the config has been successfully used before.
+    // has previously loaded a valid config, so this is a restart.
     let is_first_boot = !config_dir.join("config.toml.bak").exists();
 
     loop {
@@ -160,75 +153,37 @@ async fn run_serve_foreground_inner(args: &[String]) -> Result<(), ResiduumError
                     workspace = %cfg.workspace_dir.display(),
                     "configuration loaded"
                 );
-                // Back up the successfully-loaded config BEFORE running the
-                // gateway.  This establishes the initial `.bak` used for
-                // first-boot detection and in-place reload rollback.
-                residuum::gateway::server::backup_config(&config_dir);
-                let bind_addr = Some(cfg.gateway.addr());
-                match Box::pin(residuum::gateway::server::run_gateway(cfg)).await {
-                    Ok(residuum::gateway::server::GatewayExit::Shutdown) => break,
-                    Ok(residuum::gateway::server::GatewayExit::Reload) => {
-                        // Defensive: the gateway now handles reloads internally,
-                        // so this arm should not be reached. Log and retry.
-                        tracing::warn!(
-                            "unexpected GatewayExit::Reload from gateway (reloads are handled in-place)"
-                        );
-                    }
-                    Err(err) if is_first_boot => return Err(err),
-                    Err(err) => {
-                        // Gateway initialization failed — enter degraded mode
-                        tracing::warn!(error = %err, "gateway initialization failed");
-                        let error_msg = format!(
-                            "gateway entered degraded mode: {err}\n\n\
-                             To fix this:\n\
-                             1. Open the config editor at http://127.0.0.1:7700/ and correct the issue\n\
-                             2. Or edit ~/.residuum/config.toml directly\n\
-                             3. Then run /reload to retry"
-                        );
-                        match residuum::gateway::server::degraded::run_degraded_gateway(
-                            error_msg,
-                            config_dir.clone(),
-                            bind_addr,
-                        )
-                        .await
-                        {
-                            residuum::gateway::server::GatewayExit::Reload => {
-                                tracing::info!(
-                                    "degraded mode: reload requested, retrying full initialization"
-                                );
-                            }
-                            residuum::gateway::server::GatewayExit::Shutdown => break,
+                // Gateway handles reloads in-place and only returns on shutdown
+                // or fatal error. Backup is created inside run_gateway().
+                Box::pin(residuum::gateway::server::run_gateway(cfg)).await?;
+                break;
+            }
+            Err(err) if !is_first_boot => {
+                // Config broken on restart — try restoring from backup
+                tracing::warn!(error = %err, "config invalid, attempting rollback from backup");
+                if residuum::gateway::server::rollback_config(&config_dir) {
+                    // Backup restored — retry loading
+                    match Config::load() {
+                        Ok(cfg) => {
+                            tracing::info!("config restored from backup, starting gateway");
+                            Box::pin(residuum::gateway::server::run_gateway(cfg)).await?;
+                            break;
+                        }
+                        Err(retry_err) => {
+                            return Err(ResiduumError::Config(format!(
+                                "config invalid after rollback: {retry_err}\n\n\
+                                 fix ~/.residuum/config.toml and ~/.residuum/providers.toml manually, then restart"
+                            )));
                         }
                     }
                 }
-            }
-            Err(err) if !is_first_boot => {
-                // Config parse failed — enter degraded mode so user can fix via web UI
-                tracing::warn!(error = %err, "config invalid");
-                let error_msg = format!(
-                    "gateway entered degraded mode: config error: {err}\n\n\
-                     To fix this:\n\
-                     1. Open the config editor at http://127.0.0.1:7700/ and correct the issue\n\
-                     2. Or edit ~/.residuum/config.toml directly\n\
-                     3. Then run /reload to retry"
-                );
-                match residuum::gateway::server::degraded::run_degraded_gateway(
-                    error_msg,
-                    config_dir.clone(),
-                    None,
-                )
-                .await
-                {
-                    residuum::gateway::server::GatewayExit::Reload => {
-                        tracing::info!(
-                            "degraded mode: reload requested, retrying full initialization"
-                        );
-                    }
-                    residuum::gateway::server::GatewayExit::Shutdown => break,
-                }
+                return Err(ResiduumError::Config(format!(
+                    "config invalid and no backup available: {err}\n\n\
+                     fix ~/.residuum/config.toml and ~/.residuum/providers.toml manually, then restart"
+                )));
             }
             Err(err) => {
-                // First boot — setup wizard (existing behavior)
+                // First boot — setup wizard
                 tracing::warn!(error = %err, "config invalid, starting setup wizard");
                 match Box::pin(residuum::gateway::server::setup::run_setup_server()).await? {
                     residuum::gateway::server::setup::SetupExit::ConfigSaved => {

@@ -10,7 +10,7 @@ The new design separates concerns cleanly:
 
 1. **Actionability** — The SubAgent makes one binary judgment: is this result worth reporting, or is it HEARTBEAT_OK? This is the only gate.
 2. **Routing** — `CHANNELS.yml` defines the channel registry (what channels exist and their configuration). Each pulse in `HEARTBEAT.yml` declares its output channels via a `channels:` field. Scheduled actions and agent-spawned subagents specify channels directly at creation time. The gateway dispatches results to the resolved channels. No urgency assessment, no alert levels.
-3. **Channel infrastructure** — `config.toml` defines what channels exist and how to reach them. This is user-managed infrastructure config, not agent-editable policy.
+3. **Channel infrastructure** — `channels.toml` defines what channels exist and how to reach them. This is user-managed infrastructure config, not agent-editable policy.
 
 ---
 
@@ -63,7 +63,7 @@ Scheduled actions and agent-spawned subagents do **not** use CHANNELS.yml for ro
 - **Scheduled actions**: `channels` parameter on `schedule_action` (defaults to `["agent_feed"]`)
 - **Agent-spawned subagents**: `channels` parameter on `subagent_spawn` (defaults to `["agent_feed"]`)
 
-The gateway validates channel names at spawn time against built-in channels and `config.toml` definitions.
+The gateway validates channel names at spawn time against built-in channels and `channels.toml` definitions.
 
 ---
 
@@ -97,23 +97,23 @@ A task not listed in any channel produces its result, writes the transcript to d
 
 ## External Channels
 
-External channels deliver results outside the gateway — push notifications, webhooks, or any service that accepts a message. They are defined in `config.toml` and referenced by name in `CHANNELS.yml`, in the `channels` field on pulses in `HEARTBEAT.yml`, or in the `channels` parameter of `schedule_action` / `subagent_spawn`.
+External channels deliver results outside the gateway — push notifications, webhooks, or any service that accepts a message. They are defined in `channels.toml` and referenced by name in `CHANNELS.yml`, in the `channels` field on pulses in `HEARTBEAT.yml`, or in the `channels` parameter of `schedule_action` / `subagent_spawn`.
 
 ### Configuration
 
 ```toml
-[notifications.channels.ntfy]
+[channels.ntfy]
 type = "ntfy"
 url = "https://ntfy.sh"
 topic = "residuum"
 
-[notifications.channels.ops_webhook]
+[channels.ops_webhook]
 type = "webhook"
 url = "https://hooks.example.com/residuum"
 method = "POST"
 ```
 
-Channel names in `config.toml` must match the keys used in `CHANNELS.yml`. If a channel name referenced in `HEARTBEAT.yml` or `CHANNELS.yml` is not defined in `config.toml` and not a built-in, the gateway logs a warning and skips that channel during dispatch.
+Channel names in `channels.toml` must match the keys used in `CHANNELS.yml`. If a channel name referenced in `HEARTBEAT.yml` or `CHANNELS.yml` is not defined in `channels.toml` and not a built-in, the gateway logs a warning and skips that channel during dispatch.
 
 ### Channel types
 
@@ -194,7 +194,7 @@ Examples of agent-driven routing changes:
 - User says "stop pinging me about PR reviews" → agent removes `ntfy` from the `github_prs` pulse's `channels` list in HEARTBEAT.yml.
 - User responds urgently to deploy failures → agent adds `agent_wake` to the `deploy_check` pulse's `channels` list in HEARTBEAT.yml.
 - Agent notices a task consistently produces results the user ignores → agent moves it from `agent_feed` to `inbox` in the pulse's `channels` list, or removes the channel entirely.
-- User sets up a new ntfy topic → user adds the channel to `config.toml`, agent adds it to `CHANNELS.yml` and references it in relevant pulses' `channels` lists in HEARTBEAT.yml.
+- User sets up a new ntfy topic → user adds the channel to `channels.toml`, agent adds it to `CHANNELS.yml` and references it in relevant pulses' `channels` lists in HEARTBEAT.yml.
 
 The agent's routing decisions are visible and reversible — the user can always open `HEARTBEAT.yml` and `CHANNELS.yml` and adjust.
 
@@ -243,8 +243,8 @@ Bootstrapped on workspace creation with sensible defaults:
 #   agent_feed  — inject into agent feed, wait for next interaction
 #   inbox       — store silently, surface as unread count
 #
-# External channels (ntfy, webhook, etc.) are defined in config.toml
-# under [notifications.channels].
+# External channels (ntfy, webhook, etc.) are defined in channels.toml
+# under [channels.<name>].
 
 agent_feed: {}
 
