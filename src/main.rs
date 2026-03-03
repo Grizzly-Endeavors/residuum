@@ -548,8 +548,8 @@ async fn run_connect(url: &str, verbose: bool) -> Result<(), ResiduumError> {
 
                 match serde_json::from_str::<ServerMessage>(&raw) {
                     Ok(ServerMessage::Reloading) => {
-                        eprintln!("server is reloading, reconnect when ready");
-                        break;
+                        // In-place reload: server stays up, no need to disconnect
+                        eprintln!("server is reloading configuration...");
                     }
                     Ok(ref server_msg @ ServerMessage::Response { ref reply_to, .. })
                         if turn_active && !reply_to.is_empty() =>
