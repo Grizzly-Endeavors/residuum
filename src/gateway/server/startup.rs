@@ -1,6 +1,5 @@
 //! Gateway initialization: builds all subsystems before the event loop starts.
 
-use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
 
@@ -26,7 +25,7 @@ use crate::models::{
     CompletionOptions, EmbeddingProvider, HttpClientConfig, SharedHttpClient,
     build_embedding_provider, build_provider_chain,
 };
-use crate::notify::channels::{InboxChannel, NotificationChannel};
+use crate::notify::channels::InboxChannel;
 use crate::notify::router::NotificationRouter;
 use crate::projects::activation::{ProjectState, SharedProjectState};
 use crate::projects::scanner::ProjectIndex;
@@ -61,6 +60,7 @@ pub(super) struct GatewayComponents {
     pub(super) embedding_provider: Option<Arc<dyn EmbeddingProvider>>,
     pub(super) pulse_enabled: bool,
     pub(super) notification_router: Arc<NotificationRouter>,
+    pub(super) http_client: SharedHttpClient,
     pub(super) background_spawner: Arc<BackgroundTaskSpawner>,
     pub(super) background_result_rx: mpsc::Receiver<BackgroundResult>,
     pub(super) spawn_context: Arc<SpawnContext>,
@@ -303,6 +303,9 @@ pub(super) async fn initialize(cfg: &Config) -> Result<GatewayComponents, Residu
         layout.background_dir(),
     ));
 
+    // Clone HTTP client for later use (channel building, reload handler)
+    let http_for_channels = http.clone();
+
     // SpawnContext for pulse/actions/on-demand background task spawning
     let spawn_context = Arc::new(SpawnContext {
         background_config: cfg.background.clone(),
@@ -319,26 +322,80 @@ pub(super) async fn initialize(cfg: &Config) -> Result<GatewayComponents, Residu
         tz,
     });
 
+    // Load workspace MCP servers
+    let mcp_registry = crate::mcp::McpRegistry::new_shared();
+    match crate::workspace::config::load_mcp_servers(&layout.mcp_json()) {
+        Ok(servers) => {
+            if !servers.is_empty() {
+                let report = mcp_registry
+                    .write()
+                    .await
+                    .reconcile_and_connect(&servers)
+                    .await;
+                tracing::info!(
+                    started = report.started,
+                    stopped = report.stopped,
+                    failures = report.failures.len(),
+                    "workspace MCP servers loaded"
+                );
+            }
+        }
+        Err(err) => {
+            eprintln!(
+                "warning: failed to load mcp.json, starting without workspace MCP servers: {err}"
+            );
+            tracing::warn!(error = %err, "workspace MCP servers degraded");
+        }
+    }
+
+    // Load workspace notification channels
+    let channel_configs = match crate::workspace::config::load_channel_configs(
+        &layout.channels_toml(),
+    ) {
+        Ok(configs) => configs,
+        Err(err) => {
+            eprintln!(
+                "warning: failed to load channels.toml, starting without external channels: {err}"
+            );
+            tracing::warn!(error = %err, "workspace channels degraded");
+            Vec::new()
+        }
+    };
+    let valid_external_channels: std::collections::HashSet<String> =
+        channel_configs.iter().map(|c| c.name.clone()).collect();
+    let external_channels = crate::workspace::config::build_external_channels(
+        &channel_configs,
+        http_for_channels.client(),
+    );
+    let inbox_channel = InboxChannel::new(layout.inbox_dir(), cfg.timezone);
+    let notification_router = Arc::new(NotificationRouter::new(
+        external_channels,
+        Some(inbox_channel),
+    ));
+
     // Tool registry — block writes to config files (user-managed)
-    let blocked: std::collections::HashSet<std::path::PathBuf> = [
+    let mut blocked_paths: Vec<std::path::PathBuf> = vec![
         cfg.config_dir.join("config.toml"),
         cfg.config_dir.join("config.example.toml"),
         cfg.config_dir.join("providers.toml"),
         cfg.config_dir.join("providers.example.toml"),
-    ]
-    .into_iter()
-    .collect();
+    ];
+    if !cfg.agent.modify_mcp {
+        blocked_paths.push(layout.mcp_json());
+    }
+    if !cfg.agent.modify_channels {
+        blocked_paths.push(layout.channels_toml());
+    }
+    let blocked: std::collections::HashSet<std::path::PathBuf> =
+        blocked_paths.into_iter().collect();
     let path_policy =
         crate::tools::PathPolicy::new_shared_with_blocked(layout.root().to_path_buf(), blocked);
     let tool_filter = crate::tools::ToolFilter::new_shared(std::collections::HashSet::new());
-    let mcp_registry = crate::mcp::McpRegistry::new_shared();
     let mut tools = ToolRegistry::new();
     let file_tracker = crate::tools::FileTracker::new_shared();
     tools.register_defaults(file_tracker, Arc::clone(&path_policy));
     tools.register_search_tool(Arc::clone(&mem.hybrid_searcher));
     tools.register_memory_get_tool(layout.episodes_dir());
-    let valid_external_channels: std::collections::HashSet<String> =
-        std::collections::HashSet::new();
     tools.register_action_tools(
         Arc::clone(&action_store),
         Arc::clone(&action_notify),
@@ -365,8 +422,6 @@ pub(super) async fn initialize(cfg: &Config) -> Result<GatewayComponents, Residu
         valid_external_channels,
     );
 
-    // Notification router (built before agent so the tool can hold a reference)
-    let notification_router = Arc::new(build_notification_router(cfg, &layout));
     tools.register_send_message_tool(Arc::clone(&notification_router), layout.inbox_dir(), tz);
 
     // Agent
@@ -433,19 +488,11 @@ pub(super) async fn initialize(cfg: &Config) -> Result<GatewayComponents, Residu
         embedding_provider: providers.embedding_provider,
         pulse_enabled: cfg.pulse_enabled,
         notification_router,
+        http_client: http_for_channels,
         background_spawner,
         background_result_rx: bg_result_rx,
         spawn_context,
     })
-}
-
-/// Build a `NotificationRouter` with inbox only (no external channels).
-///
-/// External channels will be loaded from workspace config in Phase 3.
-fn build_notification_router(cfg: &Config, layout: &WorkspaceLayout) -> NotificationRouter {
-    let external_channels: HashMap<String, Box<dyn NotificationChannel>> = HashMap::new();
-    let inbox_channel = InboxChannel::new(layout.inbox_dir(), cfg.timezone);
-    NotificationRouter::new(external_channels, Some(inbox_channel))
 }
 
 /// Synchronize the search index (full rebuild or incremental sync).

@@ -11,6 +11,7 @@ mod memory;
 pub mod setup;
 mod spawn_helpers;
 mod startup;
+mod watcher;
 pub(crate) mod web;
 mod ws;
 
@@ -35,7 +36,7 @@ use crate::memory::reflector::Reflector;
 use crate::memory::search::MemoryIndex;
 use crate::memory::types::Visibility;
 use crate::memory::vector_store::VectorStore;
-use crate::models::{EmbeddingProvider, Message};
+use crate::models::{EmbeddingProvider, Message, SharedHttpClient};
 use crate::notify::router::NotificationRouter;
 use crate::notify::types::{
     BuiltinChannel, ChannelTarget, Notification, TaskSource, parse_channel_list,
@@ -67,8 +68,7 @@ pub(crate) enum ReloadSignal {
     None,
     /// Full root config reload (config.toml changed).
     Root,
-    /// Workspace-level reload (project or skill changes). Used in Phase 3+.
-    #[expect(dead_code, reason = "variant used in later reload phases")]
+    /// Workspace-level reload (mcp.json or channels.toml changed).
     Workspace,
 }
 
@@ -169,6 +169,7 @@ struct GatewayRuntime {
     skill_state: SharedSkillState,
     pulse_enabled: bool,
     notification_router: Arc<NotificationRouter>,
+    http_client: SharedHttpClient,
     background_spawner: Arc<BackgroundTaskSpawner>,
     background_result_rx: mpsc::Receiver<BackgroundResult>,
     spawn_context: Arc<SpawnContext>,
@@ -347,6 +348,13 @@ pub async fn run_gateway(cfg: Config) -> Result<GatewayExit, ResiduumError> {
     let sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
         .map_err(|e| ResiduumError::Gateway(format!("failed to register SIGTERM handler: {e}")))?;
 
+    // Spawn workspace config file watcher
+    let _watcher_handle = watcher::spawn_workspace_watcher(
+        parts.layout.mcp_json(),
+        parts.layout.channels_toml(),
+        core.reload_tx.clone(),
+    );
+
     let rt = GatewayRuntime {
         layout: parts.layout,
         tz: parts.tz,
@@ -363,6 +371,7 @@ pub async fn run_gateway(cfg: Config) -> Result<GatewayExit, ResiduumError> {
         skill_state: parts.skill_state,
         pulse_enabled: parts.pulse_enabled,
         notification_router: parts.notification_router,
+        http_client: parts.http_client,
         background_spawner: parts.background_spawner,
         background_result_rx: parts.background_result_rx,
         spawn_context: parts.spawn_context,
@@ -833,6 +842,51 @@ fn handle_root_reload(rt: &mut GatewayRuntime) {
     }
 }
 
+/// Handle a workspace config reload (mcp.json or channels.toml changed).
+async fn handle_workspace_reload(rt: &mut GatewayRuntime) {
+    tracing::info!("handling workspace config reload");
+
+    // Reload MCP servers
+    match crate::workspace::config::load_mcp_servers(&rt.layout.mcp_json()) {
+        Ok(servers) => {
+            let report = rt
+                .mcp_registry
+                .write()
+                .await
+                .reconcile_and_connect(&servers)
+                .await;
+            tracing::info!(
+                started = report.started,
+                stopped = report.stopped,
+                "MCP servers reconciled"
+            );
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "failed to reload mcp.json, keeping current servers");
+        }
+    }
+
+    // Reload notification channels
+    match crate::workspace::config::load_channel_configs(&rt.layout.channels_toml()) {
+        Ok(configs) => {
+            let channels = crate::workspace::config::build_external_channels(
+                &configs,
+                rt.http_client.client(),
+            );
+            rt.notification_router.reload_channels(channels).await;
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "failed to reload channels.toml, keeping current channels");
+        }
+    }
+
+    rt.broadcast_tx
+        .send(ServerMessage::Notice {
+            message: "workspace configuration reloaded".to_string(),
+        })
+        .ok();
+}
+
 /// Run the main gateway event loop.
 ///
 /// Processes inbound messages, pulse ticks, action ticks, and memory pipeline
@@ -868,7 +922,7 @@ async fn run_event_loop(mut rt: GatewayRuntime) -> GatewayExit {
                         handle_root_reload(&mut rt);
                     }
                     ReloadSignal::Workspace => {
-                        tracing::info!("workspace reload not yet implemented");
+                        handle_workspace_reload(&mut rt).await;
                     }
                 }
             }
