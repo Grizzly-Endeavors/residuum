@@ -12,7 +12,7 @@ use tokio::sync::mpsc;
 
 use crate::channels::cli::commands::{CommandContext, CommandSideEffect, execute_command};
 use crate::channels::types::{InboundMessage, MessageOrigin, RoutedMessage};
-use crate::gateway::server::ServerCommand;
+use crate::gateway::server::{ReloadSignal, ServerCommand};
 use crate::inbox;
 
 use super::reply::TelegramReplyHandle;
@@ -28,7 +28,7 @@ pub(super) async fn run_telegram_polling(
     token: &str,
     inbound_tx: mpsc::Sender<RoutedMessage>,
     workspace_dir: std::path::PathBuf,
-    reload_sender: tokio::sync::watch::Sender<bool>,
+    reload_tx: tokio::sync::watch::Sender<ReloadSignal>,
     command_tx: mpsc::Sender<ServerCommand>,
     tz: chrono_tz::Tz,
 ) -> anyhow::Result<()> {
@@ -84,7 +84,7 @@ pub(super) async fn run_telegram_polling(
                 from,
                 &inbound_tx,
                 &inbox_dir,
-                &reload_sender,
+                &reload_tx,
                 &command_tx,
                 tz,
             )
@@ -108,7 +108,7 @@ async fn dispatch_message(
     from: &teloxide::types::User,
     inbound_tx: &mpsc::Sender<RoutedMessage>,
     inbox_dir: &Path,
-    reload_sender: &tokio::sync::watch::Sender<bool>,
+    reload_tx: &tokio::sync::watch::Sender<ReloadSignal>,
     command_tx: &mpsc::Sender<ServerCommand>,
     tz: chrono_tz::Tz,
 ) {
@@ -127,15 +127,7 @@ async fn dispatch_message(
         let cmd_name = cmd_name.split('@').next().unwrap_or(cmd_name);
 
         handle_command(
-            bot,
-            chat_id,
-            from,
-            cmd_name,
-            cmd_args,
-            inbox_dir,
-            reload_sender,
-            command_tx,
-            tz,
+            bot, chat_id, from, cmd_name, cmd_args, inbox_dir, reload_tx, command_tx, tz,
         )
         .await;
         return;
@@ -278,7 +270,7 @@ async fn handle_command(
     cmd_name: &str,
     cmd_args: Option<&str>,
     inbox_dir: &Path,
-    reload_sender: &tokio::sync::watch::Sender<bool>,
+    reload_tx: &tokio::sync::watch::Sender<ReloadSignal>,
     command_tx: &mpsc::Sender<ServerCommand>,
     tz: chrono_tz::Tz,
 ) {
@@ -293,7 +285,7 @@ async fn handle_command(
     let response_text = match result.side_effect {
         Some(CommandSideEffect::Reload) => {
             tracing::info!("reload requested via telegram command");
-            reload_sender.send(true).ok();
+            reload_tx.send(ReloadSignal::Root).ok();
             result.response
         }
         Some(CommandSideEffect::ServerCommand { name, args }) => {

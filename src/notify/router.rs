@@ -37,6 +37,17 @@ impl NotificationRouter {
         }
     }
 
+    /// Replace external channels in-place (e.g. after a config reload).
+    pub fn reload_channels(&mut self, new_channels: HashMap<String, Box<dyn NotificationChannel>>) {
+        let old_count = self.external_channels.len();
+        self.external_channels = new_channels;
+        tracing::info!(
+            old_count,
+            new_count = self.external_channels.len(),
+            "notification channels reloaded"
+        );
+    }
+
     /// Deliver a notification directly to the inbox channel, bypassing routing.
     ///
     /// Returns `true` if delivery succeeded, `false` if no inbox is configured
@@ -301,6 +312,35 @@ mod tests {
     #[test]
     fn external_channel_names_empty() {
         let router = NotificationRouter::empty();
+        assert!(router.external_channel_names().is_empty());
+    }
+
+    #[test]
+    fn reload_channels_replaces_map() {
+        let mut router = NotificationRouter::empty();
+        assert!(
+            router.external_channel_names().is_empty(),
+            "should start empty"
+        );
+
+        // Create a mock channel map (using InboxChannel via trait object)
+        let dir = tempfile::tempdir().unwrap();
+        let inbox_dir = dir.path().join("inbox");
+        std::fs::create_dir_all(&inbox_dir).unwrap();
+
+        let mut channels: HashMap<String, Box<dyn NotificationChannel>> = HashMap::new();
+        channels.insert(
+            "test-inbox".to_string(),
+            Box::new(InboxChannel::new(&inbox_dir, chrono_tz::UTC)),
+        );
+
+        router.reload_channels(channels);
+
+        assert!(router.has_external_channel("test-inbox"));
+        assert_eq!(router.external_channel_names().len(), 1);
+
+        // Replace with empty map
+        router.reload_channels(HashMap::new());
         assert!(router.external_channel_names().is_empty());
     }
 }

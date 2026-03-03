@@ -111,10 +111,13 @@ async fn handle_connection(socket: WebSocket, state: GatewayState) {
             }
             ClientMessage::Reload => {
                 tracing::info!("reload requested by client");
-                // Notify all connected clients before the connection drops
-                state.broadcast_tx.send(ServerMessage::Reloading).ok();
-                // Signal the main loop and HTTP server
-                state.reload_sender.send(true).ok();
+                state
+                    .broadcast_tx
+                    .send(ServerMessage::Notice {
+                        message: "reloading configuration...".to_string(),
+                    })
+                    .ok();
+                state.reload_tx.send(super::ReloadSignal::Root).ok();
             }
             ClientMessage::ServerCommand { name, args } => {
                 tracing::info!(command = %name, "server command from client");

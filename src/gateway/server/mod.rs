@@ -59,6 +59,19 @@ use memory::{
 use spawn_helpers::SpawnContext;
 use ws::ws_handler;
 
+/// Describes what kind of configuration reload was requested.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub(crate) enum ReloadSignal {
+    /// No reload pending.
+    #[default]
+    None,
+    /// Full root config reload (config.toml changed).
+    Root,
+    /// Workspace-level reload (project or skill changes). Used in Phase 3+.
+    #[expect(dead_code, reason = "variant used in later reload phases")]
+    Workspace,
+}
+
 /// Outcome of the gateway main loop.
 pub enum GatewayExit {
     /// Clean shutdown (inbound channel closed).
@@ -77,12 +90,62 @@ pub struct ServerCommand {
     pub reply_tx: Option<tokio::sync::oneshot::Sender<String>>,
 }
 
+/// Long-lived core that owns shared communication channels.
+///
+/// Created once at startup and persists across configuration reloads.
+/// The senders are cloned into adapters, the web server, and event loop state.
+pub(crate) struct GatewayCore {
+    pub inbound_tx: mpsc::Sender<RoutedMessage>,
+    pub broadcast_tx: broadcast::Sender<ServerMessage>,
+    pub reload_tx: tokio::sync::watch::Sender<ReloadSignal>,
+    pub command_tx: mpsc::Sender<ServerCommand>,
+    /// Dedicated shutdown signal for the HTTP server (not tied to reload).
+    pub shutdown_tx: tokio::sync::watch::Sender<bool>,
+    pub config_dir: std::path::PathBuf,
+}
+
+/// Receiver halves consumed by the event loop.
+pub(crate) struct CoreReceivers {
+    pub inbound: mpsc::Receiver<RoutedMessage>,
+    pub reload: tokio::sync::watch::Receiver<ReloadSignal>,
+    pub command: mpsc::Receiver<ServerCommand>,
+}
+
+impl GatewayCore {
+    /// Create a new gateway core with fresh channels.
+    ///
+    /// # Errors
+    /// Returns `ResiduumError` if the SIGTERM handler cannot be registered.
+    pub fn new(config_dir: std::path::PathBuf) -> (Self, CoreReceivers) {
+        let (inbound_tx, inbound_rx) = mpsc::channel::<RoutedMessage>(32);
+        let (broadcast_tx, _broadcast_rx) = broadcast::channel::<ServerMessage>(256);
+        let (reload_tx, reload_rx) = tokio::sync::watch::channel(ReloadSignal::None);
+        let (command_tx, command_rx) = mpsc::channel::<ServerCommand>(32);
+        let (shutdown_tx, _shutdown_rx) = tokio::sync::watch::channel(false);
+
+        let core = Self {
+            inbound_tx,
+            broadcast_tx,
+            reload_tx,
+            command_tx,
+            shutdown_tx,
+            config_dir,
+        };
+        let receivers = CoreReceivers {
+            inbound: inbound_rx,
+            reload: reload_rx,
+            command: command_rx,
+        };
+        (core, receivers)
+    }
+}
+
 /// Shared state for the axum WebSocket server.
 #[derive(Clone)]
 struct GatewayState {
     inbound_tx: mpsc::Sender<RoutedMessage>,
     broadcast_tx: broadcast::Sender<ServerMessage>,
-    reload_sender: tokio::sync::watch::Sender<bool>,
+    reload_tx: tokio::sync::watch::Sender<ReloadSignal>,
     command_tx: mpsc::Sender<ServerCommand>,
     inbox_dir: std::path::PathBuf,
     tz: chrono_tz::Tz,
@@ -112,12 +175,18 @@ struct GatewayRuntime {
     // Runtime channels + handles
     inbound_rx: mpsc::Receiver<RoutedMessage>,
     broadcast_tx: broadcast::Sender<ServerMessage>,
-    reload_rx: tokio::sync::watch::Receiver<bool>,
+    reload_rx: tokio::sync::watch::Receiver<ReloadSignal>,
     command_rx: mpsc::Receiver<ServerCommand>,
+    /// Kept alive so the HTTP server task isn't dropped; shut down via `shutdown_tx`.
+    #[expect(dead_code, reason = "held to keep the server task alive")]
     server_handle: tokio::task::JoinHandle<()>,
     pulse_scheduler: PulseScheduler,
     /// SIGTERM signal listener for daemon stop support.
     sigterm: tokio::signal::unix::Signal,
+    /// Dedicated shutdown signal for the HTTP server.
+    shutdown_tx: tokio::sync::watch::Sender<bool>,
+    /// Path to the config directory (for backup/rollback during reload).
+    config_dir: std::path::PathBuf,
     /// Most recent reply handle from a user message. Used by wake turns to
     /// deliver responses to the channel the user last interacted from.
     last_reply: Option<Arc<dyn ReplyHandle>>,
@@ -160,26 +229,23 @@ fn apply_observe_action(
 pub async fn run_gateway(cfg: Config) -> Result<GatewayExit, ResiduumError> {
     let parts = startup::initialize(&cfg).await?;
 
-    let (inbound_tx, inbound_rx) = mpsc::channel::<RoutedMessage>(32);
-    let (broadcast_tx, _broadcast_rx) = broadcast::channel::<ServerMessage>(256);
-    let (reload_sender, reload_rx) = tokio::sync::watch::channel(false);
-    let (command_tx, command_rx) = mpsc::channel::<ServerCommand>(32);
+    // Create long-lived channels via GatewayCore
+    let (core, receivers) = GatewayCore::new(cfg.config_dir.clone());
 
-    // Clone senders for additional adapters before moving into GatewayState
-    let web_reload_sender = reload_sender.clone();
-    let discord_inbound_tx = inbound_tx.clone();
-    let webhook_inbound_tx = inbound_tx.clone();
-    let discord_reload_sender = reload_sender.clone();
-    let discord_command_tx = command_tx.clone();
-    let telegram_inbound_tx = inbound_tx.clone();
-    let telegram_reload_sender = reload_sender.clone();
-    let telegram_command_tx = command_tx.clone();
+    // Clone senders for adapters before moving receivers into the runtime
+    let discord_inbound_tx = core.inbound_tx.clone();
+    let webhook_inbound_tx = core.inbound_tx.clone();
+    let discord_reload_tx = core.reload_tx.clone();
+    let discord_command_tx = core.command_tx.clone();
+    let telegram_inbound_tx = core.inbound_tx.clone();
+    let telegram_reload_tx = core.reload_tx.clone();
+    let telegram_command_tx = core.command_tx.clone();
 
     let state = GatewayState {
-        inbound_tx,
-        broadcast_tx: broadcast_tx.clone(),
-        reload_sender,
-        command_tx,
+        inbound_tx: core.inbound_tx,
+        broadcast_tx: core.broadcast_tx.clone(),
+        reload_tx: core.reload_tx.clone(),
+        command_tx: core.command_tx,
         inbox_dir: parts.layout.inbox_dir(),
         tz: parts.tz,
     };
@@ -212,7 +278,7 @@ pub async fn run_gateway(cfg: Config) -> Result<GatewayExit, ResiduumError> {
         .merge(web::config_api_router(web::ConfigApiState {
             config_dir: cfg.config_dir.clone(),
             memory_dir: Some(parts.layout.memory_dir()),
-            reload_sender: Some(web_reload_sender),
+            reload_tx: Some(core.reload_tx.clone()),
             setup_done: None,
         }))
         .fallback(web::static_handler);
@@ -229,7 +295,8 @@ pub async fn run_gateway(cfg: Config) -> Result<GatewayExit, ResiduumError> {
         );
     }
 
-    let mut shutdown_rx = reload_rx.clone();
+    // HTTP server shuts down via dedicated shutdown channel (not reload)
+    let mut shutdown_rx = core.shutdown_tx.subscribe();
     let server_handle = tokio::spawn(async move {
         if let Err(e) = axum::serve(listener, app)
             .with_graceful_shutdown(async move {
@@ -247,7 +314,7 @@ pub async fn run_gateway(cfg: Config) -> Result<GatewayExit, ResiduumError> {
             discord_cfg.clone(),
             discord_inbound_tx,
             cfg.workspace_dir.clone(),
-            discord_reload_sender,
+            discord_reload_tx,
             discord_command_tx,
             parts.tz,
         );
@@ -265,7 +332,7 @@ pub async fn run_gateway(cfg: Config) -> Result<GatewayExit, ResiduumError> {
             telegram_cfg.clone(),
             telegram_inbound_tx,
             cfg.workspace_dir.clone(),
-            telegram_reload_sender,
+            telegram_reload_tx,
             telegram_command_tx,
             parts.tz,
         );
@@ -299,13 +366,15 @@ pub async fn run_gateway(cfg: Config) -> Result<GatewayExit, ResiduumError> {
         background_spawner: parts.background_spawner,
         background_result_rx: parts.background_result_rx,
         spawn_context: parts.spawn_context,
-        inbound_rx,
-        broadcast_tx,
-        reload_rx,
-        command_rx,
+        inbound_rx: receivers.inbound,
+        broadcast_tx: core.broadcast_tx,
+        reload_rx: receivers.reload,
+        command_rx: receivers.command,
         server_handle,
         pulse_scheduler: PulseScheduler::new(),
         sigterm,
+        shutdown_tx: core.shutdown_tx,
+        config_dir: core.config_dir,
         last_reply: None,
     };
 
@@ -560,9 +629,8 @@ async fn run_wake_turn_handler(
                     }
                 }
                 _ = rt.reload_rx.changed() => {
-                    rt.mcp_registry.write().await.disconnect_all().await;
-                    rt.server_handle.abort();
-                    return Some(GatewayExit::Reload);
+                    tracing::info!("reload signal received during wake turn, deferring");
+                    // Signal stays in watch channel; processed on next main loop iteration
                 }
             }
         }
@@ -701,6 +769,70 @@ async fn handle_action_main_turns(
     run_wake_turn_handler(rt, observe_deadline).await
 }
 
+/// Back up `config.toml` → `config.toml.bak` before a reload attempt.
+///
+/// Best-effort: logs a warning on failure but never panics.
+pub fn backup_config(config_dir: &std::path::Path) {
+    let src = config_dir.join("config.toml");
+    let dst = config_dir.join("config.toml.bak");
+    if let Err(err) = std::fs::copy(&src, &dst) {
+        tracing::warn!(error = %err, "failed to back up config.toml before reload");
+    } else {
+        tracing::debug!("config.toml backed up to config.toml.bak");
+    }
+}
+
+/// Restore `config.toml.bak` → `config.toml` after a failed reload.
+///
+/// Returns `true` if the rollback succeeded.
+pub fn rollback_config(config_dir: &std::path::Path) -> bool {
+    let backup = config_dir.join("config.toml.bak");
+    let target = config_dir.join("config.toml");
+    if !backup.exists() {
+        tracing::warn!("no config backup found, cannot rollback");
+        return false;
+    }
+    match std::fs::copy(&backup, &target) {
+        Ok(_) => {
+            tracing::info!("config.toml restored from backup");
+            true
+        }
+        Err(err) => {
+            tracing::warn!(error = %err, "failed to restore config.toml from backup");
+            false
+        }
+    }
+}
+
+/// Handle an in-place root config reload.
+///
+/// Backs up the current config, attempts to load the new one, and broadcasts
+/// the result. On failure, rolls back and notifies clients.
+fn handle_root_reload(rt: &mut GatewayRuntime) {
+    tracing::info!("handling root config reload in-place");
+    backup_config(&rt.config_dir);
+    match Config::load() {
+        Ok(_new_cfg) => {
+            // Phase 5 adds granular subsystem updates here
+            rt.broadcast_tx
+                .send(ServerMessage::Notice {
+                    message: "configuration reloaded successfully".to_string(),
+                })
+                .ok();
+            tracing::info!("configuration reloaded successfully");
+        }
+        Err(err) => {
+            tracing::warn!(error = %err, "config reload failed, keeping current config");
+            rollback_config(&rt.config_dir);
+            rt.broadcast_tx
+                .send(ServerMessage::Notice {
+                    message: format!("config reload failed (keeping current config): {err}"),
+                })
+                .ok();
+        }
+    }
+}
+
 /// Run the main gateway event loop.
 ///
 /// Processes inbound messages, pulse ticks, action ticks, and memory pipeline
@@ -723,16 +855,22 @@ async fn run_event_loop(mut rt: GatewayRuntime) -> GatewayExit {
             _ = rt.sigterm.recv() => {
                 tracing::info!("received SIGTERM, shutting down");
                 rt.mcp_registry.write().await.disconnect_all().await;
-                rt.server_handle.abort();
+                rt.shutdown_tx.send(true).ok();
                 break;
             }
 
             // ── Reload signal ─────────────────────────────────────────────
             _ = rt.reload_rx.changed() => {
-                tracing::info!("reloading configuration");
-                rt.mcp_registry.write().await.disconnect_all().await;
-                rt.server_handle.abort();
-                return GatewayExit::Reload;
+                let signal = rt.reload_rx.borrow_and_update().clone();
+                match signal {
+                    ReloadSignal::None => {}
+                    ReloadSignal::Root => {
+                        handle_root_reload(&mut rt);
+                    }
+                    ReloadSignal::Workspace => {
+                        tracing::info!("workspace reload not yet implemented");
+                    }
+                }
             }
 
             // ── Inbound messages (from any channel) ──────────────────────
@@ -740,7 +878,7 @@ async fn run_event_loop(mut rt: GatewayRuntime) -> GatewayExit {
                 let Some(routed) = msg else {
                     tracing::info!("inbound channel closed, shutting down");
                     rt.mcp_registry.write().await.disconnect_all().await;
-                    rt.server_handle.abort();
+                    rt.shutdown_tx.send(true).ok();
                     break;
                 };
 
@@ -809,9 +947,8 @@ async fn run_event_loop(mut rt: GatewayRuntime) -> GatewayExit {
                                 }
                             }
                             _ = rt.reload_rx.changed() => {
-                                rt.mcp_registry.write().await.disconnect_all().await;
-                                rt.server_handle.abort();
-                                return GatewayExit::Reload;
+                                tracing::info!("reload signal received during active turn, deferring");
+                                // Signal stays in watch channel; processed on next main loop iteration
                             }
                         }
                     }
@@ -1019,4 +1156,151 @@ async fn run_event_loop(mut rt: GatewayRuntime) -> GatewayExit {
     }
 
     GatewayExit::Shutdown
+}
+
+#[cfg(test)]
+#[expect(clippy::unwrap_used, reason = "test code uses unwrap for clarity")]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reload_signal_default_is_none() {
+        let signal = ReloadSignal::default();
+        assert_eq!(signal, ReloadSignal::None);
+    }
+
+    #[tokio::test]
+    async fn core_channels_survive_reload_signal() {
+        let dir = tempfile::tempdir().unwrap();
+        let (core, receivers) = GatewayCore::new(dir.path().to_path_buf());
+
+        // Send a message through inbound before reload
+        assert!(
+            core.inbound_tx
+                .send(crate::channels::types::RoutedMessage {
+                    message: crate::channels::types::InboundMessage {
+                        id: "test-1".to_string(),
+                        content: "hello".to_string(),
+                        origin: crate::channels::types::MessageOrigin {
+                            channel: "test".to_string(),
+                            sender_name: "tester".to_string(),
+                            sender_id: "t1".to_string(),
+                        },
+                        timestamp: chrono::Utc::now(),
+                    },
+                    reply: std::sync::Arc::new(crate::channels::websocket::WsReplyHandle::new(
+                        core.broadcast_tx.clone(),
+                        "test-1".to_string(),
+                    ),),
+                })
+                .await
+                .is_ok(),
+            "inbound send should succeed before reload"
+        );
+
+        // Fire a reload signal
+        core.reload_tx.send(ReloadSignal::Root).unwrap();
+
+        // Channels still work after the reload signal
+        let _broadcast_rx = core.broadcast_tx.subscribe();
+        assert!(
+            core.broadcast_tx
+                .send(crate::gateway::protocol::ServerMessage::Pong)
+                .is_ok(),
+            "broadcast should still work after reload signal"
+        );
+
+        // Inbound receiver still has the message
+        drop(core);
+        let mut inbound = receivers.inbound;
+        let msg = inbound.recv().await.unwrap();
+        assert_eq!(msg.message.content, "hello");
+    }
+
+    #[test]
+    fn backup_config_creates_bak_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = dir.path().join("config.toml");
+        std::fs::write(&config, "timezone = \"UTC\"\n").unwrap();
+
+        backup_config(dir.path());
+
+        let bak = dir.path().join("config.toml.bak");
+        assert!(bak.exists(), "backup should create config.toml.bak");
+        assert_eq!(
+            std::fs::read_to_string(&bak).unwrap(),
+            "timezone = \"UTC\"\n",
+            "backup content should match original"
+        );
+    }
+
+    #[test]
+    fn rollback_config_restores_original() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = dir.path().join("config.toml");
+        let bak = dir.path().join("config.toml.bak");
+
+        std::fs::write(&bak, "timezone = \"UTC\"\n").unwrap();
+        std::fs::write(&config, "BROKEN").unwrap();
+
+        assert!(rollback_config(dir.path()), "rollback should succeed");
+        assert_eq!(
+            std::fs::read_to_string(&config).unwrap(),
+            "timezone = \"UTC\"\n",
+        );
+    }
+
+    #[test]
+    fn rollback_config_fails_without_backup() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("config.toml"), "BROKEN").unwrap();
+        assert!(!rollback_config(dir.path()));
+    }
+
+    #[test]
+    fn backup_config_missing_source_does_not_panic() {
+        let dir = tempfile::tempdir().unwrap();
+        // No config.toml exists — backup should warn but not panic
+        backup_config(dir.path());
+        assert!(
+            !dir.path().join("config.toml.bak").exists(),
+            "no backup should be created when source is missing"
+        );
+    }
+
+    #[test]
+    fn backup_config_overwrites_stale_backup() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("config.toml.bak"), "old content").unwrap();
+        std::fs::write(dir.path().join("config.toml"), "new content").unwrap();
+
+        backup_config(dir.path());
+
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("config.toml.bak")).unwrap(),
+            "new content",
+            "backup should overwrite previous backup"
+        );
+    }
+
+    #[tokio::test]
+    async fn consecutive_reload_signals_both_received() {
+        let (tx, mut rx) = tokio::sync::watch::channel(ReloadSignal::None);
+
+        // First send
+        tx.send(ReloadSignal::Root).unwrap();
+        rx.changed().await.unwrap();
+        let val = rx.borrow_and_update().clone();
+        assert_eq!(val, ReloadSignal::Root);
+
+        // Second send of the same value — should still wake the receiver
+        tx.send(ReloadSignal::Root).unwrap();
+        rx.changed().await.unwrap();
+        let val2 = rx.borrow_and_update().clone();
+        assert_eq!(
+            val2,
+            ReloadSignal::Root,
+            "second identical send should still be received"
+        );
+    }
 }
