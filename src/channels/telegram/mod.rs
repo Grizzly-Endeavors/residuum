@@ -12,14 +12,14 @@ use tokio::sync::mpsc;
 
 use crate::channels::types::RoutedMessage;
 use crate::config::TelegramConfig;
-use crate::gateway::server::ServerCommand;
+use crate::gateway::server::{ReloadSignal, ServerCommand};
 
 /// Telegram channel adapter that routes private messages to the agent inbound channel.
 pub struct TelegramChannel {
     cfg: TelegramConfig,
     inbound_tx: mpsc::Sender<RoutedMessage>,
     workspace_dir: PathBuf,
-    reload_sender: tokio::sync::watch::Sender<bool>,
+    reload_tx: tokio::sync::watch::Sender<ReloadSignal>,
     command_tx: mpsc::Sender<ServerCommand>,
     tz: chrono_tz::Tz,
 }
@@ -27,11 +27,11 @@ pub struct TelegramChannel {
 impl TelegramChannel {
     /// Create a new Telegram channel adapter.
     #[must_use]
-    pub fn new(
+    pub(crate) fn new(
         cfg: TelegramConfig,
         inbound_tx: mpsc::Sender<RoutedMessage>,
         workspace_dir: PathBuf,
-        reload_sender: tokio::sync::watch::Sender<bool>,
+        reload_tx: tokio::sync::watch::Sender<ReloadSignal>,
         command_tx: mpsc::Sender<ServerCommand>,
         tz: chrono_tz::Tz,
     ) -> Self {
@@ -39,7 +39,7 @@ impl TelegramChannel {
             cfg,
             inbound_tx,
             workspace_dir,
-            reload_sender,
+            reload_tx,
             command_tx,
             tz,
         }
@@ -51,12 +51,12 @@ impl TelegramChannel {
     ///
     /// # Errors
     /// Returns an error if the bot cannot connect or polling fails fatally.
-    pub async fn start(self) -> anyhow::Result<()> {
+    pub(crate) async fn start(self) -> anyhow::Result<()> {
         handler::run_telegram_polling(
             &self.cfg.token,
             self.inbound_tx,
             self.workspace_dir,
-            self.reload_sender,
+            self.reload_tx,
             self.command_tx,
             self.tz,
         )

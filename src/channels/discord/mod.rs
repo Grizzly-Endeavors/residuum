@@ -18,7 +18,7 @@ use tokio::sync::mpsc;
 
 use crate::channels::types::RoutedMessage;
 use crate::config::DiscordConfig;
-use crate::gateway::server::ServerCommand;
+use crate::gateway::server::{ReloadSignal, ServerCommand};
 
 use self::handler::DiscordHandler;
 
@@ -27,7 +27,7 @@ pub struct DiscordChannel {
     cfg: DiscordConfig,
     inbound_tx: mpsc::Sender<RoutedMessage>,
     workspace_dir: PathBuf,
-    reload_sender: tokio::sync::watch::Sender<bool>,
+    reload_tx: tokio::sync::watch::Sender<ReloadSignal>,
     command_tx: mpsc::Sender<ServerCommand>,
     tz: chrono_tz::Tz,
 }
@@ -39,15 +39,15 @@ impl DiscordChannel {
     /// - `cfg`: Discord bot configuration (token).
     /// - `inbound_tx`: Channel for routing messages to the agent.
     /// - `workspace_dir`: Path to the workspace root (for PRESENCE.toml and inbox).
-    /// - `reload_sender`: Watch channel to trigger config reload.
+    /// - `reload_tx`: Watch channel to trigger config reload.
     /// - `command_tx`: Channel for dispatching named server commands.
     /// - `tz`: Timezone for inbox item timestamps.
     #[must_use]
-    pub fn new(
+    pub(crate) fn new(
         cfg: DiscordConfig,
         inbound_tx: mpsc::Sender<RoutedMessage>,
         workspace_dir: PathBuf,
-        reload_sender: tokio::sync::watch::Sender<bool>,
+        reload_tx: tokio::sync::watch::Sender<ReloadSignal>,
         command_tx: mpsc::Sender<ServerCommand>,
         tz: chrono_tz::Tz,
     ) -> Self {
@@ -55,7 +55,7 @@ impl DiscordChannel {
             cfg,
             inbound_tx,
             workspace_dir,
-            reload_sender,
+            reload_tx,
             command_tx,
             tz,
         }
@@ -67,7 +67,7 @@ impl DiscordChannel {
     ///
     /// # Errors
     /// Returns an error if the serenity client cannot be built or the connection fails.
-    pub async fn start(self) -> Result<(), serenity::Error> {
+    pub(crate) async fn start(self) -> Result<(), serenity::Error> {
         let intents = GatewayIntents::DIRECT_MESSAGES | GatewayIntents::MESSAGE_CONTENT;
 
         let presence_path = self.workspace_dir.join("PRESENCE.toml");
@@ -77,7 +77,7 @@ impl DiscordChannel {
             inbound_tx: self.inbound_tx,
             presence_path,
             inbox_dir,
-            reload_sender: self.reload_sender,
+            reload_tx: self.reload_tx,
             command_tx: self.command_tx,
             tz: self.tz,
         };

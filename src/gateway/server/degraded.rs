@@ -14,13 +14,14 @@ use tokio::sync::{broadcast, watch};
 use crate::gateway::protocol::{ClientMessage, ServerMessage};
 
 use super::GatewayExit;
+use super::ReloadSignal;
 use super::web::{self, ConfigApiState};
 
 /// Shared state for the degraded gateway.
 #[derive(Clone)]
 struct DegradedState {
     broadcast_tx: broadcast::Sender<ServerMessage>,
-    reload_sender: watch::Sender<bool>,
+    reload_tx: watch::Sender<ReloadSignal>,
     error_message: String,
 }
 
@@ -44,11 +45,11 @@ pub async fn run_degraded_gateway(
     eprintln!("warning: gateway running in degraded mode — {error_message}");
 
     let (broadcast_tx, _broadcast_rx) = broadcast::channel::<ServerMessage>(64);
-    let (reload_sender, mut reload_rx) = watch::channel(false);
+    let (reload_tx, mut reload_rx) = watch::channel(ReloadSignal::None);
 
     let state = DegradedState {
         broadcast_tx: broadcast_tx.clone(),
-        reload_sender: reload_sender.clone(),
+        reload_tx: reload_tx.clone(),
         error_message: error_message.clone(),
     };
 
@@ -58,7 +59,7 @@ pub async fn run_degraded_gateway(
         .merge(web::config_api_router(ConfigApiState {
             config_dir,
             memory_dir: None,
-            reload_sender: Some(reload_sender),
+            reload_tx: Some(reload_tx),
             setup_done: None,
         }))
         .fallback(web::static_handler);
@@ -98,7 +99,10 @@ pub async fn run_degraded_gateway(
     let server_handle = tokio::spawn(async move {
         if let Err(e) = axum::serve(listener, app)
             .with_graceful_shutdown(async move {
-                shutdown_rx.wait_for(|v| *v).await.ok();
+                shutdown_rx
+                    .wait_for(|v| *v != ReloadSignal::None)
+                    .await
+                    .ok();
             })
             .await
         {
@@ -111,7 +115,7 @@ pub async fn run_degraded_gateway(
         tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()).ok();
 
     tokio::select! {
-        _ = reload_rx.wait_for(|v| *v) => {
+        _ = reload_rx.wait_for(|v| *v != ReloadSignal::None) => {
             server_handle.abort();
             tracing::info!("degraded mode: reload requested, retrying full initialization");
             GatewayExit::Reload
@@ -182,7 +186,7 @@ async fn degraded_handle_connection(socket: WebSocket, state: DegradedState) {
             ClientMessage::Reload => {
                 tracing::info!("degraded mode: reload requested by client");
                 state.broadcast_tx.send(ServerMessage::Reloading).ok();
-                state.reload_sender.send(true).ok();
+                state.reload_tx.send(ReloadSignal::Root).ok();
             }
             ClientMessage::Ping => {
                 state.broadcast_tx.send(ServerMessage::Pong).ok();

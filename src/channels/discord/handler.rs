@@ -22,7 +22,7 @@ use crate::channels::cli::commands::{
 };
 use crate::channels::presence::{load_presence, to_activity, to_online_status};
 use crate::channels::types::{InboundMessage, MessageOrigin, RoutedMessage};
-use crate::gateway::server::ServerCommand;
+use crate::gateway::server::{ReloadSignal, ServerCommand};
 use crate::inbox;
 
 use super::reply::DiscordReplyHandle;
@@ -36,7 +36,7 @@ pub(super) struct DiscordHandler {
     pub(super) inbound_tx: mpsc::Sender<RoutedMessage>,
     pub(super) presence_path: PathBuf,
     pub(super) inbox_dir: PathBuf,
-    pub(super) reload_sender: tokio::sync::watch::Sender<bool>,
+    pub(super) reload_tx: tokio::sync::watch::Sender<ReloadSignal>,
     pub(super) command_tx: mpsc::Sender<ServerCommand>,
     pub(super) tz: chrono_tz::Tz,
 }
@@ -187,7 +187,7 @@ impl EventHandler for DiscordHandler {
         let response_text = match result.side_effect {
             Some(CommandSideEffect::Reload) => {
                 tracing::info!("reload requested via discord slash command");
-                self.reload_sender.send(true).ok();
+                self.reload_tx.send(ReloadSignal::Root).ok();
                 result.response
             }
             Some(CommandSideEffect::ServerCommand { name, args }) => {

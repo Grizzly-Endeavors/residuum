@@ -59,6 +59,19 @@ use memory::{
 use spawn_helpers::SpawnContext;
 use ws::ws_handler;
 
+/// Describes what kind of configuration reload was requested.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub(crate) enum ReloadSignal {
+    /// No reload pending.
+    #[default]
+    None,
+    /// Full root config reload (config.toml changed).
+    Root,
+    /// Workspace-level reload (project or skill changes). Used in Phase 3+.
+    #[expect(dead_code, reason = "variant used in later reload phases")]
+    Workspace,
+}
+
 /// Outcome of the gateway main loop.
 pub enum GatewayExit {
     /// Clean shutdown (inbound channel closed).
@@ -82,7 +95,7 @@ pub struct ServerCommand {
 struct GatewayState {
     inbound_tx: mpsc::Sender<RoutedMessage>,
     broadcast_tx: broadcast::Sender<ServerMessage>,
-    reload_sender: tokio::sync::watch::Sender<bool>,
+    reload_tx: tokio::sync::watch::Sender<ReloadSignal>,
     command_tx: mpsc::Sender<ServerCommand>,
     inbox_dir: std::path::PathBuf,
     tz: chrono_tz::Tz,
@@ -112,7 +125,7 @@ struct GatewayRuntime {
     // Runtime channels + handles
     inbound_rx: mpsc::Receiver<RoutedMessage>,
     broadcast_tx: broadcast::Sender<ServerMessage>,
-    reload_rx: tokio::sync::watch::Receiver<bool>,
+    reload_rx: tokio::sync::watch::Receiver<ReloadSignal>,
     command_rx: mpsc::Receiver<ServerCommand>,
     server_handle: tokio::task::JoinHandle<()>,
     pulse_scheduler: PulseScheduler,
@@ -162,23 +175,23 @@ pub async fn run_gateway(cfg: Config) -> Result<GatewayExit, ResiduumError> {
 
     let (inbound_tx, inbound_rx) = mpsc::channel::<RoutedMessage>(32);
     let (broadcast_tx, _broadcast_rx) = broadcast::channel::<ServerMessage>(256);
-    let (reload_sender, reload_rx) = tokio::sync::watch::channel(false);
+    let (reload_tx, reload_rx) = tokio::sync::watch::channel(ReloadSignal::None);
     let (command_tx, command_rx) = mpsc::channel::<ServerCommand>(32);
 
     // Clone senders for additional adapters before moving into GatewayState
-    let web_reload_sender = reload_sender.clone();
+    let web_reload_tx = reload_tx.clone();
     let discord_inbound_tx = inbound_tx.clone();
     let webhook_inbound_tx = inbound_tx.clone();
-    let discord_reload_sender = reload_sender.clone();
+    let discord_reload_tx = reload_tx.clone();
     let discord_command_tx = command_tx.clone();
     let telegram_inbound_tx = inbound_tx.clone();
-    let telegram_reload_sender = reload_sender.clone();
+    let telegram_reload_tx = reload_tx.clone();
     let telegram_command_tx = command_tx.clone();
 
     let state = GatewayState {
         inbound_tx,
         broadcast_tx: broadcast_tx.clone(),
-        reload_sender,
+        reload_tx,
         command_tx,
         inbox_dir: parts.layout.inbox_dir(),
         tz: parts.tz,
@@ -212,7 +225,7 @@ pub async fn run_gateway(cfg: Config) -> Result<GatewayExit, ResiduumError> {
         .merge(web::config_api_router(web::ConfigApiState {
             config_dir: cfg.config_dir.clone(),
             memory_dir: Some(parts.layout.memory_dir()),
-            reload_sender: Some(web_reload_sender),
+            reload_tx: Some(web_reload_tx),
             setup_done: None,
         }))
         .fallback(web::static_handler);
@@ -233,7 +246,10 @@ pub async fn run_gateway(cfg: Config) -> Result<GatewayExit, ResiduumError> {
     let server_handle = tokio::spawn(async move {
         if let Err(e) = axum::serve(listener, app)
             .with_graceful_shutdown(async move {
-                shutdown_rx.wait_for(|v| *v).await.ok();
+                shutdown_rx
+                    .wait_for(|v| *v != ReloadSignal::None)
+                    .await
+                    .ok();
             })
             .await
         {
@@ -247,7 +263,7 @@ pub async fn run_gateway(cfg: Config) -> Result<GatewayExit, ResiduumError> {
             discord_cfg.clone(),
             discord_inbound_tx,
             cfg.workspace_dir.clone(),
-            discord_reload_sender,
+            discord_reload_tx,
             discord_command_tx,
             parts.tz,
         );
@@ -265,7 +281,7 @@ pub async fn run_gateway(cfg: Config) -> Result<GatewayExit, ResiduumError> {
             telegram_cfg.clone(),
             telegram_inbound_tx,
             cfg.workspace_dir.clone(),
-            telegram_reload_sender,
+            telegram_reload_tx,
             telegram_command_tx,
             parts.tz,
         );
