@@ -1,0 +1,15 @@
+{
+  "mcpServers": {
+    "filesystem": {
+      "command": "mcp-server-filesystem",
+      "args": ["/home/user/documents"],
+      "env": {
+        "MCP_LOG": "debug"
+      }
+    },
+    "remote-search": {
+      "command": "http://10.0.0.5:8080/mcp",
+      "transport": "http"
+    }
+  }
+}

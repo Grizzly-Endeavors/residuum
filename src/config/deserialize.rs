@@ -15,10 +15,6 @@ pub(super) struct ConfigFile {
     pub(super) name: Option<String>,
     /// IANA timezone name (e.g. `"America/New_York"`).
     pub(super) timezone: Option<String>,
-    /// Named provider definitions.
-    pub(super) providers: Option<HashMap<String, ProviderEntryFile>>,
-    /// Role → model string assignments.
-    pub(super) models: Option<ModelsConfigFile>,
     /// Workspace root directory path.
     pub(super) workspace_dir: Option<String>,
     /// Request timeout in seconds.
@@ -39,14 +35,22 @@ pub(super) struct ConfigFile {
     pub(super) webhook: Option<WebhookConfigFile>,
     /// Skills subsystem configuration.
     pub(super) skills: Option<SkillsConfigFile>,
-    /// MCP server configuration.
-    pub(super) mcp: Option<McpConfigFile>,
     /// Retry configuration.
     pub(super) retry: Option<RetryConfigFile>,
-    /// Notification channel configuration.
-    pub(super) notifications: Option<NotificationsConfigFile>,
     /// Background task configuration.
     pub(super) background: Option<BackgroundConfigFile>,
+    /// Agent ability gates.
+    pub(super) agent: Option<AgentConfigFile>,
+}
+
+/// Raw TOML providers file structure (`providers.toml`).
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct ProvidersFile {
+    /// Named provider definitions.
+    pub(super) providers: Option<HashMap<String, ProviderEntryFile>>,
+    /// Role → model string assignments.
+    pub(super) models: Option<ModelsConfigFile>,
 }
 
 /// A named provider entry under `[providers.<name>]`.
@@ -190,14 +194,6 @@ pub(super) struct SkillsConfigFile {
     pub(super) dirs: Option<Vec<String>>,
 }
 
-/// Raw TOML `[mcp]` section.
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub(super) struct McpConfigFile {
-    /// Named MCP server definitions.
-    pub(super) servers: Option<HashMap<String, McpServerConfigEntry>>,
-}
-
 /// Raw TOML `[retry]` section.
 #[derive(Debug, Deserialize, Default)]
 #[serde(deny_unknown_fields)]
@@ -212,31 +208,14 @@ pub(super) struct RetryConfigFile {
     pub(super) backoff_multiplier: Option<f64>,
 }
 
-/// Raw TOML `[notifications]` section.
+/// Raw TOML `[agent]` section.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(super) struct NotificationsConfigFile {
-    /// Named external channel definitions.
-    pub(super) channels: Option<HashMap<String, ChannelConfigEntry>>,
-}
-
-/// A single channel entry under `[notifications.channels.<name>]`.
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub(super) struct ChannelConfigEntry {
-    /// Channel type: `"ntfy"` or `"webhook"`.
-    #[serde(rename = "type")]
-    pub(super) kind: String,
-    /// URL for the channel endpoint.
-    pub(super) url: Option<String>,
-    /// Ntfy topic name.
-    pub(super) topic: Option<String>,
-    /// Ntfy priority (default: `"default"`).
-    pub(super) priority: Option<String>,
-    /// HTTP method for webhooks (default: `"POST"`).
-    pub(super) method: Option<String>,
-    /// Additional HTTP headers for webhooks.
-    pub(super) headers: Option<HashMap<String, String>>,
+pub(super) struct AgentConfigFile {
+    /// Whether the agent can modify MCP server configurations.
+    pub(super) modify_mcp: Option<bool>,
+    /// Whether the agent can modify notification channels.
+    pub(super) modify_channels: Option<bool>,
 }
 
 /// Raw TOML `[background]` section.
@@ -261,18 +240,4 @@ pub(super) struct BackgroundModelsFile {
     pub(super) medium: Option<ModelStringOrList>,
     /// Large model for complex tasks. Supports failover arrays.
     pub(super) large: Option<ModelStringOrList>,
-}
-
-/// A single MCP server entry under `[mcp.servers.<name>]`.
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub(super) struct McpServerConfigEntry {
-    /// Command (stdio) or URL (http) for the server.
-    pub(super) command: String,
-    /// Command-line arguments (only used for stdio transport).
-    pub(super) args: Option<Vec<String>>,
-    /// Environment variables to pass to the server process (only used for stdio transport).
-    pub(super) env: Option<HashMap<String, String>>,
-    /// Transport type: `"stdio"` (default) or `"http"`.
-    pub(super) transport: Option<String>,
 }

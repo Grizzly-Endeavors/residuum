@@ -11,16 +11,15 @@ use super::Config;
 use super::bootstrap::default_workspace_dir;
 use super::constants::{DEFAULT_MAX_TOKENS, DEFAULT_TIMEOUT_SECS};
 use super::deserialize::{
-    BackgroundConfigFile, ConfigFile, DiscordConfigFile, GatewayConfigFile, McpConfigFile,
-    ModelStringOrList, NotificationsConfigFile, ProviderEntryFile, SearchConfigFile,
-    SkillsConfigFile, TelegramConfigFile, WebhookConfigFile,
+    AgentConfigFile, BackgroundConfigFile, ConfigFile, DiscordConfigFile, GatewayConfigFile,
+    ModelStringOrList, ProviderEntryFile, ProvidersFile, SearchConfigFile, SkillsConfigFile,
+    TelegramConfigFile, WebhookConfigFile,
 };
 use super::provider::{ModelSpec, ProviderKind, ProviderSpec};
 use super::secrets::SecretStore;
 use super::types::{
-    BackgroundConfig, DiscordConfig, ExternalChannelConfig, ExternalChannelKind, GatewayConfig,
-    McpConfig, MemoryConfig, NotificationsConfig, SearchConfig, SkillsConfig, TelegramConfig,
-    WebhookConfig,
+    AgentAbilitiesConfig, BackgroundConfig, DiscordConfig, GatewayConfig, MemoryConfig,
+    SearchConfig, SkillsConfig, TelegramConfig, WebhookConfig,
 };
 
 /// Build a `Config` from an optional config file and environment variables.
@@ -34,13 +33,14 @@ use super::types::{
 )]
 pub(super) fn from_file_and_env(
     file: Option<&ConfigFile>,
+    providers_file: Option<&ProvidersFile>,
     config_dir: &Path,
 ) -> Result<Config, ResiduumError> {
     warn_deprecated_env_vars();
 
     let secrets = SecretStore::load(config_dir)?;
-    let providers_map = file.and_then(|f| f.providers.as_ref());
-    let models = file.and_then(|f| f.models.as_ref());
+    let providers_map = providers_file.and_then(|f| f.providers.as_ref());
+    let models = providers_file.and_then(|f| f.models.as_ref());
 
     // Resolve main: RESIDUUM_MODEL env > models.main > default
     let main = if let Ok(env_model) = std::env::var("RESIDUUM_MODEL") {
@@ -154,10 +154,9 @@ pub(super) fn from_file_and_env(
     let telegram = resolve_telegram_config(file.and_then(|f| f.telegram.as_ref()), &secrets);
     let webhook = resolve_webhook_config(file.and_then(|f| f.webhook.as_ref()), &secrets);
     let skills = resolve_skills_config(file.and_then(|f| f.skills.as_ref()), &workspace_dir);
-    let mcp = resolve_mcp_config(file.and_then(|f| f.mcp.as_ref()));
 
-    let notifications =
-        resolve_notifications_config(file.and_then(|f| f.notifications.as_ref()), &secrets);
+    let agent = resolve_agent_config(file.and_then(|f| f.agent.as_ref()));
+
     let background = resolve_background_config(
         file.and_then(|f| f.background.as_ref()),
         providers_map,
@@ -218,10 +217,9 @@ pub(super) fn from_file_and_env(
         telegram,
         webhook,
         skills,
-        mcp,
         retry,
-        notifications,
         background,
+        agent,
         config_dir: PathBuf::new(),
     })
 }
@@ -499,47 +497,6 @@ fn resolve_skills_config(section: Option<&SkillsConfigFile>, workspace_dir: &Pat
     SkillsConfig { dirs }
 }
 
-/// Resolve MCP server configuration from TOML section.
-///
-/// Converts named server entries into `McpServerEntry` values with the
-/// map key used as the server name.
-fn resolve_mcp_config(section: Option<&McpConfigFile>) -> McpConfig {
-    use crate::projects::types::McpTransport;
-
-    let Some(section) = section else {
-        return McpConfig::default();
-    };
-    let Some(servers_map) = &section.servers else {
-        return McpConfig::default();
-    };
-
-    let servers = servers_map
-        .iter()
-        .map(|(name, entry)| {
-            let transport = match entry.transport.as_deref() {
-                Some("stdio") | None => McpTransport::Stdio,
-                Some("http") => McpTransport::Http,
-                Some(other) => {
-                    eprintln!(
-                        "warning: [mcp.servers.{name}] unknown transport '{other}', \
-                         expected 'stdio' or 'http'; defaulting to stdio"
-                    );
-                    McpTransport::Stdio
-                }
-            };
-            crate::projects::types::McpServerEntry {
-                name: name.clone(),
-                command: entry.command.clone(),
-                args: entry.args.clone().unwrap_or_default(),
-                env: entry.env.clone().unwrap_or_default(),
-                transport,
-            }
-        })
-        .collect();
-
-    McpConfig { servers }
-}
-
 /// Resolve hybrid search configuration from TOML section with defaults.
 fn resolve_search_config(section: Option<&SearchConfigFile>) -> SearchConfig {
     let mut cfg = SearchConfig::default();
@@ -584,91 +541,18 @@ fn resolve_search_config(section: Option<&SearchConfigFile>) -> SearchConfig {
     cfg
 }
 
-/// Resolve notification channel configuration from TOML section.
-fn resolve_notifications_config(
-    section: Option<&NotificationsConfigFile>,
-    secrets: &SecretStore,
-) -> NotificationsConfig {
-    let Some(section) = section else {
-        return NotificationsConfig::default();
-    };
-    let Some(channels_map) = &section.channels else {
-        return NotificationsConfig::default();
-    };
-
-    let mut channels = Vec::new();
-
-    for (name, entry) in channels_map {
-        match entry.kind.as_str() {
-            "ntfy" => {
-                let Some(url) = entry
-                    .url
-                    .as_deref()
-                    .and_then(|raw| resolve_secret_value(raw, secrets))
-                else {
-                    eprintln!(
-                        "warning: [notifications.channels.{name}] type=ntfy requires 'url' field, skipping"
-                    );
-                    continue;
-                };
-                let Some(topic) = entry.topic.clone() else {
-                    eprintln!(
-                        "warning: [notifications.channels.{name}] type=ntfy requires 'topic' field, skipping"
-                    );
-                    continue;
-                };
-                channels.push(ExternalChannelConfig {
-                    name: name.clone(),
-                    kind: ExternalChannelKind::Ntfy {
-                        url,
-                        topic,
-                        priority: entry.priority.clone(),
-                    },
-                });
-            }
-            "webhook" => {
-                let Some(url) = entry
-                    .url
-                    .as_deref()
-                    .and_then(|raw| resolve_secret_value(raw, secrets))
-                else {
-                    eprintln!(
-                        "warning: [notifications.channels.{name}] type=webhook requires 'url' field, skipping"
-                    );
-                    continue;
-                };
-                let headers: Vec<(String, String)> = entry
-                    .headers
-                    .as_ref()
-                    .map(|h| {
-                        h.iter()
-                            .map(|(k, v)| {
-                                let resolved =
-                                    resolve_secret_value(v, secrets).unwrap_or_else(|| v.clone());
-                                (k.clone(), resolved)
-                            })
-                            .collect()
-                    })
-                    .unwrap_or_default();
-                channels.push(ExternalChannelConfig {
-                    name: name.clone(),
-                    kind: ExternalChannelKind::Webhook {
-                        url,
-                        method: entry.method.clone(),
-                        headers,
-                    },
-                });
-            }
-            other => {
-                eprintln!(
-                    "warning: [notifications.channels.{name}] unknown type '{other}', \
-                     expected 'ntfy' or 'webhook'; skipping"
-                );
-            }
+/// Resolve agent ability gates from TOML section.
+fn resolve_agent_config(section: Option<&AgentConfigFile>) -> AgentAbilitiesConfig {
+    let mut cfg = AgentAbilitiesConfig::default();
+    if let Some(s) = section {
+        if let Some(v) = s.modify_mcp {
+            cfg.modify_mcp = v;
+        }
+        if let Some(v) = s.modify_channels {
+            cfg.modify_channels = v;
         }
     }
-
-    NotificationsConfig { channels }
+    cfg
 }
 
 /// Resolve background task configuration from TOML section.
@@ -771,6 +655,16 @@ mod tests {
         std::env::temp_dir().join("residuum-test-config")
     }
 
+    /// Parse a TOML string into a `ConfigFile` (config-only: timezone, memory, etc.).
+    fn parse_config(toml: &str) -> ConfigFile {
+        toml::from_str(toml).unwrap()
+    }
+
+    /// Parse a TOML string into a `ProvidersFile` (providers and models sections).
+    fn parse_providers(toml: &str) -> ProvidersFile {
+        toml::from_str(toml).unwrap()
+    }
+
     // ── Provider / model resolution ───────────────────────────────────────────
 
     #[test]
@@ -839,15 +733,15 @@ mod tests {
 
     #[test]
     fn default_model_fallback() {
-        let toml_str = r#"
-timezone = "UTC"
-
+        let cfg_file = parse_config("timezone = \"UTC\"\n");
+        let prov_file = parse_providers(
+            r#"
 [models]
 main = "anthropic/claude-sonnet-4-6"
 default = "anthropic/claude-haiku-4-5"
-"#;
-        let file: ConfigFile = toml::from_str(toml_str).unwrap();
-        let cfg = from_file_and_env(Some(&file), &test_config_dir()).unwrap();
+"#,
+        );
+        let cfg = from_file_and_env(Some(&cfg_file), Some(&prov_file), &test_config_dir()).unwrap();
         // observer was not set, so it falls back to default
         assert_eq!(cfg.observer[0].model.model, "claude-haiku-4-5");
         assert_eq!(cfg.reflector[0].model.model, "claude-haiku-4-5");
@@ -858,16 +752,16 @@ default = "anthropic/claude-haiku-4-5"
 
     #[test]
     fn role_specific_overrides_default() {
-        let toml_str = r#"
-timezone = "UTC"
-
+        let cfg_file = parse_config("timezone = \"UTC\"\n");
+        let prov_file = parse_providers(
+            r#"
 [models]
 main = "anthropic/claude-sonnet-4-6"
 default = "anthropic/claude-haiku-4-5"
 observer = "gemini/gemini-3.0-flash"
-"#;
-        let file: ConfigFile = toml::from_str(toml_str).unwrap();
-        let cfg = from_file_and_env(Some(&file), &test_config_dir()).unwrap();
+"#,
+        );
+        let cfg = from_file_and_env(Some(&cfg_file), Some(&prov_file), &test_config_dir()).unwrap();
         assert_eq!(
             cfg.observer[0].model.model, "gemini-3.0-flash",
             "explicit observer should override default"
@@ -880,14 +774,14 @@ observer = "gemini/gemini-3.0-flash"
 
     #[test]
     fn all_roles_resolved_to_main_by_default() {
-        let toml_str = r#"
-timezone = "UTC"
-
+        let cfg_file = parse_config("timezone = \"UTC\"\n");
+        let prov_file = parse_providers(
+            r#"
 [models]
 main = "anthropic/claude-sonnet-4-6"
-"#;
-        let file: ConfigFile = toml::from_str(toml_str).unwrap();
-        let cfg = from_file_and_env(Some(&file), &test_config_dir()).unwrap();
+"#,
+        );
+        let cfg = from_file_and_env(Some(&cfg_file), Some(&prov_file), &test_config_dir()).unwrap();
         assert_eq!(cfg.main[0].model.model, "claude-sonnet-4-6");
         assert_eq!(cfg.observer[0].model.model, "claude-sonnet-4-6");
         assert_eq!(cfg.reflector[0].model.model, "claude-sonnet-4-6");
@@ -898,14 +792,14 @@ main = "anthropic/claude-sonnet-4-6"
 
     #[test]
     fn model_chain_single_string() {
-        let toml_str = r#"
-timezone = "UTC"
-
+        let cfg_file = parse_config("timezone = \"UTC\"\n");
+        let prov_file = parse_providers(
+            r#"
 [models]
 main = "anthropic/claude-sonnet-4-6"
-"#;
-        let file: ConfigFile = toml::from_str(toml_str).unwrap();
-        let cfg = from_file_and_env(Some(&file), &test_config_dir()).unwrap();
+"#,
+        );
+        let cfg = from_file_and_env(Some(&cfg_file), Some(&prov_file), &test_config_dir()).unwrap();
         assert_eq!(
             cfg.main.len(),
             1,
@@ -916,14 +810,14 @@ main = "anthropic/claude-sonnet-4-6"
 
     #[test]
     fn model_chain_array() {
-        let toml_str = r#"
-timezone = "UTC"
-
+        let cfg_file = parse_config("timezone = \"UTC\"\n");
+        let prov_file = parse_providers(
+            r#"
 [models]
 main = ["anthropic/claude-sonnet-4-6", "openai/gpt-4o"]
-"#;
-        let file: ConfigFile = toml::from_str(toml_str).unwrap();
-        let cfg = from_file_and_env(Some(&file), &test_config_dir()).unwrap();
+"#,
+        );
+        let cfg = from_file_and_env(Some(&cfg_file), Some(&prov_file), &test_config_dir()).unwrap();
         assert_eq!(cfg.main.len(), 2, "array should produce 2-element chain");
         assert_eq!(cfg.main[0].model.kind, ProviderKind::Anthropic);
         assert_eq!(cfg.main[0].model.model, "claude-sonnet-4-6");
@@ -933,14 +827,14 @@ main = ["anthropic/claude-sonnet-4-6", "openai/gpt-4o"]
 
     #[test]
     fn role_chain_inherits_main_chain() {
-        let toml_str = r#"
-timezone = "UTC"
-
+        let cfg_file = parse_config("timezone = \"UTC\"\n");
+        let prov_file = parse_providers(
+            r#"
 [models]
 main = ["anthropic/claude-sonnet-4-6", "openai/gpt-4o"]
-"#;
-        let file: ConfigFile = toml::from_str(toml_str).unwrap();
-        let cfg = from_file_and_env(Some(&file), &test_config_dir()).unwrap();
+"#,
+        );
+        let cfg = from_file_and_env(Some(&cfg_file), Some(&prov_file), &test_config_dir()).unwrap();
         assert_eq!(
             cfg.observer.len(),
             2,
@@ -952,15 +846,15 @@ main = ["anthropic/claude-sonnet-4-6", "openai/gpt-4o"]
 
     #[test]
     fn role_chain_overrides_main_chain() {
-        let toml_str = r#"
-timezone = "UTC"
-
+        let cfg_file = parse_config("timezone = \"UTC\"\n");
+        let prov_file = parse_providers(
+            r#"
 [models]
 main = ["anthropic/claude-sonnet-4-6", "openai/gpt-4o"]
 observer = "gemini/gemini-3.0-flash"
-"#;
-        let file: ConfigFile = toml::from_str(toml_str).unwrap();
-        let cfg = from_file_and_env(Some(&file), &test_config_dir()).unwrap();
+"#,
+        );
+        let cfg = from_file_and_env(Some(&cfg_file), Some(&prov_file), &test_config_dir()).unwrap();
         assert_eq!(
             cfg.observer.len(),
             1,
@@ -972,13 +866,11 @@ observer = "gemini/gemini-3.0-flash"
     #[test]
     fn deny_unknown_fields_rejects_typos() {
         let toml_str = r#"
-timezone = "UTC"
-
 [models]
 main = "anthropic/claude-sonnet-4-6"
 typo_field = "oops"
 "#;
-        let result = toml::from_str::<ConfigFile>(toml_str);
+        let result = toml::from_str::<ProvidersFile>(toml_str);
         assert!(
             result.is_err(),
             "unknown field in [models] should be rejected"
@@ -989,9 +881,6 @@ typo_field = "oops"
     fn deny_unknown_fields_rejects_top_level_typos() {
         let toml_str = r#"
 timezone = "UTC"
-
-[models]
-main = "anthropic/claude-sonnet-4-6"
 
 [memori]
 observer_threshold_tokens = 30000
@@ -1005,9 +894,9 @@ observer_threshold_tokens = 30000
 
     #[test]
     fn provider_entry_type_field() {
-        let toml_str = r#"
-timezone = "UTC"
-
+        let cfg_file = parse_config("timezone = \"UTC\"\n");
+        let prov_file = parse_providers(
+            r#"
 [providers.cerebras]
 type = "openai"
 api_key = "csk-123"
@@ -1015,41 +904,45 @@ url = "https://api.cerebras.ai/v1"
 
 [models]
 main = "cerebras/llama-4"
-"#;
-        let file: ConfigFile = toml::from_str(toml_str).unwrap();
-        let cfg = from_file_and_env(Some(&file), &test_config_dir()).unwrap();
+"#,
+        );
+        let cfg = from_file_and_env(Some(&cfg_file), Some(&prov_file), &test_config_dir()).unwrap();
         assert_eq!(cfg.main[0].model.kind, ProviderKind::OpenAi);
         assert_eq!(cfg.main[0].provider_url, "https://api.cerebras.ai/v1");
     }
 
     #[test]
     fn memory_config_just_thresholds() {
-        let toml_str = r#"
+        let cfg_file = parse_config(
+            r#"
 timezone = "UTC"
-
-[models]
-main = "anthropic/claude-sonnet-4-6"
 
 [memory]
 observer_threshold_tokens = 20000
 reflector_threshold_tokens = 50000
-"#;
-        let file: ConfigFile = toml::from_str(toml_str).unwrap();
-        let cfg = from_file_and_env(Some(&file), &test_config_dir()).unwrap();
+"#,
+        );
+        let prov_file = parse_providers(
+            r#"
+[models]
+main = "anthropic/claude-sonnet-4-6"
+"#,
+        );
+        let cfg = from_file_and_env(Some(&cfg_file), Some(&prov_file), &test_config_dir()).unwrap();
         assert_eq!(cfg.memory.observer_threshold_tokens, 20000);
         assert_eq!(cfg.memory.reflector_threshold_tokens, 50000);
     }
 
     #[test]
     fn memory_config_defaults_when_absent() {
-        let toml_str = r#"
-timezone = "UTC"
-
+        let cfg_file = parse_config("timezone = \"UTC\"\n");
+        let prov_file = parse_providers(
+            r#"
 [models]
 main = "anthropic/claude-sonnet-4-6"
-"#;
-        let file: ConfigFile = toml::from_str(toml_str).unwrap();
-        let cfg = from_file_and_env(Some(&file), &test_config_dir()).unwrap();
+"#,
+        );
+        let cfg = from_file_and_env(Some(&cfg_file), Some(&prov_file), &test_config_dir()).unwrap();
         assert_eq!(
             cfg.memory.observer_threshold_tokens,
             DEFAULT_OBSERVER_THRESHOLD
@@ -1062,7 +955,7 @@ main = "anthropic/claude-sonnet-4-6"
 
     #[test]
     fn config_no_timezone_errors() {
-        let result = from_file_and_env(None, &test_config_dir());
+        let result = from_file_and_env(None, None, &test_config_dir());
         assert!(result.is_err(), "missing timezone should error");
         let err = result.unwrap_err().to_string();
         assert!(
@@ -1073,10 +966,9 @@ main = "anthropic/claude-sonnet-4-6"
 
     #[test]
     fn config_with_timezone() {
-        let toml_str =
-            "timezone = \"America/New_York\"\n\n[models]\nmain = \"anthropic/claude-sonnet-4-6\"\n";
-        let file: ConfigFile = toml::from_str(toml_str).unwrap();
-        let cfg = from_file_and_env(Some(&file), &test_config_dir()).unwrap();
+        let cfg_file = parse_config("timezone = \"America/New_York\"\n");
+        let prov_file = parse_providers("[models]\nmain = \"anthropic/claude-sonnet-4-6\"\n");
+        let cfg = from_file_and_env(Some(&cfg_file), Some(&prov_file), &test_config_dir()).unwrap();
         assert_eq!(
             cfg.timezone.name(),
             "America/New_York",
@@ -1086,36 +978,35 @@ main = "anthropic/claude-sonnet-4-6"
 
     #[test]
     fn config_invalid_timezone_errors() {
-        let toml_str =
-            "timezone = \"Not/A/Timezone\"\n\n[models]\nmain = \"anthropic/claude-sonnet-4-6\"\n";
-        let file: ConfigFile = toml::from_str(toml_str).unwrap();
-        let result = from_file_and_env(Some(&file), &test_config_dir());
+        let cfg_file = parse_config("timezone = \"Not/A/Timezone\"\n");
+        let prov_file = parse_providers("[models]\nmain = \"anthropic/claude-sonnet-4-6\"\n");
+        let result = from_file_and_env(Some(&cfg_file), Some(&prov_file), &test_config_dir());
         assert!(result.is_err(), "invalid timezone should error");
     }
 
     #[test]
     fn pulse_enabled_defaults() {
-        let toml_str = r#"
-timezone = "UTC"
-
+        let cfg_file = parse_config("timezone = \"UTC\"\n");
+        let prov_file = parse_providers(
+            r#"
 [models]
 main = "anthropic/claude-sonnet-4-6"
-"#;
-        let file: ConfigFile = toml::from_str(toml_str).unwrap();
-        let cfg = from_file_and_env(Some(&file), &test_config_dir()).unwrap();
+"#,
+        );
+        let cfg = from_file_and_env(Some(&cfg_file), Some(&prov_file), &test_config_dir()).unwrap();
         assert!(cfg.pulse_enabled, "pulse should default to enabled");
     }
 
     #[test]
     fn discord_absent_returns_none() {
-        let toml_str = r#"
-timezone = "UTC"
-
+        let cfg_file = parse_config("timezone = \"UTC\"\n");
+        let prov_file = parse_providers(
+            r#"
 [models]
 main = "anthropic/claude-sonnet-4-6"
-"#;
-        let file: ConfigFile = toml::from_str(toml_str).unwrap();
-        let cfg = from_file_and_env(Some(&file), &test_config_dir()).unwrap();
+"#,
+        );
+        let cfg = from_file_and_env(Some(&cfg_file), Some(&prov_file), &test_config_dir()).unwrap();
         assert!(
             cfg.discord.is_none(),
             "no [discord] section should yield None"
@@ -1124,16 +1015,20 @@ main = "anthropic/claude-sonnet-4-6"
 
     #[test]
     fn discord_section_without_token_returns_none() {
-        let toml_str = r#"
+        let cfg_file = parse_config(
+            r#"
 timezone = "UTC"
 
+[discord]
+"#,
+        );
+        let prov_file = parse_providers(
+            r#"
 [models]
 main = "anthropic/claude-sonnet-4-6"
-
-[discord]
-"#;
-        let file: ConfigFile = toml::from_str(toml_str).unwrap();
-        let cfg = from_file_and_env(Some(&file), &test_config_dir()).unwrap();
+"#,
+        );
+        let cfg = from_file_and_env(Some(&cfg_file), Some(&prov_file), &test_config_dir()).unwrap();
         assert!(
             cfg.discord.is_none(),
             "[discord] with no token should yield None"
@@ -1142,17 +1037,21 @@ main = "anthropic/claude-sonnet-4-6"
 
     #[test]
     fn discord_section_with_token() {
-        let toml_str = r#"
+        let cfg_file = parse_config(
+            r#"
 timezone = "UTC"
-
-[models]
-main = "anthropic/claude-sonnet-4-6"
 
 [discord]
 token = "my-bot-token"
-"#;
-        let file: ConfigFile = toml::from_str(toml_str).unwrap();
-        let cfg = from_file_and_env(Some(&file), &test_config_dir()).unwrap();
+"#,
+        );
+        let prov_file = parse_providers(
+            r#"
+[models]
+main = "anthropic/claude-sonnet-4-6"
+"#,
+        );
+        let cfg = from_file_and_env(Some(&cfg_file), Some(&prov_file), &test_config_dir()).unwrap();
         assert!(cfg.discord.is_some(), "[discord] with token should be Some");
         assert_eq!(
             cfg.discord.as_ref().map(|d| d.token.as_str()),
@@ -1163,14 +1062,14 @@ token = "my-bot-token"
 
     #[test]
     fn webhook_defaults_when_absent() {
-        let toml_str = r#"
-timezone = "UTC"
-
+        let cfg_file = parse_config("timezone = \"UTC\"\n");
+        let prov_file = parse_providers(
+            r#"
 [models]
 main = "anthropic/claude-sonnet-4-6"
-"#;
-        let file: ConfigFile = toml::from_str(toml_str).unwrap();
-        let cfg = from_file_and_env(Some(&file), &test_config_dir()).unwrap();
+"#,
+        );
+        let cfg = from_file_and_env(Some(&cfg_file), Some(&prov_file), &test_config_dir()).unwrap();
         assert!(!cfg.webhook.enabled, "webhook should default to disabled");
         assert!(
             cfg.webhook.secret.is_none(),
@@ -1180,18 +1079,22 @@ main = "anthropic/claude-sonnet-4-6"
 
     #[test]
     fn webhook_enabled_with_secret() {
-        let toml_str = r#"
+        let cfg_file = parse_config(
+            r#"
 timezone = "UTC"
-
-[models]
-main = "anthropic/claude-sonnet-4-6"
 
 [webhook]
 enabled = true
 secret = "my-secret"
-"#;
-        let file: ConfigFile = toml::from_str(toml_str).unwrap();
-        let cfg = from_file_and_env(Some(&file), &test_config_dir()).unwrap();
+"#,
+        );
+        let prov_file = parse_providers(
+            r#"
+[models]
+main = "anthropic/claude-sonnet-4-6"
+"#,
+        );
+        let cfg = from_file_and_env(Some(&cfg_file), Some(&prov_file), &test_config_dir()).unwrap();
         assert!(cfg.webhook.enabled, "webhook should be enabled");
         assert_eq!(
             cfg.webhook.secret.as_deref(),
@@ -1202,14 +1105,14 @@ secret = "my-secret"
 
     #[test]
     fn memory_config_cooldown_defaults() {
-        let toml_str = r#"
-timezone = "UTC"
-
+        let cfg_file = parse_config("timezone = \"UTC\"\n");
+        let prov_file = parse_providers(
+            r#"
 [models]
 main = "anthropic/claude-sonnet-4-6"
-"#;
-        let file: ConfigFile = toml::from_str(toml_str).unwrap();
-        let cfg = from_file_and_env(Some(&file), &test_config_dir()).unwrap();
+"#,
+        );
+        let cfg = from_file_and_env(Some(&cfg_file), Some(&prov_file), &test_config_dir()).unwrap();
         assert_eq!(
             cfg.memory.observer_cooldown_secs, DEFAULT_OBSERVER_COOLDOWN_SECS,
             "cooldown should default"
@@ -1222,18 +1125,22 @@ main = "anthropic/claude-sonnet-4-6"
 
     #[test]
     fn memory_config_cooldown_custom() {
-        let toml_str = r#"
+        let cfg_file = parse_config(
+            r#"
 timezone = "UTC"
-
-[models]
-main = "anthropic/claude-sonnet-4-6"
 
 [memory]
 observer_cooldown_secs = 60
 observer_force_threshold_tokens = 50000
-"#;
-        let file: ConfigFile = toml::from_str(toml_str).unwrap();
-        let cfg = from_file_and_env(Some(&file), &test_config_dir()).unwrap();
+"#,
+        );
+        let prov_file = parse_providers(
+            r#"
+[models]
+main = "anthropic/claude-sonnet-4-6"
+"#,
+        );
+        let cfg = from_file_and_env(Some(&cfg_file), Some(&prov_file), &test_config_dir()).unwrap();
         assert_eq!(
             cfg.memory.observer_cooldown_secs, 60,
             "cooldown should be custom"
@@ -1246,183 +1153,65 @@ observer_force_threshold_tokens = 50000
 
     #[test]
     fn pulse_can_be_disabled() {
-        let toml_str = r#"
+        let cfg_file = parse_config(
+            r#"
 timezone = "UTC"
-
-[models]
-main = "anthropic/claude-sonnet-4-6"
 
 [pulse]
 enabled = false
-"#;
-        let file: ConfigFile = toml::from_str(toml_str).unwrap();
-        let cfg = from_file_and_env(Some(&file), &test_config_dir()).unwrap();
+"#,
+        );
+        let prov_file = parse_providers(
+            r#"
+[models]
+main = "anthropic/claude-sonnet-4-6"
+"#,
+        );
+        let cfg = from_file_and_env(Some(&cfg_file), Some(&prov_file), &test_config_dir()).unwrap();
         assert!(!cfg.pulse_enabled);
     }
 
-    // ── MCP config ──────────────────────────────────────────────────────────
+    // ── Agent abilities ──────────────────────────────────────────────────────
 
     #[test]
-    fn mcp_defaults_empty_when_absent() {
-        let toml_str = r#"
-timezone = "UTC"
-
+    fn agent_abilities_default_to_true() {
+        let cfg_file = parse_config("timezone = \"UTC\"\n");
+        let prov_file = parse_providers(
+            r#"
 [models]
 main = "anthropic/claude-sonnet-4-6"
-"#;
-        let file: ConfigFile = toml::from_str(toml_str).unwrap();
-        let cfg = from_file_and_env(Some(&file), &test_config_dir()).unwrap();
+"#,
+        );
+        let cfg = from_file_and_env(Some(&cfg_file), Some(&prov_file), &test_config_dir()).unwrap();
+        assert!(cfg.agent.modify_mcp, "modify_mcp should default to true");
         assert!(
-            cfg.mcp.servers.is_empty(),
-            "mcp servers should default to empty"
+            cfg.agent.modify_channels,
+            "modify_channels should default to true"
         );
     }
 
     #[test]
-    fn mcp_section_with_servers() {
-        let toml_str = r#"
+    fn agent_abilities_custom_values() {
+        let cfg_file = parse_config(
+            r#"
 timezone = "UTC"
 
-[models]
-main = "anthropic/claude-sonnet-4-6"
-
-[mcp.servers.filesystem]
-command = "mcp-server-filesystem"
-args = ["/home/user/docs"]
-env = { MCP_LOG = "debug" }
-
-[mcp.servers.git]
-command = "mcp-server-git"
-"#;
-        let file: ConfigFile = toml::from_str(toml_str).unwrap();
-        let cfg = from_file_and_env(Some(&file), &test_config_dir()).unwrap();
-        assert_eq!(cfg.mcp.servers.len(), 2, "should have two mcp servers");
-
-        let fs_server = cfg.mcp.servers.iter().find(|s| s.name == "filesystem");
-        assert!(fs_server.is_some(), "should have filesystem server");
-        let fs_server = fs_server.unwrap();
-        assert_eq!(fs_server.command, "mcp-server-filesystem");
-        assert_eq!(fs_server.args, vec!["/home/user/docs"]);
-        assert_eq!(
-            fs_server.env.get("MCP_LOG").map(String::as_str),
-            Some("debug"),
-            "env should be parsed"
+[agent]
+modify_mcp = false
+modify_channels = false
+"#,
         );
-
-        let git_server = cfg.mcp.servers.iter().find(|s| s.name == "git");
-        assert!(git_server.is_some(), "should have git server");
-        let git_server = git_server.unwrap();
-        assert_eq!(git_server.command, "mcp-server-git");
-        assert!(git_server.args.is_empty(), "args should default to empty");
-        assert!(git_server.env.is_empty(), "env should default to empty");
-    }
-
-    #[test]
-    fn mcp_deny_unknown_fields() {
-        let toml_str = r#"
-timezone = "UTC"
-
+        let prov_file = parse_providers(
+            r#"
 [models]
 main = "anthropic/claude-sonnet-4-6"
-
-[mcp.servers.test]
-command = "test"
-unknown_field = "oops"
-"#;
-        let result = toml::from_str::<ConfigFile>(toml_str);
+"#,
+        );
+        let cfg = from_file_and_env(Some(&cfg_file), Some(&prov_file), &test_config_dir()).unwrap();
+        assert!(!cfg.agent.modify_mcp, "modify_mcp should be false");
         assert!(
-            result.is_err(),
-            "unknown field in mcp server should be rejected"
-        );
-    }
-
-    #[test]
-    fn mcp_empty_section_ok() {
-        let toml_str = r#"
-timezone = "UTC"
-
-[models]
-main = "anthropic/claude-sonnet-4-6"
-
-[mcp]
-"#;
-        let file: ConfigFile = toml::from_str(toml_str).unwrap();
-        let cfg = from_file_and_env(Some(&file), &test_config_dir()).unwrap();
-        assert!(
-            cfg.mcp.servers.is_empty(),
-            "empty [mcp] section should yield no servers"
-        );
-    }
-
-    #[test]
-    fn mcp_transport_defaults_to_stdio() {
-        let toml_str = r#"
-timezone = "UTC"
-
-[models]
-main = "anthropic/claude-sonnet-4-6"
-
-[mcp.servers.filesystem]
-command = "mcp-server-filesystem"
-"#;
-        let file: ConfigFile = toml::from_str(toml_str).unwrap();
-        let dir = tempfile::tempdir().unwrap();
-        let cfg = from_file_and_env(Some(&file), dir.path()).unwrap();
-        let server = cfg.mcp.servers.first().unwrap();
-        assert_eq!(
-            server.transport,
-            crate::projects::types::McpTransport::Stdio,
-            "transport should default to Stdio"
-        );
-    }
-
-    #[test]
-    fn mcp_transport_explicit_http() {
-        let toml_str = r#"
-timezone = "UTC"
-
-[models]
-main = "anthropic/claude-sonnet-4-6"
-
-[mcp.servers.remote-search]
-command = "http://10.0.0.5:8080/mcp"
-transport = "http"
-"#;
-        let file: ConfigFile = toml::from_str(toml_str).unwrap();
-        let dir = tempfile::tempdir().unwrap();
-        let cfg = from_file_and_env(Some(&file), dir.path()).unwrap();
-        let server = cfg.mcp.servers.first().unwrap();
-        assert_eq!(
-            server.transport,
-            crate::projects::types::McpTransport::Http,
-            "transport should be Http"
-        );
-        assert_eq!(
-            server.command, "http://10.0.0.5:8080/mcp",
-            "URL should be stored in command"
-        );
-    }
-
-    #[test]
-    fn mcp_transport_explicit_stdio() {
-        let toml_str = r#"
-timezone = "UTC"
-
-[models]
-main = "anthropic/claude-sonnet-4-6"
-
-[mcp.servers.local]
-command = "mcp-fs"
-transport = "stdio"
-"#;
-        let file: ConfigFile = toml::from_str(toml_str).unwrap();
-        let dir = tempfile::tempdir().unwrap();
-        let cfg = from_file_and_env(Some(&file), dir.path()).unwrap();
-        let server = cfg.mcp.servers.first().unwrap();
-        assert_eq!(
-            server.transport,
-            crate::projects::types::McpTransport::Stdio,
-            "explicit stdio should work"
+            !cfg.agent.modify_channels,
+            "modify_channels should be false"
         );
     }
 
@@ -1430,15 +1219,15 @@ transport = "stdio"
 
     #[test]
     fn embedding_role_resolved() {
-        let toml_str = r#"
-timezone = "UTC"
-
+        let cfg_file = parse_config("timezone = \"UTC\"\n");
+        let prov_file = parse_providers(
+            r#"
 [models]
 main = "anthropic/claude-sonnet-4-6"
 embedding = "openai/text-embedding-3-small"
-"#;
-        let file: ConfigFile = toml::from_str(toml_str).unwrap();
-        let cfg = from_file_and_env(Some(&file), &test_config_dir()).unwrap();
+"#,
+        );
+        let cfg = from_file_and_env(Some(&cfg_file), Some(&prov_file), &test_config_dir()).unwrap();
         let emb = cfg.embedding.as_ref();
         assert!(emb.is_some(), "embedding should be resolved");
         let emb = emb.unwrap();
@@ -1448,15 +1237,15 @@ embedding = "openai/text-embedding-3-small"
 
     #[test]
     fn embedding_anthropic_rejected() {
-        let toml_str = r#"
-timezone = "UTC"
-
+        let cfg_file = parse_config("timezone = \"UTC\"\n");
+        let prov_file = parse_providers(
+            r#"
 [models]
 main = "anthropic/claude-sonnet-4-6"
 embedding = "anthropic/some-model"
-"#;
-        let file: ConfigFile = toml::from_str(toml_str).unwrap();
-        let result = from_file_and_env(Some(&file), &test_config_dir());
+"#,
+        );
+        let result = from_file_and_env(Some(&cfg_file), Some(&prov_file), &test_config_dir());
         assert!(result.is_err(), "anthropic embedding should be rejected");
         let err = result.unwrap_err().to_string();
         assert!(
@@ -1467,14 +1256,14 @@ embedding = "anthropic/some-model"
 
     #[test]
     fn embedding_absent_is_none() {
-        let toml_str = r#"
-timezone = "UTC"
-
+        let cfg_file = parse_config("timezone = \"UTC\"\n");
+        let prov_file = parse_providers(
+            r#"
 [models]
 main = "anthropic/claude-sonnet-4-6"
-"#;
-        let file: ConfigFile = toml::from_str(toml_str).unwrap();
-        let cfg = from_file_and_env(Some(&file), &test_config_dir()).unwrap();
+"#,
+        );
+        let cfg = from_file_and_env(Some(&cfg_file), Some(&prov_file), &test_config_dir()).unwrap();
         assert!(
             cfg.embedding.is_none(),
             "missing embedding should yield None"
@@ -1483,15 +1272,15 @@ main = "anthropic/claude-sonnet-4-6"
 
     #[test]
     fn embedding_no_fallback_to_default() {
-        let toml_str = r#"
-timezone = "UTC"
-
+        let cfg_file = parse_config("timezone = \"UTC\"\n");
+        let prov_file = parse_providers(
+            r#"
 [models]
 main = "anthropic/claude-sonnet-4-6"
 default = "openai/gpt-4o"
-"#;
-        let file: ConfigFile = toml::from_str(toml_str).unwrap();
-        let cfg = from_file_and_env(Some(&file), &test_config_dir()).unwrap();
+"#,
+        );
+        let cfg = from_file_and_env(Some(&cfg_file), Some(&prov_file), &test_config_dir()).unwrap();
         assert!(
             cfg.embedding.is_none(),
             "embedding should not fall back to default"
@@ -1502,14 +1291,14 @@ default = "openai/gpt-4o"
 
     #[test]
     fn search_config_defaults_when_absent() {
-        let toml_str = r#"
-timezone = "UTC"
-
+        let cfg_file = parse_config("timezone = \"UTC\"\n");
+        let prov_file = parse_providers(
+            r#"
 [models]
 main = "anthropic/claude-sonnet-4-6"
-"#;
-        let file: ConfigFile = toml::from_str(toml_str).unwrap();
-        let cfg = from_file_and_env(Some(&file), &test_config_dir()).unwrap();
+"#,
+        );
+        let cfg = from_file_and_env(Some(&cfg_file), Some(&prov_file), &test_config_dir()).unwrap();
         let search = &cfg.memory.search;
         assert!(
             (search.vector_weight - 0.7).abs() < f64::EPSILON,
@@ -1531,20 +1320,24 @@ main = "anthropic/claude-sonnet-4-6"
 
     #[test]
     fn search_config_custom_values() {
-        let toml_str = r#"
+        let cfg_file = parse_config(
+            r#"
 timezone = "UTC"
-
-[models]
-main = "anthropic/claude-sonnet-4-6"
 
 [memory.search]
 vector_weight = 0.5
 text_weight = 0.5
 min_score = 0.2
 candidate_multiplier = 8
-"#;
-        let file: ConfigFile = toml::from_str(toml_str).unwrap();
-        let cfg = from_file_and_env(Some(&file), &test_config_dir()).unwrap();
+"#,
+        );
+        let prov_file = parse_providers(
+            r#"
+[models]
+main = "anthropic/claude-sonnet-4-6"
+"#,
+        );
+        let cfg = from_file_and_env(Some(&cfg_file), Some(&prov_file), &test_config_dir()).unwrap();
         let search = &cfg.memory.search;
         assert!(
             (search.vector_weight - 0.5).abs() < f64::EPSILON,
@@ -1568,9 +1361,6 @@ candidate_multiplier = 8
     fn search_config_deny_unknown_fields() {
         let toml_str = r#"
 timezone = "UTC"
-
-[models]
-main = "anthropic/claude-sonnet-4-6"
 
 [memory.search]
 typo_field = 0.5
@@ -1729,14 +1519,14 @@ typo_field = 0.5
 
     #[test]
     fn telegram_absent_returns_none() {
-        let toml_str = r#"
-timezone = "UTC"
-
+        let cfg_file = parse_config("timezone = \"UTC\"\n");
+        let prov_file = parse_providers(
+            r#"
 [models]
 main = "anthropic/claude-sonnet-4-6"
-"#;
-        let file: ConfigFile = toml::from_str(toml_str).unwrap();
-        let cfg = from_file_and_env(Some(&file), &test_config_dir()).unwrap();
+"#,
+        );
+        let cfg = from_file_and_env(Some(&cfg_file), Some(&prov_file), &test_config_dir()).unwrap();
         assert!(
             cfg.telegram.is_none(),
             "no [telegram] section should yield None"
@@ -1745,16 +1535,20 @@ main = "anthropic/claude-sonnet-4-6"
 
     #[test]
     fn telegram_section_without_token_returns_none() {
-        let toml_str = r#"
+        let cfg_file = parse_config(
+            r#"
 timezone = "UTC"
 
+[telegram]
+"#,
+        );
+        let prov_file = parse_providers(
+            r#"
 [models]
 main = "anthropic/claude-sonnet-4-6"
-
-[telegram]
-"#;
-        let file: ConfigFile = toml::from_str(toml_str).unwrap();
-        let cfg = from_file_and_env(Some(&file), &test_config_dir()).unwrap();
+"#,
+        );
+        let cfg = from_file_and_env(Some(&cfg_file), Some(&prov_file), &test_config_dir()).unwrap();
         assert!(
             cfg.telegram.is_none(),
             "[telegram] with no token should yield None"
@@ -1763,17 +1557,21 @@ main = "anthropic/claude-sonnet-4-6"
 
     #[test]
     fn telegram_section_with_token() {
-        let toml_str = r#"
+        let cfg_file = parse_config(
+            r#"
 timezone = "UTC"
-
-[models]
-main = "anthropic/claude-sonnet-4-6"
 
 [telegram]
 token = "123456789:ABCdefGHIjklmnop"
-"#;
-        let file: ConfigFile = toml::from_str(toml_str).unwrap();
-        let cfg = from_file_and_env(Some(&file), &test_config_dir()).unwrap();
+"#,
+        );
+        let prov_file = parse_providers(
+            r#"
+[models]
+main = "anthropic/claude-sonnet-4-6"
+"#,
+        );
+        let cfg = from_file_and_env(Some(&cfg_file), Some(&prov_file), &test_config_dir()).unwrap();
         assert!(
             cfg.telegram.is_some(),
             "[telegram] with token should be Some"

@@ -29,9 +29,9 @@ pub(crate) use constants::{
 pub use provider::{ModelSpec, ProviderKind, ProviderSpec};
 pub use secrets::SecretStore;
 pub use types::{
-    BackgroundConfig, BackgroundModelTier, BackgroundModelsConfig, DiscordConfig,
-    ExternalChannelConfig, ExternalChannelKind, GatewayConfig, McpConfig, MemoryConfig,
-    NotificationsConfig, SearchConfig, SkillsConfig, TelegramConfig, WebhookConfig,
+    AgentAbilitiesConfig, BackgroundConfig, BackgroundModelTier, BackgroundModelsConfig,
+    DiscordConfig, GatewayConfig, MemoryConfig, SearchConfig, SkillsConfig, TelegramConfig,
+    WebhookConfig,
 };
 
 // ── Config struct ─────────────────────────────────────────────────────────────
@@ -76,14 +76,12 @@ pub struct Config {
     pub webhook: WebhookConfig,
     /// Skills subsystem configuration.
     pub skills: SkillsConfig,
-    /// MCP server configuration (global servers).
-    pub mcp: McpConfig,
     /// Retry configuration for model provider calls.
     pub retry: RetryConfig,
-    /// Notification channel configuration.
-    pub notifications: NotificationsConfig,
     /// Background task configuration.
     pub background: BackgroundConfig,
+    /// Agent ability gates.
+    pub agent: AgentAbilitiesConfig,
     /// Directory this config was loaded from.
     pub config_dir: PathBuf,
 }
@@ -108,10 +106,9 @@ impl fmt::Debug for Config {
             .field("telegram", &self.telegram.as_ref().map(|_| "[configured]"))
             .field("webhook", &self.webhook)
             .field("skills", &self.skills)
-            .field("mcp", &self.mcp)
             .field("retry", &self.retry)
-            .field("notifications", &self.notifications)
             .field("background", &self.background)
+            .field("agent", &self.agent)
             .field("config_dir", &self.config_dir)
             .finish()
     }
@@ -173,6 +170,7 @@ impl Config {
     /// read or parsed, or if required values are missing.
     pub fn load_at(config_dir: &std::path::Path) -> Result<Self, ResiduumError> {
         let config_path = config_dir.join("config.toml");
+        let providers_path = config_dir.join("providers.toml");
 
         let file_config = if config_path.exists() {
             let contents = std::fs::read_to_string(&config_path).map_err(|e| {
@@ -193,7 +191,33 @@ impl Config {
             None
         };
 
-        let mut cfg = resolve::from_file_and_env(file_config.as_ref(), config_dir)?;
+        let providers_config = if providers_path.exists() {
+            let contents = std::fs::read_to_string(&providers_path).map_err(|e| {
+                ResiduumError::Config(format!(
+                    "failed to read providers config at {}: {e}",
+                    providers_path.display()
+                ))
+            })?;
+            Some(
+                toml::from_str::<deserialize::ProvidersFile>(&contents).map_err(|e| {
+                    ResiduumError::Config(format!(
+                        "failed to parse providers config at {}: {e}",
+                        providers_path.display()
+                    ))
+                })?,
+            )
+        } else {
+            return Err(ResiduumError::Config(format!(
+                "providers.toml not found at {}; run 'residuum setup' to create it",
+                providers_path.display()
+            )));
+        };
+
+        let mut cfg = resolve::from_file_and_env(
+            file_config.as_ref(),
+            providers_config.as_ref(),
+            config_dir,
+        )?;
         cfg.config_dir = config_dir.to_path_buf();
         Ok(cfg)
     }
@@ -201,9 +225,8 @@ impl Config {
     /// Validate a TOML string as a config file without saving it.
     ///
     /// Parses the TOML into the raw config structure, then runs full resolution
-    /// to catch semantic errors (bad provider names, missing timezone, etc.).
-    /// Resolves against the real config directory so that `secret:name`
-    /// references are validated against the actual encrypted secret store.
+    /// to catch semantic errors (missing timezone, etc.). Reads the existing
+    /// `providers.toml` from the config directory for model resolution.
     ///
     /// # Errors
     /// Returns a human-readable error string if validation fails.
@@ -211,7 +234,53 @@ impl Config {
         let file = toml::from_str::<deserialize::ConfigFile>(contents)
             .map_err(|e| format!("TOML parse error: {e}"))?;
 
-        resolve::from_file_and_env(Some(&file), config_dir).map_err(|e| format!("{e}"))?;
+        // Load providers.toml from disk for resolution (may not exist during setup)
+        let providers_path = config_dir.join("providers.toml");
+        let providers_file = if providers_path.exists() {
+            let prov_contents = std::fs::read_to_string(&providers_path)
+                .map_err(|e| format!("failed to read providers.toml: {e}"))?;
+            Some(
+                toml::from_str::<deserialize::ProvidersFile>(&prov_contents)
+                    .map_err(|e| format!("providers.toml parse error: {e}"))?,
+            )
+        } else {
+            None
+        };
+
+        resolve::from_file_and_env(Some(&file), providers_file.as_ref(), config_dir)
+            .map_err(|e| format!("{e}"))?;
+        Ok(())
+    }
+
+    /// Validate a TOML string as a providers file without saving it.
+    ///
+    /// Parses the TOML and runs model resolution against the existing
+    /// `config.toml` on disk to catch semantic errors.
+    ///
+    /// # Errors
+    /// Returns a human-readable error string if validation fails.
+    pub fn validate_providers_toml(
+        contents: &str,
+        config_dir: &std::path::Path,
+    ) -> Result<(), String> {
+        let providers_file = toml::from_str::<deserialize::ProvidersFile>(contents)
+            .map_err(|e| format!("TOML parse error: {e}"))?;
+
+        // Load config.toml from disk for resolution
+        let config_path = config_dir.join("config.toml");
+        let config_file = if config_path.exists() {
+            let cfg_contents = std::fs::read_to_string(&config_path)
+                .map_err(|e| format!("failed to read config.toml: {e}"))?;
+            Some(
+                toml::from_str::<deserialize::ConfigFile>(&cfg_contents)
+                    .map_err(|e| format!("config.toml parse error: {e}"))?,
+            )
+        } else {
+            None
+        };
+
+        resolve::from_file_and_env(config_file.as_ref(), Some(&providers_file), config_dir)
+            .map_err(|e| format!("{e}"))?;
         Ok(())
     }
 }
@@ -221,46 +290,31 @@ impl Config {
 mod tests {
     use super::*;
 
-    /// Valid minimal config TOML used across tests.
-    const VALID_CONFIG: &str = r#"
-timezone = "UTC"
+    /// Valid minimal config TOML (no providers/models — those are in providers.toml).
+    const VALID_CONFIG: &str = "timezone = \"UTC\"\n";
 
-[models]
-main = "anthropic/claude-sonnet-4-6"
-"#;
+    /// Valid minimal providers TOML.
+    const VALID_PROVIDERS: &str = "[models]\nmain = \"anthropic/claude-sonnet-4-6\"\n";
+
+    /// Write a `providers.toml` to disk for tests that call `validate_toml`/`load_at`.
+    fn write_providers(dir: &std::path::Path) {
+        std::fs::write(dir.join("providers.toml"), VALID_PROVIDERS).unwrap();
+    }
 
     #[test]
     fn validate_toml_accepts_valid_config() {
         let dir = tempfile::tempdir().unwrap();
+        write_providers(dir.path());
         let result = Config::validate_toml(VALID_CONFIG, dir.path());
         assert!(result.is_ok(), "valid config should pass: {result:?}");
     }
 
     #[test]
-    fn validate_toml_rejects_mcp_env_integer_value() {
-        let dir = tempfile::tempdir().unwrap();
-        let bad_config = r#"
-timezone = "UTC"
-
-[models]
-main = "anthropic/claude-sonnet-4-6"
-
-[mcp.servers.test]
-command = "mcp-server"
-env = { PORT = 8080 }
-"#;
-        let result = Config::validate_toml(bad_config, dir.path());
-        assert!(result.is_err(), "integer env value should fail TOML parse");
-    }
-
-    #[test]
     fn validate_toml_rejects_missing_timezone() {
         let dir = tempfile::tempdir().unwrap();
-        let bad_config = r#"
-[models]
-main = "anthropic/claude-sonnet-4-6"
-"#;
-        let result = Config::validate_toml(bad_config, dir.path());
+        write_providers(dir.path());
+        // Empty config — no timezone
+        let result = Config::validate_toml("", dir.path());
         assert!(result.is_err(), "missing timezone should fail validation");
         let err = result.unwrap_err();
         assert!(
@@ -272,16 +326,14 @@ main = "anthropic/claude-sonnet-4-6"
     #[test]
     fn validate_toml_resolves_secrets_from_real_store() {
         let dir = tempfile::tempdir().unwrap();
-        // Store a secret in the temp dir's secret store
+        // Store a secret
         let mut store = secrets::SecretStore::load(dir.path()).unwrap();
         store
             .set("test_api_key", "sk-test-123", dir.path())
             .unwrap();
 
-        // Config that references the secret
-        let config_with_secret = r#"
-timezone = "UTC"
-
+        // Providers file that references the secret
+        let providers_with_secret = r#"
 [providers.my-provider]
 type = "anthropic"
 api_key = "secret:test_api_key"
@@ -289,7 +341,9 @@ api_key = "secret:test_api_key"
 [models]
 main = "my-provider/claude-sonnet-4-6"
 "#;
-        let result = Config::validate_toml(config_with_secret, dir.path());
+        std::fs::write(dir.path().join("providers.toml"), providers_with_secret).unwrap();
+
+        let result = Config::validate_toml(VALID_CONFIG, dir.path());
         assert!(
             result.is_ok(),
             "secret reference should resolve with real store: {result:?}"
@@ -299,13 +353,10 @@ main = "my-provider/claude-sonnet-4-6"
     #[test]
     fn load_at_returns_error_on_invalid_toml() {
         let dir = tempfile::tempdir().unwrap();
-        let config_path = dir.path().join("config.toml");
-
-        // Write invalid TOML syntax
-        std::fs::write(&config_path, "invalid toml syntax = [").unwrap();
+        write_providers(dir.path());
+        std::fs::write(dir.path().join("config.toml"), "invalid toml syntax = [").unwrap();
 
         let result = Config::load_at(dir.path());
-
         assert!(
             result.is_err(),
             "load_at should fail on invalid TOML syntax"
@@ -314,6 +365,24 @@ main = "my-provider/claude-sonnet-4-6"
         assert!(
             matches!(err, ResiduumError::Config(_)),
             "error should be of type ResiduumError::Config, got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn load_at_returns_error_when_providers_missing() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("config.toml"), VALID_CONFIG).unwrap();
+        // No providers.toml written
+
+        let result = Config::load_at(dir.path());
+        assert!(
+            result.is_err(),
+            "load_at should fail when providers.toml is missing"
+        );
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("providers.toml"),
+            "error should mention providers.toml: {err}"
         );
     }
 
@@ -331,15 +400,15 @@ main = "my-provider/claude-sonnet-4-6"
     }
 
     #[test]
-    fn validate_toml_rejects_invalid_model_format() {
+    fn validate_providers_toml_rejects_invalid_model_format() {
         let dir = tempfile::tempdir().unwrap();
-        let bad_config = r#"
-timezone = "UTC"
+        std::fs::write(dir.path().join("config.toml"), VALID_CONFIG).unwrap();
 
+        let bad_providers = r#"
 [models]
 main = "invalid-format"
 "#;
-        let result = Config::validate_toml(bad_config, dir.path());
+        let result = Config::validate_providers_toml(bad_providers, dir.path());
         assert!(
             result.is_err(),
             "missing slash in model should fail validation"
