@@ -220,14 +220,16 @@ impl BackgroundModelsConfig {
         match tier {
             BackgroundModelTier::Small => self
                 .small
-                .clone()
-                .or_else(|| self.medium.clone())
-                .or_else(|| self.large.clone())
+                .as_ref()
+                .or(self.medium.as_ref())
+                .or(self.large.as_ref())
+                .cloned()
                 .unwrap_or_else(|| main.to_vec()),
             BackgroundModelTier::Medium => self
                 .medium
-                .clone()
-                .or_else(|| self.large.clone())
+                .as_ref()
+                .or(self.large.as_ref())
+                .cloned()
                 .unwrap_or_else(|| main.to_vec()),
             BackgroundModelTier::Large => self.large.clone().unwrap_or_else(|| main.to_vec()),
         }
@@ -309,5 +311,109 @@ mod tests {
             let s = tier.to_string();
             assert_eq!(s.parse::<BackgroundModelTier>().unwrap(), tier);
         }
+    }
+
+    #[test]
+    fn resolve_tier_tests() {
+        use super::super::provider::{ModelSpec, ProviderKind};
+
+        let p_small = ProviderSpec {
+            name: "dummy-small".to_string(),
+            model: ModelSpec {
+                kind: ProviderKind::OpenAi,
+                model: "small-model".to_string(),
+            },
+            provider_url: "http://dummy".to_string(),
+            api_key: None,
+        };
+        let p_medium = ProviderSpec {
+            name: "dummy-medium".to_string(),
+            model: ModelSpec {
+                kind: ProviderKind::OpenAi,
+                model: "medium-model".to_string(),
+            },
+            provider_url: "http://dummy".to_string(),
+            api_key: None,
+        };
+        let p_large = ProviderSpec {
+            name: "dummy-large".to_string(),
+            model: ModelSpec {
+                kind: ProviderKind::OpenAi,
+                model: "large-model".to_string(),
+            },
+            provider_url: "http://dummy".to_string(),
+            api_key: None,
+        };
+        let p_main = ProviderSpec {
+            name: "dummy-main".to_string(),
+            model: ModelSpec {
+                kind: ProviderKind::OpenAi,
+                model: "main-model".to_string(),
+            },
+            provider_url: "http://dummy".to_string(),
+            api_key: None,
+        };
+
+        let main_slice = std::slice::from_ref(&p_main);
+
+        // All present -> resolves to specific tier
+        let config_full = BackgroundModelsConfig {
+            small: Some(vec![p_small.clone()]),
+            medium: Some(vec![p_medium.clone()]),
+            large: Some(vec![p_large.clone()]),
+        };
+        assert_eq!(
+            config_full.resolve_tier(&BackgroundModelTier::Small, main_slice),
+            vec![p_small.clone()]
+        );
+        assert_eq!(
+            config_full.resolve_tier(&BackgroundModelTier::Medium, main_slice),
+            vec![p_medium.clone()]
+        );
+        assert_eq!(
+            config_full.resolve_tier(&BackgroundModelTier::Large, main_slice),
+            vec![p_large.clone()]
+        );
+
+        // Missing small -> small falls back to medium
+        let config_no_small = BackgroundModelsConfig {
+            small: None,
+            medium: Some(vec![p_medium.clone()]),
+            large: Some(vec![p_large.clone()]),
+        };
+        assert_eq!(
+            config_no_small.resolve_tier(&BackgroundModelTier::Small, main_slice),
+            vec![p_medium.clone()]
+        );
+
+        // Missing small and medium -> small and medium fall back to large
+        let config_only_large = BackgroundModelsConfig {
+            small: None,
+            medium: None,
+            large: Some(vec![p_large.clone()]),
+        };
+        assert_eq!(
+            config_only_large.resolve_tier(&BackgroundModelTier::Small, main_slice),
+            vec![p_large.clone()]
+        );
+        assert_eq!(
+            config_only_large.resolve_tier(&BackgroundModelTier::Medium, main_slice),
+            vec![p_large.clone()]
+        );
+
+        // Empty config -> all fall back to main
+        let config_empty = BackgroundModelsConfig::default();
+        assert_eq!(
+            config_empty.resolve_tier(&BackgroundModelTier::Small, main_slice),
+            vec![p_main.clone()]
+        );
+        assert_eq!(
+            config_empty.resolve_tier(&BackgroundModelTier::Medium, main_slice),
+            vec![p_main.clone()]
+        );
+        assert_eq!(
+            config_empty.resolve_tier(&BackgroundModelTier::Large, main_slice),
+            vec![p_main.clone()]
+        );
     }
 }

@@ -11,7 +11,7 @@ use super::constants::{
 ///
 /// Every role (main, observer, reflector, pulse) gets a fully resolved
 /// `ProviderSpec` at config load time — no `Option` chains at use sites.
-#[derive(Clone)]
+#[derive(Clone, PartialEq)]
 pub struct ProviderSpec {
     /// Human-readable identifier (provider entry name or implicit kind).
     pub name: String,
@@ -35,7 +35,7 @@ impl fmt::Debug for ProviderSpec {
 }
 
 /// Parsed model specification from `"provider/model"` format.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ModelSpec {
     /// The provider kind.
     pub kind: ProviderKind,
