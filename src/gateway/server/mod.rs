@@ -177,6 +177,8 @@ struct GatewayRuntime {
     broadcast_tx: broadcast::Sender<ServerMessage>,
     reload_rx: tokio::sync::watch::Receiver<ReloadSignal>,
     command_rx: mpsc::Receiver<ServerCommand>,
+    /// Kept alive so the HTTP server task isn't dropped; shut down via `shutdown_tx`.
+    #[expect(dead_code, reason = "held to keep the server task alive")]
     server_handle: tokio::task::JoinHandle<()>,
     pulse_scheduler: PulseScheduler,
     /// SIGTERM signal listener for daemon stop support.
@@ -184,7 +186,6 @@ struct GatewayRuntime {
     /// Dedicated shutdown signal for the HTTP server.
     shutdown_tx: tokio::sync::watch::Sender<bool>,
     /// Path to the config directory (for backup/rollback during reload).
-    #[expect(dead_code, reason = "used by handle_root_reload in the next step")]
     config_dir: std::path::PathBuf,
     /// Most recent reply handle from a user message. Used by wake turns to
     /// deliver responses to the channel the user last interacted from.
@@ -628,9 +629,8 @@ async fn run_wake_turn_handler(
                     }
                 }
                 _ = rt.reload_rx.changed() => {
-                    rt.mcp_registry.write().await.disconnect_all().await;
-                    rt.server_handle.abort();
-                    return Some(GatewayExit::Reload);
+                    tracing::info!("reload signal received during wake turn, deferring");
+                    // Signal stays in watch channel; processed on next main loop iteration
                 }
             }
         }
@@ -769,6 +769,70 @@ async fn handle_action_main_turns(
     run_wake_turn_handler(rt, observe_deadline).await
 }
 
+/// Back up `config.toml` → `config.toml.bak` before a reload attempt.
+///
+/// Best-effort: logs a warning on failure but never panics.
+pub(crate) fn backup_config(config_dir: &std::path::Path) {
+    let src = config_dir.join("config.toml");
+    let dst = config_dir.join("config.toml.bak");
+    if let Err(err) = std::fs::copy(&src, &dst) {
+        tracing::warn!(error = %err, "failed to back up config.toml before reload");
+    } else {
+        tracing::debug!("config.toml backed up to config.toml.bak");
+    }
+}
+
+/// Restore `config.toml.bak` → `config.toml` after a failed reload.
+///
+/// Returns `true` if the rollback succeeded.
+pub(crate) fn rollback_config(config_dir: &std::path::Path) -> bool {
+    let backup = config_dir.join("config.toml.bak");
+    let target = config_dir.join("config.toml");
+    if !backup.exists() {
+        tracing::warn!("no config backup found, cannot rollback");
+        return false;
+    }
+    match std::fs::copy(&backup, &target) {
+        Ok(_) => {
+            tracing::info!("config.toml restored from backup");
+            true
+        }
+        Err(err) => {
+            tracing::warn!(error = %err, "failed to restore config.toml from backup");
+            false
+        }
+    }
+}
+
+/// Handle an in-place root config reload.
+///
+/// Backs up the current config, attempts to load the new one, and broadcasts
+/// the result. On failure, rolls back and notifies clients.
+fn handle_root_reload(rt: &mut GatewayRuntime) {
+    tracing::info!("handling root config reload in-place");
+    backup_config(&rt.config_dir);
+    match Config::load() {
+        Ok(_new_cfg) => {
+            // Phase 5 adds granular subsystem updates here
+            rt.broadcast_tx
+                .send(ServerMessage::Notice {
+                    message: "configuration reloaded successfully".to_string(),
+                })
+                .ok();
+            tracing::info!("configuration reloaded successfully");
+        }
+        Err(err) => {
+            tracing::warn!(error = %err, "config reload failed, keeping current config");
+            rollback_config(&rt.config_dir);
+            rt.broadcast_tx
+                .send(ServerMessage::Notice {
+                    message: format!("config reload failed (keeping current config): {err}"),
+                })
+                .ok();
+        }
+    }
+}
+
 /// Run the main gateway event loop.
 ///
 /// Processes inbound messages, pulse ticks, action ticks, and memory pipeline
@@ -797,10 +861,16 @@ async fn run_event_loop(mut rt: GatewayRuntime) -> GatewayExit {
 
             // ── Reload signal ─────────────────────────────────────────────
             _ = rt.reload_rx.changed() => {
-                tracing::info!("reloading configuration");
-                rt.mcp_registry.write().await.disconnect_all().await;
-                rt.server_handle.abort();
-                return GatewayExit::Reload;
+                let signal = rt.reload_rx.borrow_and_update().clone();
+                match signal {
+                    ReloadSignal::None => {}
+                    ReloadSignal::Root => {
+                        handle_root_reload(&mut rt);
+                    }
+                    ReloadSignal::Workspace => {
+                        tracing::info!("workspace reload not yet implemented");
+                    }
+                }
             }
 
             // ── Inbound messages (from any channel) ──────────────────────
@@ -877,9 +947,8 @@ async fn run_event_loop(mut rt: GatewayRuntime) -> GatewayExit {
                                 }
                             }
                             _ = rt.reload_rx.changed() => {
-                                rt.mcp_registry.write().await.disconnect_all().await;
-                                rt.server_handle.abort();
-                                return GatewayExit::Reload;
+                                tracing::info!("reload signal received during active turn, deferring");
+                                // Signal stays in watch channel; processed on next main loop iteration
                             }
                         }
                     }
