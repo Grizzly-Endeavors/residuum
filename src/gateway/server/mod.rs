@@ -1256,4 +1256,51 @@ mod tests {
         std::fs::write(dir.path().join("config.toml"), "BROKEN").unwrap();
         assert!(!rollback_config(dir.path()));
     }
+
+    #[test]
+    fn backup_config_missing_source_does_not_panic() {
+        let dir = tempfile::tempdir().unwrap();
+        // No config.toml exists — backup should warn but not panic
+        backup_config(dir.path());
+        assert!(
+            !dir.path().join("config.toml.bak").exists(),
+            "no backup should be created when source is missing"
+        );
+    }
+
+    #[test]
+    fn backup_config_overwrites_stale_backup() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("config.toml.bak"), "old content").unwrap();
+        std::fs::write(dir.path().join("config.toml"), "new content").unwrap();
+
+        backup_config(dir.path());
+
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("config.toml.bak")).unwrap(),
+            "new content",
+            "backup should overwrite previous backup"
+        );
+    }
+
+    #[tokio::test]
+    async fn consecutive_reload_signals_both_received() {
+        let (tx, mut rx) = tokio::sync::watch::channel(ReloadSignal::None);
+
+        // First send
+        tx.send(ReloadSignal::Root).unwrap();
+        rx.changed().await.unwrap();
+        let val = rx.borrow_and_update().clone();
+        assert_eq!(val, ReloadSignal::Root);
+
+        // Second send of the same value — should still wake the receiver
+        tx.send(ReloadSignal::Root).unwrap();
+        rx.changed().await.unwrap();
+        let val2 = rx.borrow_and_update().clone();
+        assert_eq!(
+            val2,
+            ReloadSignal::Root,
+            "second identical send should still be received"
+        );
+    }
 }

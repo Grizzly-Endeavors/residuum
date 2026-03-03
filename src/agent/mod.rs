@@ -1338,4 +1338,35 @@ mod tests {
 
         assert_eq!(agent.provider.model_name(), "model-b");
     }
+
+    #[test]
+    fn swap_provider_preserves_message_history() {
+        let mut agent = Agent::new(
+            Box::new(NamedMockProvider { name: "model-a" }),
+            ToolRegistry::new(),
+            no_filter(),
+            empty_mcp(),
+            IdentityFiles::default(),
+            CompletionOptions::default(),
+            chrono_tz::UTC,
+            std::path::PathBuf::from("/tmp/residuum-test-inbox"),
+        );
+
+        // Inject some messages into history
+        agent.inject_system_message("system context".to_string());
+        agent.inject_user_message("user question".to_string());
+        let before_count = agent.message_count();
+        assert!(before_count >= 2, "should have at least 2 messages");
+
+        // Swap the provider
+        agent.swap_provider(Box::new(NamedMockProvider { name: "model-b" }));
+
+        // History should be preserved
+        assert_eq!(
+            agent.message_count(),
+            before_count,
+            "message count should not change after swap"
+        );
+        assert_eq!(agent.provider.model_name(), "model-b");
+    }
 }
