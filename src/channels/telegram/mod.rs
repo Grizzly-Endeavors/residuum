@@ -22,6 +22,7 @@ pub struct TelegramChannel {
     reload_tx: tokio::sync::watch::Sender<ReloadSignal>,
     command_tx: mpsc::Sender<ServerCommand>,
     tz: chrono_tz::Tz,
+    shutdown_rx: tokio::sync::watch::Receiver<bool>,
 }
 
 impl TelegramChannel {
@@ -34,6 +35,7 @@ impl TelegramChannel {
         reload_tx: tokio::sync::watch::Sender<ReloadSignal>,
         command_tx: mpsc::Sender<ServerCommand>,
         tz: chrono_tz::Tz,
+        shutdown_rx: tokio::sync::watch::Receiver<bool>,
     ) -> Self {
         Self {
             cfg,
@@ -42,12 +44,14 @@ impl TelegramChannel {
             reload_tx,
             command_tx,
             tz,
+            shutdown_rx,
         }
     }
 
     /// Start the Telegram long-polling loop.
     ///
-    /// This blocks until an error occurs or the task is cancelled.
+    /// This blocks until a shutdown signal is received, an error occurs, or the
+    /// task is cancelled.
     ///
     /// # Errors
     /// Returns an error if the bot cannot connect or polling fails fatally.
@@ -59,6 +63,7 @@ impl TelegramChannel {
             self.reload_tx,
             self.command_tx,
             self.tz,
+            self.shutdown_rx,
         )
         .await
     }

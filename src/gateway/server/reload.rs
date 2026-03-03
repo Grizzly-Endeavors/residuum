@@ -2,6 +2,8 @@
 
 use std::sync::Arc;
 
+use tokio::time::Duration;
+
 use crate::config::Config;
 use crate::gateway::protocol::ServerMessage;
 use crate::models::CompletionOptions;
@@ -208,34 +210,145 @@ pub(super) async fn handle_root_reload(rt: &mut GatewayRuntime) {
         tracing::info!("memory thresholds updated");
     }
 
-    // ── Gateway bind/port (deferred to Phase 6) ─────────────────────────
+    // ── Gateway bind/port ─────────────────────────────────────────────
     if diff.gateway_changed {
-        rt.broadcast_tx
-            .send(ServerMessage::Notice {
-                message: "gateway bind/port changed — restart required to take effect".to_string(),
-            })
-            .ok();
-        tracing::warn!("gateway bind/port changed, restart required");
+        let new_addr = new_cfg.gateway.addr();
+        match tokio::net::TcpListener::bind(&new_addr).await {
+            Ok(listener) => {
+                // Shut down the old HTTP server
+                rt.shutdown_tx.send(true).ok();
+
+                // New shutdown channel for the replacement server
+                let (new_shutdown_tx, mut new_shutdown_rx) = tokio::sync::watch::channel(false);
+
+                let state = super::GatewayState {
+                    inbound_tx: rt.inbound_tx.clone(),
+                    broadcast_tx: rt.broadcast_tx.clone(),
+                    reload_tx: rt.reload_tx.clone(),
+                    command_tx: rt.command_tx.clone(),
+                    inbox_dir: rt.layout.inbox_dir(),
+                    tz: rt.tz,
+                };
+                let config_api_state = super::web::ConfigApiState {
+                    config_dir: rt.config_dir.clone(),
+                    memory_dir: Some(rt.layout.memory_dir()),
+                    reload_tx: Some(rt.reload_tx.clone()),
+                    setup_done: None,
+                };
+                let app = super::build_gateway_app(state, &new_cfg, config_api_state);
+
+                let new_handle = tokio::spawn(async move {
+                    if let Err(e) = axum::serve(listener, app)
+                        .with_graceful_shutdown(async move {
+                            new_shutdown_rx.wait_for(|v| *v).await.ok();
+                        })
+                        .await
+                    {
+                        tracing::error!(error = %e, "gateway server error after rebind");
+                    }
+                });
+
+                rt.server_handle = new_handle;
+                rt.shutdown_tx = new_shutdown_tx;
+                tracing::info!(addr = %new_addr, "gateway rebound to new address");
+            }
+            Err(e) => {
+                tracing::warn!(
+                    addr = %new_addr,
+                    error = %e,
+                    "failed to bind to new gateway address, keeping current server"
+                );
+                rt.broadcast_tx
+                    .send(ServerMessage::Notice {
+                        message: format!(
+                            "gateway rebind failed ({new_addr}): {e} — keeping current server"
+                        ),
+                    })
+                    .ok();
+            }
+        }
     }
 
-    // ── Discord token (deferred to Phase 6) ─────────────────────────────
+    // ── Discord token ───────────────────────────────────────────────────
     if diff.discord_changed {
-        rt.broadcast_tx
-            .send(ServerMessage::Notice {
-                message: "discord token changed — restart required to take effect".to_string(),
-            })
-            .ok();
-        tracing::warn!("discord token changed, restart required");
+        // Shut down existing adapter if running
+        if let Some(tx) = rt.discord_shutdown_tx.take() {
+            tx.send(true).ok();
+        }
+        if let Some(handle) = rt.discord_handle.take() {
+            if tokio::time::timeout(Duration::from_secs(5), handle)
+                .await
+                .is_ok()
+            {
+                tracing::info!("discord adapter stopped");
+            } else {
+                tracing::warn!("discord adapter shutdown timed out after 5s");
+            }
+        }
+
+        // Start new adapter if token is configured
+        if let Some(ref discord_cfg) = new_cfg.discord {
+            let (tx, rx) = tokio::sync::watch::channel(false);
+            let discord = crate::channels::discord::DiscordChannel::new(
+                discord_cfg.clone(),
+                rt.inbound_tx.clone(),
+                new_cfg.workspace_dir.clone(),
+                rt.reload_tx.clone(),
+                rt.command_tx.clone(),
+                rt.tz,
+                rx,
+            );
+            rt.discord_handle = Some(tokio::spawn(async move {
+                if let Err(e) = discord.start().await {
+                    tracing::error!(error = %e, "discord channel failed after reload");
+                }
+            }));
+            rt.discord_shutdown_tx = Some(tx);
+            tracing::info!("discord adapter restarted with new token");
+        } else {
+            tracing::info!("discord adapter removed from config");
+        }
     }
 
-    // ── Telegram token (deferred to Phase 6) ────────────────────────────
+    // ── Telegram token ──────────────────────────────────────────────────
     if diff.telegram_changed {
-        rt.broadcast_tx
-            .send(ServerMessage::Notice {
-                message: "telegram token changed — restart required to take effect".to_string(),
-            })
-            .ok();
-        tracing::warn!("telegram token changed, restart required");
+        // Shut down existing adapter if running
+        if let Some(tx) = rt.telegram_shutdown_tx.take() {
+            tx.send(true).ok();
+        }
+        if let Some(handle) = rt.telegram_handle.take() {
+            if tokio::time::timeout(Duration::from_secs(5), handle)
+                .await
+                .is_ok()
+            {
+                tracing::info!("telegram adapter stopped");
+            } else {
+                tracing::warn!("telegram adapter shutdown timed out after 5s");
+            }
+        }
+
+        // Start new adapter if token is configured
+        if let Some(ref telegram_cfg) = new_cfg.telegram {
+            let (tx, rx) = tokio::sync::watch::channel(false);
+            let telegram = crate::channels::telegram::TelegramChannel::new(
+                telegram_cfg.clone(),
+                rt.inbound_tx.clone(),
+                new_cfg.workspace_dir.clone(),
+                rt.reload_tx.clone(),
+                rt.command_tx.clone(),
+                rt.tz,
+                rx,
+            );
+            rt.telegram_handle = Some(tokio::spawn(async move {
+                if let Err(e) = telegram.start().await {
+                    tracing::error!(error = %e, "telegram channel failed after reload");
+                }
+            }));
+            rt.telegram_shutdown_tx = Some(tx);
+            tracing::info!("telegram adapter restarted with new token");
+        } else {
+            tracing::info!("telegram adapter removed from config");
+        }
     }
 
     // ── Pulse toggle ────────────────────────────────────────────────────
@@ -410,5 +523,47 @@ mod tests {
         assert!(summary.contains("skills"));
         assert!(summary.contains("agent"));
         assert!(summary.contains("background"));
+    }
+
+    #[test]
+    fn diff_config_detects_discord_addition() {
+        let old = test_config();
+        let mut new = old.clone();
+        new.discord = Some(DiscordConfig {
+            token: "new-token".to_string(),
+        });
+
+        let diff = diff_config(&old, &new);
+        assert!(diff.discord_changed);
+        assert!(!diff.telegram_changed);
+    }
+
+    #[test]
+    fn diff_config_detects_discord_removal() {
+        let mut old = test_config();
+        old.discord = Some(DiscordConfig {
+            token: "existing-token".to_string(),
+        });
+        let mut new = old.clone();
+        new.discord = None;
+
+        let diff = diff_config(&old, &new);
+        assert!(diff.discord_changed);
+    }
+
+    #[test]
+    fn diff_config_detects_telegram_token_change() {
+        let mut old = test_config();
+        old.telegram = Some(TelegramConfig {
+            token: "old-tg-token".to_string(),
+        });
+        let mut new = old.clone();
+        new.telegram = Some(TelegramConfig {
+            token: "new-tg-token".to_string(),
+        });
+
+        let diff = diff_config(&old, &new);
+        assert!(diff.telegram_changed);
+        assert!(!diff.discord_changed);
     }
 }

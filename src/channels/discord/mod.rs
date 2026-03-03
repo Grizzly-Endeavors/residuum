@@ -12,6 +12,7 @@ mod handler;
 mod reply;
 
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use serenity::prelude::*;
 use tokio::sync::mpsc;
@@ -30,6 +31,7 @@ pub struct DiscordChannel {
     reload_tx: tokio::sync::watch::Sender<ReloadSignal>,
     command_tx: mpsc::Sender<ServerCommand>,
     tz: chrono_tz::Tz,
+    shutdown_rx: tokio::sync::watch::Receiver<bool>,
 }
 
 impl DiscordChannel {
@@ -42,6 +44,7 @@ impl DiscordChannel {
     /// - `reload_tx`: Watch channel to trigger config reload.
     /// - `command_tx`: Channel for dispatching named server commands.
     /// - `tz`: Timezone for inbox item timestamps.
+    /// - `shutdown_rx`: Watch channel signalling graceful shutdown.
     #[must_use]
     pub(crate) fn new(
         cfg: DiscordConfig,
@@ -50,6 +53,7 @@ impl DiscordChannel {
         reload_tx: tokio::sync::watch::Sender<ReloadSignal>,
         command_tx: mpsc::Sender<ServerCommand>,
         tz: chrono_tz::Tz,
+        shutdown_rx: tokio::sync::watch::Receiver<bool>,
     ) -> Self {
         Self {
             cfg,
@@ -58,12 +62,14 @@ impl DiscordChannel {
             reload_tx,
             command_tx,
             tz,
+            shutdown_rx,
         }
     }
 
     /// Start the Discord gateway connection.
     ///
-    /// This blocks until the connection is closed or an error occurs.
+    /// This blocks until the connection is closed, a shutdown signal is
+    /// received, or an error occurs.
     ///
     /// # Errors
     /// Returns an error if the serenity client cannot be built or the connection fails.
@@ -85,6 +91,16 @@ impl DiscordChannel {
         let mut client = Client::builder(&self.cfg.token, intents)
             .event_handler(handler)
             .await?;
+
+        // Monitor shutdown signal and cleanly disconnect shards
+        let shard_manager = Arc::clone(&client.shard_manager);
+        let mut shutdown_rx = self.shutdown_rx;
+        tokio::spawn(async move {
+            if shutdown_rx.wait_for(|v| *v).await.is_ok() {
+                tracing::info!("discord adapter received shutdown signal");
+                shard_manager.shutdown_all().await;
+            }
+        });
 
         client.start().await
     }
