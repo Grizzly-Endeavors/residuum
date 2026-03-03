@@ -384,7 +384,7 @@ const Chat = {
 
         // Code blocks: ```lang\n...\n```
         html = html.replace(/```(\w*)\n([\s\S]*?)```/g, (_m, _lang, code) => {
-            return `<pre><code>${code}</code></pre>`;
+            return `<pre><code>${code.trim()}</code></pre>`;
         });
 
         // Inline code: `...`

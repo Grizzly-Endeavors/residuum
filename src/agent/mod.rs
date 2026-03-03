@@ -295,7 +295,7 @@ impl Agent {
         let mut sys_interrupt_rx = interrupt::dead_interrupt_rx();
 
         // System turns don't inject time context (no user-facing timestamps)
-        let texts = execute_turn(
+        let mut texts = execute_turn(
             provider,
             &self.tools,
             &self.tool_filter,
@@ -311,7 +311,7 @@ impl Agent {
         )
         .await?;
 
-        let response = texts.last().cloned().unwrap_or_default();
+        let response = texts.pop().unwrap_or_default();
 
         Ok(SystemTurnResult {
             response,

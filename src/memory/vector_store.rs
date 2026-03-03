@@ -312,18 +312,26 @@ impl VectorStore {
             return Ok(());
         }
 
-        let conn = self.lock_conn()?;
+        let mut conn = self.lock_conn()?;
+        let tx = conn.transaction().map_err(|e| {
+            ResiduumError::Memory(format!("failed to begin delete transaction: {e}"))
+        })?;
+
         for id in ids {
             // Try both tables — a given ID only exists in one
-            conn.execute("DELETE FROM obs_vectors WHERE obs_id = ?1", [id])
+            tx.execute("DELETE FROM obs_vectors WHERE obs_id = ?1", [id])
                 .map_err(|e| {
                     ResiduumError::Memory(format!("failed to delete from obs_vectors: {e}"))
                 })?;
-            conn.execute("DELETE FROM chunk_vectors WHERE chunk_id = ?1", [id])
+            tx.execute("DELETE FROM chunk_vectors WHERE chunk_id = ?1", [id])
                 .map_err(|e| {
                     ResiduumError::Memory(format!("failed to delete from chunk_vectors: {e}"))
                 })?;
         }
+
+        tx.commit().map_err(|e| {
+            ResiduumError::Memory(format!("failed to commit delete transaction: {e}"))
+        })?;
 
         Ok(())
     }

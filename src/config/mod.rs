@@ -295,4 +295,59 @@ main = "my-provider/claude-sonnet-4-6"
             "secret reference should resolve with real store: {result:?}"
         );
     }
+
+    #[test]
+    fn load_at_returns_error_on_invalid_toml() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("config.toml");
+
+        // Write invalid TOML syntax
+        std::fs::write(&config_path, "invalid toml syntax = [").unwrap();
+
+        let result = Config::load_at(dir.path());
+
+        assert!(
+            result.is_err(),
+            "load_at should fail on invalid TOML syntax"
+        );
+        let err = result.unwrap_err();
+        assert!(
+            matches!(err, ResiduumError::Config(_)),
+            "error should be of type ResiduumError::Config, got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn validate_toml_rejects_invalid_toml_syntax() {
+        let dir = tempfile::tempdir().unwrap();
+        let bad_toml = "this is not valid toml";
+        let result = Config::validate_toml(bad_toml, dir.path());
+        assert!(result.is_err(), "invalid TOML syntax should fail parse");
+        let err = result.unwrap_err();
+        assert!(
+            err.contains("TOML parse error"),
+            "error should mention TOML parse error: {err}"
+        );
+    }
+
+    #[test]
+    fn validate_toml_rejects_invalid_model_format() {
+        let dir = tempfile::tempdir().unwrap();
+        let bad_config = r#"
+timezone = "UTC"
+
+[models]
+main = "invalid-format"
+"#;
+        let result = Config::validate_toml(bad_config, dir.path());
+        assert!(
+            result.is_err(),
+            "missing slash in model should fail validation"
+        );
+        let err = result.unwrap_err();
+        assert!(
+            err.contains("expected 'provider/model' format"),
+            "error should mention expected format: {err}"
+        );
+    }
 }
