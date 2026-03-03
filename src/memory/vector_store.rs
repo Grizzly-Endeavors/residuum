@@ -146,38 +146,47 @@ impl VectorStore {
             )));
         }
 
-        let conn = self.lock_conn()?;
-        let mut stmt = conn
-            .prepare_cached(
-                "INSERT INTO obs_vectors(obs_id, episode_id, date, context, content, embedding)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-            )
-            .map_err(|e| ResiduumError::Memory(format!("failed to prepare obs insert: {e}")))?;
+        let mut conn = self.lock_conn()?;
+        let tx = conn
+            .transaction()
+            .map_err(|e| ResiduumError::Memory(format!("failed to start obs transaction: {e}")))?;
 
         let mut doc_ids = Vec::with_capacity(observations.len());
-        for (i, (obs, emb)) in observations.iter().zip(embeddings.iter()).enumerate() {
-            self.check_dim(emb)?;
-            let doc_id = format!("{episode_id}-o{i}");
-            match stmt.execute(rusqlite::params![
-                doc_id,
-                episode_id,
-                date,
-                obs.project_context,
-                obs.content,
-                emb.as_bytes(),
-            ]) {
-                Ok(_) => {}
-                Err(ref e) if is_unique_violation(e) => {
-                    tracing::debug!(doc_id, "observation vector already exists, skipping");
+        {
+            let mut stmt = tx
+                .prepare_cached(
+                    "INSERT INTO obs_vectors(obs_id, episode_id, date, context, content, embedding)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                )
+                .map_err(|e| ResiduumError::Memory(format!("failed to prepare obs insert: {e}")))?;
+
+            for (i, (obs, emb)) in observations.iter().zip(embeddings.iter()).enumerate() {
+                self.check_dim(emb)?;
+                let doc_id = format!("{episode_id}-o{i}");
+                match stmt.execute(rusqlite::params![
+                    doc_id,
+                    episode_id,
+                    date,
+                    obs.project_context,
+                    obs.content,
+                    emb.as_bytes(),
+                ]) {
+                    Ok(_) => {}
+                    Err(ref e) if is_unique_violation(e) => {
+                        tracing::debug!(doc_id, "observation vector already exists, skipping");
+                    }
+                    Err(e) => {
+                        return Err(ResiduumError::Memory(format!(
+                            "failed to insert observation vector {doc_id}: {e}"
+                        )));
+                    }
                 }
-                Err(e) => {
-                    return Err(ResiduumError::Memory(format!(
-                        "failed to insert observation vector {doc_id}: {e}"
-                    )));
-                }
+                doc_ids.push(doc_id);
             }
-            doc_ids.push(doc_id);
         }
+
+        tx.commit()
+            .map_err(|e| ResiduumError::Memory(format!("failed to commit obs transaction: {e}")))?;
 
         Ok(doc_ids)
     }
@@ -202,46 +211,58 @@ impl VectorStore {
             )));
         }
 
-        let conn = self.lock_conn()?;
-        let mut stmt = conn
-            .prepare_cached(
-                "INSERT INTO chunk_vectors(chunk_id, episode_id, date, context, content,
-                 line_start, line_end, embedding)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-            )
-            .map_err(|e| ResiduumError::Memory(format!("failed to prepare chunk insert: {e}")))?;
+        let mut conn = self.lock_conn()?;
+        let tx = conn.transaction().map_err(|e| {
+            ResiduumError::Memory(format!("failed to start chunk transaction: {e}"))
+        })?;
 
         let mut doc_ids = Vec::with_capacity(chunks.len());
-        for (chunk, emb) in chunks.iter().zip(embeddings.iter()) {
-            self.check_dim(emb)?;
-            let line_start_i64 = i64::try_from(chunk.line_start).unwrap_or(i64::MAX);
-            let line_end_i64 = i64::try_from(chunk.line_end).unwrap_or(i64::MAX);
-            match stmt.execute(rusqlite::params![
-                chunk.chunk_id,
-                chunk.episode_id,
-                chunk.date,
-                chunk.context,
-                chunk.content,
-                line_start_i64,
-                line_end_i64,
-                emb.as_bytes(),
-            ]) {
-                Ok(_) => {}
-                Err(ref e) if is_unique_violation(e) => {
-                    tracing::debug!(
-                        chunk_id = chunk.chunk_id,
-                        "chunk vector already exists, skipping"
-                    );
+        {
+            let mut stmt = tx
+                .prepare_cached(
+                    "INSERT INTO chunk_vectors(chunk_id, episode_id, date, context, content,
+                     line_start, line_end, embedding)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                )
+                .map_err(|e| {
+                    ResiduumError::Memory(format!("failed to prepare chunk insert: {e}"))
+                })?;
+
+            for (chunk, emb) in chunks.iter().zip(embeddings.iter()) {
+                self.check_dim(emb)?;
+                let line_start_i64 = i64::try_from(chunk.line_start).unwrap_or(i64::MAX);
+                let line_end_i64 = i64::try_from(chunk.line_end).unwrap_or(i64::MAX);
+                match stmt.execute(rusqlite::params![
+                    chunk.chunk_id,
+                    chunk.episode_id,
+                    chunk.date,
+                    chunk.context,
+                    chunk.content,
+                    line_start_i64,
+                    line_end_i64,
+                    emb.as_bytes(),
+                ]) {
+                    Ok(_) => {}
+                    Err(ref e) if is_unique_violation(e) => {
+                        tracing::debug!(
+                            chunk_id = chunk.chunk_id,
+                            "chunk vector already exists, skipping"
+                        );
+                    }
+                    Err(e) => {
+                        return Err(ResiduumError::Memory(format!(
+                            "failed to insert chunk vector {}: {e}",
+                            chunk.chunk_id
+                        )));
+                    }
                 }
-                Err(e) => {
-                    return Err(ResiduumError::Memory(format!(
-                        "failed to insert chunk vector {}: {e}",
-                        chunk.chunk_id
-                    )));
-                }
+                doc_ids.push(chunk.chunk_id.clone());
             }
-            doc_ids.push(chunk.chunk_id.clone());
         }
+
+        tx.commit().map_err(|e| {
+            ResiduumError::Memory(format!("failed to commit chunk transaction: {e}"))
+        })?;
 
         Ok(doc_ids)
     }
