@@ -1,4 +1,4 @@
-//! CLI channel using rustyline for interactive input.
+//! CLI interface using rustyline for interactive input.
 
 use rustyline::DefaultEditor;
 use rustyline::error::ReadlineError;
@@ -17,10 +17,10 @@ impl CliReader {
     /// Create a new `CliReader`.
     ///
     /// # Errors
-    /// Returns `ResiduumError::Channel` if the readline editor cannot be initialized.
+    /// Returns `ResiduumError::Interface` if the readline editor cannot be initialized.
     pub fn new() -> Result<Self, ResiduumError> {
         let editor = DefaultEditor::new()
-            .map_err(|e| ResiduumError::Channel(format!("failed to initialize readline: {e}")))?;
+            .map_err(|e| ResiduumError::Interface(format!("failed to initialize readline: {e}")))?;
         Ok(Self { editor })
     }
 

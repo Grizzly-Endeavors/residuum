@@ -289,7 +289,7 @@ pub(super) async fn handle_root_reload(rt: &mut GatewayRuntime) {
         // Start new adapter if token is configured
         if let Some(ref discord_cfg) = new_cfg.discord {
             let (tx, rx) = tokio::sync::watch::channel(false);
-            let discord = crate::channels::discord::DiscordChannel::new(
+            let discord = crate::interfaces::discord::DiscordInterface::new(
                 discord_cfg.clone(),
                 rt.inbound_tx.clone(),
                 new_cfg.workspace_dir.clone(),
@@ -300,7 +300,7 @@ pub(super) async fn handle_root_reload(rt: &mut GatewayRuntime) {
             );
             rt.discord_handle = Some(tokio::spawn(async move {
                 if let Err(e) = discord.start().await {
-                    tracing::error!(error = %e, "discord channel failed after reload");
+                    tracing::error!(error = %e, "discord interface failed after reload");
                 }
             }));
             rt.discord_shutdown_tx = Some(tx);
@@ -330,7 +330,7 @@ pub(super) async fn handle_root_reload(rt: &mut GatewayRuntime) {
         // Start new adapter if token is configured
         if let Some(ref telegram_cfg) = new_cfg.telegram {
             let (tx, rx) = tokio::sync::watch::channel(false);
-            let telegram = crate::channels::telegram::TelegramChannel::new(
+            let telegram = crate::interfaces::telegram::TelegramInterface::new(
                 telegram_cfg.clone(),
                 rt.inbound_tx.clone(),
                 new_cfg.workspace_dir.clone(),
@@ -341,7 +341,7 @@ pub(super) async fn handle_root_reload(rt: &mut GatewayRuntime) {
             );
             rt.telegram_handle = Some(tokio::spawn(async move {
                 if let Err(e) = telegram.start().await {
-                    tracing::error!(error = %e, "telegram channel failed after reload");
+                    tracing::error!(error = %e, "telegram interface failed after reload");
                 }
             }));
             rt.telegram_shutdown_tx = Some(tx);

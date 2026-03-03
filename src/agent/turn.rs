@@ -2,8 +2,8 @@
 
 use tokio::sync::mpsc;
 
-use crate::channels::types::ReplyHandle;
 use crate::error::ResiduumError;
+use crate::interfaces::types::ReplyHandle;
 use crate::mcp::SharedMcpRegistry;
 use crate::models::{CompletionOptions, Message, ModelProvider, ModelResponse};
 use crate::tools::{SharedToolFilter, ToolError, ToolRegistry};

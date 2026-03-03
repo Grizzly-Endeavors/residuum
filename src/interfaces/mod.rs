@@ -1,4 +1,4 @@
-//! Communication channels between the user and the agent.
+//! Communication interfaces between the user and the agent.
 
 pub mod attachment;
 pub mod chunking;

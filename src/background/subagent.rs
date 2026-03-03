@@ -8,7 +8,7 @@ use crate::agent::context::{
 use crate::agent::interrupt::dead_interrupt_rx;
 use crate::agent::recent_messages::RecentMessages;
 use crate::agent::turn::execute_turn;
-use crate::channels::null::NullReplyHandle;
+use crate::interfaces::null::NullReplyHandle;
 use crate::mcp::SharedMcpRegistry;
 use crate::models::{CompletionOptions, Message, ModelProvider};
 use crate::projects::activation::{ProjectState, SharedProjectState};
@@ -280,7 +280,7 @@ async fn ensure_project_deactivated(
     memory_ctx: &crate::agent::context::MemoryContext<'_>,
     prompt_ctx: &PromptContext<'_>,
     recent_messages: &mut RecentMessages,
-    reply: &dyn crate::channels::types::ReplyHandle,
+    reply: &dyn crate::interfaces::types::ReplyHandle,
 ) {
     let active_name = resources
         .project_state

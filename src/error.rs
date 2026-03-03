@@ -26,9 +26,9 @@ pub enum ResiduumError {
     #[error("memory error: {0}")]
     Memory(String),
 
-    /// CLI channel error
-    #[error("channel error: {0}")]
-    Channel(String),
+    /// CLI interface error
+    #[error("interface error: {0}")]
+    Interface(String),
 
     /// Scheduling error (pulse or actions)
     #[error("scheduling error: {0}")]

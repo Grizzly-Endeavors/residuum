@@ -1,4 +1,4 @@
-//! Webhook channel adapter — accepts HTTP POST requests and routes them to the agent.
+//! Webhook interface adapter — accepts HTTP POST requests and routes them to the agent.
 
 use std::sync::Arc;
 
@@ -61,7 +61,7 @@ pub async fn webhook_handler(
     };
 
     let origin = MessageOrigin {
-        channel: "webhook".to_string(),
+        interface: "webhook".to_string(),
         sender_name: "webhook".to_string(),
         sender_id: "webhook".to_string(),
     };
@@ -90,7 +90,7 @@ pub async fn webhook_handler(
 
 /// Fire-and-forget reply handle for webhook requests.
 ///
-/// Webhook responses are logged but have no return channel — the HTTP
+/// Webhook responses are logged but have no return path — the HTTP
 /// response (202 Accepted) is sent before the agent processes the message.
 struct WebhookReplyHandle;
 
@@ -160,8 +160,8 @@ mod tests {
             "content should match"
         );
         assert_eq!(
-            routed.message.origin.channel, "webhook",
-            "channel should be webhook"
+            routed.message.origin.interface, "webhook",
+            "interface should be webhook"
         );
     }
 

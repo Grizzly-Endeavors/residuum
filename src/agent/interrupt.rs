@@ -3,7 +3,7 @@
 use tokio::sync::mpsc;
 
 use crate::background::types::BackgroundResult;
-use crate::channels::types::InboundMessage;
+use crate::interfaces::types::InboundMessage;
 
 /// An interrupt that can be injected into an in-progress agent turn.
 #[derive(Clone)]

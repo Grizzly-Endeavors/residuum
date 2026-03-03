@@ -1,4 +1,4 @@
-//! Telegram channel adapter (DM-only).
+//! Telegram interface adapter (DM-only).
 //!
 //! Uses the teloxide Bot API for long-polling message reception and routes
 //! private messages through the standard `RoutedMessage` pipeline.
@@ -10,12 +10,12 @@ use std::path::PathBuf;
 
 use tokio::sync::mpsc;
 
-use crate::channels::types::RoutedMessage;
 use crate::config::TelegramConfig;
 use crate::gateway::server::{ReloadSignal, ServerCommand};
+use crate::interfaces::types::RoutedMessage;
 
-/// Telegram channel adapter that routes private messages to the agent inbound channel.
-pub struct TelegramChannel {
+/// Telegram interface adapter that routes private messages to the agent inbound channel.
+pub struct TelegramInterface {
     cfg: TelegramConfig,
     inbound_tx: mpsc::Sender<RoutedMessage>,
     workspace_dir: PathBuf,
@@ -25,8 +25,8 @@ pub struct TelegramChannel {
     shutdown_rx: tokio::sync::watch::Receiver<bool>,
 }
 
-impl TelegramChannel {
-    /// Create a new Telegram channel adapter.
+impl TelegramInterface {
+    /// Create a new Telegram interface adapter.
     #[must_use]
     pub(crate) fn new(
         cfg: TelegramConfig,
@@ -71,13 +71,13 @@ impl TelegramChannel {
 
 #[cfg(test)]
 mod tests {
-    use crate::channels::cli::commands::{CommandContext, CommandSideEffect, execute_command};
+    use crate::interfaces::cli::commands::{CommandContext, CommandSideEffect, execute_command};
 
     fn telegram_ctx() -> CommandContext<'static> {
         CommandContext {
             url: "",
             verbose: false,
-            channel_name: "telegram",
+            interface_name: "telegram",
         }
     }
 

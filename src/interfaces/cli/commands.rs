@@ -1,7 +1,7 @@
 //! Data-driven slash command registry for the CLI client.
 //!
-//! Provides a shared command registry used by CLI, Discord, and any future channels.
-//! Each channel handles `CommandSideEffect` according to its own transport.
+//! Provides a shared command registry used by CLI, Discord, and any future interfaces.
+//! Each interface handles `CommandSideEffect` according to its own transport.
 
 /// What the main loop should do after a slash command.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -43,14 +43,14 @@ pub struct CommandInfo {
     pub takes_arg: bool,
 }
 
-/// Context for executing a command from any channel.
+/// Context for executing a command from any interface.
 pub struct CommandContext<'a> {
     /// Connection URL (for status display).
     pub url: &'a str,
     /// Whether verbose mode is enabled.
     pub verbose: bool,
-    /// Name of the channel dispatching the command (e.g. "cli", "discord", "websocket").
-    pub channel_name: &'a str,
+    /// Name of the interface dispatching the command (e.g. "cli", "discord", "websocket").
+    pub interface_name: &'a str,
 }
 
 /// Result of executing a command through the shared registry.
@@ -61,7 +61,7 @@ pub struct CommandResult {
     pub side_effect: Option<CommandSideEffect>,
 }
 
-/// Side effects that channel handlers must apply after a command.
+/// Side effects that interface handlers must apply after a command.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CommandSideEffect {
     /// Reload server configuration.
@@ -236,7 +236,7 @@ fn effect_to_result(effect: CommandEffect) -> CommandResult {
 
 /// Iterate over commands that produce `ServerCommand` effects.
 ///
-/// Used by Discord (and potentially other channels) to auto-register
+/// Used by Discord (and potentially other interfaces) to auto-register
 /// server commands without duplicating the list.
 pub fn server_commands() -> impl Iterator<Item = ServerCommandInfo> {
     COMMANDS.iter().filter_map(|def| {
@@ -250,7 +250,7 @@ pub fn server_commands() -> impl Iterator<Item = ServerCommandInfo> {
 
 /// Iterate over all commands in the registry.
 ///
-/// Used by channels that want to register the full command set
+/// Used by interfaces that want to register the full command set
 /// (not just server commands).
 pub fn all_commands() -> impl Iterator<Item = CommandInfo> {
     COMMANDS.iter().map(|def| CommandInfo {
@@ -494,7 +494,7 @@ mod tests {
         CommandContext {
             url: "ws://localhost/ws",
             verbose: false,
-            channel_name: "cli",
+            interface_name: "cli",
         }
     }
 
