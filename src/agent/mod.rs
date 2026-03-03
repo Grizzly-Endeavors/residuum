@@ -1297,4 +1297,45 @@ mod tests {
         );
         assert_eq!(agent.messages_since(0)[1].content, "persisted answer");
     }
+
+    /// Mock provider with a configurable model name for `swap_provider` tests.
+    struct NamedMockProvider {
+        name: &'static str,
+    }
+
+    #[async_trait]
+    impl ModelProvider for NamedMockProvider {
+        async fn complete(
+            &self,
+            _messages: &[Message],
+            _tools: &[ToolDefinition],
+            _options: &CompletionOptions,
+        ) -> Result<ModelResponse, ModelError> {
+            Ok(ModelResponse::new("ok".to_string(), vec![]))
+        }
+
+        fn model_name(&self) -> &'static str {
+            self.name
+        }
+    }
+
+    #[test]
+    fn swap_provider_changes_model() {
+        let mut agent = Agent::new(
+            Box::new(NamedMockProvider { name: "model-a" }),
+            ToolRegistry::new(),
+            no_filter(),
+            empty_mcp(),
+            IdentityFiles::default(),
+            CompletionOptions::default(),
+            chrono_tz::UTC,
+            std::path::PathBuf::from("/tmp/residuum-test-inbox"),
+        );
+
+        assert_eq!(agent.provider.model_name(), "model-a");
+
+        agent.swap_provider(Box::new(NamedMockProvider { name: "model-b" }));
+
+        assert_eq!(agent.provider.model_name(), "model-b");
+    }
 }

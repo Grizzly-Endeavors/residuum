@@ -1157,3 +1157,103 @@ async fn run_event_loop(mut rt: GatewayRuntime) -> GatewayExit {
 
     GatewayExit::Shutdown
 }
+
+#[cfg(test)]
+#[expect(clippy::unwrap_used, reason = "test code uses unwrap for clarity")]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reload_signal_default_is_none() {
+        let signal = ReloadSignal::default();
+        assert_eq!(signal, ReloadSignal::None);
+    }
+
+    #[tokio::test]
+    async fn core_channels_survive_reload_signal() {
+        let dir = tempfile::tempdir().unwrap();
+        let (core, receivers) = GatewayCore::new(dir.path().to_path_buf());
+
+        // Send a message through inbound before reload
+        assert!(
+            core.inbound_tx
+                .send(crate::channels::types::RoutedMessage {
+                    message: crate::channels::types::InboundMessage {
+                        id: "test-1".to_string(),
+                        content: "hello".to_string(),
+                        origin: crate::channels::types::MessageOrigin {
+                            channel: "test".to_string(),
+                            sender_name: "tester".to_string(),
+                            sender_id: "t1".to_string(),
+                        },
+                        timestamp: chrono::Utc::now(),
+                    },
+                    reply: std::sync::Arc::new(crate::channels::websocket::WsReplyHandle::new(
+                        core.broadcast_tx.clone(),
+                        "test-1".to_string(),
+                    ),),
+                })
+                .await
+                .is_ok(),
+            "inbound send should succeed before reload"
+        );
+
+        // Fire a reload signal
+        core.reload_tx.send(ReloadSignal::Root).unwrap();
+
+        // Channels still work after the reload signal
+        let _broadcast_rx = core.broadcast_tx.subscribe();
+        assert!(
+            core.broadcast_tx
+                .send(crate::gateway::protocol::ServerMessage::Pong)
+                .is_ok(),
+            "broadcast should still work after reload signal"
+        );
+
+        // Inbound receiver still has the message
+        drop(core);
+        let mut inbound = receivers.inbound;
+        let msg = inbound.recv().await.unwrap();
+        assert_eq!(msg.message.content, "hello");
+    }
+
+    #[test]
+    fn backup_config_creates_bak_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = dir.path().join("config.toml");
+        std::fs::write(&config, "timezone = \"UTC\"\n").unwrap();
+
+        backup_config(dir.path());
+
+        let bak = dir.path().join("config.toml.bak");
+        assert!(bak.exists(), "backup should create config.toml.bak");
+        assert_eq!(
+            std::fs::read_to_string(&bak).unwrap(),
+            "timezone = \"UTC\"\n",
+            "backup content should match original"
+        );
+    }
+
+    #[test]
+    fn rollback_config_restores_original() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = dir.path().join("config.toml");
+        let bak = dir.path().join("config.toml.bak");
+
+        std::fs::write(&bak, "timezone = \"UTC\"\n").unwrap();
+        std::fs::write(&config, "BROKEN").unwrap();
+
+        assert!(rollback_config(dir.path()), "rollback should succeed");
+        assert_eq!(
+            std::fs::read_to_string(&config).unwrap(),
+            "timezone = \"UTC\"\n",
+        );
+    }
+
+    #[test]
+    fn rollback_config_fails_without_backup() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("config.toml"), "BROKEN").unwrap();
+        assert!(!rollback_config(dir.path()));
+    }
+}

@@ -314,4 +314,33 @@ mod tests {
         let router = NotificationRouter::empty();
         assert!(router.external_channel_names().is_empty());
     }
+
+    #[test]
+    fn reload_channels_replaces_map() {
+        let mut router = NotificationRouter::empty();
+        assert!(
+            router.external_channel_names().is_empty(),
+            "should start empty"
+        );
+
+        // Create a mock channel map (using InboxChannel via trait object)
+        let dir = tempfile::tempdir().unwrap();
+        let inbox_dir = dir.path().join("inbox");
+        std::fs::create_dir_all(&inbox_dir).unwrap();
+
+        let mut channels: HashMap<String, Box<dyn NotificationChannel>> = HashMap::new();
+        channels.insert(
+            "test-inbox".to_string(),
+            Box::new(InboxChannel::new(&inbox_dir, chrono_tz::UTC)),
+        );
+
+        router.reload_channels(channels);
+
+        assert!(router.has_external_channel("test-inbox"));
+        assert_eq!(router.external_channel_names().len(), 1);
+
+        // Replace with empty map
+        router.reload_channels(HashMap::new());
+        assert!(router.external_channel_names().is_empty());
+    }
 }
