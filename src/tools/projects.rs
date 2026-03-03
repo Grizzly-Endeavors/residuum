@@ -73,12 +73,29 @@ impl Tool for ProjectActivateTool {
             .ok_or_else(|| ToolError::InvalidArguments("name is required".to_string()))?;
 
         let mut state = self.state.lock().await;
+        let global_mcp = state.layout().mcp_json();
         match state.activate(name).await {
             Ok(active) => {
                 let project_root = active.project_root.clone();
                 let tools_list = active.frontmatter.tools.clone();
-                let mcp_servers = active.frontmatter.mcp_servers.clone();
                 let project_name = active.name.clone();
+                let mcp_servers = if active.frontmatter.mcp_servers.is_empty() {
+                    Vec::new()
+                } else {
+                    let project_mcp = active.project_root.join("mcp.json");
+                    match crate::workspace::config::resolve_mcp_references(
+                        &active.frontmatter.mcp_servers,
+                        &project_mcp,
+                        &global_mcp,
+                        &active.name,
+                    ) {
+                        Ok(resolved) => resolved,
+                        Err(e) => {
+                            tracing::warn!(project = %project_name, error = %e, "failed to resolve mcp server references");
+                            Vec::new()
+                        }
+                    }
+                };
                 let manifest_summary = format!(
                     "Activated project '{}'. Manifest: {} notes, {} references, {} workspace, {} skills files.",
                     active.name,

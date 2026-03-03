@@ -20,9 +20,9 @@ pub struct ProjectFrontmatter {
     /// Tools to load when this project activates.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tools: Vec<String>,
-    /// MCP servers to start when this project activates.
+    /// MCP server names to resolve from `mcp.json` when this project activates.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub mcp_servers: Vec<McpServerEntry>,
+    pub mcp_servers: Vec<String>,
     /// When the project was archived (only set for archived projects).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub archived: Option<NaiveDate>,
@@ -142,6 +142,10 @@ impl std::fmt::Display for ProjectStatus {
 
 #[cfg(test)]
 #[expect(clippy::unwrap_used, reason = "test code uses unwrap for clarity")]
+#[expect(
+    clippy::indexing_slicing,
+    reason = "test code uses indexing for clarity"
+)]
 mod tests {
     use super::*;
 
@@ -214,23 +218,13 @@ description: "Has MCP servers"
 status: active
 created: 2026-02-20
 mcp_servers:
-  - name: filesystem
-    command: mcp-server-filesystem
-    args:
-      - /home/user/project
+  - filesystem
+  - git
 "#;
         let fm: ProjectFrontmatter = serde_yml::from_str(yaml).unwrap();
-        assert_eq!(fm.mcp_servers.len(), 1, "should have one MCP server");
-        assert_eq!(
-            fm.mcp_servers.first().unwrap().name,
-            "filesystem",
-            "server name should match"
-        );
-        assert_eq!(
-            fm.mcp_servers.first().unwrap().args.len(),
-            1,
-            "should have one arg"
-        );
+        assert_eq!(fm.mcp_servers.len(), 2, "should have two MCP server refs");
+        assert_eq!(fm.mcp_servers[0], "filesystem", "first ref should match");
+        assert_eq!(fm.mcp_servers[1], "git", "second ref should match");
     }
 
     #[test]
@@ -259,50 +253,23 @@ mcp_servers:
     }
 
     #[test]
-    fn frontmatter_with_http_mcp_server() {
-        let yaml = r#"
-name: with-http-mcp
-description: "Has HTTP MCP server"
-status: active
-created: 2026-02-20
-mcp_servers:
-  - name: remote-api
-    command: "http://10.0.0.5:8080/mcp"
-    transport: http
-"#;
-        let fm: ProjectFrontmatter = serde_yml::from_str(yaml).unwrap();
-        assert_eq!(fm.mcp_servers.len(), 1, "should have one MCP server");
-        let server = fm.mcp_servers.first().unwrap();
-        assert_eq!(server.name, "remote-api", "server name should match");
-        assert_eq!(
-            server.command, "http://10.0.0.5:8080/mcp",
-            "URL should match"
-        );
-        assert_eq!(
-            server.transport,
-            McpTransport::Http,
-            "transport should be Http"
-        );
-    }
+    fn frontmatter_with_mcp_server_references_round_trip() {
+        let fm = ProjectFrontmatter {
+            name: "ref-test".to_string(),
+            description: "MCP ref round-trip".to_string(),
+            status: ProjectStatus::Active,
+            created: NaiveDate::from_ymd_opt(2026, 2, 20).unwrap(),
+            tools: vec![],
+            mcp_servers: vec!["filesystem".to_string(), "git".to_string()],
+            archived: None,
+        };
 
-    #[test]
-    fn frontmatter_mcp_server_transport_defaults_stdio() {
-        let yaml = r#"
-name: with-stdio-mcp
-description: "Has stdio MCP server"
-status: active
-created: 2026-02-20
-mcp_servers:
-  - name: filesystem
-    command: mcp-server-filesystem
-"#;
-        let fm: ProjectFrontmatter = serde_yml::from_str(yaml).unwrap();
-        let server = fm.mcp_servers.first().unwrap();
-        assert_eq!(
-            server.transport,
-            McpTransport::Stdio,
-            "transport should default to Stdio"
-        );
+        let yaml = serde_yml::to_string(&fm).unwrap();
+        let parsed: ProjectFrontmatter = serde_yml::from_str(&yaml).unwrap();
+
+        assert_eq!(parsed.mcp_servers.len(), 2, "should round-trip two refs");
+        assert_eq!(parsed.mcp_servers[0], "filesystem");
+        assert_eq!(parsed.mcp_servers[1], "git");
     }
 
     #[test]

@@ -693,7 +693,7 @@ mod projects_integration {
         let tz = chrono_tz::UTC;
         let mcp = McpRegistry::new_shared();
 
-        // Create a project with MCP servers in frontmatter
+        // Create a project with MCP server references in frontmatter
         let create_tool = ProjectCreateTool::new(Arc::clone(&state), tz);
         create_tool
             .execute(serde_json::json!({
@@ -703,19 +703,27 @@ mod projects_integration {
             .await
             .unwrap();
 
-        // Manually add mcp_servers to the PROJECT.md frontmatter
+        // Add mcp_servers as string references in PROJECT.md
         let project_md = layout.projects_dir().join("mcp-test/PROJECT.md");
         let content = std::fs::read_to_string(&project_md).unwrap();
         let new_content = content.replace(
             "status: active",
-            "status: active\nmcp_servers:\n  - name: filesystem\n    command: mcp-server-fs\n    args:\n      - /tmp",
+            "status: active\nmcp_servers:\n  - filesystem",
         );
         std::fs::write(&project_md, new_content).unwrap();
+
+        // Write the server definition to global mcp.json
+        let global_mcp = layout.mcp_json();
+        std::fs::write(
+            &global_mcp,
+            r#"{ "mcpServers": { "filesystem": { "command": "mcp-server-fs", "args": ["/tmp"] } } }"#,
+        )
+        .unwrap();
 
         // Rescan to pick up changes
         state.lock().await.rescan().await.unwrap();
 
-        // Activate — should reconcile and queue servers to start
+        // Activate — should resolve reference and queue server to start
         let activate_tool = ProjectActivateTool::new(
             Arc::clone(&state),
             permissive_policy(),
@@ -758,6 +766,125 @@ mod projects_integration {
             assert!(
                 r.servers().is_empty(),
                 "all MCP servers should be cleared after deactivation"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn mcp_project_local_overrides_global() {
+        let (_dir, layout, state) = setup().await;
+        let tz = chrono_tz::UTC;
+        let mcp = McpRegistry::new_shared();
+
+        // Create project with mcp_servers reference
+        let create_tool = ProjectCreateTool::new(Arc::clone(&state), tz);
+        create_tool
+            .execute(serde_json::json!({
+                "name": "Local Override",
+                "description": "tests local mcp.json precedence"
+            }))
+            .await
+            .unwrap();
+
+        let project_md = layout.projects_dir().join("local-override/PROJECT.md");
+        let content = std::fs::read_to_string(&project_md).unwrap();
+        let new_content = content.replace(
+            "status: active",
+            "status: active\nmcp_servers:\n  - myserver",
+        );
+        std::fs::write(&project_md, new_content).unwrap();
+
+        // Global mcp.json with one definition
+        let global_mcp = layout.mcp_json();
+        std::fs::write(
+            &global_mcp,
+            r#"{ "mcpServers": { "myserver": { "command": "global-cmd" } } }"#,
+        )
+        .unwrap();
+
+        // Project-local mcp.json with an overriding definition
+        let project_mcp = layout.projects_dir().join("local-override/mcp.json");
+        std::fs::write(
+            &project_mcp,
+            r#"{ "mcpServers": { "myserver": { "command": "local-cmd" } } }"#,
+        )
+        .unwrap();
+
+        state.lock().await.rescan().await.unwrap();
+
+        let activate_tool = ProjectActivateTool::new(
+            Arc::clone(&state),
+            permissive_policy(),
+            no_filter(),
+            Arc::clone(&mcp),
+            empty_skills(),
+        );
+        activate_tool
+            .execute(serde_json::json!({"name": "Local Override"}))
+            .await
+            .unwrap();
+
+        {
+            let r = mcp.read().await;
+            let servers = r.servers();
+            assert_eq!(servers.len(), 1, "should have one MCP server");
+            assert_eq!(
+                servers.first().unwrap().command,
+                "local-cmd",
+                "project-local should override global"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn mcp_reference_not_found_reports_warning() {
+        let (_dir, layout, state) = setup().await;
+        let tz = chrono_tz::UTC;
+        let mcp = McpRegistry::new_shared();
+
+        // Create project referencing a server that doesn't exist
+        let create_tool = ProjectCreateTool::new(Arc::clone(&state), tz);
+        create_tool
+            .execute(serde_json::json!({
+                "name": "Missing MCP",
+                "description": "references nonexistent server"
+            }))
+            .await
+            .unwrap();
+
+        let project_md = layout.projects_dir().join("missing-mcp/PROJECT.md");
+        let content = std::fs::read_to_string(&project_md).unwrap();
+        let new_content = content.replace(
+            "status: active",
+            "status: active\nmcp_servers:\n  - nonexistent-server",
+        );
+        std::fs::write(&project_md, new_content).unwrap();
+
+        state.lock().await.rescan().await.unwrap();
+
+        // Activate should succeed (graceful degradation) but with no MCP servers
+        let activate_tool = ProjectActivateTool::new(
+            Arc::clone(&state),
+            permissive_policy(),
+            no_filter(),
+            Arc::clone(&mcp),
+            empty_skills(),
+        );
+        let result = activate_tool
+            .execute(serde_json::json!({"name": "Missing MCP"}))
+            .await
+            .unwrap();
+        assert!(
+            !result.is_error,
+            "activation should succeed even with missing mcp ref: {}",
+            result.output
+        );
+
+        {
+            let r = mcp.read().await;
+            assert!(
+                r.servers().is_empty(),
+                "no servers should be tracked when reference is unresolved"
             );
         }
     }

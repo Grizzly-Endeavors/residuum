@@ -214,7 +214,7 @@ On success: summary string like `"Activated project '{name}'. Manifest: {N} note
 
 On error: project not found or activation failure message.
 
-**Side effects:** Updates `PathPolicy` to scope writes to the project root; activates MCP servers with reference counting (servers are shared when multiple agents activate the same project simultaneously — they are only stopped when the last agent deactivates); rescans skills to include project-scoped skills.
+**Side effects:** Updates `PathPolicy` to scope writes to the project root; resolves MCP server name references from `mcp.json` files (project-local `mcp.json` alongside `PROJECT.md` takes precedence over global `workspace/config/mcp.json`) and activates them with reference counting (servers are shared when multiple agents activate the same project simultaneously — they are only stopped when the last agent deactivates); rescans skills to include project-scoped skills.
 
 ---
 
