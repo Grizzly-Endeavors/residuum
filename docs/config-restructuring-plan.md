@@ -396,7 +396,49 @@ Channel loader:
 
 ---
 
-## Phase 6: Cleanup + Migration Guide
+## Phase 6: Adapter Lifecycle on Token Change
+
+**Goal**: When Discord or Telegram tokens change in `config.toml`, gracefully shut down the old adapter and respawn with the new token. When `gateway.bind` or `gateway.port` changes, rebind the HTTP server.
+
+**PR**: `refactor/config` → `dev` — "feat: adapter lifecycle management on config reload"
+
+### Changes
+
+**`src/channels/discord/mod.rs`**:
+- Add `shutdown_rx: watch::Receiver<()>` to the Discord adapter.
+- On receiving the shutdown signal, gracefully disconnect and exit the adapter task.
+
+**`src/channels/telegram/mod.rs`**:
+- Add `shutdown_rx: watch::Receiver<()>` to the Telegram adapter.
+- On receiving the shutdown signal, gracefully disconnect and exit the adapter task.
+
+**`src/gateway/server/mod.rs`** (event loop / reload handler):
+- Store adapter shutdown senders (`watch::Sender<()>`) in `GatewayRuntime`.
+- On Discord token change: send shutdown signal, wait for adapter task to exit, spawn a new adapter with the new token and existing shared channels from `GatewayCore`.
+- On Telegram token change: same pattern as Discord.
+- On token removal (e.g., user removes `[discord]`): send shutdown signal, don't respawn.
+- On token addition (new section added): spawn a new adapter.
+
+**`src/gateway/server/reload.rs`**:
+- Replace the "restart required" warnings for `discord_changed`, `telegram_changed`, and `gateway_changed` with actual adapter restart logic.
+- For `gateway_changed`: gracefully shut down the old HTTP server → bind new `TcpListener` → spawn a new server task. Existing WebSocket connections are independent tasks communicating via shared channels, so they survive an HTTP server restart.
+
+### Tests
+
+- Integration test: Discord token change triggers adapter restart with same shared channels.
+- Integration test: Telegram token removal stops adapter without crash.
+- Integration test: gateway bind/port change triggers HTTP server restart, existing WS connections survive.
+- Unit test: adapter shutdown signal causes clean exit.
+
+### Considerations
+
+- **Existing WebSocket connections**: Already-upgraded WebSocket connections are independent tasks. They communicate via `broadcast_tx`/`inbound_tx` from `GatewayCore`. An HTTP server restart only affects new connection attempts.
+- **Adapter restart timing**: The event loop is single-threaded, so adapter restarts happen between turns. No lock contention.
+- **Token removal detection**: `old.discord.is_some() && new.discord.is_none()` → shutdown only, no respawn.
+
+---
+
+## Phase 7: Cleanup + Migration Guide
 
 **Goal**: Remove dead code, update all documentation, write migration guide.
 
@@ -450,40 +492,46 @@ Phase 1 (shared gateway core)
     │
     └── Phase 5 (graceful root config reload)
             │
-            └── Phase 6 (cleanup + migration guide)
+            └── Phase 6 (adapter lifecycle on token change)
+                    │
+                    └── Phase 7 (cleanup + migration guide)
 ```
 
-Phase 1 must land first — it's the foundation. After that, Phases 2→3→4 and Phase 5 can be developed in parallel (they touch different parts of the codebase), but Phase 5 logically builds on Phase 1's shared core. Phase 6 is last.
+Phase 1 must land first — it's the foundation. After that, Phases 2→3→4 and Phase 5 can be developed in parallel (they touch different parts of the codebase), but Phase 5 logically builds on Phase 1's shared core. Phase 6 depends on Phase 5's diff/reload infrastructure. Phase 7 is last.
 
 ## Key Files Modified
 
 | File | Phases |
 |------|--------|
-| `src/config/mod.rs` | 2 |
+| `src/config/mod.rs` | 2, 5 |
 | `src/config/deserialize.rs` | 2 |
 | `src/config/resolve.rs` | 2 |
-| `src/config/types.rs` | 2 |
+| `src/config/types.rs` | 2, 5 |
 | `src/config/bootstrap.rs` | 2 |
 | `src/config/wizard.rs` | 2 |
 | `src/config/constants.rs` | 2 |
 | `src/config/workspace.rs` (new) | 3 |
-| `src/gateway/server/mod.rs` | 1, 3, 5 |
+| `src/gateway/server/mod.rs` | 1, 3, 5, 6 |
+| `src/gateway/server/reload.rs` (new) | 5, 6 |
 | `src/gateway/server/startup.rs` | 1, 3, 5 |
 | `src/gateway/server/web.rs` | 1 |
 | `src/gateway/server/watcher.rs` (new) | 3 |
-| `src/gateway/server/degraded.rs` | 5 |
-| `src/channels/discord/mod.rs` | 1, 5 |
-| `src/channels/telegram/mod.rs` | 1, 5 |
+| `src/gateway/server/degraded.rs` | 7 |
+| `src/channels/discord/mod.rs` | 1, 6 |
+| `src/channels/telegram/mod.rs` | 1, 6 |
 | `src/agent/mod.rs` | 1 |
+| `src/memory/observer/mod.rs` | 5 |
+| `src/memory/reflector/mod.rs` | 5 |
+| `src/models/retry.rs` | 5 |
 | `src/mcp/registry.rs` | 4 |
 | `src/notify/router.rs` | 1 |
 | `src/projects/types.rs` | 4 |
 | `src/tools/projects.rs` | 4 |
-| `src/main.rs` | 1, 5 |
-| `assets/config.example.toml` | 2, 6 |
-| `assets/providers.example.toml` (new) | 2, 6 |
-| `assets/mcp.example.json` (new) | 3, 6 |
-| `assets/channels.example.toml` (new) | 3, 6 |
+| `src/main.rs` | 1, 7 |
+| `assets/config.example.toml` | 2, 7 |
+| `assets/providers.example.toml` (new) | 2, 7 |
+| `assets/mcp.example.json` (new) | 3, 7 |
+| `assets/channels.example.toml` (new) | 3, 7 |
 
 ## Verification
 
