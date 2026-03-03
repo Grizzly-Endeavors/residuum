@@ -11,7 +11,7 @@ use super::types::{BuiltinChannel, ChannelTarget, Notification, RouteOutcome};
 /// (`agent_wake`, `agent_feed`) are signaled via flags on `RouteOutcome` — the
 /// gateway acts on those flags. Inbox delivery is handled directly by the router.
 pub struct NotificationRouter {
-    external_channels: HashMap<String, Box<dyn NotificationChannel>>,
+    external_channels: tokio::sync::RwLock<HashMap<String, Box<dyn NotificationChannel>>>,
     inbox_channel: Option<InboxChannel>,
 }
 
@@ -23,7 +23,7 @@ impl NotificationRouter {
         inbox_channel: Option<InboxChannel>,
     ) -> Self {
         Self {
-            external_channels,
+            external_channels: tokio::sync::RwLock::new(external_channels),
             inbox_channel,
         }
     }
@@ -32,18 +32,22 @@ impl NotificationRouter {
     #[must_use]
     pub fn empty() -> Self {
         Self {
-            external_channels: HashMap::new(),
+            external_channels: tokio::sync::RwLock::new(HashMap::new()),
             inbox_channel: None,
         }
     }
 
     /// Replace external channels in-place (e.g. after a config reload).
-    pub fn reload_channels(&mut self, new_channels: HashMap<String, Box<dyn NotificationChannel>>) {
-        let old_count = self.external_channels.len();
-        self.external_channels = new_channels;
+    pub async fn reload_channels(
+        &self,
+        new_channels: HashMap<String, Box<dyn NotificationChannel>>,
+    ) {
+        let mut guard = self.external_channels.write().await;
+        let old_count = guard.len();
+        *guard = new_channels;
         tracing::info!(
             old_count,
-            new_count = self.external_channels.len(),
+            new_count = guard.len(),
             "notification channels reloaded"
         );
     }
@@ -115,7 +119,8 @@ impl NotificationRouter {
                     }
                 }
                 ChannelTarget::External(ext_name) => {
-                    if let Some(channel) = self.external_channels.get(ext_name.as_str()) {
+                    let guard = self.external_channels.read().await;
+                    if let Some(channel) = guard.get(ext_name.as_str()) {
                         match channel.deliver(notification).await {
                             Ok(()) => {
                                 outcome.external_dispatched.push(ext_name.clone());
@@ -154,23 +159,26 @@ impl NotificationRouter {
         channel_name: &str,
         notification: &Notification,
     ) -> anyhow::Result<()> {
-        let channel = self
-            .external_channels
+        let guard = self.external_channels.read().await;
+        let channel = guard
             .get(channel_name)
             .ok_or_else(|| anyhow::anyhow!("unknown external channel: {channel_name}"))?;
         channel.deliver(notification).await
     }
 
     /// Check if a named external channel is configured.
-    #[must_use]
-    pub fn has_external_channel(&self, name: &str) -> bool {
-        self.external_channels.contains_key(name)
+    pub async fn has_external_channel(&self, name: &str) -> bool {
+        self.external_channels.read().await.contains_key(name)
     }
 
     /// List the names of all configured external channels.
-    #[must_use]
-    pub fn external_channel_names(&self) -> Vec<&str> {
-        self.external_channels.keys().map(String::as_str).collect()
+    pub async fn external_channel_names(&self) -> Vec<String> {
+        self.external_channels
+            .read()
+            .await
+            .keys()
+            .cloned()
+            .collect()
     }
 }
 
@@ -303,23 +311,23 @@ mod tests {
         assert!(outcome.external_dispatched.is_empty());
     }
 
-    #[test]
-    fn has_external_channel_empty_router() {
+    #[tokio::test]
+    async fn has_external_channel_empty_router() {
         let router = NotificationRouter::empty();
-        assert!(!router.has_external_channel("ntfy"));
+        assert!(!router.has_external_channel("ntfy").await);
     }
 
-    #[test]
-    fn external_channel_names_empty() {
+    #[tokio::test]
+    async fn external_channel_names_empty() {
         let router = NotificationRouter::empty();
-        assert!(router.external_channel_names().is_empty());
+        assert!(router.external_channel_names().await.is_empty());
     }
 
-    #[test]
-    fn reload_channels_replaces_map() {
-        let mut router = NotificationRouter::empty();
+    #[tokio::test]
+    async fn reload_channels_replaces_map() {
+        let router = NotificationRouter::empty();
         assert!(
-            router.external_channel_names().is_empty(),
+            router.external_channel_names().await.is_empty(),
             "should start empty"
         );
 
@@ -334,13 +342,13 @@ mod tests {
             Box::new(InboxChannel::new(&inbox_dir, chrono_tz::UTC)),
         );
 
-        router.reload_channels(channels);
+        router.reload_channels(channels).await;
 
-        assert!(router.has_external_channel("test-inbox"));
-        assert_eq!(router.external_channel_names().len(), 1);
+        assert!(router.has_external_channel("test-inbox").await);
+        assert_eq!(router.external_channel_names().await.len(), 1);
 
         // Replace with empty map
-        router.reload_channels(HashMap::new());
-        assert!(router.external_channel_names().is_empty());
+        router.reload_channels(HashMap::new()).await;
+        assert!(router.external_channel_names().await.is_empty());
     }
 }

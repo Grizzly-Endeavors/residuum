@@ -183,6 +183,24 @@ impl WorkspaceLayout {
         self.root.join("CHANNELS.yml")
     }
 
+    /// Path to the workspace config directory (`root/config/`).
+    #[must_use]
+    pub fn config_dir(&self) -> PathBuf {
+        self.root.join("config")
+    }
+
+    /// Path to `config/mcp.json` — MCP server definitions.
+    #[must_use]
+    pub fn mcp_json(&self) -> PathBuf {
+        self.root.join("config/mcp.json")
+    }
+
+    /// Path to `config/channels.toml` — external notification channel definitions.
+    #[must_use]
+    pub fn channels_toml(&self) -> PathBuf {
+        self.root.join("config/channels.toml")
+    }
+
     /// Path to the background task transcript directory.
     ///
     /// Created on-demand when the first transcript is written, not at bootstrap.
@@ -217,6 +235,7 @@ impl WorkspaceLayout {
             self.archive_dir(),
             self.inbox_dir(),
             self.inbox_archive_dir(),
+            self.config_dir(),
         ]
     }
 }
@@ -303,6 +322,21 @@ mod tests {
             PathBuf::from("/tmp/ws/skills/residuum-getting-started"),
             "residuum_getting_started_skill_dir path"
         );
+        assert_eq!(
+            layout.config_dir(),
+            PathBuf::from("/tmp/ws/config"),
+            "config_dir path"
+        );
+        assert_eq!(
+            layout.mcp_json(),
+            PathBuf::from("/tmp/ws/config/mcp.json"),
+            "mcp_json path"
+        );
+        assert_eq!(
+            layout.channels_toml(),
+            PathBuf::from("/tmp/ws/config/channels.toml"),
+            "channels_toml path"
+        );
     }
 
     #[test]
@@ -334,7 +368,7 @@ mod tests {
     fn required_dirs_count() {
         let layout = WorkspaceLayout::new("/tmp/ws");
         let dirs = layout.required_dirs();
-        assert_eq!(dirs.len(), 10, "should have all required directories");
+        assert_eq!(dirs.len(), 11, "should have all required directories");
         assert!(
             dirs.contains(&PathBuf::from("/tmp/ws")),
             "root should be included"
@@ -346,6 +380,10 @@ mod tests {
         assert!(
             dirs.contains(&PathBuf::from("/tmp/ws/archive/inbox")),
             "inbox archive should be included"
+        );
+        assert!(
+            dirs.contains(&PathBuf::from("/tmp/ws/config")),
+            "config should be included"
         );
     }
 }
