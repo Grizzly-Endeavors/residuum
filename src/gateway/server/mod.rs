@@ -90,6 +90,56 @@ pub struct ServerCommand {
     pub reply_tx: Option<tokio::sync::oneshot::Sender<String>>,
 }
 
+/// Long-lived core that owns shared communication channels.
+///
+/// Created once at startup and persists across configuration reloads.
+/// The senders are cloned into adapters, the web server, and event loop state.
+pub(crate) struct GatewayCore {
+    pub inbound_tx: mpsc::Sender<RoutedMessage>,
+    pub broadcast_tx: broadcast::Sender<ServerMessage>,
+    pub reload_tx: tokio::sync::watch::Sender<ReloadSignal>,
+    pub command_tx: mpsc::Sender<ServerCommand>,
+    /// Dedicated shutdown signal for the HTTP server (not tied to reload).
+    pub shutdown_tx: tokio::sync::watch::Sender<bool>,
+    pub config_dir: std::path::PathBuf,
+}
+
+/// Receiver halves consumed by the event loop.
+pub(crate) struct CoreReceivers {
+    pub inbound: mpsc::Receiver<RoutedMessage>,
+    pub reload: tokio::sync::watch::Receiver<ReloadSignal>,
+    pub command: mpsc::Receiver<ServerCommand>,
+}
+
+impl GatewayCore {
+    /// Create a new gateway core with fresh channels.
+    ///
+    /// # Errors
+    /// Returns `ResiduumError` if the SIGTERM handler cannot be registered.
+    pub fn new(config_dir: std::path::PathBuf) -> (Self, CoreReceivers) {
+        let (inbound_tx, inbound_rx) = mpsc::channel::<RoutedMessage>(32);
+        let (broadcast_tx, _broadcast_rx) = broadcast::channel::<ServerMessage>(256);
+        let (reload_tx, reload_rx) = tokio::sync::watch::channel(ReloadSignal::None);
+        let (command_tx, command_rx) = mpsc::channel::<ServerCommand>(32);
+        let (shutdown_tx, _shutdown_rx) = tokio::sync::watch::channel(false);
+
+        let core = Self {
+            inbound_tx,
+            broadcast_tx,
+            reload_tx,
+            command_tx,
+            shutdown_tx,
+            config_dir,
+        };
+        let receivers = CoreReceivers {
+            inbound: inbound_rx,
+            reload: reload_rx,
+            command: command_rx,
+        };
+        (core, receivers)
+    }
+}
+
 /// Shared state for the axum WebSocket server.
 #[derive(Clone)]
 struct GatewayState {
@@ -131,6 +181,11 @@ struct GatewayRuntime {
     pulse_scheduler: PulseScheduler,
     /// SIGTERM signal listener for daemon stop support.
     sigterm: tokio::signal::unix::Signal,
+    /// Dedicated shutdown signal for the HTTP server.
+    shutdown_tx: tokio::sync::watch::Sender<bool>,
+    /// Path to the config directory (for backup/rollback during reload).
+    #[expect(dead_code, reason = "used by handle_root_reload in the next step")]
+    config_dir: std::path::PathBuf,
     /// Most recent reply handle from a user message. Used by wake turns to
     /// deliver responses to the channel the user last interacted from.
     last_reply: Option<Arc<dyn ReplyHandle>>,
@@ -173,26 +228,23 @@ fn apply_observe_action(
 pub async fn run_gateway(cfg: Config) -> Result<GatewayExit, ResiduumError> {
     let parts = startup::initialize(&cfg).await?;
 
-    let (inbound_tx, inbound_rx) = mpsc::channel::<RoutedMessage>(32);
-    let (broadcast_tx, _broadcast_rx) = broadcast::channel::<ServerMessage>(256);
-    let (reload_tx, reload_rx) = tokio::sync::watch::channel(ReloadSignal::None);
-    let (command_tx, command_rx) = mpsc::channel::<ServerCommand>(32);
+    // Create long-lived channels via GatewayCore
+    let (core, receivers) = GatewayCore::new(cfg.config_dir.clone());
 
-    // Clone senders for additional adapters before moving into GatewayState
-    let web_reload_tx = reload_tx.clone();
-    let discord_inbound_tx = inbound_tx.clone();
-    let webhook_inbound_tx = inbound_tx.clone();
-    let discord_reload_tx = reload_tx.clone();
-    let discord_command_tx = command_tx.clone();
-    let telegram_inbound_tx = inbound_tx.clone();
-    let telegram_reload_tx = reload_tx.clone();
-    let telegram_command_tx = command_tx.clone();
+    // Clone senders for adapters before moving receivers into the runtime
+    let discord_inbound_tx = core.inbound_tx.clone();
+    let webhook_inbound_tx = core.inbound_tx.clone();
+    let discord_reload_tx = core.reload_tx.clone();
+    let discord_command_tx = core.command_tx.clone();
+    let telegram_inbound_tx = core.inbound_tx.clone();
+    let telegram_reload_tx = core.reload_tx.clone();
+    let telegram_command_tx = core.command_tx.clone();
 
     let state = GatewayState {
-        inbound_tx,
-        broadcast_tx: broadcast_tx.clone(),
-        reload_tx,
-        command_tx,
+        inbound_tx: core.inbound_tx,
+        broadcast_tx: core.broadcast_tx.clone(),
+        reload_tx: core.reload_tx.clone(),
+        command_tx: core.command_tx,
         inbox_dir: parts.layout.inbox_dir(),
         tz: parts.tz,
     };
@@ -225,7 +277,7 @@ pub async fn run_gateway(cfg: Config) -> Result<GatewayExit, ResiduumError> {
         .merge(web::config_api_router(web::ConfigApiState {
             config_dir: cfg.config_dir.clone(),
             memory_dir: Some(parts.layout.memory_dir()),
-            reload_tx: Some(web_reload_tx),
+            reload_tx: Some(core.reload_tx.clone()),
             setup_done: None,
         }))
         .fallback(web::static_handler);
@@ -242,14 +294,12 @@ pub async fn run_gateway(cfg: Config) -> Result<GatewayExit, ResiduumError> {
         );
     }
 
-    let mut shutdown_rx = reload_rx.clone();
+    // HTTP server shuts down via dedicated shutdown channel (not reload)
+    let mut shutdown_rx = core.shutdown_tx.subscribe();
     let server_handle = tokio::spawn(async move {
         if let Err(e) = axum::serve(listener, app)
             .with_graceful_shutdown(async move {
-                shutdown_rx
-                    .wait_for(|v| *v != ReloadSignal::None)
-                    .await
-                    .ok();
+                shutdown_rx.wait_for(|v| *v).await.ok();
             })
             .await
         {
@@ -315,13 +365,15 @@ pub async fn run_gateway(cfg: Config) -> Result<GatewayExit, ResiduumError> {
         background_spawner: parts.background_spawner,
         background_result_rx: parts.background_result_rx,
         spawn_context: parts.spawn_context,
-        inbound_rx,
-        broadcast_tx,
-        reload_rx,
-        command_rx,
+        inbound_rx: receivers.inbound,
+        broadcast_tx: core.broadcast_tx,
+        reload_rx: receivers.reload,
+        command_rx: receivers.command,
         server_handle,
         pulse_scheduler: PulseScheduler::new(),
         sigterm,
+        shutdown_tx: core.shutdown_tx,
+        config_dir: core.config_dir,
         last_reply: None,
     };
 
@@ -739,7 +791,7 @@ async fn run_event_loop(mut rt: GatewayRuntime) -> GatewayExit {
             _ = rt.sigterm.recv() => {
                 tracing::info!("received SIGTERM, shutting down");
                 rt.mcp_registry.write().await.disconnect_all().await;
-                rt.server_handle.abort();
+                rt.shutdown_tx.send(true).ok();
                 break;
             }
 
@@ -756,7 +808,7 @@ async fn run_event_loop(mut rt: GatewayRuntime) -> GatewayExit {
                 let Some(routed) = msg else {
                     tracing::info!("inbound channel closed, shutting down");
                     rt.mcp_registry.write().await.disconnect_all().await;
-                    rt.server_handle.abort();
+                    rt.shutdown_tx.send(true).ok();
                     break;
                 };
 
