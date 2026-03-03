@@ -103,18 +103,26 @@ The orchestrating agent is responsible for running `cargo fmt`, `cargo clippy`, 
 
 ## Git Workflow
 
-**All changes go through pull requests.** Direct pushes to `main` are blocked by branch protection.
+The repo uses a **two-branch model**: `dev` for active development, `main` for releases.
 
-**Exception: docs-only changes** (markdown, LICENSE, `docs/` directory) can be committed and pushed directly to `main` — no branch or PR required. CI is configured with `paths-ignore` so these pushes won't trigger the workflow.
+- **`main`** — stable, release-ready code. Direct pushes blocked by branch protection.
+- **`dev`** — integration branch. Feature branches merge here via PR. Periodically promoted to `main` via a release PR.
 
-### Branch & PR Process
+**Exception: docs-only changes** (markdown, LICENSE, `docs/` directory) can be pushed directly to `main` — no branch or PR required. CI `paths-ignore` skips these.
 
-1. **Create a feature branch** from `main` with a descriptive name (e.g., `feat/add-telegram-retry`, `fix/memory-search-ranking`)
-2. **Commit frequently** with clear messages — pre-commit hooks enforce fmt, clippy, and tests on every commit
-3. **Push the branch** and open a PR against `main`
-4. **CI must pass** — the `Check` workflow (fmt, clippy, tests, dependency audit) is a required status check
-5. **1 approval required** for contributor PRs (admins may merge without review)
-6. **Stale reviews are dismissed** when new commits are pushed
+### Day-to-Day Work
+
+1. **Create a feature branch from `dev`** with a descriptive name (e.g., `feat/add-telegram-retry`, `fix/memory-search-ranking`)
+2. **Commit frequently** — pre-commit hooks enforce fmt, clippy, and tests
+3. **Push the branch** and open a PR **targeting `dev`**
+4. **CI must pass** before merge
+5. Iterate freely on `dev` — it's the scratchpad for in-progress work
+
+### Releasing to Main
+
+1. When `dev` is in a good state, open a PR from `dev` → `main`
+2. The PR summarizes all changes since the last release
+3. After merge, tag the release on `main`
 
 ### Branch Naming
 
