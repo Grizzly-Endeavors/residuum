@@ -772,7 +772,7 @@ async fn handle_action_main_turns(
 /// Back up `config.toml` → `config.toml.bak` before a reload attempt.
 ///
 /// Best-effort: logs a warning on failure but never panics.
-pub(crate) fn backup_config(config_dir: &std::path::Path) {
+pub fn backup_config(config_dir: &std::path::Path) {
     let src = config_dir.join("config.toml");
     let dst = config_dir.join("config.toml.bak");
     if let Err(err) = std::fs::copy(&src, &dst) {
@@ -785,7 +785,7 @@ pub(crate) fn backup_config(config_dir: &std::path::Path) {
 /// Restore `config.toml.bak` → `config.toml` after a failed reload.
 ///
 /// Returns `true` if the rollback succeeded.
-pub(crate) fn rollback_config(config_dir: &std::path::Path) -> bool {
+pub fn rollback_config(config_dir: &std::path::Path) -> bool {
     let backup = config_dir.join("config.toml.bak");
     let target = config_dir.join("config.toml");
     if !backup.exists() {
