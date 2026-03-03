@@ -40,7 +40,7 @@ pub use types::{
 ///
 /// All provider roles are fully resolved at load time. Consumers read fields
 /// directly — no fallback chains needed.
-#[derive(Clone)]
+#[derive(Clone, PartialEq)]
 pub struct Config {
     /// User's display name (what the agent calls them).
     pub name: Option<String>,

@@ -10,7 +10,7 @@ use tracing::{info, warn};
 use super::ModelError;
 
 /// Configuration for retry behavior.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct RetryConfig {
     /// Maximum number of retry attempts (0 = no retries).
     pub max_retries: u32,

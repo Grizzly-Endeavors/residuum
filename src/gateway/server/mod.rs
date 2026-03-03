@@ -8,6 +8,7 @@ mod actions;
 pub mod degraded;
 mod helpers;
 mod memory;
+mod reload;
 pub mod setup;
 mod spawn_helpers;
 mod startup;
@@ -153,6 +154,8 @@ struct GatewayState {
 
 /// All state needed by the main event loop.
 struct GatewayRuntime {
+    // Current running config (for diffing on reload)
+    cfg: Config,
     // Subsystems (from initialization)
     layout: WorkspaceLayout,
     tz: chrono_tz::Tz,
@@ -383,8 +386,9 @@ pub async fn run_gateway(cfg: Config) -> Result<GatewayExit, ResiduumError> {
         pulse_scheduler: PulseScheduler::new(),
         sigterm,
         shutdown_tx: core.shutdown_tx,
-        config_dir: core.config_dir,
+        config_dir: core.config_dir.clone(),
         last_reply: None,
+        cfg,
     };
 
     Ok(Box::pin(run_event_loop(rt)).await)
@@ -778,68 +782,48 @@ async fn handle_action_main_turns(
     run_wake_turn_handler(rt, observe_deadline).await
 }
 
-/// Back up `config.toml` → `config.toml.bak` before a reload attempt.
+/// Back up `config.toml` and `providers.toml` before a reload attempt.
 ///
 /// Best-effort: logs a warning on failure but never panics.
 pub fn backup_config(config_dir: &std::path::Path) {
-    let src = config_dir.join("config.toml");
-    let dst = config_dir.join("config.toml.bak");
-    if let Err(err) = std::fs::copy(&src, &dst) {
-        tracing::warn!(error = %err, "failed to back up config.toml before reload");
-    } else {
-        tracing::debug!("config.toml backed up to config.toml.bak");
+    for name in &["config.toml", "providers.toml"] {
+        let src = config_dir.join(name);
+        let dst = config_dir.join(format!("{name}.bak"));
+        if src.exists() {
+            if let Err(err) = std::fs::copy(&src, &dst) {
+                tracing::warn!(file = %name, error = %err, "failed to back up before reload");
+            } else {
+                tracing::debug!(file = %name, "backed up to .bak");
+            }
+        }
     }
 }
 
-/// Restore `config.toml.bak` → `config.toml` after a failed reload.
+/// Restore `.bak` files for `config.toml` and `providers.toml` after a failed reload.
 ///
-/// Returns `true` if the rollback succeeded.
+/// Returns `true` if at least one file was restored successfully.
 pub fn rollback_config(config_dir: &std::path::Path) -> bool {
-    let backup = config_dir.join("config.toml.bak");
-    let target = config_dir.join("config.toml");
-    if !backup.exists() {
-        tracing::warn!("no config backup found, cannot rollback");
-        return false;
-    }
-    match std::fs::copy(&backup, &target) {
-        Ok(_) => {
-            tracing::info!("config.toml restored from backup");
-            true
+    let mut any_restored = false;
+    for name in &["config.toml", "providers.toml"] {
+        let backup = config_dir.join(format!("{name}.bak"));
+        let target = config_dir.join(name);
+        if !backup.exists() {
+            continue;
         }
-        Err(err) => {
-            tracing::warn!(error = %err, "failed to restore config.toml from backup");
-            false
-        }
-    }
-}
-
-/// Handle an in-place root config reload.
-///
-/// Backs up the current config, attempts to load the new one, and broadcasts
-/// the result. On failure, rolls back and notifies clients.
-fn handle_root_reload(rt: &mut GatewayRuntime) {
-    tracing::info!("handling root config reload in-place");
-    backup_config(&rt.config_dir);
-    match Config::load() {
-        Ok(_new_cfg) => {
-            // Phase 5 adds granular subsystem updates here
-            rt.broadcast_tx
-                .send(ServerMessage::Notice {
-                    message: "configuration reloaded successfully".to_string(),
-                })
-                .ok();
-            tracing::info!("configuration reloaded successfully");
-        }
-        Err(err) => {
-            tracing::warn!(error = %err, "config reload failed, keeping current config");
-            rollback_config(&rt.config_dir);
-            rt.broadcast_tx
-                .send(ServerMessage::Notice {
-                    message: format!("config reload failed (keeping current config): {err}"),
-                })
-                .ok();
+        match std::fs::copy(&backup, &target) {
+            Ok(_) => {
+                tracing::info!(file = %name, "restored from backup");
+                any_restored = true;
+            }
+            Err(err) => {
+                tracing::warn!(file = %name, error = %err, "failed to restore from backup");
+            }
         }
     }
+    if !any_restored {
+        tracing::warn!("no config backups found, cannot rollback");
+    }
+    any_restored
 }
 
 /// Handle a workspace config reload (mcp.json or channels.toml changed).
@@ -919,7 +903,7 @@ async fn run_event_loop(mut rt: GatewayRuntime) -> GatewayExit {
                 match signal {
                     ReloadSignal::None => {}
                     ReloadSignal::Root => {
-                        handle_root_reload(&mut rt);
+                        reload::handle_root_reload(&mut rt).await;
                     }
                     ReloadSignal::Workspace => {
                         handle_workspace_reload(&mut rt).await;

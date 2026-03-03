@@ -13,7 +13,7 @@ use super::constants::{
 use super::provider::ProviderSpec;
 
 /// Validated gateway configuration.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct GatewayConfig {
     /// Address to bind the WebSocket server to.
     pub bind: String,
@@ -41,7 +41,7 @@ impl GatewayConfig {
 /// Validated memory subsystem configuration (thresholds only).
 ///
 /// Provider assignments for observer/reflector are on `Config` directly.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct MemoryConfig {
     /// Token threshold before the observer fires.
     pub observer_threshold_tokens: usize,
@@ -68,7 +68,7 @@ impl Default for MemoryConfig {
 }
 
 /// Validated hybrid search configuration.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct SearchConfig {
     /// Weight for vector similarity scores in hybrid merge (0.0–1.0).
     pub vector_weight: f64,
@@ -98,21 +98,21 @@ impl Default for SearchConfig {
 }
 
 /// Validated Discord bot configuration.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct DiscordConfig {
     /// Bot token for the Discord API.
     pub token: String,
 }
 
 /// Validated Telegram bot configuration.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct TelegramConfig {
     /// Bot token for the Telegram API.
     pub token: String,
 }
 
 /// Validated webhook endpoint configuration.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct WebhookConfig {
     /// Whether the webhook endpoint is enabled.
     pub enabled: bool,
@@ -121,7 +121,7 @@ pub struct WebhookConfig {
 }
 
 /// Validated skills subsystem configuration.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct SkillsConfig {
     /// Directories to scan for skills (resolved, expanded paths).
     pub dirs: Vec<PathBuf>,
@@ -130,7 +130,7 @@ pub struct SkillsConfig {
 /// Validated agent ability gates.
 ///
 /// Controls what the agent is allowed to modify at runtime.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct AgentAbilitiesConfig {
     /// Whether the agent can add/remove MCP servers.
     pub modify_mcp: bool,
@@ -148,7 +148,7 @@ impl Default for AgentAbilitiesConfig {
 }
 
 /// Validated background task configuration.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct BackgroundConfig {
     /// Maximum number of concurrent background tasks.
     pub max_concurrent: usize,
@@ -172,7 +172,7 @@ impl Default for BackgroundConfig {
 ///
 /// Each tier can be explicitly assigned a model chain (failover). Unset tiers
 /// fall back to the next tier up, ultimately falling back to main.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct BackgroundModelsConfig {
     /// Small/fast model chain for simple tasks.
     pub small: Option<Vec<ProviderSpec>>,
