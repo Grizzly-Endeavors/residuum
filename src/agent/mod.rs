@@ -83,6 +83,16 @@ impl Agent {
         &self.mcp_registry
     }
 
+    /// Replace the model provider in-place (e.g. after a config reload).
+    pub fn swap_provider(&mut self, provider: Box<dyn ModelProvider>) {
+        tracing::info!(
+            old_model = self.provider.model_name(),
+            new_model = provider.model_name(),
+            "swapping model provider"
+        );
+        self.provider = provider;
+    }
+
     /// Reload observations from the observation log file.
     ///
     /// # Errors

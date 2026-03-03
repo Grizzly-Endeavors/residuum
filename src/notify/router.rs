@@ -37,6 +37,17 @@ impl NotificationRouter {
         }
     }
 
+    /// Replace external channels in-place (e.g. after a config reload).
+    pub fn reload_channels(&mut self, new_channels: HashMap<String, Box<dyn NotificationChannel>>) {
+        let old_count = self.external_channels.len();
+        self.external_channels = new_channels;
+        tracing::info!(
+            old_count,
+            new_count = self.external_channels.len(),
+            "notification channels reloaded"
+        );
+    }
+
     /// Deliver a notification directly to the inbox channel, bypassing routing.
     ///
     /// Returns `true` if delivery succeeded, `false` if no inbox is configured
