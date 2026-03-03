@@ -182,7 +182,6 @@ struct GatewayRuntime {
     reload_rx: tokio::sync::watch::Receiver<ReloadSignal>,
     command_rx: mpsc::Receiver<ServerCommand>,
     /// Kept alive so the HTTP server task isn't dropped; shut down via `shutdown_tx`.
-    #[expect(dead_code, reason = "held to keep the server task alive")]
     server_handle: tokio::task::JoinHandle<()>,
     pulse_scheduler: PulseScheduler,
     /// SIGTERM signal listener for daemon stop support.
@@ -194,6 +193,15 @@ struct GatewayRuntime {
     /// Most recent reply handle from a user message. Used by wake turns to
     /// deliver responses to the channel the user last interacted from.
     last_reply: Option<Arc<dyn ReplyHandle>>,
+    // Adapter lifecycle handles
+    discord_handle: Option<tokio::task::JoinHandle<()>>,
+    telegram_handle: Option<tokio::task::JoinHandle<()>>,
+    discord_shutdown_tx: Option<tokio::sync::watch::Sender<bool>>,
+    telegram_shutdown_tx: Option<tokio::sync::watch::Sender<bool>>,
+    /// Cloned core senders for rebuilding adapters on reload.
+    inbound_tx: mpsc::Sender<RoutedMessage>,
+    reload_tx: tokio::sync::watch::Sender<ReloadSignal>,
+    command_tx: mpsc::Sender<ServerCommand>,
 }
 
 /// Apply an `ObserveAction` to the current observe deadline.
@@ -218,6 +226,37 @@ fn apply_observe_action(
     }
 }
 
+/// Build the axum `Router` for the HTTP/WS server.
+///
+/// Extracted for reuse during gateway port rebinding on config reload.
+fn build_gateway_app(
+    state: GatewayState,
+    cfg: &Config,
+    config_api_state: web::ConfigApiState,
+) -> axum::Router {
+    let webhook_router = cfg.webhook.enabled.then(|| {
+        let webhook_state = crate::channels::webhook::WebhookState {
+            inbound_tx: state.inbound_tx.clone(),
+            secret: cfg.webhook.secret.clone(),
+        };
+        axum::Router::new()
+            .route(
+                "/webhook",
+                axum::routing::post(crate::channels::webhook::webhook_handler),
+            )
+            .with_state(webhook_state)
+    });
+
+    let mut app = axum::Router::new()
+        .route("/ws", get(ws_handler))
+        .with_state(state);
+    if let Some(wh) = webhook_router {
+        app = app.merge(wh);
+    }
+    app.merge(web::config_api_router(config_api_state))
+        .fallback(web::static_handler)
+}
+
 /// Start the WebSocket gateway server and run the main event loop.
 ///
 /// Initializes all subsystems, spawns the axum WebSocket server, then enters
@@ -236,7 +275,7 @@ pub async fn run_gateway(cfg: Config) -> Result<GatewayExit, ResiduumError> {
     // Create long-lived channels via GatewayCore
     let (core, receivers) = GatewayCore::new(cfg.config_dir.clone());
 
-    // Clone senders for adapters before moving receivers into the runtime
+    // Clone senders for adapters and runtime before moving into GatewayState
     let discord_inbound_tx = core.inbound_tx.clone();
     let webhook_inbound_tx = core.inbound_tx.clone();
     let discord_reload_tx = core.reload_tx.clone();
@@ -244,6 +283,10 @@ pub async fn run_gateway(cfg: Config) -> Result<GatewayExit, ResiduumError> {
     let telegram_inbound_tx = core.inbound_tx.clone();
     let telegram_reload_tx = core.reload_tx.clone();
     let telegram_command_tx = core.command_tx.clone();
+    // Clones kept in GatewayRuntime for rebuilding adapters on reload
+    let rt_inbound_tx = core.inbound_tx.clone();
+    let rt_reload_tx = core.reload_tx.clone();
+    let rt_command_tx = core.command_tx.clone();
 
     let state = GatewayState {
         inbound_tx: core.inbound_tx,
@@ -254,38 +297,14 @@ pub async fn run_gateway(cfg: Config) -> Result<GatewayExit, ResiduumError> {
         tz: parts.tz,
     };
 
-    let webhook_router = if cfg.webhook.enabled {
-        let webhook_state = crate::channels::webhook::WebhookState {
-            inbound_tx: webhook_inbound_tx,
-            secret: cfg.webhook.secret.clone(),
-        };
-        Some(
-            axum::Router::new()
-                .route(
-                    "/webhook",
-                    axum::routing::post(crate::channels::webhook::webhook_handler),
-                )
-                .with_state(webhook_state),
-        )
-    } else {
-        drop(webhook_inbound_tx);
-        None
+    drop(webhook_inbound_tx);
+    let config_api_state = web::ConfigApiState {
+        config_dir: cfg.config_dir.clone(),
+        memory_dir: Some(parts.layout.memory_dir()),
+        reload_tx: Some(core.reload_tx.clone()),
+        setup_done: None,
     };
-
-    let mut app = axum::Router::new()
-        .route("/ws", get(ws_handler))
-        .with_state(state);
-    if let Some(wh) = webhook_router {
-        app = app.merge(wh);
-    }
-    app = app
-        .merge(web::config_api_router(web::ConfigApiState {
-            config_dir: cfg.config_dir.clone(),
-            memory_dir: Some(parts.layout.memory_dir()),
-            reload_tx: Some(core.reload_tx.clone()),
-            setup_done: None,
-        }))
-        .fallback(web::static_handler);
+    let app = build_gateway_app(state, &cfg, config_api_state);
 
     let addr = cfg.gateway.addr();
     let listener = tokio::net::TcpListener::bind(&addr)
@@ -313,7 +332,9 @@ pub async fn run_gateway(cfg: Config) -> Result<GatewayExit, ResiduumError> {
     });
 
     // Spawn Discord adapter if configured
+    let (mut discord_handle, mut discord_shutdown_tx) = (None, None);
     if let Some(ref discord_cfg) = cfg.discord {
+        let (tx, rx) = tokio::sync::watch::channel(false);
         let discord = crate::channels::discord::DiscordChannel::new(
             discord_cfg.clone(),
             discord_inbound_tx,
@@ -321,17 +342,21 @@ pub async fn run_gateway(cfg: Config) -> Result<GatewayExit, ResiduumError> {
             discord_reload_tx,
             discord_command_tx,
             parts.tz,
+            rx,
         );
-        tokio::spawn(async move {
+        discord_handle = Some(tokio::spawn(async move {
             if let Err(e) = discord.start().await {
                 tracing::error!(error = %e, "discord channel failed");
             }
-        });
+        }));
+        discord_shutdown_tx = Some(tx);
         tracing::info!("discord channel started (DM-only mode)");
     }
 
     // Spawn Telegram adapter if configured
+    let (mut telegram_handle, mut telegram_shutdown_tx) = (None, None);
     if let Some(ref telegram_cfg) = cfg.telegram {
+        let (tx, rx) = tokio::sync::watch::channel(false);
         let telegram = crate::channels::telegram::TelegramChannel::new(
             telegram_cfg.clone(),
             telegram_inbound_tx,
@@ -339,12 +364,14 @@ pub async fn run_gateway(cfg: Config) -> Result<GatewayExit, ResiduumError> {
             telegram_reload_tx,
             telegram_command_tx,
             parts.tz,
+            rx,
         );
-        tokio::spawn(async move {
+        telegram_handle = Some(tokio::spawn(async move {
             if let Err(e) = telegram.start().await {
                 tracing::error!(error = %e, "telegram channel failed");
             }
-        });
+        }));
+        telegram_shutdown_tx = Some(tx);
         tracing::info!("telegram channel started (DM-only mode)");
     }
 
@@ -388,6 +415,13 @@ pub async fn run_gateway(cfg: Config) -> Result<GatewayExit, ResiduumError> {
         shutdown_tx: core.shutdown_tx,
         config_dir: core.config_dir.clone(),
         last_reply: None,
+        discord_handle,
+        telegram_handle,
+        discord_shutdown_tx,
+        telegram_shutdown_tx,
+        inbound_tx: rt_inbound_tx,
+        reload_tx: rt_reload_tx,
+        command_tx: rt_command_tx,
         cfg,
     };
 
@@ -893,6 +927,12 @@ async fn run_event_loop(mut rt: GatewayRuntime) -> GatewayExit {
             _ = rt.sigterm.recv() => {
                 tracing::info!("received SIGTERM, shutting down");
                 rt.mcp_registry.write().await.disconnect_all().await;
+                if let Some(tx) = rt.discord_shutdown_tx.take() {
+                    tx.send(true).ok();
+                }
+                if let Some(tx) = rt.telegram_shutdown_tx.take() {
+                    tx.send(true).ok();
+                }
                 rt.shutdown_tx.send(true).ok();
                 break;
             }

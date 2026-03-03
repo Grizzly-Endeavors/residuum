@@ -20,7 +20,8 @@ use super::reply::TelegramReplyHandle;
 /// Run the Telegram long-polling loop.
 ///
 /// Connects to the Telegram API, verifies the bot token, then enters an
-/// infinite polling loop that dispatches messages to the agent.
+/// infinite polling loop that dispatches messages to the agent. Returns
+/// cleanly when the shutdown signal fires.
 ///
 /// # Errors
 /// Returns an error if the initial `get_me` verification fails.
@@ -31,6 +32,7 @@ pub(super) async fn run_telegram_polling(
     reload_tx: tokio::sync::watch::Sender<ReloadSignal>,
     command_tx: mpsc::Sender<ServerCommand>,
     tz: chrono_tz::Tz,
+    mut shutdown_rx: tokio::sync::watch::Receiver<bool>,
 ) -> anyhow::Result<()> {
     let bot = Bot::new(token);
     let inbox_dir = workspace_dir.join("inbox");
@@ -46,12 +48,20 @@ pub(super) async fn run_telegram_polling(
     let mut offset: i32 = 0;
 
     loop {
-        let updates = match bot.get_updates().offset(offset).timeout(30).await {
-            Ok(updates) => updates,
-            Err(e) => {
-                tracing::warn!(error = %e, "telegram polling error, retrying in 5s");
-                tokio::time::sleep(Duration::from_secs(5)).await;
-                continue;
+        let updates = tokio::select! {
+            result = bot.get_updates().offset(offset).timeout(30) => {
+                match result {
+                    Ok(updates) => updates,
+                    Err(e) => {
+                        tracing::warn!(error = %e, "telegram polling error, retrying in 5s");
+                        tokio::time::sleep(Duration::from_secs(5)).await;
+                        continue;
+                    }
+                }
+            }
+            _ = shutdown_rx.changed() => {
+                tracing::info!("telegram adapter received shutdown signal");
+                return Ok(());
             }
         };
 
