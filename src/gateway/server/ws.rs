@@ -7,9 +7,9 @@ use axum::extract::ws::{Message as WsMessage, WebSocket};
 use axum::response::IntoResponse;
 use futures_util::{SinkExt, StreamExt};
 
-use crate::channels::types::{InboundMessage, MessageOrigin, RoutedMessage};
-use crate::channels::websocket::WsReplyHandle;
 use crate::gateway::protocol::{ClientMessage, ServerMessage};
+use crate::interfaces::types::{InboundMessage, MessageOrigin, RoutedMessage};
+use crate::interfaces::websocket::WsReplyHandle;
 
 use super::GatewayState;
 
@@ -79,7 +79,7 @@ async fn handle_connection(socket: WebSocket, state: GatewayState) {
         match client_msg {
             ClientMessage::SendMessage { id, content } => {
                 let origin = MessageOrigin {
-                    channel: "websocket".to_string(),
+                    interface: "websocket".to_string(),
                     sender_name: "ws-client".to_string(),
                     sender_id: "ws-client".to_string(),
                 };

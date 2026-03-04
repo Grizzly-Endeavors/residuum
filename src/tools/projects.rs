@@ -79,6 +79,7 @@ impl Tool for ProjectActivateTool {
                 let project_root = active.project_root.clone();
                 let tools_list = active.frontmatter.tools.clone();
                 let project_name = active.name.clone();
+                let mut warnings: Vec<String> = Vec::new();
                 let mcp_servers = if active.frontmatter.mcp_servers.is_empty() {
                     Vec::new()
                 } else {
@@ -92,6 +93,7 @@ impl Tool for ProjectActivateTool {
                         Ok(resolved) => resolved,
                         Err(e) => {
                             tracing::warn!(project = %project_name, error = %e, "failed to resolve mcp server references");
+                            warnings.push(format!("warning: {e}"));
                             Vec::new()
                         }
                     }
@@ -120,6 +122,9 @@ impl Tool for ProjectActivateTool {
                     .await;
                 for (server_name, err) in &mcp_report.failures {
                     tracing::warn!(server = %server_name, error = %err, "mcp server failed to start");
+                    warnings.push(format!(
+                        "warning: mcp server '{server_name}' failed to start: {err}"
+                    ));
                 }
                 if mcp_report.started > 0 || mcp_report.stopped > 0 {
                     tracing::info!(
@@ -139,7 +144,12 @@ impl Tool for ProjectActivateTool {
                 {
                     tracing::warn!(error = %e, "failed to rescan skills after project activation");
                 }
-                Ok(ToolResult::success(manifest_summary))
+                let output = if warnings.is_empty() {
+                    manifest_summary
+                } else {
+                    format!("{manifest_summary}\n{}", warnings.join("\n"))
+                };
+                Ok(ToolResult::success(output))
             }
             Err(e) => Ok(ToolResult::error(e.to_string())),
         }

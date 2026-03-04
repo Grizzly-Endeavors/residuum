@@ -27,9 +27,9 @@ use crate::agent::context::{ProjectsContext, PromptContext, SkillsContext, Subag
 use crate::agent::interrupt::Interrupt;
 use crate::background::BackgroundTaskSpawner;
 use crate::background::types::{BackgroundResult, ResultRouting, format_background_result};
-use crate::channels::types::{ReplyHandle, RoutedMessage};
 use crate::config::Config;
 use crate::error::ResiduumError;
+use crate::interfaces::types::{ReplyHandle, RoutedMessage};
 use crate::mcp::SharedMcpRegistry;
 use crate::memory::observer::{ObserveAction, Observer};
 use crate::memory::reflector::Reflector;
@@ -199,6 +199,8 @@ struct GatewayRuntime {
     inbound_tx: mpsc::Sender<RoutedMessage>,
     reload_tx: tokio::sync::watch::Sender<ReloadSignal>,
     command_tx: mpsc::Sender<ServerCommand>,
+    /// Shared path policy for updating blocked paths on reload.
+    path_policy: crate::tools::SharedPathPolicy,
 }
 
 /// Apply an `ObserveAction` to the current observe deadline.
@@ -232,14 +234,14 @@ fn build_gateway_app(
     config_api_state: web::ConfigApiState,
 ) -> axum::Router {
     let webhook_router = cfg.webhook.enabled.then(|| {
-        let webhook_state = crate::channels::webhook::WebhookState {
+        let webhook_state = crate::interfaces::webhook::WebhookState {
             inbound_tx: state.inbound_tx.clone(),
             secret: cfg.webhook.secret.clone(),
         };
         axum::Router::new()
             .route(
                 "/webhook",
-                axum::routing::post(crate::channels::webhook::webhook_handler),
+                axum::routing::post(crate::interfaces::webhook::webhook_handler),
             )
             .with_state(webhook_state)
     });
@@ -301,9 +303,11 @@ pub async fn run_gateway(cfg: Config) -> Result<GatewayExit, ResiduumError> {
     drop(webhook_inbound_tx);
     let config_api_state = web::ConfigApiState {
         config_dir: cfg.config_dir.clone(),
+        workspace_dir: parts.layout.root().to_path_buf(),
         memory_dir: Some(parts.layout.memory_dir()),
         reload_tx: Some(core.reload_tx.clone()),
         setup_done: None,
+        secret_lock: Arc::new(tokio::sync::Mutex::new(())),
     };
     let app = build_gateway_app(state, &cfg, config_api_state);
 
@@ -336,7 +340,7 @@ pub async fn run_gateway(cfg: Config) -> Result<GatewayExit, ResiduumError> {
     let (mut discord_handle, mut discord_shutdown_tx) = (None, None);
     if let Some(ref discord_cfg) = cfg.discord {
         let (tx, rx) = tokio::sync::watch::channel(false);
-        let discord = crate::channels::discord::DiscordChannel::new(
+        let discord = crate::interfaces::discord::DiscordInterface::new(
             discord_cfg.clone(),
             discord_inbound_tx,
             cfg.workspace_dir.clone(),
@@ -347,18 +351,18 @@ pub async fn run_gateway(cfg: Config) -> Result<GatewayExit, ResiduumError> {
         );
         discord_handle = Some(tokio::spawn(async move {
             if let Err(e) = discord.start().await {
-                tracing::error!(error = %e, "discord channel failed");
+                tracing::error!(error = %e, "discord interface failed");
             }
         }));
         discord_shutdown_tx = Some(tx);
-        tracing::info!("discord channel started (DM-only mode)");
+        tracing::info!("discord interface started (DM-only mode)");
     }
 
     // Spawn Telegram adapter if configured
     let (mut telegram_handle, mut telegram_shutdown_tx) = (None, None);
     if let Some(ref telegram_cfg) = cfg.telegram {
         let (tx, rx) = tokio::sync::watch::channel(false);
-        let telegram = crate::channels::telegram::TelegramChannel::new(
+        let telegram = crate::interfaces::telegram::TelegramInterface::new(
             telegram_cfg.clone(),
             telegram_inbound_tx,
             cfg.workspace_dir.clone(),
@@ -369,11 +373,11 @@ pub async fn run_gateway(cfg: Config) -> Result<GatewayExit, ResiduumError> {
         );
         telegram_handle = Some(tokio::spawn(async move {
             if let Err(e) = telegram.start().await {
-                tracing::error!(error = %e, "telegram channel failed");
+                tracing::error!(error = %e, "telegram interface failed");
             }
         }));
         telegram_shutdown_tx = Some(tx);
-        tracing::info!("telegram channel started (DM-only mode)");
+        tracing::info!("telegram interface started (DM-only mode)");
     }
 
     let sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
@@ -423,6 +427,7 @@ pub async fn run_gateway(cfg: Config) -> Result<GatewayExit, ResiduumError> {
         inbound_tx: rt_inbound_tx,
         reload_tx: rt_reload_tx,
         command_tx: rt_command_tx,
+        path_policy: parts.path_policy,
         cfg,
     };
 
@@ -965,7 +970,7 @@ async fn run_event_loop(mut rt: GatewayRuntime) -> GatewayExit {
                 let origin = routed.message.origin.clone();
 
                 // TurnStarted is WS-specific protocol sugar — only broadcast for WS turns
-                if origin.channel == "websocket"
+                if origin.interface == "websocket"
                     && rt.broadcast_tx.send(ServerMessage::TurnStarted {
                         reply_to: reply_id.clone(),
                     }).is_err()
@@ -1256,18 +1261,18 @@ mod tests {
         // Send a message through inbound before reload
         assert!(
             core.inbound_tx
-                .send(crate::channels::types::RoutedMessage {
-                    message: crate::channels::types::InboundMessage {
+                .send(crate::interfaces::types::RoutedMessage {
+                    message: crate::interfaces::types::InboundMessage {
                         id: "test-1".to_string(),
                         content: "hello".to_string(),
-                        origin: crate::channels::types::MessageOrigin {
-                            channel: "test".to_string(),
+                        origin: crate::interfaces::types::MessageOrigin {
+                            interface: "test".to_string(),
                             sender_name: "tester".to_string(),
                             sender_id: "t1".to_string(),
                         },
                         timestamp: chrono::Utc::now(),
                     },
-                    reply: std::sync::Arc::new(crate::channels::websocket::WsReplyHandle::new(
+                    reply: std::sync::Arc::new(crate::interfaces::websocket::WsReplyHandle::new(
                         core.broadcast_tx.clone(),
                         "test-1".to_string(),
                     ),),

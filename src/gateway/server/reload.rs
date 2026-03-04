@@ -231,9 +231,11 @@ pub(super) async fn handle_root_reload(rt: &mut GatewayRuntime) {
                 };
                 let config_api_state = super::web::ConfigApiState {
                     config_dir: rt.config_dir.clone(),
+                    workspace_dir: rt.layout.root().to_path_buf(),
                     memory_dir: Some(rt.layout.memory_dir()),
                     reload_tx: Some(rt.reload_tx.clone()),
                     setup_done: None,
+                    secret_lock: std::sync::Arc::new(tokio::sync::Mutex::new(())),
                 };
                 let app = super::build_gateway_app(state, &new_cfg, config_api_state);
 
@@ -289,7 +291,7 @@ pub(super) async fn handle_root_reload(rt: &mut GatewayRuntime) {
         // Start new adapter if token is configured
         if let Some(ref discord_cfg) = new_cfg.discord {
             let (tx, rx) = tokio::sync::watch::channel(false);
-            let discord = crate::channels::discord::DiscordChannel::new(
+            let discord = crate::interfaces::discord::DiscordInterface::new(
                 discord_cfg.clone(),
                 rt.inbound_tx.clone(),
                 new_cfg.workspace_dir.clone(),
@@ -300,7 +302,7 @@ pub(super) async fn handle_root_reload(rt: &mut GatewayRuntime) {
             );
             rt.discord_handle = Some(tokio::spawn(async move {
                 if let Err(e) = discord.start().await {
-                    tracing::error!(error = %e, "discord channel failed after reload");
+                    tracing::error!(error = %e, "discord interface failed after reload");
                 }
             }));
             rt.discord_shutdown_tx = Some(tx);
@@ -330,7 +332,7 @@ pub(super) async fn handle_root_reload(rt: &mut GatewayRuntime) {
         // Start new adapter if token is configured
         if let Some(ref telegram_cfg) = new_cfg.telegram {
             let (tx, rx) = tokio::sync::watch::channel(false);
-            let telegram = crate::channels::telegram::TelegramChannel::new(
+            let telegram = crate::interfaces::telegram::TelegramInterface::new(
                 telegram_cfg.clone(),
                 rt.inbound_tx.clone(),
                 new_cfg.workspace_dir.clone(),
@@ -341,7 +343,7 @@ pub(super) async fn handle_root_reload(rt: &mut GatewayRuntime) {
             );
             rt.telegram_handle = Some(tokio::spawn(async move {
                 if let Err(e) = telegram.start().await {
-                    tracing::error!(error = %e, "telegram channel failed after reload");
+                    tracing::error!(error = %e, "telegram interface failed after reload");
                 }
             }));
             rt.telegram_shutdown_tx = Some(tx);
@@ -387,6 +389,27 @@ pub(super) async fn handle_root_reload(rt: &mut GatewayRuntime) {
         } else {
             tracing::info!("skills rescanned");
         }
+    }
+
+    // ── Agent ability gates ──────────────────────────────────────────────
+    if diff.agent_changed {
+        let mut blocked: Vec<std::path::PathBuf> = vec![
+            new_cfg.config_dir.join("config.toml"),
+            new_cfg.config_dir.join("config.example.toml"),
+            new_cfg.config_dir.join("providers.toml"),
+            new_cfg.config_dir.join("providers.example.toml"),
+        ];
+        if !new_cfg.agent.modify_mcp {
+            blocked.push(rt.layout.mcp_json());
+        }
+        if !new_cfg.agent.modify_channels {
+            blocked.push(rt.layout.channels_toml());
+        }
+        rt.path_policy
+            .write()
+            .await
+            .set_blocked_paths(blocked.into_iter().collect());
+        tracing::info!("agent ability gates updated");
     }
 
     // ── Store new config ────────────────────────────────────────────────

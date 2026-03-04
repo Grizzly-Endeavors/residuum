@@ -7,9 +7,9 @@
 
 mod bootstrap;
 mod constants;
-mod deserialize;
+pub(crate) mod deserialize;
 mod provider;
-mod resolve;
+pub(crate) mod resolve;
 pub(crate) mod secrets;
 mod types;
 pub mod wizard;

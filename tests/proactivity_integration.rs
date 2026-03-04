@@ -17,8 +17,8 @@ mod proactivity_integration {
     use residuum::agent::Agent;
     use residuum::agent::context::PromptContext;
     use residuum::background::types::{Execution, ResultRouting};
-    use residuum::channels::null::NullReplyHandle;
     use residuum::config::BackgroundModelTier;
+    use residuum::interfaces::null::NullReplyHandle;
     use residuum::models::{
         CompletionOptions, Message, ModelError, ModelProvider, ModelResponse, Role, ToolDefinition,
     };

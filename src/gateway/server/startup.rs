@@ -64,6 +64,7 @@ pub(super) struct GatewayComponents {
     pub(super) background_spawner: Arc<BackgroundTaskSpawner>,
     pub(super) background_result_rx: mpsc::Receiver<BackgroundResult>,
     pub(super) spawn_context: Arc<SpawnContext>,
+    pub(super) path_policy: crate::tools::SharedPathPolicy,
 }
 
 /// Model providers and memory pipeline observers built from config.
@@ -402,6 +403,7 @@ pub(super) async fn initialize(cfg: &Config) -> Result<GatewayComponents, Residu
         tz,
         valid_external_channels.clone(),
     );
+    let path_policy_for_runtime = Arc::clone(&path_policy);
     tools.register_project_tools(
         Arc::clone(&project_state),
         path_policy,
@@ -492,6 +494,7 @@ pub(super) async fn initialize(cfg: &Config) -> Result<GatewayComponents, Residu
         background_spawner,
         background_result_rx: bg_result_rx,
         spawn_context,
+        path_policy: path_policy_for_runtime,
     })
 }
 

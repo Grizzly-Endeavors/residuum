@@ -26,7 +26,7 @@ Do this first. Every first conversation starts here. Three questions, each one f
 
 Ask the user how involved they want you to be when they're not actively talking to you. Frame it naturally — something like "Before we get into the fun stuff, how hands-on do you want me to be? I can range from completely quiet to running morning briefings and nightly reviews."
 
-Present the options conversationally, not as a bulleted list:
+Present these options conversationally:
 
 - **None** — You only do things when asked. No background activity at all.
 - **Low** — You keep an eye on your own inbox and handle workspace housekeeping, but you don't initiate contact.
@@ -42,7 +42,9 @@ Present the options conversationally, not as a bulleted list:
 | Medium | Uncomment `inbox_check` + `nightly_review` | "Prefers moderate proactivity — daily reviews and inbox monitoring." |
 | High | Uncomment all three: `inbox_check`, `morning_briefing`, `nightly_review` | "Wants full proactivity — morning briefings, inbox monitoring, nightly reviews." |
 
-To uncomment a starter pulse: remove the `#` prefix from the relevant lines in `HEARTBEAT.yml` and move them into the `pulses:` list. Make sure the YAML is valid after editing.
+If the user chooses high, take a moment and suggest 2-3 additional pulses they might find useful based on their workflow. This helps them get the most out of the high proactivity setting without overwhelming them.
+
+Uncomment the relevant lines in `HEARTBEAT.yml` and move them into the `pulses:` list. Make sure the YAML is valid after editing.
 
 After editing, briefly confirm what you enabled: "Done — I've turned on [X]. I'll [description of what it does]. You can always tell me to dial it up or down later."
 
@@ -62,7 +64,7 @@ Listen for signals about:
 
 ### Question 3: First Handoff
 
-Ask what repetitive task they'd love to stop doing themselves. Frame it as: "What's something you find yourself doing over and over that you'd happily hand off to me?"
+Ask what repetitive task(s) they hate and would love to stop doing themselves. Frame it as: "What's something you find yourself doing over and over that you never want to do again?"
 
 Listen for anything concrete. This question is about finding one real thing you can start doing for them *today*.
 
@@ -73,7 +75,7 @@ Listen for anything concrete. This question is about finding one real thing you 
 - **Maps to something you can just do** (e.g., "organize my notes", "review this repo"): Just do it. Right now. Show them the result.
 - **They're not sure**: Suggest something based on what you've learned so far. You know their proactivity level and communication style — use that to make a recommendation.
 
-After completing their request (or setting it up), update `MEMORY.md` with a summary of what was configured during setup.
+After completing their request (or setting it up), update `MEMORY.md` with a summary of what was configured during setup. Then delete `BOOTSTRAP.md` to indicate that the initial setup is complete.
 
 ---
 
@@ -106,14 +108,3 @@ Read `workflows/always-on-assistant.md`. The power-user path — builds on Quick
 
 ### User just wants to hang out
 That's fine too. Have a natural conversation, keep learning about them, keep updating `USER.md`. Mention that deeper workflows exist when it feels relevant.
-
----
-
-## Wrapping Up
-
-When the conversation winds down:
-
-1. Make sure `BOOTSTRAP.md` is deleted.
-2. Update `MEMORY.md` with a summary of what was set up and what you learned.
-3. Deactivate this skill with `skill_deactivate residuum-getting-started`.
-4. Tell the user what's now running in the background (if anything) and what they can do next.

@@ -1,6 +1,6 @@
 //! Web UI static asset serving and config API endpoints.
 //!
-//! Embeds the `assets/web/` directory into the binary via `rust-embed`.
+//! Embeds the `web/dist/` directory into the binary via `rust-embed`.
 //! In debug builds, files are served from disk (hot-reload); in release
 //! builds, they are compiled into the binary.
 
@@ -31,9 +31,9 @@ mod embedded {
 
     use rust_embed::Embed;
 
-    /// Embedded web assets from `assets/web/`.
+    /// Embedded web assets from `web/dist/`.
     #[derive(Embed)]
-    #[folder = "assets/web/"]
+    #[folder = "web/dist/"]
     pub(super) struct WebAssets;
 }
 use embedded::WebAssets;
@@ -43,12 +43,16 @@ use embedded::WebAssets;
 pub(super) struct ConfigApiState {
     /// Path to the residuum config directory (`~/.residuum/`).
     pub config_dir: PathBuf,
+    /// Path to the workspace root directory (for resolving `mcp.json`, `channels.toml`, etc.).
+    pub workspace_dir: PathBuf,
     /// Path to the workspace memory directory (None in setup mode).
     pub memory_dir: Option<PathBuf>,
     /// Signal the running gateway to reload (None in setup mode).
     pub reload_tx: Option<watch::Sender<ReloadSignal>>,
     /// Signal the setup server that config is saved (None in running mode).
     pub setup_done: Option<Arc<watch::Sender<bool>>>,
+    /// Serializes secret store writes to prevent lost-update races.
+    pub secret_lock: Arc<tokio::sync::Mutex<()>>,
 }
 
 /// Status response indicating which mode the server is running in.
@@ -69,6 +73,11 @@ pub(super) fn config_api_router(state: ConfigApiState) -> axum::Router {
         .route("/api/mcp-catalog", get(api_mcp_catalog))
         .route("/api/chat/history", get(api_chat_history))
         .route("/api/providers/models", post(api_provider_models))
+        .route("/api/providers/raw", get(api_providers_raw_get))
+        .route("/api/providers/raw", put(api_providers_raw_put))
+        .route("/api/providers/validate", post(api_providers_validate))
+        .route("/api/mcp/raw", get(api_mcp_raw_get))
+        .route("/api/mcp/raw", put(api_mcp_raw_put))
         .route("/api/secrets", post(api_secrets_set))
         .route("/api/secrets", get(api_secrets_list))
         .route("/api/secrets/{name}", delete(api_secrets_delete))
@@ -171,13 +180,38 @@ async fn api_config_validate(
     }
 }
 
-/// `POST /api/config/complete-setup` — validate + write config, signal setup done.
-async fn api_complete_setup(
+// ── Providers raw endpoints ───────────────────────────────────────────
+
+/// `GET /api/providers/raw` — return raw `providers.toml` contents as text.
+async fn api_providers_raw_get(
+    State(state): State<ConfigApiState>,
+) -> Result<Response, (StatusCode, String)> {
+    let providers_path = state.config_dir.join("providers.toml");
+    let contents = tokio::fs::read_to_string(&providers_path)
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("failed to read providers.toml: {e}"),
+            )
+        })?;
+    Response::builder()
+        .header(header::CONTENT_TYPE, "text/plain; charset=utf-8")
+        .body(Body::from(contents))
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("response build error: {e}"),
+            )
+        })
+}
+
+/// `PUT /api/providers/raw` — validate and write `providers.toml`, trigger reload.
+async fn api_providers_raw_put(
     State(state): State<ConfigApiState>,
     body: String,
 ) -> Result<Json<ValidateResponse>, (StatusCode, Json<ValidateResponse>)> {
-    // Validate (use real config dir so secret:name references are checked)
-    if let Err(e) = Config::validate_toml(&body, &state.config_dir) {
+    if let Err(e) = Config::validate_providers_toml(&body, &state.config_dir) {
         return Err((
             StatusCode::BAD_REQUEST,
             Json(ValidateResponse {
@@ -187,17 +221,211 @@ async fn api_complete_setup(
         ));
     }
 
-    // Write config
-    let config_path = state.config_dir.join("config.toml");
-    tokio::fs::write(&config_path, &body).await.map_err(|e| {
+    let providers_path = state.config_dir.join("providers.toml");
+    tokio::fs::write(&providers_path, &body)
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ValidateResponse {
+                    valid: false,
+                    error: Some(format!("failed to write providers.toml: {e}")),
+                }),
+            )
+        })?;
+
+    // Trigger root reload — provider changes affect model resolution
+    if let Some(reload_tx) = &state.reload_tx {
+        reload_tx.send(ReloadSignal::Root).ok();
+    }
+
+    Ok(Json(ValidateResponse {
+        valid: true,
+        error: None,
+    }))
+}
+
+/// `POST /api/providers/validate` — validate providers TOML body without saving.
+async fn api_providers_validate(
+    State(state): State<ConfigApiState>,
+    body: String,
+) -> Json<ValidateResponse> {
+    match Config::validate_providers_toml(&body, &state.config_dir) {
+        Ok(()) => Json(ValidateResponse {
+            valid: true,
+            error: None,
+        }),
+        Err(e) => Json(ValidateResponse {
+            valid: false,
+            error: Some(e),
+        }),
+    }
+}
+
+// ── MCP raw endpoints ────────────────────────────────────────────────
+
+/// `GET /api/mcp/raw` — return raw `mcp.json` contents as JSON.
+///
+/// Returns `{"mcpServers":{}}` if the file doesn't exist yet.
+async fn api_mcp_raw_get(
+    State(state): State<ConfigApiState>,
+) -> Result<Response, (StatusCode, String)> {
+    let mcp_path = crate::workspace::layout::WorkspaceLayout::new(&state.workspace_dir).mcp_json();
+
+    let contents = match tokio::fs::read_to_string(&mcp_path).await {
+        Ok(c) => c,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => r#"{"mcpServers":{}}"#.to_string(),
+        Err(e) => {
+            return Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("failed to read mcp.json: {e}"),
+            ));
+        }
+    };
+
+    Response::builder()
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from(contents))
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("response build error: {e}"),
+            )
+        })
+}
+
+/// `PUT /api/mcp/raw` — validate JSON and write `mcp.json`, trigger workspace reload.
+async fn api_mcp_raw_put(
+    State(state): State<ConfigApiState>,
+    body: String,
+) -> Result<Json<ValidateResponse>, (StatusCode, Json<ValidateResponse>)> {
+    // Validate JSON parse
+    serde_json::from_str::<serde_json::Value>(&body).map_err(|e| {
+        (
+            StatusCode::BAD_REQUEST,
+            Json(ValidateResponse {
+                valid: false,
+                error: Some(format!("invalid JSON: {e}")),
+            }),
+        )
+    })?;
+
+    let mcp_path = crate::workspace::layout::WorkspaceLayout::new(&state.workspace_dir).mcp_json();
+
+    if let Some(parent) = mcp_path.parent() {
+        tokio::fs::create_dir_all(parent).await.ok();
+    }
+
+    tokio::fs::write(&mcp_path, &body).await.map_err(|e| {
         (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(ValidateResponse {
                 valid: false,
-                error: Some(format!("failed to write config: {e}")),
+                error: Some(format!("failed to write mcp.json: {e}")),
             }),
         )
     })?;
+
+    if let Some(reload_tx) = &state.reload_tx {
+        reload_tx.send(ReloadSignal::Workspace).ok();
+    }
+
+    Ok(Json(ValidateResponse {
+        valid: true,
+        error: None,
+    }))
+}
+
+/// Request body for the complete-setup endpoint.
+#[derive(Deserialize)]
+struct CompleteSetupRequest {
+    /// Raw config.toml content.
+    config: String,
+    /// Raw providers.toml content.
+    providers: String,
+    /// Raw mcp.json content (optional, Claude Code format).
+    #[serde(default)]
+    mcp_json: Option<String>,
+}
+
+/// `POST /api/config/complete-setup` — write config + providers, signal setup done.
+async fn api_complete_setup(
+    State(state): State<ConfigApiState>,
+    Json(body): Json<CompleteSetupRequest>,
+) -> Result<Json<ValidateResponse>, (StatusCode, Json<ValidateResponse>)> {
+    let err = |msg: String| {
+        (
+            StatusCode::BAD_REQUEST,
+            Json(ValidateResponse {
+                valid: false,
+                error: Some(msg),
+            }),
+        )
+    };
+
+    // Parse both files to validate structure
+    let config_file = toml::from_str::<crate::config::deserialize::ConfigFile>(&body.config)
+        .map_err(|e| err(format!("config.toml parse error: {e}")))?;
+    let providers_file =
+        toml::from_str::<crate::config::deserialize::ProvidersFile>(&body.providers)
+            .map_err(|e| err(format!("providers.toml parse error: {e}")))?;
+
+    // Validate together
+    crate::config::resolve::from_file_and_env(
+        Some(&config_file),
+        Some(&providers_file),
+        &state.config_dir,
+    )
+    .map_err(|e| err(format!("{e}")))?;
+
+    // Write providers.toml first (config validation reads it from disk)
+    let providers_path = state.config_dir.join("providers.toml");
+    tokio::fs::write(&providers_path, &body.providers)
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ValidateResponse {
+                    valid: false,
+                    error: Some(format!("failed to write providers.toml: {e}")),
+                }),
+            )
+        })?;
+
+    // Write config.toml
+    let config_path = state.config_dir.join("config.toml");
+    tokio::fs::write(&config_path, &body.config)
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ValidateResponse {
+                    valid: false,
+                    error: Some(format!("failed to write config.toml: {e}")),
+                }),
+            )
+        })?;
+
+    // Write mcp.json if provided
+    if let Some(ref mcp_json) = body.mcp_json {
+        let mcp_path = state
+            .config_dir
+            .join("workspace")
+            .join("config")
+            .join("mcp.json");
+        if let Some(parent) = mcp_path.parent() {
+            tokio::fs::create_dir_all(parent).await.ok();
+        }
+        tokio::fs::write(&mcp_path, mcp_json).await.map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ValidateResponse {
+                    valid: false,
+                    error: Some(format!("failed to write mcp.json: {e}")),
+                }),
+            )
+        })?;
+    }
 
     // Signal setup server to shut down
     if let Some(done_sender) = &state.setup_done {
@@ -373,10 +601,15 @@ async fn api_provider_models(
 }
 
 /// `POST /api/secrets` — store a named secret in the encrypted store.
+///
+/// Acquires `secret_lock` to serialize concurrent writes and prevent
+/// lost-update races (e.g. setup wizard storing multiple secrets via `Promise.all`).
 async fn api_secrets_set(
     State(state): State<ConfigApiState>,
     Json(req): Json<SetSecretRequest>,
 ) -> Result<Json<SetSecretResponse>, (StatusCode, String)> {
+    let _guard = state.secret_lock.lock().await;
+
     let config_dir = state.config_dir.clone();
     let name = req.name;
     let value = req.value;
@@ -737,12 +970,12 @@ mod tests {
     }
 
     #[test]
-    fn serve_embedded_returns_css_content_type() {
-        let resp = serve_embedded("style.css").unwrap();
+    fn serve_embedded_returns_json_content_type() {
+        let resp = serve_embedded("mcp-catalog.json").unwrap();
         let ct = resp.headers().get(header::CONTENT_TYPE).unwrap();
         assert!(
-            ct.to_str().unwrap().contains("css"),
-            "content type should be css"
+            ct.to_str().unwrap().contains("json"),
+            "content type should be json"
         );
     }
 
@@ -758,9 +991,11 @@ mod tests {
     async fn chat_history_returns_empty_when_no_memory_dir() {
         let state = ConfigApiState {
             config_dir: PathBuf::from("/tmp/residuum-test-nonexistent"),
+            workspace_dir: PathBuf::from("/tmp/residuum-test-nonexistent/workspace"),
             memory_dir: None,
             reload_tx: None,
             setup_done: None,
+            secret_lock: Arc::new(tokio::sync::Mutex::new(())),
         };
         let Json(messages) = api_chat_history(State(state)).await;
         assert!(
@@ -773,9 +1008,11 @@ mod tests {
     async fn chat_history_returns_empty_when_file_missing() {
         let state = ConfigApiState {
             config_dir: PathBuf::from("/tmp/residuum-test-nonexistent"),
+            workspace_dir: PathBuf::from("/tmp/residuum-test-nonexistent/workspace"),
             memory_dir: Some(PathBuf::from("/tmp/residuum-test-nonexistent-memory")),
             reload_tx: None,
             setup_done: None,
+            secret_lock: Arc::new(tokio::sync::Mutex::new(())),
         };
         let Json(messages) = api_chat_history(State(state)).await;
         assert!(
@@ -789,9 +1026,11 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let state = ConfigApiState {
             config_dir: dir.path().to_path_buf(),
+            workspace_dir: dir.path().join("workspace"),
             memory_dir: None,
             reload_tx: None,
             setup_done: None,
+            secret_lock: Arc::new(tokio::sync::Mutex::new(())),
         };
 
         // Set a secret
