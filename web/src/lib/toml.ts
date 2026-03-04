@@ -5,7 +5,7 @@
 import type { SetupWizardState } from "./types";
 import { DEFAULT_MODELS } from "./models";
 
-/** Generate config.toml content (timezone, integrations, background models). */
+/** Generate config.toml content (timezone, integrations). */
 export function generateConfigToml(state: SetupWizardState): string {
   const lines: string[] = [];
 
@@ -27,23 +27,6 @@ export function generateConfigToml(state: SetupWizardState): string {
     lines.push("");
     lines.push("[telegram]");
     lines.push(`token = "${ref}"`);
-  }
-
-  // Background models (belongs in config.toml under [background.models])
-  const bgEntries: { tier: string; prov: string; model: string }[] = [];
-  for (const tier of ["small", "medium", "large"]) {
-    const bg = state.backgroundModels[tier];
-    const prov = bg.provider || state.mainProvider;
-    if (bg.model) {
-      bgEntries.push({ tier, prov, model: bg.model });
-    }
-  }
-  if (bgEntries.length > 0) {
-    lines.push("");
-    lines.push("[background.models]");
-    for (const { tier, prov, model } of bgEntries) {
-      lines.push(`${tier} = "${prov}/${model}"`);
-    }
   }
 
   lines.push("");
@@ -122,6 +105,23 @@ export function generateProvidersToml(state: SetupWizardState): string {
     lines.push(
       `embedding = "${state.embeddingModel.provider}/${state.embeddingModel.model}"`,
     );
+  }
+
+  // Background model tiers (lives in providers.toml alongside other model config)
+  const bgEntries: { tier: string; prov: string; model: string }[] = [];
+  for (const tier of ["small", "medium", "large"]) {
+    const bg = state.backgroundModels[tier];
+    const prov = bg.provider || state.mainProvider;
+    if (bg.model) {
+      bgEntries.push({ tier, prov, model: bg.model });
+    }
+  }
+  if (bgEntries.length > 0) {
+    lines.push("");
+    lines.push("[background.models]");
+    for (const { tier, prov, model } of bgEntries) {
+      lines.push(`${tier} = "${prov}/${model}"`);
+    }
   }
 
   lines.push("");
