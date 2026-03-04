@@ -231,6 +231,7 @@ pub(super) async fn handle_root_reload(rt: &mut GatewayRuntime) {
                 };
                 let config_api_state = super::web::ConfigApiState {
                     config_dir: rt.config_dir.clone(),
+                    workspace_dir: rt.layout.root().to_path_buf(),
                     memory_dir: Some(rt.layout.memory_dir()),
                     reload_tx: Some(rt.reload_tx.clone()),
                     setup_done: None,
@@ -388,6 +389,27 @@ pub(super) async fn handle_root_reload(rt: &mut GatewayRuntime) {
         } else {
             tracing::info!("skills rescanned");
         }
+    }
+
+    // ── Agent ability gates ──────────────────────────────────────────────
+    if diff.agent_changed {
+        let mut blocked: Vec<std::path::PathBuf> = vec![
+            new_cfg.config_dir.join("config.toml"),
+            new_cfg.config_dir.join("config.example.toml"),
+            new_cfg.config_dir.join("providers.toml"),
+            new_cfg.config_dir.join("providers.example.toml"),
+        ];
+        if !new_cfg.agent.modify_mcp {
+            blocked.push(rt.layout.mcp_json());
+        }
+        if !new_cfg.agent.modify_channels {
+            blocked.push(rt.layout.channels_toml());
+        }
+        rt.path_policy
+            .write()
+            .await
+            .set_blocked_paths(blocked.into_iter().collect());
+        tracing::info!("agent ability gates updated");
     }
 
     // ── Store new config ────────────────────────────────────────────────

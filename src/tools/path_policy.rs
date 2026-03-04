@@ -74,6 +74,16 @@ impl PathPolicy {
         self.active_project_root = root;
     }
 
+    /// Replace the set of unconditionally blocked paths.
+    ///
+    /// Called during config hot-reload when agent ability gates change.
+    pub fn set_blocked_paths(&mut self, paths: HashSet<PathBuf>) {
+        self.blocked_paths = paths
+            .into_iter()
+            .map(|p| canonicalize_for_check(&p))
+            .collect();
+    }
+
     /// Check whether a write to `path` is allowed under the current policy.
     ///
     /// Returns `Ok(())` if allowed, or `Err(reason)` if rejected.
@@ -374,6 +384,31 @@ mod tests {
         assert!(
             policy.check_write(&cfg_dir.join("config.toml")).is_err(),
             "config.toml should still be blocked"
+        );
+    }
+
+    #[test]
+    fn set_blocked_paths_updates_policy() {
+        let (_dir, ws, cfg_dir) = make_workspace_with_config();
+        let blocked: HashSet<PathBuf> = [cfg_dir.join("config.toml")].into_iter().collect();
+        let mut policy = PathPolicy::with_blocked_paths(ws.clone(), blocked);
+
+        // config.toml is blocked initially
+        assert!(policy.check_write(&cfg_dir.join("config.toml")).is_err());
+
+        // Replace blocked set with empty — config.toml should now be writable
+        policy.set_blocked_paths(HashSet::new());
+        assert!(
+            policy.check_write(&cfg_dir.join("config.toml")).is_ok(),
+            "config.toml should be writable after clearing blocked paths"
+        );
+
+        // Re-block config.toml
+        let new_blocked: HashSet<PathBuf> = [cfg_dir.join("config.toml")].into_iter().collect();
+        policy.set_blocked_paths(new_blocked);
+        assert!(
+            policy.check_write(&cfg_dir.join("config.toml")).is_err(),
+            "config.toml should be blocked again"
         );
     }
 
