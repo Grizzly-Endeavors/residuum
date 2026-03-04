@@ -171,33 +171,96 @@ async fn api_config_validate(
     }
 }
 
-/// `POST /api/config/complete-setup` — validate + write config, signal setup done.
+/// Request body for the complete-setup endpoint.
+#[derive(Deserialize)]
+struct CompleteSetupRequest {
+    /// Raw config.toml content.
+    config: String,
+    /// Raw providers.toml content.
+    providers: String,
+    /// Raw mcp.json content (optional, Claude Code format).
+    #[serde(default)]
+    mcp_json: Option<String>,
+}
+
+/// `POST /api/config/complete-setup` — write config + providers, signal setup done.
 async fn api_complete_setup(
     State(state): State<ConfigApiState>,
-    body: String,
+    Json(body): Json<CompleteSetupRequest>,
 ) -> Result<Json<ValidateResponse>, (StatusCode, Json<ValidateResponse>)> {
-    // Validate (use real config dir so secret:name references are checked)
-    if let Err(e) = Config::validate_toml(&body, &state.config_dir) {
-        return Err((
+    let err = |msg: String| {
+        (
             StatusCode::BAD_REQUEST,
             Json(ValidateResponse {
                 valid: false,
-                error: Some(e),
-            }),
-        ));
-    }
-
-    // Write config
-    let config_path = state.config_dir.join("config.toml");
-    tokio::fs::write(&config_path, &body).await.map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ValidateResponse {
-                valid: false,
-                error: Some(format!("failed to write config: {e}")),
+                error: Some(msg),
             }),
         )
-    })?;
+    };
+
+    // Parse both files to validate structure
+    let config_file = toml::from_str::<crate::config::deserialize::ConfigFile>(&body.config)
+        .map_err(|e| err(format!("config.toml parse error: {e}")))?;
+    let providers_file =
+        toml::from_str::<crate::config::deserialize::ProvidersFile>(&body.providers)
+            .map_err(|e| err(format!("providers.toml parse error: {e}")))?;
+
+    // Validate together
+    crate::config::resolve::from_file_and_env(
+        Some(&config_file),
+        Some(&providers_file),
+        &state.config_dir,
+    )
+    .map_err(|e| err(format!("{e}")))?;
+
+    // Write providers.toml first (config validation reads it from disk)
+    let providers_path = state.config_dir.join("providers.toml");
+    tokio::fs::write(&providers_path, &body.providers)
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ValidateResponse {
+                    valid: false,
+                    error: Some(format!("failed to write providers.toml: {e}")),
+                }),
+            )
+        })?;
+
+    // Write config.toml
+    let config_path = state.config_dir.join("config.toml");
+    tokio::fs::write(&config_path, &body.config)
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ValidateResponse {
+                    valid: false,
+                    error: Some(format!("failed to write config.toml: {e}")),
+                }),
+            )
+        })?;
+
+    // Write mcp.json if provided
+    if let Some(ref mcp_json) = body.mcp_json {
+        let mcp_path = state
+            .config_dir
+            .join("workspace")
+            .join("config")
+            .join("mcp.json");
+        if let Some(parent) = mcp_path.parent() {
+            tokio::fs::create_dir_all(parent).await.ok();
+        }
+        tokio::fs::write(&mcp_path, mcp_json).await.map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ValidateResponse {
+                    valid: false,
+                    error: Some(format!("failed to write mcp.json: {e}")),
+                }),
+            )
+        })?;
+    }
 
     // Signal setup server to shut down
     if let Some(done_sender) = &state.setup_done {

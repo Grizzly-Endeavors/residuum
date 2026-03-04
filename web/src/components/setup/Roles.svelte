@@ -6,6 +6,7 @@
     DEFAULT_MODELS,
     DEFAULT_EMBEDDING_MODELS,
     EMBEDDING_PROVIDERS,
+    EMBEDDING_MODEL_LISTS,
     debounce,
     type ModelEntry,
   } from "../../lib/models";
@@ -133,6 +134,20 @@
 
   async function loadModels(role: string) {
     const prov = getRoleProvider(role);
+
+    // Embedding models are never returned by provider APIs — use hardcoded lists
+    if (role === "embedding") {
+      const models = EMBEDDING_MODEL_LISTS[prov] || [];
+      modelLists[role] = models;
+      const current = getRoleModel(role);
+      if (!current && models.length > 0) {
+        const defaultModel = DEFAULT_EMBEDDING_MODELS[prov] || "";
+        const found = models.some((m) => m.id === defaultModel);
+        setRoleModel(role, found ? defaultModel : models[0].id);
+      }
+      return;
+    }
+
     const provCfg = wizardState.providerConfigs[prov as ProviderKey];
     const apiKey = prov !== "ollama" ? provCfg?.apiKey : undefined;
     const url = provCfg?.url || undefined;
@@ -145,13 +160,9 @@
     // Auto-select default if no model set
     const current = getRoleModel(role);
     if (!current && result.models.length > 0) {
-      const defaultModel =
-        role === "embedding"
-          ? DEFAULT_EMBEDDING_MODELS[prov] || ""
-          : DEFAULT_MODELS[prov] || "";
+      const defaultModel = DEFAULT_MODELS[prov] || "";
       const found = result.models.some((m) => m.id === defaultModel);
-      const autoModel = found ? defaultModel : result.models[0].id;
-      setRoleModel(role, autoModel);
+      setRoleModel(role, found ? defaultModel : result.models[0].id);
     }
   }
 

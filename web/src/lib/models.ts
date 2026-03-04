@@ -50,6 +50,23 @@ export const DEFAULT_EMBEDDING_MODELS: Record<string, string> = {
   ollama: "nomic-embed-text",
 };
 
+// Hardcoded embedding model lists — provider APIs don't list embedding models
+export const EMBEDDING_MODEL_LISTS: Record<string, ModelEntry[]> = {
+  openai: [
+    { id: "text-embedding-3-small", name: "text-embedding-3-small" },
+    { id: "text-embedding-3-large", name: "text-embedding-3-large" },
+    { id: "text-embedding-ada-002", name: "text-embedding-ada-002" },
+  ],
+  gemini: [
+    { id: "gemini-embedding-001", name: "gemini-embedding-001" },
+  ],
+  ollama: [
+    { id: "nomic-embed-text", name: "nomic-embed-text" },
+    { id: "mxbai-embed-large", name: "mxbai-embed-large" },
+    { id: "all-minilm", name: "all-minilm" },
+  ],
+};
+
 export const EMBEDDING_PROVIDERS = ["openai", "gemini", "ollama"];
 
 const cache: Record<string, FetchResult> = {};
