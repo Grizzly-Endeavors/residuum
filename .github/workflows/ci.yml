@@ -25,6 +25,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Build web assets
+        run: npm ci && npm run build
+        working-directory: web
+
       - name: Check formatting
         id: fmt
         run: cargo fmt --check
