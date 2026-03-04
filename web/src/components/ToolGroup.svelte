@@ -2,8 +2,7 @@
   import type { ToolCallState } from "../lib/types";
   import ToolItem from "./ToolItem.svelte";
 
-  let { calls, verbose }: { calls: ToolCallState[]; verbose: boolean } =
-    $props();
+  let { calls, verbose }: { calls: ToolCallState[]; verbose: boolean } = $props();
 </script>
 
 {#if verbose}

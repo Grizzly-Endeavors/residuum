@@ -1,7 +1,13 @@
 <script lang="ts">
   import type { ConnectionStatus } from "../lib/types";
 
-  let { status, verbose, showSettings, onToggleVerbose, onToggleSettings }: {
+  let {
+    status,
+    verbose,
+    showSettings,
+    onToggleVerbose,
+    onToggleSettings,
+  }: {
     status: ConnectionStatus;
     verbose: boolean;
     showSettings: boolean;

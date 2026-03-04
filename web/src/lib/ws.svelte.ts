@@ -1,5 +1,6 @@
 // ── Reactive WebSocket connection (Svelte 5 runes) ──────────────────
 
+import { SvelteMap } from "svelte/reactivity";
 import type {
   ClientMessage,
   ServerMessage,
@@ -26,7 +27,7 @@ class WsConnection {
   private reconnectDelay = 1000;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private pingTimer: ReturnType<typeof setInterval> | null = null;
-  private pendingToolCalls = new Map<string, ToolCallState>();
+  private pendingToolCalls = new SvelteMap<string, ToolCallState>();
 
   constructor() {
     try {
@@ -87,7 +88,7 @@ class WsConnection {
   }
 
   send(msg: ClientMessage): void {
-    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+    if (this.ws?.readyState === WebSocket.OPEN) {
       this.ws.send(JSON.stringify(msg));
     }
   }
@@ -113,6 +114,7 @@ class WsConnection {
   loadHistory(messages: RecentMessage[]): void {
     if (!messages.length) return;
 
+    // eslint-disable-next-line svelte/prefer-svelte-reactivity -- local non-reactive scratch map
     const toolCallItems = new Map<string, ToolCallState>();
 
     for (const msg of messages) {
@@ -144,14 +146,17 @@ class WsConnection {
           if (msg.tool_call_id) {
             const call = toolCallItems.get(msg.tool_call_id);
             if (call && content) {
-              call.result = (call.result ? call.result + "\n" : "") +
-                "\u2500\u2500\u2500 result \u2500\u2500\u2500\n" + content;
+              call.result =
+                (call.result ? call.result + "\n" : "") +
+                "\u2500\u2500\u2500 result \u2500\u2500\u2500\n" +
+                content;
             }
             toolCallItems.delete(msg.tool_call_id);
           }
           break;
         }
-        // skip system
+        case "system":
+          break;
       }
     }
 
@@ -243,9 +248,7 @@ class WsConnection {
 
   private handleToolCall(msg: Extract<ServerMessage, { type: "tool_call" }>): void {
     const argsText =
-      typeof msg.arguments === "string"
-        ? msg.arguments
-        : JSON.stringify(msg.arguments, null, 2);
+      typeof msg.arguments === "string" ? msg.arguments : JSON.stringify(msg.arguments, null, 2);
 
     const call: ToolCallState = {
       id: msg.id,
@@ -256,7 +259,7 @@ class WsConnection {
 
     // Find or create a tool group at the end of the feed
     const last = this.feed[this.feed.length - 1];
-    if (last && last.kind === "tool-group") {
+    if (last?.kind === "tool-group") {
       last.calls.push(call);
     } else {
       this.feed.push({
@@ -269,18 +272,19 @@ class WsConnection {
     // Store the proxied reference from the $state feed so mutations
     // in handleToolResult go through Svelte's reactivity system
     const group = this.feed[this.feed.length - 1] as ToolGroupFeedItem;
-    this.pendingToolCalls.set(msg.id, group.calls[group.calls.length - 1]);
+    const lastCall = group.calls[group.calls.length - 1];
+    if (lastCall) this.pendingToolCalls.set(msg.id, lastCall);
   }
 
-  private handleToolResult(
-    msg: Extract<ServerMessage, { type: "tool_result" }>,
-  ): void {
+  private handleToolResult(msg: Extract<ServerMessage, { type: "tool_result" }>): void {
     const call = this.pendingToolCalls.get(msg.tool_call_id);
     if (call) {
       call.status = msg.is_error ? "error" : "done";
       if (msg.output) {
-        call.result = (call.result ? call.result + "\n" : "") +
-          "\u2500\u2500\u2500 result \u2500\u2500\u2500\n" + msg.output;
+        call.result =
+          (call.result ? call.result + "\n" : "") +
+          "\u2500\u2500\u2500 result \u2500\u2500\u2500\n" +
+          msg.output;
       }
       this.pendingToolCalls.delete(msg.tool_call_id);
     }

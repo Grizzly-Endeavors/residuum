@@ -34,8 +34,10 @@
     // Role-specific API keys (if different from provider config)
     for (const role of ["observer", "reflector", "pulse"]) {
       const r = wizardState.roles[role];
+      if (!r) continue;
       const prov = r.provider || wizardState.mainProvider;
-      const provKey = wizardState.providerConfigs[prov as keyof typeof wizardState.providerConfigs]?.apiKey || "";
+      const provKey =
+        wizardState.providerConfigs[prov as keyof typeof wizardState.providerConfigs]?.apiKey || "";
       if (r.apiKey && r.apiKey !== provKey) {
         const name = `${role}_${prov}`;
         promises.push(
@@ -83,9 +85,7 @@
     // Generate all config files with secret references
     const configToml = generateConfigToml(wizardState);
     const providersToml = generateProvidersToml(wizardState);
-    const mcpJson = wizardState.mcpServers.length > 0
-      ? generateMcpJson(wizardState)
-      : undefined;
+    const mcpJson = wizardState.mcpServers.length > 0 ? generateMcpJson(wizardState) : undefined;
 
     try {
       const result = await completeSetup(configToml, providersToml, mcpJson);
@@ -94,7 +94,7 @@
         validationClass = "success";
         setTimeout(() => onComplete(), 1500);
       } else {
-        validationMsg = result.error || "Validation failed";
+        validationMsg = result.error ?? "Validation failed";
         validationClass = "error";
         saving = false;
       }
@@ -117,12 +117,15 @@
   </div>
   <div class="review-item">
     <span class="review-label">Main model</span>
-    <span class="review-value">{wizardState.mainProvider}/{wizardState.providerConfigs[wizardState.mainProvider].model || "default"}</span>
+    <span class="review-value"
+      >{wizardState.mainProvider}/{wizardState.providerConfigs[wizardState.mainProvider].model ||
+        "default"}</span
+    >
   </div>
   {#if wizardState.mcpServers.length > 0}
     <div class="review-item">
       <span class="review-label">MCP servers</span>
-      <span class="review-value">{wizardState.mcpServers.map(s => s.name).join(", ")}</span>
+      <span class="review-value">{wizardState.mcpServers.map((s) => s.name).join(", ")}</span>
     </div>
   {/if}
   {#if wizardState.integrations.discordToken || wizardState.integrations.telegramToken}
@@ -132,7 +135,9 @@
         {[
           wizardState.integrations.discordToken ? "Discord" : "",
           wizardState.integrations.telegramToken ? "Telegram" : "",
-        ].filter(Boolean).join(", ")}
+        ]
+          .filter(Boolean)
+          .join(", ")}
       </span>
     </div>
   {/if}

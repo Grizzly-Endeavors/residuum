@@ -29,11 +29,15 @@
 
   const roleTooltips: Record<string, string> = {
     main: "The primary model used for conversations and task execution.",
-    observer: "Watches conversations and extracts facts, preferences, and patterns for long-term memory.",
-    reflector: "Periodically reviews stored memories, consolidates duplicates, and resolves contradictions.",
+    observer:
+      "Watches conversations and extracts facts, preferences, and patterns for long-term memory.",
+    reflector:
+      "Periodically reviews stored memories, consolidates duplicates, and resolves contradictions.",
     pulse: "Drives proactive behavior — daily briefings, check-ins, and ambient monitoring tasks.",
-    embedding: "Generates vector embeddings for semantic memory search. Only some providers support this.",
-    "bg-small": "Used for lightweight background tasks like formatting, simple lookups, and notifications.",
+    embedding:
+      "Generates vector embeddings for semantic memory search. Only some providers support this.",
+    "bg-small":
+      "Used for lightweight background tasks like formatting, simple lookups, and notifications.",
     "bg-medium": "Used for moderate background tasks like summarization and analysis.",
     "bg-large": "Used for complex background tasks that need strong reasoning ability.",
   };
@@ -58,9 +62,9 @@
   // Extract provider from "provider/model" string
   function getProvider(role: string): string {
     const val = models[modelsKey(role)];
-    if (!val) return providers[0]?.name || "";
+    if (!val) return providers[0]?.name ?? "";
     const slash = val.indexOf("/");
-    return slash >= 0 ? val.slice(0, slash) : providers[0]?.name || "";
+    return slash >= 0 ? val.slice(0, slash) : (providers[0]?.name ?? "");
   }
 
   // Extract model from "provider/model" string
@@ -76,7 +80,7 @@
     models[key] = prov + "/";
     otherActive[role] = false;
     otherValues[role] = "";
-    loadModels(role);
+    void loadModels(role);
   }
 
   function setModel(role: string, value: string) {
@@ -107,19 +111,19 @@
 
     // Embedding uses hardcoded lists
     if (role === "embedding") {
-      const list = EMBEDDING_MODEL_LISTS[entry.type] || [];
+      const list = EMBEDDING_MODEL_LISTS[entry.type] ?? [];
       modelLists[role] = list;
       const current = getModel(role);
       if (!current && list.length > 0) {
-        const def = DEFAULT_EMBEDDING_MODELS[entry.type] || "";
+        const def = DEFAULT_EMBEDDING_MODELS[entry.type] ?? "";
         const found = list.some((m) => m.id === def);
-        setModel(role, found ? def : list[0].id);
+        setModel(role, found ? def : (list[0]?.id ?? ""));
       }
       return;
     }
 
     const apiKey = entry.type !== "ollama" ? entry.apiKey : undefined;
-    const url = entry.url || undefined;
+    const url = entry.url !== "" ? entry.url : undefined;
 
     modelLoading[role] = true;
     const result = await fetchModels(entry.type, apiKey, url);
@@ -128,14 +132,14 @@
 
     const current = getModel(role);
     if (!current && result.models.length > 0) {
-      const def = DEFAULT_MODELS[entry.type] || "";
+      const def = DEFAULT_MODELS[entry.type] ?? "";
       const found = result.models.some((m) => m.id === def);
-      setModel(role, found ? def : result.models[0].id);
+      setModel(role, found ? def : (result.models[0]?.id ?? ""));
     }
   }
 
-  const debouncedLoadModels = debounce((role: string) => {
-    loadModels(role);
+  const _debouncedLoadModels = debounce((role: string) => {
+    void loadModels(role);
   }, 500);
 
   function addProvider() {
@@ -163,13 +167,13 @@
       "bg-medium": "Medium",
       "bg-large": "Large",
     };
-    return labels[role] || role;
+    return labels[role] ?? role;
   }
 
   onMount(() => {
     if (providers.length === 0) return;
     for (const role of [...allRoles, "embedding", ...bgTiers]) {
-      loadModels(role);
+      void loadModels(role);
     }
   });
 </script>
@@ -178,38 +182,49 @@
   <div class="settings-group">
     <div class="settings-group-label">Provider Connections</div>
 
-    {#each providers as prov, i}
+    {#each providers as prov, i (i)}
       <div class="provider-entry">
         <div class="provider-entry-fields">
           <div class="settings-field">
-            <label>Name</label>
-            <input type="text" bind:value={prov.name} placeholder="e.g. anthropic" />
+            <label for="settings-prov-{i}-name">Name</label>
+            <input
+              id="settings-prov-{i}-name"
+              type="text"
+              bind:value={prov.name}
+              placeholder="e.g. anthropic"
+            />
           </div>
           <div class="settings-field">
-            <label>Type</label>
-            <select bind:value={prov.type}>
-              {#each Object.entries(providerTypes) as [val, label]}
+            <label for="settings-prov-{i}-type">Type</label>
+            <select id="settings-prov-{i}-type" bind:value={prov.type}>
+              {#each Object.entries(providerTypes) as [val, label] (val)}
                 <option value={val}>{label}</option>
               {/each}
             </select>
           </div>
           {#if prov.type !== "ollama"}
             <div class="settings-field">
-              <label>API Key</label>
+              <label for="settings-prov-{i}-apikey">API Key</label>
               {#if prov.apiKey.startsWith("secret:")}
                 <div class="secret-stored">
                   <span class="secret-badge">Stored securely</span>
-                  <button class="btn btn-sm btn-secondary" onclick={() => { prov.apiKey = ""; }}>Change</button>
+                  <button
+                    class="btn btn-sm btn-secondary"
+                    onclick={() => {
+                      prov.apiKey = "";
+                    }}>Change</button
+                  >
                 </div>
               {:else}
                 <input
+                  id="settings-prov-{i}-apikey"
                   type="password"
                   bind:value={prov.apiKey}
                   placeholder="API key"
                   onblur={() => {
                     invalidateProvider(prov.type);
                     for (const role of [...allRoles, "embedding", ...bgTiers]) {
-                      if (getProvider(role) === prov.name) debouncedLoadModels(role);
+                      if (getProvider(role) === prov.name) _debouncedLoadModels(role);
                     }
                   }}
                 />
@@ -217,8 +232,13 @@
             </div>
           {/if}
           <div class="settings-field">
-            <label>Base URL (optional)</label>
-            <input type="text" bind:value={prov.url} placeholder="Override base URL" />
+            <label for="settings-prov-{i}-url">Base URL (optional)</label>
+            <input
+              id="settings-prov-{i}-url"
+              type="text"
+              bind:value={prov.url}
+              placeholder="Override base URL"
+            />
           </div>
         </div>
         <button class="btn btn-sm btn-danger" onclick={() => removeProvider(i)}>Remove</button>
@@ -234,7 +254,7 @@
 
     <div class="roles-section">
       <div class="roles-section-label">Agent</div>
-      {#each ["main"] as role}
+      {#each ["main"] as role (role)}
         <div class="role-row">
           <div class="role-row-label">
             {roleLabel(role)}
@@ -245,20 +265,22 @@
           </div>
           <div class="role-row-fields">
             <div class="settings-field">
-              <label>Provider</label>
+              <label for="srole-{role}-provider">Provider</label>
               <select
+                id="srole-{role}-provider"
                 value={getProvider(role)}
                 onchange={(e) => setProvider(role, (e.target as HTMLSelectElement).value)}
               >
-                {#each providerNameOptions() as pk}
+                {#each providerNameOptions() as pk (pk)}
                   <option value={pk}>{pk}</option>
                 {/each}
               </select>
             </div>
             <div class="settings-field">
-              <label>Model</label>
+              <label for="srole-{role}-model">Model</label>
               <div class="model-select-wrap">
                 <select
+                  id="srole-{role}-model"
                   value={otherActive[role] ? "__other__" : getModel(role)}
                   onchange={(e) => setModel(role, (e.target as HTMLSelectElement).value)}
                   disabled={modelLoading[role]}
@@ -266,8 +288,8 @@
                   {#if modelLoading[role]}
                     <option value="">Loading...</option>
                   {:else}
-                    {#each modelLists[role] || [] as m}
-                      <option value={m.id}>{m.name || m.id}</option>
+                    {#each modelLists[role] ?? [] as m (m.id)}
+                      <option value={m.id}>{m.name ?? m.id}</option>
                     {/each}
                     <option value="__other__">Other...</option>
                   {/if}
@@ -277,7 +299,7 @@
                     class="model-other-input"
                     type="text"
                     placeholder="Enter model ID..."
-                    value={otherValues[role] || ""}
+                    value={otherValues[role] ?? ""}
                     oninput={(e) => setOtherModel(role, (e.target as HTMLInputElement).value)}
                   />
                 {/if}
@@ -290,7 +312,7 @@
 
     <div class="roles-section">
       <div class="roles-section-label">Subsystems</div>
-      {#each ["observer", "reflector", "pulse"] as role}
+      {#each ["observer", "reflector", "pulse"] as role (role)}
         <div class="role-row">
           <div class="role-row-label">
             {roleLabel(role)}
@@ -301,20 +323,22 @@
           </div>
           <div class="role-row-fields">
             <div class="settings-field">
-              <label>Provider</label>
+              <label for="srole-{role}-provider">Provider</label>
               <select
+                id="srole-{role}-provider"
                 value={getProvider(role)}
                 onchange={(e) => setProvider(role, (e.target as HTMLSelectElement).value)}
               >
-                {#each providerNameOptions() as pk}
+                {#each providerNameOptions() as pk (pk)}
                   <option value={pk}>{pk}</option>
                 {/each}
               </select>
             </div>
             <div class="settings-field">
-              <label>Model</label>
+              <label for="srole-{role}-model">Model</label>
               <div class="model-select-wrap">
                 <select
+                  id="srole-{role}-model"
                   value={otherActive[role] ? "__other__" : getModel(role)}
                   onchange={(e) => setModel(role, (e.target as HTMLSelectElement).value)}
                   disabled={modelLoading[role]}
@@ -322,8 +346,8 @@
                   {#if modelLoading[role]}
                     <option value="">Loading...</option>
                   {:else}
-                    {#each modelLists[role] || [] as m}
-                      <option value={m.id}>{m.name || m.id}</option>
+                    {#each modelLists[role] ?? [] as m (m.id)}
+                      <option value={m.id}>{m.name ?? m.id}</option>
                     {/each}
                     <option value="__other__">Other...</option>
                   {/if}
@@ -333,7 +357,7 @@
                     class="model-other-input"
                     type="text"
                     placeholder="Enter model ID..."
-                    value={otherValues[role] || ""}
+                    value={otherValues[role] ?? ""}
                     oninput={(e) => setOtherModel(role, (e.target as HTMLInputElement).value)}
                   />
                 {/if}
@@ -356,20 +380,25 @@
         </div>
         <div class="role-row-fields">
           <div class="settings-field">
-            <label>Provider</label>
+            <label for="srole-embedding-provider">Provider</label>
             <select
+              id="srole-embedding-provider"
               value={getProvider("embedding")}
               onchange={(e) => setProvider("embedding", (e.target as HTMLSelectElement).value)}
             >
-              {#each providerNameOptions().filter((n) => { const entry = providerEntry(n); return entry && EMBEDDING_PROVIDERS.includes(entry.type); }) as pk}
+              {#each providerNameOptions().filter((n) => {
+                const entry = providerEntry(n);
+                return entry && EMBEDDING_PROVIDERS.includes(entry.type);
+              }) as pk (pk)}
                 <option value={pk}>{pk}</option>
               {/each}
             </select>
           </div>
           <div class="settings-field">
-            <label>Model</label>
+            <label for="srole-embedding-model">Model</label>
             <div class="model-select-wrap">
               <select
+                id="srole-embedding-model"
                 value={otherActive["embedding"] ? "__other__" : getModel("embedding")}
                 onchange={(e) => setModel("embedding", (e.target as HTMLSelectElement).value)}
                 disabled={modelLoading["embedding"]}
@@ -377,8 +406,8 @@
                 {#if modelLoading["embedding"]}
                   <option value="">Loading...</option>
                 {:else}
-                  {#each modelLists["embedding"] || [] as m}
-                    <option value={m.id}>{m.name || m.id}</option>
+                  {#each modelLists["embedding"] ?? [] as m (m.id)}
+                    <option value={m.id}>{m.name ?? m.id}</option>
                   {/each}
                   <option value="__other__">Other...</option>
                 {/if}
@@ -388,7 +417,7 @@
                   class="model-other-input"
                   type="text"
                   placeholder="Enter model ID..."
-                  value={otherValues["embedding"] || ""}
+                  value={otherValues["embedding"] ?? ""}
                   oninput={(e) => setOtherModel("embedding", (e.target as HTMLInputElement).value)}
                 />
               {/if}
@@ -400,7 +429,7 @@
 
     <div class="roles-section">
       <div class="roles-section-label">Background Tasks</div>
-      {#each bgTiers as role}
+      {#each bgTiers as role (role)}
         <div class="role-row">
           <div class="role-row-label">
             {roleLabel(role)}
@@ -411,20 +440,22 @@
           </div>
           <div class="role-row-fields">
             <div class="settings-field">
-              <label>Provider</label>
+              <label for="srole-{role}-provider">Provider</label>
               <select
+                id="srole-{role}-provider"
                 value={getProvider(role)}
                 onchange={(e) => setProvider(role, (e.target as HTMLSelectElement).value)}
               >
-                {#each providerNameOptions() as pk}
+                {#each providerNameOptions() as pk (pk)}
                   <option value={pk}>{pk}</option>
                 {/each}
               </select>
             </div>
             <div class="settings-field">
-              <label>Model</label>
+              <label for="srole-{role}-model">Model</label>
               <div class="model-select-wrap">
                 <select
+                  id="srole-{role}-model"
                   value={otherActive[role] ? "__other__" : getModel(role)}
                   onchange={(e) => setModel(role, (e.target as HTMLSelectElement).value)}
                   disabled={modelLoading[role]}
@@ -432,8 +463,8 @@
                   {#if modelLoading[role]}
                     <option value="">Loading...</option>
                   {:else}
-                    {#each modelLists[role] || [] as m}
-                      <option value={m.id}>{m.name || m.id}</option>
+                    {#each modelLists[role] ?? [] as m (m.id)}
+                      <option value={m.id}>{m.name ?? m.id}</option>
                     {/each}
                     <option value="__other__">Other...</option>
                   {/if}
@@ -443,7 +474,7 @@
                     class="model-other-input"
                     type="text"
                     placeholder="Enter model ID..."
-                    value={otherValues[role] || ""}
+                    value={otherValues[role] ?? ""}
                     oninput={(e) => setOtherModel(role, (e.target as HTMLInputElement).value)}
                   />
                 {/if}

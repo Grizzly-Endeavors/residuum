@@ -176,10 +176,7 @@ export interface DeleteSecretResponse {
 
 // ── Feed items (UI rendering) ────────────────────────────────────────
 
-export type ConnectionStatus =
-  | "connecting"
-  | "connected"
-  | "disconnected";
+export type ConnectionStatus = "connecting" | "connected" | "disconnected";
 
 export interface ToolCallState {
   id: string;

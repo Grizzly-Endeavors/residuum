@@ -51,7 +51,7 @@
     // Validate all required inputs
     let hasError = false;
     for (const req of srv.requires_input) {
-      const val = (pendingInputs[req.field] || "").trim();
+      const val = (pendingInputs[req.field] ?? "").trim();
       if (!val) {
         inputErrors[req.field] = true;
         hasError = true;
@@ -63,7 +63,7 @@
     const env = { ...(srv.env || {}) };
     for (const req of srv.requires_input) {
       const key = req.field.startsWith("env.") ? req.field.slice(4) : req.field;
-      env[key] = pendingInputs[req.field].trim();
+      env[key] = (pendingInputs[req.field] ?? "").trim();
     }
 
     wizardState.mcpServers.push({
@@ -86,7 +86,7 @@
 {#if catalog.length === 0}
   <p style="color:var(--text-dim)">No catalog entries available.</p>
 {:else}
-  {#each catalog as srv, i}
+  {#each catalog as srv, i (srv.name)}
     {@const added = isAdded(srv.name)}
     {@const isPending = pendingIdx === i}
     <div class="mcp-item" class:added class:pending={isPending}>
@@ -103,15 +103,18 @@
 
       {#if isPending && srv.requires_input.length > 0}
         <div class="mcp-inline-inputs">
-          {#each srv.requires_input as req}
+          {#each srv.requires_input as req (req.field)}
             <div class="settings-field mcp-input-field">
-              <label>{req.label}</label>
+              <label for="mcp-setup-{i}-{req.field}">{req.label}</label>
               <input
+                id="mcp-setup-{i}-{req.field}"
                 type="text"
                 class:input-error={inputErrors[req.field]}
                 bind:value={pendingInputs[req.field]}
                 placeholder={req.label}
-                oninput={() => { inputErrors[req.field] = false; }}
+                oninput={() => {
+                  inputErrors[req.field] = false;
+                }}
               />
             </div>
           {/each}

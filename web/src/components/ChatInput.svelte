@@ -1,12 +1,13 @@
 <script lang="ts">
-  let { onSend, disabled = false }: { onSend: (text: string) => void; disabled?: boolean } = $props();
+  let { onSend, disabled = false }: { onSend: (text: string) => void; disabled?: boolean } =
+    $props();
   let value = $state("");
   let textarea: HTMLTextAreaElement | undefined = $state();
 
   function autoResize() {
     if (!textarea) return;
     textarea.style.height = "auto";
-    textarea.style.height = Math.min(textarea.scrollHeight, 160) + "px";
+    textarea.style.height = `${Math.min(textarea.scrollHeight, 160)}px`;
   }
 
   function handleKeydown(e: KeyboardEvent) {
@@ -43,8 +44,6 @@
       onkeydown={handleKeydown}
       oninput={autoResize}
     ></textarea>
-    <button class="send-btn" onclick={submit} disabled={disabled || !value.trim()}>
-      Send
-    </button>
+    <button class="send-btn" onclick={submit} disabled={disabled || !value.trim()}> Send </button>
   </div>
 </div>
