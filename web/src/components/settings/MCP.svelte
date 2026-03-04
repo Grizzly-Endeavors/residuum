@@ -64,7 +64,7 @@
 
     let hasError = false;
     for (const req of srv.requires_input) {
-      const val = (pendingInputs[req.field] || "").trim();
+      const val = (pendingInputs[req.field] ?? "").trim();
       if (!val) {
         inputErrors[req.field] = true;
         hasError = true;
@@ -75,7 +75,7 @@
     const env = { ...(srv.env || {}) };
     for (const req of srv.requires_input) {
       const key = req.field.startsWith("env.") ? req.field.slice(4) : req.field;
-      env[key] = pendingInputs[req.field].trim();
+      env[key] = (pendingInputs[req.field] ?? "").trim();
     }
 
     servers.push({
@@ -128,7 +128,7 @@
       <p style="color:var(--text-dim); font-size:13px;">No MCP servers configured.</p>
     {/if}
 
-    {#each servers as srv, i}
+    {#each servers as srv, i (srv.name)}
       <div class="mcp-server-entry">
         <div class="mcp-server-info">
           <span class="mcp-server-name">{srv.name}</span>
@@ -141,28 +141,60 @@
     {#if showAddForm}
       <div class="mcp-add-form">
         <div class="settings-field">
-          <label>Name</label>
-          <input type="text" bind:value={newServer.name} placeholder="Server name" />
+          <label for="mcp-new-name">Name</label>
+          <input
+            id="mcp-new-name"
+            type="text"
+            bind:value={newServer.name}
+            placeholder="Server name"
+          />
         </div>
         <div class="settings-field">
-          <label>Command</label>
-          <input type="text" bind:value={newServer.command} placeholder="e.g. npx, uvx" />
+          <label for="mcp-new-command">Command</label>
+          <input
+            id="mcp-new-command"
+            type="text"
+            bind:value={newServer.command}
+            placeholder="e.g. npx, uvx"
+          />
         </div>
         <div class="settings-field">
-          <label>Arguments (space-separated)</label>
-          <input type="text" bind:value={newArgsStr} placeholder="e.g. -y @org/server" />
+          <label for="mcp-new-args">Arguments (space-separated)</label>
+          <input
+            id="mcp-new-args"
+            type="text"
+            bind:value={newArgsStr}
+            placeholder="e.g. -y @org/server"
+          />
         </div>
         <div class="settings-field">
-          <label>Environment (KEY=value, one per line)</label>
-          <textarea class="toml-editor" style="min-height:60px;" bind:value={newEnvStr} placeholder="API_KEY=abc123"></textarea>
+          <label for="mcp-new-env">Environment (KEY=value, one per line)</label>
+          <textarea
+            id="mcp-new-env"
+            class="toml-editor"
+            style="min-height:60px;"
+            bind:value={newEnvStr}
+            placeholder="API_KEY=abc123"
+          ></textarea>
         </div>
         <div class="mcp-inline-actions">
           <button class="btn btn-primary btn-sm" onclick={handleManualAdd}>Add</button>
-          <button class="btn btn-secondary btn-sm" onclick={() => { showAddForm = false; }}>Cancel</button>
+          <button
+            class="btn btn-secondary btn-sm"
+            onclick={() => {
+              showAddForm = false;
+            }}>Cancel</button
+          >
         </div>
       </div>
     {:else}
-      <button class="btn btn-secondary btn-sm" style="margin-top:8px;" onclick={() => { showAddForm = true; }}>+ Add Server</button>
+      <button
+        class="btn btn-secondary btn-sm"
+        style="margin-top:8px;"
+        onclick={() => {
+          showAddForm = true;
+        }}>+ Add Server</button
+      >
     {/if}
   </div>
 
@@ -174,7 +206,7 @@
     {#if catalog.length === 0}
       <p style="color:var(--text-dim); font-size:13px;">Loading catalog...</p>
     {:else}
-      {#each catalog as srv, i}
+      {#each catalog as srv, i (srv.name)}
         {@const added = isAdded(srv.name)}
         {@const isPending = pendingIdx === i}
         <div class="mcp-item" class:added class:pending={isPending}>
@@ -191,15 +223,18 @@
 
           {#if isPending && srv.requires_input.length > 0}
             <div class="mcp-inline-inputs">
-              {#each srv.requires_input as req}
+              {#each srv.requires_input as req (req.field)}
                 <div class="settings-field mcp-input-field">
-                  <label>{req.label}</label>
+                  <label for="mcp-input-{i}-{req.field}">{req.label}</label>
                   <input
+                    id="mcp-input-{i}-{req.field}"
                     type="text"
                     class:input-error={inputErrors[req.field]}
                     bind:value={pendingInputs[req.field]}
                     placeholder={req.label}
-                    oninput={() => { inputErrors[req.field] = false; }}
+                    oninput={() => {
+                      inputErrors[req.field] = false;
+                    }}
                   />
                 </div>
               {/each}

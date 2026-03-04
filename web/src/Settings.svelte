@@ -1,6 +1,11 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import type { SettingsSection, McpServerEntry, SettingsProviderEntry, SettingsModelAssignments } from "./lib/types";
+  import type {
+    SettingsSection,
+    McpServerEntry,
+    SettingsProviderEntry,
+    SettingsModelAssignments,
+  } from "./lib/types";
   import {
     fetchConfigRaw,
     fetchProvidersRaw,
@@ -59,7 +64,7 @@
   let mcpServers = $state<McpServerEntry[]>([]);
 
   // Secrets tracking
-  let existingSecrets = $state<string[]>([]);
+  let _existingSecrets = $state<string[]>([]);
 
   // ── Sidebar ────────────────────────────────────────────────────────
 
@@ -84,11 +89,11 @@
       rawConfig = cfgRaw;
       rawProviders = provRaw;
       rawMcp = mcpRaw;
-      existingSecrets = secrets;
+      _existingSecrets = secrets;
 
       parseAllToForm();
-    } catch (err) {
-      validationMsg = `Failed to load settings: ${err}`;
+    } catch (err: unknown) {
+      validationMsg = `Failed to load settings: ${String(err)}`;
       validationKind = "error";
     } finally {
       loading = false;
@@ -146,8 +151,8 @@
       }
       validationMsg = "Reloaded from disk.";
       validationKind = "success";
-    } catch (err) {
-      validationMsg = `Reload failed: ${err}`;
+    } catch (err: unknown) {
+      validationMsg = `Reload failed: ${String(err)}`;
       validationKind = "error";
     } finally {
       loading = false;
@@ -176,22 +181,22 @@
       // Validate providers first (config validation reads it from disk)
       const provResult = await validateProviders(provToml);
       if (!provResult.valid) {
-        validationMsg = `providers.toml: ${provResult.error}`;
+        validationMsg = `providers.toml: ${provResult.error ?? "unknown error"}`;
         validationKind = "error";
         return;
       }
 
       const cfgResult = await validateConfig(cfgToml);
       if (!cfgResult.valid) {
-        validationMsg = `config.toml: ${cfgResult.error}`;
+        validationMsg = `config.toml: ${cfgResult.error ?? "unknown error"}`;
         validationKind = "error";
         return;
       }
 
       validationMsg = "Configuration is valid.";
       validationKind = "success";
-    } catch (err) {
-      validationMsg = `Validation error: ${err}`;
+    } catch (err: unknown) {
+      validationMsg = `Validation error: ${String(err)}`;
       validationKind = "error";
     } finally {
       saving = false;
@@ -225,21 +230,21 @@
       // Save providers.toml first (config validation reads it from disk)
       const provResult = await putProvidersRaw(provToml);
       if (!provResult.valid) {
-        validationMsg = `providers.toml: ${provResult.error}`;
+        validationMsg = `providers.toml: ${provResult.error ?? "unknown error"}`;
         validationKind = "error";
         return;
       }
 
       const cfgResult = await putConfigRaw(cfgToml);
       if (!cfgResult.valid) {
-        validationMsg = `config.toml: ${cfgResult.error}`;
+        validationMsg = `config.toml: ${cfgResult.error ?? "unknown error"}`;
         validationKind = "error";
         return;
       }
 
       const mcpResult = await putMcpRaw(mcpJson);
       if (!mcpResult.valid) {
-        validationMsg = `mcp.json: ${mcpResult.error}`;
+        validationMsg = `mcp.json: ${mcpResult.error ?? "unknown error"}`;
         validationKind = "error";
         return;
       }
@@ -251,8 +256,8 @@
 
       validationMsg = "Settings saved and applied.";
       validationKind = "success";
-    } catch (err) {
-      validationMsg = `Save failed: ${err}`;
+    } catch (err: unknown) {
+      validationMsg = `Save failed: ${String(err)}`;
       validationKind = "error";
     } finally {
       saving = false;
@@ -263,7 +268,10 @@
 
   async function storeNewSecrets() {
     // Collect secrets that need storing (non-empty, non-secret: values)
-    const secretOps: { field: "discord_token" | "telegram_token" | "webhook_secret"; name: string }[] = [];
+    const secretOps: {
+      field: "discord_token" | "telegram_token" | "webhook_secret";
+      name: string;
+    }[] = [];
 
     const secretFields = [
       { field: "discord_token" as const, name: "discord" },
@@ -282,7 +290,7 @@
     const provKeyOps: { idx: number; name: string }[] = [];
     for (let i = 0; i < providerEntries.length; i++) {
       const p = providerEntries[i];
-      if (p.apiKey && !p.apiKey.startsWith("secret:") && p.type !== "ollama") {
+      if (p?.apiKey && !p.apiKey.startsWith("secret:") && p.type !== "ollama") {
         provKeyOps.push({ idx: i, name: p.name });
       }
     }
@@ -294,8 +302,10 @@
     }
 
     for (const { idx, name } of provKeyOps) {
-      const result = await storeSecret(name, providerEntries[idx].apiKey);
-      providerEntries[idx].apiKey = result.reference;
+      const entry = providerEntries[idx];
+      if (!entry) continue;
+      const result = await storeSecret(name, entry.apiKey);
+      entry.apiKey = result.reference;
     }
   }
 </script>
@@ -319,11 +329,13 @@
   <div class="settings-body">
     {#if !advancedMode}
       <div class="settings-sidebar">
-        {#each sections as sec}
+        {#each sections as sec (sec.id)}
           <button
             class="settings-sidebar-btn"
             class:active={activeSection === sec.id}
-            onclick={() => { activeSection = sec.id; }}
+            onclick={() => {
+              activeSection = sec.id;
+            }}
           >
             {sec.label}
           </button>
@@ -337,9 +349,27 @@
       {:else if advancedMode}
         <!-- Advanced tabbed editor -->
         <div class="advanced-tabs">
-          <button class="advanced-tab" class:active={advancedTab === "config"} onclick={() => { advancedTab = "config"; }}>config.toml</button>
-          <button class="advanced-tab" class:active={advancedTab === "providers"} onclick={() => { advancedTab = "providers"; }}>providers.toml</button>
-          <button class="advanced-tab" class:active={advancedTab === "mcp"} onclick={() => { advancedTab = "mcp"; }}>mcp.json</button>
+          <button
+            class="advanced-tab"
+            class:active={advancedTab === "config"}
+            onclick={() => {
+              advancedTab = "config";
+            }}>config.toml</button
+          >
+          <button
+            class="advanced-tab"
+            class:active={advancedTab === "providers"}
+            onclick={() => {
+              advancedTab = "providers";
+            }}>providers.toml</button
+          >
+          <button
+            class="advanced-tab"
+            class:active={advancedTab === "mcp"}
+            onclick={() => {
+              advancedTab = "mcp";
+            }}>mcp.json</button
+          >
         </div>
         {#if advancedTab === "config"}
           <textarea class="toml-editor" bind:value={editConfig}></textarea>

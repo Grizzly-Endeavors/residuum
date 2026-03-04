@@ -44,7 +44,11 @@
       <span class="header-title">Residuum</span>
     </div>
   </div>
-  <Setup onComplete={() => { mode = "running"; }} />
+  <Setup
+    onComplete={() => {
+      mode = "running";
+    }}
+  />
 {:else}
   <Header
     status={ws.status}
@@ -54,7 +58,11 @@
     onToggleSettings={handleToggleSettings}
   />
   {#if showSettings}
-    <Settings onClose={() => { showSettings = false; }} />
+    <Settings
+      onClose={() => {
+        showSettings = false;
+      }}
+    />
   {:else}
     <Chat />
   {/if}

@@ -14,13 +14,13 @@ import type {
 export async function fetchStatus(): Promise<StatusResponse> {
   const resp = await fetch("/api/status");
   if (!resp.ok) throw new Error(`status check failed: ${resp.status}`);
-  return resp.json();
+  return (await resp.json()) as StatusResponse;
 }
 
 export async function fetchChatHistory(): Promise<RecentMessage[]> {
   const resp = await fetch("/api/chat/history");
   if (!resp.ok) return [];
-  return resp.json();
+  return (await resp.json()) as RecentMessage[];
 }
 
 // ── Setup API wrappers ──────────────────────────────────────────────
@@ -29,7 +29,7 @@ export async function fetchTimezone(): Promise<string> {
   try {
     const resp = await fetch("/api/system/timezone");
     if (!resp.ok) throw new Error("failed");
-    const data: TimezoneResponse = await resp.json();
+    const data = (await resp.json()) as TimezoneResponse;
     return data.timezone || Intl.DateTimeFormat().resolvedOptions().timeZone || "";
   } catch {
     return Intl.DateTimeFormat().resolvedOptions().timeZone || "";
@@ -50,23 +50,20 @@ export async function fetchProviderModels(
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
   });
-  return resp.json();
+  return (await resp.json()) as ModelsResponse;
 }
 
 export async function fetchMcpCatalog(): Promise<McpCatalogEntry[]> {
   try {
     const resp = await fetch("/api/mcp-catalog");
     if (!resp.ok) return [];
-    return resp.json();
+    return (await resp.json()) as McpCatalogEntry[];
   } catch {
     return [];
   }
 }
 
-export async function storeSecret(
-  name: string,
-  value: string,
-): Promise<SecretResponse> {
+export async function storeSecret(name: string, value: string): Promise<SecretResponse> {
   const resp = await fetch("/api/secrets", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -76,7 +73,7 @@ export async function storeSecret(
     const text = await resp.text();
     throw new Error(`failed to store secret "${name}": ${text}`);
   }
-  return resp.json();
+  return (await resp.json()) as SecretResponse;
 }
 
 export async function completeSetup(
@@ -91,7 +88,7 @@ export async function completeSetup(
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
   });
-  return resp.json();
+  return (await resp.json()) as ValidateResponse;
 }
 
 // ── Settings API wrappers ────────────────────────────────────────────
@@ -108,7 +105,7 @@ export async function putConfigRaw(toml: string): Promise<ValidateResponse> {
     headers: { "Content-Type": "text/plain" },
     body: toml,
   });
-  return resp.json();
+  return (await resp.json()) as ValidateResponse;
 }
 
 export async function validateConfig(toml: string): Promise<ValidateResponse> {
@@ -117,7 +114,7 @@ export async function validateConfig(toml: string): Promise<ValidateResponse> {
     headers: { "Content-Type": "text/plain" },
     body: toml,
   });
-  return resp.json();
+  return (await resp.json()) as ValidateResponse;
 }
 
 export async function fetchProvidersRaw(): Promise<string> {
@@ -132,7 +129,7 @@ export async function putProvidersRaw(toml: string): Promise<ValidateResponse> {
     headers: { "Content-Type": "text/plain" },
     body: toml,
   });
-  return resp.json();
+  return (await resp.json()) as ValidateResponse;
 }
 
 export async function validateProviders(toml: string): Promise<ValidateResponse> {
@@ -141,7 +138,7 @@ export async function validateProviders(toml: string): Promise<ValidateResponse>
     headers: { "Content-Type": "text/plain" },
     body: toml,
   });
-  return resp.json();
+  return (await resp.json()) as ValidateResponse;
 }
 
 export async function fetchMcpRaw(): Promise<string> {
@@ -156,13 +153,13 @@ export async function putMcpRaw(json: string): Promise<ValidateResponse> {
     headers: { "Content-Type": "application/json" },
     body: json,
   });
-  return resp.json();
+  return (await resp.json()) as ValidateResponse;
 }
 
 export async function listSecrets(): Promise<string[]> {
   const resp = await fetch("/api/secrets");
   if (!resp.ok) return [];
-  const data: SecretsListResponse = await resp.json();
+  const data = (await resp.json()) as SecretsListResponse;
   return data.names;
 }
 

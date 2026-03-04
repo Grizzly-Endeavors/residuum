@@ -14,7 +14,7 @@ export function generateConfigToml(state: SetupWizardState): string {
 
   // Discord (top-level section)
   if (state.integrations.discordToken) {
-    const ref = state.secretRefs["discord"] || state.integrations.discordToken;
+    const ref = state.secretRefs["discord"] ?? state.integrations.discordToken;
     lines.push("");
     lines.push("[discord]");
     lines.push(`token = "${ref}"`);
@@ -22,8 +22,7 @@ export function generateConfigToml(state: SetupWizardState): string {
 
   // Telegram (top-level section)
   if (state.integrations.telegramToken) {
-    const ref =
-      state.secretRefs["telegram"] || state.integrations.telegramToken;
+    const ref = state.secretRefs["telegram"] ?? state.integrations.telegramToken;
     lines.push("");
     lines.push("[telegram]");
     lines.push(`token = "${ref}"`);
@@ -38,10 +37,7 @@ export function generateProvidersToml(state: SetupWizardState): string {
   const lines: string[] = [];
 
   // Collect provider entries
-  const providerEntries: Record<
-    string,
-    { type: string; api_key: string; url: string | null }
-  > = {};
+  const providerEntries: Record<string, { type: string; api_key: string; url: string | null }> = {};
 
   for (const prov of state.selectedProviders) {
     const cfg = state.providerConfigs[prov];
@@ -59,6 +55,7 @@ export function generateProvidersToml(state: SetupWizardState): string {
   // Role providers (if different from selected ones)
   for (const role of ["observer", "reflector", "pulse"]) {
     const r = state.roles[role];
+    if (!r) continue;
     const prov = r.provider || state.mainProvider;
     if (!providerEntries[prov] && prov !== "ollama" && r.apiKey) {
       providerEntries[prov] = {
@@ -79,7 +76,7 @@ export function generateProvidersToml(state: SetupWizardState): string {
     }
     lines.push(`[providers.${name}]`);
     lines.push(`type = "${cfg.type}"`);
-    const keyRef = state.secretRefs[name] || cfg.api_key;
+    const keyRef = state.secretRefs[name] ?? cfg.api_key;
     lines.push(`api_key = "${keyRef}"`);
     if (cfg.url) lines.push(`url = "${cfg.url}"`);
     lines.push("");
@@ -87,13 +84,13 @@ export function generateProvidersToml(state: SetupWizardState): string {
 
   // Models section
   const mainCfg = state.providerConfigs[state.mainProvider];
-  const mainModel =
-    mainCfg.model || DEFAULT_MODELS[state.mainProvider] || "";
+  const mainModel = mainCfg.model || DEFAULT_MODELS[state.mainProvider] || "";
   lines.push("[models]");
   lines.push(`main = "${state.mainProvider}/${mainModel}"`);
 
   for (const role of ["observer", "reflector", "pulse"]) {
     const r = state.roles[role];
+    if (!r) continue;
     const prov = r.provider || state.mainProvider;
     if (r.model) {
       lines.push(`${role} = "${prov}/${r.model}"`);
@@ -102,15 +99,14 @@ export function generateProvidersToml(state: SetupWizardState): string {
 
   // Embedding model
   if (state.embeddingModel.provider && state.embeddingModel.model) {
-    lines.push(
-      `embedding = "${state.embeddingModel.provider}/${state.embeddingModel.model}"`,
-    );
+    lines.push(`embedding = "${state.embeddingModel.provider}/${state.embeddingModel.model}"`);
   }
 
   // Background model tiers (lives in providers.toml alongside other model config)
   const bgEntries: { tier: string; prov: string; model: string }[] = [];
   for (const tier of ["small", "medium", "large"]) {
     const bg = state.backgroundModels[tier];
+    if (!bg) continue;
     const prov = bg.provider || state.mainProvider;
     if (bg.model) {
       bgEntries.push({ tier, prov, model: bg.model });
@@ -139,8 +135,8 @@ export function generateMcpJson(state: SetupWizardState): string {
     const entry: { command: string; args?: string[]; env?: Record<string, string> } = {
       command: srv.command,
     };
-    if (srv.args && srv.args.length > 0) entry.args = srv.args;
-    if (srv.env && Object.keys(srv.env).length > 0) entry.env = srv.env;
+    if (srv.args.length > 0) entry.args = srv.args;
+    if (Object.keys(srv.env).length > 0) entry.env = srv.env;
     servers[srv.name] = entry;
   }
 

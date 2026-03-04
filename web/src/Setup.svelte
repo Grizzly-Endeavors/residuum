@@ -19,7 +19,7 @@
   let step = $state(0);
   let catalog = $state<McpCatalogEntry[]>([]);
 
-  let state = $state<SetupWizardState>({
+  let wizardState = $state<SetupWizardState>({
     userName: "",
     timezone: "",
     selectedProviders: ["anthropic"] as ProviderKey[],
@@ -48,7 +48,7 @@
 
   onMount(async () => {
     const [tz, cat] = await Promise.all([fetchTimezone(), fetchMcpCatalog()]);
-    state.timezone = tz;
+    wizardState.timezone = tz;
     catalog = cat;
   });
 
@@ -65,27 +65,23 @@
   <div class="setup-body">
     <div class="setup-card">
       <div class="setup-step-indicator">
-        {#each Array(TOTAL_STEPS) as _, i}
-          <div
-            class="step-dot"
-            class:active={i === step}
-            class:done={i < step}
-          ></div>
+        {#each Array(TOTAL_STEPS) as _, i (i)}
+          <div class="step-dot" class:active={i === step} class:done={i < step}></div>
         {/each}
       </div>
 
       {#if step === 0}
-        <Welcome wizardState={state} onNext={next} />
+        <Welcome {wizardState} onNext={next} />
       {:else if step === 1}
-        <Providers wizardState={state} onNext={next} onBack={back} />
+        <Providers {wizardState} onNext={next} onBack={back} />
       {:else if step === 2}
-        <Roles wizardState={state} onNext={next} onBack={back} />
+        <Roles {wizardState} onNext={next} onBack={back} />
       {:else if step === 3}
-        <MCP wizardState={state} {catalog} onNext={next} onBack={back} />
+        <MCP {wizardState} {catalog} onNext={next} onBack={back} />
       {:else if step === 4}
-        <Integrations wizardState={state} onNext={next} onBack={back} />
+        <Integrations {wizardState} onNext={next} onBack={back} />
       {:else if step === 5}
-        <Review wizardState={state} onBack={back} {onComplete} />
+        <Review {wizardState} onBack={back} {onComplete} />
       {/if}
     </div>
   </div>

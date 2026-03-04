@@ -12,14 +12,27 @@ NC='\033[0m'
 
 echo -e "${YELLOW}Running pre-push checks...${NC}"
 
-# Full test suite (including ignored tests if any)
-echo -e "\n${YELLOW}Running full test suite...${NC}"
+# Full Rust test suite
+echo -e "\n${YELLOW}[1/2] Running full test suite...${NC}"
 if ! OUTPUT=$(cargo test --all-targets --quiet 2>&1); then
     echo "$OUTPUT"
     echo -e "${RED}ERROR: Tests failed. Push aborted.${NC}"
     exit 1
 fi
 echo -e "${GREEN}✓ All tests passed${NC}"
+
+# Web type check
+if [ -d "web/node_modules" ]; then
+    echo -e "\n${YELLOW}[2/2] Running web type check...${NC}"
+    if ! OUTPUT=$(cd web && npm run check 2>&1); then
+        echo "$OUTPUT"
+        echo -e "${RED}ERROR: svelte-check failed. Push aborted.${NC}"
+        exit 1
+    fi
+    echo -e "${GREEN}✓ Web type check OK${NC}"
+else
+    echo -e "\n${YELLOW}[2/2] Skipping web type check (node_modules not installed)${NC}"
+fi
 
 # Check for uncommitted changes (sanity check)
 if ! git diff --quiet || ! git diff --cached --quiet; then

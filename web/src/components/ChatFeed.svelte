@@ -10,7 +10,11 @@
   import ToolGroup from "./ToolGroup.svelte";
   import ThinkingIndicator from "./ThinkingIndicator.svelte";
 
-  let { items, isProcessing, verbose }: {
+  let {
+    items,
+    isProcessing,
+    verbose,
+  }: {
     items: FeedItem[];
     isProcessing: boolean;
     verbose: boolean;
@@ -20,7 +24,7 @@
 
   function scrollToBottom() {
     if (!feedEl) return;
-    requestAnimationFrame(() => {
+    window.requestAnimationFrame(() => {
       if (feedEl) feedEl.scrollTop = feedEl.scrollHeight;
     });
   }
@@ -29,7 +33,7 @@
     // scroll when items change
     items.length;
     isProcessing;
-    tick().then(scrollToBottom);
+    void tick().then(scrollToBottom);
   });
 </script>
 

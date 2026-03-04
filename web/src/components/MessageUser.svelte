@@ -5,5 +5,6 @@
 </script>
 
 <div class="msg msg-user">
+  <!-- eslint-disable svelte/no-at-html-tags -->
   <div class="msg-content">{@html escapeHtml(content)}</div>
 </div>

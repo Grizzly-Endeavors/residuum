@@ -48,13 +48,6 @@
 </script>
 
 <div class="chat-view">
-  <ChatFeed
-    items={ws.feed}
-    isProcessing={ws.isProcessing}
-    verbose={ws.verbose}
-  />
-  <ChatInput
-    onSend={handleSend}
-    disabled={ws.status !== "connected"}
-  />
+  <ChatFeed items={ws.feed} isProcessing={ws.isProcessing} verbose={ws.verbose} />
+  <ChatInput onSend={handleSend} disabled={ws.status !== "connected"} />
 </div>

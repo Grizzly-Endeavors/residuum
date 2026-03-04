@@ -13,8 +13,9 @@
 <p class="subtitle">Let's get your agent configured. This will only take a minute.</p>
 
 <div class="settings-field">
-  <label>Your Name</label>
+  <label for="welcome-name">Your Name</label>
   <input
+    id="welcome-name"
     type="text"
     bind:value={wizardState.userName}
     placeholder="What should your agent call you?"
@@ -22,8 +23,9 @@
 </div>
 
 <div class="settings-field">
-  <label>Timezone (IANA format)</label>
+  <label for="welcome-timezone">Timezone (IANA format)</label>
   <input
+    id="welcome-timezone"
     type="text"
     bind:value={wizardState.timezone}
     placeholder="America/New_York"

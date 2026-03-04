@@ -57,9 +57,7 @@ export const EMBEDDING_MODEL_LISTS: Record<string, ModelEntry[]> = {
     { id: "text-embedding-3-large", name: "text-embedding-3-large" },
     { id: "text-embedding-ada-002", name: "text-embedding-ada-002" },
   ],
-  gemini: [
-    { id: "gemini-embedding-001", name: "gemini-embedding-001" },
-  ],
+  gemini: [{ id: "gemini-embedding-001", name: "gemini-embedding-001" }],
   ollama: [
     { id: "nomic-embed-text", name: "nomic-embed-text" },
     { id: "mxbai-embed-large", name: "mxbai-embed-large" },
@@ -72,7 +70,7 @@ export const EMBEDDING_PROVIDERS = ["openai", "gemini", "ollama"];
 const cache: Record<string, FetchResult> = {};
 
 function cacheKey(provider: string, apiKey?: string, url?: string): string {
-  return `${provider}:${apiKey || ""}:${url || ""}`;
+  return `${provider}:${apiKey ?? ""}:${url ?? ""}`;
 }
 
 export async function fetchModels(
@@ -81,23 +79,24 @@ export async function fetchModels(
   url?: string,
 ): Promise<FetchResult> {
   const key = cacheKey(provider, apiKey, url);
-  if (cache[key]) return cache[key];
+  const cached = cache[key];
+  if (cached) return cached;
 
   try {
     const data = await fetchProviderModels(provider, apiKey, url);
-    if (data.models && data.models.length > 0) {
+    if (data.models.length > 0) {
       const result: FetchResult = { models: data.models, error: null };
       cache[key] = result;
       return result;
     }
     return {
-      models: FALLBACK_MODELS[provider] || [],
-      error: data.error || "no models returned",
+      models: FALLBACK_MODELS[provider] ?? [],
+      error: data.error ?? "no models returned",
     };
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err);
     return {
-      models: FALLBACK_MODELS[provider] || [],
+      models: FALLBACK_MODELS[provider] ?? [],
       error: message,
     };
   }
@@ -117,13 +116,15 @@ export function invalidateAll(): void {
   }
 }
 
-export function debounce<T extends (...args: unknown[]) => void>(
-  fn: T,
+export function debounce<A extends unknown[]>(
+  fn: (...args: A) => void,
   ms: number,
-): (...args: Parameters<T>) => void {
+): (...args: A) => void {
   let timer: ReturnType<typeof setTimeout>;
-  return function (...args: Parameters<T>) {
+  return function (...args: A): void {
     clearTimeout(timer);
-    timer = setTimeout(() => fn(...args), ms);
+    timer = setTimeout(() => {
+      fn(...args);
+    }, ms);
   };
 }

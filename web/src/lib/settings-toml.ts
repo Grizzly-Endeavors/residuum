@@ -4,11 +4,7 @@
 // Uses smol-toml for parsing and line-building for serialization (matching toml.ts).
 
 import { parse as parseToml } from "smol-toml";
-import type {
-  McpServerEntry,
-  SettingsProviderEntry,
-  SettingsModelAssignments,
-} from "./types";
+import type { McpServerEntry, SettingsProviderEntry, SettingsModelAssignments } from "./types";
 
 // ── Config form fields (config.toml) ─────────────────────────────────
 
@@ -93,7 +89,9 @@ export function defaultConfigFields(): ConfigFields {
 
 // Helper to safely read nested TOML values
 function str(v: unknown): string {
-  return v == null ? "" : String(v);
+  if (v == null) return "";
+  if (typeof v === "object") return JSON.stringify(v);
+  return String(v as string | number | boolean);
 }
 
 function bool(v: unknown, fallback: boolean): boolean {
@@ -259,7 +257,9 @@ export function parseProvidersToml(raw: string): ProvidersFormState {
 /** Model values can be a string or array (failover). Show first entry for form. */
 function modelStr(v: unknown): string {
   if (Array.isArray(v)) return v.length > 0 ? String(v[0]) : "";
-  return v == null ? "" : String(v);
+  if (v == null) return "";
+  if (typeof v === "object") return JSON.stringify(v);
+  return String(v as string | number | boolean);
 }
 
 // ── MCP (mcp.json) ──────────────────────────────────────────────────
@@ -268,12 +268,12 @@ export function parseMcpJson(raw: string): McpServerEntry[] {
   if (!raw.trim()) return [];
   try {
     const doc = JSON.parse(raw) as Record<string, unknown>;
-    const servers = (doc.mcpServers || {}) as Record<string, Record<string, unknown>>;
+    const servers = (doc.mcpServers as Record<string, Record<string, unknown>> | undefined) ?? {};
     return Object.entries(servers).map(([name, srv]) => ({
       name,
       command: str(srv.command),
       args: Array.isArray(srv.args) ? (srv.args as string[]) : [],
-      env: (srv.env || {}) as Record<string, string>,
+      env: (srv.env ?? {}) as Record<string, string>,
     }));
   } catch {
     return [];
@@ -309,18 +309,24 @@ export function serializeConfigToml(f: ConfigFields): string {
 
   // memory
   const memLines: string[] = [];
-  if (f.observer_threshold_tokens) memLines.push(`observer_threshold_tokens = ${f.observer_threshold_tokens}`);
-  if (f.reflector_threshold_tokens) memLines.push(`reflector_threshold_tokens = ${f.reflector_threshold_tokens}`);
-  if (f.observer_cooldown_secs) memLines.push(`observer_cooldown_secs = ${f.observer_cooldown_secs}`);
-  if (f.observer_force_threshold_tokens) memLines.push(`observer_force_threshold_tokens = ${f.observer_force_threshold_tokens}`);
+  if (f.observer_threshold_tokens)
+    memLines.push(`observer_threshold_tokens = ${f.observer_threshold_tokens}`);
+  if (f.reflector_threshold_tokens)
+    memLines.push(`reflector_threshold_tokens = ${f.reflector_threshold_tokens}`);
+  if (f.observer_cooldown_secs)
+    memLines.push(`observer_cooldown_secs = ${f.observer_cooldown_secs}`);
+  if (f.observer_force_threshold_tokens)
+    memLines.push(`observer_force_threshold_tokens = ${f.observer_force_threshold_tokens}`);
 
   const searchLines: string[] = [];
   if (f.search_vector_weight) searchLines.push(`vector_weight = ${f.search_vector_weight}`);
   if (f.search_text_weight) searchLines.push(`text_weight = ${f.search_text_weight}`);
   if (f.search_min_score) searchLines.push(`min_score = ${f.search_min_score}`);
-  if (f.search_candidate_multiplier) searchLines.push(`candidate_multiplier = ${f.search_candidate_multiplier}`);
+  if (f.search_candidate_multiplier)
+    searchLines.push(`candidate_multiplier = ${f.search_candidate_multiplier}`);
   if (f.search_temporal_decay) searchLines.push(`temporal_decay = true`);
-  if (f.search_temporal_decay_half_life_days) searchLines.push(`temporal_decay_half_life_days = ${f.search_temporal_decay_half_life_days}`);
+  if (f.search_temporal_decay_half_life_days)
+    searchLines.push(`temporal_decay_half_life_days = ${f.search_temporal_decay_half_life_days}`);
 
   if (memLines.length > 0 || searchLines.length > 0) {
     lines.push("");
@@ -364,13 +370,19 @@ export function serializeConfigToml(f: ConfigFields): string {
   }
 
   // retry
-  if (f.retry_max_retries || f.retry_initial_delay_ms || f.retry_max_delay_ms || f.retry_backoff_multiplier) {
+  if (
+    f.retry_max_retries ||
+    f.retry_initial_delay_ms ||
+    f.retry_max_delay_ms ||
+    f.retry_backoff_multiplier
+  ) {
     lines.push("");
     lines.push("[retry]");
     if (f.retry_max_retries) lines.push(`max_retries = ${f.retry_max_retries}`);
     if (f.retry_initial_delay_ms) lines.push(`initial_delay_ms = ${f.retry_initial_delay_ms}`);
     if (f.retry_max_delay_ms) lines.push(`max_delay_ms = ${f.retry_max_delay_ms}`);
-    if (f.retry_backoff_multiplier) lines.push(`backoff_multiplier = ${f.retry_backoff_multiplier}`);
+    if (f.retry_backoff_multiplier)
+      lines.push(`backoff_multiplier = ${f.retry_backoff_multiplier}`);
   }
 
   // background
@@ -378,7 +390,8 @@ export function serializeConfigToml(f: ConfigFields): string {
     lines.push("");
     lines.push("[background]");
     if (f.bg_max_concurrent) lines.push(`max_concurrent = ${f.bg_max_concurrent}`);
-    if (f.bg_transcript_retention_days) lines.push(`transcript_retention_days = ${f.bg_transcript_retention_days}`);
+    if (f.bg_transcript_retention_days)
+      lines.push(`transcript_retention_days = ${f.bg_transcript_retention_days}`);
   }
 
   // agent
@@ -440,13 +453,14 @@ export function serializeProvidersToml(
 
 /** Serialize MCP servers back to mcp.json. */
 export function serializeMcpJson(servers: McpServerEntry[]): string {
-  const obj: Record<string, { command: string; args?: string[]; env?: Record<string, string> }> = {};
+  const obj: Record<string, { command: string; args?: string[]; env?: Record<string, string> }> =
+    {};
   for (const srv of servers) {
     const entry: { command: string; args?: string[]; env?: Record<string, string> } = {
       command: srv.command,
     };
-    if (srv.args && srv.args.length > 0) entry.args = srv.args;
-    if (srv.env && Object.keys(srv.env).length > 0) entry.env = srv.env;
+    if (srv.args.length > 0) entry.args = srv.args;
+    if (Object.keys(srv.env).length > 0) entry.env = srv.env;
     obj[srv.name] = entry;
   }
   return JSON.stringify({ mcpServers: obj }, null, 2) + "\n";

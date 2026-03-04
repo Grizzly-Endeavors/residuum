@@ -24,14 +24,11 @@ const HELP_TEXT = `Available commands:
   /reload        Reload gateway configuration
   /inbox <text>  Add a message to the inbox`;
 
-export function parseCommand(
-  input: string,
-  ctx: CommandContext,
-): CommandResult | null {
+export function parseCommand(input: string, ctx: CommandContext): CommandResult | null {
   if (!input.startsWith("/")) return null;
 
   const parts = input.split(/\s+/);
-  const cmd = parts[0].toLowerCase();
+  const cmd = (parts[0] ?? "/").toLowerCase();
   const args = parts.slice(1).join(" ");
 
   switch (cmd) {

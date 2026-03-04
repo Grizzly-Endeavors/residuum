@@ -31,6 +31,21 @@ jobs:
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
+      - name: Install web dependencies
+        run: cd web && npm ci
+
+      - name: Web format check
+        id: web_format
+        run: cd web && npm run format:check
+
+      - name: Web lint
+        id: web_lint
+        run: cd web && npm run lint
+
+      - name: Web type check
+        id: web_typecheck
+        run: cd web && npm run check
+
       - name: Check formatting
         id: fmt
         run: cargo fmt --check
@@ -57,6 +72,9 @@ jobs:
           echo '' >> "$GITHUB_STEP_SUMMARY"
           echo '| Check | Status |' >> "$GITHUB_STEP_SUMMARY"
           echo '|-------|--------|' >> "$GITHUB_STEP_SUMMARY"
+          echo "| Web Format | ${{ steps.web_format.outcome }} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Web Lint | ${{ steps.web_lint.outcome }} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Web Types | ${{ steps.web_typecheck.outcome }} |" >> "$GITHUB_STEP_SUMMARY"
           echo "| Format | ${{ steps.fmt.outcome }} |" >> "$GITHUB_STEP_SUMMARY"
           echo "| Clippy | ${{ steps.clippy.outcome }} |" >> "$GITHUB_STEP_SUMMARY"
           echo "| Tests | ${{ steps.test.outcome }} |" >> "$GITHUB_STEP_SUMMARY"
@@ -91,6 +109,15 @@ jobs:
       - name: Install Rust toolchain (macOS)
         if: runner.os == 'macOS'
         uses: dtolnay/rust-toolchain@stable
+
+      - name: Setup Node.js (macOS)
+        if: runner.os == 'macOS'
+        uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+
+      - name: Build web assets
+        run: cd web && npm ci && npm run build
 
       - name: Add target
         if: matrix.cross
