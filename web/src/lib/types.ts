@@ -143,6 +143,37 @@ export interface ValidateResponse {
   error?: string;
 }
 
+// ── Settings types ───────────────────────────────────────────────────
+
+export type SettingsSection = "runtime" | "providers" | "memory" | "integrations" | "mcp";
+
+export interface SettingsProviderEntry {
+  name: string;
+  type: string;
+  apiKey: string;
+  url: string;
+}
+
+export interface SettingsModelAssignments {
+  main: string;
+  default: string;
+  observer: string;
+  reflector: string;
+  pulse: string;
+  embedding: string;
+  bgSmall: string;
+  bgMedium: string;
+  bgLarge: string;
+}
+
+export interface SecretsListResponse {
+  names: string[];
+}
+
+export interface DeleteSecretResponse {
+  deleted: boolean;
+}
+
 // ── Feed items (UI rendering) ────────────────────────────────────────
 
 export type ConnectionStatus =

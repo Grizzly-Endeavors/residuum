@@ -5,8 +5,10 @@
   import Header from "./components/Header.svelte";
   import Chat from "./Chat.svelte";
   import Setup from "./Setup.svelte";
+  import Settings from "./Settings.svelte";
 
   let mode = $state<"loading" | "setup" | "running">("loading");
+  let showSettings = $state(false);
 
   onMount(async () => {
     try {
@@ -20,6 +22,10 @@
 
   function handleToggleVerbose() {
     ws.setVerbose(!ws.verbose);
+  }
+
+  function handleToggleSettings() {
+    showSettings = !showSettings;
   }
 </script>
 
@@ -43,7 +49,13 @@
   <Header
     status={ws.status}
     verbose={ws.verbose}
+    {showSettings}
     onToggleVerbose={handleToggleVerbose}
+    onToggleSettings={handleToggleSettings}
   />
-  <Chat />
+  {#if showSettings}
+    <Settings onClose={() => { showSettings = false; }} />
+  {:else}
+    <Chat />
+  {/if}
 {/if}
