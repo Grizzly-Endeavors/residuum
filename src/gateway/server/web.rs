@@ -1,6 +1,6 @@
 //! Web UI static asset serving and config API endpoints.
 //!
-//! Embeds the `assets/web/` directory into the binary via `rust-embed`.
+//! Embeds the `web/dist/` directory into the binary via `rust-embed`.
 //! In debug builds, files are served from disk (hot-reload); in release
 //! builds, they are compiled into the binary.
 
@@ -31,9 +31,9 @@ mod embedded {
 
     use rust_embed::Embed;
 
-    /// Embedded web assets from `assets/web/`.
+    /// Embedded web assets from `web/dist/`.
     #[derive(Embed)]
-    #[folder = "assets/web/"]
+    #[folder = "web/dist/"]
     pub(super) struct WebAssets;
 }
 use embedded::WebAssets;
@@ -737,12 +737,12 @@ mod tests {
     }
 
     #[test]
-    fn serve_embedded_returns_css_content_type() {
-        let resp = serve_embedded("style.css").unwrap();
+    fn serve_embedded_returns_json_content_type() {
+        let resp = serve_embedded("mcp-catalog.json").unwrap();
         let ct = resp.headers().get(header::CONTENT_TYPE).unwrap();
         assert!(
-            ct.to_str().unwrap().contains("css"),
-            "content type should be css"
+            ct.to_str().unwrap().contains("json"),
+            "content type should be json"
         );
     }
 

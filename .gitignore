@@ -5,3 +5,5 @@
 .vscode/
 .claude/
 reference-mats/
+web/node_modules/
+web/dist/
