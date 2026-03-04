@@ -51,6 +51,16 @@ pub(crate) struct ProvidersFile {
     pub(super) providers: Option<HashMap<String, ProviderEntryFile>>,
     /// Role → model string assignments.
     pub(super) models: Option<ModelsConfigFile>,
+    /// Background task model tier assignments.
+    pub(super) background: Option<BackgroundProviderSection>,
+}
+
+/// Wrapper for `[background]` in `providers.toml` (only contains models).
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct BackgroundProviderSection {
+    /// Model tier assignments for background tasks.
+    pub(super) models: Option<BackgroundModelsFile>,
 }
 
 /// A named provider entry under `[providers.<name>]`.
@@ -218,7 +228,7 @@ pub(super) struct AgentConfigFile {
     pub(super) modify_channels: Option<bool>,
 }
 
-/// Raw TOML `[background]` section.
+/// Raw TOML `[background]` section (in `config.toml`).
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct BackgroundConfigFile {
@@ -226,8 +236,6 @@ pub(super) struct BackgroundConfigFile {
     pub(super) max_concurrent: Option<usize>,
     /// Number of days to retain background task transcripts.
     pub(super) transcript_retention_days: Option<u64>,
-    /// Model tier assignments for background tasks.
-    pub(super) models: Option<BackgroundModelsFile>,
 }
 
 /// Raw TOML `[background.models]` section.

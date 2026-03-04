@@ -128,6 +128,10 @@ async fn run_serve_foreground_inner(args: &[String]) -> Result<(), ResiduumError
         // Load the config written by the wizard and run the gateway
         let mut cfg = Config::load_at(&tmp_dir)?;
         cfg.workspace_dir = tmp_dir.join("workspace");
+        if let Some(first) = cfg.skills.dirs.first_mut() {
+            *first =
+                residuum::workspace::layout::WorkspaceLayout::new(&cfg.workspace_dir).skills_dir();
+        }
         tracing::info!(
             model = cfg.main.first().map_or("(none)", |s| s.model.model.as_str()),
             provider_url = cfg.main.first().map_or("(none)", |s| s.provider_url.as_str()),

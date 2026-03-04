@@ -234,6 +234,7 @@ pub(super) async fn handle_root_reload(rt: &mut GatewayRuntime) {
                     memory_dir: Some(rt.layout.memory_dir()),
                     reload_tx: Some(rt.reload_tx.clone()),
                     setup_done: None,
+                    secret_lock: std::sync::Arc::new(tokio::sync::Mutex::new(())),
                 };
                 let app = super::build_gateway_app(state, &new_cfg, config_api_state);
 

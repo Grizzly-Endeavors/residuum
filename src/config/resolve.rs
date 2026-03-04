@@ -11,9 +11,9 @@ use super::Config;
 use super::bootstrap::default_workspace_dir;
 use super::constants::{DEFAULT_MAX_TOKENS, DEFAULT_TIMEOUT_SECS};
 use super::deserialize::{
-    AgentConfigFile, BackgroundConfigFile, ConfigFile, DiscordConfigFile, GatewayConfigFile,
-    ModelStringOrList, ProviderEntryFile, ProvidersFile, SearchConfigFile, SkillsConfigFile,
-    TelegramConfigFile, WebhookConfigFile,
+    AgentConfigFile, BackgroundConfigFile, BackgroundModelsFile, ConfigFile, DiscordConfigFile,
+    GatewayConfigFile, ModelStringOrList, ProviderEntryFile, ProvidersFile, SearchConfigFile,
+    SkillsConfigFile, TelegramConfigFile, WebhookConfigFile,
 };
 use super::provider::{ModelSpec, ProviderKind, ProviderSpec};
 use super::secrets::SecretStore;
@@ -159,6 +159,9 @@ pub(crate) fn from_file_and_env(
 
     let background = resolve_background_config(
         file.and_then(|f| f.background.as_ref()),
+        providers_file
+            .and_then(|pf| pf.background.as_ref())
+            .and_then(|b| b.models.as_ref()),
         providers_map,
         &secrets,
     )?;
@@ -555,29 +558,32 @@ fn resolve_agent_config(section: Option<&AgentConfigFile>) -> AgentAbilitiesConf
     cfg
 }
 
-/// Resolve background task configuration from TOML section.
+/// Resolve background task configuration.
+///
+/// Reads `max_concurrent` and `transcript_retention_days` from `config.toml`'s
+/// `[background]` section, and model tiers from `providers.toml`'s
+/// `[background.models]` section.
 ///
 /// # Errors
 /// Returns `ResiduumError::Config` if a model tier string cannot be resolved.
 fn resolve_background_config(
     section: Option<&BackgroundConfigFile>,
+    models_section: Option<&BackgroundModelsFile>,
     providers_map: Option<&HashMap<String, ProviderEntryFile>>,
     secrets: &SecretStore,
 ) -> Result<BackgroundConfig, ResiduumError> {
     let mut cfg = BackgroundConfig::default();
 
-    let Some(section) = section else {
-        return Ok(cfg);
-    };
-
-    if let Some(v) = section.max_concurrent {
-        cfg.max_concurrent = v;
-    }
-    if let Some(v) = section.transcript_retention_days {
-        cfg.transcript_retention_days = v;
+    if let Some(section) = section {
+        if let Some(v) = section.max_concurrent {
+            cfg.max_concurrent = v;
+        }
+        if let Some(v) = section.transcript_retention_days {
+            cfg.transcript_retention_days = v;
+        }
     }
 
-    if let Some(models_section) = section.models.as_ref() {
+    if let Some(models_section) = models_section {
         cfg.models.small = models_section
             .small
             .clone()

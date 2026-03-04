@@ -18,22 +18,6 @@
     return wizardState.mcpServers.some((s) => s.name === name);
   }
 
-  function setNestedField(
-    obj: Record<string, unknown>,
-    path: string,
-    value: string,
-  ) {
-    const parts = path.split(".");
-    let target: Record<string, unknown> = obj;
-    for (let i = 0; i < parts.length - 1; i++) {
-      if (!target[parts[i]] || typeof target[parts[i]] !== "object") {
-        target[parts[i]] = {};
-      }
-      target = target[parts[i]] as Record<string, unknown>;
-    }
-    target[parts[parts.length - 1]] = value;
-  }
-
   function handleAdd(idx: number) {
     const srv = catalog[idx];
     if (!srv) return;
@@ -75,10 +59,11 @@
     }
     if (hasError) return;
 
-    // Build env with user values
+    // Build env with user values — strip "env." prefix from catalog field names
     const env = { ...(srv.env || {}) };
     for (const req of srv.requires_input) {
-      setNestedField(env, req.field, pendingInputs[req.field].trim());
+      const key = req.field.startsWith("env.") ? req.field.slice(4) : req.field;
+      env[key] = pendingInputs[req.field].trim();
     }
 
     wizardState.mcpServers.push({
