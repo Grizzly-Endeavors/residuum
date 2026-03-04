@@ -1,0 +1,112 @@
+// ── Model Fetcher ───────────────────────────────────────────────────
+//
+// Cached model list fetcher for provider API dropdowns.
+
+import { fetchProviderModels } from "./api";
+
+export interface ModelEntry {
+  id: string;
+  name: string;
+}
+
+interface FetchResult {
+  models: ModelEntry[];
+  error: string | null;
+}
+
+export const FALLBACK_MODELS: Record<string, ModelEntry[]> = {
+  anthropic: [
+    { id: "claude-sonnet-4-6", name: "Claude Sonnet 4.6" },
+    { id: "claude-haiku-4-5", name: "Claude Haiku 4.5" },
+    { id: "claude-opus-4-6", name: "Claude Opus 4.6" },
+  ],
+  openai: [
+    { id: "gpt-4o", name: "gpt-4o" },
+    { id: "gpt-4o-mini", name: "gpt-4o-mini" },
+    { id: "o3-mini", name: "o3-mini" },
+  ],
+  gemini: [
+    { id: "gemini-2.5-pro", name: "Gemini 2.5 Pro" },
+    { id: "gemini-2.5-flash", name: "Gemini 2.5 Flash" },
+    { id: "gemini-2.0-flash", name: "Gemini 2.0 Flash" },
+  ],
+  ollama: [
+    { id: "llama3.1", name: "llama3.1" },
+    { id: "mistral", name: "mistral" },
+    { id: "qwen2.5", name: "qwen2.5" },
+  ],
+};
+
+export const DEFAULT_MODELS: Record<string, string> = {
+  anthropic: "claude-sonnet-4-6",
+  openai: "gpt-4o",
+  gemini: "gemini-2.5-flash",
+  ollama: "llama3.1",
+};
+
+export const DEFAULT_EMBEDDING_MODELS: Record<string, string> = {
+  openai: "text-embedding-3-small",
+  gemini: "gemini-embedding-001",
+  ollama: "nomic-embed-text",
+};
+
+export const EMBEDDING_PROVIDERS = ["openai", "gemini", "ollama"];
+
+const cache: Record<string, FetchResult> = {};
+
+function cacheKey(provider: string, apiKey?: string, url?: string): string {
+  return `${provider}:${apiKey || ""}:${url || ""}`;
+}
+
+export async function fetchModels(
+  provider: string,
+  apiKey?: string,
+  url?: string,
+): Promise<FetchResult> {
+  const key = cacheKey(provider, apiKey, url);
+  if (cache[key]) return cache[key];
+
+  try {
+    const data = await fetchProviderModels(provider, apiKey, url);
+    if (data.models && data.models.length > 0) {
+      const result: FetchResult = { models: data.models, error: null };
+      cache[key] = result;
+      return result;
+    }
+    return {
+      models: FALLBACK_MODELS[provider] || [],
+      error: data.error || "no models returned",
+    };
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : String(err);
+    return {
+      models: FALLBACK_MODELS[provider] || [],
+      error: message,
+    };
+  }
+}
+
+export function invalidateProvider(provider: string): void {
+  for (const key of Object.keys(cache)) {
+    if (key.startsWith(provider + ":")) {
+      delete cache[key];
+    }
+  }
+}
+
+export function invalidateAll(): void {
+  for (const key of Object.keys(cache)) {
+    delete cache[key];
+  }
+}
+
+export function debounce<T extends (...args: unknown[]) => void>(
+  fn: T,
+  ms: number,
+): (...args: Parameters<T>) => void {
+  let timer: ReturnType<typeof setTimeout>;
+  return function (...args: Parameters<T>) {
+    clearTimeout(timer);
+    timer = setTimeout(() => fn(...args), ms);
+  };
+}

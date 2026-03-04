@@ -54,6 +54,95 @@ export interface StatusResponse {
   mode: "setup" | "running";
 }
 
+// ── Setup wizard types ──────────────────────────────────────────────
+
+export type ProviderKey = "anthropic" | "openai" | "gemini" | "ollama";
+
+export interface ProviderConfig {
+  apiKey: string;
+  model: string;
+  url: string;
+}
+
+export interface RoleConfig {
+  provider: string;
+  apiKey: string;
+  url: string;
+  model: string;
+}
+
+export interface EmbeddingConfig {
+  provider: string;
+  model: string;
+}
+
+export interface BackgroundModelConfig {
+  provider: string;
+  model: string;
+}
+
+export interface McpServerEntry {
+  name: string;
+  command: string;
+  args: string[];
+  env: Record<string, string>;
+}
+
+export interface McpRequiredInput {
+  field: string;
+  label: string;
+}
+
+export interface McpCatalogEntry {
+  name: string;
+  description: string;
+  command: string;
+  args: string[];
+  env: Record<string, string>;
+  category: string;
+  requires_input: McpRequiredInput[];
+  install_hint: string;
+}
+
+export interface IntegrationsConfig {
+  discordToken: string;
+  telegramToken: string;
+}
+
+export interface SetupWizardState {
+  userName: string;
+  timezone: string;
+  selectedProviders: ProviderKey[];
+  providerConfigs: Record<ProviderKey, ProviderConfig>;
+  mainProvider: ProviderKey;
+  roles: Record<string, RoleConfig>;
+  embeddingModel: EmbeddingConfig;
+  backgroundModels: Record<string, BackgroundModelConfig>;
+  mcpServers: McpServerEntry[];
+  integrations: IntegrationsConfig;
+  secretRefs: Record<string, string>;
+}
+
+// ── Setup API response types ────────────────────────────────────────
+
+export interface TimezoneResponse {
+  timezone: string;
+}
+
+export interface ModelsResponse {
+  models: { id: string; name: string }[];
+  error?: string;
+}
+
+export interface SecretResponse {
+  reference: string;
+}
+
+export interface ValidateResponse {
+  valid: boolean;
+  error?: string;
+}
+
 // ── Feed items (UI rendering) ────────────────────────────────────────
 
 export type ConnectionStatus =

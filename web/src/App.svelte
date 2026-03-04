@@ -4,6 +4,7 @@
   import { ws } from "./lib/ws.svelte";
   import Header from "./components/Header.svelte";
   import Chat from "./Chat.svelte";
+  import Setup from "./Setup.svelte";
 
   let mode = $state<"loading" | "setup" | "running">("loading");
 
@@ -37,9 +38,7 @@
       <span class="header-title">Residuum</span>
     </div>
   </div>
-  <div style="flex:1;display:flex;align-items:center;justify-content:center;color:var(--text-muted);font-size:14px;">
-    Setup wizard coming in Phase 3
-  </div>
+  <Setup onComplete={() => { mode = "running"; }} />
 {:else}
   <Header
     status={ws.status}
