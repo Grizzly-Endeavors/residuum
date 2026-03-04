@@ -1,6 +1,6 @@
 <script lang="ts">
   import type { SetupWizardState } from "../../lib/types";
-  import { generateConfigToml, generateProvidersToml } from "../../lib/toml";
+  import { generateConfigToml, generateProvidersToml, generateMcpJson } from "../../lib/toml";
   import { storeSecret, completeSetup } from "../../lib/api";
 
   interface Props {
@@ -80,12 +80,15 @@
       return;
     }
 
-    // Generate both config files with secret references
+    // Generate all config files with secret references
     const configToml = generateConfigToml(wizardState);
     const providersToml = generateProvidersToml(wizardState);
+    const mcpJson = wizardState.mcpServers.length > 0
+      ? generateMcpJson(wizardState)
+      : undefined;
 
     try {
-      const result = await completeSetup(configToml, providersToml);
+      const result = await completeSetup(configToml, providersToml, mcpJson);
       if (result.valid) {
         validationMsg = "Configuration saved! Starting gateway...";
         validationClass = "success";

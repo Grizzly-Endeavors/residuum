@@ -178,6 +178,9 @@ struct CompleteSetupRequest {
     config: String,
     /// Raw providers.toml content.
     providers: String,
+    /// Raw mcp.json content (optional, Claude Code format).
+    #[serde(default)]
+    mcp_json: Option<String>,
 }
 
 /// `POST /api/config/complete-setup` — write config + providers, signal setup done.
@@ -237,6 +240,27 @@ async fn api_complete_setup(
                 }),
             )
         })?;
+
+    // Write mcp.json if provided
+    if let Some(ref mcp_json) = body.mcp_json {
+        let mcp_path = state
+            .config_dir
+            .join("workspace")
+            .join("config")
+            .join("mcp.json");
+        if let Some(parent) = mcp_path.parent() {
+            tokio::fs::create_dir_all(parent).await.ok();
+        }
+        tokio::fs::write(&mcp_path, mcp_json).await.map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ValidateResponse {
+                    valid: false,
+                    error: Some(format!("failed to write mcp.json: {e}")),
+                }),
+            )
+        })?;
+    }
 
     // Signal setup server to shut down
     if let Some(done_sender) = &state.setup_done {

@@ -1,12 +1,11 @@
-// ── TOML Generators ─────────────────────────────────────────────────
+// ── Config Generators ───────────────────────────────────────────────
 //
-// Generates config.toml and providers.toml from the setup wizard state.
-// These are separate files in the Residuum config directory.
+// Generates config.toml, providers.toml, and mcp.json from wizard state.
 
 import type { SetupWizardState } from "./types";
 import { DEFAULT_MODELS } from "./models";
 
-/** Generate config.toml content (timezone, integrations, MCP servers). */
+/** Generate config.toml content (timezone, integrations, background models). */
 export function generateConfigToml(state: SetupWizardState): string {
   const lines: string[] = [];
 
@@ -30,23 +29,20 @@ export function generateConfigToml(state: SetupWizardState): string {
     lines.push(`token = "${ref}"`);
   }
 
-  // MCP servers
-  if (state.mcpServers.length > 0) {
+  // Background models (belongs in config.toml under [background.models])
+  const bgEntries: { tier: string; prov: string; model: string }[] = [];
+  for (const tier of ["small", "medium", "large"]) {
+    const bg = state.backgroundModels[tier];
+    const prov = bg.provider || state.mainProvider;
+    if (bg.model) {
+      bgEntries.push({ tier, prov, model: bg.model });
+    }
+  }
+  if (bgEntries.length > 0) {
     lines.push("");
-    for (const srv of state.mcpServers) {
-      lines.push(`[mcp.servers.${srv.name}]`);
-      lines.push(`command = "${srv.command}"`);
-      if (srv.args && srv.args.length > 0) {
-        const argsStr = srv.args.map((a) => `"${a}"`).join(", ");
-        lines.push(`args = [${argsStr}]`);
-      }
-      if (srv.env && Object.keys(srv.env).length > 0) {
-        const envParts = Object.entries(srv.env)
-          .map(([k, v]) => `${k} = "${v}"`)
-          .join(", ");
-        lines.push(`env = { ${envParts} }`);
-      }
-      lines.push("");
+    lines.push("[background.models]");
+    for (const { tier, prov, model } of bgEntries) {
+      lines.push(`${tier} = "${prov}/${model}"`);
     }
   }
 
@@ -128,23 +124,25 @@ export function generateProvidersToml(state: SetupWizardState): string {
     );
   }
 
-  // Background models
-  const bgEntries: { tier: string; prov: string; model: string }[] = [];
-  for (const tier of ["small", "medium", "large"]) {
-    const bg = state.backgroundModels[tier];
-    const prov = bg.provider || state.mainProvider;
-    if (bg.model) {
-      bgEntries.push({ tier, prov, model: bg.model });
-    }
-  }
-  if (bgEntries.length > 0) {
-    lines.push("");
-    lines.push("[background.models]");
-    for (const { tier, prov, model } of bgEntries) {
-      lines.push(`${tier} = "${prov}/${model}"`);
-    }
-  }
-
   lines.push("");
   return lines.join("\n");
+}
+
+/** Generate mcp.json content (Claude Code format). */
+export function generateMcpJson(state: SetupWizardState): string {
+  const servers: Record<
+    string,
+    { command: string; args?: string[]; env?: Record<string, string> }
+  > = {};
+
+  for (const srv of state.mcpServers) {
+    const entry: { command: string; args?: string[]; env?: Record<string, string> } = {
+      command: srv.command,
+    };
+    if (srv.args && srv.args.length > 0) entry.args = srv.args;
+    if (srv.env && Object.keys(srv.env).length > 0) entry.env = srv.env;
+    servers[srv.name] = entry;
+  }
+
+  return JSON.stringify({ mcpServers: servers }, null, 2) + "\n";
 }

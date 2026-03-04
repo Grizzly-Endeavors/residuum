@@ -81,11 +81,14 @@ export async function storeSecret(
 export async function completeSetup(
   config: string,
   providers: string,
+  mcpJson?: string,
 ): Promise<ValidateResponse> {
+  const payload: Record<string, string> = { config, providers };
+  if (mcpJson) payload.mcp_json = mcpJson;
   const resp = await fetch("/api/config/complete-setup", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ config, providers }),
+    body: JSON.stringify(payload),
   });
   return resp.json();
 }
