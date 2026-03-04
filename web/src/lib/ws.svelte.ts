@@ -254,8 +254,6 @@ class WsConnection {
       status: "running",
     };
 
-    this.pendingToolCalls.set(msg.id, call);
-
     // Find or create a tool group at the end of the feed
     const last = this.feed[this.feed.length - 1];
     if (last && last.kind === "tool-group") {
@@ -267,6 +265,11 @@ class WsConnection {
         calls: [call],
       });
     }
+
+    // Store the proxied reference from the $state feed so mutations
+    // in handleToolResult go through Svelte's reactivity system
+    const group = this.feed[this.feed.length - 1] as ToolGroupFeedItem;
+    this.pendingToolCalls.set(msg.id, group.calls[group.calls.length - 1]);
   }
 
   private handleToolResult(
