@@ -30,16 +30,6 @@
     "install_hint": "Requires Node.js 18+"
   },
   {
-    "name": "filesystem",
-    "description": "Read, write, and manage local files",
-    "command": "npx",
-    "args": ["-y", "@anthropic/mcp-server-filesystem", "/home"],
-    "env": {},
-    "category": "core",
-    "requires_input": [],
-    "install_hint": "Requires Node.js 18+. Edit args to set allowed directories."
-  },
-  {
     "name": "github",
     "description": "GitHub API access (repos, issues, PRs)",
     "command": "npx",
@@ -47,16 +37,6 @@
     "env": {"GITHUB_PERSONAL_ACCESS_TOKEN": ""},
     "category": "dev",
     "requires_input": [{"field": "env.GITHUB_PERSONAL_ACCESS_TOKEN", "label": "GitHub Personal Access Token"}],
-    "install_hint": "Requires Node.js 18+"
-  },
-  {
-    "name": "memory",
-    "description": "Persistent knowledge graph memory",
-    "command": "npx",
-    "args": ["-y", "@anthropic/mcp-server-memory"],
-    "env": {},
-    "category": "core",
-    "requires_input": [],
     "install_hint": "Requires Node.js 18+"
   },
   {
@@ -68,16 +48,6 @@
     "category": "web",
     "requires_input": [],
     "install_hint": "Requires Node.js 18+ and Chrome/Chromium"
-  },
-  {
-    "name": "sequential-thinking",
-    "description": "Step-by-step reasoning and problem decomposition",
-    "command": "npx",
-    "args": ["-y", "@anthropic/mcp-server-sequential-thinking"],
-    "env": {},
-    "category": "core",
-    "requires_input": [],
-    "install_hint": "Requires Node.js 18+"
   },
   {
     "name": "slack",
