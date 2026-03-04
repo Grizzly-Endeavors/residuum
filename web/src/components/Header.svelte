@@ -1,10 +1,12 @@
 <script lang="ts">
   import type { ConnectionStatus } from "../lib/types";
 
-  let { status, verbose, onToggleVerbose }: {
+  let { status, verbose, showSettings, onToggleVerbose, onToggleSettings }: {
     status: ConnectionStatus;
     verbose: boolean;
+    showSettings: boolean;
     onToggleVerbose: () => void;
+    onToggleSettings: () => void;
   } = $props();
 </script>
 
@@ -22,6 +24,14 @@
       onclick={onToggleVerbose}
     >
       &#128295;
+    </button>
+    <button
+      class="icon-btn"
+      class:active={showSettings}
+      title="Settings"
+      onclick={onToggleSettings}
+    >
+      &#9881;
     </button>
   </div>
 </div>

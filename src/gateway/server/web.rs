@@ -71,6 +71,11 @@ pub(super) fn config_api_router(state: ConfigApiState) -> axum::Router {
         .route("/api/mcp-catalog", get(api_mcp_catalog))
         .route("/api/chat/history", get(api_chat_history))
         .route("/api/providers/models", post(api_provider_models))
+        .route("/api/providers/raw", get(api_providers_raw_get))
+        .route("/api/providers/raw", put(api_providers_raw_put))
+        .route("/api/providers/validate", post(api_providers_validate))
+        .route("/api/mcp/raw", get(api_mcp_raw_get))
+        .route("/api/mcp/raw", put(api_mcp_raw_put))
         .route("/api/secrets", post(api_secrets_set))
         .route("/api/secrets", get(api_secrets_list))
         .route("/api/secrets/{name}", delete(api_secrets_delete))
@@ -171,6 +176,170 @@ async fn api_config_validate(
             error: Some(e),
         }),
     }
+}
+
+// ── Providers raw endpoints ───────────────────────────────────────────
+
+/// `GET /api/providers/raw` — return raw `providers.toml` contents as text.
+async fn api_providers_raw_get(
+    State(state): State<ConfigApiState>,
+) -> Result<Response, (StatusCode, String)> {
+    let providers_path = state.config_dir.join("providers.toml");
+    let contents = tokio::fs::read_to_string(&providers_path)
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("failed to read providers.toml: {e}"),
+            )
+        })?;
+    Response::builder()
+        .header(header::CONTENT_TYPE, "text/plain; charset=utf-8")
+        .body(Body::from(contents))
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("response build error: {e}"),
+            )
+        })
+}
+
+/// `PUT /api/providers/raw` — validate and write `providers.toml`, trigger reload.
+async fn api_providers_raw_put(
+    State(state): State<ConfigApiState>,
+    body: String,
+) -> Result<Json<ValidateResponse>, (StatusCode, Json<ValidateResponse>)> {
+    if let Err(e) = Config::validate_providers_toml(&body, &state.config_dir) {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(ValidateResponse {
+                valid: false,
+                error: Some(e),
+            }),
+        ));
+    }
+
+    let providers_path = state.config_dir.join("providers.toml");
+    tokio::fs::write(&providers_path, &body)
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ValidateResponse {
+                    valid: false,
+                    error: Some(format!("failed to write providers.toml: {e}")),
+                }),
+            )
+        })?;
+
+    // Trigger root reload — provider changes affect model resolution
+    if let Some(reload_tx) = &state.reload_tx {
+        reload_tx.send(ReloadSignal::Root).ok();
+    }
+
+    Ok(Json(ValidateResponse {
+        valid: true,
+        error: None,
+    }))
+}
+
+/// `POST /api/providers/validate` — validate providers TOML body without saving.
+async fn api_providers_validate(
+    State(state): State<ConfigApiState>,
+    body: String,
+) -> Json<ValidateResponse> {
+    match Config::validate_providers_toml(&body, &state.config_dir) {
+        Ok(()) => Json(ValidateResponse {
+            valid: true,
+            error: None,
+        }),
+        Err(e) => Json(ValidateResponse {
+            valid: false,
+            error: Some(e),
+        }),
+    }
+}
+
+// ── MCP raw endpoints ────────────────────────────────────────────────
+
+/// `GET /api/mcp/raw` — return raw `mcp.json` contents as JSON.
+///
+/// Returns `{"mcpServers":{}}` if the file doesn't exist yet.
+async fn api_mcp_raw_get(
+    State(state): State<ConfigApiState>,
+) -> Result<Response, (StatusCode, String)> {
+    let mcp_path = state
+        .config_dir
+        .join("workspace")
+        .join("config")
+        .join("mcp.json");
+
+    let contents = match tokio::fs::read_to_string(&mcp_path).await {
+        Ok(c) => c,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => r#"{"mcpServers":{}}"#.to_string(),
+        Err(e) => {
+            return Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("failed to read mcp.json: {e}"),
+            ));
+        }
+    };
+
+    Response::builder()
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from(contents))
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("response build error: {e}"),
+            )
+        })
+}
+
+/// `PUT /api/mcp/raw` — validate JSON and write `mcp.json`, trigger workspace reload.
+async fn api_mcp_raw_put(
+    State(state): State<ConfigApiState>,
+    body: String,
+) -> Result<Json<ValidateResponse>, (StatusCode, Json<ValidateResponse>)> {
+    // Validate JSON parse
+    serde_json::from_str::<serde_json::Value>(&body).map_err(|e| {
+        (
+            StatusCode::BAD_REQUEST,
+            Json(ValidateResponse {
+                valid: false,
+                error: Some(format!("invalid JSON: {e}")),
+            }),
+        )
+    })?;
+
+    let mcp_path = state
+        .config_dir
+        .join("workspace")
+        .join("config")
+        .join("mcp.json");
+
+    if let Some(parent) = mcp_path.parent() {
+        tokio::fs::create_dir_all(parent).await.ok();
+    }
+
+    tokio::fs::write(&mcp_path, &body).await.map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ValidateResponse {
+                valid: false,
+                error: Some(format!("failed to write mcp.json: {e}")),
+            }),
+        )
+    })?;
+
+    if let Some(reload_tx) = &state.reload_tx {
+        reload_tx.send(ReloadSignal::Workspace).ok();
+    }
+
+    Ok(Json(ValidateResponse {
+        valid: true,
+        error: None,
+    }))
 }
 
 /// Request body for the complete-setup endpoint.
