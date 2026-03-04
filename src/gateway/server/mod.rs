@@ -199,6 +199,8 @@ struct GatewayRuntime {
     inbound_tx: mpsc::Sender<RoutedMessage>,
     reload_tx: tokio::sync::watch::Sender<ReloadSignal>,
     command_tx: mpsc::Sender<ServerCommand>,
+    /// Shared path policy for updating blocked paths on reload.
+    path_policy: crate::tools::SharedPathPolicy,
 }
 
 /// Apply an `ObserveAction` to the current observe deadline.
@@ -301,6 +303,7 @@ pub async fn run_gateway(cfg: Config) -> Result<GatewayExit, ResiduumError> {
     drop(webhook_inbound_tx);
     let config_api_state = web::ConfigApiState {
         config_dir: cfg.config_dir.clone(),
+        workspace_dir: parts.layout.root().to_path_buf(),
         memory_dir: Some(parts.layout.memory_dir()),
         reload_tx: Some(core.reload_tx.clone()),
         setup_done: None,
@@ -424,6 +427,7 @@ pub async fn run_gateway(cfg: Config) -> Result<GatewayExit, ResiduumError> {
         inbound_tx: rt_inbound_tx,
         reload_tx: rt_reload_tx,
         command_tx: rt_command_tx,
+        path_policy: parts.path_policy,
         cfg,
     };
 

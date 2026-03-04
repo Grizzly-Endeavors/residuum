@@ -43,6 +43,8 @@ use embedded::WebAssets;
 pub(super) struct ConfigApiState {
     /// Path to the residuum config directory (`~/.residuum/`).
     pub config_dir: PathBuf,
+    /// Path to the workspace root directory (for resolving `mcp.json`, `channels.toml`, etc.).
+    pub workspace_dir: PathBuf,
     /// Path to the workspace memory directory (None in setup mode).
     pub memory_dir: Option<PathBuf>,
     /// Signal the running gateway to reload (None in setup mode).
@@ -268,11 +270,7 @@ async fn api_providers_validate(
 async fn api_mcp_raw_get(
     State(state): State<ConfigApiState>,
 ) -> Result<Response, (StatusCode, String)> {
-    let mcp_path = state
-        .config_dir
-        .join("workspace")
-        .join("config")
-        .join("mcp.json");
+    let mcp_path = crate::workspace::layout::WorkspaceLayout::new(&state.workspace_dir).mcp_json();
 
     let contents = match tokio::fs::read_to_string(&mcp_path).await {
         Ok(c) => c,
@@ -312,11 +310,7 @@ async fn api_mcp_raw_put(
         )
     })?;
 
-    let mcp_path = state
-        .config_dir
-        .join("workspace")
-        .join("config")
-        .join("mcp.json");
+    let mcp_path = crate::workspace::layout::WorkspaceLayout::new(&state.workspace_dir).mcp_json();
 
     if let Some(parent) = mcp_path.parent() {
         tokio::fs::create_dir_all(parent).await.ok();
@@ -997,6 +991,7 @@ mod tests {
     async fn chat_history_returns_empty_when_no_memory_dir() {
         let state = ConfigApiState {
             config_dir: PathBuf::from("/tmp/residuum-test-nonexistent"),
+            workspace_dir: PathBuf::from("/tmp/residuum-test-nonexistent/workspace"),
             memory_dir: None,
             reload_tx: None,
             setup_done: None,
@@ -1013,6 +1008,7 @@ mod tests {
     async fn chat_history_returns_empty_when_file_missing() {
         let state = ConfigApiState {
             config_dir: PathBuf::from("/tmp/residuum-test-nonexistent"),
+            workspace_dir: PathBuf::from("/tmp/residuum-test-nonexistent/workspace"),
             memory_dir: Some(PathBuf::from("/tmp/residuum-test-nonexistent-memory")),
             reload_tx: None,
             setup_done: None,
@@ -1030,6 +1026,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let state = ConfigApiState {
             config_dir: dir.path().to_path_buf(),
+            workspace_dir: dir.path().join("workspace"),
             memory_dir: None,
             reload_tx: None,
             setup_done: None,

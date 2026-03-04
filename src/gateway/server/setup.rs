@@ -45,8 +45,12 @@ pub async fn run_setup_server_at(config_dir: PathBuf) -> Result<SetupExit, Resid
     let (setup_done_tx, mut setup_done_rx) = tokio::sync::watch::channel(false);
     let setup_done_tx = Arc::new(setup_done_tx);
 
+    // During setup, workspace_dir defaults to config_dir/workspace since the user
+    // hasn't configured a custom workspace yet.
+    let workspace_dir = config_dir.join("workspace");
     let api_state = ConfigApiState {
         config_dir,
+        workspace_dir,
         memory_dir: None,
         reload_tx: None,
         setup_done: Some(Arc::clone(&setup_done_tx)),
