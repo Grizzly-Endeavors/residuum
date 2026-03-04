@@ -46,6 +46,9 @@ jobs:
         id: web_typecheck
         run: cd web && npm run check
 
+      - name: Build web assets
+        run: cd web && npm run build
+
       - name: Check formatting
         id: fmt
         run: cargo fmt --check
