@@ -73,7 +73,11 @@ impl CliClient {
 
     /// Print the startup banner to stderr.
     pub fn print_banner(&self) {
-        let banner = format!("residuum v0.1.0 \u{2014} connected to {}", self.url);
+        let banner = format!(
+            "residuum {} \u{2014} connected to {}",
+            env!("RESIDUUM_VERSION"),
+            self.url
+        );
         eprintln!("{}", self.theme.format_banner(&banner));
         let http_url = ws_url_to_http(&self.url);
         eprintln!("  web UI: {http_url}");
