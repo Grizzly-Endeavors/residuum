@@ -31,7 +31,7 @@ use super::types::{
     clippy::too_many_lines,
     reason = "config resolution is a single sequential pipeline; splitting would obscure the precedence chain"
 )]
-pub(super) fn from_file_and_env(
+pub(crate) fn from_file_and_env(
     file: Option<&ConfigFile>,
     providers_file: Option<&ProvidersFile>,
     config_dir: &Path,

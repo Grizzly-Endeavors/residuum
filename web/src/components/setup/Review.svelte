@@ -1,7 +1,6 @@
 <script lang="ts">
-  import { onMount } from "svelte";
   import type { SetupWizardState } from "../../lib/types";
-  import { generateToml } from "../../lib/toml";
+  import { generateConfigToml, generateProvidersToml } from "../../lib/toml";
   import { storeSecret, completeSetup } from "../../lib/api";
 
   interface Props {
@@ -12,14 +11,9 @@
 
   let { wizardState, onBack, onComplete }: Props = $props();
 
-  let tomlText = $state("");
   let saving = $state(false);
   let validationMsg = $state("");
   let validationClass = $state("");
-
-  onMount(() => {
-    tomlText = generateToml(state);
-  });
 
   async function storeAllSecrets(): Promise<void> {
     wizardState.secretRefs = {};
@@ -86,11 +80,12 @@
       return;
     }
 
-    // Regenerate TOML with secret references
-    const finalToml = generateToml(state);
+    // Generate both config files with secret references
+    const configToml = generateConfigToml(wizardState);
+    const providersToml = generateProvidersToml(wizardState);
 
     try {
-      const result = await completeSetup(finalToml);
+      const result = await completeSetup(configToml, providersToml);
       if (result.valid) {
         validationMsg = "Configuration saved! Starting gateway...";
         validationClass = "success";
@@ -109,10 +104,36 @@
   }
 </script>
 
-<h2>Review Configuration</h2>
-<p class="subtitle">Here's your generated config. Edit if needed, then save to start Residuum.</p>
+<h2>Save & Start</h2>
+<p class="subtitle">Your configuration is ready. Click below to save and start Residuum.</p>
 
-<textarea class="toml-editor" bind:value={tomlText}></textarea>
+<div class="review-summary">
+  <div class="review-item">
+    <span class="review-label">Providers</span>
+    <span class="review-value">{wizardState.selectedProviders.join(", ")}</span>
+  </div>
+  <div class="review-item">
+    <span class="review-label">Main model</span>
+    <span class="review-value">{wizardState.mainProvider}/{wizardState.providerConfigs[wizardState.mainProvider].model || "default"}</span>
+  </div>
+  {#if wizardState.mcpServers.length > 0}
+    <div class="review-item">
+      <span class="review-label">MCP servers</span>
+      <span class="review-value">{wizardState.mcpServers.map(s => s.name).join(", ")}</span>
+    </div>
+  {/if}
+  {#if wizardState.integrations.discordToken || wizardState.integrations.telegramToken}
+    <div class="review-item">
+      <span class="review-label">Integrations</span>
+      <span class="review-value">
+        {[
+          wizardState.integrations.discordToken ? "Discord" : "",
+          wizardState.integrations.telegramToken ? "Telegram" : "",
+        ].filter(Boolean).join(", ")}
+      </span>
+    </div>
+  {/if}
+</div>
 
 {#if validationMsg}
   <div class="validation-msg {validationClass}">{validationMsg}</div>

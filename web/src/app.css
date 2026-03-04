@@ -1118,6 +1118,39 @@ body::before {
     box-shadow: var(--input-inset), 0 0 0 1px rgba(59, 139, 219, 0.15), 0 0 8px rgba(59, 139, 219, 0.06);
 }
 
+/* ── Review summary ───────────────────────────────────────────────────── */
+
+.review-summary {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    margin-bottom: 16px;
+}
+
+.review-item {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 8px 12px;
+    background: var(--bg-deep);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-sm);
+}
+
+.review-label {
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+}
+
+.review-value {
+    font-size: 13px;
+    color: var(--text);
+    font-family: var(--font-mono);
+}
+
 /* ── Integration cards (#21) ──────────────────────────────────────────── */
 
 .integration-card {

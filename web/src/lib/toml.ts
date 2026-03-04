@@ -1,16 +1,62 @@
-// ── TOML Generator ──────────────────────────────────────────────────
+// ── TOML Generators ─────────────────────────────────────────────────
 //
-// Generates a valid config.toml from the setup wizard state.
+// Generates config.toml and providers.toml from the setup wizard state.
+// These are separate files in the Residuum config directory.
 
 import type { SetupWizardState } from "./types";
 import { DEFAULT_MODELS } from "./models";
 
-export function generateToml(state: SetupWizardState): string {
+/** Generate config.toml content (timezone, integrations, MCP servers). */
+export function generateConfigToml(state: SetupWizardState): string {
   const lines: string[] = [];
 
   if (state.userName) lines.push(`name = "${state.userName}"`);
   lines.push(`timezone = "${state.timezone}"`);
+
+  // Discord (top-level section)
+  if (state.integrations.discordToken) {
+    const ref = state.secretRefs["discord"] || state.integrations.discordToken;
+    lines.push("");
+    lines.push("[discord]");
+    lines.push(`token = "${ref}"`);
+  }
+
+  // Telegram (top-level section)
+  if (state.integrations.telegramToken) {
+    const ref =
+      state.secretRefs["telegram"] || state.integrations.telegramToken;
+    lines.push("");
+    lines.push("[telegram]");
+    lines.push(`token = "${ref}"`);
+  }
+
+  // MCP servers
+  if (state.mcpServers.length > 0) {
+    lines.push("");
+    for (const srv of state.mcpServers) {
+      lines.push(`[mcp.servers.${srv.name}]`);
+      lines.push(`command = "${srv.command}"`);
+      if (srv.args && srv.args.length > 0) {
+        const argsStr = srv.args.map((a) => `"${a}"`).join(", ");
+        lines.push(`args = [${argsStr}]`);
+      }
+      if (srv.env && Object.keys(srv.env).length > 0) {
+        const envParts = Object.entries(srv.env)
+          .map(([k, v]) => `${k} = "${v}"`)
+          .join(", ");
+        lines.push(`env = { ${envParts} }`);
+      }
+      lines.push("");
+    }
+  }
+
   lines.push("");
+  return lines.join("\n");
+}
+
+/** Generate providers.toml content (provider connections + model role assignments). */
+export function generateProvidersToml(state: SetupWizardState): string {
+  const lines: string[] = [];
 
   // Collect provider entries
   const providerEntries: Record<
@@ -21,7 +67,6 @@ export function generateToml(state: SetupWizardState): string {
   for (const prov of state.selectedProviders) {
     const cfg = state.providerConfigs[prov];
     if (prov === "ollama") {
-      // Ollama needs a section if selected, but no api_key
       providerEntries[prov] = { type: prov, api_key: "", url: null };
     } else if (cfg.apiKey) {
       providerEntries[prov] = {
@@ -100,42 +145,6 @@ export function generateToml(state: SetupWizardState): string {
     }
   }
 
-  // Discord (top-level section)
-  if (state.integrations.discordToken) {
-    const ref = state.secretRefs["discord"] || state.integrations.discordToken;
-    lines.push("");
-    lines.push("[discord]");
-    lines.push(`token = "${ref}"`);
-  }
-
-  // Telegram (top-level section)
-  if (state.integrations.telegramToken) {
-    const ref =
-      state.secretRefs["telegram"] || state.integrations.telegramToken;
-    lines.push("");
-    lines.push("[telegram]");
-    lines.push(`token = "${ref}"`);
-  }
-
-  // MCP servers
-  if (state.mcpServers.length > 0) {
-    lines.push("");
-    for (const srv of state.mcpServers) {
-      lines.push(`[mcp.servers.${srv.name}]`);
-      lines.push(`command = "${srv.command}"`);
-      if (srv.args && srv.args.length > 0) {
-        const argsStr = srv.args.map((a) => `"${a}"`).join(", ");
-        lines.push(`args = [${argsStr}]`);
-      }
-      if (srv.env && Object.keys(srv.env).length > 0) {
-        const envParts = Object.entries(srv.env)
-          .map(([k, v]) => `${k} = "${v}"`)
-          .join(", ");
-        lines.push(`env = { ${envParts} }`);
-      }
-      lines.push("");
-    }
-  }
-
+  lines.push("");
   return lines.join("\n");
 }

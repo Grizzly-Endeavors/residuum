@@ -79,12 +79,13 @@ export async function storeSecret(
 }
 
 export async function completeSetup(
-  toml: string,
+  config: string,
+  providers: string,
 ): Promise<ValidateResponse> {
   const resp = await fetch("/api/config/complete-setup", {
     method: "POST",
-    headers: { "Content-Type": "text/plain" },
-    body: toml,
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ config, providers }),
   });
   return resp.json();
 }
