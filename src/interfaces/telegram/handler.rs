@@ -7,12 +7,14 @@ use std::time::Duration;
 use teloxide::Bot;
 use teloxide::payloads::GetUpdatesSetters;
 use teloxide::requests::Requester;
-use teloxide::types::{ChatId, UpdateKind};
+use teloxide::types::{BotCommand, ChatId, UpdateKind};
 use tokio::sync::mpsc;
 
 use crate::gateway::server::{ReloadSignal, ServerCommand};
 use crate::inbox;
-use crate::interfaces::cli::commands::{CommandContext, CommandSideEffect, execute_command};
+use crate::interfaces::cli::commands::{
+    CommandContext, CommandSideEffect, all_commands, execute_command,
+};
 use crate::interfaces::types::{InboundMessage, MessageOrigin, RoutedMessage};
 
 use super::reply::TelegramReplyHandle;
@@ -44,6 +46,10 @@ pub(super) async fn run_telegram_polling(
         bot_username = %me.username(),
         "telegram bot connected"
     );
+
+    if let Err(e) = register_commands(&bot).await {
+        tracing::warn!(error = %e, "failed to register telegram bot commands");
+    }
 
     let mut offset: i32 = 0;
 
@@ -101,6 +107,26 @@ pub(super) async fn run_telegram_polling(
             .await;
         }
     }
+}
+
+/// Register slash commands with the Telegram API so users see autocomplete.
+///
+/// Mirrors the Discord `register_slash_commands` pattern. Client-only commands
+/// (quit, exit, verbose toggles) are skipped.
+///
+/// # Errors
+/// Returns an error if the Telegram `setMyCommands` API call fails.
+async fn register_commands(bot: &Bot) -> anyhow::Result<()> {
+    let skip = ["quit", "exit", "q", "verbose", "v"];
+
+    let commands: Vec<BotCommand> = all_commands()
+        .filter(|info| !skip.contains(&info.name))
+        .map(|info| BotCommand::new(info.name, info.help))
+        .collect();
+
+    bot.set_my_commands(commands).await?;
+    tracing::info!("telegram bot commands registered");
+    Ok(())
 }
 
 /// Dispatch a single incoming private message: commands, text, or attachments.
