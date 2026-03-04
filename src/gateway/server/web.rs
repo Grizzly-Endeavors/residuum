@@ -49,6 +49,8 @@ pub(super) struct ConfigApiState {
     pub reload_tx: Option<watch::Sender<ReloadSignal>>,
     /// Signal the setup server that config is saved (None in running mode).
     pub setup_done: Option<Arc<watch::Sender<bool>>>,
+    /// Serializes secret store writes to prevent lost-update races.
+    pub secret_lock: Arc<tokio::sync::Mutex<()>>,
 }
 
 /// Status response indicating which mode the server is running in.
@@ -436,10 +438,15 @@ async fn api_provider_models(
 }
 
 /// `POST /api/secrets` — store a named secret in the encrypted store.
+///
+/// Acquires `secret_lock` to serialize concurrent writes and prevent
+/// lost-update races (e.g. setup wizard storing multiple secrets via `Promise.all`).
 async fn api_secrets_set(
     State(state): State<ConfigApiState>,
     Json(req): Json<SetSecretRequest>,
 ) -> Result<Json<SetSecretResponse>, (StatusCode, String)> {
+    let _guard = state.secret_lock.lock().await;
+
     let config_dir = state.config_dir.clone();
     let name = req.name;
     let value = req.value;
@@ -824,6 +831,7 @@ mod tests {
             memory_dir: None,
             reload_tx: None,
             setup_done: None,
+            secret_lock: Arc::new(tokio::sync::Mutex::new(())),
         };
         let Json(messages) = api_chat_history(State(state)).await;
         assert!(
@@ -839,6 +847,7 @@ mod tests {
             memory_dir: Some(PathBuf::from("/tmp/residuum-test-nonexistent-memory")),
             reload_tx: None,
             setup_done: None,
+            secret_lock: Arc::new(tokio::sync::Mutex::new(())),
         };
         let Json(messages) = api_chat_history(State(state)).await;
         assert!(
@@ -855,6 +864,7 @@ mod tests {
             memory_dir: None,
             reload_tx: None,
             setup_done: None,
+            secret_lock: Arc::new(tokio::sync::Mutex::new(())),
         };
 
         // Set a secret

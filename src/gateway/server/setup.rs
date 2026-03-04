@@ -50,6 +50,7 @@ pub async fn run_setup_server_at(config_dir: PathBuf) -> Result<SetupExit, Resid
         memory_dir: None,
         reload_tx: None,
         setup_done: Some(Arc::clone(&setup_done_tx)),
+        secret_lock: Arc::new(tokio::sync::Mutex::new(())),
     };
 
     let app = web::config_api_router(api_state).fallback(get(web::static_handler));

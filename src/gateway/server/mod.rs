@@ -304,6 +304,7 @@ pub async fn run_gateway(cfg: Config) -> Result<GatewayExit, ResiduumError> {
         memory_dir: Some(parts.layout.memory_dir()),
         reload_tx: Some(core.reload_tx.clone()),
         setup_done: None,
+        secret_lock: Arc::new(tokio::sync::Mutex::new(())),
     };
     let app = build_gateway_app(state, &cfg, config_api_state);
 
