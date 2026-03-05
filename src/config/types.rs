@@ -2,13 +2,15 @@
 
 use std::path::PathBuf;
 
+use std::time::Duration;
+
 use super::constants::{
     DEFAULT_AGENT_MODIFY_CHANNELS, DEFAULT_AGENT_MODIFY_MCP, DEFAULT_GATEWAY_BIND,
-    DEFAULT_GATEWAY_PORT, DEFAULT_MAX_CONCURRENT_BACKGROUND, DEFAULT_OBSERVER_COOLDOWN_SECS,
-    DEFAULT_OBSERVER_FORCE_THRESHOLD, DEFAULT_OBSERVER_THRESHOLD, DEFAULT_REFLECTOR_THRESHOLD,
-    DEFAULT_SEARCH_CANDIDATE_MULTIPLIER, DEFAULT_SEARCH_MIN_SCORE, DEFAULT_SEARCH_TEMPORAL_DECAY,
-    DEFAULT_SEARCH_TEMPORAL_DECAY_HALF_LIFE_DAYS, DEFAULT_SEARCH_TEXT_WEIGHT,
-    DEFAULT_SEARCH_VECTOR_WEIGHT, DEFAULT_TRANSCRIPT_RETENTION_DAYS,
+    DEFAULT_GATEWAY_PORT, DEFAULT_IDLE_TIMEOUT_MINUTES, DEFAULT_MAX_CONCURRENT_BACKGROUND,
+    DEFAULT_OBSERVER_COOLDOWN_SECS, DEFAULT_OBSERVER_FORCE_THRESHOLD, DEFAULT_OBSERVER_THRESHOLD,
+    DEFAULT_REFLECTOR_THRESHOLD, DEFAULT_SEARCH_CANDIDATE_MULTIPLIER, DEFAULT_SEARCH_MIN_SCORE,
+    DEFAULT_SEARCH_TEMPORAL_DECAY, DEFAULT_SEARCH_TEMPORAL_DECAY_HALF_LIFE_DAYS,
+    DEFAULT_SEARCH_TEXT_WEIGHT, DEFAULT_SEARCH_VECTOR_WEIGHT, DEFAULT_TRANSCRIPT_RETENTION_DAYS,
 };
 use super::provider::ProviderSpec;
 
@@ -143,6 +145,24 @@ impl Default for AgentAbilitiesConfig {
         Self {
             modify_mcp: DEFAULT_AGENT_MODIFY_MCP,
             modify_channels: DEFAULT_AGENT_MODIFY_CHANNELS,
+        }
+    }
+}
+
+/// Validated idle system configuration.
+#[derive(Clone, Debug, PartialEq)]
+pub struct IdleConfig {
+    /// Inactivity timeout. `Duration::ZERO` means disabled.
+    pub timeout: Duration,
+    /// Interface to switch to when idle. `None` = keep current. (Phase 2)
+    pub idle_channel: Option<String>,
+}
+
+impl Default for IdleConfig {
+    fn default() -> Self {
+        Self {
+            timeout: Duration::from_secs(DEFAULT_IDLE_TIMEOUT_MINUTES * 60),
+            idle_channel: None,
         }
     }
 }

@@ -6,6 +6,7 @@
 
 mod actions;
 mod helpers;
+mod idle;
 mod memory;
 mod reload;
 pub mod setup;
@@ -917,13 +918,14 @@ async fn handle_workspace_reload(rt: &mut GatewayRuntime) {
 /// signals until shutdown or reload is requested.
 #[expect(
     clippy::too_many_lines,
-    reason = "7-arm select! loop; each arm is a distinct event source and cannot be split further"
+    reason = "8-arm select! loop; each arm is a distinct event source and cannot be split further"
 )]
 async fn run_event_loop(mut rt: GatewayRuntime) -> GatewayExit {
     let mut pulse_tick = tokio::time::interval(Duration::from_secs(60));
     let mut action_tick = tokio::time::interval(Duration::from_secs(30));
     pulse_tick.tick().await; // skip first tick
     let mut observe_deadline: Option<tokio::time::Instant> = None;
+    let mut idle_deadline: Option<tokio::time::Instant> = None;
 
     tracing::info!("gateway ready, entering main loop");
 
@@ -1100,6 +1102,11 @@ async fn run_event_loop(mut rt: GatewayRuntime) -> GatewayExit {
                         }
                     }
                 }
+
+                // Reset idle deadline on every inbound user message
+                if !rt.cfg.idle.timeout.is_zero() {
+                    idle_deadline = Some(tokio::time::Instant::now() + rt.cfg.idle.timeout);
+                }
             }
 
             // ── Pulse timer ───────────────────────────────────────────────
@@ -1209,6 +1216,17 @@ async fn run_event_loop(mut rt: GatewayRuntime) -> GatewayExit {
             } => {
                 observe_deadline = None;
                 execute_observation(&rt.observer, &rt.reflector, &rt.search_index, &rt.layout, &mut rt.agent, rt.vector_store.as_ref(), rt.embedding_provider.as_ref()).await;
+            }
+
+            // ── Idle deadline ────────────────────────────────────────────────
+            () = async {
+                match idle_deadline {
+                    Some(d) => tokio::time::sleep_until(d).await,
+                    None => std::future::pending().await,
+                }
+            } => {
+                idle::execute_idle_transition(&mut rt, &mut observe_deadline).await;
+                idle_deadline = None;
             }
 
             // ── Background task results ──────────────────────────────────

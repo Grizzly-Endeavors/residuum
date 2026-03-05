@@ -455,6 +455,7 @@ mod tests {
             retry: RetryConfig::default(),
             background: BackgroundConfig::default(),
             agent: AgentAbilitiesConfig::default(),
+            idle: crate::config::IdleConfig::default(),
             config_dir: std::path::PathBuf::from("/tmp/config"),
         }
     }

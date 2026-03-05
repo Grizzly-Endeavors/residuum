@@ -41,6 +41,8 @@ pub(crate) struct ConfigFile {
     pub(super) background: Option<BackgroundConfigFile>,
     /// Agent ability gates.
     pub(super) agent: Option<AgentConfigFile>,
+    /// Idle system configuration.
+    pub(super) idle: Option<IdleConfigFile>,
 }
 
 /// Raw TOML providers file structure (`providers.toml`).
@@ -226,6 +228,16 @@ pub(super) struct AgentConfigFile {
     pub(super) modify_mcp: Option<bool>,
     /// Whether the agent can modify notification channels.
     pub(super) modify_channels: Option<bool>,
+}
+
+/// Raw TOML `[idle]` section.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct IdleConfigFile {
+    /// Inactivity timeout in minutes (0 = disabled).
+    pub(super) timeout_minutes: Option<u64>,
+    /// Interface to switch to when idle (Phase 2, parsed but not used).
+    pub(super) idle_channel: Option<String>,
 }
 
 /// Raw TOML `[background]` section (in `config.toml`).

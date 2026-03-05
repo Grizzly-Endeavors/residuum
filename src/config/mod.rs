@@ -30,8 +30,8 @@ pub use provider::{ModelSpec, ProviderKind, ProviderSpec};
 pub use secrets::SecretStore;
 pub use types::{
     AgentAbilitiesConfig, BackgroundConfig, BackgroundModelTier, BackgroundModelsConfig,
-    DiscordConfig, GatewayConfig, MemoryConfig, SearchConfig, SkillsConfig, TelegramConfig,
-    WebhookConfig,
+    DiscordConfig, GatewayConfig, IdleConfig, MemoryConfig, SearchConfig, SkillsConfig,
+    TelegramConfig, WebhookConfig,
 };
 
 // ── Config struct ─────────────────────────────────────────────────────────────
@@ -82,6 +82,8 @@ pub struct Config {
     pub background: BackgroundConfig,
     /// Agent ability gates.
     pub agent: AgentAbilitiesConfig,
+    /// Idle system configuration.
+    pub idle: IdleConfig,
     /// Directory this config was loaded from.
     pub config_dir: PathBuf,
 }
@@ -109,6 +111,7 @@ impl fmt::Debug for Config {
             .field("retry", &self.retry)
             .field("background", &self.background)
             .field("agent", &self.agent)
+            .field("idle", &self.idle)
             .field("config_dir", &self.config_dir)
             .finish()
     }
@@ -418,5 +421,37 @@ main = "invalid-format"
             err.contains("expected 'provider/model' format"),
             "error should mention expected format: {err}"
         );
+    }
+
+    #[test]
+    fn idle_config_defaults_when_section_missing() {
+        let dir = tempfile::tempdir().unwrap();
+        write_providers(dir.path());
+        std::fs::write(dir.path().join("config.toml"), VALID_CONFIG).unwrap();
+        let cfg = Config::load_at(dir.path()).unwrap();
+        assert_eq!(cfg.idle.timeout, std::time::Duration::from_secs(30 * 60));
+        assert!(cfg.idle.idle_channel.is_none());
+    }
+
+    #[test]
+    fn idle_config_timeout_zero_disables() {
+        let dir = tempfile::tempdir().unwrap();
+        write_providers(dir.path());
+        let toml = "timezone = \"UTC\"\n\n[idle]\ntimeout_minutes = 0\n";
+        std::fs::write(dir.path().join("config.toml"), toml).unwrap();
+        let cfg = Config::load_at(dir.path()).unwrap();
+        assert_eq!(cfg.idle.timeout, std::time::Duration::ZERO);
+    }
+
+    #[test]
+    fn idle_config_explicit_values() {
+        let dir = tempfile::tempdir().unwrap();
+        write_providers(dir.path());
+        let toml =
+            "timezone = \"UTC\"\n\n[idle]\ntimeout_minutes = 15\nidle_channel = \"telegram\"\n";
+        std::fs::write(dir.path().join("config.toml"), toml).unwrap();
+        let cfg = Config::load_at(dir.path()).unwrap();
+        assert_eq!(cfg.idle.timeout, std::time::Duration::from_secs(15 * 60));
+        assert_eq!(cfg.idle.idle_channel.as_deref(), Some("telegram"));
     }
 }

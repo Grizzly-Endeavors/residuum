@@ -9,7 +9,7 @@ use crate::models::retry::RetryConfig;
 
 use super::Config;
 use super::bootstrap::default_workspace_dir;
-use super::constants::{DEFAULT_MAX_TOKENS, DEFAULT_TIMEOUT_SECS};
+use super::constants::{DEFAULT_IDLE_TIMEOUT_MINUTES, DEFAULT_MAX_TOKENS, DEFAULT_TIMEOUT_SECS};
 use super::deserialize::{
     AgentConfigFile, BackgroundConfigFile, BackgroundModelsFile, ConfigFile, DiscordConfigFile,
     GatewayConfigFile, ModelStringOrList, ProviderEntryFile, ProvidersFile, SearchConfigFile,
@@ -18,7 +18,7 @@ use super::deserialize::{
 use super::provider::{ModelSpec, ProviderKind, ProviderSpec};
 use super::secrets::SecretStore;
 use super::types::{
-    AgentAbilitiesConfig, BackgroundConfig, DiscordConfig, GatewayConfig, MemoryConfig,
+    AgentAbilitiesConfig, BackgroundConfig, DiscordConfig, GatewayConfig, IdleConfig, MemoryConfig,
     SearchConfig, SkillsConfig, TelegramConfig, WebhookConfig,
 };
 
@@ -157,6 +157,18 @@ pub(crate) fn from_file_and_env(
 
     let agent = resolve_agent_config(file.and_then(|f| f.agent.as_ref()));
 
+    let idle = {
+        let section = file.and_then(|f| f.idle.as_ref());
+        let timeout_minutes = section
+            .and_then(|s| s.timeout_minutes)
+            .unwrap_or(DEFAULT_IDLE_TIMEOUT_MINUTES);
+        let idle_channel = section.and_then(|s| s.idle_channel.clone());
+        IdleConfig {
+            timeout: std::time::Duration::from_secs(timeout_minutes * 60),
+            idle_channel,
+        }
+    };
+
     let background = resolve_background_config(
         file.and_then(|f| f.background.as_ref()),
         providers_file
@@ -223,6 +235,7 @@ pub(crate) fn from_file_and_env(
         retry,
         background,
         agent,
+        idle,
         config_dir: PathBuf::new(),
     })
 }
