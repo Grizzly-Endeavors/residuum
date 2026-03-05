@@ -10,7 +10,7 @@ HOOK_DIR="$REPO_ROOT/.git/hooks"
 
 echo "Symlinking .githooks into .git/hooks..."
 
-for hook in "$SCRIPT_DIR"/pre-commit "$SCRIPT_DIR"/commit-msg "$SCRIPT_DIR"/pre-push; do
+for hook in "$SCRIPT_DIR"/pre-commit "$SCRIPT_DIR"/commit-msg; do
     name="$(basename "$hook")"
     ln -sf "$hook" "$HOOK_DIR/$name"
     echo "  $name -> .githooks/$name"

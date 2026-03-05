@@ -17,7 +17,6 @@
 Pre-commit hooks enforce quality gates:
 - **pre-commit**: auto-formats with `cargo fmt` (auto-stages changes), runs `cargo clippy`, runs `cargo test`
 - **commit-msg**: validates message format
-- **pre-push**: full test suite
 
 Bypass is **FORBIDDEN**.
 
@@ -103,26 +102,13 @@ The orchestrating agent is responsible for running `cargo fmt`, `cargo clippy`, 
 
 ## Git Workflow
 
-The repo uses a **two-branch model**: `dev` for active development, `main` for releases.
-
-- **`main`** — stable, release-ready code. Direct pushes blocked by branch protection.
-- **`dev`** — integration branch. Feature branches merge here via PR. Periodically promoted to `main` via a release PR.
-
-**Exception: docs-only changes** (markdown, LICENSE, `docs/` directory) can be pushed directly to `main` — no branch or PR required. CI `paths-ignore` skips these.
+Single-branch model: all work lands on `main`.
 
 ### Day-to-Day Work
 
-1. **Create a feature branch from `dev`** with a descriptive name (e.g., `feat/add-telegram-retry`, `fix/memory-search-ranking`)
+1. **Create a feature branch from `main`** with a descriptive name (e.g., `feat/add-telegram-retry`, `fix/memory-search-ranking`)
 2. **Commit frequently** — pre-commit hooks enforce fmt, clippy, and tests
-3. **Push the branch** and open a PR **targeting `dev`**
-4. **CI must pass** before merge
-5. Iterate freely on `dev` — it's the scratchpad for in-progress work
-
-### Releasing to Main
-
-1. When `dev` is in a good state, open a PR from `dev` → `main`
-2. The PR summarizes all changes since the last release
-3. After merge, tag the release on `main`
+3. **Push the branch** and merge into `main`
 
 ### Branch Naming
 
@@ -136,7 +122,7 @@ Use prefixed branch names:
 
 ### Releases
 
-Releases use **CalVer** (`YYYY.0M.0D`), not SemVer. Tags like `v2026.03.02`, with `-N` suffix for same-day follow-ups (`v2026.03.02-2`). Cargo.toml version is independent and not tied to release tags.
+Releases use **CalVer** (`YYYY.0M.0D`), not SemVer. Tags like `v2026.03.02`, with `-N` suffix for same-day follow-ups (`v2026.03.02-2`). Cargo.toml version is independent and not tied to release tags. The release workflow runs full CI checks before building artifacts.
 
 ## Misc Notes
 - Testing is a first class operation, NEVER skip test implementation.
