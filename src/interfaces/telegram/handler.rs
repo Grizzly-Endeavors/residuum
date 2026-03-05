@@ -36,7 +36,14 @@ pub(super) async fn run_telegram_polling(
     tz: chrono_tz::Tz,
     mut shutdown_rx: tokio::sync::watch::Receiver<bool>,
 ) -> anyhow::Result<()> {
-    let bot = Bot::new(token);
+    // TCP keepalive detects silently-dropped connections (e.g. NAT timeout);
+    // pool_idle_timeout evicts stale connections before they poison the pool.
+    // Without these, long-poll requests reuse dead connections indefinitely.
+    let http_client = teloxide::net::default_reqwest_settings()
+        .tcp_keepalive(Duration::from_secs(60))
+        .pool_idle_timeout(Duration::from_secs(90))
+        .build()?;
+    let bot = Bot::with_client(token, http_client);
     let inbox_dir = workspace_dir.join("inbox");
 
     // Verify the bot token is valid
