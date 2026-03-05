@@ -9,7 +9,7 @@ Scheduled actions are one-off future tasks persisted in `scheduled_actions.json`
   "id": "action-a1b2c3d4",
   "name": "remind-standup",
   "prompt": "Remind the user about the 10am standup meeting.",
-  "run_at": "2026-02-27T10:00:00Z",
+  "run_at": "2026-02-27T10:00:00",
   "agent": null,
   "model_tier": null,
   "channels": [],
@@ -27,7 +27,7 @@ Scheduled actions are one-off future tasks persisted in `scheduled_actions.json`
 
 ## `schedule_action` Details
 
-- **`run_at`**: ISO 8601 datetime. Naive datetimes (without timezone) are interpreted in the configured workspace timezone.
+- **`run_at`**: Local time without offset (e.g. `2026-03-01T09:00:00`). Interpreted in the configured workspace timezone. All displayed times are also in local time — no UTC conversion needed.
 - **`agent_name`**: Routing control. `null` → SubAgent, `"main"` → main agent turn, `"<preset>"` → SubAgent with named preset.
 - **`model_tier`**: `"small"`, `"medium"`, or `"large"`. Defaults to medium for SubAgent execution.
 - **`channels`**: Array of notification channel names (built-in or from config.toml). Results are routed directly to these channels after execution. Defaults to `["agent_feed"]`. **Mutually exclusive with `agent_name: "main"`** — main-turn actions inject directly into the conversation.

@@ -376,7 +376,7 @@ On error: skill is not currently active.
 |--------------|-----------------|----------|-------------------------------------------------------------------------------------------------------------------------------------------------------------------|
 | `name`       | string          | yes      | Human-readable name for this action                                                                                                                               |
 | `prompt`     | string          | yes      | The prompt to execute when the action fires                                                                                                                       |
-| `run_at`     | string          | yes      | When to fire, as an ISO 8601 datetime string. Interpreted in the configured timezone if no offset is provided (e.g. `2026-03-01T09:00:00` or `2026-03-01T14:00:00Z`). Must be in the future. |
+| `run_at`     | string          | yes      | Always use local time without an offset (e.g. `2026-03-01T09:00:00`). Interpreted in the user's configured timezone. Must be in the future. |
 | `agent_name` | string          | no       | Agent routing: `"main"` runs a full wake turn with conversation context; a preset name (e.g. `"memory-agent"`) spawns a sub-agent using that preset. Omit for default sub-agent behavior. |
 | `model_tier` | string (enum)   | no       | Model tier override for sub-agent actions: `"small"`, `"medium"`, `"large"`. Defaults to medium.                                                                 |
 | `channels`   | array\<string\> | no       | Result delivery channels for sub-agent actions. Defaults to `["agent_feed"]`. Not used when `agent_name="main"`.                                                  |
@@ -385,7 +385,7 @@ On error: skill is not currently active.
 
 ### Output
 
-On success: `"Scheduled '{name}' (id: {id}). Fires at: {datetime}"`
+On success: `"Scheduled '{name}' (id: {id}). Fires at: {datetime}"` (datetime in user's local timezone)
 
 On error: invalid datetime, `run_at` in the past, invalid channel, or save failure.
 
@@ -406,7 +406,7 @@ No parameters required (empty object accepted).
 
 ### Output
 
-On success: count header followed by one entry per action:
+On success: count header followed by one entry per action (fire times displayed in user's local timezone):
 ```
 {N} action(s):
   {name} ({id}) — fires: {datetime} [agent info] → [channels]

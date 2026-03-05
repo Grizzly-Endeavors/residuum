@@ -66,7 +66,7 @@ impl Tool for ScheduleActionTool {
                     },
                     "run_at": {
                         "type": "string",
-                        "description": "When to fire, as an ISO 8601 datetime string. Interpreted in the configured timezone if no offset is provided (e.g. '2026-03-01T09:00:00' or '2026-03-01T14:00:00Z')."
+                        "description": "Always use local time without an offset (e.g. '2026-03-01T09:00:00'). Interpreted in the user's configured timezone."
                     },
                     "agent_name": {
                         "type": "string",
@@ -178,7 +178,7 @@ impl Tool for ScheduleActionTool {
 
         self.notify.notify_one();
 
-        let run_at_display = run_at.format("%Y-%m-%dT%H:%M:%S UTC");
+        let run_at_display = run_at.with_timezone(&self.tz).format("%Y-%m-%dT%H:%M:%S");
         Ok(ToolResult::success(format!(
             "Scheduled '{name}' (id: {id}). Fires at: {run_at_display}"
         )))
@@ -190,13 +190,14 @@ impl Tool for ScheduleActionTool {
 /// Tool for listing all pending scheduled actions.
 pub struct ListActionsTool {
     store: Arc<Mutex<ActionStore>>,
+    tz: chrono_tz::Tz,
 }
 
 impl ListActionsTool {
     /// Create a new `ListActionsTool`.
     #[must_use]
-    pub fn new(store: Arc<Mutex<ActionStore>>) -> Self {
-        Self { store }
+    pub fn new(store: Arc<Mutex<ActionStore>>, tz: chrono_tz::Tz) -> Self {
+        Self { store, tz }
     }
 }
 
@@ -231,7 +232,10 @@ impl Tool for ListActionsTool {
         lines.push(format!("{} action(s):", actions.len()));
 
         for action in actions {
-            let run_at = action.run_at.format("%Y-%m-%dT%H:%M:%S UTC");
+            let run_at = action
+                .run_at
+                .with_timezone(&self.tz)
+                .format("%Y-%m-%dT%H:%M:%S");
             let agent_label = match action.agent.as_deref() {
                 Some("main") => " [main turn]".to_string(),
                 Some(preset) => format!(" [preset: {preset}]"),
@@ -398,9 +402,81 @@ mod tests {
     #[test]
     fn list_actions_tool_has_correct_name() {
         let store = Arc::new(Mutex::new(ActionStore::new_empty("/tmp/test-actions.json")));
-        let tool = ListActionsTool::new(store);
+        let tool = ListActionsTool::new(store, chrono_tz::UTC);
         assert_eq!(tool.name(), "list_actions");
     }
 
     use chrono::Timelike;
+
+    #[tokio::test]
+    async fn schedule_action_displays_local_time() {
+        let store = Arc::new(Mutex::new(ActionStore::new_empty(
+            "/tmp/test-sched-tz.json",
+        )));
+        let notify = Arc::new(Notify::new());
+        let tz = chrono_tz::Tz::America__New_York;
+        let tool = ScheduleActionTool::new(store, notify, tz, HashSet::new());
+
+        // Schedule an action 1 hour from now so it's in the future
+        let future = Utc::now() + chrono::Duration::hours(1);
+        let naive_local = future
+            .with_timezone(&tz)
+            .format("%Y-%m-%dT%H:%M:%S")
+            .to_string();
+
+        let args = serde_json::json!({
+            "name": "tz-test",
+            "prompt": "hello",
+            "run_at": naive_local
+        });
+
+        let result = tool.execute(args).await.unwrap();
+        let output = result.output;
+
+        // Output should contain the local time, not UTC
+        assert!(
+            output.contains(&naive_local),
+            "expected local time '{naive_local}' in output, got: {output}"
+        );
+        assert!(
+            !output.contains("UTC"),
+            "output should not contain 'UTC', got: {output}"
+        );
+    }
+
+    #[tokio::test]
+    async fn list_actions_displays_local_time() {
+        let store = Arc::new(Mutex::new(ActionStore::new_empty("/tmp/test-list-tz.json")));
+        let tz = chrono_tz::Tz::America__New_York;
+
+        // Add an action with a known UTC time
+        let run_at_utc = chrono::DateTime::parse_from_rfc3339("2026-06-15T18:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let action = ScheduledAction {
+            id: "action-test1234".to_string(),
+            name: "tz-list-test".to_string(),
+            prompt: "hello".to_string(),
+            run_at: run_at_utc,
+            agent: None,
+            model_tier: None,
+            channels: vec!["agent_feed".to_string()],
+            created_at: Utc::now(),
+        };
+        store.lock().await.add(action);
+
+        let tool = ListActionsTool::new(store, tz);
+        let result = tool.execute(serde_json::json!({})).await.unwrap();
+        let output = result.output;
+
+        // 18:00 UTC in June = 14:00 EDT (America/New_York)
+        assert!(
+            output.contains("2026-06-15T14:00:00"),
+            "expected EDT time '2026-06-15T14:00:00' in output, got: {output}"
+        );
+        assert!(
+            !output.contains("UTC"),
+            "output should not contain 'UTC', got: {output}"
+        );
+    }
 }

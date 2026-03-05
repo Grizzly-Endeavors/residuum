@@ -62,7 +62,8 @@ schedules during active hours as sub-agents (or main wake turns).
 - **Inbox**: Capture items for later. Background task results can route here. \
 Unread count appears in your status line.
 - **Scheduled Actions**: One-off future tasks. Fire once at a specified time, \
-then auto-remove. Results route to channels specified at creation time.
+then auto-remove. Results route to channels specified at creation time. \
+All times are in your local timezone — never convert to or from UTC.
 - **Skills**: Loadable knowledge packs. Activate with `skill_activate`, \
 deactivate with `skill_deactivate`. Create new ones in skills/.
 - **Notifications**: Pulse results route to channels declared on each pulse in HEARTBEAT.yml. \

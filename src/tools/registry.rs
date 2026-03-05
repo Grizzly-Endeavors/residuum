@@ -258,7 +258,10 @@ impl ToolRegistry {
             tz,
             valid_external_channels,
         )));
-        self.register(Box::new(actions::ListActionsTool::new(Arc::clone(&store))));
+        self.register(Box::new(actions::ListActionsTool::new(
+            Arc::clone(&store),
+            tz,
+        )));
         self.register(Box::new(actions::CancelActionTool::new(store, notify)));
     }
 }
