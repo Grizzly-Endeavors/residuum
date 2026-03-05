@@ -348,6 +348,14 @@ fn resolve_role_chain(
     Ok(main.to_vec())
 }
 
+/// Resolve gateway configuration from environment variables and defaults only.
+///
+/// Used by the setup server which runs before any config file exists.
+#[must_use]
+pub(crate) fn resolve_default_gateway_config() -> GatewayConfig {
+    resolve_gateway_config(None)
+}
+
 /// Resolve gateway configuration from TOML section and environment variables.
 fn resolve_gateway_config(section: Option<&GatewayConfigFile>) -> GatewayConfig {
     let mut cfg = GatewayConfig::default();
@@ -1521,6 +1529,33 @@ typo_field = 0.5
             "missing secret should fall back to provider env var"
         );
         unsafe { std::env::remove_var("OPENAI_API_KEY") };
+    }
+
+    // ── Gateway config ──────────────────────────────────────────────────────
+
+    #[test]
+    fn gateway_config_defaults() {
+        let cfg = resolve_gateway_config(None);
+        assert_eq!(cfg.bind, "127.0.0.1", "default bind should be loopback");
+        assert_eq!(cfg.port, 7700, "default port should be 7700");
+        assert_eq!(cfg.addr(), "127.0.0.1:7700");
+    }
+
+    #[test]
+    fn gateway_config_env_override() {
+        // SAFETY: test-only, single-threaded test environment
+        unsafe {
+            std::env::set_var("RESIDUUM_GATEWAY_BIND", "0.0.0.0");
+            std::env::set_var("RESIDUUM_GATEWAY_PORT", "8080");
+        }
+        let cfg = resolve_gateway_config(None);
+        assert_eq!(cfg.bind, "0.0.0.0", "env should override bind");
+        assert_eq!(cfg.port, 8080, "env should override port");
+        assert_eq!(cfg.addr(), "0.0.0.0:8080");
+        unsafe {
+            std::env::remove_var("RESIDUUM_GATEWAY_BIND");
+            std::env::remove_var("RESIDUUM_GATEWAY_PORT");
+        }
     }
 
     #[test]

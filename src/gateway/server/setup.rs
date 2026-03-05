@@ -59,9 +59,16 @@ pub async fn run_setup_server_at(config_dir: PathBuf) -> Result<SetupExit, Resid
 
     let app = web::config_api_router(api_state).fallback(get(web::static_handler));
 
-    // Use the default gateway address
-    let addr = "127.0.0.1:7700";
-    let listener = tokio::net::TcpListener::bind(addr).await.map_err(|e| {
+    // Resolve gateway bind/port from env vars and defaults (no config file during setup)
+    let gateway_cfg = crate::config::resolve::resolve_default_gateway_config();
+    if gateway_cfg.bind != "127.0.0.1" && gateway_cfg.bind != "localhost" {
+        tracing::warn!(
+            bind = %gateway_cfg.bind,
+            "setup wizard is exposed on a non-loopback address with no authentication"
+        );
+    }
+    let addr = gateway_cfg.addr();
+    let listener = tokio::net::TcpListener::bind(&addr).await.map_err(|e| {
         ResiduumError::Gateway(format!("failed to bind setup server to {addr}: {e}"))
     })?;
 
