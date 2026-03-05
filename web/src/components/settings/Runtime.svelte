@@ -169,4 +169,26 @@
       </label>
     </div>
   </div>
+
+  <div class="settings-group">
+    <div class="settings-group-label">Idle</div>
+    <div class="settings-field">
+      <label for="rt-idle-timeout">Timeout (minutes)</label>
+      <input
+        id="rt-idle-timeout"
+        type="number"
+        bind:value={fields.idle_timeout_minutes}
+        placeholder="Default: 30 (0 = disabled)"
+      />
+    </div>
+    <div class="settings-field">
+      <label for="rt-idle-channel">Idle Channel</label>
+      <select id="rt-idle-channel" bind:value={fields.idle_channel}>
+        <option value="">Keep current</option>
+        <option value="websocket">WebSocket</option>
+        <option value="telegram">Telegram</option>
+        <option value="discord">Discord</option>
+      </select>
+    </div>
+  </div>
 </div>

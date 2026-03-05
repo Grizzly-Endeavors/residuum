@@ -65,3 +65,6 @@ pub(super) const DEFAULT_AGENT_MODIFY_MCP: bool = true;
 
 /// Whether the agent can modify notification channels by default.
 pub(super) const DEFAULT_AGENT_MODIFY_CHANNELS: bool = true;
+
+/// Default idle timeout in minutes (30 minutes).
+pub(super) const DEFAULT_IDLE_TIMEOUT_MINUTES: u64 = 30;

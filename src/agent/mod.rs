@@ -143,6 +143,16 @@ impl Agent {
         self.recent_messages.clear();
     }
 
+    /// Clear all in-memory messages (used after idle transition + observer).
+    pub fn clear_messages(&mut self) {
+        self.recent_messages.clear();
+    }
+
+    /// Clear gated tool permissions (used during idle project deactivation).
+    pub async fn clear_tool_filter(&self) {
+        self.tool_filter.write().await.clear_enabled();
+    }
+
     /// Rotate messages after an observation cycle.
     ///
     /// Extracts the last 3 text exchanges, clears the buffer, then prepends
@@ -841,6 +851,18 @@ mod tests {
             msgs[5].content, "answer 4",
             "last retained should be exchange 4"
         );
+    }
+
+    #[test]
+    fn clear_messages_empties_buffer() {
+        // Build a minimal agent
+        use crate::models::Message;
+        let mut msgs = crate::agent::recent_messages::RecentMessages::new();
+        msgs.push(Message::user("hello"));
+        msgs.push(Message::assistant("hi", None));
+        assert!(!msgs.is_empty());
+        msgs.clear();
+        assert_eq!(msgs.len(), 0);
     }
 
     type InjectEntry = (usize, Vec<interrupt::Interrupt>);

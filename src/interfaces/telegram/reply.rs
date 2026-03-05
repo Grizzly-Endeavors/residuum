@@ -1,5 +1,7 @@
 //! Telegram reply handle — routes responses back to a private chat.
 
+use std::sync::Arc;
+
 use async_trait::async_trait;
 use teloxide::Bot;
 use teloxide::requests::Requester;
@@ -86,5 +88,9 @@ impl ReplyHandle for TelegramReplyHandle {
         });
 
         TypingGuard::new(stop_tx, handle)
+    }
+
+    fn unsolicited_clone(&self) -> Option<Arc<dyn ReplyHandle>> {
+        Some(Arc::new(Self::new(self.bot.clone(), self.chat_id)))
     }
 }

@@ -30,6 +30,9 @@ export interface ConfigFields {
   // agent
   agent_modify_mcp: boolean;
   agent_modify_channels: boolean;
+  // idle
+  idle_timeout_minutes: string;
+  idle_channel: string;
   // memory observation
   observer_threshold_tokens: string;
   reflector_threshold_tokens: string;
@@ -69,6 +72,8 @@ export function defaultConfigFields(): ConfigFields {
     retry_backoff_multiplier: "",
     agent_modify_mcp: true,
     agent_modify_channels: true,
+    idle_timeout_minutes: "",
+    idle_channel: "",
     observer_threshold_tokens: "",
     reflector_threshold_tokens: "",
     observer_cooldown_secs: "",
@@ -144,6 +149,12 @@ export function parseConfigToml(raw: string): ConfigFields {
   if (agent) {
     fields.agent_modify_mcp = bool(agent.modify_mcp, true);
     fields.agent_modify_channels = bool(agent.modify_channels, true);
+  }
+
+  const idle = doc.idle as Record<string, unknown> | undefined;
+  if (idle) {
+    fields.idle_timeout_minutes = str(idle.timeout_minutes);
+    fields.idle_channel = str(idle.idle_channel);
   }
 
   const mem = doc.memory as Record<string, unknown> | undefined;
@@ -400,6 +411,14 @@ export function serializeConfigToml(f: ConfigFields): string {
     lines.push("[agent]");
     if (!f.agent_modify_mcp) lines.push("modify_mcp = false");
     if (!f.agent_modify_channels) lines.push("modify_channels = false");
+  }
+
+  // idle
+  if (f.idle_timeout_minutes || f.idle_channel) {
+    lines.push("");
+    lines.push("[idle]");
+    if (f.idle_timeout_minutes) lines.push(`timeout_minutes = ${f.idle_timeout_minutes}`);
+    if (f.idle_channel) lines.push(`idle_channel = "${f.idle_channel}"`);
   }
 
   lines.push("");

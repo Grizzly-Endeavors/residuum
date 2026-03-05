@@ -11,6 +11,16 @@ use crate::models::CompletionOptions;
 use super::GatewayRuntime;
 use super::spawn_helpers::SpawnContext;
 
+/// What the event loop should do with the idle timer after a config reload.
+pub(super) enum IdleAction {
+    /// No idle-related changes.
+    None,
+    /// Idle system was disabled (timeout set to zero).
+    Disable,
+    /// Idle timeout changed; recalculate the deadline.
+    Recalculate { new_timeout: Duration },
+}
+
 /// Which subsystems differ between two `Config` snapshots.
 #[expect(
     clippy::struct_excessive_bools,
@@ -35,6 +45,8 @@ pub(super) struct ConfigDiff {
     pub agent_changed: bool,
     /// Skill directories changed.
     pub skills_changed: bool,
+    /// Idle system config changed (timeout or `idle_channel`).
+    pub idle_changed: bool,
 }
 
 impl ConfigDiff {
@@ -49,6 +61,7 @@ impl ConfigDiff {
             && !self.background_changed
             && !self.agent_changed
             && !self.skills_changed
+            && !self.idle_changed
     }
 
     /// Build a human-readable summary of what changed.
@@ -81,6 +94,9 @@ impl ConfigDiff {
         if self.skills_changed {
             parts.push("skills");
         }
+        if self.idle_changed {
+            parts.push("idle");
+        }
         if parts.is_empty() {
             "no changes detected".to_string()
         } else {
@@ -107,6 +123,7 @@ pub(super) fn diff_config(old: &Config, new: &Config) -> ConfigDiff {
         background_changed: old.background != new.background,
         agent_changed: old.agent != new.agent,
         skills_changed: old.skills != new.skills,
+        idle_changed: old.idle != new.idle,
     }
 }
 
@@ -119,7 +136,7 @@ pub(super) fn diff_config(old: &Config, new: &Config) -> ConfigDiff {
     clippy::too_many_lines,
     reason = "linear pipeline applying each diff field in sequence"
 )]
-pub(super) async fn handle_root_reload(rt: &mut GatewayRuntime) {
+pub(super) async fn handle_root_reload(rt: &mut GatewayRuntime) -> IdleAction {
     tracing::info!("handling root config reload in-place");
     super::backup_config(&rt.config_dir);
 
@@ -133,7 +150,7 @@ pub(super) async fn handle_root_reload(rt: &mut GatewayRuntime) {
                     message: format!("config reload failed (keeping current config): {err}"),
                 })
                 .ok();
-            return;
+            return IdleAction::None;
         }
     };
 
@@ -146,7 +163,7 @@ pub(super) async fn handle_root_reload(rt: &mut GatewayRuntime) {
             })
             .ok();
         tracing::info!("config reload: no changes detected");
-        return;
+        return IdleAction::None;
     }
 
     let summary = diff.summary();
@@ -421,6 +438,18 @@ pub(super) async fn handle_root_reload(rt: &mut GatewayRuntime) {
         })
         .ok();
     tracing::info!(changes = %summary, "configuration reloaded successfully");
+
+    if diff.idle_changed {
+        if rt.cfg.idle.timeout.is_zero() {
+            IdleAction::Disable
+        } else {
+            IdleAction::Recalculate {
+                new_timeout: rt.cfg.idle.timeout,
+            }
+        }
+    } else {
+        IdleAction::None
+    }
 }
 
 #[cfg(test)]
@@ -455,6 +484,7 @@ mod tests {
             retry: RetryConfig::default(),
             background: BackgroundConfig::default(),
             agent: AgentAbilitiesConfig::default(),
+            idle: crate::config::IdleConfig::default(),
             config_dir: std::path::PathBuf::from("/tmp/config"),
         }
     }
@@ -473,6 +503,7 @@ mod tests {
         assert!(!diff.background_changed);
         assert!(!diff.agent_changed);
         assert!(!diff.skills_changed);
+        assert!(!diff.idle_changed);
         assert!(diff.is_empty());
     }
 
@@ -588,5 +619,34 @@ mod tests {
         let diff = diff_config(&old, &new);
         assert!(diff.telegram_changed);
         assert!(!diff.discord_changed);
+    }
+
+    #[test]
+    fn diff_config_detects_idle_timeout_change() {
+        let old = test_config();
+        let mut new = old.clone();
+        new.idle.timeout = std::time::Duration::from_secs(600);
+
+        let diff = diff_config(&old, &new);
+        assert!(diff.idle_changed);
+        assert!(!diff.providers_changed);
+    }
+
+    #[test]
+    fn diff_config_detects_idle_channel_change() {
+        let old = test_config();
+        let mut new = old.clone();
+        new.idle.idle_channel = Some("telegram".to_string());
+
+        let diff = diff_config(&old, &new);
+        assert!(diff.idle_changed);
+        assert!(!diff.providers_changed);
+    }
+
+    #[test]
+    fn diff_config_no_idle_change() {
+        let cfg = test_config();
+        let diff = diff_config(&cfg, &cfg);
+        assert!(!diff.idle_changed);
     }
 }

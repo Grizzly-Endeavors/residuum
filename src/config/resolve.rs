@@ -9,7 +9,7 @@ use crate::models::retry::RetryConfig;
 
 use super::Config;
 use super::bootstrap::default_workspace_dir;
-use super::constants::{DEFAULT_MAX_TOKENS, DEFAULT_TIMEOUT_SECS};
+use super::constants::{DEFAULT_IDLE_TIMEOUT_MINUTES, DEFAULT_MAX_TOKENS, DEFAULT_TIMEOUT_SECS};
 use super::deserialize::{
     AgentConfigFile, BackgroundConfigFile, BackgroundModelsFile, ConfigFile, DiscordConfigFile,
     GatewayConfigFile, ModelStringOrList, ProviderEntryFile, ProvidersFile, SearchConfigFile,
@@ -18,7 +18,7 @@ use super::deserialize::{
 use super::provider::{ModelSpec, ProviderKind, ProviderSpec};
 use super::secrets::SecretStore;
 use super::types::{
-    AgentAbilitiesConfig, BackgroundConfig, DiscordConfig, GatewayConfig, MemoryConfig,
+    AgentAbilitiesConfig, BackgroundConfig, DiscordConfig, GatewayConfig, IdleConfig, MemoryConfig,
     SearchConfig, SkillsConfig, TelegramConfig, WebhookConfig,
 };
 
@@ -157,6 +157,37 @@ pub(crate) fn from_file_and_env(
 
     let agent = resolve_agent_config(file.and_then(|f| f.agent.as_ref()));
 
+    let idle = {
+        let section = file.and_then(|f| f.idle.as_ref());
+        let timeout_minutes = section
+            .and_then(|s| s.timeout_minutes)
+            .unwrap_or(DEFAULT_IDLE_TIMEOUT_MINUTES);
+        let idle_channel = section.and_then(|s| s.idle_channel.clone());
+
+        if let Some(ref channel) = idle_channel {
+            let valid = match channel.as_str() {
+                "telegram" => telegram.is_some(),
+                "discord" => discord.is_some(),
+                "websocket" => true,
+                other => {
+                    return Err(ResiduumError::Config(format!(
+                        "idle_channel \"{other}\" is not a recognized interface"
+                    )));
+                }
+            };
+            if !valid {
+                return Err(ResiduumError::Config(format!(
+                    "idle_channel \"{channel}\" configured but [{channel}] section is missing"
+                )));
+            }
+        }
+
+        IdleConfig {
+            timeout: std::time::Duration::from_secs(timeout_minutes * 60),
+            idle_channel,
+        }
+    };
+
     let background = resolve_background_config(
         file.and_then(|f| f.background.as_ref()),
         providers_file
@@ -223,6 +254,7 @@ pub(crate) fn from_file_and_env(
         retry,
         background,
         agent,
+        idle,
         config_dir: PathBuf::new(),
     })
 }
@@ -1535,6 +1567,12 @@ typo_field = 0.5
 
     #[test]
     fn gateway_config_defaults() {
+        // Clear env vars that gateway_config_env_override may have set
+        // (tests run in parallel within the same process).
+        unsafe {
+            std::env::remove_var("RESIDUUM_GATEWAY_BIND");
+            std::env::remove_var("RESIDUUM_GATEWAY_PORT");
+        }
         let cfg = resolve_gateway_config(None);
         assert_eq!(cfg.bind, "127.0.0.1", "default bind should be loopback");
         assert_eq!(cfg.port, 7700, "default port should be 7700");

@@ -6,6 +6,7 @@
 
 mod actions;
 mod helpers;
+mod idle;
 mod memory;
 mod reload;
 pub mod setup;
@@ -190,6 +191,11 @@ struct GatewayRuntime {
     /// Most recent reply handle from a user message. Used by wake turns to
     /// deliver responses to the channel the user last interacted from.
     last_reply: Option<Arc<dyn ReplyHandle>>,
+    /// Unsolicited send handles keyed by interface name. Populated on first
+    /// message from each interface for use during idle channel switching.
+    unsolicited_handles: std::collections::HashMap<String, Arc<dyn ReplyHandle>>,
+    /// When the last user message was received (for idle deadline recalculation on reload).
+    last_user_message_instant: Option<tokio::time::Instant>,
     // Adapter lifecycle handles
     discord_handle: Option<tokio::task::JoinHandle<()>>,
     telegram_handle: Option<tokio::task::JoinHandle<()>>,
@@ -420,6 +426,8 @@ pub async fn run_gateway(cfg: Config) -> Result<GatewayExit, ResiduumError> {
         shutdown_tx: core.shutdown_tx,
         config_dir: core.config_dir.clone(),
         last_reply: None,
+        unsolicited_handles: std::collections::HashMap::new(),
+        last_user_message_instant: None,
         discord_handle,
         telegram_handle,
         discord_shutdown_tx,
@@ -917,13 +925,14 @@ async fn handle_workspace_reload(rt: &mut GatewayRuntime) {
 /// signals until shutdown or reload is requested.
 #[expect(
     clippy::too_many_lines,
-    reason = "7-arm select! loop; each arm is a distinct event source and cannot be split further"
+    reason = "8-arm select! loop; each arm is a distinct event source and cannot be split further"
 )]
 async fn run_event_loop(mut rt: GatewayRuntime) -> GatewayExit {
     let mut pulse_tick = tokio::time::interval(Duration::from_secs(60));
     let mut action_tick = tokio::time::interval(Duration::from_secs(30));
     pulse_tick.tick().await; // skip first tick
     let mut observe_deadline: Option<tokio::time::Instant> = None;
+    let mut idle_deadline: Option<tokio::time::Instant> = None;
 
     tracing::info!("gateway ready, entering main loop");
 
@@ -949,7 +958,26 @@ async fn run_event_loop(mut rt: GatewayRuntime) -> GatewayExit {
                 match signal {
                     ReloadSignal::None => {}
                     ReloadSignal::Root => {
-                        reload::handle_root_reload(&mut rt).await;
+                        let idle_action = reload::handle_root_reload(&mut rt).await;
+                        match idle_action {
+                            reload::IdleAction::None => {}
+                            reload::IdleAction::Disable => {
+                                idle_deadline = None;
+                            }
+                            reload::IdleAction::Recalculate { new_timeout } => {
+                                if let Some(last_msg) = rt.last_user_message_instant {
+                                    let new_dl = last_msg + new_timeout;
+                                    if new_dl > tokio::time::Instant::now() {
+                                        idle_deadline = Some(new_dl);
+                                    } else {
+                                        idle::execute_idle_transition(&mut rt, &mut observe_deadline).await;
+                                        idle_deadline = None;
+                                    }
+                                } else {
+                                    idle_deadline = Some(tokio::time::Instant::now() + new_timeout);
+                                }
+                            }
+                        }
                     }
                     ReloadSignal::Workspace => {
                         handle_workspace_reload(&mut rt).await;
@@ -979,6 +1007,12 @@ async fn run_event_loop(mut rt: GatewayRuntime) -> GatewayExit {
                 }
 
                 rt.last_reply = Some(Arc::clone(&routed.reply));
+                let iface = routed.message.origin.interface.clone();
+                if let std::collections::hash_map::Entry::Vacant(e) = rt.unsolicited_handles.entry(iface)
+                    && let Some(h) = routed.reply.unsolicited_clone()
+                {
+                    e.insert(h);
+                }
                 let typing_guard = routed.reply.start_typing();
 
                 let before = rt.agent.message_count();
@@ -1100,6 +1134,13 @@ async fn run_event_loop(mut rt: GatewayRuntime) -> GatewayExit {
                         }
                     }
                 }
+
+                // Reset idle deadline on every inbound user message
+                if !rt.cfg.idle.timeout.is_zero() {
+                    let now = tokio::time::Instant::now();
+                    rt.last_user_message_instant = Some(now);
+                    idle_deadline = Some(now + rt.cfg.idle.timeout);
+                }
             }
 
             // ── Pulse timer ───────────────────────────────────────────────
@@ -1209,6 +1250,17 @@ async fn run_event_loop(mut rt: GatewayRuntime) -> GatewayExit {
             } => {
                 observe_deadline = None;
                 execute_observation(&rt.observer, &rt.reflector, &rt.search_index, &rt.layout, &mut rt.agent, rt.vector_store.as_ref(), rt.embedding_provider.as_ref()).await;
+            }
+
+            // ── Idle deadline ────────────────────────────────────────────────
+            () = async {
+                match idle_deadline {
+                    Some(d) => tokio::time::sleep_until(d).await,
+                    None => std::future::pending().await,
+                }
+            } => {
+                idle::execute_idle_transition(&mut rt, &mut observe_deadline).await;
+                idle_deadline = None;
             }
 
             // ── Background task results ──────────────────────────────────

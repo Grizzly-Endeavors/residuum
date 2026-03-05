@@ -1,5 +1,7 @@
 //! WebSocket-specific reply handle for the gateway.
 
+use std::sync::Arc;
+
 use async_trait::async_trait;
 use tokio::sync::broadcast;
 
@@ -95,6 +97,13 @@ impl ReplyHandle for WsReplyHandle {
         {
             tracing::trace!("no broadcast receivers for intermediate response");
         }
+    }
+
+    fn unsolicited_clone(&self) -> Option<Arc<dyn ReplyHandle>> {
+        Some(Arc::new(Self::new(
+            self.broadcast_tx.clone(),
+            "unsolicited".to_string(),
+        )))
     }
 }
 
@@ -194,6 +203,31 @@ mod tests {
                     if content == "thinking..."
             ),
             "should broadcast intermediate response, got: {msg:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn unsolicited_clone_returns_some_and_can_send() {
+        let (tx, mut rx) = broadcast::channel::<ServerMessage>(16);
+        let handle = WsReplyHandle::new(tx, "msg-1".to_string());
+
+        let cloned = handle.unsolicited_clone();
+        assert!(
+            cloned.is_some(),
+            "WsReplyHandle should support unsolicited_clone"
+        );
+
+        let cloned = cloned.unwrap();
+        cloned.send_response("unsolicited hello").await;
+
+        let msg = rx.recv().await.unwrap();
+        assert!(
+            matches!(
+                &msg,
+                ServerMessage::Response { reply_to, content }
+                    if reply_to == "unsolicited" && content == "unsolicited hello"
+            ),
+            "cloned handle should broadcast with 'unsolicited' reply_to, got: {msg:?}"
         );
     }
 

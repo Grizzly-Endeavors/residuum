@@ -83,4 +83,8 @@ impl ReplyHandle for DiscordReplyHandle {
 
         TypingGuard::new(stop_tx, handle)
     }
+
+    fn unsolicited_clone(&self) -> Option<Arc<dyn ReplyHandle>> {
+        Some(Arc::new(Self::new(Arc::clone(&self.http), self.channel_id)))
+    }
 }
