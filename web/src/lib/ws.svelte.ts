@@ -112,6 +112,8 @@ class WsConnection {
   }
 
   loadHistory(messages: RecentMessage[]): void {
+    this.feed.length = 0;
+    this.pendingToolCalls.clear();
     if (!messages.length) return;
 
     // eslint-disable-next-line svelte/prefer-svelte-reactivity -- local non-reactive scratch map

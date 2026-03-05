@@ -10,6 +10,7 @@ pub(crate) mod null;
 pub(crate) mod ollama;
 pub(crate) mod openai;
 pub(crate) mod retry;
+pub(crate) mod think_tags;
 
 pub(crate) use embedding::build_embedding_provider;
 pub use embedding::{EmbeddingProvider, EmbeddingResponse};

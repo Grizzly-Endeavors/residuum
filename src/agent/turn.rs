@@ -94,6 +94,10 @@ pub(crate) async fn execute_turn(
             .await
             .map_err(ResiduumError::Model)?;
 
+        // Strip <think>...</think> blocks emitted by reasoning models (e.g. DeepSeek-R1)
+        let mut response = response;
+        response.content = crate::models::think_tags::strip_think_tags(&response.content);
+
         if response.tool_calls.is_empty() {
             recent_messages.push(Message::assistant(response.content.clone(), None));
             log_usage(&response);
