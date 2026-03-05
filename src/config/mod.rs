@@ -447,11 +447,56 @@ main = "invalid-format"
     fn idle_config_explicit_values() {
         let dir = tempfile::tempdir().unwrap();
         write_providers(dir.path());
-        let toml =
-            "timezone = \"UTC\"\n\n[idle]\ntimeout_minutes = 15\nidle_channel = \"telegram\"\n";
+        let toml = "timezone = \"UTC\"\n\n[telegram]\ntoken = \"test-token\"\n\n[idle]\ntimeout_minutes = 15\nidle_channel = \"telegram\"\n";
         std::fs::write(dir.path().join("config.toml"), toml).unwrap();
         let cfg = Config::load_at(dir.path()).unwrap();
         assert_eq!(cfg.idle.timeout, std::time::Duration::from_secs(15 * 60));
         assert_eq!(cfg.idle.idle_channel.as_deref(), Some("telegram"));
+    }
+
+    #[test]
+    fn idle_channel_rejected_for_unconfigured_interface() {
+        let dir = tempfile::tempdir().unwrap();
+        write_providers(dir.path());
+        let toml = "timezone = \"UTC\"\n\n[idle]\nidle_channel = \"telegram\"\n";
+        std::fs::write(dir.path().join("config.toml"), toml).unwrap();
+        let result = Config::load_at(dir.path());
+        assert!(
+            result.is_err(),
+            "idle_channel=telegram without [telegram] should fail"
+        );
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("idle_channel") && err.contains("missing"),
+            "error should mention idle_channel and missing section: {err}"
+        );
+    }
+
+    #[test]
+    fn idle_channel_rejected_for_unknown_name() {
+        let dir = tempfile::tempdir().unwrap();
+        write_providers(dir.path());
+        let toml = "timezone = \"UTC\"\n\n[idle]\nidle_channel = \"sms\"\n";
+        std::fs::write(dir.path().join("config.toml"), toml).unwrap();
+        let result = Config::load_at(dir.path());
+        assert!(
+            result.is_err(),
+            "idle_channel=sms should be rejected as unknown"
+        );
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("not a recognized interface"),
+            "error should mention unrecognized interface: {err}"
+        );
+    }
+
+    #[test]
+    fn idle_channel_websocket_always_valid() {
+        let dir = tempfile::tempdir().unwrap();
+        write_providers(dir.path());
+        let toml = "timezone = \"UTC\"\n\n[idle]\nidle_channel = \"websocket\"\n";
+        std::fs::write(dir.path().join("config.toml"), toml).unwrap();
+        let cfg = Config::load_at(dir.path()).unwrap();
+        assert_eq!(cfg.idle.idle_channel.as_deref(), Some("websocket"));
     }
 }

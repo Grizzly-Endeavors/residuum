@@ -69,6 +69,13 @@ pub trait ReplyHandle: Send + Sync {
     ///
     /// Default is a no-op.
     async fn send_intermediate(&self, _content: &str) {}
+
+    /// Create a handle that can send to the same destination without an inbound message.
+    ///
+    /// Returns `None` for interfaces that don't support unsolicited messaging.
+    fn unsolicited_clone(&self) -> Option<Arc<dyn ReplyHandle>> {
+        None
+    }
 }
 
 /// A message paired with its reply handle, ready for the main loop.
@@ -129,6 +136,19 @@ mod tests {
         let guard = TypingGuard::no_op();
         assert!(guard.cancel.is_none());
         drop(guard);
+    }
+
+    #[test]
+    fn default_unsolicited_clone_returns_none() {
+        struct DummyReply;
+        #[async_trait]
+        impl ReplyHandle for DummyReply {
+            async fn send_response(&self, _content: &str) {}
+            async fn send_typing(&self) {}
+            async fn send_system_event(&self, _source: &str, _content: &str) {}
+        }
+        let handle = DummyReply;
+        assert!(handle.unsolicited_clone().is_none());
     }
 
     #[tokio::test]
