@@ -27,7 +27,7 @@ pub(super) enum IdleAction {
     reason = "diff struct deliberately uses bool flags for each subsystem"
 )]
 pub(super) struct ConfigDiff {
-    /// Provider chains changed (main, observer, reflector, pulse, embedding, retry, `max_tokens`).
+    /// Provider chains changed (main, observer, reflector, pulse, embedding, retry, `max_tokens`, temperature, thinking).
     pub providers_changed: bool,
     /// Memory thresholds changed (observer/reflector thresholds, search config).
     pub memory_changed: bool,
@@ -114,7 +114,9 @@ pub(super) fn diff_config(old: &Config, new: &Config) -> ConfigDiff {
             || old.pulse != new.pulse
             || old.embedding != new.embedding
             || old.retry != new.retry
-            || old.max_tokens != new.max_tokens,
+            || old.max_tokens != new.max_tokens
+            || old.temperature != new.temperature
+            || old.thinking != new.thinking,
         memory_changed: old.memory != new.memory,
         gateway_changed: old.gateway != new.gateway,
         discord_changed: old.discord != new.discord,
@@ -188,6 +190,7 @@ pub(super) async fn handle_root_reload(rt: &mut GatewayRuntime) -> IdleAction {
                     options: CompletionOptions {
                         max_tokens: Some(new_cfg.max_tokens),
                         temperature: new_cfg.temperature,
+                        thinking: new_cfg.thinking.clone(),
                         ..CompletionOptions::default()
                     },
                     layout: rt.layout.clone(),
@@ -390,6 +393,7 @@ pub(super) async fn handle_root_reload(rt: &mut GatewayRuntime) -> IdleAction {
             options: CompletionOptions {
                 max_tokens: Some(new_cfg.max_tokens),
                 temperature: new_cfg.temperature,
+                thinking: new_cfg.thinking.clone(),
                 ..CompletionOptions::default()
             },
             layout: rt.layout.clone(),
@@ -488,6 +492,7 @@ mod tests {
             agent: AgentAbilitiesConfig::default(),
             idle: crate::config::IdleConfig::default(),
             temperature: None,
+            thinking: None,
             config_dir: std::path::PathBuf::from("/tmp/config"),
         }
     }

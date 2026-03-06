@@ -14,7 +14,7 @@ use super::http::{SharedHttpClient, map_request_error, warn_if_insecure_remote};
 use super::retry::{RetryConfig, with_retry};
 use super::{
     CompletionOptions, Message, ModelError, ModelProvider, ModelResponse, ResponseFormat, Role,
-    ToolCall, ToolDefinition, Usage,
+    ThinkingConfig, ThinkingLevel, ToolCall, ToolDefinition, Usage,
 };
 
 /// Client for the Google Gemini `generateContent` API.
@@ -231,12 +231,29 @@ impl ModelProvider for GeminiClient {
             temperature: options.temperature,
         };
 
+        let thinking_config = options.thinking.as_ref().and_then(|tc| match tc {
+            ThinkingConfig::Level(ThinkingLevel::Low) => Some(GeminiThinkingConfig {
+                thinking_budget: 1024,
+            }),
+            ThinkingConfig::Level(ThinkingLevel::Medium) => Some(GeminiThinkingConfig {
+                thinking_budget: 8192,
+            }),
+            ThinkingConfig::Level(ThinkingLevel::High) => Some(GeminiThinkingConfig {
+                thinking_budget: 32768,
+            }),
+            ThinkingConfig::Toggle(true) => Some(GeminiThinkingConfig {
+                thinking_budget: -1,
+            }),
+            ThinkingConfig::Toggle(false) => None,
+        });
+
         with_retry(&self.retry, || {
             let url = url.clone();
             let system_instruction = system_instruction.clone();
             let contents = contents.clone();
             let gemini_tools = gemini_tools.clone();
             let generation_config = generation_config.clone();
+            let thinking_config = thinking_config.clone();
             let model = model.clone();
             let http = http.clone();
 
@@ -246,6 +263,7 @@ impl ModelProvider for GeminiClient {
                     system_instruction,
                     tools: gemini_tools,
                     generation_config,
+                    thinking_config,
                 };
 
                 debug!(model = %model, "sending Gemini generateContent request");
@@ -288,6 +306,12 @@ impl ModelProvider for GeminiClient {
 // Gemini API request types
 // ---------------------------------------------------------------------------
 
+#[derive(Serialize, Clone)]
+struct GeminiThinkingConfig {
+    #[serde(rename = "thinkingBudget")]
+    thinking_budget: i32,
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct GeminiRequest {
@@ -297,6 +321,8 @@ struct GeminiRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
     tools: Option<Vec<GeminiTools>>,
     generation_config: GeminiGenerationConfig,
+    #[serde(rename = "thinkingConfig", skip_serializing_if = "Option::is_none")]
+    thinking_config: Option<GeminiThinkingConfig>,
 }
 
 #[derive(Serialize, Clone)]
@@ -1093,6 +1119,44 @@ mod tests {
             usage.cache_read_tokens,
             Some(8),
             "cache read tokens should match cachedContentTokenCount"
+        );
+    }
+
+    #[tokio::test]
+    async fn thinking_config_included_when_set() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path_regex("/models/.+:generateContent"))
+            .and(query_param("key", "test-api-key"))
+            .and(wiremock::matchers::body_partial_json(serde_json::json!({
+                "thinkingConfig": {
+                    "thinkingBudget": 8192
+                }
+            })))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "candidates": [{
+                    "content": {
+                        "parts": [{"text": "ok"}],
+                        "role": "model"
+                    }
+                }]
+            })))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        let client = make_client(&mock_server.uri());
+        let options = CompletionOptions {
+            thinking: Some(ThinkingConfig::Level(ThinkingLevel::Medium)),
+            ..CompletionOptions::default()
+        };
+        let result = client
+            .complete(&[Message::user("Hello")], &[], &options)
+            .await;
+        assert!(
+            result.is_ok(),
+            "request with thinking config should succeed: {result:?}"
         );
     }
 

@@ -31,6 +31,10 @@ pub(crate) const MAX_TOOL_ITERATIONS: usize = 50;
     clippy::too_many_arguments,
     reason = "threading context through the turn loop; grouping into a struct would obscure the call site"
 )]
+#[expect(
+    clippy::too_many_lines,
+    reason = "thinking logging added a few lines; splitting would fragment the turn loop"
+)]
 pub(crate) async fn execute_turn(
     provider: &dyn ModelProvider,
     tools: &ToolRegistry,
@@ -93,6 +97,14 @@ pub(crate) async fn execute_turn(
             .complete(&messages, &tool_definitions, options)
             .await
             .map_err(ResiduumError::Model)?;
+
+        // Log structured thinking if the provider returned it natively
+        if let Some(ref thinking) = response.thinking {
+            tracing::debug!(
+                thinking_len = thinking.len(),
+                "structured thinking received"
+            );
+        }
 
         // Strip <think>...</think> blocks emitted by reasoning models (e.g. DeepSeek-R1)
         let mut response = response;
