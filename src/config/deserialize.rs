@@ -78,6 +78,8 @@ pub(super) struct ProviderEntryFile {
     pub(super) api_key: Option<String>,
     /// Override base URL.
     pub(super) url: Option<String>,
+    /// Ollama `keep_alive` duration (e.g. `"5m"`, `"0"` to unload immediately).
+    pub(super) keep_alive: Option<String>,
 }
 
 /// A model string that can be either a single string or a list (for failover).

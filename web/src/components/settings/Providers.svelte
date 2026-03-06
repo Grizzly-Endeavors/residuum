@@ -143,7 +143,7 @@
   }, 500);
 
   function addProvider() {
-    providers.push({ name: "", type: "anthropic", apiKey: "", url: "" });
+    providers.push({ name: "", type: "anthropic", apiKey: "", url: "", keepAlive: "" });
     providers = providers;
   }
 
@@ -241,6 +241,17 @@
               placeholder="Override base URL"
             />
           </div>
+          {#if prov.type === "ollama"}
+            <div class="settings-field">
+              <label for="settings-prov-{i}-keepalive">Keep Alive</label>
+              <input
+                id="settings-prov-{i}-keepalive"
+                type="text"
+                bind:value={prov.keepAlive}
+                placeholder="5m (default)"
+              />
+            </div>
+          {/if}
         </div>
         <button class="btn btn-sm btn-danger" onclick={() => removeProvider(i)}>Remove</button>
       </div>

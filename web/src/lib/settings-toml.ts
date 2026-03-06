@@ -242,6 +242,7 @@ export function parseProvidersToml(raw: string): ProvidersFormState {
         type: str(entry.type),
         apiKey: str(entry.api_key),
         url: str(entry.url),
+        keepAlive: str(entry.keep_alive),
       });
     }
   }
@@ -442,6 +443,7 @@ export function serializeProvidersToml(
     lines.push(`type = "${p.type}"`);
     if (p.apiKey) lines.push(`api_key = "${p.apiKey}"`);
     if (p.url) lines.push(`url = "${p.url}"`);
+    if (p.keepAlive) lines.push(`keep_alive = "${p.keepAlive}"`);
     lines.push("");
   }
 

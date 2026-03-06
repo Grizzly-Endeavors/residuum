@@ -319,6 +319,7 @@ fn resolve_model_string(
             },
             provider_url,
             api_key,
+            keep_alive: entry.keep_alive.clone(),
         });
     }
 
@@ -343,6 +344,7 @@ fn resolve_model_string(
         },
         provider_url,
         api_key,
+        keep_alive: None,
     })
 }
 
@@ -734,6 +736,7 @@ mod tests {
                 kind: "anthropic".to_string(),
                 api_key: Some("sk-explicit".to_string()),
                 url: None,
+                keep_alive: None,
             },
         );
 
@@ -768,6 +771,7 @@ mod tests {
                 kind: "openai".to_string(),
                 api_key: Some("csk-123".to_string()),
                 url: Some("https://api.cerebras.ai/v1".to_string()),
+                keep_alive: None,
             },
         );
 
@@ -1503,6 +1507,7 @@ typo_field = 0.5
                 kind: "openai".to_string(),
                 api_key: Some("${RESIDUUM_TEST_PROVIDER_KEY}".to_string()),
                 url: None,
+                keep_alive: None,
             },
         );
 
@@ -1528,6 +1533,7 @@ typo_field = 0.5
                 kind: "openai".to_string(),
                 api_key: Some("secret:my_openai".to_string()),
                 url: None,
+                keep_alive: None,
             },
         );
 
@@ -1552,6 +1558,7 @@ typo_field = 0.5
                 kind: "openai".to_string(),
                 api_key: Some("secret:nonexistent".to_string()),
                 url: None,
+                keep_alive: None,
             },
         );
 

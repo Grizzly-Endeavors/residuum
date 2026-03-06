@@ -21,6 +21,8 @@ pub struct ProviderSpec {
     pub provider_url: String,
     /// API key (redacted in Debug output).
     pub api_key: Option<String>,
+    /// Ollama `keep_alive` duration (e.g. `"5m"`, `"0"` to unload immediately).
+    pub keep_alive: Option<String>,
 }
 
 impl fmt::Debug for ProviderSpec {
@@ -30,6 +32,7 @@ impl fmt::Debug for ProviderSpec {
             .field("model", &self.model)
             .field("provider_url", &self.provider_url)
             .field("api_key", &self.api_key.as_ref().map(|_| "[REDACTED]"))
+            .field("keep_alive", &self.keep_alive)
             .finish()
     }
 }

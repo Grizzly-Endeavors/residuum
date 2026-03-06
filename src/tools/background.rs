@@ -396,6 +396,7 @@ mod tests {
                 },
                 provider_url: "http://localhost:11434".to_string(),
                 api_key: None,
+                keep_alive: None,
             }],
             http_client: crate::models::SharedHttpClient::new(
                 &crate::models::HttpClientConfig::with_timeout(30),
