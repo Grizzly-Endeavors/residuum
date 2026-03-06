@@ -320,6 +320,7 @@ mod tests {
             },
             provider_url: "http://dummy".to_string(),
             api_key: None,
+            keep_alive: None,
         };
         let p_medium = ProviderSpec {
             name: "dummy-medium".to_string(),
@@ -329,6 +330,7 @@ mod tests {
             },
             provider_url: "http://dummy".to_string(),
             api_key: None,
+            keep_alive: None,
         };
         let p_large = ProviderSpec {
             name: "dummy-large".to_string(),
@@ -338,6 +340,7 @@ mod tests {
             },
             provider_url: "http://dummy".to_string(),
             api_key: None,
+            keep_alive: None,
         };
         let p_main = ProviderSpec {
             name: "dummy-main".to_string(),
@@ -347,6 +350,7 @@ mod tests {
             },
             provider_url: "http://dummy".to_string(),
             api_key: None,
+            keep_alive: None,
         };
 
         let main_slice = std::slice::from_ref(&p_main);

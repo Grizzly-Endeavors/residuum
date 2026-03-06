@@ -78,6 +78,7 @@ pub(crate) fn build_embedding_provider(
                     &spec.provider_url,
                     &spec.model.model,
                     key,
+                    spec.keep_alive.clone(),
                     retry,
                 )
             } else {
@@ -85,6 +86,7 @@ pub(crate) fn build_embedding_provider(
                     http,
                     &spec.provider_url,
                     &spec.model.model,
+                    spec.keep_alive.clone(),
                     retry,
                 )
             };
@@ -126,6 +128,7 @@ mod tests {
             },
             provider_url: kind.default_url().to_string(),
             api_key: api_key.map(String::from),
+            keep_alive: None,
         }
     }
 

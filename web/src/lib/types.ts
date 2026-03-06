@@ -152,6 +152,7 @@ export interface SettingsProviderEntry {
   type: string;
   apiKey: string;
   url: string;
+  keepAlive: string;
 }
 
 export interface SettingsModelAssignments {

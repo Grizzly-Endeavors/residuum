@@ -26,6 +26,7 @@ pub(crate) fn build_provider_from_provider_spec(
         &spec.model,
         &spec.provider_url,
         spec.api_key.as_deref(),
+        spec.keep_alive.clone(),
         max_tokens,
         http,
         retry,
@@ -41,6 +42,7 @@ fn build_provider_from_spec(
     spec: &ModelSpec,
     url: &str,
     api_key: Option<&str>,
+    keep_alive: Option<String>,
     max_tokens: u32,
     http: SharedHttpClient,
     retry: RetryConfig,
@@ -87,6 +89,7 @@ fn build_provider_from_spec(
                     url,
                     &spec.model,
                     key,
+                    keep_alive,
                     retry,
                 )))
             } else {
@@ -94,6 +97,7 @@ fn build_provider_from_spec(
                     http,
                     url,
                     &spec.model,
+                    keep_alive,
                     retry,
                 )))
             }

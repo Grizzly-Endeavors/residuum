@@ -17,6 +17,11 @@
 # cerebras = { type = "openai", api_key = "csk-...", url = "https://api.cerebras.ai/v1" }
 # claude-max = { type = "anthropic", api_key = "${ANTHROPIC_API_KEY}" }
 # google-api = { type = "gemini", api_key = "secret:gemini_key" }
+#
+# Ollama supports keep_alive to control how long models stay loaded in memory:
+# [providers.local-ollama]
+# type = "ollama"
+# keep_alive = "5m"
 
 # ── Models (role assignments) ─────────────────────────────────────────────────
 # Format: "provider_or_type/model_name"

@@ -18,6 +18,7 @@ pub(crate) struct OllamaClient {
     base_url: String,
     model: String,
     api_key: Option<String>,
+    keep_alive: Option<String>,
     retry: RetryConfig,
 }
 
@@ -30,6 +31,7 @@ impl OllamaClient {
         http: SharedHttpClient,
         base_url: impl Into<String>,
         model: impl Into<String>,
+        keep_alive: Option<String>,
         retry: RetryConfig,
     ) -> Self {
         let base_url = base_url.into();
@@ -40,6 +42,7 @@ impl OllamaClient {
             base_url,
             model: model.into(),
             api_key: None,
+            keep_alive,
             retry,
         }
     }
@@ -53,6 +56,7 @@ impl OllamaClient {
         base_url: impl Into<String>,
         model: impl Into<String>,
         api_key: impl Into<String>,
+        keep_alive: Option<String>,
         retry: RetryConfig,
     ) -> Self {
         let base_url = base_url.into();
@@ -63,6 +67,7 @@ impl OllamaClient {
             base_url,
             model: model.into(),
             api_key: Some(api_key.into()),
+            keep_alive,
             retry,
         }
     }
@@ -96,6 +101,7 @@ impl ModelProvider for OllamaClient {
         let has_tools = !ollama_tools.is_empty();
         let model = self.model.clone();
         let api_key = self.api_key.clone();
+        let keep_alive = self.keep_alive.clone();
         let http = self.http.clone();
         let timeout_secs = self.timeout_secs();
 
@@ -113,6 +119,7 @@ impl ModelProvider for OllamaClient {
             let ollama_tools = ollama_tools.clone();
             let model = model.clone();
             let api_key = api_key.clone();
+            let keep_alive = keep_alive.clone();
             let http = http.clone();
             let format = format.clone();
             let model_options = model_options.clone();
@@ -125,6 +132,7 @@ impl ModelProvider for OllamaClient {
                     stream: false,
                     format,
                     options: model_options,
+                    keep_alive,
                 };
 
                 let mut req_builder = http.client().post(&url).json(&request);
@@ -194,6 +202,8 @@ struct OllamaChatRequest<'a> {
     format: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     options: Option<OllamaModelOptions>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    keep_alive: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -270,6 +280,7 @@ pub(crate) struct OllamaEmbeddingClient {
     base_url: String,
     model: String,
     api_key: Option<String>,
+    keep_alive: Option<String>,
     retry: RetryConfig,
 }
 
@@ -280,6 +291,7 @@ impl OllamaEmbeddingClient {
         http: SharedHttpClient,
         base_url: impl Into<String>,
         model: impl Into<String>,
+        keep_alive: Option<String>,
         retry: RetryConfig,
     ) -> Self {
         let base_url = base_url.into();
@@ -290,6 +302,7 @@ impl OllamaEmbeddingClient {
             base_url,
             model: model.into(),
             api_key: None,
+            keep_alive,
             retry,
         }
     }
@@ -301,6 +314,7 @@ impl OllamaEmbeddingClient {
         base_url: impl Into<String>,
         model: impl Into<String>,
         api_key: impl Into<String>,
+        keep_alive: Option<String>,
         retry: RetryConfig,
     ) -> Self {
         let base_url = base_url.into();
@@ -311,6 +325,7 @@ impl OllamaEmbeddingClient {
             base_url,
             model: model.into(),
             api_key: Some(api_key.into()),
+            keep_alive,
             retry,
         }
     }
@@ -322,6 +337,7 @@ impl EmbeddingProvider for OllamaEmbeddingClient {
         let url = format!("{}/api/embed", self.base_url);
         let model = self.model.clone();
         let api_key = self.api_key.clone();
+        let keep_alive = self.keep_alive.clone();
         let http = self.http.clone();
         let timeout_secs = self.http.timeout_secs();
 
@@ -329,12 +345,14 @@ impl EmbeddingProvider for OllamaEmbeddingClient {
             let url = url.clone();
             let model = model.clone();
             let api_key = api_key.clone();
+            let keep_alive = keep_alive.clone();
             let http = http.clone();
 
             async move {
                 let request = OllamaEmbedRequest {
                     model: &model,
                     input: texts,
+                    keep_alive,
                 };
 
                 let mut req_builder = http.client().post(&url).json(&request);
@@ -386,6 +404,8 @@ impl EmbeddingProvider for OllamaEmbeddingClient {
 struct OllamaEmbedRequest<'a> {
     model: &'a str,
     input: &'a [&'a str],
+    #[serde(skip_serializing_if = "Option::is_none")]
+    keep_alive: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -405,12 +425,12 @@ mod tests {
 
     fn make_client(url: impl Into<String>, model: &str) -> OllamaClient {
         let http = SharedHttpClient::new(&HttpClientConfig::default()).unwrap();
-        OllamaClient::with_http_client(http, url, model, RetryConfig::no_retry())
+        OllamaClient::with_http_client(http, url, model, None, RetryConfig::no_retry())
     }
 
     fn make_client_with_timeout(url: impl Into<String>, model: &str, timeout: u64) -> OllamaClient {
         let http = SharedHttpClient::new(&HttpClientConfig::with_timeout(timeout)).unwrap();
-        OllamaClient::with_http_client(http, url, model, RetryConfig::no_retry())
+        OllamaClient::with_http_client(http, url, model, None, RetryConfig::no_retry())
     }
 
     #[test]
@@ -720,6 +740,7 @@ mod tests {
             url,
             model,
             api_key,
+            None,
             RetryConfig::no_retry(),
         )
     }
@@ -799,9 +820,49 @@ mod tests {
 
     use crate::models::embedding::EmbeddingProvider;
 
+    #[tokio::test]
+    async fn keep_alive_included_in_request() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path("/api/chat"))
+            .and(wiremock::matchers::body_partial_json(serde_json::json!({
+                "keep_alive": "10m"
+            })))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "message": {
+                    "role": "assistant",
+                    "content": "ok"
+                }
+            })))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        let http = SharedHttpClient::new(&HttpClientConfig::default()).unwrap();
+        let client = OllamaClient::with_http_client(
+            http,
+            mock_server.uri(),
+            "test-model",
+            Some("10m".to_string()),
+            RetryConfig::no_retry(),
+        );
+        let result = client
+            .complete(
+                &[Message::user("Hello")],
+                &[],
+                &CompletionOptions::default(),
+            )
+            .await;
+        assert!(
+            result.is_ok(),
+            "request with keep_alive should succeed: {result:?}"
+        );
+    }
+
     fn make_embedding_client(url: impl Into<String>, model: &str) -> OllamaEmbeddingClient {
         let http = SharedHttpClient::new(&HttpClientConfig::default()).unwrap();
-        OllamaEmbeddingClient::with_http_client(http, url, model, RetryConfig::no_retry())
+        OllamaEmbeddingClient::with_http_client(http, url, model, None, RetryConfig::no_retry())
     }
 
     #[tokio::test]
