@@ -221,6 +221,7 @@ impl ModelProvider for AnthropicClient {
                 },
             }),
         };
+        let temperature = options.temperature;
 
         with_retry(&self.retry, || {
             let system = system.clone();
@@ -240,6 +241,7 @@ impl ModelProvider for AnthropicClient {
                     messages: api_messages,
                     tools: api_tools,
                     output_config,
+                    temperature,
                 };
 
                 debug!(
@@ -333,6 +335,8 @@ struct AnthropicRequest<'a> {
     tools: Option<Vec<AnthropicTool>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     output_config: Option<AnthropicOutputConfig>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    temperature: Option<f32>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -820,6 +824,53 @@ mod tests {
             result.unwrap().content,
             "{\"answer\": \"hello\"}",
             "should return JSON content"
+        );
+    }
+
+    #[tokio::test]
+    async fn temperature_included_when_set() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/messages"))
+            .and(wiremock::matchers::body_partial_json(json!({
+                "temperature": 0.7
+            })))
+            .respond_with(ResponseTemplate::new(200).set_body_json(success_response_body()))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let client = test_client(&server.uri());
+        let options = CompletionOptions {
+            temperature: Some(0.7),
+            ..CompletionOptions::default()
+        };
+        let result = client.complete(&simple_user_message(), &[], &options).await;
+        assert!(result.is_ok(), "request with temperature should succeed");
+    }
+
+    #[tokio::test]
+    async fn temperature_absent_when_none() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/messages"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(success_response_body()))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let client = test_client(&server.uri());
+        let options = CompletionOptions::default();
+        let result = client.complete(&simple_user_message(), &[], &options).await;
+        assert!(result.is_ok(), "request without temperature should succeed");
+
+        // Verify by checking the request body does not contain "temperature"
+        let requests = server.received_requests().await.unwrap();
+        let body: serde_json::Value =
+            serde_json::from_slice(&requests.first().unwrap().body).unwrap();
+        assert!(
+            body.get("temperature").is_none(),
+            "temperature should be absent from request body when None"
         );
     }
 }

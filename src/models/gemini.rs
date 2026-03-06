@@ -226,6 +226,7 @@ impl ModelProvider for GeminiClient {
             max_output_tokens,
             response_mime_type,
             response_schema,
+            temperature: options.temperature,
         };
 
         with_retry(&self.retry, || {
@@ -372,6 +373,8 @@ struct GeminiGenerationConfig {
     response_mime_type: Option<String>,
     #[serde(rename = "responseSchema", skip_serializing_if = "Option::is_none")]
     response_schema: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    temperature: Option<f32>,
 }
 
 // ---------------------------------------------------------------------------
@@ -998,6 +1001,46 @@ mod tests {
             response.content, "{\"answer\": \"hello\"}",
             "should return JSON content"
         );
+    }
+
+    #[tokio::test]
+    async fn temperature_included_in_generation_config() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path_regex(r"/models/gemini-2\.0-flash:generateContent"))
+            .and(wiremock::matchers::body_partial_json(serde_json::json!({
+                "generationConfig": {
+                    "temperature": 0.9
+                }
+            })))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "candidates": [{
+                    "content": {
+                        "role": "model",
+                        "parts": [{"text": "ok"}]
+                    },
+                    "finishReason": "STOP"
+                }],
+                "usageMetadata": {
+                    "promptTokenCount": 5,
+                    "candidatesTokenCount": 1,
+                    "totalTokenCount": 6
+                }
+            })))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        let client = make_client(&mock_server.uri());
+        let options = CompletionOptions {
+            temperature: Some(0.9),
+            ..CompletionOptions::default()
+        };
+        let result = client
+            .complete(&[Message::user("Hello")], &[], &options)
+            .await;
+        assert!(result.is_ok(), "request with temperature should succeed");
     }
 
     // --- Embedding tests ---

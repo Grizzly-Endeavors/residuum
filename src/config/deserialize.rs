@@ -43,6 +43,8 @@ pub(crate) struct ConfigFile {
     pub(super) agent: Option<AgentConfigFile>,
     /// Idle system configuration.
     pub(super) idle: Option<IdleConfigFile>,
+    /// Sampling temperature for model completions (0.0–2.0).
+    pub(super) temperature: Option<f32>,
 }
 
 /// Raw TOML providers file structure (`providers.toml`).

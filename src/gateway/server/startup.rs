@@ -317,6 +317,7 @@ pub(super) async fn initialize(cfg: &Config) -> Result<GatewayComponents, Residu
         identity: identity.clone(),
         options: CompletionOptions {
             max_tokens: Some(cfg.max_tokens),
+            temperature: cfg.temperature,
             ..CompletionOptions::default()
         },
         layout: layout.clone(),
@@ -429,6 +430,7 @@ pub(super) async fn initialize(cfg: &Config) -> Result<GatewayComponents, Residu
     // Agent
     let options = CompletionOptions {
         max_tokens: Some(cfg.max_tokens),
+        temperature: cfg.temperature,
         ..CompletionOptions::default()
     };
     let mut agent = Agent::new(

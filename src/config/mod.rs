@@ -84,6 +84,8 @@ pub struct Config {
     pub agent: AgentAbilitiesConfig,
     /// Idle system configuration.
     pub idle: IdleConfig,
+    /// Sampling temperature for model completions.
+    pub temperature: Option<f32>,
     /// Directory this config was loaded from.
     pub config_dir: PathBuf,
 }
@@ -112,6 +114,7 @@ impl fmt::Debug for Config {
             .field("background", &self.background)
             .field("agent", &self.agent)
             .field("idle", &self.idle)
+            .field("temperature", &self.temperature)
             .field("config_dir", &self.config_dir)
             .finish()
     }

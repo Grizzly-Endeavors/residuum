@@ -22,6 +22,7 @@ timezone = "America/New_York"
 # workspace_dir = "~/.residuum/workspace"
 timeout_secs = 120
 max_tokens = 8192
+# temperature = 0.7
 
 # ── Retry (optional, defaults shown) ─────────────────────────────────────────
 # [retry]

@@ -114,6 +114,7 @@ impl ModelProvider for OpenAiClient {
                 },
             }),
         };
+        let temperature = options.temperature;
 
         with_retry(&self.retry, || {
             let url = url.clone();
@@ -131,6 +132,7 @@ impl ModelProvider for OpenAiClient {
                     tools: has_tools.then_some(openai_tools),
                     tool_choice: has_tools.then_some("auto"),
                     response_format,
+                    temperature,
                 };
 
                 let mut req_builder = http.client().post(&url).json(&request);
@@ -214,6 +216,8 @@ struct ChatCompletionRequest<'a> {
     tool_choice: Option<&'a str>,
     #[serde(skip_serializing_if = "Option::is_none")]
     response_format: Option<OpenAiResponseFormat>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    temperature: Option<f32>,
 }
 
 #[derive(Serialize, Clone)]
@@ -935,6 +939,72 @@ mod tests {
         assert_eq!(
             response.content, "{\"answer\": \"hello\"}",
             "should return JSON string content"
+        );
+    }
+
+    #[tokio::test]
+    async fn temperature_included_when_set() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .and(wiremock::matchers::body_partial_json(serde_json::json!({
+                "temperature": 0.5
+            })))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "choices": [{
+                    "message": {
+                        "role": "assistant",
+                        "content": "ok"
+                    }
+                }]
+            })))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        let client = make_client(mock_server.uri(), "gpt-4");
+        let options = CompletionOptions {
+            temperature: Some(0.5),
+            ..CompletionOptions::default()
+        };
+        let result = client
+            .complete(&[Message::user("Hello")], &[], &options)
+            .await;
+        assert!(result.is_ok(), "request with temperature should succeed");
+    }
+
+    #[tokio::test]
+    async fn temperature_absent_when_none() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "choices": [{
+                    "message": { "role": "assistant", "content": "ok" }
+                }]
+            })))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        let client = make_client(mock_server.uri(), "gpt-4");
+        let result = client
+            .complete(
+                &[Message::user("Hello")],
+                &[],
+                &CompletionOptions::default(),
+            )
+            .await;
+        assert!(result.is_ok(), "request without temperature should succeed");
+
+        let requests = mock_server.received_requests().await.unwrap();
+        let body: serde_json::Value =
+            serde_json::from_slice(&requests.first().unwrap().body).unwrap();
+        assert!(
+            body.get("temperature").is_none(),
+            "temperature should be absent when None"
         );
     }
 
