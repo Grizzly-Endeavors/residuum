@@ -122,7 +122,7 @@
       return;
     }
 
-    const apiKey = entry.type !== "ollama" ? entry.apiKey : undefined;
+    const apiKey = entry.apiKey || undefined;
     const url = entry.url !== "" ? entry.url : undefined;
 
     modelLoading[role] = true;
@@ -202,35 +202,36 @@
               {/each}
             </select>
           </div>
-          {#if prov.type !== "ollama"}
-            <div class="settings-field">
-              <label for="settings-prov-{i}-apikey">API Key</label>
-              {#if prov.apiKey.startsWith("secret:")}
-                <div class="secret-stored">
-                  <span class="secret-badge">Stored securely</span>
-                  <button
-                    class="btn btn-sm btn-secondary"
-                    onclick={() => {
-                      prov.apiKey = "";
-                    }}>Change</button
-                  >
-                </div>
-              {:else}
-                <input
-                  id="settings-prov-{i}-apikey"
-                  type="password"
-                  bind:value={prov.apiKey}
-                  placeholder="API key"
-                  onblur={() => {
-                    invalidateProvider(prov.type);
-                    for (const role of [...allRoles, "embedding", ...bgTiers]) {
-                      if (getProvider(role) === prov.name) _debouncedLoadModels(role);
-                    }
-                  }}
-                />
-              {/if}
-            </div>
-          {/if}
+          <div class="settings-field">
+            <label for="settings-prov-{i}-apikey"
+              >API Key{#if prov.type === "ollama"}
+                (optional){/if}</label
+            >
+            {#if prov.apiKey.startsWith("secret:")}
+              <div class="secret-stored">
+                <span class="secret-badge">Stored securely</span>
+                <button
+                  class="btn btn-sm btn-secondary"
+                  onclick={() => {
+                    prov.apiKey = "";
+                  }}>Change</button
+                >
+              </div>
+            {:else}
+              <input
+                id="settings-prov-{i}-apikey"
+                type="password"
+                bind:value={prov.apiKey}
+                placeholder="API key"
+                onblur={() => {
+                  invalidateProvider(prov.type);
+                  for (const role of [...allRoles, "embedding", ...bgTiers]) {
+                    if (getProvider(role) === prov.name) _debouncedLoadModels(role);
+                  }
+                }}
+              />
+            {/if}
+          </div>
           <div class="settings-field">
             <label for="settings-prov-{i}-url">Base URL (optional)</label>
             <input

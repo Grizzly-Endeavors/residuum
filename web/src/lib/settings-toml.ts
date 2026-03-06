@@ -440,7 +440,7 @@ export function serializeProvidersToml(
   for (const p of providers) {
     lines.push(`[providers.${p.name}]`);
     lines.push(`type = "${p.type}"`);
-    if (p.apiKey && p.type !== "ollama") lines.push(`api_key = "${p.apiKey}"`);
+    if (p.apiKey) lines.push(`api_key = "${p.apiKey}"`);
     if (p.url) lines.push(`url = "${p.url}"`);
     lines.push("");
   }

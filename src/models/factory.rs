@@ -80,12 +80,24 @@ fn build_provider_from_spec(
                 retry,
             )))
         }
-        ProviderKind::Ollama => Ok(Box::new(OllamaClient::with_http_client(
-            http,
-            url,
-            &spec.model,
-            retry,
-        ))),
+        ProviderKind::Ollama => {
+            if let Some(key) = api_key {
+                Ok(Box::new(OllamaClient::with_http_client_and_api_key(
+                    http,
+                    url,
+                    &spec.model,
+                    key,
+                    retry,
+                )))
+            } else {
+                Ok(Box::new(OllamaClient::with_http_client(
+                    http,
+                    url,
+                    &spec.model,
+                    retry,
+                )))
+            }
+        }
         ProviderKind::OpenAi => {
             if let Some(key) = api_key {
                 Ok(Box::new(OpenAiClient::with_http_client_and_api_key(
