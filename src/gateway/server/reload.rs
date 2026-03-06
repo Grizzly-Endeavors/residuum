@@ -187,6 +187,7 @@ pub(super) async fn handle_root_reload(rt: &mut GatewayRuntime) -> IdleAction {
                     identity: rt.spawn_context.identity.clone(),
                     options: CompletionOptions {
                         max_tokens: Some(new_cfg.max_tokens),
+                        temperature: new_cfg.temperature,
                         ..CompletionOptions::default()
                     },
                     layout: rt.layout.clone(),
@@ -388,6 +389,7 @@ pub(super) async fn handle_root_reload(rt: &mut GatewayRuntime) -> IdleAction {
             identity: rt.spawn_context.identity.clone(),
             options: CompletionOptions {
                 max_tokens: Some(new_cfg.max_tokens),
+                temperature: new_cfg.temperature,
                 ..CompletionOptions::default()
             },
             layout: rt.layout.clone(),
@@ -485,6 +487,7 @@ mod tests {
             background: BackgroundConfig::default(),
             agent: AgentAbilitiesConfig::default(),
             idle: crate::config::IdleConfig::default(),
+            temperature: None,
             config_dir: std::path::PathBuf::from("/tmp/config"),
         }
     }

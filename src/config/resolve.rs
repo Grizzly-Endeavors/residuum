@@ -255,6 +255,7 @@ pub(crate) fn from_file_and_env(
         background,
         agent,
         idle,
+        temperature: file.and_then(|f| f.temperature),
         config_dir: PathBuf::new(),
     })
 }

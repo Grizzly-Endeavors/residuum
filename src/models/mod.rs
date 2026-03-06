@@ -247,6 +247,8 @@ pub struct CompletionOptions {
     pub max_tokens: Option<u32>,
     /// Desired response format.
     pub response_format: ResponseFormat,
+    /// Sampling temperature (0.0–2.0). None uses provider default.
+    pub temperature: Option<f32>,
 }
 
 /// Trait for model provider implementations.
@@ -421,6 +423,10 @@ mod tests {
         assert!(
             opts.max_tokens.is_none(),
             "default max_tokens should be None"
+        );
+        assert!(
+            opts.temperature.is_none(),
+            "default temperature should be None"
         );
     }
 }

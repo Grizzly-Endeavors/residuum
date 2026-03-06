@@ -45,6 +45,8 @@ export interface ConfigFields {
   search_candidate_multiplier: string;
   search_temporal_decay: boolean;
   search_temporal_decay_half_life_days: string;
+  // model parameters
+  temperature: string;
   // integrations
   discord_token: string;
   telegram_token: string;
@@ -84,6 +86,7 @@ export function defaultConfigFields(): ConfigFields {
     search_candidate_multiplier: "",
     search_temporal_decay: false,
     search_temporal_decay_half_life_days: "",
+    temperature: "",
     discord_token: "",
     telegram_token: "",
     webhook_enabled: false,
@@ -119,6 +122,7 @@ export function parseConfigToml(raw: string): ConfigFields {
   fields.workspace_dir = str(doc.workspace_dir);
   fields.timeout_secs = str(doc.timeout_secs);
   fields.max_tokens = str(doc.max_tokens);
+  fields.temperature = str(doc.temperature);
 
   const gw = doc.gateway as Record<string, unknown> | undefined;
   if (gw) {
@@ -302,6 +306,7 @@ export function serializeConfigToml(f: ConfigFields): string {
   if (f.workspace_dir) lines.push(`workspace_dir = "${f.workspace_dir}"`);
   if (f.timeout_secs) lines.push(`timeout_secs = ${f.timeout_secs}`);
   if (f.max_tokens) lines.push(`max_tokens = ${f.max_tokens}`);
+  if (f.temperature) lines.push(`temperature = ${f.temperature}`);
 
   // gateway
   if (f.gateway_bind || f.gateway_port) {

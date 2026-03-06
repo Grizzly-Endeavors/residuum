@@ -52,6 +52,18 @@
         placeholder="Default: 8192"
       />
     </div>
+    <div class="settings-field">
+      <label for="rt-temperature">Temperature</label>
+      <input
+        id="rt-temperature"
+        type="number"
+        step="0.1"
+        min="0"
+        max="2"
+        bind:value={fields.temperature}
+        placeholder="Provider default"
+      />
+    </div>
   </div>
 
   <div class="settings-group">

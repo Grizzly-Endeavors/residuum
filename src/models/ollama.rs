@@ -77,6 +77,9 @@ impl ModelProvider for OllamaClient {
             ResponseFormat::Text => None,
             ResponseFormat::JsonSchema { schema, .. } => Some(schema.clone()),
         };
+        let model_options = options.temperature.map(|t| OllamaModelOptions {
+            temperature: Some(t),
+        });
 
         with_retry(&self.retry, || {
             let url = url.clone();
@@ -85,6 +88,7 @@ impl ModelProvider for OllamaClient {
             let model = model.clone();
             let http = http.clone();
             let format = format.clone();
+            let model_options = model_options.clone();
 
             async move {
                 let request = OllamaChatRequest {
@@ -93,6 +97,7 @@ impl ModelProvider for OllamaClient {
                     tools: has_tools.then_some(ollama_tools),
                     stream: false,
                     format,
+                    options: model_options,
                 };
 
                 let response = http
@@ -141,6 +146,13 @@ impl ModelProvider for OllamaClient {
 
 // Ollama API request/response types
 
+/// Nested model options for Ollama (e.g. temperature).
+#[derive(Debug, Serialize, Clone)]
+struct OllamaModelOptions {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    temperature: Option<f32>,
+}
+
 #[derive(Serialize)]
 struct OllamaChatRequest<'a> {
     model: &'a str,
@@ -150,6 +162,8 @@ struct OllamaChatRequest<'a> {
     stream: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     format: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    options: Option<OllamaModelOptions>,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -573,6 +587,67 @@ mod tests {
         assert_eq!(
             response.content, "{\"answer\": \"hello\"}",
             "should return JSON content"
+        );
+    }
+
+    #[tokio::test]
+    async fn temperature_nested_in_options() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path("/api/chat"))
+            .and(wiremock::matchers::body_partial_json(serde_json::json!({
+                "options": {
+                    "temperature": 1.2
+                }
+            })))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "message": { "role": "assistant", "content": "ok" }
+            })))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        let client = make_client(mock_server.uri(), "test-model");
+        let options = CompletionOptions {
+            temperature: Some(1.2),
+            ..CompletionOptions::default()
+        };
+        let result = client
+            .complete(&[Message::user("Hello")], &[], &options)
+            .await;
+        assert!(result.is_ok(), "request with temperature should succeed");
+    }
+
+    #[tokio::test]
+    async fn temperature_options_absent_when_none() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path("/api/chat"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "message": { "role": "assistant", "content": "ok" }
+            })))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        let client = make_client(mock_server.uri(), "test-model");
+        let result = client
+            .complete(
+                &[Message::user("Hello")],
+                &[],
+                &CompletionOptions::default(),
+            )
+            .await;
+        assert!(result.is_ok(), "request without temperature should succeed");
+
+        let requests = mock_server.received_requests().await.unwrap();
+        let body: serde_json::Value =
+            serde_json::from_slice(&requests.first().unwrap().body).unwrap();
+        assert!(
+            body.get("options").is_none(),
+            "options should be absent when temperature is None"
         );
     }
 
