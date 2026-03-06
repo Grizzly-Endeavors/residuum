@@ -180,6 +180,8 @@ impl AnthropicClient {
         let usage = response.usage.map(|u| Usage {
             input_tokens: u.input_tokens,
             output_tokens: u.output_tokens,
+            cache_creation_tokens: u.cache_creation_input_tokens,
+            cache_read_tokens: u.cache_read_input_tokens,
         });
 
         let mut resp = ModelResponse::new(content, tool_calls);
@@ -398,9 +400,14 @@ struct AnthropicResponse {
 }
 
 #[derive(Debug, Deserialize)]
+#[expect(clippy::struct_field_names, reason = "field names match Anthropic API")]
 struct AnthropicUsage {
     input_tokens: u32,
     output_tokens: u32,
+    #[serde(default)]
+    cache_creation_input_tokens: Option<u32>,
+    #[serde(default)]
+    cache_read_input_tokens: Option<u32>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -847,6 +854,49 @@ mod tests {
         };
         let result = client.complete(&simple_user_message(), &[], &options).await;
         assert!(result.is_ok(), "request with temperature should succeed");
+    }
+
+    #[tokio::test]
+    async fn cache_tokens_parsed_from_response() {
+        let server = MockServer::start().await;
+        let body = json!({
+            "content": [
+                {"type": "text", "text": "cached response"}
+            ],
+            "stop_reason": "end_turn",
+            "usage": {
+                "input_tokens": 10,
+                "output_tokens": 15,
+                "cache_creation_input_tokens": 100,
+                "cache_read_input_tokens": 50
+            }
+        });
+
+        Mock::given(method("POST"))
+            .and(path("/v1/messages"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(body))
+            .mount(&server)
+            .await;
+
+        let client = test_client(&server.uri());
+        let result = client
+            .complete(&simple_user_message(), &[], &CompletionOptions::default())
+            .await;
+        assert!(result.is_ok(), "cache token response should succeed");
+
+        let usage = result.unwrap().usage.unwrap();
+        assert_eq!(usage.input_tokens, 10, "input tokens should match");
+        assert_eq!(usage.output_tokens, 15, "output tokens should match");
+        assert_eq!(
+            usage.cache_creation_tokens,
+            Some(100),
+            "cache creation tokens should match"
+        );
+        assert_eq!(
+            usage.cache_read_tokens,
+            Some(50),
+            "cache read tokens should match"
+        );
     }
 
     #[tokio::test]

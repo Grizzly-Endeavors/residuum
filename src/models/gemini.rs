@@ -92,6 +92,8 @@ impl GeminiClient {
         let usage = gemini_response.usage_metadata.map(|u| Usage {
             input_tokens: u.prompt_token_count,
             output_tokens: u.candidates_token_count,
+            cache_creation_tokens: None,
+            cache_read_tokens: u.cached_content_token_count,
         });
 
         let mut model_response = ModelResponse::new(content_text, tool_calls);
@@ -399,11 +401,14 @@ struct GeminiResponseContent {
 }
 
 #[derive(Deserialize)]
+#[expect(clippy::struct_field_names, reason = "field names match Gemini API")]
 struct GeminiUsageMetadata {
     #[serde(rename = "promptTokenCount")]
     prompt_token_count: u32,
     #[serde(rename = "candidatesTokenCount")]
     candidates_token_count: u32,
+    #[serde(default, rename = "cachedContentTokenCount")]
+    cached_content_token_count: Option<u32>,
 }
 
 #[derive(Deserialize)]
@@ -1041,6 +1046,54 @@ mod tests {
             .complete(&[Message::user("Hello")], &[], &options)
             .await;
         assert!(result.is_ok(), "request with temperature should succeed");
+    }
+
+    #[tokio::test]
+    async fn cache_tokens_parsed_from_usage_metadata() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path_regex(r"/models/gemini-2\.0-flash:generateContent"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "candidates": [{
+                    "content": {
+                        "role": "model",
+                        "parts": [{"text": "cached response"}]
+                    },
+                    "finishReason": "STOP"
+                }],
+                "usageMetadata": {
+                    "promptTokenCount": 10,
+                    "candidatesTokenCount": 5,
+                    "totalTokenCount": 15,
+                    "cachedContentTokenCount": 8
+                }
+            })))
+            .mount(&mock_server)
+            .await;
+
+        let client = make_client(&mock_server.uri());
+        let result = client
+            .complete(
+                &[Message::user("Hello")],
+                &[],
+                &CompletionOptions::default(),
+            )
+            .await;
+        assert!(result.is_ok(), "cache token response should succeed");
+
+        let usage = result.unwrap().usage.unwrap();
+        assert_eq!(usage.input_tokens, 10, "input tokens should match");
+        assert_eq!(usage.output_tokens, 5, "output tokens should match");
+        assert_eq!(
+            usage.cache_creation_tokens, None,
+            "Gemini does not report cache creation tokens"
+        );
+        assert_eq!(
+            usage.cache_read_tokens,
+            Some(8),
+            "cache read tokens should match cachedContentTokenCount"
+        );
     }
 
     // --- Embedding tests ---

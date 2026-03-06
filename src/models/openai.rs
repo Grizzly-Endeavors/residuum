@@ -11,7 +11,7 @@ use super::http::{SharedHttpClient, map_request_error, warn_if_insecure_remote};
 use super::retry::{RetryConfig, with_retry};
 use super::{
     CompletionOptions, Message, ModelError, ModelProvider, ModelResponse, ResponseFormat, ToolCall,
-    ToolDefinition,
+    ToolDefinition, Usage,
 };
 
 /// OpenAI-compatible API client.
@@ -78,6 +78,10 @@ impl OpenAiClient {
 
 #[async_trait]
 impl ModelProvider for OpenAiClient {
+    #[expect(
+        clippy::too_many_lines,
+        reason = "usage parsing added a few lines; splitting would obscure the request flow"
+    )]
     async fn complete(
         &self,
         messages: &[Message],
@@ -162,6 +166,13 @@ impl ModelProvider for OpenAiClient {
 
                 let chat_response: ChatCompletionResponse = response.json().await?;
 
+                let usage = chat_response.usage.map(|u| Usage {
+                    input_tokens: u.prompt_tokens.unwrap_or(0),
+                    output_tokens: u.completion_tokens.unwrap_or(0),
+                    cache_creation_tokens: None,
+                    cache_read_tokens: u.prompt_tokens_details.and_then(|d| d.cached_tokens),
+                });
+
                 let choice = chat_response.choices.into_iter().next().ok_or_else(|| {
                     ModelError::Parse(
                         "OpenAI API response contained no choices in response".to_string(),
@@ -193,7 +204,9 @@ impl ModelProvider for OpenAiClient {
                     })
                     .collect::<Result<Vec<_>, ModelError>>()?;
 
-                Ok(ModelResponse::new(content, tool_calls))
+                let mut resp = ModelResponse::new(content, tool_calls);
+                resp.usage = usage;
+                Ok(resp)
             }
         })
         .await
@@ -297,6 +310,21 @@ struct OpenAiFunctionCall {
 #[derive(Deserialize)]
 struct ChatCompletionResponse {
     choices: Vec<ChatCompletionChoice>,
+    #[serde(default)]
+    usage: Option<OpenAiUsage>,
+}
+
+#[derive(Deserialize)]
+struct OpenAiUsage {
+    prompt_tokens: Option<u32>,
+    completion_tokens: Option<u32>,
+    #[serde(default)]
+    prompt_tokens_details: Option<OpenAiPromptTokensDetails>,
+}
+
+#[derive(Deserialize)]
+struct OpenAiPromptTokensDetails {
+    cached_tokens: Option<u32>,
 }
 
 #[derive(Deserialize)]
@@ -1005,6 +1033,55 @@ mod tests {
         assert!(
             body.get("temperature").is_none(),
             "temperature should be absent when None"
+        );
+    }
+
+    #[tokio::test]
+    async fn usage_with_cached_tokens_parsed() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "choices": [{
+                    "message": {
+                        "role": "assistant",
+                        "content": "cached hello"
+                    }
+                }],
+                "usage": {
+                    "prompt_tokens": 100,
+                    "completion_tokens": 50,
+                    "prompt_tokens_details": {
+                        "cached_tokens": 30
+                    }
+                }
+            })))
+            .mount(&mock_server)
+            .await;
+
+        let client = make_client(mock_server.uri(), "gpt-4");
+        let result = client
+            .complete(
+                &[Message::user("Hello")],
+                &[],
+                &CompletionOptions::default(),
+            )
+            .await;
+        assert!(result.is_ok(), "usage with cache tokens should succeed");
+
+        let resp = result.unwrap();
+        let usage = resp.usage.unwrap();
+        assert_eq!(usage.input_tokens, 100, "input tokens should match");
+        assert_eq!(usage.output_tokens, 50, "output tokens should match");
+        assert_eq!(
+            usage.cache_creation_tokens, None,
+            "OpenAI does not report cache creation tokens"
+        );
+        assert_eq!(
+            usage.cache_read_tokens,
+            Some(30),
+            "cache read tokens should match cached_tokens"
         );
     }
 

@@ -194,6 +194,10 @@ pub struct Usage {
     pub input_tokens: u32,
     /// Number of output/completion tokens generated.
     pub output_tokens: u32,
+    /// Tokens written to the prompt cache (Anthropic-specific).
+    pub cache_creation_tokens: Option<u32>,
+    /// Tokens read from the prompt cache.
+    pub cache_read_tokens: Option<u32>,
 }
 
 /// Response from a model provider.
