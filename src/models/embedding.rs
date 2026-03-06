@@ -72,12 +72,22 @@ pub(crate) fn build_embedding_provider(
             Ok(Box::new(client))
         }
         ProviderKind::Ollama => {
-            let client = super::ollama::OllamaEmbeddingClient::with_http_client(
-                http,
-                &spec.provider_url,
-                &spec.model.model,
-                retry,
-            );
+            let client = if let Some(ref key) = spec.api_key {
+                super::ollama::OllamaEmbeddingClient::with_http_client_and_api_key(
+                    http,
+                    &spec.provider_url,
+                    &spec.model.model,
+                    key,
+                    retry,
+                )
+            } else {
+                super::ollama::OllamaEmbeddingClient::with_http_client(
+                    http,
+                    &spec.provider_url,
+                    &spec.model.model,
+                    retry,
+                )
+            };
             Ok(Box::new(client))
         }
         ProviderKind::Gemini => {

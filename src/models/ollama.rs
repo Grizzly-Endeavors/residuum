@@ -17,6 +17,7 @@ pub(crate) struct OllamaClient {
     http: SharedHttpClient,
     base_url: String,
     model: String,
+    api_key: Option<String>,
     retry: RetryConfig,
 }
 
@@ -38,6 +39,30 @@ impl OllamaClient {
             http,
             base_url,
             model: model.into(),
+            api_key: None,
+            retry,
+        }
+    }
+
+    /// Create a new Ollama client with a shared HTTP client and API key authentication.
+    ///
+    /// Use this constructor for cloud-hosted Ollama instances that require authentication.
+    #[must_use]
+    pub fn with_http_client_and_api_key(
+        http: SharedHttpClient,
+        base_url: impl Into<String>,
+        model: impl Into<String>,
+        api_key: impl Into<String>,
+        retry: RetryConfig,
+    ) -> Self {
+        let base_url = base_url.into();
+        warn_if_insecure_remote(&base_url);
+
+        Self {
+            http,
+            base_url,
+            model: model.into(),
+            api_key: Some(api_key.into()),
             retry,
         }
     }
@@ -70,6 +95,7 @@ impl ModelProvider for OllamaClient {
             .collect();
         let has_tools = !ollama_tools.is_empty();
         let model = self.model.clone();
+        let api_key = self.api_key.clone();
         let http = self.http.clone();
         let timeout_secs = self.timeout_secs();
 
@@ -86,6 +112,7 @@ impl ModelProvider for OllamaClient {
             let ollama_messages = ollama_messages.clone();
             let ollama_tools = ollama_tools.clone();
             let model = model.clone();
+            let api_key = api_key.clone();
             let http = http.clone();
             let format = format.clone();
             let model_options = model_options.clone();
@@ -100,10 +127,13 @@ impl ModelProvider for OllamaClient {
                     options: model_options,
                 };
 
-                let response = http
-                    .client()
-                    .post(&url)
-                    .json(&request)
+                let mut req_builder = http.client().post(&url).json(&request);
+
+                if let Some(ref key) = api_key {
+                    req_builder = req_builder.header("Authorization", format!("Bearer {key}"));
+                }
+
+                let response = req_builder
                     .send()
                     .await
                     .map_err(|e| map_request_error(e, timeout_secs))?;
@@ -239,6 +269,7 @@ pub(crate) struct OllamaEmbeddingClient {
     http: SharedHttpClient,
     base_url: String,
     model: String,
+    api_key: Option<String>,
     retry: RetryConfig,
 }
 
@@ -258,6 +289,28 @@ impl OllamaEmbeddingClient {
             http,
             base_url,
             model: model.into(),
+            api_key: None,
+            retry,
+        }
+    }
+
+    /// Create a new Ollama embedding client with a shared HTTP client and API key authentication.
+    #[must_use]
+    pub fn with_http_client_and_api_key(
+        http: SharedHttpClient,
+        base_url: impl Into<String>,
+        model: impl Into<String>,
+        api_key: impl Into<String>,
+        retry: RetryConfig,
+    ) -> Self {
+        let base_url = base_url.into();
+        warn_if_insecure_remote(&base_url);
+
+        Self {
+            http,
+            base_url,
+            model: model.into(),
+            api_key: Some(api_key.into()),
             retry,
         }
     }
@@ -268,12 +321,14 @@ impl EmbeddingProvider for OllamaEmbeddingClient {
     async fn embed(&self, texts: &[&str]) -> Result<EmbeddingResponse, ModelError> {
         let url = format!("{}/api/embed", self.base_url);
         let model = self.model.clone();
+        let api_key = self.api_key.clone();
         let http = self.http.clone();
         let timeout_secs = self.http.timeout_secs();
 
         with_retry(&self.retry, || {
             let url = url.clone();
             let model = model.clone();
+            let api_key = api_key.clone();
             let http = http.clone();
 
             async move {
@@ -282,10 +337,13 @@ impl EmbeddingProvider for OllamaEmbeddingClient {
                     input: texts,
                 };
 
-                let response = http
-                    .client()
-                    .post(&url)
-                    .json(&request)
+                let mut req_builder = http.client().post(&url).json(&request);
+
+                if let Some(ref key) = api_key {
+                    req_builder = req_builder.header("Authorization", format!("Bearer {key}"));
+                }
+
+                let response = req_builder
                     .send()
                     .await
                     .map_err(|e| map_request_error(e, timeout_secs))?;
@@ -342,7 +400,7 @@ mod tests {
     use crate::models::CompletionOptions;
     use crate::models::http::{HttpClientConfig, SharedHttpClient};
     use crate::models::retry::RetryConfig;
-    use wiremock::matchers::{method, path};
+    use wiremock::matchers::{header, method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     fn make_client(url: impl Into<String>, model: &str) -> OllamaClient {
@@ -648,6 +706,92 @@ mod tests {
         assert!(
             body.get("options").is_none(),
             "options should be absent when temperature is None"
+        );
+    }
+
+    fn make_client_with_api_key(
+        url: impl Into<String>,
+        model: &str,
+        api_key: &str,
+    ) -> OllamaClient {
+        let http = SharedHttpClient::new(&HttpClientConfig::default()).unwrap();
+        OllamaClient::with_http_client_and_api_key(
+            http,
+            url,
+            model,
+            api_key,
+            RetryConfig::no_retry(),
+        )
+    }
+
+    #[tokio::test]
+    async fn api_key_sends_bearer_header() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path("/api/chat"))
+            .and(header("Authorization", "Bearer test-ollama-key"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "message": {
+                    "role": "assistant",
+                    "content": "authenticated response"
+                }
+            })))
+            .mount(&mock_server)
+            .await;
+
+        let client = make_client_with_api_key(mock_server.uri(), "test-model", "test-ollama-key");
+        let messages = vec![Message::user("Hello")];
+
+        let result = client
+            .complete(&messages, &[], &CompletionOptions::default())
+            .await;
+        assert!(
+            result.is_ok(),
+            "request with api key should succeed: {result:?}"
+        );
+        assert_eq!(
+            result.unwrap().content,
+            "authenticated response",
+            "content should match"
+        );
+    }
+
+    #[tokio::test]
+    async fn no_auth_header_without_api_key() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path("/api/chat"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "message": {
+                    "role": "assistant",
+                    "content": "no auth response"
+                }
+            })))
+            .mount(&mock_server)
+            .await;
+
+        let client = make_client(mock_server.uri(), "test-model");
+        let messages = vec![Message::user("Hello")];
+
+        let result = client
+            .complete(&messages, &[], &CompletionOptions::default())
+            .await;
+        assert!(
+            result.is_ok(),
+            "request without api key should succeed: {result:?}"
+        );
+
+        let requests = mock_server.received_requests().await.unwrap();
+        let req = requests.first().unwrap();
+        let has_auth = req
+            .headers
+            .iter()
+            .any(|(name, _)| name.as_str().eq_ignore_ascii_case("authorization"));
+        assert!(
+            !has_auth,
+            "request should not contain an Authorization header"
         );
     }
 
