@@ -7,8 +7,8 @@ use super::embedding::{EmbeddingProvider, EmbeddingResponse};
 use super::http::{SharedHttpClient, map_request_error, warn_if_insecure_remote};
 use super::retry::{RetryConfig, with_retry};
 use super::{
-    CompletionOptions, Message, ModelError, ModelProvider, ModelResponse, ResponseFormat, ToolCall,
-    ToolDefinition,
+    CompletionOptions, Message, ModelError, ModelProvider, ModelResponse, ResponseFormat,
+    ThinkingConfig, ToolCall, ToolDefinition,
 };
 
 /// Ollama API client implementing the [`ModelProvider`] trait.
@@ -113,6 +113,11 @@ impl ModelProvider for OllamaClient {
             temperature: Some(t),
         });
 
+        let think = options.thinking.as_ref().map(|tc| match tc {
+            ThinkingConfig::Toggle(val) => *val,
+            ThinkingConfig::Level(_) => true,
+        });
+
         with_retry(&self.retry, || {
             let url = url.clone();
             let ollama_messages = ollama_messages.clone();
@@ -133,6 +138,7 @@ impl ModelProvider for OllamaClient {
                     format,
                     options: model_options,
                     keep_alive,
+                    think,
                 };
 
                 let mut req_builder = http.client().post(&url).json(&request);
@@ -171,7 +177,9 @@ impl ModelProvider for OllamaClient {
                     })
                     .collect();
 
-                Ok(ModelResponse::new(content, tool_calls))
+                let mut resp = ModelResponse::new(content, tool_calls);
+                resp.thinking = chat_response.message.thinking;
+                Ok(resp)
             }
         })
         .await
@@ -204,6 +212,8 @@ struct OllamaChatRequest<'a> {
     options: Option<OllamaModelOptions>,
     #[serde(skip_serializing_if = "Option::is_none")]
     keep_alive: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    think: Option<bool>,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -267,6 +277,8 @@ struct OllamaChatResponse {
 struct OllamaResponseMessage {
     content: Option<String>,
     tool_calls: Option<Vec<OllamaToolCall>>,
+    #[serde(default)]
+    thinking: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -813,6 +825,39 @@ mod tests {
         assert!(
             !has_auth,
             "request should not contain an Authorization header"
+        );
+    }
+
+    #[tokio::test]
+    async fn think_flag_included_when_thinking_set() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path("/api/chat"))
+            .and(wiremock::matchers::body_partial_json(serde_json::json!({
+                "think": true
+            })))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "message": {
+                    "role": "assistant",
+                    "content": "ok"
+                }
+            })))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        let client = make_client(mock_server.uri(), "deepseek-r1");
+        let options = CompletionOptions {
+            thinking: Some(ThinkingConfig::Toggle(true)),
+            ..CompletionOptions::default()
+        };
+        let result = client
+            .complete(&[Message::user("Hello")], &[], &options)
+            .await;
+        assert!(
+            result.is_ok(),
+            "request with think flag should succeed: {result:?}"
         );
     }
 

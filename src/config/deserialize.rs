@@ -45,6 +45,8 @@ pub(crate) struct ConfigFile {
     pub(super) idle: Option<IdleConfigFile>,
     /// Sampling temperature for model completions (0.0–2.0).
     pub(super) temperature: Option<f32>,
+    /// Thinking/reasoning configuration (off, on, low, medium, high).
+    pub(super) thinking: Option<String>,
 }
 
 /// Raw TOML providers file structure (`providers.toml`).

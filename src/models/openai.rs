@@ -10,8 +10,8 @@ use super::embedding::{EmbeddingProvider, EmbeddingResponse};
 use super::http::{SharedHttpClient, map_request_error, warn_if_insecure_remote};
 use super::retry::{RetryConfig, with_retry};
 use super::{
-    CompletionOptions, Message, ModelError, ModelProvider, ModelResponse, ResponseFormat, ToolCall,
-    ToolDefinition, Usage,
+    CompletionOptions, Message, ModelError, ModelProvider, ModelResponse, ResponseFormat,
+    ThinkingConfig, ThinkingLevel, ToolCall, ToolDefinition, Usage,
 };
 
 /// OpenAI-compatible API client.
@@ -120,6 +120,15 @@ impl ModelProvider for OpenAiClient {
         };
         let temperature = options.temperature;
 
+        let reasoning_effort = options.thinking.as_ref().and_then(|tc| match tc {
+            ThinkingConfig::Level(ThinkingLevel::Low) => Some("low".to_string()),
+            ThinkingConfig::Level(ThinkingLevel::Medium) | ThinkingConfig::Toggle(true) => {
+                Some("medium".to_string())
+            }
+            ThinkingConfig::Level(ThinkingLevel::High) => Some("high".to_string()),
+            ThinkingConfig::Toggle(false) => None,
+        });
+
         with_retry(&self.retry, || {
             let url = url.clone();
             let openai_messages = openai_messages.clone();
@@ -128,6 +137,7 @@ impl ModelProvider for OpenAiClient {
             let api_key = api_key.clone();
             let http = http.clone();
             let response_format = response_format.clone();
+            let reasoning_effort = reasoning_effort.clone();
 
             async move {
                 let request = ChatCompletionRequest {
@@ -137,6 +147,7 @@ impl ModelProvider for OpenAiClient {
                     tool_choice: has_tools.then_some("auto"),
                     response_format,
                     temperature,
+                    reasoning_effort,
                 };
 
                 let mut req_builder = http.client().post(&url).json(&request);
@@ -231,6 +242,8 @@ struct ChatCompletionRequest<'a> {
     response_format: Option<OpenAiResponseFormat>,
     #[serde(skip_serializing_if = "Option::is_none")]
     temperature: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reasoning_effort: Option<String>,
 }
 
 #[derive(Serialize, Clone)]
@@ -1082,6 +1095,41 @@ mod tests {
             usage.cache_read_tokens,
             Some(30),
             "cache read tokens should match cached_tokens"
+        );
+    }
+
+    #[tokio::test]
+    async fn reasoning_effort_included_when_thinking_set() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .and(wiremock::matchers::body_partial_json(serde_json::json!({
+                "reasoning_effort": "high"
+            })))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "choices": [{
+                    "message": {
+                        "role": "assistant",
+                        "content": "ok"
+                    }
+                }]
+            })))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        let client = make_client(mock_server.uri(), "o3-mini");
+        let options = CompletionOptions {
+            thinking: Some(ThinkingConfig::Level(ThinkingLevel::High)),
+            ..CompletionOptions::default()
+        };
+        let result = client
+            .complete(&[Message::user("Hello")], &[], &options)
+            .await;
+        assert!(
+            result.is_ok(),
+            "request with reasoning_effort should succeed: {result:?}"
         );
     }
 

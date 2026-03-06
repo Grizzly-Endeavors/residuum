@@ -64,6 +64,15 @@
         placeholder="Provider default"
       />
     </div>
+    <div class="settings-field">
+      <label for="rt-thinking">Thinking</label>
+      <select id="rt-thinking" bind:value={fields.thinking}>
+        <option value="">Default (off)</option>
+        <option value="low">Low</option>
+        <option value="medium">Medium</option>
+        <option value="high">High</option>
+      </select>
+    </div>
   </div>
 
   <div class="settings-group">

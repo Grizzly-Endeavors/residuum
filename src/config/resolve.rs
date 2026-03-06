@@ -6,6 +6,7 @@ use std::str::FromStr;
 
 use crate::error::ResiduumError;
 use crate::models::retry::RetryConfig;
+use crate::models::{ThinkingConfig, ThinkingLevel};
 
 use super::Config;
 use super::bootstrap::default_workspace_dir;
@@ -233,6 +234,11 @@ pub(crate) fn from_file_and_env(
 
     let name = file.and_then(|f| f.name.clone());
 
+    let thinking = file
+        .and_then(|f| f.thinking.as_deref())
+        .map(parse_thinking_config)
+        .transpose()?;
+
     Ok(Config {
         name,
         main,
@@ -256,6 +262,7 @@ pub(crate) fn from_file_and_env(
         agent,
         idle,
         temperature: file.and_then(|f| f.temperature),
+        thinking,
         config_dir: PathBuf::new(),
     })
 }
@@ -585,6 +592,20 @@ fn resolve_search_config(section: Option<&SearchConfigFile>) -> SearchConfig {
     }
 
     cfg
+}
+
+/// Parse a thinking config string into a `ThinkingConfig`.
+fn parse_thinking_config(value: &str) -> Result<ThinkingConfig, ResiduumError> {
+    match value.to_lowercase().as_str() {
+        "off" | "false" => Ok(ThinkingConfig::Toggle(false)),
+        "on" | "true" => Ok(ThinkingConfig::Toggle(true)),
+        "low" => Ok(ThinkingConfig::Level(ThinkingLevel::Low)),
+        "medium" => Ok(ThinkingConfig::Level(ThinkingLevel::Medium)),
+        "high" => Ok(ThinkingConfig::Level(ThinkingLevel::High)),
+        other => Err(ResiduumError::Config(format!(
+            "invalid thinking value '{other}': expected one of: off, on, low, medium, high"
+        ))),
+    }
 }
 
 /// Resolve agent ability gates from TOML section.

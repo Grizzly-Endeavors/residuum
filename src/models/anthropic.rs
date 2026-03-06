@@ -9,7 +9,7 @@ use super::http::{SharedHttpClient, map_request_error, warn_if_insecure_remote};
 use super::retry::{RetryConfig, with_retry};
 use super::{
     CompletionOptions, Message, ModelError, ModelProvider, ModelResponse, ResponseFormat, Role,
-    ToolCall, ToolDefinition, Usage,
+    ThinkingConfig, ThinkingLevel, ToolCall, ToolDefinition, Usage,
 };
 
 /// Anthropic Messages API version header value.
@@ -155,12 +155,16 @@ impl AnthropicClient {
     /// Parse the API response into our generic `ModelResponse`.
     fn parse_response(response: AnthropicResponse) -> ModelResponse {
         let mut text_parts: Vec<String> = Vec::new();
+        let mut thinking_parts: Vec<String> = Vec::new();
         let mut tool_calls: Vec<ToolCall> = Vec::new();
 
         for block in response.content {
             match block {
                 AnthropicContentBlock::Text { text } => {
                     text_parts.push(text);
+                }
+                AnthropicContentBlock::Thinking { thinking } => {
+                    thinking_parts.push(thinking);
                 }
                 AnthropicContentBlock::ToolUse { id, name, input } => {
                     tool_calls.push(ToolCall {
@@ -176,6 +180,11 @@ impl AnthropicClient {
         }
 
         let content = text_parts.join("");
+        let thinking_text = if thinking_parts.is_empty() {
+            None
+        } else {
+            Some(thinking_parts.join(""))
+        };
 
         let usage = response.usage.map(|u| Usage {
             input_tokens: u.input_tokens,
@@ -186,6 +195,7 @@ impl AnthropicClient {
 
         let mut resp = ModelResponse::new(content, tool_calls);
         resp.usage = usage;
+        resp.thinking = thinking_text;
         resp
     }
 }
@@ -198,6 +208,10 @@ impl ModelProvider for AnthropicClient {
     /// Returns `ModelError::Timeout` if the request exceeds the configured timeout,
     /// `ModelError::Api` if the API returns an error status, `ModelError::Parse` if
     /// the response body is malformed, or `ModelError::Request` for network failures.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "thinking config added computation; splitting would obscure the request flow"
+    )]
     async fn complete(
         &self,
         messages: &[Message],
@@ -225,11 +239,29 @@ impl ModelProvider for AnthropicClient {
         };
         let temperature = options.temperature;
 
+        let thinking = options.thinking.as_ref().and_then(|tc| {
+            let budget = match tc {
+                ThinkingConfig::Level(ThinkingLevel::Low) => max_tokens / 4,
+                ThinkingConfig::Level(ThinkingLevel::Medium) | ThinkingConfig::Toggle(true) => {
+                    max_tokens / 2
+                }
+                ThinkingConfig::Level(ThinkingLevel::High) => max_tokens * 3 / 4,
+                ThinkingConfig::Toggle(false) => return None,
+            };
+            // budget_tokens must be > 0 and < max_tokens
+            let budget = budget.max(1).min(max_tokens - 1);
+            Some(AnthropicThinking {
+                r#type: "enabled".to_string(),
+                budget_tokens: budget,
+            })
+        });
+
         with_retry(&self.retry, || {
             let system = system.clone();
             let api_messages = api_messages.clone();
             let api_tools = api_tools.clone();
             let output_config = output_config.clone();
+            let thinking = thinking.clone();
             let model = model.clone();
             let endpoint = endpoint.clone();
             let api_key = api_key.clone();
@@ -244,6 +276,7 @@ impl ModelProvider for AnthropicClient {
                     tools: api_tools,
                     output_config,
                     temperature,
+                    thinking,
                 };
 
                 debug!(
@@ -326,6 +359,12 @@ impl ModelProvider for AnthropicClient {
 // Anthropic API serde types (private)
 // ---------------------------------------------------------------------------
 
+#[derive(Debug, Serialize, Clone)]
+struct AnthropicThinking {
+    r#type: String,
+    budget_tokens: u32,
+}
+
 #[derive(Debug, Serialize)]
 struct AnthropicRequest<'a> {
     model: &'a str,
@@ -339,6 +378,8 @@ struct AnthropicRequest<'a> {
     output_config: Option<AnthropicOutputConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
     temperature: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    thinking: Option<AnthropicThinking>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -360,6 +401,9 @@ enum AnthropicContent {
 enum AnthropicContentBlock {
     Text {
         text: String,
+    },
+    Thinking {
+        thinking: String,
     },
     ToolUse {
         id: String,
@@ -921,6 +965,73 @@ mod tests {
         assert!(
             body.get("temperature").is_none(),
             "temperature should be absent from request body when None"
+        );
+    }
+
+    #[tokio::test]
+    async fn thinking_level_sends_budget() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/messages"))
+            .and(wiremock::matchers::body_partial_json(json!({
+                "thinking": {
+                    "type": "enabled"
+                }
+            })))
+            .respond_with(ResponseTemplate::new(200).set_body_json(success_response_body()))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let client = test_client(&server.uri());
+        let options = CompletionOptions {
+            max_tokens: Some(1024),
+            thinking: Some(ThinkingConfig::Level(ThinkingLevel::Medium)),
+            ..CompletionOptions::default()
+        };
+        let result = client.complete(&simple_user_message(), &[], &options).await;
+        assert!(
+            result.is_ok(),
+            "request with thinking should succeed: {result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn thinking_response_extracted() {
+        let server = MockServer::start().await;
+        let body = json!({
+            "content": [
+                {"type": "thinking", "thinking": "Let me reason about this..."},
+                {"type": "text", "text": "Here is my answer."}
+            ],
+            "stop_reason": "end_turn",
+            "usage": {
+                "input_tokens": 10,
+                "output_tokens": 25
+            }
+        });
+
+        Mock::given(method("POST"))
+            .and(path("/v1/messages"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(body))
+            .mount(&server)
+            .await;
+
+        let client = test_client(&server.uri());
+        let result = client
+            .complete(&simple_user_message(), &[], &CompletionOptions::default())
+            .await;
+        assert!(result.is_ok(), "thinking response should succeed");
+
+        let resp = result.unwrap();
+        assert_eq!(
+            resp.content, "Here is my answer.",
+            "content should only contain text blocks"
+        );
+        assert_eq!(
+            resp.thinking.as_deref(),
+            Some("Let me reason about this..."),
+            "thinking should be extracted separately"
         );
     }
 }

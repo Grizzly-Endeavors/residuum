@@ -209,6 +209,8 @@ pub struct ModelResponse {
     pub tool_calls: Vec<ToolCall>,
     /// Token usage information, if the provider reports it.
     pub usage: Option<Usage>,
+    /// Thinking/reasoning text from the model (not sent back in context).
+    pub thinking: Option<String>,
 }
 
 impl ModelResponse {
@@ -219,6 +221,7 @@ impl ModelResponse {
             content,
             tool_calls,
             usage: None,
+            thinking: None,
         }
     }
 
@@ -244,6 +247,23 @@ pub enum ResponseFormat {
     },
 }
 
+/// Thinking/reasoning configuration for model completions.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ThinkingConfig {
+    /// Graduated reasoning effort (Anthropic, `OpenAI`, Gemini).
+    Level(ThinkingLevel),
+    /// Simple on/off toggle (Ollama, or explicit disable).
+    Toggle(bool),
+}
+
+/// Reasoning effort levels.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ThinkingLevel {
+    Low,
+    Medium,
+    High,
+}
+
 /// Options for model completion requests.
 #[derive(Debug, Clone, Default)]
 pub struct CompletionOptions {
@@ -253,6 +273,8 @@ pub struct CompletionOptions {
     pub response_format: ResponseFormat,
     /// Sampling temperature (0.0–2.0). None uses provider default.
     pub temperature: Option<f32>,
+    /// Thinking/reasoning configuration. None means not configured (off).
+    pub thinking: Option<ThinkingConfig>,
 }
 
 /// Trait for model provider implementations.

@@ -86,6 +86,8 @@ pub struct Config {
     pub idle: IdleConfig,
     /// Sampling temperature for model completions.
     pub temperature: Option<f32>,
+    /// Thinking/reasoning configuration for model completions.
+    pub thinking: Option<crate::models::ThinkingConfig>,
     /// Directory this config was loaded from.
     pub config_dir: PathBuf,
 }
@@ -115,6 +117,7 @@ impl fmt::Debug for Config {
             .field("agent", &self.agent)
             .field("idle", &self.idle)
             .field("temperature", &self.temperature)
+            .field("thinking", &self.thinking)
             .field("config_dir", &self.config_dir)
             .finish()
     }
