@@ -1567,30 +1567,29 @@ typo_field = 0.5
     // ── Gateway config ──────────────────────────────────────────────────────
 
     #[test]
-    fn gateway_config_defaults() {
-        // Clear env vars that gateway_config_env_override may have set
-        // (tests run in parallel within the same process).
+    fn gateway_config_defaults_and_env_override() {
+        // Combined into one test to avoid env var races across parallel tests.
+        // SAFETY: test-only environment
         unsafe {
             std::env::remove_var("RESIDUUM_GATEWAY_BIND");
             std::env::remove_var("RESIDUUM_GATEWAY_PORT");
         }
+
+        // Defaults
         let cfg = resolve_gateway_config(None);
         assert_eq!(cfg.bind, "127.0.0.1", "default bind should be loopback");
         assert_eq!(cfg.port, 7700, "default port should be 7700");
         assert_eq!(cfg.addr(), "127.0.0.1:7700");
-    }
 
-    #[test]
-    fn gateway_config_env_override() {
-        // SAFETY: test-only, single-threaded test environment
+        // Env overrides
         unsafe {
             std::env::set_var("RESIDUUM_GATEWAY_BIND", "0.0.0.0");
             std::env::set_var("RESIDUUM_GATEWAY_PORT", "8080");
         }
-        let cfg = resolve_gateway_config(None);
-        assert_eq!(cfg.bind, "0.0.0.0", "env should override bind");
-        assert_eq!(cfg.port, 8080, "env should override port");
-        assert_eq!(cfg.addr(), "0.0.0.0:8080");
+        let env_cfg = resolve_gateway_config(None);
+        assert_eq!(env_cfg.bind, "0.0.0.0", "env should override bind");
+        assert_eq!(env_cfg.port, 8080, "env should override port");
+        assert_eq!(env_cfg.addr(), "0.0.0.0:8080");
         unsafe {
             std::env::remove_var("RESIDUUM_GATEWAY_BIND");
             std::env::remove_var("RESIDUUM_GATEWAY_PORT");
