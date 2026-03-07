@@ -14,7 +14,7 @@ use crate::projects::activation::SharedProjectState;
 use crate::skills::SharedSkillState;
 use crate::workspace::layout::WorkspaceLayout;
 
-use super::spawn_helpers::{SpawnContext, build_spawn_resources};
+use crate::background::spawn_context::{SpawnContext, build_spawn_resources};
 
 /// A scheduled action that should run as a main agent wake turn rather than a sub-agent.
 pub(super) struct ActionMainTurn {

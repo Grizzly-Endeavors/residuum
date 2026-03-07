@@ -115,15 +115,15 @@ async fn run_serve_foreground_inner(args: &[String]) -> Result<(), ResiduumError
             "setup mode: config will be written to {}",
             tmp_dir.display()
         );
-        match Box::pin(residuum::gateway::server::setup::run_setup_server_at(
+        match Box::pin(residuum::gateway::setup::run_setup_server_at(
             tmp_dir.clone(),
         ))
         .await?
         {
-            residuum::gateway::server::setup::SetupExit::ConfigSaved => {
+            residuum::gateway::setup::SetupExit::ConfigSaved => {
                 tracing::info!("setup complete, loading config from temp directory");
             }
-            residuum::gateway::server::setup::SetupExit::Shutdown => return Ok(()),
+            residuum::gateway::setup::SetupExit::Shutdown => return Ok(()),
         }
 
         // Load the config written by the wizard and run the gateway
@@ -139,7 +139,7 @@ async fn run_serve_foreground_inner(args: &[String]) -> Result<(), ResiduumError
             workspace = %cfg.workspace_dir.display(),
             "setup-mode: configuration loaded, starting gateway"
         );
-        Box::pin(residuum::gateway::server::run_gateway(cfg)).await?;
+        Box::pin(residuum::gateway::run_gateway(cfg)).await?;
         return Ok(());
     }
 
@@ -160,18 +160,18 @@ async fn run_serve_foreground_inner(args: &[String]) -> Result<(), ResiduumError
                 );
                 // Gateway handles reloads in-place and only returns on shutdown
                 // or fatal error. Backup is created inside run_gateway().
-                Box::pin(residuum::gateway::server::run_gateway(cfg)).await?;
+                Box::pin(residuum::gateway::run_gateway(cfg)).await?;
                 break;
             }
             Err(err) if !is_first_boot => {
                 // Config broken on restart — try restoring from backup
                 tracing::warn!(error = %err, "config invalid, attempting rollback from backup");
-                if residuum::gateway::server::rollback_config(&config_dir) {
+                if residuum::gateway::rollback_config(&config_dir) {
                     // Backup restored — retry loading
                     match Config::load() {
                         Ok(cfg) => {
                             tracing::info!("config restored from backup, starting gateway");
-                            Box::pin(residuum::gateway::server::run_gateway(cfg)).await?;
+                            Box::pin(residuum::gateway::run_gateway(cfg)).await?;
                             break;
                         }
                         Err(retry_err) => {
@@ -190,11 +190,11 @@ async fn run_serve_foreground_inner(args: &[String]) -> Result<(), ResiduumError
             Err(err) => {
                 // First boot — setup wizard
                 tracing::warn!(error = %err, "config invalid, starting setup wizard");
-                match Box::pin(residuum::gateway::server::setup::run_setup_server()).await? {
-                    residuum::gateway::server::setup::SetupExit::ConfigSaved => {
+                match Box::pin(residuum::gateway::setup::run_setup_server()).await? {
+                    residuum::gateway::setup::SetupExit::ConfigSaved => {
                         tracing::info!("setup complete, loading configuration");
                     }
-                    residuum::gateway::server::setup::SetupExit::Shutdown => break,
+                    residuum::gateway::setup::SetupExit::Shutdown => break,
                 }
             }
         }
@@ -1042,7 +1042,7 @@ mod tests {
 
     #[test]
     fn backup_config_creates_bak_file() {
-        use residuum::gateway::server::backup_config;
+        use residuum::gateway::backup_config;
 
         let dir = tempfile::tempdir().unwrap();
         let config = dir.path().join("config.toml");
@@ -1061,7 +1061,7 @@ mod tests {
 
     #[test]
     fn rollback_restores_backup() {
-        use residuum::gateway::server::rollback_config;
+        use residuum::gateway::rollback_config;
 
         let dir = tempfile::tempdir().unwrap();
         let config = dir.path().join("config.toml");
@@ -1080,7 +1080,7 @@ mod tests {
 
     #[test]
     fn rollback_fails_without_backup() {
-        use residuum::gateway::server::rollback_config;
+        use residuum::gateway::rollback_config;
 
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("config.toml"), "BROKEN").unwrap();

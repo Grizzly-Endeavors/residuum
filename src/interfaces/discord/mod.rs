@@ -18,7 +18,7 @@ use serenity::prelude::*;
 use tokio::sync::mpsc;
 
 use crate::config::DiscordConfig;
-use crate::gateway::server::{ReloadSignal, ServerCommand};
+use crate::gateway::types::{ReloadSignal, ServerCommand};
 use crate::interfaces::types::RoutedMessage;
 
 use self::handler::DiscordHandler;

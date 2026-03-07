@@ -11,8 +11,8 @@ use crate::memory::recent_messages::load_recent_messages;
 use crate::models::factory::build_provider_chain;
 use crate::models::{CompletionOptions, Message};
 
-use super::GatewayRuntime;
-use super::memory::{MemorySubsystems, execute_observation};
+use crate::gateway::types::GatewayRuntime;
+use crate::gateway::memory::{MemorySubsystems, execute_observation};
 
 /// Run the full idle transition sequence.
 pub(super) async fn execute_idle_transition(

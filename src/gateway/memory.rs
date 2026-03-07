@@ -5,20 +5,18 @@ use std::sync::Arc;
 use tokio::sync::broadcast;
 
 use crate::agent::Agent;
-use crate::config::Config;
-use crate::error::ResiduumError;
 use crate::gateway::protocol::ServerMessage;
 use crate::memory::log_store::load_observation_log;
-use crate::memory::observer::{ObserveAction, ObserveResult, Observer, ObserverConfig};
+use crate::memory::observer::{ObserveAction, ObserveResult, Observer};
 use crate::memory::recent_context::{RecentContext, save_recent_context};
 use crate::memory::recent_messages::{
     append_recent_messages, clear_recent_messages, load_recent_messages,
 };
-use crate::memory::reflector::{Reflector, ReflectorConfig};
+use crate::memory::reflector::Reflector;
 use crate::memory::search::MemoryIndex;
 use crate::memory::types::{IndexManifest, ManifestFileEntry, Visibility};
 use crate::memory::vector_store::VectorStore;
-use crate::models::{EmbeddingProvider, SharedHttpClient, build_provider_chain};
+use crate::models::EmbeddingProvider;
 use crate::workspace::layout::WorkspaceLayout;
 
 /// Date format for episode file paths: `YYYY-MM/DD`.
@@ -27,45 +25,6 @@ fn episode_date_dir(date: &str) -> Option<String> {
     let year_month = date.get(..7)?;
     let day = date.get(8..10)?;
     Some(format!("{year_month}/{day}"))
-}
-
-/// Build observer and reflector from fully-resolved provider specs on `Config`.
-///
-/// # Errors
-/// Returns `ResiduumError::Config` if either provider cannot be built.
-pub(super) fn build_memory_components(
-    cfg: &Config,
-    tz: chrono_tz::Tz,
-    http: SharedHttpClient,
-) -> Result<(Observer, Reflector), ResiduumError> {
-    let observer_provider = build_provider_chain(
-        &cfg.observer,
-        cfg.max_tokens,
-        http.clone(),
-        cfg.retry.clone(),
-    )?;
-    let reflector_provider =
-        build_provider_chain(&cfg.reflector, cfg.max_tokens, http, cfg.retry.clone())?;
-
-    let observer = Observer::new(
-        observer_provider,
-        ObserverConfig {
-            threshold_tokens: cfg.memory.observer_threshold_tokens,
-            cooldown_secs: cfg.memory.observer_cooldown_secs,
-            force_threshold_tokens: cfg.memory.observer_force_threshold_tokens,
-            tz,
-        },
-    );
-
-    let reflector = Reflector::new(
-        reflector_provider,
-        ReflectorConfig {
-            threshold_tokens: cfg.memory.reflector_threshold_tokens,
-            tz,
-        },
-    );
-
-    Ok((observer, reflector))
 }
 
 /// Persist new messages and check whether observation thresholds are met.

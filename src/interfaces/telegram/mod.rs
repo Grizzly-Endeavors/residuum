@@ -11,7 +11,7 @@ use std::path::PathBuf;
 use tokio::sync::mpsc;
 
 use crate::config::TelegramConfig;
-use crate::gateway::server::{ReloadSignal, ServerCommand};
+use crate::gateway::types::{ReloadSignal, ServerCommand};
 use crate::interfaces::types::RoutedMessage;
 
 /// Telegram interface adapter that routes private messages to the agent inbound channel.

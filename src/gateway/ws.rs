@@ -11,7 +11,7 @@ use crate::gateway::protocol::{ClientMessage, ServerMessage};
 use crate::interfaces::types::{InboundMessage, MessageOrigin, RoutedMessage};
 use crate::interfaces::websocket::WsReplyHandle;
 
-use super::GatewayState;
+use crate::gateway::types::GatewayState;
 
 /// Axum handler that upgrades an HTTP request to a WebSocket connection.
 pub(super) async fn ws_handler(
@@ -126,13 +126,13 @@ async fn handle_client_message(msg: ClientMessage, state: &GatewayState) -> bool
                     message: "reloading configuration...".to_string(),
                 })
                 .ok();
-            state.reload_tx.send(super::ReloadSignal::Root).ok();
+            state.reload_tx.send(crate::gateway::types::ReloadSignal::Root).ok();
         }
         ClientMessage::ServerCommand { name, args } => {
             tracing::info!(command = %name, "server command from client");
             state
                 .command_tx
-                .send(super::ServerCommand {
+                .send(crate::gateway::types::ServerCommand {
                     name,
                     args,
                     reply_tx: None,

@@ -14,7 +14,7 @@ use serenity::model::gateway::Ready;
 use serenity::prelude::*;
 use tokio::sync::mpsc;
 
-use crate::gateway::server::{ReloadSignal, ServerCommand};
+use crate::gateway::types::{ReloadSignal, ServerCommand};
 use crate::inbox;
 use crate::interfaces::attachment::{
     AttachmentInfo, MAX_IMAGE_INLINE_SIZE, download_attachment, encode_image_from_file,

@@ -7,9 +7,11 @@ use tokio::time::Duration;
 use crate::config::Config;
 use crate::gateway::protocol::ServerMessage;
 use crate::models::CompletionOptions;
+use crate::background::spawn_context::SpawnContext;
+use crate::gateway::startup;
 
-use super::GatewayRuntime;
-use super::spawn_helpers::SpawnContext;
+use crate::gateway::types::GatewayRuntime;
+use crate::gateway::types::GatewayState;
 
 /// What the event loop should do with the idle timer after a config reload.
 pub(super) enum IdleAction {
@@ -129,6 +131,50 @@ pub(super) fn diff_config(old: &Config, new: &Config) -> ConfigDiff {
     }
 }
 
+/// Backup `config.toml` and `providers.toml` before reload.
+///
+/// Best-effort: logs a warning on failure but never panics.
+pub fn backup_config(config_dir: &std::path::Path) {
+    for name in &["config.toml", "providers.toml"] {
+        let src = config_dir.join(name);
+        let dst = config_dir.join(format!("{name}.bak"));
+        if src.exists() {
+            if let Err(err) = std::fs::copy(&src, &dst) {
+                tracing::warn!(file = %name, error = %err, "failed to back up before reload");
+            } else {
+                tracing::debug!(file = %name, "backed up to .bak");
+            }
+        }
+    }
+}
+
+/// Restore `.bak` files for `config.toml` and `providers.toml` after a failed reload.
+///
+/// Returns `true` if at least one file was restored successfully.
+pub fn rollback_config(config_dir: &std::path::Path) -> bool {
+    let mut any_restored = false;
+    for name in &["config.toml", "providers.toml"] {
+        let backup = config_dir.join(format!("{name}.bak"));
+        let target = config_dir.join(name);
+        if !backup.exists() {
+            continue;
+        }
+        match std::fs::copy(&backup, &target) {
+            Ok(_) => {
+                tracing::info!(file = %name, "restored from backup");
+                any_restored = true;
+            }
+            Err(err) => {
+                tracing::warn!(file = %name, error = %err, "failed to restore from backup");
+            }
+        }
+    }
+    if !any_restored {
+        tracing::warn!("no config backups found, cannot rollback");
+    }
+    any_restored
+}
+
 /// Handle an in-place root config reload.
 ///
 /// Backs up current config files, loads new config, diffs old vs new, and
@@ -136,13 +182,13 @@ pub(super) fn diff_config(old: &Config, new: &Config) -> ConfigDiff {
 /// clients.
 pub(super) async fn handle_root_reload(rt: &mut GatewayRuntime) -> IdleAction {
     tracing::info!("handling root config reload in-place");
-    super::backup_config(&rt.config_dir);
+    backup_config(&rt.config_dir);
 
     let new_cfg = match Config::load() {
         Ok(cfg) => cfg,
         Err(err) => {
             tracing::warn!(error = %err, "config reload failed, keeping current config");
-            super::rollback_config(&rt.config_dir);
+            rollback_config(&rt.config_dir);
             rt.broadcast_tx
                 .send(ServerMessage::Notice {
                     message: format!("config reload failed (keeping current config): {err}"),
@@ -240,7 +286,7 @@ fn build_spawn_context(rt: &GatewayRuntime, new_cfg: &Config) -> Arc<SpawnContex
 
 /// Rebuild providers and swap them into the runtime.
 fn reload_providers(rt: &mut GatewayRuntime, new_cfg: &Config) {
-    match super::startup::init_providers(new_cfg, rt.tz, rt.http_client.clone()) {
+    match startup::init_providers(new_cfg, rt.tz, rt.http_client.clone()) {
         Ok(components) => {
             rt.agent.swap_provider(components.provider);
             rt.observer = components.observer;
@@ -289,7 +335,7 @@ async fn reload_gateway(rt: &mut GatewayRuntime, new_cfg: &Config) {
 
             let (new_shutdown_tx, mut new_shutdown_rx) = tokio::sync::watch::channel(false);
 
-            let state = super::GatewayState {
+            let state = GatewayState {
                 inbound_tx: rt.inbound_tx.clone(),
                 broadcast_tx: rt.broadcast_tx.clone(),
                 reload_tx: rt.reload_tx.clone(),
@@ -297,7 +343,7 @@ async fn reload_gateway(rt: &mut GatewayRuntime, new_cfg: &Config) {
                 inbox_dir: rt.layout.inbox_dir(),
                 tz: rt.tz,
             };
-            let config_api_state = super::web::ConfigApiState {
+            let config_api_state = crate::gateway::web::ConfigApiState {
                 config_dir: rt.config_dir.clone(),
                 workspace_dir: rt.layout.root().to_path_buf(),
                 memory_dir: Some(rt.layout.memory_dir()),
@@ -305,7 +351,7 @@ async fn reload_gateway(rt: &mut GatewayRuntime, new_cfg: &Config) {
                 setup_done: None,
                 secret_lock: std::sync::Arc::new(tokio::sync::Mutex::new(())),
             };
-            let app = super::build_gateway_app(state, new_cfg, config_api_state);
+            let app = crate::gateway::event_loop::build_gateway_app(state, new_cfg, config_api_state);
 
             let new_handle = tokio::spawn(async move {
                 if let Err(e) = axum::serve(listener, app)
@@ -455,6 +501,7 @@ async fn reload_telegram_adapter(rt: &mut GatewayRuntime, new_cfg: &Config) {
 }
 
 #[cfg(test)]
+#[expect(clippy::unwrap_used, reason = "test code uses unwrap for clarity")]
 mod tests {
     use super::*;
     use crate::config::{
@@ -652,5 +699,71 @@ mod tests {
         let cfg = test_config();
         let diff = diff_config(&cfg, &cfg);
         assert!(!diff.idle_changed);
+    }
+
+    #[test]
+    fn backup_config_creates_bak_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = dir.path().join("config.toml");
+        std::fs::write(&config, "timezone = \"UTC\"\n").unwrap();
+
+        backup_config(dir.path());
+
+        let bak = dir.path().join("config.toml.bak");
+        assert!(bak.exists(), "backup should create config.toml.bak");
+        assert_eq!(
+            std::fs::read_to_string(&bak).unwrap(),
+            "timezone = \"UTC\"\n",
+            "backup content should match original"
+        );
+    }
+
+    #[test]
+    fn rollback_config_restores_original() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = dir.path().join("config.toml");
+        let bak = dir.path().join("config.toml.bak");
+
+        std::fs::write(&bak, "timezone = \"UTC\"\n").unwrap();
+        std::fs::write(&config, "BROKEN").unwrap();
+
+        assert!(rollback_config(dir.path()), "rollback should succeed");
+        assert_eq!(
+            std::fs::read_to_string(&config).unwrap(),
+            "timezone = \"UTC\"\n",
+        );
+    }
+
+    #[test]
+    fn rollback_config_fails_without_backup() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("config.toml"), "BROKEN").unwrap();
+        assert!(!rollback_config(dir.path()));
+    }
+
+    #[test]
+    fn backup_config_missing_source_does_not_panic() {
+        let dir = tempfile::tempdir().unwrap();
+        // No config.toml exists — backup should warn but not panic
+        backup_config(dir.path());
+        assert!(
+            !dir.path().join("config.toml.bak").exists(),
+            "no backup should be created when source is missing"
+        );
+    }
+
+    #[test]
+    fn backup_config_overwrites_stale_backup() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("config.toml.bak"), "old content").unwrap();
+        std::fs::write(dir.path().join("config.toml"), "new content").unwrap();
+
+        backup_config(dir.path());
+
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("config.toml.bak")).unwrap(),
+            "new content",
+            "backup should overwrite previous backup"
+        );
     }
 }

@@ -4,6 +4,6 @@ pub mod context;
 pub mod interrupt;
 pub mod recent_messages;
 pub(crate) mod turn;
-mod agent;
+mod core;
 
-pub use agent::{Agent, AgentConfig, SystemTurnResult};
+pub use core::{Agent, AgentConfig, SystemTurnResult};

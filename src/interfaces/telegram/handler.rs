@@ -10,7 +10,7 @@ use teloxide::requests::Requester;
 use teloxide::types::{BotCommand, ChatId, UpdateKind};
 use tokio::sync::mpsc;
 
-use crate::gateway::server::{ReloadSignal, ServerCommand};
+use crate::gateway::types::{ReloadSignal, ServerCommand};
 use crate::inbox;
 use crate::interfaces::attachment::{
     MAX_IMAGE_INLINE_SIZE, encode_image_from_file, is_supported_image,
