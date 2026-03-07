@@ -4,11 +4,11 @@ use std::sync::Arc;
 
 use tokio::time::Duration;
 
+use crate::background::spawn_context::SpawnContext;
 use crate::config::Config;
 use crate::gateway::protocol::ServerMessage;
-use crate::models::CompletionOptions;
-use crate::background::spawn_context::SpawnContext;
 use crate::gateway::startup;
+use crate::models::CompletionOptions;
 
 use crate::gateway::types::GatewayRuntime;
 use crate::gateway::types::GatewayState;
@@ -351,7 +351,8 @@ async fn reload_gateway(rt: &mut GatewayRuntime, new_cfg: &Config) {
                 setup_done: None,
                 secret_lock: std::sync::Arc::new(tokio::sync::Mutex::new(())),
             };
-            let app = crate::gateway::event_loop::build_gateway_app(state, new_cfg, config_api_state);
+            let app =
+                crate::gateway::event_loop::build_gateway_app(state, new_cfg, config_api_state);
 
             let new_handle = tokio::spawn(async move {
                 if let Err(e) = axum::serve(listener, app)
@@ -526,6 +527,7 @@ mod tests {
             pulse_enabled: false,
             gateway: GatewayConfig::default(),
             timezone: chrono_tz::UTC,
+            cloud: None,
             discord: None,
             telegram: None,
             webhook: WebhookConfig::default(),

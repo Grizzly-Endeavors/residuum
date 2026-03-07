@@ -4,7 +4,9 @@ use crate::config::Config;
 use crate::error::ResiduumError;
 use crate::memory::observer::Observer;
 use crate::memory::reflector::Reflector;
-use crate::models::{EmbeddingProvider, SharedHttpClient, build_embedding_provider, build_provider_chain};
+use crate::models::{
+    EmbeddingProvider, SharedHttpClient, build_embedding_provider, build_provider_chain,
+};
 
 use super::memory::build_memory_components;
 

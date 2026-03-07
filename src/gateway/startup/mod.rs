@@ -89,8 +89,10 @@ pub(super) async fn init_identity_and_http(
     cfg: &Config,
 ) -> Result<(IdentityFiles, SharedHttpClient), ResiduumError> {
     let identity = IdentityFiles::load(layout).await?;
-    let http = SharedHttpClient::new(&crate::models::HttpClientConfig::with_timeout(cfg.timeout_secs))
-        .map_err(|e| ResiduumError::Config(format!("failed to build HTTP client: {e}")))?;
+    let http = SharedHttpClient::new(&crate::models::HttpClientConfig::with_timeout(
+        cfg.timeout_secs,
+    ))
+    .map_err(|e| ResiduumError::Config(format!("failed to build HTTP client: {e}")))?;
     Ok((identity, http))
 }
 

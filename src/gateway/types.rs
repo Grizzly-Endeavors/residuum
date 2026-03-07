@@ -1,7 +1,7 @@
 //! Core types for the gateway module.
 
-use std::sync::Arc;
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use tokio::sync::{broadcast, mpsc};
 
@@ -159,6 +159,11 @@ pub(crate) struct GatewayRuntime {
     /// When the last user message was received (for idle deadline recalculation on reload).
     pub last_user_message_instant: Option<tokio::time::Instant>,
     // Adapter lifecycle handles
+    #[expect(
+        dead_code,
+        reason = "kept alive so tunnel task is not dropped on shutdown"
+    )]
+    pub tunnel_handle: Option<tokio::task::JoinHandle<()>>,
     pub discord_handle: Option<tokio::task::JoinHandle<()>>,
     pub telegram_handle: Option<tokio::task::JoinHandle<()>>,
     pub discord_shutdown_tx: Option<tokio::sync::watch::Sender<bool>>,

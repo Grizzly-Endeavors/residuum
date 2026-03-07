@@ -17,4 +17,5 @@ pub mod skills;
 pub mod subagents;
 pub mod time;
 pub mod tools;
+pub(crate) mod tunnel;
 pub mod workspace;

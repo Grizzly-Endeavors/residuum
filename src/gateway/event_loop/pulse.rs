@@ -25,7 +25,13 @@ pub async fn handle_pulse_execution(
             let formatted = format!("[Scheduled pulse: {pulse_name}]\n{prompt}");
             rt.agent.inject_system_message(formatted.clone());
             let msgs = [Message::system(&formatted)];
-            super::turns::persist_and_maybe_observe(rt, &msgs, Visibility::Background, observe_deadline).await;
+            super::turns::persist_and_maybe_observe(
+                rt,
+                &msgs,
+                Visibility::Background,
+                observe_deadline,
+            )
+            .await;
             true
         }
         PulseExecution::SubAgent {

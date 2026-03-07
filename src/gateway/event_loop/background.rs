@@ -6,7 +6,9 @@ use crate::memory::observer::Observer;
 use crate::memory::types::Visibility;
 use crate::models::Message;
 use crate::notify::router::NotificationRouter;
-use crate::notify::types::{BuiltinChannel, ChannelTarget, Notification, TaskSource, parse_channel_list};
+use crate::notify::types::{
+    BuiltinChannel, ChannelTarget, Notification, TaskSource, parse_channel_list,
+};
 use crate::projects::activation::SharedProjectState;
 use crate::workspace::layout::WorkspaceLayout;
 

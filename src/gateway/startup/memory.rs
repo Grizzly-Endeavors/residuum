@@ -41,15 +41,21 @@ pub(super) fn build_memory_components(
     let reflector_provider =
         build_provider_chain(&cfg.reflector, cfg.max_tokens, http, cfg.retry.clone())?;
 
-    let observer = Observer::new(observer_provider, ObserverConfig {
-        tz,
-        ..ObserverConfig::default()
-    });
+    let observer = Observer::new(
+        observer_provider,
+        ObserverConfig {
+            tz,
+            ..ObserverConfig::default()
+        },
+    );
 
-    let reflector = Reflector::new(reflector_provider, ReflectorConfig {
-        tz,
-        ..ReflectorConfig::default()
-    });
+    let reflector = Reflector::new(
+        reflector_provider,
+        ReflectorConfig {
+            tz,
+            ..ReflectorConfig::default()
+        },
+    );
 
     Ok((observer, reflector))
 }

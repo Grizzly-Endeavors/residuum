@@ -1,0 +1,172 @@
+//! WebSocket connection forwarding to the local residuum instance.
+
+use std::collections::HashMap;
+use std::sync::Arc;
+
+use futures_util::stream::SplitSink;
+use futures_util::{SinkExt, StreamExt};
+use tokio::net::TcpStream;
+use tokio::sync::{Mutex, mpsc};
+use tokio_tungstenite::tungstenite::Message;
+use tokio_tungstenite::tungstenite::http as ws_http;
+use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
+use tracing::{debug, warn};
+
+use super::protocol::TunnelFrame;
+
+/// Type alias for the write half of the tunnel WebSocket connection.
+///
+/// The tunnel connects to the relay server, which may be behind TLS.
+pub(super) type TunnelSink = SplitSink<WebSocketStream<MaybeTlsStream<TcpStream>>, Message>;
+
+/// Channel capacity for messages flowing from the tunnel to local WebSocket.
+const LOCAL_WS_CHANNEL_CAPACITY: usize = 64;
+
+/// Handle a `WsOpen` frame by connecting to the local WebSocket endpoint.
+///
+/// On success, sends a `WsOpenResult { success: true }` through the tunnel and
+/// returns an `mpsc::Sender` for forwarding messages from the tunnel to the
+/// local WebSocket. On failure, sends `WsOpenResult { success: false }` and
+/// returns `None`.
+///
+/// # Errors
+///
+/// This function does not return errors directly. Connection failures are
+/// communicated back through the tunnel as `WsOpenResult` frames.
+pub(super) async fn handle_ws_open(
+    port: u16,
+    channel_id: String,
+    path: String,
+    headers: HashMap<String, String>,
+    tunnel_tx: Arc<Mutex<TunnelSink>>,
+) -> Option<mpsc::Sender<String>> {
+    let url = format!("ws://localhost:{port}{path}");
+    debug!(channel_id, url, "opening local WebSocket connection");
+
+    // Build the local WS connect request with forwarded headers.
+    let mut request = match ws_http::Request::builder()
+        .uri(&url)
+        .header("Connection", "Upgrade")
+        .header("Upgrade", "websocket")
+        .header("Sec-WebSocket-Version", "13")
+        .header(
+            "Sec-WebSocket-Key",
+            tokio_tungstenite::tungstenite::handshake::client::generate_key(),
+        )
+        .body(())
+    {
+        Ok(r) => r,
+        Err(e) => {
+            warn!(channel_id, error = %e, "failed to build local WS request");
+            send_ws_open_result(&tunnel_tx, &channel_id, false).await;
+            return None;
+        }
+    };
+
+    // Add forwarded headers (skip WebSocket handshake headers).
+    for (name, value) in &headers {
+        let lower = name.to_lowercase();
+        if lower != "connection"
+            && lower != "upgrade"
+            && lower != "sec-websocket-version"
+            && lower != "sec-websocket-key"
+            && let Ok(v) = ws_http::HeaderValue::from_str(value)
+            && let Ok(n) = ws_http::HeaderName::from_bytes(name.as_bytes())
+        {
+            request.headers_mut().insert(n, v);
+        }
+    }
+
+    let (ws_stream, _response) = match tokio_tungstenite::connect_async(request).await {
+        Ok(pair) => pair,
+        Err(e) => {
+            warn!(channel_id, error = %e, "failed to connect to local WebSocket");
+            send_ws_open_result(&tunnel_tx, &channel_id, false).await;
+            return None;
+        }
+    };
+
+    // Connection succeeded — notify the relay.
+    send_ws_open_result(&tunnel_tx, &channel_id, true).await;
+
+    let (local_write, mut local_read) = ws_stream.split();
+    let local_write = Arc::new(Mutex::new(local_write));
+
+    // Channel for messages flowing from tunnel → local WS.
+    let (tx, mut rx) = mpsc::channel::<String>(LOCAL_WS_CHANNEL_CAPACITY);
+
+    // Task: read from local WS, send through tunnel.
+    let tunnel_tx_reader = Arc::clone(&tunnel_tx);
+    let ch_id_reader = channel_id.clone();
+    tokio::spawn(async move {
+        while let Some(msg) = local_read.next().await {
+            match msg {
+                Ok(Message::Text(text)) => {
+                    let frame = TunnelFrame::WsMessage {
+                        channel_id: ch_id_reader.clone(),
+                        data: text.to_string(),
+                    };
+                    if let Err(e) = send_tunnel_frame(&tunnel_tx_reader, &frame).await {
+                        warn!(channel_id = ch_id_reader, error = %e, "failed to forward local WS message to tunnel");
+                        break;
+                    }
+                }
+                Ok(Message::Close(_)) => {
+                    debug!(channel_id = ch_id_reader, "local WebSocket closed");
+                    break;
+                }
+                Ok(_) => {
+                    // Ignore binary, ping, pong frames from local.
+                }
+                Err(e) => {
+                    warn!(channel_id = ch_id_reader, error = %e, "local WebSocket read error");
+                    break;
+                }
+            }
+        }
+
+        // Notify relay that the local WS has closed.
+        let close_frame = TunnelFrame::WsClose {
+            channel_id: ch_id_reader,
+        };
+        drop(send_tunnel_frame(&tunnel_tx_reader, &close_frame).await);
+    });
+
+    // Task: read from mpsc rx, send to local WS.
+    let ch_id_writer = channel_id;
+    tokio::spawn(async move {
+        while let Some(data) = rx.recv().await {
+            let mut guard = local_write.lock().await;
+            if let Err(e) = guard.send(Message::Text(data.into())).await {
+                warn!(channel_id = ch_id_writer, error = %e, "failed to forward tunnel message to local WS");
+                break;
+            }
+        }
+        // Channel closed — the tunnel side dropped the sender.
+        debug!(channel_id = ch_id_writer, "tunnel→local WS channel closed");
+    });
+
+    Some(tx)
+}
+
+/// Send a `WsOpenResult` frame through the tunnel.
+async fn send_ws_open_result(tunnel_tx: &Arc<Mutex<TunnelSink>>, channel_id: &str, success: bool) {
+    let frame = TunnelFrame::WsOpenResult {
+        channel_id: channel_id.to_string(),
+        success,
+    };
+    if let Err(e) = send_tunnel_frame(tunnel_tx, &frame).await {
+        warn!(channel_id, error = %e, "failed to send WsOpenResult");
+    }
+}
+
+/// Serialize and send a `TunnelFrame` over the tunnel WebSocket.
+async fn send_tunnel_frame(
+    tunnel_tx: &Arc<Mutex<TunnelSink>>,
+    frame: &TunnelFrame,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let json = serde_json::to_string(frame)?;
+    let mut guard = tunnel_tx.lock().await;
+    guard.send(Message::Text(json.into())).await?;
+    Ok(())
+}

@@ -10,9 +10,7 @@ use tokio::time::Duration;
 use crate::config::Config;
 use crate::error::ResiduumError;
 use crate::gateway::protocol::ServerMessage;
-use crate::gateway::types::{
-    GatewayCore, GatewayExit, GatewayRuntime, GatewayState, ReloadSignal,
-};
+use crate::gateway::types::{GatewayCore, GatewayExit, GatewayRuntime, GatewayState, ReloadSignal};
 use crate::memory::types::Visibility;
 use crate::pulse::scheduler::PulseScheduler;
 
@@ -73,6 +71,16 @@ pub async fn run_gateway(cfg: Config) -> Result<GatewayExit, ResiduumError> {
     let server_handle = spawn_http_server(&cfg, app, &core.shutdown_tx).await?;
     let adapters = spawn_adapters(&cfg, discord_senders, telegram_senders, parts.tz);
 
+    let tunnel_handle = if let Some(ref cloud_cfg) = cfg.cloud {
+        let cloud = cloud_cfg.clone();
+        let shutdown_rx = core.shutdown_tx.subscribe();
+        Some(tokio::spawn(async move {
+            crate::tunnel::start_tunnel(cloud, shutdown_rx).await;
+        }))
+    } else {
+        None
+    };
+
     let sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
         .map_err(|e| ResiduumError::Gateway(format!("failed to register SIGTERM handler: {e}")))?;
 
@@ -114,6 +122,7 @@ pub async fn run_gateway(cfg: Config) -> Result<GatewayExit, ResiduumError> {
         last_reply: None,
         unsolicited_handles: std::collections::HashMap::new(),
         last_user_message_instant: None,
+        tunnel_handle,
         discord_handle: adapters.discord_handle,
         telegram_handle: adapters.telegram_handle,
         discord_shutdown_tx: adapters.discord_shutdown_tx,

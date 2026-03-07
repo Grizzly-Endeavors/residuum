@@ -1,13 +1,11 @@
 //! Server command handler in the event loop.
 
-use crate::gateway::types::GatewayRuntime;
 use crate::gateway::protocol::ServerMessage;
+use crate::gateway::types::GatewayRuntime;
 use crate::gateway::types::ServerCommand;
 
 use super::turns::load_prompt_context_strings;
-use crate::gateway::memory::{
-    MemorySubsystems, run_forced_observe, run_forced_reflect,
-};
+use crate::gateway::memory::{MemorySubsystems, run_forced_observe, run_forced_reflect};
 
 /// Dispatch a named server command from any client channel.
 pub async fn handle_server_command(

@@ -4,7 +4,7 @@ use tokio::sync::mpsc;
 
 use crate::config::Config;
 use crate::error::ResiduumError;
-use crate::gateway::types::{GatewayState, ServerCommand, ReloadSignal};
+use crate::gateway::types::{GatewayState, ReloadSignal, ServerCommand};
 use crate::interfaces::types::RoutedMessage;
 
 use crate::gateway::web;

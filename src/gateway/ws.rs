@@ -126,7 +126,10 @@ async fn handle_client_message(msg: ClientMessage, state: &GatewayState) -> bool
                     message: "reloading configuration...".to_string(),
                 })
                 .ok();
-            state.reload_tx.send(crate::gateway::types::ReloadSignal::Root).ok();
+            state
+                .reload_tx
+                .send(crate::gateway::types::ReloadSignal::Root)
+                .ok();
         }
         ClientMessage::ServerCommand { name, args } => {
             tracing::info!(command = %name, "server command from client");

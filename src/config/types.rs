@@ -101,6 +101,17 @@ impl Default for SearchConfig {
     }
 }
 
+/// Validated cloud tunnel configuration.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CloudConfig {
+    /// Relay server WebSocket URL.
+    pub relay_url: String,
+    /// Authentication token.
+    pub token: String,
+    /// Local port to forward requests to.
+    pub local_port: u16,
+}
+
 /// Validated Discord bot configuration.
 #[derive(Debug, Clone, PartialEq)]
 pub struct DiscordConfig {
@@ -302,6 +313,8 @@ pub struct Config {
     pub gateway: GatewayConfig,
     /// IANA timezone for the agent (e.g. `America/New_York`).
     pub timezone: chrono_tz::Tz,
+    /// Cloud tunnel configuration (None if `[cloud]` section absent or disabled).
+    pub cloud: Option<CloudConfig>,
     /// Discord bot configuration (None if `[discord]` section absent or no token).
     pub discord: Option<DiscordConfig>,
     /// Telegram bot configuration (None if `[telegram]` section absent or no token).
@@ -342,6 +355,7 @@ impl fmt::Debug for Config {
             .field("pulse_enabled", &self.pulse_enabled)
             .field("gateway", &self.gateway)
             .field("timezone", &self.timezone)
+            .field("cloud", &self.cloud.as_ref().map(|_| "[configured]"))
             .field("discord", &self.discord.as_ref().map(|_| "[configured]"))
             .field("telegram", &self.telegram.as_ref().map(|_| "[configured]"))
             .field("webhook", &self.webhook)

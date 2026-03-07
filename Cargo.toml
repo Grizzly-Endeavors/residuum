@@ -53,7 +53,7 @@ rpassword = "7"
 
 # WebSocket gateway + web UI
 axum = { version = "0.8", features = ["ws"] }
-tokio-tungstenite = "0.26"
+tokio-tungstenite = { version = "0.26", features = ["native-tls"] }
 futures-util = "0.3"
 uuid = { version = "1", features = ["v4"] }
 rust-embed = "8"

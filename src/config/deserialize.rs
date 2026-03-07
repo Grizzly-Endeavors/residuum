@@ -47,6 +47,8 @@ pub(crate) struct ConfigFile {
     pub(super) temperature: Option<f32>,
     /// Thinking/reasoning configuration (off, on, low, medium, high).
     pub(super) thinking: Option<String>,
+    /// Cloud tunnel configuration.
+    pub(super) cloud: Option<CloudConfigFile>,
 }
 
 /// Raw TOML providers file structure (`providers.toml`).
@@ -254,6 +256,20 @@ pub(super) struct BackgroundConfigFile {
     pub(super) max_concurrent: Option<usize>,
     /// Number of days to retain background task transcripts.
     pub(super) transcript_retention_days: Option<u64>,
+}
+
+/// Raw TOML `[cloud]` section.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct CloudConfigFile {
+    /// Whether the cloud tunnel is enabled.
+    pub(super) enabled: Option<bool>,
+    /// Relay server WebSocket URL.
+    pub(super) relay_url: Option<String>,
+    /// Authentication token (supports `${ENV_VAR}` syntax).
+    pub(super) token: Option<String>,
+    /// Local port to forward requests to.
+    pub(super) local_port: Option<u16>,
 }
 
 /// Raw TOML `[background.models]` section.

@@ -73,6 +73,17 @@ port = 7700
 # [telegram]
 # token = "${RESIDUUM_TELEGRAM_TOKEN}"
 
+# ── Cloud tunnel (optional) ──────────────────────────────────────────────────
+# Connects to the relay server to make this instance accessible from the
+# public internet via agent-residuum.com/user/{id}/.
+# Token can be set here or via RESIDUUM_CLOUD_TOKEN env var.
+#
+# [cloud]
+# enabled = true
+# token = "${RESIDUUM_CLOUD_TOKEN}"
+# relay_url = "wss://agent-residuum.com/tunnel/register"
+# local_port = 7700
+
 # ── Skills (optional, extra scan directories) ────────────────────────────────
 # The workspace skills/ directory is always scanned. Add extra directories here.
 #

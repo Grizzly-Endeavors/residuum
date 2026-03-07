@@ -1,19 +1,19 @@
 //! WebSocket gateway for multi-client access to the agent.
 
-pub mod protocol;
-pub(crate) mod types;
-mod reload;
+mod actions;
+mod event_loop;
+mod helpers;
 mod idle;
 mod memory;
-mod actions;
-mod watcher;
+pub mod protocol;
+mod reload;
 pub mod setup;
-mod helpers;
-mod ws;
-pub(crate) mod web;
-mod event_loop;
 pub(crate) mod startup;
+pub(crate) mod types;
+mod watcher;
+pub(crate) mod web;
+mod ws;
 
 pub use event_loop::run_gateway;
-pub use types::{GatewayExit, ReloadSignal, ServerCommand};
 pub use reload::{backup_config, rollback_config};
+pub use types::{GatewayExit, ReloadSignal, ServerCommand};

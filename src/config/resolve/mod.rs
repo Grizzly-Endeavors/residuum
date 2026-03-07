@@ -13,14 +13,14 @@ use super::Config;
 use super::bootstrap::default_workspace_dir;
 use super::constants::{DEFAULT_IDLE_TIMEOUT_MINUTES, DEFAULT_MAX_TOKENS, DEFAULT_TIMEOUT_SECS};
 use super::deserialize::{
-    AgentConfigFile, BackgroundConfigFile, BackgroundModelsFile, ConfigFile, DiscordConfigFile,
-    GatewayConfigFile, MemoryConfigFile, ProviderEntryFile, ProvidersFile, SearchConfigFile,
-    SkillsConfigFile, TelegramConfigFile, WebhookConfigFile,
+    AgentConfigFile, BackgroundConfigFile, BackgroundModelsFile, CloudConfigFile, ConfigFile,
+    DiscordConfigFile, GatewayConfigFile, MemoryConfigFile, ProviderEntryFile, ProvidersFile,
+    SearchConfigFile, SkillsConfigFile, TelegramConfigFile, WebhookConfigFile,
 };
 use super::secrets::SecretStore;
 use super::types::{
-    AgentAbilitiesConfig, BackgroundConfig, DiscordConfig, GatewayConfig, IdleConfig, MemoryConfig,
-    SearchConfig, SkillsConfig, TelegramConfig, WebhookConfig,
+    AgentAbilitiesConfig, BackgroundConfig, CloudConfig, DiscordConfig, GatewayConfig, IdleConfig,
+    MemoryConfig, SearchConfig, SkillsConfig, TelegramConfig, WebhookConfig,
 };
 
 /// Build a `Config` from an optional config file and environment variables.
@@ -67,6 +67,7 @@ pub(crate) fn from_file_and_env(
         .unwrap_or(true);
 
     let gateway = resolve_gateway_config(file.and_then(|f| f.gateway.as_ref()));
+    let cloud = resolve_cloud_config(file.and_then(|f| f.cloud.as_ref()), &secrets, &gateway);
     let discord = resolve_discord_config(file.and_then(|f| f.discord.as_ref()), &secrets);
     let telegram = resolve_telegram_config(file.and_then(|f| f.telegram.as_ref()), &secrets);
     let webhook = resolve_webhook_config(file.and_then(|f| f.webhook.as_ref()), &secrets);
@@ -110,6 +111,7 @@ pub(crate) fn from_file_and_env(
         pulse_enabled,
         gateway,
         timezone,
+        cloud,
         discord,
         telegram,
         webhook,
@@ -211,6 +213,59 @@ fn resolve_discord_config(
             None
         }
         (None, None) => None,
+    }
+}
+
+/// Default relay WebSocket URL.
+const DEFAULT_CLOUD_RELAY_URL: &str = "wss://agent-residuum.com/tunnel/register";
+
+/// Resolve cloud tunnel configuration from TOML section and environment.
+///
+/// Token resolution: `RESIDUUM_CLOUD_TOKEN` env > `token` field in TOML (with
+/// `${ENV_VAR}` / `secret:name` expansion) > `None` if section is absent, disabled,
+/// or no token found.
+fn resolve_cloud_config(
+    section: Option<&CloudConfigFile>,
+    secrets: &SecretStore,
+    gateway: &GatewayConfig,
+) -> Option<CloudConfig> {
+    let section = section?;
+
+    // If explicitly disabled, return None.
+    if section.enabled == Some(false) {
+        return None;
+    }
+
+    let token = std::env::var("RESIDUUM_CLOUD_TOKEN")
+        .ok()
+        .or_else(|| {
+            section
+                .token
+                .as_ref()
+                .and_then(|t| resolve_secret_value(t, secrets))
+        })
+        .filter(|t| !t.is_empty());
+
+    if let Some(tok) = token {
+        let relay_url = section
+            .relay_url
+            .clone()
+            .unwrap_or_else(|| DEFAULT_CLOUD_RELAY_URL.to_string());
+        let local_port = section.local_port.unwrap_or(gateway.port);
+        Some(CloudConfig {
+            relay_url,
+            token: tok,
+            local_port,
+        })
+    } else {
+        // Section present with enabled=true but no token.
+        if section.enabled == Some(true) {
+            eprintln!(
+                "warning: [cloud] section enabled but no token found; \
+                 set RESIDUUM_CLOUD_TOKEN or token in config"
+            );
+        }
+        None
     }
 }
 
@@ -1132,6 +1187,162 @@ main = "anthropic/claude-sonnet-4-6"
             cfg.telegram.as_ref().map(|t| t.token.as_str()),
             Some("123456789:ABCdefGHIjklmnop"),
             "token should match"
+        );
+    }
+
+    // ── Cloud config ───────────────────────────────────────────────────────
+
+    #[test]
+    fn cloud_absent_returns_none() {
+        let cfg_file = parse_config("timezone = \"UTC\"\n");
+        let prov_file = parse_providers(
+            r#"
+[models]
+main = "anthropic/claude-sonnet-4-6"
+"#,
+        );
+        let cfg = from_file_and_env(Some(&cfg_file), Some(&prov_file), &test_config_dir()).unwrap();
+        assert!(cfg.cloud.is_none(), "no [cloud] section should yield None");
+    }
+
+    #[test]
+    fn cloud_disabled_returns_none() {
+        let cfg_file = parse_config(
+            r#"
+timezone = "UTC"
+
+[cloud]
+enabled = false
+token = "rst_test"
+"#,
+        );
+        let prov_file = parse_providers(
+            r#"
+[models]
+main = "anthropic/claude-sonnet-4-6"
+"#,
+        );
+        let cfg = from_file_and_env(Some(&cfg_file), Some(&prov_file), &test_config_dir()).unwrap();
+        assert!(
+            cfg.cloud.is_none(),
+            "[cloud] with enabled=false should yield None"
+        );
+    }
+
+    #[test]
+    fn cloud_with_token_and_defaults() {
+        let cfg_file = parse_config(
+            r#"
+timezone = "UTC"
+
+[cloud]
+enabled = true
+token = "rst_testtoken12345678901234567890"
+"#,
+        );
+        let prov_file = parse_providers(
+            r#"
+[models]
+main = "anthropic/claude-sonnet-4-6"
+"#,
+        );
+        let cfg = from_file_and_env(Some(&cfg_file), Some(&prov_file), &test_config_dir()).unwrap();
+        let cloud = cfg.cloud.as_ref();
+        assert!(cloud.is_some(), "[cloud] with token should be Some");
+        let cloud = cloud.unwrap();
+        assert_eq!(
+            cloud.token, "rst_testtoken12345678901234567890",
+            "token should match"
+        );
+        assert_eq!(
+            cloud.relay_url, "wss://agent-residuum.com/tunnel/register",
+            "relay_url should default"
+        );
+        assert_eq!(
+            cloud.local_port, 7700,
+            "local_port should default to gateway port"
+        );
+    }
+
+    #[test]
+    fn cloud_custom_relay_url_and_port() {
+        let cfg_file = parse_config(
+            r#"
+timezone = "UTC"
+
+[gateway]
+port = 9000
+
+[cloud]
+enabled = true
+token = "rst_testtoken12345678901234567890"
+relay_url = "ws://localhost:8080/tunnel/register"
+local_port = 3000
+"#,
+        );
+        let prov_file = parse_providers(
+            r#"
+[models]
+main = "anthropic/claude-sonnet-4-6"
+"#,
+        );
+        let cfg = from_file_and_env(Some(&cfg_file), Some(&prov_file), &test_config_dir()).unwrap();
+        let cloud = cfg.cloud.as_ref().unwrap();
+        assert_eq!(
+            cloud.relay_url, "ws://localhost:8080/tunnel/register",
+            "custom relay_url"
+        );
+        assert_eq!(cloud.local_port, 3000, "custom local_port");
+    }
+
+    #[test]
+    fn cloud_local_port_defaults_to_gateway_port() {
+        let cfg_file = parse_config(
+            r#"
+timezone = "UTC"
+
+[gateway]
+port = 9000
+
+[cloud]
+enabled = true
+token = "rst_testtoken12345678901234567890"
+"#,
+        );
+        let prov_file = parse_providers(
+            r#"
+[models]
+main = "anthropic/claude-sonnet-4-6"
+"#,
+        );
+        let cfg = from_file_and_env(Some(&cfg_file), Some(&prov_file), &test_config_dir()).unwrap();
+        let cloud = cfg.cloud.as_ref().unwrap();
+        assert_eq!(
+            cloud.local_port, 9000,
+            "local_port should default to gateway port"
+        );
+    }
+
+    #[test]
+    fn cloud_section_no_token_returns_none() {
+        let cfg_file = parse_config(
+            r#"
+timezone = "UTC"
+
+[cloud]
+enabled = true
+"#,
+        );
+        let prov_file = parse_providers(
+            r#"
+[models]
+main = "anthropic/claude-sonnet-4-6"
+"#,
+        );
+        let cfg = from_file_and_env(Some(&cfg_file), Some(&prov_file), &test_config_dir()).unwrap();
+        assert!(
+            cfg.cloud.is_none(),
+            "[cloud] enabled=true but no token should yield None"
         );
     }
 }

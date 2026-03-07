@@ -13,10 +13,10 @@ use crate::projects::activation::SharedProjectState;
 use crate::skills::SharedSkillState;
 use crate::workspace::layout::WorkspaceLayout;
 
+use super::background::{BackgroundContext, handle_background_result};
 use crate::agent::context::loading::{
     build_project_context_strings, build_skill_context_strings, build_subagents_context_string,
 };
-use super::background::{BackgroundContext, handle_background_result};
 use crate::gateway::memory::{MemorySubsystems, execute_observation};
 
 /// Raw prompt context strings for constructing a `PromptContext`.
@@ -131,7 +131,7 @@ pub async fn persist_and_maybe_observe(
     observe_deadline: &mut Option<tokio::time::Instant>,
 ) {
     use crate::gateway::helpers::project_context_label;
-    use crate::gateway::memory::{persist_and_check_thresholds, execute_observation};
+    use crate::gateway::memory::{execute_observation, persist_and_check_thresholds};
 
     let project_ctx = project_context_label(&rt.project_state, &rt.layout).await;
     let action = persist_and_check_thresholds(

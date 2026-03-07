@@ -24,7 +24,7 @@ pub(crate) use constants::{
 pub use provider::{ModelSpec, ProviderKind, ProviderSpec};
 pub use secrets::SecretStore;
 pub use types::{
-    AgentAbilitiesConfig, BackgroundConfig, BackgroundModelTier, BackgroundModelsConfig, Config,
-    DiscordConfig, GatewayConfig, IdleConfig, MemoryConfig, SearchConfig, SkillsConfig,
-    TelegramConfig, WebhookConfig,
+    AgentAbilitiesConfig, BackgroundConfig, BackgroundModelTier, BackgroundModelsConfig,
+    CloudConfig, Config, DiscordConfig, GatewayConfig, IdleConfig, MemoryConfig, SearchConfig,
+    SkillsConfig, TelegramConfig, WebhookConfig,
 };
