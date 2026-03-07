@@ -63,7 +63,8 @@ DO NOT, under any circumstance, change this config without explicit approval fro
 - Doc comments: one-line `///` summary for public items; expand only for complex behavior
 
 ### Module Organization
-- Group related types in one file (e.g., `Message`, `Role`, `ToolCall` together in `llm/mod.rs`)
+- `mod.rs` files should be reserved for declarations and re-exports, not logic.
+- Group related types in one file (e.g., `Message`, `Role`, `ToolCall` together in `llm/types.rs`)
 - Tests: unit tests in `#[cfg(test)] mod tests` at file bottom; integration tests in `tests/`
 
 ### Visibility

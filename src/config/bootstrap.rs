@@ -33,6 +33,23 @@ pub(super) fn default_workspace_dir() -> Result<PathBuf, ResiduumError> {
     default_config_dir().map(|d| d.join("workspace"))
 }
 
+/// Write a file only if it doesn't already exist.
+///
+/// Returns `true` if the file was written, `false` if it already existed.
+fn write_if_absent(path: &Path, content: &str) -> Result<bool, ResiduumError> {
+    if path.exists() {
+        return Ok(false);
+    }
+    std::fs::write(path, content).map_err(|e| {
+        ResiduumError::Config(format!(
+            "failed to write {} at {}: {e}",
+            path.file_name().and_then(|n| n.to_str()).unwrap_or("file"),
+            path.display()
+        ))
+    })?;
+    Ok(true)
+}
+
 /// Write bootstrap config files to `dir`.
 ///
 /// Creates the directory if absent, writes `config.toml` only if absent,
@@ -50,28 +67,12 @@ pub(super) fn bootstrap_at(dir: &Path) -> Result<(), ResiduumError> {
         })?;
     }
 
-    // config.toml — only if absent
-    let config_path = dir.join("config.toml");
-    if !config_path.exists() {
-        std::fs::write(&config_path, MINIMAL_CONFIG).map_err(|e| {
-            ResiduumError::Config(format!(
-                "failed to write config.toml at {}: {e}",
-                config_path.display()
-            ))
-        })?;
-        tracing::info!(path = %config_path.display(), "wrote initial config.toml");
+    if write_if_absent(&dir.join("config.toml"), MINIMAL_CONFIG)? {
+        tracing::info!(path = %dir.join("config.toml").display(), "wrote initial config.toml");
     }
 
-    // providers.toml — only if absent
-    let providers_path = dir.join("providers.toml");
-    if !providers_path.exists() {
-        std::fs::write(&providers_path, MINIMAL_PROVIDERS).map_err(|e| {
-            ResiduumError::Config(format!(
-                "failed to write providers.toml at {}: {e}",
-                providers_path.display()
-            ))
-        })?;
-        tracing::info!(path = %providers_path.display(), "wrote initial providers.toml");
+    if write_if_absent(&dir.join("providers.toml"), MINIMAL_PROVIDERS)? {
+        tracing::info!(path = %dir.join("providers.toml").display(), "wrote initial providers.toml");
     }
 
     // Always regenerate example files
@@ -102,29 +103,12 @@ pub(super) fn bootstrap_at(dir: &Path) -> Result<(), ResiduumError> {
         })?;
     }
 
-    let mcp_json = ws_config_dir.join("mcp.json");
-    if !mcp_json.exists() {
-        std::fs::write(&mcp_json, "{ \"mcpServers\": {} }\n").map_err(|e| {
-            ResiduumError::Config(format!(
-                "failed to write mcp.json at {}: {e}",
-                mcp_json.display()
-            ))
-        })?;
-    }
+    write_if_absent(&ws_config_dir.join("mcp.json"), "{ \"mcpServers\": {} }\n")?;
 
-    let channels_toml = ws_config_dir.join("channels.toml");
-    if !channels_toml.exists() {
-        std::fs::write(
-            &channels_toml,
-            "# Notification channel configuration. See channels.example.toml for options.\n",
-        )
-        .map_err(|e| {
-            ResiduumError::Config(format!(
-                "failed to write channels.toml at {}: {e}",
-                channels_toml.display()
-            ))
-        })?;
-    }
+    write_if_absent(
+        &ws_config_dir.join("channels.toml"),
+        "# Notification channel configuration. See channels.example.toml for options.\n",
+    )?;
 
     Ok(())
 }

@@ -1,8 +1,10 @@
 //! Validated runtime configuration structs for each subsystem.
 
+use std::fmt;
 use std::path::PathBuf;
-
 use std::time::Duration;
+
+use crate::models::retry::RetryConfig;
 
 use super::constants::{
     DEFAULT_AGENT_MODIFY_CHANNELS, DEFAULT_AGENT_MODIFY_MCP, DEFAULT_GATEWAY_BIND,
@@ -265,6 +267,93 @@ impl std::str::FromStr for BackgroundModelTier {
                 "invalid model tier '{other}': must be small, medium, or large"
             )),
         }
+    }
+}
+
+/// Validated runtime configuration.
+///
+/// All provider roles are fully resolved at load time. Consumers read fields
+/// directly — no fallback chains needed.
+#[derive(Clone, PartialEq)]
+pub struct Config {
+    /// User's display name (what the agent calls them).
+    pub name: Option<String>,
+    /// Fully resolved main agent provider chain (failover).
+    pub main: Vec<ProviderSpec>,
+    /// Fully resolved observer provider chain (failover).
+    pub observer: Vec<ProviderSpec>,
+    /// Fully resolved reflector provider chain (failover).
+    pub reflector: Vec<ProviderSpec>,
+    /// Fully resolved pulse provider chain (failover).
+    pub pulse: Vec<ProviderSpec>,
+    /// Fully resolved embedding provider (None if not configured).
+    pub embedding: Option<ProviderSpec>,
+    /// Path to the workspace root directory.
+    pub workspace_dir: PathBuf,
+    /// Request timeout in seconds.
+    pub timeout_secs: u64,
+    /// Maximum tokens for model responses.
+    pub max_tokens: u32,
+    /// Memory subsystem configuration (thresholds only).
+    pub memory: MemoryConfig,
+    /// Whether the pulse system is enabled.
+    pub pulse_enabled: bool,
+    /// WebSocket gateway configuration.
+    pub gateway: GatewayConfig,
+    /// IANA timezone for the agent (e.g. `America/New_York`).
+    pub timezone: chrono_tz::Tz,
+    /// Discord bot configuration (None if `[discord]` section absent or no token).
+    pub discord: Option<DiscordConfig>,
+    /// Telegram bot configuration (None if `[telegram]` section absent or no token).
+    pub telegram: Option<TelegramConfig>,
+    /// Webhook endpoint configuration.
+    pub webhook: WebhookConfig,
+    /// Skills subsystem configuration.
+    pub skills: SkillsConfig,
+    /// Retry configuration for model provider calls.
+    pub retry: RetryConfig,
+    /// Background task configuration.
+    pub background: BackgroundConfig,
+    /// Agent ability gates.
+    pub agent: AgentAbilitiesConfig,
+    /// Idle system configuration.
+    pub idle: IdleConfig,
+    /// Sampling temperature for model completions.
+    pub temperature: Option<f32>,
+    /// Thinking/reasoning configuration for model completions.
+    pub thinking: Option<crate::models::ThinkingConfig>,
+    /// Directory this config was loaded from.
+    pub config_dir: PathBuf,
+}
+
+impl fmt::Debug for Config {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Config")
+            .field("name", &self.name)
+            .field("main", &self.main)
+            .field("observer", &self.observer)
+            .field("reflector", &self.reflector)
+            .field("pulse", &self.pulse)
+            .field("embedding", &self.embedding)
+            .field("workspace_dir", &self.workspace_dir)
+            .field("timeout_secs", &self.timeout_secs)
+            .field("max_tokens", &self.max_tokens)
+            .field("memory", &self.memory)
+            .field("pulse_enabled", &self.pulse_enabled)
+            .field("gateway", &self.gateway)
+            .field("timezone", &self.timezone)
+            .field("discord", &self.discord.as_ref().map(|_| "[configured]"))
+            .field("telegram", &self.telegram.as_ref().map(|_| "[configured]"))
+            .field("webhook", &self.webhook)
+            .field("skills", &self.skills)
+            .field("retry", &self.retry)
+            .field("background", &self.background)
+            .field("agent", &self.agent)
+            .field("idle", &self.idle)
+            .field("temperature", &self.temperature)
+            .field("thinking", &self.thinking)
+            .field("config_dir", &self.config_dir)
+            .finish()
     }
 }
 
