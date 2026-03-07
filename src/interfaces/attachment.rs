@@ -1,12 +1,44 @@
 //! Attachment downloading and metadata formatting for channel messages.
 //!
 //! Downloads attachments to the workspace inbox directory and formats metadata
-//! lines for the agent.
+//! lines for the agent. Supported image formats are base64-encoded for inline
+//! delivery to the model.
 
 use std::path::{Path, PathBuf};
 
+use base64::Engine;
+
+use crate::models::ImageData;
+
 /// Maximum attachment size in bytes (25 MB — Discord's own limit).
 const MAX_ATTACHMENT_SIZE: u32 = 25 * 1024 * 1024;
+
+/// Images larger than 20 MB are saved but not sent inline to the model.
+pub const MAX_IMAGE_INLINE_SIZE: u32 = 20 * 1024 * 1024;
+
+/// MIME types that can be sent inline to the model as images.
+const SUPPORTED_IMAGE_TYPES: &[&str] = &["image/jpeg", "image/png", "image/gif", "image/webp"];
+
+/// Check if a content type is a supported image format for inline encoding.
+#[must_use]
+pub fn is_supported_image(content_type: Option<&str>) -> bool {
+    content_type.is_some_and(|ct| SUPPORTED_IMAGE_TYPES.contains(&ct))
+}
+
+/// Base64-encode an image file from disk.
+///
+/// # Errors
+/// Returns an error if the file cannot be read.
+pub async fn encode_image_from_file(path: &Path, media_type: &str) -> Result<ImageData, String> {
+    let bytes = tokio::fs::read(path)
+        .await
+        .map_err(|e| format!("failed to read image {}: {e}", path.display()))?;
+    let data = base64::engine::general_purpose::STANDARD.encode(&bytes);
+    Ok(ImageData {
+        media_type: media_type.to_string(),
+        data,
+    })
+}
 
 /// Metadata about an attachment from an incoming message.
 pub struct AttachmentInfo {
@@ -176,5 +208,44 @@ mod tests {
             err.contains("exceeds 25 MB"),
             "error should mention size limit: {err}"
         );
+    }
+
+    #[test]
+    fn is_supported_image_types() {
+        assert!(
+            is_supported_image(Some("image/jpeg")),
+            "jpeg should be supported"
+        );
+        assert!(
+            is_supported_image(Some("image/png")),
+            "png should be supported"
+        );
+        assert!(
+            is_supported_image(Some("image/gif")),
+            "gif should be supported"
+        );
+        assert!(
+            is_supported_image(Some("image/webp")),
+            "webp should be supported"
+        );
+        assert!(
+            !is_supported_image(Some("application/pdf")),
+            "pdf should not be supported"
+        );
+        assert!(
+            !is_supported_image(None),
+            "None content type should not be supported"
+        );
+    }
+
+    #[tokio::test]
+    async fn encode_image_from_file_success() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test.jpg");
+        tokio::fs::write(&path, b"fake image bytes").await.unwrap();
+
+        let img = encode_image_from_file(&path, "image/jpeg").await.unwrap();
+        assert_eq!(img.media_type, "image/jpeg", "media type should match");
+        assert!(!img.data.is_empty(), "base64 data should be non-empty");
     }
 }

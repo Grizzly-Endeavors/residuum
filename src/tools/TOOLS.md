@@ -9,7 +9,7 @@ This document is the source of truth for every tool exposed to the LLM. It must 
 **Source:** `read.rs` · `ReadTool`
 
 **Description sent to LLM:**
-> Read the contents of a file. Each output line is tagged with a content hash (e.g. `1:f1\thello`) for use with edit_file. By default returns the first 2000 lines; use offset/limit for larger files. Lines longer than 2000 characters are truncated.
+> Read the contents of a file. Each output line is tagged with a content hash (e.g. `1:f1\thello`) for use with edit_file. By default returns the first 2000 lines; use offset/limit for larger files. Lines longer than 2000 characters are truncated. Image files (JPEG, PNG, GIF, WebP) are returned as inline images for visual inspection instead of raw bytes.
 
 ### Input
 
@@ -21,11 +21,13 @@ This document is the source of truth for every tool exposed to the LLM. It must 
 
 ### Output
 
-On success: lines formatted as `{line_num:>4}:{hash}\t{content}` joined by newlines, optionally preceded by warning lines.
+**Text files:** lines formatted as `{line_num:>4}:{hash}\t{content}` joined by newlines, optionally preceded by warning lines.
 
 Warnings prepended when:
 - File exceeds 2000 lines and no explicit `limit`/`offset` was given
 - Any lines exceed 2000 characters (they are truncated with `... (truncated)`)
+
+**Image files** (JPEG, PNG, GIF, WebP): returns a text summary (`[Image: {filename}, {size} KB]`) plus inline base64-encoded image data via `ToolResult.images`. The `offset`/`limit` parameters are ignored for images.
 
 On error (returned as `is_error = true`):
 - File does not exist or cannot be read

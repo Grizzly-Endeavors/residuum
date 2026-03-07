@@ -17,13 +17,15 @@ use tokio::sync::mpsc;
 use crate::gateway::server::{ReloadSignal, ServerCommand};
 use crate::inbox;
 use crate::interfaces::attachment::{
-    AttachmentInfo, download_attachment, format_attachment_line, format_failed_attachment_line,
+    AttachmentInfo, MAX_IMAGE_INLINE_SIZE, download_attachment, encode_image_from_file,
+    format_attachment_line, format_failed_attachment_line, is_supported_image,
 };
 use crate::interfaces::cli::commands::{
     CommandContext, CommandSideEffect, all_commands, execute_command,
 };
 use crate::interfaces::presence::{load_presence, to_activity, to_online_status};
 use crate::interfaces::types::{InboundMessage, MessageOrigin, RoutedMessage};
+use crate::models::ImageData;
 
 use super::reply::DiscordReplyHandle;
 
@@ -77,62 +79,15 @@ impl EventHandler for DiscordHandler {
             return;
         }
 
-        // Build content with attachment metadata
-        let mut content = msg.content.clone();
-        for attachment in &msg.attachments {
-            let info = AttachmentInfo {
-                filename: attachment.filename.clone(),
-                url: attachment.url.clone(),
-                size: attachment.size,
-                content_type: attachment.content_type.clone(),
-            };
-
-            match download_attachment(&info, &self.inbox_dir).await {
-                Ok(saved) => {
-                    let line = format_attachment_line(&saved, &info);
-                    content.push('\n');
-                    content.push_str(&line);
-
-                    // Create companion inbox item for the attachment
-                    let saved_name = saved
-                        .local_path
-                        .file_name()
-                        .unwrap_or_default()
-                        .to_string_lossy()
-                        .to_string();
-                    let content_type_str = info.content_type.as_deref().unwrap_or("unknown");
-                    let companion = inbox::InboxItem {
-                        title: format!("Discord attachment: {}", info.filename),
-                        body: format!(
-                            "From: {}\nSize: {} bytes\nContent-Type: {content_type_str}",
-                            msg.author.name, info.size,
-                        ),
-                        source: "discord".to_string(),
-                        timestamp: crate::time::now_local(self.tz),
-                        read: false,
-                        attachments: vec![PathBuf::from("inbox").join(&saved_name)],
-                    };
-                    let filename = inbox::generate_filename(&companion.title, self.tz);
-                    if let Err(e) = inbox::save_item(&self.inbox_dir, &filename, &companion).await {
-                        tracing::warn!(
-                            filename = %info.filename,
-                            error = %e,
-                            "failed to create companion inbox item for discord attachment"
-                        );
-                    }
-                }
-                Err(reason) => {
-                    tracing::warn!(
-                        filename = %info.filename,
-                        error = %reason,
-                        "failed to download discord attachment"
-                    );
-                    let line = format_failed_attachment_line(&info, &reason);
-                    content.push('\n');
-                    content.push_str(&line);
-                }
-            }
-        }
+        // Build content with attachment metadata and collect inline images
+        let (content, images) = process_discord_attachments(
+            &msg.attachments,
+            msg.content.clone(),
+            &msg.author.name,
+            &self.inbox_dir,
+            self.tz,
+        )
+        .await;
 
         let origin = MessageOrigin {
             interface: "discord".to_string(),
@@ -145,6 +100,7 @@ impl EventHandler for DiscordHandler {
             content,
             origin,
             timestamp: chrono::Utc::now(),
+            images,
         };
 
         let reply = Arc::new(DiscordReplyHandle::new(
@@ -236,6 +192,99 @@ impl EventHandler for DiscordHandler {
             );
         }
     }
+}
+
+/// Download and process all Discord attachments, encoding supported images inline.
+async fn process_discord_attachments(
+    attachments: &[serenity::model::channel::Attachment],
+    mut content: String,
+    author_name: &str,
+    inbox_dir: &std::path::Path,
+    tz: chrono_tz::Tz,
+) -> (String, Vec<ImageData>) {
+    let mut images: Vec<ImageData> = Vec::new();
+
+    for attachment in attachments {
+        let info = AttachmentInfo {
+            filename: attachment.filename.clone(),
+            url: attachment.url.clone(),
+            size: attachment.size,
+            content_type: attachment.content_type.clone(),
+        };
+
+        match download_attachment(&info, inbox_dir).await {
+            Ok(saved) => {
+                let line = format_attachment_line(&saved, &info);
+                content.push('\n');
+                content.push_str(&line);
+
+                // Encode supported images inline for the model
+                if is_supported_image(info.content_type.as_deref())
+                    && info.size <= MAX_IMAGE_INLINE_SIZE
+                {
+                    match encode_image_from_file(
+                        &saved.local_path,
+                        info.content_type.as_deref().unwrap_or("image/jpeg"),
+                    )
+                    .await
+                    {
+                        Ok(img) => images.push(img),
+                        Err(e) => tracing::warn!(
+                            filename = %info.filename,
+                            error = %e,
+                            "failed to encode discord image for inline delivery"
+                        ),
+                    }
+                } else if is_supported_image(info.content_type.as_deref()) {
+                    tracing::warn!(
+                        filename = %info.filename,
+                        size = info.size,
+                        "discord image exceeds inline size limit, saved but not sent to model"
+                    );
+                }
+
+                // Create companion inbox item for the attachment
+                let saved_name = saved
+                    .local_path
+                    .file_name()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .to_string();
+                let content_type_str = info.content_type.as_deref().unwrap_or("unknown");
+                let companion = inbox::InboxItem {
+                    title: format!("Discord attachment: {}", info.filename),
+                    body: format!(
+                        "From: {author_name}\nSize: {} bytes\nContent-Type: {content_type_str}",
+                        info.size,
+                    ),
+                    source: "discord".to_string(),
+                    timestamp: crate::time::now_local(tz),
+                    read: false,
+                    attachments: vec![PathBuf::from("inbox").join(&saved_name)],
+                };
+                let filename = inbox::generate_filename(&companion.title, tz);
+                if let Err(e) = inbox::save_item(inbox_dir, &filename, &companion).await {
+                    tracing::warn!(
+                        filename = %info.filename,
+                        error = %e,
+                        "failed to create companion inbox item for discord attachment"
+                    );
+                }
+            }
+            Err(reason) => {
+                tracing::warn!(
+                    filename = %info.filename,
+                    error = %reason,
+                    "failed to download discord attachment"
+                );
+                let line = format_failed_attachment_line(&info, &reason);
+                content.push('\n');
+                content.push_str(&line);
+            }
+        }
+    }
+
+    (content, images)
 }
 
 /// Register global slash commands with Discord from the shared command registry.

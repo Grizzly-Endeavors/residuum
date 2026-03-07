@@ -66,6 +66,15 @@ impl ModelError {
     }
 }
 
+/// Base64-encoded image data for multimodal messages.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ImageData {
+    /// MIME type (e.g. `"image/jpeg"`, `"image/png"`).
+    pub media_type: String,
+    /// Base64-encoded image bytes.
+    pub data: String,
+}
+
 /// A message in the conversation.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Message {
@@ -79,6 +88,9 @@ pub struct Message {
     /// The ID of the tool call this message is a result for.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_call_id: Option<String>,
+    /// Inline images attached to the message.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub images: Option<Vec<ImageData>>,
 }
 
 impl Message {
@@ -90,6 +102,23 @@ impl Message {
             content: content.into(),
             tool_calls: None,
             tool_call_id: None,
+            images: None,
+        }
+    }
+
+    /// Create a user message with inline images.
+    #[must_use]
+    pub fn user_with_images(content: impl Into<String>, images: Vec<ImageData>) -> Self {
+        Self {
+            role: Role::User,
+            content: content.into(),
+            tool_calls: None,
+            tool_call_id: None,
+            images: if images.is_empty() {
+                None
+            } else {
+                Some(images)
+            },
         }
     }
 
@@ -101,6 +130,7 @@ impl Message {
             content: content.into(),
             tool_calls: None,
             tool_call_id: None,
+            images: None,
         }
     }
 
@@ -112,6 +142,7 @@ impl Message {
             content: content.into(),
             tool_calls,
             tool_call_id: None,
+            images: None,
         }
     }
 
@@ -123,6 +154,27 @@ impl Message {
             content: content.into(),
             tool_calls: None,
             tool_call_id: Some(tool_call_id.into()),
+            images: None,
+        }
+    }
+
+    /// Create a tool result message with inline images.
+    #[must_use]
+    pub fn tool_with_images(
+        content: impl Into<String>,
+        tool_call_id: impl Into<String>,
+        images: Vec<ImageData>,
+    ) -> Self {
+        Self {
+            role: Role::Tool,
+            content: content.into(),
+            tool_calls: None,
+            tool_call_id: Some(tool_call_id.into()),
+            images: if images.is_empty() {
+                None
+            } else {
+                Some(images)
+            },
         }
     }
 }
@@ -429,6 +481,90 @@ mod tests {
         let owned = String::from("owned content");
         let msg = Message::user(owned);
         assert_eq!(msg.content, "owned content", "should accept String");
+    }
+
+    #[test]
+    fn message_user_with_images_constructor() {
+        let images = vec![ImageData {
+            media_type: "image/jpeg".to_string(),
+            data: "base64data".to_string(),
+        }];
+        let msg = Message::user_with_images("describe this", images);
+        assert_eq!(msg.role, Role::User, "role should be User");
+        assert!(msg.images.is_some(), "images should be present");
+        assert_eq!(
+            msg.images.as_ref().unwrap().len(),
+            1,
+            "should have one image"
+        );
+    }
+
+    #[test]
+    fn message_user_with_empty_images_is_none() {
+        let msg = Message::user_with_images("no images", vec![]);
+        assert!(
+            msg.images.is_none(),
+            "empty images vec should be stored as None"
+        );
+    }
+
+    #[test]
+    fn message_tool_with_images_constructor() {
+        let images = vec![ImageData {
+            media_type: "image/png".to_string(),
+            data: "pngdata".to_string(),
+        }];
+        let msg = Message::tool_with_images("image content", "call_1", images);
+        assert_eq!(msg.role, Role::Tool, "role should be Tool");
+        assert!(msg.images.is_some(), "images should be present");
+        assert_eq!(
+            msg.tool_call_id,
+            Some("call_1".to_string()),
+            "tool_call_id should be set"
+        );
+    }
+
+    #[test]
+    fn message_serde_without_images_backward_compat() {
+        // Simulate old JSON without images field
+        let json = r#"{"role":"user","content":"hello"}"#;
+        let msg: Message = serde_json::from_str(json).unwrap();
+        assert_eq!(msg.content, "hello");
+        assert!(
+            msg.images.is_none(),
+            "missing images should deserialize as None"
+        );
+    }
+
+    #[test]
+    fn message_serde_with_images_roundtrip() {
+        let images = vec![ImageData {
+            media_type: "image/jpeg".to_string(),
+            data: "abc123".to_string(),
+        }];
+        let msg = Message::user_with_images("look at this", images);
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(
+            json.contains("images"),
+            "serialized JSON should contain images"
+        );
+
+        let restored: Message = serde_json::from_str(&json).unwrap();
+        assert!(restored.images.is_some(), "images should roundtrip");
+        assert_eq!(
+            restored.images.unwrap().first().unwrap().media_type,
+            "image/jpeg"
+        );
+    }
+
+    #[test]
+    fn message_serde_without_images_omits_field() {
+        let msg = Message::user("hello world");
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(
+            !json.contains("\"images\""),
+            "None images field should be omitted from JSON, got: {json}"
+        );
     }
 
     #[test]

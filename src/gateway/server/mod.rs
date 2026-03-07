@@ -925,6 +925,7 @@ async fn handle_inbound_message(
             Some(&origin),
             &prompt_ctx,
             &mut interrupt_rx,
+            &routed.message.images,
         ));
         loop {
             tokio::select! {
@@ -1404,6 +1405,7 @@ mod tests {
                             sender_id: "t1".to_string(),
                         },
                         timestamp: chrono::Utc::now(),
+                        images: vec![],
                     },
                     reply: std::sync::Arc::new(crate::interfaces::websocket::WsReplyHandle::new(
                         core.broadcast_tx.clone(),

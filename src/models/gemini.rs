@@ -86,6 +86,9 @@ impl GeminiClient {
                 GeminiPart::FunctionResponse { .. } => {
                     tracing::warn!("unexpected functionResponse part in Gemini model output");
                 }
+                GeminiPart::InlineData { .. } => {
+                    tracing::warn!("unexpected inlineData part in Gemini model output");
+                }
             }
         }
 
@@ -129,12 +132,38 @@ impl GeminiClient {
                     system_parts.push(&msg.content);
                 }
                 Role::User => {
-                    contents.push(GeminiContent {
-                        role: "user".to_string(),
-                        parts: vec![GeminiPart::Text {
-                            text: msg.content.clone(),
-                        }],
-                    });
+                    let has_images = msg.images.as_ref().is_some_and(|imgs| !imgs.is_empty());
+
+                    if has_images {
+                        let mut parts: Vec<GeminiPart> = Vec::new();
+
+                        if !msg.content.is_empty() {
+                            parts.push(GeminiPart::Text {
+                                text: msg.content.clone(),
+                            });
+                        }
+
+                        for img in msg.images.as_ref().unwrap_or(&Vec::new()) {
+                            parts.push(GeminiPart::InlineData {
+                                inline_data: GeminiInlineData {
+                                    mime_type: img.media_type.clone(),
+                                    data: img.data.clone(),
+                                },
+                            });
+                        }
+
+                        contents.push(GeminiContent {
+                            role: "user".to_string(),
+                            parts,
+                        });
+                    } else {
+                        contents.push(GeminiContent {
+                            role: "user".to_string(),
+                            parts: vec![GeminiPart::Text {
+                                text: msg.content.clone(),
+                            }],
+                        });
+                    }
                 }
                 Role::Assistant => {
                     let mut parts: Vec<GeminiPart> = Vec::new();
@@ -350,6 +379,16 @@ enum GeminiPart {
         #[serde(rename = "functionResponse")]
         function_response: GeminiFunctionResponse,
     },
+    InlineData {
+        #[serde(rename = "inlineData")]
+        inline_data: GeminiInlineData,
+    },
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+struct GeminiInlineData {
+    mime_type: String,
+    data: String,
 }
 
 #[derive(Serialize, Deserialize, Clone)]

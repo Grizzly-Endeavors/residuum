@@ -252,6 +252,7 @@ impl Agent {
         origin: Option<&MessageOrigin>,
         prompt_ctx: &PromptContext<'_>,
         interrupt_rx: &mut tokio::sync::mpsc::Receiver<interrupt::Interrupt>,
+        images: &[crate::models::ImageData],
     ) -> Result<Vec<String>, ResiduumError> {
         let now = crate::time::now_local(self.tz);
         let unread = crate::inbox::count_unread(&self.inbox_dir);
@@ -263,7 +264,12 @@ impl Agent {
         };
         self.last_user_message_at = Some(now);
 
-        self.recent_messages.push(Message::user(user_input));
+        if images.is_empty() {
+            self.recent_messages.push(Message::user(user_input));
+        } else {
+            self.recent_messages
+                .push(Message::user_with_images(user_input, images.to_vec()));
+        }
 
         let memory_ctx = MemoryContext {
             observations: self.observations.as_deref(),
@@ -483,7 +489,7 @@ mod tests {
         let reply = NullReplyHandle;
         let mut irx = interrupt::dead_interrupt_rx();
         let result = agent
-            .process_message("hi", &reply, None, &PromptContext::none(), &mut irx)
+            .process_message("hi", &reply, None, &PromptContext::none(), &mut irx, &[])
             .await
             .unwrap();
         assert_eq!(result, vec!["hello there"], "should return model text");
@@ -531,6 +537,7 @@ mod tests {
                 None,
                 &PromptContext::none(),
                 &mut irx,
+                &[],
             )
             .await
             .unwrap();
@@ -584,6 +591,7 @@ mod tests {
                 None,
                 &PromptContext::none(),
                 &mut irx,
+                &[],
             )
             .await
             .unwrap();
@@ -638,6 +646,7 @@ mod tests {
                 None,
                 &PromptContext::none(),
                 &mut irx,
+                &[],
             )
             .await;
         assert!(result.is_err(), "should error after max iterations");
@@ -980,6 +989,7 @@ mod tests {
                 sender_id: "t1".to_string(),
             },
             timestamp: chrono::Utc::now(),
+            images: vec![],
         }
     }
 
@@ -1039,6 +1049,7 @@ mod tests {
                 None,
                 &PromptContext::none(),
                 &mut interrupt_rx,
+                &[],
             )
             .await
             .unwrap();
@@ -1110,6 +1121,7 @@ mod tests {
                 None,
                 &PromptContext::none(),
                 &mut interrupt_rx,
+                &[],
             )
             .await
             .unwrap();
@@ -1169,6 +1181,7 @@ mod tests {
                 None,
                 &PromptContext::none(),
                 &mut interrupt_rx,
+                &[],
             )
             .await
             .unwrap();
@@ -1202,7 +1215,7 @@ mod tests {
         let reply = NullReplyHandle;
         let mut irx = interrupt::dead_interrupt_rx();
         let result = agent
-            .process_message("hello", &reply, None, &PromptContext::none(), &mut irx)
+            .process_message("hello", &reply, None, &PromptContext::none(), &mut irx, &[])
             .await;
         assert!(result.is_err(), "empty response should return error");
 
@@ -1279,6 +1292,7 @@ mod tests {
                 None,
                 &PromptContext::none(),
                 &mut interrupt_rx,
+                &[],
             )
             .await
             .unwrap();

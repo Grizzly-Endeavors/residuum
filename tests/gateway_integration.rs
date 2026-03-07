@@ -143,6 +143,7 @@ mod gateway_integration {
                         None,
                         &PromptContext::none(),
                         &mut irx,
+                        &[],
                     )
                     .await
                 {

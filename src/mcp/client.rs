@@ -151,7 +151,11 @@ impl McpClient {
         let is_error = result.is_error.unwrap_or(false);
         let output = extract_text_content(&result.content);
 
-        Ok(ToolResult { output, is_error })
+        Ok(ToolResult {
+            output,
+            is_error,
+            images: vec![],
+        })
     }
 
     /// Gracefully shut down the MCP server connection.

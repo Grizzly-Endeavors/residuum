@@ -6,6 +6,8 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use tokio::task::JoinHandle;
 
+use crate::models::ImageData;
+
 /// Where a message originated from.
 #[derive(Debug, Clone)]
 pub struct MessageOrigin {
@@ -28,6 +30,8 @@ pub struct InboundMessage {
     pub origin: MessageOrigin,
     /// When the message was received.
     pub timestamp: DateTime<Utc>,
+    /// Inline images attached to the message.
+    pub images: Vec<ImageData>,
 }
 
 /// Trait for sending responses back to the originating interface.
