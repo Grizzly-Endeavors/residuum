@@ -1,12 +1,15 @@
 //! File reading tool for the agent.
 
+use std::path::Path;
+
 use async_trait::async_trait;
+use base64::Engine;
 use serde_json::Value;
 
 use super::file_tracker::SharedFileTracker;
 use super::line_hash::line_hash;
 use super::{Tool, ToolError, ToolResult};
-use crate::models::ToolDefinition;
+use crate::models::{ImageData, ToolDefinition};
 
 /// Hard cap on file size (10 MB safety net).
 const MAX_READ_BYTES: u64 = 10 * 1024 * 1024;
@@ -28,6 +31,34 @@ impl ReadTool {
     pub fn new(tracker: SharedFileTracker) -> Self {
         Self { tracker }
     }
+
+    /// Read an image file, base64-encode it, and return as a tool result with inline image data.
+    #[expect(clippy::cast_precision_loss, reason = "file size in KB display only")]
+    async fn read_image(&self, path: &str, size: u64, mime: &str) -> Result<ToolResult, ToolError> {
+        let bytes = match tokio::fs::read(path).await {
+            Ok(b) => b,
+            Err(e) => return Ok(ToolResult::error(format!("failed to read {path}: {e}"))),
+        };
+
+        let encoded = base64::engine::general_purpose::STANDARD.encode(&bytes);
+        let filename = Path::new(path)
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy();
+
+        let size_kb = size as f64 / 1024.0;
+        let summary = format!("[Image: {filename}, {size_kb:.1} KB]");
+
+        self.tracker.lock().await.record_read(path);
+
+        Ok(ToolResult::success_with_images(
+            summary,
+            vec![ImageData {
+                media_type: mime.to_string(),
+                data: encoded,
+            }],
+        ))
+    }
 }
 
 #[async_trait]
@@ -42,7 +73,9 @@ impl Tool for ReadTool {
             description: "Read the contents of a file. Each output line is tagged with a \
                           content hash (e.g. `1:f1\\thello`) for use with edit_file. \
                           By default returns the first 2000 lines; use offset/limit for larger files. \
-                          Lines longer than 2000 characters are truncated."
+                          Lines longer than 2000 characters are truncated. \
+                          Image files (JPEG, PNG, GIF, WebP) are returned as inline images \
+                          for visual inspection instead of raw bytes."
                 .to_string(),
             parameters: serde_json::json!({
                 "type": "object",
@@ -86,6 +119,11 @@ impl Tool for ReadTool {
                 "file {path} is too large ({} bytes, max {MAX_READ_BYTES})",
                 metadata.len()
             )));
+        }
+
+        // Check if this is a supported image file — return inline image data
+        if let Some(mime) = image_mime_type(Path::new(path)) {
+            return self.read_image(path, metadata.len(), mime).await;
         }
 
         let file_contents = match tokio::fs::read_to_string(path).await {
@@ -170,6 +208,18 @@ impl Tool for ReadTool {
             let header = warnings.join("\n");
             Ok(ToolResult::success(format!("{header}\n\n{body}")))
         }
+    }
+}
+
+/// Return the MIME type for a supported image extension, or `None`.
+fn image_mime_type(path: &Path) -> Option<&'static str> {
+    let ext = path.extension()?.to_str()?.to_ascii_lowercase();
+    match ext.as_str() {
+        "jpg" | "jpeg" => Some("image/jpeg"),
+        "png" => Some("image/png"),
+        "gif" => Some("image/gif"),
+        "webp" => Some("image/webp"),
+        _ => None,
     }
 }
 
@@ -405,5 +455,97 @@ mod tests {
                 .has_been_read(file_path.to_str().unwrap()),
             "tracker should record the read path"
         );
+    }
+
+    #[tokio::test]
+    async fn read_image_file_returns_inline_image() {
+        let dir = tempfile::tempdir().unwrap();
+        let file_path = dir.path().join("photo.jpg");
+        // Write fake JPEG bytes (real image not needed — just testing encoding path)
+        tokio::fs::write(&file_path, b"\xFF\xD8\xFF\xE0fake jpeg data")
+            .await
+            .unwrap();
+
+        let tool = make_tool();
+        let result = tool
+            .execute(serde_json::json!({ "path": file_path.to_str().unwrap() }))
+            .await
+            .unwrap();
+
+        assert!(!result.is_error, "image read should succeed");
+        assert!(
+            result.output.contains("[Image:"),
+            "output should contain image summary: {}",
+            result.output,
+        );
+        assert_eq!(result.images.len(), 1, "should have one inline image");
+        assert_eq!(
+            result.images.first().unwrap().media_type,
+            "image/jpeg",
+            "media type should be image/jpeg"
+        );
+        assert!(
+            !result.images.first().unwrap().data.is_empty(),
+            "base64 data should be non-empty"
+        );
+    }
+
+    #[tokio::test]
+    async fn read_text_file_has_no_images() {
+        let dir = tempfile::tempdir().unwrap();
+        let file_path = dir.path().join("readme.md");
+        tokio::fs::write(&file_path, "# Hello\nworld\n")
+            .await
+            .unwrap();
+
+        let tool = make_tool();
+        let result = tool
+            .execute(serde_json::json!({ "path": file_path.to_str().unwrap() }))
+            .await
+            .unwrap();
+
+        assert!(!result.is_error, "text read should succeed");
+        assert!(
+            result.images.is_empty(),
+            "text files should not return images"
+        );
+    }
+
+    #[tokio::test]
+    async fn read_image_records_in_tracker() {
+        let dir = tempfile::tempdir().unwrap();
+        let file_path = dir.path().join("test.png");
+        tokio::fs::write(&file_path, b"\x89PNG\r\n\x1A\nfake png")
+            .await
+            .unwrap();
+
+        let tracker = FileTracker::new_shared();
+        let tool = ReadTool::new(std::sync::Arc::clone(&tracker));
+
+        tool.execute(serde_json::json!({ "path": file_path.to_str().unwrap() }))
+            .await
+            .unwrap();
+
+        assert!(
+            tracker
+                .lock()
+                .await
+                .has_been_read(file_path.to_str().unwrap()),
+            "tracker should record image file read"
+        );
+    }
+
+    #[test]
+    fn image_mime_type_detection() {
+        assert_eq!(image_mime_type(Path::new("photo.jpg")), Some("image/jpeg"),);
+        assert_eq!(image_mime_type(Path::new("photo.JPEG")), Some("image/jpeg"),);
+        assert_eq!(image_mime_type(Path::new("icon.png")), Some("image/png"),);
+        assert_eq!(image_mime_type(Path::new("anim.gif")), Some("image/gif"),);
+        assert_eq!(
+            image_mime_type(Path::new("modern.webp")),
+            Some("image/webp"),
+        );
+        assert_eq!(image_mime_type(Path::new("document.txt")), None,);
+        assert_eq!(image_mime_type(Path::new("noext")), None,);
     }
 }

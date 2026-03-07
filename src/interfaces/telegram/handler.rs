@@ -12,10 +12,14 @@ use tokio::sync::mpsc;
 
 use crate::gateway::server::{ReloadSignal, ServerCommand};
 use crate::inbox;
+use crate::interfaces::attachment::{
+    MAX_IMAGE_INLINE_SIZE, encode_image_from_file, is_supported_image,
+};
 use crate::interfaces::cli::commands::{
     CommandContext, CommandSideEffect, all_commands, execute_command,
 };
 use crate::interfaces::types::{InboundMessage, MessageOrigin, RoutedMessage};
+use crate::models::ImageData;
 
 use super::reply::TelegramReplyHandle;
 
@@ -175,10 +179,20 @@ async fn dispatch_message(
         return;
     }
 
-    // Build content with attachment metadata
+    // Build content with attachment metadata and collect inline images
     let mut content = msg.text().unwrap_or("").to_string();
+    let mut images: Vec<ImageData> = Vec::new();
 
-    process_attachments(bot, msg, &mut content, ctx.inbox_dir, from, ctx.tz).await;
+    process_attachments(
+        bot,
+        msg,
+        &mut content,
+        &mut images,
+        ctx.inbox_dir,
+        from,
+        ctx.tz,
+    )
+    .await;
 
     // Skip empty messages (no text, no attachments processed)
     if content.is_empty() {
@@ -198,6 +212,7 @@ async fn dispatch_message(
         content,
         origin,
         timestamp: chrono::Utc::now(),
+        images,
     };
 
     let reply = Arc::new(TelegramReplyHandle::new(bot.clone(), chat_id));
@@ -289,6 +304,7 @@ async fn process_attachments(
     bot: &Bot,
     msg: &teloxide::types::Message,
     content: &mut String,
+    images: &mut Vec<ImageData>,
     inbox_dir: &Path,
     from: &teloxide::types::User,
     tz: chrono_tz::Tz,
@@ -301,7 +317,7 @@ async fn process_attachments(
             size: doc.file.size,
             content_type: doc.mime_type.as_ref().map(ToString::to_string),
         };
-        handle_attachment(bot, content, &meta, inbox_dir, from, tz).await;
+        handle_attachment(bot, content, images, &meta, inbox_dir, from, tz).await;
     }
 
     // Handle photo attachments (use largest size)
@@ -314,7 +330,7 @@ async fn process_attachments(
             size: photo.file.size,
             content_type: Some("image/jpeg".to_string()),
         };
-        handle_attachment(bot, content, &meta, inbox_dir, from, tz).await;
+        handle_attachment(bot, content, images, &meta, inbox_dir, from, tz).await;
     }
 
     // Handle audio attachments
@@ -325,7 +341,7 @@ async fn process_attachments(
             size: audio.file.size,
             content_type: audio.mime_type.as_ref().map(ToString::to_string),
         };
-        handle_attachment(bot, content, &meta, inbox_dir, from, tz).await;
+        handle_attachment(bot, content, images, &meta, inbox_dir, from, tz).await;
     }
 
     // Handle voice attachments
@@ -336,7 +352,7 @@ async fn process_attachments(
             size: voice.file.size,
             content_type: voice.mime_type.as_ref().map(ToString::to_string),
         };
-        handle_attachment(bot, content, &meta, inbox_dir, from, tz).await;
+        handle_attachment(bot, content, images, &meta, inbox_dir, from, tz).await;
     }
 
     // Handle video attachments
@@ -347,7 +363,7 @@ async fn process_attachments(
             size: video.file.size,
             content_type: video.mime_type.as_ref().map(ToString::to_string),
         };
-        handle_attachment(bot, content, &meta, inbox_dir, from, tz).await;
+        handle_attachment(bot, content, images, &meta, inbox_dir, from, tz).await;
     }
 }
 
@@ -355,6 +371,7 @@ async fn process_attachments(
 async fn handle_attachment(
     bot: &Bot,
     content: &mut String,
+    images: &mut Vec<ImageData>,
     meta: &AttachmentMeta<'_>,
     inbox_dir: &Path,
     from: &teloxide::types::User,
@@ -402,6 +419,31 @@ async fn handle_attachment(
             let line = format_attachment_line(&saved, &info);
             content.push('\n');
             content.push_str(&line);
+
+            // Encode supported images inline for the model
+            if is_supported_image(info.content_type.as_deref())
+                && info.size <= MAX_IMAGE_INLINE_SIZE
+            {
+                match encode_image_from_file(
+                    &saved.local_path,
+                    info.content_type.as_deref().unwrap_or("image/jpeg"),
+                )
+                .await
+                {
+                    Ok(img) => images.push(img),
+                    Err(e) => tracing::warn!(
+                        filename = %filename,
+                        error = %e,
+                        "failed to encode telegram image for inline delivery"
+                    ),
+                }
+            } else if is_supported_image(info.content_type.as_deref()) {
+                tracing::warn!(
+                    filename = %filename,
+                    size = info.size,
+                    "telegram image exceeds inline size limit, saved but not sent to model"
+                );
+            }
 
             // Create companion inbox item
             let saved_name = saved

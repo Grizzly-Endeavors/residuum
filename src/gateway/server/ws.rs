@@ -96,6 +96,7 @@ async fn handle_client_message(msg: ClientMessage, state: &GatewayState) -> bool
                 content,
                 origin,
                 timestamp: chrono::Utc::now(),
+                images: vec![],
             };
             let reply = Arc::new(WsReplyHandle::new(state.broadcast_tx.clone(), id));
             let routed = RoutedMessage {

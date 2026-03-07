@@ -8,8 +8,8 @@ use tracing::{debug, info};
 use super::http::{SharedHttpClient, map_request_error, warn_if_insecure_remote};
 use super::retry::{RetryConfig, with_retry};
 use super::{
-    CompletionOptions, Message, ModelError, ModelProvider, ModelResponse, ResponseFormat, Role,
-    ThinkingConfig, ThinkingLevel, ToolCall, ToolDefinition, Usage,
+    CompletionOptions, ImageData, Message, ModelError, ModelProvider, ModelResponse,
+    ResponseFormat, Role, ThinkingConfig, ThinkingLevel, ToolCall, ToolDefinition, Usage,
 };
 
 /// Anthropic Messages API version header value.
@@ -83,9 +83,21 @@ impl AnthropicClient {
                     system_parts.push(&msg.content);
                 }
                 Role::User => {
+                    let content = if has_images(msg.images.as_ref()) {
+                        let mut blocks = Vec::new();
+                        if !msg.content.is_empty() {
+                            blocks.push(AnthropicContentBlock::Text {
+                                text: msg.content.clone(),
+                            });
+                        }
+                        append_image_blocks(&mut blocks, msg.images.as_ref());
+                        AnthropicContent::Blocks(blocks)
+                    } else {
+                        AnthropicContent::Text(msg.content.clone())
+                    };
                     api_messages.push(AnthropicMessage {
                         role: String::from("user"),
-                        content: AnthropicContent::Text(msg.content.clone()),
+                        content,
                     });
                 }
                 Role::Assistant => {
@@ -123,13 +135,14 @@ impl AnthropicClient {
                 }
                 Role::Tool => {
                     let tool_use_id = msg.tool_call_id.clone().unwrap_or_default();
-                    let block = AnthropicContentBlock::ToolResult {
+                    let mut blocks = vec![AnthropicContentBlock::ToolResult {
                         tool_use_id,
                         content: msg.content.clone(),
-                    };
+                    }];
+                    append_image_blocks(&mut blocks, msg.images.as_ref());
                     api_messages.push(AnthropicMessage {
                         role: String::from("user"),
-                        content: AnthropicContent::Blocks(vec![block]),
+                        content: AnthropicContent::Blocks(blocks),
                     });
                 }
             }
@@ -268,8 +281,8 @@ impl AnthropicClient {
                         arguments: input,
                     });
                 }
-                AnthropicContentBlock::ToolResult { .. } => {
-                    // tool_result blocks only appear in requests, not responses
+                AnthropicContentBlock::Image { .. } | AnthropicContentBlock::ToolResult { .. } => {
+                    // image and tool_result blocks only appear in requests, not responses
                 }
             }
         }
@@ -379,6 +392,30 @@ impl ModelProvider for AnthropicClient {
 }
 
 // ---------------------------------------------------------------------------
+// Image helpers
+// ---------------------------------------------------------------------------
+
+/// Returns `true` if the option contains a non-empty image vec.
+fn has_images(images: Option<&Vec<ImageData>>) -> bool {
+    images.is_some_and(|v| !v.is_empty())
+}
+
+/// Append `Image` content blocks for each `ImageData` entry.
+fn append_image_blocks(blocks: &mut Vec<AnthropicContentBlock>, images: Option<&Vec<ImageData>>) {
+    if let Some(imgs) = images {
+        for img in imgs {
+            blocks.push(AnthropicContentBlock::Image {
+                source: AnthropicImageSource {
+                    r#type: String::from("base64"),
+                    media_type: img.media_type.clone(),
+                    data: img.data.clone(),
+                },
+            });
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Anthropic API serde types (private)
 // ---------------------------------------------------------------------------
 
@@ -428,6 +465,9 @@ enum AnthropicContentBlock {
     Thinking {
         thinking: String,
     },
+    Image {
+        source: AnthropicImageSource,
+    },
     ToolUse {
         id: String,
         name: String,
@@ -437,6 +477,13 @@ enum AnthropicContentBlock {
         tool_use_id: String,
         content: String,
     },
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+struct AnthropicImageSource {
+    r#type: String,
+    media_type: String,
+    data: String,
 }
 
 #[derive(Debug, Serialize, Clone)]

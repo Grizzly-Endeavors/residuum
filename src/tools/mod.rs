@@ -29,7 +29,7 @@ use serde_json::Value;
 use thiserror::Error;
 use tokio::sync::RwLock;
 
-use crate::models::ToolDefinition;
+use crate::models::{ImageData, ToolDefinition};
 
 /// Errors from tool execution.
 #[derive(Error, Debug)]
@@ -54,6 +54,8 @@ pub struct ToolResult {
     pub output: String,
     /// Whether the tool execution encountered an error.
     pub is_error: bool,
+    /// Inline images returned by the tool (empty by default).
+    pub images: Vec<ImageData>,
 }
 
 impl ToolResult {
@@ -63,6 +65,17 @@ impl ToolResult {
         Self {
             output: output.into(),
             is_error: false,
+            images: vec![],
+        }
+    }
+
+    /// Create a successful tool result with inline images.
+    #[must_use]
+    pub fn success_with_images(output: impl Into<String>, images: Vec<ImageData>) -> Self {
+        Self {
+            output: output.into(),
+            is_error: false,
+            images,
         }
     }
 
@@ -72,6 +85,7 @@ impl ToolResult {
         Self {
             output: output.into(),
             is_error: true,
+            images: vec![],
         }
     }
 }

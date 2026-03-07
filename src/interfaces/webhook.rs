@@ -71,6 +71,7 @@ pub async fn webhook_handler(
         content,
         origin,
         timestamp: chrono::Utc::now(),
+        images: vec![],
     };
 
     let reply = Arc::new(WebhookReplyHandle);

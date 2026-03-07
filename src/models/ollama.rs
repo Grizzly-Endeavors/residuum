@@ -222,6 +222,8 @@ struct OllamaMessage {
     content: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     tool_calls: Option<Vec<OllamaToolCall>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    images: Option<Vec<String>>,
 }
 
 impl From<&Message> for OllamaMessage {
@@ -240,6 +242,10 @@ impl From<&Message> for OllamaMessage {
                     })
                     .collect()
             }),
+            images: msg
+                .images
+                .as_ref()
+                .map(|imgs| imgs.iter().map(|img| img.data.clone()).collect()),
         }
     }
 }

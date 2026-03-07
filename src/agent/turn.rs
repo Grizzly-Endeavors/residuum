@@ -195,16 +195,24 @@ async fn execute_tool(
         other => other,
     };
 
-    let (output, is_error) = match result {
-        Ok(r) => (r.output, r.is_error),
-        Err(e) => (e.to_string(), true),
+    let (output, is_error, images) = match result {
+        Ok(r) => (r.output, r.is_error, r.images),
+        Err(e) => (e.to_string(), true, vec![]),
     };
 
     reply
         .send_tool_result(&tool_call.id, &tool_call.name, &output, is_error)
         .await;
 
-    recent_messages.push(Message::tool(output, tool_call.id.clone()));
+    if images.is_empty() {
+        recent_messages.push(Message::tool(output, tool_call.id.clone()));
+    } else {
+        recent_messages.push(Message::tool_with_images(
+            output,
+            tool_call.id.clone(),
+            images,
+        ));
+    }
 }
 
 /// Log token usage from a model response at info level.

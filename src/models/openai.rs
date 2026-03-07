@@ -267,10 +267,31 @@ struct OpenAiJsonSchema {
 }
 
 #[derive(Serialize, Deserialize, Clone)]
+#[serde(untagged)]
+enum OpenAiContent {
+    Text(String),
+    Parts(Vec<OpenAiContentPart>),
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+#[serde(tag = "type")]
+enum OpenAiContentPart {
+    #[serde(rename = "text")]
+    Text { text: String },
+    #[serde(rename = "image_url")]
+    ImageUrl { image_url: OpenAiImageUrl },
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+struct OpenAiImageUrl {
+    url: String,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
 struct OpenAiMessage {
     role: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    content: Option<String>,
+    content: Option<OpenAiContent>,
     #[serde(skip_serializing_if = "Option::is_none")]
     tool_calls: Option<Vec<OpenAiToolCall>>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -279,9 +300,34 @@ struct OpenAiMessage {
 
 impl From<&Message> for OpenAiMessage {
     fn from(msg: &Message) -> Self {
+        let has_images = msg.images.as_ref().is_some_and(|imgs| !imgs.is_empty());
+
+        let content = if has_images {
+            let mut parts: Vec<OpenAiContentPart> = Vec::new();
+            if !msg.content.is_empty() {
+                parts.push(OpenAiContentPart::Text {
+                    text: msg.content.clone(),
+                });
+            }
+            if let Some(images) = &msg.images {
+                for img in images {
+                    parts.push(OpenAiContentPart::ImageUrl {
+                        image_url: OpenAiImageUrl {
+                            url: format!("data:{};base64,{}", img.media_type, img.data),
+                        },
+                    });
+                }
+            }
+            Some(OpenAiContent::Parts(parts))
+        } else if msg.content.is_empty() {
+            None
+        } else {
+            Some(OpenAiContent::Text(msg.content.clone()))
+        };
+
         Self {
             role: msg.role.as_str().to_string(),
-            content: (!msg.content.is_empty()).then(|| msg.content.clone()),
+            content,
             tool_calls: msg.tool_calls.as_ref().map(|calls| {
                 calls
                     .iter()
@@ -550,10 +596,12 @@ mod tests {
 
         let openai_msg: OpenAiMessage = (&msg).into();
         assert_eq!(openai_msg.role, "user", "role should map to user");
+        // Content should serialize as a plain string (Text variant)
+        let content_json = serde_json::to_value(&openai_msg.content).unwrap();
         assert_eq!(
-            openai_msg.content,
-            Some("Hello".to_string()),
-            "content should be preserved"
+            content_json,
+            serde_json::json!("Hello"),
+            "content should be preserved as plain string"
         );
         assert!(
             openai_msg.tool_calls.is_none(),
@@ -604,9 +652,10 @@ mod tests {
 
         let openai_msg: OpenAiMessage = (&msg).into();
         assert_eq!(openai_msg.role, "tool", "role should map to tool");
+        let content_json = serde_json::to_value(&openai_msg.content).unwrap();
         assert_eq!(
-            openai_msg.content,
-            Some("result output".to_string()),
+            content_json,
+            serde_json::json!("result output"),
             "content should be preserved"
         );
         assert_eq!(
