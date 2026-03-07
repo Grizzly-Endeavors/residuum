@@ -7,7 +7,7 @@ use crate::agent::context::{
 };
 use crate::agent::interrupt::dead_interrupt_rx;
 use crate::agent::recent_messages::RecentMessages;
-use crate::agent::turn::execute_turn;
+use crate::agent::turn::{TurnResources, execute_turn};
 use crate::interfaces::null::NullReplyHandle;
 use crate::mcp::SharedMcpRegistry;
 use crate::models::{CompletionOptions, Message, ModelProvider};
@@ -238,13 +238,17 @@ pub(crate) async fn execute_subagent(
         subagents: SubagentsContext::none(),
     };
 
+    let turn_resources = TurnResources {
+        provider: &*resources.provider,
+        tools: &resources.tools,
+        tool_filter: &resources.tool_filter,
+        mcp_registry: &resources.mcp_registry,
+        identity: &resources.identity,
+        options: &resources.options,
+    };
+
     let mut texts: Vec<String> = execute_turn(
-        &*resources.provider,
-        &resources.tools,
-        &resources.tool_filter,
-        &resources.mcp_registry,
-        &resources.identity,
-        &resources.options,
+        &turn_resources,
         &memory_ctx,
         &prompt_ctx,
         &mut recent_messages,
@@ -306,14 +310,18 @@ async fn ensure_project_deactivated(
          the work you did."
     )));
 
+    let turn_resources = TurnResources {
+        provider: &*resources.provider,
+        tools: &resources.tools,
+        tool_filter: &resources.tool_filter,
+        mcp_registry: &resources.mcp_registry,
+        identity: &resources.identity,
+        options: &resources.options,
+    };
+
     let mut deactivation_interrupt_rx = dead_interrupt_rx();
     if let Err(err) = execute_turn(
-        &*resources.provider,
-        &resources.tools,
-        &resources.tool_filter,
-        &resources.mcp_registry,
-        &resources.identity,
-        &resources.options,
+        &turn_resources,
         memory_ctx,
         prompt_ctx,
         recent_messages,

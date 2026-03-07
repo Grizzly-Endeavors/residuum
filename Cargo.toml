@@ -110,6 +110,9 @@ dbg_macro = "deny"
 # --- Controlled exit points (only main.rs may call process::exit) ---
 exit = "deny"
 
+# --- Code complexity ---
+too_many_lines = "deny"
+
 # --- Documentation and API discipline ---
 missing_errors_doc = "deny"
 missing_panics_doc = "deny"

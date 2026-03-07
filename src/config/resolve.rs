@@ -13,8 +13,8 @@ use super::bootstrap::default_workspace_dir;
 use super::constants::{DEFAULT_IDLE_TIMEOUT_MINUTES, DEFAULT_MAX_TOKENS, DEFAULT_TIMEOUT_SECS};
 use super::deserialize::{
     AgentConfigFile, BackgroundConfigFile, BackgroundModelsFile, ConfigFile, DiscordConfigFile,
-    GatewayConfigFile, ModelStringOrList, ProviderEntryFile, ProvidersFile, SearchConfigFile,
-    SkillsConfigFile, TelegramConfigFile, WebhookConfigFile,
+    GatewayConfigFile, MemoryConfigFile, ModelStringOrList, ModelsConfigFile, ProviderEntryFile,
+    ProvidersFile, SearchConfigFile, SkillsConfigFile, TelegramConfigFile, WebhookConfigFile,
 };
 use super::provider::{ModelSpec, ProviderKind, ProviderSpec};
 use super::secrets::SecretStore;
@@ -28,10 +28,6 @@ use super::types::{
 /// # Errors
 /// Returns `ResiduumError::Config` if the model spec cannot be parsed or
 /// the workspace directory cannot be determined.
-#[expect(
-    clippy::too_many_lines,
-    reason = "config resolution is a single sequential pipeline; splitting would obscure the precedence chain"
-)]
 pub(crate) fn from_file_and_env(
     file: Option<&ConfigFile>,
     providers_file: Option<&ProvidersFile>,
@@ -43,16 +39,121 @@ pub(crate) fn from_file_and_env(
     let providers_map = providers_file.and_then(|f| f.providers.as_ref());
     let models = providers_file.and_then(|f| f.models.as_ref());
 
+    let resolved_models = resolve_all_model_specs(models, providers_map, &secrets)?;
+
+    // Workspace dir: env > file > default
+    let workspace_dir = std::env::var("RESIDUUM_WORKSPACE")
+        .ok()
+        .or_else(|| file.and_then(|f| f.workspace_dir.clone()))
+        .map(|s| {
+            let expanded = shellexpand::tilde(&s);
+            PathBuf::from(expanded.as_ref())
+        })
+        .map_or_else(default_workspace_dir, Ok)?;
+
+    let timeout_secs = file
+        .and_then(|f| f.timeout_secs)
+        .unwrap_or(DEFAULT_TIMEOUT_SECS);
+
+    let max_tokens = file
+        .and_then(|f| f.max_tokens)
+        .unwrap_or(DEFAULT_MAX_TOKENS);
+
+    let memory = resolve_memory_config(file.and_then(|f| f.memory.as_ref()));
+
+    let pulse_enabled = file
+        .and_then(|f| f.pulse.as_ref())
+        .and_then(|p| p.enabled)
+        .unwrap_or(true);
+
+    let gateway = resolve_gateway_config(file.and_then(|f| f.gateway.as_ref()));
+    let discord = resolve_discord_config(file.and_then(|f| f.discord.as_ref()), &secrets);
+    let telegram = resolve_telegram_config(file.and_then(|f| f.telegram.as_ref()), &secrets);
+    let webhook = resolve_webhook_config(file.and_then(|f| f.webhook.as_ref()), &secrets);
+    let skills = resolve_skills_config(file.and_then(|f| f.skills.as_ref()), &workspace_dir);
+
+    let agent = resolve_agent_config(file.and_then(|f| f.agent.as_ref()));
+
+    let idle = resolve_idle_config(file, telegram.as_ref(), discord.as_ref())?;
+
+    let background = resolve_background_config(
+        file.and_then(|f| f.background.as_ref()),
+        providers_file
+            .and_then(|pf| pf.background.as_ref())
+            .and_then(|b| b.models.as_ref()),
+        providers_map,
+        &secrets,
+    )?;
+
+    let retry = resolve_retry_config(file);
+
+    let timezone = resolve_timezone(file)?;
+
+    let name = file.and_then(|f| f.name.clone());
+
+    let thinking = file
+        .and_then(|f| f.thinking.as_deref())
+        .map(parse_thinking_config)
+        .transpose()?;
+
+    Ok(Config {
+        name,
+        main: resolved_models.main,
+        observer: resolved_models.observer,
+        reflector: resolved_models.reflector,
+        pulse: resolved_models.pulse,
+        embedding: resolved_models.embedding,
+        workspace_dir,
+        timeout_secs,
+        max_tokens,
+        memory,
+        pulse_enabled,
+        gateway,
+        timezone,
+        discord,
+        telegram,
+        webhook,
+        skills,
+        retry,
+        background,
+        agent,
+        idle,
+        temperature: file.and_then(|f| f.temperature),
+        thinking,
+        config_dir: PathBuf::new(),
+    })
+}
+
+/// Resolved model provider specs for all roles.
+struct ResolvedModels {
+    main: Vec<ProviderSpec>,
+    observer: Vec<ProviderSpec>,
+    reflector: Vec<ProviderSpec>,
+    pulse: Vec<ProviderSpec>,
+    embedding: Option<ProviderSpec>,
+}
+
+/// Resolve all model specs (main, observer, reflector, pulse, embedding) from the
+/// `[models]` config section and environment overrides.
+///
+/// # Errors
+/// Returns `ResiduumError::Config` if any model string is invalid or an unsupported
+/// provider is used for embeddings.
+fn resolve_all_model_specs(
+    models: Option<&ModelsConfigFile>,
+    providers_map: Option<&HashMap<String, ProviderEntryFile>>,
+    secrets: &SecretStore,
+) -> Result<ResolvedModels, ResiduumError> {
     // Resolve main: RESIDUUM_MODEL env > models.main > default
     let main = if let Ok(env_model) = std::env::var("RESIDUUM_MODEL") {
-        vec![resolve_model_string(&env_model, providers_map, &secrets)?]
+        vec![resolve_model_string(&env_model, providers_map, secrets)?]
     } else if let Some(main_spec) = models.and_then(|m| m.main.clone()) {
-        resolve_model_chain(main_spec, providers_map, &secrets)?
+        resolve_model_chain(main_spec, providers_map, secrets)?
     } else {
         vec![resolve_model_string(
             "anthropic/claude-sonnet-4-6",
             providers_map,
-            &secrets,
+            secrets,
         )?]
     };
 
@@ -75,26 +176,27 @@ pub(crate) fn from_file_and_env(
         default_chain.as_ref(),
         &main,
         providers_map,
-        &secrets,
+        secrets,
     )?;
     let reflector = resolve_role_chain(
         models.and_then(|m| m.reflector.clone()),
         default_chain.as_ref(),
         &main,
         providers_map,
-        &secrets,
+        secrets,
     )?;
-    let pulse_spec = resolve_role_chain(
+    let pulse = resolve_role_chain(
         models.and_then(|m| m.pulse.clone()),
         default_chain.as_ref(),
         &main,
         providers_map,
-        &secrets,
+        secrets,
     )?;
+
     // Resolve embedding: models.embedding only, no fallback to default or main
     let embedding = models
         .and_then(|m| m.embedding.as_deref())
-        .map(|s| resolve_model_string(s, providers_map, &secrets))
+        .map(|s| resolve_model_string(s, providers_map, secrets))
         .transpose()?;
     if let Some(ref spec) = embedding
         && spec.model.kind == ProviderKind::Anthropic
@@ -106,164 +208,35 @@ pub(crate) fn from_file_and_env(
         ));
     }
 
-    // Workspace dir: env > file > default
-    let workspace_dir = std::env::var("RESIDUUM_WORKSPACE")
-        .ok()
-        .or_else(|| file.and_then(|f| f.workspace_dir.clone()))
-        .map(|s| {
-            let expanded = shellexpand::tilde(&s);
-            PathBuf::from(expanded.as_ref())
-        })
-        .map_or_else(default_workspace_dir, Ok)?;
-
-    let timeout_secs = file
-        .and_then(|f| f.timeout_secs)
-        .unwrap_or(DEFAULT_TIMEOUT_SECS);
-
-    let max_tokens = file
-        .and_then(|f| f.max_tokens)
-        .unwrap_or(DEFAULT_MAX_TOKENS);
-
-    let memory = {
-        let mem_section = file.and_then(|f| f.memory.as_ref());
-        let mut mem = MemoryConfig::default();
-        if let Some(s) = mem_section {
-            if let Some(v) = s.observer_threshold_tokens {
-                mem.observer_threshold_tokens = v;
-            }
-            if let Some(v) = s.reflector_threshold_tokens {
-                mem.reflector_threshold_tokens = v;
-            }
-            if let Some(v) = s.observer_cooldown_secs {
-                mem.observer_cooldown_secs = v;
-            }
-            if let Some(v) = s.observer_force_threshold_tokens {
-                mem.observer_force_threshold_tokens = v;
-            }
-        }
-        mem.search = resolve_search_config(mem_section.and_then(|m| m.search.as_ref()));
-        mem
-    };
-
-    let pulse_enabled = file
-        .and_then(|f| f.pulse.as_ref())
-        .and_then(|p| p.enabled)
-        .unwrap_or(true);
-
-    let gateway = resolve_gateway_config(file.and_then(|f| f.gateway.as_ref()));
-    let discord = resolve_discord_config(file.and_then(|f| f.discord.as_ref()), &secrets);
-    let telegram = resolve_telegram_config(file.and_then(|f| f.telegram.as_ref()), &secrets);
-    let webhook = resolve_webhook_config(file.and_then(|f| f.webhook.as_ref()), &secrets);
-    let skills = resolve_skills_config(file.and_then(|f| f.skills.as_ref()), &workspace_dir);
-
-    let agent = resolve_agent_config(file.and_then(|f| f.agent.as_ref()));
-
-    let idle = {
-        let section = file.and_then(|f| f.idle.as_ref());
-        let timeout_minutes = section
-            .and_then(|s| s.timeout_minutes)
-            .unwrap_or(DEFAULT_IDLE_TIMEOUT_MINUTES);
-        let idle_channel = section.and_then(|s| s.idle_channel.clone());
-
-        if let Some(ref channel) = idle_channel {
-            let valid = match channel.as_str() {
-                "telegram" => telegram.is_some(),
-                "discord" => discord.is_some(),
-                "websocket" => true,
-                other => {
-                    return Err(ResiduumError::Config(format!(
-                        "idle_channel \"{other}\" is not a recognized interface"
-                    )));
-                }
-            };
-            if !valid {
-                return Err(ResiduumError::Config(format!(
-                    "idle_channel \"{channel}\" configured but [{channel}] section is missing"
-                )));
-            }
-        }
-
-        IdleConfig {
-            timeout: std::time::Duration::from_secs(timeout_minutes * 60),
-            idle_channel,
-        }
-    };
-
-    let background = resolve_background_config(
-        file.and_then(|f| f.background.as_ref()),
-        providers_file
-            .and_then(|pf| pf.background.as_ref())
-            .and_then(|b| b.models.as_ref()),
-        providers_map,
-        &secrets,
-    )?;
-
-    let retry = {
-        let r = file.and_then(|f| f.retry.as_ref());
-        let mut cfg = RetryConfig::default();
-        if let Some(v) = r.and_then(|r| r.max_retries) {
-            cfg.max_retries = v;
-        }
-        if let Some(v) = r.and_then(|r| r.initial_delay_ms) {
-            cfg.initial_delay = std::time::Duration::from_millis(v);
-        }
-        if let Some(v) = r.and_then(|r| r.max_delay_ms) {
-            cfg.max_delay = std::time::Duration::from_millis(v);
-        }
-        if let Some(v) = r.and_then(|r| r.backoff_multiplier) {
-            cfg.backoff_multiplier = v;
-        }
-        cfg
-    };
-
-    let timezone_str = std::env::var("RESIDUUM_TIMEZONE")
-        .ok()
-        .or_else(|| file.and_then(|f| f.timezone.clone()));
-    let tz_name = timezone_str.ok_or_else(|| {
-        ResiduumError::Config(
-            "timezone is required: set RESIDUUM_TIMEZONE env var or 'timezone' in config.toml \
-             (IANA name, e.g. \"America/New_York\")"
-                .to_string(),
-        )
-    })?;
-    let timezone: chrono_tz::Tz = tz_name.parse().map_err(|_err| {
-        ResiduumError::Config(format!(
-            "invalid timezone '{tz_name}': expected IANA name like 'America/New_York' or 'UTC'"
-        ))
-    })?;
-
-    let name = file.and_then(|f| f.name.clone());
-
-    let thinking = file
-        .and_then(|f| f.thinking.as_deref())
-        .map(parse_thinking_config)
-        .transpose()?;
-
-    Ok(Config {
-        name,
+    Ok(ResolvedModels {
         main,
         observer,
         reflector,
-        pulse: pulse_spec,
+        pulse,
         embedding,
-        workspace_dir,
-        timeout_secs,
-        max_tokens,
-        memory,
-        pulse_enabled,
-        gateway,
-        timezone,
-        discord,
-        telegram,
-        webhook,
-        skills,
-        retry,
-        background,
-        agent,
-        idle,
-        temperature: file.and_then(|f| f.temperature),
-        thinking,
-        config_dir: PathBuf::new(),
+    })
+}
+
+/// Resolve the timezone from env var or config file.
+///
+/// # Errors
+/// Returns `ResiduumError::Config` if no timezone is set or the value is not a
+/// valid IANA timezone name.
+fn resolve_timezone(file: Option<&ConfigFile>) -> Result<chrono_tz::Tz, ResiduumError> {
+    let tz_name = std::env::var("RESIDUUM_TIMEZONE")
+        .ok()
+        .or_else(|| file.and_then(|f| f.timezone.clone()))
+        .ok_or_else(|| {
+            ResiduumError::Config(
+                "timezone is required: set RESIDUUM_TIMEZONE env var or 'timezone' in config.toml \
+                 (IANA name, e.g. \"America/New_York\")"
+                    .to_string(),
+            )
+        })?;
+    tz_name.parse().map_err(|_err| {
+        ResiduumError::Config(format!(
+            "invalid timezone '{tz_name}': expected IANA name like 'America/New_York' or 'UTC'"
+        ))
     })
 }
 
@@ -548,6 +521,87 @@ fn resolve_skills_config(section: Option<&SkillsConfigFile>, workspace_dir: &Pat
     }
 
     SkillsConfig { dirs }
+}
+
+/// Resolve memory subsystem configuration from TOML section with defaults.
+fn resolve_memory_config(section: Option<&MemoryConfigFile>) -> MemoryConfig {
+    let mut mem = MemoryConfig::default();
+    if let Some(s) = section {
+        if let Some(v) = s.observer_threshold_tokens {
+            mem.observer_threshold_tokens = v;
+        }
+        if let Some(v) = s.reflector_threshold_tokens {
+            mem.reflector_threshold_tokens = v;
+        }
+        if let Some(v) = s.observer_cooldown_secs {
+            mem.observer_cooldown_secs = v;
+        }
+        if let Some(v) = s.observer_force_threshold_tokens {
+            mem.observer_force_threshold_tokens = v;
+        }
+    }
+    mem.search = resolve_search_config(section.and_then(|m| m.search.as_ref()));
+    mem
+}
+
+/// Resolve idle configuration from TOML section, validating the idle channel
+/// against configured interfaces.
+///
+/// # Errors
+/// Returns `ResiduumError::Config` if the idle channel references an unknown
+/// or unconfigured interface.
+fn resolve_idle_config(
+    file: Option<&ConfigFile>,
+    telegram: Option<&TelegramConfig>,
+    discord: Option<&DiscordConfig>,
+) -> Result<IdleConfig, ResiduumError> {
+    let section = file.and_then(|f| f.idle.as_ref());
+    let timeout_minutes = section
+        .and_then(|s| s.timeout_minutes)
+        .unwrap_or(DEFAULT_IDLE_TIMEOUT_MINUTES);
+    let idle_channel = section.and_then(|s| s.idle_channel.clone());
+
+    if let Some(ref channel) = idle_channel {
+        let valid = match channel.as_str() {
+            "telegram" => telegram.is_some(),
+            "discord" => discord.is_some(),
+            "websocket" => true,
+            other => {
+                return Err(ResiduumError::Config(format!(
+                    "idle_channel \"{other}\" is not a recognized interface"
+                )));
+            }
+        };
+        if !valid {
+            return Err(ResiduumError::Config(format!(
+                "idle_channel \"{channel}\" configured but [{channel}] section is missing"
+            )));
+        }
+    }
+
+    Ok(IdleConfig {
+        timeout: std::time::Duration::from_secs(timeout_minutes * 60),
+        idle_channel,
+    })
+}
+
+/// Resolve retry configuration from TOML section with defaults.
+fn resolve_retry_config(file: Option<&ConfigFile>) -> RetryConfig {
+    let r = file.and_then(|f| f.retry.as_ref());
+    let mut cfg = RetryConfig::default();
+    if let Some(v) = r.and_then(|r| r.max_retries) {
+        cfg.max_retries = v;
+    }
+    if let Some(v) = r.and_then(|r| r.initial_delay_ms) {
+        cfg.initial_delay = std::time::Duration::from_millis(v);
+    }
+    if let Some(v) = r.and_then(|r| r.max_delay_ms) {
+        cfg.max_delay = std::time::Duration::from_millis(v);
+    }
+    if let Some(v) = r.and_then(|r| r.backoff_multiplier) {
+        cfg.backoff_multiplier = v;
+    }
+    cfg
 }
 
 /// Resolve hybrid search configuration from TOML section with defaults.

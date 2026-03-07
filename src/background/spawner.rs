@@ -48,10 +48,6 @@ impl BackgroundTaskSpawner {
     ///
     /// # Errors
     /// Returns an error if the task cannot be registered (e.g. duplicate ID).
-    #[expect(
-        clippy::too_many_lines,
-        reason = "single async spawn with setup, select!, and cleanup — splitting would fragment the task lifecycle"
-    )]
     pub async fn spawn(
         &self,
         task: BackgroundTask,
@@ -106,63 +102,10 @@ impl BackgroundTaskSpawner {
             let result = tokio::select! {
                 biased;
                 () = child_token.cancelled() => {
-                    // Deactivate any active project the sub-agent had open
-                    if let Some((project_state, mcp_registry, path_policy, tool_filter)) =
-                        cleanup_handles
-                    {
-                        let active_name = project_state
-                            .lock()
-                            .await
-                            .active_project_name()
-                            .map(str::to_string);
-                        if let Some(name) = active_name {
-                            tracing::info!(
-                                task_id = %spawn_task_id,
-                                project = %name,
-                                "[cancelled] SubAgent {spawn_task_id} was stopped. Work may be incomplete."
-                            );
-                            mcp_registry.write().await.deactivate_project(&name).await;
-                            path_policy.write().await.set_active_project(None);
-                            tool_filter.write().await.clear_enabled();
-                        }
-                    }
-
-                    BackgroundResult {
-                        id: task.id.clone(),
-                        task_name: task.task_name.clone(),
-                        source: task.source,
-                        summary: String::new(),
-                        transcript_path: None,
-                        status: TaskStatus::Cancelled,
-                        timestamp: Utc::now(),
-                        routing: task.routing.clone(),
-                    }
+                    build_cancelled_result(&task, &spawn_task_id, cleanup_handles).await
                 }
                 outcome = execute_task(&task, resources.as_ref(), &workspace_root) => {
-                    let (status, summary, messages) = match outcome {
-                        Ok(SubAgentOutput { summary, messages }) => {
-                            (TaskStatus::Completed, summary, Some(messages))
-                        }
-                        Err(e) => {
-                            let error_msg = e.to_string();
-                            (TaskStatus::Failed { error: error_msg.clone() }, format!("[FAILED] {error_msg}"), None)
-                        }
-                    };
-
-                    let transcript_path = write_transcript(
-                        &background_dir, &task.id, &summary, messages.as_deref(),
-                    ).await;
-
-                    BackgroundResult {
-                        id: task.id.clone(),
-                        task_name: task.task_name.clone(),
-                        source: task.source,
-                        summary,
-                        transcript_path,
-                        status,
-                        timestamp: Utc::now(),
-                        routing: task.routing.clone(),
-                    }
+                    build_completed_result(&task, outcome, &background_dir).await
                 }
             };
 
@@ -218,6 +161,84 @@ impl BackgroundTaskSpawner {
     pub async fn active_task_ids(&self) -> Vec<String> {
         let guard = self.active_tasks.lock().await;
         guard.keys().cloned().collect()
+    }
+}
+
+/// Build a `BackgroundResult` for a cancelled task, cleaning up any active project.
+async fn build_cancelled_result(
+    task: &BackgroundTask,
+    spawn_task_id: &str,
+    cleanup_handles: Option<(
+        crate::projects::activation::SharedProjectState,
+        crate::mcp::registry::SharedMcpRegistry,
+        crate::tools::path_policy::SharedPathPolicy,
+        crate::tools::SharedToolFilter,
+    )>,
+) -> BackgroundResult {
+    if let Some((project_state, mcp_registry, path_policy, tool_filter)) = cleanup_handles {
+        let active_name = project_state
+            .lock()
+            .await
+            .active_project_name()
+            .map(str::to_string);
+        if let Some(name) = active_name {
+            tracing::info!(
+                task_id = %spawn_task_id,
+                project = %name,
+                "[cancelled] SubAgent {spawn_task_id} was stopped. Work may be incomplete."
+            );
+            mcp_registry.write().await.deactivate_project(&name).await;
+            path_policy.write().await.set_active_project(None);
+            tool_filter.write().await.clear_enabled();
+        }
+    }
+
+    BackgroundResult {
+        id: task.id.clone(),
+        task_name: task.task_name.clone(),
+        source: task.source,
+        summary: String::new(),
+        transcript_path: None,
+        status: TaskStatus::Cancelled,
+        timestamp: Utc::now(),
+        routing: task.routing.clone(),
+    }
+}
+
+/// Build a `BackgroundResult` from a completed (or failed) task execution.
+async fn build_completed_result(
+    task: &BackgroundTask,
+    outcome: Result<SubAgentOutput, anyhow::Error>,
+    background_dir: &std::path::Path,
+) -> BackgroundResult {
+    let (status, summary, messages) = match outcome {
+        Ok(SubAgentOutput { summary, messages }) => {
+            (TaskStatus::Completed, summary, Some(messages))
+        }
+        Err(e) => {
+            let error_msg = e.to_string();
+            (
+                TaskStatus::Failed {
+                    error: error_msg.clone(),
+                },
+                format!("[FAILED] {error_msg}"),
+                None,
+            )
+        }
+    };
+
+    let transcript_path =
+        write_transcript(background_dir, &task.id, &summary, messages.as_deref()).await;
+
+    BackgroundResult {
+        id: task.id.clone(),
+        task_name: task.task_name.clone(),
+        source: task.source,
+        summary,
+        transcript_path,
+        status,
+        timestamp: Utc::now(),
+        routing: task.routing.clone(),
     }
 }
 

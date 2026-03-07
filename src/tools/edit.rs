@@ -85,6 +85,170 @@ fn validate_anchor(anchor: &LineAnchor, lines: &[String]) -> Option<String> {
     None
 }
 
+/// Replace a range of lines with new content.
+fn apply_replace(
+    mut lines: Vec<String>,
+    range_start: usize,
+    range_end: usize,
+    content: &str,
+) -> (Vec<String>, String) {
+    let content_lines: Vec<&str> = content.lines().collect();
+    let range_desc = if range_start == range_end {
+        format!("{}", range_start + 1)
+    } else {
+        format!("{}-{}", range_start + 1, range_end + 1)
+    };
+
+    let mut new_lines =
+        Vec::with_capacity(lines.len() - (range_end - range_start + 1) + content_lines.len());
+    new_lines.extend(lines.drain(..range_start));
+    new_lines.extend(content_lines.iter().map(|s| (*s).to_string()));
+    let skip_count = range_end - range_start + 1;
+    let remaining: Vec<String> = lines.into_iter().skip(skip_count).collect();
+    new_lines.extend(remaining);
+
+    (new_lines, format!("replaced line(s) {range_desc}"))
+}
+
+/// Insert content after a line, or at file start when `at_start` is true.
+fn apply_insert(
+    mut lines: Vec<String>,
+    range_start: usize,
+    content: &str,
+    at_start: bool,
+) -> (Vec<String>, String) {
+    let content_lines: Vec<&str> = content.lines().collect();
+
+    if at_start {
+        let mut new_lines = Vec::with_capacity(lines.len() + content_lines.len());
+        new_lines.extend(content_lines.iter().map(|s| (*s).to_string()));
+        new_lines.extend(lines);
+        (new_lines, "inserted at file start".to_string())
+    } else {
+        let insert_idx = range_start + 1;
+        let mut new_lines = Vec::with_capacity(lines.len() + content_lines.len());
+        new_lines.extend(lines.drain(..insert_idx));
+        new_lines.extend(content_lines.iter().map(|s| (*s).to_string()));
+        new_lines.extend(lines);
+        (
+            new_lines,
+            format!("inserted after line {}", range_start + 1),
+        )
+    }
+}
+
+/// Parsed and validated edit arguments.
+struct EditArgs<'a> {
+    path: &'a str,
+    operation: &'a str,
+    new_content: Option<&'a str>,
+    start_anchor: Option<LineAnchor>,
+    end_anchor: Option<LineAnchor>,
+    insert_at_start: bool,
+}
+
+/// Parse and validate edit arguments from the JSON input.
+fn parse_edit_args(arguments: &Value) -> Result<EditArgs<'_>, ToolError> {
+    let path = arguments
+        .get("path")
+        .and_then(Value::as_str)
+        .ok_or_else(|| {
+            ToolError::InvalidArguments("missing required 'path' argument".to_string())
+        })?;
+
+    let operation = arguments
+        .get("operation")
+        .and_then(Value::as_str)
+        .ok_or_else(|| {
+            ToolError::InvalidArguments("missing required 'operation' argument".to_string())
+        })?;
+
+    let start_line_str = arguments
+        .get("start_line")
+        .and_then(Value::as_str)
+        .ok_or_else(|| {
+            ToolError::InvalidArguments("missing required 'start_line' argument".to_string())
+        })?;
+
+    let end_line_str = arguments.get("end_line").and_then(Value::as_str);
+    let new_content = arguments.get("content").and_then(Value::as_str);
+
+    if !matches!(operation, "replace" | "insert_after" | "delete") {
+        return Err(ToolError::InvalidArguments(format!(
+            "invalid operation '{operation}', must be 'replace', 'insert_after', or 'delete'"
+        )));
+    }
+
+    if matches!(operation, "replace" | "insert_after") && new_content.is_none() {
+        return Err(ToolError::InvalidArguments(format!(
+            "'{operation}' requires 'content' argument"
+        )));
+    }
+
+    // end_line required for replace — forces the model to be explicit about the full range
+    // being overwritten, preventing silent under-deletion when content spans multiple lines.
+    if operation == "replace" && end_line_str.is_none() {
+        return Err(ToolError::InvalidArguments(
+            "replace requires 'end_line' (use the same anchor as start_line to replace a single line)"
+                .to_string(),
+        ));
+    }
+
+    // Parse start_line — special case: "0" for insert_after at file start
+    let insert_at_start = operation == "insert_after" && start_line_str == "0";
+    let start_anchor = if insert_at_start {
+        None
+    } else {
+        Some(parse_anchor(start_line_str)?)
+    };
+
+    let end_anchor = end_line_str.map(parse_anchor).transpose()?;
+
+    if let (Some(start), Some(end)) = (&start_anchor, &end_anchor)
+        && end.line_num < start.line_num
+    {
+        return Err(ToolError::InvalidArguments(format!(
+            "end_line {} is before start_line {}",
+            end.line_num, start.line_num
+        )));
+    }
+
+    Ok(EditArgs {
+        path,
+        operation,
+        new_content,
+        start_anchor,
+        end_anchor,
+        insert_at_start,
+    })
+}
+
+/// Delete a range of lines. Returns `Err` if deleting all lines.
+fn apply_delete(
+    mut lines: Vec<String>,
+    range_start: usize,
+    range_end: usize,
+    path: &str,
+) -> Result<(Vec<String>, String), String> {
+    let delete_count = range_end - range_start + 1;
+    if delete_count >= lines.len() {
+        return Err(format!("cannot delete all lines from {path}"));
+    }
+
+    let range_desc = if range_start == range_end {
+        format!("{}", range_start + 1)
+    } else {
+        format!("{}-{}", range_start + 1, range_end + 1)
+    };
+
+    let mut new_lines = Vec::with_capacity(lines.len() - delete_count);
+    new_lines.extend(lines.drain(..range_start));
+    let remaining: Vec<String> = lines.into_iter().skip(delete_count).collect();
+    new_lines.extend(remaining);
+
+    Ok((new_lines, format!("deleted line(s) {range_desc}")))
+}
+
 #[async_trait]
 impl Tool for EditTool {
     fn name(&self) -> &'static str {
@@ -132,17 +296,15 @@ impl Tool for EditTool {
         }
     }
 
-    #[expect(
-        clippy::too_many_lines,
-        reason = "edit logic with validation is inherently sequential; splitting would scatter related checks"
-    )]
     async fn execute(&self, arguments: Value) -> Result<ToolResult, ToolError> {
-        let path = arguments
-            .get("path")
-            .and_then(Value::as_str)
-            .ok_or_else(|| {
-                ToolError::InvalidArguments("missing required 'path' argument".to_string())
-            })?;
+        let EditArgs {
+            path,
+            operation,
+            new_content,
+            start_anchor,
+            end_anchor,
+            insert_at_start,
+        } = parse_edit_args(&arguments)?;
 
         // Enforce write-scoping policy
         if let Err(reason) = self
@@ -152,67 +314,6 @@ impl Tool for EditTool {
             .check_write(std::path::Path::new(path))
         {
             return Ok(ToolResult::error(reason));
-        }
-
-        let operation = arguments
-            .get("operation")
-            .and_then(Value::as_str)
-            .ok_or_else(|| {
-                ToolError::InvalidArguments("missing required 'operation' argument".to_string())
-            })?;
-
-        let start_line_str = arguments
-            .get("start_line")
-            .and_then(Value::as_str)
-            .ok_or_else(|| {
-                ToolError::InvalidArguments("missing required 'start_line' argument".to_string())
-            })?;
-
-        let end_line_str = arguments.get("end_line").and_then(Value::as_str);
-        let new_content = arguments.get("content").and_then(Value::as_str);
-
-        // Validate operation
-        if !matches!(operation, "replace" | "insert_after" | "delete") {
-            return Err(ToolError::InvalidArguments(format!(
-                "invalid operation '{operation}', must be 'replace', 'insert_after', or 'delete'"
-            )));
-        }
-
-        // Content required for replace and insert_after
-        if matches!(operation, "replace" | "insert_after") && new_content.is_none() {
-            return Err(ToolError::InvalidArguments(format!(
-                "'{operation}' requires 'content' argument"
-            )));
-        }
-
-        // end_line required for replace — forces the model to be explicit about the full range
-        // being overwritten, preventing silent under-deletion when content spans multiple lines.
-        if operation == "replace" && end_line_str.is_none() {
-            return Err(ToolError::InvalidArguments(
-                "replace requires 'end_line' (use the same anchor as start_line to replace a single line)"
-                    .to_string(),
-            ));
-        }
-
-        // Parse start_line — special case: "0" for insert_after at file start
-        let insert_at_start = operation == "insert_after" && start_line_str == "0";
-        let start_anchor = if insert_at_start {
-            None
-        } else {
-            Some(parse_anchor(start_line_str)?)
-        };
-
-        // Parse end_line if provided
-        let end_anchor = end_line_str.map(parse_anchor).transpose()?;
-
-        // Validate range ordering
-        if let (Some(start), Some(end)) = (&start_anchor, &end_anchor)
-            && end.line_num < start.line_num
-        {
-            return Err(ToolError::InvalidArguments(format!(
-                "end_line {} is before start_line {}",
-                end.line_num, start.line_num
-            )));
         }
 
         // Check file exists
@@ -235,7 +336,7 @@ impl Tool for EditTool {
             }
         };
 
-        let mut lines: Vec<String> = file_text.lines().map(String::from).collect();
+        let lines: Vec<String> = file_text.lines().map(String::from).collect();
         let ends_with_newline = file_text.ends_with('\n');
 
         // Validate anchors against current file content
@@ -260,68 +361,23 @@ impl Tool for EditTool {
         };
 
         // Apply operation
-        let description = match operation {
-            "replace" => {
-                let content_lines: Vec<&str> = new_content.unwrap_or_default().lines().collect();
-                let range_desc = if range_start == range_end {
-                    format!("{}", range_start + 1)
-                } else {
-                    format!("{}-{}", range_start + 1, range_end + 1)
-                };
-
-                let mut new_lines = Vec::with_capacity(
-                    lines.len() - (range_end - range_start + 1) + content_lines.len(),
-                );
-                new_lines.extend(lines.drain(..range_start));
-                new_lines.extend(content_lines.iter().map(|s| (*s).to_string()));
-                let skip_count = range_end - range_start + 1;
-                let remaining: Vec<String> = lines.into_iter().skip(skip_count).collect();
-                new_lines.extend(remaining);
-                lines = new_lines;
-
-                format!("replaced line(s) {range_desc}")
-            }
-            "insert_after" => {
-                let content_lines: Vec<&str> = new_content.unwrap_or_default().lines().collect();
-
-                if insert_at_start {
-                    let mut new_lines = Vec::with_capacity(lines.len() + content_lines.len());
-                    new_lines.extend(content_lines.iter().map(|s| (*s).to_string()));
-                    new_lines.extend(lines);
-                    lines = new_lines;
-                    "inserted at file start".to_string()
-                } else {
-                    let insert_idx = range_start + 1;
-                    let mut new_lines = Vec::with_capacity(lines.len() + content_lines.len());
-                    new_lines.extend(lines.drain(..insert_idx));
-                    new_lines.extend(content_lines.iter().map(|s| (*s).to_string()));
-                    new_lines.extend(lines);
-                    lines = new_lines;
-                    format!("inserted after line {}", range_start + 1)
-                }
-            }
-            "delete" => {
-                let delete_count = range_end - range_start + 1;
-                if delete_count >= lines.len() {
-                    return Ok(ToolResult::error(format!(
-                        "cannot delete all lines from {path}"
-                    )));
-                }
-
-                let range_desc = if range_start == range_end {
-                    format!("{}", range_start + 1)
-                } else {
-                    format!("{}-{}", range_start + 1, range_end + 1)
-                };
-
-                let mut new_lines = Vec::with_capacity(lines.len() - delete_count);
-                new_lines.extend(lines.drain(..range_start));
-                let remaining: Vec<String> = lines.into_iter().skip(delete_count).collect();
-                new_lines.extend(remaining);
-                lines = new_lines;
-
-                format!("deleted line(s) {range_desc}")
-            }
+        let (lines, description) = match operation {
+            "replace" => apply_replace(
+                lines,
+                range_start,
+                range_end,
+                new_content.unwrap_or_default(),
+            ),
+            "insert_after" => apply_insert(
+                lines,
+                range_start,
+                new_content.unwrap_or_default(),
+                insert_at_start,
+            ),
+            "delete" => match apply_delete(lines, range_start, range_end, path) {
+                Ok(result) => result,
+                Err(msg) => return Ok(ToolResult::error(msg)),
+            },
             _ => {
                 return Err(ToolError::InvalidArguments(format!(
                     "unknown operation '{operation}'"

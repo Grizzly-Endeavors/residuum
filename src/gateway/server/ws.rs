@@ -26,10 +26,6 @@ pub(super) async fn ws_handler(
 /// Splits the socket into read/write halves. A forwarding task reads from the
 /// broadcast channel and sends all events to the client. Verbose filtering
 /// is handled client-side. The read loop processes incoming client messages.
-#[expect(
-    clippy::too_many_lines,
-    reason = "match on all ClientMessage variants; splitting would obscure the dispatch logic"
-)]
 async fn handle_connection(socket: WebSocket, state: GatewayState) {
     let (mut ws_tx, mut ws_rx) = socket.split();
 
@@ -76,95 +72,103 @@ async fn handle_connection(socket: WebSocket, state: GatewayState) {
             }
         };
 
-        match client_msg {
-            ClientMessage::SendMessage { id, content } => {
-                let origin = MessageOrigin {
-                    interface: "websocket".to_string(),
-                    sender_name: "ws-client".to_string(),
-                    sender_id: "ws-client".to_string(),
-                };
-                let inbound = InboundMessage {
-                    id: id.clone(),
-                    content,
-                    origin,
-                    timestamp: chrono::Utc::now(),
-                };
-                let reply = Arc::new(WsReplyHandle::new(state.broadcast_tx.clone(), id));
-                let routed = RoutedMessage {
-                    message: inbound,
-                    reply,
-                };
-                if state.inbound_tx.send(routed).await.is_err() {
-                    tracing::warn!("inbound channel closed, dropping message");
-                    break;
-                }
-            }
-            ClientMessage::SetVerbose { .. } => {
-                // Verbose filtering is handled client-side; acknowledge silently.
-            }
-            ClientMessage::Ping => {
-                // Send pong through broadcast (all clients will filter; only this
-                // one would care, but pong is cheap and non-verbose)
-                if state.broadcast_tx.send(ServerMessage::Pong).is_err() {
-                    tracing::trace!("no broadcast receivers for pong");
-                }
-            }
-            ClientMessage::Reload => {
-                tracing::info!("reload requested by client");
-                state
-                    .broadcast_tx
-                    .send(ServerMessage::Notice {
-                        message: "reloading configuration...".to_string(),
-                    })
-                    .ok();
-                state.reload_tx.send(super::ReloadSignal::Root).ok();
-            }
-            ClientMessage::ServerCommand { name, args } => {
-                tracing::info!(command = %name, "server command from client");
-                state
-                    .command_tx
-                    .send(super::ServerCommand {
-                        name,
-                        args,
-                        reply_tx: None,
-                    })
-                    .await
-                    .ok();
-            }
-            ClientMessage::InboxAdd { body } => {
-                tracing::info!("inbox add requested by client");
-                let dir = state.inbox_dir.clone();
-                let tz = state.tz;
-                let tx = state.broadcast_tx.clone();
-                tokio::spawn(async move {
-                    let title: String = body
-                        .lines()
-                        .next()
-                        .unwrap_or("Inbox message")
-                        .chars()
-                        .take(60)
-                        .collect();
-                    match crate::inbox::quick_add(&dir, &title, &body, "cli", tz).await {
-                        Ok(_filename) => {
-                            tx.send(ServerMessage::Notice {
-                                message: "[inbox] item added".to_string(),
-                            })
-                            .ok();
-                        }
-                        Err(e) => {
-                            tx.send(ServerMessage::Error {
-                                reply_to: None,
-                                message: format!("inbox add failed: {e}"),
-                            })
-                            .ok();
-                        }
-                    }
-                });
-            }
+        if !handle_client_message(client_msg, &state).await {
+            break;
         }
     }
 
     // Clean up: abort forwarding task when client disconnects
     fwd_handle.abort();
     tracing::debug!("client disconnected");
+}
+
+/// Dispatch a single client message. Returns `false` to break the read loop.
+async fn handle_client_message(msg: ClientMessage, state: &GatewayState) -> bool {
+    match msg {
+        ClientMessage::SendMessage { id, content } => {
+            let origin = MessageOrigin {
+                interface: "websocket".to_string(),
+                sender_name: "ws-client".to_string(),
+                sender_id: "ws-client".to_string(),
+            };
+            let inbound = InboundMessage {
+                id: id.clone(),
+                content,
+                origin,
+                timestamp: chrono::Utc::now(),
+            };
+            let reply = Arc::new(WsReplyHandle::new(state.broadcast_tx.clone(), id));
+            let routed = RoutedMessage {
+                message: inbound,
+                reply,
+            };
+            if state.inbound_tx.send(routed).await.is_err() {
+                tracing::warn!("inbound channel closed, dropping message");
+                return false;
+            }
+        }
+        ClientMessage::SetVerbose { .. } => {
+            // Verbose filtering is handled client-side; acknowledge silently.
+        }
+        ClientMessage::Ping => {
+            // Send pong through broadcast (all clients will filter; only this
+            // one would care, but pong is cheap and non-verbose)
+            if state.broadcast_tx.send(ServerMessage::Pong).is_err() {
+                tracing::trace!("no broadcast receivers for pong");
+            }
+        }
+        ClientMessage::Reload => {
+            tracing::info!("reload requested by client");
+            state
+                .broadcast_tx
+                .send(ServerMessage::Notice {
+                    message: "reloading configuration...".to_string(),
+                })
+                .ok();
+            state.reload_tx.send(super::ReloadSignal::Root).ok();
+        }
+        ClientMessage::ServerCommand { name, args } => {
+            tracing::info!(command = %name, "server command from client");
+            state
+                .command_tx
+                .send(super::ServerCommand {
+                    name,
+                    args,
+                    reply_tx: None,
+                })
+                .await
+                .ok();
+        }
+        ClientMessage::InboxAdd { body } => {
+            tracing::info!("inbox add requested by client");
+            let dir = state.inbox_dir.clone();
+            let tz = state.tz;
+            let tx = state.broadcast_tx.clone();
+            tokio::spawn(async move {
+                let title: String = body
+                    .lines()
+                    .next()
+                    .unwrap_or("Inbox message")
+                    .chars()
+                    .take(60)
+                    .collect();
+                match crate::inbox::quick_add(&dir, &title, &body, "cli", tz).await {
+                    Ok(_filename) => {
+                        tx.send(ServerMessage::Notice {
+                            message: "[inbox] item added".to_string(),
+                        })
+                        .ok();
+                    }
+                    Err(e) => {
+                        tx.send(ServerMessage::Error {
+                            reply_to: None,
+                            message: format!("inbox add failed: {e}"),
+                        })
+                        .ok();
+                    }
+                }
+            });
+        }
+    }
+    true
 }

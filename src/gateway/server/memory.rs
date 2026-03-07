@@ -108,17 +108,19 @@ pub(super) async fn persist_and_check_thresholds(
     observer.check_thresholds(&recent)
 }
 
+/// Subsystem references for memory observation and embedding.
+pub(super) struct MemorySubsystems<'a> {
+    pub observer: &'a Observer,
+    pub reflector: &'a Reflector,
+    pub search_index: &'a Arc<MemoryIndex>,
+    pub layout: &'a WorkspaceLayout,
+    pub vector_store: Option<&'a Arc<VectorStore>>,
+    pub embedding_provider: Option<&'a Arc<dyn EmbeddingProvider>>,
+}
+
 /// Execute an observation cycle: LLM call, clear file, rotate messages, index, reflect, reload.
-pub(super) async fn execute_observation(
-    observer: &Observer,
-    reflector: &Reflector,
-    search_index: &MemoryIndex,
-    layout: &WorkspaceLayout,
-    agent: &mut Agent,
-    vector_store: Option<&Arc<VectorStore>>,
-    embedding_provider: Option<&Arc<dyn EmbeddingProvider>>,
-) {
-    let recent = match load_recent_messages(&layout.recent_messages_json()).await {
+pub(super) async fn execute_observation(mem: &MemorySubsystems<'_>, agent: &mut Agent) {
+    let recent = match load_recent_messages(&mem.layout.recent_messages_json()).await {
         Ok(msgs) => msgs,
         Err(e) => {
             eprintln!("warning: failed to load recent messages for observation: {e}");
@@ -130,7 +132,7 @@ pub(super) async fn execute_observation(
         return;
     }
 
-    match observer.observe(&recent, layout).await {
+    match mem.observer.observe(&recent, mem.layout).await {
         Ok(result) => {
             tracing::info!(episode_id = %result.id, "observer extracted episode");
 
@@ -138,72 +140,23 @@ pub(super) async fn execute_observation(
             if let Some(narrative) = &result.narrative {
                 let ctx = RecentContext {
                     narrative: narrative.clone(),
-                    created_at: crate::time::now_local(observer.timezone()),
+                    created_at: crate::time::now_local(mem.observer.timezone()),
                     episode_id: result.id.clone(),
                 };
-                if let Err(e) = save_recent_context(&layout.recent_context_json(), &ctx).await {
+                if let Err(e) = save_recent_context(&mem.layout.recent_context_json(), &ctx).await {
                     eprintln!("warning: failed to save recent context: {e}");
                 }
             }
 
-            if let Err(e) = clear_recent_messages(&layout.recent_messages_json()).await {
+            if let Err(e) = clear_recent_messages(&mem.layout.recent_messages_json()).await {
                 eprintln!("warning: failed to clear recent messages: {e}");
             }
             agent.rotate_messages_after_observation();
 
-            // Index observations and chunks into the search index
-            if let Err(e) =
-                search_index.index_observations(&result.id, &result.date, &result.observations)
-            {
-                eprintln!("warning: failed to index observations: {e}");
-            }
-            if let Err(e) = search_index.index_chunks(&result.chunks) {
-                eprintln!("warning: failed to index chunks: {e}");
-            }
-
-            // Embed and store in vector index
-            let embedded =
-                embed_observation_result(&result, vector_store, embedding_provider).await;
-            if embedded {
-                mark_episode_embedded(layout, &result).await;
-            }
-
-            run_reflector_if_needed(reflector, layout).await;
-
-            if let Err(e) = agent.reload_observations(layout).await {
-                eprintln!("warning: failed to reload observations: {e}");
-            }
-            if let Err(e) = agent.reload_recent_context(layout).await {
-                eprintln!("warning: failed to reload recent context: {e}");
-            }
+            finalize_observation(mem, agent, &result).await;
         }
         Err(e) => {
             eprintln!("warning: observer failed: {e}");
-        }
-    }
-}
-
-/// Run the reflector if the observation log exceeds the threshold.
-async fn run_reflector_if_needed(reflector: &Reflector, layout: &WorkspaceLayout) {
-    let log = match load_observation_log(&layout.observations_json()).await {
-        Ok(log) => log,
-        Err(e) => {
-            eprintln!("warning: failed to load observation log for reflection: {e}");
-            return;
-        }
-    };
-
-    if reflector.should_reflect(&log) {
-        match reflector.reflect(layout).await {
-            Ok(compressed) => {
-                tracing::info!(
-                    episodes = compressed.len(),
-                    "reflector compressed observation log"
-                );
-            }
-            Err(e) => {
-                eprintln!("warning: reflector failed: {e}");
-            }
         }
     }
 }
@@ -293,29 +246,82 @@ async fn embed_observation_result(
     all_ok
 }
 
+/// Post-observation steps: index, embed, reflect check, reload agent context.
+///
+/// Returns `true` if the reflector was triggered.
+async fn finalize_observation(
+    mem: &MemorySubsystems<'_>,
+    agent: &mut Agent,
+    result: &ObserveResult,
+) -> bool {
+    // Index observations and chunks into the search index
+    if let Err(e) =
+        mem.search_index
+            .index_observations(&result.id, &result.date, &result.observations)
+    {
+        eprintln!("warning: failed to index observations: {e}");
+    }
+    if let Err(e) = mem.search_index.index_chunks(&result.chunks) {
+        eprintln!("warning: failed to index chunks: {e}");
+    }
+
+    // Embed and store in vector index
+    let embedded = embed_observation_result(result, mem.vector_store, mem.embedding_provider).await;
+    if embedded {
+        mark_episode_embedded(mem.layout, result).await;
+    }
+
+    let reflected = run_reflector_check(mem.reflector, mem.layout).await;
+
+    if let Err(e) = agent.reload_observations(mem.layout).await {
+        eprintln!("warning: failed to reload observations: {e}");
+    }
+    if let Err(e) = agent.reload_recent_context(mem.layout).await {
+        eprintln!("warning: failed to reload recent context: {e}");
+    }
+
+    reflected
+}
+
+/// Run the reflector if the observation log exceeds the threshold, returning whether it fired.
+async fn run_reflector_check(reflector: &Reflector, layout: &WorkspaceLayout) -> bool {
+    let log = match load_observation_log(&layout.observations_json()).await {
+        Ok(log) => log,
+        Err(e) => {
+            eprintln!("warning: failed to load observation log for reflection check: {e}");
+            return false;
+        }
+    };
+
+    if reflector.should_reflect(&log) {
+        match reflector.reflect(layout).await {
+            Ok(compressed) => {
+                tracing::info!(
+                    episodes = compressed.len(),
+                    "reflector compressed observation log"
+                );
+                true
+            }
+            Err(e) => {
+                eprintln!("warning: reflector failed: {e}");
+                false
+            }
+        }
+    } else {
+        false
+    }
+}
+
 /// Force an observation cycle regardless of token threshold.
 ///
 /// Loads recent messages, runs the observer, clears recent messages, updates
 /// the search index, optionally triggers reflection, and broadcasts a `Notice`.
-#[expect(
-    clippy::too_many_lines,
-    reason = "forced observe is a linear pipeline with error handling at each step"
-)]
-#[expect(
-    clippy::too_many_arguments,
-    reason = "pipeline function threading subsystem references through from the event loop"
-)]
 pub(super) async fn run_forced_observe(
-    observer: &Observer,
-    reflector: &Reflector,
-    search_index: &Arc<MemoryIndex>,
-    layout: &WorkspaceLayout,
+    mem: &MemorySubsystems<'_>,
     agent: &mut Agent,
     broadcast_tx: &broadcast::Sender<ServerMessage>,
-    vector_store: Option<&Arc<VectorStore>>,
-    embedding_provider: Option<&Arc<dyn EmbeddingProvider>>,
 ) {
-    let recent = match load_recent_messages(&layout.recent_messages_json()).await {
+    let recent = match load_recent_messages(&mem.layout.recent_messages_json()).await {
         Ok(msgs) => msgs,
         Err(e) => {
             eprintln!("warning: forced observe failed to load recent messages: {e}");
@@ -344,7 +350,7 @@ pub(super) async fn run_forced_observe(
         return;
     }
 
-    let result = match observer.observe(&recent, layout).await {
+    let result = match mem.observer.observe(&recent, mem.layout).await {
         Ok(r) => r,
         Err(e) => {
             eprintln!("warning: forced observe failed: {e}");
@@ -365,55 +371,20 @@ pub(super) async fn run_forced_observe(
     if let Some(narrative) = &result.narrative {
         let ctx = RecentContext {
             narrative: narrative.clone(),
-            created_at: crate::time::now_local(observer.timezone()),
+            created_at: crate::time::now_local(mem.observer.timezone()),
             episode_id: result.id.clone(),
         };
-        if let Err(e) = save_recent_context(&layout.recent_context_json(), &ctx).await {
+        if let Err(e) = save_recent_context(&mem.layout.recent_context_json(), &ctx).await {
             eprintln!("warning: failed to save recent context after forced observe: {e}");
         }
     }
 
-    if let Err(e) = clear_recent_messages(&layout.recent_messages_json()).await {
+    if let Err(e) = clear_recent_messages(&mem.layout.recent_messages_json()).await {
         eprintln!("warning: failed to clear recent messages after forced observe: {e}");
     }
     agent.rotate_messages_after_observation();
 
-    // Index observations and chunks into the search index
-    if let Err(e) = search_index.index_observations(&result.id, &result.date, &result.observations)
-    {
-        eprintln!("warning: failed to index observations after forced observe: {e}");
-    }
-    if let Err(e) = search_index.index_chunks(&result.chunks) {
-        eprintln!("warning: failed to index chunks after forced observe: {e}");
-    }
-
-    // Embed and store in vector index
-    let embedded = embed_observation_result(&result, vector_store, embedding_provider).await;
-    if embedded {
-        mark_episode_embedded(layout, &result).await;
-    }
-
-    let reflected = match load_observation_log(&layout.observations_json()).await {
-        Ok(log) if reflector.should_reflect(&log) => match reflector.reflect(layout).await {
-            Ok(_) => true,
-            Err(e) => {
-                eprintln!("warning: reflector failed after forced observe: {e}");
-                false
-            }
-        },
-        Ok(_) => false,
-        Err(e) => {
-            eprintln!("warning: failed to load observation log for reflection check: {e}");
-            false
-        }
-    };
-
-    if let Err(e) = agent.reload_observations(layout).await {
-        eprintln!("warning: failed to reload observations after forced observe: {e}");
-    }
-    if let Err(e) = agent.reload_recent_context(layout).await {
-        eprintln!("warning: failed to reload recent context after forced observe: {e}");
-    }
+    let reflected = finalize_observation(mem, agent, &result).await;
 
     let suffix = if reflected {
         "; reflection triggered"

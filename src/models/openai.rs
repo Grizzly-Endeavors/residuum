@@ -70,18 +70,97 @@ impl OpenAiClient {
         }
     }
 
-    /// Get the configured timeout in seconds.
-    fn timeout_secs(&self) -> u64 {
-        self.http.timeout_secs()
+    /// Map thinking config to the `reasoning_effort` parameter.
+    fn build_reasoning_effort(thinking: &ThinkingConfig) -> Option<String> {
+        match thinking {
+            ThinkingConfig::Level(ThinkingLevel::Low) => Some("low".to_string()),
+            ThinkingConfig::Level(ThinkingLevel::Medium) | ThinkingConfig::Toggle(true) => {
+                Some("medium".to_string())
+            }
+            ThinkingConfig::Level(ThinkingLevel::High) => Some("high".to_string()),
+            ThinkingConfig::Toggle(false) => None,
+        }
+    }
+
+    /// Send a pre-built request to the OpenAI-compatible API and parse the response.
+    async fn send_completion(
+        http: &SharedHttpClient,
+        url: &str,
+        api_key: Option<&str>,
+        request: &ChatCompletionRequest<'_>,
+    ) -> Result<ModelResponse, ModelError> {
+        let timeout_secs = http.timeout_secs();
+        let mut req_builder = http.client().post(url).json(request);
+
+        if let Some(key) = api_key {
+            req_builder = req_builder.header("Authorization", format!("Bearer {key}"));
+        }
+
+        let response = req_builder
+            .send()
+            .await
+            .map_err(|e| map_request_error(e, timeout_secs))?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let raw_body = match response.text().await {
+                Ok(body) => body,
+                Err(e) => {
+                    tracing::warn!(error = %e, "failed to read error response body");
+                    format!("failed to read response body: {e}")
+                }
+            };
+            let error_body = serde_json::from_str::<OpenAiErrorResponse>(&raw_body)
+                .map_or_else(|_| raw_body, |e| e.error.message);
+            return Err(ModelError::Api(format!("{status}: {error_body}")));
+        }
+
+        let chat_response: ChatCompletionResponse = response.json().await?;
+
+        let usage = chat_response.usage.map(|u| Usage {
+            input_tokens: u.prompt_tokens.unwrap_or(0),
+            output_tokens: u.completion_tokens.unwrap_or(0),
+            cache_creation_tokens: None,
+            cache_read_tokens: u.prompt_tokens_details.and_then(|d| d.cached_tokens),
+        });
+
+        let choice = chat_response.choices.into_iter().next().ok_or_else(|| {
+            ModelError::Parse("OpenAI API response contained no choices in response".to_string())
+        })?;
+
+        // OpenAI uses null for content when tool_calls are present
+        let content = choice.message.content.unwrap_or_default();
+
+        let tool_calls = choice
+            .message
+            .tool_calls
+            .unwrap_or_default()
+            .into_iter()
+            .map(|tc| {
+                // OpenAI returns arguments as a JSON string, need to parse it
+                let arguments: serde_json::Value = serde_json::from_str(&tc.function.arguments)
+                    .map_err(|e| {
+                        ModelError::Parse(format!(
+                            "failed to parse tool arguments for '{}': {e} (raw: {})",
+                            tc.function.name, tc.function.arguments
+                        ))
+                    })?;
+                Ok(ToolCall {
+                    id: tc.id,
+                    name: tc.function.name,
+                    arguments,
+                })
+            })
+            .collect::<Result<Vec<_>, ModelError>>()?;
+
+        let mut resp = ModelResponse::new(content, tool_calls);
+        resp.usage = usage;
+        Ok(resp)
     }
 }
 
 #[async_trait]
 impl ModelProvider for OpenAiClient {
-    #[expect(
-        clippy::too_many_lines,
-        reason = "usage parsing added a few lines; splitting would obscure the request flow"
-    )]
     async fn complete(
         &self,
         messages: &[Message],
@@ -105,7 +184,6 @@ impl ModelProvider for OpenAiClient {
         let model = self.model.clone();
         let api_key = self.api_key.clone();
         let http = self.http.clone();
-        let timeout_secs = self.timeout_secs();
 
         let response_format = match &options.response_format {
             ResponseFormat::Text => None,
@@ -120,14 +198,10 @@ impl ModelProvider for OpenAiClient {
         };
         let temperature = options.temperature;
 
-        let reasoning_effort = options.thinking.as_ref().and_then(|tc| match tc {
-            ThinkingConfig::Level(ThinkingLevel::Low) => Some("low".to_string()),
-            ThinkingConfig::Level(ThinkingLevel::Medium) | ThinkingConfig::Toggle(true) => {
-                Some("medium".to_string())
-            }
-            ThinkingConfig::Level(ThinkingLevel::High) => Some("high".to_string()),
-            ThinkingConfig::Toggle(false) => None,
-        });
+        let reasoning_effort = options
+            .thinking
+            .as_ref()
+            .and_then(Self::build_reasoning_effort);
 
         with_retry(&self.retry, || {
             let url = url.clone();
@@ -150,74 +224,7 @@ impl ModelProvider for OpenAiClient {
                     reasoning_effort,
                 };
 
-                let mut req_builder = http.client().post(&url).json(&request);
-
-                if let Some(ref key) = api_key {
-                    req_builder = req_builder.header("Authorization", format!("Bearer {key}"));
-                }
-
-                let response = req_builder
-                    .send()
-                    .await
-                    .map_err(|e| map_request_error(e, timeout_secs))?;
-
-                if !response.status().is_success() {
-                    let status = response.status();
-                    let raw_body = match response.text().await {
-                        Ok(body) => body,
-                        Err(e) => {
-                            tracing::warn!(error = %e, "failed to read error response body");
-                            format!("failed to read response body: {e}")
-                        }
-                    };
-                    let error_body = serde_json::from_str::<OpenAiErrorResponse>(&raw_body)
-                        .map_or_else(|_| raw_body, |e| e.error.message);
-                    return Err(ModelError::Api(format!("{status}: {error_body}")));
-                }
-
-                let chat_response: ChatCompletionResponse = response.json().await?;
-
-                let usage = chat_response.usage.map(|u| Usage {
-                    input_tokens: u.prompt_tokens.unwrap_or(0),
-                    output_tokens: u.completion_tokens.unwrap_or(0),
-                    cache_creation_tokens: None,
-                    cache_read_tokens: u.prompt_tokens_details.and_then(|d| d.cached_tokens),
-                });
-
-                let choice = chat_response.choices.into_iter().next().ok_or_else(|| {
-                    ModelError::Parse(
-                        "OpenAI API response contained no choices in response".to_string(),
-                    )
-                })?;
-
-                // OpenAI uses null for content when tool_calls are present
-                let content = choice.message.content.unwrap_or_default();
-
-                let tool_calls = choice
-                    .message
-                    .tool_calls
-                    .unwrap_or_default()
-                    .into_iter()
-                    .map(|tc| {
-                        // OpenAI returns arguments as a JSON string, need to parse it
-                        let arguments: serde_json::Value =
-                            serde_json::from_str(&tc.function.arguments).map_err(|e| {
-                                ModelError::Parse(format!(
-                                    "failed to parse tool arguments for '{}': {e} (raw: {})",
-                                    tc.function.name, tc.function.arguments
-                                ))
-                            })?;
-                        Ok(ToolCall {
-                            id: tc.id,
-                            name: tc.function.name,
-                            arguments,
-                        })
-                    })
-                    .collect::<Result<Vec<_>, ModelError>>()?;
-
-                let mut resp = ModelResponse::new(content, tool_calls);
-                resp.usage = usage;
-                Ok(resp)
+                Self::send_completion(&http, &url, api_key.as_deref(), &request).await
             }
         })
         .await

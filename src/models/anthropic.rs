@@ -152,6 +152,101 @@ impl AnthropicClient {
             .collect()
     }
 
+    /// Map thinking config to Anthropic's thinking budget format.
+    fn build_thinking_config(
+        thinking: &ThinkingConfig,
+        max_tokens: u32,
+    ) -> Option<AnthropicThinking> {
+        let budget = match thinking {
+            ThinkingConfig::Level(ThinkingLevel::Low) => max_tokens / 4,
+            ThinkingConfig::Level(ThinkingLevel::Medium) | ThinkingConfig::Toggle(true) => {
+                max_tokens / 2
+            }
+            ThinkingConfig::Level(ThinkingLevel::High) => max_tokens * 3 / 4,
+            ThinkingConfig::Toggle(false) => return None,
+        };
+        // budget_tokens must be > 0 and < max_tokens
+        let budget = budget.max(1).min(max_tokens - 1);
+        Some(AnthropicThinking {
+            r#type: "enabled".to_string(),
+            budget_tokens: budget,
+        })
+    }
+
+    /// Send a pre-built request to the Anthropic API and parse the response.
+    async fn send_completion(
+        http: &SharedHttpClient,
+        endpoint: &str,
+        api_key: &str,
+        model: &str,
+        request: &AnthropicRequest<'_>,
+        message_count: usize,
+        tool_count: usize,
+    ) -> Result<ModelResponse, ModelError> {
+        debug!(
+            model = %model,
+            max_tokens = request.max_tokens,
+            message_count = message_count,
+            tool_count = tool_count,
+            "sending anthropic completion request"
+        );
+
+        let timeout_secs = http.timeout_secs();
+        let mut req_builder = http
+            .client()
+            .post(endpoint)
+            .header("anthropic-version", ANTHROPIC_VERSION)
+            .header("content-type", "application/json");
+
+        // OAuth tokens (sk-ant-oat01-*) use Bearer auth + beta header;
+        // standard API keys use x-api-key.
+        // NOTE: this logic is duplicated in gateway::server::web::fetch_anthropic_models
+        if api_key.starts_with("sk-ant-oat01-") {
+            req_builder = req_builder
+                .header("Authorization", format!("Bearer {api_key}"))
+                .header("anthropic-beta", "oauth-2025-04-20");
+        } else {
+            req_builder = req_builder.header("x-api-key", api_key);
+        }
+
+        let response = req_builder
+            .json(request)
+            .send()
+            .await
+            .map_err(|e| map_request_error(e, timeout_secs))?;
+
+        let status = response.status();
+        if !status.is_success() {
+            let body = response.text().await.unwrap_or_default();
+
+            let error_msg = serde_json::from_str::<AnthropicErrorResponse>(&body).map_or_else(
+                |_| format!("anthropic api error {status}: {body}"),
+                |parsed| format!("anthropic api error {status}: {}", parsed.error.message),
+            );
+
+            return Err(ModelError::Api(error_msg));
+        }
+
+        let body = response
+            .text()
+            .await
+            .map_err(|e| map_request_error(e, timeout_secs))?;
+
+        let api_response: AnthropicResponse = serde_json::from_str(&body)
+            .map_err(|e| ModelError::Parse(format!("failed to parse anthropic response: {e}")))?;
+
+        let result = Self::parse_response(api_response);
+
+        info!(
+            model = %model,
+            content_len = result.content.len(),
+            tool_calls = result.tool_calls.len(),
+            "anthropic completion received"
+        );
+
+        Ok(result)
+    }
+
     /// Parse the API response into our generic `ModelResponse`.
     fn parse_response(response: AnthropicResponse) -> ModelResponse {
         let mut text_parts: Vec<String> = Vec::new();
@@ -208,10 +303,6 @@ impl ModelProvider for AnthropicClient {
     /// Returns `ModelError::Timeout` if the request exceeds the configured timeout,
     /// `ModelError::Api` if the API returns an error status, `ModelError::Parse` if
     /// the response body is malformed, or `ModelError::Request` for network failures.
-    #[expect(
-        clippy::too_many_lines,
-        reason = "thinking config added computation; splitting would obscure the request flow"
-    )]
     async fn complete(
         &self,
         messages: &[Message],
@@ -239,22 +330,10 @@ impl ModelProvider for AnthropicClient {
         };
         let temperature = options.temperature;
 
-        let thinking = options.thinking.as_ref().and_then(|tc| {
-            let budget = match tc {
-                ThinkingConfig::Level(ThinkingLevel::Low) => max_tokens / 4,
-                ThinkingConfig::Level(ThinkingLevel::Medium) | ThinkingConfig::Toggle(true) => {
-                    max_tokens / 2
-                }
-                ThinkingConfig::Level(ThinkingLevel::High) => max_tokens * 3 / 4,
-                ThinkingConfig::Toggle(false) => return None,
-            };
-            // budget_tokens must be > 0 and < max_tokens
-            let budget = budget.max(1).min(max_tokens - 1);
-            Some(AnthropicThinking {
-                r#type: "enabled".to_string(),
-                budget_tokens: budget,
-            })
-        });
+        let thinking = options
+            .thinking
+            .as_ref()
+            .and_then(|tc| Self::build_thinking_config(tc, max_tokens));
 
         with_retry(&self.retry, || {
             let system = system.clone();
@@ -279,72 +358,16 @@ impl ModelProvider for AnthropicClient {
                     thinking,
                 };
 
-                debug!(
-                    model = %model,
-                    max_tokens = max_tokens,
-                    message_count = message_count,
-                    tool_count = tool_count,
-                    "sending anthropic completion request"
-                );
-
-                let timeout_secs = http.timeout_secs();
-                let mut req_builder = http
-                    .client()
-                    .post(&endpoint)
-                    .header("anthropic-version", ANTHROPIC_VERSION)
-                    .header("content-type", "application/json");
-
-                // OAuth tokens (sk-ant-oat01-*) use Bearer auth + beta header;
-                // standard API keys use x-api-key.
-                // NOTE: this logic is duplicated in gateway::server::web::fetch_anthropic_models
-                if api_key.starts_with("sk-ant-oat01-") {
-                    req_builder = req_builder
-                        .header("Authorization", format!("Bearer {api_key}"))
-                        .header("anthropic-beta", "oauth-2025-04-20");
-                } else {
-                    req_builder = req_builder.header("x-api-key", &api_key);
-                }
-
-                let response = req_builder
-                    .json(&request)
-                    .send()
-                    .await
-                    .map_err(|e| map_request_error(e, timeout_secs))?;
-
-                let status = response.status();
-                if !status.is_success() {
-                    let body = response.text().await.unwrap_or_default();
-
-                    let error_msg = serde_json::from_str::<AnthropicErrorResponse>(&body)
-                        .map_or_else(
-                            |_| format!("anthropic api error {status}: {body}"),
-                            |parsed| {
-                                format!("anthropic api error {status}: {}", parsed.error.message)
-                            },
-                        );
-
-                    return Err(ModelError::Api(error_msg));
-                }
-
-                let body = response
-                    .text()
-                    .await
-                    .map_err(|e| map_request_error(e, timeout_secs))?;
-
-                let api_response: AnthropicResponse = serde_json::from_str(&body).map_err(|e| {
-                    ModelError::Parse(format!("failed to parse anthropic response: {e}"))
-                })?;
-
-                let result = Self::parse_response(api_response);
-
-                info!(
-                    model = %model,
-                    content_len = result.content.len(),
-                    tool_calls = result.tool_calls.len(),
-                    "anthropic completion received"
-                );
-
-                Ok(result)
+                Self::send_completion(
+                    &http,
+                    &endpoint,
+                    &api_key,
+                    &model,
+                    &request,
+                    message_count,
+                    tool_count,
+                )
+                .await
             }
         })
         .await
@@ -437,9 +460,6 @@ struct AnthropicOutputFormat {
 #[derive(Debug, Deserialize)]
 struct AnthropicResponse {
     content: Vec<AnthropicContentBlock>,
-    #[serde(default)]
-    #[expect(dead_code, reason = "captured from API for diagnostics/future use")]
-    stop_reason: Option<String>,
     usage: Option<AnthropicUsage>,
 }
 
