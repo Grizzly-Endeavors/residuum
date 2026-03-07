@@ -134,10 +134,6 @@ pub(super) fn diff_config(old: &Config, new: &Config) -> ConfigDiff {
 /// Backs up current config files, loads new config, diffs old vs new, and
 /// applies only the changed subsystems. On failure, rolls back and notifies
 /// clients.
-#[expect(
-    clippy::too_many_lines,
-    reason = "linear pipeline applying each diff field in sequence"
-)]
 pub(super) async fn handle_root_reload(rt: &mut GatewayRuntime) -> IdleAction {
     tracing::info!("handling root config reload in-place");
     super::backup_config(&rt.config_dir);
@@ -170,269 +166,33 @@ pub(super) async fn handle_root_reload(rt: &mut GatewayRuntime) -> IdleAction {
 
     let summary = diff.summary();
 
-    // ── Provider swap ───────────────────────────────────────────────────
     if diff.providers_changed {
-        match super::startup::init_providers(&new_cfg, rt.tz, rt.http_client.clone()) {
-            Ok(components) => {
-                rt.agent.swap_provider(components.provider);
-                rt.observer = components.observer;
-                rt.reflector = components.reflector;
-                rt.embedding_provider = components.embedding_provider;
-
-                // Rebuild SpawnContext with new provider specs
-                let spawn_ctx = Arc::new(SpawnContext {
-                    background_config: new_cfg.background.clone(),
-                    main_provider_specs: new_cfg.main.clone(),
-                    http_client: rt.http_client.clone(),
-                    max_tokens: new_cfg.max_tokens,
-                    retry_config: new_cfg.retry.clone(),
-                    identity: rt.spawn_context.identity.clone(),
-                    options: CompletionOptions {
-                        max_tokens: Some(new_cfg.max_tokens),
-                        temperature: new_cfg.temperature,
-                        thinking: new_cfg.thinking.clone(),
-                        ..CompletionOptions::default()
-                    },
-                    layout: rt.layout.clone(),
-                    tz: rt.tz,
-                });
-                rt.spawn_context = spawn_ctx;
-
-                tracing::info!("providers swapped successfully");
-            }
-            Err(err) => {
-                tracing::warn!(error = %err, "provider rebuild failed, keeping current providers");
-                rt.broadcast_tx
-                    .send(ServerMessage::Notice {
-                        message: format!("provider rebuild failed (keeping current): {err}"),
-                    })
-                    .ok();
-            }
-        }
+        reload_providers(rt, &new_cfg);
     }
-
-    // ── Memory thresholds ───────────────────────────────────────────────
     if diff.memory_changed {
-        use crate::memory::observer::ObserverConfig;
-        use crate::memory::reflector::ReflectorConfig;
-
-        rt.observer.update_config(ObserverConfig {
-            threshold_tokens: new_cfg.memory.observer_threshold_tokens,
-            cooldown_secs: new_cfg.memory.observer_cooldown_secs,
-            force_threshold_tokens: new_cfg.memory.observer_force_threshold_tokens,
-            tz: new_cfg.timezone,
-        });
-
-        rt.reflector.update_config(ReflectorConfig {
-            threshold_tokens: new_cfg.memory.reflector_threshold_tokens,
-            tz: new_cfg.timezone,
-        });
-
-        tracing::info!("memory thresholds updated");
+        reload_memory_thresholds(rt, &new_cfg);
     }
-
-    // ── Gateway bind/port ─────────────────────────────────────────────
     if diff.gateway_changed {
-        let new_addr = new_cfg.gateway.addr();
-        match tokio::net::TcpListener::bind(&new_addr).await {
-            Ok(listener) => {
-                // Shut down the old HTTP server
-                rt.shutdown_tx.send(true).ok();
-
-                // New shutdown channel for the replacement server
-                let (new_shutdown_tx, mut new_shutdown_rx) = tokio::sync::watch::channel(false);
-
-                let state = super::GatewayState {
-                    inbound_tx: rt.inbound_tx.clone(),
-                    broadcast_tx: rt.broadcast_tx.clone(),
-                    reload_tx: rt.reload_tx.clone(),
-                    command_tx: rt.command_tx.clone(),
-                    inbox_dir: rt.layout.inbox_dir(),
-                    tz: rt.tz,
-                };
-                let config_api_state = super::web::ConfigApiState {
-                    config_dir: rt.config_dir.clone(),
-                    workspace_dir: rt.layout.root().to_path_buf(),
-                    memory_dir: Some(rt.layout.memory_dir()),
-                    reload_tx: Some(rt.reload_tx.clone()),
-                    setup_done: None,
-                    secret_lock: std::sync::Arc::new(tokio::sync::Mutex::new(())),
-                };
-                let app = super::build_gateway_app(state, &new_cfg, config_api_state);
-
-                let new_handle = tokio::spawn(async move {
-                    if let Err(e) = axum::serve(listener, app)
-                        .with_graceful_shutdown(async move {
-                            new_shutdown_rx.wait_for(|v| *v).await.ok();
-                        })
-                        .await
-                    {
-                        tracing::error!(error = %e, "gateway server error after rebind");
-                    }
-                });
-
-                rt.server_handle = new_handle;
-                rt.shutdown_tx = new_shutdown_tx;
-                tracing::info!(addr = %new_addr, "gateway rebound to new address");
-            }
-            Err(e) => {
-                tracing::warn!(
-                    addr = %new_addr,
-                    error = %e,
-                    "failed to bind to new gateway address, keeping current server"
-                );
-                rt.broadcast_tx
-                    .send(ServerMessage::Notice {
-                        message: format!(
-                            "gateway rebind failed ({new_addr}): {e} — keeping current server"
-                        ),
-                    })
-                    .ok();
-            }
-        }
+        reload_gateway(rt, &new_cfg).await;
     }
-
-    // ── Discord token ───────────────────────────────────────────────────
     if diff.discord_changed {
-        // Shut down existing adapter if running
-        if let Some(tx) = rt.discord_shutdown_tx.take() {
-            tx.send(true).ok();
-        }
-        if let Some(handle) = rt.discord_handle.take() {
-            if tokio::time::timeout(Duration::from_secs(5), handle)
-                .await
-                .is_ok()
-            {
-                tracing::info!("discord adapter stopped");
-            } else {
-                tracing::warn!("discord adapter shutdown timed out after 5s");
-            }
-        }
-
-        // Start new adapter if token is configured
-        if let Some(ref discord_cfg) = new_cfg.discord {
-            let (tx, rx) = tokio::sync::watch::channel(false);
-            let discord = crate::interfaces::discord::DiscordInterface::new(
-                discord_cfg.clone(),
-                rt.inbound_tx.clone(),
-                new_cfg.workspace_dir.clone(),
-                rt.reload_tx.clone(),
-                rt.command_tx.clone(),
-                rt.tz,
-                rx,
-            );
-            rt.discord_handle = Some(tokio::spawn(async move {
-                if let Err(e) = discord.start().await {
-                    tracing::error!(error = %e, "discord interface failed after reload");
-                }
-            }));
-            rt.discord_shutdown_tx = Some(tx);
-            tracing::info!("discord adapter restarted with new token");
-        } else {
-            tracing::info!("discord adapter removed from config");
-        }
+        reload_discord_adapter(rt, &new_cfg).await;
     }
-
-    // ── Telegram token ──────────────────────────────────────────────────
     if diff.telegram_changed {
-        // Shut down existing adapter if running
-        if let Some(tx) = rt.telegram_shutdown_tx.take() {
-            tx.send(true).ok();
-        }
-        if let Some(handle) = rt.telegram_handle.take() {
-            if tokio::time::timeout(Duration::from_secs(5), handle)
-                .await
-                .is_ok()
-            {
-                tracing::info!("telegram adapter stopped");
-            } else {
-                tracing::warn!("telegram adapter shutdown timed out after 5s");
-            }
-        }
-
-        // Start new adapter if token is configured
-        if let Some(ref telegram_cfg) = new_cfg.telegram {
-            let (tx, rx) = tokio::sync::watch::channel(false);
-            let telegram = crate::interfaces::telegram::TelegramInterface::new(
-                telegram_cfg.clone(),
-                rt.inbound_tx.clone(),
-                new_cfg.workspace_dir.clone(),
-                rt.reload_tx.clone(),
-                rt.command_tx.clone(),
-                rt.tz,
-                rx,
-            );
-            rt.telegram_handle = Some(tokio::spawn(async move {
-                if let Err(e) = telegram.start().await {
-                    tracing::error!(error = %e, "telegram interface failed after reload");
-                }
-            }));
-            rt.telegram_shutdown_tx = Some(tx);
-            tracing::info!("telegram adapter restarted with new token");
-        } else {
-            tracing::info!("telegram adapter removed from config");
-        }
+        reload_telegram_adapter(rt, &new_cfg).await;
     }
-
-    // ── Pulse toggle ────────────────────────────────────────────────────
     if diff.pulse_changed {
         rt.pulse_enabled = new_cfg.pulse_enabled;
         tracing::info!(enabled = new_cfg.pulse_enabled, "pulse toggle updated");
     }
-
-    // ── Background config ───────────────────────────────────────────────
     if diff.background_changed && !diff.providers_changed {
-        // If providers also changed, SpawnContext was already rebuilt above.
-        let spawn_ctx = Arc::new(SpawnContext {
-            background_config: new_cfg.background.clone(),
-            main_provider_specs: new_cfg.main.clone(),
-            http_client: rt.http_client.clone(),
-            max_tokens: new_cfg.max_tokens,
-            retry_config: new_cfg.retry.clone(),
-            identity: rt.spawn_context.identity.clone(),
-            options: CompletionOptions {
-                max_tokens: Some(new_cfg.max_tokens),
-                temperature: new_cfg.temperature,
-                thinking: new_cfg.thinking.clone(),
-                ..CompletionOptions::default()
-            },
-            layout: rt.layout.clone(),
-            tz: rt.tz,
-        });
-        rt.spawn_context = spawn_ctx;
-        tracing::info!("background config updated");
+        reload_background_config(rt, &new_cfg);
     }
-
-    // ── Skills rescan ───────────────────────────────────────────────────
     if diff.skills_changed {
-        let mut skill_guard = rt.skill_state.lock().await;
-        // Rescan with no project-specific skills dir (project rescan happens separately)
-        if let Err(err) = skill_guard.rescan(None).await {
-            tracing::warn!(error = %err, "skill rescan failed during reload");
-        } else {
-            tracing::info!("skills rescanned");
-        }
+        reload_skills(rt).await;
     }
-
-    // ── Agent ability gates ──────────────────────────────────────────────
     if diff.agent_changed {
-        let mut blocked: Vec<std::path::PathBuf> = vec![
-            new_cfg.config_dir.join("config.toml"),
-            new_cfg.config_dir.join("config.example.toml"),
-            new_cfg.config_dir.join("providers.toml"),
-            new_cfg.config_dir.join("providers.example.toml"),
-        ];
-        if !new_cfg.agent.modify_mcp {
-            blocked.push(rt.layout.mcp_json());
-        }
-        if !new_cfg.agent.modify_channels {
-            blocked.push(rt.layout.channels_toml());
-        }
-        rt.path_policy
-            .write()
-            .await
-            .set_blocked_paths(blocked.into_iter().collect());
-        tracing::info!("agent ability gates updated");
+        reload_agent_abilities(rt, &new_cfg).await;
     }
 
     // ── Store new config ────────────────────────────────────────────────
@@ -455,6 +215,242 @@ pub(super) async fn handle_root_reload(rt: &mut GatewayRuntime) -> IdleAction {
         }
     } else {
         IdleAction::None
+    }
+}
+
+/// Build a new `SpawnContext` from the current runtime and new config.
+fn build_spawn_context(rt: &GatewayRuntime, new_cfg: &Config) -> Arc<SpawnContext> {
+    Arc::new(SpawnContext {
+        background_config: new_cfg.background.clone(),
+        main_provider_specs: new_cfg.main.clone(),
+        http_client: rt.http_client.clone(),
+        max_tokens: new_cfg.max_tokens,
+        retry_config: new_cfg.retry.clone(),
+        identity: rt.spawn_context.identity.clone(),
+        options: CompletionOptions {
+            max_tokens: Some(new_cfg.max_tokens),
+            temperature: new_cfg.temperature,
+            thinking: new_cfg.thinking.clone(),
+            ..CompletionOptions::default()
+        },
+        layout: rt.layout.clone(),
+        tz: rt.tz,
+    })
+}
+
+/// Rebuild providers and swap them into the runtime.
+fn reload_providers(rt: &mut GatewayRuntime, new_cfg: &Config) {
+    match super::startup::init_providers(new_cfg, rt.tz, rt.http_client.clone()) {
+        Ok(components) => {
+            rt.agent.swap_provider(components.provider);
+            rt.observer = components.observer;
+            rt.reflector = components.reflector;
+            rt.embedding_provider = components.embedding_provider;
+            rt.spawn_context = build_spawn_context(rt, new_cfg);
+            tracing::info!("providers swapped successfully");
+        }
+        Err(err) => {
+            tracing::warn!(error = %err, "provider rebuild failed, keeping current providers");
+            rt.broadcast_tx
+                .send(ServerMessage::Notice {
+                    message: format!("provider rebuild failed (keeping current): {err}"),
+                })
+                .ok();
+        }
+    }
+}
+
+/// Update observer and reflector thresholds from the new config.
+fn reload_memory_thresholds(rt: &mut GatewayRuntime, new_cfg: &Config) {
+    use crate::memory::observer::ObserverConfig;
+    use crate::memory::reflector::ReflectorConfig;
+
+    rt.observer.update_config(ObserverConfig {
+        threshold_tokens: new_cfg.memory.observer_threshold_tokens,
+        cooldown_secs: new_cfg.memory.observer_cooldown_secs,
+        force_threshold_tokens: new_cfg.memory.observer_force_threshold_tokens,
+        tz: new_cfg.timezone,
+    });
+
+    rt.reflector.update_config(ReflectorConfig {
+        threshold_tokens: new_cfg.memory.reflector_threshold_tokens,
+        tz: new_cfg.timezone,
+    });
+
+    tracing::info!("memory thresholds updated");
+}
+
+/// Rebind the gateway HTTP server to a new address.
+async fn reload_gateway(rt: &mut GatewayRuntime, new_cfg: &Config) {
+    let new_addr = new_cfg.gateway.addr();
+    match tokio::net::TcpListener::bind(&new_addr).await {
+        Ok(listener) => {
+            rt.shutdown_tx.send(true).ok();
+
+            let (new_shutdown_tx, mut new_shutdown_rx) = tokio::sync::watch::channel(false);
+
+            let state = super::GatewayState {
+                inbound_tx: rt.inbound_tx.clone(),
+                broadcast_tx: rt.broadcast_tx.clone(),
+                reload_tx: rt.reload_tx.clone(),
+                command_tx: rt.command_tx.clone(),
+                inbox_dir: rt.layout.inbox_dir(),
+                tz: rt.tz,
+            };
+            let config_api_state = super::web::ConfigApiState {
+                config_dir: rt.config_dir.clone(),
+                workspace_dir: rt.layout.root().to_path_buf(),
+                memory_dir: Some(rt.layout.memory_dir()),
+                reload_tx: Some(rt.reload_tx.clone()),
+                setup_done: None,
+                secret_lock: std::sync::Arc::new(tokio::sync::Mutex::new(())),
+            };
+            let app = super::build_gateway_app(state, new_cfg, config_api_state);
+
+            let new_handle = tokio::spawn(async move {
+                if let Err(e) = axum::serve(listener, app)
+                    .with_graceful_shutdown(async move {
+                        new_shutdown_rx.wait_for(|v| *v).await.ok();
+                    })
+                    .await
+                {
+                    tracing::error!(error = %e, "gateway server error after rebind");
+                }
+            });
+
+            rt.server_handle = new_handle;
+            rt.shutdown_tx = new_shutdown_tx;
+            tracing::info!(addr = %new_addr, "gateway rebound to new address");
+        }
+        Err(e) => {
+            tracing::warn!(
+                addr = %new_addr,
+                error = %e,
+                "failed to bind to new gateway address, keeping current server"
+            );
+            rt.broadcast_tx
+                .send(ServerMessage::Notice {
+                    message: format!(
+                        "gateway rebind failed ({new_addr}): {e} — keeping current server"
+                    ),
+                })
+                .ok();
+        }
+    }
+}
+
+/// Rebuild `SpawnContext` when only background config changed (providers unchanged).
+fn reload_background_config(rt: &mut GatewayRuntime, new_cfg: &Config) {
+    rt.spawn_context = build_spawn_context(rt, new_cfg);
+    tracing::info!("background config updated");
+}
+
+/// Rescan skill directories.
+async fn reload_skills(rt: &mut GatewayRuntime) {
+    let mut skill_guard = rt.skill_state.lock().await;
+    if let Err(err) = skill_guard.rescan(None).await {
+        tracing::warn!(error = %err, "skill rescan failed during reload");
+    } else {
+        tracing::info!("skills rescanned");
+    }
+}
+
+/// Update path policy with new agent ability gates.
+async fn reload_agent_abilities(rt: &mut GatewayRuntime, new_cfg: &Config) {
+    let mut blocked: Vec<std::path::PathBuf> = vec![
+        new_cfg.config_dir.join("config.toml"),
+        new_cfg.config_dir.join("config.example.toml"),
+        new_cfg.config_dir.join("providers.toml"),
+        new_cfg.config_dir.join("providers.example.toml"),
+    ];
+    if !new_cfg.agent.modify_mcp {
+        blocked.push(rt.layout.mcp_json());
+    }
+    if !new_cfg.agent.modify_channels {
+        blocked.push(rt.layout.channels_toml());
+    }
+    rt.path_policy
+        .write()
+        .await
+        .set_blocked_paths(blocked.into_iter().collect());
+    tracing::info!("agent ability gates updated");
+}
+
+/// Stop the existing Discord adapter (if running) and start a new one if configured.
+async fn reload_discord_adapter(rt: &mut GatewayRuntime, new_cfg: &Config) {
+    if let Some(tx) = rt.discord_shutdown_tx.take() {
+        tx.send(true).ok();
+    }
+    if let Some(handle) = rt.discord_handle.take() {
+        if tokio::time::timeout(Duration::from_secs(5), handle)
+            .await
+            .is_ok()
+        {
+            tracing::info!("discord adapter stopped");
+        } else {
+            tracing::warn!("discord adapter shutdown timed out after 5s");
+        }
+    }
+
+    if let Some(ref discord_cfg) = new_cfg.discord {
+        let (tx, rx) = tokio::sync::watch::channel(false);
+        let discord = crate::interfaces::discord::DiscordInterface::new(
+            discord_cfg.clone(),
+            rt.inbound_tx.clone(),
+            new_cfg.workspace_dir.clone(),
+            rt.reload_tx.clone(),
+            rt.command_tx.clone(),
+            rt.tz,
+            rx,
+        );
+        rt.discord_handle = Some(tokio::spawn(async move {
+            if let Err(e) = discord.start().await {
+                tracing::error!(error = %e, "discord interface failed after reload");
+            }
+        }));
+        rt.discord_shutdown_tx = Some(tx);
+        tracing::info!("discord adapter restarted with new token");
+    } else {
+        tracing::info!("discord adapter removed from config");
+    }
+}
+
+/// Stop the existing Telegram adapter (if running) and start a new one if configured.
+async fn reload_telegram_adapter(rt: &mut GatewayRuntime, new_cfg: &Config) {
+    if let Some(tx) = rt.telegram_shutdown_tx.take() {
+        tx.send(true).ok();
+    }
+    if let Some(handle) = rt.telegram_handle.take() {
+        if tokio::time::timeout(Duration::from_secs(5), handle)
+            .await
+            .is_ok()
+        {
+            tracing::info!("telegram adapter stopped");
+        } else {
+            tracing::warn!("telegram adapter shutdown timed out after 5s");
+        }
+    }
+
+    if let Some(ref telegram_cfg) = new_cfg.telegram {
+        let (tx, rx) = tokio::sync::watch::channel(false);
+        let telegram = crate::interfaces::telegram::TelegramInterface::new(
+            telegram_cfg.clone(),
+            rt.inbound_tx.clone(),
+            new_cfg.workspace_dir.clone(),
+            rt.reload_tx.clone(),
+            rt.command_tx.clone(),
+            rt.tz,
+            rx,
+        );
+        rt.telegram_handle = Some(tokio::spawn(async move {
+            if let Err(e) = telegram.start().await {
+                tracing::error!(error = %e, "telegram interface failed after reload");
+            }
+        }));
+        rt.telegram_shutdown_tx = Some(tx);
+        tracing::info!("telegram adapter restarted with new token");
+    } else {
+        tracing::info!("telegram adapter removed from config");
     }
 }
 

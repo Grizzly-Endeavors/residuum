@@ -19,6 +19,23 @@ use crate::interfaces::types::{InboundMessage, MessageOrigin, RoutedMessage};
 
 use super::reply::TelegramReplyHandle;
 
+/// Shared gateway references threaded through telegram message dispatch.
+struct TelegramContext<'a> {
+    inbound_tx: &'a mpsc::Sender<RoutedMessage>,
+    inbox_dir: &'a Path,
+    reload_tx: &'a tokio::sync::watch::Sender<ReloadSignal>,
+    command_tx: &'a mpsc::Sender<ServerCommand>,
+    tz: chrono_tz::Tz,
+}
+
+/// Metadata for a Telegram file attachment.
+struct AttachmentMeta<'a> {
+    file_id: &'a str,
+    filename: &'a str,
+    size: u32,
+    content_type: Option<String>,
+}
+
 /// Run the Telegram long-polling loop.
 ///
 /// Connects to the Telegram API, verifies the bot token, then enters an
@@ -101,17 +118,14 @@ pub(super) async fn run_telegram_polling(
                 continue;
             }
 
-            dispatch_message(
-                &bot,
-                &msg,
-                from,
-                &inbound_tx,
-                &inbox_dir,
-                &reload_tx,
-                &command_tx,
+            let ctx = TelegramContext {
+                inbound_tx: &inbound_tx,
+                inbox_dir: &inbox_dir,
+                reload_tx: &reload_tx,
+                command_tx: &command_tx,
                 tz,
-            )
-            .await;
+            };
+            dispatch_message(&bot, &msg, from, &ctx).await;
         }
     }
 }
@@ -137,23 +151,11 @@ async fn register_commands(bot: &Bot) -> anyhow::Result<()> {
 }
 
 /// Dispatch a single incoming private message: commands, text, or attachments.
-#[expect(
-    clippy::too_many_arguments,
-    reason = "threads subsystem references from the polling loop for message dispatch"
-)]
-#[expect(
-    clippy::too_many_lines,
-    reason = "sequential attachment handling for each media type; splitting would obscure the flow"
-)]
 async fn dispatch_message(
     bot: &Bot,
     msg: &teloxide::types::Message,
     from: &teloxide::types::User,
-    inbound_tx: &mpsc::Sender<RoutedMessage>,
-    inbox_dir: &Path,
-    reload_tx: &tokio::sync::watch::Sender<ReloadSignal>,
-    command_tx: &mpsc::Sender<ServerCommand>,
-    tz: chrono_tz::Tz,
+    ctx: &TelegramContext<'_>,
 ) {
     let chat_id = msg.chat.id;
 
@@ -169,97 +171,14 @@ async fn dispatch_message(
         // Strip @botname suffix from commands (e.g. /help@mybot)
         let cmd_name = cmd_name.split('@').next().unwrap_or(cmd_name);
 
-        handle_command(
-            bot, chat_id, from, cmd_name, cmd_args, inbox_dir, reload_tx, command_tx, tz,
-        )
-        .await;
+        handle_command(bot, chat_id, from, cmd_name, cmd_args, ctx).await;
         return;
     }
 
     // Build content with attachment metadata
     let mut content = msg.text().unwrap_or("").to_string();
 
-    // Handle document attachments
-    if let Some(doc) = msg.document() {
-        handle_attachment(
-            bot,
-            &mut content,
-            &doc.file.id.0,
-            doc.file_name.as_deref().unwrap_or("document"),
-            doc.file.size,
-            doc.mime_type.as_ref().map(ToString::to_string),
-            inbox_dir,
-            from,
-            tz,
-        )
-        .await;
-    }
-
-    // Handle photo attachments (use largest size)
-    if let Some(photos) = msg.photo()
-        && let Some(photo) = photos.last()
-    {
-        handle_attachment(
-            bot,
-            &mut content,
-            &photo.file.id.0,
-            "photo.jpg",
-            photo.file.size,
-            Some("image/jpeg".to_string()),
-            inbox_dir,
-            from,
-            tz,
-        )
-        .await;
-    }
-
-    // Handle audio attachments
-    if let Some(audio) = msg.audio() {
-        handle_attachment(
-            bot,
-            &mut content,
-            &audio.file.id.0,
-            audio.file_name.as_deref().unwrap_or("audio"),
-            audio.file.size,
-            audio.mime_type.as_ref().map(ToString::to_string),
-            inbox_dir,
-            from,
-            tz,
-        )
-        .await;
-    }
-
-    // Handle voice attachments
-    if let Some(voice) = msg.voice() {
-        handle_attachment(
-            bot,
-            &mut content,
-            &voice.file.id.0,
-            "voice.ogg",
-            voice.file.size,
-            voice.mime_type.as_ref().map(ToString::to_string),
-            inbox_dir,
-            from,
-            tz,
-        )
-        .await;
-    }
-
-    // Handle video attachments
-    if let Some(video) = msg.video() {
-        handle_attachment(
-            bot,
-            &mut content,
-            &video.file.id.0,
-            video.file_name.as_deref().unwrap_or("video.mp4"),
-            video.file.size,
-            video.mime_type.as_ref().map(ToString::to_string),
-            inbox_dir,
-            from,
-            tz,
-        )
-        .await;
-    }
+    process_attachments(bot, msg, &mut content, ctx.inbox_dir, from, ctx.tz).await;
 
     // Skip empty messages (no text, no attachments processed)
     if content.is_empty() {
@@ -288,7 +207,7 @@ async fn dispatch_message(
         reply,
     };
 
-    if inbound_tx.send(routed).await.is_err() {
+    if ctx.inbound_tx.send(routed).await.is_err() {
         tracing::warn!("inbound channel closed, dropping telegram message");
     }
 }
@@ -302,20 +221,13 @@ fn build_sender_name(user: &teloxide::types::User) -> String {
 }
 
 /// Handle a Telegram /command.
-#[expect(
-    clippy::too_many_arguments,
-    reason = "mirrors discord handler's command dispatch with all needed context"
-)]
 async fn handle_command(
     bot: &Bot,
     chat_id: ChatId,
     from: &teloxide::types::User,
     cmd_name: &str,
     cmd_args: Option<&str>,
-    inbox_dir: &Path,
-    reload_tx: &tokio::sync::watch::Sender<ReloadSignal>,
-    command_tx: &mpsc::Sender<ServerCommand>,
-    tz: chrono_tz::Tz,
+    ctx: &TelegramContext<'_>,
 ) {
     let command_ctx = CommandContext {
         url: "",
@@ -328,13 +240,13 @@ async fn handle_command(
     let response_text = match result.side_effect {
         Some(CommandSideEffect::Reload) => {
             tracing::info!("reload requested via telegram command");
-            reload_tx.send(ReloadSignal::Root).ok();
+            ctx.reload_tx.send(ReloadSignal::Root).ok();
             result.response
         }
         Some(CommandSideEffect::ServerCommand { name, args }) => {
             tracing::info!(command = %name, "server command via telegram command");
             let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
-            command_tx
+            ctx.command_tx
                 .try_send(ServerCommand {
                     name: name.to_string(),
                     args,
@@ -355,7 +267,7 @@ async fn handle_command(
                 .take(60)
                 .collect();
             let source = format!("telegram:{}", build_sender_name(from));
-            match inbox::quick_add(inbox_dir, &title, &body, &source, tz).await {
+            match inbox::quick_add(ctx.inbox_dir, &title, &body, &source, ctx.tz).await {
                 Ok(_) => result.response,
                 Err(e) => format!("failed to add inbox item: {e}"),
             }
@@ -372,18 +284,78 @@ async fn handle_command(
     }
 }
 
+/// Extract and process all attachment types from a Telegram message.
+async fn process_attachments(
+    bot: &Bot,
+    msg: &teloxide::types::Message,
+    content: &mut String,
+    inbox_dir: &Path,
+    from: &teloxide::types::User,
+    tz: chrono_tz::Tz,
+) {
+    // Handle document attachments
+    if let Some(doc) = msg.document() {
+        let meta = AttachmentMeta {
+            file_id: &doc.file.id.0,
+            filename: doc.file_name.as_deref().unwrap_or("document"),
+            size: doc.file.size,
+            content_type: doc.mime_type.as_ref().map(ToString::to_string),
+        };
+        handle_attachment(bot, content, &meta, inbox_dir, from, tz).await;
+    }
+
+    // Handle photo attachments (use largest size)
+    if let Some(photos) = msg.photo()
+        && let Some(photo) = photos.last()
+    {
+        let meta = AttachmentMeta {
+            file_id: &photo.file.id.0,
+            filename: "photo.jpg",
+            size: photo.file.size,
+            content_type: Some("image/jpeg".to_string()),
+        };
+        handle_attachment(bot, content, &meta, inbox_dir, from, tz).await;
+    }
+
+    // Handle audio attachments
+    if let Some(audio) = msg.audio() {
+        let meta = AttachmentMeta {
+            file_id: &audio.file.id.0,
+            filename: audio.file_name.as_deref().unwrap_or("audio"),
+            size: audio.file.size,
+            content_type: audio.mime_type.as_ref().map(ToString::to_string),
+        };
+        handle_attachment(bot, content, &meta, inbox_dir, from, tz).await;
+    }
+
+    // Handle voice attachments
+    if let Some(voice) = msg.voice() {
+        let meta = AttachmentMeta {
+            file_id: &voice.file.id.0,
+            filename: "voice.ogg",
+            size: voice.file.size,
+            content_type: voice.mime_type.as_ref().map(ToString::to_string),
+        };
+        handle_attachment(bot, content, &meta, inbox_dir, from, tz).await;
+    }
+
+    // Handle video attachments
+    if let Some(video) = msg.video() {
+        let meta = AttachmentMeta {
+            file_id: &video.file.id.0,
+            filename: video.file_name.as_deref().unwrap_or("video.mp4"),
+            size: video.file.size,
+            content_type: video.mime_type.as_ref().map(ToString::to_string),
+        };
+        handle_attachment(bot, content, &meta, inbox_dir, from, tz).await;
+    }
+}
+
 /// Download a Telegram file and append attachment metadata to the content string.
-#[expect(
-    clippy::too_many_arguments,
-    reason = "attachment handling requires file metadata, bot reference, and inbox context"
-)]
 async fn handle_attachment(
     bot: &Bot,
     content: &mut String,
-    file_id: &str,
-    filename: &str,
-    size: u32,
-    content_type: Option<String>,
+    meta: &AttachmentMeta<'_>,
     inbox_dir: &Path,
     from: &teloxide::types::User,
     tz: chrono_tz::Tz,
@@ -393,17 +365,19 @@ async fn handle_attachment(
     };
     use teloxide::net::Download;
 
+    let filename = meta.filename;
+
     let info = AttachmentInfo {
         filename: filename.to_string(),
         url: String::new(), // Telegram doesn't use URL-based download
-        size,
-        content_type,
+        size: meta.size,
+        content_type: meta.content_type.clone(),
     };
 
     // Two-step Telegram download: get_file → download_file
     let download_result: Result<SavedAttachment, String> = async {
         let file = bot
-            .get_file(teloxide::types::FileId(file_id.to_string()))
+            .get_file(teloxide::types::FileId(meta.file_id.to_string()))
             .await
             .map_err(|e| format!("failed to get file info for '{filename}': {e}"))?;
 

@@ -78,9 +78,11 @@ mod gateway_integration {
             ToolFilter::new_shared(std::collections::HashSet::new()),
             residuum::mcp::McpRegistry::new_shared(),
             IdentityFiles::default(),
-            CompletionOptions::default(),
-            chrono_tz::UTC,
-            std::path::PathBuf::from("/tmp/residuum-test-inbox"),
+            residuum::agent::AgentConfig {
+                options: CompletionOptions::default(),
+                tz: chrono_tz::UTC,
+                inbox_dir: std::path::PathBuf::from("/tmp/residuum-test-inbox"),
+            },
         )
     }
 

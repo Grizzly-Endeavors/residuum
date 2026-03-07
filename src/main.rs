@@ -511,14 +511,9 @@ fn run_stop_command() -> Result<(), ResiduumError> {
 /// # Errors
 ///
 /// Returns `ResiduumError::Gateway` if the WebSocket connection fails.
-#[expect(
-    clippy::too_many_lines,
-    reason = "CLI connect loop wires up readline, WS, and indicator; splitting would obscure the event flow"
-)]
 async fn run_connect(url: &str, verbose: bool) -> Result<(), ResiduumError> {
-    use futures_util::{SinkExt, StreamExt};
+    use futures_util::StreamExt;
     use residuum::interfaces::cli::CliReader;
-    use tokio_tungstenite::tungstenite::Message as TungsteniteMessage;
 
     let (ws_stream, _response) = tokio_tungstenite::connect_async(url)
         .await
@@ -559,59 +554,13 @@ async fn run_connect(url: &str, verbose: bool) -> Result<(), ResiduumError> {
                     break;
                 };
 
-                // Check for slash commands
-                if let Some(effect) = client.handle_command(&line) {
-                    match effect {
-                        CommandEffect::ToggleVerbose => {
-                            let new_verbose = !client.verbose();
-                            client.set_verbose(new_verbose);
-                            let label = if new_verbose { "on" } else { "off" };
-                            eprintln!("verbose mode: {label}");
-                            send_client_message(
-                                &mut ws_tx,
-                                &ClientMessage::SetVerbose { enabled: new_verbose },
-                            ).await?;
-                        }
-                        CommandEffect::Reload => {
-                            send_client_message(&mut ws_tx, &ClientMessage::Reload).await?;
-                        }
-                        CommandEffect::ServerCommand { name, args } => {
-                            send_client_message(
-                                &mut ws_tx,
-                                &ClientMessage::ServerCommand {
-                                    name: name.to_string(),
-                                    args,
-                                },
-                            ).await?;
-                        }
-                        CommandEffect::InboxAdd(body) => {
-                            send_client_message(
-                                &mut ws_tx,
-                                &ClientMessage::InboxAdd { body },
-                            )
-                            .await?;
-                        }
-                        CommandEffect::Quit => break,
-                        CommandEffect::PrintLocal(text) => eprintln!("{text}"),
-                    }
-                    // Slash commands don't trigger agent turns; unblock prompt immediately
-                    gate_tx.send(()).ok();
-                    continue;
+                match handle_cli_input(
+                    &line, &mut client, &mut ws_tx, &gate_tx,
+                    &mut msg_counter, &mut turn_active,
+                ).await? {
+                    std::ops::ControlFlow::Break(()) => break,
+                    std::ops::ControlFlow::Continue(()) => {}
                 }
-
-                msg_counter = msg_counter.wrapping_add(1);
-                let client_msg = ClientMessage::SendMessage {
-                    id: format!("cli-{msg_counter}"),
-                    content: line,
-                };
-                let json = serde_json::to_string(&client_msg).map_err(|e| {
-                    ResiduumError::Gateway(format!("failed to serialize message: {e}"))
-                })?;
-                if ws_tx.send(TungsteniteMessage::text(json)).await.is_err() {
-                    eprintln!("connection closed");
-                    break;
-                }
-                turn_active = true;
             }
 
             // Gateway → display to user
@@ -621,39 +570,9 @@ async fn run_connect(url: &str, verbose: bool) -> Result<(), ResiduumError> {
                     break;
                 };
 
-                let raw = match frame_result {
-                    Ok(TungsteniteMessage::Text(txt)) => txt,
-                    Ok(TungsteniteMessage::Close(_)) => {
-                        eprintln!("server closed connection");
-                        break;
-                    }
-                    Ok(_) => continue,
-                    Err(e) => {
-                        eprintln!("websocket error: {e}");
-                        break;
-                    }
-                };
-
-                match serde_json::from_str::<ServerMessage>(&raw) {
-                    Ok(ServerMessage::Reloading) => {
-                        // In-place reload: server stays up, no need to disconnect
-                        eprintln!("server is reloading configuration...");
-                    }
-                    Ok(ref server_msg @ ServerMessage::Response { ref reply_to, .. })
-                        if turn_active && !reply_to.is_empty() =>
-                    {
-                        client.display(server_msg);
-                        // Final response (non-empty reply_to) ends the turn
-                        turn_active = false;
-                        gate_tx.send(()).ok();
-                    }
-                    Ok(ref server_msg @ ServerMessage::Error { .. }) if turn_active => {
-                        client.display(server_msg);
-                        turn_active = false;
-                        gate_tx.send(()).ok();
-                    }
-                    Ok(server_msg) => client.display(&server_msg),
-                    Err(e) => eprintln!("warning: failed to parse server message: {e}"),
+                match handle_ws_frame(frame_result, &mut client, &mut turn_active, &gate_tx) {
+                    std::ops::ControlFlow::Break(()) => break,
+                    std::ops::ControlFlow::Continue(()) => {}
                 }
             }
 
@@ -945,6 +864,135 @@ fn extract_flag_value(args: &[String], flag: &str) -> Option<String> {
         .position(|a| a == flag)
         .and_then(|i| args.get(i + 1))
         .cloned()
+}
+
+/// Process a single WebSocket frame from the gateway.
+///
+/// Returns `Break(())` to exit the event loop, `Continue(())` otherwise.
+fn handle_ws_frame(
+    frame_result: Result<
+        tokio_tungstenite::tungstenite::Message,
+        tokio_tungstenite::tungstenite::Error,
+    >,
+    client: &mut CliClient,
+    turn_active: &mut bool,
+    gate_tx: &std::sync::mpsc::Sender<()>,
+) -> std::ops::ControlFlow<()> {
+    use tokio_tungstenite::tungstenite::Message as TungsteniteMessage;
+
+    let raw = match frame_result {
+        Ok(TungsteniteMessage::Text(txt)) => txt,
+        Ok(TungsteniteMessage::Close(_)) => {
+            eprintln!("server closed connection");
+            return std::ops::ControlFlow::Break(());
+        }
+        Ok(_) => return std::ops::ControlFlow::Continue(()),
+        Err(e) => {
+            eprintln!("websocket error: {e}");
+            return std::ops::ControlFlow::Break(());
+        }
+    };
+
+    match serde_json::from_str::<ServerMessage>(&raw) {
+        Ok(ServerMessage::Reloading) => {
+            eprintln!("server is reloading configuration...");
+        }
+        Ok(ref server_msg @ ServerMessage::Response { ref reply_to, .. })
+            if *turn_active && !reply_to.is_empty() =>
+        {
+            client.display(server_msg);
+            *turn_active = false;
+            gate_tx.send(()).ok();
+        }
+        Ok(ref server_msg @ ServerMessage::Error { .. }) if *turn_active => {
+            client.display(server_msg);
+            *turn_active = false;
+            gate_tx.send(()).ok();
+        }
+        Ok(server_msg) => client.display(&server_msg),
+        Err(e) => eprintln!("warning: failed to parse server message: {e}"),
+    }
+
+    std::ops::ControlFlow::Continue(())
+}
+
+/// Handle a line of CLI input: dispatch slash commands or send as a message.
+///
+/// Returns `Break(())` to exit the event loop, `Continue(())` otherwise.
+///
+/// # Errors
+///
+/// Returns `ResiduumError::Gateway` on serialization or send failure.
+async fn handle_cli_input<S>(
+    line: &str,
+    client: &mut CliClient,
+    ws_tx: &mut S,
+    gate_tx: &std::sync::mpsc::Sender<()>,
+    msg_counter: &mut u64,
+    turn_active: &mut bool,
+) -> Result<std::ops::ControlFlow<()>, ResiduumError>
+where
+    S: futures_util::Sink<
+            tokio_tungstenite::tungstenite::Message,
+            Error = tokio_tungstenite::tungstenite::Error,
+        > + Unpin,
+{
+    use futures_util::SinkExt;
+    use tokio_tungstenite::tungstenite::Message as TungsteniteMessage;
+
+    if let Some(effect) = client.handle_command(line) {
+        match effect {
+            CommandEffect::ToggleVerbose => {
+                let new_verbose = !client.verbose();
+                client.set_verbose(new_verbose);
+                let label = if new_verbose { "on" } else { "off" };
+                eprintln!("verbose mode: {label}");
+                send_client_message(
+                    ws_tx,
+                    &ClientMessage::SetVerbose {
+                        enabled: new_verbose,
+                    },
+                )
+                .await?;
+            }
+            CommandEffect::Reload => {
+                send_client_message(ws_tx, &ClientMessage::Reload).await?;
+            }
+            CommandEffect::ServerCommand { name, args } => {
+                send_client_message(
+                    ws_tx,
+                    &ClientMessage::ServerCommand {
+                        name: name.to_string(),
+                        args,
+                    },
+                )
+                .await?;
+            }
+            CommandEffect::InboxAdd(body) => {
+                send_client_message(ws_tx, &ClientMessage::InboxAdd { body }).await?;
+            }
+            CommandEffect::Quit => return Ok(std::ops::ControlFlow::Break(())),
+            CommandEffect::PrintLocal(text) => eprintln!("{text}"),
+        }
+        // Slash commands don't trigger agent turns; unblock prompt immediately
+        gate_tx.send(()).ok();
+        return Ok(std::ops::ControlFlow::Continue(()));
+    }
+
+    *msg_counter = msg_counter.wrapping_add(1);
+    let client_msg = ClientMessage::SendMessage {
+        id: format!("cli-{}", *msg_counter),
+        content: line.to_string(),
+    };
+    let json = serde_json::to_string(&client_msg)
+        .map_err(|e| ResiduumError::Gateway(format!("failed to serialize message: {e}")))?;
+    if ws_tx.send(TungsteniteMessage::text(json)).await.is_err() {
+        eprintln!("connection closed");
+        return Ok(std::ops::ControlFlow::Break(()));
+    }
+    *turn_active = true;
+
+    Ok(std::ops::ControlFlow::Continue(()))
 }
 
 /// Serialize and send a `ClientMessage` over the WebSocket.

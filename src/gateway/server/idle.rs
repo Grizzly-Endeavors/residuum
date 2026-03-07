@@ -12,7 +12,7 @@ use crate::models::factory::build_provider_chain;
 use crate::models::{CompletionOptions, Message};
 
 use super::GatewayRuntime;
-use super::memory::execute_observation;
+use super::memory::{MemorySubsystems, execute_observation};
 
 /// Run the full idle transition sequence.
 pub(super) async fn execute_idle_transition(
@@ -30,16 +30,15 @@ pub(super) async fn execute_idle_transition(
     let total_skills = skill_count_from_project + extra_skill_count;
 
     // 3. Fire observer, then clear in-memory message buffer
-    execute_observation(
-        &rt.observer,
-        &rt.reflector,
-        &rt.search_index,
-        &rt.layout,
-        &mut rt.agent,
-        rt.vector_store.as_ref(),
-        rt.embedding_provider.as_ref(),
-    )
-    .await;
+    let mem = MemorySubsystems {
+        observer: &rt.observer,
+        reflector: &rt.reflector,
+        search_index: &rt.search_index,
+        layout: &rt.layout,
+        vector_store: rt.vector_store.as_ref(),
+        embedding_provider: rt.embedding_provider.as_ref(),
+    };
+    execute_observation(&mem, &mut rt.agent).await;
     *observe_deadline = None;
     rt.agent.clear_messages();
 

@@ -14,7 +14,7 @@ use crate::workspace::identity::IdentityFiles;
 
 use self::context::{MemoryContext, PromptContext, StatusLine};
 use self::recent_messages::RecentMessages;
-use self::turn::execute_turn;
+use self::turn::{TurnResources, execute_turn};
 
 /// Result of a background system turn (pulse or scheduled action).
 pub struct SystemTurnResult {
@@ -24,6 +24,13 @@ pub struct SystemTurnResult {
     ///
     /// Feed these into `run_memory_pipeline()` so background turns contribute to memory.
     pub messages: Vec<Message>,
+}
+
+/// Configuration for creating a new `Agent`.
+pub struct AgentConfig {
+    pub options: CompletionOptions,
+    pub tz: chrono_tz::Tz,
+    pub inbox_dir: std::path::PathBuf,
 }
 
 /// The agent runtime that processes user messages through the model.
@@ -47,19 +54,13 @@ pub struct Agent {
 impl Agent {
     /// Create a new agent with the given components.
     #[must_use]
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "agent needs all subsystem handles at construction"
-    )]
     pub fn new(
         provider: Box<dyn ModelProvider>,
         tools: ToolRegistry,
         tool_filter: SharedToolFilter,
         mcp_registry: SharedMcpRegistry,
         identity: IdentityFiles,
-        options: CompletionOptions,
-        tz: chrono_tz::Tz,
-        inbox_dir: std::path::PathBuf,
+        config: AgentConfig,
     ) -> Self {
         Self {
             provider,
@@ -68,12 +69,12 @@ impl Agent {
             mcp_registry,
             identity,
             recent_messages: RecentMessages::new(),
-            options,
+            options: config.options,
             observations: None,
             recent_context: None,
-            tz,
+            tz: config.tz,
             last_user_message_at: None,
-            inbox_dir,
+            inbox_dir: config.inbox_dir,
         }
     }
 
@@ -215,13 +216,16 @@ impl Agent {
             recent_context: self.recent_context.as_deref(),
         };
 
+        let resources = TurnResources {
+            provider: &*self.provider,
+            tools: &self.tools,
+            tool_filter: &self.tool_filter,
+            mcp_registry: &self.mcp_registry,
+            identity: &self.identity,
+            options: &self.options,
+        };
         execute_turn(
-            &*self.provider,
-            &self.tools,
-            &self.tool_filter,
-            &self.mcp_registry,
-            &self.identity,
-            &self.options,
+            &resources,
             &memory_ctx,
             prompt_ctx,
             &mut self.recent_messages,
@@ -266,13 +270,16 @@ impl Agent {
             recent_context: self.recent_context.as_deref(),
         };
 
+        let resources = TurnResources {
+            provider: &*self.provider,
+            tools: &self.tools,
+            tool_filter: &self.tool_filter,
+            mcp_registry: &self.mcp_registry,
+            identity: &self.identity,
+            options: &self.options,
+        };
         execute_turn(
-            &*self.provider,
-            &self.tools,
-            &self.tool_filter,
-            &self.mcp_registry,
-            &self.identity,
-            &self.options,
+            &resources,
             &memory_ctx,
             prompt_ctx,
             &mut self.recent_messages,
@@ -314,14 +321,18 @@ impl Agent {
         // System turns don't participate in interrupts — use a dead-end channel
         let mut sys_interrupt_rx = interrupt::dead_interrupt_rx();
 
+        let resources = TurnResources {
+            provider,
+            tools: &self.tools,
+            tool_filter: &self.tool_filter,
+            mcp_registry: &self.mcp_registry,
+            identity: &self.identity,
+            options: &self.options,
+        };
+
         // System turns don't inject time context (no user-facing timestamps)
         let mut texts = execute_turn(
-            provider,
-            &self.tools,
-            &self.tool_filter,
-            &self.mcp_registry,
-            &self.identity,
-            &self.options,
+            &resources,
             &memory_ctx,
             prompt_ctx,
             &mut thread_messages,
@@ -462,9 +473,11 @@ mod tests {
             no_filter(),
             empty_mcp(),
             IdentityFiles::default(),
-            CompletionOptions::default(),
-            chrono_tz::UTC,
-            std::path::PathBuf::from("/tmp/residuum-test-inbox"),
+            AgentConfig {
+                options: CompletionOptions::default(),
+                tz: chrono_tz::UTC,
+                inbox_dir: std::path::PathBuf::from("/tmp/residuum-test-inbox"),
+            },
         );
 
         let reply = NullReplyHandle;
@@ -502,9 +515,11 @@ mod tests {
             no_filter(),
             empty_mcp(),
             IdentityFiles::default(),
-            CompletionOptions::default(),
-            chrono_tz::UTC,
-            std::path::PathBuf::from("/tmp/residuum-test-inbox"),
+            AgentConfig {
+                options: CompletionOptions::default(),
+                tz: chrono_tz::UTC,
+                inbox_dir: std::path::PathBuf::from("/tmp/residuum-test-inbox"),
+            },
         );
 
         let reply = NullReplyHandle;
@@ -553,9 +568,11 @@ mod tests {
             no_filter(),
             empty_mcp(),
             IdentityFiles::default(),
-            CompletionOptions::default(),
-            chrono_tz::UTC,
-            std::path::PathBuf::from("/tmp/residuum-test-inbox"),
+            AgentConfig {
+                options: CompletionOptions::default(),
+                tz: chrono_tz::UTC,
+                inbox_dir: std::path::PathBuf::from("/tmp/residuum-test-inbox"),
+            },
         );
 
         let reply = NullReplyHandle;
@@ -605,9 +622,11 @@ mod tests {
             no_filter(),
             empty_mcp(),
             IdentityFiles::default(),
-            CompletionOptions::default(),
-            chrono_tz::UTC,
-            std::path::PathBuf::from("/tmp/residuum-test-inbox"),
+            AgentConfig {
+                options: CompletionOptions::default(),
+                tz: chrono_tz::UTC,
+                inbox_dir: std::path::PathBuf::from("/tmp/residuum-test-inbox"),
+            },
         );
 
         let reply = NullReplyHandle;
@@ -635,9 +654,11 @@ mod tests {
             no_filter(),
             empty_mcp(),
             IdentityFiles::default(),
-            CompletionOptions::default(),
-            chrono_tz::UTC,
-            std::path::PathBuf::from("/tmp/residuum-test-inbox"),
+            AgentConfig {
+                options: CompletionOptions::default(),
+                tz: chrono_tz::UTC,
+                inbox_dir: std::path::PathBuf::from("/tmp/residuum-test-inbox"),
+            },
         );
 
         let reply = NullReplyHandle;
@@ -665,9 +686,11 @@ mod tests {
             no_filter(),
             empty_mcp(),
             IdentityFiles::default(),
-            CompletionOptions::default(),
-            chrono_tz::UTC,
-            std::path::PathBuf::from("/tmp/residuum-test-inbox"),
+            AgentConfig {
+                options: CompletionOptions::default(),
+                tz: chrono_tz::UTC,
+                inbox_dir: std::path::PathBuf::from("/tmp/residuum-test-inbox"),
+            },
         );
 
         agent.inject_user_message("leftover interrupt message");
@@ -698,9 +721,11 @@ mod tests {
             no_filter(),
             empty_mcp(),
             IdentityFiles::default(),
-            CompletionOptions::default(),
-            chrono_tz::UTC,
-            std::path::PathBuf::from("/tmp/residuum-test-inbox"),
+            AgentConfig {
+                options: CompletionOptions::default(),
+                tz: chrono_tz::UTC,
+                inbox_dir: std::path::PathBuf::from("/tmp/residuum-test-inbox"),
+            },
         );
 
         // Set a known timestamp so we can verify it doesn't change
@@ -750,9 +775,11 @@ mod tests {
             no_filter(),
             empty_mcp(),
             IdentityFiles::default(),
-            CompletionOptions::default(),
-            chrono_tz::UTC,
-            std::path::PathBuf::from("/tmp/residuum-test-inbox"),
+            AgentConfig {
+                options: CompletionOptions::default(),
+                tz: chrono_tz::UTC,
+                inbox_dir: std::path::PathBuf::from("/tmp/residuum-test-inbox"),
+            },
         );
 
         agent.inject_system_message("background task completed: report-gen");
@@ -778,9 +805,11 @@ mod tests {
             no_filter(),
             empty_mcp(),
             IdentityFiles::default(),
-            CompletionOptions::default(),
-            chrono_tz::UTC,
-            std::path::PathBuf::from("/tmp/residuum-test-inbox"),
+            AgentConfig {
+                options: CompletionOptions::default(),
+                tz: chrono_tz::UTC,
+                inbox_dir: std::path::PathBuf::from("/tmp/residuum-test-inbox"),
+            },
         );
 
         // Inject a background message before the "turn"
@@ -815,9 +844,11 @@ mod tests {
             no_filter(),
             empty_mcp(),
             IdentityFiles::default(),
-            CompletionOptions::default(),
-            chrono_tz::UTC,
-            std::path::PathBuf::from("/tmp/residuum-test-inbox"),
+            AgentConfig {
+                options: CompletionOptions::default(),
+                tz: chrono_tz::UTC,
+                inbox_dir: std::path::PathBuf::from("/tmp/residuum-test-inbox"),
+            },
         );
 
         // Simulate a conversation with 5 exchanges
@@ -993,9 +1024,11 @@ mod tests {
             no_filter(),
             empty_mcp(),
             IdentityFiles::default(),
-            CompletionOptions::default(),
-            chrono_tz::UTC,
-            std::path::PathBuf::from("/tmp/residuum-test-inbox"),
+            AgentConfig {
+                options: CompletionOptions::default(),
+                tz: chrono_tz::UTC,
+                inbox_dir: std::path::PathBuf::from("/tmp/residuum-test-inbox"),
+            },
         );
 
         let reply = NullReplyHandle;
@@ -1062,9 +1095,11 @@ mod tests {
             no_filter(),
             empty_mcp(),
             IdentityFiles::default(),
-            CompletionOptions::default(),
-            chrono_tz::UTC,
-            std::path::PathBuf::from("/tmp/residuum-test-inbox"),
+            AgentConfig {
+                options: CompletionOptions::default(),
+                tz: chrono_tz::UTC,
+                inbox_dir: std::path::PathBuf::from("/tmp/residuum-test-inbox"),
+            },
         );
 
         let reply = NullReplyHandle;
@@ -1119,9 +1154,11 @@ mod tests {
             no_filter(),
             empty_mcp(),
             IdentityFiles::default(),
-            CompletionOptions::default(),
-            chrono_tz::UTC,
-            std::path::PathBuf::from("/tmp/residuum-test-inbox"),
+            AgentConfig {
+                options: CompletionOptions::default(),
+                tz: chrono_tz::UTC,
+                inbox_dir: std::path::PathBuf::from("/tmp/residuum-test-inbox"),
+            },
         );
 
         let reply = NullReplyHandle;
@@ -1155,9 +1192,11 @@ mod tests {
             no_filter(),
             empty_mcp(),
             IdentityFiles::default(),
-            CompletionOptions::default(),
-            chrono_tz::UTC,
-            std::path::PathBuf::from("/tmp/residuum-test-inbox"),
+            AgentConfig {
+                options: CompletionOptions::default(),
+                tz: chrono_tz::UTC,
+                inbox_dir: std::path::PathBuf::from("/tmp/residuum-test-inbox"),
+            },
         );
 
         let reply = NullReplyHandle;
@@ -1225,9 +1264,11 @@ mod tests {
             no_filter(),
             empty_mcp(),
             IdentityFiles::default(),
-            CompletionOptions::default(),
-            chrono_tz::UTC,
-            std::path::PathBuf::from("/tmp/residuum-test-inbox"),
+            AgentConfig {
+                options: CompletionOptions::default(),
+                tz: chrono_tz::UTC,
+                inbox_dir: std::path::PathBuf::from("/tmp/residuum-test-inbox"),
+            },
         );
 
         let reply = NullReplyHandle;
@@ -1263,9 +1304,11 @@ mod tests {
             no_filter(),
             empty_mcp(),
             IdentityFiles::default(),
-            CompletionOptions::default(),
-            chrono_tz::UTC,
-            std::path::PathBuf::from("/tmp/residuum-test-inbox"),
+            AgentConfig {
+                options: CompletionOptions::default(),
+                tz: chrono_tz::UTC,
+                inbox_dir: std::path::PathBuf::from("/tmp/residuum-test-inbox"),
+            },
         );
 
         // Only 2 exchanges — fewer than the 3-exchange retention window
@@ -1296,9 +1339,11 @@ mod tests {
             no_filter(),
             empty_mcp(),
             IdentityFiles::default(),
-            CompletionOptions::default(),
-            chrono_tz::UTC,
-            std::path::PathBuf::from("/tmp/residuum-test-inbox"),
+            AgentConfig {
+                options: CompletionOptions::default(),
+                tz: chrono_tz::UTC,
+                inbox_dir: std::path::PathBuf::from("/tmp/residuum-test-inbox"),
+            },
         );
 
         let messages = vec![
@@ -1349,9 +1394,11 @@ mod tests {
             no_filter(),
             empty_mcp(),
             IdentityFiles::default(),
-            CompletionOptions::default(),
-            chrono_tz::UTC,
-            std::path::PathBuf::from("/tmp/residuum-test-inbox"),
+            AgentConfig {
+                options: CompletionOptions::default(),
+                tz: chrono_tz::UTC,
+                inbox_dir: std::path::PathBuf::from("/tmp/residuum-test-inbox"),
+            },
         );
 
         assert_eq!(agent.provider.model_name(), "model-a");
@@ -1369,9 +1416,11 @@ mod tests {
             no_filter(),
             empty_mcp(),
             IdentityFiles::default(),
-            CompletionOptions::default(),
-            chrono_tz::UTC,
-            std::path::PathBuf::from("/tmp/residuum-test-inbox"),
+            AgentConfig {
+                options: CompletionOptions::default(),
+                tz: chrono_tz::UTC,
+                inbox_dir: std::path::PathBuf::from("/tmp/residuum-test-inbox"),
+            },
         );
 
         // Inject some messages into history

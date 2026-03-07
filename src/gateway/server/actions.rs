@@ -59,14 +59,17 @@ pub(super) async fn spawn_due_actions(
                 });
             }
             Some(preset_name) => {
-                spawn_action_with_preset(
-                    action,
-                    preset_name,
-                    &layout.subagents_dir(),
+                let action_ctx = ActionSpawnContext {
                     spawn_ctx,
                     project_state,
                     skill_state,
                     mcp_registry,
+                };
+                spawn_action_with_preset(
+                    action,
+                    preset_name,
+                    &layout.subagents_dir(),
+                    &action_ctx,
                     spawner,
                 )
                 .await;
@@ -144,19 +147,20 @@ async fn spawn_action_default(
     }
 }
 
+/// Spawn-related subsystem references for action execution.
+struct ActionSpawnContext<'a> {
+    spawn_ctx: &'a SpawnContext,
+    project_state: &'a SharedProjectState,
+    skill_state: &'a SharedSkillState,
+    mcp_registry: &'a SharedMcpRegistry,
+}
+
 /// Spawn an action using a named sub-agent preset.
-#[expect(
-    clippy::too_many_arguments,
-    reason = "passes through subsystem references for resource construction"
-)]
 async fn spawn_action_with_preset(
     action: &ScheduledAction,
     preset_name: &str,
     subagents_dir: &std::path::Path,
-    spawn_ctx: &SpawnContext,
-    project_state: &SharedProjectState,
-    skill_state: &SharedSkillState,
-    mcp_registry: &SharedMcpRegistry,
+    ctx: &ActionSpawnContext<'_>,
     spawner: &Arc<BackgroundTaskSpawner>,
 ) {
     let tier_fallback = action
@@ -198,11 +202,11 @@ async fn spawn_action_with_preset(
     let preset_arg = preset.as_ref().map(|(fm, body)| (fm, body.clone()));
 
     match build_spawn_resources(
-        spawn_ctx,
+        ctx.spawn_ctx,
         &tier,
-        project_state,
-        skill_state,
-        Arc::clone(mcp_registry),
+        ctx.project_state,
+        ctx.skill_state,
+        Arc::clone(ctx.mcp_registry),
         preset_arg,
     )
     .await

@@ -6,7 +6,7 @@ use std::sync::Arc;
 use tokio::sync::mpsc;
 
 use crate::actions::store::ActionStore;
-use crate::agent::Agent;
+use crate::agent::{Agent, AgentConfig};
 use crate::background::BackgroundTaskSpawner;
 use crate::background::types::BackgroundResult;
 use crate::config::Config;
@@ -46,11 +46,6 @@ pub(super) struct GatewayComponents {
     pub(super) observer: Observer,
     pub(super) reflector: Reflector,
     pub(super) search_index: Arc<MemoryIndex>,
-    #[expect(
-        dead_code,
-        reason = "used only in tool registration, not read by event loop"
-    )]
-    pub(super) hybrid_searcher: Arc<HybridSearcher>,
     pub(super) vector_store: Option<Arc<VectorStore>>,
     pub(super) action_store: Arc<tokio::sync::Mutex<ActionStore>>,
     pub(super) action_notify: Arc<tokio::sync::Notify>,
@@ -245,17 +240,82 @@ pub(super) async fn init_memory(
 ///
 /// # Errors
 /// Returns `ResiduumError` if any subsystem fails to initialize.
-#[expect(
-    clippy::too_many_lines,
-    reason = "sequential initialization pipeline; each section is a distinct setup step"
-)]
 pub(super) async fn initialize(cfg: &Config) -> Result<GatewayComponents, ResiduumError> {
     let (layout, tz) = init_workspace(cfg).await?;
     let (identity, http) = init_identity_and_http(&layout, cfg).await?;
     let providers = init_providers(cfg, tz, http.clone())?;
     let mem = init_memory(cfg, &layout, providers.embedding_provider.as_ref()).await?;
 
-    // Scheduled actions store
+    let (action_store, action_notify) = init_action_store(&layout).await;
+    let (project_state, skill_state) = init_project_and_skills(cfg, &layout).await;
+
+    let (bg_result_rx, background_spawner) = init_background_spawner(cfg, &layout);
+    let http_for_channels = http.clone();
+    let spawn_context = Arc::new(build_spawn_context(cfg, http, &identity, &layout, tz));
+
+    let mcp_registry = init_mcp_servers(&layout).await;
+    let (notification_router, valid_external_channels) =
+        init_notification_channels(&layout, &http_for_channels, cfg);
+
+    let tool_deps = ToolRegistryDeps {
+        action_store: &action_store,
+        action_notify: &action_notify,
+        valid_external_channels: &valid_external_channels,
+        project_state: &project_state,
+        skill_state: &skill_state,
+        mcp_registry: &mcp_registry,
+        background_spawner: &background_spawner,
+        spawn_context: &spawn_context,
+        notification_router: &notification_router,
+    };
+    let (tools, tool_filter, path_policy_for_runtime) =
+        init_tool_registry(cfg, &layout, &mem, tz, &tool_deps);
+
+    let agent = create_agent(
+        cfg,
+        CreateAgentArgs {
+            provider: providers.provider,
+            tools,
+            tool_filter,
+            identity,
+        },
+        &mcp_registry,
+        tz,
+        &layout,
+    )
+    .await;
+
+    Ok(GatewayComponents {
+        layout,
+        tz,
+        agent,
+        observer: providers.observer,
+        reflector: providers.reflector,
+        search_index: mem.search_index,
+        vector_store: mem.vector_store,
+        action_store,
+        action_notify,
+        mcp_registry,
+        project_state,
+        skill_state,
+        embedding_provider: providers.embedding_provider,
+        pulse_enabled: cfg.pulse_enabled,
+        notification_router,
+        http_client: http_for_channels,
+        background_spawner,
+        background_result_rx: bg_result_rx,
+        spawn_context,
+        path_policy: path_policy_for_runtime,
+    })
+}
+
+/// Load the scheduled action store and create the notification handle.
+async fn init_action_store(
+    layout: &WorkspaceLayout,
+) -> (
+    Arc<tokio::sync::Mutex<ActionStore>>,
+    Arc<tokio::sync::Notify>,
+) {
     let actions_path = layout.scheduled_actions_json();
     let action_store = match ActionStore::load(&actions_path).await {
         Ok(store) => Arc::new(tokio::sync::Mutex::new(store)),
@@ -270,9 +330,15 @@ pub(super) async fn initialize(cfg: &Config) -> Result<GatewayComponents, Residu
         }
     };
     let action_notify = Arc::new(tokio::sync::Notify::new());
+    (action_store, action_notify)
+}
 
-    // Project + skill state
-    let project_index = match ProjectIndex::scan(&layout).await {
+/// Scan for projects and skills and return their shared state handles.
+async fn init_project_and_skills(
+    cfg: &Config,
+    layout: &WorkspaceLayout,
+) -> (SharedProjectState, SharedSkillState) {
+    let project_index = match ProjectIndex::scan(layout).await {
         Ok(idx) => idx,
         Err(err) => {
             eprintln!("warning: failed to scan projects, starting with empty index: {err}");
@@ -294,8 +360,14 @@ pub(super) async fn initialize(cfg: &Config) -> Result<GatewayComponents, Residu
     };
     let skill_state: SharedSkillState =
         SkillState::new_shared(skill_index, cfg.skills.dirs.clone());
+    (project_state, skill_state)
+}
 
-    // Background task spawner (created before tool registry so tools can hold Arc clones)
+/// Create the background task spawner and its result channel.
+fn init_background_spawner(
+    cfg: &Config,
+    layout: &WorkspaceLayout,
+) -> (mpsc::Receiver<BackgroundResult>, Arc<BackgroundTaskSpawner>) {
     let (bg_result_tx, bg_result_rx) = mpsc::channel::<BackgroundResult>(32);
     let background_spawner = Arc::new(BackgroundTaskSpawner::new(
         bg_result_tx,
@@ -303,12 +375,18 @@ pub(super) async fn initialize(cfg: &Config) -> Result<GatewayComponents, Residu
         layout.root().to_path_buf(),
         layout.background_dir(),
     ));
+    (bg_result_rx, background_spawner)
+}
 
-    // Clone HTTP client for later use (channel building, reload handler)
-    let http_for_channels = http.clone();
-
-    // SpawnContext for pulse/actions/on-demand background task spawning
-    let spawn_context = Arc::new(SpawnContext {
+/// Build the spawn context used for pulse, actions, and on-demand background tasks.
+fn build_spawn_context(
+    cfg: &Config,
+    http: SharedHttpClient,
+    identity: &IdentityFiles,
+    layout: &WorkspaceLayout,
+    tz: chrono_tz::Tz,
+) -> SpawnContext {
+    SpawnContext {
         background_config: cfg.background.clone(),
         main_provider_specs: cfg.main.clone(),
         http_client: http,
@@ -323,9 +401,90 @@ pub(super) async fn initialize(cfg: &Config) -> Result<GatewayComponents, Residu
         },
         layout: layout.clone(),
         tz,
-    });
+    }
+}
 
-    // Load workspace MCP servers
+/// Shared subsystem handles needed for tool registration.
+struct ToolRegistryDeps<'a> {
+    action_store: &'a Arc<tokio::sync::Mutex<ActionStore>>,
+    action_notify: &'a Arc<tokio::sync::Notify>,
+    valid_external_channels: &'a std::collections::HashSet<String>,
+    project_state: &'a SharedProjectState,
+    skill_state: &'a SharedSkillState,
+    mcp_registry: &'a SharedMcpRegistry,
+    background_spawner: &'a Arc<BackgroundTaskSpawner>,
+    spawn_context: &'a Arc<SpawnContext>,
+    notification_router: &'a Arc<NotificationRouter>,
+}
+
+/// Build the tool registry with all default and domain-specific tools.
+fn init_tool_registry(
+    cfg: &Config,
+    layout: &WorkspaceLayout,
+    mem: &MemoryComponents,
+    tz: chrono_tz::Tz,
+    deps: &ToolRegistryDeps<'_>,
+) -> (
+    ToolRegistry,
+    crate::tools::SharedToolFilter,
+    crate::tools::SharedPathPolicy,
+) {
+    let mut blocked_paths: Vec<std::path::PathBuf> = vec![
+        cfg.config_dir.join("config.toml"),
+        cfg.config_dir.join("config.example.toml"),
+        cfg.config_dir.join("providers.toml"),
+        cfg.config_dir.join("providers.example.toml"),
+    ];
+    if !cfg.agent.modify_mcp {
+        blocked_paths.push(layout.mcp_json());
+    }
+    if !cfg.agent.modify_channels {
+        blocked_paths.push(layout.channels_toml());
+    }
+    let blocked: std::collections::HashSet<std::path::PathBuf> =
+        blocked_paths.into_iter().collect();
+    let path_policy =
+        crate::tools::PathPolicy::new_shared_with_blocked(layout.root().to_path_buf(), blocked);
+    let tool_filter = crate::tools::ToolFilter::new_shared(std::collections::HashSet::new());
+    let mut tools = ToolRegistry::new();
+    let file_tracker = crate::tools::FileTracker::new_shared();
+    tools.register_defaults(file_tracker, Arc::clone(&path_policy));
+    tools.register_search_tool(Arc::clone(&mem.hybrid_searcher));
+    tools.register_memory_get_tool(layout.episodes_dir());
+    tools.register_action_tools(
+        Arc::clone(deps.action_store),
+        Arc::clone(deps.action_notify),
+        tz,
+        deps.valid_external_channels.clone(),
+    );
+    let path_policy_for_runtime = Arc::clone(&path_policy);
+    tools.register_project_tools(
+        Arc::clone(deps.project_state),
+        path_policy,
+        Arc::clone(&tool_filter),
+        Arc::clone(deps.mcp_registry),
+        Arc::clone(deps.skill_state),
+        tz,
+    );
+    tools.register_skill_tools(Arc::clone(deps.skill_state));
+    tools.register_inbox_tools(layout.inbox_dir(), layout.inbox_archive_dir(), tz);
+    tools.register_background_tools(Arc::clone(deps.background_spawner));
+    tools.register_spawn_tool(
+        Arc::clone(deps.background_spawner),
+        Arc::clone(deps.spawn_context),
+        Arc::clone(deps.project_state),
+        Arc::clone(deps.skill_state),
+        Arc::clone(deps.mcp_registry),
+        deps.valid_external_channels.clone(),
+    );
+
+    tools.register_send_message_tool(Arc::clone(deps.notification_router), layout.inbox_dir(), tz);
+
+    (tools, tool_filter, path_policy_for_runtime)
+}
+
+/// Load and connect workspace MCP servers.
+async fn init_mcp_servers(layout: &WorkspaceLayout) -> SharedMcpRegistry {
     let mcp_registry = crate::mcp::McpRegistry::new_shared();
     match crate::workspace::config::load_mcp_servers(&layout.mcp_json()) {
         Ok(servers) => {
@@ -350,8 +509,15 @@ pub(super) async fn initialize(cfg: &Config) -> Result<GatewayComponents, Residu
             tracing::warn!(error = %err, "workspace MCP servers degraded");
         }
     }
+    mcp_registry
+}
 
-    // Load workspace notification channels
+/// Load notification channels from workspace config and build the router.
+fn init_notification_channels(
+    layout: &WorkspaceLayout,
+    http: &SharedHttpClient,
+    cfg: &Config,
+) -> (Arc<NotificationRouter>, std::collections::HashSet<String>) {
     let channel_configs = match crate::workspace::config::load_channel_configs(
         &layout.channels_toml(),
     ) {
@@ -366,69 +532,32 @@ pub(super) async fn initialize(cfg: &Config) -> Result<GatewayComponents, Residu
     };
     let valid_external_channels: std::collections::HashSet<String> =
         channel_configs.iter().map(|c| c.name.clone()).collect();
-    let external_channels = crate::workspace::config::build_external_channels(
-        &channel_configs,
-        http_for_channels.client(),
-    );
+    let external_channels =
+        crate::workspace::config::build_external_channels(&channel_configs, http.client());
     let inbox_channel = InboxChannel::new(layout.inbox_dir(), cfg.timezone);
     let notification_router = Arc::new(NotificationRouter::new(
         external_channels,
         Some(inbox_channel),
     ));
+    (notification_router, valid_external_channels)
+}
 
-    // Tool registry — block writes to config files (user-managed)
-    let mut blocked_paths: Vec<std::path::PathBuf> = vec![
-        cfg.config_dir.join("config.toml"),
-        cfg.config_dir.join("config.example.toml"),
-        cfg.config_dir.join("providers.toml"),
-        cfg.config_dir.join("providers.example.toml"),
-    ];
-    if !cfg.agent.modify_mcp {
-        blocked_paths.push(layout.mcp_json());
-    }
-    if !cfg.agent.modify_channels {
-        blocked_paths.push(layout.channels_toml());
-    }
-    let blocked: std::collections::HashSet<std::path::PathBuf> =
-        blocked_paths.into_iter().collect();
-    let path_policy =
-        crate::tools::PathPolicy::new_shared_with_blocked(layout.root().to_path_buf(), blocked);
-    let tool_filter = crate::tools::ToolFilter::new_shared(std::collections::HashSet::new());
-    let mut tools = ToolRegistry::new();
-    let file_tracker = crate::tools::FileTracker::new_shared();
-    tools.register_defaults(file_tracker, Arc::clone(&path_policy));
-    tools.register_search_tool(Arc::clone(&mem.hybrid_searcher));
-    tools.register_memory_get_tool(layout.episodes_dir());
-    tools.register_action_tools(
-        Arc::clone(&action_store),
-        Arc::clone(&action_notify),
-        tz,
-        valid_external_channels.clone(),
-    );
-    let path_policy_for_runtime = Arc::clone(&path_policy);
-    tools.register_project_tools(
-        Arc::clone(&project_state),
-        path_policy,
-        Arc::clone(&tool_filter),
-        Arc::clone(&mcp_registry),
-        Arc::clone(&skill_state),
-        tz,
-    );
-    tools.register_skill_tools(Arc::clone(&skill_state));
-    tools.register_inbox_tools(layout.inbox_dir(), layout.inbox_archive_dir(), tz);
-    tools.register_background_tools(Arc::clone(&background_spawner));
-    tools.register_spawn_tool(
-        Arc::clone(&background_spawner),
-        Arc::clone(&spawn_context),
-        Arc::clone(&project_state),
-        Arc::clone(&skill_state),
-        Arc::clone(&mcp_registry),
-        valid_external_channels,
-    );
+/// Arguments for creating the agent, bundled to stay under the argument limit.
+struct CreateAgentArgs {
+    provider: Box<dyn crate::models::ModelProvider>,
+    tools: ToolRegistry,
+    tool_filter: crate::tools::SharedToolFilter,
+    identity: IdentityFiles,
+}
 
-    tools.register_send_message_tool(Arc::clone(&notification_router), layout.inbox_dir(), tz);
-
-    // Agent
+/// Create the agent, load observations, recent context, and restore messages.
+async fn create_agent(
+    cfg: &Config,
+    args: CreateAgentArgs,
+    mcp_registry: &SharedMcpRegistry,
+    tz: chrono_tz::Tz,
+    layout: &WorkspaceLayout,
+) -> Agent {
     let options = CompletionOptions {
         max_tokens: Some(cfg.max_tokens),
         temperature: cfg.temperature,
@@ -436,22 +565,24 @@ pub(super) async fn initialize(cfg: &Config) -> Result<GatewayComponents, Residu
         ..CompletionOptions::default()
     };
     let mut agent = Agent::new(
-        providers.provider,
-        tools,
-        tool_filter,
-        Arc::clone(&mcp_registry),
-        identity,
-        options,
-        tz,
-        layout.inbox_dir(),
+        args.provider,
+        args.tools,
+        args.tool_filter,
+        Arc::clone(mcp_registry),
+        args.identity,
+        AgentConfig {
+            options,
+            tz,
+            inbox_dir: layout.inbox_dir(),
+        },
     );
-    if let Err(err) = agent.reload_observations(&layout).await {
+    if let Err(err) = agent.reload_observations(layout).await {
         eprintln!(
             "warning: failed to load observations, continuing without observation context: {err}"
         );
         tracing::warn!(error = %err, "observation loading degraded");
     }
-    if let Err(err) = agent.reload_recent_context(&layout).await {
+    if let Err(err) = agent.reload_recent_context(layout).await {
         eprintln!(
             "warning: failed to load recent context, continuing without recent context: {err}"
         );
@@ -477,29 +608,7 @@ pub(super) async fn initialize(cfg: &Config) -> Result<GatewayComponents, Residu
         }
     }
 
-    Ok(GatewayComponents {
-        layout,
-        tz,
-        agent,
-        observer: providers.observer,
-        reflector: providers.reflector,
-        search_index: mem.search_index,
-        hybrid_searcher: mem.hybrid_searcher,
-        vector_store: mem.vector_store,
-        action_store,
-        action_notify,
-        mcp_registry,
-        project_state,
-        skill_state,
-        embedding_provider: providers.embedding_provider,
-        pulse_enabled: cfg.pulse_enabled,
-        notification_router,
-        http_client: http_for_channels,
-        background_spawner,
-        background_result_rx: bg_result_rx,
-        spawn_context,
-        path_policy: path_policy_for_runtime,
-    })
+    agent
 }
 
 /// Synchronize the search index (full rebuild or incremental sync).
