@@ -44,8 +44,10 @@ pub(super) async fn handle_ws_open(
     debug!(channel_id, url, "opening local WebSocket connection");
 
     // Build the local WS connect request with forwarded headers.
+    let host = format!("localhost:{port}");
     let mut request = match ws_http::Request::builder()
         .uri(&url)
+        .header("Host", &host)
         .header("Connection", "Upgrade")
         .header("Upgrade", "websocket")
         .header("Sec-WebSocket-Version", "13")
@@ -66,7 +68,8 @@ pub(super) async fn handle_ws_open(
     // Add forwarded headers (skip WebSocket handshake headers).
     for (name, value) in &headers {
         let lower = name.to_lowercase();
-        if lower != "connection"
+        if lower != "host"
+            && lower != "connection"
             && lower != "upgrade"
             && lower != "sec-websocket-version"
             && lower != "sec-websocket-key"
