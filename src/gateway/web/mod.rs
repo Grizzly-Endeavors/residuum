@@ -14,6 +14,7 @@ use tokio::sync::watch;
 
 use super::ReloadSignal;
 
+pub mod cloud;
 pub mod config;
 pub mod providers;
 pub mod secrets;
