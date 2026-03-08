@@ -9,12 +9,14 @@ pub mod inbox;
 mod line_hash;
 pub mod memory_get;
 pub mod memory_search;
+pub(crate) mod ollama_web_search;
 pub mod path_policy;
 pub mod projects;
 mod read;
 mod registry;
 pub mod send_message;
 pub mod skills;
+pub(crate) mod web_fetch;
 mod write;
 
 pub use file_tracker::{FileTracker, SharedFileTracker};

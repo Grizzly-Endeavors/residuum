@@ -281,6 +281,41 @@ impl std::str::FromStr for BackgroundModelTier {
     }
 }
 
+/// Validated web search configuration.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct WebSearchConfig {
+    /// Provider-native search config (set when main provider supports it).
+    pub provider_native: Option<ProviderNativeSearchConfig>,
+    /// Standalone backend name for MCP resolution (e.g. `"brave"`, `"tavily"`, `"ollama"`).
+    pub standalone_backend: Option<StandaloneBackendConfig>,
+}
+
+/// Provider-native search overrides (Anthropic, `OpenAI`, Gemini).
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct ProviderNativeSearchConfig {
+    /// Maximum web search invocations per request (Anthropic).
+    pub max_uses: Option<u32>,
+    /// Restrict search to these domains (Anthropic).
+    pub allowed_domains: Option<Vec<String>>,
+    /// Exclude these domains from search (Anthropic).
+    pub blocked_domains: Option<Vec<String>>,
+    /// Search context size (`OpenAI`: `"low"`, `"medium"`, `"high"`).
+    pub search_context_size: Option<String>,
+    /// Domains to exclude from Google Search grounding (Gemini).
+    pub exclude_domains: Option<Vec<String>>,
+}
+
+/// Standalone web search backend configuration.
+#[derive(Debug, Clone, PartialEq)]
+pub struct StandaloneBackendConfig {
+    /// Backend name (`"brave"`, `"tavily"`, or `"ollama"`).
+    pub name: String,
+    /// API key for the backend.
+    pub api_key: String,
+    /// Base URL (only used by Ollama Cloud).
+    pub base_url: Option<String>,
+}
+
 /// Validated runtime configuration.
 ///
 /// All provider roles are fully resolved at load time. Consumers read fields
@@ -335,6 +370,8 @@ pub struct Config {
     pub temperature: Option<f32>,
     /// Thinking/reasoning configuration for model completions.
     pub thinking: Option<crate::models::ThinkingConfig>,
+    /// Web search configuration.
+    pub web_search: WebSearchConfig,
     /// Directory this config was loaded from.
     pub config_dir: PathBuf,
 }
@@ -366,6 +403,7 @@ impl fmt::Debug for Config {
             .field("idle", &self.idle)
             .field("temperature", &self.temperature)
             .field("thinking", &self.thinking)
+            .field("web_search", &self.web_search)
             .field("config_dir", &self.config_dir)
             .finish()
     }

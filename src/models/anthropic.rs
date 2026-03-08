@@ -154,15 +154,35 @@ impl AnthropicClient {
     }
 
     /// Convert tool definitions to Anthropic's format.
-    fn convert_tools(tools: &[ToolDefinition]) -> Vec<AnthropicTool> {
-        tools
+    ///
+    /// Returns a heterogeneous vec of tool entries. If `web_search` is set,
+    /// a server-side `web_search_20250305` entry is appended.
+    fn convert_tools(
+        tools: &[ToolDefinition],
+        web_search: Option<&super::WebSearchNativeConfig>,
+    ) -> Vec<AnthropicToolEntry> {
+        let mut entries: Vec<AnthropicToolEntry> = tools
             .iter()
-            .map(|t| AnthropicTool {
-                name: t.name.clone(),
-                description: t.description.clone(),
-                input_schema: t.parameters.clone(),
+            .map(|t| {
+                AnthropicToolEntry::Function(AnthropicTool {
+                    name: t.name.clone(),
+                    description: t.description.clone(),
+                    input_schema: t.parameters.clone(),
+                })
             })
-            .collect()
+            .collect();
+
+        if let Some(ws) = web_search {
+            entries.push(AnthropicToolEntry::WebSearch(AnthropicWebSearchTool {
+                r#type: "web_search_20250305".to_string(),
+                name: "web_search".to_string(),
+                max_uses: ws.max_uses,
+                allowed_domains: ws.allowed_domains.clone(),
+                blocked_domains: ws.blocked_domains.clone(),
+            }));
+        }
+
+        entries
     }
 
     /// Map thinking config to Anthropic's thinking budget format.
@@ -281,8 +301,11 @@ impl AnthropicClient {
                         arguments: input,
                     });
                 }
-                AnthropicContentBlock::Image { .. } | AnthropicContentBlock::ToolResult { .. } => {
-                    // image and tool_result blocks only appear in requests, not responses
+                AnthropicContentBlock::Image { .. }
+                | AnthropicContentBlock::ToolResult { .. }
+                | AnthropicContentBlock::ServerToolUse { .. }
+                | AnthropicContentBlock::WebSearchToolResult { .. } => {
+                    // request-only or server-side informational blocks — skip in response parsing
                 }
             }
         }
@@ -324,7 +347,9 @@ impl ModelProvider for AnthropicClient {
     ) -> Result<ModelResponse, ModelError> {
         let (system, api_messages) = Self::convert_messages(messages);
         let max_tokens = options.max_tokens.unwrap_or(self.max_tokens);
-        let api_tools = (!tools.is_empty()).then(|| Self::convert_tools(tools));
+        let has_web_search = options.web_search.is_some();
+        let api_tools = (!tools.is_empty() || has_web_search)
+            .then(|| Self::convert_tools(tools, options.web_search.as_ref()));
         let model = self.model.clone();
         let endpoint = self.endpoint();
         let api_key = self.api_key.clone();
@@ -433,7 +458,7 @@ struct AnthropicRequest<'a> {
     system: Option<&'a str>,
     messages: Vec<AnthropicMessage>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    tools: Option<Vec<AnthropicTool>>,
+    tools: Option<Vec<AnthropicToolEntry>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     output_config: Option<AnthropicOutputConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -477,6 +502,20 @@ enum AnthropicContentBlock {
         tool_use_id: String,
         content: String,
     },
+    /// Server-side tool invocation (e.g. web search). Informational only —
+    /// results are already incorporated into the model's text response.
+    ServerToolUse {
+        id: String,
+        name: String,
+        #[serde(default)]
+        input: Value,
+    },
+    /// Result of a server-side tool (e.g. web search results).
+    WebSearchToolResult {
+        tool_use_id: String,
+        #[serde(default)]
+        content: Value,
+    },
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -486,11 +525,36 @@ struct AnthropicImageSource {
     data: String,
 }
 
+/// Heterogeneous tool entry for the Anthropic `tools` array.
+///
+/// Anthropic's API supports both function tools and server-side tools
+/// (like `web_search_20250305`) in the same array.
+#[derive(Debug, Serialize, Clone)]
+#[serde(untagged)]
+enum AnthropicToolEntry {
+    /// Standard function tool (name, description, `input_schema`).
+    Function(AnthropicTool),
+    /// Server-side web search tool.
+    WebSearch(AnthropicWebSearchTool),
+}
+
 #[derive(Debug, Serialize, Clone)]
 struct AnthropicTool {
     name: String,
     description: String,
     input_schema: Value,
+}
+
+#[derive(Debug, Serialize, Clone)]
+struct AnthropicWebSearchTool {
+    r#type: String,
+    name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    max_uses: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    allowed_domains: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    blocked_domains: Option<Vec<String>>,
 }
 
 #[derive(Debug, Serialize, Clone)]
@@ -1099,6 +1163,127 @@ mod tests {
             resp.thinking.as_deref(),
             Some("Let me reason about this..."),
             "thinking should be extracted separately"
+        );
+    }
+
+    #[tokio::test]
+    async fn web_search_tool_injected_when_enabled() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/messages"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(success_response_body()))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let client = test_client(&server.uri());
+        let options = CompletionOptions {
+            web_search: Some(crate::models::WebSearchNativeConfig {
+                max_uses: Some(3),
+                ..Default::default()
+            }),
+            ..CompletionOptions::default()
+        };
+        let result = client.complete(&simple_user_message(), &[], &options).await;
+        assert!(result.is_ok(), "request with web search should succeed");
+
+        let requests = server.received_requests().await.unwrap();
+        let body: serde_json::Value =
+            serde_json::from_slice(&requests.first().unwrap().body).unwrap();
+        let tools = body.get("tools").unwrap().as_array().unwrap();
+        assert_eq!(tools.len(), 1, "should have one tool (web_search)");
+        let ws_tool = tools.first().unwrap();
+        assert_eq!(
+            ws_tool.get("type").unwrap().as_str().unwrap(),
+            "web_search_20250305",
+            "tool type should be web_search_20250305"
+        );
+        assert_eq!(
+            ws_tool.get("max_uses").unwrap().as_u64().unwrap(),
+            3,
+            "max_uses should be set"
+        );
+    }
+
+    #[tokio::test]
+    async fn web_search_absent_when_not_configured() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/messages"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(success_response_body()))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let client = test_client(&server.uri());
+        let result = client
+            .complete(&simple_user_message(), &[], &CompletionOptions::default())
+            .await;
+        assert!(result.is_ok(), "request without web search should succeed");
+
+        let requests = server.received_requests().await.unwrap();
+        let body: serde_json::Value =
+            serde_json::from_slice(&requests.first().unwrap().body).unwrap();
+        assert!(
+            body.get("tools").is_none(),
+            "tools should be absent when no tools or web search configured"
+        );
+    }
+
+    #[tokio::test]
+    async fn server_tool_use_blocks_dont_create_tool_calls() {
+        let server = MockServer::start().await;
+        let response_with_server_tool = json!({
+            "content": [
+                {
+                    "type": "server_tool_use",
+                    "id": "srvtoolu_123",
+                    "name": "web_search",
+                    "input": {"query": "rust programming"}
+                },
+                {
+                    "type": "web_search_tool_result",
+                    "tool_use_id": "srvtoolu_123",
+                    "content": [{"type": "web_search_result", "url": "https://example.com"}]
+                },
+                {
+                    "type": "text",
+                    "text": "Based on my search, Rust is a systems programming language."
+                }
+            ],
+            "stop_reason": "end_turn",
+            "usage": {
+                "input_tokens": 20,
+                "output_tokens": 30
+            }
+        });
+
+        Mock::given(method("POST"))
+            .and(path("/v1/messages"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(response_with_server_tool))
+            .mount(&server)
+            .await;
+
+        let client = test_client(&server.uri());
+        let options = CompletionOptions {
+            web_search: Some(crate::models::WebSearchNativeConfig::default()),
+            ..CompletionOptions::default()
+        };
+        let result = client.complete(&simple_user_message(), &[], &options).await;
+        assert!(
+            result.is_ok(),
+            "response with server tool blocks should parse"
+        );
+
+        let resp = result.unwrap();
+        assert!(
+            resp.tool_calls.is_empty(),
+            "server_tool_use should not create ToolCall entries"
+        );
+        assert!(
+            resp.content
+                .contains("Rust is a systems programming language"),
+            "text content should be preserved"
         );
     }
 }

@@ -19,6 +19,9 @@ toml = "0.8"
 anyhow = "1"
 thiserror = "2"
 
+# HTML content extraction
+dom_smoothie = "0.15"
+
 # Encoding
 base64 = "0.22"
 

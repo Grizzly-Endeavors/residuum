@@ -55,6 +55,17 @@ export interface ConfigFields {
   webhook_secret: string;
   // skills
   skills_dirs: string[];
+  // web search
+  ws_backend: string;
+  ws_brave_api_key: string;
+  ws_tavily_api_key: string;
+  ws_ollama_api_key: string;
+  ws_ollama_base_url: string;
+  ws_anthropic_max_uses: string;
+  ws_anthropic_allowed_domains: string;
+  ws_anthropic_blocked_domains: string;
+  ws_openai_search_context_size: string;
+  ws_gemini_exclude_domains: string;
 }
 
 export function defaultConfigFields(): ConfigFields {
@@ -94,6 +105,16 @@ export function defaultConfigFields(): ConfigFields {
     webhook_enabled: false,
     webhook_secret: "",
     skills_dirs: [],
+    ws_backend: "",
+    ws_brave_api_key: "",
+    ws_tavily_api_key: "",
+    ws_ollama_api_key: "",
+    ws_ollama_base_url: "",
+    ws_anthropic_max_uses: "",
+    ws_anthropic_allowed_domains: "",
+    ws_anthropic_blocked_domains: "",
+    ws_openai_search_context_size: "",
+    ws_gemini_exclude_domains: "",
   };
 }
 
@@ -200,6 +221,33 @@ export function parseConfigToml(raw: string): ConfigFields {
   const skills = doc.skills as Record<string, unknown> | undefined;
   if (skills && Array.isArray(skills.dirs)) {
     fields.skills_dirs = (skills.dirs as unknown[]).map(String);
+  }
+
+  const ws = doc.web_search as Record<string, unknown> | undefined;
+  if (ws) {
+    fields.ws_backend = str(ws.backend);
+    const brave = ws.brave as Record<string, unknown> | undefined;
+    if (brave) fields.ws_brave_api_key = str(brave.api_key);
+    const tavily = ws.tavily as Record<string, unknown> | undefined;
+    if (tavily) fields.ws_tavily_api_key = str(tavily.api_key);
+    const ollama = ws.ollama as Record<string, unknown> | undefined;
+    if (ollama) {
+      fields.ws_ollama_api_key = str(ollama.api_key);
+      fields.ws_ollama_base_url = str(ollama.base_url);
+    }
+    const anthropic = ws.anthropic as Record<string, unknown> | undefined;
+    if (anthropic) {
+      fields.ws_anthropic_max_uses = str(anthropic.max_uses);
+      if (Array.isArray(anthropic.allowed_domains))
+        fields.ws_anthropic_allowed_domains = (anthropic.allowed_domains as string[]).join(", ");
+      if (Array.isArray(anthropic.blocked_domains))
+        fields.ws_anthropic_blocked_domains = (anthropic.blocked_domains as string[]).join(", ");
+    }
+    const openai = ws.openai as Record<string, unknown> | undefined;
+    if (openai) fields.ws_openai_search_context_size = str(openai.search_context_size);
+    const gemini = ws.gemini as Record<string, unknown> | undefined;
+    if (gemini && Array.isArray(gemini.exclude_domains))
+      fields.ws_gemini_exclude_domains = (gemini.exclude_domains as string[]).join(", ");
   }
 
   return fields;
@@ -429,6 +477,75 @@ export function serializeConfigToml(f: ConfigFields): string {
     lines.push("[idle]");
     if (f.idle_timeout_minutes) lines.push(`timeout_minutes = ${f.idle_timeout_minutes}`);
     if (f.idle_channel) lines.push(`idle_channel = "${f.idle_channel}"`);
+  }
+
+  // web_search
+  const hasWsBackend = Boolean(f.ws_backend);
+  const hasWsNative =
+    f.ws_anthropic_max_uses ||
+    f.ws_anthropic_allowed_domains ||
+    f.ws_anthropic_blocked_domains ||
+    f.ws_openai_search_context_size ||
+    f.ws_gemini_exclude_domains;
+
+  if (hasWsBackend || hasWsNative) {
+    lines.push("");
+    lines.push("[web_search]");
+    if (f.ws_backend) lines.push(`backend = "${f.ws_backend}"`);
+
+    if (f.ws_backend === "brave" && f.ws_brave_api_key) {
+      lines.push("");
+      lines.push("[web_search.brave]");
+      lines.push(`api_key = "${f.ws_brave_api_key}"`);
+    }
+    if (f.ws_backend === "tavily" && f.ws_tavily_api_key) {
+      lines.push("");
+      lines.push("[web_search.tavily]");
+      lines.push(`api_key = "${f.ws_tavily_api_key}"`);
+    }
+    if (f.ws_backend === "ollama" && (f.ws_ollama_api_key || f.ws_ollama_base_url)) {
+      lines.push("");
+      lines.push("[web_search.ollama]");
+      if (f.ws_ollama_api_key) lines.push(`api_key = "${f.ws_ollama_api_key}"`);
+      if (f.ws_ollama_base_url) lines.push(`base_url = "${f.ws_ollama_base_url}"`);
+    }
+    if (
+      f.ws_anthropic_max_uses ||
+      f.ws_anthropic_allowed_domains ||
+      f.ws_anthropic_blocked_domains
+    ) {
+      lines.push("");
+      lines.push("[web_search.anthropic]");
+      if (f.ws_anthropic_max_uses) lines.push(`max_uses = ${f.ws_anthropic_max_uses}`);
+      if (f.ws_anthropic_allowed_domains) {
+        const domains = f.ws_anthropic_allowed_domains
+          .split(",")
+          .map((d) => `"${d.trim()}"`)
+          .filter((d) => d !== '""');
+        if (domains.length > 0) lines.push(`allowed_domains = [${domains.join(", ")}]`);
+      }
+      if (f.ws_anthropic_blocked_domains) {
+        const domains = f.ws_anthropic_blocked_domains
+          .split(",")
+          .map((d) => `"${d.trim()}"`)
+          .filter((d) => d !== '""');
+        if (domains.length > 0) lines.push(`blocked_domains = [${domains.join(", ")}]`);
+      }
+    }
+    if (f.ws_openai_search_context_size) {
+      lines.push("");
+      lines.push("[web_search.openai]");
+      lines.push(`search_context_size = "${f.ws_openai_search_context_size}"`);
+    }
+    if (f.ws_gemini_exclude_domains) {
+      lines.push("");
+      lines.push("[web_search.gemini]");
+      const domains = f.ws_gemini_exclude_domains
+        .split(",")
+        .map((d) => `"${d.trim()}"`)
+        .filter((d) => d !== '""');
+      if (domains.length > 0) lines.push(`exclude_domains = [${domains.join(", ")}]`);
+    }
   }
 
   lines.push("");

@@ -538,6 +538,7 @@ mod tests {
             idle: crate::config::IdleConfig::default(),
             temperature: None,
             thinking: None,
+            web_search: crate::config::WebSearchConfig::default(),
             config_dir: std::path::PathBuf::from("/tmp/config"),
         }
     }

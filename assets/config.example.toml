@@ -106,6 +106,35 @@ port = 7700
 # modify_mcp = true          # allow agent to add/remove MCP servers
 # modify_channels = true     # allow agent to add/remove notification channels
 
+# ── Web search (optional) ────────────────────────────────────────────────
+# Providers with native search (Anthropic, OpenAI, Gemini) enable it
+# automatically. Use `backend` for providers without native support (Ollama).
+#
+# [web_search]
+# backend = "brave"              # "brave", "tavily", or "ollama"
+#
+# [web_search.brave]
+# api_key = "${BRAVE_API_KEY}"   # or literal key, or secret:name
+#
+# [web_search.tavily]
+# api_key = "${TAVILY_API_KEY}"
+#
+# [web_search.ollama]
+# api_key = "${OLLAMA_API_KEY}"
+# base_url = "https://ollama.com/api"
+#
+# Provider-native overrides (optional):
+# [web_search.anthropic]
+# max_uses = 5
+# allowed_domains = ["example.com"]
+# blocked_domains = ["spam.com"]
+#
+# [web_search.openai]
+# search_context_size = "medium"   # "low", "medium", "high"
+#
+# [web_search.gemini]
+# exclude_domains = ["example.com"]
+
 # ── Background tasks (optional) ───────────────────────────────────────────
 # Semaphore-bounded concurrent background tasks (sub-agents and scripts).
 # Model tiers fall back: tier → next tier up → main.

@@ -17,8 +17,8 @@ use crate::skills::SharedSkillState;
 
 use super::{
     SharedFileTracker, SharedPathPolicy, SharedToolFilter, Tool, ToolError, ToolFilter, ToolResult,
-    actions, background, edit, exec, inbox, memory_get, memory_search, projects, read,
-    send_message, skills, write,
+    actions, background, edit, exec, inbox, memory_get, memory_search, ollama_web_search, projects,
+    read, send_message, skills, web_fetch, write,
 };
 
 /// Registry of available tools.
@@ -242,6 +242,18 @@ impl ToolRegistry {
         registry.register_skill_tools(skill_state);
 
         registry
+    }
+
+    /// Register the `web_fetch` tool for fetching web page content.
+    pub fn register_web_fetch_tool(&mut self) {
+        self.register(Box::new(web_fetch::WebFetchTool::new()));
+    }
+
+    /// Register the `ollama_web_search` tool for Ollama Cloud web search.
+    pub fn register_ollama_web_search_tool(&mut self, api_key: String, base_url: String) {
+        self.register(Box::new(ollama_web_search::OllamaWebSearchTool::new(
+            api_key, base_url,
+        )));
     }
 
     /// Register action scheduling tools (`schedule_action`, `list_actions`, `cancel_action`).

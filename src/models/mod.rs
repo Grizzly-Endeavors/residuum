@@ -316,6 +316,23 @@ pub enum ThinkingLevel {
     High,
 }
 
+/// Provider-native web search configuration passed to completion requests.
+///
+/// Flat struct — each provider reads the fields it cares about.
+#[derive(Debug, Clone, Default)]
+pub struct WebSearchNativeConfig {
+    /// Maximum web search invocations per request (Anthropic).
+    pub max_uses: Option<u32>,
+    /// Restrict search to these domains (Anthropic).
+    pub allowed_domains: Option<Vec<String>>,
+    /// Exclude these domains from search (Anthropic).
+    pub blocked_domains: Option<Vec<String>>,
+    /// Search context size (`OpenAI`: `"low"`, `"medium"`, `"high"`).
+    pub search_context_size: Option<String>,
+    /// Domains to exclude from Google Search grounding (Gemini).
+    pub exclude_domains: Option<Vec<String>>,
+}
+
 /// Options for model completion requests.
 #[derive(Debug, Clone, Default)]
 pub struct CompletionOptions {
@@ -327,6 +344,8 @@ pub struct CompletionOptions {
     pub temperature: Option<f32>,
     /// Thinking/reasoning configuration. None means not configured (off).
     pub thinking: Option<ThinkingConfig>,
+    /// Provider-native web search configuration. None disables web search.
+    pub web_search: Option<WebSearchNativeConfig>,
 }
 
 /// Trait for model provider implementations.

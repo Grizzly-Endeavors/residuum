@@ -102,6 +102,19 @@ pub(super) fn init_tool_registry(
     );
 
     tools.register_send_message_tool(Arc::clone(deps.notification_router), layout.inbox_dir(), tz);
+    tools.register_web_fetch_tool();
+
+    // Register Ollama Cloud web search tool if configured
+    if let Some(backend) = &cfg.web_search.standalone_backend
+        && backend.name == "ollama"
+    {
+        let base_url = backend
+            .base_url
+            .clone()
+            .unwrap_or_else(|| "https://api.ollama.com".to_string());
+        tools.register_ollama_web_search_tool(backend.api_key.clone(), base_url);
+        tracing::info!("registered ollama_web_search tool");
+    }
 
     (tools, tool_filter, path_policy_for_runtime)
 }
@@ -114,10 +127,22 @@ pub(super) async fn create_agent(
     tz: chrono_tz::Tz,
     layout: &WorkspaceLayout,
 ) -> Agent {
+    let web_search =
+        cfg.web_search
+            .provider_native
+            .as_ref()
+            .map(|pn| crate::models::WebSearchNativeConfig {
+                max_uses: pn.max_uses,
+                allowed_domains: pn.allowed_domains.clone(),
+                blocked_domains: pn.blocked_domains.clone(),
+                search_context_size: pn.search_context_size.clone(),
+                exclude_domains: pn.exclude_domains.clone(),
+            });
     let options = CompletionOptions {
         max_tokens: Some(cfg.max_tokens),
         temperature: cfg.temperature,
         thinking: cfg.thinking.clone(),
+        web_search,
         ..CompletionOptions::default()
     };
     let mut agent = Agent::new(
