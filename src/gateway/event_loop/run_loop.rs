@@ -75,17 +75,8 @@ pub async fn run_gateway(cfg: Config) -> Result<GatewayExit, ResiduumError> {
     let server_handle = spawn_http_server(&cfg, app, &core.shutdown_tx).await?;
     let adapters = spawn_adapters(&cfg, discord_senders, telegram_senders, parts.tz);
 
-    let (tunnel_handle, tunnel_shutdown_tx) = if let Some(ref cloud_cfg) = cfg.cloud {
-        let cloud = cloud_cfg.clone();
-        let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
-        let handle = tokio::spawn(async move {
-            crate::tunnel::start_tunnel(cloud, shutdown_rx, tunnel_status_tx).await;
-        });
-        (Some(handle), Some(shutdown_tx))
-    } else {
-        drop(tunnel_status_tx);
-        (None, None)
-    };
+    let (tunnel_handle, tunnel_shutdown_tx) =
+        spawn_tunnel(&cfg, tunnel_status_tx);
 
     let sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
         .map_err(|e| ResiduumError::Gateway(format!("failed to register SIGTERM handler: {e}")))?;
@@ -143,6 +134,27 @@ pub async fn run_gateway(cfg: Config) -> Result<GatewayExit, ResiduumError> {
     };
 
     Ok(Box::pin(run_event_loop(rt)).await)
+}
+
+/// Spawn the cloud tunnel task if configured, returning its handle and shutdown sender.
+fn spawn_tunnel(
+    cfg: &Config,
+    status_tx: tokio::sync::watch::Sender<crate::tunnel::TunnelStatus>,
+) -> (
+    Option<tokio::task::JoinHandle<()>>,
+    Option<tokio::sync::watch::Sender<bool>>,
+) {
+    if let Some(ref cloud_cfg) = cfg.cloud {
+        let cloud = cloud_cfg.clone();
+        let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+        let handle = tokio::spawn(async move {
+            crate::tunnel::start_tunnel(cloud, shutdown_rx, status_tx).await;
+        });
+        (Some(handle), Some(shutdown_tx))
+    } else {
+        drop(status_tx);
+        (None, None)
+    }
 }
 
 /// Handle a workspace config reload (mcp.json or channels.toml changed).

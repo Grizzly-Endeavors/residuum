@@ -1,5 +1,7 @@
 //! HTTP server setup and adapter spawning in the event loop.
 
+use std::sync::Arc;
+
 use tokio::sync::mpsc;
 
 use crate::config::Config;
@@ -51,7 +53,7 @@ pub fn build_gateway_app(
             config_dir: config_api_state.config_dir.clone(),
             reload_tx: state.reload_tx.clone(),
             tunnel_status_rx: state.tunnel_status_rx.clone(),
-            secret_lock: config_api_state.secret_lock.clone(),
+            secret_lock: Arc::clone(&config_api_state.secret_lock),
         };
         axum::Router::new()
             .route("/api/cloud/status", get(web::cloud::api_cloud_status))

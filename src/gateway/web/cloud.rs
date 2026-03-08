@@ -116,7 +116,7 @@ pub(crate) async fn cloud_callback(
     };
 
     let config_dir = state.config_dir.clone();
-    let secret_lock = state.secret_lock.clone();
+    let secret_lock = Arc::clone(&state.secret_lock);
 
     // Store the token as a secret
     let store_result = {
@@ -223,7 +223,7 @@ fn update_cloud_section(raw: &str, enable: bool) -> String {
         }
 
         // Preserve token line, relay_url, and local_port from original
-        for line in &lines[start + 1..end] {
+        for line in lines.get(start + 1..end).unwrap_or_default() {
             let trimmed = line.trim();
             if trimmed.starts_with("token") || trimmed.starts_with("relay_url") || trimmed.starts_with("local_port") {
                 new_section.push(line.clone());

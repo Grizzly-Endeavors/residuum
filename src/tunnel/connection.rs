@@ -115,62 +115,81 @@ pub(crate) async fn start_tunnel(
         // Reset backoff on successful connection.
         backoff = MIN_BACKOFF;
 
-        // Track active local WebSocket connections.
-        let mut local_ws_channels: HashMap<String, mpsc::Sender<String>> = HashMap::new();
+        let action = run_tunnel_loop(
+            &client,
+            cfg.local_port,
+            &mut read,
+            &write,
+            &mut shutdown_rx,
+            &status_tx,
+        )
+        .await;
 
-        // Frame processing loop.
-        let disconnect_reason: String = loop {
-            tokio::select! {
-                msg = read.next() => {
-                    match msg {
-                        Some(Ok(Message::Text(text))) => {
-                            match serde_json::from_str::<TunnelFrame>(&text) {
-                                Ok(frame) => {
-                                    handle_frame(
-                                        frame,
-                                        &client,
-                                        cfg.local_port,
-                                        &write,
-                                        &mut local_ws_channels,
-                                    )
-                                    .await;
-                                }
-                                Err(e) => {
-                                    warn!(error = %e, "failed to parse tunnel frame");
-                                }
+        match action {
+            LoopExit::Shutdown => return,
+            LoopExit::Reconnect(reason) => {
+                warn!(reason = %reason, "disconnected from relay, reconnecting");
+            }
+        }
+    }
+}
+
+/// Result of the inner frame-processing loop.
+enum LoopExit {
+    /// Graceful shutdown was requested.
+    Shutdown,
+    /// Connection was lost; includes the reason string for logging.
+    Reconnect(String),
+}
+
+/// Process tunnel frames until disconnection or shutdown.
+async fn run_tunnel_loop<S>(
+    client: &reqwest::Client,
+    local_port: u16,
+    read: &mut S,
+    write: &Arc<Mutex<TunnelSink>>,
+    shutdown_rx: &mut watch::Receiver<bool>,
+    status_tx: &watch::Sender<TunnelStatus>,
+) -> LoopExit
+where
+    S: StreamExt<Item = Result<Message, tokio_tungstenite::tungstenite::Error>> + Unpin,
+{
+    let mut local_ws_channels: HashMap<String, mpsc::Sender<String>> = HashMap::new();
+
+    let disconnect_reason: String = loop {
+        tokio::select! {
+            msg = read.next() => {
+                match msg {
+                    Some(Ok(Message::Text(text))) => {
+                        match serde_json::from_str::<TunnelFrame>(&text) {
+                            Ok(frame) => {
+                                handle_frame(frame, client, local_port, write, &mut local_ws_channels).await;
+                            }
+                            Err(e) => {
+                                warn!(error = %e, "failed to parse tunnel frame");
                             }
                         }
-                        Some(Ok(Message::Close(_))) => {
-                            break "relay sent close frame".to_string();
-                        }
-                        Some(Ok(_)) => {
-                            debug!("ignoring non-text WebSocket message");
-                        }
-                        Some(Err(e)) => {
-                            break format!("WebSocket error: {e}");
-                        }
-                        None => {
-                            break "WebSocket stream ended".to_string();
-                        }
                     }
-                }
-                _ = shutdown_rx.changed() => {
-                    if *shutdown_rx.borrow() {
-                        info!("tunnel shutting down");
-                        status_tx.send(TunnelStatus::Disconnected).ok();
-                        drop(send_close(&write).await);
-                        // Drop all local WS channels.
-                        local_ws_channels.clear();
-                        return;
-                    }
+                    Some(Ok(Message::Close(_))) => break "relay sent close frame".to_string(),
+                    Some(Ok(_)) => { debug!("ignoring non-text WebSocket message"); }
+                    Some(Err(e)) => break format!("WebSocket error: {e}"),
+                    None => break "WebSocket stream ended".to_string(),
                 }
             }
-        };
+            _ = shutdown_rx.changed() => {
+                if *shutdown_rx.borrow() {
+                    info!("tunnel shutting down");
+                    status_tx.send(TunnelStatus::Disconnected).ok();
+                    drop(send_close(write).await);
+                    local_ws_channels.clear();
+                    return LoopExit::Shutdown;
+                }
+            }
+        }
+    };
 
-        warn!(reason = %disconnect_reason, "disconnected from relay, reconnecting");
-        // Clean up all local WS connections before reconnecting.
-        local_ws_channels.clear();
-    }
+    local_ws_channels.clear();
+    LoopExit::Reconnect(disconnect_reason)
 }
 
 /// Build the HTTP request used to initiate the WebSocket connection with auth.
