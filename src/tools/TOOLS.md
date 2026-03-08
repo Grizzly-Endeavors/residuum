@@ -720,3 +720,42 @@ On execution error:
 - Response body read failure: `"failed to read response body: {details}"`
 
 **No side effects.** Read-only tool with a 30-second timeout and 5-redirect limit.
+
+---
+
+## `ollama_web_search`
+
+**Source:** `ollama_web_search.rs` · `OllamaWebSearchTool`
+
+**Conditional registration:** only registered when `web_search.standalone_backend.name == "ollama"` in config.
+
+**Description sent to LLM:**
+> Search the web using Ollama Cloud. Returns search results with titles, URLs, and snippets.
+
+### Input
+
+| Parameter     | Type    | Required | Description                                      |
+|---------------|---------|----------|--------------------------------------------------|
+| `query`       | string  | yes      | The search query                                 |
+| `max_results` | integer | no       | Maximum number of results to return (default: 5) |
+
+### Output
+
+On success with results:
+```
+Found {N} result(s):
+
+1. {title}
+   URL: {url}
+   {snippet}
+```
+
+On success with no results: `"No search results found."`
+
+On non-2xx HTTP response: `"ollama web search API returned HTTP {status}: {body}"` (returned as `is_error = true`)
+
+On execution error:
+- API call failure: `"failed to call ollama web search API: {details}"`
+- Response parse failure: `"failed to parse ollama web search response: {details}"`
+
+**No side effects.** Read-only tool with a 30-second timeout.

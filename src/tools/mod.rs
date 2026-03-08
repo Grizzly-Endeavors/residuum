@@ -9,6 +9,7 @@ pub mod inbox;
 mod line_hash;
 pub mod memory_get;
 pub mod memory_search;
+pub(crate) mod ollama_web_search;
 pub mod path_policy;
 pub mod projects;
 mod read;

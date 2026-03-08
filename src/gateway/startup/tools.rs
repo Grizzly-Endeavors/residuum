@@ -104,6 +104,18 @@ pub(super) fn init_tool_registry(
     tools.register_send_message_tool(Arc::clone(deps.notification_router), layout.inbox_dir(), tz);
     tools.register_web_fetch_tool();
 
+    // Register Ollama Cloud web search tool if configured
+    if let Some(backend) = &cfg.web_search.standalone_backend
+        && backend.name == "ollama"
+    {
+        let base_url = backend
+            .base_url
+            .clone()
+            .unwrap_or_else(|| "https://api.ollama.com".to_string());
+        tools.register_ollama_web_search_tool(backend.api_key.clone(), base_url);
+        tracing::info!("registered ollama_web_search tool");
+    }
+
     (tools, tool_filter, path_policy_for_runtime)
 }
 

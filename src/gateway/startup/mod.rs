@@ -194,6 +194,58 @@ async fn init_mcp_servers(layout: &WorkspaceLayout) -> SharedMcpRegistry {
     mcp_registry
 }
 
+/// Connect standalone web search MCP servers (Brave/Tavily) if configured.
+async fn connect_web_search_mcp(cfg: &Config, mcp_registry: &SharedMcpRegistry) {
+    let Some(backend) = &cfg.web_search.standalone_backend else {
+        return;
+    };
+
+    let entry = match backend.name.as_str() {
+        "brave" => crate::projects::types::McpServerEntry {
+            name: "brave_web_search".to_string(),
+            command: "npx".to_string(),
+            args: vec![
+                "-y".to_string(),
+                "@anthropic-ai/mcp-server-brave-search".to_string(),
+            ],
+            env: std::collections::HashMap::from([(
+                "BRAVE_API_KEY".to_string(),
+                backend.api_key.clone(),
+            )]),
+            transport: crate::projects::types::McpTransport::Stdio,
+        },
+        "tavily" => crate::projects::types::McpServerEntry {
+            name: "tavily_web_search".to_string(),
+            command: "npx".to_string(),
+            args: vec!["-y".to_string(), "tavily-mcp".to_string()],
+            env: std::collections::HashMap::from([(
+                "TAVILY_API_KEY".to_string(),
+                backend.api_key.clone(),
+            )]),
+            transport: crate::projects::types::McpTransport::Stdio,
+        },
+        // Ollama uses a native tool, not MCP
+        _ => return,
+    };
+
+    let report = mcp_registry
+        .write()
+        .await
+        .reconcile_and_connect(&[entry])
+        .await;
+    tracing::info!(
+        backend = %backend.name,
+        started = report.started,
+        failures = report.failures.len(),
+        "web search MCP server loaded"
+    );
+    if !report.failures.is_empty() {
+        for (name, err) in &report.failures {
+            eprintln!("warning: failed to start web search MCP server '{name}': {err}");
+        }
+    }
+}
+
 /// Load notification channels from workspace config and build the router.
 fn init_notification_channels(
     layout: &WorkspaceLayout,
@@ -261,6 +313,7 @@ pub(crate) async fn initialize(cfg: &Config) -> Result<GatewayComponents, Residu
     });
 
     let mcp_registry = init_mcp_servers(&layout).await;
+    connect_web_search_mcp(cfg, &mcp_registry).await;
     let (notification_router, valid_external_channels) =
         init_notification_channels(&layout, &http_for_channels, cfg);
 

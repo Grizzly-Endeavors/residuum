@@ -754,9 +754,17 @@ fn run_setup_command(args: &[String]) -> Result<(), ResiduumError> {
     let provider_flag = extract_flag_value(args, "--provider");
     let key_flag = extract_flag_value(args, "--api-key");
     let model_flag = extract_flag_value(args, "--model");
+    let ws_backend_flag = extract_flag_value(args, "--web-search-backend");
+    let ws_key_flag = extract_flag_value(args, "--web-search-api-key");
+    let ws_url_flag = extract_flag_value(args, "--web-search-base-url");
 
-    let has_flags =
-        tz_flag.is_some() || provider_flag.is_some() || key_flag.is_some() || model_flag.is_some();
+    let has_flags = tz_flag.is_some()
+        || provider_flag.is_some()
+        || key_flag.is_some()
+        || model_flag.is_some()
+        || ws_backend_flag.is_some()
+        || ws_key_flag.is_some()
+        || ws_url_flag.is_some();
 
     let answers = if has_flags {
         wizard::from_flags(
@@ -764,6 +772,9 @@ fn run_setup_command(args: &[String]) -> Result<(), ResiduumError> {
             provider_flag.as_deref(),
             key_flag.as_deref(),
             model_flag.as_deref(),
+            ws_backend_flag.as_deref(),
+            ws_key_flag.as_deref(),
+            ws_url_flag.as_deref(),
         )?
     } else {
         wizard::run_interactive()?
@@ -782,6 +793,9 @@ fn run_setup_command(args: &[String]) -> Result<(), ResiduumError> {
             eprintln!("  model: {}/{}", answers.provider, answers.model);
             if cfg.main.first().and_then(|s| s.api_key.as_ref()).is_some() {
                 eprintln!("  api key: configured");
+            }
+            if let Some(ref backend) = answers.web_search_backend {
+                eprintln!("  web search: {backend}");
             }
         }
         Err(err) => {
