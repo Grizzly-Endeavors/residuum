@@ -15,6 +15,7 @@ mod read;
 mod registry;
 pub mod send_message;
 pub mod skills;
+pub(crate) mod web_fetch;
 mod write;
 
 pub use file_tracker::{FileTracker, SharedFileTracker};

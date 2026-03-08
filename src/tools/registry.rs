@@ -18,7 +18,7 @@ use crate::skills::SharedSkillState;
 use super::{
     SharedFileTracker, SharedPathPolicy, SharedToolFilter, Tool, ToolError, ToolFilter, ToolResult,
     actions, background, edit, exec, inbox, memory_get, memory_search, projects, read,
-    send_message, skills, write,
+    send_message, skills, web_fetch, write,
 };
 
 /// Registry of available tools.
@@ -242,6 +242,11 @@ impl ToolRegistry {
         registry.register_skill_tools(skill_state);
 
         registry
+    }
+
+    /// Register the `web_fetch` tool for fetching web page content.
+    pub fn register_web_fetch_tool(&mut self) {
+        self.register(Box::new(web_fetch::WebFetchTool::new()));
     }
 
     /// Register action scheduling tools (`schedule_action`, `list_actions`, `cancel_action`).
