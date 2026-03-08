@@ -145,7 +145,13 @@ export interface ValidateResponse {
 
 // ── Settings types ───────────────────────────────────────────────────
 
-export type SettingsSection = "runtime" | "providers" | "memory" | "integrations" | "mcp";
+export type SettingsSection =
+  | "runtime"
+  | "providers"
+  | "memory"
+  | "integrations"
+  | "mcp"
+  | "web_search";
 
 export interface SettingsProviderEntry {
   name: string;

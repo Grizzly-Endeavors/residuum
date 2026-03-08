@@ -34,6 +34,7 @@
   import Memory from "./components/settings/Memory.svelte";
   import Integrations from "./components/settings/Integrations.svelte";
   import MCP from "./components/settings/MCP.svelte";
+  import WebSearch from "./components/settings/WebSearch.svelte";
 
   let { onClose }: { onClose: () => void } = $props();
 
@@ -74,6 +75,7 @@
     { id: "memory", label: "Memory" },
     { id: "integrations", label: "Integrations" },
     { id: "mcp", label: "MCP" },
+    { id: "web_search", label: "Web Search" },
   ];
 
   // ── Load ───────────────────────────────────────────────────────────
@@ -388,6 +390,8 @@
         <Integrations bind:fields={configFields} />
       {:else if activeSection === "mcp"}
         <MCP bind:servers={mcpServers} />
+      {:else if activeSection === "web_search"}
+        <WebSearch bind:fields={configFields} />
       {/if}
     </div>
   </div>
