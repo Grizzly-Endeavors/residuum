@@ -22,6 +22,7 @@ use crate::notify::router::NotificationRouter;
 use crate::projects::activation::SharedProjectState;
 use crate::pulse::scheduler::PulseScheduler;
 use crate::skills::SharedSkillState;
+use crate::tunnel::TunnelStatus;
 use crate::workspace::layout::WorkspaceLayout;
 
 use super::protocol::ServerMessage;
@@ -110,6 +111,7 @@ pub(crate) struct GatewayState {
     pub command_tx: mpsc::Sender<ServerCommand>,
     pub inbox_dir: std::path::PathBuf,
     pub tz: chrono_tz::Tz,
+    pub tunnel_status_rx: tokio::sync::watch::Receiver<TunnelStatus>,
 }
 
 /// All state needed by the main event loop.
@@ -159,11 +161,9 @@ pub(crate) struct GatewayRuntime {
     /// When the last user message was received (for idle deadline recalculation on reload).
     pub last_user_message_instant: Option<tokio::time::Instant>,
     // Adapter lifecycle handles
-    #[expect(
-        dead_code,
-        reason = "kept alive so tunnel task is not dropped on shutdown"
-    )]
     pub tunnel_handle: Option<tokio::task::JoinHandle<()>>,
+    pub tunnel_shutdown_tx: Option<tokio::sync::watch::Sender<bool>>,
+    pub tunnel_status_rx: tokio::sync::watch::Receiver<TunnelStatus>,
     pub discord_handle: Option<tokio::task::JoinHandle<()>>,
     pub telegram_handle: Option<tokio::task::JoinHandle<()>>,
     pub discord_shutdown_tx: Option<tokio::sync::watch::Sender<bool>>,

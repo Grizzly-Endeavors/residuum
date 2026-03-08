@@ -10,6 +10,7 @@ use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::tungstenite::http as ws_http;
 use tracing::{debug, error, info, warn};
 
+use super::TunnelStatus;
 use super::forward_http;
 use super::forward_ws;
 use super::forward_ws::TunnelSink;
@@ -44,7 +45,11 @@ fn next_backoff(current: Duration) -> Duration {
 ///
 /// This function runs until the shutdown signal is received. Transient
 /// connection errors are logged and retried automatically.
-pub(crate) async fn start_tunnel(cfg: CloudConfig, mut shutdown_rx: watch::Receiver<bool>) {
+pub(crate) async fn start_tunnel(
+    cfg: CloudConfig,
+    mut shutdown_rx: watch::Receiver<bool>,
+    status_tx: watch::Sender<TunnelStatus>,
+) {
     let client = reqwest::Client::new();
     let mut backoff = MIN_BACKOFF;
 
@@ -52,9 +57,11 @@ pub(crate) async fn start_tunnel(cfg: CloudConfig, mut shutdown_rx: watch::Recei
         // Check for shutdown before attempting connection.
         if *shutdown_rx.borrow() {
             info!("tunnel shutting down before reconnect");
+            status_tx.send(TunnelStatus::Disconnected).ok();
             return;
         }
 
+        status_tx.send(TunnelStatus::Connecting).ok();
         info!(url = %cfg.relay_url, "connecting to relay at {}", cfg.relay_url);
 
         let request = match build_ws_request(&cfg) {
@@ -93,6 +100,11 @@ pub(crate) async fn start_tunnel(cfg: CloudConfig, mut shutdown_rx: watch::Recei
             keepalive_interval_secs,
         } = connected
         {
+            status_tx
+                .send(TunnelStatus::Connected {
+                    user_id: user_id.clone(),
+                })
+                .ok();
             info!(
                 user_id = %user_id,
                 keepalive_interval_secs,
@@ -145,6 +157,7 @@ pub(crate) async fn start_tunnel(cfg: CloudConfig, mut shutdown_rx: watch::Recei
                 _ = shutdown_rx.changed() => {
                     if *shutdown_rx.borrow() {
                         info!("tunnel shutting down");
+                        status_tx.send(TunnelStatus::Disconnected).ok();
                         drop(send_close(&write).await);
                         // Drop all local WS channels.
                         local_ws_channels.clear();

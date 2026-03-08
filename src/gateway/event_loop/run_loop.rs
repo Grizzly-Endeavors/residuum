@@ -51,6 +51,9 @@ pub async fn run_gateway(cfg: Config) -> Result<GatewayExit, ResiduumError> {
     let rt_reload_tx = core.reload_tx.clone();
     let rt_command_tx = core.command_tx.clone();
 
+    let (tunnel_status_tx, tunnel_status_rx) =
+        tokio::sync::watch::channel(crate::tunnel::TunnelStatus::Disconnected);
+
     let state = GatewayState {
         inbound_tx: core.inbound_tx,
         broadcast_tx: core.broadcast_tx.clone(),
@@ -58,6 +61,7 @@ pub async fn run_gateway(cfg: Config) -> Result<GatewayExit, ResiduumError> {
         command_tx: core.command_tx,
         inbox_dir: parts.layout.inbox_dir(),
         tz: parts.tz,
+        tunnel_status_rx: tunnel_status_rx.clone(),
     };
     let config_api_state = web::ConfigApiState {
         config_dir: cfg.config_dir.clone(),
@@ -71,14 +75,16 @@ pub async fn run_gateway(cfg: Config) -> Result<GatewayExit, ResiduumError> {
     let server_handle = spawn_http_server(&cfg, app, &core.shutdown_tx).await?;
     let adapters = spawn_adapters(&cfg, discord_senders, telegram_senders, parts.tz);
 
-    let tunnel_handle = if let Some(ref cloud_cfg) = cfg.cloud {
+    let (tunnel_handle, tunnel_shutdown_tx) = if let Some(ref cloud_cfg) = cfg.cloud {
         let cloud = cloud_cfg.clone();
-        let shutdown_rx = core.shutdown_tx.subscribe();
-        Some(tokio::spawn(async move {
-            crate::tunnel::start_tunnel(cloud, shutdown_rx).await;
-        }))
+        let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+        let handle = tokio::spawn(async move {
+            crate::tunnel::start_tunnel(cloud, shutdown_rx, tunnel_status_tx).await;
+        });
+        (Some(handle), Some(shutdown_tx))
     } else {
-        None
+        drop(tunnel_status_tx);
+        (None, None)
     };
 
     let sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
@@ -123,6 +129,8 @@ pub async fn run_gateway(cfg: Config) -> Result<GatewayExit, ResiduumError> {
         unsolicited_handles: std::collections::HashMap::new(),
         last_user_message_instant: None,
         tunnel_handle,
+        tunnel_shutdown_tx,
+        tunnel_status_rx,
         discord_handle: adapters.discord_handle,
         telegram_handle: adapters.telegram_handle,
         discord_shutdown_tx: adapters.discord_shutdown_tx,
@@ -308,6 +316,7 @@ async fn run_event_loop(mut rt: GatewayRuntime) -> GatewayExit {
             _ = rt.sigterm.recv() => {
                 tracing::info!("received SIGTERM, shutting down");
                 rt.mcp_registry.write().await.disconnect_all().await;
+                if let Some(tx) = rt.tunnel_shutdown_tx.take() { tx.send(true).ok(); }
                 if let Some(tx) = rt.discord_shutdown_tx.take() { tx.send(true).ok(); }
                 if let Some(tx) = rt.telegram_shutdown_tx.take() { tx.send(true).ok(); }
                 rt.shutdown_tx.send(true).ok();

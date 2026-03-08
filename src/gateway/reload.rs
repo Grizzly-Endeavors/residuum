@@ -12,6 +12,7 @@ use crate::models::CompletionOptions;
 
 use crate::gateway::types::GatewayRuntime;
 use crate::gateway::types::GatewayState;
+use crate::tunnel::TunnelStatus;
 
 /// What the event loop should do with the idle timer after a config reload.
 pub(super) enum IdleAction {
@@ -49,6 +50,8 @@ pub(super) struct ConfigDiff {
     pub skills_changed: bool,
     /// Idle system config changed (timeout or `idle_channel`).
     pub idle_changed: bool,
+    /// Cloud tunnel config changed (added/removed/changed).
+    pub cloud_changed: bool,
 }
 
 impl ConfigDiff {
@@ -64,6 +67,7 @@ impl ConfigDiff {
             && !self.agent_changed
             && !self.skills_changed
             && !self.idle_changed
+            && !self.cloud_changed
     }
 
     /// Build a human-readable summary of what changed.
@@ -99,6 +103,9 @@ impl ConfigDiff {
         if self.idle_changed {
             parts.push("idle");
         }
+        if self.cloud_changed {
+            parts.push("cloud");
+        }
         if parts.is_empty() {
             "no changes detected".to_string()
         } else {
@@ -128,6 +135,7 @@ pub(super) fn diff_config(old: &Config, new: &Config) -> ConfigDiff {
         agent_changed: old.agent != new.agent,
         skills_changed: old.skills != new.skills,
         idle_changed: old.idle != new.idle,
+        cloud_changed: old.cloud != new.cloud,
     }
 }
 
@@ -226,6 +234,9 @@ pub(super) async fn handle_root_reload(rt: &mut GatewayRuntime) -> IdleAction {
     }
     if diff.telegram_changed {
         reload_telegram_adapter(rt, &new_cfg).await;
+    }
+    if diff.cloud_changed {
+        reload_tunnel(rt, &new_cfg).await;
     }
     if diff.pulse_changed {
         rt.pulse_enabled = new_cfg.pulse_enabled;
@@ -342,6 +353,7 @@ async fn reload_gateway(rt: &mut GatewayRuntime, new_cfg: &Config) {
                 command_tx: rt.command_tx.clone(),
                 inbox_dir: rt.layout.inbox_dir(),
                 tz: rt.tz,
+                tunnel_status_rx: rt.tunnel_status_rx.clone(),
             };
             let config_api_state = crate::gateway::web::ConfigApiState {
                 config_dir: rt.config_dir.clone(),
@@ -462,6 +474,37 @@ async fn reload_discord_adapter(rt: &mut GatewayRuntime, new_cfg: &Config) {
     }
 }
 
+/// Stop the existing tunnel (if running) and start a new one if configured.
+async fn reload_tunnel(rt: &mut GatewayRuntime, new_cfg: &Config) {
+    if let Some(tx) = rt.tunnel_shutdown_tx.take() {
+        tx.send(true).ok();
+    }
+    if let Some(handle) = rt.tunnel_handle.take() {
+        if tokio::time::timeout(Duration::from_secs(5), handle)
+            .await
+            .is_ok()
+        {
+            tracing::info!("tunnel stopped");
+        } else {
+            tracing::warn!("tunnel shutdown timed out after 5s");
+        }
+    }
+
+    if let Some(ref cloud_cfg) = new_cfg.cloud {
+        let cloud = cloud_cfg.clone();
+        let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+        let (status_tx, status_rx) = tokio::sync::watch::channel(TunnelStatus::Disconnected);
+        rt.tunnel_handle = Some(tokio::spawn(async move {
+            crate::tunnel::start_tunnel(cloud, shutdown_rx, status_tx).await;
+        }));
+        rt.tunnel_shutdown_tx = Some(shutdown_tx);
+        rt.tunnel_status_rx = status_rx;
+        tracing::info!("tunnel restarted with new config");
+    } else {
+        tracing::info!("cloud tunnel removed from config");
+    }
+}
+
 /// Stop the existing Telegram adapter (if running) and start a new one if configured.
 async fn reload_telegram_adapter(rt: &mut GatewayRuntime, new_cfg: &Config) {
     if let Some(tx) = rt.telegram_shutdown_tx.take() {
@@ -506,8 +549,8 @@ async fn reload_telegram_adapter(rt: &mut GatewayRuntime, new_cfg: &Config) {
 mod tests {
     use super::*;
     use crate::config::{
-        AgentAbilitiesConfig, BackgroundConfig, DiscordConfig, GatewayConfig, MemoryConfig,
-        SkillsConfig, TelegramConfig, WebhookConfig,
+        AgentAbilitiesConfig, BackgroundConfig, CloudConfig, DiscordConfig, GatewayConfig,
+        MemoryConfig, SkillsConfig, TelegramConfig, WebhookConfig,
     };
     use crate::models::retry::RetryConfig;
 
@@ -752,6 +795,55 @@ mod tests {
             !dir.path().join("config.toml.bak").exists(),
             "no backup should be created when source is missing"
         );
+    }
+
+    #[test]
+    fn diff_config_detects_cloud_change() {
+        let mut old = test_config();
+        old.cloud = Some(CloudConfig {
+            relay_url: "wss://example.com".to_string(),
+            token: "old-token".to_string(),
+            local_port: 7700,
+        });
+        let mut new = old.clone();
+        new.cloud = Some(CloudConfig {
+            relay_url: "wss://example.com".to_string(),
+            token: "new-token".to_string(),
+            local_port: 7700,
+        });
+
+        let diff = diff_config(&old, &new);
+        assert!(diff.cloud_changed);
+        assert!(!diff.discord_changed);
+    }
+
+    #[test]
+    fn diff_config_detects_cloud_addition() {
+        let old = test_config();
+        let mut new = old.clone();
+        new.cloud = Some(CloudConfig {
+            relay_url: "wss://example.com".to_string(),
+            token: "tok".to_string(),
+            local_port: 7700,
+        });
+
+        let diff = diff_config(&old, &new);
+        assert!(diff.cloud_changed);
+    }
+
+    #[test]
+    fn diff_config_detects_cloud_removal() {
+        let mut old = test_config();
+        old.cloud = Some(CloudConfig {
+            relay_url: "wss://example.com".to_string(),
+            token: "tok".to_string(),
+            local_port: 7700,
+        });
+        let mut new = old.clone();
+        new.cloud = None;
+
+        let diff = diff_config(&old, &new);
+        assert!(diff.cloud_changed);
     }
 
     #[test]
