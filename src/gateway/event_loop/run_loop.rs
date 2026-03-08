@@ -75,8 +75,7 @@ pub async fn run_gateway(cfg: Config) -> Result<GatewayExit, ResiduumError> {
     let server_handle = spawn_http_server(&cfg, app, &core.shutdown_tx).await?;
     let adapters = spawn_adapters(&cfg, discord_senders, telegram_senders, parts.tz);
 
-    let (tunnel_handle, tunnel_shutdown_tx) =
-        spawn_tunnel(&cfg, tunnel_status_tx);
+    let (tunnel_handle, tunnel_shutdown_tx) = spawn_tunnel(&cfg, tunnel_status_tx);
 
     let sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
         .map_err(|e| ResiduumError::Gateway(format!("failed to register SIGTERM handler: {e}")))?;

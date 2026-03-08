@@ -73,17 +73,17 @@ fn parse_cloud_state(raw: &str) -> (bool, bool) {
         if !in_cloud {
             continue;
         }
-        if let Some(rest) = trimmed.strip_prefix("token") {
-            if rest.trim_start().starts_with('=') {
-                let val = rest.trim_start().trim_start_matches('=').trim();
-                has_token = !val.trim_matches('"').is_empty();
-            }
+        if let Some(rest) = trimmed.strip_prefix("token")
+            && rest.trim_start().starts_with('=')
+        {
+            let val = rest.trim_start().trim_start_matches('=').trim();
+            has_token = !val.trim_matches('"').is_empty();
         }
-        if let Some(rest) = trimmed.strip_prefix("enabled") {
-            if rest.trim_start().starts_with('=') {
-                let val = rest.trim_start().trim_start_matches('=').trim();
-                enabled = val != "false";
-            }
+        if let Some(rest) = trimmed.strip_prefix("enabled")
+            && rest.trim_start().starts_with('=')
+        {
+            let val = rest.trim_start().trim_start_matches('=').trim();
+            enabled = val != "false";
         }
     }
 
@@ -225,7 +225,10 @@ fn update_cloud_section(raw: &str, enable: bool) -> String {
         // Preserve token line, relay_url, and local_port from original
         for line in lines.get(start + 1..end).unwrap_or_default() {
             let trimmed = line.trim();
-            if trimmed.starts_with("token") || trimmed.starts_with("relay_url") || trimmed.starts_with("local_port") {
+            if trimmed.starts_with("token")
+                || trimmed.starts_with("relay_url")
+                || trimmed.starts_with("local_port")
+            {
                 new_section.push(line.clone());
             }
         }
@@ -280,7 +283,6 @@ const SUCCESS_HTML: &str = r#"<!DOCTYPE html>
 </html>"#;
 
 #[cfg(test)]
-#[expect(clippy::unwrap_used, reason = "test code uses unwrap for clarity")]
 mod tests {
     use super::*;
 
