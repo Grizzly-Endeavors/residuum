@@ -49,6 +49,8 @@ pub(crate) struct ConfigFile {
     pub(super) thinking: Option<String>,
     /// Cloud tunnel configuration.
     pub(super) cloud: Option<CloudConfigFile>,
+    /// Web search configuration.
+    pub(super) web_search: Option<WebSearchConfigFile>,
 }
 
 /// Raw TOML providers file structure (`providers.toml`).
@@ -270,6 +272,80 @@ pub(super) struct CloudConfigFile {
     pub(super) token: Option<String>,
     /// Local port to forward requests to.
     pub(super) local_port: Option<u16>,
+}
+
+/// Raw TOML `[web_search]` section.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct WebSearchConfigFile {
+    /// Standalone backend name (`"brave"`, `"tavily"`, or `"ollama"`).
+    pub(super) backend: Option<String>,
+    /// Brave Search backend configuration.
+    pub(super) brave: Option<BraveSearchConfigFile>,
+    /// Tavily backend configuration.
+    pub(super) tavily: Option<TavilySearchConfigFile>,
+    /// Ollama Cloud backend configuration.
+    pub(super) ollama: Option<OllamaSearchConfigFile>,
+    /// Anthropic provider-native search overrides.
+    pub(super) anthropic: Option<AnthropicSearchConfigFile>,
+    /// `OpenAI` provider-native search overrides.
+    pub(super) openai: Option<OpenAiSearchConfigFile>,
+    /// Gemini provider-native search overrides.
+    pub(super) gemini: Option<GeminiSearchConfigFile>,
+}
+
+/// Raw TOML `[web_search.brave]` section.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct BraveSearchConfigFile {
+    /// Brave Search API key (supports `${ENV_VAR}` / `secret:name`).
+    pub(super) api_key: Option<String>,
+}
+
+/// Raw TOML `[web_search.tavily]` section.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct TavilySearchConfigFile {
+    /// Tavily API key (supports `${ENV_VAR}` / `secret:name`).
+    pub(super) api_key: Option<String>,
+}
+
+/// Raw TOML `[web_search.ollama]` section.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct OllamaSearchConfigFile {
+    /// Ollama Cloud API key (supports `${ENV_VAR}` / `secret:name`).
+    pub(super) api_key: Option<String>,
+    /// Ollama Cloud base URL.
+    pub(super) base_url: Option<String>,
+}
+
+/// Raw TOML `[web_search.anthropic]` section.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct AnthropicSearchConfigFile {
+    /// Maximum number of web search invocations per request.
+    pub(super) max_uses: Option<u32>,
+    /// Restrict search to these domains.
+    pub(super) allowed_domains: Option<Vec<String>>,
+    /// Exclude these domains from search.
+    pub(super) blocked_domains: Option<Vec<String>>,
+}
+
+/// Raw TOML `[web_search.openai]` section.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct OpenAiSearchConfigFile {
+    /// Search context size (`"low"`, `"medium"`, `"high"`).
+    pub(super) search_context_size: Option<String>,
+}
+
+/// Raw TOML `[web_search.gemini]` section.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct GeminiSearchConfigFile {
+    /// Domains to exclude from Google Search grounding.
+    pub(super) exclude_domains: Option<Vec<String>>,
 }
 
 /// Raw TOML `[background.models]` section.

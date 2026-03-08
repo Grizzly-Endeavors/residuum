@@ -25,6 +25,7 @@ pub use provider::{ModelSpec, ProviderKind, ProviderSpec};
 pub use secrets::SecretStore;
 pub use types::{
     AgentAbilitiesConfig, BackgroundConfig, BackgroundModelTier, BackgroundModelsConfig,
-    CloudConfig, Config, DiscordConfig, GatewayConfig, IdleConfig, MemoryConfig, SearchConfig,
-    SkillsConfig, TelegramConfig, WebhookConfig,
+    CloudConfig, Config, DiscordConfig, GatewayConfig, IdleConfig, MemoryConfig,
+    ProviderNativeSearchConfig, SearchConfig, SkillsConfig, StandaloneBackendConfig,
+    TelegramConfig, WebSearchConfig, WebhookConfig,
 };

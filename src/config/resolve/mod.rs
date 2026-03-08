@@ -15,12 +15,14 @@ use super::constants::{DEFAULT_IDLE_TIMEOUT_MINUTES, DEFAULT_MAX_TOKENS, DEFAULT
 use super::deserialize::{
     AgentConfigFile, BackgroundConfigFile, BackgroundModelsFile, CloudConfigFile, ConfigFile,
     DiscordConfigFile, GatewayConfigFile, MemoryConfigFile, ProviderEntryFile, ProvidersFile,
-    SearchConfigFile, SkillsConfigFile, TelegramConfigFile, WebhookConfigFile,
+    SearchConfigFile, SkillsConfigFile, TelegramConfigFile, WebSearchConfigFile, WebhookConfigFile,
 };
+use super::provider::ProviderKind;
 use super::secrets::SecretStore;
 use super::types::{
     AgentAbilitiesConfig, BackgroundConfig, CloudConfig, DiscordConfig, GatewayConfig, IdleConfig,
-    MemoryConfig, SearchConfig, SkillsConfig, TelegramConfig, WebhookConfig,
+    MemoryConfig, ProviderNativeSearchConfig, SearchConfig, SkillsConfig, StandaloneBackendConfig,
+    TelegramConfig, WebSearchConfig, WebhookConfig,
 };
 
 /// Build a `Config` from an optional config file and environment variables.
@@ -97,6 +99,12 @@ pub(crate) fn from_file_and_env(
         .map(parse_thinking_config)
         .transpose()?;
 
+    let web_search = resolve_web_search_config(
+        file.and_then(|f| f.web_search.as_ref()),
+        &resolved_models.main,
+        &secrets,
+    );
+
     Ok(Config {
         name,
         main: resolved_models.main,
@@ -122,6 +130,7 @@ pub(crate) fn from_file_and_env(
         idle,
         temperature: file.and_then(|f| f.temperature),
         thinking,
+        web_search,
         config_dir: PathBuf::new(),
     })
 }
@@ -482,6 +491,115 @@ fn resolve_search_config(section: Option<&SearchConfigFile>) -> SearchConfig {
             "warning: [memory.search] vector_weight ({}) + text_weight ({}) = {sum:.2}, expected ~1.0",
             cfg.vector_weight, cfg.text_weight
         );
+    }
+
+    cfg
+}
+
+/// Resolve web search configuration from TOML section.
+///
+/// Provider-native search is enabled automatically when the main provider supports it
+/// (Anthropic, `OpenAI`, Gemini). Standalone backends are resolved from the `backend` field.
+fn resolve_web_search_config(
+    section: Option<&WebSearchConfigFile>,
+    main_chain: &[super::provider::ProviderSpec],
+    secrets: &SecretStore,
+) -> WebSearchConfig {
+    let mut cfg = WebSearchConfig::default();
+
+    // Determine the main provider kind for native search detection
+    let main_kind = main_chain.first().map(|p| p.model.kind);
+
+    // Provider-native search: auto-enable for Anthropic, OpenAI, Gemini
+    let has_native = matches!(
+        main_kind,
+        Some(ProviderKind::Anthropic | ProviderKind::OpenAi | ProviderKind::Gemini)
+    );
+
+    if has_native {
+        let mut native = ProviderNativeSearchConfig::default();
+
+        if let Some(s) = section {
+            // Apply Anthropic overrides
+            if let Some(ref a) = s.anthropic {
+                native.max_uses = a.max_uses;
+                native.allowed_domains.clone_from(&a.allowed_domains);
+                native.blocked_domains.clone_from(&a.blocked_domains);
+            }
+            // Apply OpenAI overrides
+            if let Some(ref o) = s.openai {
+                native
+                    .search_context_size
+                    .clone_from(&o.search_context_size);
+            }
+            // Apply Gemini overrides
+            if let Some(ref g) = s.gemini {
+                native.exclude_domains.clone_from(&g.exclude_domains);
+            }
+        }
+
+        cfg.provider_native = Some(native);
+    }
+
+    // Standalone backend
+    if let Some(s) = section
+        && let Some(ref backend_name) = s.backend
+    {
+        let resolved = match backend_name.as_str() {
+            "brave" => s.brave.as_ref().and_then(|b| {
+                let api_key = b
+                    .api_key
+                    .as_deref()
+                    .and_then(|k| resolve_secret_value(k, secrets))
+                    .or_else(|| std::env::var("BRAVE_API_KEY").ok());
+                api_key.map(|key| StandaloneBackendConfig {
+                    name: "brave".to_string(),
+                    api_key: key,
+                    base_url: None,
+                })
+            }),
+            "tavily" => s.tavily.as_ref().and_then(|t| {
+                let api_key = t
+                    .api_key
+                    .as_deref()
+                    .and_then(|k| resolve_secret_value(k, secrets))
+                    .or_else(|| std::env::var("TAVILY_API_KEY").ok());
+                api_key.map(|key| StandaloneBackendConfig {
+                    name: "tavily".to_string(),
+                    api_key: key,
+                    base_url: None,
+                })
+            }),
+            "ollama" => s.ollama.as_ref().and_then(|o| {
+                let api_key = o
+                    .api_key
+                    .as_deref()
+                    .and_then(|k| resolve_secret_value(k, secrets))
+                    .or_else(|| std::env::var("OLLAMA_API_KEY").ok());
+                api_key.map(|key| StandaloneBackendConfig {
+                    name: "ollama".to_string(),
+                    api_key: key,
+                    base_url: o.base_url.clone(),
+                })
+            }),
+            other => {
+                eprintln!(
+                    "warning: [web_search] unknown backend \"{other}\"; \
+                         expected brave, tavily, or ollama"
+                );
+                None
+            }
+        };
+
+        if resolved.is_none() && !backend_name.is_empty() {
+            eprintln!(
+                "warning: [web_search] backend \"{backend_name}\" configured but \
+                     no API key found; set api_key in [web_search.{backend_name}] or the \
+                     corresponding env var"
+            );
+        }
+
+        cfg.standalone_backend = resolved;
     }
 
     cfg
@@ -1321,6 +1439,254 @@ main = "anthropic/claude-sonnet-4-6"
             cloud.local_port, 9000,
             "local_port should default to gateway port"
         );
+    }
+
+    // ── Web search config ────────────────────────────────────────────────
+
+    #[test]
+    fn web_search_native_enabled_for_anthropic() {
+        let cfg_file = parse_config("timezone = \"UTC\"\n");
+        let prov_file = parse_providers(
+            r#"
+[models]
+main = "anthropic/claude-sonnet-4-6"
+"#,
+        );
+        let cfg = from_file_and_env(Some(&cfg_file), Some(&prov_file), &test_config_dir()).unwrap();
+        assert!(
+            cfg.web_search.provider_native.is_some(),
+            "anthropic should get provider-native search"
+        );
+    }
+
+    #[test]
+    fn web_search_native_enabled_for_openai() {
+        let cfg_file = parse_config("timezone = \"UTC\"\n");
+        let prov_file = parse_providers(
+            r#"
+[models]
+main = "openai/gpt-4o"
+"#,
+        );
+        let cfg = from_file_and_env(Some(&cfg_file), Some(&prov_file), &test_config_dir()).unwrap();
+        assert!(
+            cfg.web_search.provider_native.is_some(),
+            "openai should get provider-native search"
+        );
+    }
+
+    #[test]
+    fn web_search_native_enabled_for_gemini() {
+        let cfg_file = parse_config("timezone = \"UTC\"\n");
+        let prov_file = parse_providers(
+            r#"
+[models]
+main = "gemini/gemini-2.0-flash"
+"#,
+        );
+        let cfg = from_file_and_env(Some(&cfg_file), Some(&prov_file), &test_config_dir()).unwrap();
+        assert!(
+            cfg.web_search.provider_native.is_some(),
+            "gemini should get provider-native search"
+        );
+    }
+
+    #[test]
+    fn web_search_native_disabled_for_ollama() {
+        let cfg_file = parse_config("timezone = \"UTC\"\n");
+        let prov_file = parse_providers(
+            r#"
+[models]
+main = "ollama/llama3"
+"#,
+        );
+        let cfg = from_file_and_env(Some(&cfg_file), Some(&prov_file), &test_config_dir()).unwrap();
+        assert!(
+            cfg.web_search.provider_native.is_none(),
+            "ollama should not get provider-native search"
+        );
+    }
+
+    #[test]
+    fn web_search_anthropic_overrides() {
+        let cfg_file = parse_config(
+            r#"
+timezone = "UTC"
+
+[web_search.anthropic]
+max_uses = 3
+allowed_domains = ["example.com"]
+blocked_domains = ["spam.com"]
+"#,
+        );
+        let prov_file = parse_providers(
+            r#"
+[models]
+main = "anthropic/claude-sonnet-4-6"
+"#,
+        );
+        let cfg = from_file_and_env(Some(&cfg_file), Some(&prov_file), &test_config_dir()).unwrap();
+        let native = cfg.web_search.provider_native.as_ref().unwrap();
+        assert_eq!(native.max_uses, Some(3), "max_uses should be set");
+        assert_eq!(
+            native.allowed_domains.as_deref(),
+            Some(&["example.com".to_string()][..]),
+            "allowed_domains should be set"
+        );
+        assert_eq!(
+            native.blocked_domains.as_deref(),
+            Some(&["spam.com".to_string()][..]),
+            "blocked_domains should be set"
+        );
+    }
+
+    #[test]
+    fn web_search_openai_overrides() {
+        let cfg_file = parse_config(
+            r#"
+timezone = "UTC"
+
+[web_search.openai]
+search_context_size = "high"
+"#,
+        );
+        let prov_file = parse_providers(
+            r#"
+[models]
+main = "openai/gpt-4o"
+"#,
+        );
+        let cfg = from_file_and_env(Some(&cfg_file), Some(&prov_file), &test_config_dir()).unwrap();
+        let native = cfg.web_search.provider_native.as_ref().unwrap();
+        assert_eq!(
+            native.search_context_size.as_deref(),
+            Some("high"),
+            "search_context_size should be set"
+        );
+    }
+
+    #[test]
+    fn web_search_standalone_brave_with_literal_key() {
+        let cfg_file = parse_config(
+            r#"
+timezone = "UTC"
+
+[web_search]
+backend = "brave"
+
+[web_search.brave]
+api_key = "BSA-test-key"
+"#,
+        );
+        let prov_file = parse_providers(
+            r#"
+[models]
+main = "ollama/llama3"
+"#,
+        );
+        let cfg = from_file_and_env(Some(&cfg_file), Some(&prov_file), &test_config_dir()).unwrap();
+        let backend = cfg.web_search.standalone_backend.as_ref().unwrap();
+        assert_eq!(backend.name, "brave", "backend name should be brave");
+        assert_eq!(
+            backend.api_key, "BSA-test-key",
+            "api key should be resolved"
+        );
+    }
+
+    #[test]
+    fn web_search_standalone_no_key_warns() {
+        let cfg_file = parse_config(
+            r#"
+timezone = "UTC"
+
+[web_search]
+backend = "brave"
+
+[web_search.brave]
+"#,
+        );
+        let prov_file = parse_providers(
+            r#"
+[models]
+main = "ollama/llama3"
+"#,
+        );
+        let cfg = from_file_and_env(Some(&cfg_file), Some(&prov_file), &test_config_dir()).unwrap();
+        assert!(
+            cfg.web_search.standalone_backend.is_none(),
+            "backend without api key should be None"
+        );
+    }
+
+    #[test]
+    fn web_search_both_native_and_standalone_coexist() {
+        let cfg_file = parse_config(
+            r#"
+timezone = "UTC"
+
+[web_search]
+backend = "brave"
+
+[web_search.brave]
+api_key = "BSA-test"
+
+[web_search.anthropic]
+max_uses = 5
+"#,
+        );
+        let prov_file = parse_providers(
+            r#"
+[models]
+main = "anthropic/claude-sonnet-4-6"
+"#,
+        );
+        let cfg = from_file_and_env(Some(&cfg_file), Some(&prov_file), &test_config_dir()).unwrap();
+        assert!(
+            cfg.web_search.provider_native.is_some(),
+            "provider-native should be set"
+        );
+        assert!(
+            cfg.web_search.standalone_backend.is_some(),
+            "standalone backend should also be set"
+        );
+    }
+
+    #[test]
+    fn web_search_deny_unknown_fields() {
+        let toml_str = r#"
+timezone = "UTC"
+
+[web_search]
+typo = "bad"
+"#;
+        let result = toml::from_str::<ConfigFile>(toml_str);
+        assert!(
+            result.is_err(),
+            "unknown field in [web_search] should be rejected"
+        );
+    }
+
+    #[test]
+    fn web_search_defaults_when_absent() {
+        let cfg_file = parse_config("timezone = \"UTC\"\n");
+        let prov_file = parse_providers(
+            r#"
+[models]
+main = "anthropic/claude-sonnet-4-6"
+"#,
+        );
+        let cfg = from_file_and_env(Some(&cfg_file), Some(&prov_file), &test_config_dir()).unwrap();
+        assert!(
+            cfg.web_search.standalone_backend.is_none(),
+            "standalone should be None by default"
+        );
+        // provider_native is auto-set for anthropic
+        assert!(
+            cfg.web_search.provider_native.is_some(),
+            "native should be auto-set for anthropic"
+        );
+        let native = cfg.web_search.provider_native.as_ref().unwrap();
+        assert!(native.max_uses.is_none(), "max_uses should default to None");
     }
 
     #[test]
