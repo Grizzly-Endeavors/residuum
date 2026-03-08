@@ -229,16 +229,22 @@ impl ModelProvider for GeminiClient {
     ) -> Result<ModelResponse, ModelError> {
         let url = self.endpoint();
         let (system_instruction, contents) = Self::convert_messages(messages);
-        let gemini_tools = (!tools.is_empty()).then(|| {
-            vec![GeminiTools {
-                function_declarations: tools
+        let has_web_search = options.web_search.is_some();
+        let gemini_tools = (!tools.is_empty() || has_web_search).then(|| {
+            let function_declarations = (!tools.is_empty()).then(|| {
+                tools
                     .iter()
                     .map(|t| GeminiFunctionDeclaration {
                         name: t.name.clone(),
                         description: t.description.clone(),
                         parameters: t.parameters.clone(),
                     })
-                    .collect(),
+                    .collect()
+            });
+            let google_search = has_web_search.then(|| serde_json::json!({}));
+            vec![GeminiTools {
+                function_declarations,
+                google_search,
             }]
         });
         let max_output_tokens = options.max_tokens.unwrap_or(self.max_tokens);
@@ -405,8 +411,13 @@ struct GeminiFunctionResponse {
 
 #[derive(Serialize, Clone)]
 struct GeminiTools {
-    #[serde(rename = "functionDeclarations")]
-    function_declarations: Vec<GeminiFunctionDeclaration>,
+    #[serde(
+        rename = "functionDeclarations",
+        skip_serializing_if = "Option::is_none"
+    )]
+    function_declarations: Option<Vec<GeminiFunctionDeclaration>>,
+    #[serde(rename = "googleSearch", skip_serializing_if = "Option::is_none")]
+    google_search: Option<serde_json::Value>,
 }
 
 #[derive(Serialize, Clone)]

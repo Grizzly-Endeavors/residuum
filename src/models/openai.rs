@@ -169,18 +169,26 @@ impl ModelProvider for OpenAiClient {
     ) -> Result<ModelResponse, ModelError> {
         let url = format!("{}/chat/completions", self.base_url);
         let openai_messages: Vec<OpenAiMessage> = messages.iter().map(Into::into).collect();
-        let openai_tools: Vec<OpenAiTool> = tools
+        let mut openai_tools: Vec<OpenAiToolEntry> = tools
             .iter()
-            .map(|t| OpenAiTool {
-                r#type: "function".to_string(),
-                function: OpenAiFunction {
-                    name: t.name.clone(),
-                    description: t.description.clone(),
-                    parameters: t.parameters.clone(),
-                },
+            .map(|t| {
+                OpenAiToolEntry::Function(OpenAiTool {
+                    r#type: "function".to_string(),
+                    function: OpenAiFunction {
+                        name: t.name.clone(),
+                        description: t.description.clone(),
+                        parameters: t.parameters.clone(),
+                    },
+                })
             })
             .collect();
-        let has_tools = !tools.is_empty();
+        if let Some(ws) = &options.web_search {
+            openai_tools.push(OpenAiToolEntry::WebSearch(OpenAiWebSearchTool {
+                r#type: "web_search_preview".to_string(),
+                search_context_size: ws.search_context_size.clone(),
+            }));
+        }
+        let has_tools = !openai_tools.is_empty();
         let model = self.model.clone();
         let api_key = self.api_key.clone();
         let http = self.http.clone();
@@ -242,7 +250,7 @@ struct ChatCompletionRequest<'a> {
     model: &'a str,
     messages: Vec<OpenAiMessage>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    tools: Option<Vec<OpenAiTool>>,
+    tools: Option<Vec<OpenAiToolEntry>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     tool_choice: Option<&'a str>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -347,10 +355,27 @@ impl From<&Message> for OpenAiMessage {
     }
 }
 
+/// Heterogeneous tool entry for the `OpenAI` `tools` array.
+#[derive(Serialize, Clone)]
+#[serde(untagged)]
+enum OpenAiToolEntry {
+    /// Standard function tool.
+    Function(OpenAiTool),
+    /// Web search tool.
+    WebSearch(OpenAiWebSearchTool),
+}
+
 #[derive(Serialize, Deserialize, Clone)]
 struct OpenAiTool {
     r#type: String,
     function: OpenAiFunction,
+}
+
+#[derive(Serialize, Clone)]
+struct OpenAiWebSearchTool {
+    r#type: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    search_context_size: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
