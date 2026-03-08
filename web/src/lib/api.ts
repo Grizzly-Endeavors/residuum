@@ -9,6 +9,7 @@ import type {
   SecretResponse,
   ValidateResponse,
   SecretsListResponse,
+  CloudStatusResponse,
 } from "./types";
 
 export async function fetchStatus(): Promise<StatusResponse> {
@@ -170,5 +171,21 @@ export async function deleteSecret(name: string): Promise<void> {
   if (!resp.ok) {
     const text = await resp.text();
     throw new Error(`failed to delete secret "${name}": ${text}`);
+  }
+}
+
+// ── Cloud API wrappers ──────────────────────────────────────────────
+
+export async function fetchCloudStatus(): Promise<CloudStatusResponse> {
+  const resp = await fetch("/api/cloud/status");
+  if (!resp.ok) throw new Error(`cloud status check failed: ${resp.status}`);
+  return (await resp.json()) as CloudStatusResponse;
+}
+
+export async function disconnectCloud(): Promise<void> {
+  const resp = await fetch("/api/cloud/disconnect", { method: "POST" });
+  if (!resp.ok) {
+    const text = await resp.text();
+    throw new Error(`cloud disconnect failed: ${text}`);
   }
 }

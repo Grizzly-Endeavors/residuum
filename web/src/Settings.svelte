@@ -33,6 +33,7 @@
   import Providers from "./components/settings/Providers.svelte";
   import Memory from "./components/settings/Memory.svelte";
   import Integrations from "./components/settings/Integrations.svelte";
+  import Cloud from "./components/settings/Cloud.svelte";
   import MCP from "./components/settings/MCP.svelte";
 
   let { onClose }: { onClose: () => void } = $props();
@@ -73,6 +74,7 @@
     { id: "providers", label: "Providers" },
     { id: "memory", label: "Memory" },
     { id: "integrations", label: "Integrations" },
+    { id: "cloud", label: "Cloud" },
     { id: "mcp", label: "MCP" },
   ];
 
@@ -269,7 +271,7 @@
   async function storeNewSecrets() {
     // Collect secrets that need storing (non-empty, non-secret: values)
     const secretOps: {
-      field: "discord_token" | "telegram_token" | "webhook_secret";
+      field: "discord_token" | "telegram_token" | "webhook_secret" | "cloud_token";
       name: string;
     }[] = [];
 
@@ -277,6 +279,7 @@
       { field: "discord_token" as const, name: "discord" },
       { field: "telegram_token" as const, name: "telegram" },
       { field: "webhook_secret" as const, name: "webhook_secret" },
+      { field: "cloud_token" as const, name: "cloud_token" },
     ];
 
     for (const { field, name } of secretFields) {
@@ -386,6 +389,8 @@
         <Memory bind:fields={configFields} />
       {:else if activeSection === "integrations"}
         <Integrations bind:fields={configFields} />
+      {:else if activeSection === "cloud"}
+        <Cloud bind:fields={configFields} />
       {:else if activeSection === "mcp"}
         <MCP bind:servers={mcpServers} />
       {/if}

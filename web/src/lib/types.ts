@@ -145,7 +145,16 @@ export interface ValidateResponse {
 
 // ── Settings types ───────────────────────────────────────────────────
 
-export type SettingsSection = "runtime" | "providers" | "memory" | "integrations" | "mcp";
+export type SettingsSection = "runtime" | "providers" | "memory" | "integrations" | "cloud" | "mcp";
+
+export type CloudTunnelStatus = "disconnected" | "connecting" | "connected";
+
+export interface CloudStatusResponse {
+  status: CloudTunnelStatus;
+  user_id: string | null;
+  has_token: boolean;
+  enabled: boolean;
+}
 
 export interface SettingsProviderEntry {
   name: string;
