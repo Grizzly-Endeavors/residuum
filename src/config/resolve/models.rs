@@ -727,4 +727,236 @@ default = "openai/gpt-4o"
         );
         unsafe { std::env::remove_var("OPENAI_API_KEY") };
     }
+
+    // ── ModelAssignment deserialization and overrides ──────────────────────
+
+    #[test]
+    fn model_assignment_simple_string() {
+        let prov_file = parse_providers(
+            r#"
+[models]
+main = "anthropic/claude-sonnet-4-6"
+observer = "gemini/gemini-3.0-flash"
+"#,
+        );
+        let cfg_file = parse_config("timezone = \"UTC\"\n");
+        let cfg = from_file_and_env(Some(&cfg_file), Some(&prov_file), &test_config_dir()).unwrap();
+
+        assert_eq!(cfg.main[0].model.model, "claude-sonnet-4-6");
+        assert_eq!(cfg.observer[0].model.model, "gemini-3.0-flash");
+        assert!(
+            cfg.role_overrides.is_empty(),
+            "no overrides for simple strings"
+        );
+    }
+
+    #[test]
+    fn model_assignment_with_overrides() {
+        let prov_file = parse_providers(
+            r#"
+[models]
+main = "anthropic/claude-sonnet-4-6"
+observer = { model = "gemini/gemini-3.0-flash", temperature = 0.2, thinking = "off" }
+reflector = { model = "anthropic/claude-sonnet-4-6", thinking = "low" }
+"#,
+        );
+        let cfg_file = parse_config("timezone = \"UTC\"\n");
+        let cfg = from_file_and_env(Some(&cfg_file), Some(&prov_file), &test_config_dir()).unwrap();
+
+        assert_eq!(cfg.observer[0].model.model, "gemini-3.0-flash");
+        assert_eq!(cfg.reflector[0].model.model, "claude-sonnet-4-6");
+
+        let obs_ov = &cfg.role_overrides["observer"];
+        assert_eq!(obs_ov.temperature, Some(0.2));
+        assert_eq!(
+            obs_ov.thinking,
+            Some(crate::models::ThinkingConfig::Toggle(false))
+        );
+
+        let ref_ov = &cfg.role_overrides["reflector"];
+        assert_eq!(ref_ov.temperature, None);
+        assert_eq!(
+            ref_ov.thinking,
+            Some(crate::models::ThinkingConfig::Level(
+                crate::models::ThinkingLevel::Low
+            ))
+        );
+    }
+
+    #[test]
+    fn model_assignment_table_no_overrides() {
+        let prov_file = parse_providers(
+            r#"
+[models]
+main = "anthropic/claude-sonnet-4-6"
+pulse = { model = "anthropic/claude-haiku" }
+"#,
+        );
+        let cfg_file = parse_config("timezone = \"UTC\"\n");
+        let cfg = from_file_and_env(Some(&cfg_file), Some(&prov_file), &test_config_dir()).unwrap();
+
+        assert_eq!(cfg.pulse[0].model.model, "claude-haiku");
+        assert!(
+            !cfg.role_overrides.contains_key("pulse"),
+            "table with no overrides should not create entry"
+        );
+    }
+
+    #[test]
+    fn model_assignment_table_with_list() {
+        let prov_file = parse_providers(
+            r#"
+[models]
+main = { model = ["anthropic/claude-sonnet-4-6", "openai/gpt-4o"], temperature = 1.0 }
+"#,
+        );
+        let cfg_file = parse_config("timezone = \"UTC\"\n");
+        let cfg = from_file_and_env(Some(&cfg_file), Some(&prov_file), &test_config_dir()).unwrap();
+
+        assert_eq!(
+            cfg.main.len(),
+            2,
+            "should resolve failover chain from table"
+        );
+        assert_eq!(cfg.main[0].model.model, "claude-sonnet-4-6");
+        assert_eq!(cfg.main[1].model.model, "gpt-4o");
+
+        let main_ov = &cfg.role_overrides["main"];
+        assert_eq!(main_ov.temperature, Some(1.0));
+    }
+
+    #[test]
+    fn model_assignment_invalid_temperature() {
+        let prov_file = parse_providers(
+            r#"
+[models]
+main = "anthropic/claude-sonnet-4-6"
+observer = { model = "gemini/gemini-3.0-flash", temperature = 3.0 }
+"#,
+        );
+        let cfg_file = parse_config("timezone = \"UTC\"\n");
+        let result = from_file_and_env(Some(&cfg_file), Some(&prov_file), &test_config_dir());
+        assert!(result.is_err(), "temperature > 2.0 should error");
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("temperature"),
+            "error should mention temperature: {err}"
+        );
+    }
+
+    #[test]
+    fn model_assignment_invalid_thinking() {
+        let prov_file = parse_providers(
+            r#"
+[models]
+main = "anthropic/claude-sonnet-4-6"
+observer = { model = "gemini/gemini-3.0-flash", thinking = "turbo" }
+"#,
+        );
+        let cfg_file = parse_config("timezone = \"UTC\"\n");
+        let result = from_file_and_env(Some(&cfg_file), Some(&prov_file), &test_config_dir());
+        assert!(result.is_err(), "invalid thinking value should error");
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("thinking"),
+            "error should mention thinking: {err}"
+        );
+    }
+
+    #[test]
+    fn background_model_with_overrides() {
+        let prov_file = parse_providers(
+            r#"
+[models]
+main = "anthropic/claude-sonnet-4-6"
+
+[background.models]
+small = { model = "ollama/llama3", thinking = "off" }
+medium = "anthropic/claude-haiku"
+large = { model = "anthropic/claude-sonnet-4-6", thinking = "medium" }
+"#,
+        );
+        let cfg_file = parse_config("timezone = \"UTC\"\n");
+        let cfg = from_file_and_env(Some(&cfg_file), Some(&prov_file), &test_config_dir()).unwrap();
+
+        assert!(cfg.background.models.small.is_some());
+        assert!(cfg.background.models.medium.is_some());
+        assert!(cfg.background.models.large.is_some());
+
+        let bg_small_ov = &cfg.role_overrides["bg_small"];
+        assert_eq!(
+            bg_small_ov.thinking,
+            Some(crate::models::ThinkingConfig::Toggle(false))
+        );
+        assert!(!cfg.role_overrides.contains_key("bg_medium"));
+        let bg_large_ov = &cfg.role_overrides["bg_large"];
+        assert_eq!(
+            bg_large_ov.thinking,
+            Some(crate::models::ThinkingConfig::Level(
+                crate::models::ThinkingLevel::Medium
+            ))
+        );
+    }
+
+    // ── completion_options_for_role ────────────────────────────────────────
+
+    #[test]
+    fn completion_options_for_role_with_override() {
+        let prov_file = parse_providers(
+            r#"
+[models]
+main = "anthropic/claude-sonnet-4-6"
+observer = { model = "gemini/gemini-3.0-flash", temperature = 0.2 }
+"#,
+        );
+        let cfg_file = parse_config(
+            r#"
+timezone = "UTC"
+temperature = 0.8
+"#,
+        );
+        let cfg = from_file_and_env(Some(&cfg_file), Some(&prov_file), &test_config_dir()).unwrap();
+
+        let main_opts = cfg.completion_options_for_role("main");
+        assert_eq!(
+            main_opts.temperature,
+            Some(0.8),
+            "main should use global temp"
+        );
+
+        let obs_opts = cfg.completion_options_for_role("observer");
+        assert_eq!(
+            obs_opts.temperature,
+            Some(0.2),
+            "observer should use override temp"
+        );
+    }
+
+    #[test]
+    fn completion_options_for_role_fallback_to_global() {
+        let prov_file = parse_providers(
+            r#"
+[models]
+main = "anthropic/claude-sonnet-4-6"
+"#,
+        );
+        let cfg_file = parse_config(
+            r#"
+timezone = "UTC"
+temperature = 0.5
+thinking = "medium"
+"#,
+        );
+        let cfg = from_file_and_env(Some(&cfg_file), Some(&prov_file), &test_config_dir()).unwrap();
+
+        let opts = cfg.completion_options_for_role("reflector");
+        assert_eq!(opts.temperature, Some(0.5), "should fall back to global");
+        assert_eq!(
+            opts.thinking,
+            Some(crate::models::ThinkingConfig::Level(
+                crate::models::ThinkingLevel::Medium
+            )),
+            "should fall back to global thinking"
+        );
+    }
 }
