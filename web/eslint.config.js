@@ -10,7 +10,7 @@ import globals from "globals";
 export default tseslint.config(
   // ── Global ignores ──────────────────────────────────────────────────
   {
-    ignores: ["dist/**", "node_modules/**", "*.config.js", "*.config.ts"],
+    ignores: ["dist/**", "node_modules/**", "*.config.js", "*.config.ts", "mock-server.ts"],
   },
 
   // ── Base presets ────────────────────────────────────────────────────

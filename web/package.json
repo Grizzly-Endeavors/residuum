@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "dev:mock": "VITE_MOCK=1 vite",
     "build": "vite build",
     "preview": "vite preview",
     "check": "svelte-check --tsconfig ./tsconfig.json",
@@ -29,7 +30,9 @@
     "svelte-eslint-parser": "^1.5.1",
     "typescript": "^5.0.0",
     "typescript-eslint": "^8.56.1",
-    "vite": "^6.0.0"
+    "@types/ws": "^8.18.1",
+    "vite": "^6.0.0",
+    "ws": "^8.18.1"
   },
   "dependencies": {
     "smol-toml": "^1.6.0"
