@@ -112,21 +112,72 @@ impl ModelStringOrList {
     }
 }
 
+/// A model assignment that can be a simple string, a list, or an inline table
+/// with optional per-role overrides.
+///
+/// Accepts:
+/// - `main = "anthropic/claude-sonnet-4-6"`
+/// - `main = ["anthropic/claude-sonnet-4-6", "openai/gpt-4o"]`
+/// - `observer = { model = "gemini/gemini-3.0-flash", temperature = 0.2, thinking = "off" }`
+#[derive(Debug, Clone, Deserialize)]
+#[serde(untagged)]
+pub(super) enum ModelAssignment {
+    /// Single model string.
+    Simple(String),
+    /// Ordered list of model strings (failover chain).
+    List(Vec<String>),
+    /// Inline table with model and optional overrides.
+    WithOverrides(ModelAssignmentTable),
+}
+
+/// Inline table form for model assignments with optional overrides.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct ModelAssignmentTable {
+    /// Model string or failover list.
+    pub(super) model: ModelStringOrList,
+    /// Per-role temperature override (0.0–2.0).
+    pub(super) temperature: Option<f32>,
+    /// Per-role thinking override (off, on, low, medium, high).
+    pub(super) thinking: Option<String>,
+}
+
+impl ModelAssignment {
+    /// Extract the model strings regardless of variant.
+    #[must_use]
+    pub(super) fn into_model_strings(self) -> Vec<String> {
+        match self {
+            Self::Simple(s) => vec![s],
+            Self::List(v) => v,
+            Self::WithOverrides(table) => table.model.into_vec(),
+        }
+    }
+
+    /// Extract override fields (temperature, thinking string) if present.
+    #[must_use]
+    pub(super) fn overrides(&self) -> (Option<f32>, Option<&str>) {
+        match self {
+            Self::WithOverrides(table) => (table.temperature, table.thinking.as_deref()),
+            Self::Simple(_) | Self::List(_) => (None, None),
+        }
+    }
+}
+
 /// Raw TOML `[models]` section — maps roles to `"provider/model"` strings.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct ModelsConfigFile {
-    /// Main agent model (required for operation). Supports failover arrays.
-    pub(super) main: Option<ModelStringOrList>,
-    /// Default fallback for unset roles. Supports failover arrays.
-    pub(super) default: Option<ModelStringOrList>,
-    /// Memory observer model. Supports failover arrays.
-    pub(super) observer: Option<ModelStringOrList>,
-    /// Memory reflector model. Supports failover arrays.
-    pub(super) reflector: Option<ModelStringOrList>,
-    /// Pulse agent model. Supports failover arrays.
-    pub(super) pulse: Option<ModelStringOrList>,
-    /// Embedding model (no failover — single string only).
+    /// Main agent model (required for operation). Supports failover arrays and overrides.
+    pub(super) main: Option<ModelAssignment>,
+    /// Default fallback for unset roles. Supports failover arrays and overrides.
+    pub(super) default: Option<ModelAssignment>,
+    /// Memory observer model. Supports failover arrays and overrides.
+    pub(super) observer: Option<ModelAssignment>,
+    /// Memory reflector model. Supports failover arrays and overrides.
+    pub(super) reflector: Option<ModelAssignment>,
+    /// Pulse agent model. Supports failover arrays and overrides.
+    pub(super) pulse: Option<ModelAssignment>,
+    /// Embedding model (no failover — single string only, no overrides).
     pub(super) embedding: Option<String>,
 }
 
@@ -352,10 +403,10 @@ pub(super) struct GeminiSearchConfigFile {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct BackgroundModelsFile {
-    /// Small/fast model for simple tasks. Supports failover arrays.
-    pub(super) small: Option<ModelStringOrList>,
-    /// Medium model for typical tasks (default tier). Supports failover arrays.
-    pub(super) medium: Option<ModelStringOrList>,
-    /// Large model for complex tasks. Supports failover arrays.
-    pub(super) large: Option<ModelStringOrList>,
+    /// Small/fast model for simple tasks. Supports failover arrays and overrides.
+    pub(super) small: Option<ModelAssignment>,
+    /// Medium model for typical tasks (default tier). Supports failover arrays and overrides.
+    pub(super) medium: Option<ModelAssignment>,
+    /// Large model for complex tasks. Supports failover arrays and overrides.
+    pub(super) large: Option<ModelAssignment>,
 }

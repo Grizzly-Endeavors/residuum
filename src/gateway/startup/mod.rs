@@ -310,6 +310,7 @@ pub(crate) async fn initialize(cfg: &Config) -> Result<GatewayComponents, Residu
         },
         layout: layout.clone(),
         tz,
+        role_overrides: cfg.role_overrides.clone(),
     });
 
     let mcp_registry = init_mcp_servers(&layout).await;

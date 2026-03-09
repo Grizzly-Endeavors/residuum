@@ -161,6 +161,22 @@ export interface SettingsProviderEntry {
   keepAlive: string;
 }
 
+export interface RoleOverrides {
+  temperature: string;
+  thinking: string;
+}
+
+export type ModelRoleKey =
+  | "main"
+  | "default"
+  | "observer"
+  | "reflector"
+  | "pulse"
+  | "embedding"
+  | "bgSmall"
+  | "bgMedium"
+  | "bgLarge";
+
 export interface SettingsModelAssignments {
   main: string;
   default: string;
@@ -171,6 +187,7 @@ export interface SettingsModelAssignments {
   bgSmall: string;
   bgMedium: string;
   bgLarge: string;
+  overrides: Record<string, RoleOverrides>;
 }
 
 export interface SecretsListResponse {

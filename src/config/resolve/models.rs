@@ -6,9 +6,10 @@
 use std::collections::HashMap;
 use std::str::FromStr;
 
+use crate::config::types::RoleOverrides;
 use crate::error::ResiduumError;
 
-use super::super::deserialize::{ModelStringOrList, ModelsConfigFile, ProviderEntryFile};
+use super::super::deserialize::{ModelAssignment, ModelsConfigFile, ProviderEntryFile};
 use super::super::provider::{ModelSpec, ProviderKind, ProviderSpec};
 use super::super::secrets::SecretStore;
 
@@ -19,6 +20,7 @@ pub(super) struct ResolvedModels {
     pub(super) reflector: Vec<ProviderSpec>,
     pub(super) pulse: Vec<ProviderSpec>,
     pub(super) embedding: Option<ProviderSpec>,
+    pub(super) role_overrides: HashMap<String, RoleOverrides>,
 }
 
 /// Resolve all model specs (main, observer, reflector, pulse, embedding) from the
@@ -32,11 +34,14 @@ pub(super) fn resolve_all_model_specs(
     providers_map: Option<&HashMap<String, ProviderEntryFile>>,
     secrets: &SecretStore,
 ) -> Result<ResolvedModels, ResiduumError> {
+    let mut role_overrides = HashMap::new();
+
     // Resolve main: RESIDUUM_MODEL env > models.main > default
     let main = if let Ok(env_model) = std::env::var("RESIDUUM_MODEL") {
         vec![resolve_model_string(&env_model, providers_map, secrets)?]
     } else if let Some(main_spec) = models.and_then(|m| m.main.clone()) {
-        resolve_model_chain(main_spec, providers_map, secrets)?
+        extract_role_overrides("main", &main_spec, &mut role_overrides)?;
+        resolve_assignment_chain(main_spec, providers_map, secrets)?
     } else {
         vec![resolve_model_string(
             "anthropic/claude-sonnet-4-6",
@@ -57,28 +62,34 @@ pub(super) fn resolve_all_model_specs(
     };
 
     // Resolve each role: models.<role> > models.default > main
-    let default_chain = models.and_then(|m| m.default.clone());
+    let default_assignment = models.and_then(|m| m.default.clone());
 
-    let observer = resolve_role_chain(
+    let observer = resolve_role_chain_from_assignment(
         models.and_then(|m| m.observer.clone()),
-        default_chain.as_ref(),
+        default_assignment.as_ref(),
         &main,
         providers_map,
         secrets,
+        "observer",
+        &mut role_overrides,
     )?;
-    let reflector = resolve_role_chain(
+    let reflector = resolve_role_chain_from_assignment(
         models.and_then(|m| m.reflector.clone()),
-        default_chain.as_ref(),
+        default_assignment.as_ref(),
         &main,
         providers_map,
         secrets,
+        "reflector",
+        &mut role_overrides,
     )?;
-    let pulse = resolve_role_chain(
+    let pulse = resolve_role_chain_from_assignment(
         models.and_then(|m| m.pulse.clone()),
-        default_chain.as_ref(),
+        default_assignment.as_ref(),
         &main,
         providers_map,
         secrets,
+        "pulse",
+        &mut role_overrides,
     )?;
 
     // Resolve embedding: models.embedding only, no fallback to default or main
@@ -102,6 +113,7 @@ pub(super) fn resolve_all_model_specs(
         reflector,
         pulse,
         embedding,
+        role_overrides,
     })
 }
 
@@ -193,37 +205,94 @@ fn resolve_model_string(
     })
 }
 
-/// Resolve a `ModelStringOrList` into a `Vec<ProviderSpec>` (failover chain).
+/// Resolve a `ModelAssignment` into a `Vec<ProviderSpec>` (failover chain).
 ///
 /// # Errors
-/// Returns `ResiduumError::Config` if any model string in the list cannot be resolved.
-pub(super) fn resolve_model_chain(
-    spec: ModelStringOrList,
+/// Returns `ResiduumError::Config` if any model string in the assignment cannot be resolved.
+pub(super) fn resolve_assignment_chain(
+    assignment: ModelAssignment,
     providers_map: Option<&HashMap<String, ProviderEntryFile>>,
     secrets: &SecretStore,
 ) -> Result<Vec<ProviderSpec>, ResiduumError> {
-    spec.into_vec()
+    assignment
+        .into_model_strings()
         .iter()
         .map(|s| resolve_model_string(s, providers_map, secrets))
         .collect()
 }
 
-/// Resolve a role's provider chain: explicit role > default > clone of main chain.
+/// Extract per-role overrides from a `ModelAssignment` and insert into the map.
+///
+/// Public within the resolve module for use by background tier resolution.
+///
+/// # Errors
+/// Returns `ResiduumError::Config` if the thinking string is invalid or temperature
+/// is out of range.
+pub(super) fn extract_role_overrides_pub(
+    role: &str,
+    assignment: &ModelAssignment,
+    overrides: &mut HashMap<String, RoleOverrides>,
+) -> Result<(), ResiduumError> {
+    extract_role_overrides(role, assignment, overrides)
+}
+
+/// Extract per-role overrides from a `ModelAssignment` and insert into the map.
+///
+/// # Errors
+/// Returns `ResiduumError::Config` if the thinking string is invalid or temperature
+/// is out of range.
+fn extract_role_overrides(
+    role: &str,
+    assignment: &ModelAssignment,
+    overrides: &mut HashMap<String, RoleOverrides>,
+) -> Result<(), ResiduumError> {
+    let (temp, thinking_str) = assignment.overrides();
+    if temp.is_none() && thinking_str.is_none() {
+        return Ok(());
+    }
+
+    if let Some(t) = temp
+        && !(0.0..=2.0).contains(&t)
+    {
+        return Err(ResiduumError::Config(format!(
+            "invalid temperature for role '{role}': {t} (expected 0.0–2.0)"
+        )));
+    }
+
+    let thinking = thinking_str.map(super::parse_thinking_config).transpose()?;
+
+    overrides.insert(
+        role.to_string(),
+        RoleOverrides {
+            temperature: temp,
+            thinking,
+        },
+    );
+    Ok(())
+}
+
+/// Resolve a role's provider chain from a `ModelAssignment`:
+/// explicit role > default > clone of main chain.
+///
+/// Also extracts per-role overrides into the map.
 ///
 /// # Errors
 /// Returns `ResiduumError::Config` if any model string cannot be resolved.
-fn resolve_role_chain(
-    role_spec: Option<ModelStringOrList>,
-    default_spec: Option<&ModelStringOrList>,
+fn resolve_role_chain_from_assignment(
+    role_spec: Option<ModelAssignment>,
+    default_spec: Option<&ModelAssignment>,
     main: &[ProviderSpec],
     providers_map: Option<&HashMap<String, ProviderEntryFile>>,
     secrets: &SecretStore,
+    role: &str,
+    overrides: &mut HashMap<String, RoleOverrides>,
 ) -> Result<Vec<ProviderSpec>, ResiduumError> {
     if let Some(spec) = role_spec {
-        return resolve_model_chain(spec, providers_map, secrets);
+        extract_role_overrides(role, &spec, overrides)?;
+        return resolve_assignment_chain(spec, providers_map, secrets);
     }
     if let Some(spec) = default_spec {
-        return resolve_model_chain(spec.clone(), providers_map, secrets);
+        return resolve_assignment_chain(spec.clone(), providers_map, secrets);
     }
     Ok(main.to_vec())
 }
@@ -657,5 +726,237 @@ default = "openai/gpt-4o"
             "missing secret should fall back to provider env var"
         );
         unsafe { std::env::remove_var("OPENAI_API_KEY") };
+    }
+
+    // ── ModelAssignment deserialization and overrides ──────────────────────
+
+    #[test]
+    fn model_assignment_simple_string() {
+        let prov_file = parse_providers(
+            r#"
+[models]
+main = "anthropic/claude-sonnet-4-6"
+observer = "gemini/gemini-3.0-flash"
+"#,
+        );
+        let cfg_file = parse_config("timezone = \"UTC\"\n");
+        let cfg = from_file_and_env(Some(&cfg_file), Some(&prov_file), &test_config_dir()).unwrap();
+
+        assert_eq!(cfg.main[0].model.model, "claude-sonnet-4-6");
+        assert_eq!(cfg.observer[0].model.model, "gemini-3.0-flash");
+        assert!(
+            cfg.role_overrides.is_empty(),
+            "no overrides for simple strings"
+        );
+    }
+
+    #[test]
+    fn model_assignment_with_overrides() {
+        let prov_file = parse_providers(
+            r#"
+[models]
+main = "anthropic/claude-sonnet-4-6"
+observer = { model = "gemini/gemini-3.0-flash", temperature = 0.2, thinking = "off" }
+reflector = { model = "anthropic/claude-sonnet-4-6", thinking = "low" }
+"#,
+        );
+        let cfg_file = parse_config("timezone = \"UTC\"\n");
+        let cfg = from_file_and_env(Some(&cfg_file), Some(&prov_file), &test_config_dir()).unwrap();
+
+        assert_eq!(cfg.observer[0].model.model, "gemini-3.0-flash");
+        assert_eq!(cfg.reflector[0].model.model, "claude-sonnet-4-6");
+
+        let obs_ov = &cfg.role_overrides["observer"];
+        assert_eq!(obs_ov.temperature, Some(0.2));
+        assert_eq!(
+            obs_ov.thinking,
+            Some(crate::models::ThinkingConfig::Toggle(false))
+        );
+
+        let ref_ov = &cfg.role_overrides["reflector"];
+        assert_eq!(ref_ov.temperature, None);
+        assert_eq!(
+            ref_ov.thinking,
+            Some(crate::models::ThinkingConfig::Level(
+                crate::models::ThinkingLevel::Low
+            ))
+        );
+    }
+
+    #[test]
+    fn model_assignment_table_no_overrides() {
+        let prov_file = parse_providers(
+            r#"
+[models]
+main = "anthropic/claude-sonnet-4-6"
+pulse = { model = "anthropic/claude-haiku" }
+"#,
+        );
+        let cfg_file = parse_config("timezone = \"UTC\"\n");
+        let cfg = from_file_and_env(Some(&cfg_file), Some(&prov_file), &test_config_dir()).unwrap();
+
+        assert_eq!(cfg.pulse[0].model.model, "claude-haiku");
+        assert!(
+            !cfg.role_overrides.contains_key("pulse"),
+            "table with no overrides should not create entry"
+        );
+    }
+
+    #[test]
+    fn model_assignment_table_with_list() {
+        let prov_file = parse_providers(
+            r#"
+[models]
+main = { model = ["anthropic/claude-sonnet-4-6", "openai/gpt-4o"], temperature = 1.0 }
+"#,
+        );
+        let cfg_file = parse_config("timezone = \"UTC\"\n");
+        let cfg = from_file_and_env(Some(&cfg_file), Some(&prov_file), &test_config_dir()).unwrap();
+
+        assert_eq!(
+            cfg.main.len(),
+            2,
+            "should resolve failover chain from table"
+        );
+        assert_eq!(cfg.main[0].model.model, "claude-sonnet-4-6");
+        assert_eq!(cfg.main[1].model.model, "gpt-4o");
+
+        let main_ov = &cfg.role_overrides["main"];
+        assert_eq!(main_ov.temperature, Some(1.0));
+    }
+
+    #[test]
+    fn model_assignment_invalid_temperature() {
+        let prov_file = parse_providers(
+            r#"
+[models]
+main = "anthropic/claude-sonnet-4-6"
+observer = { model = "gemini/gemini-3.0-flash", temperature = 3.0 }
+"#,
+        );
+        let cfg_file = parse_config("timezone = \"UTC\"\n");
+        let result = from_file_and_env(Some(&cfg_file), Some(&prov_file), &test_config_dir());
+        assert!(result.is_err(), "temperature > 2.0 should error");
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("temperature"),
+            "error should mention temperature: {err}"
+        );
+    }
+
+    #[test]
+    fn model_assignment_invalid_thinking() {
+        let prov_file = parse_providers(
+            r#"
+[models]
+main = "anthropic/claude-sonnet-4-6"
+observer = { model = "gemini/gemini-3.0-flash", thinking = "turbo" }
+"#,
+        );
+        let cfg_file = parse_config("timezone = \"UTC\"\n");
+        let result = from_file_and_env(Some(&cfg_file), Some(&prov_file), &test_config_dir());
+        assert!(result.is_err(), "invalid thinking value should error");
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("thinking"),
+            "error should mention thinking: {err}"
+        );
+    }
+
+    #[test]
+    fn background_model_with_overrides() {
+        let prov_file = parse_providers(
+            r#"
+[models]
+main = "anthropic/claude-sonnet-4-6"
+
+[background.models]
+small = { model = "ollama/llama3", thinking = "off" }
+medium = "anthropic/claude-haiku"
+large = { model = "anthropic/claude-sonnet-4-6", thinking = "medium" }
+"#,
+        );
+        let cfg_file = parse_config("timezone = \"UTC\"\n");
+        let cfg = from_file_and_env(Some(&cfg_file), Some(&prov_file), &test_config_dir()).unwrap();
+
+        assert!(cfg.background.models.small.is_some());
+        assert!(cfg.background.models.medium.is_some());
+        assert!(cfg.background.models.large.is_some());
+
+        let bg_small_ov = &cfg.role_overrides["bg_small"];
+        assert_eq!(
+            bg_small_ov.thinking,
+            Some(crate::models::ThinkingConfig::Toggle(false))
+        );
+        assert!(!cfg.role_overrides.contains_key("bg_medium"));
+        let bg_large_ov = &cfg.role_overrides["bg_large"];
+        assert_eq!(
+            bg_large_ov.thinking,
+            Some(crate::models::ThinkingConfig::Level(
+                crate::models::ThinkingLevel::Medium
+            ))
+        );
+    }
+
+    // ── completion_options_for_role ────────────────────────────────────────
+
+    #[test]
+    fn completion_options_for_role_with_override() {
+        let prov_file = parse_providers(
+            r#"
+[models]
+main = "anthropic/claude-sonnet-4-6"
+observer = { model = "gemini/gemini-3.0-flash", temperature = 0.2 }
+"#,
+        );
+        let cfg_file = parse_config(
+            r#"
+timezone = "UTC"
+temperature = 0.8
+"#,
+        );
+        let cfg = from_file_and_env(Some(&cfg_file), Some(&prov_file), &test_config_dir()).unwrap();
+
+        let main_opts = cfg.completion_options_for_role("main");
+        assert_eq!(
+            main_opts.temperature,
+            Some(0.8),
+            "main should use global temp"
+        );
+
+        let obs_opts = cfg.completion_options_for_role("observer");
+        assert_eq!(
+            obs_opts.temperature,
+            Some(0.2),
+            "observer should use override temp"
+        );
+    }
+
+    #[test]
+    fn completion_options_for_role_fallback_to_global() {
+        let prov_file = parse_providers(
+            r#"
+[models]
+main = "anthropic/claude-sonnet-4-6"
+"#,
+        );
+        let cfg_file = parse_config(
+            r#"
+timezone = "UTC"
+temperature = 0.5
+thinking = "medium"
+"#,
+        );
+        let cfg = from_file_and_env(Some(&cfg_file), Some(&prov_file), &test_config_dir()).unwrap();
+
+        let opts = cfg.completion_options_for_role("reflector");
+        assert_eq!(opts.temperature, Some(0.5), "should fall back to global");
+        assert_eq!(
+            opts.thinking,
+            Some(crate::models::ThinkingConfig::Level(
+                crate::models::ThinkingLevel::Medium
+            )),
+            "should fall back to global thinking"
+        );
     }
 }

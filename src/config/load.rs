@@ -176,6 +176,21 @@ impl Config {
             .map_err(|e| format!("{e}"))?;
         Ok(())
     }
+
+    /// Build `CompletionOptions` for a named role, applying per-role overrides
+    /// over the global defaults.
+    #[must_use]
+    pub fn completion_options_for_role(&self, role: &str) -> crate::models::CompletionOptions {
+        let ov = self.role_overrides.get(role);
+        crate::models::CompletionOptions {
+            max_tokens: Some(self.max_tokens),
+            temperature: ov.and_then(|o| o.temperature).or(self.temperature),
+            thinking: ov
+                .and_then(|o| o.thinking.clone())
+                .or(self.thinking.clone()),
+            ..crate::models::CompletionOptions::default()
+        }
+    }
 }
 
 #[cfg(test)]

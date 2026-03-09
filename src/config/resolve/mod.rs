@@ -41,7 +41,8 @@ pub(crate) fn from_file_and_env(
     let providers_map = providers_file.and_then(|f| f.providers.as_ref());
     let models_section = providers_file.and_then(|f| f.models.as_ref());
 
-    let resolved_models = models::resolve_all_model_specs(models_section, providers_map, &secrets)?;
+    let mut resolved_models =
+        models::resolve_all_model_specs(models_section, providers_map, &secrets)?;
 
     // Workspace dir: env > file > default
     let workspace_dir = std::env::var("RESIDUUM_WORKSPACE")
@@ -86,6 +87,7 @@ pub(crate) fn from_file_and_env(
             .and_then(|b| b.models.as_ref()),
         providers_map,
         &secrets,
+        &mut resolved_models.role_overrides,
     )?;
 
     let retry = resolve_retry_config(file);
@@ -131,6 +133,7 @@ pub(crate) fn from_file_and_env(
         temperature: file.and_then(|f| f.temperature),
         thinking,
         web_search,
+        role_overrides: resolved_models.role_overrides,
         config_dir: PathBuf::new(),
     })
 }
@@ -646,6 +649,7 @@ fn resolve_background_config(
     models_section: Option<&BackgroundModelsFile>,
     providers_map: Option<&HashMap<String, ProviderEntryFile>>,
     secrets: &SecretStore,
+    role_overrides: &mut HashMap<String, super::types::RoleOverrides>,
 ) -> Result<BackgroundConfig, ResiduumError> {
     let mut cfg = BackgroundConfig::default();
 
@@ -659,24 +663,49 @@ fn resolve_background_config(
     }
 
     if let Some(models_section) = models_section {
-        cfg.models.small = models_section
-            .small
-            .clone()
-            .map(|spec| models::resolve_model_chain(spec, providers_map, secrets))
-            .transpose()?;
-        cfg.models.medium = models_section
-            .medium
-            .clone()
-            .map(|spec| models::resolve_model_chain(spec, providers_map, secrets))
-            .transpose()?;
-        cfg.models.large = models_section
-            .large
-            .clone()
-            .map(|spec| models::resolve_model_chain(spec, providers_map, secrets))
-            .transpose()?;
+        cfg.models.small = resolve_bg_tier(
+            models_section.small.clone(),
+            "bg_small",
+            providers_map,
+            secrets,
+            role_overrides,
+        )?;
+        cfg.models.medium = resolve_bg_tier(
+            models_section.medium.clone(),
+            "bg_medium",
+            providers_map,
+            secrets,
+            role_overrides,
+        )?;
+        cfg.models.large = resolve_bg_tier(
+            models_section.large.clone(),
+            "bg_large",
+            providers_map,
+            secrets,
+            role_overrides,
+        )?;
     }
 
     Ok(cfg)
+}
+
+/// Resolve a single background tier assignment, extracting overrides.
+fn resolve_bg_tier(
+    assignment: Option<super::deserialize::ModelAssignment>,
+    role_key: &str,
+    providers_map: Option<&HashMap<String, ProviderEntryFile>>,
+    secrets: &SecretStore,
+    role_overrides: &mut HashMap<String, super::types::RoleOverrides>,
+) -> Result<Option<Vec<super::provider::ProviderSpec>>, ResiduumError> {
+    let Some(spec) = assignment else {
+        return Ok(None);
+    };
+    models::extract_role_overrides_pub(role_key, &spec, role_overrides)?;
+    Ok(Some(models::resolve_assignment_chain(
+        spec,
+        providers_map,
+        secrets,
+    )?))
 }
 
 /// Warn on deprecated environment variables that no longer have effect.

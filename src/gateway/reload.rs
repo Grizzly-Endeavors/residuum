@@ -118,7 +118,8 @@ pub(super) fn diff_config(old: &Config, new: &Config) -> ConfigDiff {
             || old.retry != new.retry
             || old.max_tokens != new.max_tokens
             || old.temperature != new.temperature
-            || old.thinking != new.thinking,
+            || old.thinking != new.thinking
+            || old.role_overrides != new.role_overrides,
         memory_changed: old.memory != new.memory,
         gateway_changed: old.gateway != new.gateway,
         discord_changed: old.discord != new.discord,
@@ -281,6 +282,7 @@ fn build_spawn_context(rt: &GatewayRuntime, new_cfg: &Config) -> Arc<SpawnContex
         },
         layout: rt.layout.clone(),
         tz: rt.tz,
+        role_overrides: new_cfg.role_overrides.clone(),
     })
 }
 
@@ -316,11 +318,13 @@ fn reload_memory_thresholds(rt: &mut GatewayRuntime, new_cfg: &Config) {
         cooldown_secs: new_cfg.memory.observer_cooldown_secs,
         force_threshold_tokens: new_cfg.memory.observer_force_threshold_tokens,
         tz: new_cfg.timezone,
+        role_overrides: new_cfg.role_overrides.get("observer").cloned(),
     });
 
     rt.reflector.update_config(ReflectorConfig {
         threshold_tokens: new_cfg.memory.reflector_threshold_tokens,
         tz: new_cfg.timezone,
+        role_overrides: new_cfg.role_overrides.get("reflector").cloned(),
     });
 
     tracing::info!("memory thresholds updated");
@@ -539,6 +543,7 @@ mod tests {
             temperature: None,
             thinking: None,
             web_search: crate::config::WebSearchConfig::default(),
+            role_overrides: std::collections::HashMap::new(),
             config_dir: std::path::PathBuf::from("/tmp/config"),
         }
     }

@@ -1,6 +1,10 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import type { SettingsProviderEntry, SettingsModelAssignments } from "../../lib/types";
+  import type {
+    SettingsProviderEntry,
+    SettingsModelAssignments,
+    ModelRoleKey,
+  } from "../../lib/types";
   import {
     fetchModels,
     DEFAULT_MODELS,
@@ -45,6 +49,22 @@
   const allRoles = ["main", "observer", "reflector", "pulse"];
   const bgTiers = ["bg-small", "bg-medium", "bg-large"];
 
+  const thinkingOptions = [
+    { value: "", label: "Default" },
+    { value: "off", label: "Off" },
+    { value: "low", label: "Low" },
+    { value: "medium", label: "Medium" },
+    { value: "high", label: "High" },
+  ];
+
+  /** Ensure the overrides record has an entry for a given key. */
+  function ensureOverrides(key: string) {
+    if (!models.overrides[key]) {
+      models.overrides[key] = { temperature: "", thinking: "" };
+      models.overrides = models.overrides;
+    }
+  }
+
   // Model lists and loading state per role
   let modelLists = $state<Record<string, ModelEntry[]>>({});
   let modelLoading = $state<Record<string, boolean>>({});
@@ -52,11 +72,11 @@
   let otherValues = $state<Record<string, string>>({});
 
   // Map role key to models field key
-  function modelsKey(role: string): keyof SettingsModelAssignments {
+  function modelsKey(role: string): ModelRoleKey {
     if (role === "bg-small") return "bgSmall";
     if (role === "bg-medium") return "bgMedium";
     if (role === "bg-large") return "bgLarge";
-    return role as keyof SettingsModelAssignments;
+    return role as ModelRoleKey;
   }
 
   // Extract provider from "provider/model" string
@@ -267,6 +287,7 @@
     <div class="roles-section">
       <div class="roles-section-label">Agent</div>
       {#each ["main"] as role (role)}
+        {@const ovKey = modelsKey(role)}
         <div class="role-row">
           <div class="role-row-label">
             {roleLabel(role)}
@@ -318,6 +339,45 @@
               </div>
             </div>
           </div>
+          <div class="role-overrides">
+            <div class="settings-field override-field">
+              <label for="srole-{role}-temp">Temperature</label>
+              <input
+                id="srole-{role}-temp"
+                type="number"
+                step="0.1"
+                min="0"
+                max="2"
+                value={models.overrides[ovKey]?.temperature ?? ""}
+                oninput={(e) => {
+                  ensureOverrides(ovKey);
+                  const ov = models.overrides[ovKey];
+                  if (ov) ov.temperature = (e.target as HTMLInputElement).value;
+                }}
+                placeholder="Global default"
+              />
+            </div>
+            <div class="settings-field override-field">
+              <span class="override-label">Thinking</span>
+              <div class="segmented-control">
+                {#each thinkingOptions as opt (opt.value)}
+                  <button
+                    type="button"
+                    class="seg-btn"
+                    class:active={(models.overrides[ovKey]?.thinking ?? "") === opt.value}
+                    onclick={() => {
+                      ensureOverrides(ovKey);
+                      const ov = models.overrides[ovKey];
+                      if (ov) ov.thinking = opt.value;
+                      models.overrides = models.overrides;
+                    }}
+                  >
+                    {opt.label}
+                  </button>
+                {/each}
+              </div>
+            </div>
+          </div>
         </div>
       {/each}
     </div>
@@ -325,6 +385,7 @@
     <div class="roles-section">
       <div class="roles-section-label">Subsystems</div>
       {#each ["observer", "reflector", "pulse"] as role (role)}
+        {@const ovKey = modelsKey(role)}
         <div class="role-row">
           <div class="role-row-label">
             {roleLabel(role)}
@@ -373,6 +434,45 @@
                     oninput={(e) => setOtherModel(role, (e.target as HTMLInputElement).value)}
                   />
                 {/if}
+              </div>
+            </div>
+          </div>
+          <div class="role-overrides">
+            <div class="settings-field override-field">
+              <label for="srole-{role}-temp">Temperature</label>
+              <input
+                id="srole-{role}-temp"
+                type="number"
+                step="0.1"
+                min="0"
+                max="2"
+                value={models.overrides[ovKey]?.temperature ?? ""}
+                oninput={(e) => {
+                  ensureOverrides(ovKey);
+                  const ov = models.overrides[ovKey];
+                  if (ov) ov.temperature = (e.target as HTMLInputElement).value;
+                }}
+                placeholder="Global default"
+              />
+            </div>
+            <div class="settings-field override-field">
+              <span class="override-label">Thinking</span>
+              <div class="segmented-control">
+                {#each thinkingOptions as opt (opt.value)}
+                  <button
+                    type="button"
+                    class="seg-btn"
+                    class:active={(models.overrides[ovKey]?.thinking ?? "") === opt.value}
+                    onclick={() => {
+                      ensureOverrides(ovKey);
+                      const ov = models.overrides[ovKey];
+                      if (ov) ov.thinking = opt.value;
+                      models.overrides = models.overrides;
+                    }}
+                  >
+                    {opt.label}
+                  </button>
+                {/each}
               </div>
             </div>
           </div>
@@ -442,6 +542,7 @@
     <div class="roles-section">
       <div class="roles-section-label">Background Tasks</div>
       {#each bgTiers as role (role)}
+        {@const ovKey = modelsKey(role)}
         <div class="role-row">
           <div class="role-row-label">
             {roleLabel(role)}
@@ -490,6 +591,45 @@
                     oninput={(e) => setOtherModel(role, (e.target as HTMLInputElement).value)}
                   />
                 {/if}
+              </div>
+            </div>
+          </div>
+          <div class="role-overrides">
+            <div class="settings-field override-field">
+              <label for="srole-{role}-temp">Temperature</label>
+              <input
+                id="srole-{role}-temp"
+                type="number"
+                step="0.1"
+                min="0"
+                max="2"
+                value={models.overrides[ovKey]?.temperature ?? ""}
+                oninput={(e) => {
+                  ensureOverrides(ovKey);
+                  const ov = models.overrides[ovKey];
+                  if (ov) ov.temperature = (e.target as HTMLInputElement).value;
+                }}
+                placeholder="Global default"
+              />
+            </div>
+            <div class="settings-field override-field">
+              <span class="override-label">Thinking</span>
+              <div class="segmented-control">
+                {#each thinkingOptions as opt (opt.value)}
+                  <button
+                    type="button"
+                    class="seg-btn"
+                    class:active={(models.overrides[ovKey]?.thinking ?? "") === opt.value}
+                    onclick={() => {
+                      ensureOverrides(ovKey);
+                      const ov = models.overrides[ovKey];
+                      if (ov) ov.thinking = opt.value;
+                      models.overrides = models.overrides;
+                    }}
+                  >
+                    {opt.label}
+                  </button>
+                {/each}
               </div>
             </div>
           </div>

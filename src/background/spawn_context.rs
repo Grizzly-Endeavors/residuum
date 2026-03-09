@@ -31,6 +31,7 @@ pub(crate) struct SpawnContext {
     pub(crate) options: CompletionOptions,
     pub(crate) layout: WorkspaceLayout,
     pub(crate) tz: chrono_tz::Tz,
+    pub(crate) role_overrides: std::collections::HashMap<String, crate::config::RoleOverrides>,
 }
 
 /// Build isolated `SubAgentResources` for a background task at a given tier.
@@ -79,12 +80,28 @@ pub(crate) async fn build_spawn_resources(
         None => (None, None),
     };
 
+    // Apply per-tier overrides over global options
+    let tier_key = match tier {
+        BackgroundModelTier::Small => "bg_small",
+        BackgroundModelTier::Medium => "bg_medium",
+        BackgroundModelTier::Large => "bg_large",
+    };
+    let ov = ctx.role_overrides.get(tier_key);
+    let options = CompletionOptions {
+        max_tokens: Some(ctx.max_tokens),
+        temperature: ov.and_then(|o| o.temperature).or(ctx.options.temperature),
+        thinking: ov
+            .and_then(|o| o.thinking.clone())
+            .or(ctx.options.thinking.clone()),
+        ..CompletionOptions::default()
+    };
+
     let build_config = SubAgentBuildConfig {
         gated_tools: HashSet::new(),
         preset_tool_restriction,
         workspace_layout: ctx.layout.clone(),
         identity: ctx.identity.clone(),
-        options: ctx.options.clone(),
+        options,
         tz: ctx.tz,
         preset_instructions,
     };

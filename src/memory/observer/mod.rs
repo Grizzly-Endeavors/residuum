@@ -66,6 +66,8 @@ pub struct ObserverConfig {
     pub force_threshold_tokens: usize,
     /// Timezone used for timestamps in observations.
     pub tz: Tz,
+    /// Per-role overrides for temperature and thinking.
+    pub role_overrides: Option<crate::config::RoleOverrides>,
 }
 
 impl Default for ObserverConfig {
@@ -75,6 +77,7 @@ impl Default for ObserverConfig {
             cooldown_secs: DEFAULT_OBSERVER_COOLDOWN_SECS,
             force_threshold_tokens: DEFAULT_OBSERVER_FORCE_THRESHOLD,
             tz: chrono_tz::UTC,
+            role_overrides: None,
         }
     }
 }
@@ -105,6 +108,7 @@ impl Observer {
                 cooldown_secs: u64::MAX,
                 force_threshold_tokens: usize::MAX,
                 tz,
+                role_overrides: None,
             },
         }
     }
@@ -204,8 +208,11 @@ impl Observer {
         // tool calls, project context) so the observer LLM has complete context.
         let extraction_messages = build_extraction_prompt(recent_messages, &content_guidance);
 
-        // Call the model with structured output
+        // Call the model with structured output, applying per-role overrides
+        let ov = self.config.role_overrides.as_ref();
         let options = CompletionOptions {
+            temperature: ov.and_then(|o| o.temperature),
+            thinking: ov.and_then(|o| o.thinking.clone()),
             response_format: ResponseFormat::JsonSchema {
                 name: "observer_extraction".to_string(),
                 schema: observer_response_schema(),
@@ -800,6 +807,7 @@ mod tests {
                 cooldown_secs: 60,
                 force_threshold_tokens: 5000,
                 tz: chrono_tz::UTC,
+                role_overrides: None,
             },
         );
 
@@ -813,6 +821,7 @@ mod tests {
             cooldown_secs: 120,
             force_threshold_tokens: 10000,
             tz: chrono_tz::US::Eastern,
+            role_overrides: None,
         });
 
         assert_eq!(observer.threshold_tokens(), 2000);

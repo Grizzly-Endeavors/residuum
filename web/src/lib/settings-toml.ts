@@ -4,7 +4,13 @@
 // Uses smol-toml for parsing and line-building for serialization (matching toml.ts).
 
 import { parse as parseToml } from "smol-toml";
-import type { McpServerEntry, SettingsProviderEntry, SettingsModelAssignments } from "./types";
+import type {
+  McpServerEntry,
+  SettingsProviderEntry,
+  SettingsModelAssignments,
+  ModelRoleKey,
+  RoleOverrides,
+} from "./types";
 
 // ── Config form fields (config.toml) ─────────────────────────────────
 
@@ -260,6 +266,10 @@ export interface ProvidersFormState {
   models: SettingsModelAssignments;
 }
 
+function defaultOverrides(): RoleOverrides {
+  return { temperature: "", thinking: "" };
+}
+
 export function defaultModels(): SettingsModelAssignments {
   return {
     main: "",
@@ -271,6 +281,16 @@ export function defaultModels(): SettingsModelAssignments {
     bgSmall: "",
     bgMedium: "",
     bgLarge: "",
+    overrides: {
+      main: defaultOverrides(),
+      default: defaultOverrides(),
+      observer: defaultOverrides(),
+      reflector: defaultOverrides(),
+      pulse: defaultOverrides(),
+      bgSmall: defaultOverrides(),
+      bgMedium: defaultOverrides(),
+      bgLarge: defaultOverrides(),
+    },
   };
 }
 
@@ -300,11 +320,17 @@ export function parseProvidersToml(raw: string): ProvidersFormState {
 
   const models = doc.models as Record<string, unknown> | undefined;
   if (models) {
-    result.models.main = modelStr(models.main);
-    result.models.default = modelStr(models.default);
-    result.models.observer = modelStr(models.observer);
-    result.models.reflector = modelStr(models.reflector);
-    result.models.pulse = modelStr(models.pulse);
+    for (const [tomlKey, formKey] of [
+      ["main", "main"],
+      ["default", "default"],
+      ["observer", "observer"],
+      ["reflector", "reflector"],
+      ["pulse", "pulse"],
+    ] as const) {
+      const val = models[tomlKey];
+      result.models[formKey as ModelRoleKey] = modelStr(val);
+      extractOverrides(val, formKey, result.models.overrides);
+    }
     result.models.embedding = str(models.embedding);
   }
 
@@ -312,21 +338,49 @@ export function parseProvidersToml(raw: string): ProvidersFormState {
   if (bg) {
     const bgModels = bg.models as Record<string, unknown> | undefined;
     if (bgModels) {
-      result.models.bgSmall = modelStr(bgModels.small);
-      result.models.bgMedium = modelStr(bgModels.medium);
-      result.models.bgLarge = modelStr(bgModels.large);
+      for (const [tomlKey, formKey] of [
+        ["small", "bgSmall"],
+        ["medium", "bgMedium"],
+        ["large", "bgLarge"],
+      ] as const) {
+        const val = bgModels[tomlKey];
+        result.models[formKey as ModelRoleKey] = modelStr(val);
+        extractOverrides(val, formKey, result.models.overrides);
+      }
     }
   }
 
   return result;
 }
 
-/** Model values can be a string or array (failover). Show first entry for form. */
+/** Model values can be a string, array (failover), or inline table. Show first entry for form. */
 function modelStr(v: unknown): string {
   if (Array.isArray(v)) return v.length > 0 ? String(v[0]) : "";
   if (v == null) return "";
-  if (typeof v === "object") return JSON.stringify(v);
+  if (typeof v === "object") {
+    const obj = v as Record<string, unknown>;
+    if ("model" in obj) {
+      // Inline table form: { model = "...", temperature = ..., thinking = "..." }
+      return modelStr(obj.model);
+    }
+    return JSON.stringify(v);
+  }
   return String(v as string | number | boolean);
+}
+
+/** Extract temperature/thinking overrides from an inline table model assignment. */
+function extractOverrides(v: unknown, key: string, overrides: Record<string, RoleOverrides>): void {
+  if (v == null || typeof v !== "object" || Array.isArray(v)) return;
+  const obj = v as Record<string, unknown>;
+  if (!("model" in obj)) return;
+
+  const temp = obj.temperature != null ? str(obj.temperature) : "";
+  const thinking = obj.thinking != null ? str(obj.thinking) : "";
+  if (temp || thinking) {
+    overrides[key] ??= defaultOverrides();
+    overrides[key].temperature = temp;
+    overrides[key].thinking = thinking;
+  }
 }
 
 // ── MCP (mcp.json) ──────────────────────────────────────────────────
@@ -552,6 +606,23 @@ export function serializeConfigToml(f: ConfigFields): string {
   return lines.join("\n");
 }
 
+/** Build a TOML line for a model role, using inline table when overrides exist. */
+function serializeModelLine(
+  tomlKey: string,
+  modelValue: string,
+  ov: RoleOverrides | undefined,
+): string {
+  const hasTemp = ov?.temperature != null && ov.temperature !== "";
+  const hasThinking = ov?.thinking != null && ov.thinking !== "";
+  if (!hasTemp && !hasThinking) {
+    return `${tomlKey} = "${modelValue}"`;
+  }
+  const parts = [`model = "${modelValue}"`];
+  if (hasTemp) parts.push(`temperature = ${ov.temperature}`);
+  if (hasThinking) parts.push(`thinking = "${ov.thinking}"`);
+  return `${tomlKey} = { ${parts.join(", ")} }`;
+}
+
 /** Serialize providers form state back to providers.toml. */
 export function serializeProvidersToml(
   providers: SettingsProviderEntry[],
@@ -570,11 +641,16 @@ export function serializeProvidersToml(
 
   // Models
   const modelLines: string[] = [];
-  if (models.main) modelLines.push(`main = "${models.main}"`);
-  if (models.default) modelLines.push(`default = "${models.default}"`);
-  if (models.observer) modelLines.push(`observer = "${models.observer}"`);
-  if (models.reflector) modelLines.push(`reflector = "${models.reflector}"`);
-  if (models.pulse) modelLines.push(`pulse = "${models.pulse}"`);
+  for (const [tomlKey, formKey] of [
+    ["main", "main"],
+    ["default", "default"],
+    ["observer", "observer"],
+    ["reflector", "reflector"],
+    ["pulse", "pulse"],
+  ] as const) {
+    const val = models[formKey as ModelRoleKey];
+    if (val) modelLines.push(serializeModelLine(tomlKey, val, models.overrides[formKey]));
+  }
   if (models.embedding) modelLines.push(`embedding = "${models.embedding}"`);
 
   if (modelLines.length > 0) {
@@ -585,9 +661,14 @@ export function serializeProvidersToml(
 
   // Background models
   const bgLines: string[] = [];
-  if (models.bgSmall) bgLines.push(`small = "${models.bgSmall}"`);
-  if (models.bgMedium) bgLines.push(`medium = "${models.bgMedium}"`);
-  if (models.bgLarge) bgLines.push(`large = "${models.bgLarge}"`);
+  for (const [tomlKey, formKey] of [
+    ["small", "bgSmall"],
+    ["medium", "bgMedium"],
+    ["large", "bgLarge"],
+  ] as const) {
+    const val = models[formKey as ModelRoleKey];
+    if (val) bgLines.push(serializeModelLine(tomlKey, val, models.overrides[formKey]));
+  }
 
   if (bgLines.length > 0) {
     lines.push("[background.models]");

@@ -337,6 +337,7 @@ mod memory_integration {
             ReflectorConfig {
                 threshold_tokens: 10, // Very low threshold for testing
                 tz: chrono_tz::UTC,
+                role_overrides: None,
             },
         );
 
