@@ -8,7 +8,7 @@ use crate::background::BackgroundTaskSpawner;
 use crate::config::Config;
 use crate::mcp::SharedMcpRegistry;
 use crate::memory::recent_messages::load_messages_for_agent;
-use crate::models::CompletionOptions;
+
 use crate::notify::router::NotificationRouter;
 use crate::projects::activation::SharedProjectState;
 use crate::skills::SharedSkillState;
@@ -138,13 +138,8 @@ pub(super) async fn create_agent(
                 search_context_size: pn.search_context_size.clone(),
                 exclude_domains: pn.exclude_domains.clone(),
             });
-    let options = CompletionOptions {
-        max_tokens: Some(cfg.max_tokens),
-        temperature: cfg.temperature,
-        thinking: cfg.thinking.clone(),
-        web_search,
-        ..CompletionOptions::default()
-    };
+    let mut options = cfg.completion_options_for_role("main");
+    options.web_search = web_search;
     let mut agent = Agent::new(
         args.provider,
         args.tools,

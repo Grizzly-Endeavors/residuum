@@ -408,6 +408,7 @@ mod tests {
             options: CompletionOptions::default(),
             layout: WorkspaceLayout::new(PathBuf::from("/tmp")),
             tz: chrono_tz::UTC,
+            role_overrides: std::collections::HashMap::new(),
         })
     }
 

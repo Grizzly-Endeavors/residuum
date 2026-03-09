@@ -6,9 +6,10 @@
 use std::collections::HashMap;
 use std::str::FromStr;
 
+use crate::config::types::RoleOverrides;
 use crate::error::ResiduumError;
 
-use super::super::deserialize::{ModelStringOrList, ModelsConfigFile, ProviderEntryFile};
+use super::super::deserialize::{ModelAssignment, ModelsConfigFile, ProviderEntryFile};
 use super::super::provider::{ModelSpec, ProviderKind, ProviderSpec};
 use super::super::secrets::SecretStore;
 
@@ -19,6 +20,7 @@ pub(super) struct ResolvedModels {
     pub(super) reflector: Vec<ProviderSpec>,
     pub(super) pulse: Vec<ProviderSpec>,
     pub(super) embedding: Option<ProviderSpec>,
+    pub(super) role_overrides: HashMap<String, RoleOverrides>,
 }
 
 /// Resolve all model specs (main, observer, reflector, pulse, embedding) from the
@@ -32,11 +34,14 @@ pub(super) fn resolve_all_model_specs(
     providers_map: Option<&HashMap<String, ProviderEntryFile>>,
     secrets: &SecretStore,
 ) -> Result<ResolvedModels, ResiduumError> {
+    let mut role_overrides = HashMap::new();
+
     // Resolve main: RESIDUUM_MODEL env > models.main > default
     let main = if let Ok(env_model) = std::env::var("RESIDUUM_MODEL") {
         vec![resolve_model_string(&env_model, providers_map, secrets)?]
     } else if let Some(main_spec) = models.and_then(|m| m.main.clone()) {
-        resolve_model_chain(main_spec, providers_map, secrets)?
+        extract_role_overrides("main", &main_spec, &mut role_overrides)?;
+        resolve_assignment_chain(main_spec, providers_map, secrets)?
     } else {
         vec![resolve_model_string(
             "anthropic/claude-sonnet-4-6",
@@ -57,28 +62,34 @@ pub(super) fn resolve_all_model_specs(
     };
 
     // Resolve each role: models.<role> > models.default > main
-    let default_chain = models.and_then(|m| m.default.clone());
+    let default_assignment = models.and_then(|m| m.default.clone());
 
-    let observer = resolve_role_chain(
+    let observer = resolve_role_chain_from_assignment(
         models.and_then(|m| m.observer.clone()),
-        default_chain.as_ref(),
+        default_assignment.as_ref(),
         &main,
         providers_map,
         secrets,
+        "observer",
+        &mut role_overrides,
     )?;
-    let reflector = resolve_role_chain(
+    let reflector = resolve_role_chain_from_assignment(
         models.and_then(|m| m.reflector.clone()),
-        default_chain.as_ref(),
+        default_assignment.as_ref(),
         &main,
         providers_map,
         secrets,
+        "reflector",
+        &mut role_overrides,
     )?;
-    let pulse = resolve_role_chain(
+    let pulse = resolve_role_chain_from_assignment(
         models.and_then(|m| m.pulse.clone()),
-        default_chain.as_ref(),
+        default_assignment.as_ref(),
         &main,
         providers_map,
         secrets,
+        "pulse",
+        &mut role_overrides,
     )?;
 
     // Resolve embedding: models.embedding only, no fallback to default or main
@@ -102,6 +113,7 @@ pub(super) fn resolve_all_model_specs(
         reflector,
         pulse,
         embedding,
+        role_overrides,
     })
 }
 
@@ -193,37 +205,94 @@ fn resolve_model_string(
     })
 }
 
-/// Resolve a `ModelStringOrList` into a `Vec<ProviderSpec>` (failover chain).
+/// Resolve a `ModelAssignment` into a `Vec<ProviderSpec>` (failover chain).
 ///
 /// # Errors
-/// Returns `ResiduumError::Config` if any model string in the list cannot be resolved.
-pub(super) fn resolve_model_chain(
-    spec: ModelStringOrList,
+/// Returns `ResiduumError::Config` if any model string in the assignment cannot be resolved.
+pub(super) fn resolve_assignment_chain(
+    assignment: ModelAssignment,
     providers_map: Option<&HashMap<String, ProviderEntryFile>>,
     secrets: &SecretStore,
 ) -> Result<Vec<ProviderSpec>, ResiduumError> {
-    spec.into_vec()
+    assignment
+        .into_model_strings()
         .iter()
         .map(|s| resolve_model_string(s, providers_map, secrets))
         .collect()
 }
 
-/// Resolve a role's provider chain: explicit role > default > clone of main chain.
+/// Extract per-role overrides from a `ModelAssignment` and insert into the map.
+///
+/// Public within the resolve module for use by background tier resolution.
+///
+/// # Errors
+/// Returns `ResiduumError::Config` if the thinking string is invalid or temperature
+/// is out of range.
+pub(super) fn extract_role_overrides_pub(
+    role: &str,
+    assignment: &ModelAssignment,
+    overrides: &mut HashMap<String, RoleOverrides>,
+) -> Result<(), ResiduumError> {
+    extract_role_overrides(role, assignment, overrides)
+}
+
+/// Extract per-role overrides from a `ModelAssignment` and insert into the map.
+///
+/// # Errors
+/// Returns `ResiduumError::Config` if the thinking string is invalid or temperature
+/// is out of range.
+fn extract_role_overrides(
+    role: &str,
+    assignment: &ModelAssignment,
+    overrides: &mut HashMap<String, RoleOverrides>,
+) -> Result<(), ResiduumError> {
+    let (temp, thinking_str) = assignment.overrides();
+    if temp.is_none() && thinking_str.is_none() {
+        return Ok(());
+    }
+
+    if let Some(t) = temp
+        && !(0.0..=2.0).contains(&t)
+    {
+        return Err(ResiduumError::Config(format!(
+            "invalid temperature for role '{role}': {t} (expected 0.0–2.0)"
+        )));
+    }
+
+    let thinking = thinking_str.map(super::parse_thinking_config).transpose()?;
+
+    overrides.insert(
+        role.to_string(),
+        RoleOverrides {
+            temperature: temp,
+            thinking,
+        },
+    );
+    Ok(())
+}
+
+/// Resolve a role's provider chain from a `ModelAssignment`:
+/// explicit role > default > clone of main chain.
+///
+/// Also extracts per-role overrides into the map.
 ///
 /// # Errors
 /// Returns `ResiduumError::Config` if any model string cannot be resolved.
-fn resolve_role_chain(
-    role_spec: Option<ModelStringOrList>,
-    default_spec: Option<&ModelStringOrList>,
+fn resolve_role_chain_from_assignment(
+    role_spec: Option<ModelAssignment>,
+    default_spec: Option<&ModelAssignment>,
     main: &[ProviderSpec],
     providers_map: Option<&HashMap<String, ProviderEntryFile>>,
     secrets: &SecretStore,
+    role: &str,
+    overrides: &mut HashMap<String, RoleOverrides>,
 ) -> Result<Vec<ProviderSpec>, ResiduumError> {
     if let Some(spec) = role_spec {
-        return resolve_model_chain(spec, providers_map, secrets);
+        extract_role_overrides(role, &spec, overrides)?;
+        return resolve_assignment_chain(spec, providers_map, secrets);
     }
     if let Some(spec) = default_spec {
-        return resolve_model_chain(spec.clone(), providers_map, secrets);
+        return resolve_assignment_chain(spec.clone(), providers_map, secrets);
     }
     Ok(main.to_vec())
 }

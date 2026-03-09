@@ -26,6 +26,6 @@ pub use secrets::SecretStore;
 pub use types::{
     AgentAbilitiesConfig, BackgroundConfig, BackgroundModelTier, BackgroundModelsConfig,
     CloudConfig, Config, DiscordConfig, GatewayConfig, IdleConfig, MemoryConfig,
-    ProviderNativeSearchConfig, SearchConfig, SkillsConfig, StandaloneBackendConfig,
+    ProviderNativeSearchConfig, RoleOverrides, SearchConfig, SkillsConfig, StandaloneBackendConfig,
     TelegramConfig, WebSearchConfig, WebhookConfig,
 };

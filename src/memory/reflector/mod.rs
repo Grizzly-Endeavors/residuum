@@ -25,6 +25,8 @@ pub struct ReflectorConfig {
     pub threshold_tokens: usize,
     /// Timezone used for timestamps in observations.
     pub tz: Tz,
+    /// Per-role overrides for temperature and thinking.
+    pub role_overrides: Option<crate::config::RoleOverrides>,
 }
 
 impl Default for ReflectorConfig {
@@ -32,6 +34,7 @@ impl Default for ReflectorConfig {
         Self {
             threshold_tokens: DEFAULT_REFLECTOR_THRESHOLD,
             tz: chrono_tz::UTC,
+            role_overrides: None,
         }
     }
 }
@@ -60,6 +63,7 @@ impl Reflector {
             config: ReflectorConfig {
                 threshold_tokens: usize::MAX,
                 tz,
+                role_overrides: None,
             },
         }
     }
@@ -121,8 +125,11 @@ impl Reflector {
 
         let messages = build_reflection_prompt(&serialized, &content_guidance);
 
-        // Call the model with structured output
+        // Call the model with structured output, applying per-role overrides
+        let ov = self.config.role_overrides.as_ref();
         let options = CompletionOptions {
+            temperature: ov.and_then(|o| o.temperature),
+            thinking: ov.and_then(|o| o.thinking.clone()),
             response_format: ResponseFormat::JsonSchema {
                 name: "reflector_compression".to_string(),
                 schema: reflector_response_schema(),
@@ -197,6 +204,7 @@ mod tests {
             ReflectorConfig {
                 threshold_tokens: 100_000,
                 tz: chrono_tz::UTC,
+                role_overrides: None,
             },
         );
 
@@ -216,6 +224,7 @@ mod tests {
             ReflectorConfig {
                 threshold_tokens: 10,
                 tz: chrono_tz::UTC,
+                role_overrides: None,
             },
         );
 
@@ -348,6 +357,7 @@ mod tests {
             ReflectorConfig {
                 threshold_tokens: 10,
                 tz: chrono_tz::UTC,
+                role_overrides: None,
             },
         );
 
@@ -440,6 +450,7 @@ mod tests {
             ReflectorConfig {
                 threshold_tokens: 10,
                 tz: chrono_tz::UTC,
+                role_overrides: None,
             },
         );
 
@@ -476,6 +487,7 @@ mod tests {
             ReflectorConfig {
                 threshold_tokens: 10,
                 tz: chrono_tz::UTC,
+                role_overrides: None,
             },
         );
 
@@ -500,6 +512,7 @@ mod tests {
             ReflectorConfig {
                 threshold_tokens: 1000,
                 tz: chrono_tz::UTC,
+                role_overrides: None,
             },
         );
 
@@ -512,6 +525,7 @@ mod tests {
         reflector.update_config(ReflectorConfig {
             threshold_tokens: 10,
             tz: chrono_tz::US::Eastern,
+            role_overrides: None,
         });
 
         // Same log should now trigger at threshold=10

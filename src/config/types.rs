@@ -1,5 +1,6 @@
 //! Validated runtime configuration structs for each subsystem.
 
+use std::collections::HashMap;
 use std::fmt;
 use std::path::PathBuf;
 use std::time::Duration;
@@ -281,6 +282,18 @@ impl std::str::FromStr for BackgroundModelTier {
     }
 }
 
+/// Per-role overrides for temperature and thinking.
+///
+/// When set, these override the global `temperature` / `thinking` values
+/// from `config.toml` for a specific role.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct RoleOverrides {
+    /// Sampling temperature override (0.0–2.0).
+    pub temperature: Option<f32>,
+    /// Thinking/reasoning configuration override.
+    pub thinking: Option<crate::models::ThinkingConfig>,
+}
+
 /// Validated web search configuration.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct WebSearchConfig {
@@ -372,6 +385,8 @@ pub struct Config {
     pub thinking: Option<crate::models::ThinkingConfig>,
     /// Web search configuration.
     pub web_search: WebSearchConfig,
+    /// Per-role overrides for temperature and thinking.
+    pub role_overrides: HashMap<String, RoleOverrides>,
     /// Directory this config was loaded from.
     pub config_dir: PathBuf,
 }
@@ -404,6 +419,7 @@ impl fmt::Debug for Config {
             .field("temperature", &self.temperature)
             .field("thinking", &self.thinking)
             .field("web_search", &self.web_search)
+            .field("role_overrides", &self.role_overrides)
             .field("config_dir", &self.config_dir)
             .finish()
     }

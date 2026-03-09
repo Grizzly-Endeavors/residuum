@@ -45,6 +45,7 @@ pub(super) fn build_memory_components(
         observer_provider,
         ObserverConfig {
             tz,
+            role_overrides: cfg.role_overrides.get("observer").cloned(),
             ..ObserverConfig::default()
         },
     );
@@ -53,6 +54,7 @@ pub(super) fn build_memory_components(
         reflector_provider,
         ReflectorConfig {
             tz,
+            role_overrides: cfg.role_overrides.get("reflector").cloned(),
             ..ReflectorConfig::default()
         },
     );
