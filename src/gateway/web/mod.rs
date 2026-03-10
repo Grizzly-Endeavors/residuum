@@ -17,6 +17,7 @@ use super::ReloadSignal;
 pub mod config;
 pub mod providers;
 pub mod secrets;
+pub mod workspace;
 
 mod embedded {
     //! Module boundary isolates `rust-embed` derive from clippy `same_name_method`.
@@ -80,6 +81,11 @@ pub(super) fn config_api_router(state: ConfigApiState) -> axum::Router {
         .route("/api/secrets", post(secrets::api_secrets_set))
         .route("/api/secrets", get(secrets::api_secrets_list))
         .route("/api/secrets/{name}", delete(secrets::api_secrets_delete))
+        .route("/api/workspace/files", get(workspace::api_workspace_files))
+        .route(
+            "/api/workspace/file",
+            get(workspace::api_workspace_file_read).put(workspace::api_workspace_file_write),
+        )
         .with_state(state)
 }
 
