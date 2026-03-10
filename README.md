@@ -18,7 +18,7 @@
 </p>
 
 <p align="center">
-  <a href="https://residuum.bearflinn.com">Website</a> &middot;
+  <a href="https://agent-residuum.com">Website</a> &middot;
   <a href="docs/">Documentation</a> &middot;
   <a href="#quick-start">Quick Start</a> &middot;
   <a href="CONTRIBUTING.md">Contributing</a>
@@ -65,7 +65,7 @@ AI agent frameworks are built on sessions. Start a conversation, do some work, c
 ### Install
 
 ```bash
-curl -fsSL https://residuum.bearflinn.com/install | sh
+curl -fsSL https://agent-residuum.com/install | sh
 ```
 
 Detects your platform automatically. Supports Linux (x86_64, aarch64) and macOS (Apple Silicon).

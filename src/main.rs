@@ -357,7 +357,7 @@ async fn run_update_command(args: &[String]) -> Result<(), ResiduumError> {
     // Download install script to a temp file and execute it
     let client = reqwest::Client::new();
     let script = client
-        .get("https://residuum.bearflinn.com/install")
+        .get("https://agent-residuum.com/install")
         .send()
         .await
         .map_err(|e| ResiduumError::Gateway(format!("failed to download install script: {e}")))?
