@@ -70,3 +70,17 @@
     </button>
   {/each}
 </div>
+<select
+  class="thinking-mobile-select"
+  disabled={disabled || saving}
+  onchange={(e: Event) => {
+    const val = (e.target as HTMLSelectElement).value;
+    void setLevel(val);
+  }}
+>
+  {#each LEVELS as level (level)}
+    <option value={level} selected={level === currentLevel}>
+      {level === currentLevel ? `\u2713 ${LABELS[level]}` : LABELS[level]}
+    </option>
+  {/each}
+</select>
