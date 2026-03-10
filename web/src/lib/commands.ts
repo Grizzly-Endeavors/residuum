@@ -14,15 +14,31 @@ interface CommandContext {
   nextId: () => number;
 }
 
-const HELP_TEXT = `Available commands:
-  /help          Show this help message
-  /verbose       Toggle tool call visibility
-  /status        Show connection status
-  /observe       Trigger memory observation
-  /reflect       Trigger memory reflection
-  /context       Show current project context
-  /reload        Reload gateway configuration
-  /inbox <text>  Add a message to the inbox`;
+// ── Command registry ────────────────────────────────────────────────
+
+export interface CommandDef {
+  name: string;
+  description: string;
+  hasArgs: boolean;
+}
+
+export const COMMAND_REGISTRY: CommandDef[] = [
+  { name: "/help", description: "Show this help message", hasArgs: false },
+  { name: "/verbose", description: "Toggle tool call visibility", hasArgs: false },
+  { name: "/status", description: "Show connection status", hasArgs: false },
+  { name: "/observe", description: "Trigger memory observation", hasArgs: false },
+  { name: "/reflect", description: "Trigger memory reflection", hasArgs: false },
+  { name: "/context", description: "Show current project context", hasArgs: false },
+  { name: "/reload", description: "Reload gateway configuration", hasArgs: false },
+  { name: "/inbox", description: "Add a message to the inbox", hasArgs: true },
+];
+
+const HELP_TEXT = COMMAND_REGISTRY.map((c) => `  ${c.name.padEnd(15)}${c.description}`).join("\n");
+
+export function filterCommands(query: string): CommandDef[] {
+  const q = query.toLowerCase();
+  return COMMAND_REGISTRY.filter((c) => c.name.slice(1).startsWith(q));
+}
 
 export function parseCommand(input: string, ctx: CommandContext): CommandResult | null {
   if (!input.startsWith("/")) return null;
