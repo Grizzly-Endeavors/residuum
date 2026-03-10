@@ -1,0 +1,55 @@
+/* ── Residuum Web UI — Stone + Vein Theme ─────────────────────────────── */
+
+@import url("https://fonts.googleapis.com/css2?family=Cinzel:wght@400;600;700&family=JetBrains+Mono:wght@400;500&family=Literata:ital,opsz,wght@0,7..72,300..700;1,7..72,300..700&display=swap");
+
+:root {
+  /* Stone + Vein palette */
+  --bg-deep: #0e0e10;
+  --bg-surface: #161618;
+  --bg-raised: #1c1c1f;
+  --bg-input: #141416;
+
+  --border: #2a2a2e;
+  --border-subtle: #222225;
+
+  --text: #e8e8ea;
+  --text-muted: #9a9a9f;
+  --text-dim: #6a6a6f;
+
+  --ember: #3b8bdb;
+  --ember-bright: #5aa3f0;
+  --ember-glow: rgba(59, 139, 219, 0.15);
+  --ember-dim: #2a6cb5;
+
+  --steel: #6b7a4a;
+  --steel-dim: #7a7d6e;
+
+  --error: #c0392b;
+  --error-bg: rgba(192, 57, 43, 0.1);
+  --success: #2ecc71;
+
+  /* Card tints */
+  --card-user: rgba(107, 122, 74, 0.14);
+  --card-assistant: rgba(59, 139, 219, 0.1);
+  --card-shadow: 0 1px 4px rgba(0, 0, 0, 0.25), 0 0 1px rgba(0, 0, 0, 0.15);
+  --card-shadow-hover: 0 2px 8px rgba(0, 0, 0, 0.35), 0 0 1px rgba(0, 0, 0, 0.2);
+
+  /* Glow effects */
+  --ember-ring: 0 0 0 1px rgba(59, 139, 219, 0.2), 0 0 0 3px rgba(59, 139, 219, 0.07);
+  --input-inset: inset 0 1px 3px rgba(0, 0, 0, 0.3);
+
+  /* Typography */
+  --font-display: "Cinzel", "Georgia", serif;
+  --font-body: "Literata", "Georgia", serif;
+  --font-mono: "JetBrains Mono", "Fira Code", "SF Mono", "Cascadia Code", "Consolas", monospace;
+
+  /* Sizing */
+  --chat-max-width: 760px;
+  --header-height: 52px;
+  --input-height: 56px;
+  --radius: 6px;
+  --radius-sm: 4px;
+
+  /* Motion */
+  --ease-out-expo: cubic-bezier(0.16, 1, 0.3, 1);
+}

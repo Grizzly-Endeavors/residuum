@@ -1,0 +1,106 @@
+/* ── Header ────────────────────────────────────────────────────────────── */
+
+.header {
+  display: flex;
+  align-items: center;
+  height: var(--header-height);
+  padding: 0 16px;
+  border-bottom: 1px solid var(--border-subtle);
+  background: linear-gradient(180deg, #1a1a1e 0%, var(--bg-surface) 100%);
+  box-shadow:
+    0 1px 6px rgba(0, 0, 0, 0.3),
+    0 1px 0 rgba(59, 139, 219, 0.08);
+  flex-shrink: 0;
+  gap: 10px;
+  position: relative;
+  z-index: 10;
+}
+
+.header-brand {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1;
+}
+
+.header-icon {
+  width: 28px;
+  height: 28px;
+  border-radius: var(--radius-sm);
+  background: var(--ember-glow);
+  border: 1px solid var(--ember-dim);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 16px;
+  color: var(--ember);
+}
+
+.header-title {
+  font-family: var(--font-display);
+  font-size: 16px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  color: var(--text);
+}
+
+.header-status {
+  font-size: 11px;
+  color: var(--text-dim);
+  padding: 2px 8px;
+  border-radius: 10px;
+  border: 1px solid var(--border-subtle);
+}
+
+.header-status.connected {
+  color: var(--success);
+  border-color: rgba(46, 204, 113, 0.3);
+}
+.header-status.disconnected {
+  color: var(--error);
+  border-color: rgba(192, 57, 43, 0.3);
+}
+.header-status.connecting {
+  color: var(--ember);
+  border-color: rgba(59, 139, 219, 0.3);
+}
+
+.header-actions {
+  display: flex;
+  gap: 6px;
+}
+
+.icon-btn {
+  width: 34px;
+  height: 34px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-subtle);
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 16px;
+  transition: all 0.15s;
+}
+
+.icon-btn:hover {
+  background: var(--bg-raised);
+  color: var(--text);
+  border-color: var(--border);
+}
+
+.icon-btn.active {
+  background: var(--ember-glow);
+  color: var(--ember);
+  border-color: var(--ember-dim);
+}
+
+@media (max-width: 600px) {
+  /* Header: sticky on mobile */
+  .header {
+    position: sticky;
+    top: 0;
+  }
+}
