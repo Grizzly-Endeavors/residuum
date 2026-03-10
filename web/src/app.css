@@ -209,7 +209,7 @@ body::before {
 .chat-feed {
   flex: 1;
   overflow-y: auto;
-  padding: 16px 16px 96px;
+  padding: 16px 16px 264px;
   scroll-behavior: smooth;
 }
 
@@ -554,15 +554,20 @@ body::before {
 
 .chat-input-wrap {
   display: flex;
-  gap: 8px;
-  align-items: flex-end;
+  flex-direction: column;
   background: var(--bg-surface);
   border: 1px solid var(--border);
   border-radius: 16px;
-  padding: 8px 8px 8px 4px;
+  padding: 8px 8px 4px 4px;
   box-shadow:
     0 4px 24px rgba(0, 0, 0, 0.4),
     0 0 0 1px rgba(255, 255, 255, 0.03);
+}
+
+.chat-input-row {
+  display: flex;
+  gap: 8px;
+  align-items: flex-end;
 }
 
 .chat-input {
@@ -623,6 +628,191 @@ body::before {
   cursor: not-allowed;
   box-shadow: none;
   transform: none;
+}
+
+/* ── Chat toolbar ─────────────────────────────────────────────────────── */
+
+.chat-input-container {
+  position: relative;
+}
+
+.chat-toolbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 4px 8px;
+  margin-top: 4px;
+  border-top: 1px solid var(--border-subtle);
+}
+
+.chat-toolbar-left,
+.chat-toolbar-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* Command menu button */
+.cmd-menu-btn {
+  height: 28px;
+  padding: 0 10px;
+  font-family: var(--font-mono);
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-dim);
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.cmd-menu-btn:hover {
+  color: var(--ember);
+  border-color: var(--ember-dim);
+}
+
+.cmd-menu-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+/* ── Command autocomplete dropdown ────────────────────────────────────── */
+
+.cmd-menu {
+  position: absolute;
+  bottom: calc(100% + 4px);
+  left: 0;
+  right: 0;
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  max-height: 240px;
+  overflow-y: auto;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
+  z-index: 30;
+}
+
+.cmd-item {
+  display: flex;
+  gap: 12px;
+  align-items: baseline;
+  padding: 8px 12px;
+  cursor: pointer;
+  transition: background 0.1s;
+}
+
+.cmd-item:first-child {
+  border-radius: 8px 8px 0 0;
+}
+
+.cmd-item:last-child {
+  border-radius: 0 0 8px 8px;
+}
+
+.cmd-item.selected,
+.cmd-item:hover {
+  background: var(--bg-raised);
+}
+
+.cmd-name {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  color: var(--ember);
+  white-space: nowrap;
+}
+
+.cmd-desc {
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
+/* ── Model selector (compact) ─────────────────────────────────────────── */
+
+.model-selector-wrap {
+  position: relative;
+}
+
+.model-chip {
+  height: 28px;
+  padding: 0 10px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-muted);
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  transition: all 0.15s;
+  max-width: 200px;
+}
+
+.model-chip:hover {
+  color: var(--text);
+  border-color: var(--ember-dim);
+}
+
+.model-chip:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.model-chip-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.model-chip-chevron {
+  font-size: 8px;
+  opacity: 0.5;
+}
+
+.model-dropdown {
+  position: absolute;
+  bottom: calc(100% + 4px);
+  right: 0;
+  min-width: 220px;
+  max-height: 280px;
+  overflow-y: auto;
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
+  z-index: 30;
+}
+
+.model-dropdown-item {
+  padding: 8px 12px;
+  cursor: pointer;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--text-muted);
+  transition: background 0.1s;
+}
+
+.model-dropdown-item:hover,
+.model-dropdown-item.active {
+  background: var(--bg-raised);
+  color: var(--text);
+}
+
+/* ── Thinking selector (compact) ──────────────────────────────────────── */
+
+.thinking-compact {
+  display: inline-flex;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.thinking-compact .seg-btn {
+  padding: 2px 8px;
+  font-size: 11px;
+  height: 28px;
 }
 
 /* ── Scrollbar ─────────────────────────────────────────────────────────── */
@@ -1666,8 +1856,10 @@ body::before {
     width: calc(100% - 16px);
     bottom: 8px;
   }
-  .chat-input-wrap {
+  .chat-input-row {
     flex-direction: column;
+  }
+  .chat-input-wrap {
     border-radius: 12px;
   }
   .send-btn {
