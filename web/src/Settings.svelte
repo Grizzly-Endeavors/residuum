@@ -13,8 +13,6 @@
     putConfigRaw,
     putProvidersRaw,
     putMcpRaw,
-    validateConfig,
-    validateProviders,
     storeSecret,
     listSecrets,
   } from "./lib/api";
@@ -44,8 +42,9 @@
   let advancedMode = $state(false);
   let loading = $state(true);
   let saving = $state(false);
-  let validationMsg = $state("");
-  let validationKind = $state<"error" | "success" | "">("");
+  let statusMsg = $state("");
+  let statusKind = $state<"error" | "success" | "saving" | "">("");
+  let initialized = $state(false);
 
   // Raw text (source of truth from last save/load)
   let rawConfig = $state("");
@@ -66,6 +65,11 @@
 
   // Secrets tracking
   let _existingSecrets = $state<string[]>([]);
+
+  // Auto-save debounce timer
+  let autoSaveTimer: ReturnType<typeof setTimeout> | undefined;
+  let statusClearTimer: ReturnType<typeof setTimeout> | undefined;
+  let lastSavedSnapshot = "";
 
   // ── Sidebar ────────────────────────────────────────────────────────
 
@@ -101,10 +105,13 @@
 
       parseAllToForm();
     } catch (err: unknown) {
-      validationMsg = `Failed to load settings: ${String(err)}`;
-      validationKind = "error";
+      statusMsg = `Failed to load settings: ${String(err)}`;
+      statusKind = "error";
     } finally {
       loading = false;
+      // Set initial snapshot before enabling auto-save
+      lastSavedSnapshot = currentSnapshot();
+      initialized = true;
     }
   });
 
@@ -119,8 +126,8 @@
   // ── Mode toggle ────────────────────────────────────────────────────
 
   function toggleMode() {
-    validationMsg = "";
-    validationKind = "";
+    statusMsg = "";
+    statusKind = "";
     if (advancedMode) {
       // Switching to form mode — reload from saved raw state
       parseAllToForm();
@@ -138,8 +145,8 @@
 
   async function handleReload() {
     loading = true;
-    validationMsg = "";
-    validationKind = "";
+    statusMsg = "";
+    statusKind = "";
     try {
       const [cfgRaw, provRaw, mcpRaw] = await Promise.all([
         fetchConfigRaw(),
@@ -157,66 +164,74 @@
       } else {
         parseAllToForm();
       }
-      validationMsg = "Reloaded from disk.";
-      validationKind = "success";
+      lastSavedSnapshot = currentSnapshot();
+      showStatus("Reloaded", "success");
     } catch (err: unknown) {
-      validationMsg = `Reload failed: ${String(err)}`;
-      validationKind = "error";
+      statusMsg = `Reload failed: ${String(err)}`;
+      statusKind = "error";
     } finally {
       loading = false;
     }
   }
 
-  // ── Validate ───────────────────────────────────────────────────────
+  // ── Status display ─────────────────────────────────────────────────
 
-  async function handleValidate() {
-    validationMsg = "";
-    validationKind = "";
-    saving = true;
-
-    try {
-      let cfgToml: string;
-      let provToml: string;
-
-      if (advancedMode) {
-        cfgToml = editConfig;
-        provToml = editProviders;
-      } else {
-        cfgToml = serializeConfigToml(configFields);
-        provToml = serializeProvidersToml(providerEntries, modelAssignments);
-      }
-
-      // Validate providers first (config validation reads it from disk)
-      const provResult = await validateProviders(provToml);
-      if (!provResult.valid) {
-        validationMsg = `providers.toml: ${provResult.error ?? "unknown error"}`;
-        validationKind = "error";
-        return;
-      }
-
-      const cfgResult = await validateConfig(cfgToml);
-      if (!cfgResult.valid) {
-        validationMsg = `config.toml: ${cfgResult.error ?? "unknown error"}`;
-        validationKind = "error";
-        return;
-      }
-
-      validationMsg = "Configuration is valid.";
-      validationKind = "success";
-    } catch (err: unknown) {
-      validationMsg = `Validation error: ${String(err)}`;
-      validationKind = "error";
-    } finally {
-      saving = false;
+  function showStatus(msg: string, kind: "success" | "error") {
+    if (statusClearTimer) clearTimeout(statusClearTimer);
+    statusMsg = msg;
+    statusKind = kind;
+    if (kind === "success") {
+      statusClearTimer = setTimeout(() => {
+        statusMsg = "";
+        statusKind = "";
+      }, 2000);
     }
   }
 
-  // ── Save ───────────────────────────────────────────────────────────
+  // ── Auto-save ──────────────────────────────────────────────────────
 
-  async function handleSave() {
-    validationMsg = "";
-    validationKind = "";
+  function currentSnapshot(): string {
+    if (advancedMode) {
+      return `adv:${editConfig}|${editProviders}|${editMcp}`;
+    }
+    return `form:${JSON.stringify(configFields)}|${JSON.stringify(providerEntries)}|${JSON.stringify(modelAssignments)}|${JSON.stringify(mcpServers)}`;
+  }
+
+  function scheduleAutoSave() {
+    if (!initialized || saving) return;
+    const snap = currentSnapshot();
+    if (snap === lastSavedSnapshot) return;
+    if (autoSaveTimer) clearTimeout(autoSaveTimer);
+    autoSaveTimer = setTimeout(() => {
+      void autoSave();
+    }, 800);
+  }
+
+  // Form mode: watch all form state for changes
+  $effect(() => {
+    JSON.stringify(configFields);
+    JSON.stringify(providerEntries);
+    JSON.stringify(modelAssignments);
+    JSON.stringify(mcpServers);
+    if (!advancedMode) scheduleAutoSave();
+  });
+
+  // Advanced mode: watch editor buffers for changes
+  $effect(() => {
+    editConfig;
+    editProviders;
+    editMcp;
+    if (advancedMode) scheduleAutoSave();
+  });
+
+  async function autoSave(): Promise<void> {
+    if (saving) return;
+    const snap = currentSnapshot();
+    if (snap === lastSavedSnapshot) return;
+
     saving = true;
+    statusMsg = "Saving...";
+    statusKind = "saving";
 
     try {
       let cfgToml: string;
@@ -228,45 +243,39 @@
         provToml = editProviders;
         mcpJson = editMcp;
       } else {
-        // Store new secrets before serializing
         await storeNewSecrets();
         cfgToml = serializeConfigToml(configFields);
         provToml = serializeProvidersToml(providerEntries, modelAssignments);
         mcpJson = serializeMcpJson(mcpServers);
       }
 
-      // Save providers.toml first (config validation reads it from disk)
       const provResult = await putProvidersRaw(provToml);
       if (!provResult.valid) {
-        validationMsg = `providers.toml: ${provResult.error ?? "unknown error"}`;
-        validationKind = "error";
+        showStatus(`providers.toml: ${provResult.error ?? "unknown error"}`, "error");
         return;
       }
 
       const cfgResult = await putConfigRaw(cfgToml);
       if (!cfgResult.valid) {
-        validationMsg = `config.toml: ${cfgResult.error ?? "unknown error"}`;
-        validationKind = "error";
+        showStatus(`config.toml: ${cfgResult.error ?? "unknown error"}`, "error");
         return;
       }
 
       const mcpResult = await putMcpRaw(mcpJson);
       if (!mcpResult.valid) {
-        validationMsg = `mcp.json: ${mcpResult.error ?? "unknown error"}`;
-        validationKind = "error";
+        showStatus(`mcp.json: ${mcpResult.error ?? "unknown error"}`, "error");
         return;
       }
 
-      // Update raw state to match what was saved
       rawConfig = cfgToml;
       rawProviders = provToml;
       rawMcp = mcpJson;
 
-      validationMsg = "Settings saved and applied.";
-      validationKind = "success";
+      // Record snapshot after save (includes any secret mutations)
+      lastSavedSnapshot = currentSnapshot();
+      showStatus("Saved", "success");
     } catch (err: unknown) {
-      validationMsg = `Save failed: ${String(err)}`;
-      validationKind = "error";
+      showStatus(`Save failed: ${String(err)}`, "error");
     } finally {
       saving = false;
     }
@@ -322,6 +331,12 @@
   <div class="settings-header">
     <span class="settings-title">Settings</span>
     <div class="settings-header-actions">
+      {#if statusMsg}
+        <span class="settings-status {statusKind}">{statusMsg}</span>
+      {/if}
+      <button class="icon-btn" title="Reload from disk" onclick={handleReload} disabled={saving}
+        >&#8635;</button
+      >
       <button
         class="btn btn-sm"
         class:btn-primary={advancedMode}
@@ -411,21 +426,6 @@
       {:else if activeSection === "web_search"}
         <WebSearch bind:fields={configFields} />
       {/if}
-    </div>
-  </div>
-
-  <div class="settings-footer">
-    <div class="settings-footer-left">
-      <button class="btn btn-secondary" onclick={handleReload} disabled={saving}>Reload</button>
-      <button class="btn btn-secondary" onclick={handleValidate} disabled={saving}>Validate</button>
-    </div>
-    <div class="settings-footer-right">
-      {#if validationMsg}
-        <span class="validation-msg {validationKind}">{validationMsg}</span>
-      {/if}
-      <button class="btn btn-primary" onclick={handleSave} disabled={saving}>
-        {saving ? "Saving..." : "Save"}
-      </button>
     </div>
   </div>
 </div>

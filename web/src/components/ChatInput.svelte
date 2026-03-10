@@ -153,6 +153,9 @@
         <div class="chat-toolbar-right">
           <ModelSelector {disabled} />
           <ThinkingSelector {disabled} />
+          <button class="send-btn-toolbar" onclick={submit} disabled={disabled || !value.trim()}
+            >Send</button
+          >
         </div>
       </div>
     </div>
