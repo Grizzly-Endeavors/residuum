@@ -273,7 +273,11 @@
             </div>
           {/if}
         </div>
-        <button class="btn btn-sm btn-danger" onclick={() => removeProvider(i)}>Remove</button>
+        <button
+          class="provider-remove-btn"
+          title="Remove provider"
+          onclick={() => removeProvider(i)}>&#10005;</button
+        >
       </div>
     {/each}
 
@@ -376,6 +380,20 @@
                   </button>
                 {/each}
               </div>
+              <select
+                class="thinking-mobile-select"
+                value={models.overrides[ovKey]?.thinking ?? ""}
+                onchange={(e) => {
+                  ensureOverrides(ovKey);
+                  const ov = models.overrides[ovKey];
+                  if (ov) ov.thinking = (e.target as HTMLSelectElement).value;
+                  models.overrides = models.overrides;
+                }}
+              >
+                {#each thinkingOptions as opt (opt.value)}
+                  <option value={opt.value}>{opt.label}</option>
+                {/each}
+              </select>
             </div>
           </div>
         </div>
@@ -474,6 +492,20 @@
                   </button>
                 {/each}
               </div>
+              <select
+                class="thinking-mobile-select"
+                value={models.overrides[ovKey]?.thinking ?? ""}
+                onchange={(e) => {
+                  ensureOverrides(ovKey);
+                  const ov = models.overrides[ovKey];
+                  if (ov) ov.thinking = (e.target as HTMLSelectElement).value;
+                  models.overrides = models.overrides;
+                }}
+              >
+                {#each thinkingOptions as opt (opt.value)}
+                  <option value={opt.value}>{opt.label}</option>
+                {/each}
+              </select>
             </div>
           </div>
         </div>
@@ -631,6 +663,20 @@
                   </button>
                 {/each}
               </div>
+              <select
+                class="thinking-mobile-select"
+                value={models.overrides[ovKey]?.thinking ?? ""}
+                onchange={(e) => {
+                  ensureOverrides(ovKey);
+                  const ov = models.overrides[ovKey];
+                  if (ov) ov.thinking = (e.target as HTMLSelectElement).value;
+                  models.overrides = models.overrides;
+                }}
+              >
+                {#each thinkingOptions as opt (opt.value)}
+                  <option value={opt.value}>{opt.label}</option>
+                {/each}
+              </select>
             </div>
           </div>
         </div>
