@@ -198,6 +198,14 @@ export interface DeleteSecretResponse {
   deleted: boolean;
 }
 
+// ── Workspace types ─────────────────────────────────────────────────
+
+export interface WorkspaceEntry {
+  name: string;
+  entry_type: "file" | "directory";
+  size: number | null;
+}
+
 // ── Feed items (UI rendering) ────────────────────────────────────────
 
 export type ConnectionStatus = "connecting" | "connected" | "disconnected";

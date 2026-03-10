@@ -6,27 +6,19 @@
   import Chat from "./Chat.svelte";
   import Setup from "./Setup.svelte";
   import Settings from "./Settings.svelte";
+  import Workspace from "./components/Workspace.svelte";
 
   let mode = $state<"loading" | "setup" | "running">("loading");
-  let showSettings = $state(false);
+  let activeView = $state<"chat" | "workspace" | "settings">("chat");
 
   onMount(async () => {
     try {
       const status = await fetchStatus();
       mode = status.mode === "setup" ? "setup" : "running";
     } catch {
-      // If status check fails, assume running (server may not support setup)
       mode = "running";
     }
   });
-
-  function handleToggleVerbose() {
-    ws.setVerbose(!ws.verbose);
-  }
-
-  function handleToggleSettings() {
-    showSettings = !showSettings;
-  }
 </script>
 
 {#if mode === "loading"}
@@ -52,18 +44,33 @@
 {:else}
   <Header
     status={ws.status}
-    verbose={ws.verbose}
-    {showSettings}
-    onToggleVerbose={handleToggleVerbose}
-    onToggleSettings={handleToggleSettings}
+    {activeView}
+    onOpenChat={() => {
+      activeView = "chat";
+    }}
+    onOpenWorkspace={() => {
+      activeView = activeView === "workspace" ? "chat" : "workspace";
+    }}
+    onOpenSettings={() => {
+      activeView = activeView === "settings" ? "chat" : "settings";
+    }}
   />
-  {#if showSettings}
+  {#if activeView === "settings"}
     <Settings
       onClose={() => {
-        showSettings = false;
+        activeView = "chat";
       }}
     />
   {:else}
-    <Chat />
+    <div class="app-main" class:with-workspace={activeView === "workspace"}>
+      {#if activeView === "workspace"}
+        <Workspace
+          onClose={() => {
+            activeView = "chat";
+          }}
+        />
+      {/if}
+      <Chat />
+    </div>
   {/if}
 {/if}

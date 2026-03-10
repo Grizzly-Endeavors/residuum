@@ -9,6 +9,7 @@ import type {
   SecretResponse,
   ValidateResponse,
   SecretsListResponse,
+  WorkspaceEntry,
 } from "./types";
 
 export async function fetchStatus(): Promise<StatusResponse> {
@@ -170,5 +171,32 @@ export async function deleteSecret(name: string): Promise<void> {
   if (!resp.ok) {
     const text = await resp.text();
     throw new Error(`failed to delete secret "${name}": ${text}`);
+  }
+}
+
+// ── Workspace API wrappers ──────────────────────────────────────────
+
+export async function fetchWorkspaceFiles(path?: string): Promise<WorkspaceEntry[]> {
+  const params = path ? `?path=${encodeURIComponent(path)}` : "";
+  const resp = await fetch(`/api/workspace/files${params}`);
+  if (!resp.ok) throw new Error(`failed to list workspace: ${resp.status}`);
+  return (await resp.json()) as WorkspaceEntry[];
+}
+
+export async function fetchWorkspaceFile(path: string): Promise<string> {
+  const resp = await fetch(`/api/workspace/file?path=${encodeURIComponent(path)}`);
+  if (!resp.ok) throw new Error(`failed to read file: ${resp.status}`);
+  return resp.text();
+}
+
+export async function putWorkspaceFile(path: string, content: string): Promise<void> {
+  const resp = await fetch("/api/workspace/file", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ path, content }),
+  });
+  if (!resp.ok) {
+    const text = await resp.text();
+    throw new Error(`failed to save file: ${text}`);
   }
 }
