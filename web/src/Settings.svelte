@@ -69,6 +69,8 @@
 
   // ── Sidebar ────────────────────────────────────────────────────────
 
+  let mobileNavOpen = $state(false);
+
   const sections: { id: SettingsSection; label: string }[] = [
     { id: "runtime", label: "Runtime" },
     { id: "providers", label: "Providers" },
@@ -77,6 +79,10 @@
     { id: "mcp", label: "MCP" },
     { id: "web_search", label: "Web Search" },
   ];
+
+  function activeLabel(): string {
+    return sections.find((s) => s.id === activeSection)?.label ?? "Runtime";
+  }
 
   // ── Load ───────────────────────────────────────────────────────────
 
@@ -330,18 +336,30 @@
 
   <div class="settings-body">
     {#if !advancedMode}
-      <div class="settings-sidebar">
-        {#each sections as sec (sec.id)}
-          <button
-            class="settings-sidebar-btn"
-            class:active={activeSection === sec.id}
-            onclick={() => {
-              activeSection = sec.id;
-            }}
-          >
-            {sec.label}
-          </button>
-        {/each}
+      <div class="settings-sidebar" class:collapsed={!mobileNavOpen}>
+        <button
+          class="settings-nav-toggle"
+          onclick={() => {
+            mobileNavOpen = !mobileNavOpen;
+          }}
+        >
+          <span>{activeLabel()}</span>
+          <span class="nav-chevron" class:open={mobileNavOpen}>&#9660;</span>
+        </button>
+        <div class="settings-nav-items">
+          {#each sections as sec (sec.id)}
+            <button
+              class="settings-sidebar-btn"
+              class:active={activeSection === sec.id}
+              onclick={() => {
+                activeSection = sec.id;
+                mobileNavOpen = false;
+              }}
+            >
+              {sec.label}
+            </button>
+          {/each}
+        </div>
       </div>
     {/if}
 
