@@ -59,6 +59,11 @@ export interface ConfigFields {
   telegram_token: string;
   webhook_enabled: boolean;
   webhook_secret: string;
+  // cloud
+  cloud_enabled: boolean;
+  cloud_token: string;
+  cloud_relay_url: string;
+  cloud_local_port: string;
   // skills
   skills_dirs: string[];
   // web search
@@ -110,6 +115,10 @@ export function defaultConfigFields(): ConfigFields {
     telegram_token: "",
     webhook_enabled: false,
     webhook_secret: "",
+    cloud_enabled: true,
+    cloud_token: "",
+    cloud_relay_url: "",
+    cloud_local_port: "",
     skills_dirs: [],
     ws_backend: "",
     ws_brave_api_key: "",
@@ -222,6 +231,14 @@ export function parseConfigToml(raw: string): ConfigFields {
   if (webhook) {
     fields.webhook_enabled = bool(webhook.enabled, false);
     fields.webhook_secret = str(webhook.secret);
+  }
+
+  const cloud = doc.cloud as Record<string, unknown> | undefined;
+  if (cloud) {
+    fields.cloud_enabled = bool(cloud.enabled, true);
+    fields.cloud_token = str(cloud.token);
+    fields.cloud_relay_url = str(cloud.relay_url);
+    fields.cloud_local_port = str(cloud.local_port);
   }
 
   const skills = doc.skills as Record<string, unknown> | undefined;
@@ -482,6 +499,18 @@ export function serializeConfigToml(f: ConfigFields): string {
     lines.push("[webhook]");
     if (f.webhook_enabled) lines.push("enabled = true");
     if (f.webhook_secret) lines.push(`secret = "${f.webhook_secret}"`);
+  }
+
+  // cloud
+  if (f.cloud_token || f.cloud_relay_url || f.cloud_local_port || !f.cloud_enabled) {
+    lines.push("");
+    lines.push("[cloud]");
+    if (!f.cloud_enabled) {
+      lines.push("enabled = false");
+    }
+    if (f.cloud_token) lines.push(`token = "${f.cloud_token}"`);
+    if (f.cloud_relay_url) lines.push(`relay_url = "${f.cloud_relay_url}"`);
+    if (f.cloud_local_port) lines.push(`local_port = ${f.cloud_local_port}`);
   }
 
   // skills

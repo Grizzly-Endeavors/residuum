@@ -150,8 +150,18 @@ export type SettingsSection =
   | "providers"
   | "memory"
   | "integrations"
+  | "cloud"
   | "mcp"
   | "web_search";
+
+export type CloudTunnelStatus = "disconnected" | "connecting" | "connected";
+
+export interface CloudStatusResponse {
+  status: CloudTunnelStatus;
+  user_id: string | null;
+  has_token: boolean;
+  enabled: boolean;
+}
 
 export interface SettingsProviderEntry {
   name: string;

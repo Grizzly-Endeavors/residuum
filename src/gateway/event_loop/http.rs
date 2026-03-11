@@ -1,5 +1,7 @@
 //! HTTP server setup and adapter spawning in the event loop.
 
+use std::sync::Arc;
+
 use tokio::sync::mpsc;
 
 use crate::config::Config;
@@ -25,13 +27,13 @@ pub struct AdapterHandles {
     pub telegram_shutdown_tx: Option<tokio::sync::watch::Sender<bool>>,
 }
 
-/// Build the gateway app with WebSocket, webhook, and config API routes.
+/// Build the gateway app with WebSocket, webhook, cloud, and config API routes.
 pub fn build_gateway_app(
     state: GatewayState,
     cfg: &Config,
     config_api_state: web::ConfigApiState,
 ) -> axum::Router {
-    use axum::routing::get;
+    use axum::routing::{get, post};
 
     let webhook_router = cfg.webhook.enabled.then(|| {
         let webhook_state = crate::interfaces::webhook::WebhookState {
@@ -46,13 +48,31 @@ pub fn build_gateway_app(
             .with_state(webhook_state)
     });
 
+    let cloud_router = {
+        let cloud_state = web::cloud::CloudApiState {
+            config_dir: config_api_state.config_dir.clone(),
+            reload_tx: state.reload_tx.clone(),
+            tunnel_status_rx: state.tunnel_status_rx.clone(),
+            secret_lock: Arc::clone(&config_api_state.secret_lock),
+        };
+        axum::Router::new()
+            .route("/api/cloud/status", get(web::cloud::api_cloud_status))
+            .route("/cloud/callback", get(web::cloud::cloud_callback))
+            .route(
+                "/api/cloud/disconnect",
+                post(web::cloud::api_cloud_disconnect),
+            )
+            .with_state(cloud_state)
+    };
+
     let mut app = axum::Router::new()
         .route("/ws", get(ws_handler))
         .with_state(state);
     if let Some(wh) = webhook_router {
         app = app.merge(wh);
     }
-    app.merge(web::config_api_router(config_api_state))
+    app.merge(cloud_router)
+        .merge(web::config_api_router(config_api_state))
         .fallback(web::static_handler)
 }
 
