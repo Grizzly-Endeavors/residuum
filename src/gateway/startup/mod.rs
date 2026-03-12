@@ -247,7 +247,7 @@ async fn connect_web_search_mcp(cfg: &Config, mcp_registry: &SharedMcpRegistry) 
 }
 
 /// Load notification channels from workspace config and build the router.
-fn init_notification_channels(
+async fn init_notification_channels(
     layout: &WorkspaceLayout,
     http: &SharedHttpClient,
     cfg: &Config,
@@ -267,7 +267,7 @@ fn init_notification_channels(
     let valid_external_channels: std::collections::HashSet<String> =
         channel_configs.iter().map(|c| c.name.clone()).collect();
     let external_channels =
-        crate::workspace::config::build_external_channels(&channel_configs, http.client());
+        crate::workspace::config::build_external_channels(&channel_configs, http.client()).await;
     let inbox_channel = InboxChannel::new(layout.inbox_dir(), cfg.timezone);
     let notification_router = Arc::new(NotificationRouter::new(
         external_channels,
@@ -316,7 +316,7 @@ pub(crate) async fn initialize(cfg: &Config) -> Result<GatewayComponents, Residu
     let mcp_registry = init_mcp_servers(&layout).await;
     connect_web_search_mcp(cfg, &mcp_registry).await;
     let (notification_router, valid_external_channels) =
-        init_notification_channels(&layout, &http_for_channels, cfg);
+        init_notification_channels(&layout, &http_for_channels, cfg).await;
 
     let tool_deps = ToolRegistryDeps {
         action_store: &action_store,

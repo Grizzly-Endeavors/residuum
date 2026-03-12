@@ -69,6 +69,13 @@ serenity = { version = "0.12", default-features = false, features = ["client", "
 # Telegram
 teloxide = { version = "0.17", default-features = false, features = ["rustls"] }
 
+# macOS native notifications (Apple Silicon only)
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+objc2-foundation = "0.3"
+objc2-user-notifications = "0.3"
+block2 = "0.6"
+
 [dev-dependencies]
 tempfile = "3"
 tower = "0.5"
