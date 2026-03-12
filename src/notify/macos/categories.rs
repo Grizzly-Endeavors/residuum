@@ -6,22 +6,16 @@ use serde::{Deserialize, Serialize};
 
 use crate::notify::types::TaskSource;
 
-/// Notification category mapped to macOS `UNNotificationCategory` identifiers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum MacosCategory {
-    /// Results from background tasks (pulses, agent work).
     BackgroundResults,
-    /// Scheduled action reminders.
     Reminders,
-    /// Inbox items requiring attention.
     InboxItems,
-    /// High-priority alerts.
     Alerts,
 }
 
 impl MacosCategory {
-    /// Category identifier string for `UNNotificationCategory`.
     #[must_use]
     pub fn as_category_id(&self) -> &'static str {
         match self {
@@ -32,7 +26,6 @@ impl MacosCategory {
         }
     }
 
-    /// All category variants for registration.
     #[must_use]
     pub fn all() -> &'static [Self] {
         &[
@@ -50,8 +43,6 @@ impl fmt::Display for MacosCategory {
     }
 }
 
-/// Parse a category string into a `MacosCategory`.
-///
 /// # Errors
 /// Returns an error if the string does not match any known category.
 pub fn parse_category(s: &str) -> anyhow::Result<MacosCategory> {
@@ -64,20 +55,16 @@ pub fn parse_category(s: &str) -> anyhow::Result<MacosCategory> {
     }
 }
 
-/// Notification interruption level mapped to macOS `UNNotificationInterruptionLevel`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum MacosInterruptionLevel {
-    /// Silent — appears only in Notification Center, no banner or sound.
     Passive,
-    /// Standard — banner + sound, respects Focus modes.
     Active,
     /// Breaks through Focus modes (requires entitlement).
     TimeSensitive,
 }
 
 impl MacosInterruptionLevel {
-    /// String representation for display and config.
     #[must_use]
     pub fn as_str(&self) -> &'static str {
         match self {
@@ -94,8 +81,6 @@ impl fmt::Display for MacosInterruptionLevel {
     }
 }
 
-/// Parse a priority string into a `MacosInterruptionLevel`.
-///
 /// # Errors
 /// Returns an error if the string does not match any known priority.
 pub fn parse_priority(s: &str) -> anyhow::Result<MacosInterruptionLevel> {
@@ -107,7 +92,6 @@ pub fn parse_priority(s: &str) -> anyhow::Result<MacosInterruptionLevel> {
     }
 }
 
-/// Map a `TaskSource` to the default `MacosCategory`.
 #[must_use]
 pub fn default_category_for_source(source: TaskSource) -> MacosCategory {
     match source {
@@ -116,7 +100,6 @@ pub fn default_category_for_source(source: TaskSource) -> MacosCategory {
     }
 }
 
-/// Resolve the effective category: use channel default if set, otherwise map from source.
 #[must_use]
 pub fn resolve_category(_source: TaskSource, channel_default: MacosCategory) -> MacosCategory {
     // Channel config default takes precedence over source-based mapping
@@ -124,19 +107,14 @@ pub fn resolve_category(_source: TaskSource, channel_default: MacosCategory) -> 
     channel_default
 }
 
-/// Notification action for interaction with notification banners.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MacosNotificationAction {
-    /// Open the Residuum web UI to the relevant context.
     Open,
-    /// Clear the notification from Notification Center.
     Dismiss,
-    /// Mark the corresponding inbox item as acknowledged.
     MarkRead,
 }
 
 impl MacosNotificationAction {
-    /// Action identifier string for `UNNotificationAction`.
     #[must_use]
     pub fn action_id(&self) -> &'static str {
         match self {
@@ -146,7 +124,6 @@ impl MacosNotificationAction {
         }
     }
 
-    /// Button title displayed on the notification.
     #[must_use]
     pub fn button_title(&self) -> &'static str {
         match self {
@@ -156,13 +133,11 @@ impl MacosNotificationAction {
         }
     }
 
-    /// All action variants.
     #[must_use]
     pub fn all() -> &'static [Self] {
         &[Self::Open, Self::Dismiss, Self::MarkRead]
     }
 
-    /// Actions for a given category.
     #[must_use]
     pub fn for_category(category: MacosCategory) -> &'static [Self] {
         match category {

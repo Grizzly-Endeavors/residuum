@@ -1,7 +1,4 @@
 //! macOS `UNUserNotificationCenter` FFI bridge.
-//!
-//! All `objc2` FFI calls are contained in this module. The bridge handles
-//! notification posting, category registration, and delegate callbacks.
 
 #![expect(
     unsafe_code,
@@ -23,24 +20,19 @@ use tokio::sync::mpsc;
 use super::MacosChannelConfig;
 use super::categories::{MacosCategory, MacosInterruptionLevel, MacosNotificationAction};
 
-/// Acknowledgment message sent when user clicks "Mark Read" on a notification.
 #[derive(Debug)]
 pub struct InboxAcknowledgment {
-    /// Identifier of the inbox item to mark as read.
     pub item_id: String,
 }
 
-/// Bridge to macOS `UNUserNotificationCenter`.
-///
-/// Encapsulates all Objective-C runtime calls for notification delivery.
+/// Isolates all objc2 FFI so the rest of the notification system
+/// stays platform-agnostic and testable without a macOS runtime.
 pub struct MacosBridge {
     config: MacosChannelConfig,
     ack_tx: Option<mpsc::Sender<InboxAcknowledgment>>,
 }
 
 impl MacosBridge {
-    /// Create a new bridge and register notification categories.
-    ///
     /// # Errors
     /// Returns an error if category registration fails.
     pub fn new(config: MacosChannelConfig) -> anyhow::Result<Self> {
@@ -52,12 +44,12 @@ impl MacosBridge {
         Ok(bridge)
     }
 
-    /// Set the acknowledgment sender for "Mark Read" actions.
     pub fn set_ack_sender(&mut self, tx: mpsc::Sender<InboxAcknowledgment>) {
         self.ack_tx = Some(tx);
     }
 
-    /// Register notification categories with macOS.
+    /// Must run before any notification is posted — macOS silently drops
+    /// action buttons for notifications whose category isn't registered.
     fn register_categories() {
         let result = std::panic::catch_unwind(|| {
             let center = UNUserNotificationCenter::currentNotificationCenter();
@@ -109,10 +101,8 @@ impl MacosBridge {
         }
     }
 
-    /// Post an individual notification to macOS Notification Center.
-    ///
     /// # Errors
-    /// Returns an error if the notification cannot be posted.
+    /// Returns an error if the `spawn_blocking` task panics.
     #[expect(
         clippy::too_many_arguments,
         reason = "macOS notification content requires many distinct fields"
@@ -150,10 +140,11 @@ impl MacosBridge {
         Ok(())
     }
 
-    /// Post a summary notification that replaces any previous summary.
+    /// Uses a stable identifier so each new summary replaces the previous
+    /// one in Notification Center instead of stacking.
     ///
     /// # Errors
-    /// Returns an error if the notification cannot be posted.
+    /// Returns an error if the `spawn_blocking` task panics.
     pub async fn post_summary(
         &self,
         title: &str,
@@ -172,7 +163,6 @@ impl MacosBridge {
         .await
     }
 
-    /// Handle a notification action response.
     pub fn handle_action(&self, action_id: &str, notification_id: &str) {
         match action_id {
             "open" => {
@@ -198,14 +188,14 @@ impl MacosBridge {
         }
     }
 
-    /// Get a reference to the channel config.
     #[must_use]
     pub fn config(&self) -> &MacosChannelConfig {
         &self.config
     }
 }
 
-/// Synchronous notification post (runs in `spawn_blocking`).
+/// Wraps objc2 calls in `catch_unwind` because the `ObjC` runtime can panic
+/// on missing selectors or nil center — we log rather than crash the process.
 fn post_notification_sync(
     identifier: &str,
     title: &str,
@@ -259,7 +249,8 @@ fn post_notification_sync(
     }
 }
 
-/// Open a URL using macOS `NSWorkspace`.
+/// Uses raw `msg_send!` because `objc2-app-kit` doesn't expose
+/// `NSWorkspace.open(_:)` as a safe wrapper yet.
 fn open_url(url_str: &str) {
     let result = std::panic::catch_unwind(|| {
         let ns_url_str = NSString::from_str(url_str);

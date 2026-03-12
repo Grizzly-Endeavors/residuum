@@ -13,11 +13,9 @@ use super::MacosChannelConfig;
 use super::bridge::MacosBridge;
 use crate::notify::types::Notification;
 
-/// Collects notifications and flushes them as batched macOS notifications.
 pub struct BatchAggregator;
 
 impl BatchAggregator {
-    /// Spawn the aggregator as a tokio task.
     #[must_use]
     pub fn spawn(
         rx: mpsc::Receiver<Notification>,
@@ -27,7 +25,6 @@ impl BatchAggregator {
         tokio::spawn(Self::run(rx, bridge, config))
     }
 
-    /// Aggregator event loop.
     async fn run(
         mut rx: mpsc::Receiver<Notification>,
         bridge: MacosBridge,
@@ -69,12 +66,10 @@ impl BatchAggregator {
     }
 }
 
-/// Flush buffered notifications to macOS.
-///
-/// Flush decision logic:
+/// Cap at 3 macOS notifications per flush (SC-004) to avoid flooding
+/// Notification Center when many tasks complete in one window.
 /// - 1-3 items: deliver each individually
-/// - 4-9 items: deliver top 2 + summary
-/// - 10+ items: deliver top 2 + summary (max 3 total per SC-004)
+/// - 4+  items: deliver top 2 + 1 summary
 async fn flush(bridge: &MacosBridge, buffer: &[Notification], config: &MacosChannelConfig) {
     let count = buffer.len();
     tracing::info!(count, "flushing macOS notification batch");
@@ -84,12 +79,10 @@ async fn flush(bridge: &MacosBridge, buffer: &[Notification], config: &MacosChan
     }
 
     if count <= 3 {
-        // Deliver each individually
         for notif in buffer {
             deliver_individual(bridge, notif, config).await;
         }
     } else {
-        // Deliver top 2 individually + 1 summary
         for notif in buffer.iter().take(2) {
             deliver_individual(bridge, notif, config).await;
         }
@@ -114,7 +107,6 @@ async fn flush(bridge: &MacosBridge, buffer: &[Notification], config: &MacosChan
     }
 }
 
-/// Deliver a single notification.
 async fn deliver_individual(
     bridge: &MacosBridge,
     notif: &Notification,
@@ -149,7 +141,6 @@ async fn deliver_individual(
     }
 }
 
-/// Build a summary body from buffered notifications.
 fn build_summary_body(buffer: &[Notification]) -> String {
     let mut body = String::new();
     for notif in buffer {
@@ -161,7 +152,6 @@ fn build_summary_body(buffer: &[Notification]) -> String {
     truncate_body(&body, 200)
 }
 
-/// Truncate a string to `max_len` characters, adding ellipsis if truncated.
 fn truncate_body(s: &str, max_len: usize) -> String {
     if s.len() <= max_len {
         s.to_string()

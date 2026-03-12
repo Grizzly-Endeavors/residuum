@@ -2,9 +2,6 @@
 
 use super::bridge::MacosBridge;
 
-/// Check notification permissions and request if needed.
-///
-/// Logs actionable guidance if permissions are denied.
 pub async fn check_and_request(_bridge: &MacosBridge) {
     let result = tokio::task::spawn_blocking(|| {
         check_permissions_sync();
@@ -16,7 +13,6 @@ pub async fn check_and_request(_bridge: &MacosBridge) {
     }
 }
 
-/// Synchronous permission check (runs in `spawn_blocking`).
 fn check_permissions_sync() {
     use block2::RcBlock;
     use objc2::runtime::Bool;

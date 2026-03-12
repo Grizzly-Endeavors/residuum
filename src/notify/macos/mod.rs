@@ -1,7 +1,4 @@
 //! Native macOS notification channel via `UNUserNotificationCenter`.
-//!
-//! Delivers notification banners through Apple's `UserNotifications` framework.
-//! All macOS-specific code is gated behind `cfg(target_os = "macos")`.
 
 pub mod bridge;
 pub mod categories;
@@ -15,28 +12,20 @@ use tokio::task::JoinHandle;
 use super::channels::NotificationChannel;
 use super::types::Notification;
 
-/// Configuration for a macOS native notification channel.
 #[derive(Debug, Clone)]
 pub struct MacosChannelConfig {
-    /// Default notification category when source doesn't specify one.
     pub default_category: categories::MacosCategory,
-    /// Default interruption level for notifications.
     pub default_priority: categories::MacosInterruptionLevel,
-    /// Duration in seconds for the batch throttle window.
     pub throttle_window_secs: u64,
-    /// Whether to play a sound with notifications.
     pub sound: bool,
-    /// Display name in notification banners.
     pub app_name: String,
-    /// Base URL for "Open" action. If unset, "Open" action is omitted.
+    /// If unset, the "Open" action button is omitted from notifications.
     pub web_url: Option<String>,
 }
 
 impl MacosChannelConfig {
-    /// Validate the configuration values.
-    ///
     /// # Errors
-    /// Returns an error if `throttle_window_secs` is outside the valid range (1-300).
+    /// Returns an error if `throttle_window_secs` is outside 1-300.
     pub fn validate(&self) -> anyhow::Result<()> {
         if self.throttle_window_secs == 0 || self.throttle_window_secs > 300 {
             anyhow::bail!(
@@ -61,21 +50,14 @@ impl Default for MacosChannelConfig {
     }
 }
 
-/// Native macOS notification channel.
-///
-/// Sends notifications to a `BatchAggregator` via an mpsc channel for
-/// throttled delivery through `UNUserNotificationCenter`.
+/// `deliver()` enqueues to the `BatchAggregator` and returns immediately —
+/// actual macOS delivery happens asynchronously after the throttle window.
 pub struct MacosNativeChannel {
     channel_name: String,
     batch_tx: mpsc::Sender<Notification>,
 }
 
 impl MacosNativeChannel {
-    /// Create a new macOS notification channel.
-    ///
-    /// Initializes the macOS bridge, checks permissions, and spawns the
-    /// batch aggregator task.
-    ///
     /// # Errors
     /// Returns an error if the macOS bridge cannot be initialized.
     pub async fn new(
