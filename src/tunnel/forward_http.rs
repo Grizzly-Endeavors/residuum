@@ -3,9 +3,13 @@
 use std::collections::HashMap;
 
 use base64::{Engine as _, engine::general_purpose::STANDARD};
+use futures_util::StreamExt;
 use tracing::{debug, warn};
 
 use super::protocol::TunnelFrame;
+
+/// Maximum response body size (10 MB).
+const MAX_RESPONSE_SIZE: usize = 10 * 1024 * 1024;
 
 /// Hop-by-hop headers that must not be forwarded between proxy and backend.
 const HOP_BY_HOP_HEADERS: &[&str] = &[
@@ -15,6 +19,7 @@ const HOP_BY_HOP_HEADERS: &[&str] = &[
     "te",
     "trailer",
     "upgrade",
+    "host",
 ];
 
 /// Returns `true` if the given header name is a hop-by-hop header.
@@ -109,18 +114,39 @@ pub(super) async fn forward(
         }
     }
 
-    // Read and base64-encode the response body.
-    let response_body = match response.bytes().await {
-        Ok(bytes) => {
-            if bytes.is_empty() {
-                None
-            } else {
-                Some(STANDARD.encode(&bytes))
+    // Stream the response body in chunks, enforcing the size limit without
+    // buffering the entire response before checking.
+    let response_body = {
+        let mut buf = Vec::new();
+        let mut stream = response.bytes_stream();
+        let mut exceeded = false;
+        while let Some(chunk_result) = stream.next().await {
+            match chunk_result {
+                Ok(chunk) => {
+                    buf.extend_from_slice(&chunk);
+                    if buf.len() > MAX_RESPONSE_SIZE {
+                        warn!(request_id, size = buf.len(), "response body too large");
+                        exceeded = true;
+                        break;
+                    }
+                }
+                Err(e) => {
+                    warn!(request_id, error = %e, "failed to read response body");
+                    return error_response(
+                        request_id,
+                        502,
+                        &format!("failed to read response: {e}"),
+                    );
+                }
             }
         }
-        Err(e) => {
-            warn!(request_id, error = %e, "failed to read response body");
-            return error_response(request_id, 502, &format!("failed to read response: {e}"));
+        if exceeded {
+            return error_response(request_id, 502, "response body too large");
+        }
+        if buf.is_empty() {
+            None
+        } else {
+            Some(STANDARD.encode(&buf))
         }
     };
 

@@ -8,7 +8,7 @@ edition = "2024"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "fs", "signal", "io-std", "io-util", "sync", "time"] }
 
 # HTTP client
-reqwest = { version = "0.13", features = ["json"] }
+reqwest = { version = "0.13", features = ["json", "stream"] }
 
 # Serialization
 serde = { version = "1", features = ["derive"] }
