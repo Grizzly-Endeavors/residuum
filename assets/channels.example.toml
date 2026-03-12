@@ -8,6 +8,16 @@
 # topic = "my-alerts"
 # priority = "high"                # optional, default: "default"
 
+# ── Native macOS notifications (macOS only) ─────────────────────────────────
+# [channels.macos]
+# type = "macos"
+# default_category = "alerts"       # optional: alerts, reminders, inbox-items, background-results
+# default_priority = "active"       # optional: passive, active, time_sensitive
+# throttle_window_secs = 30         # optional, 1-300, default: 30
+# sound = true                      # optional, default: true
+# app_name = "Residuum"             # optional, default: "Residuum"
+# web_url = "http://localhost:3000" # optional, enables "Open" action button
+
 # ── Webhook channels ─────────────────────────────────────────────────────────
 # [channels.slack-webhook]
 # type = "webhook"
