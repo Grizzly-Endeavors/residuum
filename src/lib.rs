@@ -14,6 +14,7 @@ pub mod notify;
 pub mod projects;
 pub mod pulse;
 pub mod skills;
+pub mod spawn;
 pub mod subagents;
 pub mod time;
 pub mod tools;

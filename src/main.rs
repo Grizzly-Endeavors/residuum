@@ -23,6 +23,17 @@ async fn main() {
 }
 
 async fn run() -> Result<(), ResiduumError> {
+    // Install rustls CryptoProvider before any TLS usage. Required since
+    // rustls 0.23 when both `ring` and `aws-lc-rs` appear in the dep tree.
+    drop(rustls::crypto::ring::default_provider().install_default());
+
+    // Install a panic hook that logs to both tracing and stderr.
+    // Tracing may not be initialized yet, and stderr is always available.
+    std::panic::set_hook(Box::new(|info| {
+        tracing::error!(%info, "panic in spawned task");
+        eprintln!("PANIC: {info}");
+    }));
+
     // Load .env early (ignore if missing, warn on parse errors)
     if let Err(e) = dotenvy::dotenv()
         && !e.not_found()

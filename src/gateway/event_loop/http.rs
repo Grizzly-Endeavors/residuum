@@ -139,7 +139,7 @@ pub fn spawn_adapters(
             tz,
             rx,
         );
-        discord_handle = Some(tokio::spawn(async move {
+        discord_handle = Some(crate::spawn::spawn_monitored("discord", async move {
             if let Err(e) = iface.start().await {
                 tracing::error!(error = %e, "discord interface failed");
             }
@@ -160,7 +160,7 @@ pub fn spawn_adapters(
             tz,
             rx,
         );
-        telegram_handle = Some(tokio::spawn(async move {
+        telegram_handle = Some(crate::spawn::spawn_monitored("telegram", async move {
             if let Err(e) = iface.start().await {
                 tracing::error!(error = %e, "telegram interface failed");
             }
