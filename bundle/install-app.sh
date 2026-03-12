@@ -20,13 +20,19 @@ mkdir -p "$MACOS_DIR"
 cp "$PROJECT_ROOT/bundle/Info.plist" "$CONTENTS/Info.plist"
 cp "$PROJECT_ROOT/target/release/residuum" "$MACOS_DIR/residuum"
 
+# Ad-hoc sign so macOS recognizes the bundle for notifications
+echo "Signing app bundle..."
+codesign -s - -f --deep "$APP_DIR"
+
+# Register with LaunchServices so it appears in Notification Settings
+/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f "$APP_DIR"
+
 # Also update the cargo bin copy for non-notification use
 cp "$PROJECT_ROOT/target/release/residuum" "$HOME/.cargo/bin/residuum"
 
 echo "Done. Residuum.app installed at $APP_DIR"
 echo ""
-echo "To run with macOS notifications:"
-echo "  $MACOS_DIR/residuum serve --foreground"
+echo "Start with:  open $APP_DIR --args serve"
 echo ""
-echo "To grant notification permissions:"
+echo "Grant notification permissions at:"
 echo "  System Settings > Notifications > Residuum > Allow Notifications"
