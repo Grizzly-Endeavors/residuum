@@ -25,7 +25,7 @@ HAS_WEB=false
 # Calculate total steps for progress display
 RUST_STEPS=0
 WEB_STEPS=0
-$HAS_RUST && RUST_STEPS=3
+$HAS_RUST && RUST_STEPS=4
 $HAS_WEB && WEB_STEPS=3
 TOTAL_STEPS=$((RUST_STEPS + WEB_STEPS))
 STEP=0
@@ -46,6 +46,15 @@ if $HAS_RUST; then
         exit 1
     fi
     echo -e "${GREEN}✓ Clippy OK${NC}"
+
+    STEP=$((STEP + 1))
+    echo -e "\n${YELLOW}[$STEP/$TOTAL_STEPS] Running cargo deny...${NC}"
+    if ! OUTPUT=$(cargo deny check 2>&1); then
+        echo "$OUTPUT"
+        echo -e "${RED}ERROR: cargo deny found issues.${NC}"
+        exit 1
+    fi
+    echo -e "${GREEN}✓ Cargo deny OK${NC}"
 
     STEP=$((STEP + 1))
     echo -e "\n${YELLOW}[$STEP/$TOTAL_STEPS] Running tests...${NC}"

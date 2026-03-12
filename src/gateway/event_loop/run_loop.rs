@@ -48,7 +48,8 @@ pub async fn run_gateway(cfg: Config) -> Result<GatewayExit, ResiduumError> {
         restart_tx,
         restart_rx,
     };
-    let rt = build_runtime(parts, core, receivers, cfg, spawned, update);
+    let cloud_config = cfg.cloud.clone();
+    let rt = build_runtime(parts, core, receivers, cfg, spawned, update, cloud_config);
 
     Ok(Box::pin(run_event_loop(rt)).await)
 }
@@ -142,6 +143,7 @@ fn build_runtime(
     cfg: Config,
     spawned: SpawnedHandles,
     update: UpdateChannels,
+    cloud_config: Option<crate::config::CloudConfig>,
 ) -> GatewayRuntime {
     GatewayRuntime {
         layout: parts.layout,
@@ -175,6 +177,7 @@ fn build_runtime(
         last_reply: None,
         unsolicited_handles: std::collections::HashMap::new(),
         last_user_message_instant: None,
+        cloud_config,
         tunnel_handle: spawned.tunnel_handle,
         tunnel_shutdown_tx: spawned.tunnel_shutdown_tx,
         tunnel_status_rx: spawned.tunnel_status_rx,
@@ -204,7 +207,7 @@ fn spawn_tunnel(
     if let Some(ref cloud_cfg) = cfg.cloud {
         let cloud = cloud_cfg.clone();
         let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
-        let handle = tokio::spawn(async move {
+        let handle = crate::spawn::spawn_monitored("tunnel", async move {
             crate::tunnel::start_tunnel(cloud, shutdown_rx, status_tx).await;
         });
         (Some(handle), Some(shutdown_tx))
@@ -390,6 +393,59 @@ fn spawn_update_check(status: &crate::update::SharedUpdateStatus) {
     });
 }
 
+/// Run the memory observation pipeline.
+async fn run_observation(rt: &mut GatewayRuntime) {
+    let mem = MemorySubsystems {
+        observer: &rt.observer,
+        reflector: &rt.reflector,
+        search_index: &rt.search_index,
+        layout: &rt.layout,
+        vector_store: rt.vector_store.as_ref(),
+        embedding_provider: rt.embedding_provider.as_ref(),
+    };
+    execute_observation(&mem, &mut rt.agent).await;
+}
+
+/// Format the reason a task handle completed.
+fn handle_exit_reason(result: &Result<(), tokio::task::JoinError>) -> String {
+    match result {
+        Ok(()) => "exited unexpectedly".to_string(),
+        Err(e) => format!("failed: {e}"),
+    }
+}
+
+/// Respawn the cloud tunnel after an unexpected exit.
+fn respawn_tunnel(rt: &mut GatewayRuntime) {
+    if let Some(ref cloud_cfg) = rt.cloud_config {
+        let cloud = cloud_cfg.clone();
+        let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+        let (status_tx, status_rx) =
+            tokio::sync::watch::channel(crate::tunnel::TunnelStatus::Disconnected);
+        rt.tunnel_handle = Some(crate::spawn::spawn_monitored("tunnel", async move {
+            crate::tunnel::start_tunnel(cloud, shutdown_rx, status_tx).await;
+        }));
+        rt.tunnel_shutdown_tx = Some(shutdown_tx);
+        rt.tunnel_status_rx = status_rx;
+        tracing::info!("tunnel respawned after unexpected exit");
+    }
+}
+
+/// Await a `JoinHandle` if present, or pend forever if `None`.
+///
+/// On completion, the slot is cleared to prevent re-polling a finished handle.
+async fn poll_handle(
+    handle: &mut Option<tokio::task::JoinHandle<()>>,
+) -> Result<(), tokio::task::JoinError> {
+    match handle {
+        Some(h) => {
+            let result = h.await;
+            *handle = None;
+            result
+        }
+        None => std::future::pending().await,
+    }
+}
+
 /// Run the main gateway event loop.
 ///
 /// Processes inbound messages, pulse ticks, action ticks, and memory pipeline
@@ -459,13 +515,7 @@ async fn run_event_loop(mut rt: GatewayRuntime) -> GatewayExit {
 
             () = wait_for_deadline(observe_deadline) => {
                 observe_deadline = None;
-                let mem = MemorySubsystems {
-                    observer: &rt.observer, reflector: &rt.reflector,
-                    search_index: &rt.search_index, layout: &rt.layout,
-                    vector_store: rt.vector_store.as_ref(),
-                    embedding_provider: rt.embedding_provider.as_ref(),
-                };
-                execute_observation(&mem, &mut rt.agent).await;
+                run_observation(&mut rt).await;
             }
 
             () = wait_for_deadline(idle_deadline) => {
@@ -495,6 +545,19 @@ async fn run_event_loop(mut rt: GatewayRuntime) -> GatewayExit {
                 tracing::info!("restart signal received, shutting down for re-exec");
                 graceful_shutdown(&mut rt).await;
                 return GatewayExit::Restart;
+            }
+
+            result = poll_handle(&mut rt.tunnel_handle) => {
+                tracing::error!(reason = handle_exit_reason(&result), "tunnel task ended, attempting respawn");
+                respawn_tunnel(&mut rt);
+            }
+
+            result = poll_handle(&mut rt.discord_handle) => {
+                tracing::error!(reason = handle_exit_reason(&result), "discord adapter task ended");
+            }
+
+            result = poll_handle(&mut rt.telegram_handle) => {
+                tracing::error!(reason = handle_exit_reason(&result), "telegram adapter task ended");
             }
         }
     }

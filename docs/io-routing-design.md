@@ -2,157 +2,103 @@
 
 ## Overview
 
-Residuum's communication architecture is built on two independent layers: **I/O** (how messages move) and **Routing** (who cares about what). These are separate concerns that compose cleanly — I/O endpoints know how to send and receive, routing policy decides when and where.
+Residuum's communication architecture is built on two layers: **I/O** (how messages move) and **Routing** (who cares about what).
 
-The agent is a first-class participant in routing decisions. Static routing rules handle the common case, but the agent can override, escalate, or redirect at any time. A background task result that looks routine gets filed quietly; one that looks urgent gets pushed to the user on Discord with a notification. The agent decides, not the config.
+Input routing is **user-managed** — the user decides how external events reach the agent. Output routing is **agent-managed** — the agent (or its subagents) decides what the user needs to know and how to reach them.
 
 ---
 
 ## I/O Layer
 
-The I/O layer manages endpoints — anything the system can send to or receive from. Every endpoint has a name, a direction, and a transport.
+### Interactive Endpoints
 
-### Endpoint Types
-
-**Interactive endpoints** support bidirectional, real-time conversation. A user sends a message, the agent responds on the same endpoint, the user replies — a natural thread. Interactive endpoints can also be *initiated* by the agent: the user was last seen on the web UI, but the agent decides to open a thread on Discord because it's more likely to get their attention.
+Interactive endpoints support bidirectional conversation. Either party can initiate — a user messages the agent, or the agent reaches out proactively. Responses flow on the same endpoint. This is an inherent contract, not something that needs configuration.
 
 Examples: WebSocket (web UI, CLI), Discord DM, Telegram chat.
 
-Interactive endpoints have two capabilities:
-- **Receive**: accept inbound messages from a user or external system.
-- **Reply**: send responses correlated to an inbound message.
-- **Initiate**: send an outbound message unprompted, starting a new thread.
+### Non-Interactive Endpoints
 
-Not all interactive endpoints support initiation. A WebSocket client that disconnects can't be reached. A Discord DM channel can always be initiated if the user has previously interacted.
+Non-interactive endpoints are unidirectional.
 
-**Non-interactive endpoints** are unidirectional. They either accept input or produce output, never both in the same conversation.
+- **Input-only**: the agent's inbox, inbound webhooks.
+- **Output-only**: push notifications (ntfy), outbound webhooks.
 
-- **Input-only**: Inbox (user drops something for the agent to look at later), inbound webhooks (external systems pushing events).
-- **Output-only**: Push notifications (ntfy), outbound webhooks (HTTP POST to an external service).
+### The Inbox
+
+The inbox is the agent's low-priority input queue. The user is the producer, the agent is the consumer. Users add items when they want the agent to look at something non-urgently. The inbox doesn't wake the agent — items sit there until the agent triages them naturally.
+
+The inbox is not a delivery destination for agent output.
 
 ### Endpoint Registry
 
-All endpoints — interactive and non-interactive — live in a single registry. Each endpoint has:
-
-- **Name**: unique identifier (e.g., `discord`, `telegram`, `web`, `ntfy-phone`, `inbox`).
-- **Direction**: `interactive`, `input-only`, or `output-only`.
-- **Status**: `available` (can send/receive now), `reachable` (can initiate but no active session), or `offline` (not connected, can't be reached).
-- **Capabilities**: which operations the endpoint supports (receive, reply, initiate, deliver).
-
-The registry is dynamic. WebSocket endpoints come and go as clients connect and disconnect. Discord is reachable as long as the bot is authenticated. The agent can query the registry to discover what's available before deciding where to send something.
-
-### Agent as Endpoint Consumer
-
-The agent itself is an I/O consumer, not an endpoint. It receives input from the routing layer (user messages, background results, external events) and produces output that the routing layer delivers to endpoints. The agent doesn't interact with endpoints directly — it expresses intent ("send this to the user on Discord", "push-notify this") and the I/O layer handles transport.
+All endpoints live in a single registry, discoverable by the agent. The registry is dynamic — WebSocket clients come and go, Discord is reachable as long as the bot is authenticated. The agent queries it when deciding where to send output.
 
 ---
 
-## Routing Layer
+## Routing
 
-The routing layer answers one question: **who cares about this, and how much?**
+### Input Routing
 
-When something happens — a user message arrives, a background task completes, a pulse finds something, an external webhook fires — the routing layer determines:
+**Interactive messages** need no routing configuration. The message/response contract is inherent.
 
-1. **Does the agent care?** And with what urgency:
-   - **Immediate**: interrupt the current turn if busy, start a turn if idle.
-   - **Passive**: include in the agent's context on the next natural turn.
-   - **None**: the agent doesn't need to see this.
+**Non-interactive inputs** (webhooks, external events) have two user-configured routes:
 
-2. **Does the user care?** And through which endpoints:
-   - **Reply**: respond on the same endpoint the user messaged from (default for interactive conversations).
-   - **Deliver**: send to one or more specific endpoints (push notification, inbox, Discord DM).
-   - **None**: the user doesn't need to see this.
+- **Inbox**: the event lands in the agent's inbox for passive triage.
+- **Subagent**: the event triggers a dedicated subagent that handles it autonomously — evaluates, decides, and routes output without involving the main agent.
 
-3. **Does an external system care?** Fire outbound webhooks, update external services, etc.
+The user configures which route each non-interactive input takes because they understand their own workflow and what deserves active handling vs. passive awareness.
 
-### Default Routing
+### Output Routing
 
-Most routing is straightforward and doesn't require agent judgment:
+Output routing is agent-managed. When the agent (or a subagent) has something to communicate, it queries the endpoint registry, evaluates what the user needs to know, and delivers through the appropriate endpoints.
 
-- **User message on an interactive endpoint** → agent cares (immediate), reply on the same endpoint.
-- **Inbox item added by user** → agent cares (passive), no user delivery needed (user already knows).
-- **Inbound webhook** → agent cares (urgency depends on config), no reply (fire-and-forget input).
+This applies uniformly: the main agent deciding to proactively message the user, a subagent handling a webhook event and push-notifying about a failed deploy, or the pulse subagent triaging a finding and reaching out on Discord. The LLM doing the work makes the routing call.
 
-These defaults are handled automatically. The agent doesn't need to make a decision for the common case.
+### Background Task Results
 
-### Agent-Driven Routing
+When the main agent spawns a subagent, it declares one of two result modes:
 
-The interesting case is when the agent is in the loop. Background task results, pulse findings, and proactive notifications all flow through the agent, which decides what to do:
+- **Wake** (default): the result comes back to the main agent. Agent wakes if idle, gets the result injected if mid-turn. The agent evaluates and decides what to do.
+- **Inbox**: the result lands in the agent's inbox for deferred triage. No wake, no injection. The agent sees it when it next checks its inbox — confirms success or investigates failure.
 
-- A pulse checks email and finds nothing. The agent sees the HEARTBEAT_OK, does nothing. No user notification.
-- A pulse checks email and finds something urgent. The agent evaluates the content, decides the user needs to know now, and initiates on Discord + sends a push notification.
-- A background subagent finishes a code review. The agent reads the summary, decides it's not urgent, and drops a note in the web UI for the user to see next time they open it.
-- An external webhook reports a deploy failure. The agent sees it, decides this is critical, and reaches the user through every available channel.
+The agent does not declare output routing at spawn time. That decision happens after seeing the result (wake mode) or not at all (inbox mode — the subagent already handled it, the inbox entry is just a receipt).
 
-The agent has access to:
-- The endpoint registry (what's available, what's reachable).
-- The user's notification preferences (quiet hours, preferred channels, escalation rules).
-- The content of the event (to judge urgency and relevance).
+### Pulse Results
 
-This means routing tools replace static routing config for background tasks. Instead of declaring `channels: [agent_feed, ntfy]` at task spawn time, the agent receives the result and decides what to do with it. The spawn config only specifies what the agent's involvement should be — "give me the result" — not what happens after.
-
-### Notification Preferences
-
-User-managed preferences constrain the agent's routing decisions:
-
-- **Quiet hours**: don't push-notify between midnight and 7am, queue for inbox instead.
-- **Channel preferences**: prefer Discord for urgent, inbox for routine.
-- **Escalation rules**: if the agent can't reach the user on the preferred channel, fall back to X.
-
-These are advisory inputs to the agent, not hard routing rules. The agent respects them but can override in genuine emergencies (deploy down, security alert, etc.). The preferences file is user-edited, not agent-edited.
+Pulse subagents evaluate a check and produce a finding. If the finding is HEARTBEAT_OK, it's silently logged. If substantive, the pulse subagent handles output routing autonomously — same as any subagent triggered by a non-interactive input. The main agent is not involved. (Needs code level system to ensure non-OK results are actually routed)
 
 ---
 
 ## How It Composes
 
-### User asks a question on Discord
+**User asks a question on Discord** — Agent receives it, responds on Discord. Inherent contract.
 
-1. Discord endpoint receives message, delivers to agent (immediate).
-2. Agent processes, produces response.
-3. Response routes back to Discord (reply on same endpoint).
+**Agent wants to proactively reach the user** — Agent queries registry, picks the right endpoint, initiates.
 
-### Agent wants to proactively reach the user
+**Subagent spawned in wake mode** — Result returns to main agent. Agent evaluates, decides whether and how to notify the user.
 
-1. Agent decides the user should know something.
-2. Agent queries endpoint registry — Discord is reachable, web UI has an active session.
-3. Agent evaluates preferences — user prefers Discord for proactive messages.
-4. Agent initiates on Discord, optionally also delivers to web UI.
+**Subagent spawned in inbox mode** — Result lands in agent's inbox. Agent triages later.
 
-### Background task completes
+**Pulse finds something** — Pulse subagent evaluates the finding and handles routing autonomously (notify user, push, etc.).
 
-1. Subagent finishes, result delivered to agent (passive — agent sees it on next turn, or immediate if the task was flagged urgent).
-2. Agent evaluates the result content.
-3. Agent decides: routine → no action. Important → deliver to user via preferred endpoints.
+**User adds to inbox** — Item sits until the agent triages. Agent decides how to respond.
 
-### Pulse finds something
+**Webhook fires, routed to subagent** — Subagent evaluates the event and handles output routing. Main agent isn't involved.
 
-1. Pulse subagent evaluates, produces a finding (not HEARTBEAT_OK).
-2. Result delivered to agent.
-3. Agent reads the finding, judges urgency, and routes accordingly.
-
-### User adds to inbox
-
-1. User adds an item via the inbox UI or API.
-2. Inbox endpoint delivers to agent (passive — agent sees it next turn).
-3. Agent triages: responds when convenient, or flags for follow-up.
-
-### External webhook fires
-
-1. Webhook endpoint receives POST, delivers to agent (urgency per webhook config).
-2. Agent evaluates payload and routes any user-facing output to appropriate endpoints.
+**Webhook fires, routed to inbox** — Event lands in agent's inbox for passive triage.
 
 ---
 
 ## Design Principles
 
-1. **I/O is transport, routing is policy.** Endpoints don't decide who sees what. They move bytes. Routing decides who cares and tells I/O where to deliver.
+1. **I/O is transport, routing is policy.** Endpoints move messages. Routing decides who cares.
 
-2. **The agent is in the routing loop.** Static rules handle the obvious cases (reply where you were asked). For everything else — background results, proactive notifications, escalations — the agent makes the call. This is what makes it an agent, not a pipeline.
+2. **Input routing is user-managed, output routing is agent-managed.** Users decide how the world reaches the agent. The agent decides how it reaches back out.
 
-3. **Endpoints are a flat registry.** No split between "interfaces" and "notification channels." Discord is an endpoint. Ntfy is an endpoint. Inbox is an endpoint. They have different capabilities, but they live in one place and are discoverable by the agent.
+3. **Interactive endpoints have an inherent contract.** No configuration needed.
 
-4. **Interactive endpoints can be initiated.** The agent isn't limited to replying. It can start conversations on any reachable interactive endpoint. This is how proactive communication works.
+4. **Endpoints are a flat registry.** No split between "interfaces" and "notification channels." They're all endpoints with different capabilities.
 
-5. **Preferences, not rules.** User notification preferences guide the agent but don't cage it. Quiet hours mean "prefer not to" — a production outage still gets through.
+5. **The inbox is the agent's input queue.** Not a delivery destination.
 
-6. **Background tasks deliver to the agent, not to the user.** The subagent's job is to do the work and report back. The main agent's job is to decide what the user needs to know. Routing is not the subagent's concern.
+6. **Background tasks deliver to the agent, not to the user.** Subagents report results. The receiving LLM (main agent or autonomous subagent) decides what the user needs to know.

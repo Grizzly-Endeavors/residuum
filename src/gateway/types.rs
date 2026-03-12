@@ -163,6 +163,8 @@ pub(crate) struct GatewayRuntime {
     pub unsolicited_handles: HashMap<String, Arc<dyn ReplyHandle>>,
     /// When the last user message was received (for idle deadline recalculation on reload).
     pub last_user_message_instant: Option<tokio::time::Instant>,
+    // Cloud config for tunnel respawn
+    pub cloud_config: Option<crate::config::CloudConfig>,
     // Adapter lifecycle handles
     pub tunnel_handle: Option<tokio::task::JoinHandle<()>>,
     pub tunnel_shutdown_tx: Option<tokio::sync::watch::Sender<bool>>,
