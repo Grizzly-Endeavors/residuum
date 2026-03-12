@@ -27,11 +27,12 @@ pub struct AdapterHandles {
     pub telegram_shutdown_tx: Option<tokio::sync::watch::Sender<bool>>,
 }
 
-/// Build the gateway app with WebSocket, webhook, cloud, and config API routes.
+/// Build the gateway app with WebSocket, webhook, cloud, update, and config API routes.
 pub fn build_gateway_app(
     state: GatewayState,
     cfg: &Config,
     config_api_state: web::ConfigApiState,
+    update_api_state: web::update::UpdateApiState,
 ) -> axum::Router {
     use axum::routing::{get, post};
 
@@ -65,6 +66,13 @@ pub fn build_gateway_app(
             .with_state(cloud_state)
     };
 
+    let update_router = axum::Router::new()
+        .route("/api/update/status", get(web::update::api_update_status))
+        .route("/api/update/check", post(web::update::api_update_check))
+        .route("/api/update/apply", post(web::update::api_update_apply))
+        .route("/api/update/restart", post(web::update::api_update_restart))
+        .with_state(update_api_state);
+
     let mut app = axum::Router::new()
         .route("/ws", get(ws_handler))
         .with_state(state);
@@ -72,6 +80,7 @@ pub fn build_gateway_app(
         app = app.merge(wh);
     }
     app.merge(cloud_router)
+        .merge(update_router)
         .merge(web::config_api_router(config_api_state))
         .fallback(web::static_handler)
 }

@@ -34,6 +34,7 @@
   import Cloud from "./components/settings/Cloud.svelte";
   import MCP from "./components/settings/MCP.svelte";
   import WebSearch from "./components/settings/WebSearch.svelte";
+  import Update from "./components/settings/Update.svelte";
 
   let { onClose }: { onClose: () => void } = $props();
 
@@ -84,6 +85,7 @@
     { id: "cloud", label: "Cloud" },
     { id: "mcp", label: "MCP" },
     { id: "web_search", label: "Web Search" },
+    { id: "update", label: "Update" },
   ];
 
   function activeLabel(): string {
@@ -430,6 +432,8 @@
         <MCP bind:servers={mcpServers} />
       {:else if activeSection === "web_search"}
         <WebSearch bind:fields={configFields} />
+      {:else if activeSection === "update"}
+        <Update />
       {/if}
     </div>
   </div>

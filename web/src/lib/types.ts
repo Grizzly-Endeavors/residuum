@@ -152,7 +152,16 @@ export type SettingsSection =
   | "integrations"
   | "cloud"
   | "mcp"
-  | "web_search";
+  | "web_search"
+  | "update";
+
+export interface UpdateStatusResponse {
+  current: string;
+  latest: string | null;
+  update_available: boolean;
+  last_checked: string | null;
+  checking: boolean;
+}
 
 export type CloudTunnelStatus = "disconnected" | "connecting" | "connected";
 

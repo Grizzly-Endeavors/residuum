@@ -37,6 +37,40 @@ pub async fn run_gateway(cfg: Config) -> Result<GatewayExit, ResiduumError> {
     let parts = crate::gateway::startup::initialize(&cfg).await?;
     let (core, receivers) = GatewayCore::new(cfg.config_dir.clone());
 
+    let update_status = crate::update::new_shared_status();
+    let (restart_tx, restart_rx) = tokio::sync::mpsc::channel::<()>(1);
+
+    let spawned =
+        spawn_server_and_adapters(&core, &parts, &cfg, &update_status, &restart_tx).await?;
+
+    let update = UpdateChannels {
+        status: update_status,
+        restart_tx,
+        restart_rx,
+    };
+    let rt = build_runtime(parts, core, receivers, cfg, spawned, update);
+
+    Ok(Box::pin(run_event_loop(rt)).await)
+}
+
+/// Handles returned from spawning the HTTP server, adapters, tunnel, and watcher.
+struct SpawnedHandles {
+    server_handle: tokio::task::JoinHandle<()>,
+    adapters: super::http::AdapterHandles,
+    tunnel_handle: Option<tokio::task::JoinHandle<()>>,
+    tunnel_shutdown_tx: Option<tokio::sync::watch::Sender<bool>>,
+    tunnel_status_rx: tokio::sync::watch::Receiver<crate::tunnel::TunnelStatus>,
+    sigterm: tokio::signal::unix::Signal,
+}
+
+/// Spawn the HTTP server, chat adapters, cloud tunnel, and workspace watcher.
+async fn spawn_server_and_adapters(
+    core: &GatewayCore,
+    parts: &crate::gateway::startup::GatewayComponents,
+    cfg: &Config,
+    update_status: &crate::update::SharedUpdateStatus,
+    restart_tx: &tokio::sync::mpsc::Sender<()>,
+) -> Result<SpawnedHandles, ResiduumError> {
     let discord_senders = AdapterSenders {
         inbound: core.inbound_tx.clone(),
         reload: core.reload_tx.clone(),
@@ -47,18 +81,14 @@ pub async fn run_gateway(cfg: Config) -> Result<GatewayExit, ResiduumError> {
         reload: core.reload_tx.clone(),
         command: core.command_tx.clone(),
     };
-    let rt_inbound_tx = core.inbound_tx.clone();
-    let rt_reload_tx = core.reload_tx.clone();
-    let rt_command_tx = core.command_tx.clone();
-
     let (tunnel_status_tx, tunnel_status_rx) =
         tokio::sync::watch::channel(crate::tunnel::TunnelStatus::Disconnected);
 
     let state = GatewayState {
-        inbound_tx: core.inbound_tx,
+        inbound_tx: core.inbound_tx.clone(),
         broadcast_tx: core.broadcast_tx.clone(),
         reload_tx: core.reload_tx.clone(),
-        command_tx: core.command_tx,
+        command_tx: core.command_tx.clone(),
         inbox_dir: parts.layout.inbox_dir(),
         tz: parts.tz,
         tunnel_status_rx: tunnel_status_rx.clone(),
@@ -71,22 +101,49 @@ pub async fn run_gateway(cfg: Config) -> Result<GatewayExit, ResiduumError> {
         setup_done: None,
         secret_lock: Arc::new(tokio::sync::Mutex::new(())),
     };
-    let app = build_gateway_app(state, &cfg, config_api_state);
-    let server_handle = spawn_http_server(&cfg, app, &core.shutdown_tx).await?;
-    let adapters = spawn_adapters(&cfg, discord_senders, telegram_senders, parts.tz);
-
-    let (tunnel_handle, tunnel_shutdown_tx) = spawn_tunnel(&cfg, tunnel_status_tx);
-
+    let update_api_state = web::update::UpdateApiState {
+        update_status: Arc::clone(update_status),
+        restart_tx: restart_tx.clone(),
+    };
+    let app = build_gateway_app(state, cfg, config_api_state, update_api_state);
+    let server_handle = spawn_http_server(cfg, app, &core.shutdown_tx).await?;
+    let adapters = spawn_adapters(cfg, discord_senders, telegram_senders, parts.tz);
+    let (tunnel_handle, tunnel_shutdown_tx) = spawn_tunnel(cfg, tunnel_status_tx);
     let sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
         .map_err(|e| ResiduumError::Gateway(format!("failed to register SIGTERM handler: {e}")))?;
-
     let _watcher_handle = watcher::spawn_workspace_watcher(
         parts.layout.mcp_json(),
         parts.layout.channels_toml(),
         core.reload_tx.clone(),
     );
 
-    let rt = GatewayRuntime {
+    Ok(SpawnedHandles {
+        server_handle,
+        adapters,
+        tunnel_handle,
+        tunnel_shutdown_tx,
+        tunnel_status_rx,
+        sigterm,
+    })
+}
+
+/// Update-related channels bundled to reduce argument count.
+struct UpdateChannels {
+    status: crate::update::SharedUpdateStatus,
+    restart_tx: tokio::sync::mpsc::Sender<()>,
+    restart_rx: tokio::sync::mpsc::Receiver<()>,
+}
+
+/// Assemble the `GatewayRuntime` from initialized parts and spawned handles.
+fn build_runtime(
+    parts: crate::gateway::startup::GatewayComponents,
+    core: GatewayCore,
+    receivers: crate::gateway::types::CoreReceivers,
+    cfg: Config,
+    spawned: SpawnedHandles,
+    update: UpdateChannels,
+) -> GatewayRuntime {
+    GatewayRuntime {
         layout: parts.layout,
         tz: parts.tz,
         agent: parts.agent,
@@ -110,29 +167,30 @@ pub async fn run_gateway(cfg: Config) -> Result<GatewayExit, ResiduumError> {
         broadcast_tx: core.broadcast_tx,
         reload_rx: receivers.reload,
         command_rx: receivers.command,
-        server_handle,
+        server_handle: spawned.server_handle,
         pulse_scheduler: PulseScheduler::new(),
-        sigterm,
+        sigterm: spawned.sigterm,
         shutdown_tx: core.shutdown_tx,
         config_dir: core.config_dir.clone(),
         last_reply: None,
         unsolicited_handles: std::collections::HashMap::new(),
         last_user_message_instant: None,
-        tunnel_handle,
-        tunnel_shutdown_tx,
-        tunnel_status_rx,
-        discord_handle: adapters.discord_handle,
-        telegram_handle: adapters.telegram_handle,
-        discord_shutdown_tx: adapters.discord_shutdown_tx,
-        telegram_shutdown_tx: adapters.telegram_shutdown_tx,
-        inbound_tx: rt_inbound_tx,
-        reload_tx: rt_reload_tx,
-        command_tx: rt_command_tx,
+        tunnel_handle: spawned.tunnel_handle,
+        tunnel_shutdown_tx: spawned.tunnel_shutdown_tx,
+        tunnel_status_rx: spawned.tunnel_status_rx,
+        discord_handle: spawned.adapters.discord_handle,
+        telegram_handle: spawned.adapters.telegram_handle,
+        discord_shutdown_tx: spawned.adapters.discord_shutdown_tx,
+        telegram_shutdown_tx: spawned.adapters.telegram_shutdown_tx,
+        inbound_tx: core.inbound_tx,
+        reload_tx: core.reload_tx,
+        command_tx: core.command_tx,
         path_policy: parts.path_policy,
+        update_status: update.status,
+        restart_tx: update.restart_tx,
+        restart_rx: update.restart_rx,
         cfg,
-    };
-
-    Ok(Box::pin(run_event_loop(rt)).await)
+    }
 }
 
 /// Spawn the cloud tunnel task if configured, returning its handle and shutdown sender.
@@ -309,6 +367,29 @@ async fn handle_action_main_turns(
     run_wake_turn_handler(rt, observe_deadline).await
 }
 
+/// Gracefully shut down all adapters, MCP servers, and the HTTP server.
+async fn graceful_shutdown(rt: &mut GatewayRuntime) {
+    rt.mcp_registry.write().await.disconnect_all().await;
+    if let Some(tx) = rt.tunnel_shutdown_tx.take() {
+        tx.send(true).ok();
+    }
+    if let Some(tx) = rt.discord_shutdown_tx.take() {
+        tx.send(true).ok();
+    }
+    if let Some(tx) = rt.telegram_shutdown_tx.take() {
+        tx.send(true).ok();
+    }
+    rt.shutdown_tx.send(true).ok();
+}
+
+/// Spawn a fire-and-forget update check task.
+fn spawn_update_check(status: &crate::update::SharedUpdateStatus) {
+    let status = Arc::clone(status);
+    tokio::spawn(async move {
+        crate::update::check_for_update(&status).await;
+    });
+}
+
 /// Run the main gateway event loop.
 ///
 /// Processes inbound messages, pulse ticks, action ticks, and memory pipeline
@@ -316,7 +397,10 @@ async fn handle_action_main_turns(
 async fn run_event_loop(mut rt: GatewayRuntime) -> GatewayExit {
     let mut pulse_tick = tokio::time::interval(Duration::from_secs(60));
     let mut action_tick = tokio::time::interval(Duration::from_secs(30));
+    let mut update_check_tick = tokio::time::interval(Duration::from_secs(6 * 60 * 60));
     pulse_tick.tick().await; // skip first tick
+    spawn_update_check(&rt.update_status);
+
     let mut observe_deadline: Option<tokio::time::Instant> = None;
     let mut idle_deadline: Option<tokio::time::Instant> = None;
 
@@ -326,11 +410,7 @@ async fn run_event_loop(mut rt: GatewayRuntime) -> GatewayExit {
         tokio::select! {
             _ = rt.sigterm.recv() => {
                 tracing::info!("received SIGTERM, shutting down");
-                rt.mcp_registry.write().await.disconnect_all().await;
-                if let Some(tx) = rt.tunnel_shutdown_tx.take() { tx.send(true).ok(); }
-                if let Some(tx) = rt.discord_shutdown_tx.take() { tx.send(true).ok(); }
-                if let Some(tx) = rt.telegram_shutdown_tx.take() { tx.send(true).ok(); }
-                rt.shutdown_tx.send(true).ok();
+                graceful_shutdown(&mut rt).await;
                 break;
             }
 
@@ -351,8 +431,7 @@ async fn run_event_loop(mut rt: GatewayRuntime) -> GatewayExit {
             msg = rt.inbound_rx.recv() => {
                 let Some(routed) = msg else {
                     tracing::info!("inbound channel closed, shutting down");
-                    rt.mcp_registry.write().await.disconnect_all().await;
-                    rt.shutdown_tx.send(true).ok();
+                    graceful_shutdown(&mut rt).await;
                     break;
                 };
                 if let Some(exit) = handle_inbound_message(routed, &mut rt, &mut observe_deadline, &mut idle_deadline).await {
@@ -406,6 +485,16 @@ async fn run_event_loop(mut rt: GatewayRuntime) -> GatewayExit {
                 if let Some(cmd) = cmd {
                     handle_server_command(cmd, &mut rt, &mut observe_deadline).await;
                 }
+            }
+
+            _ = update_check_tick.tick() => {
+                spawn_update_check(&rt.update_status);
+            }
+
+            _ = rt.restart_rx.recv() => {
+                tracing::info!("restart signal received, shutting down for re-exec");
+                graceful_shutdown(&mut rt).await;
+                return GatewayExit::Restart;
             }
         }
     }

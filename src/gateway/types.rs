@@ -23,6 +23,7 @@ use crate::projects::activation::SharedProjectState;
 use crate::pulse::scheduler::PulseScheduler;
 use crate::skills::SharedSkillState;
 use crate::tunnel::TunnelStatus;
+use crate::update::SharedUpdateStatus;
 use crate::workspace::layout::WorkspaceLayout;
 
 use super::protocol::ServerMessage;
@@ -43,6 +44,8 @@ pub enum ReloadSignal {
 pub enum GatewayExit {
     /// Clean shutdown (inbound channel closed).
     Shutdown,
+    /// Restart requested (binary updated, re-exec needed).
+    Restart,
 }
 
 /// A named command dispatched from any client channel to the server event loop.
@@ -174,6 +177,12 @@ pub(crate) struct GatewayRuntime {
     pub command_tx: mpsc::Sender<ServerCommand>,
     /// Shared path policy for updating blocked paths on reload.
     pub path_policy: crate::tools::SharedPathPolicy,
+    /// Shared update status for periodic version checking.
+    pub update_status: SharedUpdateStatus,
+    /// Sender half for triggering restart (cloned into API state on rebind).
+    pub restart_tx: mpsc::Sender<()>,
+    /// Receives a signal to trigger a graceful restart (binary replaced).
+    pub restart_rx: mpsc::Receiver<()>,
 }
 
 #[cfg(test)]

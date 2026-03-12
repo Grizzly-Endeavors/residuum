@@ -367,8 +367,16 @@ async fn reload_gateway(rt: &mut GatewayRuntime, new_cfg: &Config) {
                 setup_done: None,
                 secret_lock: std::sync::Arc::new(tokio::sync::Mutex::new(())),
             };
-            let app =
-                crate::gateway::event_loop::build_gateway_app(state, new_cfg, config_api_state);
+            let update_api_state = crate::gateway::web::update::UpdateApiState {
+                update_status: std::sync::Arc::clone(&rt.update_status),
+                restart_tx: rt.restart_tx.clone(),
+            };
+            let app = crate::gateway::event_loop::build_gateway_app(
+                state,
+                new_cfg,
+                config_api_state,
+                update_api_state,
+            );
 
             let new_handle = tokio::spawn(async move {
                 if let Err(e) = axum::serve(listener, app)

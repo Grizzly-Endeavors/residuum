@@ -139,7 +139,7 @@ async fn run_serve_foreground_inner(args: &[String]) -> Result<(), ResiduumError
             workspace = %cfg.workspace_dir.display(),
             "setup-mode: configuration loaded, starting gateway"
         );
-        Box::pin(residuum::gateway::run_gateway(cfg)).await?;
+        let _ = Box::pin(residuum::gateway::run_gateway(cfg)).await?;
         return Ok(());
     }
 
@@ -160,8 +160,12 @@ async fn run_serve_foreground_inner(args: &[String]) -> Result<(), ResiduumError
                 );
                 // Gateway handles reloads in-place and only returns on shutdown
                 // or fatal error. Backup is created inside run_gateway().
-                Box::pin(residuum::gateway::run_gateway(cfg)).await?;
-                break;
+                match Box::pin(residuum::gateway::run_gateway(cfg)).await? {
+                    residuum::gateway::GatewayExit::Shutdown => break,
+                    residuum::gateway::GatewayExit::Restart => {
+                        return re_exec_serve_foreground();
+                    }
+                }
             }
             Err(err) if !is_first_boot => {
                 // Config broken on restart — try restoring from backup
@@ -171,8 +175,12 @@ async fn run_serve_foreground_inner(args: &[String]) -> Result<(), ResiduumError
                     match Config::load() {
                         Ok(cfg) => {
                             tracing::info!("config restored from backup, starting gateway");
-                            Box::pin(residuum::gateway::run_gateway(cfg)).await?;
-                            break;
+                            match Box::pin(residuum::gateway::run_gateway(cfg)).await? {
+                                residuum::gateway::GatewayExit::Shutdown => break,
+                                residuum::gateway::GatewayExit::Restart => {
+                                    return re_exec_serve_foreground();
+                                }
+                            }
                         }
                         Err(retry_err) => {
                             return Err(ResiduumError::Config(format!(
@@ -200,6 +208,34 @@ async fn run_serve_foreground_inner(args: &[String]) -> Result<(), ResiduumError
         }
     }
     Ok(())
+}
+
+/// Re-exec the current binary with `serve --foreground` args.
+///
+/// Uses `exec()` to replace the process image with the (potentially updated)
+/// binary on disk. The PID stays the same, so the daemon parent doesn't notice.
+///
+/// # Errors
+///
+/// Returns `ResiduumError::Gateway` if the current executable path cannot be
+/// determined. On Unix, `exec()` does not return on success.
+fn re_exec_serve_foreground() -> Result<(), ResiduumError> {
+    use std::os::unix::process::CommandExt;
+
+    let exe = std::env::current_exe().map_err(|e| {
+        ResiduumError::Gateway(format!(
+            "failed to determine current executable for re-exec: {e}"
+        ))
+    })?;
+
+    tracing::info!(exe = %exe.display(), "re-execing with updated binary");
+
+    let err = std::process::Command::new(&exe)
+        .args(["serve", "--foreground"])
+        .exec();
+
+    // exec() only returns on error
+    Err(ResiduumError::Gateway(format!("re-exec failed: {err}")))
 }
 
 /// Spawn the gateway as a background daemon process.
@@ -326,26 +362,29 @@ fn run_daemonize(args: &[String]) -> Result<(), ResiduumError> {
 ///
 /// Fetches the latest release tag, compares it against the build-time
 /// version, and optionally downloads the install script to replace the
-/// current binary.
+/// current binary. With `-y`/`--yes`, automatically triggers a daemon
+/// restart after a successful update.
 ///
 /// # Errors
 ///
 /// Returns `ResiduumError::Gateway` if the GitHub API request fails or
 /// the install script cannot be executed.
 async fn run_update_command(args: &[String]) -> Result<(), ResiduumError> {
+    use residuum::update::{self, CURRENT_VERSION};
+
     let check_only = args.iter().any(|a| a == "--check");
-    let current = env!("RESIDUUM_VERSION");
+    let auto_yes = args.iter().any(|a| a == "-y" || a == "--yes");
 
     eprintln!("residuum: checking for updates...");
 
-    let latest = fetch_latest_version().await?;
+    let latest = update::fetch_latest_version().await?;
 
-    if is_up_to_date(current, &latest) {
-        eprintln!("residuum: already up to date ({current})");
+    if update::is_up_to_date(CURRENT_VERSION, &latest) {
+        eprintln!("residuum: already up to date ({CURRENT_VERSION})");
         return Ok(());
     }
 
-    eprintln!("residuum: current version: {current}");
+    eprintln!("residuum: current version: {CURRENT_VERSION}");
     eprintln!("residuum: latest version:  {latest}");
 
     if check_only {
@@ -354,100 +393,37 @@ async fn run_update_command(args: &[String]) -> Result<(), ResiduumError> {
 
     eprintln!("residuum: downloading and installing {latest}...");
 
-    // Download install script to a temp file and execute it
-    let client = reqwest::Client::new();
-    let script = client
-        .get("https://agent-residuum.com/install")
-        .send()
-        .await
-        .map_err(|e| ResiduumError::Gateway(format!("failed to download install script: {e}")))?
-        .text()
-        .await
-        .map_err(|e| ResiduumError::Gateway(format!("failed to read install script body: {e}")))?;
+    let installed = update::download_and_install().await?;
+    eprintln!("residuum: updated to {installed}");
 
-    let tmp_dir = std::env::temp_dir();
-    let script_path = tmp_dir.join("residuum-install.sh");
-    std::fs::write(&script_path, &script)
-        .map_err(|e| ResiduumError::Gateway(format!("failed to write install script: {e}")))?;
-
-    let status = std::process::Command::new("sh")
-        .arg(&script_path)
-        .status()
-        .map_err(|e| ResiduumError::Gateway(format!("failed to execute install script: {e}")))?;
-
-    // Clean up temp script (best-effort, ignore failure)
-    drop(std::fs::remove_file(&script_path));
-
-    if !status.success() {
-        return Err(ResiduumError::Gateway(format!(
-            "install script exited with {status}"
-        )));
-    }
-
-    eprintln!("residuum: updated to {latest}");
-
-    // Warn if gateway is running
+    // Check if gateway is running and try to restart it
     if let Ok(pid_path) = residuum::daemon::pid_file_path()
         && let Ok(pid) = residuum::daemon::read_pid_file(&pid_path)
         && residuum::daemon::is_process_running(pid)
     {
-        eprintln!(
-            "residuum: gateway is still running (pid {pid}) — restart it to use the new version"
-        );
+        if auto_yes {
+            // Try to trigger seamless restart via the API
+            let gateway_addr = Config::load().map_or_else(
+                |_| residuum::config::GatewayConfig::default().addr(),
+                |cfg| cfg.gateway.addr(),
+            );
+            let url = format!("http://{gateway_addr}/api/update/restart");
+            match reqwest::Client::new().post(&url).send().await {
+                Ok(resp) if resp.status().is_success() => {
+                    eprintln!("residuum: restart signal sent to gateway (pid {pid})");
+                }
+                _ => {
+                    eprintln!("residuum: failed to signal gateway restart — restart it manually");
+                }
+            }
+        } else {
+            eprintln!(
+                "residuum: gateway is still running (pid {pid}) — restart it to use the new version"
+            );
+        }
     }
 
     Ok(())
-}
-
-/// Fetch the latest release tag name from GitHub.
-async fn fetch_latest_version() -> Result<String, ResiduumError> {
-    let client = reqwest::Client::builder()
-        .user_agent("residuum-updater")
-        .build()
-        .map_err(|e| ResiduumError::Gateway(format!("failed to build http client: {e}")))?;
-
-    let resp = client
-        .get("https://api.github.com/repos/grizzly-endeavors/residuum/releases/latest")
-        .header("Accept", "application/vnd.github+json")
-        .send()
-        .await
-        .map_err(|e| ResiduumError::Gateway(format!("failed to fetch latest release: {e}")))?;
-
-    if !resp.status().is_success() {
-        return Err(ResiduumError::Gateway(format!(
-            "github api returned {} — are you online?",
-            resp.status()
-        )));
-    }
-
-    let body: serde_json::Value = resp
-        .json()
-        .await
-        .map_err(|e| ResiduumError::Gateway(format!("failed to parse release response: {e}")))?;
-
-    body.get("tag_name")
-        .and_then(|v| v.as_str())
-        .map(String::from)
-        .ok_or_else(|| {
-            ResiduumError::Gateway("release response missing tag_name field".to_string())
-        })
-}
-
-/// Compare the current build version against the latest release tag.
-///
-/// Returns `true` if the current version starts with the latest tag,
-/// accounting for `git describe` suffixes like `-5-gabcdef1`.
-fn is_up_to_date(current: &str, latest: &str) -> bool {
-    // Exact match (tagged commit)
-    if current == latest {
-        return true;
-    }
-    // current is "v2026.03.02-5-gabcdef1" and latest is "v2026.03.02" —
-    // the current build is *ahead* of the latest release
-    if current.starts_with(latest) && current.as_bytes().get(latest.len()) == Some(&b'-') {
-        return true;
-    }
-    false
 }
 
 /// Stop a running gateway daemon.
@@ -1102,46 +1078,6 @@ mod tests {
         assert!(
             !rollback_config(dir.path()),
             "rollback should fail when no backup exists"
-        );
-    }
-
-    #[test]
-    fn is_up_to_date_exact_match() {
-        assert!(
-            super::is_up_to_date("v2026.03.02", "v2026.03.02"),
-            "exact match should be up to date"
-        );
-    }
-
-    #[test]
-    fn is_up_to_date_ahead_of_release() {
-        assert!(
-            super::is_up_to_date("v2026.03.02-5-gabcdef1", "v2026.03.02"),
-            "build ahead of latest release should be up to date"
-        );
-    }
-
-    #[test]
-    fn is_up_to_date_different_version() {
-        assert!(
-            !super::is_up_to_date("v2026.03.01", "v2026.03.02"),
-            "older version should not be up to date"
-        );
-    }
-
-    #[test]
-    fn is_up_to_date_dev_build() {
-        assert!(
-            !super::is_up_to_date("dev", "v2026.03.02"),
-            "dev build should not be up to date"
-        );
-    }
-
-    #[test]
-    fn is_up_to_date_no_false_prefix_match() {
-        assert!(
-            !super::is_up_to_date("v2026.03.021", "v2026.03.02"),
-            "version with shared prefix but no dash separator should not match"
         );
     }
 
