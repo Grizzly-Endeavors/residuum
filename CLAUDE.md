@@ -131,3 +131,10 @@ Releases use **CalVer** (`YYYY.0M.0D`), not SemVer. Tags like `v2026.03.02`, wit
 - All changes must be committed before giving the user a completion summary.
 - **Never** use `git -C` — the shell is already in the project root; use plain `git` commands.
 - Always run `cargo test --quiet` — never plain `cargo test`. The `--quiet` flag suppresses per-test noise and only shows failures and the summary.
+
+## Active Technologies
+- Rust (edition 2024), targeting stable toolchain + `objc2` 0.6, `objc2-foundation` 0.3, `objc2-user-notifications` 0.3, `block2` 0.6 (all macOS-only via `cfg(target_os = "macos")`) (001-macos-notifications)
+- N/A — notifications are fire-and-forget; throttle state is in-memory only (001-macos-notifications)
+
+## Recent Changes
+- 001-macos-notifications: Added Rust (edition 2024), targeting stable toolchain + `objc2` 0.6, `objc2-foundation` 0.3, `objc2-user-notifications` 0.3, `block2` 0.6 (all macOS-only via `cfg(target_os = "macos")`)
