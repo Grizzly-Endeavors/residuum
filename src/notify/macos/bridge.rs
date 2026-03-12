@@ -9,7 +9,7 @@ use block2::RcBlock;
 use objc2::rc::Retained;
 use objc2::runtime::Bool;
 use objc2::{ClassType, msg_send};
-use objc2_foundation::{NSError, NSSet, NSString};
+use objc2_foundation::{NSBundle, NSError, NSSet, NSString};
 use objc2_user_notifications::{
     UNMutableNotificationContent, UNNotificationCategory, UNNotificationCategoryOptions,
     UNNotificationInterruptionLevel, UNNotificationRequest, UNNotificationSound,
@@ -19,6 +19,20 @@ use tokio::sync::mpsc;
 
 use super::MacosChannelConfig;
 use super::categories::{MacosCategory, MacosInterruptionLevel, MacosNotificationAction};
+
+/// `UNUserNotificationCenter` throws an unrecoverable ObjC exception if the
+/// process has no app bundle. Check `NSBundle.mainBundle.bundleIdentifier`
+/// first so we can return an error instead of crashing.
+fn require_app_bundle() -> anyhow::Result<()> {
+    let bundle = NSBundle::mainBundle();
+    if bundle.bundleIdentifier().is_none() {
+        anyhow::bail!(
+            "macOS notifications require an app bundle with a CFBundleIdentifier. \
+             Run residuum from a .app bundle or set the bundle identifier via Info.plist"
+        );
+    }
+    Ok(())
+}
 
 #[derive(Debug)]
 pub struct InboxAcknowledgment {
@@ -36,6 +50,7 @@ impl MacosBridge {
     /// # Errors
     /// Returns an error if category registration fails.
     pub fn new(config: MacosChannelConfig) -> anyhow::Result<Self> {
+        require_app_bundle()?;
         let bridge = Self {
             config,
             ack_tx: None,
