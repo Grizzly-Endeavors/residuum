@@ -7,3 +7,4 @@
 reference-mats/
 web/node_modules/
 web/dist/
+.specify/
