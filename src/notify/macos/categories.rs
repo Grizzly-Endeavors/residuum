@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::notify::types::TaskSource;
 
+/// Notification category mapped to macOS `UNNotificationCategory` identifiers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum MacosCategory {
@@ -55,6 +56,7 @@ pub fn parse_category(s: &str) -> anyhow::Result<MacosCategory> {
     }
 }
 
+/// Maps to macOS `UNNotificationInterruptionLevel`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum MacosInterruptionLevel {
@@ -107,6 +109,7 @@ pub fn resolve_category(_source: TaskSource, channel_default: MacosCategory) -> 
     channel_default
 }
 
+/// Action buttons displayed on notification banners.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MacosNotificationAction {
     Open,
