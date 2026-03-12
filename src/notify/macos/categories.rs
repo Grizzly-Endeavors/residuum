@@ -111,18 +111,14 @@ pub fn parse_priority(s: &str) -> anyhow::Result<MacosInterruptionLevel> {
 #[must_use]
 pub fn default_category_for_source(source: TaskSource) -> MacosCategory {
     match source {
-        TaskSource::Pulse => MacosCategory::BackgroundResults,
+        TaskSource::Pulse | TaskSource::Agent => MacosCategory::BackgroundResults,
         TaskSource::Action => MacosCategory::Reminders,
-        TaskSource::Agent => MacosCategory::BackgroundResults,
     }
 }
 
 /// Resolve the effective category: use channel default if set, otherwise map from source.
 #[must_use]
-pub fn resolve_category(
-    _source: TaskSource,
-    channel_default: MacosCategory,
-) -> MacosCategory {
+pub fn resolve_category(_source: TaskSource, channel_default: MacosCategory) -> MacosCategory {
     // Channel config default takes precedence over source-based mapping
     // when explicitly configured. Since we always have a default, use it.
     channel_default
@@ -170,15 +166,19 @@ impl MacosNotificationAction {
     #[must_use]
     pub fn for_category(category: MacosCategory) -> &'static [Self] {
         match category {
-            MacosCategory::BackgroundResults
-            | MacosCategory::Reminders
-            | MacosCategory::Alerts => &[Self::Open, Self::Dismiss],
+            MacosCategory::BackgroundResults | MacosCategory::Reminders | MacosCategory::Alerts => {
+                &[Self::Open, Self::Dismiss]
+            }
             MacosCategory::InboxItems => &[Self::Open, Self::MarkRead],
         }
     }
 }
 
 #[cfg(test)]
+#[expect(
+    clippy::indexing_slicing,
+    reason = "test code uses indexing for clarity"
+)]
 mod tests {
     use super::*;
 
@@ -187,10 +187,10 @@ mod tests {
     #[test]
     fn category_serde_roundtrip() {
         for cat in MacosCategory::all() {
-            let json = serde_json::to_string(cat)
-                .unwrap_or_else(|_| String::from("serialize failed"));
-            let parsed: MacosCategory = serde_json::from_str(&json)
-                .unwrap_or_else(|_| MacosCategory::BackgroundResults);
+            let json =
+                serde_json::to_string(cat).unwrap_or_else(|_| String::from("serialize failed"));
+            let parsed: MacosCategory =
+                serde_json::from_str(&json).unwrap_or(MacosCategory::BackgroundResults);
             assert_eq!(*cat, parsed, "roundtrip failed for {cat}");
         }
     }
@@ -198,20 +198,21 @@ mod tests {
     #[test]
     fn category_kebab_case_serialization() {
         assert_eq!(
-            serde_json::to_string(&MacosCategory::BackgroundResults)
-                .unwrap_or_default(),
+            serde_json::to_string(&MacosCategory::BackgroundResults).unwrap_or_default(),
             "\"background-results\""
         );
         assert_eq!(
-            serde_json::to_string(&MacosCategory::InboxItems)
-                .unwrap_or_default(),
+            serde_json::to_string(&MacosCategory::InboxItems).unwrap_or_default(),
             "\"inbox-items\""
         );
     }
 
     #[test]
     fn category_display() {
-        assert_eq!(MacosCategory::BackgroundResults.to_string(), "background-results");
+        assert_eq!(
+            MacosCategory::BackgroundResults.to_string(),
+            "background-results"
+        );
         assert_eq!(MacosCategory::Reminders.to_string(), "reminders");
         assert_eq!(MacosCategory::InboxItems.to_string(), "inbox-items");
         assert_eq!(MacosCategory::Alerts.to_string(), "alerts");
@@ -265,10 +266,10 @@ mod tests {
             MacosInterruptionLevel::TimeSensitive,
         ];
         for level in &levels {
-            let json = serde_json::to_string(level)
-                .unwrap_or_else(|_| String::from("serialize failed"));
-            let parsed: MacosInterruptionLevel = serde_json::from_str(&json)
-                .unwrap_or(MacosInterruptionLevel::Active);
+            let json =
+                serde_json::to_string(level).unwrap_or_else(|_| String::from("serialize failed"));
+            let parsed: MacosInterruptionLevel =
+                serde_json::from_str(&json).unwrap_or(MacosInterruptionLevel::Active);
             assert_eq!(*level, parsed, "roundtrip failed for {level}");
         }
     }
@@ -276,18 +277,15 @@ mod tests {
     #[test]
     fn interruption_level_snake_case_serialization() {
         assert_eq!(
-            serde_json::to_string(&MacosInterruptionLevel::TimeSensitive)
-                .unwrap_or_default(),
+            serde_json::to_string(&MacosInterruptionLevel::TimeSensitive).unwrap_or_default(),
             "\"time_sensitive\""
         );
         assert_eq!(
-            serde_json::to_string(&MacosInterruptionLevel::Active)
-                .unwrap_or_default(),
+            serde_json::to_string(&MacosInterruptionLevel::Active).unwrap_or_default(),
             "\"active\""
         );
         assert_eq!(
-            serde_json::to_string(&MacosInterruptionLevel::Passive)
-                .unwrap_or_default(),
+            serde_json::to_string(&MacosInterruptionLevel::Passive).unwrap_or_default(),
             "\"passive\""
         );
     }
@@ -296,7 +294,10 @@ mod tests {
     fn interruption_level_display() {
         assert_eq!(MacosInterruptionLevel::Passive.to_string(), "passive");
         assert_eq!(MacosInterruptionLevel::Active.to_string(), "active");
-        assert_eq!(MacosInterruptionLevel::TimeSensitive.to_string(), "time_sensitive");
+        assert_eq!(
+            MacosInterruptionLevel::TimeSensitive.to_string(),
+            "time_sensitive"
+        );
     }
 
     #[test]
@@ -362,7 +363,10 @@ mod tests {
     fn action_button_titles() {
         assert_eq!(MacosNotificationAction::Open.button_title(), "Open");
         assert_eq!(MacosNotificationAction::Dismiss.button_title(), "Dismiss");
-        assert_eq!(MacosNotificationAction::MarkRead.button_title(), "Mark Read");
+        assert_eq!(
+            MacosNotificationAction::MarkRead.button_title(),
+            "Mark Read"
+        );
     }
 
     #[test]

@@ -9,8 +9,8 @@ use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tokio::time::{Instant, sleep_until};
 
-use super::bridge::MacosBridge;
 use super::MacosChannelConfig;
+use super::bridge::MacosBridge;
 use crate::notify::types::Notification;
 
 /// Collects notifications and flushes them as batched macOS notifications.
@@ -18,6 +18,7 @@ pub struct BatchAggregator;
 
 impl BatchAggregator {
     /// Spawn the aggregator as a tokio task.
+    #[must_use]
     pub fn spawn(
         rx: mpsc::Receiver<Notification>,
         bridge: MacosBridge,
@@ -42,21 +43,18 @@ impl BatchAggregator {
             let deadline = window_deadline.unwrap_or(far_future);
             tokio::select! {
                 maybe_notif = rx.recv() => {
-                    match maybe_notif {
-                        Some(notif) => {
-                            buffer.push(notif);
-                            if window_deadline.is_none() {
-                                window_deadline = Some(Instant::now() + throttle_duration);
-                            }
+                    if let Some(notif) = maybe_notif {
+                        buffer.push(notif);
+                        if window_deadline.is_none() {
+                            window_deadline = Some(Instant::now() + throttle_duration);
                         }
-                        None => {
-                            // Channel closed — flush remaining and exit
-                            if !buffer.is_empty() {
-                                flush(&bridge, &buffer, &config).await;
-                            }
-                            tracing::info!("macOS notification aggregator shutting down");
-                            return;
+                    } else {
+                        // Channel closed — flush remaining and exit
+                        if !buffer.is_empty() {
+                            flush(&bridge, &buffer, &config).await;
                         }
+                        tracing::info!("macOS notification aggregator shutting down");
+                        return;
                     }
                 }
                 () = sleep_until(deadline) => {
@@ -125,10 +123,7 @@ async fn deliver_individual(
     let id = format!("residuum-{}", uuid::Uuid::new_v4());
     let title = format!("[{}] {}", notif.source.as_str(), notif.task_name);
     let body = truncate_body(&notif.summary, 200);
-    let category = super::categories::resolve_category(
-        notif.source,
-        config.default_category,
-    );
+    let category = super::categories::resolve_category(notif.source, config.default_category);
 
     if let Err(e) = bridge
         .post_notification(
@@ -166,7 +161,7 @@ fn build_summary_body(buffer: &[Notification]) -> String {
     truncate_body(&body, 200)
 }
 
-/// Truncate a string to max_len characters, adding ellipsis if truncated.
+/// Truncate a string to `max_len` characters, adding ellipsis if truncated.
 fn truncate_body(s: &str, max_len: usize) -> String {
     if s.len() <= max_len {
         s.to_string()
@@ -178,7 +173,6 @@ fn truncate_body(s: &str, max_len: usize) -> String {
 }
 
 #[cfg(test)]
-#[expect(clippy::unwrap_used, reason = "test code uses unwrap for clarity")]
 mod tests {
     use super::*;
     use crate::notify::types::TaskSource;
@@ -247,10 +241,7 @@ mod tests {
     #[test]
     fn flush_decision_1_to_3_delivers_individually() {
         for count in 1..=3 {
-            assert!(
-                count <= 3,
-                "1-3 items should deliver individually"
-            );
+            assert!(count <= 3, "1-3 items should deliver individually");
         }
     }
 
@@ -263,20 +254,23 @@ mod tests {
             );
             // max 3 notifications total: 2 individual + 1 summary
             let total_notifications = 2 + 1;
-            assert_eq!(total_notifications, 3, "should produce exactly 3 notifications");
+            assert_eq!(
+                total_notifications, 3,
+                "should produce exactly 3 notifications"
+            );
         }
     }
 
     #[test]
     fn flush_decision_10_plus_delivers_top_2_plus_summary() {
         for count in [10, 20, 100] {
-            assert!(
-                count >= 10,
-                "10+ items should deliver top 2 + summary"
-            );
+            assert!(count >= 10, "10+ items should deliver top 2 + summary");
             // max 3 notifications total per SC-004
             let total_notifications = 2 + 1;
-            assert_eq!(total_notifications, 3, "should produce exactly 3 notifications (SC-004)");
+            assert_eq!(
+                total_notifications, 3,
+                "should produce exactly 3 notifications (SC-004)"
+            );
         }
     }
 }

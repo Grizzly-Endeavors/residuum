@@ -273,12 +273,12 @@ pub async fn build_external_channels(
             } => {
                 build_macos_channel(
                     &cfg.name,
-                    default_category,
-                    default_priority,
-                    throttle_window_secs,
-                    sound,
-                    app_name,
-                    web_url,
+                    default_category.as_ref(),
+                    default_priority.as_ref(),
+                    throttle_window_secs.as_ref(),
+                    sound.as_ref(),
+                    app_name.as_ref(),
+                    web_url.as_ref(),
                 )
                 .await
             }
@@ -297,12 +297,12 @@ pub async fn build_external_channels(
 #[cfg(target_os = "macos")]
 async fn build_macos_channel(
     name: &str,
-    default_category: &Option<String>,
-    default_priority: &Option<String>,
-    throttle_window_secs: &Option<u64>,
-    sound: &Option<bool>,
-    app_name: &Option<String>,
-    web_url: &Option<String>,
+    default_category: Option<&String>,
+    default_priority: Option<&String>,
+    throttle_window_secs: Option<&u64>,
+    sound: Option<&bool>,
+    app_name: Option<&String>,
+    web_url: Option<&String>,
 ) -> Option<Box<dyn NotificationChannel>> {
     use crate::notify::macos::MacosChannelConfig;
     use crate::notify::macos::categories::{parse_category, parse_priority};
@@ -340,7 +340,7 @@ async fn build_macos_channel(
     if let Some(n) = app_name {
         config.app_name = n.clone();
     }
-    config.web_url.clone_from(web_url);
+    config.web_url = web_url.cloned();
 
     match crate::notify::macos::MacosNativeChannel::new(name, config).await {
         Ok((channel, _handle)) => {
@@ -358,12 +358,12 @@ async fn build_macos_channel(
 #[cfg(not(target_os = "macos"))]
 async fn build_macos_channel(
     name: &str,
-    _default_category: &Option<String>,
-    _default_priority: &Option<String>,
-    _throttle_window_secs: &Option<u64>,
-    _sound: &Option<bool>,
-    _app_name: &Option<String>,
-    _web_url: &Option<String>,
+    _default_category: Option<&String>,
+    _default_priority: Option<&String>,
+    _throttle_window_secs: Option<&u64>,
+    _sound: Option<&bool>,
+    _app_name: Option<&String>,
+    _web_url: Option<&String>,
 ) -> Option<Box<dyn NotificationChannel>> {
     tracing::warn!(
         channel = name,
@@ -677,7 +677,10 @@ type = "macos"
         };
         assert!(default_category.is_none(), "minimal config has no category");
         assert!(default_priority.is_none(), "minimal config has no priority");
-        assert!(throttle_window_secs.is_none(), "minimal config has no throttle");
+        assert!(
+            throttle_window_secs.is_none(),
+            "minimal config has no throttle"
+        );
         assert!(sound.is_none(), "minimal config has no sound");
         assert!(app_name.is_none(), "minimal config has no app_name");
         assert!(web_url.is_none(), "minimal config has no web_url");

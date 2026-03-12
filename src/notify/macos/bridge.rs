@@ -3,24 +3,25 @@
 //! All `objc2` FFI calls are contained in this module. The bridge handles
 //! notification posting, category registration, and delegate callbacks.
 
-#![expect(unsafe_code, reason = "objc2 FFI for macOS UserNotifications framework")]
+#![expect(
+    unsafe_code,
+    reason = "objc2 FFI for macOS UserNotifications framework"
+)]
 
 use block2::RcBlock;
 use objc2::rc::Retained;
 use objc2::runtime::Bool;
-use objc2::{msg_send, ClassType};
+use objc2::{ClassType, msg_send};
 use objc2_foundation::{NSError, NSSet, NSString};
 use objc2_user_notifications::{
-    UNMutableNotificationContent, UNNotificationCategory,
-    UNNotificationCategoryOptions, UNNotificationInterruptionLevel, UNNotificationRequest,
-    UNNotificationSound, UNUserNotificationCenter,
+    UNMutableNotificationContent, UNNotificationCategory, UNNotificationCategoryOptions,
+    UNNotificationInterruptionLevel, UNNotificationRequest, UNNotificationSound,
+    UNUserNotificationCenter,
 };
 use tokio::sync::mpsc;
 
-use super::categories::{
-    MacosCategory, MacosInterruptionLevel, MacosNotificationAction,
-};
 use super::MacosChannelConfig;
+use super::categories::{MacosCategory, MacosInterruptionLevel, MacosNotificationAction};
 
 /// Acknowledgment message sent when user clicks "Mark Read" on a notification.
 #[derive(Debug)]
@@ -47,7 +48,7 @@ impl MacosBridge {
             config,
             ack_tx: None,
         };
-        bridge.register_categories();
+        Self::register_categories();
         Ok(bridge)
     }
 
@@ -57,7 +58,7 @@ impl MacosBridge {
     }
 
     /// Register notification categories with macOS.
-    fn register_categories(&self) {
+    fn register_categories() {
         let result = std::panic::catch_unwind(|| {
             let center = UNUserNotificationCenter::currentNotificationCenter();
             let mut category_set: Vec<Retained<UNNotificationCategory>> = Vec::new();
@@ -80,8 +81,7 @@ impl MacosBridge {
                 }
 
                 let cat_id = NSString::from_str(cat.as_category_id());
-                let actions_array =
-                    objc2_foundation::NSArray::from_retained_slice(&ns_actions);
+                let actions_array = objc2_foundation::NSArray::from_retained_slice(&ns_actions);
                 let empty_intents: Retained<objc2_foundation::NSArray<NSString>> =
                     objc2_foundation::NSArray::from_retained_slice(&[]);
 
@@ -113,6 +113,10 @@ impl MacosBridge {
     ///
     /// # Errors
     /// Returns an error if the notification cannot be posted.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "macOS notification content requires many distinct fields"
+    )]
     pub async fn post_notification(
         &self,
         identifier: &str,
@@ -185,10 +189,7 @@ impl MacosBridge {
                         item_id: notification_id.to_string(),
                     };
                     if tx.try_send(ack).is_err() {
-                        tracing::warn!(
-                            notification_id,
-                            "failed to send mark-read acknowledgment"
-                        );
+                        tracing::warn!(notification_id, "failed to send mark-read acknowledgment");
                     }
                 }
             }
@@ -230,9 +231,7 @@ fn post_notification_sync(
         let interruption_level = match level {
             MacosInterruptionLevel::Passive => UNNotificationInterruptionLevel::Passive,
             MacosInterruptionLevel::Active => UNNotificationInterruptionLevel::Active,
-            MacosInterruptionLevel::TimeSensitive => {
-                UNNotificationInterruptionLevel::TimeSensitive
-            }
+            MacosInterruptionLevel::TimeSensitive => UNNotificationInterruptionLevel::TimeSensitive,
         };
         content.setInterruptionLevel(interruption_level);
 
@@ -269,8 +268,10 @@ fn open_url(url_str: &str) {
                 msg_send![objc2_foundation::NSURL::class(), URLWithString: &*ns_url_str];
             if let Some(url) = url {
                 let cls_name = c"NSWorkspace";
-                let workspace: Retained<objc2_foundation::NSObject> =
-                    msg_send![objc2::runtime::AnyClass::get(cls_name).unwrap_unchecked(), sharedWorkspace];
+                let workspace: Retained<objc2_foundation::NSObject> = msg_send![
+                    objc2::runtime::AnyClass::get(cls_name).unwrap_unchecked(),
+                    sharedWorkspace
+                ];
                 let _: Bool = msg_send![&*workspace, openURL: &*url];
             }
         }

@@ -1,6 +1,6 @@
 //! Native macOS notification channel via `UNUserNotificationCenter`.
 //!
-//! Delivers notification banners through Apple's UserNotifications framework.
+//! Delivers notification banners through Apple's `UserNotifications` framework.
 //! All macOS-specific code is gated behind `cfg(target_os = "macos")`.
 
 pub mod bridge;
@@ -91,8 +91,7 @@ impl MacosNativeChannel {
 
         permissions::check_and_request(&macos_bridge).await;
 
-        let aggregator_handle =
-            throttle::BatchAggregator::spawn(rx, macos_bridge, config);
+        let aggregator_handle = throttle::BatchAggregator::spawn(rx, macos_bridge, config);
 
         Ok((
             Self {
@@ -124,7 +123,7 @@ impl NotificationChannel for MacosNativeChannel {
         self.batch_tx
             .send(queued)
             .await
-            .map_err(|_| anyhow::anyhow!("macOS notification aggregator is not running"))?;
+            .map_err(|e| anyhow::anyhow!("macOS notification aggregator is not running: {e}"))?;
         Ok(())
     }
 }
