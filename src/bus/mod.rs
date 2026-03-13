@@ -9,6 +9,7 @@ mod broker;
 mod endpoint;
 mod events;
 mod handle;
+mod registry;
 mod types;
 
 pub(crate) use broker::{spawn_broker, BusHandle};
@@ -18,4 +19,5 @@ pub(crate) use events::{
     NotificationEvent, ResponseEvent,
 };
 pub(crate) use handle::{Publisher, Subscriber};
+pub(crate) use registry::{EndpointEntry, EndpointRegistry};
 pub(crate) use types::{BusError, EndpointName, NotifyName, PresetName, TopicId, WebhookName};
