@@ -5,7 +5,7 @@
 use std::time::Duration;
 
 use tokio::time::sleep;
-use tracing::{info, warn};
+use tracing::warn;
 
 use super::ModelError;
 
@@ -71,14 +71,14 @@ where
                 return Err(e);
             }
             Err(e) => {
+                if attempts == 0 {
+                    warn!(
+                        max_retries = config.max_retries,
+                        error = %e,
+                        "transient error, retrying"
+                    );
+                }
                 attempts += 1;
-                info!(
-                    attempt = attempts,
-                    max_retries = config.max_retries,
-                    delay_ms = delay.as_millis(),
-                    error = %e,
-                    "retrying after transient error"
-                );
 
                 // Add jitter (+-25%)
                 #[expect(

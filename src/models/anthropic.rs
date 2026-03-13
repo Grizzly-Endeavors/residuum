@@ -150,6 +150,9 @@ impl AnthropicClient {
 
         let system = (!system_parts.is_empty()).then(|| system_parts.join("\n"));
 
+        // Merge consecutive same-role messages (required by Anthropic API for tool results)
+        let api_messages = merge_consecutive_messages(api_messages);
+
         (system, api_messages)
     }
 
@@ -250,7 +253,13 @@ impl AnthropicClient {
 
         let status = response.status();
         if !status.is_success() {
-            let body = response.text().await.unwrap_or_default();
+            let body = match response.text().await {
+                Ok(b) => b,
+                Err(e) => {
+                    tracing::warn!(error = %e, "failed to read error response body");
+                    format!("failed to read response body: {e}")
+                }
+            };
 
             let error_msg = serde_json::from_str::<AnthropicErrorResponse>(&body).map_or_else(
                 |_| format!("anthropic api error {status}: {body}"),
@@ -441,6 +450,36 @@ fn append_image_blocks(blocks: &mut Vec<AnthropicContentBlock>, images: Option<&
 }
 
 // ---------------------------------------------------------------------------
+// Message merging
+// ---------------------------------------------------------------------------
+
+/// Merge consecutive messages that share the same role.
+///
+/// Anthropic's API requires that all content blocks for a given role appear in
+/// a single message when consecutive (e.g. multiple tool results must be in one
+/// user message). This collapses runs of same-role messages by combining their
+/// content blocks.
+fn merge_consecutive_messages(messages: Vec<AnthropicMessage>) -> Vec<AnthropicMessage> {
+    let mut merged: Vec<AnthropicMessage> = Vec::with_capacity(messages.len());
+
+    for msg in messages {
+        if let Some(last) = merged.last_mut()
+            && last.role == msg.role
+        {
+            let existing =
+                std::mem::replace(&mut last.content, AnthropicContent::Blocks(Vec::new()));
+            let mut blocks = existing.into_blocks();
+            blocks.extend(msg.content.into_blocks());
+            last.content = AnthropicContent::Blocks(blocks);
+            continue;
+        }
+        merged.push(msg);
+    }
+
+    merged
+}
+
+// ---------------------------------------------------------------------------
 // Anthropic API serde types (private)
 // ---------------------------------------------------------------------------
 
@@ -479,6 +518,16 @@ struct AnthropicMessage {
 enum AnthropicContent {
     Text(String),
     Blocks(Vec<AnthropicContentBlock>),
+}
+
+impl AnthropicContent {
+    /// Convert into a vec of content blocks regardless of variant.
+    fn into_blocks(self) -> Vec<AnthropicContentBlock> {
+        match self {
+            Self::Text(s) => vec![AnthropicContentBlock::Text { text: s }],
+            Self::Blocks(b) => b,
+        }
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -1285,5 +1334,153 @@ mod tests {
                 .contains("Rust is a systems programming language"),
             "text content should be preserved"
         );
+    }
+
+    #[test]
+    fn convert_messages_merges_consecutive_tool_results() {
+        let messages = vec![
+            Message::user("Use both tools"),
+            Message::assistant(
+                "",
+                Some(vec![
+                    ToolCall {
+                        id: "tool_1".to_string(),
+                        name: "search".to_string(),
+                        arguments: json!({"q": "a"}),
+                    },
+                    ToolCall {
+                        id: "tool_2".to_string(),
+                        name: "search".to_string(),
+                        arguments: json!({"q": "b"}),
+                    },
+                ]),
+            ),
+            Message::tool("Result A", "tool_1"),
+            Message::tool("Result B", "tool_2"),
+        ];
+
+        let (_system, api_msgs) = AnthropicClient::convert_messages(&messages);
+
+        // user, assistant, merged-user (two tool results)
+        assert_eq!(
+            api_msgs.len(),
+            3,
+            "two tool results should merge into one user message"
+        );
+
+        let tool_msg = api_msgs.get(2).unwrap();
+        assert_eq!(tool_msg.role, "user");
+
+        let serialized = serde_json::to_value(tool_msg).unwrap();
+        let blocks = serialized.get("content").unwrap().as_array().unwrap();
+        assert_eq!(blocks.len(), 2, "merged message should have two blocks");
+        assert_eq!(
+            blocks
+                .first()
+                .unwrap()
+                .get("type")
+                .unwrap()
+                .as_str()
+                .unwrap(),
+            "tool_result"
+        );
+        assert_eq!(
+            blocks
+                .get(1)
+                .unwrap()
+                .get("type")
+                .unwrap()
+                .as_str()
+                .unwrap(),
+            "tool_result"
+        );
+        assert_eq!(
+            blocks
+                .first()
+                .unwrap()
+                .get("tool_use_id")
+                .unwrap()
+                .as_str()
+                .unwrap(),
+            "tool_1"
+        );
+        assert_eq!(
+            blocks
+                .get(1)
+                .unwrap()
+                .get("tool_use_id")
+                .unwrap()
+                .as_str()
+                .unwrap(),
+            "tool_2"
+        );
+    }
+
+    #[test]
+    fn convert_messages_merges_user_after_tool_result() {
+        let messages = vec![
+            Message::assistant(
+                "calling tool",
+                Some(vec![ToolCall {
+                    id: "tool_1".to_string(),
+                    name: "search".to_string(),
+                    arguments: json!({}),
+                }]),
+            ),
+            Message::tool("Tool output", "tool_1"),
+            Message::user("Thanks, now do something else"),
+        ];
+
+        let (_system, api_msgs) = AnthropicClient::convert_messages(&messages);
+
+        // assistant, merged-user (tool_result + user text)
+        assert_eq!(
+            api_msgs.len(),
+            2,
+            "tool result and following user message should merge"
+        );
+
+        let merged = api_msgs.get(1).unwrap();
+        assert_eq!(merged.role, "user");
+
+        let serialized = serde_json::to_value(merged).unwrap();
+        let blocks = serialized.get("content").unwrap().as_array().unwrap();
+        assert_eq!(blocks.len(), 2, "merged message should have two blocks");
+        assert_eq!(
+            blocks
+                .first()
+                .unwrap()
+                .get("type")
+                .unwrap()
+                .as_str()
+                .unwrap(),
+            "tool_result"
+        );
+        assert_eq!(
+            blocks
+                .get(1)
+                .unwrap()
+                .get("type")
+                .unwrap()
+                .as_str()
+                .unwrap(),
+            "text"
+        );
+    }
+
+    #[test]
+    fn convert_messages_no_merge_across_roles() {
+        let messages = vec![
+            Message::user("Hello"),
+            Message::assistant("Hi there", None),
+            Message::user("Follow up"),
+        ];
+
+        let (_system, api_msgs) = AnthropicClient::convert_messages(&messages);
+
+        assert_eq!(api_msgs.len(), 3, "alternating roles should not be merged");
+        assert_eq!(api_msgs.first().unwrap().role, "user");
+        assert_eq!(api_msgs.get(1).unwrap().role, "assistant");
+        assert_eq!(api_msgs.get(2).unwrap().role, "user");
     }
 }

@@ -106,10 +106,22 @@ const DEFAULT_MEMORY: &str = "\
 Persistent notes across restarts. You should update this file frequently.
 ";
 
+/// Default content for ENVIRONMENT.md -- local environment notes.
+const DEFAULT_ENVIRONMENT: &str = "\
+# Environment
+
+Document details about the local system environment here — OS, installed tools, \
+quirks, workarounds, or anything that affects how you operate on this machine.
+
+This file is yours to maintain. Update it as you discover relevant details about \
+the system you're running on.
+";
+
 /// Default content for BOOTSTRAP.md -- first-run guidance.
 ///
 /// This file is written once during workspace creation and should be deleted
-/// by the agent after the first conversation.
+/// by the agent after the first conversation. A `.bootstrapped` sentinel file
+/// prevents it from being recreated on subsequent startups.
 const DEFAULT_BOOTSTRAP: &str = "\
 # First Run — You are Awake, you are What Remains.
 
@@ -343,7 +355,23 @@ pub async fn ensure_workspace(
     write_if_missing(&layout.user_md(), &user_content).await?;
 
     write_if_missing(&layout.memory_md(), DEFAULT_MEMORY).await?;
-    write_if_missing(&layout.bootstrap_md(), DEFAULT_BOOTSTRAP).await?;
+    write_if_missing(&layout.environment_md(), DEFAULT_ENVIRONMENT).await?;
+
+    // BOOTSTRAP.md is first-run only: write it once, then drop a sentinel so it
+    // is never recreated after the agent deletes it.
+    let sentinel = layout.root().join(".bootstrapped");
+    if !sentinel.exists() {
+        write_if_missing(&layout.bootstrap_md(), DEFAULT_BOOTSTRAP).await?;
+        // Create the sentinel after writing BOOTSTRAP.md so that if we crash
+        // between writing and sentinel creation, the next startup will retry.
+        tokio::fs::write(&sentinel, "").await.map_err(|e| {
+            ResiduumError::Workspace(format!(
+                "failed to write bootstrap sentinel {}: {e}",
+                sentinel.display()
+            ))
+        })?;
+    }
+
     write_if_missing(&layout.observer_md(), DEFAULT_OBSERVER_PROMPT).await?;
     write_if_missing(&layout.reflector_md(), DEFAULT_REFLECTOR_PROMPT).await?;
     write_if_missing(&layout.heartbeat_yml(), DEFAULT_HEARTBEAT).await?;
@@ -589,6 +617,57 @@ mod tests {
                 .join("workflows/always-on-assistant.md")
                 .exists(),
             "always-on-assistant.md"
+        );
+    }
+
+    #[tokio::test]
+    async fn bootstrap_creates_environment_md() {
+        let dir = tempfile::tempdir().unwrap();
+        let layout = WorkspaceLayout::new(dir.path().join("workspace"));
+
+        ensure_workspace(&layout, None, None).await.unwrap();
+
+        assert!(
+            layout.environment_md().exists(),
+            "ENVIRONMENT.md should exist"
+        );
+        let content = tokio::fs::read_to_string(layout.environment_md())
+            .await
+            .unwrap();
+        assert!(
+            content.contains("Environment"),
+            "ENVIRONMENT.md should contain default content"
+        );
+    }
+
+    #[tokio::test]
+    async fn bootstrap_does_not_recreate_bootstrap_md_after_deletion() {
+        let dir = tempfile::tempdir().unwrap();
+        let layout = WorkspaceLayout::new(dir.path().join("workspace"));
+
+        // First run: BOOTSTRAP.md and sentinel are created
+        ensure_workspace(&layout, None, None).await.unwrap();
+        assert!(
+            layout.bootstrap_md().exists(),
+            "BOOTSTRAP.md should exist on first run"
+        );
+        assert!(
+            layout.root().join(".bootstrapped").exists(),
+            "sentinel should exist after first run"
+        );
+
+        // Simulate agent deleting BOOTSTRAP.md after first conversation
+        tokio::fs::remove_file(layout.bootstrap_md()).await.unwrap();
+        assert!(
+            !layout.bootstrap_md().exists(),
+            "BOOTSTRAP.md should be deleted"
+        );
+
+        // Second run: BOOTSTRAP.md should NOT be recreated
+        ensure_workspace(&layout, None, None).await.unwrap();
+        assert!(
+            !layout.bootstrap_md().exists(),
+            "BOOTSTRAP.md should not be recreated after sentinel exists"
         );
     }
 

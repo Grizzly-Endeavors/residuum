@@ -23,6 +23,7 @@ use crate::projects::activation::SharedProjectState;
 use crate::pulse::scheduler::PulseScheduler;
 use crate::skills::SharedSkillState;
 use crate::tunnel::TunnelStatus;
+use crate::update::SharedUpdateStatus;
 use crate::workspace::layout::WorkspaceLayout;
 
 use super::protocol::ServerMessage;
@@ -43,6 +44,8 @@ pub enum ReloadSignal {
 pub enum GatewayExit {
     /// Clean shutdown (inbound channel closed).
     Shutdown,
+    /// Restart requested (binary updated, re-exec needed).
+    Restart,
 }
 
 /// A named command dispatched from any client channel to the server event loop.
@@ -160,6 +163,8 @@ pub(crate) struct GatewayRuntime {
     pub unsolicited_handles: HashMap<String, Arc<dyn ReplyHandle>>,
     /// When the last user message was received (for idle deadline recalculation on reload).
     pub last_user_message_instant: Option<tokio::time::Instant>,
+    // Cloud config for tunnel respawn
+    pub cloud_config: Option<crate::config::CloudConfig>,
     // Adapter lifecycle handles
     pub tunnel_handle: Option<tokio::task::JoinHandle<()>>,
     pub tunnel_shutdown_tx: Option<tokio::sync::watch::Sender<bool>>,
@@ -174,6 +179,12 @@ pub(crate) struct GatewayRuntime {
     pub command_tx: mpsc::Sender<ServerCommand>,
     /// Shared path policy for updating blocked paths on reload.
     pub path_policy: crate::tools::SharedPathPolicy,
+    /// Shared update status for periodic version checking.
+    pub update_status: SharedUpdateStatus,
+    /// Sender half for triggering restart (cloned into API state on rebind).
+    pub restart_tx: mpsc::Sender<()>,
+    /// Receives a signal to trigger a graceful restart (binary replaced).
+    pub restart_rx: mpsc::Receiver<()>,
 }
 
 #[cfg(test)]

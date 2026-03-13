@@ -125,8 +125,13 @@ pub(crate) async fn write_idx_jsonl(
 ///
 /// Returns an empty Vec for missing or empty files. Skips unparseable lines with a warning.
 pub(crate) fn read_idx_jsonl(path: &Path) -> Vec<IndexChunk> {
-    let Ok(content) = std::fs::read_to_string(path) else {
-        return Vec::new();
+    let content = match std::fs::read_to_string(path) {
+        Ok(c) => c,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Vec::new(),
+        Err(e) => {
+            tracing::warn!(path = %path.display(), error = %e, "failed to read idx.jsonl");
+            return Vec::new();
+        }
     };
 
     let mut chunks = Vec::new();

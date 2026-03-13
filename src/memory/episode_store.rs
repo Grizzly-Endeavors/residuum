@@ -279,7 +279,10 @@ pub(crate) async fn read_episode_lines(
             let line_num = idx + 1;
             match serde_json::from_str::<Message>(raw) {
                 Ok(msg) => format_message_line(&mut parts, line_num, &msg),
-                Err(_) => parts.push(format!("[line {line_num}] (unparseable)")),
+                Err(e) => {
+                    tracing::warn!(line = line_num, path = %path.display(), error = %e, "unparseable message line");
+                    parts.push(format!("[line {line_num}] (unparseable)"));
+                }
             }
         }
     }

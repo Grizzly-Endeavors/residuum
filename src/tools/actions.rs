@@ -170,10 +170,10 @@ impl Tool for ScheduleActionTool {
         {
             let mut store = self.store.lock().await;
             store.add(action);
-            store
-                .save()
-                .await
-                .map_err(|e| ToolError::Execution(format!("failed to save action store: {e}")))?;
+            store.save().await.map_err(|e| {
+                tracing::error!(error = %e, "failed to persist action store");
+                ToolError::Execution(format!("failed to save action store: {e}"))
+            })?;
         }
 
         self.notify.notify_one();
@@ -310,10 +310,10 @@ impl Tool for CancelActionTool {
             if !store.remove(&id) {
                 return Ok(ToolResult::error(format!("action '{id}' not found")));
             }
-            store
-                .save()
-                .await
-                .map_err(|e| ToolError::Execution(format!("failed to save action store: {e}")))?;
+            store.save().await.map_err(|e| {
+                tracing::error!(error = %e, "failed to persist action store");
+                ToolError::Execution(format!("failed to save action store: {e}"))
+            })?;
         }
 
         self.notify.notify_one();
@@ -356,7 +356,9 @@ fn naive_to_utc(
 ) -> Result<chrono::DateTime<Utc>, ToolError> {
     use chrono::TimeZone;
     match tz.from_local_datetime(&naive) {
-        chrono::LocalResult::Single(dt) | chrono::LocalResult::Ambiguous(dt, _) => {
+        chrono::LocalResult::Single(dt) => Ok(dt.with_timezone(&Utc)),
+        chrono::LocalResult::Ambiguous(dt, _) => {
+            tracing::warn!(datetime = %naive, timezone = %tz, "datetime is ambiguous during DST transition, using earlier interpretation");
             Ok(dt.with_timezone(&Utc))
         }
         chrono::LocalResult::None => Err(ToolError::InvalidArguments(format!(

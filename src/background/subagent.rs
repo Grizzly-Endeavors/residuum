@@ -269,6 +269,9 @@ pub(crate) async fn execute_subagent(
     )
     .await;
 
+    if texts.is_empty() {
+        tracing::warn!(task_id = %task_id, "sub-agent turn produced no text output");
+    }
     let summary = texts.pop().unwrap_or_default();
     let messages = recent_messages.messages().to_vec();
     Ok(SubAgentOutput { summary, messages })

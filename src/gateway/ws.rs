@@ -64,7 +64,7 @@ async fn handle_connection(socket: WebSocket, state: GatewayState) {
                     reply_to: None,
                     message: format!("malformed message: {e}"),
                 };
-                // Send directly to this client, not broadcast
+                tracing::warn!(error = %e, "malformed WebSocket message from client");
                 if state.broadcast_tx.send(err_msg).is_err() {
                     tracing::trace!("no broadcast receivers for error");
                 }

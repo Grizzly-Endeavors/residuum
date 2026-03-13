@@ -143,19 +143,21 @@ impl EventHandler for DiscordHandler {
         let response_text = match result.side_effect {
             Some(CommandSideEffect::Reload) => {
                 tracing::info!("reload requested via discord slash command");
-                self.reload_tx.send(ReloadSignal::Root).ok();
+                if self.reload_tx.send(ReloadSignal::Root).is_err() {
+                    tracing::warn!("reload_tx closed, reload dropped");
+                }
                 result.response
             }
             Some(CommandSideEffect::ServerCommand { name, args }) => {
                 tracing::info!(command = %name, "server command via discord slash command");
                 let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
-                self.command_tx
-                    .try_send(ServerCommand {
-                        name: name.to_string(),
-                        args,
-                        reply_tx: Some(reply_tx),
-                    })
-                    .ok();
+                if let Err(e) = self.command_tx.try_send(ServerCommand {
+                    name: name.to_string(),
+                    args,
+                    reply_tx: Some(reply_tx),
+                }) {
+                    tracing::warn!(command = %name, error = %e, "failed to dispatch server command");
+                }
                 match tokio::time::timeout(Duration::from_secs(10), reply_rx).await {
                     Ok(Ok(msg)) => msg,
                     _ => result.response,
@@ -244,12 +246,11 @@ async fn process_discord_attachments(
                 }
 
                 // Create companion inbox item for the attachment
-                let saved_name = saved
-                    .local_path
-                    .file_name()
-                    .unwrap_or_default()
-                    .to_string_lossy()
-                    .to_string();
+                let Some(file_name_os) = saved.local_path.file_name() else {
+                    tracing::warn!(path = %saved.local_path.display(), "attachment path has no filename, skipping companion item");
+                    continue;
+                };
+                let saved_name = file_name_os.to_string_lossy().to_string();
                 let content_type_str = info.content_type.as_deref().unwrap_or("unknown");
                 let companion = inbox::InboxItem {
                     title: format!("Discord attachment: {}", info.filename),

@@ -54,7 +54,7 @@ mod background_integration {
             timestamp: result.timestamp,
         };
 
-        let delivered = router.deliver_to_inbox(&notification).await;
+        let delivered = router.deliver_to_inbox(&notification).await.unwrap();
         assert!(delivered, "should deliver to inbox");
 
         // Verify inbox item was created

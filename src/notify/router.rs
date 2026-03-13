@@ -54,25 +54,29 @@ impl NotificationRouter {
 
     /// Deliver a notification directly to the inbox channel, bypassing routing.
     ///
-    /// Returns `true` if delivery succeeded, `false` if no inbox is configured
-    /// or delivery failed.
-    pub async fn deliver_to_inbox(&self, notification: &Notification) -> bool {
+    /// Returns `Ok(true)` if delivery succeeded, `Ok(false)` if no inbox is configured,
+    /// or `Err` if delivery failed.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the inbox channel is configured but delivery fails.
+    pub async fn deliver_to_inbox(&self, notification: &Notification) -> anyhow::Result<bool> {
         if let Some(ref inbox) = self.inbox_channel {
-            if let Err(e) = inbox.deliver(notification).await {
+            inbox.deliver(notification).await.map_err(|e| {
                 tracing::warn!(
                     task = %notification.task_name,
                     error = %e,
                     "direct inbox delivery failed"
                 );
-                return false;
-            }
-            true
+                e
+            })?;
+            Ok(true)
         } else {
             tracing::warn!(
                 task = %notification.task_name,
                 "direct inbox delivery requested but no inbox configured"
             );
-            false
+            Ok(false)
         }
     }
 
@@ -87,29 +91,33 @@ impl NotificationRouter {
         notification: &Notification,
         channels: &[ChannelTarget],
     ) -> RouteOutcome {
+        let mut outcome = RouteOutcome::default();
+
         if channels.is_empty() {
             tracing::warn!(
                 task = %notification.task_name,
                 "notification routed to zero channels"
             );
+            outcome.unrouted = true;
+            return outcome;
         }
-
-        let mut outcome = RouteOutcome::default();
 
         for target in channels {
             match target {
                 ChannelTarget::Builtin(BuiltinChannel::AgentWake) => outcome.agent_wake = true,
                 ChannelTarget::Builtin(BuiltinChannel::AgentFeed) => outcome.agent_feed = true,
                 ChannelTarget::Builtin(BuiltinChannel::Inbox) => {
-                    outcome.inbox = true;
                     if let Some(ref inbox) = self.inbox_channel {
-                        if let Err(e) = inbox.deliver(notification).await {
-                            tracing::warn!(
-                                channel = "inbox",
-                                task = %notification.task_name,
-                                error = %e,
-                                "inbox delivery failed"
-                            );
+                        match inbox.deliver(notification).await {
+                            Ok(()) => outcome.inbox = true,
+                            Err(e) => {
+                                tracing::warn!(
+                                    channel = "inbox",
+                                    task = %notification.task_name,
+                                    error = %e,
+                                    "inbox delivery failed"
+                                );
+                            }
                         }
                     } else {
                         tracing::warn!(
@@ -243,7 +251,7 @@ mod tests {
         assert_eq!(items.len(), 1, "should create one inbox item");
     }
 
-    /// When channels is empty, `route()` returns an empty outcome
+    /// When channels is empty, `route()` returns an outcome with `unrouted = true`
     /// and emits a `tracing::warn` to surface the misconfiguration.
     #[tokio::test]
     async fn route_unrouted_task_returns_empty() {
@@ -256,6 +264,10 @@ mod tests {
         assert!(!outcome.agent_feed);
         assert!(!outcome.inbox);
         assert!(outcome.external_dispatched.is_empty());
+        assert!(
+            outcome.unrouted,
+            "should set unrouted flag when channels is empty"
+        );
     }
 
     #[tokio::test]
@@ -282,8 +294,11 @@ mod tests {
         let router = NotificationRouter::new(HashMap::new(), Some(inbox_channel));
 
         let notif = make_notification("direct_task");
-        let ok = router.deliver_to_inbox(&notif).await;
-        assert!(ok, "should succeed when inbox is configured");
+        let result = router.deliver_to_inbox(&notif).await;
+        assert!(
+            matches!(result, Ok(true)),
+            "should return Ok(true) when inbox is configured and delivery succeeds"
+        );
 
         let items: Vec<_> = std::fs::read_dir(&inbox_dir)
             .unwrap()
@@ -296,8 +311,11 @@ mod tests {
     async fn deliver_to_inbox_without_channel() {
         let router = NotificationRouter::empty();
         let notif = make_notification("orphan_task");
-        let ok = router.deliver_to_inbox(&notif).await;
-        assert!(!ok, "should return false when no inbox is configured");
+        let result = router.deliver_to_inbox(&notif).await;
+        assert!(
+            matches!(result, Ok(false)),
+            "should return Ok(false) when no inbox is configured"
+        );
     }
 
     #[tokio::test]

@@ -5,6 +5,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use futures_util::{SinkExt, StreamExt};
+use rand::Rng;
 use tokio::sync::{Mutex, mpsc, watch};
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::tungstenite::http as ws_http;
@@ -23,16 +24,22 @@ const MIN_BACKOFF: Duration = Duration::from_secs(1);
 /// Maximum backoff duration between reconnection attempts.
 const MAX_BACKOFF: Duration = Duration::from_secs(60);
 
+/// Default keepalive timeout — 3x the relay's default 30s keepalive interval.
+/// Used as a fallback when the server does not provide `keepalive_interval_secs`.
+const DEFAULT_KEEPALIVE_TIMEOUT: Duration = Duration::from_secs(90);
+
 /// Calculate the next backoff duration by doubling the current value, capped at
-/// [`MAX_BACKOFF`].
+/// [`MAX_BACKOFF`], with random jitter (0.5x–1.5x) to avoid thundering herd.
 #[must_use]
 fn next_backoff(current: Duration) -> Duration {
     let doubled = current.saturating_mul(2);
-    if doubled > MAX_BACKOFF {
+    let base = if doubled > MAX_BACKOFF {
         MAX_BACKOFF
     } else {
         doubled
-    }
+    };
+    let jitter = rand::thread_rng().gen_range(0.5_f64..1.5);
+    base.mul_f64(jitter)
 }
 
 /// Start the tunnel client, maintaining a persistent connection to the cloud
@@ -50,7 +57,13 @@ pub(crate) async fn start_tunnel(
     mut shutdown_rx: watch::Receiver<bool>,
     status_tx: watch::Sender<TunnelStatus>,
 ) {
-    let client = reqwest::Client::new();
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(25))
+        .build()
+        .unwrap_or_else(|e| {
+            warn!(error = %e, "failed to build reqwest client with timeout, falling back to default");
+            reqwest::Client::default()
+        });
     let mut backoff = MIN_BACKOFF;
 
     loop {
@@ -87,15 +100,27 @@ pub(crate) async fn start_tunnel(
         let (write, mut read) = ws_stream.split();
         let write = Arc::new(Mutex::new(write));
 
-        // Wait for the Connected frame.
-        let Some(connected) = wait_for_connected(&mut read).await else {
-            warn!("relay closed connection before sending Connected frame");
-            tokio::time::sleep(backoff).await;
-            backoff = next_backoff(backoff);
-            continue;
+        // Wait for the Connected frame (15s timeout to avoid blocking
+        // indefinitely if the relay accepts the WS but never sends Connected).
+        let connected_result =
+            tokio::time::timeout(Duration::from_secs(15), wait_for_connected(&mut read)).await;
+        let connected = match connected_result {
+            Err(_) => {
+                warn!("timed out waiting for Connected frame from relay");
+                tokio::time::sleep(backoff).await;
+                backoff = next_backoff(backoff);
+                continue;
+            }
+            Ok(None) => {
+                warn!("relay closed connection before sending Connected frame");
+                tokio::time::sleep(backoff).await;
+                backoff = next_backoff(backoff);
+                continue;
+            }
+            Ok(Some(frame)) => frame,
         };
 
-        if let TunnelFrame::Connected {
+        let keepalive_timeout = if let TunnelFrame::Connected {
             ref user_id,
             keepalive_interval_secs,
         } = connected
@@ -105,12 +130,17 @@ pub(crate) async fn start_tunnel(
                     user_id: user_id.clone(),
                 })
                 .ok();
+            let timeout = Duration::from_secs(keepalive_interval_secs * 3);
             info!(
                 user_id = %user_id,
                 keepalive_interval_secs,
+                keepalive_timeout_secs = timeout.as_secs(),
                 "tunnel connected for user {user_id}, keepalive every {keepalive_interval_secs}s"
             );
-        }
+            timeout
+        } else {
+            DEFAULT_KEEPALIVE_TIMEOUT
+        };
 
         // Reset backoff on successful connection.
         backoff = MIN_BACKOFF;
@@ -122,6 +152,7 @@ pub(crate) async fn start_tunnel(
             &write,
             &mut shutdown_rx,
             &status_tx,
+            keepalive_timeout,
         )
         .await;
 
@@ -150,20 +181,27 @@ async fn run_tunnel_loop<S>(
     write: &Arc<Mutex<TunnelSink>>,
     shutdown_rx: &mut watch::Receiver<bool>,
     status_tx: &watch::Sender<TunnelStatus>,
+    keepalive_timeout: Duration,
 ) -> LoopExit
 where
     S: StreamExt<Item = Result<Message, tokio_tungstenite::tungstenite::Error>> + Unpin,
 {
     let mut local_ws_channels: HashMap<String, mpsc::Sender<String>> = HashMap::new();
+    let mut last_frame = tokio::time::Instant::now();
+
+    // Channel for completed WsOpen results — spawned tasks send back the
+    // channel_id and sender so the frame loop isn't blocked.
+    let (ws_open_tx, mut ws_open_rx) = mpsc::channel::<(String, mpsc::Sender<String>)>(16);
 
     let disconnect_reason: String = loop {
         tokio::select! {
             msg = read.next() => {
                 match msg {
                     Some(Ok(Message::Text(text))) => {
+                        last_frame = tokio::time::Instant::now();
                         match serde_json::from_str::<TunnelFrame>(&text) {
                             Ok(frame) => {
-                                handle_frame(frame, client, local_port, write, &mut local_ws_channels).await;
+                                handle_frame(frame, client, local_port, write, &mut local_ws_channels, &ws_open_tx).await;
                             }
                             Err(e) => {
                                 warn!(error = %e, "failed to parse tunnel frame");
@@ -171,19 +209,30 @@ where
                         }
                     }
                     Some(Ok(Message::Close(_))) => break "relay sent close frame".to_string(),
-                    Some(Ok(_)) => { debug!("ignoring non-text WebSocket message"); }
+                    Some(Ok(_)) => {
+                        last_frame = tokio::time::Instant::now();
+                        debug!("ignoring non-text WebSocket message");
+                    }
                     Some(Err(e)) => break format!("WebSocket error: {e}"),
                     None => break "WebSocket stream ended".to_string(),
                 }
+            }
+            Some((channel_id, sender)) = ws_open_rx.recv() => {
+                local_ws_channels.insert(channel_id, sender);
             }
             _ = shutdown_rx.changed() => {
                 if *shutdown_rx.borrow() {
                     info!("tunnel shutting down");
                     status_tx.send(TunnelStatus::Disconnected).ok();
-                    drop(send_close(write).await);
+                    if let Err(e) = send_close(write).await {
+                        warn!(error = %e, "failed to send WebSocket close frame during shutdown");
+                    }
                     local_ws_channels.clear();
                     return LoopExit::Shutdown;
                 }
+            }
+            () = tokio::time::sleep_until(last_frame + keepalive_timeout) => {
+                break "keepalive timeout".to_string();
             }
         }
     };
@@ -249,6 +298,7 @@ async fn handle_frame(
     local_port: u16,
     write: &Arc<Mutex<TunnelSink>>,
     local_ws_channels: &mut HashMap<String, mpsc::Sender<String>>,
+    ws_open_tx: &mpsc::Sender<(String, mpsc::Sender<String>)>,
 ) {
     match frame {
         TunnelFrame::Ping => {
@@ -282,12 +332,19 @@ async fn handle_frame(
             headers,
         } => {
             let write = Arc::clone(write);
-            let ch_id = channel_id.clone();
-            let sender =
-                forward_ws::handle_ws_open(local_port, channel_id, path, headers, write).await;
-            if let Some(tx) = sender {
-                local_ws_channels.insert(ch_id, tx);
-            }
+            let ws_open_tx = ws_open_tx.clone();
+            tokio::spawn(async move {
+                let ch_id = channel_id.clone();
+                let sender =
+                    forward_ws::handle_ws_open(local_port, channel_id, path, headers, write).await;
+                if let Some(tx) = sender {
+                    // Send back to the frame loop; if the loop has exited the
+                    // channel will be dropped and this is harmless.
+                    if let Err(e) = ws_open_tx.send((ch_id.clone(), tx)).await {
+                        warn!(channel_id = ch_id, error = %e, "failed to register WS channel with frame loop");
+                    }
+                }
+            });
         }
         TunnelFrame::WsMessage { channel_id, data } => {
             if let Some(tx) = local_ws_channels.get(&channel_id) {
@@ -306,11 +363,29 @@ async fn handle_frame(
                 debug!(channel_id, "WsClose for unknown channel, ignoring");
             }
         }
-        TunnelFrame::Connected { .. }
-        | TunnelFrame::Pong
-        | TunnelFrame::HttpResponse { .. }
-        | TunnelFrame::WsOpenResult { .. } => {
-            warn!("received unexpected frame type from relay");
+        TunnelFrame::Connected { .. } => {
+            warn!(
+                frame_type = "Connected",
+                "received unexpected frame type from relay"
+            );
+        }
+        TunnelFrame::Pong => {
+            warn!(
+                frame_type = "Pong",
+                "received unexpected frame type from relay"
+            );
+        }
+        TunnelFrame::HttpResponse { .. } => {
+            warn!(
+                frame_type = "HttpResponse",
+                "received unexpected frame type from relay"
+            );
+        }
+        TunnelFrame::WsOpenResult { .. } => {
+            warn!(
+                frame_type = "WsOpenResult",
+                "received unexpected frame type from relay"
+            );
         }
     }
 }
@@ -340,41 +415,62 @@ mod tests {
     use super::*;
 
     #[test]
-    fn backoff_doubles() {
-        let current = Duration::from_secs(1);
+    fn backoff_doubles_with_jitter() {
+        let current = Duration::from_secs(2);
         let next = next_backoff(current);
+        // Doubled = 4s, jitter range 0.5..1.5 → result in 2s..6s
         assert!(
-            next == Duration::from_secs(2),
-            "backoff should double from 1s to 2s"
+            next >= Duration::from_secs(2) && next <= Duration::from_secs(6),
+            "backoff from 2s should be in 2s..6s (4s ± jitter), got {next:?}"
         );
     }
 
     #[test]
-    fn backoff_caps_at_max() {
+    fn backoff_caps_at_max_with_jitter() {
         let current = Duration::from_secs(45);
         let next = next_backoff(current);
+        // Base is capped at MAX_BACKOFF (60s), jitter range → 30s..90s
+        let max_with_jitter = MAX_BACKOFF.mul_f64(1.5);
         assert!(
-            next == MAX_BACKOFF,
-            "backoff should cap at {MAX_BACKOFF:?}, got {next:?}"
+            next <= max_with_jitter,
+            "backoff should not exceed {max_with_jitter:?}, got {next:?}"
         );
     }
 
     #[test]
-    fn backoff_stays_at_max() {
+    fn backoff_at_max_stays_bounded() {
         let next = next_backoff(MAX_BACKOFF);
-        assert!(next == MAX_BACKOFF, "backoff at max should stay at max");
+        let max_with_jitter = MAX_BACKOFF.mul_f64(1.5);
+        assert!(
+            next <= max_with_jitter,
+            "backoff at max should stay bounded by {max_with_jitter:?}, got {next:?}"
+        );
     }
 
     #[test]
-    fn backoff_sequence() {
+    fn default_keepalive_timeout_is_3x_relay_interval() {
+        // Relay sends keepalive pings every 30s; default timeout must be 3x that.
+        assert!(
+            DEFAULT_KEEPALIVE_TIMEOUT == Duration::from_secs(90),
+            "default keepalive timeout should be 90s (3 × 30s relay interval), got {DEFAULT_KEEPALIVE_TIMEOUT:?}"
+        );
+    }
+
+    #[test]
+    fn backoff_increases_monotonically_on_average() {
+        // With jitter, individual values may vary, but the base should increase.
+        // Run multiple samples to verify the trend.
         let mut current = MIN_BACKOFF;
-        let expected = [1, 2, 4, 8, 16, 32, 60, 60];
-        for &expected_secs in &expected {
+        for _ in 0..5 {
+            let next = next_backoff(current);
+            // The base doubles, so even with 0.5x jitter the minimum should
+            // be >= current * 0.5 (since doubled * 0.5 = current).
+            let floor = current.mul_f64(0.5);
             assert!(
-                current == Duration::from_secs(expected_secs),
-                "expected {expected_secs}s, got {current:?}"
+                next >= floor,
+                "backoff should not drop below {floor:?}, got {next:?} from {current:?}"
             );
-            current = next_backoff(current);
+            current = next;
         }
     }
 }

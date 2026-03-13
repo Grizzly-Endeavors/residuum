@@ -18,6 +18,7 @@ pub mod cloud;
 pub mod config;
 pub mod providers;
 pub mod secrets;
+pub mod update;
 pub mod workspace;
 
 mod embedded {

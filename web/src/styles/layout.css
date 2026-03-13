@@ -336,20 +336,45 @@
     display: none;
   }
   .workspace-view {
+    position: relative;
     flex-direction: column;
     border-right: none;
   }
   .workspace-tree-pane {
+    flex: 1;
+    min-height: 0;
     width: 100%;
     border-right: none;
     border-bottom: 1px solid var(--border-subtle);
   }
-  .workspace-view.mobile-editor-open .workspace-tree-pane {
+
+  /* Hide editor by default on mobile; show tree */
+  .workspace-view:not(.mobile-editor-open) .workspace-editor {
     display: none;
+  }
+
+  /* Fade transition between tree and editor views */
+  .workspace-tree-pane,
+  .workspace-editor {
+    transition:
+      opacity 0.25s ease-out,
+      visibility 0.25s ease-out;
+  }
+
+  .workspace-view.mobile-editor-open .workspace-tree-pane {
+    opacity: 0;
+    visibility: hidden;
+    position: absolute;
+    pointer-events: none;
   }
   .workspace-view.mobile-editor-open .workspace-editor {
     flex: 1;
   }
+  .workspace-view:not(.mobile-editor-open) .workspace-tree-pane {
+    opacity: 1;
+    visibility: visible;
+  }
+
   .workspace-mobile-back {
     display: flex;
   }

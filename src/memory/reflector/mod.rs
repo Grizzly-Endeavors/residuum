@@ -112,11 +112,17 @@ impl Reflector {
         }
 
         // Load content guidance from disk, falling back to embedded constant.
-        let content_guidance = tokio::fs::read_to_string(layout.reflector_md())
-            .await
-            .ok()
-            .and_then(|s| if s.trim().is_empty() { None } else { Some(s) })
-            .unwrap_or_else(|| REFLECTION_CONTENT_PROMPT.to_string());
+        let content_guidance = match tokio::fs::read_to_string(layout.reflector_md()).await {
+            Ok(s) if !s.trim().is_empty() => s,
+            Ok(_) => REFLECTION_CONTENT_PROMPT.to_string(),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                REFLECTION_CONTENT_PROMPT.to_string()
+            }
+            Err(e) => {
+                tracing::warn!(path = %layout.reflector_md().display(), error = %e, "failed to read reflector guidance, using default");
+                REFLECTION_CONTENT_PROMPT.to_string()
+            }
+        };
 
         // Serialize the flat observations for the LLM prompt — keep full objects
         // so the model has project_context and timestamp info for intelligent merging.

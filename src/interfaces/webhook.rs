@@ -51,7 +51,8 @@ pub async fn webhook_handler(
     // Parse body as JSON or plain text
     let content = match serde_json::from_slice::<WebhookPayload>(&body) {
         Ok(payload) => payload.content,
-        Err(_) => {
+        Err(e) => {
+            tracing::debug!(error = %e, "webhook body is not valid JSON, falling back to plain text");
             // Try as plain text
             match String::from_utf8(body.to_vec()) {
                 Ok(text) if !text.trim().is_empty() => text,

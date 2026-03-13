@@ -80,14 +80,33 @@ pub(super) async fn run_telegram_polling(
     }
 
     let mut offset: i32 = 0;
+    let mut consecutive_errors: u32 = 0;
 
     loop {
         let updates = tokio::select! {
             result = bot.get_updates().offset(offset).timeout(30) => {
                 match result {
-                    Ok(updates) => updates,
+                    Ok(updates) => {
+                        if consecutive_errors > 0 {
+                            tracing::info!(
+                                attempts = consecutive_errors,
+                                "telegram polling recovered"
+                            );
+                            consecutive_errors = 0;
+                        }
+                        updates
+                    }
                     Err(e) => {
-                        tracing::warn!(error = %e, "telegram polling error, retrying in 5s");
+                        consecutive_errors += 1;
+                        if consecutive_errors == 1 {
+                            tracing::warn!(error = %e, "telegram polling error, retrying");
+                        } else {
+                            tracing::debug!(
+                                error = %e,
+                                attempt = consecutive_errors,
+                                "telegram polling still failing"
+                            );
+                        }
                         tokio::time::sleep(Duration::from_secs(5)).await;
                         continue;
                     }
@@ -255,19 +274,21 @@ async fn handle_command(
     let response_text = match result.side_effect {
         Some(CommandSideEffect::Reload) => {
             tracing::info!("reload requested via telegram command");
-            ctx.reload_tx.send(ReloadSignal::Root).ok();
+            if ctx.reload_tx.send(ReloadSignal::Root).is_err() {
+                tracing::warn!("reload_tx closed, reload dropped");
+            }
             result.response
         }
         Some(CommandSideEffect::ServerCommand { name, args }) => {
             tracing::info!(command = %name, "server command via telegram command");
             let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
-            ctx.command_tx
-                .try_send(ServerCommand {
-                    name: name.to_string(),
-                    args,
-                    reply_tx: Some(reply_tx),
-                })
-                .ok();
+            if let Err(e) = ctx.command_tx.try_send(ServerCommand {
+                name: name.to_string(),
+                args,
+                reply_tx: Some(reply_tx),
+            }) {
+                tracing::warn!(command = %name, error = %e, "failed to dispatch server command");
+            }
             match tokio::time::timeout(Duration::from_secs(10), reply_rx).await {
                 Ok(Ok(msg)) => msg,
                 _ => result.response,
@@ -446,12 +467,11 @@ async fn handle_attachment(
             }
 
             // Create companion inbox item
-            let saved_name = saved
-                .local_path
-                .file_name()
-                .unwrap_or_default()
-                .to_string_lossy()
-                .to_string();
+            let Some(file_name_os) = saved.local_path.file_name() else {
+                tracing::warn!(path = %saved.local_path.display(), "attachment path has no filename, skipping companion item");
+                return;
+            };
+            let saved_name = file_name_os.to_string_lossy().to_string();
             let content_type_str = info.content_type.as_deref().unwrap_or("unknown");
             let companion = inbox::InboxItem {
                 title: format!("Telegram attachment: {filename}"),

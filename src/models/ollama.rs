@@ -161,7 +161,14 @@ impl ModelProvider for OllamaClient {
                     return Err(ModelError::Api(error_body));
                 }
 
-                let chat_response: OllamaChatResponse = response.json().await?;
+                let body = response
+                    .text()
+                    .await
+                    .map_err(|e| map_request_error(e, timeout_secs))?;
+                let chat_response: OllamaChatResponse =
+                    serde_json::from_str(&body).map_err(|e| {
+                        ModelError::Parse(format!("failed to parse ollama response: {e}"))
+                    })?;
 
                 let content = chat_response.message.content.unwrap_or_default();
                 let tool_calls = chat_response
@@ -393,7 +400,14 @@ impl EmbeddingProvider for OllamaEmbeddingClient {
                     return Err(ModelError::Api(error_body));
                 }
 
-                let embed_response: OllamaEmbedResponse = response.json().await?;
+                let body = response
+                    .text()
+                    .await
+                    .map_err(|e| map_request_error(e, timeout_secs))?;
+                let embed_response: OllamaEmbedResponse =
+                    serde_json::from_str(&body).map_err(|e| {
+                        ModelError::Parse(format!("failed to parse ollama embed response: {e}"))
+                    })?;
 
                 let dimensions =
                     embed_response

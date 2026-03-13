@@ -96,10 +96,16 @@ pub(super) async fn handle_background_result(
                         source: result.source,
                         timestamp: result.timestamp,
                     };
-                    ctx.router.deliver_to_inbox(&notification).await;
+                    if let Err(e) = ctx.router.deliver_to_inbox(&notification).await {
+                        tracing::warn!(
+                            task = %result.task_name,
+                            error = %e,
+                            "inbox delivery failed"
+                        );
+                    }
                 }
                 ChannelTarget::External(ext_name) => {
-                    tracing::debug!(
+                    tracing::warn!(
                         channel = %ext_name,
                         task = %result.task_name,
                         "direct channel routing (external channels not yet supported for direct)"

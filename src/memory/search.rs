@@ -710,7 +710,11 @@ fn parse_line_num(doc: &TantivyDocument, field: Field) -> Option<usize> {
     if text.is_empty() {
         None
     } else {
-        text.parse().ok()
+        text.parse()
+            .map_err(|e| {
+                tracing::warn!(value = %text, error = %e, "failed to parse stored line number");
+            })
+            .ok()
     }
 }
 
@@ -779,14 +783,16 @@ fn make_relative(file: &Path, base: &Path) -> String {
 
 /// Get the mtime of a file as an ISO-ish string, or empty on failure.
 fn file_mtime_str(path: &Path) -> String {
-    std::fs::metadata(path)
-        .and_then(|m| m.modified())
-        .ok()
-        .map(|t| {
+    match std::fs::metadata(path).and_then(|m| m.modified()) {
+        Ok(t) => {
             let dt: chrono::DateTime<chrono::Utc> = t.into();
             dt.format("%Y-%m-%dT%H:%M:%S").to_string()
-        })
-        .unwrap_or_default()
+        }
+        Err(e) => {
+            tracing::warn!(path = %path.display(), error = %e, "failed to get file mtime");
+            String::new()
+        }
+    }
 }
 
 /// Recursively collect `.obs.json` and `.idx.jsonl` files with their mtimes.

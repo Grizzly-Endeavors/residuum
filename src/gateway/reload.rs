@@ -367,8 +367,16 @@ async fn reload_gateway(rt: &mut GatewayRuntime, new_cfg: &Config) {
                 setup_done: None,
                 secret_lock: std::sync::Arc::new(tokio::sync::Mutex::new(())),
             };
-            let app =
-                crate::gateway::event_loop::build_gateway_app(state, new_cfg, config_api_state);
+            let update_api_state = crate::gateway::web::update::UpdateApiState {
+                update_status: std::sync::Arc::clone(&rt.update_status),
+                restart_tx: rt.restart_tx.clone(),
+            };
+            let app = crate::gateway::event_loop::build_gateway_app(
+                state,
+                new_cfg,
+                config_api_state,
+                update_api_state,
+            );
 
             let new_handle = tokio::spawn(async move {
                 if let Err(e) = axum::serve(listener, app)
@@ -466,7 +474,7 @@ async fn reload_discord_adapter(rt: &mut GatewayRuntime, new_cfg: &Config) {
             rt.tz,
             rx,
         );
-        rt.discord_handle = Some(tokio::spawn(async move {
+        rt.discord_handle = Some(crate::spawn::spawn_monitored("discord", async move {
             if let Err(e) = discord.start().await {
                 tracing::error!(error = %e, "discord interface failed after reload");
             }
@@ -498,13 +506,15 @@ async fn reload_tunnel(rt: &mut GatewayRuntime, new_cfg: &Config) {
         let cloud = cloud_cfg.clone();
         let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
         let (status_tx, status_rx) = tokio::sync::watch::channel(TunnelStatus::Disconnected);
-        rt.tunnel_handle = Some(tokio::spawn(async move {
+        rt.tunnel_handle = Some(crate::spawn::spawn_monitored("tunnel", async move {
             crate::tunnel::start_tunnel(cloud, shutdown_rx, status_tx).await;
         }));
         rt.tunnel_shutdown_tx = Some(shutdown_tx);
         rt.tunnel_status_rx = status_rx;
+        rt.cloud_config.clone_from(&new_cfg.cloud);
         tracing::info!("tunnel restarted with new config");
     } else {
+        rt.cloud_config = None;
         tracing::info!("cloud tunnel removed from config");
     }
 }
@@ -536,7 +546,7 @@ async fn reload_telegram_adapter(rt: &mut GatewayRuntime, new_cfg: &Config) {
             rt.tz,
             rx,
         );
-        rt.telegram_handle = Some(tokio::spawn(async move {
+        rt.telegram_handle = Some(crate::spawn::spawn_monitored("telegram", async move {
             if let Err(e) = telegram.start().await {
                 tracing::error!(error = %e, "telegram interface failed after reload");
             }

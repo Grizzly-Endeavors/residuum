@@ -173,7 +173,16 @@ impl PulseScheduler {
                         || Duration::hours(24),
                         |(start, end)| active_period_duration(start, end),
                     );
-                    let spacing = active_duration / i32::try_from(tc).unwrap_or(i32::MAX);
+                    let spacing = if let Ok(tc_i32) = i32::try_from(tc) {
+                        active_duration / tc_i32
+                    } else {
+                        tracing::warn!(
+                            pulse = %pulse.name,
+                            trigger_count = tc,
+                            "trigger_count exceeds i32::MAX, spacing collapsed to near-zero; pulse will fire at schedule rate"
+                        );
+                        active_duration / i32::MAX
+                    };
                     let jittered = apply_jitter(spacing, &pulse.name, now);
                     // Effective interval is max(schedule_duration, spacing_with_jitter)
                     if jittered > duration {
@@ -201,8 +210,14 @@ impl PulseScheduler {
             }
         }
 
-        if !due.is_empty() {
-            self.save_state();
+        if !due.is_empty()
+            && let Err(e) = self.save_state()
+        {
+            tracing::warn!(
+                pulses = ?due.iter().map(|p| &p.name).collect::<Vec<_>>(),
+                error = %e,
+                "failed to persist pulse state; these pulses may re-fire on restart"
+            );
         }
 
         due
@@ -229,9 +244,9 @@ impl PulseScheduler {
     }
 
     /// Persist current state to disk (no-op if no state path is configured).
-    fn save_state(&self) {
+    fn save_state(&self) -> Result<(), Box<dyn std::error::Error>> {
         let Some(ref path) = self.state_path else {
-            return;
+            return Ok(());
         };
 
         let state = PulseState {
@@ -248,20 +263,24 @@ impl PulseScheduler {
                         error = %err,
                         "failed to write pulse state temp file"
                     );
-                    return;
+                    return Err(err.into());
                 }
                 if let Err(err) = std::fs::rename(&tmp, path) {
                     tracing::warn!(
+                        tmp = %tmp.display(),
                         path = %path.display(),
                         error = %err,
                         "failed to rename pulse state file"
                     );
+                    return Err(err.into());
                 }
             }
             Err(err) => {
                 tracing::warn!(error = %err, "failed to serialize pulse state");
+                return Err(err.into());
             }
         }
+        Ok(())
     }
 }
 

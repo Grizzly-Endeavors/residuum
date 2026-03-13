@@ -34,9 +34,6 @@ pub fn init_providers(
     let (observer, reflector) = match build_memory_components(cfg, tz, http.clone()) {
         Ok(pair) => pair,
         Err(err) => {
-            eprintln!(
-                "warning: memory subsystem failed to initialize, running without observer/reflector: {err}"
-            );
             tracing::warn!(error = %err, "memory subsystem degraded: observer and reflector disabled");
             (Observer::disabled(tz), Reflector::disabled(tz))
         }
@@ -55,7 +52,6 @@ pub fn init_providers(
             ep.map(std::sync::Arc::from)
         }
         Err(err) => {
-            eprintln!("warning: embedding provider failed to initialize: {err}");
             tracing::warn!(error = %err, "embedding provider degraded");
             None
         }

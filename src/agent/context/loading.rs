@@ -98,7 +98,7 @@ pub(crate) async fn build_subagents_context_string(subagents_dir: &Path) -> Opti
             }
         }
         Err(e) => {
-            tracing::warn!(error = %e, "failed to scan subagent presets");
+            tracing::error!(error = %e, "failed to scan subagent presets");
             None
         }
     }

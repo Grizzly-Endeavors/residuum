@@ -218,18 +218,16 @@ pub async fn run_wake_turn_handler(
             tokio::select! {
                 result = &mut turn => break result,
                 next_msg = rt.inbound_rx.recv() => {
-                    if let Some(next_routed) = next_msg {
-                        drop(interrupt_tx.try_send(
-                            Interrupt::UserMessage(next_routed.message)
-                        ));
-                    }
+                    if let Some(next_routed) = next_msg
+                        && interrupt_tx.try_send(Interrupt::UserMessage(next_routed.message)).is_err() {
+                            tracing::warn!("interrupt channel full, dropping user message mid-turn");
+                        }
                 }
                 bg_result = rt.background_result_rx.recv() => {
-                    if let Some(result) = bg_result {
-                        drop(interrupt_tx.try_send(
-                            Interrupt::BackgroundResult(result)
-                        ));
-                    }
+                    if let Some(result) = bg_result
+                        && interrupt_tx.try_send(Interrupt::BackgroundResult(result)).is_err() {
+                            tracing::warn!("interrupt channel full, dropping background result mid-turn");
+                        }
                 }
                 _ = rt.reload_rx.changed() => {
                     tracing::info!("reload signal received during wake turn, deferring");
@@ -324,14 +322,16 @@ pub async fn handle_inbound_message(
             tokio::select! {
                 result = &mut turn => break result,
                 next_msg = rt.inbound_rx.recv() => {
-                    if let Some(next_routed) = next_msg {
-                        drop(interrupt_tx.try_send(Interrupt::UserMessage(next_routed.message)));
-                    }
+                    if let Some(next_routed) = next_msg
+                        && interrupt_tx.try_send(Interrupt::UserMessage(next_routed.message)).is_err() {
+                            tracing::warn!("interrupt channel full, dropping user message mid-turn");
+                        }
                 }
                 bg_result = rt.background_result_rx.recv() => {
-                    if let Some(result) = bg_result {
-                        drop(interrupt_tx.try_send(Interrupt::BackgroundResult(result)));
-                    }
+                    if let Some(result) = bg_result
+                        && interrupt_tx.try_send(Interrupt::BackgroundResult(result)).is_err() {
+                            tracing::warn!("interrupt channel full, dropping background result mid-turn");
+                        }
                 }
                 _ = rt.reload_rx.changed() => {
                     tracing::info!("reload signal received during active turn, deferring");

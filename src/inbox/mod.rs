@@ -96,12 +96,22 @@ pub async fn quick_add(
 /// # Errors
 /// Returns an error if serialization or file operations fail.
 pub async fn save_item(inbox_dir: &Path, filename: &str, item: &InboxItem) -> anyhow::Result<()> {
+    use anyhow::Context as _;
+
     let target = inbox_dir.join(filename);
     let tmp = inbox_dir.join(format!(".{filename}.tmp"));
 
-    let json = serde_json::to_string_pretty(item)?;
-    tokio::fs::write(&tmp, json).await?;
-    tokio::fs::rename(&tmp, &target).await?;
+    let json = serde_json::to_string_pretty(item)
+        .with_context(|| format!("failed to serialize inbox item for {}", target.display()))?;
+    tokio::fs::write(&tmp, json)
+        .await
+        .with_context(|| format!("failed to write inbox item to {}", tmp.display()))?;
+    if let Err(e) = tokio::fs::rename(&tmp, &target).await {
+        tracing::warn!(tmp = %tmp.display(), target = %target.display(), error = %e, "failed to rename tmp file, orphaned tmp may remain");
+        return Err(e).with_context(|| {
+            format!("failed to rename {} to {}", tmp.display(), target.display())
+        });
+    }
 
     Ok(())
 }
@@ -111,8 +121,13 @@ pub async fn save_item(inbox_dir: &Path, filename: &str, item: &InboxItem) -> an
 /// # Errors
 /// Returns an error if the file cannot be read or parsed.
 pub async fn load_item(path: &Path) -> anyhow::Result<InboxItem> {
-    let content = tokio::fs::read_to_string(path).await?;
-    let item: InboxItem = serde_json::from_str(&content)?;
+    use anyhow::Context as _;
+
+    let content = tokio::fs::read_to_string(path)
+        .await
+        .with_context(|| format!("failed to read inbox item at {}", path.display()))?;
+    let item: InboxItem = serde_json::from_str(&content)
+        .with_context(|| format!("failed to parse inbox item at {}", path.display()))?;
     Ok(item)
 }
 
@@ -159,22 +174,44 @@ pub async fn list_items(inbox_dir: &Path) -> anyhow::Result<Vec<(String, InboxIt
 /// Deserializes each `.json` file in the inbox directory — acceptable for low throughput.
 #[must_use]
 pub fn count_unread(inbox_dir: &Path) -> usize {
-    let Ok(dir) = std::fs::read_dir(inbox_dir) else {
-        return 0;
+    let dir = match std::fs::read_dir(inbox_dir) {
+        Ok(d) => d,
+        Err(e) => {
+            tracing::warn!(path = %inbox_dir.display(), error = %e, "failed to read inbox directory for unread count");
+            return 0;
+        }
     };
 
-    dir.filter_map(Result::ok)
-        .filter(|e| {
-            let p = e.path();
-            p.is_file() && p.extension().and_then(|x| x.to_str()) == Some("json")
-        })
-        .filter(|e| {
-            std::fs::read_to_string(e.path())
-                .ok()
-                .and_then(|c| serde_json::from_str::<InboxItem>(&c).ok())
-                .is_some_and(|item| !item.read)
-        })
-        .count()
+    let mut count = 0;
+    for entry_result in dir {
+        let entry = match entry_result {
+            Ok(e) => e,
+            Err(e) => {
+                tracing::warn!(error = %e, "failed to read inbox directory entry");
+                continue;
+            }
+        };
+        let path = entry.path();
+        if !path.is_file() || path.extension().and_then(|x| x.to_str()) != Some("json") {
+            continue;
+        }
+        match std::fs::read_to_string(&path) {
+            Err(e) => {
+                tracing::warn!(path = %path.display(), error = %e, "failed to read inbox item for unread count");
+            }
+            Ok(content) => match serde_json::from_str::<InboxItem>(&content) {
+                Err(e) => {
+                    tracing::warn!(path = %path.display(), error = %e, "failed to parse inbox item for unread count");
+                }
+                Ok(item) => {
+                    if !item.read {
+                        count += 1;
+                    }
+                }
+            },
+        }
+    }
+    count
 }
 
 /// Mark an inbox item as read and save it back atomically.
@@ -182,12 +219,18 @@ pub fn count_unread(inbox_dir: &Path) -> usize {
 /// # Errors
 /// Returns an error if the file cannot be found, read, or written.
 pub async fn mark_read(inbox_dir: &Path, filename: &str) -> anyhow::Result<InboxItem> {
+    use anyhow::Context as _;
+
     let json_name = ensure_json_ext(filename);
     let path = inbox_dir.join(&json_name);
 
-    let mut item = load_item(&path).await?;
+    let mut item = load_item(&path)
+        .await
+        .with_context(|| format!("failed to load inbox item {json_name} for mark_read"))?;
     item.read = true;
-    save_item(inbox_dir, &json_name, &item).await?;
+    save_item(inbox_dir, &json_name, &item)
+        .await
+        .with_context(|| format!("failed to save inbox item {json_name} after mark_read"))?;
 
     Ok(item)
 }

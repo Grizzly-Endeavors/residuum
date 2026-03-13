@@ -76,7 +76,6 @@ pub(super) async fn init_memory(
     let manifest = match IndexManifest::load(&manifest_path).await {
         Ok(m) => m,
         Err(err) => {
-            eprintln!("warning: failed to load index manifest, starting fresh: {err}");
             tracing::warn!(error = %err, "index manifest degraded: starting with empty manifest");
             IndexManifest::default()
         }
@@ -93,9 +92,6 @@ pub(super) async fn init_memory(
     let search_index = match create_shared_index(&layout.search_index_dir()) {
         Ok(idx) => idx,
         Err(err) => {
-            eprintln!(
-                "warning: failed to create on-disk search index, using in-memory fallback: {err}"
-            );
             tracing::warn!(error = %err, "search index degraded: using empty in-memory index");
             Arc::new(MemoryIndex::empty()?)
         }
@@ -148,10 +144,12 @@ async fn sync_search_index(
                 );
                 let rebuilt = build_manifest_from_rebuild(result);
                 if let Err(save_err) = rebuilt.save(manifest_path).await {
-                    eprintln!("warning: failed to save index manifest after rebuild: {save_err}");
+                    tracing::warn!(error = %save_err, "failed to save index manifest after rebuild");
                 }
             }
-            Err(rebuild_err) => eprintln!("warning: failed to rebuild search index: {rebuild_err}"),
+            Err(rebuild_err) => {
+                tracing::warn!(error = %rebuild_err, "failed to rebuild search index");
+            }
         }
     } else {
         match search_index.incremental_sync(&layout.memory_dir(), manifest) {
@@ -164,13 +162,11 @@ async fn sync_search_index(
                     "search index synced incrementally"
                 );
                 if let Err(save_err) = synced_manifest.save(manifest_path).await {
-                    eprintln!("warning: failed to save index manifest after sync: {save_err}");
+                    tracing::warn!(error = %save_err, "failed to save index manifest after sync");
                 }
             }
             Err(sync_err) => {
-                eprintln!(
-                    "warning: incremental sync failed, falling back to full rebuild: {sync_err}"
-                );
+                tracing::warn!(error = %sync_err, "incremental sync failed, falling back to full rebuild");
                 match search_index.rebuild(&layout.memory_dir()) {
                     Ok(result) => {
                         let total = result.obs_count + result.chunk_count;
@@ -181,13 +177,11 @@ async fn sync_search_index(
                         );
                         let rebuilt = build_manifest_from_rebuild(result);
                         if let Err(save_err) = rebuilt.save(manifest_path).await {
-                            eprintln!(
-                                "warning: failed to save index manifest after fallback rebuild: {save_err}"
-                            );
+                            tracing::warn!(error = %save_err, "failed to save index manifest after fallback rebuild");
                         }
                     }
                     Err(rebuild_err) => {
-                        eprintln!("warning: fallback rebuild also failed: {rebuild_err}");
+                        tracing::warn!(error = %rebuild_err, "fallback rebuild also failed");
                     }
                 }
             }
@@ -205,7 +199,7 @@ async fn build_vector_store(
     let probe = match ep.embed(&["dimension probe"]).await {
         Ok(p) => p,
         Err(e) => {
-            eprintln!("warning: embedding dimension probe failed: {e}");
+            tracing::warn!(error = %e, "embedding dimension probe failed");
             return None;
         }
     };
@@ -226,7 +220,7 @@ async fn build_vector_store(
         if let Err(e) = std::fs::remove_file(layout.vectors_db())
             && e.kind() != std::io::ErrorKind::NotFound
         {
-            eprintln!("warning: failed to remove old vector store: {e}");
+            tracing::warn!(error = %e, "failed to remove old vector store");
         }
     }
 
@@ -243,13 +237,13 @@ async fn build_vector_store(
                 }
             }
             if let Err(e) = updated_manifest.save(manifest_path).await {
-                eprintln!("warning: failed to save manifest with embedding info: {e}");
+                tracing::warn!(error = %e, "failed to save manifest with embedding info");
             }
 
             Some(Arc::new(vs))
         }
         Err(e) => {
-            eprintln!("warning: failed to open vector store: {e}");
+            tracing::warn!(error = %e, "failed to open vector store");
             None
         }
     }
@@ -279,7 +273,7 @@ async fn backfill_embeddings(
     let mut manifest = match IndexManifest::load(manifest_path).await {
         Ok(m) => m,
         Err(e) => {
-            eprintln!("warning: failed to load manifest for embedding backfill: {e}");
+            tracing::warn!(error = %e, "failed to load manifest for embedding backfill");
             return;
         }
     };
@@ -307,12 +301,12 @@ async fn backfill_embeddings(
 
         if rel_path.ends_with(".obs.json") {
             if let Err(e) = backfill_obs_file(vs, ep, &abs_path).await {
-                eprintln!("warning: failed to backfill embeddings for {rel_path}: {e}");
+                tracing::warn!(error = %e, path = %rel_path, "failed to backfill embeddings");
                 continue;
             }
         } else if rel_path.ends_with(".idx.jsonl") {
             if let Err(e) = backfill_idx_file(vs, ep, &abs_path).await {
-                eprintln!("warning: failed to backfill embeddings for {rel_path}: {e}");
+                tracing::warn!(error = %e, path = %rel_path, "failed to backfill embeddings");
                 continue;
             }
         } else {
@@ -327,7 +321,7 @@ async fn backfill_embeddings(
 
     if embedded_count > 0 {
         if let Err(e) = manifest.save(manifest_path).await {
-            eprintln!("warning: failed to save manifest after embedding backfill: {e}");
+            tracing::warn!(error = %e, "failed to save manifest after embedding backfill");
         }
         tracing::info!(embedded_count, "embedding backfill complete");
     }

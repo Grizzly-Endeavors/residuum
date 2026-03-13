@@ -11,6 +11,7 @@ import type {
   SecretsListResponse,
   WorkspaceEntry,
   CloudStatusResponse,
+  UpdateStatusResponse,
 } from "./types";
 
 export async function fetchStatus(): Promise<StatusResponse> {
@@ -216,4 +217,27 @@ export async function disconnectCloud(): Promise<void> {
     const text = await resp.text();
     throw new Error(`cloud disconnect failed: ${text}`);
   }
+}
+
+// ── Update API wrappers ──────────────────────────────────────────────
+
+export async function fetchUpdateStatus(): Promise<UpdateStatusResponse> {
+  const resp = await fetch("/api/update/status");
+  if (!resp.ok) throw new Error(`update status check failed: ${resp.status}`);
+  return (await resp.json()) as UpdateStatusResponse;
+}
+
+export async function triggerUpdateCheck(): Promise<UpdateStatusResponse> {
+  const resp = await fetch("/api/update/check", { method: "POST" });
+  if (!resp.ok) throw new Error(`update check failed: ${resp.status}`);
+  return (await resp.json()) as UpdateStatusResponse;
+}
+
+export async function applyUpdate(): Promise<UpdateStatusResponse> {
+  const resp = await fetch("/api/update/apply", { method: "POST" });
+  if (!resp.ok) {
+    const text = await resp.text();
+    throw new Error(`update apply failed: ${text}`);
+  }
+  return (await resp.json()) as UpdateStatusResponse;
 }

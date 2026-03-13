@@ -65,7 +65,15 @@ pub fn load_mcp_servers_map(path: &Path) -> Result<HashMap<String, McpServerEntr
         .map(|(name, raw)| {
             let transport = match raw.transport.as_deref() {
                 Some("http") => McpTransport::Http,
-                _ => McpTransport::Stdio,
+                None | Some("stdio") => McpTransport::Stdio,
+                Some(unknown) => {
+                    tracing::warn!(
+                        server = %name,
+                        transport = %unknown,
+                        "unrecognized MCP transport, falling back to stdio"
+                    );
+                    McpTransport::Stdio
+                }
             };
             let entry = McpServerEntry {
                 name: name.clone(),
@@ -222,6 +230,48 @@ pub fn load_channel_configs(path: &Path) -> Result<Vec<ExternalChannelConfig>, R
                     method: raw.method,
                     headers: raw.headers.unwrap_or_default().into_iter().collect(),
                 },
+                "ntfy" => {
+                    let url = raw.url.unwrap_or_default();
+                    let topic = raw.topic.unwrap_or_default();
+                    if url.is_empty() {
+                        tracing::warn!(channel = %name, "ntfy channel is missing required 'url' field");
+                    }
+                    if topic.is_empty() {
+                        tracing::warn!(channel = %name, "ntfy channel is missing required 'topic' field");
+                    }
+                    ExternalChannelKind::Ntfy {
+                        url,
+                        topic,
+                        priority: raw.priority,
+                    }
+                }
+                "webhook" => {
+                    let url = raw.url.unwrap_or_default();
+                    if url.is_empty() {
+                        tracing::warn!(channel = %name, "webhook channel is missing required 'url' field");
+                    }
+                    ExternalChannelKind::Webhook {
+                        url,
+                        method: raw.method,
+                        headers: raw.headers.unwrap_or_default().into_iter().collect(),
+                    }
+                }
+                unknown => {
+                    tracing::warn!(
+                        channel = %name,
+                        type_ = %unknown,
+                        "unrecognized channel type, falling back to webhook"
+                    );
+                    let url = raw.url.unwrap_or_default();
+                    if url.is_empty() {
+                        tracing::warn!(channel = %name, "channel is missing required 'url' field");
+                    }
+                    ExternalChannelKind::Webhook {
+                        url,
+                        method: raw.method,
+                        headers: raw.headers.unwrap_or_default().into_iter().collect(),
+                    }
+                }
             };
             ExternalChannelConfig { name, kind }
         })

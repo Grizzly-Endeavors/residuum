@@ -119,6 +119,15 @@
           <span class="cloud-status-dot cloud-status-connecting"></span>
           <span class="cloud-status-text">Connecting...</span>
         </div>
+        <div class="cloud-actions">
+          <button
+            class="btn btn-sm btn-secondary"
+            onclick={handleDisconnect}
+            disabled={actionInProgress}
+          >
+            {actionInProgress ? "Cancelling..." : "Cancel"}
+          </button>
+        </div>
       {:else if cloudStatus?.has_token && !cloudStatus?.enabled}
         <!-- Disconnected with token, disabled -->
         <div class="cloud-status-row">

@@ -151,6 +151,14 @@ impl McpClient {
         let is_error = result.is_error.unwrap_or(false);
         let output = extract_text_content(&result.content);
 
+        if is_error {
+            tracing::debug!(
+                tool = %name,
+                server = %self.server_name,
+                "mcp tool returned error response"
+            );
+        }
+
         Ok(ToolResult {
             output,
             is_error,

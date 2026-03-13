@@ -3,6 +3,7 @@
 //! Entrypoint with subcommands:
 //! - `serve` (default): starts the gateway as a background daemon
 //! - `serve --foreground`: runs the gateway in the foreground
+//! - `serve --debug[=mode]`: run with debug logging (modes: all, trace)
 //! - `stop`: stops a running gateway daemon
 //! - `connect [url]`: connects a CLI client to a running gateway
 //! - `logs [--watch]`: display CLI log files
@@ -23,6 +24,19 @@ async fn main() {
 }
 
 async fn run() -> Result<(), ResiduumError> {
+    // Install rustls CryptoProvider before any TLS usage. Required since
+    // rustls 0.23 when both `ring` and `aws-lc-rs` appear in the dep tree.
+    // Err means a provider was already installed by a dependency — that's
+    // expected and fine; we just continue with whatever was registered first.
+    drop(rustls::crypto::ring::default_provider().install_default());
+
+    // Install a panic hook that logs to both tracing and stderr.
+    // Tracing may not be initialized yet, and stderr is always available.
+    std::panic::set_hook(Box::new(|info| {
+        tracing::error!(%info, "panic in spawned task");
+        eprintln!("PANIC: {info}");
+    }));
+
     // Load .env early (ignore if missing, warn on parse errors)
     if let Err(e) = dotenvy::dotenv()
         && !e.not_found()
@@ -56,10 +70,11 @@ async fn run() -> Result<(), ResiduumError> {
         // "serve" or no subcommand → start gateway
         Some("serve") | None => {
             let foreground = args.iter().any(|a| a == "--foreground");
+            let debug_mode = parse_debug_flag(&args)?;
 
             if foreground {
-                // Foreground mode: file-only logging, run gateway directly
-                residuum::daemon::init_daemon_tracing();
+                // Foreground mode: file-only logging (+ stderr if --debug), run gateway directly
+                residuum::daemon::init_daemon_tracing(debug_mode);
                 run_serve_foreground(&args).await
             } else {
                 // Daemon mode: spawn foreground child, poll for PID file, exit
@@ -139,7 +154,7 @@ async fn run_serve_foreground_inner(args: &[String]) -> Result<(), ResiduumError
             workspace = %cfg.workspace_dir.display(),
             "setup-mode: configuration loaded, starting gateway"
         );
-        Box::pin(residuum::gateway::run_gateway(cfg)).await?;
+        let _ = Box::pin(residuum::gateway::run_gateway(cfg)).await?;
         return Ok(());
     }
 
@@ -160,8 +175,12 @@ async fn run_serve_foreground_inner(args: &[String]) -> Result<(), ResiduumError
                 );
                 // Gateway handles reloads in-place and only returns on shutdown
                 // or fatal error. Backup is created inside run_gateway().
-                Box::pin(residuum::gateway::run_gateway(cfg)).await?;
-                break;
+                match Box::pin(residuum::gateway::run_gateway(cfg)).await? {
+                    residuum::gateway::GatewayExit::Shutdown => break,
+                    residuum::gateway::GatewayExit::Restart => {
+                        return re_exec_serve_foreground();
+                    }
+                }
             }
             Err(err) if !is_first_boot => {
                 // Config broken on restart — try restoring from backup
@@ -171,8 +190,12 @@ async fn run_serve_foreground_inner(args: &[String]) -> Result<(), ResiduumError
                     match Config::load() {
                         Ok(cfg) => {
                             tracing::info!("config restored from backup, starting gateway");
-                            Box::pin(residuum::gateway::run_gateway(cfg)).await?;
-                            break;
+                            match Box::pin(residuum::gateway::run_gateway(cfg)).await? {
+                                residuum::gateway::GatewayExit::Shutdown => break,
+                                residuum::gateway::GatewayExit::Restart => {
+                                    return re_exec_serve_foreground();
+                                }
+                            }
                         }
                         Err(retry_err) => {
                             return Err(ResiduumError::Config(format!(
@@ -182,8 +205,9 @@ async fn run_serve_foreground_inner(args: &[String]) -> Result<(), ResiduumError
                         }
                     }
                 }
+                tracing::warn!(error = %err, "config rollback failed (no backup exists or I/O error)");
                 return Err(ResiduumError::Config(format!(
-                    "config invalid and no backup available: {err}\n\n\
+                    "config invalid and rollback failed: {err}\n\n\
                      fix ~/.residuum/config.toml and ~/.residuum/providers.toml manually, then restart"
                 )));
             }
@@ -200,6 +224,48 @@ async fn run_serve_foreground_inner(args: &[String]) -> Result<(), ResiduumError
         }
     }
     Ok(())
+}
+
+/// Re-exec the current binary with `serve --foreground` args.
+///
+/// Uses `exec()` to replace the process image with the (potentially updated)
+/// binary on disk. The PID stays the same, so the daemon parent doesn't notice.
+///
+/// # Errors
+///
+/// Returns `ResiduumError::Gateway` if the current executable path cannot be
+/// determined. On Unix, `exec()` does not return on success.
+fn re_exec_serve_foreground() -> Result<(), ResiduumError> {
+    use std::os::unix::process::CommandExt;
+
+    let raw_exe = std::env::current_exe().map_err(|e| {
+        ResiduumError::Gateway(format!(
+            "failed to determine current executable for re-exec: {e}"
+        ))
+    })?;
+
+    // On Linux, atomically replacing the binary (via `mv`) unlinks the old
+    // inode while the process is still running. The kernel then appends
+    // " (deleted)" to /proc/self/exe, so current_exe() returns a path that
+    // no longer exists. Strip the suffix to get the live path on disk, which
+    // now points to the freshly-installed binary.
+    let exe = {
+        let s = raw_exe.to_string_lossy();
+        if let Some(stripped) = s.strip_suffix(" (deleted)") {
+            std::path::PathBuf::from(stripped)
+        } else {
+            raw_exe
+        }
+    };
+
+    tracing::info!(exe = %exe.display(), "re-execing with updated binary");
+
+    // Forward the original args so --debug is preserved across re-exec
+    let original_args: Vec<String> = std::env::args().skip(1).collect();
+    let err = std::process::Command::new(&exe).args(&original_args).exec();
+
+    // exec() only returns on error
+    Err(ResiduumError::Gateway(format!("re-exec failed: {err}")))
 }
 
 /// Spawn the gateway as a background daemon process.
@@ -304,8 +370,14 @@ fn run_daemonize(args: &[String]) -> Result<(), ResiduumError> {
 
     loop {
         if start.elapsed() > timeout {
-            eprintln!("residuum: gateway did not start within 10 seconds");
-            eprintln!("  check logs: residuum logs");
+            if let Ok(Some(status)) = child.try_wait() {
+                eprintln!("residuum: gateway crashed during startup (exit status: {status})");
+                eprintln!("  check logs: residuum logs");
+                eprintln!("  note: if no log files exist, the daemon crashed before writing any");
+            } else {
+                eprintln!("residuum: gateway did not start within 10 seconds");
+                eprintln!("  check logs: residuum logs");
+            }
             return Err(ResiduumError::Gateway(
                 "daemon startup timed out".to_string(),
             ));
@@ -326,26 +398,29 @@ fn run_daemonize(args: &[String]) -> Result<(), ResiduumError> {
 ///
 /// Fetches the latest release tag, compares it against the build-time
 /// version, and optionally downloads the install script to replace the
-/// current binary.
+/// current binary. With `-y`/`--yes`, automatically triggers a daemon
+/// restart after a successful update.
 ///
 /// # Errors
 ///
 /// Returns `ResiduumError::Gateway` if the GitHub API request fails or
 /// the install script cannot be executed.
 async fn run_update_command(args: &[String]) -> Result<(), ResiduumError> {
+    use residuum::update::{self, CURRENT_VERSION};
+
     let check_only = args.iter().any(|a| a == "--check");
-    let current = env!("RESIDUUM_VERSION");
+    let auto_yes = args.iter().any(|a| a == "-y" || a == "--yes");
 
     eprintln!("residuum: checking for updates...");
 
-    let latest = fetch_latest_version().await?;
+    let latest = update::fetch_latest_version().await?;
 
-    if is_up_to_date(current, &latest) {
-        eprintln!("residuum: already up to date ({current})");
+    if update::is_up_to_date(CURRENT_VERSION, &latest) {
+        eprintln!("residuum: already up to date ({CURRENT_VERSION})");
         return Ok(());
     }
 
-    eprintln!("residuum: current version: {current}");
+    eprintln!("residuum: current version: {CURRENT_VERSION}");
     eprintln!("residuum: latest version:  {latest}");
 
     if check_only {
@@ -354,100 +429,45 @@ async fn run_update_command(args: &[String]) -> Result<(), ResiduumError> {
 
     eprintln!("residuum: downloading and installing {latest}...");
 
-    // Download install script to a temp file and execute it
-    let client = reqwest::Client::new();
-    let script = client
-        .get("https://agent-residuum.com/install")
-        .send()
-        .await
-        .map_err(|e| ResiduumError::Gateway(format!("failed to download install script: {e}")))?
-        .text()
-        .await
-        .map_err(|e| ResiduumError::Gateway(format!("failed to read install script body: {e}")))?;
+    let installed = update::download_and_install().await?;
+    eprintln!("residuum: updated to {installed}");
 
-    let tmp_dir = std::env::temp_dir();
-    let script_path = tmp_dir.join("residuum-install.sh");
-    std::fs::write(&script_path, &script)
-        .map_err(|e| ResiduumError::Gateway(format!("failed to write install script: {e}")))?;
-
-    let status = std::process::Command::new("sh")
-        .arg(&script_path)
-        .status()
-        .map_err(|e| ResiduumError::Gateway(format!("failed to execute install script: {e}")))?;
-
-    // Clean up temp script (best-effort, ignore failure)
-    drop(std::fs::remove_file(&script_path));
-
-    if !status.success() {
-        return Err(ResiduumError::Gateway(format!(
-            "install script exited with {status}"
-        )));
-    }
-
-    eprintln!("residuum: updated to {latest}");
-
-    // Warn if gateway is running
+    // Check if gateway is running and try to restart it
     if let Ok(pid_path) = residuum::daemon::pid_file_path()
         && let Ok(pid) = residuum::daemon::read_pid_file(&pid_path)
         && residuum::daemon::is_process_running(pid)
     {
-        eprintln!(
-            "residuum: gateway is still running (pid {pid}) — restart it to use the new version"
-        );
+        if auto_yes {
+            // Try to trigger seamless restart via the API
+            let gateway_addr = Config::load().map_or_else(
+                |_| residuum::config::GatewayConfig::default().addr(),
+                |cfg| cfg.gateway.addr(),
+            );
+            let url = format!("http://{gateway_addr}/api/update/restart");
+            match reqwest::Client::new().post(&url).send().await {
+                Ok(resp) if resp.status().is_success() => {
+                    eprintln!("residuum: restart signal sent to gateway (pid {pid})");
+                }
+                Ok(resp) => {
+                    eprintln!(
+                        "residuum: failed to signal gateway restart (status {}) — restart it manually",
+                        resp.status()
+                    );
+                }
+                Err(e) => {
+                    eprintln!(
+                        "residuum: failed to signal gateway restart ({e}) — restart it manually"
+                    );
+                }
+            }
+        } else {
+            eprintln!(
+                "residuum: gateway is still running (pid {pid}) — restart it to use the new version"
+            );
+        }
     }
 
     Ok(())
-}
-
-/// Fetch the latest release tag name from GitHub.
-async fn fetch_latest_version() -> Result<String, ResiduumError> {
-    let client = reqwest::Client::builder()
-        .user_agent("residuum-updater")
-        .build()
-        .map_err(|e| ResiduumError::Gateway(format!("failed to build http client: {e}")))?;
-
-    let resp = client
-        .get("https://api.github.com/repos/grizzly-endeavors/residuum/releases/latest")
-        .header("Accept", "application/vnd.github+json")
-        .send()
-        .await
-        .map_err(|e| ResiduumError::Gateway(format!("failed to fetch latest release: {e}")))?;
-
-    if !resp.status().is_success() {
-        return Err(ResiduumError::Gateway(format!(
-            "github api returned {} — are you online?",
-            resp.status()
-        )));
-    }
-
-    let body: serde_json::Value = resp
-        .json()
-        .await
-        .map_err(|e| ResiduumError::Gateway(format!("failed to parse release response: {e}")))?;
-
-    body.get("tag_name")
-        .and_then(|v| v.as_str())
-        .map(String::from)
-        .ok_or_else(|| {
-            ResiduumError::Gateway("release response missing tag_name field".to_string())
-        })
-}
-
-/// Compare the current build version against the latest release tag.
-///
-/// Returns `true` if the current version starts with the latest tag,
-/// accounting for `git describe` suffixes like `-5-gabcdef1`.
-fn is_up_to_date(current: &str, latest: &str) -> bool {
-    // Exact match (tagged commit)
-    if current == latest {
-        return true;
-    }
-    // current is "v2026.03.02-5-gabcdef1" and latest is "v2026.03.02" —
-    // the current build is *ahead* of the latest release
-    if current.starts_with(latest) && current.as_bytes().get(latest.len()) == Some(&b'-') {
-        return true;
-    }
-    false
 }
 
 /// Stop a running gateway daemon.
@@ -624,7 +644,10 @@ fn init_cli_tracing() {
         .build(&log_dir)
         .unwrap_or_else(|e| {
             eprintln!("warning: failed to create log file appender: {e}");
-            // Fall back to writing to /dev/null-equivalent temp dir
+            eprintln!(
+                "warning: logs will be written to {} instead — 'residuum logs' will not find them",
+                std::env::temp_dir().display()
+            );
             tracing_appender::rolling::RollingFileAppender::builder()
                 .filename_prefix("cli")
                 .filename_suffix("log")
@@ -632,7 +655,10 @@ fn init_cli_tracing() {
                 .build(std::env::temp_dir())
                 .unwrap_or_else(|e2| {
                     eprintln!("warning: fallback log appender also failed: {e2}");
-                    // Last resort: same as daily to temp dir with never rotation
+                    eprintln!(
+                        "warning: logs will be written to {} — 'residuum logs' will not find them",
+                        std::env::temp_dir().display()
+                    );
                     tracing_appender::rolling::daily(std::env::temp_dir(), "cli.log")
                 })
         });
@@ -680,9 +706,13 @@ async fn run_logs_command(watch: bool) -> Result<(), ResiduumError> {
 
     // Sort by modification time, most recent last
     entries.sort_by_key(|e| {
-        e.metadata()
-            .and_then(|m| m.modified())
-            .unwrap_or(std::time::SystemTime::UNIX_EPOCH)
+        match e.metadata().and_then(|m| m.modified()) {
+            Ok(t) => t,
+            Err(err) => {
+                tracing::warn!(path = %e.path().display(), error = %err, "failed to read log file metadata for sorting");
+                std::time::SystemTime::UNIX_EPOCH
+            }
+        }
     });
 
     let latest = entries
@@ -880,6 +910,30 @@ fn extract_flag_value(args: &[String], flag: &str) -> Option<String> {
         .cloned()
 }
 
+/// Parse `--debug` or `--debug=<mode>` from args.
+///
+/// Returns `Ok(None)` if no `--debug` flag is present, `Ok(Some(mode))` for
+/// valid modes, or an error for unrecognized mode values.
+fn parse_debug_flag(args: &[String]) -> Result<Option<residuum::daemon::DebugMode>, ResiduumError> {
+    use residuum::daemon::DebugMode;
+
+    for arg in args {
+        if arg == "--debug" {
+            return Ok(Some(DebugMode::Default));
+        }
+        if let Some(value) = arg.strip_prefix("--debug=") {
+            return DebugMode::from_flag_value(Some(value))
+                .map(Some)
+                .ok_or_else(|| {
+                    ResiduumError::Config(format!(
+                        "unknown debug mode '{value}', expected one of: all, trace"
+                    ))
+                });
+        }
+    }
+    Ok(None)
+}
+
 /// Process a single WebSocket frame from the gateway.
 ///
 /// Returns `Break(())` to exit the event loop, `Continue(())` otherwise.
@@ -916,12 +970,16 @@ fn handle_ws_frame(
         {
             client.display(server_msg);
             *turn_active = false;
-            gate_tx.send(()).ok();
+            if gate_tx.send(()).is_err() {
+                tracing::debug!("prompt gate send failed: readline thread has exited");
+            }
         }
         Ok(ref server_msg @ ServerMessage::Error { .. }) if *turn_active => {
             client.display(server_msg);
             *turn_active = false;
-            gate_tx.send(()).ok();
+            if gate_tx.send(()).is_err() {
+                tracing::debug!("prompt gate send failed: readline thread has exited");
+            }
         }
         Ok(server_msg) => client.display(&server_msg),
         Err(e) => eprintln!("warning: failed to parse server message: {e}"),
@@ -989,7 +1047,9 @@ where
             CommandEffect::PrintLocal(text) => eprintln!("{text}"),
         }
         // Slash commands don't trigger agent turns; unblock prompt immediately
-        gate_tx.send(()).ok();
+        if gate_tx.send(()).is_err() {
+            tracing::debug!("prompt gate send failed: readline thread has exited");
+        }
         return Ok(std::ops::ControlFlow::Continue(()));
     }
 
@@ -1000,8 +1060,8 @@ where
     };
     let json = serde_json::to_string(&client_msg)
         .map_err(|e| ResiduumError::Gateway(format!("failed to serialize message: {e}")))?;
-    if ws_tx.send(TungsteniteMessage::text(json)).await.is_err() {
-        eprintln!("connection closed");
+    if let Err(e) = ws_tx.send(TungsteniteMessage::text(json)).await {
+        eprintln!("connection closed: {e}");
         return Ok(std::ops::ControlFlow::Break(()));
     }
     *turn_active = true;
@@ -1106,46 +1166,6 @@ mod tests {
     }
 
     #[test]
-    fn is_up_to_date_exact_match() {
-        assert!(
-            super::is_up_to_date("v2026.03.02", "v2026.03.02"),
-            "exact match should be up to date"
-        );
-    }
-
-    #[test]
-    fn is_up_to_date_ahead_of_release() {
-        assert!(
-            super::is_up_to_date("v2026.03.02-5-gabcdef1", "v2026.03.02"),
-            "build ahead of latest release should be up to date"
-        );
-    }
-
-    #[test]
-    fn is_up_to_date_different_version() {
-        assert!(
-            !super::is_up_to_date("v2026.03.01", "v2026.03.02"),
-            "older version should not be up to date"
-        );
-    }
-
-    #[test]
-    fn is_up_to_date_dev_build() {
-        assert!(
-            !super::is_up_to_date("dev", "v2026.03.02"),
-            "dev build should not be up to date"
-        );
-    }
-
-    #[test]
-    fn is_up_to_date_no_false_prefix_match() {
-        assert!(
-            !super::is_up_to_date("v2026.03.021", "v2026.03.02"),
-            "version with shared prefix but no dash separator should not match"
-        );
-    }
-
-    #[test]
     fn extract_check_flag() {
         let args: Vec<String> = vec!["residuum", "update", "--check"]
             .into_iter()
@@ -1155,5 +1175,53 @@ mod tests {
             args.iter().any(|a| a == "--check"),
             "--check flag should be detected"
         );
+    }
+
+    #[test]
+    fn parse_debug_flag_absent() {
+        let args: Vec<String> = vec!["residuum", "serve", "--foreground"]
+            .into_iter()
+            .map(String::from)
+            .collect();
+        assert!(super::parse_debug_flag(&args).unwrap().is_none());
+    }
+
+    #[test]
+    fn parse_debug_flag_bare() {
+        let args: Vec<String> = vec!["residuum", "serve", "--debug"]
+            .into_iter()
+            .map(String::from)
+            .collect();
+        let mode = super::parse_debug_flag(&args).unwrap().unwrap();
+        assert_eq!(mode.filter_str(), "residuum=debug,warn");
+    }
+
+    #[test]
+    fn parse_debug_flag_all() {
+        let args: Vec<String> = vec!["residuum", "serve", "--debug=all"]
+            .into_iter()
+            .map(String::from)
+            .collect();
+        let mode = super::parse_debug_flag(&args).unwrap().unwrap();
+        assert_eq!(mode.filter_str(), "debug");
+    }
+
+    #[test]
+    fn parse_debug_flag_trace() {
+        let args: Vec<String> = vec!["residuum", "serve", "--debug=trace"]
+            .into_iter()
+            .map(String::from)
+            .collect();
+        let mode = super::parse_debug_flag(&args).unwrap().unwrap();
+        assert_eq!(mode.filter_str(), "residuum=trace,warn");
+    }
+
+    #[test]
+    fn parse_debug_flag_unknown_mode_errors() {
+        let args: Vec<String> = vec!["residuum", "serve", "--debug=bogus"]
+            .into_iter()
+            .map(String::from)
+            .collect();
+        assert!(super::parse_debug_flag(&args).is_err());
     }
 }

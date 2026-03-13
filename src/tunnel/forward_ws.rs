@@ -130,9 +130,11 @@ pub(super) async fn handle_ws_open(
 
         // Notify relay that the local WS has closed.
         let close_frame = TunnelFrame::WsClose {
-            channel_id: ch_id_reader,
+            channel_id: ch_id_reader.clone(),
         };
-        drop(send_tunnel_frame(&tunnel_tx_reader, &close_frame).await);
+        if let Err(e) = send_tunnel_frame(&tunnel_tx_reader, &close_frame).await {
+            warn!(channel_id = ch_id_reader, error = %e, "failed to send WsClose to relay; relay may hold a zombie channel");
+        }
     });
 
     // Task: read from mpsc rx, send to local WS.

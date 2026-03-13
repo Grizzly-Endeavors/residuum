@@ -61,7 +61,10 @@ impl SkillState {
                 ResiduumError::Skills(format!("failed to read SKILL.md for '{}': {e}", entry.name))
             })?;
 
-        let (_fm, body) = parse_skill_md(&file_content)?;
+        let (_fm, body) = parse_skill_md(&file_content).map_err(|e| {
+            tracing::error!(path = %skill_md_path.display(), error = %e, "failed to parse SKILL.md at activation time");
+            e
+        })?;
 
         let skill_name = entry.name.clone();
         self.active.push(ActiveSkill {
@@ -102,6 +105,11 @@ impl SkillState {
         self.index = SkillIndex::scan(&self.dirs, project_skills_dir).await?;
 
         // Remove active skills that no longer exist in the index
+        for skill in &self.active {
+            if self.index.find_by_name(&skill.name).is_none() {
+                tracing::warn!(name = %skill.name, "deactivating skill: no longer found after rescan");
+            }
+        }
         self.active
             .retain(|a| self.index.find_by_name(&a.name).is_some());
 

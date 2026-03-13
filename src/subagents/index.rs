@@ -95,6 +95,7 @@ impl SubagentPresetIndex {
             }
         }
 
+        tracing::error!(name = %name, "preset found in index but has no path and is not a built-in — this is a bug in scan()");
         Err(ResiduumError::Subagents(format!(
             "preset '{name}' found in index but has no path and is not a built-in"
         )))
@@ -160,7 +161,10 @@ async fn scan_preset_directory(
 ) -> Result<(), ResiduumError> {
     let mut read_dir = match tokio::fs::read_dir(dir).await {
         Ok(rd) => rd,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            tracing::debug!(dir = %dir.display(), "subagents directory not found, skipping");
+            return Ok(());
+        }
         Err(e) => {
             return Err(ResiduumError::Subagents(format!(
                 "failed to read subagents directory {}: {e}",
@@ -221,43 +225,7 @@ async fn scan_preset_directory(
         };
 
         match parse_preset_md(&file_content) {
-            Ok((fm, _body)) => {
-                let lower = fm.name.to_lowercase();
-
-                // Check if this overrides a built-in
-                if let Some(pos) = seen_names.iter().position(|n| *n == lower) {
-                    // If the existing entry is a built-in (no preset_path), override it
-                    if entries.get(pos).is_some_and(|e| e.preset_path.is_none()) {
-                        tracing::info!(
-                            name = %fm.name,
-                            path = %path.display(),
-                            "user preset overrides built-in"
-                        );
-                        if let Some(slot) = entries.get_mut(pos) {
-                            *slot = SubagentPresetEntry {
-                                name: fm.name,
-                                description: fm.description,
-                                preset_path: Some(path),
-                            };
-                        }
-                        continue;
-                    }
-
-                    tracing::warn!(
-                        name = %fm.name,
-                        path = %path.display(),
-                        "duplicate preset name, keeping first found"
-                    );
-                    continue;
-                }
-
-                seen_names.push(lower);
-                entries.push(SubagentPresetEntry {
-                    name: fm.name,
-                    description: fm.description,
-                    preset_path: Some(path),
-                });
-            }
+            Ok((fm, _body)) => register_preset(fm, path, entries, seen_names),
             Err(e) => {
                 tracing::warn!(
                     path = %path.display(),
@@ -269,6 +237,47 @@ async fn scan_preset_directory(
     }
 
     Ok(())
+}
+
+fn register_preset(
+    fm: SubagentPresetFrontmatter,
+    path: std::path::PathBuf,
+    entries: &mut Vec<SubagentPresetEntry>,
+    seen_names: &mut Vec<String>,
+) {
+    let lower = fm.name.to_lowercase();
+
+    if let Some(pos) = seen_names.iter().position(|n| *n == lower) {
+        if entries.get(pos).is_some_and(|e| e.preset_path.is_none()) {
+            tracing::info!(
+                name = %fm.name,
+                path = %path.display(),
+                "user preset overrides built-in"
+            );
+            if let Some(slot) = entries.get_mut(pos) {
+                *slot = SubagentPresetEntry {
+                    name: fm.name,
+                    description: fm.description,
+                    preset_path: Some(path),
+                };
+            }
+            return;
+        }
+
+        tracing::warn!(
+            name = %fm.name,
+            path = %path.display(),
+            "duplicate preset name, keeping first found"
+        );
+        return;
+    }
+
+    seen_names.push(lower);
+    entries.push(SubagentPresetEntry {
+        name: fm.name,
+        description: fm.description,
+        preset_path: Some(path),
+    });
 }
 
 #[cfg(test)]

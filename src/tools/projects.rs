@@ -332,6 +332,7 @@ impl Tool for ProjectCreateTool {
         match lifecycle::create_project(&layout, name, description, tools, today).await {
             Ok(path) => {
                 state.rescan().await.map_err(|e| {
+                    tracing::error!(error = %e, project = %name, "failed to rescan projects after create");
                     ToolError::Execution(format!("project created but rescan failed: {e}"))
                 })?;
                 Ok(ToolResult::success(format!(
@@ -414,6 +415,7 @@ impl Tool for ProjectArchiveTool {
         match lifecycle::archive_project(&layout, &dir_name, today).await {
             Ok(()) => {
                 state.rescan().await.map_err(|e| {
+                    tracing::error!(error = %e, project = %name, "failed to rescan projects after archive");
                     ToolError::Execution(format!("project archived but rescan failed: {e}"))
                 })?;
                 Ok(ToolResult::success(format!(
