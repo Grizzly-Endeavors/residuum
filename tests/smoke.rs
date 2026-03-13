@@ -9,23 +9,40 @@
     reason = "integration tests live in tests/ directory, not inside #[cfg(test)] modules"
 )]
 mod smoke {
+    use std::io::Read;
+    use std::process::{Command, Stdio};
+    use std::time::Duration;
+
     #[test]
     fn binary_starts_without_panic() {
-        let output = std::process::Command::new(env!("CARGO_BIN_EXE_residuum"))
+        let mut child = Command::new(env!("CARGO_BIN_EXE_residuum"))
             .args(["serve", "--foreground"])
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped())
-            .output()
-            .expect("failed to run binary");
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("failed to spawn binary");
 
-        let stderr = String::from_utf8_lossy(&output.stderr);
+        // Let the process run long enough to initialize and potentially panic
+        std::thread::sleep(Duration::from_secs(2));
+
+        child.kill().expect("failed to kill child process");
+        child.wait().expect("failed to wait on child process");
+
+        let mut stderr_buf = String::new();
+        child
+            .stderr
+            .take()
+            .expect("missing stderr handle")
+            .read_to_string(&mut stderr_buf)
+            .expect("failed to read stderr");
+
         assert!(
-            !stderr.contains("panicked at"),
-            "binary panicked on startup: {stderr}"
+            !stderr_buf.contains("panicked at"),
+            "binary panicked on startup: {stderr_buf}"
         );
         assert!(
-            !stderr.contains("PANIC:"),
-            "binary panicked on startup: {stderr}"
+            !stderr_buf.contains("PANIC:"),
+            "binary panicked on startup: {stderr_buf}"
         );
     }
 }
