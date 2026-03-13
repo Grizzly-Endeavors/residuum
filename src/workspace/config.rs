@@ -149,7 +149,7 @@ struct ChannelsFile {
 /// Raw TOML channel entry before conversion to `ExternalChannelConfig`.
 #[derive(Deserialize)]
 struct ChannelEntryRaw {
-    /// Channel type: `"ntfy"` or `"webhook"`.
+    /// Channel type: `"ntfy"`, `"webhook"`, or `"macos"`.
     #[serde(rename = "type")]
     type_: String,
     #[serde(default)]
@@ -162,6 +162,19 @@ struct ChannelEntryRaw {
     method: Option<String>,
     #[serde(default)]
     headers: Option<HashMap<String, String>>,
+    // macOS channel fields
+    #[serde(default)]
+    default_category: Option<String>,
+    #[serde(default)]
+    default_priority: Option<String>,
+    #[serde(default)]
+    throttle_window_secs: Option<u64>,
+    #[serde(default)]
+    sound: Option<bool>,
+    #[serde(default)]
+    app_name: Option<String>,
+    #[serde(default)]
+    web_url: Option<String>,
 }
 
 /// Load external channel configs from a TOML file.
@@ -199,6 +212,24 @@ pub fn load_channel_configs(path: &Path) -> Result<Vec<ExternalChannelConfig>, R
         .into_iter()
         .map(|(name, raw)| {
             let kind = match raw.type_.as_str() {
+                "ntfy" => ExternalChannelKind::Ntfy {
+                    url: raw.url.unwrap_or_default(),
+                    topic: raw.topic.unwrap_or_default(),
+                    priority: raw.priority,
+                },
+                "macos" => ExternalChannelKind::Macos {
+                    default_category: raw.default_category,
+                    default_priority: raw.default_priority,
+                    throttle_window_secs: raw.throttle_window_secs,
+                    sound: raw.sound,
+                    app_name: raw.app_name,
+                    web_url: raw.web_url,
+                },
+                _ => ExternalChannelKind::Webhook {
+                    url: raw.url.unwrap_or_default(),
+                    method: raw.method,
+                    headers: raw.headers.unwrap_or_default().into_iter().collect(),
+                },
                 "ntfy" => {
                     let url = raw.url.unwrap_or_default();
                     let topic = raw.topic.unwrap_or_default();
@@ -252,42 +283,146 @@ pub fn load_channel_configs(path: &Path) -> Result<Vec<ExternalChannelConfig>, R
 // ── Channel builder ──────────────────────────────────────────────────────────
 
 /// Build external channel implementations from configs.
-#[must_use]
-pub fn build_external_channels(
+pub async fn build_external_channels(
     configs: &[ExternalChannelConfig],
     client: &reqwest::Client,
 ) -> HashMap<String, Box<dyn NotificationChannel>> {
     let mut channels: HashMap<String, Box<dyn NotificationChannel>> = HashMap::new();
 
     for cfg in configs {
-        let channel: Box<dyn NotificationChannel> = match &cfg.kind {
+        let channel: Option<Box<dyn NotificationChannel>> = match &cfg.kind {
             ExternalChannelKind::Ntfy {
                 url,
                 topic,
                 priority,
-            } => Box::new(NtfyChannel::new(
+            } => Some(Box::new(NtfyChannel::new(
                 cfg.name.clone(),
                 client.clone(),
                 url.clone(),
                 topic.clone(),
                 priority.clone(),
-            )),
+            ))),
             ExternalChannelKind::Webhook {
                 url,
                 method,
                 headers,
-            } => Box::new(WebhookChannel::new(
+            } => Some(Box::new(WebhookChannel::new(
                 cfg.name.clone(),
                 client.clone(),
                 url.clone(),
                 method.clone(),
                 headers.clone(),
-            )),
+            ))),
+            ExternalChannelKind::Macos {
+                default_category,
+                default_priority,
+                throttle_window_secs,
+                sound,
+                app_name,
+                web_url,
+            } => {
+                build_macos_channel(
+                    &cfg.name,
+                    default_category.as_ref(),
+                    default_priority.as_ref(),
+                    throttle_window_secs.as_ref(),
+                    sound.as_ref(),
+                    app_name.as_ref(),
+                    web_url.as_ref(),
+                )
+                .await
+            }
         };
-        channels.insert(cfg.name.clone(), channel);
+        if let Some(ch) = channel {
+            channels.insert(cfg.name.clone(), ch);
+        }
     }
 
     channels
+}
+
+/// Build a macOS notification channel from raw config fields.
+///
+/// On non-macOS platforms, logs a warning and returns `None`.
+#[cfg(target_os = "macos")]
+async fn build_macos_channel(
+    name: &str,
+    default_category: Option<&String>,
+    default_priority: Option<&String>,
+    throttle_window_secs: Option<&u64>,
+    sound: Option<&bool>,
+    app_name: Option<&String>,
+    web_url: Option<&String>,
+) -> Option<Box<dyn NotificationChannel>> {
+    use crate::notify::macos::MacosChannelConfig;
+    use crate::notify::macos::categories::{parse_category, parse_priority};
+
+    let mut config = MacosChannelConfig::default();
+
+    if let Some(cat) = default_category {
+        match parse_category(cat) {
+            Ok(c) => config.default_category = c,
+            Err(e) => {
+                tracing::warn!(channel = name, error = %e, "invalid macOS channel config, skipping");
+                eprintln!("warning: invalid macOS channel '{name}' config: {e}");
+                return None;
+            }
+        }
+    }
+
+    if let Some(pri) = default_priority {
+        match parse_priority(pri) {
+            Ok(p) => config.default_priority = p,
+            Err(e) => {
+                tracing::warn!(channel = name, error = %e, "invalid macOS channel config, skipping");
+                eprintln!("warning: invalid macOS channel '{name}' config: {e}");
+                return None;
+            }
+        }
+    }
+
+    if let Some(secs) = throttle_window_secs {
+        config.throttle_window_secs = *secs;
+    }
+    if let Some(s) = sound {
+        config.sound = *s;
+    }
+    if let Some(n) = app_name {
+        config.app_name = n.clone();
+    }
+    config.web_url = web_url.cloned();
+
+    match crate::notify::macos::MacosNativeChannel::new(name, config).await {
+        Ok((channel, _handle)) => {
+            tracing::info!(channel = name, "macOS notification channel initialized");
+            Some(Box::new(channel))
+        }
+        Err(e) => {
+            tracing::warn!(channel = name, error = %e, "failed to initialize macOS channel, skipping");
+            eprintln!("warning: failed to initialize macOS channel '{name}': {e}");
+            None
+        }
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+async fn build_macos_channel(
+    name: &str,
+    _default_category: Option<&String>,
+    _default_priority: Option<&String>,
+    _throttle_window_secs: Option<&u64>,
+    _sound: Option<&bool>,
+    _app_name: Option<&String>,
+    _web_url: Option<&String>,
+) -> Option<Box<dyn NotificationChannel>> {
+    tracing::warn!(
+        channel = name,
+        "macOS notification channel configured but not available on this platform"
+    );
+    eprintln!(
+        "warning: macOS notification channel '{name}' configured but not available on this platform"
+    );
+    None
 }
 
 #[cfg(test)]
@@ -529,8 +664,8 @@ url = "https://hooks.slack.com/services/xxx"
 
     // ── Channel builder tests ────────────────────────────────────────────
 
-    #[test]
-    fn build_external_channels_creates_instances() {
+    #[tokio::test]
+    async fn build_external_channels_creates_instances() {
         let configs = vec![
             ExternalChannelConfig {
                 name: "my-ntfy".to_string(),
@@ -551,13 +686,96 @@ url = "https://hooks.slack.com/services/xxx"
         ];
 
         let client = reqwest::Client::new();
-        let channels = build_external_channels(&configs, &client);
+        let channels = build_external_channels(&configs, &client).await;
 
         assert_eq!(channels.len(), 2);
         assert!(channels.contains_key("my-ntfy"));
         assert!(channels.contains_key("my-webhook"));
         assert_eq!(channels["my-ntfy"].channel_kind(), "ntfy");
         assert_eq!(channels["my-webhook"].channel_kind(), "webhook");
+    }
+
+    // ── macOS channel config tests ─────────────────────────────────────
+
+    #[test]
+    fn load_channel_configs_macos_minimal() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("channels.toml");
+        std::fs::write(
+            &path,
+            r#"
+[channels.macos]
+type = "macos"
+"#,
+        )
+        .unwrap();
+
+        let configs = load_channel_configs(&path).unwrap();
+        assert_eq!(configs.len(), 1, "should load one channel");
+        let c = &configs[0];
+        assert_eq!(c.name, "macos");
+        let ExternalChannelKind::Macos {
+            default_category,
+            default_priority,
+            throttle_window_secs,
+            sound,
+            app_name,
+            web_url,
+        } = &c.kind
+        else {
+            unreachable!("expected Macos kind");
+        };
+        assert!(default_category.is_none(), "minimal config has no category");
+        assert!(default_priority.is_none(), "minimal config has no priority");
+        assert!(
+            throttle_window_secs.is_none(),
+            "minimal config has no throttle"
+        );
+        assert!(sound.is_none(), "minimal config has no sound");
+        assert!(app_name.is_none(), "minimal config has no app_name");
+        assert!(web_url.is_none(), "minimal config has no web_url");
+    }
+
+    #[test]
+    fn load_channel_configs_macos_fully_specified() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("channels.toml");
+        std::fs::write(
+            &path,
+            r#"
+[channels.macos_alerts]
+type = "macos"
+default_category = "alerts"
+default_priority = "time_sensitive"
+throttle_window_secs = 10
+sound = true
+app_name = "Residuum"
+web_url = "http://localhost:3000"
+"#,
+        )
+        .unwrap();
+
+        let configs = load_channel_configs(&path).unwrap();
+        assert_eq!(configs.len(), 1, "should load one channel");
+        let c = &configs[0];
+        assert_eq!(c.name, "macos_alerts");
+        let ExternalChannelKind::Macos {
+            default_category,
+            default_priority,
+            throttle_window_secs,
+            sound,
+            app_name,
+            web_url,
+        } = &c.kind
+        else {
+            unreachable!("expected Macos kind");
+        };
+        assert_eq!(default_category.as_deref(), Some("alerts"));
+        assert_eq!(default_priority.as_deref(), Some("time_sensitive"));
+        assert_eq!(*throttle_window_secs, Some(10));
+        assert_eq!(*sound, Some(true));
+        assert_eq!(app_name.as_deref(), Some("Residuum"));
+        assert_eq!(web_url.as_deref(), Some("http://localhost:3000"));
     }
 
     // ── MCP map + resolution tests ──────────────────────────────────────

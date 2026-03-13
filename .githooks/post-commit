@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+# Post-commit hook: auto-commit specs/ changes to its local-only git repo
+
+SPECS_DIR="$(git rev-parse --show-toplevel)/specs"
+
+# Skip if specs/ doesn't exist or has no local git repo
+[ -d "$SPECS_DIR/.git" ] || exit 0
+
+# Skip if there are no changes
+if git -C "$SPECS_DIR" diff --quiet && git -C "$SPECS_DIR" diff --cached --quiet && [ -z "$(git -C "$SPECS_DIR" ls-files --others --exclude-standard)" ]; then
+    exit 0
+fi
+
+# Get the parent repo's commit message to reuse
+PARENT_MSG="$(git log -1 --format=%s)"
+
+git -C "$SPECS_DIR" add -A
+git -C "$SPECS_DIR" commit -m "sync: $PARENT_MSG" --quiet
+
+echo "Specs tracked locally (sync: $PARENT_MSG)"

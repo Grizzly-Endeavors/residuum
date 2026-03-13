@@ -247,7 +247,8 @@ async fn handle_workspace_reload(rt: &mut GatewayRuntime) {
             let channels = crate::workspace::config::build_external_channels(
                 &configs,
                 rt.http_client.client(),
-            );
+            )
+            .await;
             rt.notification_router.reload_channels(channels).await;
         }
         Err(e) => {

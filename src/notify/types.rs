@@ -150,6 +150,21 @@ pub enum ExternalChannelKind {
         /// Additional headers.
         headers: Vec<(String, String)>,
     },
+    /// Native macOS notification channel.
+    Macos {
+        /// Default notification category.
+        default_category: Option<String>,
+        /// Default interruption level.
+        default_priority: Option<String>,
+        /// Throttle window in seconds.
+        throttle_window_secs: Option<u64>,
+        /// Play notification sound.
+        sound: Option<bool>,
+        /// Display name in banners.
+        app_name: Option<String>,
+        /// Base URL for "Open" action.
+        web_url: Option<String>,
+    },
 }
 
 /// Outcome of routing a notification through channels.
