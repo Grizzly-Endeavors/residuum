@@ -17,7 +17,7 @@ pub struct IdentityFiles {
     pub user: Option<String>,
     /// MEMORY.md -- persistent memory across restarts.
     pub memory: Option<String>,
-    /// ENVIRONMENT.md -- local environment notes (optional).
+    /// ENVIRONMENT.md -- local environment notes.
     pub environment: Option<String>,
     /// BOOTSTRAP.md -- first-run guidance (present only on first conversation).
     pub bootstrap: Option<String>,
@@ -26,8 +26,8 @@ pub struct IdentityFiles {
 impl IdentityFiles {
     /// Load all identity files from the workspace.
     ///
-    /// Missing files are silently treated as `None` (only the required ones
-    /// are created during bootstrap; ENVIRONMENT.md is always optional).
+    /// Missing files are silently treated as `None` — required files log a
+    /// warning when absent.
     ///
     /// # Errors
     /// Returns `ResiduumError::Workspace` if a file exists but cannot be read.
@@ -50,12 +50,17 @@ impl IdentityFiles {
             tracing::warn!(path = %layout.memory_md().display(), "MEMORY.md is missing or empty; expected after bootstrap");
         }
 
+        let environment = read_optional(&layout.environment_md()).await?;
+        if environment.is_none() {
+            tracing::warn!(path = %layout.environment_md().display(), "ENVIRONMENT.md is missing or empty; expected after bootstrap");
+        }
+
         Ok(Self {
             soul,
             agents,
             user,
             memory,
-            environment: read_optional(&layout.environment_md()).await?,
+            environment,
             bootstrap: read_optional(&layout.bootstrap_md()).await?,
         })
     }
@@ -99,8 +104,8 @@ mod tests {
         assert!(identity.user.is_some(), "user should be loaded");
         assert!(identity.memory.is_some(), "memory should be loaded");
         assert!(
-            identity.environment.is_none(),
-            "environment should be None (not created by bootstrap)"
+            identity.environment.is_some(),
+            "environment should be loaded after bootstrap"
         );
         assert!(
             identity.bootstrap.is_some(),
