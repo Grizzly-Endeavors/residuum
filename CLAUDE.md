@@ -50,13 +50,27 @@ DO NOT, under any circumstance, change this config without explicit approval fro
 
 ### No Silent Failures
 
-**Every failure must be visible to the user.** This is non-negotiable.
+**Every failure must be visible.** This is non-negotiable.
 
-- If an operation fails, it must either return an error or print a warning to stderr
-- Debug/trace logging is NOT sufficient - users don't run with `RUST_LOG=debug` by default
-- Partial failures (e.g., reading 2 of 3 files) must be reported, not silently ignored
-- Empty input that causes unexpected behavior must warn the user
-- "Graceful degradation" that hides errors is not acceptable - fail explicitly instead
+#### User-facing: clear, actionable messages
+- Assume users are non-technical — error messages must explain what went wrong and what to do next, not expose internals
+- Use plain language: `"Couldn't connect to the server. Check your internet connection and try again."` not `"TCP connection refused on port 443"`
+- Partial failures (e.g., syncing 2 of 3 items) must tell the user what succeeded, what failed, and whether they need to act
+- Never show raw error types, stack traces, or module paths to the user
+- If an operation fails silently with no user impact, it still needs a log (see below)
+
+#### Developer-facing: rich, structured diagnostics
+- Every error path must produce a log entry with enough context to diagnose without reproducing
+- Include structured fields: `error!(error = %e, path = %path, "failed to read config")` — not just the message
+- Chain error context with `anyhow`: `.context("failed to load user settings")` so logs show the full causal chain
+- Use appropriate log levels (error/warn/info/debug/trace per the logging guidelines above)
+- Transient failures (retries, timeouts) should log at `warn` with attempt count and backoff details
+
+#### Avoid log spam
+- Do not log every retry attempt individually — log once at `warn` when retries start, and once when they resolve or exhaust
+- Do not log routine successful operations ("connection still alive", "heartbeat ok") — absence of errors is the signal that things work
+- Periodic health-check style output belongs at `trace` level at most, never `info` or above
+- If a log line would fire on every loop iteration or timer tick under normal conditions, it's too noisy
 
 ### Comments
 - Explain **why**, never **what** — the code shows what, comments explain non-obvious reasoning
@@ -87,6 +101,13 @@ DO NOT, under any circumstance, change this config without explicit approval fro
 - **debug**: internal details, state transitions
 - **trace**: verbose diagnostics (full payloads, timing)
 - Use structured fields: `info!(chunks = count, "starting chunked review")` not string interpolation
+
+### Debugging
+- `residuum serve --debug` — debug logging for residuum crates (default mode)
+- `residuum serve --debug=all` — debug logging for all crates including dependencies
+- `residuum serve --debug=trace` — trace-level logging for residuum crates
+- `residuum logs` — view saved log files; `residuum logs --watch` to tail live
+- `RUST_LOG` env var overrides `--debug` when set
 
 ## Agent Usage
 

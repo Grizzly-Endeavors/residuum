@@ -3,6 +3,7 @@
 //! Entrypoint with subcommands:
 //! - `serve` (default): starts the gateway as a background daemon
 //! - `serve --foreground`: runs the gateway in the foreground
+//! - `serve --debug[=mode]`: run with debug logging (modes: all, trace)
 //! - `stop`: stops a running gateway daemon
 //! - `connect [url]`: connects a CLI client to a running gateway
 //! - `logs [--watch]`: display CLI log files
@@ -67,10 +68,11 @@ async fn run() -> Result<(), ResiduumError> {
         // "serve" or no subcommand → start gateway
         Some("serve") | None => {
             let foreground = args.iter().any(|a| a == "--foreground");
+            let debug_mode = parse_debug_flag(&args)?;
 
             if foreground {
-                // Foreground mode: file-only logging, run gateway directly
-                residuum::daemon::init_daemon_tracing();
+                // Foreground mode: file-only logging (+ stderr if --debug), run gateway directly
+                residuum::daemon::init_daemon_tracing(debug_mode);
                 run_serve_foreground(&args).await
             } else {
                 // Daemon mode: spawn foreground child, poll for PID file, exit
@@ -241,9 +243,9 @@ fn re_exec_serve_foreground() -> Result<(), ResiduumError> {
 
     tracing::info!(exe = %exe.display(), "re-execing with updated binary");
 
-    let err = std::process::Command::new(&exe)
-        .args(["serve", "--foreground"])
-        .exec();
+    // Forward the original args so --debug is preserved across re-exec
+    let original_args: Vec<String> = std::env::args().skip(1).collect();
+    let err = std::process::Command::new(&exe).args(&original_args).exec();
 
     // exec() only returns on error
     Err(ResiduumError::Gateway(format!("re-exec failed: {err}")))
@@ -867,6 +869,30 @@ fn extract_flag_value(args: &[String], flag: &str) -> Option<String> {
         .cloned()
 }
 
+/// Parse `--debug` or `--debug=<mode>` from args.
+///
+/// Returns `Ok(None)` if no `--debug` flag is present, `Ok(Some(mode))` for
+/// valid modes, or an error for unrecognized mode values.
+fn parse_debug_flag(args: &[String]) -> Result<Option<residuum::daemon::DebugMode>, ResiduumError> {
+    use residuum::daemon::DebugMode;
+
+    for arg in args {
+        if arg == "--debug" {
+            return Ok(Some(DebugMode::Default));
+        }
+        if let Some(value) = arg.strip_prefix("--debug=") {
+            return DebugMode::from_flag_value(Some(value))
+                .map(Some)
+                .ok_or_else(|| {
+                    ResiduumError::Config(format!(
+                        "unknown debug mode '{value}', expected one of: all, trace"
+                    ))
+                });
+        }
+    }
+    Ok(None)
+}
+
 /// Process a single WebSocket frame from the gateway.
 ///
 /// Returns `Break(())` to exit the event loop, `Continue(())` otherwise.
@@ -1102,5 +1128,53 @@ mod tests {
             args.iter().any(|a| a == "--check"),
             "--check flag should be detected"
         );
+    }
+
+    #[test]
+    fn parse_debug_flag_absent() {
+        let args: Vec<String> = vec!["residuum", "serve", "--foreground"]
+            .into_iter()
+            .map(String::from)
+            .collect();
+        assert!(super::parse_debug_flag(&args).unwrap().is_none());
+    }
+
+    #[test]
+    fn parse_debug_flag_bare() {
+        let args: Vec<String> = vec!["residuum", "serve", "--debug"]
+            .into_iter()
+            .map(String::from)
+            .collect();
+        let mode = super::parse_debug_flag(&args).unwrap().unwrap();
+        assert_eq!(mode.filter_str(), "residuum=debug,warn");
+    }
+
+    #[test]
+    fn parse_debug_flag_all() {
+        let args: Vec<String> = vec!["residuum", "serve", "--debug=all"]
+            .into_iter()
+            .map(String::from)
+            .collect();
+        let mode = super::parse_debug_flag(&args).unwrap().unwrap();
+        assert_eq!(mode.filter_str(), "debug");
+    }
+
+    #[test]
+    fn parse_debug_flag_trace() {
+        let args: Vec<String> = vec!["residuum", "serve", "--debug=trace"]
+            .into_iter()
+            .map(String::from)
+            .collect();
+        let mode = super::parse_debug_flag(&args).unwrap().unwrap();
+        assert_eq!(mode.filter_str(), "residuum=trace,warn");
+    }
+
+    #[test]
+    fn parse_debug_flag_unknown_mode_errors() {
+        let args: Vec<String> = vec!["residuum", "serve", "--debug=bogus"]
+            .into_iter()
+            .map(String::from)
+            .collect();
+        assert!(super::parse_debug_flag(&args).is_err());
     }
 }
