@@ -15,8 +15,9 @@ mod types;
 pub(crate) use broker::{spawn_broker, BusHandle};
 pub(crate) use endpoint::{EndpointCapabilities, EndpointId};
 pub(crate) use events::{
-    AgentResultEvent, AgentResultStatus, BusEvent, EventTrigger, HeartbeatStatus, MessageEvent,
-    NotificationEvent, ResponseEvent,
+    AgentResultEvent, AgentResultStatus, BusEvent, EventTrigger, HeartbeatStatus,
+    IntermediateEvent, MessageEvent, NotificationEvent, ResponseEvent, SystemEventData,
+    ToolCallEvent, ToolResultEvent,
 };
 pub(crate) use handle::{Publisher, Subscriber};
 pub(crate) use registry::{EndpointEntry, EndpointRegistry};

@@ -99,6 +99,56 @@ pub(crate) struct NotificationEvent {
     pub(crate) timestamp: NaiveDateTime,
 }
 
+/// Tool invocation sent by the agent during a turn.
+#[derive(Debug, Clone)]
+pub(crate) struct ToolCallEvent {
+    /// Links back to the originating message.
+    pub(crate) correlation_id: String,
+    /// Unique identifier for this tool invocation.
+    pub(crate) tool_call_id: String,
+    /// Tool name.
+    pub(crate) name: String,
+    /// Tool arguments.
+    pub(crate) arguments: serde_json::Value,
+}
+
+/// Result of a tool execution.
+#[derive(Debug, Clone)]
+pub(crate) struct ToolResultEvent {
+    /// Links back to the originating message.
+    pub(crate) correlation_id: String,
+    /// Matches the originating tool call.
+    pub(crate) tool_call_id: String,
+    /// Tool name.
+    pub(crate) name: String,
+    /// Tool output text.
+    pub(crate) output: String,
+    /// Whether the tool reported an error.
+    pub(crate) is_error: bool,
+}
+
+/// Intermediate model text emitted during a turn.
+#[derive(Debug, Clone)]
+pub(crate) struct IntermediateEvent {
+    /// Links back to the originating message.
+    pub(crate) correlation_id: String,
+    /// Partial/intermediate content.
+    pub(crate) content: String,
+}
+
+/// System event surfaced to endpoints.
+#[derive(Debug, Clone)]
+pub(crate) struct SystemEventData {
+    /// Links back to the originating message.
+    pub(crate) correlation_id: String,
+    /// Source label (e.g. pulse name, action name).
+    pub(crate) source: String,
+    /// Event content.
+    pub(crate) content: String,
+    /// Local timestamp.
+    pub(crate) timestamp: NaiveDateTime,
+}
+
 /// Result from a completed background or subagent task.
 #[derive(Debug, Clone)]
 pub(crate) struct AgentResultEvent {
@@ -137,6 +187,24 @@ pub(crate) enum BusEvent {
     Notification(NotificationEvent),
     /// Completed background/subagent result.
     AgentResult(AgentResultEvent),
+    /// Tool invocation from the agent.
+    ToolCall(ToolCallEvent),
+    /// Tool execution result.
+    ToolResult(ToolResultEvent),
+    /// Intermediate model text.
+    Intermediate(IntermediateEvent),
+    /// System event (pulse, action, etc.).
+    SystemEvent(SystemEventData),
+    /// Agent turn has started processing.
+    TurnStarted {
+        /// Links back to the originating message.
+        correlation_id: String,
+    },
+    /// Agent turn has finished processing.
+    TurnEnded {
+        /// Links back to the originating message.
+        correlation_id: String,
+    },
     /// Raw webhook payload.
     WebhookPayload {
         /// The raw body content.
@@ -302,5 +370,136 @@ mod tests {
         let trigger = EventTrigger::Webhook("github".into());
         let debug = format!("{trigger:?}");
         assert!(debug.contains("github"), "Debug should contain webhook name");
+    }
+
+    #[test]
+    fn bus_event_tool_call_variant() {
+        let event = BusEvent::ToolCall(ToolCallEvent {
+            correlation_id: "m1".into(),
+            tool_call_id: "tc1".into(),
+            name: "search".into(),
+            arguments: serde_json::json!({"query": "rust"}),
+        });
+        match event {
+            BusEvent::ToolCall(tc) => {
+                assert_eq!(tc.correlation_id, "m1");
+                assert_eq!(tc.tool_call_id, "tc1");
+                assert_eq!(tc.name, "search");
+                assert_eq!(tc.arguments["query"], "rust");
+            }
+            _ => panic!("expected ToolCall variant"),
+        }
+    }
+
+    #[test]
+    fn bus_event_tool_result_variant() {
+        let event = BusEvent::ToolResult(ToolResultEvent {
+            correlation_id: "m1".into(),
+            tool_call_id: "tc1".into(),
+            name: "search".into(),
+            output: "found 3 results".into(),
+            is_error: false,
+        });
+        match event {
+            BusEvent::ToolResult(tr) => {
+                assert_eq!(tr.tool_call_id, "tc1");
+                assert!(!tr.is_error);
+            }
+            _ => panic!("expected ToolResult variant"),
+        }
+    }
+
+    #[test]
+    fn bus_event_tool_result_error_variant() {
+        let event = BusEvent::ToolResult(ToolResultEvent {
+            correlation_id: "m1".into(),
+            tool_call_id: "tc2".into(),
+            name: "fetch".into(),
+            output: "connection refused".into(),
+            is_error: true,
+        });
+        match event {
+            BusEvent::ToolResult(tr) => {
+                assert!(tr.is_error);
+                assert_eq!(tr.output, "connection refused");
+            }
+            _ => panic!("expected ToolResult variant"),
+        }
+    }
+
+    #[test]
+    fn bus_event_intermediate_variant() {
+        let event = BusEvent::Intermediate(IntermediateEvent {
+            correlation_id: "m1".into(),
+            content: "thinking...".into(),
+        });
+        match event {
+            BusEvent::Intermediate(im) => {
+                assert_eq!(im.correlation_id, "m1");
+                assert_eq!(im.content, "thinking...");
+            }
+            _ => panic!("expected Intermediate variant"),
+        }
+    }
+
+    #[test]
+    fn bus_event_system_event_variant() {
+        let event = BusEvent::SystemEvent(SystemEventData {
+            correlation_id: "m1".into(),
+            source: "daily-summary".into(),
+            content: "3 tasks completed".into(),
+            timestamp: sample_timestamp(),
+        });
+        match event {
+            BusEvent::SystemEvent(se) => {
+                assert_eq!(se.source, "daily-summary");
+                assert_eq!(se.content, "3 tasks completed");
+            }
+            _ => panic!("expected SystemEvent variant"),
+        }
+    }
+
+    #[test]
+    fn bus_event_turn_started_variant() {
+        let event = BusEvent::TurnStarted {
+            correlation_id: "m1".into(),
+        };
+        match event {
+            BusEvent::TurnStarted { correlation_id } => assert_eq!(correlation_id, "m1"),
+            _ => panic!("expected TurnStarted variant"),
+        }
+    }
+
+    #[test]
+    fn bus_event_turn_ended_variant() {
+        let event = BusEvent::TurnEnded {
+            correlation_id: "m1".into(),
+        };
+        match event {
+            BusEvent::TurnEnded { correlation_id } => assert_eq!(correlation_id, "m1"),
+            _ => panic!("expected TurnEnded variant"),
+        }
+    }
+
+    #[test]
+    fn streaming_event_clone() {
+        let tc = ToolCallEvent {
+            correlation_id: "c1".into(),
+            tool_call_id: "t1".into(),
+            name: "read".into(),
+            arguments: serde_json::json!({"path": "/tmp"}),
+        };
+        let cloned = tc.clone();
+        assert_eq!(cloned.name, "read");
+        assert_eq!(cloned.arguments["path"], "/tmp");
+
+        let se = SystemEventData {
+            correlation_id: "c1".into(),
+            source: "pulse".into(),
+            content: "check".into(),
+            timestamp: sample_timestamp(),
+        };
+        let cloned = se.clone();
+        assert_eq!(cloned.source, "pulse");
     }
 }
