@@ -12,7 +12,7 @@ mod handle;
 mod registry;
 mod types;
 
-pub(crate) use broker::{spawn_broker, BusHandle};
+pub(crate) use broker::{BusHandle, spawn_broker};
 pub(crate) use endpoint::{EndpointCapabilities, EndpointId};
 pub(crate) use events::{
     AgentResultEvent, AgentResultStatus, BusEvent, EventTrigger, HeartbeatStatus,

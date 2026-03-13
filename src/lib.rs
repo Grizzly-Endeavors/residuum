@@ -1,6 +1,12 @@
 pub mod actions;
 pub mod agent;
 pub mod background;
+#[expect(
+    dead_code,
+    unused_imports,
+    reason = "bus types will be consumed in subsequent migration phases"
+)]
+pub(crate) mod bus;
 pub mod config;
 pub mod daemon;
 pub mod error;

@@ -103,7 +103,6 @@ pub(crate) enum BusError {
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
-#[expect(clippy::unwrap_used, reason = "test code uses unwrap for clarity")]
 mod tests {
     use std::collections::HashSet;
 
@@ -185,9 +184,9 @@ mod tests {
         let err = BusError::BrokerShutdown;
         assert_eq!(err.to_string(), "bus broker is shut down");
 
-        let err = BusError::SendFailed("channel closed".to_string());
+        let err2 = BusError::SendFailed("channel closed".to_string());
         assert_eq!(
-            err.to_string(),
+            err2.to_string(),
             "failed to send to bus broker: channel closed"
         );
     }

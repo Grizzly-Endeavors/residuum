@@ -220,6 +220,12 @@ pub(crate) enum BusEvent {
 
 #[cfg(test)]
 #[expect(clippy::unwrap_used, reason = "test code uses unwrap for clarity")]
+#[expect(
+    clippy::wildcard_enum_match_arm,
+    reason = "test assertions use wildcard for non-matching variants"
+)]
+#[expect(clippy::panic, reason = "test assertions")]
+#[expect(clippy::indexing_slicing, reason = "test assertions")]
 mod tests {
     use chrono::NaiveDate;
 
@@ -301,7 +307,10 @@ mod tests {
         match event {
             BusEvent::AgentResult(ar) => {
                 assert_eq!(ar.task_id, "t1");
-                assert_eq!(ar.transcript_path, Some(PathBuf::from("/tmp/transcript.json")));
+                assert_eq!(
+                    ar.transcript_path,
+                    Some(PathBuf::from("/tmp/transcript.json"))
+                );
             }
             _ => panic!("expected AgentResult variant"),
         }
@@ -369,7 +378,10 @@ mod tests {
     fn event_trigger_webhook_debug() {
         let trigger = EventTrigger::Webhook("github".into());
         let debug = format!("{trigger:?}");
-        assert!(debug.contains("github"), "Debug should contain webhook name");
+        assert!(
+            debug.contains("github"),
+            "Debug should contain webhook name"
+        );
     }
 
     #[test]
@@ -499,7 +511,7 @@ mod tests {
             content: "check".into(),
             timestamp: sample_timestamp(),
         };
-        let cloned = se.clone();
-        assert_eq!(cloned.source, "pulse");
+        let cloned_se = se.clone();
+        assert_eq!(cloned_se.source, "pulse");
     }
 }

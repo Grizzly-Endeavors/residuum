@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 
-use crate::config::types::Config;
+use crate::config::Config;
 use crate::notify::types::{ExternalChannelConfig, ExternalChannelKind};
 
 use super::endpoint::{EndpointCapabilities, EndpointId};
@@ -50,8 +50,7 @@ impl EndpointRegistry {
         registry.register(EndpointEntry {
             id: EndpointId::from("ws"),
             topic: TopicId::Interactive(EndpointName::from("ws")),
-            capabilities: EndpointCapabilities::INTERACTIVE
-                .union(EndpointCapabilities::STREAMING),
+            capabilities: EndpointCapabilities::INTERACTIVE.union(EndpointCapabilities::STREAMING),
             display_name: "WebSocket".to_string(),
         });
 
@@ -114,34 +113,49 @@ impl EndpointRegistry {
 
     /// Add or overwrite an endpoint entry.
     pub(crate) fn register(&self, entry: EndpointEntry) {
-        let mut map = self.inner.write().unwrap_or_else(|e| e.into_inner());
+        let mut map = self
+            .inner
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         map.insert(entry.id.clone(), entry);
     }
 
     /// Remove an endpoint, returning the entry if it existed.
     pub(crate) fn unregister(&self, id: &EndpointId) -> Option<EndpointEntry> {
-        let mut map = self.inner.write().unwrap_or_else(|e| e.into_inner());
+        let mut map = self
+            .inner
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         map.remove(id)
     }
 
     /// Look up an endpoint by its ID.
     #[must_use]
     pub(crate) fn get(&self, id: &EndpointId) -> Option<EndpointEntry> {
-        let map = self.inner.read().unwrap_or_else(|e| e.into_inner());
+        let map = self
+            .inner
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         map.get(id).cloned()
     }
 
     /// Look up an endpoint by its topic.
     #[must_use]
     pub(crate) fn get_by_topic(&self, topic: &TopicId) -> Option<EndpointEntry> {
-        let map = self.inner.read().unwrap_or_else(|e| e.into_inner());
+        let map = self
+            .inner
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         map.values().find(|e| e.topic == *topic).cloned()
     }
 
     /// Return all endpoints whose capabilities contain all flags in `caps`.
     #[must_use]
     pub(crate) fn filter_by(&self, caps: EndpointCapabilities) -> Vec<EndpointEntry> {
-        let map = self.inner.read().unwrap_or_else(|e| e.into_inner());
+        let map = self
+            .inner
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         map.values()
             .filter(|e| e.capabilities.contains(caps))
             .cloned()
@@ -163,21 +177,30 @@ impl EndpointRegistry {
     /// Return all registered endpoints.
     #[must_use]
     pub(crate) fn all(&self) -> Vec<EndpointEntry> {
-        let map = self.inner.read().unwrap_or_else(|e| e.into_inner());
+        let map = self
+            .inner
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         map.values().cloned().collect()
     }
 
     /// Number of registered endpoints.
     #[must_use]
     pub(crate) fn len(&self) -> usize {
-        let map = self.inner.read().unwrap_or_else(|e| e.into_inner());
+        let map = self
+            .inner
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         map.len()
     }
 
     /// Whether the registry has no endpoints.
     #[must_use]
     pub(crate) fn is_empty(&self) -> bool {
-        let map = self.inner.read().unwrap_or_else(|e| e.into_inner());
+        let map = self
+            .inner
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         map.is_empty()
     }
 }
@@ -188,12 +211,14 @@ impl EndpointRegistry {
 
 #[cfg(test)]
 #[expect(clippy::unwrap_used, reason = "test code uses unwrap for clarity")]
+#[expect(clippy::indexing_slicing, reason = "test assertions")]
+#[expect(clippy::default_trait_access, reason = "test code")]
 mod tests {
     use std::collections::HashMap;
     use std::path::PathBuf;
 
     use super::*;
-    use crate::config::types::{
+    use crate::config::{
         BackgroundConfig, GatewayConfig, IdleConfig, MemoryConfig, SkillsConfig, WebSearchConfig,
         WebhookConfig,
     };
@@ -219,9 +244,7 @@ mod tests {
             discord: None,
             telegram: None,
             webhook: WebhookConfig::default(),
-            skills: SkillsConfig {
-                dirs: vec![],
-            },
+            skills: SkillsConfig { dirs: vec![] },
             retry: RetryConfig::default(),
             background: BackgroundConfig::default(),
             agent: Default::default(),
@@ -323,9 +346,10 @@ mod tests {
     fn get_by_topic_not_found() {
         let reg = EndpointRegistry::new();
         reg.register(make_entry("ws", EndpointCapabilities::INTERACTIVE));
-        assert!(reg
-            .get_by_topic(&TopicId::Interactive(EndpointName::from("missing")))
-            .is_none());
+        assert!(
+            reg.get_by_topic(&TopicId::Interactive(EndpointName::from("missing")))
+                .is_none()
+        );
     }
 
     #[test]
@@ -429,7 +453,11 @@ mod tests {
 
         let inbox = reg.get(&EndpointId::from("inbox")).unwrap();
         assert_eq!(inbox.display_name, "Inbox");
-        assert!(inbox.capabilities.contains(EndpointCapabilities::INPUT_ONLY));
+        assert!(
+            inbox
+                .capabilities
+                .contains(EndpointCapabilities::INPUT_ONLY)
+        );
 
         // discord/telegram not present
         assert!(reg.get(&EndpointId::from("discord")).is_none());
@@ -440,7 +468,7 @@ mod tests {
     #[test]
     fn from_config_includes_discord_when_configured() {
         let mut config = minimal_config();
-        config.discord = Some(crate::config::types::DiscordConfig {
+        config.discord = Some(crate::config::DiscordConfig {
             token: "test-token".to_string(),
         });
 
@@ -448,9 +476,11 @@ mod tests {
 
         let discord = reg.get(&EndpointId::from("discord")).unwrap();
         assert_eq!(discord.display_name, "Discord");
-        assert!(discord
-            .capabilities
-            .contains(EndpointCapabilities::INTERACTIVE));
+        assert!(
+            discord
+                .capabilities
+                .contains(EndpointCapabilities::INTERACTIVE)
+        );
     }
 
     #[test]

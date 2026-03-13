@@ -12,10 +12,7 @@ use super::types::{BusError, TopicId};
 /// Commands sent from handles to the broker task.
 pub(crate) enum BrokerCommand {
     /// Publish an event to a topic.
-    Publish {
-        topic: TopicId,
-        event: BusEvent,
-    },
+    Publish { topic: TopicId, event: BusEvent },
     /// Register a subscriber for a topic.
     Subscribe {
         id: u64,
@@ -23,10 +20,7 @@ pub(crate) enum BrokerCommand {
         sender: mpsc::Sender<BusEvent>,
     },
     /// Remove a subscriber from a topic.
-    Unsubscribe {
-        id: u64,
-        topic: TopicId,
-    },
+    Unsubscribe { id: u64, topic: TopicId },
 }
 
 // ---------------------------------------------------------------------------
@@ -50,11 +44,7 @@ impl Publisher {
     /// # Errors
     ///
     /// Returns `BusError::BrokerShutdown` if the broker has stopped.
-    pub(crate) async fn publish(
-        &self,
-        topic: TopicId,
-        event: BusEvent,
-    ) -> Result<(), BusError> {
+    pub(crate) async fn publish(&self, topic: TopicId, event: BusEvent) -> Result<(), BusError> {
         self.cmd_tx
             .send(BrokerCommand::Publish { topic, event })
             .await

@@ -5,6 +5,8 @@
 
 mod handler;
 mod reply;
+#[expect(dead_code, reason = "subscriber will be wired in during bus migration")]
+pub(crate) mod subscriber;
 
 use std::path::PathBuf;
 
