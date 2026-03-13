@@ -140,9 +140,9 @@ Rules:
 - Do NOT touch files outside the module being audited
 - If an audit finding is vague or you're unsure how to fix it, skip it
 
-Your final output will be used directly as the git commit message.
-First line: concise summary (<=72 chars). Then a blank line and a short body listing what was fixed.
-No markdown fencing, no preamble, no Co-Authored-By lines.
+After making your changes, stage and commit them using `git add` and `git commit -m "message"`.
+Write a good commit message: concise summary (<=72 chars) on the first line.
+Do NOT use `git commit -m "$(cat ...)"` or heredocs — just a plain `-m "message"` string.
 
 INSTRUCTIONS
         echo "## Audit Findings"
@@ -160,20 +160,23 @@ INSTRUCTIONS
 
     echo "  Applying fixes..."
 
-    local commit_msg
-    if commit_msg=$(claude -p --model "$MODEL" --no-session-persistence \
-        --allowedTools "Edit Read Glob Grep" \
-        < "$tmpfile" 2>/dev/null); then
+    local pre_head
+    pre_head=$(git rev-parse HEAD)
 
-        # Check if any changes were made
-        if [[ -z $(git status --porcelain) ]]; then
-            echo "  [no-op] No changes needed"
+    if claude -p --model "$MODEL" --no-session-persistence \
+        --allowedTools "Edit Read Glob Grep Bash(git:*)" \
+        < "$tmpfile" > /dev/null 2>&1; then
+
+        # Check if Claude actually committed something
+        if [[ "$(git rev-parse HEAD)" == "$pre_head" ]]; then
+            # No commit — clean up any uncommitted changes
+            git checkout -- . 2>/dev/null
+            git clean -fd 2>/dev/null
+            echo "  [no-op] No changes committed"
             SKIPPED=$((SKIPPED + 1))
             return 0
         fi
 
-        git add -A
-        git commit -m "$commit_msg" > /dev/null 2>&1
         mkdir -p "$INPUT_DIR/applied"
         mv "$audit_file" "$INPUT_DIR/applied/"
         echo "  [done] Committed"
