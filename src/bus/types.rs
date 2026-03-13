@@ -84,22 +84,6 @@ impl fmt::Display for TopicId {
 }
 
 // ---------------------------------------------------------------------------
-// BusEvent
-// ---------------------------------------------------------------------------
-
-/// An event published onto the bus.
-#[derive(Debug, Clone)]
-pub(crate) enum BusEvent {
-    /// A simple text message.
-    Message {
-        /// Unique message identifier.
-        id: String,
-        /// Message content.
-        content: String,
-    },
-}
-
-// ---------------------------------------------------------------------------
 // BusError
 // ---------------------------------------------------------------------------
 

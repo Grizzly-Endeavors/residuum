@@ -2,7 +2,8 @@
 
 use tokio::sync::mpsc;
 
-use super::types::{BusError, BusEvent, TopicId};
+use super::events::BusEvent;
+use super::types::{BusError, TopicId};
 
 // ---------------------------------------------------------------------------
 // BrokerCommand

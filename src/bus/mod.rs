@@ -6,11 +6,16 @@
 //! active subscribers on the target topic.
 
 mod broker;
+mod endpoint;
+mod events;
 mod handle;
 mod types;
 
 pub(crate) use broker::{spawn_broker, BusHandle};
-pub(crate) use handle::{Publisher, Subscriber};
-pub(crate) use types::{
-    BusError, BusEvent, EndpointName, NotifyName, PresetName, TopicId, WebhookName,
+pub(crate) use endpoint::{EndpointCapabilities, EndpointId};
+pub(crate) use events::{
+    AgentResultEvent, AgentResultStatus, BusEvent, EventTrigger, HeartbeatStatus, MessageEvent,
+    NotificationEvent, ResponseEvent,
 };
+pub(crate) use handle::{Publisher, Subscriber};
+pub(crate) use types::{BusError, EndpointName, NotifyName, PresetName, TopicId, WebhookName};

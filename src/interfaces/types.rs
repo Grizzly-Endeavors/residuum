@@ -11,8 +11,8 @@ use crate::models::ImageData;
 /// Where a message originated from.
 #[derive(Debug, Clone)]
 pub struct MessageOrigin {
-    /// Interface name (e.g. `"websocket"`, `"discord"`, `"webhook"`).
-    pub interface: String,
+    /// Endpoint name (e.g. `"websocket"`, `"discord"`, `"webhook"`).
+    pub endpoint: String,
     /// Human-readable sender name.
     pub sender_name: String,
     /// Unique sender identifier (user ID, IP, etc.).

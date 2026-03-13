@@ -62,7 +62,7 @@ pub async fn webhook_handler(
     };
 
     let origin = MessageOrigin {
-        interface: "webhook".to_string(),
+        endpoint: "webhook".to_string(),
         sender_name: "webhook".to_string(),
         sender_id: "webhook".to_string(),
     };
@@ -162,8 +162,8 @@ mod tests {
             "content should match"
         );
         assert_eq!(
-            routed.message.origin.interface, "webhook",
-            "interface should be webhook"
+            routed.message.origin.endpoint, "webhook",
+            "endpoint should be webhook"
         );
     }
 

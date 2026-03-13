@@ -256,7 +256,7 @@ impl Agent {
         let status_line = StatusLine {
             now,
             last_message_at: self.last_user_message_at,
-            message_source: origin.map(|o| o.interface.clone()),
+            message_source: origin.map(|o| o.endpoint.clone()),
             unread_inbox_count: unread,
         };
         self.last_user_message_at = Some(now);
@@ -984,7 +984,7 @@ mod tests {
             id: id.to_string(),
             content: content.to_string(),
             origin: crate::interfaces::types::MessageOrigin {
-                interface: "test".to_string(),
+                endpoint: "test".to_string(),
                 sender_name: "tester".to_string(),
                 sender_id: "t1".to_string(),
             },

@@ -212,7 +212,7 @@ mod tests {
                         id: "test-1".to_string(),
                         content: "hello".to_string(),
                         origin: crate::interfaces::types::MessageOrigin {
-                            interface: "test".to_string(),
+                            endpoint: "test".to_string(),
                             sender_name: "tester".to_string(),
                             sender_id: "t1".to_string(),
                         },

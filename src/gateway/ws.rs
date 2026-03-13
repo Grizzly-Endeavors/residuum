@@ -91,7 +91,7 @@ async fn handle_client_message(msg: ClientMessage, state: &GatewayState) -> bool
             images,
         } => {
             let origin = MessageOrigin {
-                interface: "websocket".to_string(),
+                endpoint: "websocket".to_string(),
                 sender_name: "ws-client".to_string(),
                 sender_id: "ws-client".to_string(),
             };

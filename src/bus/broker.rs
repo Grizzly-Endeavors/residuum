@@ -7,8 +7,9 @@ use std::sync::Arc;
 use tokio::sync::mpsc;
 use tracing::{debug, warn};
 
+use super::events::BusEvent;
 use super::handle::{BrokerCommand, Publisher, Subscriber};
-use super::types::{BusError, BusEvent, TopicId};
+use super::types::{BusError, TopicId};
 use crate::spawn::spawn_monitored;
 
 /// Command channel capacity for the broker.
@@ -137,7 +138,28 @@ async fn run_broker(mut cmd_rx: mpsc::Receiver<BrokerCommand>) {
 #[cfg(test)]
 #[expect(clippy::unwrap_used, reason = "test code uses unwrap for clarity")]
 mod tests {
+    use chrono::NaiveDate;
+
     use super::*;
+    use crate::bus::events::MessageEvent;
+    use crate::interfaces::types::MessageOrigin;
+
+    fn test_message(id: &str, content: &str) -> BusEvent {
+        BusEvent::Message(MessageEvent {
+            id: id.into(),
+            content: content.into(),
+            origin: MessageOrigin {
+                endpoint: "test".into(),
+                sender_name: "tester".into(),
+                sender_id: "t-1".into(),
+            },
+            timestamp: NaiveDate::from_ymd_opt(2026, 3, 13)
+                .unwrap()
+                .and_hms_opt(12, 0, 0)
+                .unwrap(),
+            images: vec![],
+        })
+    }
 
     #[tokio::test]
     async fn publish_to_single_subscriber() {
@@ -146,22 +168,17 @@ mod tests {
         let mut sub = handle.subscribe(TopicId::Inbox).await.unwrap();
 
         pub_
-            .publish(
-                TopicId::Inbox,
-                BusEvent::Message {
-                    id: "1".into(),
-                    content: "hello".into(),
-                },
-            )
+            .publish(TopicId::Inbox, test_message("1", "hello"))
             .await
             .unwrap();
 
         let event = sub.recv().await.unwrap();
         match event {
-            BusEvent::Message { id, content } => {
-                assert_eq!(id, "1");
-                assert_eq!(content, "hello");
+            BusEvent::Message(msg) => {
+                assert_eq!(msg.id, "1");
+                assert_eq!(msg.content, "hello");
             }
+            _ => panic!("expected Message variant"),
         }
     }
 
@@ -173,30 +190,18 @@ mod tests {
         let mut sub2 = handle.subscribe(TopicId::Inbox).await.unwrap();
 
         pub_
-            .publish(
-                TopicId::Inbox,
-                BusEvent::Message {
-                    id: "2".into(),
-                    content: "fanout".into(),
-                },
-            )
+            .publish(TopicId::Inbox, test_message("2", "fanout"))
             .await
             .unwrap();
 
         let e1 = sub1.recv().await.unwrap();
         let e2 = sub2.recv().await.unwrap();
         match (&e1, &e2) {
-            (
-                BusEvent::Message {
-                    content: c1, ..
-                },
-                BusEvent::Message {
-                    content: c2, ..
-                },
-            ) => {
-                assert_eq!(c1, "fanout");
-                assert_eq!(c2, "fanout");
+            (BusEvent::Message(m1), BusEvent::Message(m2)) => {
+                assert_eq!(m1.content, "fanout");
+                assert_eq!(m2.content, "fanout");
             }
+            _ => panic!("expected Message variants"),
         }
     }
 
@@ -207,13 +212,7 @@ mod tests {
 
         // Publishing to a topic with no subscribers should not error.
         let result = pub_
-            .publish(
-                TopicId::AgentMain,
-                BusEvent::Message {
-                    id: "3".into(),
-                    content: "void".into(),
-                },
-            )
+            .publish(TopicId::AgentMain, test_message("3", "void"))
             .await;
 
         assert!(result.is_ok());
@@ -232,13 +231,7 @@ mod tests {
         tokio::task::yield_now().await;
 
         let result = pub_
-            .publish(
-                TopicId::Inbox,
-                BusEvent::Message {
-                    id: "4".into(),
-                    content: "gone".into(),
-                },
-            )
+            .publish(TopicId::Inbox, test_message("4", "gone"))
             .await;
 
         assert!(result.is_ok());
@@ -265,24 +258,12 @@ mod tests {
         let mut sub_agent = handle.subscribe(TopicId::AgentMain).await.unwrap();
 
         pub_
-            .publish(
-                TopicId::Inbox,
-                BusEvent::Message {
-                    id: "5".into(),
-                    content: "for inbox".into(),
-                },
-            )
+            .publish(TopicId::Inbox, test_message("5", "for inbox"))
             .await
             .unwrap();
 
         pub_
-            .publish(
-                TopicId::AgentMain,
-                BusEvent::Message {
-                    id: "6".into(),
-                    content: "for agent".into(),
-                },
-            )
+            .publish(TopicId::AgentMain, test_message("6", "for agent"))
             .await
             .unwrap();
 
@@ -290,10 +271,12 @@ mod tests {
         let agent_event = sub_agent.recv().await.unwrap();
 
         match inbox_event {
-            BusEvent::Message { content, .. } => assert_eq!(content, "for inbox"),
+            BusEvent::Message(msg) => assert_eq!(msg.content, "for inbox"),
+            _ => panic!("expected Message variant"),
         }
         match agent_event {
-            BusEvent::Message { content, .. } => assert_eq!(content, "for agent"),
+            BusEvent::Message(msg) => assert_eq!(msg.content, "for agent"),
+            _ => panic!("expected Message variant"),
         }
     }
 
@@ -311,19 +294,14 @@ mod tests {
 
         // Publish — sub1 should be pruned, sub2 should receive.
         pub_
-            .publish(
-                TopicId::Inbox,
-                BusEvent::Message {
-                    id: "7".into(),
-                    content: "after prune".into(),
-                },
-            )
+            .publish(TopicId::Inbox, test_message("7", "after prune"))
             .await
             .unwrap();
 
         let event = sub2.recv().await.unwrap();
         match event {
-            BusEvent::Message { content, .. } => assert_eq!(content, "after prune"),
+            BusEvent::Message(msg) => assert_eq!(msg.content, "after prune"),
+            _ => panic!("expected Message variant"),
         }
     }
 }

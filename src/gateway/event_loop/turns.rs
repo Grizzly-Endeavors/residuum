@@ -286,7 +286,7 @@ pub async fn handle_inbound_message(
     let origin = routed.message.origin.clone();
 
     // TurnStarted is WS-specific protocol sugar
-    if origin.interface == "websocket" {
+    if origin.endpoint == "websocket" {
         rt.broadcast_tx
             .send(ServerMessage::TurnStarted {
                 reply_to: reply_id.clone(),
@@ -296,7 +296,7 @@ pub async fn handle_inbound_message(
 
     rt.last_reply = Some(Arc::clone(&routed.reply));
     if let std::collections::hash_map::Entry::Vacant(e) =
-        rt.unsolicited_handles.entry(origin.interface.clone())
+        rt.unsolicited_handles.entry(origin.endpoint.clone())
         && let Some(h) = routed.reply.unsolicited_clone()
     {
         e.insert(h);

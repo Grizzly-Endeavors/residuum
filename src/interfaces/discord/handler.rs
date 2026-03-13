@@ -90,7 +90,7 @@ impl EventHandler for DiscordHandler {
         .await;
 
         let origin = MessageOrigin {
-            interface: "discord".to_string(),
+            endpoint: "discord".to_string(),
             sender_name: msg.author.name.clone(),
             sender_id: msg.author.id.to_string(),
         };

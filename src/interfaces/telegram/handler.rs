@@ -221,7 +221,7 @@ async fn dispatch_message(
     let sender_name = build_sender_name(from);
 
     let origin = MessageOrigin {
-        interface: "telegram".to_string(),
+        endpoint: "telegram".to_string(),
         sender_name,
         sender_id: from.id.to_string(),
     };
