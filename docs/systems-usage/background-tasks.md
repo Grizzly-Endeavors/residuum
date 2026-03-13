@@ -61,7 +61,7 @@ Model tiers are configured in `[background]` config section (`models.small`, `mo
 
 ## Subagent Presets
 
-Presets are markdown files in the workspace `subagents/` directory. Filenames should be kebab-case matching the preset name (e.g., `memory-agent.md` for a preset named `memory-agent`).
+Presets are markdown files in the workspace `subagents/` directory, these presets are used to populate the subagent registry. Filenames should be kebab-case matching the preset name (e.g., `memory-agent.md` for a preset named `memory-agent`).
 
 ```yaml
 ---
