@@ -20,6 +20,13 @@ use tokio::sync::mpsc;
 use super::MacosChannelConfig;
 use super::categories::{MacosCategory, MacosInterruptionLevel, MacosNotificationAction};
 
+/// Text content for a macOS notification.
+pub struct NotificationText {
+    pub title: String,
+    pub subtitle: String,
+    pub body: String,
+}
+
 /// `UNUserNotificationCenter` throws an unrecoverable `ObjC` exception if the
 /// process has no app bundle. Check `NSBundle.mainBundle.bundleIdentifier`
 /// first so we can return an error instead of crashing.
@@ -118,34 +125,23 @@ impl MacosBridge {
 
     /// # Errors
     /// Returns an error if the `spawn_blocking` task panics.
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "macOS notification content requires many distinct fields"
-    )]
     pub async fn post_notification(
         &self,
         identifier: &str,
-        title: &str,
-        subtitle: &str,
-        body: &str,
+        text: NotificationText,
         category_id: &str,
         interruption_level: MacosInterruptionLevel,
         sound: bool,
         thread_id: &str,
     ) -> anyhow::Result<()> {
         let id = identifier.to_string();
-        let title = title.to_string();
-        let subtitle = subtitle.to_string();
-        let body = body.to_string();
         let cat_id = category_id.to_string();
         let thread = thread_id.to_string();
         let level = interruption_level;
         let play_sound = sound;
 
         tokio::task::spawn_blocking(move || {
-            post_notification_sync(
-                &id, &title, &subtitle, &body, &cat_id, level, play_sound, &thread,
-            );
+            post_notification_sync(&id, text, &cat_id, level, play_sound, &thread);
         })
         .await
         .map_err(|e| anyhow::anyhow!("notification post task failed: {e}"))?;
@@ -170,11 +166,14 @@ impl MacosBridge {
         body: &str,
         interruption_level: MacosInterruptionLevel,
     ) -> anyhow::Result<()> {
+        let text = NotificationText {
+            title: title.to_string(),
+            subtitle: String::new(),
+            body: body.to_string(),
+        };
         self.post_notification(
             "residuum-batch-summary",
-            title,
-            "",
-            body,
+            text,
             "background-results",
             interruption_level,
             self.config.sound,
@@ -216,15 +215,9 @@ impl MacosBridge {
 
 /// Wraps objc2 calls in `catch_unwind` because the `ObjC` runtime can panic
 /// on missing selectors or nil center — we log rather than crash the process.
-#[expect(
-    clippy::too_many_arguments,
-    reason = "macOS notification content requires many distinct fields"
-)]
 fn post_notification_sync(
     identifier: &str,
-    title: &str,
-    subtitle: &str,
-    body: &str,
+    text: NotificationText,
     category_id: &str,
     level: MacosInterruptionLevel,
     sound: bool,
@@ -233,9 +226,9 @@ fn post_notification_sync(
     let result = std::panic::catch_unwind(|| {
         let content = UNMutableNotificationContent::new();
 
-        let ns_title = NSString::from_str(title);
-        let ns_subtitle = NSString::from_str(subtitle);
-        let ns_body = NSString::from_str(body);
+        let ns_title = NSString::from_str(&text.title);
+        let ns_subtitle = NSString::from_str(&text.subtitle);
+        let ns_body = NSString::from_str(&text.body);
         let ns_cat = NSString::from_str(category_id);
         let ns_thread = NSString::from_str(thread_id);
 

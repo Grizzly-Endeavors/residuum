@@ -30,9 +30,8 @@ fn check_permissions_sync() {
 
         let block = RcBlock::new(move |granted: Bool, error: *mut NSError| {
             if !error.is_null() {
-                tracing::warn!("macOS notification permission request failed");
-                eprintln!(
-                    "warning: macOS notification permission request failed. \
+                tracing::warn!(
+                    "macOS notification permission request failed. \
                      To enable: System Settings > Notifications > Residuum > Allow Notifications"
                 );
             } else if granted.as_bool() {
@@ -42,10 +41,6 @@ fn check_permissions_sync() {
                     "macOS notification permissions not granted for Residuum. \
                      To enable: System Settings > Notifications > Residuum > Allow Notifications. \
                      Notifications will not be delivered until permissions are granted."
-                );
-                eprintln!(
-                    "warning: macOS notification permissions not granted for Residuum. \
-                     To enable: System Settings > Notifications > Residuum > Allow Notifications"
                 );
             }
         });

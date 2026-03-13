@@ -113,17 +113,17 @@ async fn deliver_individual(
     config: &MacosChannelConfig,
 ) {
     let id = format!("residuum-{}", uuid::Uuid::new_v4());
-    let title = config.app_name.clone();
-    let subtitle = notif.task_name.replace('_', " ");
-    let body = truncate_body(&notif.summary, 200);
+    let text = super::bridge::NotificationText {
+        title: config.app_name.clone(),
+        subtitle: notif.task_name.replace('_', " "),
+        body: truncate_body(&notif.summary, 200),
+    };
     let category = super::categories::resolve_category(notif.source, config.default_category);
 
     if let Err(e) = bridge
         .post_notification(
             &id,
-            &title,
-            &subtitle,
-            &body,
+            text,
             category.as_category_id(),
             config.default_priority,
             config.sound,
@@ -135,10 +135,6 @@ async fn deliver_individual(
             task = %notif.task_name,
             error = %e,
             "failed to post individual notification"
-        );
-        eprintln!(
-            "warning: failed to post macOS notification for '{}': {e}",
-            notif.task_name
         );
     }
 }
