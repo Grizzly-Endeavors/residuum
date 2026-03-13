@@ -74,12 +74,14 @@ if [[ -n $(git status --porcelain) ]]; then
 fi
 
 if ! $DRY_RUN; then
-    # Create the branch from main (fail if it already exists)
-    if ! git checkout -b "$BRANCH" main 2>/dev/null; then
-        echo "Error: branch '$BRANCH' already exists. Delete it or choose a different name with -b."
-        exit 1
+    # Create or switch to the branch
+    if git show-ref --verify --quiet "refs/heads/$BRANCH"; then
+        git checkout "$BRANCH" 2>/dev/null
+        echo "Resuming on existing branch: $BRANCH"
+    else
+        git checkout -b "$BRANCH" main 2>/dev/null
+        echo "Created branch: $BRANCH"
     fi
-    echo "Created branch: $BRANCH"
 fi
 
 APPLIED=0
@@ -99,7 +101,7 @@ apply_audit() {
         module_path="src/${module_name}"
     else
         echo "[skip] $module_name — no matching source at src/${module_name}{,.rs}"
-        ((SKIPPED++))
+        SKIPPED=$((SKIPPED + 1))
         return 0
     fi
 
@@ -166,20 +168,22 @@ INSTRUCTIONS
         # Check if any changes were made
         if [[ -z $(git status --porcelain) ]]; then
             echo "  [no-op] No changes needed"
-            ((SKIPPED++))
+            SKIPPED=$((SKIPPED + 1))
             return 0
         fi
 
         git add -A
         git commit -m "$commit_msg" > /dev/null 2>&1
+        mkdir -p "$INPUT_DIR/applied"
+        mv "$audit_file" "$INPUT_DIR/applied/"
         echo "  [done] Committed"
-        ((APPLIED++))
+        APPLIED=$((APPLIED + 1))
     else
         echo "  [FAIL] Claude exited with an error"
         # Clean up any partial changes
         git checkout -- . 2>/dev/null
         git clean -fd 2>/dev/null
-        ((FAILED++))
+        FAILED=$((FAILED + 1))
     fi
 }
 
