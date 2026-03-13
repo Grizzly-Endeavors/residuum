@@ -7,11 +7,17 @@ set -euo pipefail
 #   ./scripts/audit-modules.sh [OPTIONS]
 #
 # Options:
-#   -p, --prompt PROMPT   The audit prompt/instruction (required)
+#   -p, --prompt PROMPT   The audit prompt/instruction (inline)
+#   -f, --file FILE       Read audit prompt from a file (use - for stdin)
 #   -m, --model MODEL     Model to use (default: sonnet)
 #   -j, --jobs N          Max parallel jobs (default: 4)
 #   -o, --output DIR      Output directory (default: audit-results/)
 #   -h, --help            Show this help
+#
+# Examples:
+#   ./scripts/audit-modules.sh -p "Review for error handling issues"
+#   ./scripts/audit-modules.sh -f audits/no-silent-failures.txt -m opus
+#   cat prompt.txt | ./scripts/audit-modules.sh -f -
 
 MODEL="sonnet"
 JOBS=4
@@ -19,13 +25,21 @@ PROMPT=""
 OUTPUT_DIR="audit-results"
 
 usage() {
-    sed -n '/^# Usage:/,/^$/p' "$0" | sed 's/^# \?//'
+    sed -n '/^# Usage:/,/^# Examples:/p' "$0" | sed 's/^# \?//'
+    sed -n '/^# Examples:/,/^$/p' "$0" | sed 's/^# \?//'
     exit 0
 }
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
         -p|--prompt)  PROMPT="$2"; shift 2 ;;
+        -f|--file)
+            if [[ "$2" == "-" ]]; then
+                PROMPT="$(cat)"
+            else
+                PROMPT="$(cat "$2")"
+            fi
+            shift 2 ;;
         -m|--model)   MODEL="$2"; shift 2 ;;
         -j|--jobs)    JOBS="$2"; shift 2 ;;
         -o|--output)  OUTPUT_DIR="$2"; shift 2 ;;
@@ -70,31 +84,32 @@ audit_module() {
         files="$module"
     fi
 
-    # Build the file list for context
-    local file_contents=""
-    for f in $files; do
-        file_contents+="
---- $f ---
-$(cat "$f")
-"
-    done
+    # Build the full prompt with file contents, write to a temp file to avoid ARG_MAX
+    local tmpfile
+    tmpfile=$(mktemp)
+    trap "rm -f '$tmpfile'" RETURN
 
-    local full_prompt="You are auditing the Rust module \`$module\` from the Residuum project.
-
-$PROMPT
-
-Here are the files in this module:
-
-$file_contents
-
-Provide your audit findings in markdown. Be specific — reference file paths and line numbers. Focus on actionable findings, not praise."
+    {
+        echo "You are auditing the Rust module \`$module\` from the Residuum project."
+        echo ""
+        echo "$PROMPT"
+        echo ""
+        echo "Here are the files in this module:"
+        echo ""
+        for f in $files; do
+            echo "--- $f ---"
+            cat "$f"
+            echo ""
+        done
+        echo "Provide your audit findings in markdown. Be specific — reference file paths and line numbers. Focus on actionable findings, not praise."
+    } > "$tmpfile"
 
     echo "[start] $module -> $outfile"
 
-    if claude -p --model "$MODEL" --no-session-persistence "$full_prompt" > "$outfile" 2>/dev/null; then
+    if claude -p --model "$MODEL" --no-session-persistence < "$tmpfile" > "$outfile" 2>/dev/null; then
         echo "[done]  $module"
     else
-        echo "[ERROR] $module — claude exited with $?"
+        echo "[FAIL]  $module (exit $?)"
         echo "# Audit failed for $module" > "$outfile"
     fi
 }
