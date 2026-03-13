@@ -238,11 +238,25 @@ async fn run_serve_foreground_inner(args: &[String]) -> Result<(), ResiduumError
 fn re_exec_serve_foreground() -> Result<(), ResiduumError> {
     use std::os::unix::process::CommandExt;
 
-    let exe = std::env::current_exe().map_err(|e| {
+    let raw_exe = std::env::current_exe().map_err(|e| {
         ResiduumError::Gateway(format!(
             "failed to determine current executable for re-exec: {e}"
         ))
     })?;
+
+    // On Linux, atomically replacing the binary (via `mv`) unlinks the old
+    // inode while the process is still running. The kernel then appends
+    // " (deleted)" to /proc/self/exe, so current_exe() returns a path that
+    // no longer exists. Strip the suffix to get the live path on disk, which
+    // now points to the freshly-installed binary.
+    let exe = {
+        let s = raw_exe.to_string_lossy();
+        if let Some(stripped) = s.strip_suffix(" (deleted)") {
+            std::path::PathBuf::from(stripped)
+        } else {
+            raw_exe
+        }
+    };
 
     tracing::info!(exe = %exe.display(), "re-execing with updated binary");
 
