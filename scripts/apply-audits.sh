@@ -163,8 +163,8 @@ INSTRUCTIONS
     local pre_head
     pre_head=$(git rev-parse HEAD)
 
-    if claude -p --model "$MODEL" --no-session-persistence \
-        --allowedTools "Edit Read Glob Grep Bash(git:*)" \
+    if claude -p --model "$MODEL" \
+        --allowedTools "Edit Read Glob Grep Bash(git:*) Bash(cargo:*)" \
         < "$tmpfile" > /dev/null 2>&1; then
 
         # Check if Claude actually committed something
