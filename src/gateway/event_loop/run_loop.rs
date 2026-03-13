@@ -388,7 +388,7 @@ async fn graceful_shutdown(rt: &mut GatewayRuntime) {
 /// Spawn a fire-and-forget update check task.
 fn spawn_update_check(status: &crate::update::SharedUpdateStatus) {
     let status = Arc::clone(status);
-    tokio::spawn(async move {
+    crate::spawn::spawn_monitored("update-check", async move {
         crate::update::check_for_update(&status).await;
     });
 }

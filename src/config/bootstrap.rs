@@ -103,12 +103,16 @@ pub(super) fn bootstrap_at(dir: &Path) -> Result<(), ResiduumError> {
         })?;
     }
 
-    write_if_absent(&ws_config_dir.join("mcp.json"), "{ \"mcpServers\": {} }\n")?;
+    if write_if_absent(&ws_config_dir.join("mcp.json"), "{ \"mcpServers\": {} }\n")? {
+        tracing::info!(path = %ws_config_dir.join("mcp.json").display(), "wrote initial mcp.json");
+    }
 
-    write_if_absent(
+    if write_if_absent(
         &ws_config_dir.join("channels.toml"),
         "# Notification channel configuration. See channels.example.toml for options.\n",
-    )?;
+    )? {
+        tracing::info!(path = %ws_config_dir.join("channels.toml").display(), "wrote initial channels.toml");
+    }
 
     Ok(())
 }

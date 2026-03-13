@@ -143,7 +143,15 @@ async fn scan_directory(
 
         match parse_project_md(&content) {
             Ok((fm, _body)) => {
-                let dir_name = entry.file_name().to_str().unwrap_or("unknown").to_string();
+                let dir_name = if let Some(s) = entry.file_name().to_str() {
+                    s.to_string()
+                } else {
+                    tracing::warn!(
+                        path = %entry.path().display(),
+                        "skipping project directory with non-UTF-8 name"
+                    );
+                    continue;
+                };
 
                 entries.push(ProjectIndexEntry {
                     name: fm.name.clone(),

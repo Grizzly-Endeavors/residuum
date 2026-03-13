@@ -250,7 +250,13 @@ impl AnthropicClient {
 
         let status = response.status();
         if !status.is_success() {
-            let body = response.text().await.unwrap_or_default();
+            let body = match response.text().await {
+                Ok(b) => b,
+                Err(e) => {
+                    tracing::warn!(error = %e, "failed to read error response body");
+                    format!("failed to read response body: {e}")
+                }
+            };
 
             let error_msg = serde_json::from_str::<AnthropicErrorResponse>(&body).map_or_else(
                 |_| format!("anthropic api error {status}: {body}"),

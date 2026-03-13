@@ -107,9 +107,6 @@ async fn init_action_store(
     let action_store = match ActionStore::load(&actions_path).await {
         Ok(store) => Arc::new(tokio::sync::Mutex::new(store)),
         Err(err) => {
-            eprintln!(
-                "warning: failed to load scheduled actions, starting with empty store: {err}"
-            );
             tracing::warn!(error = %err, "action store degraded: starting empty");
             Arc::new(tokio::sync::Mutex::new(ActionStore::new_empty(
                 actions_path,
@@ -128,7 +125,6 @@ async fn init_project_and_skills(
     let project_index = match ProjectIndex::scan(layout).await {
         Ok(idx) => idx,
         Err(err) => {
-            eprintln!("warning: failed to scan projects, starting with empty index: {err}");
             tracing::warn!(error = %err, "project index degraded: starting empty");
             ProjectIndex::default()
         }
@@ -140,7 +136,6 @@ async fn init_project_and_skills(
     let skill_index = match SkillIndex::scan(&cfg.skills.dirs, None).await {
         Ok(idx) => idx,
         Err(err) => {
-            eprintln!("warning: failed to scan skills, starting with empty index: {err}");
             tracing::warn!(error = %err, "skill index degraded: starting empty");
             SkillIndex::default()
         }
@@ -185,9 +180,6 @@ async fn init_mcp_servers(layout: &WorkspaceLayout) -> SharedMcpRegistry {
             }
         }
         Err(err) => {
-            eprintln!(
-                "warning: failed to load mcp.json, starting without workspace MCP servers: {err}"
-            );
             tracing::warn!(error = %err, "workspace MCP servers degraded");
         }
     }
@@ -241,7 +233,7 @@ async fn connect_web_search_mcp(cfg: &Config, mcp_registry: &SharedMcpRegistry) 
     );
     if !report.failures.is_empty() {
         for (name, err) in &report.failures {
-            eprintln!("warning: failed to start web search MCP server '{name}': {err}");
+            tracing::warn!(server = %name, error = %err, "failed to start web search MCP server");
         }
     }
 }
@@ -252,18 +244,14 @@ fn init_notification_channels(
     http: &SharedHttpClient,
     cfg: &Config,
 ) -> (Arc<NotificationRouter>, std::collections::HashSet<String>) {
-    let channel_configs = match crate::workspace::config::load_channel_configs(
-        &layout.channels_toml(),
-    ) {
-        Ok(configs) => configs,
-        Err(err) => {
-            eprintln!(
-                "warning: failed to load channels.toml, starting without external channels: {err}"
-            );
-            tracing::warn!(error = %err, "workspace channels degraded");
-            Vec::new()
-        }
-    };
+    let channel_configs =
+        match crate::workspace::config::load_channel_configs(&layout.channels_toml()) {
+            Ok(configs) => configs,
+            Err(err) => {
+                tracing::warn!(error = %err, "workspace channels degraded");
+                Vec::new()
+            }
+        };
     let valid_external_channels: std::collections::HashSet<String> =
         channel_configs.iter().map(|c| c.name.clone()).collect();
     let external_channels =

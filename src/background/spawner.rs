@@ -84,6 +84,7 @@ impl BackgroundTaskSpawner {
             let _permit = match semaphore.acquire().await {
                 Ok(permit) => permit,
                 Err(_closed) => {
+                    tracing::warn!(task_id = %spawn_task_id, "semaphore closed before task could acquire permit; task dropped");
                     active_tasks.lock().await.remove(&spawn_task_id);
                     return;
                 }
@@ -217,6 +218,7 @@ async fn build_completed_result(
         }
         Err(e) => {
             let error_msg = e.to_string();
+            tracing::warn!(task_id = %task.id, task_name = %task.task_name, error = %e, "background task failed");
             (
                 TaskStatus::Failed {
                     error: error_msg.clone(),

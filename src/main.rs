@@ -26,6 +26,8 @@ async fn main() {
 async fn run() -> Result<(), ResiduumError> {
     // Install rustls CryptoProvider before any TLS usage. Required since
     // rustls 0.23 when both `ring` and `aws-lc-rs` appear in the dep tree.
+    // Err means a provider was already installed by a dependency — that's
+    // expected and fine; we just continue with whatever was registered first.
     drop(rustls::crypto::ring::default_provider().install_default());
 
     // Install a panic hook that logs to both tracing and stderr.
@@ -203,8 +205,9 @@ async fn run_serve_foreground_inner(args: &[String]) -> Result<(), ResiduumError
                         }
                     }
                 }
+                tracing::warn!(error = %err, "config rollback failed (no backup exists or I/O error)");
                 return Err(ResiduumError::Config(format!(
-                    "config invalid and no backup available: {err}\n\n\
+                    "config invalid and rollback failed: {err}\n\n\
                      fix ~/.residuum/config.toml and ~/.residuum/providers.toml manually, then restart"
                 )));
             }
@@ -353,8 +356,14 @@ fn run_daemonize(args: &[String]) -> Result<(), ResiduumError> {
 
     loop {
         if start.elapsed() > timeout {
-            eprintln!("residuum: gateway did not start within 10 seconds");
-            eprintln!("  check logs: residuum logs");
+            if let Ok(Some(status)) = child.try_wait() {
+                eprintln!("residuum: gateway crashed during startup (exit status: {status})");
+                eprintln!("  check logs: residuum logs");
+                eprintln!("  note: if no log files exist, the daemon crashed before writing any");
+            } else {
+                eprintln!("residuum: gateway did not start within 10 seconds");
+                eprintln!("  check logs: residuum logs");
+            }
             return Err(ResiduumError::Gateway(
                 "daemon startup timed out".to_string(),
             ));
@@ -425,8 +434,16 @@ async fn run_update_command(args: &[String]) -> Result<(), ResiduumError> {
                 Ok(resp) if resp.status().is_success() => {
                     eprintln!("residuum: restart signal sent to gateway (pid {pid})");
                 }
-                _ => {
-                    eprintln!("residuum: failed to signal gateway restart — restart it manually");
+                Ok(resp) => {
+                    eprintln!(
+                        "residuum: failed to signal gateway restart (status {}) — restart it manually",
+                        resp.status()
+                    );
+                }
+                Err(e) => {
+                    eprintln!(
+                        "residuum: failed to signal gateway restart ({e}) — restart it manually"
+                    );
                 }
             }
         } else {
@@ -613,7 +630,10 @@ fn init_cli_tracing() {
         .build(&log_dir)
         .unwrap_or_else(|e| {
             eprintln!("warning: failed to create log file appender: {e}");
-            // Fall back to writing to /dev/null-equivalent temp dir
+            eprintln!(
+                "warning: logs will be written to {} instead — 'residuum logs' will not find them",
+                std::env::temp_dir().display()
+            );
             tracing_appender::rolling::RollingFileAppender::builder()
                 .filename_prefix("cli")
                 .filename_suffix("log")
@@ -621,7 +641,10 @@ fn init_cli_tracing() {
                 .build(std::env::temp_dir())
                 .unwrap_or_else(|e2| {
                     eprintln!("warning: fallback log appender also failed: {e2}");
-                    // Last resort: same as daily to temp dir with never rotation
+                    eprintln!(
+                        "warning: logs will be written to {} — 'residuum logs' will not find them",
+                        std::env::temp_dir().display()
+                    );
                     tracing_appender::rolling::daily(std::env::temp_dir(), "cli.log")
                 })
         });
@@ -669,9 +692,13 @@ async fn run_logs_command(watch: bool) -> Result<(), ResiduumError> {
 
     // Sort by modification time, most recent last
     entries.sort_by_key(|e| {
-        e.metadata()
-            .and_then(|m| m.modified())
-            .unwrap_or(std::time::SystemTime::UNIX_EPOCH)
+        match e.metadata().and_then(|m| m.modified()) {
+            Ok(t) => t,
+            Err(err) => {
+                tracing::warn!(path = %e.path().display(), error = %err, "failed to read log file metadata for sorting");
+                std::time::SystemTime::UNIX_EPOCH
+            }
+        }
     });
 
     let latest = entries
@@ -929,12 +956,16 @@ fn handle_ws_frame(
         {
             client.display(server_msg);
             *turn_active = false;
-            gate_tx.send(()).ok();
+            if gate_tx.send(()).is_err() {
+                tracing::debug!("prompt gate send failed: readline thread has exited");
+            }
         }
         Ok(ref server_msg @ ServerMessage::Error { .. }) if *turn_active => {
             client.display(server_msg);
             *turn_active = false;
-            gate_tx.send(()).ok();
+            if gate_tx.send(()).is_err() {
+                tracing::debug!("prompt gate send failed: readline thread has exited");
+            }
         }
         Ok(server_msg) => client.display(&server_msg),
         Err(e) => eprintln!("warning: failed to parse server message: {e}"),
@@ -1002,7 +1033,9 @@ where
             CommandEffect::PrintLocal(text) => eprintln!("{text}"),
         }
         // Slash commands don't trigger agent turns; unblock prompt immediately
-        gate_tx.send(()).ok();
+        if gate_tx.send(()).is_err() {
+            tracing::debug!("prompt gate send failed: readline thread has exited");
+        }
         return Ok(std::ops::ControlFlow::Continue(()));
     }
 
@@ -1013,8 +1046,8 @@ where
     };
     let json = serde_json::to_string(&client_msg)
         .map_err(|e| ResiduumError::Gateway(format!("failed to serialize message: {e}")))?;
-    if ws_tx.send(TungsteniteMessage::text(json)).await.is_err() {
-        eprintln!("connection closed");
+    if let Err(e) = ws_tx.send(TungsteniteMessage::text(json)).await {
+        eprintln!("connection closed: {e}");
         return Ok(std::ops::ControlFlow::Break(()));
     }
     *turn_active = true;

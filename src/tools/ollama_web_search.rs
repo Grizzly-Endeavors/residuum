@@ -24,7 +24,10 @@ impl OllamaWebSearchTool {
         let http = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(30))
             .build()
-            .unwrap_or_default();
+            .unwrap_or_else(|e| {
+                tracing::error!(error = %e, "failed to build HTTP client for ollama web search, using default");
+                reqwest::Client::default()
+            });
         Self {
             api_key,
             base_url,

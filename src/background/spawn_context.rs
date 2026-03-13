@@ -137,11 +137,13 @@ pub(crate) async fn load_preset_for_spawn(
     let index = crate::subagents::SubagentPresetIndex::scan(subagents_dir).await?;
     let (fm, body) = index.load_preset(preset_name).await?;
 
-    let tier: BackgroundModelTier = fm
-        .model_tier
-        .as_deref()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(fallback_tier);
+    let tier: BackgroundModelTier = match fm.model_tier.as_deref() {
+        Some(s) => s.parse().unwrap_or_else(|_| {
+            tracing::warn!(preset = %preset_name, model_tier = %s, "unknown model_tier, using fallback");
+            fallback_tier
+        }),
+        None => fallback_tier,
+    };
 
     Ok((tier, Some((fm, body))))
 }

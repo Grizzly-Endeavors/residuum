@@ -156,9 +156,9 @@ pub fn from_flags(
             }
         }
         if (backend == "brave" || backend == "tavily") && web_search_api_key.is_none() {
-            eprintln!(
-                "warning: --web-search-api-key not provided for {backend}, \
-                 web search may not work without it"
+            tracing::warn!(
+                backend,
+                "--web-search-api-key not provided; web search may not work without it"
             );
         }
         Some(backend.to_string())

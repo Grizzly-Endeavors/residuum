@@ -82,6 +82,7 @@ pub fn is_process_running(pid: u32) -> bool {
     use nix::unistd::Pid;
 
     let Ok(nix_pid) = i32::try_from(pid).map(Pid::from_raw) else {
+        tracing::warn!(pid, "PID out of i32 range; cannot check process status");
         return false;
     };
     // Signal 0 checks process existence without sending a signal.
@@ -160,7 +161,12 @@ pub fn init_daemon_tracing(debug_mode: Option<DebugMode>) {
         .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(default_filter));
 
     let log_dir = dirs::home_dir().map_or_else(
-        || std::path::PathBuf::from("logs"),
+        || {
+            eprintln!(
+                "warning: could not determine home directory; logs will be written to ./logs"
+            );
+            std::path::PathBuf::from("logs")
+        },
         |h| h.join(".residuum").join("logs"),
     );
 
@@ -171,14 +177,20 @@ pub fn init_daemon_tracing(debug_mode: Option<DebugMode>) {
         .max_log_files(30)
         .build(&log_dir)
         .unwrap_or_else(|e| {
-            eprintln!("warning: failed to create log file appender: {e}");
+            eprintln!(
+                "warning: failed to create log file appender: {e}; falling back to {}",
+                std::env::temp_dir().display()
+            );
             tracing_appender::rolling::RollingFileAppender::builder()
                 .filename_prefix("serve")
                 .filename_suffix("log")
                 .rotation(tracing_appender::rolling::Rotation::DAILY)
                 .build(std::env::temp_dir())
                 .unwrap_or_else(|e2| {
-                    eprintln!("warning: fallback log appender also failed: {e2}");
+                    eprintln!(
+                        "warning: fallback log appender also failed: {e2}; falling back to {}",
+                        std::env::temp_dir().display()
+                    );
                     tracing_appender::rolling::daily(std::env::temp_dir(), "serve.log")
                 })
         });

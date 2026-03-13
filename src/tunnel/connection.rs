@@ -60,7 +60,10 @@ pub(crate) async fn start_tunnel(
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(25))
         .build()
-        .unwrap_or_default();
+        .unwrap_or_else(|e| {
+            warn!(error = %e, "failed to build reqwest client with timeout, falling back to default");
+            reqwest::Client::default()
+        });
     let mut backoff = MIN_BACKOFF;
 
     loop {
@@ -101,14 +104,20 @@ pub(crate) async fn start_tunnel(
         // indefinitely if the relay accepts the WS but never sends Connected).
         let connected_result =
             tokio::time::timeout(Duration::from_secs(15), wait_for_connected(&mut read)).await;
-        let Some(connected) = connected_result.unwrap_or_else(|_| {
-            warn!("timed out waiting for Connected frame from relay");
-            None
-        }) else {
-            warn!("relay closed connection before sending Connected frame");
-            tokio::time::sleep(backoff).await;
-            backoff = next_backoff(backoff);
-            continue;
+        let connected = match connected_result {
+            Err(_) => {
+                warn!("timed out waiting for Connected frame from relay");
+                tokio::time::sleep(backoff).await;
+                backoff = next_backoff(backoff);
+                continue;
+            }
+            Ok(None) => {
+                warn!("relay closed connection before sending Connected frame");
+                tokio::time::sleep(backoff).await;
+                backoff = next_backoff(backoff);
+                continue;
+            }
+            Ok(Some(frame)) => frame,
         };
 
         let keepalive_timeout = if let TunnelFrame::Connected {
@@ -215,7 +224,9 @@ where
                 if *shutdown_rx.borrow() {
                     info!("tunnel shutting down");
                     status_tx.send(TunnelStatus::Disconnected).ok();
-                    drop(send_close(write).await);
+                    if let Err(e) = send_close(write).await {
+                        warn!(error = %e, "failed to send WebSocket close frame during shutdown");
+                    }
                     local_ws_channels.clear();
                     return LoopExit::Shutdown;
                 }
@@ -329,7 +340,9 @@ async fn handle_frame(
                 if let Some(tx) = sender {
                     // Send back to the frame loop; if the loop has exited the
                     // channel will be dropped and this is harmless.
-                    drop(ws_open_tx.send((ch_id, tx)).await);
+                    if let Err(e) = ws_open_tx.send((ch_id.clone(), tx)).await {
+                        warn!(channel_id = ch_id, error = %e, "failed to register WS channel with frame loop");
+                    }
                 }
             });
         }
@@ -350,11 +363,29 @@ async fn handle_frame(
                 debug!(channel_id, "WsClose for unknown channel, ignoring");
             }
         }
-        TunnelFrame::Connected { .. }
-        | TunnelFrame::Pong
-        | TunnelFrame::HttpResponse { .. }
-        | TunnelFrame::WsOpenResult { .. } => {
-            warn!("received unexpected frame type from relay");
+        TunnelFrame::Connected { .. } => {
+            warn!(
+                frame_type = "Connected",
+                "received unexpected frame type from relay"
+            );
+        }
+        TunnelFrame::Pong => {
+            warn!(
+                frame_type = "Pong",
+                "received unexpected frame type from relay"
+            );
+        }
+        TunnelFrame::HttpResponse { .. } => {
+            warn!(
+                frame_type = "HttpResponse",
+                "received unexpected frame type from relay"
+            );
+        }
+        TunnelFrame::WsOpenResult { .. } => {
+            warn!(
+                frame_type = "WsOpenResult",
+                "received unexpected frame type from relay"
+            );
         }
     }
 }

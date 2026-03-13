@@ -17,8 +17,18 @@ where
     F: Future<Output = ()> + Send + 'static,
 {
     tokio::spawn(async move {
-        if let Err(e) = std::panic::AssertUnwindSafe(future).catch_unwind().await {
-            tracing::error!(task = name, "task panicked: {e:?}");
+        match std::panic::AssertUnwindSafe(future).catch_unwind().await {
+            Ok(()) => {
+                tracing::warn!(task = name, "task exited unexpectedly");
+            }
+            Err(e) => {
+                let msg = e
+                    .downcast_ref::<&str>()
+                    .copied()
+                    .or_else(|| e.downcast_ref::<String>().map(String::as_str))
+                    .unwrap_or("<non-string panic payload>");
+                tracing::error!(task = name, panic = msg, "task panicked");
+            }
         }
     })
 }

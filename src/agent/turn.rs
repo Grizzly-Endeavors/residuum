@@ -197,7 +197,15 @@ async fn execute_tool(
 
     let (output, is_error, images) = match result {
         Ok(r) => (r.output, r.is_error, r.images),
-        Err(e) => (e.to_string(), true, vec![]),
+        Err(e) => {
+            tracing::warn!(
+                error = %e,
+                tool_name = %tool_call.name,
+                tool_call_id = %tool_call.id,
+                "tool execution failed"
+            );
+            (e.to_string(), true, vec![])
+        }
     };
 
     reply

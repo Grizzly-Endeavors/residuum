@@ -157,20 +157,27 @@ pub async fn download_and_install() -> Result<String, ResiduumError> {
     std::fs::write(&script_path, &script)
         .map_err(|e| ResiduumError::Gateway(format!("failed to write install script: {e}")))?;
 
-    let status = std::process::Command::new("sh")
+    tracing::info!("starting self-update download and install");
+
+    let output = std::process::Command::new("sh")
         .arg(&script_path)
-        .status()
+        .output()
         .map_err(|e| ResiduumError::Gateway(format!("failed to execute install script: {e}")))?;
 
-    // Clean up temp script (best-effort)
-    drop(std::fs::remove_file(&script_path));
+    if let Err(e) = std::fs::remove_file(&script_path) {
+        tracing::warn!(error = %e, path = %script_path.display(), "failed to remove temp install script");
+    }
 
-    if !status.success() {
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
         return Err(ResiduumError::Gateway(format!(
-            "install script exited with {status}"
+            "install script exited with {}: {}",
+            output.status,
+            stderr.trim()
         )));
     }
 
+    tracing::info!(version = %latest, "update downloaded and installed successfully");
     Ok(latest)
 }
 

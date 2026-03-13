@@ -57,6 +57,12 @@ impl GeminiClient {
         }
     }
 
+    /// Deserialize a Gemini API response body from text.
+    fn parse_response_body(text: &str) -> Result<GeminiResponse, ModelError> {
+        serde_json::from_str(text)
+            .map_err(|e| ModelError::Parse(format!("failed to parse gemini response: {e}")))
+    }
+
     /// Parse a successful Gemini response into our generic `ModelResponse`.
     fn parse_response(gemini_response: GeminiResponse) -> Result<ModelResponse, ModelError> {
         let candidate = gemini_response
@@ -84,10 +90,16 @@ impl GeminiClient {
                     });
                 }
                 GeminiPart::FunctionResponse { .. } => {
-                    tracing::warn!("unexpected functionResponse part in Gemini model output");
+                    tracing::warn!(
+                        part_index = idx,
+                        "unexpected functionResponse part in Gemini model output"
+                    );
                 }
                 GeminiPart::InlineData { .. } => {
-                    tracing::warn!("unexpected inlineData part in Gemini model output");
+                    tracing::warn!(
+                        part_index = idx,
+                        "unexpected inlineData part in Gemini model output"
+                    );
                 }
             }
         }
@@ -325,8 +337,11 @@ impl ModelProvider for GeminiClient {
                     return Err(ModelError::Api(format!("{status}: {error_body}")));
                 }
 
-                let gemini_response: GeminiResponse = response.json().await?;
-                Self::parse_response(gemini_response)
+                let text = response
+                    .text()
+                    .await
+                    .map_err(|e| map_request_error(e, timeout_secs))?;
+                Self::parse_response(Self::parse_response_body(&text)?)
             }
         })
         .await
@@ -585,7 +600,7 @@ impl GeminiEmbeddingClient {
     ) -> Result<EmbeddingResponse, ModelError> {
         with_retry(&self.retry, || {
             let url = format!("{base_url}/models/{model}:embedContent?key={api_key}");
-            let body = GeminiEmbedContentRequest {
+            let request_body = GeminiEmbedContentRequest {
                 model: format!("models/{model}"),
                 content: GeminiEmbedContent {
                     parts: vec![GeminiEmbedPart { text: text.clone() }],
@@ -597,7 +612,7 @@ impl GeminiEmbeddingClient {
                 let response = http
                     .client()
                     .post(&url)
-                    .json(&body)
+                    .json(&request_body)
                     .send()
                     .await
                     .map_err(|e| map_request_error(e, timeout_secs))?;
@@ -606,7 +621,14 @@ impl GeminiEmbeddingClient {
                     return Err(parse_gemini_embed_error(response).await);
                 }
 
-                let parsed: GeminiEmbedContentResponse = response.json().await?;
+                let resp_body = response
+                    .text()
+                    .await
+                    .map_err(|e| map_request_error(e, timeout_secs))?;
+                let parsed: GeminiEmbedContentResponse =
+                    serde_json::from_str(&resp_body).map_err(|e| {
+                        ModelError::Parse(format!("failed to parse gemini embed response: {e}"))
+                    })?;
                 let dimensions = parsed.embedding.values.len();
                 Ok(EmbeddingResponse {
                     embeddings: vec![parsed.embedding.values],
@@ -637,14 +659,14 @@ impl GeminiEmbeddingClient {
                     },
                 })
                 .collect();
-            let body = GeminiBatchEmbedRequest { requests };
+            let request_body = GeminiBatchEmbedRequest { requests };
             let http = http.clone();
 
             async move {
                 let response = http
                     .client()
                     .post(&url)
-                    .json(&body)
+                    .json(&request_body)
                     .send()
                     .await
                     .map_err(|e| map_request_error(e, timeout_secs))?;
@@ -653,7 +675,16 @@ impl GeminiEmbeddingClient {
                     return Err(parse_gemini_embed_error(response).await);
                 }
 
-                let parsed: GeminiBatchEmbedResponse = response.json().await?;
+                let resp_body = response
+                    .text()
+                    .await
+                    .map_err(|e| map_request_error(e, timeout_secs))?;
+                let parsed: GeminiBatchEmbedResponse =
+                    serde_json::from_str(&resp_body).map_err(|e| {
+                        ModelError::Parse(format!(
+                            "failed to parse gemini batch embed response: {e}"
+                        ))
+                    })?;
                 let dimensions = parsed.embeddings.first().map_or(0, |e| e.values.len());
                 let embeddings = parsed.embeddings.into_iter().map(|e| e.values).collect();
                 Ok(EmbeddingResponse {

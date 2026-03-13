@@ -1,6 +1,7 @@
 //! Central time helper for timezone-aware local time.
 
 use chrono::{Datelike, NaiveDateTime, TimeDelta};
+use tracing::warn;
 
 /// Get the current local time for the configured timezone.
 ///
@@ -30,8 +31,14 @@ pub fn ordinal_suffix(day: u32) -> &'static str {
 #[must_use]
 pub fn format_display_datetime(dt: NaiveDateTime) -> String {
     let suffix = ordinal_suffix(dt.day());
-    dt.format(&format!("%A %b %-d{suffix} %Y | %H:%M"))
-        .to_string()
+    let result = dt
+        .format(&format!("%A %b %-d{suffix} %Y | %H:%M"))
+        .to_string();
+    debug_assert!(
+        !result.is_empty(),
+        "format_display_datetime produced empty output"
+    );
+    result
 }
 
 /// Format a time delta as a human-readable relative string.
@@ -40,6 +47,13 @@ pub fn format_display_datetime(dt: NaiveDateTime) -> String {
 #[must_use]
 pub fn format_relative_time(delta: TimeDelta) -> String {
     let total_secs = delta.num_seconds();
+    if total_secs < 0 {
+        warn!(
+            total_secs,
+            "format_relative_time called with negative delta"
+        );
+        return "just now".to_string();
+    }
     if total_secs < 60 {
         return "just now".to_string();
     }

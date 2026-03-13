@@ -345,7 +345,10 @@ impl Agent {
         )
         .await?;
 
-        let response = texts.pop().unwrap_or_default();
+        let response = texts.pop().unwrap_or_else(|| {
+            tracing::warn!("system turn returned no text responses");
+            String::new()
+        });
 
         Ok(SystemTurnResult {
             response,

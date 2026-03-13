@@ -196,6 +196,11 @@ impl McpRegistry {
                 tool_count = server.tools.len(),
                 "mcp server connected"
             );
+        } else {
+            tracing::warn!(
+                server = %entry.name,
+                "mcp server connected but was removed from tracking before state could be updated — client discarded"
+            );
         }
 
         Ok(())
@@ -224,6 +229,7 @@ impl McpRegistry {
             if let Some(client) = server.client {
                 client.shutdown().await;
             }
+            tracing::info!(server = %server.name, "mcp server disconnected");
         }
 
         names
@@ -262,6 +268,9 @@ impl McpRegistry {
         // disconnection through the to_stop list. The clients were dropped when
         // the TrackedServer was removed. This is fine because ChildWithCleanup
         // handles process cleanup on drop.
+        for name in &diff.to_stop {
+            tracing::info!(server = %name, "mcp server stopped");
+        }
 
         report
     }
@@ -299,6 +308,13 @@ impl McpRegistry {
                 servers: servers.to_vec(),
             },
         );
+        if !report.failures.is_empty() {
+            tracing::warn!(
+                project = %project_name,
+                failures = report.failures.len(),
+                "project mcp activation had connection failures"
+            );
+        }
         tracing::debug!(
             project = %project_name,
             started = report.started,
@@ -395,6 +411,10 @@ impl McpRegistry {
         let server = server.ok_or_else(|| ToolError::NotFound(name.to_string()))?;
 
         let client = server.client.as_ref().ok_or_else(|| {
+            tracing::error!(
+                server = %server.name,
+                "running server has no client handle — internal state corruption"
+            );
             ToolError::Execution(format!(
                 "mcp server '{}' is marked running but has no client",
                 server.name

@@ -261,13 +261,25 @@ async fn read_recent_logs(project_root: &Path) -> Option<String> {
     let mut month_dirs: Vec<PathBuf> = Vec::new();
     loop {
         match months.next_entry().await {
-            Ok(Some(entry)) => {
-                if entry.file_type().await.is_ok_and(|ft| ft.is_dir()) {
-                    month_dirs.push(entry.path());
+            Ok(Some(entry)) => match entry.file_type().await {
+                Ok(ft) if ft.is_dir() => month_dirs.push(entry.path()),
+                Ok(_) => {}
+                Err(e) => {
+                    tracing::warn!(
+                        path = %entry.path().display(),
+                        error = %e,
+                        "failed to get file type for log entry"
+                    );
                 }
-            }
+            },
             Ok(None) => break,
-            Err(_) => {}
+            Err(e) => {
+                tracing::warn!(
+                    dir = %log_dir.display(),
+                    error = %e,
+                    "failed to read log directory entry"
+                );
+            }
         }
     }
     month_dirs.sort_unstable();
@@ -281,6 +293,10 @@ async fn read_recent_logs(project_root: &Path) -> Option<String> {
         }
 
         let Ok(mut day_rd) = tokio::fs::read_dir(month_path).await else {
+            tracing::warn!(
+                path = %month_path.display(),
+                "failed to open log month directory"
+            );
             continue;
         };
 
@@ -294,7 +310,13 @@ async fn read_recent_logs(project_root: &Path) -> Option<String> {
                     }
                 }
                 Ok(None) => break,
-                Err(_) => {}
+                Err(e) => {
+                    tracing::warn!(
+                        dir = %month_path.display(),
+                        error = %e,
+                        "failed to read log day directory entry"
+                    );
+                }
             }
         }
         day_files.sort_unstable();
@@ -305,17 +327,26 @@ async fn read_recent_logs(project_root: &Path) -> Option<String> {
                 break;
             }
 
-            if let Ok(content) = tokio::fs::read_to_string(day_file).await {
-                if !collected.is_empty() {
-                    collected.push('\n');
+            match tokio::fs::read_to_string(day_file).await {
+                Ok(content) => {
+                    if !collected.is_empty() {
+                        collected.push('\n');
+                    }
+                    let remaining = MAX_CHARS.saturating_sub(collected.len());
+                    if content.len() <= remaining {
+                        collected.push_str(&content);
+                    } else {
+                        // Truncate at a char boundary
+                        let truncated: String = content.chars().take(remaining).collect();
+                        collected.push_str(&truncated);
+                    }
                 }
-                let remaining = MAX_CHARS.saturating_sub(collected.len());
-                if content.len() <= remaining {
-                    collected.push_str(&content);
-                } else {
-                    // Truncate at a char boundary
-                    let truncated: String = content.chars().take(remaining).collect();
-                    collected.push_str(&truncated);
+                Err(e) => {
+                    tracing::warn!(
+                        path = %day_file.display(),
+                        error = %e,
+                        "failed to read log file"
+                    );
                 }
             }
         }

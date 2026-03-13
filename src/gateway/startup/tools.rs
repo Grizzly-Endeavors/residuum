@@ -153,15 +153,9 @@ pub(super) async fn create_agent(
         },
     );
     if let Err(err) = agent.reload_observations(layout).await {
-        eprintln!(
-            "warning: failed to load observations, continuing without observation context: {err}"
-        );
         tracing::warn!(error = %err, "observation loading degraded");
     }
     if let Err(err) = agent.reload_recent_context(layout).await {
-        eprintln!(
-            "warning: failed to load recent context, continuing without recent context: {err}"
-        );
         tracing::warn!(error = %err, "recent context loading degraded");
     }
 
@@ -177,9 +171,6 @@ pub(super) async fn create_agent(
             agent.set_last_user_message_at(restore.last_user_message_at);
         }
         Err(err) => {
-            eprintln!(
-                "warning: failed to load recent messages, starting with empty history: {err}"
-            );
             tracing::warn!(error = %err, "message restore degraded: starting with empty history");
         }
     }

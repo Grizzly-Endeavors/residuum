@@ -53,7 +53,9 @@ impl WorkingIndicator {
     pub fn clear_line(&mut self) {
         if self.active {
             eprint!("\r\x1b[2K");
-            drop(std::io::stderr().flush());
+            if std::io::stderr().flush().is_err() {
+                tracing::trace!("failed to flush stderr");
+            }
         }
     }
 
@@ -62,7 +64,9 @@ impl WorkingIndicator {
         if self.active {
             self.active = false;
             eprint!("\r\x1b[2K");
-            drop(std::io::stderr().flush());
+            if std::io::stderr().flush().is_err() {
+                tracing::trace!("failed to flush stderr");
+            }
         }
     }
 
@@ -85,7 +89,9 @@ impl WorkingIndicator {
             String::new()
         };
         eprint!("\x1b[2K\rWorking{dots}{tool_suffix}");
-        drop(std::io::stderr().flush());
+        if std::io::stderr().flush().is_err() {
+            tracing::trace!("failed to flush stderr");
+        }
     }
 }
 

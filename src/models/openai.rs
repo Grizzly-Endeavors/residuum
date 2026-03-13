@@ -115,7 +115,12 @@ impl OpenAiClient {
             return Err(ModelError::Api(format!("{status}: {error_body}")));
         }
 
-        let chat_response: ChatCompletionResponse = response.json().await?;
+        let body = response
+            .text()
+            .await
+            .map_err(|e| map_request_error(e, timeout_secs))?;
+        let chat_response: ChatCompletionResponse = serde_json::from_str(&body)
+            .map_err(|e| ModelError::Parse(format!("failed to parse openai response: {e}")))?;
 
         let usage = chat_response.usage.map(|u| Usage {
             input_tokens: u.prompt_tokens.unwrap_or(0),
@@ -556,7 +561,14 @@ impl EmbeddingProvider for OpenAiEmbeddingClient {
                     return Err(ModelError::Api(format!("{status}: {error_body}")));
                 }
 
-                let mut api_response: EmbeddingApiResponse = response.json().await?;
+                let body = response
+                    .text()
+                    .await
+                    .map_err(|e| map_request_error(e, timeout_secs))?;
+                let mut api_response: EmbeddingApiResponse =
+                    serde_json::from_str(&body).map_err(|e| {
+                        ModelError::Parse(format!("failed to parse openai embedding response: {e}"))
+                    })?;
 
                 if api_response.data.is_empty() {
                     return Err(ModelError::Parse(

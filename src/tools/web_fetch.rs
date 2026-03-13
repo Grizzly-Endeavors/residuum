@@ -25,7 +25,10 @@ impl WebFetchTool {
             .user_agent("Mozilla/5.0 (compatible; Residuum/1.0; +https://github.com/residuum)")
             .redirect(reqwest::redirect::Policy::limited(5))
             .build()
-            .unwrap_or_default();
+            .unwrap_or_else(|e| {
+                tracing::error!(error = %e, "failed to build HTTP client for web fetch, using default");
+                reqwest::Client::default()
+            });
         Self { http }
     }
 }

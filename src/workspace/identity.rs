@@ -32,11 +32,29 @@ impl IdentityFiles {
     /// # Errors
     /// Returns `ResiduumError::Workspace` if a file exists but cannot be read.
     pub async fn load(layout: &WorkspaceLayout) -> Result<Self, ResiduumError> {
+        let soul = read_optional(&layout.soul_md()).await?;
+        let agents = read_optional(&layout.agents_md()).await?;
+        let user = read_optional(&layout.user_md()).await?;
+        let memory = read_optional(&layout.memory_md()).await?;
+
+        if soul.is_none() {
+            tracing::warn!(path = %layout.soul_md().display(), "SOUL.md is missing or empty; expected after bootstrap");
+        }
+        if agents.is_none() {
+            tracing::warn!(path = %layout.agents_md().display(), "AGENTS.md is missing or empty; expected after bootstrap");
+        }
+        if user.is_none() {
+            tracing::warn!(path = %layout.user_md().display(), "USER.md is missing or empty; expected after bootstrap");
+        }
+        if memory.is_none() {
+            tracing::warn!(path = %layout.memory_md().display(), "MEMORY.md is missing or empty; expected after bootstrap");
+        }
+
         Ok(Self {
-            soul: read_optional(&layout.soul_md()).await?,
-            agents: read_optional(&layout.agents_md()).await?,
-            user: read_optional(&layout.user_md()).await?,
-            memory: read_optional(&layout.memory_md()).await?,
+            soul,
+            agents,
+            user,
+            memory,
             environment: read_optional(&layout.environment_md()).await?,
             bootstrap: read_optional(&layout.bootstrap_md()).await?,
         })
@@ -48,6 +66,7 @@ async fn read_optional(path: &std::path::Path) -> Result<Option<String>, Residuu
     match tokio::fs::read_to_string(path).await {
         Ok(content) => {
             if content.trim().is_empty() {
+                tracing::debug!(path = %path.display(), "identity file exists but is whitespace-only, treating as absent");
                 Ok(None)
             } else {
                 Ok(Some(content))

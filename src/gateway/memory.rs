@@ -52,14 +52,14 @@ pub(super) async fn persist_and_check_thresholds(
     )
     .await
     {
-        eprintln!("warning: failed to persist recent messages: {e}");
+        tracing::warn!(error = %e, "failed to persist recent messages");
         return ObserveAction::None;
     }
 
     let recent = match load_recent_messages(&layout.recent_messages_json()).await {
         Ok(msgs) => msgs,
         Err(e) => {
-            eprintln!("warning: failed to load recent messages: {e}");
+            tracing::warn!(error = %e, "failed to load recent messages");
             return ObserveAction::None;
         }
     };
@@ -82,7 +82,7 @@ pub(super) async fn execute_observation(mem: &MemorySubsystems<'_>, agent: &mut 
     let recent = match load_recent_messages(&mem.layout.recent_messages_json()).await {
         Ok(msgs) => msgs,
         Err(e) => {
-            eprintln!("warning: failed to load recent messages for observation: {e}");
+            tracing::warn!(error = %e, "failed to load recent messages for observation");
             return;
         }
     };
@@ -103,19 +103,19 @@ pub(super) async fn execute_observation(mem: &MemorySubsystems<'_>, agent: &mut 
                     episode_id: result.id.clone(),
                 };
                 if let Err(e) = save_recent_context(&mem.layout.recent_context_json(), &ctx).await {
-                    eprintln!("warning: failed to save recent context: {e}");
+                    tracing::warn!(error = %e, "failed to save recent context");
                 }
             }
 
             if let Err(e) = clear_recent_messages(&mem.layout.recent_messages_json()).await {
-                eprintln!("warning: failed to clear recent messages: {e}");
+                tracing::warn!(error = %e, "failed to clear recent messages");
             }
             agent.rotate_messages_after_observation();
 
             finalize_observation(mem, agent, &result).await;
         }
         Err(e) => {
-            eprintln!("warning: observer failed: {e}");
+            tracing::warn!(error = %e, "observer failed");
         }
     }
 }
@@ -156,18 +156,18 @@ async fn embed_observation_result(
                 .await
                 {
                     Ok(Err(e)) => {
-                        eprintln!("warning: failed to insert observation vectors: {e}");
+                        tracing::warn!(error = %e, "failed to insert observation vectors");
                         all_ok = false;
                     }
                     Err(e) => {
-                        eprintln!("warning: observation vector insert task panicked: {e}");
+                        tracing::warn!(error = %e, "observation vector insert task panicked");
                         all_ok = false;
                     }
                     Ok(Ok(_)) => {}
                 }
             }
             Err(e) => {
-                eprintln!("warning: failed to embed observations: {e}");
+                tracing::warn!(error = %e, "failed to embed observations");
                 all_ok = false;
             }
         }
@@ -185,18 +185,18 @@ async fn embed_observation_result(
                     .await
                 {
                     Ok(Err(e)) => {
-                        eprintln!("warning: failed to insert chunk vectors: {e}");
+                        tracing::warn!(error = %e, "failed to insert chunk vectors");
                         all_ok = false;
                     }
                     Err(e) => {
-                        eprintln!("warning: chunk vector insert task panicked: {e}");
+                        tracing::warn!(error = %e, "chunk vector insert task panicked");
                         all_ok = false;
                     }
                     Ok(Ok(_)) => {}
                 }
             }
             Err(e) => {
-                eprintln!("warning: failed to embed chunks: {e}");
+                tracing::warn!(error = %e, "failed to embed chunks");
                 all_ok = false;
             }
         }
@@ -218,10 +218,10 @@ async fn finalize_observation(
         mem.search_index
             .index_observations(&result.id, &result.date, &result.observations)
     {
-        eprintln!("warning: failed to index observations: {e}");
+        tracing::warn!(error = %e, "failed to index observations");
     }
     if let Err(e) = mem.search_index.index_chunks(&result.chunks) {
-        eprintln!("warning: failed to index chunks: {e}");
+        tracing::warn!(error = %e, "failed to index chunks");
     }
 
     // Embed and store in vector index
@@ -233,10 +233,10 @@ async fn finalize_observation(
     let reflected = run_reflector_check(mem.reflector, mem.layout).await;
 
     if let Err(e) = agent.reload_observations(mem.layout).await {
-        eprintln!("warning: failed to reload observations: {e}");
+        tracing::warn!(error = %e, "failed to reload observations");
     }
     if let Err(e) = agent.reload_recent_context(mem.layout).await {
-        eprintln!("warning: failed to reload recent context: {e}");
+        tracing::warn!(error = %e, "failed to reload recent context");
     }
 
     reflected
@@ -247,7 +247,7 @@ async fn run_reflector_check(reflector: &Reflector, layout: &WorkspaceLayout) ->
     let log = match load_observation_log(&layout.observations_json()).await {
         Ok(log) => log,
         Err(e) => {
-            eprintln!("warning: failed to load observation log for reflection check: {e}");
+            tracing::warn!(error = %e, "failed to load observation log for reflection check");
             return false;
         }
     };
@@ -262,7 +262,7 @@ async fn run_reflector_check(reflector: &Reflector, layout: &WorkspaceLayout) ->
                 true
             }
             Err(e) => {
-                eprintln!("warning: reflector failed: {e}");
+                tracing::warn!(error = %e, "reflector failed");
                 false
             }
         }
@@ -283,7 +283,7 @@ pub(super) async fn run_forced_observe(
     let recent = match load_recent_messages(&mem.layout.recent_messages_json()).await {
         Ok(msgs) => msgs,
         Err(e) => {
-            eprintln!("warning: forced observe failed to load recent messages: {e}");
+            tracing::warn!(error = %e, "forced observe failed to load recent messages");
             if broadcast_tx
                 .send(ServerMessage::Error {
                     reply_to: None,
@@ -312,7 +312,7 @@ pub(super) async fn run_forced_observe(
     let result = match mem.observer.observe(&recent, mem.layout).await {
         Ok(r) => r,
         Err(e) => {
-            eprintln!("warning: forced observe failed: {e}");
+            tracing::warn!(error = %e, "forced observe failed");
             if broadcast_tx
                 .send(ServerMessage::Error {
                     reply_to: None,
@@ -334,12 +334,12 @@ pub(super) async fn run_forced_observe(
             episode_id: result.id.clone(),
         };
         if let Err(e) = save_recent_context(&mem.layout.recent_context_json(), &ctx).await {
-            eprintln!("warning: failed to save recent context after forced observe: {e}");
+            tracing::warn!(error = %e, "failed to save recent context after forced observe");
         }
     }
 
     if let Err(e) = clear_recent_messages(&mem.layout.recent_messages_json()).await {
-        eprintln!("warning: failed to clear recent messages after forced observe: {e}");
+        tracing::warn!(error = %e, "failed to clear recent messages after forced observe");
     }
     agent.rotate_messages_after_observation();
 
@@ -372,16 +372,13 @@ async fn mark_episode_embedded(layout: &WorkspaceLayout, result: &ObserveResult)
     let mut manifest = match IndexManifest::load(&manifest_path).await {
         Ok(m) => m,
         Err(e) => {
-            eprintln!("warning: failed to load manifest to mark embedded: {e}");
+            tracing::warn!(error = %e, "failed to load manifest to mark embedded");
             return;
         }
     };
 
     let Some(date_dir) = episode_date_dir(&result.date) else {
-        eprintln!(
-            "warning: invalid date format in episode result: {}",
-            result.date
-        );
+        tracing::warn!(date = %result.date, "invalid date format in episode result");
         return;
     };
 
@@ -418,7 +415,7 @@ async fn mark_episode_embedded(layout: &WorkspaceLayout, result: &ObserveResult)
     }
 
     if let Err(e) = manifest.save(&manifest_path).await {
-        eprintln!("warning: failed to save manifest after marking embedded: {e}");
+        tracing::warn!(error = %e, "failed to save manifest after marking embedded");
     }
 }
 
@@ -434,7 +431,7 @@ pub(super) async fn run_forced_reflect(
     match reflector.reflect(layout).await {
         Ok(compressed) => {
             if let Err(e) = agent.reload_observations(layout).await {
-                eprintln!("warning: failed to reload observations after forced reflect: {e}");
+                tracing::warn!(error = %e, "failed to reload observations after forced reflect");
             }
             if broadcast_tx
                 .send(ServerMessage::Notice {
@@ -446,7 +443,7 @@ pub(super) async fn run_forced_reflect(
             }
         }
         Err(e) => {
-            eprintln!("warning: forced reflect failed: {e}");
+            tracing::warn!(error = %e, "forced reflect failed");
             if broadcast_tx
                 .send(ServerMessage::Error {
                     reply_to: None,

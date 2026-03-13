@@ -336,7 +336,13 @@ async fn resolve_spawn_params(
     let tier = if let Some(s) = explicit_model_override {
         parse_model_tier(s).map_err(|e| ToolResult::error(e.to_string()))?
     } else if let Some(tier_str) = preset_fm.model_tier.as_deref() {
-        parse_model_tier(tier_str).unwrap_or(BackgroundModelTier::Medium)
+        match parse_model_tier(tier_str) {
+            Ok(t) => t,
+            Err(e) => {
+                tracing::warn!(preset = %preset_name, tier = %tier_str, error = %e, "invalid model_tier in preset, falling back to medium");
+                BackgroundModelTier::Medium
+            }
+        }
     } else {
         BackgroundModelTier::Medium
     };

@@ -198,11 +198,17 @@ impl Observer {
         let episode_id = next_episode_id(&layout.episodes_dir()).await?;
 
         // Load content guidance from disk, falling back to embedded constant.
-        let content_guidance = tokio::fs::read_to_string(layout.observer_md())
-            .await
-            .ok()
-            .and_then(|s| if s.trim().is_empty() { None } else { Some(s) })
-            .unwrap_or_else(|| EXTRACTION_CONTENT_PROMPT.to_string());
+        let content_guidance = match tokio::fs::read_to_string(layout.observer_md()).await {
+            Ok(s) if !s.trim().is_empty() => s,
+            Ok(_) => EXTRACTION_CONTENT_PROMPT.to_string(),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                EXTRACTION_CONTENT_PROMPT.to_string()
+            }
+            Err(e) => {
+                tracing::warn!(path = %layout.observer_md().display(), error = %e, "failed to read observer guidance, using default");
+                EXTRACTION_CONTENT_PROMPT.to_string()
+            }
+        };
 
         // Build extraction prompt using full RecentMessage metadata (timestamps,
         // tool calls, project context) so the observer LLM has complete context.

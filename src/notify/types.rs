@@ -154,6 +154,10 @@ pub enum ExternalChannelKind {
 
 /// Outcome of routing a notification through channels.
 #[derive(Debug, Default)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "outcome flags are distinct boolean states, not a state machine"
+)]
 pub struct RouteOutcome {
     /// Whether the result should wake the agent (start a turn if idle).
     pub agent_wake: bool,
@@ -163,6 +167,8 @@ pub struct RouteOutcome {
     pub inbox: bool,
     /// Names of external channels that were dispatched to.
     pub external_dispatched: Vec<String>,
+    /// Whether routing was attempted but resolved to zero channels.
+    pub unrouted: bool,
 }
 
 #[cfg(test)]
