@@ -20,7 +20,7 @@ use tokio::sync::mpsc;
 use super::MacosChannelConfig;
 use super::categories::{MacosCategory, MacosInterruptionLevel, MacosNotificationAction};
 
-/// `UNUserNotificationCenter` throws an unrecoverable ObjC exception if the
+/// `UNUserNotificationCenter` throws an unrecoverable `ObjC` exception if the
 /// process has no app bundle. Check `NSBundle.mainBundle.bundleIdentifier`
 /// first so we can return an error instead of crashing.
 fn require_app_bundle() -> anyhow::Result<()> {
@@ -126,6 +126,7 @@ impl MacosBridge {
         &self,
         identifier: &str,
         title: &str,
+        subtitle: &str,
         body: &str,
         category_id: &str,
         interruption_level: MacosInterruptionLevel,
@@ -134,6 +135,7 @@ impl MacosBridge {
     ) -> anyhow::Result<()> {
         let id = identifier.to_string();
         let title = title.to_string();
+        let subtitle = subtitle.to_string();
         let body = body.to_string();
         let cat_id = category_id.to_string();
         let thread = thread_id.to_string();
@@ -141,7 +143,9 @@ impl MacosBridge {
         let play_sound = sound;
 
         tokio::task::spawn_blocking(move || {
-            post_notification_sync(&id, &title, &body, &cat_id, level, play_sound, &thread);
+            post_notification_sync(
+                &id, &title, &subtitle, &body, &cat_id, level, play_sound, &thread,
+            );
         })
         .await
         .map_err(|e| anyhow::anyhow!("notification post task failed: {e}"))?;
@@ -169,6 +173,7 @@ impl MacosBridge {
         self.post_notification(
             "residuum-batch-summary",
             title,
+            "",
             body,
             "background-results",
             interruption_level,
@@ -211,9 +216,14 @@ impl MacosBridge {
 
 /// Wraps objc2 calls in `catch_unwind` because the `ObjC` runtime can panic
 /// on missing selectors or nil center — we log rather than crash the process.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "macOS notification content requires many distinct fields"
+)]
 fn post_notification_sync(
     identifier: &str,
     title: &str,
+    subtitle: &str,
     body: &str,
     category_id: &str,
     level: MacosInterruptionLevel,
@@ -224,11 +234,13 @@ fn post_notification_sync(
         let content = UNMutableNotificationContent::new();
 
         let ns_title = NSString::from_str(title);
+        let ns_subtitle = NSString::from_str(subtitle);
         let ns_body = NSString::from_str(body);
         let ns_cat = NSString::from_str(category_id);
         let ns_thread = NSString::from_str(thread_id);
 
         content.setTitle(&ns_title);
+        content.setSubtitle(&ns_subtitle);
         content.setBody(&ns_body);
         content.setCategoryIdentifier(&ns_cat);
         content.setThreadIdentifier(&ns_thread);
