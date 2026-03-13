@@ -49,7 +49,7 @@ pub async fn run_gateway(cfg: Config) -> Result<GatewayExit, ResiduumError> {
         restart_rx,
     };
     let cloud_config = cfg.cloud.clone();
-    let rt = build_runtime(parts, core, receivers, cfg, spawned, update, cloud_config);
+    let rt = build_runtime(parts, core, receivers, cfg, spawned, update, cloud_config).await?;
 
     Ok(Box::pin(run_event_loop(rt)).await)
 }
@@ -63,6 +63,7 @@ struct SpawnedHandles {
     tunnel_status_tx: Arc<tokio::sync::watch::Sender<crate::tunnel::TunnelStatus>>,
     tunnel_status_rx: tokio::sync::watch::Receiver<crate::tunnel::TunnelStatus>,
     sigterm: tokio::signal::unix::Signal,
+    bus_handle: crate::bus::BusHandle,
 }
 
 /// Spawn the HTTP server, chat adapters, cloud tunnel, and workspace watcher.
@@ -95,6 +96,8 @@ async fn spawn_server_and_adapters(
         inbox_dir: parts.layout.inbox_dir(),
         tz: parts.tz,
         tunnel_status_rx: tunnel_status_rx.clone(),
+        publisher: core.publisher.clone(),
+        bus_handle: core.bus_handle.clone(),
     };
     let config_api_state = web::ConfigApiState {
         config_dir: cfg.config_dir.clone(),
@@ -128,6 +131,7 @@ async fn spawn_server_and_adapters(
         tunnel_status_tx,
         tunnel_status_rx,
         sigterm,
+        bus_handle: core.bus_handle.clone(),
     })
 }
 
@@ -139,7 +143,7 @@ struct UpdateChannels {
 }
 
 /// Assemble the `GatewayRuntime` from initialized parts and spawned handles.
-fn build_runtime(
+async fn build_runtime(
     parts: crate::gateway::startup::GatewayComponents,
     core: GatewayCore,
     receivers: crate::gateway::types::CoreReceivers,
@@ -147,8 +151,14 @@ fn build_runtime(
     spawned: SpawnedHandles,
     update: UpdateChannels,
     cloud_config: Option<crate::config::CloudConfig>,
-) -> GatewayRuntime {
-    GatewayRuntime {
+) -> Result<GatewayRuntime, ResiduumError> {
+    let agent_subscriber = spawned
+        .bus_handle
+        .subscribe(crate::bus::TopicId::AgentMain)
+        .await
+        .map_err(|e| ResiduumError::Gateway(format!("failed to subscribe to agent:main: {e}")))?;
+
+    Ok(GatewayRuntime {
         layout: parts.layout,
         tz: parts.tz,
         agent: parts.agent,
@@ -169,6 +179,10 @@ fn build_runtime(
         background_result_rx: parts.background_result_rx,
         spawn_context: parts.spawn_context,
         inbound_rx: receivers.inbound,
+        bus_handle: spawned.bus_handle,
+        publisher: core.publisher,
+        agent_subscriber,
+        last_output_topic: None,
         broadcast_tx: core.broadcast_tx,
         reload_rx: receivers.reload,
         command_rx: receivers.command,
@@ -197,7 +211,7 @@ fn build_runtime(
         restart_tx: update.restart_tx,
         restart_rx: update.restart_rx,
         cfg,
-    }
+    })
 }
 
 /// Spawn the cloud tunnel task if configured, returning its handle and shutdown sender.

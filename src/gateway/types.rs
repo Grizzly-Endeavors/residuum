@@ -10,6 +10,7 @@ use crate::agent::Agent;
 use crate::background::BackgroundTaskSpawner;
 use crate::background::spawn_context::SpawnContext;
 use crate::background::types::BackgroundResult;
+use crate::bus::{BusHandle, Publisher, Subscriber, TopicId};
 use crate::config::Config;
 use crate::interfaces::types::{ReplyHandle, RoutedMessage};
 use crate::mcp::SharedMcpRegistry;
@@ -70,6 +71,8 @@ pub(crate) struct GatewayCore {
     /// Dedicated shutdown signal for the HTTP server (not tied to reload).
     pub shutdown_tx: tokio::sync::watch::Sender<bool>,
     pub config_dir: std::path::PathBuf,
+    pub bus_handle: BusHandle,
+    pub publisher: Publisher,
 }
 
 /// Receiver halves consumed by the event loop.
@@ -87,6 +90,8 @@ impl GatewayCore {
         let (reload_tx, reload_rx) = tokio::sync::watch::channel(ReloadSignal::None);
         let (command_tx, command_rx) = mpsc::channel::<ServerCommand>(32);
         let (shutdown_tx, _shutdown_rx) = tokio::sync::watch::channel(false);
+        let bus_handle = crate::bus::spawn_broker();
+        let publisher = bus_handle.publisher();
 
         let core = Self {
             inbound_tx,
@@ -95,6 +100,8 @@ impl GatewayCore {
             command_tx,
             shutdown_tx,
             config_dir,
+            bus_handle,
+            publisher,
         };
         let receivers = CoreReceivers {
             inbound: inbound_rx,
@@ -107,6 +114,10 @@ impl GatewayCore {
 
 /// Shared state for the axum WebSocket server.
 #[derive(Clone)]
+#[expect(
+    dead_code,
+    reason = "bus fields will be consumed in endpoint migration"
+)]
 pub(crate) struct GatewayState {
     pub inbound_tx: mpsc::Sender<RoutedMessage>,
     pub broadcast_tx: broadcast::Sender<ServerMessage>,
@@ -115,9 +126,15 @@ pub(crate) struct GatewayState {
     pub inbox_dir: std::path::PathBuf,
     pub tz: chrono_tz::Tz,
     pub tunnel_status_rx: tokio::sync::watch::Receiver<TunnelStatus>,
+    pub publisher: Publisher,
+    pub bus_handle: BusHandle,
 }
 
 /// All state needed by the main event loop.
+#[expect(
+    dead_code,
+    reason = "bus fields will be consumed in event loop migration"
+)]
 pub(crate) struct GatewayRuntime {
     // Current running config (for diffing on reload)
     pub cfg: Config,
@@ -143,6 +160,14 @@ pub(crate) struct GatewayRuntime {
     pub spawn_context: Arc<SpawnContext>,
     // Runtime channels + handles
     pub inbound_rx: mpsc::Receiver<RoutedMessage>,
+    /// Bus handle for creating publishers/subscribers.
+    pub bus_handle: BusHandle,
+    /// Publisher for sending events onto the bus.
+    pub publisher: Publisher,
+    /// Subscriber for receiving inbound messages from the bus.
+    pub agent_subscriber: Subscriber,
+    /// Topic for the last endpoint that sent a message (for response routing).
+    pub last_output_topic: Option<TopicId>,
     pub broadcast_tx: broadcast::Sender<ServerMessage>,
     pub reload_rx: tokio::sync::watch::Receiver<ReloadSignal>,
     pub command_rx: mpsc::Receiver<ServerCommand>,
