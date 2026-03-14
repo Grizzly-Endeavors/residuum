@@ -87,6 +87,7 @@ impl EndpointRegistry {
             let kind_label = match &ch.kind {
                 ExternalChannelKind::Ntfy { .. } => "Ntfy",
                 ExternalChannelKind::Webhook { .. } => "Webhook",
+                ExternalChannelKind::Macos { .. } => "macOS",
             };
             registry.register(EndpointEntry {
                 id: EndpointId::from(ch.name.as_str()),
