@@ -334,7 +334,6 @@ pub(crate) async fn initialize(
     let (project_state, skill_state) = init_project_and_skills(cfg, &layout).await;
 
     let (bg_result_rx, background_spawner) = init_background_spawner(cfg, &layout);
-    let http_for_channels = http.clone();
     let spawn_context = Arc::new(SpawnContext {
         background_config: cfg.background.clone(),
         main_provider_specs: cfg.main.clone(),
@@ -403,7 +402,7 @@ pub(crate) async fn initialize(
         pulse_enabled: cfg.pulse_enabled,
         endpoint_registry,
         channel_configs,
-        http_client: http_for_channels,
+        http_client: http.clone(),
         background_spawner,
         background_result_rx: bg_result_rx,
         spawn_context,

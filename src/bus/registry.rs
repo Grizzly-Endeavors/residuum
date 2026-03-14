@@ -6,7 +6,8 @@ use std::sync::{Arc, RwLock};
 use crate::config::Config;
 use crate::notify::types::{ExternalChannelConfig, ExternalChannelKind};
 
-use super::endpoint::{EndpointCapabilities, EndpointId};
+use super::endpoint::EndpointCapabilities;
+use super::types::EndpointId;
 use super::types::{EndpointName, NotifyName, TopicId, WebhookName};
 
 // ---------------------------------------------------------------------------

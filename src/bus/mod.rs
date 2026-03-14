@@ -13,7 +13,7 @@ mod registry;
 mod types;
 
 pub use broker::{BusHandle, spawn_broker};
-pub use endpoint::{EndpointCapabilities, EndpointId};
+pub use endpoint::EndpointCapabilities;
 pub use events::{
     AgentResultEvent, AgentResultStatus, BusEvent, EventTrigger, HeartbeatStatus,
     IntermediateEvent, MessageEvent, NotificationEvent, ResponseEvent, SpawnRequestEvent,
@@ -21,4 +21,4 @@ pub use events::{
 };
 pub use handle::{Publisher, Subscriber};
 pub use registry::{EndpointEntry, EndpointRegistry};
-pub use types::{BusError, EndpointName, NotifyName, PresetName, TopicId, WebhookName};
+pub use types::{BusError, EndpointId, EndpointName, NotifyName, PresetName, TopicId, WebhookName};

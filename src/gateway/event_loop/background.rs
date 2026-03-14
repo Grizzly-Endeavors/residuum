@@ -60,11 +60,17 @@ async fn route_agent_result(event: &AgentResultEvent, publisher: &Publisher) {
         } else {
             TopicId::Notify(crate::bus::NotifyName::from(channel_name.as_str()))
         };
-        drop(
-            publisher
-                .publish(topic, BusEvent::Notification(notification.clone()))
-                .await,
-        );
+        if let Err(e) = publisher
+            .publish(topic.clone(), BusEvent::Notification(notification.clone()))
+            .await
+        {
+            tracing::warn!(
+                topic = %topic,
+                source_label = %event.source_label,
+                error = %e,
+                "failed to publish notification to bus"
+            );
+        }
     }
 
     if event.routing.is_empty() {

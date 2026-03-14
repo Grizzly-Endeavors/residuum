@@ -38,6 +38,7 @@ macro_rules! newtype_string {
     };
 }
 
+newtype_string!(EndpointId, "Unique identifier for a bus endpoint.");
 newtype_string!(EndpointName, "Interactive endpoint identifier.");
 newtype_string!(PresetName, "Subagent preset identifier.");
 newtype_string!(WebhookName, "Named webhook identifier.");
@@ -135,6 +136,23 @@ mod tests {
         set.insert(topic.clone());
         assert!(set.contains(&topic));
         assert!(set.contains(&TopicId::AgentPreset(PresetName::from("summarizer"))));
+    }
+
+    #[test]
+    fn endpoint_id_equality_and_hash() {
+        let a = EndpointId::from("ws");
+        let b = EndpointId::from("ws");
+        assert_eq!(a, b);
+
+        let mut set = HashSet::new();
+        set.insert(a.clone());
+        assert!(set.contains(&b));
+    }
+
+    #[test]
+    fn endpoint_id_display() {
+        let id = EndpointId::from("telegram");
+        assert_eq!(id.to_string(), "telegram");
     }
 
     #[test]

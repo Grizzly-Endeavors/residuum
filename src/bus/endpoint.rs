@@ -1,38 +1,4 @@
-//! Endpoint identity and capability flags for the bus.
-
-use std::fmt;
-
-// ---------------------------------------------------------------------------
-// EndpointId
-// ---------------------------------------------------------------------------
-
-/// Unique identifier for a bus endpoint.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct EndpointId(String);
-
-impl fmt::Display for EndpointId {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.0)
-    }
-}
-
-impl AsRef<str> for EndpointId {
-    fn as_ref(&self) -> &str {
-        &self.0
-    }
-}
-
-impl From<&str> for EndpointId {
-    fn from(s: &str) -> Self {
-        Self(s.to_owned())
-    }
-}
-
-impl From<String> for EndpointId {
-    fn from(s: String) -> Self {
-        Self(s)
-    }
-}
+//! Endpoint capability flags for the bus.
 
 // ---------------------------------------------------------------------------
 // EndpointCapabilities
@@ -77,26 +43,7 @@ impl EndpointCapabilities {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashSet;
-
     use super::*;
-
-    #[test]
-    fn endpoint_id_equality_and_hash() {
-        let a = EndpointId::from("ws");
-        let b = EndpointId::from("ws");
-        assert_eq!(a, b);
-
-        let mut set = HashSet::new();
-        set.insert(a.clone());
-        assert!(set.contains(&b));
-    }
-
-    #[test]
-    fn endpoint_id_display() {
-        let id = EndpointId::from("telegram");
-        assert_eq!(id.to_string(), "telegram");
-    }
 
     #[test]
     fn capabilities_empty_contains_nothing() {
