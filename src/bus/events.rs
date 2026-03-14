@@ -8,7 +8,6 @@ use crate::bus::types::PresetName;
 use crate::config::BackgroundModelTier;
 use crate::interfaces::types::MessageOrigin;
 use crate::models::ImageData;
-use crate::notify::types::TaskSource;
 
 // ---------------------------------------------------------------------------
 // EventTrigger
@@ -36,16 +35,6 @@ impl EventTrigger {
             Self::Action => "action",
             Self::Agent => "agent",
             Self::Webhook(_) => "webhook",
-        }
-    }
-}
-
-impl From<TaskSource> for EventTrigger {
-    fn from(source: TaskSource) -> Self {
-        match source {
-            TaskSource::Pulse => Self::Pulse,
-            TaskSource::Action => Self::Action,
-            TaskSource::Agent => Self::Agent,
         }
     }
 }
@@ -179,10 +168,10 @@ pub struct SystemEventData {
 pub struct AgentResultEvent {
     /// Unique task identifier.
     pub task_id: String,
-    /// Human-readable task name.
-    pub task_name: String,
-    /// Subagent preset from the registry.
-    pub preset: PresetName,
+    /// Human-readable source label (e.g. `"pulse:email_check"`, `"action:deploy"`).
+    pub source_label: String,
+    /// Subagent preset that ran the task.
+    pub agent_preset: PresetName,
     /// What triggered this task.
     pub source: EventTrigger,
     /// Whether the last heartbeat was substantive.
@@ -202,8 +191,8 @@ pub struct AgentResultEvent {
 /// Request to spawn a sub-agent from any source.
 #[derive(Debug, Clone)]
 pub struct SpawnRequestEvent {
-    /// Human-readable task name.
-    pub task_name: String,
+    /// Human-readable source label (e.g. `"pulse:email_check"`, `"agent:researcher"`).
+    pub source_label: String,
     /// The prompt/instructions for the sub-agent.
     pub prompt: String,
     /// Additional context to prepend (e.g. project context).
@@ -341,8 +330,8 @@ mod tests {
     fn bus_event_agent_result_variant() {
         let event = BusEvent::AgentResult(AgentResultEvent {
             task_id: "t1".into(),
-            task_name: "summarize".into(),
-            preset: PresetName::from("summarizer"),
+            source_label: "action:summarize".into(),
+            agent_preset: PresetName::from("summarizer"),
             source: EventTrigger::Action,
             heartbeat_status: HeartbeatStatus::Substantive,
             status: AgentResultStatus::Completed,
@@ -383,8 +372,8 @@ mod tests {
     fn agent_result_clone_preserves_all_fields() {
         let ar = AgentResultEvent {
             task_id: "t2".into(),
-            task_name: "review".into(),
-            preset: PresetName::from("reviewer"),
+            source_label: "agent:review".into(),
+            agent_preset: PresetName::from("reviewer"),
             source: EventTrigger::Agent,
             heartbeat_status: HeartbeatStatus::Ok,
             status: AgentResultStatus::Completed,
@@ -395,7 +384,7 @@ mod tests {
         };
         let cloned = ar.clone();
         assert_eq!(cloned.task_id, "t2");
-        assert_eq!(cloned.task_name, "review");
+        assert_eq!(cloned.source_label, "agent:review");
         assert_eq!(cloned.summary, "all good");
         assert_eq!(
             cloned.transcript_path,
@@ -407,7 +396,7 @@ mod tests {
     #[test]
     fn bus_event_spawn_request_variant() {
         let event = BusEvent::SpawnRequest(SpawnRequestEvent {
-            task_name: "review".into(),
+            source_label: "agent:review".into(),
             prompt: "review the PR".into(),
             context: None,
             source: EventTrigger::Agent,
@@ -416,7 +405,7 @@ mod tests {
         });
         match event {
             BusEvent::SpawnRequest(sr) => {
-                assert_eq!(sr.task_name, "review");
+                assert_eq!(sr.source_label, "agent:review");
                 assert_eq!(sr.prompt, "review the PR");
                 assert!(sr.context.is_none());
                 assert!(sr.model_tier_override.is_none());
@@ -594,23 +583,5 @@ mod tests {
         assert_eq!(EventTrigger::Webhook("github".into()).as_str(), "webhook");
         // Webhook name does not affect the label.
         assert_eq!(EventTrigger::Webhook("custom".into()).as_str(), "webhook");
-    }
-
-    #[test]
-    fn event_trigger_from_task_source() {
-        use crate::notify::types::TaskSource;
-
-        assert!(matches!(
-            EventTrigger::from(TaskSource::Pulse),
-            EventTrigger::Pulse
-        ));
-        assert!(matches!(
-            EventTrigger::from(TaskSource::Action),
-            EventTrigger::Action
-        ));
-        assert!(matches!(
-            EventTrigger::from(TaskSource::Agent),
-            EventTrigger::Agent
-        ));
     }
 }

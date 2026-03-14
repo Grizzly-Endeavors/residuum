@@ -158,7 +158,7 @@ async fn build_runtime(
         .map_err(|e| ResiduumError::Gateway(format!("failed to subscribe to agent:main: {e}")))?;
 
     // Spawn notify channel subscribers on the bus
-    let mut notify_handles = crate::gateway::startup::spawn_notify_subscribers(
+    let notify_handles = crate::gateway::startup::spawn_notify_subscribers(
         &spawned.bus_handle,
         &parts.channel_configs,
         &parts.http_client,
@@ -167,19 +167,22 @@ async fn build_runtime(
     )
     .await;
 
+    // Spawn bus infrastructure handles (not restarted on workspace reload)
+    let mut bus_infra_handles = Vec::new();
+
     // Spawn the result bridge: reads from spawner's mpsc channel, publishes to bus
     let bridge_handle = crate::background::bridge::spawn_result_bridge(
         parts.background_result_rx,
         core.publisher.clone(),
         parts.tz,
     );
-    notify_handles.push(bridge_handle);
+    bus_infra_handles.push(bridge_handle);
 
     // Spawn the result router: subscribes to BackgroundResult topic, routes to channels
     if let Some(router_handle) =
         super::background::spawn_result_router(&spawned.bus_handle, core.publisher.clone()).await
     {
-        notify_handles.push(router_handle);
+        bus_infra_handles.push(router_handle);
     }
 
     // Spawn the subagent registry: subscribes to preset topics, handles spawn requests
@@ -193,7 +196,7 @@ async fn build_runtime(
     );
     let registry_handle =
         crate::subagents::registry::spawn_registry(registry, &spawned.bus_handle).await;
-    notify_handles.push(registry_handle);
+    bus_infra_handles.push(registry_handle);
 
     Ok(GatewayRuntime {
         layout: parts.layout,
@@ -212,6 +215,7 @@ async fn build_runtime(
         pulse_enabled: parts.pulse_enabled,
         endpoint_registry: parts.endpoint_registry,
         notify_handles,
+        bus_infra_handles,
         http_client: parts.http_client,
         spawn_context: parts.spawn_context,
         inbound_rx: receivers.inbound,
@@ -389,6 +393,9 @@ async fn handle_action_main_turns(
 /// Gracefully shut down all adapters, MCP servers, and the HTTP server.
 async fn graceful_shutdown(rt: &mut GatewayRuntime) {
     for h in rt.notify_handles.drain(..) {
+        h.abort();
+    }
+    for h in rt.bus_infra_handles.drain(..) {
         h.abort();
     }
     rt.mcp_registry.write().await.disconnect_all().await;

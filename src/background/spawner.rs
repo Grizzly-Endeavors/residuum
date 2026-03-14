@@ -48,7 +48,7 @@ impl BackgroundTaskSpawner {
     ///
     /// # Errors
     /// Returns an error if the task cannot be registered (e.g. duplicate ID).
-    pub async fn spawn(
+    pub(crate) async fn spawn(
         &self,
         task: BackgroundTask,
         resources: Option<SubAgentResources>,
@@ -66,8 +66,8 @@ impl BackgroundTaskSpawner {
 
         let (exec_type, prompt_preview) = execution_info(&task.execution);
         let active_info = ActiveTaskInfo {
-            task_name: task.task_name.clone(),
-            source: task.source,
+            source_label: task.source_label.clone(),
+            source: task.source.clone(),
             execution_type: exec_type,
             prompt_preview,
             started_at: Utc::now(),
@@ -196,13 +196,14 @@ async fn build_cancelled_result(
 
     BackgroundResult {
         id: task.id.clone(),
-        task_name: task.task_name.clone(),
-        source: task.source,
+        source_label: task.source_label.clone(),
+        source: task.source.clone(),
         summary: String::new(),
         transcript_path: None,
         status: TaskStatus::Cancelled,
         timestamp: Utc::now(),
         routing: task.routing.clone(),
+        agent_preset: task.agent_preset.clone(),
     }
 }
 
@@ -218,7 +219,7 @@ async fn build_completed_result(
         }
         Err(e) => {
             let error_msg = e.to_string();
-            tracing::warn!(task_id = %task.id, task_name = %task.task_name, error = %e, "background task failed");
+            tracing::warn!(task_id = %task.id, source_label = %task.source_label, error = %e, "background task failed");
             (
                 TaskStatus::Failed {
                     error: error_msg.clone(),
@@ -234,13 +235,14 @@ async fn build_completed_result(
 
     BackgroundResult {
         id: task.id.clone(),
-        task_name: task.task_name.clone(),
-        source: task.source,
+        source_label: task.source_label.clone(),
+        source: task.source.clone(),
         summary,
         transcript_path,
         status,
         timestamp: Utc::now(),
         routing: task.routing.clone(),
+        agent_preset: task.agent_preset.clone(),
     }
 }
 
@@ -307,8 +309,8 @@ async fn write_transcript(
 mod tests {
     use super::*;
     use crate::background::types::{Execution, ResultRouting, SubAgentConfig};
+    use crate::bus::{EventTrigger, PresetName};
     use crate::config::BackgroundModelTier;
-    use crate::notify::types::TaskSource;
 
     #[tokio::test]
     async fn send_result_delivers_to_channel() {
@@ -319,22 +321,23 @@ mod tests {
 
         let result = BackgroundResult {
             id: "direct-1".to_string(),
-            task_name: "action_event".to_string(),
-            source: TaskSource::Action,
+            source_label: "action:action_event".to_string(),
+            source: EventTrigger::Action,
             summary: "system alert".to_string(),
             transcript_path: None,
             status: super::TaskStatus::Completed,
             timestamp: chrono::Utc::now(),
             routing: ResultRouting::Direct(vec!["inbox".to_string()]),
+            agent_preset: PresetName::from("general-purpose"),
         };
 
         spawner.send_result(result).await.unwrap();
 
         let received = rx.recv().await.unwrap();
         assert_eq!(received.id, "direct-1");
-        assert_eq!(received.task_name, "action_event");
+        assert_eq!(received.source_label, "action:action_event");
         assert_eq!(received.summary, "system alert");
-        assert!(matches!(received.source, TaskSource::Action));
+        assert!(matches!(received.source, EventTrigger::Action));
     }
 
     #[tokio::test]
@@ -347,14 +350,15 @@ mod tests {
         // SubAgent without resources → guaranteed failure
         let task = BackgroundTask {
             id: "fail-transcript-1".to_string(),
-            task_name: "failing_agent".to_string(),
-            source: TaskSource::Agent,
+            source_label: "agent:failing_agent".to_string(),
+            source: EventTrigger::Agent,
             execution: Execution::SubAgent(SubAgentConfig {
                 prompt: "do something".to_string(),
                 context: None,
                 model_tier: BackgroundModelTier::Medium,
             }),
             routing: ResultRouting::Direct(vec!["inbox".to_string()]),
+            agent_preset: PresetName::from("general-purpose"),
         };
 
         spawner.spawn(task, None).await.unwrap();

@@ -6,10 +6,9 @@ use tokio::task::JoinHandle;
 
 use crate::background::types::{BackgroundResult, ResultRouting, TaskStatus};
 use crate::bus::{
-    AgentResultEvent, AgentResultStatus, BusEvent, EventTrigger, HeartbeatStatus, PresetName,
-    Publisher, TopicId,
+    AgentResultEvent, AgentResultStatus, BusEvent, EventTrigger, HeartbeatStatus, Publisher,
+    TopicId,
 };
-use crate::notify::types::TaskSource;
 
 /// Spawn the bridge task that forwards background results to the bus.
 ///
@@ -41,12 +40,13 @@ pub(crate) fn spawn_result_bridge(
 
 /// Convert a `BackgroundResult` to an `AgentResultEvent` for the bus.
 fn convert_to_agent_result(result: &BackgroundResult, tz: chrono_tz::Tz) -> AgentResultEvent {
-    let heartbeat_status =
-        if matches!(result.source, TaskSource::Pulse) && result.summary.contains("HEARTBEAT_OK") {
-            HeartbeatStatus::Ok
-        } else {
-            HeartbeatStatus::Substantive
-        };
+    let heartbeat_status = if matches!(result.source, EventTrigger::Pulse)
+        && result.summary.contains("HEARTBEAT_OK")
+    {
+        HeartbeatStatus::Ok
+    } else {
+        HeartbeatStatus::Substantive
+    };
 
     let status = match &result.status {
         TaskStatus::Completed => AgentResultStatus::Completed,
@@ -60,9 +60,9 @@ fn convert_to_agent_result(result: &BackgroundResult, tz: chrono_tz::Tz) -> Agen
 
     AgentResultEvent {
         task_id: result.id.clone(),
-        task_name: result.task_name.clone(),
-        preset: PresetName::from(result.task_name.as_str()),
-        source: EventTrigger::from(result.source),
+        source_label: result.source_label.clone(),
+        agent_preset: result.agent_preset.clone(),
+        source: result.source.clone(),
         heartbeat_status,
         status,
         summary: result.summary.clone(),
@@ -86,23 +86,25 @@ mod tests {
 
     use super::*;
     use crate::background::types::ResultRouting;
+    use crate::bus::PresetName;
 
     #[test]
     fn convert_completed_result() {
         let result = BackgroundResult {
             id: "bg-1".into(),
-            task_name: "email_check".into(),
-            source: TaskSource::Action,
+            source_label: "action:email_check".into(),
+            source: EventTrigger::Action,
             summary: "3 new emails".into(),
             transcript_path: Some(PathBuf::from("/tmp/bg-1.log")),
             status: TaskStatus::Completed,
             timestamp: Utc::now(),
             routing: ResultRouting::Direct(vec!["inbox".into()]),
+            agent_preset: PresetName::from("general-purpose"),
         };
 
         let event = convert_to_agent_result(&result, chrono_tz::UTC);
         assert_eq!(event.task_id, "bg-1");
-        assert_eq!(event.task_name, "email_check");
+        assert_eq!(event.source_label, "action:email_check");
         assert!(matches!(event.status, AgentResultStatus::Completed));
         assert_eq!(event.heartbeat_status, HeartbeatStatus::Substantive);
         assert_eq!(event.routing, vec!["inbox".to_string()]);
@@ -112,13 +114,14 @@ mod tests {
     fn convert_heartbeat_ok_result() {
         let result = BackgroundResult {
             id: "pulse-1".into(),
-            task_name: "health".into(),
-            source: TaskSource::Pulse,
+            source_label: "pulse:health".into(),
+            source: EventTrigger::Pulse,
             summary: "HEARTBEAT_OK".into(),
             transcript_path: None,
             status: TaskStatus::Completed,
             timestamp: Utc::now(),
             routing: ResultRouting::Direct(vec!["inbox".into()]),
+            agent_preset: PresetName::from("general-purpose"),
         };
 
         let event = convert_to_agent_result(&result, chrono_tz::UTC);
@@ -129,8 +132,8 @@ mod tests {
     fn convert_failed_result() {
         let result = BackgroundResult {
             id: "bg-2".into(),
-            task_name: "deploy".into(),
-            source: TaskSource::Agent,
+            source_label: "agent:deploy".into(),
+            source: EventTrigger::Agent,
             summary: String::new(),
             transcript_path: None,
             status: TaskStatus::Failed {
@@ -138,6 +141,7 @@ mod tests {
             },
             timestamp: Utc::now(),
             routing: ResultRouting::Direct(vec![]),
+            agent_preset: PresetName::from("general-purpose"),
         };
 
         let event = convert_to_agent_result(&result, chrono_tz::UTC);
@@ -161,13 +165,14 @@ mod tests {
 
         let result = BackgroundResult {
             id: "bg-test".into(),
-            task_name: "test-task".into(),
-            source: TaskSource::Agent,
+            source_label: "agent:test-task".into(),
+            source: EventTrigger::Agent,
             summary: "done".into(),
             transcript_path: None,
             status: TaskStatus::Completed,
             timestamp: Utc::now(),
             routing: ResultRouting::Direct(vec!["inbox".into()]),
+            agent_preset: PresetName::from("general-purpose"),
         };
 
         tx.send(result).await.unwrap();
@@ -180,7 +185,7 @@ mod tests {
         match event {
             BusEvent::AgentResult(ar) => {
                 assert_eq!(ar.task_id, "bg-test");
-                assert_eq!(ar.task_name, "test-task");
+                assert_eq!(ar.source_label, "agent:test-task");
                 assert_eq!(ar.routing, vec!["inbox".to_string()]);
             }
             _ => panic!("expected AgentResult event"),

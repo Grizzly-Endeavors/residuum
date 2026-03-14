@@ -5,22 +5,25 @@ use std::path::PathBuf;
 
 use chrono::{DateTime, Utc};
 
+use crate::bus::EventTrigger;
+use crate::bus::PresetName;
 use crate::config::BackgroundModelTier;
-use crate::notify::types::TaskSource;
 
 /// A background task to be executed by the spawner.
 #[derive(Debug, Clone)]
-pub struct BackgroundTask {
+pub(crate) struct BackgroundTask {
     /// Unique task identifier.
     pub id: String,
-    /// Human-readable task name.
-    pub task_name: String,
+    /// Human-readable source label (e.g. `"pulse:email_check"`, `"action:deploy"`).
+    pub source_label: String,
     /// Where this task originated.
-    pub source: TaskSource,
+    pub source: EventTrigger,
     /// How to execute the task.
     pub execution: Execution,
     /// How to route the result.
     pub routing: ResultRouting,
+    /// The agent preset that will run this task.
+    pub agent_preset: PresetName,
 }
 
 /// How to route a background task result.
@@ -53,10 +56,10 @@ pub struct SubAgentConfig {
 pub struct BackgroundResult {
     /// The task ID.
     pub id: String,
-    /// Human-readable task name.
-    pub task_name: String,
+    /// Human-readable source label (e.g. `"pulse:email_check"`, `"action:deploy"`).
+    pub source_label: String,
     /// Where this task originated.
-    pub source: TaskSource,
+    pub source: EventTrigger,
     /// Summary of the result (text output or error message).
     pub summary: String,
     /// Path to the transcript/log file (if written).
@@ -67,15 +70,17 @@ pub struct BackgroundResult {
     pub timestamp: DateTime<Utc>,
     /// How the result should be routed.
     pub routing: ResultRouting,
+    /// The agent preset that ran this task.
+    pub agent_preset: PresetName,
 }
 
 /// Metadata tracked for a currently-running background task.
 #[derive(Debug, Clone)]
 pub struct ActiveTaskInfo {
-    /// Human-readable task name.
-    pub task_name: String,
+    /// Human-readable source label (e.g. `"pulse:email_check"`, `"action:deploy"`).
+    pub source_label: String,
     /// Where this task originated.
-    pub source: TaskSource,
+    pub source: EventTrigger,
     /// Execution variant label (always `"sub_agent"`).
     pub execution_type: &'static str,
     /// Truncated prompt or command preview (at most 120 chars).
@@ -118,11 +123,11 @@ impl fmt::Display for TaskStatus {
 /// Format a `BackgroundResult` for injection into the agent message stream.
 #[must_use]
 pub fn format_background_result(result: &BackgroundResult) -> String {
-    let source_label = result.source.as_str();
+    let source_kind = result.source.as_str();
 
     let mut parts = vec![format!(
         "[Background Task Result]\nTask: {} ({})\nSource: {}\nStatus: {}",
-        result.task_name, result.id, source_label, result.status
+        result.source_label, result.id, source_kind, result.status
     )];
 
     if !result.summary.is_empty() {
@@ -157,19 +162,20 @@ mod tests {
     fn format_background_result_completed() {
         let result = BackgroundResult {
             id: "bg-001".to_string(),
-            task_name: "email_check".to_string(),
-            source: TaskSource::Action,
+            source_label: "action:email_check".to_string(),
+            source: EventTrigger::Action,
             summary: "3 new emails found".to_string(),
             transcript_path: None,
             status: TaskStatus::Completed,
             timestamp: Utc::now(),
             routing: ResultRouting::Direct(vec!["inbox".to_string()]),
+            agent_preset: PresetName::from("general-purpose"),
         };
 
         let formatted = format_background_result(&result);
         assert!(
-            formatted.contains("email_check"),
-            "should contain task name"
+            formatted.contains("action:email_check"),
+            "should contain source label"
         );
         assert!(formatted.contains("bg-001"), "should contain task id");
         assert!(formatted.contains("action"), "should contain source");
@@ -184,8 +190,8 @@ mod tests {
     fn format_background_result_failed() {
         let result = BackgroundResult {
             id: "bg-002".to_string(),
-            task_name: "deploy_check".to_string(),
-            source: TaskSource::Agent,
+            source_label: "agent:deploy_check".to_string(),
+            source: EventTrigger::Agent,
             summary: String::new(),
             transcript_path: Some(PathBuf::from("/tmp/bg-002.log")),
             status: TaskStatus::Failed {
@@ -193,6 +199,7 @@ mod tests {
             },
             timestamp: Utc::now(),
             routing: ResultRouting::Direct(vec!["inbox".to_string()]),
+            agent_preset: PresetName::from("general-purpose"),
         };
 
         let formatted = format_background_result(&result);
@@ -211,13 +218,14 @@ mod tests {
     fn format_background_result_cancelled() {
         let result = BackgroundResult {
             id: "bg-003".to_string(),
-            task_name: "long_task".to_string(),
-            source: TaskSource::Pulse,
+            source_label: "pulse:long_task".to_string(),
+            source: EventTrigger::Pulse,
             summary: "partial output".to_string(),
             transcript_path: None,
             status: TaskStatus::Cancelled,
             timestamp: Utc::now(),
             routing: ResultRouting::Direct(vec!["inbox".to_string()]),
+            agent_preset: PresetName::from("general-purpose"),
         };
 
         let formatted = format_background_result(&result);

@@ -152,6 +152,8 @@ pub(crate) struct GatewayRuntime {
     )]
     pub endpoint_registry: EndpointRegistry,
     pub notify_handles: Vec<tokio::task::JoinHandle<()>>,
+    /// Bus infrastructure handles (bridge, result router, registry) — not restarted on reload.
+    pub bus_infra_handles: Vec<tokio::task::JoinHandle<()>>,
     pub http_client: SharedHttpClient,
     pub spawn_context: Arc<SpawnContext>,
     // Runtime channels + handles

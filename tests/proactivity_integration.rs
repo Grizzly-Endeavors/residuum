@@ -16,14 +16,11 @@ mod proactivity_integration {
 
     use residuum::agent::Agent;
     use residuum::agent::context::PromptContext;
-    use residuum::background::types::{Execution, ResultRouting};
-    use residuum::bus::{EndpointName, TopicId, spawn_broker};
-    use residuum::config::BackgroundModelTier;
+    use residuum::bus::{EndpointName, EventTrigger, TopicId, spawn_broker};
     use residuum::models::{
         CompletionOptions, Message, ModelError, ModelProvider, ModelResponse, Role, ToolDefinition,
     };
-    use residuum::notify::types::TaskSource;
-    use residuum::pulse::executor::{PulseExecution, build_pulse_execution, build_pulse_task};
+    use residuum::pulse::executor::{PulseExecution, build_pulse_execution};
     use residuum::pulse::scheduler::PulseScheduler;
     use residuum::pulse::types::{PulseDef, PulseTask};
     use residuum::tools::{ToolFilter, ToolRegistry};
@@ -97,85 +94,67 @@ mod proactivity_integration {
         }
     }
 
-    // ── build_pulse_task tests ───────────────────────────────────────────
+    // ── build_pulse_execution tests ────────────────────────────────────────
 
     #[test]
-    fn build_pulse_task_source_is_pulse() {
+    fn build_pulse_execution_no_agent_returns_subagent() {
         let pulse = sample_pulse();
-        let task = build_pulse_task(&pulse);
-        assert!(
-            matches!(task.source, TaskSource::Pulse),
-            "source should be Pulse"
-        );
+        match build_pulse_execution(&pulse) {
+            PulseExecution::SubAgent {
+                spawn_event,
+                preset_name,
+            } => {
+                assert_eq!(preset_name, "general-purpose");
+                assert_eq!(spawn_event.source_label, "pulse:email_check");
+                assert!(matches!(spawn_event.source, EventTrigger::Pulse));
+            }
+            PulseExecution::MainWakeTurn { .. } => panic!("expected SubAgent"),
+        }
     }
 
     #[test]
-    fn build_pulse_task_name_matches_pulse() {
+    fn build_pulse_execution_prompt_contains_pulse_name_and_heartbeat_ok() {
         let pulse = sample_pulse();
-        let task = build_pulse_task(&pulse);
-        assert_eq!(
-            task.task_name, "email_check",
-            "task_name should match pulse name"
-        );
+        match build_pulse_execution(&pulse) {
+            PulseExecution::SubAgent { spawn_event, .. } => {
+                assert!(
+                    spawn_event.prompt.contains("email_check"),
+                    "prompt should contain pulse name"
+                );
+                assert!(
+                    spawn_event.prompt.contains("check_inbox"),
+                    "prompt should contain task name"
+                );
+                assert!(
+                    spawn_event.prompt.contains("Check email"),
+                    "prompt should contain task prompt"
+                );
+                assert!(
+                    spawn_event.prompt.contains("HEARTBEAT_OK"),
+                    "prompt should contain HEARTBEAT_OK instruction"
+                );
+            }
+            PulseExecution::MainWakeTurn { .. } => panic!("expected SubAgent"),
+        }
     }
 
     #[test]
-    fn build_pulse_task_id_format() {
+    fn build_pulse_execution_routing_defaults_to_configured() {
         let pulse = sample_pulse();
-        let task = build_pulse_task(&pulse);
-        assert!(
-            task.id.starts_with("pulse-email_check-"),
-            "id should start with pulse-<name>-"
-        );
+        match build_pulse_execution(&pulse) {
+            PulseExecution::SubAgent { spawn_event, .. } => {
+                assert_eq!(
+                    spawn_event.routing_override,
+                    Some(vec!["agent_feed".to_string()]),
+                    "should route to configured channel"
+                );
+            }
+            PulseExecution::MainWakeTurn { .. } => panic!("expected SubAgent"),
+        }
     }
 
     #[test]
-    fn build_pulse_task_execution_is_subagent_small() {
-        let pulse = sample_pulse();
-        let task = build_pulse_task(&pulse);
-        let Execution::SubAgent(cfg) = &task.execution;
-        assert_eq!(
-            cfg.model_tier,
-            BackgroundModelTier::Small,
-            "tier should be Small"
-        );
-    }
-
-    #[test]
-    fn build_pulse_task_prompt_contains_pulse_name_and_heartbeat_ok() {
-        let pulse = sample_pulse();
-        let task = build_pulse_task(&pulse);
-        let Execution::SubAgent(cfg) = &task.execution;
-        let prompt = &cfg.prompt;
-
-        assert!(
-            prompt.contains("email_check"),
-            "prompt should contain pulse name"
-        );
-        assert!(
-            prompt.contains("check_inbox"),
-            "prompt should contain task name"
-        );
-        assert!(
-            prompt.contains("Check email"),
-            "prompt should contain task prompt"
-        );
-        assert!(
-            prompt.contains("HEARTBEAT_OK"),
-            "prompt should contain HEARTBEAT_OK instruction"
-        );
-    }
-
-    #[test]
-    fn build_pulse_task_routing_defaults_to_agent_feed() {
-        let pulse = sample_pulse();
-        let task = build_pulse_task(&pulse);
-        let ResultRouting::Direct(channels) = &task.routing;
-        assert_eq!(channels, &["agent_feed"], "should route to default channel");
-    }
-
-    #[test]
-    fn build_pulse_task_with_no_tasks() {
+    fn build_pulse_execution_empty_tasks_still_builds() {
         let pulse = PulseDef {
             name: "empty_test".to_string(),
             enabled: true,
@@ -187,26 +166,13 @@ mod proactivity_integration {
             tasks: vec![],
         };
 
-        let task = build_pulse_task(&pulse);
-        assert_eq!(task.task_name, "empty_test");
-        let Execution::SubAgent(cfg) = &task.execution;
-        let prompt = &cfg.prompt;
-        assert!(
-            prompt.contains("HEARTBEAT_OK"),
-            "should still have HEARTBEAT_OK instruction with no tasks"
-        );
-    }
-
-    // ── build_pulse_execution tests ────────────────────────────────────────
-
-    #[test]
-    fn build_pulse_execution_no_agent_returns_subagent() {
-        let pulse = sample_pulse();
         match build_pulse_execution(&pulse) {
-            PulseExecution::SubAgent { task, preset_name } => {
-                assert!(preset_name.is_none(), "should have no preset");
-                assert_eq!(task.task_name, "email_check");
-                assert!(matches!(task.source, TaskSource::Pulse));
+            PulseExecution::SubAgent { spawn_event, .. } => {
+                assert_eq!(spawn_event.source_label, "pulse:empty_test");
+                assert!(
+                    spawn_event.prompt.contains("HEARTBEAT_OK"),
+                    "should still have HEARTBEAT_OK instruction with no tasks"
+                );
             }
             PulseExecution::MainWakeTurn { .. } => panic!("expected SubAgent"),
         }
@@ -231,9 +197,12 @@ mod proactivity_integration {
         let mut pulse = sample_pulse();
         pulse.agent = Some("memory-agent".to_string());
         match build_pulse_execution(&pulse) {
-            PulseExecution::SubAgent { task, preset_name } => {
-                assert_eq!(preset_name.as_deref(), Some("memory-agent"));
-                assert_eq!(task.task_name, "email_check");
+            PulseExecution::SubAgent {
+                preset_name,
+                spawn_event,
+            } => {
+                assert_eq!(preset_name, "memory-agent");
+                assert_eq!(spawn_event.source_label, "pulse:email_check");
             }
             PulseExecution::MainWakeTurn { .. } => panic!("expected SubAgent"),
         }

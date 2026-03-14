@@ -99,7 +99,7 @@ pub async fn webhook_handler(
         }
         WebhookRouting::Agent(preset) => {
             let spawn_event = crate::bus::SpawnRequestEvent {
-                task_name: format!("webhook:{name}"),
+                source_label: format!("webhook:{name}"),
                 prompt: notification.content,
                 context: None,
                 source: crate::bus::EventTrigger::Webhook(name.clone()),
@@ -525,7 +525,7 @@ mod tests {
         match event {
             crate::bus::BusEvent::SpawnRequest(sr) => {
                 assert_eq!(sr.prompt, "review this");
-                assert_eq!(sr.task_name, "webhook:agent-hook");
+                assert_eq!(sr.source_label, "webhook:agent-hook");
             }
             other => panic!("expected SpawnRequest, got {other:?}"),
         }

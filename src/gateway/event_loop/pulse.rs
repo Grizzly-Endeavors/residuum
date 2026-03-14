@@ -1,6 +1,6 @@
 //! Pulse execution handling and scheduling in the event loop.
 
-use crate::bus::{BusEvent, EventTrigger, PresetName, SpawnRequestEvent, TopicId};
+use crate::bus::{BusEvent, PresetName, TopicId};
 use crate::gateway::types::GatewayRuntime;
 use crate::memory::types::Visibility;
 use crate::models::Message;
@@ -31,44 +31,10 @@ pub async fn handle_pulse_execution(
             true
         }
         PulseExecution::SubAgent {
-            task,
-            preset_name: Some(name),
+            spawn_event,
+            preset_name,
         } => {
-            let crate::background::types::Execution::SubAgent(cfg) = &task.execution;
-            let crate::background::types::ResultRouting::Direct(channels) = &task.routing;
-            let spawn_event = SpawnRequestEvent {
-                task_name: task.task_name.clone(),
-                prompt: cfg.prompt.clone(),
-                context: cfg.context.clone(),
-                source: EventTrigger::Pulse,
-                model_tier_override: Some(cfg.model_tier),
-                routing_override: Some(channels.clone()),
-            };
-            let topic = TopicId::AgentPreset(PresetName::from(name.as_str()));
-            if let Err(e) = rt
-                .publisher
-                .publish(topic, BusEvent::SpawnRequest(spawn_event))
-                .await
-            {
-                tracing::warn!(pulse = %pulse_name, error = %e, "failed to publish pulse spawn request");
-            }
-            false
-        }
-        PulseExecution::SubAgent {
-            task,
-            preset_name: None,
-        } => {
-            let crate::background::types::Execution::SubAgent(cfg) = &task.execution;
-            let crate::background::types::ResultRouting::Direct(channels) = &task.routing;
-            let spawn_event = SpawnRequestEvent {
-                task_name: task.task_name.clone(),
-                prompt: cfg.prompt.clone(),
-                context: cfg.context.clone(),
-                source: EventTrigger::Pulse,
-                model_tier_override: Some(cfg.model_tier),
-                routing_override: Some(channels.clone()),
-            };
-            let topic = TopicId::AgentPreset(PresetName::from("general-purpose"));
+            let topic = TopicId::AgentPreset(PresetName::from(preset_name.as_str()));
             if let Err(e) = rt
                 .publisher
                 .publish(topic, BusEvent::SpawnRequest(spawn_event))

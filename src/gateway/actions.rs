@@ -72,7 +72,7 @@ async fn publish_action_spawn(
         .unwrap_or(BackgroundModelTier::Medium);
 
     let spawn_event = SpawnRequestEvent {
-        task_name: action.name.clone(),
+        source_label: format!("action:{}", action.name),
         prompt: action.prompt.clone(),
         context: None,
         source: EventTrigger::Action,

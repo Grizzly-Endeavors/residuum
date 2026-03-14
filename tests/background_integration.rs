@@ -4,6 +4,7 @@
 //! notification system, and Phase 4 isolated project/skill state for sub-agents.
 
 #[expect(clippy::unwrap_used, reason = "test code uses unwrap for clarity")]
+#[expect(clippy::panic, reason = "test assertions")]
 #[expect(
     clippy::tests_outside_test_module,
     reason = "integration tests live in tests/ directory, not inside #[cfg(test)] modules"
@@ -17,12 +18,13 @@ mod background_integration {
 
     use residuum::background::BackgroundTaskSpawner;
     use residuum::background::types::{
-        BackgroundTask, ResultRouting, TaskStatus, format_background_result,
+        BackgroundResult, ResultRouting, TaskStatus, format_background_result,
     };
-    use residuum::bus::{BusEvent, EventTrigger, NotificationEvent, TopicId, spawn_broker};
+    use residuum::bus::{
+        BusEvent, EventTrigger, NotificationEvent, PresetName, TopicId, spawn_broker,
+    };
     use residuum::notify::channels::InboxChannel;
     use residuum::notify::subscriber::run_notify_subscriber;
-    use residuum::notify::types::TaskSource;
 
     // ── Result routing to inbox via bus subscriber ────────────────────
 
@@ -76,15 +78,16 @@ mod background_integration {
         let dir = tempdir().unwrap();
 
         // Empty channels = unrouted
-        let result = residuum::background::types::BackgroundResult {
+        let result = BackgroundResult {
             id: "unrouted-1".to_string(),
-            task_name: "nobody_listens".to_string(),
-            source: TaskSource::Agent,
+            source_label: "agent:nobody_listens".to_string(),
+            source: EventTrigger::Agent,
             summary: "result that goes nowhere".to_string(),
             transcript_path: Some(dir.path().join("bg-unrouted-1.log")),
             status: TaskStatus::Completed,
             timestamp: chrono::Utc::now(),
             routing: ResultRouting::Direct(vec![]),
+            agent_preset: PresetName::from("general-purpose"),
         };
 
         let ResultRouting::Direct(channels) = &result.routing;
@@ -183,19 +186,20 @@ mod background_integration {
 
     #[test]
     fn format_result_contains_all_fields() {
-        let result = residuum::background::types::BackgroundResult {
+        let result = BackgroundResult {
             id: "fmt-1".to_string(),
-            task_name: "my_task".to_string(),
-            source: TaskSource::Action,
+            source_label: "action:my_task".to_string(),
+            source: EventTrigger::Action,
             summary: "task completed successfully".to_string(),
             transcript_path: Some(PathBuf::from("/tmp/bg-fmt-1.log")),
             status: TaskStatus::Completed,
             timestamp: chrono::Utc::now(),
             routing: ResultRouting::Direct(vec!["agent_feed".to_string()]),
+            agent_preset: PresetName::from("general-purpose"),
         };
 
         let formatted = format_background_result(&result);
-        assert!(formatted.contains("my_task"));
+        assert!(formatted.contains("action:my_task"));
         assert!(formatted.contains("fmt-1"));
         assert!(formatted.contains("action"));
         assert!(formatted.contains("completed"));
@@ -212,83 +216,33 @@ mod background_integration {
         let spawner =
             BackgroundTaskSpawner::new(tx, 3, PathBuf::from("/tmp"), dir.path().to_path_buf());
 
-        let result = residuum::background::types::BackgroundResult {
+        let result = BackgroundResult {
             id: "action-evt-test-1".to_string(),
-            task_name: "reminder".to_string(),
-            source: TaskSource::Action,
+            source_label: "action:reminder".to_string(),
+            source: EventTrigger::Action,
             summary: "time to stretch".to_string(),
             transcript_path: None,
             status: TaskStatus::Completed,
             timestamp: chrono::Utc::now(),
             routing: ResultRouting::Direct(vec!["agent_feed".to_string()]),
+            agent_preset: PresetName::from("general-purpose"),
         };
 
         spawner.send_result(result).await.unwrap();
 
         let received = rx.recv().await.unwrap();
         assert_eq!(received.id, "action-evt-test-1");
-        assert_eq!(received.task_name, "reminder");
+        assert_eq!(received.source_label, "action:reminder");
         assert_eq!(received.summary, "time to stretch");
-        assert!(matches!(received.source, TaskSource::Action));
+        assert!(matches!(received.source, EventTrigger::Action));
         assert!(matches!(received.status, TaskStatus::Completed));
     }
 
-    // ── Phase 6: subagent_spawn async result delivery ──────────────────
-
-    #[tokio::test]
-    async fn subagent_spawn_async_result_delivery() {
-        use residuum::background::types::{Execution, SubAgentConfig};
-        use residuum::config::BackgroundModelTier;
-
-        let dir = tempdir().unwrap();
-        let (tx, mut rx) = mpsc::channel(32);
-        let spawner = Arc::new(BackgroundTaskSpawner::new(
-            tx,
-            3,
-            PathBuf::from("/tmp"),
-            dir.path().to_path_buf(),
-        ));
-
-        let task = BackgroundTask {
-            id: "agent-spawn-e2e-1".to_string(),
-            task_name: "my_subagent".to_string(),
-            source: TaskSource::Agent,
-            execution: Execution::SubAgent(SubAgentConfig {
-                prompt: "summarize recent events".to_string(),
-                context: None,
-                model_tier: BackgroundModelTier::Medium,
-            }),
-            routing: ResultRouting::Direct(vec!["agent_feed".to_string(), "inbox".to_string()]),
-        };
-
-        // Without real SubAgentResources, the spawner will fail with a "requires SubAgentResources" error.
-        // That's fine — we're testing that the task enters the pipeline with correct source and routing.
-        spawner.spawn(task, None).await.unwrap();
-
-        let result = rx.recv().await.unwrap();
-        assert_eq!(result.id, "agent-spawn-e2e-1");
-        assert_eq!(result.task_name, "my_subagent");
-        assert!(
-            matches!(result.source, TaskSource::Agent),
-            "source should be Agent"
-        );
-        // Should be Failed because no resources were provided
-        assert!(
-            matches!(result.status, TaskStatus::Failed { .. }),
-            "should fail without resources"
-        );
-        // Routing should be preserved on the result
-        let ResultRouting::Direct(channels) = &result.routing;
-        assert_eq!(channels.len(), 2);
-        assert!(channels.contains(&"agent_feed".to_string()));
-        assert!(channels.contains(&"inbox".to_string()));
-    }
+    // ── Pulse execution builds correct structure ──────────────────────
 
     #[test]
-    fn build_pulse_task_creates_correct_structure() {
-        use residuum::background::types::Execution;
-        use residuum::config::BackgroundModelTier;
-        use residuum::pulse::executor::build_pulse_task;
+    fn build_pulse_execution_creates_correct_structure() {
+        use residuum::pulse::executor::{PulseExecution, build_pulse_execution};
         use residuum::pulse::types::{PulseDef, PulseTask};
 
         let pulse = PulseDef {
@@ -305,17 +259,24 @@ mod background_integration {
             }],
         };
 
-        let task = build_pulse_task(&pulse);
-
-        assert_eq!(task.task_name, "status_check");
-        assert!(task.id.starts_with("pulse-status_check-"));
-        assert!(matches!(task.source, TaskSource::Pulse));
-        let ResultRouting::Direct(channels) = &task.routing;
-        assert_eq!(channels, &["agent_feed"], "should route to default channel");
-
-        let Execution::SubAgent(cfg) = &task.execution;
-        assert_eq!(cfg.model_tier, BackgroundModelTier::Small);
-        assert!(cfg.prompt.contains("status_check"));
-        assert!(cfg.prompt.contains("HEARTBEAT_OK"));
+        match build_pulse_execution(&pulse) {
+            PulseExecution::SubAgent {
+                spawn_event,
+                preset_name,
+            } => {
+                assert_eq!(preset_name, "general-purpose");
+                assert_eq!(spawn_event.source_label, "pulse:status_check");
+                assert!(spawn_event.prompt.contains("status_check"));
+                assert!(spawn_event.prompt.contains("HEARTBEAT_OK"));
+                assert_eq!(
+                    spawn_event.routing_override,
+                    Some(vec!["agent_feed".to_string()]),
+                    "should route to configured channel"
+                );
+            }
+            PulseExecution::MainWakeTurn { .. } => {
+                panic!("expected SubAgent");
+            }
+        }
     }
 }

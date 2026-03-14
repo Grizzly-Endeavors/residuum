@@ -113,7 +113,7 @@ impl Tool for ListAgentsTool {
 
         for (id, info) in &tasks {
             let elapsed_secs = (now - info.started_at).num_seconds().max(0);
-            let source_label = info.source.as_str();
+            let source_kind = info.source.as_str();
             let preview_suffix = if info.prompt_preview.is_empty() {
                 String::new()
             } else {
@@ -121,9 +121,9 @@ impl Tool for ListAgentsTool {
             };
             lines.push(format!(
                 "  [{id}] {task} — type: {etype} — source: {src} — running {elapsed}s{sfx}",
-                task = info.task_name,
+                task = info.source_label,
                 etype = info.execution_type,
-                src = source_label,
+                src = source_kind,
                 elapsed = elapsed_secs,
                 sfx = preview_suffix,
             ));
@@ -250,7 +250,7 @@ impl Tool for SubAgentSpawnTool {
         }
 
         let spawn_event = crate::bus::SpawnRequestEvent {
-            task_name: resolved.preset_name.clone(),
+            source_label: format!("agent:{}", resolved.preset_name),
             prompt: task_prompt.to_string(),
             context: None,
             source: crate::bus::EventTrigger::Agent,

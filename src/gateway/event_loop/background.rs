@@ -43,12 +43,12 @@ async fn result_router_loop(mut subscriber: crate::bus::Subscriber, publisher: P
 async fn route_agent_result(event: &AgentResultEvent, publisher: &Publisher) {
     // Silently log heartbeat-ok results
     if event.heartbeat_status == HeartbeatStatus::Ok {
-        tracing::info!(task = %event.task_name, "pulse check: HEARTBEAT_OK");
+        tracing::info!(source_label = %event.source_label, "pulse check: HEARTBEAT_OK");
         return;
     }
 
     let notification = NotificationEvent {
-        title: event.task_name.clone(),
+        title: event.source_label.clone(),
         content: event.summary.clone(),
         source: event.source.clone(),
         timestamp: event.timestamp,
@@ -69,7 +69,7 @@ async fn route_agent_result(event: &AgentResultEvent, publisher: &Publisher) {
 
     if event.routing.is_empty() {
         tracing::debug!(
-            task = %event.task_name,
+            source_label = %event.source_label,
             "agent result has no routing channels"
         );
     }

@@ -16,10 +16,9 @@ use crate::background::spawn_context::{
     SpawnContext, build_spawn_resources, load_preset_for_spawn,
 };
 use crate::background::types::{BackgroundTask, Execution, ResultRouting, SubAgentConfig};
-use crate::bus::{BusEvent, BusHandle, EventTrigger, PresetName, SpawnRequestEvent, TopicId};
+use crate::bus::{BusEvent, BusHandle, PresetName, SpawnRequestEvent, TopicId};
 use crate::config::BackgroundModelTier;
 use crate::mcp::SharedMcpRegistry;
-use crate::notify::types::TaskSource;
 use crate::projects::activation::SharedProjectState;
 use crate::skills::SharedSkillState;
 use crate::subagents::SubagentPresetIndex;
@@ -146,15 +145,15 @@ async fn handle_spawn_request(
     preset_name: &str,
     event: SpawnRequestEvent,
 ) -> Result<(), anyhow::Error> {
-    let fallback_tier = event
-        .model_tier_override
-        .unwrap_or(BackgroundModelTier::Medium);
-
-    let (tier, preset) =
-        load_preset_for_spawn(&registry.subagents_dir, preset_name, fallback_tier).await?;
+    let (preset_tier, preset) = load_preset_for_spawn(
+        &registry.subagents_dir,
+        preset_name,
+        BackgroundModelTier::Medium,
+    )
+    .await?;
 
     // Use override tier if provided, otherwise use preset-resolved tier
-    let final_tier = event.model_tier_override.unwrap_or(tier);
+    let final_tier = event.model_tier_override.unwrap_or(preset_tier);
 
     let preset_arg = preset.as_ref().map(|(fm, body)| (fm, body.clone()));
 
@@ -176,32 +175,22 @@ async fn handle_spawn_request(
             .unwrap_or_else(|| vec!["inbox".to_string()])
     });
 
-    let source = event_trigger_to_task_source(&event.source);
-
     let task_id = generate_registry_task_id(preset_name);
     let task = BackgroundTask {
         id: task_id,
-        task_name: event.task_name,
-        source,
+        source_label: event.source_label,
+        source: event.source,
         execution: Execution::SubAgent(SubAgentConfig {
             prompt: event.prompt,
             context: event.context,
             model_tier: final_tier,
         }),
         routing: ResultRouting::Direct(channels),
+        agent_preset: PresetName::from(preset_name),
     };
 
     registry.spawner.spawn(task, Some(resources)).await?;
     Ok(())
-}
-
-/// Convert an `EventTrigger` to a `TaskSource` for the background task.
-fn event_trigger_to_task_source(trigger: &EventTrigger) -> TaskSource {
-    match trigger {
-        EventTrigger::Pulse => TaskSource::Pulse,
-        EventTrigger::Action => TaskSource::Action,
-        EventTrigger::Agent | EventTrigger::Webhook(_) => TaskSource::Agent,
-    }
 }
 
 /// Generate a task ID for a registry-spawned task.
@@ -214,26 +203,6 @@ fn generate_registry_task_id(preset_name: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn event_trigger_to_source_mapping() {
-        assert!(matches!(
-            event_trigger_to_task_source(&EventTrigger::Pulse),
-            TaskSource::Pulse
-        ));
-        assert!(matches!(
-            event_trigger_to_task_source(&EventTrigger::Action),
-            TaskSource::Action
-        ));
-        assert!(matches!(
-            event_trigger_to_task_source(&EventTrigger::Agent),
-            TaskSource::Agent
-        ));
-        assert!(matches!(
-            event_trigger_to_task_source(&EventTrigger::Webhook("gh".into())),
-            TaskSource::Agent
-        ));
-    }
 
     #[test]
     fn registry_task_id_contains_preset() {

@@ -5,7 +5,6 @@
 
 pub mod channels;
 pub mod external;
-pub mod loader;
 #[cfg(target_os = "macos")]
 pub mod macos;
 pub mod subscriber;
