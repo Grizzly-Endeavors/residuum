@@ -1057,6 +1057,7 @@ where
     let client_msg = ClientMessage::SendMessage {
         id: format!("cli-{}", *msg_counter),
         content: line.to_string(),
+        images: vec![],
     };
     let json = serde_json::to_string(&client_msg)
         .map_err(|e| ResiduumError::Gateway(format!("failed to serialize message: {e}")))?;
