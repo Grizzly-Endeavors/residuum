@@ -86,7 +86,6 @@ mod proactivity_integration {
             active_hours: None,
             agent: None,
             trigger_count: None,
-            channels: vec!["agent_feed".to_string()],
             tasks: vec![PulseTask {
                 name: "check_inbox".to_string(),
                 prompt: "Check email.".to_string(),
@@ -139,21 +138,6 @@ mod proactivity_integration {
     }
 
     #[test]
-    fn build_pulse_execution_routing_defaults_to_configured() {
-        let pulse = sample_pulse();
-        match build_pulse_execution(&pulse) {
-            PulseExecution::SubAgent { spawn_event, .. } => {
-                assert_eq!(
-                    spawn_event.routing_override,
-                    Some(vec!["agent_feed".to_string()]),
-                    "should route to configured channel"
-                );
-            }
-            PulseExecution::MainWakeTurn { .. } => panic!("expected SubAgent"),
-        }
-    }
-
-    #[test]
     fn build_pulse_execution_empty_tasks_still_builds() {
         let pulse = PulseDef {
             name: "empty_test".to_string(),
@@ -162,7 +146,6 @@ mod proactivity_integration {
             active_hours: None,
             agent: None,
             trigger_count: None,
-            channels: vec!["agent_feed".to_string()],
             tasks: vec![],
         };
 
@@ -264,7 +247,6 @@ mod proactivity_integration {
             run_at: now + chrono::Duration::hours(1),
             agent: Some("memory-agent".to_string()),
             model_tier: None,
-            channels: vec!["agent_feed".to_string()],
             created_at: now,
         };
 
@@ -312,7 +294,6 @@ mod proactivity_integration {
             run_at: now - chrono::Duration::minutes(5),
             agent: None,
             model_tier: None,
-            channels: vec!["agent_feed".to_string()],
             created_at: now,
         };
         let future_action = ScheduledAction {
@@ -322,7 +303,6 @@ mod proactivity_integration {
             run_at: now + chrono::Duration::hours(1),
             agent: None,
             model_tier: None,
-            channels: vec!["agent_feed".to_string()],
             created_at: now,
         };
 
@@ -352,7 +332,6 @@ mod proactivity_integration {
             run_at: now + chrono::Duration::hours(1),
             agent: None,
             model_tier: None,
-            channels: vec!["agent_feed".to_string()],
             created_at: now,
         };
 

@@ -15,7 +15,7 @@ use crate::background::BackgroundTaskSpawner;
 use crate::background::spawn_context::{
     SpawnContext, build_spawn_resources, load_preset_for_spawn,
 };
-use crate::background::types::{BackgroundTask, Execution, ResultRouting, SubAgentConfig};
+use crate::background::types::{BackgroundTask, Execution, SubAgentConfig};
 use crate::bus::{BusEvent, BusHandle, PresetName, SpawnRequestEvent, TopicId};
 use crate::config::BackgroundModelTier;
 use crate::mcp::SharedMcpRegistry;
@@ -167,14 +167,6 @@ async fn handle_spawn_request(
     )
     .await?;
 
-    // Resolve routing: use override, then preset channels, then fallback to inbox
-    let channels = event.routing_override.unwrap_or_else(|| {
-        preset
-            .as_ref()
-            .and_then(|(fm, _)| fm.channels.clone())
-            .unwrap_or_else(|| vec!["inbox".to_string()])
-    });
-
     let task_id = generate_registry_task_id(preset_name);
     let task = BackgroundTask {
         id: task_id,
@@ -185,7 +177,6 @@ async fn handle_spawn_request(
             context: event.context,
             model_tier: final_tier,
         }),
-        routing: ResultRouting::Direct(channels),
         agent_preset: PresetName::from(preset_name),
     };
 

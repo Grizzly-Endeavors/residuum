@@ -1,6 +1,5 @@
 //! Background task management tools: `stop_agent`, `list_agents`, and `subagent_spawn`.
 
-use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -138,21 +137,15 @@ impl Tool for ListAgentsTool {
 /// Tool for spawning background sub-agents on demand.
 pub struct SubAgentSpawnTool {
     publisher: crate::bus::Publisher,
-    valid_external_channels: HashSet<String>,
     subagents_dir: PathBuf,
 }
 
 impl SubAgentSpawnTool {
     /// Create a new `SubAgentSpawnTool`.
     #[must_use]
-    pub(crate) fn new(
-        publisher: crate::bus::Publisher,
-        valid_external_channels: HashSet<String>,
-        subagents_dir: PathBuf,
-    ) -> Self {
+    pub(crate) fn new(publisher: crate::bus::Publisher, subagents_dir: PathBuf) -> Self {
         Self {
             publisher,
-            valid_external_channels,
             subagents_dir,
         }
     }
@@ -167,7 +160,7 @@ impl Tool for SubAgentSpawnTool {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: "subagent_spawn".to_string(),
-            description: "Spawn a background sub-agent to handle a task. The agent_name selects a preset that configures the sub-agent's instructions, model tier, and tool restrictions. Unknown preset names fail immediately with a list of available presets. Runs asynchronously and delivers the result to the specified channels.".to_string(),
+            description: "Spawn a background sub-agent to handle a task. The agent_name selects a preset that configures the sub-agent's instructions, model tier, and tool restrictions. Unknown preset names fail immediately with a list of available presets. Runs asynchronously; results are routed by the notification router based on content and ALERTS.md policy.".to_string(),
             parameters: serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -183,11 +176,6 @@ impl Tool for SubAgentSpawnTool {
                         "type": "string",
                         "enum": ["small", "medium", "large"],
                         "description": "Override the preset's model tier. If omitted, the preset's tier is used (default: \"medium\")."
-                    },
-                    "channels": {
-                        "type": "array",
-                        "items": { "type": "string" },
-                        "description": "Result delivery channels. If omitted, uses the preset's default channels (fallback: [\"inbox\"])."
                     }
                 },
                 "required": ["task"]
@@ -219,35 +207,14 @@ impl Tool for SubAgentSpawnTool {
             ));
         }
         let explicit_model_override = arguments.get("model_override").and_then(Value::as_str);
-        let explicit_channels: Option<Vec<String>> = arguments
-            .get("channels")
-            .and_then(Value::as_array)
-            .map(|arr| {
-                arr.iter()
-                    .filter_map(Value::as_str)
-                    .map(String::from)
-                    .collect()
-            });
 
-        let resolved = match resolve_spawn_params(
-            &self.subagents_dir,
-            preset_name,
-            explicit_model_override,
-            explicit_channels,
-        )
-        .await
-        {
-            Ok(r) => r,
-            Err(tool_result) => return Ok(tool_result),
-        };
-
-        for ch in &resolved.channels {
-            if !is_valid_channel(ch, &self.valid_external_channels) {
-                return Ok(ToolResult::error(format!(
-                    "unknown channel '{ch}'. Valid: inbox or configured external channels."
-                )));
-            }
-        }
+        let resolved =
+            match resolve_spawn_params(&self.subagents_dir, preset_name, explicit_model_override)
+                .await
+            {
+                Ok(r) => r,
+                Err(tool_result) => return Ok(tool_result),
+            };
 
         let spawn_event = crate::bus::SpawnRequestEvent {
             source_label: format!("agent:{}", resolved.preset_name),
@@ -255,7 +222,6 @@ impl Tool for SubAgentSpawnTool {
             context: None,
             source: crate::bus::EventTrigger::Agent,
             model_tier_override: Some(resolved.tier),
-            routing_override: Some(resolved.channels),
         };
 
         let topic = crate::bus::TopicId::AgentPreset(crate::bus::PresetName::from(preset_name));
@@ -277,15 +243,13 @@ impl Tool for SubAgentSpawnTool {
 struct ResolvedSpawn {
     preset_name: String,
     tier: BackgroundModelTier,
-    channels: Vec<String>,
 }
 
-/// Load a preset and resolve tier/channel defaults from arguments + preset.
+/// Load a preset and resolve tier defaults from arguments + preset.
 async fn resolve_spawn_params(
     subagents_dir: &std::path::Path,
     preset_name: &str,
     explicit_model_override: Option<&str>,
-    explicit_channels: Option<Vec<String>>,
 ) -> Result<ResolvedSpawn, ToolResult> {
     let index = SubagentPresetIndex::scan(subagents_dir)
         .await
@@ -310,24 +274,15 @@ async fn resolve_spawn_params(
         BackgroundModelTier::Medium
     };
 
-    let channels = explicit_channels
-        .or_else(|| preset_fm.channels.clone())
-        .unwrap_or_else(|| vec!["inbox".to_string()]);
-
     Ok(ResolvedSpawn {
         preset_name: preset_name.to_string(),
         tier,
-        channels,
     })
 }
 
 fn parse_model_tier(s: &str) -> Result<BackgroundModelTier, ToolError> {
     s.parse::<BackgroundModelTier>()
         .map_err(ToolError::InvalidArguments)
-}
-
-pub(crate) fn is_valid_channel(name: &str, external: &HashSet<String>) -> bool {
-    name == "inbox" || external.contains(name)
 }
 
 #[cfg(test)]
@@ -340,7 +295,7 @@ mod tests {
     fn make_tool() -> SubAgentSpawnTool {
         let bus_handle = crate::bus::spawn_broker();
         let publisher = bus_handle.publisher();
-        SubAgentSpawnTool::new(publisher, HashSet::new(), PathBuf::from("/tmp"))
+        SubAgentSpawnTool::new(publisher, PathBuf::from("/tmp"))
     }
 
     #[test]
@@ -363,38 +318,6 @@ mod tests {
     fn model_tier_parsing_invalid() {
         assert!(parse_model_tier("invalid").is_err());
         assert!(parse_model_tier("SMALL").is_err());
-    }
-
-    #[test]
-    fn valid_channels() {
-        let external = HashSet::from(["ntfy_phone".to_string()]);
-        assert!(
-            !is_valid_channel("agent_wake", &external),
-            "agent_wake should be invalid"
-        );
-        assert!(
-            !is_valid_channel("agent_feed", &external),
-            "agent_feed should be invalid"
-        );
-        assert!(is_valid_channel("inbox", &external));
-        assert!(is_valid_channel("ntfy_phone", &external));
-        assert!(!is_valid_channel("unknown", &external));
-    }
-
-    #[tokio::test]
-    async fn invalid_channel_rejected() {
-        let tool = make_tool();
-
-        let result = tool
-            .execute(serde_json::json!({
-                "task": "do something",
-                "channels": ["nonexistent_channel"]
-            }))
-            .await
-            .unwrap();
-
-        assert!(result.is_error, "should reject unknown channel");
-        assert!(result.output.contains("unknown channel"));
     }
 
     #[tokio::test]

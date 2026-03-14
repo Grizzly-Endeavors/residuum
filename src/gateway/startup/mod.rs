@@ -246,7 +246,6 @@ fn init_channels_and_registry(
     cfg: &Config,
 ) -> (
     Vec<crate::notify::types::ExternalChannelConfig>,
-    std::collections::HashSet<String>,
     EndpointRegistry,
 ) {
     let channel_configs =
@@ -257,10 +256,8 @@ fn init_channels_and_registry(
                 Vec::new()
             }
         };
-    let valid_external_channels: std::collections::HashSet<String> =
-        channel_configs.iter().map(|c| c.name.clone()).collect();
     let endpoint_registry = EndpointRegistry::from_config(cfg, &channel_configs);
-    (channel_configs, valid_external_channels, endpoint_registry)
+    (channel_configs, endpoint_registry)
 }
 
 /// Spawn notify subscribers for each configured channel and the inbox.
@@ -354,13 +351,11 @@ pub(crate) async fn initialize(
 
     let mcp_registry = init_mcp_servers(&layout).await;
     connect_web_search_mcp(cfg, &mcp_registry).await;
-    let (channel_configs, valid_external_channels, endpoint_registry) =
-        init_channels_and_registry(&layout, cfg);
+    let (channel_configs, endpoint_registry) = init_channels_and_registry(&layout, cfg);
 
     let tool_deps = ToolRegistryDeps {
         action_store: &action_store,
         action_notify: &action_notify,
-        valid_external_channels: &valid_external_channels,
         project_state: &project_state,
         skill_state: &skill_state,
         mcp_registry: &mcp_registry,

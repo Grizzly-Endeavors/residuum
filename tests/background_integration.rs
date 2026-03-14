@@ -17,9 +17,7 @@ mod background_integration {
     use tokio::sync::mpsc;
 
     use residuum::background::BackgroundTaskSpawner;
-    use residuum::background::types::{
-        BackgroundResult, ResultRouting, TaskStatus, format_background_result,
-    };
+    use residuum::background::types::{BackgroundResult, TaskStatus, format_background_result};
     use residuum::bus::{
         BusEvent, EventTrigger, NotificationEvent, PresetName, TopicId, spawn_broker,
     };
@@ -86,12 +84,9 @@ mod background_integration {
             transcript_path: Some(dir.path().join("bg-unrouted-1.log")),
             status: TaskStatus::Completed,
             timestamp: chrono::Utc::now(),
-            routing: ResultRouting::Direct(vec![]),
+
             agent_preset: PresetName::from("general-purpose"),
         };
-
-        let ResultRouting::Direct(channels) = &result.routing;
-        assert!(channels.is_empty(), "should have no channels");
 
         // Transcript path was set (would have been written by spawner)
         assert!(result.transcript_path.is_some());
@@ -194,7 +189,7 @@ mod background_integration {
             transcript_path: Some(PathBuf::from("/tmp/bg-fmt-1.log")),
             status: TaskStatus::Completed,
             timestamp: chrono::Utc::now(),
-            routing: ResultRouting::Direct(vec!["agent_feed".to_string()]),
+
             agent_preset: PresetName::from("general-purpose"),
         };
 
@@ -224,7 +219,7 @@ mod background_integration {
             transcript_path: None,
             status: TaskStatus::Completed,
             timestamp: chrono::Utc::now(),
-            routing: ResultRouting::Direct(vec!["agent_feed".to_string()]),
+
             agent_preset: PresetName::from("general-purpose"),
         };
 
@@ -252,7 +247,6 @@ mod background_integration {
             active_hours: None,
             agent: None,
             trigger_count: None,
-            channels: vec!["agent_feed".to_string()],
             tasks: vec![PulseTask {
                 name: "check_health".to_string(),
                 prompt: "Check system health.".to_string(),
@@ -268,11 +262,6 @@ mod background_integration {
                 assert_eq!(spawn_event.source_label, "pulse:status_check");
                 assert!(spawn_event.prompt.contains("status_check"));
                 assert!(spawn_event.prompt.contains("HEARTBEAT_OK"));
-                assert_eq!(
-                    spawn_event.routing_override,
-                    Some(vec!["agent_feed".to_string()]),
-                    "should route to configured channel"
-                );
             }
             PulseExecution::MainWakeTurn { .. } => {
                 panic!("expected SubAgent");

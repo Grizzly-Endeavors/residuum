@@ -4,7 +4,7 @@
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
-use crate::background::types::{BackgroundResult, ResultRouting, TaskStatus};
+use crate::background::types::{BackgroundResult, TaskStatus};
 use crate::bus::{
     AgentResultEvent, AgentResultStatus, BusEvent, EventTrigger, HeartbeatStatus, Publisher,
     TopicId,
@@ -56,8 +56,6 @@ fn convert_to_agent_result(result: &BackgroundResult, tz: chrono_tz::Tz) -> Agen
         },
     };
 
-    let ResultRouting::Direct(channels) = &result.routing;
-
     AgentResultEvent {
         task_id: result.id.clone(),
         source_label: result.source_label.clone(),
@@ -67,7 +65,6 @@ fn convert_to_agent_result(result: &BackgroundResult, tz: chrono_tz::Tz) -> Agen
         status,
         summary: result.summary.clone(),
         transcript_path: result.transcript_path.clone(),
-        routing: channels.clone(),
         timestamp: result.timestamp.with_timezone(&tz).naive_local(),
     }
 }
@@ -85,7 +82,6 @@ mod tests {
     use chrono::Utc;
 
     use super::*;
-    use crate::background::types::ResultRouting;
     use crate::bus::PresetName;
 
     #[test]
@@ -98,7 +94,7 @@ mod tests {
             transcript_path: Some(PathBuf::from("/tmp/bg-1.log")),
             status: TaskStatus::Completed,
             timestamp: Utc::now(),
-            routing: ResultRouting::Direct(vec!["inbox".into()]),
+
             agent_preset: PresetName::from("general-purpose"),
         };
 
@@ -107,7 +103,6 @@ mod tests {
         assert_eq!(event.source_label, "action:email_check");
         assert!(matches!(event.status, AgentResultStatus::Completed));
         assert_eq!(event.heartbeat_status, HeartbeatStatus::Substantive);
-        assert_eq!(event.routing, vec!["inbox".to_string()]);
     }
 
     #[test]
@@ -120,7 +115,7 @@ mod tests {
             transcript_path: None,
             status: TaskStatus::Completed,
             timestamp: Utc::now(),
-            routing: ResultRouting::Direct(vec!["inbox".into()]),
+
             agent_preset: PresetName::from("general-purpose"),
         };
 
@@ -140,7 +135,7 @@ mod tests {
                 error: "timeout".into(),
             },
             timestamp: Utc::now(),
-            routing: ResultRouting::Direct(vec![]),
+
             agent_preset: PresetName::from("general-purpose"),
         };
 
@@ -171,7 +166,7 @@ mod tests {
             transcript_path: None,
             status: TaskStatus::Completed,
             timestamp: Utc::now(),
-            routing: ResultRouting::Direct(vec!["inbox".into()]),
+
             agent_preset: PresetName::from("general-purpose"),
         };
 
@@ -186,7 +181,6 @@ mod tests {
             BusEvent::AgentResult(ar) => {
                 assert_eq!(ar.task_id, "bg-test");
                 assert_eq!(ar.source_label, "agent:test-task");
-                assert_eq!(ar.routing, vec!["inbox".to_string()]);
             }
             _ => panic!("expected AgentResult event"),
         }

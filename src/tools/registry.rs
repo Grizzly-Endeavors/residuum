@@ -1,4 +1,3 @@
-use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -182,12 +181,10 @@ impl ToolRegistry {
     pub(crate) fn register_spawn_tool(
         &mut self,
         publisher: crate::bus::Publisher,
-        valid_external_channels: HashSet<String>,
         subagents_dir: std::path::PathBuf,
     ) {
         self.register(Box::new(background::SubAgentSpawnTool::new(
             publisher,
-            valid_external_channels,
             subagents_dir,
         )));
     }
@@ -255,13 +252,11 @@ impl ToolRegistry {
         store: Arc<Mutex<ActionStore>>,
         notify: Arc<Notify>,
         tz: chrono_tz::Tz,
-        valid_external_channels: HashSet<String>,
     ) {
         self.register(Box::new(actions::ScheduleActionTool::new(
             Arc::clone(&store),
             Arc::clone(&notify),
             tz,
-            valid_external_channels,
         )));
         self.register(Box::new(actions::ListActionsTool::new(
             Arc::clone(&store),

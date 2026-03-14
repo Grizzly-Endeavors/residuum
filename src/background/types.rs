@@ -20,17 +20,8 @@ pub(crate) struct BackgroundTask {
     pub source: EventTrigger,
     /// How to execute the task.
     pub execution: Execution,
-    /// How to route the result.
-    pub routing: ResultRouting,
     /// The agent preset that will run this task.
     pub agent_preset: PresetName,
-}
-
-/// How to route a background task result.
-#[derive(Debug, Clone)]
-pub enum ResultRouting {
-    /// Dispatch to the named channels.
-    Direct(Vec<String>),
 }
 
 /// How to execute the task.
@@ -68,8 +59,6 @@ pub struct BackgroundResult {
     pub status: TaskStatus,
     /// When the task completed.
     pub timestamp: DateTime<Utc>,
-    /// How the result should be routed.
-    pub routing: ResultRouting,
     /// The agent preset that ran this task.
     pub agent_preset: PresetName,
 }
@@ -168,7 +157,7 @@ mod tests {
             transcript_path: None,
             status: TaskStatus::Completed,
             timestamp: Utc::now(),
-            routing: ResultRouting::Direct(vec!["inbox".to_string()]),
+
             agent_preset: PresetName::from("general-purpose"),
         };
 
@@ -198,7 +187,7 @@ mod tests {
                 error: "connection refused".to_string(),
             },
             timestamp: Utc::now(),
-            routing: ResultRouting::Direct(vec!["inbox".to_string()]),
+
             agent_preset: PresetName::from("general-purpose"),
         };
 
@@ -224,7 +213,7 @@ mod tests {
             transcript_path: None,
             status: TaskStatus::Cancelled,
             timestamp: Utc::now(),
-            routing: ResultRouting::Direct(vec!["inbox".to_string()]),
+
             agent_preset: PresetName::from("general-purpose"),
         };
 

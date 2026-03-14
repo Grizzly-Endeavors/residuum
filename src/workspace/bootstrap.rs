@@ -266,6 +266,18 @@ const DEFAULT_PRESENCE: &str = "\
 # activity_text = \"DMs\"
 ";
 
+/// Default content for ALERTS.md when creating a new workspace.
+const DEFAULT_ALERTS: &str = "\
+# Routing Policy
+
+Route background task results based on content and urgency.
+
+## Rules
+- Security alerts, errors, and failures → notify channels (ntfy, etc.) + inbox
+- Routine findings and informational results → inbox only
+- Webhook-triggered results → inbox (unless content indicates urgency)
+";
+
 /// Default content for CHANNELS.yml when creating a new workspace.
 const DEFAULT_CHANNELS: &str = "\
 # CHANNELS.yml — Channel registry
@@ -373,6 +385,7 @@ pub async fn ensure_workspace(
     write_if_missing(&layout.reflector_md(), DEFAULT_REFLECTOR_PROMPT).await?;
     write_if_missing(&layout.heartbeat_yml(), DEFAULT_HEARTBEAT).await?;
     write_if_missing(&layout.channels_yml(), DEFAULT_CHANNELS).await?;
+    write_if_missing(&layout.alerts_md(), DEFAULT_ALERTS).await?;
     write_if_missing(&layout.presence_toml(), DEFAULT_PRESENCE).await?;
 
     // Write bundled skills
@@ -532,6 +545,7 @@ mod tests {
             "HEARTBEAT.yml should exist"
         );
         assert!(layout.channels_yml().exists(), "CHANNELS.yml should exist");
+        assert!(layout.alerts_md().exists(), "ALERTS.md should exist");
         assert!(
             layout.presence_toml().exists(),
             "PRESENCE.toml should exist"

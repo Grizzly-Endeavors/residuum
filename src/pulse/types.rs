@@ -25,20 +25,12 @@ pub struct PulseDef {
     /// When set, firings are spaced evenly across the active window.
     #[serde(default)]
     pub trigger_count: Option<u32>,
-    /// Channels to route results to (defaults to `["inbox"]`).
-    /// Only meaningful for sub-agent pulses; ignored for `agent: "main"` pulses.
-    #[serde(default = "default_channels")]
-    pub channels: Vec<String>,
     #[serde(default)]
     pub tasks: Vec<PulseTask>,
 }
 
 fn default_enabled() -> bool {
     true
-}
-
-pub(crate) fn default_channels() -> Vec<String> {
-    vec!["inbox".to_string()]
 }
 
 /// One task within a pulse.
@@ -386,40 +378,5 @@ pulses:
         let cfg: HeartbeatConfig = serde_yml::from_str(yaml).unwrap();
         let pulse = cfg.pulses.first().unwrap();
         assert!(pulse.enabled, "enabled should default to true when absent");
-    }
-
-    #[test]
-    fn pulse_def_channels_default() {
-        let yaml = r#"
-pulses:
-  - name: basic
-    schedule: "1h"
-    tasks: []
-"#;
-        let cfg: HeartbeatConfig = serde_yml::from_str(yaml).unwrap();
-        let pulse = cfg.pulses.first().unwrap();
-        assert_eq!(
-            pulse.channels,
-            vec!["inbox"],
-            "channels should default to inbox"
-        );
-    }
-
-    #[test]
-    fn pulse_def_channels_custom() {
-        let yaml = r#"
-pulses:
-  - name: important
-    schedule: "30m"
-    channels: [inbox, ntfy]
-    tasks: []
-"#;
-        let cfg: HeartbeatConfig = serde_yml::from_str(yaml).unwrap();
-        let pulse = cfg.pulses.first().unwrap();
-        assert_eq!(
-            pulse.channels,
-            vec!["inbox", "ntfy"],
-            "channels should be custom"
-        );
     }
 }

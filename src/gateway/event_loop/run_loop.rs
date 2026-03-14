@@ -178,9 +178,16 @@ async fn build_runtime(
     );
     bus_infra_handles.push(bridge_handle);
 
-    // Spawn the result router: subscribes to BackgroundResult topic, routes to channels
-    if let Some(router_handle) =
-        super::background::spawn_result_router(&spawned.bus_handle, core.publisher.clone()).await
+    // Spawn the LLM notification router: subscribes to BackgroundResult topic,
+    // applies content-aware routing via ALERTS.md policy
+    if let Some(router_handle) = crate::notify::router::spawn_notification_router(
+        &spawned.bus_handle,
+        &parts.spawn_context,
+        parts.endpoint_registry.clone(),
+        core.publisher.clone(),
+        parts.layout.alerts_md(),
+    )
+    .await
     {
         bus_infra_handles.push(router_handle);
     }

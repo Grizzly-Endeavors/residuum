@@ -77,7 +77,6 @@ async fn publish_action_spawn(
         context: None,
         source: EventTrigger::Action,
         model_tier_override: Some(tier),
-        routing_override: Some(action.channels.clone()),
     };
 
     let topic = TopicId::AgentPreset(PresetName::from(preset_name));

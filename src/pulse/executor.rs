@@ -3,7 +3,7 @@
 use crate::bus::EventTrigger;
 use crate::bus::SpawnRequestEvent;
 
-use super::types::{PulseDef, default_channels};
+use super::types::PulseDef;
 
 /// The execution strategy for a pulse.
 #[derive(Debug)]
@@ -35,18 +35,10 @@ pub fn build_pulse_execution(pulse: &PulseDef) -> PulseExecution {
     let source_label = format!("pulse:{}", pulse.name);
 
     match pulse.agent.as_deref() {
-        Some("main") => {
-            if pulse.channels != default_channels() {
-                tracing::warn!(
-                    pulse = %pulse.name,
-                    "channels field is ignored for main-turn pulses"
-                );
-            }
-            PulseExecution::MainWakeTurn {
-                pulse_name: pulse.name.clone(),
-                prompt,
-            }
-        }
+        Some("main") => PulseExecution::MainWakeTurn {
+            pulse_name: pulse.name.clone(),
+            prompt,
+        },
         Some(preset) => {
             let spawn_event = SpawnRequestEvent {
                 source_label,
@@ -54,7 +46,6 @@ pub fn build_pulse_execution(pulse: &PulseDef) -> PulseExecution {
                 context: None,
                 source: EventTrigger::Pulse,
                 model_tier_override: Some(crate::config::BackgroundModelTier::Small),
-                routing_override: Some(pulse.channels.clone()),
             };
             PulseExecution::SubAgent {
                 spawn_event,
@@ -68,7 +59,6 @@ pub fn build_pulse_execution(pulse: &PulseDef) -> PulseExecution {
                 context: None,
                 source: EventTrigger::Pulse,
                 model_tier_override: Some(crate::config::BackgroundModelTier::Small),
-                routing_override: Some(pulse.channels.clone()),
             };
             PulseExecution::SubAgent {
                 spawn_event,
@@ -115,7 +105,6 @@ mod tests {
             active_hours: None,
             agent: None,
             trigger_count: None,
-            channels: vec!["inbox".to_string()],
             tasks: vec![
                 PulseTask {
                     name: "check_inbox".to_string(),
@@ -213,21 +202,6 @@ mod tests {
     }
 
     #[test]
-    fn routing_defaults_to_inbox() {
-        let pulse = sample_pulse();
-        match build_pulse_execution(&pulse) {
-            PulseExecution::SubAgent { spawn_event, .. } => {
-                assert_eq!(
-                    spawn_event.routing_override,
-                    Some(vec!["inbox".to_string()]),
-                    "should route to default channel"
-                );
-            }
-            PulseExecution::MainWakeTurn { .. } => panic!("expected SubAgent"),
-        }
-    }
-
-    #[test]
     fn empty_tasks_pulse_still_builds() {
         let pulse = PulseDef {
             name: "empty".to_string(),
@@ -236,7 +210,6 @@ mod tests {
             active_hours: None,
             agent: None,
             trigger_count: None,
-            channels: vec!["inbox".to_string()],
             tasks: vec![],
         };
         match build_pulse_execution(&pulse) {

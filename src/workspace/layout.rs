@@ -183,6 +183,12 @@ impl WorkspaceLayout {
         self.root.join("CHANNELS.yml")
     }
 
+    /// Path to ALERTS.md -- notification routing policy for the LLM router.
+    #[must_use]
+    pub fn alerts_md(&self) -> PathBuf {
+        self.root.join("ALERTS.md")
+    }
+
     /// Path to the workspace config directory (`root/config/`).
     #[must_use]
     pub fn config_dir(&self) -> PathBuf {
@@ -336,6 +342,11 @@ mod tests {
             layout.channels_toml(),
             PathBuf::from("/tmp/ws/config/channels.toml"),
             "channels_toml path"
+        );
+        assert_eq!(
+            layout.alerts_md(),
+            PathBuf::from("/tmp/ws/ALERTS.md"),
+            "alerts_md path"
         );
     }
 

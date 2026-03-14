@@ -22,7 +22,6 @@ use super::memory::MemoryComponents;
 pub(super) struct ToolRegistryDeps<'a> {
     pub action_store: &'a Arc<tokio::sync::Mutex<ActionStore>>,
     pub action_notify: &'a Arc<tokio::sync::Notify>,
-    pub valid_external_channels: &'a std::collections::HashSet<String>,
     pub project_state: &'a SharedProjectState,
     pub skill_state: &'a SharedSkillState,
     pub mcp_registry: &'a SharedMcpRegistry,
@@ -77,7 +76,6 @@ pub(super) fn init_tool_registry(
         Arc::clone(deps.action_store),
         Arc::clone(deps.action_notify),
         tz,
-        deps.valid_external_channels.clone(),
     );
     let path_policy_for_runtime = Arc::clone(&path_policy);
     tools.register_project_tools(
@@ -91,11 +89,7 @@ pub(super) fn init_tool_registry(
     tools.register_skill_tools(Arc::clone(deps.skill_state));
     tools.register_inbox_tools(layout.inbox_dir(), layout.inbox_archive_dir(), tz);
     tools.register_background_tools(Arc::clone(deps.background_spawner));
-    tools.register_spawn_tool(
-        deps.publisher.clone(),
-        deps.valid_external_channels.clone(),
-        layout.subagents_dir(),
-    );
+    tools.register_spawn_tool(deps.publisher.clone(), layout.subagents_dir());
 
     tools.register_send_message_tool(deps.endpoint_registry.clone(), layout.inbox_dir(), tz);
     tools.register_web_fetch_tool();

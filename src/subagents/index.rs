@@ -148,7 +148,6 @@ fn builtin_general_purpose() -> (SubagentPresetEntry, SubagentPresetFrontmatter,
         model_tier: None,
         denied_tools: None,
         allowed_tools: None,
-        channels: None,
     };
     (entry, fm, GENERAL_PURPOSE_BODY.to_string())
 }

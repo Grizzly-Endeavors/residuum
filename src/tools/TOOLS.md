@@ -381,15 +381,12 @@ On error: skill is not currently active.
 | `run_at`     | string          | yes      | Always use local time without an offset (e.g. `2026-03-01T09:00:00`). Interpreted in the user's configured timezone. Must be in the future. |
 | `agent_name` | string          | no       | Agent routing: `"main"` runs a full wake turn with conversation context; a preset name (e.g. `"memory-agent"`) spawns a sub-agent using that preset. Omit for default sub-agent behavior. |
 | `model_tier` | string (enum)   | no       | Model tier override for sub-agent actions: `"small"`, `"medium"`, `"large"`. Defaults to medium.                                                                 |
-| `channels`   | array\<string\> | no       | Result delivery channels for sub-agent actions. Defaults to `["inbox"]`. Not used when `agent_name="main"`.                                                  |
-
-**Mutual exclusion:** if `agent_name="main"`, `channels` must not be provided — main-turn actions inject directly into the agent.
 
 ### Output
 
 On success: `"Scheduled '{name}' (id: {id}). Fires at: {datetime}"` (datetime in user's local timezone)
 
-On error: invalid datetime, `run_at` in the past, invalid channel, or save failure.
+On error: invalid datetime, `run_at` in the past, or save failure.
 
 **Side effect:** Persists the action to `scheduled_actions.json` and wakes the action scheduler.
 
@@ -411,10 +408,10 @@ No parameters required (empty object accepted).
 On success: count header followed by one entry per action (fire times displayed in user's local timezone):
 ```
 {N} action(s):
-  {name} ({id}) — fires: {datetime} [agent info] → [channels]
+  {name} ({id}) — fires: {datetime} [agent info]
 ```
 
-The agent label shows `[main turn]` for main-turn actions, `[preset: {name}]` for preset-routed actions, or nothing for default sub-agent actions. The channels suffix is omitted for main-turn actions.
+The agent label shows `[main turn]` for main-turn actions, `[preset: {name}]` for preset-routed actions, or nothing for default sub-agent actions.
 
 When no actions exist: `"No pending scheduled actions."`
 
@@ -632,7 +629,7 @@ The `preview` line is omitted if the task has an empty prompt/command.
 **Source:** `background.rs` · `SubAgentSpawnTool`
 
 **Description sent to LLM:**
-> Spawn a background sub-agent to handle a task. The agent_name selects a preset that configures the sub-agent's instructions, model tier, and tool restrictions. Unknown preset names fail immediately with a list of available presets. Runs asynchronously and delivers the result to the specified channels.
+> Spawn a background sub-agent to handle a task. The agent_name selects a preset that configures the sub-agent's instructions, model tier, and tool restrictions. Unknown preset names fail immediately with a list of available presets. Runs asynchronously; results are routed by the notification router based on content and ALERTS.md policy.
 
 ### Input
 
@@ -641,9 +638,6 @@ The `preview` line is omitted if the task has an empty prompt/command.
 | `task`           | string          | yes      | The prompt/instructions for the sub-agent                            |
 | `agent_name`     | string          | no       | Preset name to use (default: `"general-purpose"`). Must match a known preset or the call fails. `"main"` is reserved for scheduled tasks and will be rejected. |
 | `model_override` | string          | no       | Override the preset's model tier: `"small"`, `"medium"`, `"large"`. If omitted, uses the preset's tier (default: `"medium"`). |
-| `channels`       | array\<string\> | no       | Result delivery channels. If omitted, uses the preset's default channels (fallback: `["inbox"]`). |
-
-Valid channel names: `inbox` or any configured external notification channel.
 
 ### Subagent Presets
 
@@ -656,8 +650,6 @@ description: "Research specialist for gathering information"
 model_tier: small          # small / medium / large (optional, default: medium)
 denied_tools:              # permanently block these tools (mutually exclusive with allowed_tools)
   - exec
-channels:                  # default result channels (overrideable at spawn time)
-  - inbox
 ---
 
 You are a research specialist. Focus on gathering and synthesising
@@ -674,7 +666,7 @@ information. Always cite sources.
 
 On success: `"Subagent '{preset_name}' spawned with task delegated to registry."`
 
-The sub-agent runs in the background via the subagent registry. When it completes, the result is delivered to the specified `channels` via the bus result routing system.
+The sub-agent runs in the background via the subagent registry. When it completes, the result is routed by the LLM notification router based on content and the ALERTS.md routing policy.
 
 ### Errors
 
@@ -682,7 +674,6 @@ The sub-agent runs in the background via the subagent registry. When it complete
 - `agent_name` is `"main"` (reserved, case-insensitive) → `InvalidArguments`
 - Invalid `model_override` value → `InvalidArguments`
 - Unknown `agent_name` (preset not found) → `is_error = true` with available preset list
-- Unknown channel name → `is_error = true` with message
 - Bus publish failure → `Execution` error
 
 **Side effects:** Publishes a `SpawnRequest` to the bus, which the subagent registry picks up and spawns as a background task (visible via `list_agents`, cancellable via `stop_agent`). Result delivered through the bus notification system.

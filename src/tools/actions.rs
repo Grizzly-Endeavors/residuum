@@ -1,6 +1,5 @@
 //! Scheduled action tools: schedule, list, and cancel one-off actions.
 
-use std::collections::HashSet;
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -12,7 +11,6 @@ use crate::actions::store::ActionStore;
 use crate::actions::types::ScheduledAction;
 use crate::models::ToolDefinition;
 
-use super::background::is_valid_channel;
 use super::{Tool, ToolError, ToolResult};
 
 // ─── schedule_action ─────────────────────────────────────────────────────────
@@ -22,24 +20,13 @@ pub struct ScheduleActionTool {
     store: Arc<Mutex<ActionStore>>,
     notify: Arc<Notify>,
     tz: chrono_tz::Tz,
-    valid_external_channels: HashSet<String>,
 }
 
 impl ScheduleActionTool {
     /// Create a new `ScheduleActionTool`.
     #[must_use]
-    pub fn new(
-        store: Arc<Mutex<ActionStore>>,
-        notify: Arc<Notify>,
-        tz: chrono_tz::Tz,
-        valid_external_channels: HashSet<String>,
-    ) -> Self {
-        Self {
-            store,
-            notify,
-            tz,
-            valid_external_channels,
-        }
+    pub fn new(store: Arc<Mutex<ActionStore>>, notify: Arc<Notify>, tz: chrono_tz::Tz) -> Self {
+        Self { store, notify, tz }
     }
 }
 
@@ -76,11 +63,6 @@ impl Tool for ScheduleActionTool {
                         "type": "string",
                         "enum": ["small", "medium", "large"],
                         "description": "Model tier override for sub-agent actions. Defaults to medium."
-                    },
-                    "channels": {
-                        "type": "array",
-                        "items": { "type": "string" },
-                        "description": "Result delivery channels for sub-agent actions. Defaults to ['inbox']. Not used when agent_name='main'."
                     }
                 },
                 "required": ["name", "prompt", "run_at"]
@@ -124,37 +106,6 @@ impl Tool for ScheduleActionTool {
             .and_then(Value::as_str)
             .map(String::from);
 
-        let channels: Vec<String> = arguments
-            .get("channels")
-            .and_then(Value::as_array)
-            .map_or_else(
-                || vec!["inbox".to_string()],
-                |arr| {
-                    arr.iter()
-                        .filter_map(Value::as_str)
-                        .map(String::from)
-                        .collect()
-                },
-            );
-
-        // Mutual exclusion: main-turn actions cannot have channels
-        if agent_name.as_deref() == Some("main") && arguments.get("channels").is_some() {
-            return Err(ToolError::InvalidArguments(
-                "channels cannot be set when agent_name='main' — main-turn actions inject directly into the agent".to_string(),
-            ));
-        }
-
-        // Validate channels for sub-agent actions
-        if agent_name.as_deref() != Some("main") {
-            for ch in &channels {
-                if !is_valid_channel(ch, &self.valid_external_channels) {
-                    return Ok(ToolResult::error(format!(
-                        "unknown channel '{ch}'. Valid: inbox or configured external channels."
-                    )));
-                }
-            }
-        }
-
         let id = ActionStore::generate_id();
         let action = ScheduledAction {
             id: id.clone(),
@@ -163,7 +114,6 @@ impl Tool for ScheduleActionTool {
             run_at,
             agent: agent_name,
             model_tier,
-            channels,
             created_at: Utc::now(),
         };
 
@@ -241,17 +191,11 @@ impl Tool for ListActionsTool {
                 Some(preset) => format!(" [preset: {preset}]"),
                 None => String::new(),
             };
-            let channels_label = if action.agent.as_deref() == Some("main") {
-                String::new()
-            } else {
-                format!(" → [{}]", action.channels.join(", "))
-            };
             lines.push(format!(
-                "  {name} ({id}) — fires: {run_at}{agent}{channels}",
+                "  {name} ({id}) — fires: {run_at}{agent}",
                 name = action.name,
                 id = action.id,
                 agent = agent_label,
-                channels = channels_label,
             ));
         }
 
@@ -417,7 +361,7 @@ mod tests {
         )));
         let notify = Arc::new(Notify::new());
         let tz = chrono_tz::Tz::America__New_York;
-        let tool = ScheduleActionTool::new(store, notify, tz, HashSet::new());
+        let tool = ScheduleActionTool::new(store, notify, tz);
 
         // Schedule an action 1 hour from now so it's in the future
         let future = Utc::now() + chrono::Duration::hours(1);
@@ -462,7 +406,6 @@ mod tests {
             run_at: run_at_utc,
             agent: None,
             model_tier: None,
-            channels: vec!["inbox".to_string()],
             created_at: Utc::now(),
         };
         store.lock().await.add(action);

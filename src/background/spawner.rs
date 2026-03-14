@@ -202,7 +202,6 @@ async fn build_cancelled_result(
         transcript_path: None,
         status: TaskStatus::Cancelled,
         timestamp: Utc::now(),
-        routing: task.routing.clone(),
         agent_preset: task.agent_preset.clone(),
     }
 }
@@ -241,7 +240,6 @@ async fn build_completed_result(
         transcript_path,
         status,
         timestamp: Utc::now(),
-        routing: task.routing.clone(),
         agent_preset: task.agent_preset.clone(),
     }
 }
@@ -308,7 +306,7 @@ async fn write_transcript(
 #[expect(clippy::unwrap_used, reason = "test code uses unwrap for clarity")]
 mod tests {
     use super::*;
-    use crate::background::types::{Execution, ResultRouting, SubAgentConfig};
+    use crate::background::types::{Execution, SubAgentConfig};
     use crate::bus::{EventTrigger, PresetName};
     use crate::config::BackgroundModelTier;
 
@@ -327,7 +325,7 @@ mod tests {
             transcript_path: None,
             status: super::TaskStatus::Completed,
             timestamp: chrono::Utc::now(),
-            routing: ResultRouting::Direct(vec!["inbox".to_string()]),
+
             agent_preset: PresetName::from("general-purpose"),
         };
 
@@ -357,7 +355,7 @@ mod tests {
                 context: None,
                 model_tier: BackgroundModelTier::Medium,
             }),
-            routing: ResultRouting::Direct(vec!["inbox".to_string()]),
+
             agent_preset: PresetName::from("general-purpose"),
         };
 

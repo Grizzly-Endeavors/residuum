@@ -21,9 +21,6 @@ pub struct ScheduledAction {
     /// Model tier override (e.g. "small", "medium", "large").
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model_tier: Option<String>,
-    /// Result delivery channels (only for sub-agent actions, not main-turn).
-    #[serde(default)]
-    pub channels: Vec<String>,
     /// When this action was created.
     pub created_at: DateTime<Utc>,
 }

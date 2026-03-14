@@ -130,10 +130,6 @@ You are a research specialist. Focus on gathering information.
             Some(vec!["exec".to_string(), "write_file".to_string()].as_slice())
         );
         assert!(fm.allowed_tools.is_none());
-        assert_eq!(
-            fm.channels.as_deref(),
-            Some(vec!["inbox".to_string()].as_slice())
-        );
         assert!(body.contains("research specialist"));
     }
 
@@ -146,7 +142,6 @@ You are a research specialist. Focus on gathering information.
         assert!(fm.model_tier.is_none());
         assert!(fm.denied_tools.is_none());
         assert!(fm.allowed_tools.is_none());
-        assert!(fm.channels.is_none());
         assert!(body.is_empty());
     }
 

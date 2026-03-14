@@ -17,8 +17,6 @@ pub struct SubagentPresetFrontmatter {
     pub denied_tools: Option<Vec<String>>,
     /// If present, ONLY these tools are available. Mutually exclusive with `denied_tools`.
     pub allowed_tools: Option<Vec<String>>,
-    /// Default result routing channels (overrideable at spawn time).
-    pub channels: Option<Vec<String>>,
 }
 
 /// Lightweight index entry built from scanning a subagent preset's frontmatter.

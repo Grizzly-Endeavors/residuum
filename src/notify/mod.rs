@@ -7,5 +7,6 @@ pub mod channels;
 pub mod external;
 #[cfg(target_os = "macos")]
 pub mod macos;
+pub mod router;
 pub mod subscriber;
 pub mod types;

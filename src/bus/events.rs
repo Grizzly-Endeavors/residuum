@@ -182,8 +182,6 @@ pub struct AgentResultEvent {
     pub summary: String,
     /// Path to the full conversation transcript, if saved.
     pub transcript_path: Option<PathBuf>,
-    /// Channels to deliver the result to.
-    pub routing: Vec<String>,
     /// Local timestamp.
     pub timestamp: NaiveDateTime,
 }
@@ -201,8 +199,6 @@ pub struct SpawnRequestEvent {
     pub source: EventTrigger,
     /// Override the preset's model tier.
     pub model_tier_override: Option<BackgroundModelTier>,
-    /// Override the preset's result routing channels.
-    pub routing_override: Option<Vec<String>>,
 }
 
 // ---------------------------------------------------------------------------
@@ -337,7 +333,6 @@ mod tests {
             status: AgentResultStatus::Completed,
             summary: "done".into(),
             transcript_path: Some(PathBuf::from("/tmp/transcript.json")),
-            routing: vec![],
             timestamp: sample_timestamp(),
         });
         match event {
@@ -379,7 +374,6 @@ mod tests {
             status: AgentResultStatus::Completed,
             summary: "all good".into(),
             transcript_path: Some(PathBuf::from("/var/log/transcript.json")),
-            routing: vec!["inbox".to_string()],
             timestamp: sample_timestamp(),
         };
         let cloned = ar.clone();
@@ -390,7 +384,6 @@ mod tests {
             cloned.transcript_path,
             Some(PathBuf::from("/var/log/transcript.json"))
         );
-        assert_eq!(cloned.routing, vec!["inbox".to_string()]);
     }
 
     #[test]
@@ -401,7 +394,6 @@ mod tests {
             context: None,
             source: EventTrigger::Agent,
             model_tier_override: None,
-            routing_override: Some(vec!["inbox".into()]),
         });
         match event {
             BusEvent::SpawnRequest(sr) => {
@@ -409,7 +401,6 @@ mod tests {
                 assert_eq!(sr.prompt, "review the PR");
                 assert!(sr.context.is_none());
                 assert!(sr.model_tier_override.is_none());
-                assert_eq!(sr.routing_override, Some(vec!["inbox".to_string()]));
             }
             _ => panic!("expected SpawnRequest variant"),
         }

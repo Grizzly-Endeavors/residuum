@@ -104,7 +104,6 @@ pub async fn webhook_handler(
                 context: None,
                 source: crate::bus::EventTrigger::Webhook(name.clone()),
                 model_tier_override: None,
-                routing_override: None,
             };
             let topic =
                 crate::bus::TopicId::AgentPreset(crate::bus::PresetName::from(preset.as_str()));

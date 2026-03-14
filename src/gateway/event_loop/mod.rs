@@ -1,6 +1,5 @@
 //! Event loop implementation for the WebSocket gateway.
 
-mod background;
 mod commands;
 mod http;
 mod pulse;
