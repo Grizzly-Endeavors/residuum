@@ -65,6 +65,11 @@ pub struct McpServerEntry {
     /// Transport type (defaults to stdio).
     #[serde(default, skip_serializing_if = "is_default_transport")]
     pub transport: McpTransport,
+    /// HTTP headers to send with requests (only used for http transport).
+    /// Header values support `${VAR}` and `${VAR:-default}` env var interpolation
+    /// which is expanded at connect time.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub headers: HashMap<String, String>,
 }
 
 #[expect(

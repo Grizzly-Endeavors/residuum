@@ -4,8 +4,10 @@
 //! tool listing and invocation backed by the rmcp SDK.
 
 use std::borrow::Cow;
+use std::collections::HashMap;
 use std::time::Duration;
 
+use http::{HeaderName, HeaderValue};
 use rmcp::RoleClient;
 use rmcp::model::{CallToolRequestParams, CallToolResult, Content};
 use rmcp::service::{RunningService, ServiceExt};
@@ -66,7 +68,13 @@ impl McpClient {
     }
 
     async fn connect_http(entry: &McpServerEntry) -> Result<Self, anyhow::Error> {
-        let config = StreamableHttpClientTransportConfig::with_uri(entry.command.as_str());
+        let mut config = StreamableHttpClientTransportConfig::with_uri(entry.command.as_str());
+
+        if !entry.headers.is_empty() {
+            let expanded = expand_header_env_vars(&entry.headers)?;
+            config = config.custom_headers(expanded);
+        }
+
         let transport = StreamableHttpClientTransport::<reqwest::Client>::from_config(config);
 
         let service = ().serve(transport).await.map_err(|e| {
@@ -178,6 +186,44 @@ impl McpClient {
     }
 }
 
+/// Expand `${VAR}` and `${VAR:-default}` patterns in a string using environment variables.
+///
+/// Unresolved variables with no default are replaced with an empty string.
+#[must_use]
+pub fn expand_env_vars(input: &str) -> String {
+    let re = regex::Regex::new(r"\$\{([^}:]+?)(?::-(.*?))?\}");
+    let Ok(re) = re else {
+        return input.to_string();
+    };
+    re.replace_all(input, |caps: &regex::Captures<'_>| {
+        let var_name = caps.get(1).map_or("", |m| m.as_str());
+        match std::env::var(var_name) {
+            Ok(val) => val,
+            Err(_) => caps.get(2).map_or("", |m| m.as_str()).to_string(),
+        }
+    })
+    .into_owned()
+}
+
+/// Expand env vars in header values and convert to HTTP header types.
+///
+/// # Errors
+/// Returns an error if any header name or expanded value is invalid.
+fn expand_header_env_vars(
+    headers: &HashMap<String, String>,
+) -> Result<HashMap<HeaderName, HeaderValue>, anyhow::Error> {
+    let mut result = HashMap::with_capacity(headers.len());
+    for (name, value) in headers {
+        let header_name = HeaderName::try_from(name.as_str())
+            .map_err(|e| anyhow::anyhow!("invalid header name '{name}': {e}"))?;
+        let expanded = expand_env_vars(value);
+        let header_value = HeaderValue::try_from(expanded.as_str())
+            .map_err(|e| anyhow::anyhow!("invalid header value for '{name}': {e}"))?;
+        result.insert(header_name, header_value);
+    }
+    Ok(result)
+}
+
 /// Extract text from MCP content blocks, joining multiple blocks with newlines.
 fn extract_text_content(content: &[Content]) -> String {
     let texts: Vec<&str> = content
@@ -197,6 +243,10 @@ impl std::fmt::Debug for McpClient {
 
 #[cfg(test)]
 #[expect(clippy::unwrap_used, reason = "test code uses unwrap for clarity")]
+#[expect(
+    unsafe_code,
+    reason = "tests use set_var/remove_var which are unsafe in edition 2024"
+)]
 mod tests {
     use super::*;
     use std::collections::HashMap;
@@ -209,6 +259,7 @@ mod tests {
             args: vec![],
             env: HashMap::new(),
             transport: McpTransport::Http,
+            headers: HashMap::new(),
         };
 
         let result = McpClient::connect(&entry).await;
@@ -228,6 +279,7 @@ mod tests {
             args: vec![],
             env: HashMap::new(),
             transport: McpTransport::Stdio,
+            headers: HashMap::new(),
         };
 
         let result = McpClient::connect(&entry).await;
@@ -240,5 +292,62 @@ mod tests {
             err.contains("bad-stdio"),
             "error should mention server name: {err}"
         );
+    }
+
+    #[test]
+    fn expand_env_vars_simple() {
+        // SAFETY: test-only, single-threaded test runner for this module
+        unsafe { std::env::set_var("TEST_MCP_VAR", "hello") };
+        assert_eq!(
+            expand_env_vars("Bearer ${TEST_MCP_VAR}"),
+            "Bearer hello",
+            "should expand simple env var"
+        );
+        unsafe { std::env::remove_var("TEST_MCP_VAR") };
+    }
+
+    #[test]
+    fn expand_env_vars_with_default() {
+        // SAFETY: test-only, single-threaded test runner for this module
+        unsafe { std::env::remove_var("TEST_MCP_MISSING") };
+        assert_eq!(
+            expand_env_vars("${TEST_MCP_MISSING:-fallback}"),
+            "fallback",
+            "should use default when var is missing"
+        );
+    }
+
+    #[test]
+    fn expand_env_vars_no_pattern() {
+        assert_eq!(
+            expand_env_vars("plain string"),
+            "plain string",
+            "should pass through strings without patterns"
+        );
+    }
+
+    #[test]
+    fn expand_env_vars_missing_no_default() {
+        // SAFETY: test-only, single-threaded test runner for this module
+        unsafe { std::env::remove_var("TEST_MCP_GONE") };
+        assert_eq!(
+            expand_env_vars("prefix-${TEST_MCP_GONE}-suffix"),
+            "prefix--suffix",
+            "should replace with empty string when no default"
+        );
+    }
+
+    #[test]
+    fn expand_env_vars_multiple_vars() {
+        // SAFETY: test-only, single-threaded test runner for this module
+        unsafe { std::env::set_var("TEST_MCP_A", "aaa") };
+        unsafe { std::env::set_var("TEST_MCP_B", "bbb") };
+        assert_eq!(
+            expand_env_vars("${TEST_MCP_A}:${TEST_MCP_B}"),
+            "aaa:bbb",
+            "should expand multiple vars"
+        );
+        unsafe { std::env::remove_var("TEST_MCP_A") };
+        unsafe { std::env::remove_var("TEST_MCP_B") };
     }
 }

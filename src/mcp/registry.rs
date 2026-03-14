@@ -487,6 +487,7 @@ mod tests {
             args: vec![],
             env: std::collections::HashMap::new(),
             transport: crate::projects::types::McpTransport::default(),
+            headers: std::collections::HashMap::new(),
         }
     }
 

@@ -205,6 +205,7 @@ async fn connect_web_search_mcp(cfg: &Config, mcp_registry: &SharedMcpRegistry) 
                 backend.api_key.clone(),
             )]),
             transport: crate::projects::types::McpTransport::Stdio,
+            headers: std::collections::HashMap::new(),
         },
         "tavily" => crate::projects::types::McpServerEntry {
             name: "tavily_web_search".to_string(),
@@ -215,6 +216,7 @@ async fn connect_web_search_mcp(cfg: &Config, mcp_registry: &SharedMcpRegistry) 
                 backend.api_key.clone(),
             )]),
             transport: crate::projects::types::McpTransport::Stdio,
+            headers: std::collections::HashMap::new(),
         },
         // Ollama uses a native tool, not MCP
         _ => return,

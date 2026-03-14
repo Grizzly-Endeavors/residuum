@@ -123,6 +123,7 @@ mod background_integration {
             args: vec![],
             env: std::collections::HashMap::new(),
             transport: McpTransport::default(),
+            headers: std::collections::HashMap::new(),
         };
 
         // First activation: starts (fails) the server but records ref count = 1

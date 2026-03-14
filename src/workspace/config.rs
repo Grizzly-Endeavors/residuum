@@ -22,16 +22,31 @@ struct McpConfigFile {
 }
 
 /// Raw JSON server entry before conversion to `McpServerEntry`.
+///
+/// Supports multiple config formats:
+/// - Residuum native: `transport` field with `"stdio"` or `"http"`
+/// - Claude Code/Desktop: `type` field with `"stdio"`, `"streamable-http"`, or `"http"`
+/// - `url` field alias for HTTP server address (falls back to `command`)
 #[derive(Deserialize)]
 struct McpServerRaw {
-    command: String,
+    #[serde(default)]
+    command: Option<String>,
     #[serde(default)]
     args: Vec<String>,
     #[serde(default)]
     env: HashMap<String, String>,
+    /// Claude Code/Desktop standard: `"stdio"`, `"streamable-http"`, `"http"`, or `"sse"`.
+    #[serde(rename = "type", default)]
+    type_: Option<String>,
     /// Residuum extension: `"stdio"` (default) or `"http"`.
     #[serde(default)]
     transport: Option<String>,
+    /// HTTP server URL (alternative to putting the URL in `command`).
+    #[serde(default)]
+    url: Option<String>,
+    /// HTTP headers to send with requests (only used for http transport).
+    #[serde(default)]
+    headers: HashMap<String, String>,
 }
 
 /// Load MCP server definitions from a JSON file as a name → entry map.
@@ -62,27 +77,66 @@ pub fn load_mcp_servers_map(path: &Path) -> Result<HashMap<String, McpServerEntr
     let servers = file
         .mcp_servers
         .into_iter()
-        .map(|(name, raw)| {
-            let transport = match raw.transport.as_deref() {
-                Some("http") => McpTransport::Http,
+        .filter_map(|(name, raw)| {
+            // Resolve transport: check `type` first (Claude standard), then `transport` (Residuum)
+            let transport_str = raw.type_.as_deref().or(raw.transport.as_deref());
+            let transport = match transport_str {
+                Some("streamable-http" | "http") => McpTransport::Http,
                 None | Some("stdio") => McpTransport::Stdio,
+                Some("sse") => {
+                    tracing::warn!(
+                        server = %name,
+                        "SSE transport is deprecated by the MCP spec, skipping server"
+                    );
+                    return None;
+                }
                 Some(unknown) => {
                     tracing::warn!(
                         server = %name,
                         transport = %unknown,
-                        "unrecognized MCP transport, falling back to stdio"
+                        "unrecognized MCP transport, skipping server"
                     );
-                    McpTransport::Stdio
+                    return None;
                 }
             };
+
+            // Resolve command/url based on transport
+            let command = match transport {
+                McpTransport::Http => {
+                    if let Some(url) = raw.url.filter(|u| !u.is_empty()) {
+                        url
+                    } else if let Some(cmd) = raw.command.filter(|c| !c.is_empty()) {
+                        cmd
+                    } else {
+                        tracing::warn!(
+                            server = %name,
+                            "HTTP MCP server has no url or command, skipping"
+                        );
+                        return None;
+                    }
+                }
+                McpTransport::Stdio => {
+                    if let Some(cmd) = raw.command.filter(|c| !c.is_empty()) {
+                        cmd
+                    } else {
+                        tracing::warn!(
+                            server = %name,
+                            "stdio MCP server has no command, skipping"
+                        );
+                        return None;
+                    }
+                }
+            };
+
             let entry = McpServerEntry {
                 name: name.clone(),
-                command: raw.command,
+                command,
                 args: raw.args,
                 env: raw.env,
                 transport,
+                headers: raw.headers,
             };
-            (name, entry)
+            Some((name, entry))
         })
         .collect();
 
@@ -504,6 +558,184 @@ mod tests {
         assert_eq!(servers.len(), 1);
         assert_eq!(servers[0].transport, McpTransport::Http);
         assert_eq!(servers[0].command, "http://10.0.0.5:8080/mcp");
+    }
+
+    #[test]
+    fn load_mcp_servers_claude_desktop_type_field() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("mcp.json");
+        std::fs::write(
+            &path,
+            r#"{
+                "mcpServers": {
+                    "remote-api": {
+                        "type": "streamable-http",
+                        "url": "https://mcp.example.com/v1"
+                    }
+                }
+            }"#,
+        )
+        .unwrap();
+
+        let servers = load_mcp_servers(&path).unwrap();
+        assert_eq!(servers.len(), 1, "should parse claude desktop style config");
+        assert_eq!(servers[0].transport, McpTransport::Http);
+        assert_eq!(servers[0].command, "https://mcp.example.com/v1");
+    }
+
+    #[test]
+    fn load_mcp_servers_type_takes_priority_over_transport() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("mcp.json");
+        std::fs::write(
+            &path,
+            r#"{
+                "mcpServers": {
+                    "conflict": {
+                        "type": "http",
+                        "transport": "stdio",
+                        "url": "http://localhost:8080/mcp"
+                    }
+                }
+            }"#,
+        )
+        .unwrap();
+
+        let servers = load_mcp_servers(&path).unwrap();
+        assert_eq!(servers.len(), 1);
+        assert_eq!(
+            servers[0].transport,
+            McpTransport::Http,
+            "type field should take priority over transport"
+        );
+    }
+
+    #[test]
+    fn load_mcp_servers_url_field_preferred_over_command_for_http() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("mcp.json");
+        std::fs::write(
+            &path,
+            r#"{
+                "mcpServers": {
+                    "remote": {
+                        "transport": "http",
+                        "url": "http://preferred.example.com/mcp",
+                        "command": "http://fallback.example.com/mcp"
+                    }
+                }
+            }"#,
+        )
+        .unwrap();
+
+        let servers = load_mcp_servers(&path).unwrap();
+        assert_eq!(servers.len(), 1);
+        assert_eq!(
+            servers[0].command, "http://preferred.example.com/mcp",
+            "url field should be preferred over command for http"
+        );
+    }
+
+    #[test]
+    fn load_mcp_servers_sse_transport_skipped() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("mcp.json");
+        std::fs::write(
+            &path,
+            r#"{
+                "mcpServers": {
+                    "sse-server": {
+                        "type": "sse",
+                        "url": "http://sse.example.com/mcp"
+                    },
+                    "good-server": {
+                        "command": "mcp-server"
+                    }
+                }
+            }"#,
+        )
+        .unwrap();
+
+        let servers = load_mcp_servers(&path).unwrap();
+        assert_eq!(servers.len(), 1, "SSE server should be skipped");
+        assert_eq!(servers[0].name, "good-server");
+    }
+
+    #[test]
+    fn load_mcp_servers_http_missing_url_and_command_skipped() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("mcp.json");
+        std::fs::write(
+            &path,
+            r#"{
+                "mcpServers": {
+                    "broken": {
+                        "type": "http"
+                    }
+                }
+            }"#,
+        )
+        .unwrap();
+
+        let servers = load_mcp_servers(&path).unwrap();
+        assert!(
+            servers.is_empty(),
+            "HTTP server with no url or command should be skipped"
+        );
+    }
+
+    #[test]
+    fn load_mcp_servers_stdio_missing_command_skipped() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("mcp.json");
+        std::fs::write(
+            &path,
+            r#"{
+                "mcpServers": {
+                    "broken-stdio": {
+                        "type": "stdio"
+                    }
+                }
+            }"#,
+        )
+        .unwrap();
+
+        let servers = load_mcp_servers(&path).unwrap();
+        assert!(
+            servers.is_empty(),
+            "stdio server with no command should be skipped"
+        );
+    }
+
+    #[test]
+    fn load_mcp_servers_with_headers() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("mcp.json");
+        std::fs::write(
+            &path,
+            r#"{
+                "mcpServers": {
+                    "authed": {
+                        "type": "http",
+                        "url": "http://api.example.com/mcp",
+                        "headers": {
+                            "Authorization": "Bearer token123",
+                            "X-Custom": "value"
+                        }
+                    }
+                }
+            }"#,
+        )
+        .unwrap();
+
+        let servers = load_mcp_servers(&path).unwrap();
+        assert_eq!(servers.len(), 1);
+        assert_eq!(servers[0].headers.len(), 2, "should preserve headers");
+        assert_eq!(
+            servers[0].headers.get("Authorization").map(String::as_str),
+            Some("Bearer token123"),
+            "should have auth header"
+        );
     }
 
     #[test]

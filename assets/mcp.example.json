@@ -8,8 +8,19 @@
       }
     },
     "remote-search": {
-      "command": "http://10.0.0.5:8080/mcp",
-      "transport": "http"
+      "url": "http://10.0.0.5:8080/mcp",
+      "transport": "http",
+      "headers": {
+        "Authorization": "Bearer ${MCP_API_KEY}",
+        "X-Custom": "${CUSTOM_HEADER:-default-value}"
+      }
+    },
+    "claude-desktop-style": {
+      "type": "streamable-http",
+      "url": "https://mcp.example.com/v1",
+      "headers": {
+        "Authorization": "Bearer ${API_TOKEN}"
+      }
     }
   }
 }
