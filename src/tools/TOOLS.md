@@ -381,7 +381,7 @@ On error: skill is not currently active.
 | `run_at`     | string          | yes      | Always use local time without an offset (e.g. `2026-03-01T09:00:00`). Interpreted in the user's configured timezone. Must be in the future. |
 | `agent_name` | string          | no       | Agent routing: `"main"` runs a full wake turn with conversation context; a preset name (e.g. `"memory-agent"`) spawns a sub-agent using that preset. Omit for default sub-agent behavior. |
 | `model_tier` | string (enum)   | no       | Model tier override for sub-agent actions: `"small"`, `"medium"`, `"large"`. Defaults to medium.                                                                 |
-| `channels`   | array\<string\> | no       | Result delivery channels for sub-agent actions. Defaults to `["agent_feed"]`. Not used when `agent_name="main"`.                                                  |
+| `channels`   | array\<string\> | no       | Result delivery channels for sub-agent actions. Defaults to `["inbox"]`. Not used when `agent_name="main"`.                                                  |
 
 **Mutual exclusion:** if `agent_name="main"`, `channels` must not be provided — main-turn actions inject directly into the agent.
 
@@ -571,8 +571,7 @@ On success (inbox): `"Message saved to inbox as {filename}"`
 On success (external): `"Message sent to channel '{name}'"`
 
 On error:
-- Channel is `agent_wake` or `agent_feed` → `"send_message cannot target internal routing channels..."`
-- Unknown external channel → `"unknown external channel '{name}'; available: {list}"`
+- Unknown channel → `"unknown channel '{name}'; available: {list}"`
 - Delivery failure → execution error with details
 
 **Side effects:**
@@ -642,9 +641,9 @@ The `preview` line is omitted if the task has an empty prompt/command.
 | `task`           | string          | yes      | The prompt/instructions for the sub-agent                            |
 | `agent_name`     | string          | no       | Preset name to use (default: `"general-purpose"`). Must match a known preset or the call fails. `"main"` is reserved for scheduled tasks and will be rejected. |
 | `model_override` | string          | no       | Override the preset's model tier: `"small"`, `"medium"`, `"large"`. If omitted, uses the preset's tier (default: `"medium"`). |
-| `channels`       | array\<string\> | no       | Result delivery channels. If omitted, uses the preset's default channels (fallback: `["agent_feed"]`). |
+| `channels`       | array\<string\> | no       | Result delivery channels. If omitted, uses the preset's default channels (fallback: `["inbox"]`). |
 
-Valid channel names: `agent_wake`, `agent_feed`, `inbox`, or any configured external notification channel.
+Valid channel names: `inbox` or any configured external notification channel.
 
 ### Subagent Presets
 

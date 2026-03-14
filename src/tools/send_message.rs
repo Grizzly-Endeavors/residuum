@@ -76,64 +76,52 @@ impl Tool for SendMessageTool {
 
         let title = arguments.get("title").and_then(Value::as_str);
 
-        match channel_name {
-            "inbox" => {
-                let inbox_title = title.map_or_else(
+        if channel_name == "inbox" {
+            let inbox_title = title.map_or_else(
+                || message.chars().take(60).collect::<String>(),
+                str::to_string,
+            );
+            let filename =
+                crate::inbox::quick_add(&self.inbox_dir, &inbox_title, message, "agent", self.tz)
+                    .await
+                    .map_err(|e| ToolError::Execution(format!("failed to add inbox item: {e}")))?;
+            Ok(ToolResult::success(format!(
+                "Message saved to inbox as {filename}"
+            )))
+        } else {
+            // Validate the channel exists in the registry
+            let endpoint_id = crate::bus::EndpointId::from(channel_name);
+            if self.registry.get(&endpoint_id).is_none() {
+                let available: Vec<String> = self
+                    .registry
+                    .notify()
+                    .iter()
+                    .map(|e| e.id.as_ref().to_string())
+                    .collect();
+                return Ok(ToolResult::error(format!(
+                    "unknown channel '{channel_name}'; available: {}",
+                    if available.is_empty() {
+                        "(none configured)".to_string()
+                    } else {
+                        available.join(", ")
+                    }
+                )));
+            }
+
+            let _notification = NotificationEvent {
+                title: title.map_or_else(
                     || message.chars().take(60).collect::<String>(),
                     str::to_string,
-                );
-                let filename = crate::inbox::quick_add(
-                    &self.inbox_dir,
-                    &inbox_title,
-                    message,
-                    "agent",
-                    self.tz,
-                )
-                .await
-                .map_err(|e| ToolError::Execution(format!("failed to add inbox item: {e}")))?;
-                Ok(ToolResult::success(format!(
-                    "Message saved to inbox as {filename}"
-                )))
-            }
-            "agent_wake" | "agent_feed" => Ok(ToolResult::error(
-                "agent_wake and agent_feed are no longer supported; \
-                 use inbox or an external channel instead",
-            )),
-            _ => {
-                // Validate the channel exists in the registry
-                let endpoint_id = crate::bus::EndpointId::from(channel_name);
-                if self.registry.get(&endpoint_id).is_none() {
-                    let available: Vec<String> = self
-                        .registry
-                        .notify()
-                        .iter()
-                        .map(|e| e.id.as_ref().to_string())
-                        .collect();
-                    return Ok(ToolResult::error(format!(
-                        "unknown channel '{channel_name}'; available: {}",
-                        if available.is_empty() {
-                            "(none configured)".to_string()
-                        } else {
-                            available.join(", ")
-                        }
-                    )));
-                }
+                ),
+                content: message.to_string(),
+                source: EventTrigger::Agent,
+                timestamp: crate::time::now_local(self.tz),
+            };
 
-                let _notification = NotificationEvent {
-                    title: title.map_or_else(
-                        || message.chars().take(60).collect::<String>(),
-                        str::to_string,
-                    ),
-                    content: message.to_string(),
-                    source: EventTrigger::Agent,
-                    timestamp: crate::time::now_local(self.tz),
-                };
-
-                // Fire-and-forget: report "published" without confirming delivery
-                Ok(ToolResult::success(format!(
-                    "Message published to channel '{channel_name}'"
-                )))
-            }
+            // Fire-and-forget: report "published" without confirming delivery
+            Ok(ToolResult::success(format!(
+                "Message published to channel '{channel_name}'"
+            )))
         }
     }
 }
@@ -203,7 +191,7 @@ mod tests {
 
         assert!(result.is_error, "should error for agent_wake");
         assert!(
-            result.output.contains("no longer supported"),
+            result.output.contains("unknown channel"),
             "should explain: {}",
             result.output
         );
@@ -223,6 +211,11 @@ mod tests {
             .unwrap();
 
         assert!(result.is_error, "should error for agent_feed");
+        assert!(
+            result.output.contains("unknown channel"),
+            "should explain: {}",
+            result.output
+        );
     }
 
     #[tokio::test]

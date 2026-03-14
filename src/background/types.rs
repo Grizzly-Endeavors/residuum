@@ -163,7 +163,7 @@ mod tests {
             transcript_path: None,
             status: TaskStatus::Completed,
             timestamp: Utc::now(),
-            routing: ResultRouting::Direct(vec!["agent_feed".to_string()]),
+            routing: ResultRouting::Direct(vec!["inbox".to_string()]),
         };
 
         let formatted = format_background_result(&result);
@@ -217,7 +217,7 @@ mod tests {
             transcript_path: None,
             status: TaskStatus::Cancelled,
             timestamp: Utc::now(),
-            routing: ResultRouting::Direct(vec!["agent_feed".to_string()]),
+            routing: ResultRouting::Direct(vec!["inbox".to_string()]),
         };
 
         let formatted = format_background_result(&result);

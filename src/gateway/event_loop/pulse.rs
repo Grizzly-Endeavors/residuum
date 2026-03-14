@@ -115,14 +115,10 @@ pub async fn handle_pulse_tick(
     let due = rt
         .pulse_scheduler
         .due_pulses(now, &rt.layout.heartbeat_yml());
-    let mut wake_requested = false;
     for pulse in &due {
         let name = pulse.name.clone();
         let exec = build_pulse_execution(pulse);
-        if handle_pulse_execution(exec, &name, rt, observe_deadline).await {
-            wake_requested = true;
-        }
+        handle_pulse_execution(exec, &name, rt, observe_deadline).await;
     }
-    let _ = wake_requested;
     None
 }

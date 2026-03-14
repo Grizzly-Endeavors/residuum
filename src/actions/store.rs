@@ -190,7 +190,7 @@ mod tests {
             run_at: now + Duration::seconds(offset_secs),
             agent: None,
             model_tier: None,
-            channels: vec!["agent_feed".to_string()],
+            channels: vec!["inbox".to_string()],
             created_at: now,
         }
     }

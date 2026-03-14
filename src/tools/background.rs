@@ -208,7 +208,7 @@ impl Tool for SubAgentSpawnTool {
                     "channels": {
                         "type": "array",
                         "items": { "type": "string" },
-                        "description": "Result delivery channels. If omitted, uses the preset's default channels (fallback: [\"agent_feed\"])."
+                        "description": "Result delivery channels. If omitted, uses the preset's default channels (fallback: [\"inbox\"])."
                     }
                 },
                 "required": ["task"]
@@ -265,7 +265,7 @@ impl Tool for SubAgentSpawnTool {
         for ch in &resolved.channels {
             if !is_valid_channel(ch, &self.valid_external_channels) {
                 return Ok(ToolResult::error(format!(
-                    "unknown channel '{ch}'. Valid: agent_wake, agent_feed, inbox, or configured external channels."
+                    "unknown channel '{ch}'. Valid: inbox or configured external channels."
                 )));
             }
         }
@@ -349,7 +349,7 @@ async fn resolve_spawn_params(
 
     let channels = explicit_channels
         .or_else(|| preset_fm.channels.clone())
-        .unwrap_or_else(|| vec!["agent_feed".to_string()]);
+        .unwrap_or_else(|| vec!["inbox".to_string()]);
 
     Ok(ResolvedSpawn {
         preset_name: preset_name.to_string(),
@@ -372,7 +372,7 @@ fn generate_agent_task_id() -> String {
 }
 
 pub(crate) fn is_valid_channel(name: &str, external: &HashSet<String>) -> bool {
-    matches!(name, "agent_wake" | "agent_feed" | "inbox") || external.contains(name)
+    name == "inbox" || external.contains(name)
 }
 
 #[cfg(test)]
@@ -458,8 +458,14 @@ mod tests {
     #[test]
     fn valid_channels() {
         let external = HashSet::from(["ntfy_phone".to_string()]);
-        assert!(is_valid_channel("agent_wake", &external));
-        assert!(is_valid_channel("agent_feed", &external));
+        assert!(
+            !is_valid_channel("agent_wake", &external),
+            "agent_wake should be invalid"
+        );
+        assert!(
+            !is_valid_channel("agent_feed", &external),
+            "agent_feed should be invalid"
+        );
         assert!(is_valid_channel("inbox", &external));
         assert!(is_valid_channel("ntfy_phone", &external));
         assert!(!is_valid_channel("unknown", &external));

@@ -105,7 +105,7 @@ When `execute_subagent()` runs:
 
 The gateway receives the result and routes to the channels listed in `ResultRouting::Direct`. Channels are specified at task creation time (e.g., by the pulse definition's `channels` field, or by the `subagent_spawn` tool).
 
-Results routed to `agent_wake` or `agent_feed` are injected into the main agent's message stream as system messages (via the interrupt channel). Results routed to `inbox` become inbox items. External channel results (ntfy, webhook) are delivered via HTTP.
+Results routed to `inbox` become inbox items. External channel results (ntfy, webhook) are delivered via HTTP.
 
 ### Resource Isolation
 
@@ -273,10 +273,6 @@ graph TD
 
     K --> L["Gateway receives result"]
     L --> P{Destination channel?}
-    P -->|agent_wake/agent_feed| Q["Inject into interrupt channel<br/>→ turn loop receives it"]
     P -->|inbox| R["Create InboxItem<br/>in memory/inbox/"]
     P -->|external| S["Deliver via HTTP<br/>to ntfy/webhook"]
-
-    Q --> T["Turn loop drains interrupt channel<br/>appends to message stream"]
-    T --> U["LLM sees: tool result<br/>+ background context<br/>+ any user amendments"]
 ```

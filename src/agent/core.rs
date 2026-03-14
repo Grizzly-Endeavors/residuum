@@ -1311,7 +1311,7 @@ mod tests {
                     status: crate::background::types::TaskStatus::Completed,
                     timestamp: chrono::Utc::now(),
                     routing: crate::background::types::ResultRouting::Direct(vec![
-                        "agent_feed".to_string(),
+                        "inbox".to_string(),
                     ]),
                 },
             )],

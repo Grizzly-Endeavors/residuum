@@ -47,16 +47,16 @@ mod tests {
         let path = dir.path().join("CHANNELS.yml");
         std::fs::write(
             &path,
-            "agent_feed:\n  - email_check\n  - deploy_check\ninbox:\n  - backup\n",
+            "inbox:\n  - email_check\n  - deploy_check\nntfy:\n  - backup\n",
         )
         .unwrap();
 
         let cfg = load_channels_config(&path).unwrap();
         assert_eq!(cfg.0.len(), 2, "should have two channels");
         assert_eq!(
-            cfg.0.get("agent_feed").map(Vec::len),
+            cfg.0.get("inbox").map(Vec::len),
             Some(2),
-            "agent_feed should have two tasks"
+            "inbox should have two tasks"
         );
     }
 
@@ -64,7 +64,7 @@ mod tests {
     fn load_empty_yaml() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("CHANNELS.yml");
-        std::fs::write(&path, "agent_feed: []\ninbox: []\n").unwrap();
+        std::fs::write(&path, "inbox: []\nntfy: []\n").unwrap();
 
         let cfg = load_channels_config(&path).unwrap();
         assert_eq!(cfg.0.len(), 2, "should have two channels (empty lists)");

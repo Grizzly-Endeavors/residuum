@@ -113,7 +113,7 @@ denied_tools:
   - exec
   - write_file
 channels:
-  - agent_feed
+  - inbox
 ---
 
 You are a research specialist. Focus on gathering information.
@@ -132,7 +132,7 @@ You are a research specialist. Focus on gathering information.
         assert!(fm.allowed_tools.is_none());
         assert_eq!(
             fm.channels.as_deref(),
-            Some(vec!["agent_feed".to_string()].as_slice())
+            Some(vec!["inbox".to_string()].as_slice())
         );
         assert!(body.contains("research specialist"));
     }

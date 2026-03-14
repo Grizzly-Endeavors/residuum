@@ -202,14 +202,14 @@ const DEFAULT_HEARTBEAT: &str = "\
 # HEARTBEAT.yml — Pulse monitoring configuration
 #
 # Define ambient checks the agent performs on a schedule.
-# Results route to channels declared on each pulse (defaults to agent_feed).
+# Results route to channels declared on each pulse (defaults to inbox).
 #
 # Fields:
 #   schedule: duration string — \"30m\", \"2h\", \"24h\"
 #   active_hours: optional — \"HH:MM-HH:MM\" in configured timezone
 #                 supports overnight windows (e.g. \"22:00-06:00\")
 #   agent: ~ (sub-agent, small) | \"main\" (wake turn) | \"preset-name\"
-#   channels: where to route results (default: [agent_feed])
+#   channels: where to route results (default: [inbox])
 
 pulses: []
 
@@ -220,7 +220,7 @@ pulses: []
 #  - name: inbox_check
 #    enabled: true
 #    schedule: \"3h\"
-#    channels: [agent_feed]
+#    channels: [inbox]
 #    tasks:
 #      - name: check_inbox
 #        prompt: \"Check your inbox for unread items. If any need action, handle them or note what is needed. Report HEARTBEAT_OK if nothing new.\"
@@ -272,15 +272,12 @@ const DEFAULT_CHANNELS: &str = "\
 # Lists channels available for notification routing.
 #
 # Built-in channels (always available):
-#   agent_wake  — inject into agent feed, start a turn if idle
-#   agent_feed  — inject into agent feed, wait for next interaction
 #   inbox       — store silently, surface as unread count
 #
 # External channels (ntfy, webhook, etc.) are defined in config.toml
 # under [notifications.channels].
 
 channels:
-  - agent_feed
   - inbox
 ";
 

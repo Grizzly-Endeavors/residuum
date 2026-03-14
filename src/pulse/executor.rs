@@ -130,7 +130,7 @@ mod tests {
             active_hours: None,
             agent: None,
             trigger_count: None,
-            channels: vec!["agent_feed".to_string()],
+            channels: vec!["inbox".to_string()],
             tasks: vec![
                 PulseTask {
                     name: "check_inbox".to_string(),
@@ -222,11 +222,11 @@ mod tests {
     }
 
     #[test]
-    fn routing_defaults_to_agent_feed() {
+    fn routing_defaults_to_inbox() {
         let pulse = sample_pulse();
         let task = build_pulse_task(&pulse);
         let ResultRouting::Direct(channels) = &task.routing;
-        assert_eq!(channels, &["agent_feed"], "should route to default channel");
+        assert_eq!(channels, &["inbox"], "should route to default channel");
     }
 
     #[test]
@@ -238,7 +238,7 @@ mod tests {
             active_hours: None,
             agent: None,
             trigger_count: None,
-            channels: vec!["agent_feed".to_string()],
+            channels: vec!["inbox".to_string()],
             tasks: vec![],
         };
         let task = build_pulse_task(&pulse);

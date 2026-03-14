@@ -40,17 +40,26 @@ pub fn build_gateway_app(
     } else {
         let mut endpoints = std::collections::HashMap::new();
         for (name, entry) in &cfg.webhooks {
+            if let crate::config::WebhookRouting::Agent(ref preset) = entry.routing {
+                tracing::warn!(
+                    webhook = %name,
+                    preset = %preset,
+                    "webhook agent routing is not yet implemented (phase-7); \
+                     falling back to inbox routing"
+                );
+            }
             endpoints.insert(
                 name.clone(),
                 crate::interfaces::webhook::WebhookEndpointState {
                     secret: entry.secret.clone(),
                     format: entry.format.clone(),
                     content_fields: entry.content_fields.clone(),
+                    routing: entry.routing.clone(),
                 },
             );
         }
         let webhook_state = crate::interfaces::webhook::WebhookState {
-            inbound_tx: state.inbound_tx.clone(),
+            publisher: state.publisher.clone(),
             webhooks: endpoints,
         };
         Some(

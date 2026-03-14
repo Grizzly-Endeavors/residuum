@@ -4,17 +4,13 @@
 //! field extraction config. Unknown names return 404.
 
 use std::collections::HashMap;
-use std::sync::Arc;
 
 use axum::body::Bytes;
 use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::IntoResponse;
-use tokio::sync::mpsc;
 
-use crate::config::WebhookFormat;
-
-use super::types::{InboundMessage, MessageOrigin, ReplyHandle, RoutedMessage};
+use crate::config::{WebhookFormat, WebhookRouting};
 
 /// Per-webhook endpoint configuration (built from `WebhookEntry` at startup).
 #[derive(Clone, Debug)]
@@ -25,13 +21,15 @@ pub struct WebhookEndpointState {
     pub format: WebhookFormat,
     /// JSON dot-path fields to extract (only used with `Parsed` format).
     pub content_fields: Option<Vec<String>>,
+    /// Routing destination for this webhook.
+    pub routing: WebhookRouting,
 }
 
 /// Shared state for the webhook handler — holds all named webhook configs.
 #[derive(Clone)]
 pub struct WebhookState {
-    /// Sender for routing messages to the agent main loop.
-    pub inbound_tx: mpsc::Sender<RoutedMessage>,
+    /// Publisher for sending events onto the bus.
+    pub publisher: crate::bus::Publisher,
     /// Named webhook endpoint configurations.
     pub webhooks: HashMap<String, WebhookEndpointState>,
 }
@@ -39,7 +37,7 @@ pub struct WebhookState {
 /// Axum handler for `POST /webhook/{name}`.
 ///
 /// Looks up the named webhook config, validates auth, extracts content per the
-/// webhook's format / content-fields settings, and sends a `RoutedMessage`.
+/// webhook's format / content-fields settings, and publishes a `NotificationEvent`.
 /// Returns 404 for unknown names, 401 for bad auth, 202 on success.
 pub async fn webhook_handler(
     State(state): State<WebhookState>,
@@ -78,29 +76,28 @@ pub async fn webhook_handler(
         }
     };
 
-    let origin = MessageOrigin {
-        endpoint: format!("webhook:{name}"),
-        sender_name: format!("webhook:{name}"),
-        sender_id: format!("webhook:{name}"),
-    };
-
-    let inbound = InboundMessage {
-        id: uuid::Uuid::new_v4().to_string(),
+    let notification = crate::bus::NotificationEvent {
+        title: format!("webhook:{name}"),
         content,
-        origin,
-        timestamp: chrono::Utc::now(),
-        images: vec![],
+        source: crate::bus::EventTrigger::Webhook(name.clone()),
+        timestamp: crate::time::now_local(chrono_tz::UTC),
     };
 
-    let reply = Arc::new(WebhookReplyHandle { name: name.clone() });
-
-    let routed = RoutedMessage {
-        message: inbound,
-        reply,
+    // TODO(phase-7): for WebhookRouting::Agent(preset), route to TopicId::AgentPreset(preset)
+    let topic = match &endpoint.routing {
+        WebhookRouting::Inbox => crate::bus::TopicId::Inbox,
+        WebhookRouting::Agent(_preset) => {
+            // Phase 7 will route to TopicId::AgentPreset; fall back to inbox for now
+            crate::bus::TopicId::Inbox
+        }
     };
 
-    if state.inbound_tx.send(routed).await.is_err() {
-        tracing::warn!(webhook = %name, "inbound channel closed, dropping webhook message");
+    if let Err(e) = state
+        .publisher
+        .publish(topic, crate::bus::BusEvent::Notification(notification))
+        .await
+    {
+        tracing::warn!(webhook = %name, error = %e, "bus publish failed, dropping webhook message");
         return StatusCode::SERVICE_UNAVAILABLE;
     }
 
@@ -159,60 +156,39 @@ fn extract_json_field(value: &serde_json::Value, path: &str) -> Option<String> {
     }
 }
 
-/// Fire-and-forget reply handle for webhook requests.
-///
-/// Webhook responses are logged but have no return path — the HTTP
-/// response (202 Accepted) is sent before the agent processes the message.
-struct WebhookReplyHandle {
-    name: String,
-}
-
-#[async_trait::async_trait]
-impl ReplyHandle for WebhookReplyHandle {
-    async fn send_response(&self, content: &str) {
-        tracing::info!(
-            channel = %format!("webhook:{}", self.name),
-            response_len = content.len(),
-            "webhook response (no return channel)"
-        );
-    }
-
-    async fn send_typing(&self) {
-        // No typing indicator for webhooks
-    }
-
-    async fn send_system_event(&self, source: &str, content: &str) {
-        tracing::info!(
-            channel = %format!("webhook:{}", self.name),
-            source,
-            event_len = content.len(),
-            "webhook system event (no return channel)"
-        );
-    }
-}
-
 #[cfg(test)]
 #[expect(clippy::unwrap_used, reason = "test code uses unwrap for clarity")]
+#[expect(clippy::panic, reason = "test assertions")]
+#[expect(
+    clippy::wildcard_enum_match_arm,
+    reason = "test assertions use wildcard for non-matching variants"
+)]
 mod tests {
     use super::*;
     use axum::body::Body;
     use axum::http::Request;
     use axum::routing::post;
-    use tokio::sync::mpsc;
     use tower::ServiceExt;
 
-    fn make_app(
+    use crate::config::WebhookRouting;
+
+    async fn make_app(
         webhooks: HashMap<String, WebhookEndpointState>,
-    ) -> (axum::Router, mpsc::Receiver<RoutedMessage>) {
-        let (tx, rx) = mpsc::channel::<RoutedMessage>(32);
+    ) -> (axum::Router, crate::bus::Subscriber) {
+        let bus_handle = crate::bus::spawn_broker();
+        let publisher = bus_handle.publisher();
+        let subscriber = bus_handle
+            .subscribe(crate::bus::TopicId::Inbox)
+            .await
+            .unwrap();
         let state = WebhookState {
-            inbound_tx: tx,
+            publisher,
             webhooks,
         };
         let app = axum::Router::new()
             .route("/webhook/{name}", post(webhook_handler))
             .with_state(state);
-        (app, rx)
+        (app, subscriber)
     }
 
     fn parsed_endpoint(secret: Option<&str>) -> WebhookEndpointState {
@@ -220,6 +196,7 @@ mod tests {
             secret: secret.map(String::from),
             format: WebhookFormat::Parsed,
             content_fields: None,
+            routing: WebhookRouting::default(),
         }
     }
 
@@ -234,7 +211,7 @@ mod tests {
 
     #[tokio::test]
     async fn unknown_webhook_returns_404() {
-        let (app, _rx) = make_app(HashMap::new());
+        let (app, _sub) = make_app(HashMap::new()).await;
 
         let req = Request::builder()
             .method("POST")
@@ -248,7 +225,7 @@ mod tests {
 
     #[tokio::test]
     async fn json_payload_accepted() {
-        let (app, mut rx) = make_app(single_webhook("test", parsed_endpoint(None)));
+        let (app, mut sub) = make_app(single_webhook("test", parsed_endpoint(None))).await;
 
         let req = Request::builder()
             .method("POST")
@@ -260,14 +237,21 @@ mod tests {
         let resp = app.oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::ACCEPTED);
 
-        let routed = rx.try_recv().unwrap();
-        assert_eq!(routed.message.content, "hello from webhook");
-        assert_eq!(routed.message.origin.endpoint, "webhook:test");
+        let event = tokio::time::timeout(std::time::Duration::from_millis(100), sub.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        let notification = match event {
+            crate::bus::BusEvent::Notification(n) => n,
+            other => panic!("expected Notification, got {other:?}"),
+        };
+        assert_eq!(notification.content, "hello from webhook");
+        assert_eq!(notification.title, "webhook:test");
     }
 
     #[tokio::test]
     async fn plain_text_accepted() {
-        let (app, mut rx) = make_app(single_webhook("test", parsed_endpoint(None)));
+        let (app, mut sub) = make_app(single_webhook("test", parsed_endpoint(None))).await;
 
         let req = Request::builder()
             .method("POST")
@@ -278,13 +262,20 @@ mod tests {
         let resp = app.oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::ACCEPTED);
 
-        let routed = rx.try_recv().unwrap();
-        assert_eq!(routed.message.content, "plain text message");
+        let event = tokio::time::timeout(std::time::Duration::from_millis(100), sub.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        let notification = match event {
+            crate::bus::BusEvent::Notification(n) => n,
+            other => panic!("expected Notification, got {other:?}"),
+        };
+        assert_eq!(notification.content, "plain text message");
     }
 
     #[tokio::test]
     async fn empty_body_rejected() {
-        let (app, _rx) = make_app(single_webhook("test", parsed_endpoint(None)));
+        let (app, _sub) = make_app(single_webhook("test", parsed_endpoint(None))).await;
 
         let req = Request::builder()
             .method("POST")
@@ -298,10 +289,11 @@ mod tests {
 
     #[tokio::test]
     async fn bearer_auth_required() {
-        let (app, _rx) = make_app(single_webhook(
+        let (app, _sub) = make_app(single_webhook(
             "secure",
             parsed_endpoint(Some("secret-token")),
-        ));
+        ))
+        .await;
 
         let req = Request::builder()
             .method("POST")
@@ -316,10 +308,11 @@ mod tests {
 
     #[tokio::test]
     async fn bearer_auth_wrong_token() {
-        let (app, _rx) = make_app(single_webhook(
+        let (app, _sub) = make_app(single_webhook(
             "secure",
             parsed_endpoint(Some("secret-token")),
-        ));
+        ))
+        .await;
 
         let req = Request::builder()
             .method("POST")
@@ -335,10 +328,11 @@ mod tests {
 
     #[tokio::test]
     async fn bearer_auth_correct_token() {
-        let (app, mut rx) = make_app(single_webhook(
+        let (app, mut sub) = make_app(single_webhook(
             "secure",
             parsed_endpoint(Some("secret-token")),
-        ));
+        ))
+        .await;
 
         let req = Request::builder()
             .method("POST")
@@ -351,8 +345,15 @@ mod tests {
         let resp = app.oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::ACCEPTED);
 
-        let routed = rx.try_recv().unwrap();
-        assert_eq!(routed.message.content, "hello");
+        let event = tokio::time::timeout(std::time::Duration::from_millis(100), sub.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        let notification = match event {
+            crate::bus::BusEvent::Notification(n) => n,
+            other => panic!("expected Notification, got {other:?}"),
+        };
+        assert_eq!(notification.content, "hello");
     }
 
     #[tokio::test]
@@ -361,8 +362,9 @@ mod tests {
             secret: None,
             format: WebhookFormat::Raw,
             content_fields: None,
+            routing: WebhookRouting::default(),
         };
-        let (app, mut rx) = make_app(single_webhook("raw-hook", endpoint));
+        let (app, mut sub) = make_app(single_webhook("raw-hook", endpoint)).await;
 
         let body = r#"{"any":"json","or":"text"}"#;
         let req = Request::builder()
@@ -374,8 +376,15 @@ mod tests {
         let resp = app.oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::ACCEPTED);
 
-        let routed = rx.try_recv().unwrap();
-        assert_eq!(routed.message.content, body);
+        let event = tokio::time::timeout(std::time::Duration::from_millis(100), sub.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        let notification = match event {
+            crate::bus::BusEvent::Notification(n) => n,
+            other => panic!("expected Notification, got {other:?}"),
+        };
+        assert_eq!(notification.content, body);
     }
 
     #[tokio::test]
@@ -384,8 +393,9 @@ mod tests {
             secret: None,
             format: WebhookFormat::Parsed,
             content_fields: Some(vec!["issue.title".to_string(), "issue.body".to_string()]),
+            routing: WebhookRouting::default(),
         };
-        let (app, mut rx) = make_app(single_webhook("github", endpoint));
+        let (app, mut sub) = make_app(single_webhook("github", endpoint)).await;
 
         let json = r#"{"issue":{"title":"Bug report","body":"Something broke","labels":["bug"]}}"#;
         let req = Request::builder()
@@ -398,8 +408,15 @@ mod tests {
         let resp = app.oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::ACCEPTED);
 
-        let routed = rx.try_recv().unwrap();
-        assert_eq!(routed.message.content, "Bug report\n\nSomething broke");
+        let event = tokio::time::timeout(std::time::Duration::from_millis(100), sub.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        let notification = match event {
+            crate::bus::BusEvent::Notification(n) => n,
+            other => panic!("expected Notification, got {other:?}"),
+        };
+        assert_eq!(notification.content, "Bug report\n\nSomething broke");
     }
 
     #[tokio::test]
@@ -408,8 +425,9 @@ mod tests {
             secret: None,
             format: WebhookFormat::Parsed,
             content_fields: Some(vec!["nonexistent.path".to_string()]),
+            routing: WebhookRouting::default(),
         };
-        let (app, _rx) = make_app(single_webhook("test", endpoint));
+        let (app, _sub) = make_app(single_webhook("test", endpoint)).await;
 
         let req = Request::builder()
             .method("POST")
@@ -427,7 +445,7 @@ mod tests {
         let mut webhooks = HashMap::new();
         webhooks.insert("public".to_string(), parsed_endpoint(None));
         webhooks.insert("private".to_string(), parsed_endpoint(Some("tok123")));
-        let (app, _rx) = make_app(webhooks);
+        let (app, _sub) = make_app(webhooks).await;
 
         // Public should accept without auth
         let pub_req = Request::builder()
@@ -446,6 +464,69 @@ mod tests {
             .unwrap();
         let priv_resp = app.oneshot(priv_req).await.unwrap();
         assert_eq!(priv_resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn webhook_agent_routing_falls_back_to_inbox() {
+        let endpoint = WebhookEndpointState {
+            secret: None,
+            format: WebhookFormat::Parsed,
+            content_fields: None,
+            routing: WebhookRouting::Agent("code_reviewer".to_string()),
+        };
+        let (app, mut sub) = make_app(single_webhook("agent-hook", endpoint)).await;
+
+        let req = Request::builder()
+            .method("POST")
+            .uri("/webhook/agent-hook")
+            .body(Body::from(r#"{"content":"review this"}"#))
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::ACCEPTED);
+
+        let event = tokio::time::timeout(std::time::Duration::from_millis(100), sub.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        match event {
+            crate::bus::BusEvent::Notification(n) => {
+                assert_eq!(n.content, "review this");
+            }
+            other => panic!("expected Notification, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn webhook_inbox_routing_publishes_notification() {
+        let endpoint = WebhookEndpointState {
+            secret: None,
+            format: WebhookFormat::Parsed,
+            content_fields: None,
+            routing: WebhookRouting::Inbox,
+        };
+        let (app, mut sub) = make_app(single_webhook("inbox-hook", endpoint)).await;
+
+        let req = Request::builder()
+            .method("POST")
+            .uri("/webhook/inbox-hook")
+            .body(Body::from(r#"{"content":"notify me"}"#))
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::ACCEPTED);
+
+        let event = tokio::time::timeout(std::time::Duration::from_millis(100), sub.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        match event {
+            crate::bus::BusEvent::Notification(n) => {
+                assert_eq!(n.content, "notify me");
+                assert_eq!(n.title, "webhook:inbox-hook");
+            }
+            other => panic!("expected Notification, got {other:?}"),
+        }
     }
 
     #[test]

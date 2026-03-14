@@ -80,7 +80,7 @@ impl Tool for ScheduleActionTool {
                     "channels": {
                         "type": "array",
                         "items": { "type": "string" },
-                        "description": "Result delivery channels for sub-agent actions. Defaults to ['agent_feed']. Not used when agent_name='main'."
+                        "description": "Result delivery channels for sub-agent actions. Defaults to ['inbox']. Not used when agent_name='main'."
                     }
                 },
                 "required": ["name", "prompt", "run_at"]
@@ -128,7 +128,7 @@ impl Tool for ScheduleActionTool {
             .get("channels")
             .and_then(Value::as_array)
             .map_or_else(
-                || vec!["agent_feed".to_string()],
+                || vec!["inbox".to_string()],
                 |arr| {
                     arr.iter()
                         .filter_map(Value::as_str)
@@ -149,7 +149,7 @@ impl Tool for ScheduleActionTool {
             for ch in &channels {
                 if !is_valid_channel(ch, &self.valid_external_channels) {
                     return Ok(ToolResult::error(format!(
-                        "unknown channel '{ch}'. Valid: agent_wake, agent_feed, inbox, or configured external channels."
+                        "unknown channel '{ch}'. Valid: inbox or configured external channels."
                     )));
                 }
             }
@@ -462,7 +462,7 @@ mod tests {
             run_at: run_at_utc,
             agent: None,
             model_tier: None,
-            channels: vec!["agent_feed".to_string()],
+            channels: vec!["inbox".to_string()],
             created_at: Utc::now(),
         };
         store.lock().await.add(action);
