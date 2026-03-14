@@ -672,9 +672,9 @@ information. Always cite sources.
 
 ### Output
 
-On success: `"Subagent spawned: {task_id}"`
+On success: `"Subagent '{preset_name}' spawned with task delegated to registry."`
 
-The sub-agent runs in the background. When it completes, the result is delivered to the specified `channels` via `ResultRouting::Direct`.
+The sub-agent runs in the background via the subagent registry. When it completes, the result is delivered to the specified `channels` via the bus result routing system.
 
 ### Errors
 
@@ -683,9 +683,9 @@ The sub-agent runs in the background. When it completes, the result is delivered
 - Invalid `model_override` value → `InvalidArguments`
 - Unknown `agent_name` (preset not found) → `is_error = true` with available preset list
 - Unknown channel name → `is_error = true` with message
-- Provider construction failure → `Execution` error
+- Bus publish failure → `Execution` error
 
-**Side effects:** Registers a background task in the spawner (visible via `list_agents`, cancellable via `stop_agent`). Result delivered through the notification/channel system.
+**Side effects:** Publishes a `SpawnRequest` to the bus, which the subagent registry picks up and spawns as a background task (visible via `list_agents`, cancellable via `stop_agent`). Result delivered through the bus notification system.
 
 **Not available to sub-agents:** this tool is only registered in the main agent's registry, not in `build_subagent_registry()`.
 
