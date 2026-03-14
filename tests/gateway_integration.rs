@@ -109,11 +109,18 @@ mod gateway_integration {
         let publisher = bus.publisher();
         let output_topic = TopicId::Interactive(EndpointName::from("ws"));
 
-        let sub = bus.subscribe(output_topic.clone()).await.unwrap();
+        let mut sub = bus.subscribe(output_topic.clone()).await.unwrap();
         let sub_broadcast = broadcast_tx.clone();
-        tokio::spawn(
-            residuum::interfaces::websocket::subscriber::run_ws_subscriber(sub, sub_broadcast),
-        );
+        tokio::spawn(async move {
+            while let Some(event) = sub.recv().await {
+                if let Some(msg) =
+                    residuum::interfaces::websocket::subscriber::translate_bus_event(event)
+                    && sub_broadcast.send(msg).is_err()
+                {
+                    break;
+                }
+            }
+        });
 
         let state = TestGatewayState {
             inbound_tx: inbound_tx.clone(),

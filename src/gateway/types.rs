@@ -111,12 +111,10 @@ impl GatewayCore {
 
 /// Shared state for the axum WebSocket server.
 #[derive(Clone)]
-#[expect(
-    dead_code,
-    reason = "bus_handle will be consumed in endpoint subscriber migration"
-)]
 pub(crate) struct GatewayState {
+    #[expect(dead_code, reason = "removed in upcoming channel cleanup commit")]
     pub inbound_tx: mpsc::Sender<RoutedMessage>,
+    #[expect(dead_code, reason = "removed in upcoming channel cleanup commit")]
     pub broadcast_tx: broadcast::Sender<ServerMessage>,
     pub reload_tx: tokio::sync::watch::Sender<ReloadSignal>,
     pub command_tx: mpsc::Sender<ServerCommand>,
