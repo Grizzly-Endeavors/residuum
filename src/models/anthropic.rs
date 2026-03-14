@@ -403,6 +403,9 @@ impl ModelProvider for AnthropicClient {
                     output_config,
                     temperature,
                     thinking,
+                    cache_control: Some(AnthropicCacheControl {
+                        r#type: "ephemeral".to_string(),
+                    }),
                 };
 
                 Self::send_completion(
@@ -484,6 +487,11 @@ fn merge_consecutive_messages(messages: Vec<AnthropicMessage>) -> Vec<AnthropicM
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Serialize, Clone)]
+struct AnthropicCacheControl {
+    r#type: String,
+}
+
+#[derive(Debug, Serialize, Clone)]
 struct AnthropicThinking {
     r#type: String,
     budget_tokens: u32,
@@ -504,6 +512,8 @@ struct AnthropicRequest<'a> {
     temperature: Option<f32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     thinking: Option<AnthropicThinking>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cache_control: Option<AnthropicCacheControl>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -1482,5 +1492,30 @@ mod tests {
         assert_eq!(api_msgs.first().unwrap().role, "user");
         assert_eq!(api_msgs.get(1).unwrap().role, "assistant");
         assert_eq!(api_msgs.get(2).unwrap().role, "user");
+    }
+
+    #[tokio::test]
+    async fn cache_control_included_in_request() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/messages"))
+            .and(wiremock::matchers::body_partial_json(json!({
+                "cache_control": {
+                    "type": "ephemeral"
+                }
+            })))
+            .respond_with(ResponseTemplate::new(200).set_body_json(success_response_body()))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let client = test_client(&server.uri());
+        let result = client
+            .complete(&simple_user_message(), &[], &CompletionOptions::default())
+            .await;
+        assert!(
+            result.is_ok(),
+            "request with cache_control should succeed: {result:?}"
+        );
     }
 }
