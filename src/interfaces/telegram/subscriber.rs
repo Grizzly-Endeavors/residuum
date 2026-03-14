@@ -54,6 +54,16 @@ pub(crate) async fn run_telegram_subscriber(mut subscriber: Subscriber, bot: Bot
                 let text = format!("**[{}]** {}", se.source, se.content);
                 send_chunks(&bot, chat_id, &text).await;
             }
+            BusEvent::Error {
+                correlation_id: _,
+                message,
+            } => {
+                let text = format!("**Error:** {message}");
+                send_chunks(&bot, chat_id, &text).await;
+            }
+            BusEvent::Notice { message } => {
+                send_chunks(&bot, chat_id, &message).await;
+            }
             // Tool calls/results are not surfaced in Telegram
             BusEvent::ToolCall(_)
             | BusEvent::ToolResult(_)

@@ -67,6 +67,8 @@ pub enum TopicId {
     BackgroundEvent,
     /// A named webhook.
     Webhook(WebhookName),
+    /// Broadcast to all connected interactive endpoints.
+    SystemBroadcast,
 }
 
 impl fmt::Display for TopicId {
@@ -80,6 +82,7 @@ impl fmt::Display for TopicId {
             Self::BackgroundResult => f.write_str("background:result"),
             Self::BackgroundEvent => f.write_str("background:event"),
             Self::Webhook(name) => write!(f, "webhook:{name}"),
+            Self::SystemBroadcast => f.write_str("system:broadcast"),
         }
     }
 }
@@ -195,6 +198,11 @@ mod tests {
             TopicId::Webhook(WebhookName::from("deploy")).to_string(),
             "webhook:deploy"
         );
+    }
+
+    #[test]
+    fn topic_id_system_broadcast_display() {
+        assert_eq!(TopicId::SystemBroadcast.to_string(), "system:broadcast");
     }
 
     #[test]

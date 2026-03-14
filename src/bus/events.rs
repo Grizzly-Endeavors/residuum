@@ -263,6 +263,18 @@ pub enum BusEvent {
         /// MIME content type, if known.
         content_type: Option<String>,
     },
+    /// An error tied to a specific agent turn.
+    Error {
+        /// Links back to the originating message.
+        correlation_id: String,
+        /// Error description.
+        message: String,
+    },
+    /// Operational notice (reload status, memory progress, command responses).
+    Notice {
+        /// Human-readable notice message.
+        message: String,
+    },
 }
 
 // ---------------------------------------------------------------------------
@@ -584,6 +596,35 @@ mod tests {
         };
         let cloned_se = se.clone();
         assert_eq!(cloned_se.source, "pulse");
+    }
+
+    #[test]
+    fn bus_event_error_variant() {
+        let event = BusEvent::Error {
+            correlation_id: "c1".into(),
+            message: "something broke".into(),
+        };
+        match event {
+            BusEvent::Error {
+                correlation_id,
+                message,
+            } => {
+                assert_eq!(correlation_id, "c1");
+                assert_eq!(message, "something broke");
+            }
+            _ => panic!("expected Error variant"),
+        }
+    }
+
+    #[test]
+    fn bus_event_notice_variant() {
+        let event = BusEvent::Notice {
+            message: "reloading config".into(),
+        };
+        match event {
+            BusEvent::Notice { message } => assert_eq!(message, "reloading config"),
+            _ => panic!("expected Notice variant"),
+        }
     }
 
     #[test]

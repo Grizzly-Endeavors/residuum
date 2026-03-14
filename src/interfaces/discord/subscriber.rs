@@ -63,6 +63,16 @@ pub(crate) async fn run_discord_subscriber(
                 let text = format!("**[{}]** {}", se.source, se.content);
                 send_chunks(&http, cid, &text).await;
             }
+            BusEvent::Error {
+                correlation_id: _,
+                message,
+            } => {
+                let text = format!("**Error:** {message}");
+                send_chunks(&http, cid, &text).await;
+            }
+            BusEvent::Notice { message } => {
+                send_chunks(&http, cid, &message).await;
+            }
             // Tool calls/results are not surfaced in Discord
             BusEvent::ToolCall(_)
             | BusEvent::ToolResult(_)

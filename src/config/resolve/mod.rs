@@ -1538,6 +1538,9 @@ main = "anthropic/claude-sonnet-4-6"
             r#"
 timezone = "UTC"
 
+[gateway]
+port = 7700
+
 [cloud]
 enabled = true
 token = "rst_testtoken12345678901234567890"

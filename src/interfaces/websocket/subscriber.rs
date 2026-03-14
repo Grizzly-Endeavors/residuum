@@ -38,6 +38,14 @@ pub async fn run_ws_subscriber(
                 source: se.source,
                 content: se.content,
             }),
+            BusEvent::Error {
+                correlation_id,
+                message,
+            } => Some(ServerMessage::Error {
+                reply_to: Some(correlation_id),
+                message,
+            }),
+            BusEvent::Notice { message } => Some(ServerMessage::Notice { message }),
             // TurnEnded has no ServerMessage equivalent currently — skip
             BusEvent::TurnEnded { .. }
             | BusEvent::Message(_)
@@ -208,6 +216,37 @@ mod tests {
             &msgs[0],
             ServerMessage::SystemEvent { source, content }
                 if source == "pulse" && content == "check done"
+        ));
+    }
+
+    #[tokio::test]
+    async fn error_maps_to_server_message() {
+        let msgs = run_subscriber_with_events(vec![BusEvent::Error {
+            correlation_id: "c1".into(),
+            message: "something broke".into(),
+        }])
+        .await;
+
+        assert_eq!(msgs.len(), 1);
+        assert!(matches!(
+            &msgs[0],
+            ServerMessage::Error { reply_to, message }
+                if *reply_to == Some("c1".to_string()) && message == "something broke"
+        ));
+    }
+
+    #[tokio::test]
+    async fn notice_maps_to_server_message() {
+        let msgs = run_subscriber_with_events(vec![BusEvent::Notice {
+            message: "reloading".into(),
+        }])
+        .await;
+
+        assert_eq!(msgs.len(), 1);
+        assert!(matches!(
+            &msgs[0],
+            ServerMessage::Notice { message }
+                if message == "reloading"
         ));
     }
 
