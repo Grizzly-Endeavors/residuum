@@ -266,24 +266,6 @@ pub fn load_channel_configs(path: &Path) -> Result<Vec<ExternalChannelConfig>, R
         .into_iter()
         .map(|(name, raw)| {
             let kind = match raw.type_.as_str() {
-                "ntfy" => ExternalChannelKind::Ntfy {
-                    url: raw.url.unwrap_or_default(),
-                    topic: raw.topic.unwrap_or_default(),
-                    priority: raw.priority,
-                },
-                "macos" => ExternalChannelKind::Macos {
-                    default_category: raw.default_category,
-                    default_priority: raw.default_priority,
-                    throttle_window_secs: raw.throttle_window_secs,
-                    sound: raw.sound,
-                    app_name: raw.app_name,
-                    web_url: raw.web_url,
-                },
-                _ => ExternalChannelKind::Webhook {
-                    url: raw.url.unwrap_or_default(),
-                    method: raw.method,
-                    headers: raw.headers.unwrap_or_default().into_iter().collect(),
-                },
                 "ntfy" => {
                     let url = raw.url.unwrap_or_default();
                     let topic = raw.topic.unwrap_or_default();
@@ -299,6 +281,14 @@ pub fn load_channel_configs(path: &Path) -> Result<Vec<ExternalChannelConfig>, R
                         priority: raw.priority,
                     }
                 }
+                "macos" => ExternalChannelKind::Macos {
+                    default_category: raw.default_category,
+                    default_priority: raw.default_priority,
+                    throttle_window_secs: raw.throttle_window_secs,
+                    sound: raw.sound,
+                    app_name: raw.app_name,
+                    web_url: raw.web_url,
+                },
                 "webhook" => {
                     let url = raw.url.unwrap_or_default();
                     if url.is_empty() {
