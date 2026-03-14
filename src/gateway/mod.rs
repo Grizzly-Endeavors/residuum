@@ -1,7 +1,7 @@
 //! WebSocket gateway for multi-client access to the agent.
 
 mod actions;
-mod event_loop;
+pub(crate) mod event_loop;
 mod helpers;
 mod idle;
 mod memory;

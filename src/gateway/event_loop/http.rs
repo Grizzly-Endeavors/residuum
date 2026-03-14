@@ -14,6 +14,7 @@ use crate::gateway::ws::ws_handler;
 /// Bundled senders for spawning a chat adapter (Discord or Telegram).
 pub struct AdapterSenders {
     pub publisher: crate::bus::Publisher,
+    pub bus_handle: crate::bus::BusHandle,
     pub reload: tokio::sync::watch::Sender<ReloadSignal>,
     pub command: mpsc::Sender<ServerCommand>,
 }
@@ -155,10 +156,8 @@ pub fn spawn_adapters(
         let (tx, rx) = tokio::sync::watch::channel(false);
         let iface = crate::interfaces::discord::DiscordInterface::new(
             discord_cfg.clone(),
-            discord.publisher,
+            discord,
             cfg.workspace_dir.clone(),
-            discord.reload,
-            discord.command,
             tz,
             rx,
         );
@@ -176,10 +175,8 @@ pub fn spawn_adapters(
         let (tx, rx) = tokio::sync::watch::channel(false);
         let iface = crate::interfaces::telegram::TelegramInterface::new(
             telegram_cfg.clone(),
-            telegram.publisher,
+            telegram,
             cfg.workspace_dir.clone(),
-            telegram.reload,
-            telegram.command,
             tz,
             rx,
         );

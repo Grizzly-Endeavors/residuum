@@ -4,24 +4,18 @@
 //! private messages onto the bus for agent processing.
 
 mod handler;
-#[expect(dead_code, reason = "subscriber will be wired in during bus migration")]
 pub(crate) mod subscriber;
 
 use std::path::PathBuf;
 
-use tokio::sync::mpsc;
-
-use crate::bus::Publisher;
 use crate::config::TelegramConfig;
-use crate::gateway::types::{ReloadSignal, ServerCommand};
+use crate::gateway::event_loop::AdapterSenders;
 
 /// Telegram interface adapter that routes private messages to the agent inbound channel.
 pub struct TelegramInterface {
     cfg: TelegramConfig,
-    publisher: Publisher,
+    senders: AdapterSenders,
     workspace_dir: PathBuf,
-    reload_tx: tokio::sync::watch::Sender<ReloadSignal>,
-    command_tx: mpsc::Sender<ServerCommand>,
     tz: chrono_tz::Tz,
     shutdown_rx: tokio::sync::watch::Receiver<bool>,
 }
@@ -31,19 +25,15 @@ impl TelegramInterface {
     #[must_use]
     pub(crate) fn new(
         cfg: TelegramConfig,
-        publisher: Publisher,
+        senders: AdapterSenders,
         workspace_dir: PathBuf,
-        reload_tx: tokio::sync::watch::Sender<ReloadSignal>,
-        command_tx: mpsc::Sender<ServerCommand>,
         tz: chrono_tz::Tz,
         shutdown_rx: tokio::sync::watch::Receiver<bool>,
     ) -> Self {
         Self {
             cfg,
-            publisher,
+            senders,
             workspace_dir,
-            reload_tx,
-            command_tx,
             tz,
             shutdown_rx,
         }
@@ -59,10 +49,8 @@ impl TelegramInterface {
     pub(crate) async fn start(self) -> anyhow::Result<()> {
         handler::run_telegram_polling(
             &self.cfg.token,
-            self.publisher,
+            self.senders,
             self.workspace_dir,
-            self.reload_tx,
-            self.command_tx,
             self.tz,
             self.shutdown_rx,
         )

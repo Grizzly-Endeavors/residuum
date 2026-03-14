@@ -1,6 +1,7 @@
 //! Serenity event handler, slash command registration, and presence watcher.
 
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Duration;
 
 use serenity::async_trait;
@@ -12,7 +13,7 @@ use serenity::model::channel::Message;
 use serenity::model::gateway::Ready;
 use serenity::prelude::*;
 
-use crate::bus::Publisher;
+use crate::bus::{BusHandle, EndpointName, Publisher, TopicId};
 use crate::gateway::types::{ReloadSignal, ServerCommand};
 use crate::inbox;
 use crate::interfaces::attachment::{
@@ -33,6 +34,8 @@ const PRESENCE_POLL_SECS: u64 = 30;
 /// registers slash commands, and handles attachments.
 pub(super) struct DiscordHandler {
     pub(super) publisher: Publisher,
+    pub(super) bus_handle: BusHandle,
+    pub(super) channel_id: Arc<tokio::sync::Mutex<Option<serenity::model::id::ChannelId>>>,
     pub(super) presence_path: PathBuf,
     pub(super) inbox_dir: PathBuf,
     pub(super) reload_tx: tokio::sync::watch::Sender<ReloadSignal>,
@@ -57,6 +60,29 @@ impl EventHandler for DiscordHandler {
             tracing::warn!(error = %e, "failed to register discord slash commands");
         }
 
+        // Subscribe to bus topics and spawn subscriber loops
+        let interactive_sub = self
+            .bus_handle
+            .subscribe(TopicId::Interactive(EndpointName::from("discord")))
+            .await;
+        let broadcast_sub = self.bus_handle.subscribe(TopicId::SystemBroadcast).await;
+
+        if let Ok(sub) = interactive_sub {
+            let h = Arc::clone(&ctx.http);
+            let cid = Arc::clone(&self.channel_id);
+            tokio::spawn(super::subscriber::run_discord_subscriber(sub, h, cid));
+        } else if let Err(e) = interactive_sub {
+            tracing::warn!(error = %e, "failed to subscribe to interactive:discord");
+        }
+
+        if let Ok(sub) = broadcast_sub {
+            let h = Arc::clone(&ctx.http);
+            let cid = Arc::clone(&self.channel_id);
+            tokio::spawn(super::subscriber::run_discord_subscriber(sub, h, cid));
+        } else if let Err(e) = broadcast_sub {
+            tracing::warn!(error = %e, "failed to subscribe to system:broadcast for discord");
+        }
+
         // Spawn presence watcher background task
         let presence_path = self.presence_path.clone();
         let shard = ctx.shard.clone();
@@ -74,6 +100,15 @@ impl EventHandler for DiscordHandler {
         // DM-only: ignore guild messages
         if msg.guild_id.is_some() {
             return;
+        }
+
+        // Track the DM channel for subscriber output
+        {
+            let mut cid = self.channel_id.lock().await;
+            if cid.is_none() {
+                *cid = Some(msg.channel_id);
+                tracing::debug!(channel_id = %msg.channel_id, "discord DM channel tracked");
+            }
         }
 
         // Build content with attachment metadata and collect inline images

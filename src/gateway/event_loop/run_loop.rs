@@ -74,11 +74,13 @@ async fn spawn_server_and_adapters(
 ) -> Result<SpawnedHandles, ResiduumError> {
     let discord_senders = AdapterSenders {
         publisher: core.publisher.clone(),
+        bus_handle: core.bus_handle.clone(),
         reload: core.reload_tx.clone(),
         command: core.command_tx.clone(),
     };
     let telegram_senders = AdapterSenders {
         publisher: core.publisher.clone(),
+        bus_handle: core.bus_handle.clone(),
         reload: core.reload_tx.clone(),
         command: core.command_tx.clone(),
     };

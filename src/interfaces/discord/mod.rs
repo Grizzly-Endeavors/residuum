@@ -9,59 +9,41 @@
 //! - Attachment downloading to the workspace inbox
 
 mod handler;
-#[expect(dead_code, reason = "subscriber will be wired in during bus migration")]
 pub(crate) mod subscriber;
 
 use std::path::PathBuf;
 use std::sync::Arc;
 
 use serenity::prelude::*;
-use tokio::sync::mpsc;
 
-use crate::bus::Publisher;
 use crate::config::DiscordConfig;
-use crate::gateway::types::{ReloadSignal, ServerCommand};
+use crate::gateway::event_loop::AdapterSenders;
 
 use self::handler::DiscordHandler;
 
 /// Discord interface adapter that routes DMs to the agent inbound channel.
 pub struct DiscordInterface {
     cfg: DiscordConfig,
-    publisher: Publisher,
+    senders: AdapterSenders,
     workspace_dir: PathBuf,
-    reload_tx: tokio::sync::watch::Sender<ReloadSignal>,
-    command_tx: mpsc::Sender<ServerCommand>,
     tz: chrono_tz::Tz,
     shutdown_rx: tokio::sync::watch::Receiver<bool>,
 }
 
 impl DiscordInterface {
     /// Create a new Discord interface adapter.
-    ///
-    /// # Arguments
-    /// - `cfg`: Discord bot configuration (token).
-    /// - `publisher`: Bus publisher for routing messages to the agent.
-    /// - `workspace_dir`: Path to the workspace root (for PRESENCE.toml and inbox).
-    /// - `reload_tx`: Watch channel to trigger config reload.
-    /// - `command_tx`: Channel for dispatching named server commands.
-    /// - `tz`: Timezone for inbox item timestamps.
-    /// - `shutdown_rx`: Watch channel signalling graceful shutdown.
     #[must_use]
     pub(crate) fn new(
         cfg: DiscordConfig,
-        publisher: Publisher,
+        senders: AdapterSenders,
         workspace_dir: PathBuf,
-        reload_tx: tokio::sync::watch::Sender<ReloadSignal>,
-        command_tx: mpsc::Sender<ServerCommand>,
         tz: chrono_tz::Tz,
         shutdown_rx: tokio::sync::watch::Receiver<bool>,
     ) -> Self {
         Self {
             cfg,
-            publisher,
+            senders,
             workspace_dir,
-            reload_tx,
-            command_tx,
             tz,
             shutdown_rx,
         }
@@ -80,12 +62,16 @@ impl DiscordInterface {
         let presence_path = self.workspace_dir.join("PRESENCE.toml");
         let inbox_dir = self.workspace_dir.join("inbox");
 
+        let channel_id = Arc::new(tokio::sync::Mutex::new(None));
+
         let handler = DiscordHandler {
-            publisher: self.publisher,
+            publisher: self.senders.publisher,
+            bus_handle: self.senders.bus_handle,
+            channel_id,
             presence_path,
             inbox_dir,
-            reload_tx: self.reload_tx,
-            command_tx: self.command_tx,
+            reload_tx: self.senders.reload,
+            command_tx: self.senders.command,
             tz: self.tz,
         };
 

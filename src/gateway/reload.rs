@@ -471,12 +471,16 @@ async fn reload_discord_adapter(rt: &mut GatewayRuntime, new_cfg: &Config) {
 
     if let Some(ref discord_cfg) = new_cfg.discord {
         let (tx, rx) = tokio::sync::watch::channel(false);
+        let senders = crate::gateway::event_loop::AdapterSenders {
+            publisher: rt.publisher.clone(),
+            bus_handle: rt.bus_handle.clone(),
+            reload: rt.reload_tx.clone(),
+            command: rt.command_tx.clone(),
+        };
         let discord = crate::interfaces::discord::DiscordInterface::new(
             discord_cfg.clone(),
-            rt.publisher.clone(),
+            senders,
             new_cfg.workspace_dir.clone(),
-            rt.reload_tx.clone(),
-            rt.command_tx.clone(),
             rt.tz,
             rx,
         );
@@ -545,12 +549,16 @@ async fn reload_telegram_adapter(rt: &mut GatewayRuntime, new_cfg: &Config) {
 
     if let Some(ref telegram_cfg) = new_cfg.telegram {
         let (tx, rx) = tokio::sync::watch::channel(false);
+        let senders = crate::gateway::event_loop::AdapterSenders {
+            publisher: rt.publisher.clone(),
+            bus_handle: rt.bus_handle.clone(),
+            reload: rt.reload_tx.clone(),
+            command: rt.command_tx.clone(),
+        };
         let telegram = crate::interfaces::telegram::TelegramInterface::new(
             telegram_cfg.clone(),
-            rt.publisher.clone(),
+            senders,
             new_cfg.workspace_dir.clone(),
-            rt.reload_tx.clone(),
-            rt.command_tx.clone(),
             rt.tz,
             rx,
         );

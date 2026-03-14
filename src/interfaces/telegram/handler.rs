@@ -8,7 +8,8 @@ use teloxide::payloads::GetUpdatesSetters;
 use teloxide::requests::Requester;
 use teloxide::types::{BotCommand, ChatId, UpdateKind};
 
-use crate::bus::Publisher;
+use crate::bus::{BusHandle, EndpointName, Publisher, TopicId};
+use crate::gateway::event_loop::AdapterSenders;
 use crate::gateway::types::{ReloadSignal, ServerCommand};
 use crate::inbox;
 use crate::interfaces::attachment::{
@@ -47,13 +48,15 @@ struct AttachmentMeta<'a> {
 /// Returns an error if the initial `get_me` verification fails.
 pub(super) async fn run_telegram_polling(
     token: &str,
-    publisher: Publisher,
+    senders: AdapterSenders,
     workspace_dir: std::path::PathBuf,
-    reload_tx: tokio::sync::watch::Sender<ReloadSignal>,
-    command_tx: tokio::sync::mpsc::Sender<ServerCommand>,
     tz: chrono_tz::Tz,
     mut shutdown_rx: tokio::sync::watch::Receiver<bool>,
 ) -> anyhow::Result<()> {
+    let publisher = senders.publisher;
+    let bus_handle = senders.bus_handle;
+    let reload_tx = senders.reload;
+    let command_tx = senders.command;
     // TCP keepalive detects silently-dropped connections (e.g. NAT timeout);
     // pool_idle_timeout evicts stale connections before they poison the pool.
     // Without these, long-poll requests reuse dead connections indefinitely.
@@ -78,6 +81,7 @@ pub(super) async fn run_telegram_polling(
 
     let mut offset: i32 = 0;
     let mut consecutive_errors: u32 = 0;
+    let mut subscriber_spawned = false;
 
     loop {
         let updates = tokio::select! {
@@ -138,6 +142,13 @@ pub(super) async fn run_telegram_polling(
                 continue;
             }
 
+            // Spawn subscriber loops on first private DM
+            if !subscriber_spawned {
+                subscriber_spawned = true;
+                let chat_id = msg.chat.id;
+                spawn_telegram_subscribers(&bus_handle, &bot, chat_id).await;
+            }
+
             let ctx = TelegramContext {
                 publisher: &publisher,
                 inbox_dir: &inbox_dir,
@@ -148,6 +159,30 @@ pub(super) async fn run_telegram_polling(
             dispatch_message(&bot, &msg, from, &ctx).await;
         }
     }
+}
+
+/// Spawn bus subscriber loops for Telegram output.
+async fn spawn_telegram_subscribers(bus_handle: &BusHandle, bot: &Bot, chat_id: ChatId) {
+    let interactive_sub = bus_handle
+        .subscribe(TopicId::Interactive(EndpointName::from("telegram")))
+        .await;
+    let broadcast_sub = bus_handle.subscribe(TopicId::SystemBroadcast).await;
+
+    if let Ok(sub) = interactive_sub {
+        let b = bot.clone();
+        tokio::spawn(super::subscriber::run_telegram_subscriber(sub, b, chat_id));
+    } else if let Err(e) = interactive_sub {
+        tracing::warn!(error = %e, "failed to subscribe to interactive:telegram");
+    }
+
+    if let Ok(sub) = broadcast_sub {
+        let b = bot.clone();
+        tokio::spawn(super::subscriber::run_telegram_subscriber(sub, b, chat_id));
+    } else if let Err(e) = broadcast_sub {
+        tracing::warn!(error = %e, "failed to subscribe to system:broadcast for telegram");
+    }
+
+    tracing::debug!(%chat_id, "telegram subscriber loops spawned");
 }
 
 /// Register slash commands with the Telegram API so users see autocomplete.
