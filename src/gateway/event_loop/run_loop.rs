@@ -61,7 +61,6 @@ struct SpawnedHandles {
     tunnel_status_tx: Arc<tokio::sync::watch::Sender<crate::tunnel::TunnelStatus>>,
     tunnel_status_rx: tokio::sync::watch::Receiver<crate::tunnel::TunnelStatus>,
     sigterm: tokio::signal::unix::Signal,
-    bus_handle: crate::bus::BusHandle,
 }
 
 /// Spawn the HTTP server, chat adapters, cloud tunnel, and workspace watcher.
@@ -78,12 +77,7 @@ async fn spawn_server_and_adapters(
         reload: core.reload_tx.clone(),
         command: core.command_tx.clone(),
     };
-    let telegram_senders = AdapterSenders {
-        publisher: core.publisher.clone(),
-        bus_handle: core.bus_handle.clone(),
-        reload: core.reload_tx.clone(),
-        command: core.command_tx.clone(),
-    };
+    let telegram_senders = discord_senders.clone();
     let (tunnel_status_tx, tunnel_status_rx) =
         tokio::sync::watch::channel(crate::tunnel::TunnelStatus::Disconnected);
     let tunnel_status_tx = Arc::new(tunnel_status_tx);
@@ -129,7 +123,6 @@ async fn spawn_server_and_adapters(
         tunnel_status_tx,
         tunnel_status_rx,
         sigterm,
-        bus_handle: core.bus_handle.clone(),
     })
 }
 
@@ -150,7 +143,7 @@ async fn build_runtime(
     update: UpdateChannels,
     cloud_config: Option<crate::config::CloudConfig>,
 ) -> Result<GatewayRuntime, ResiduumError> {
-    let agent_subscriber = spawned
+    let agent_subscriber = core
         .bus_handle
         .subscribe(crate::bus::TopicId::AgentMain)
         .await
@@ -158,7 +151,7 @@ async fn build_runtime(
 
     // Spawn notify channel subscribers on the bus
     let notify_handles = crate::gateway::startup::spawn_notify_subscribers(
-        &spawned.bus_handle,
+        &core.bus_handle,
         &parts.channel_configs,
         &parts.http_client,
         &parts.layout,
@@ -180,7 +173,7 @@ async fn build_runtime(
     // Spawn the LLM notification router: subscribes to BackgroundResult topic,
     // applies content-aware routing via ALERTS.md policy
     if let Some(router_handle) = crate::notify::router::spawn_notification_router(
-        &spawned.bus_handle,
+        &core.bus_handle,
         &parts.spawn_context,
         parts.endpoint_registry.clone(),
         core.publisher.clone(),
@@ -201,7 +194,7 @@ async fn build_runtime(
         parts.layout.subagents_dir(),
     );
     let registry_handle =
-        crate::subagents::registry::spawn_registry(registry, &spawned.bus_handle).await;
+        crate::subagents::registry::spawn_registry(registry, &core.bus_handle).await;
     bus_infra_handles.push(registry_handle);
 
     Ok(GatewayRuntime {
@@ -219,12 +212,11 @@ async fn build_runtime(
         project_state: parts.project_state,
         skill_state: parts.skill_state,
         pulse_enabled: parts.pulse_enabled,
-        endpoint_registry: parts.endpoint_registry,
         notify_handles,
         bus_infra_handles,
         http_client: parts.http_client,
         spawn_context: parts.spawn_context,
-        bus_handle: spawned.bus_handle,
+        bus_handle: core.bus_handle,
         publisher: core.publisher,
         agent_subscriber,
         last_output_topic: None,

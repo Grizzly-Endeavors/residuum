@@ -7,7 +7,6 @@ use tokio::sync::mpsc;
 use crate::actions::store::ActionStore;
 use crate::agent::Agent;
 use crate::background::spawn_context::SpawnContext;
-use crate::bus::EndpointRegistry;
 use crate::bus::{BusHandle, Publisher, Subscriber, TopicId};
 use crate::config::Config;
 use crate::mcp::SharedMcpRegistry;
@@ -129,11 +128,6 @@ pub(crate) struct GatewayRuntime {
     pub project_state: SharedProjectState,
     pub skill_state: SharedSkillState,
     pub pulse_enabled: bool,
-    #[expect(
-        dead_code,
-        reason = "endpoint_registry will be consumed by future endpoint routing phases"
-    )]
-    pub endpoint_registry: EndpointRegistry,
     pub notify_handles: Vec<tokio::task::JoinHandle<()>>,
     /// Bus infrastructure handles (bridge, result router, registry) — not restarted on reload.
     pub bus_infra_handles: Vec<tokio::task::JoinHandle<()>>,

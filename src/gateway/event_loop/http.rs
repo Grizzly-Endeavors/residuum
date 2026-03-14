@@ -12,6 +12,7 @@ use crate::gateway::web;
 use crate::gateway::ws::ws_handler;
 
 /// Bundled senders for spawning a chat adapter (Discord or Telegram).
+#[derive(Clone)]
 pub struct AdapterSenders {
     pub publisher: crate::bus::Publisher,
     pub bus_handle: crate::bus::BusHandle,
