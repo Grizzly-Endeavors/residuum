@@ -5,7 +5,6 @@ use tokio::sync::mpsc;
 use crate::agent::Agent;
 use crate::agent::context::{ProjectsContext, PromptContext, SkillsContext, SubagentsContext};
 use crate::agent::interrupt::Interrupt;
-use crate::background::types::BackgroundResult;
 use crate::bus::{BusEvent, EndpointName, Publisher, ResponseEvent, Subscriber, TopicId};
 use crate::error::ResiduumError;
 use crate::gateway::types::{GatewayExit, GatewayRuntime, ReloadSignal};
@@ -16,7 +15,6 @@ use crate::projects::activation::SharedProjectState;
 use crate::skills::SharedSkillState;
 use crate::workspace::layout::WorkspaceLayout;
 
-use super::background::{BackgroundContext, handle_background_result};
 use crate::agent::context::loading::{
     build_project_context_strings, build_skill_context_strings, build_subagents_context_string,
 };
@@ -72,26 +70,11 @@ pub async fn load_prompt_context_strings(
 
 /// Process leftover interrupts that arrived during an agent turn but weren't consumed.
 ///
-/// Background results are published to notification topics; user messages are
-/// injected into the agent's conversation.
-pub async fn process_leftover_interrupts(
-    leftovers: Vec<Interrupt>,
-    rt: &mut GatewayRuntime,
-    _observe_deadline: &mut Option<tokio::time::Instant>,
-) {
+/// User messages are injected into the agent's conversation for the next turn.
+pub fn process_leftover_interrupts(leftovers: Vec<Interrupt>, rt: &mut GatewayRuntime) {
     for intr in leftovers {
-        match intr {
-            Interrupt::BackgroundResult(bg_leftover) => {
-                let bg_ctx = BackgroundContext {
-                    publisher: &rt.publisher,
-                    tz: rt.tz,
-                };
-                handle_background_result(bg_leftover, &bg_ctx).await;
-            }
-            Interrupt::UserMessage(leftover_msg) => {
-                rt.agent.inject_user_message(leftover_msg.content);
-            }
-        }
+        let Interrupt::UserMessage(leftover_msg) = intr;
+        rt.agent.inject_user_message(leftover_msg.content);
     }
 }
 
@@ -158,8 +141,8 @@ fn apply_observe_action(
     }
 }
 
-/// Run an agent turn while monitoring interrupt sources (bus messages, background
-/// results, reload signals). Returns the turn result and any leftover interrupts
+/// Run an agent turn while monitoring interrupt sources (bus messages,
+/// reload signals). Returns the turn result and any leftover interrupts
 /// that arrived after the turn completed.
 #[expect(
     clippy::too_many_arguments,
@@ -174,7 +157,6 @@ async fn run_agent_turn_with_interrupts(
     prompt_ctx: &PromptContext<'_>,
     images: &[ImageData],
     agent_subscriber: &mut Subscriber,
-    background_result_rx: &mut mpsc::Receiver<BackgroundResult>,
     reload_rx: &mut tokio::sync::watch::Receiver<ReloadSignal>,
 ) -> (Result<Vec<String>, ResiduumError>, Vec<Interrupt>) {
     let (interrupt_tx, mut interrupt_rx) = mpsc::channel::<Interrupt>(32);
@@ -204,12 +186,6 @@ async fn run_agent_turn_with_interrupts(
                             tracing::warn!("interrupt channel full, dropping user message mid-turn");
                         }
                     }
-                }
-                bg_result = background_result_rx.recv() => {
-                    if let Some(result) = bg_result
-                        && interrupt_tx.try_send(Interrupt::BackgroundResult(result)).is_err() {
-                            tracing::warn!("interrupt channel full, dropping background result mid-turn");
-                        }
                 }
                 _ = reload_rx.changed() => {
                     tracing::info!("reload signal received during active turn, deferring");
@@ -267,7 +243,6 @@ pub async fn handle_inbound_message(
         &prompt_ctx,
         &routed.message.images,
         &mut rt.agent_subscriber,
-        &mut rt.background_result_rx,
         &mut rt.reload_rx,
     )
     .await;
@@ -323,7 +298,7 @@ pub async fn handle_inbound_message(
     let new_messages: Vec<_> = rt.agent.messages_since(before).to_vec();
     persist_and_maybe_observe(rt, &new_messages, Visibility::User, observe_deadline).await;
 
-    process_leftover_interrupts(leftover_interrupts, rt, observe_deadline).await;
+    process_leftover_interrupts(leftover_interrupts, rt);
 
     if !rt.cfg.idle.timeout.is_zero() {
         let now = tokio::time::Instant::now();

@@ -5,6 +5,7 @@ use std::path::PathBuf;
 use chrono::NaiveDateTime;
 
 use crate::bus::types::PresetName;
+use crate::config::BackgroundModelTier;
 use crate::interfaces::types::MessageOrigin;
 use crate::models::ImageData;
 use crate::notify::types::TaskSource;
@@ -192,8 +193,27 @@ pub struct AgentResultEvent {
     pub summary: String,
     /// Path to the full conversation transcript, if saved.
     pub transcript_path: Option<PathBuf>,
+    /// Channels to deliver the result to.
+    pub routing: Vec<String>,
     /// Local timestamp.
     pub timestamp: NaiveDateTime,
+}
+
+/// Request to spawn a sub-agent from any source.
+#[derive(Debug, Clone)]
+pub struct SpawnRequestEvent {
+    /// Human-readable task name.
+    pub task_name: String,
+    /// The prompt/instructions for the sub-agent.
+    pub prompt: String,
+    /// Additional context to prepend (e.g. project context).
+    pub context: Option<String>,
+    /// What triggered this spawn request.
+    pub source: EventTrigger,
+    /// Override the preset's model tier.
+    pub model_tier_override: Option<BackgroundModelTier>,
+    /// Override the preset's result routing channels.
+    pub routing_override: Option<Vec<String>>,
 }
 
 // ---------------------------------------------------------------------------
@@ -211,6 +231,8 @@ pub enum BusEvent {
     Notification(NotificationEvent),
     /// Completed background/subagent result.
     AgentResult(AgentResultEvent),
+    /// Request to spawn a sub-agent.
+    SpawnRequest(SpawnRequestEvent),
     /// Tool invocation from the agent.
     ToolCall(ToolCallEvent),
     /// Tool execution result.
@@ -326,6 +348,7 @@ mod tests {
             status: AgentResultStatus::Completed,
             summary: "done".into(),
             transcript_path: Some(PathBuf::from("/tmp/transcript.json")),
+            routing: vec![],
             timestamp: sample_timestamp(),
         });
         match event {
@@ -367,6 +390,7 @@ mod tests {
             status: AgentResultStatus::Completed,
             summary: "all good".into(),
             transcript_path: Some(PathBuf::from("/var/log/transcript.json")),
+            routing: vec!["inbox".to_string()],
             timestamp: sample_timestamp(),
         };
         let cloned = ar.clone();
@@ -377,6 +401,29 @@ mod tests {
             cloned.transcript_path,
             Some(PathBuf::from("/var/log/transcript.json"))
         );
+        assert_eq!(cloned.routing, vec!["inbox".to_string()]);
+    }
+
+    #[test]
+    fn bus_event_spawn_request_variant() {
+        let event = BusEvent::SpawnRequest(SpawnRequestEvent {
+            task_name: "review".into(),
+            prompt: "review the PR".into(),
+            context: None,
+            source: EventTrigger::Agent,
+            model_tier_override: None,
+            routing_override: Some(vec!["inbox".into()]),
+        });
+        match event {
+            BusEvent::SpawnRequest(sr) => {
+                assert_eq!(sr.task_name, "review");
+                assert_eq!(sr.prompt, "review the PR");
+                assert!(sr.context.is_none());
+                assert!(sr.model_tier_override.is_none());
+                assert_eq!(sr.routing_override, Some(vec!["inbox".to_string()]));
+            }
+            _ => panic!("expected SpawnRequest variant"),
+        }
     }
 
     #[test]

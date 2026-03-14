@@ -6,18 +6,11 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use chrono::Utc;
-use rand::Rng;
 use serde_json::Value;
 
 use crate::background::BackgroundTaskSpawner;
-use crate::background::spawn_context::{SpawnContext, build_spawn_resources};
-use crate::background::types::{BackgroundTask, Execution, ResultRouting, SubAgentConfig};
 use crate::config::BackgroundModelTier;
-use crate::mcp::SharedMcpRegistry;
 use crate::models::ToolDefinition;
-use crate::notify::types::TaskSource;
-use crate::projects::activation::SharedProjectState;
-use crate::skills::SharedSkillState;
 use crate::subagents::SubagentPresetIndex;
 
 use super::{Tool, ToolError, ToolResult};
@@ -144,35 +137,21 @@ impl Tool for ListAgentsTool {
 
 /// Tool for spawning background sub-agents on demand.
 pub struct SubAgentSpawnTool {
-    spawner: Arc<BackgroundTaskSpawner>,
-    spawn_context: Arc<SpawnContext>,
-    project_state: SharedProjectState,
-    skill_state: SharedSkillState,
-    mcp_registry: SharedMcpRegistry,
+    publisher: crate::bus::Publisher,
     valid_external_channels: HashSet<String>,
     subagents_dir: PathBuf,
 }
 
 impl SubAgentSpawnTool {
     /// Create a new `SubAgentSpawnTool`.
-    ///
-    /// The `subagents_dir` for preset loading is derived from `spawn_context.layout`.
     #[must_use]
     pub(crate) fn new(
-        spawner: Arc<BackgroundTaskSpawner>,
-        spawn_context: Arc<SpawnContext>,
-        project_state: SharedProjectState,
-        skill_state: SharedSkillState,
-        mcp_registry: SharedMcpRegistry,
+        publisher: crate::bus::Publisher,
         valid_external_channels: HashSet<String>,
+        subagents_dir: PathBuf,
     ) -> Self {
-        let subagents_dir = spawn_context.layout.subagents_dir();
         Self {
-            spawner,
-            spawn_context,
-            project_state,
-            skill_state,
-            mcp_registry,
+            publisher,
             valid_external_channels,
             subagents_dir,
         }
@@ -270,41 +249,27 @@ impl Tool for SubAgentSpawnTool {
             }
         }
 
-        let task_id = generate_agent_task_id();
-        let config = SubAgentConfig {
+        let spawn_event = crate::bus::SpawnRequestEvent {
+            task_name: resolved.preset_name.clone(),
             prompt: task_prompt.to_string(),
             context: None,
-            model_tier: resolved.tier,
-        };
-        let preset_arg = Some((&resolved.preset_fm, resolved.preset_body.clone()));
-
-        let resources = build_spawn_resources(
-            &self.spawn_context,
-            &resolved.tier,
-            &self.project_state,
-            &self.skill_state,
-            Arc::clone(&self.mcp_registry),
-            preset_arg,
-        )
-        .await
-        .map_err(|err| {
-            ToolError::Execution(format!("failed to build sub-agent resources: {err}"))
-        })?;
-
-        let task = BackgroundTask {
-            id: task_id.clone(),
-            task_name: resolved.preset_name,
-            source: TaskSource::Agent,
-            execution: Execution::SubAgent(config),
-            routing: ResultRouting::Direct(resolved.channels),
+            source: crate::bus::EventTrigger::Agent,
+            model_tier_override: Some(resolved.tier),
+            routing_override: Some(resolved.channels),
         };
 
-        self.spawner
-            .spawn(task, Some(resources))
+        let topic = crate::bus::TopicId::AgentPreset(crate::bus::PresetName::from(preset_name));
+
+        self.publisher
+            .publish(topic, crate::bus::BusEvent::SpawnRequest(spawn_event))
             .await
-            .map_err(|err| ToolError::Execution(format!("failed to spawn sub-agent: {err}")))?;
+            .map_err(|err| {
+                ToolError::Execution(format!("failed to publish spawn request: {err}"))
+            })?;
 
-        Ok(ToolResult::success(format!("Subagent spawned: {task_id}")))
+        Ok(ToolResult::success(format!(
+            "Subagent '{preset_name}' spawned with task delegated to registry."
+        )))
     }
 }
 
@@ -313,8 +278,6 @@ struct ResolvedSpawn {
     preset_name: String,
     tier: BackgroundModelTier,
     channels: Vec<String>,
-    preset_fm: crate::subagents::types::SubagentPresetFrontmatter,
-    preset_body: String,
 }
 
 /// Load a preset and resolve tier/channel defaults from arguments + preset.
@@ -328,7 +291,7 @@ async fn resolve_spawn_params(
         .await
         .map_err(|e| ToolResult::error(format!("failed to load subagent presets: {e}")))?;
 
-    let (preset_fm, preset_body) = index
+    let (preset_fm, _preset_body) = index
         .load_preset(preset_name)
         .await
         .map_err(|e| ToolResult::error(e.to_string()))?;
@@ -355,20 +318,12 @@ async fn resolve_spawn_params(
         preset_name: preset_name.to_string(),
         tier,
         channels,
-        preset_fm,
-        preset_body,
     })
 }
 
 fn parse_model_tier(s: &str) -> Result<BackgroundModelTier, ToolError> {
     s.parse::<BackgroundModelTier>()
         .map_err(ToolError::InvalidArguments)
-}
-
-fn generate_agent_task_id() -> String {
-    let rand_part: u32 = rand::thread_rng().r#gen();
-    let timestamp_ms = Utc::now().timestamp_millis();
-    format!("agent-{rand_part:08x}-{timestamp_ms}")
 }
 
 pub(crate) fn is_valid_channel(name: &str, external: &HashSet<String>) -> bool {
@@ -381,56 +336,11 @@ mod tests {
     use std::path::PathBuf;
 
     use super::*;
-    use crate::mcp::McpRegistry;
-    use crate::models::CompletionOptions;
-    use crate::projects::activation::ProjectState;
-    use crate::projects::scanner::ProjectIndex;
-    use crate::skills::{SkillIndex, SkillState};
-    use crate::workspace::identity::IdentityFiles;
-    use crate::workspace::layout::WorkspaceLayout;
 
-    use tokio::sync::mpsc;
-
-    fn make_test_spawn_context() -> Arc<SpawnContext> {
-        Arc::new(SpawnContext {
-            background_config: crate::config::BackgroundConfig::default(),
-            main_provider_specs: vec![crate::config::ProviderSpec {
-                name: "test".to_string(),
-                model: crate::config::ModelSpec {
-                    kind: crate::config::ProviderKind::Ollama,
-                    model: "test-model".to_string(),
-                },
-                provider_url: "http://localhost:11434".to_string(),
-                api_key: None,
-                keep_alive: None,
-            }],
-            http_client: crate::models::SharedHttpClient::new(
-                &crate::models::HttpClientConfig::with_timeout(30),
-            )
-            .unwrap(),
-            max_tokens: 4096,
-            retry_config: crate::models::retry::RetryConfig::no_retry(),
-            identity: IdentityFiles::default(),
-            options: CompletionOptions::default(),
-            layout: WorkspaceLayout::new(PathBuf::from("/tmp")),
-            tz: chrono_tz::UTC,
-            role_overrides: std::collections::HashMap::new(),
-        })
-    }
-
-    fn make_spawner() -> (
-        Arc<BackgroundTaskSpawner>,
-        mpsc::Receiver<crate::background::types::BackgroundResult>,
-    ) {
-        let dir = tempfile::tempdir().unwrap();
-        let (tx, rx) = mpsc::channel(32);
-        let spawner = Arc::new(BackgroundTaskSpawner::new(
-            tx,
-            3,
-            PathBuf::from("/tmp"),
-            dir.path().to_path_buf(),
-        ));
-        (spawner, rx)
+    fn make_tool() -> SubAgentSpawnTool {
+        let bus_handle = crate::bus::spawn_broker();
+        let publisher = bus_handle.publisher();
+        SubAgentSpawnTool::new(publisher, HashSet::new(), PathBuf::from("/tmp"))
     }
 
     #[test]
@@ -471,33 +381,9 @@ mod tests {
         assert!(!is_valid_channel("unknown", &external));
     }
 
-    #[test]
-    fn task_id_format() {
-        let id = generate_agent_task_id();
-        assert!(id.starts_with("agent-"), "should start with agent-");
-        // Format: agent-XXXXXXXX-TIMESTAMP
-        let parts: Vec<&str> = id.splitn(3, '-').collect();
-        assert_eq!(parts.len(), 3, "should have 3 parts");
-    }
-
     #[tokio::test]
     async fn invalid_channel_rejected() {
-        let (spawner, _rx) = make_spawner();
-        let project_state = ProjectState::new_shared(
-            ProjectIndex::default(),
-            WorkspaceLayout::new(PathBuf::from("/tmp")),
-        );
-        let skill_state = SkillState::new_shared(SkillIndex::default(), vec![]);
-        let mcp_registry = McpRegistry::new_shared();
-
-        let tool = SubAgentSpawnTool::new(
-            spawner,
-            make_test_spawn_context(),
-            project_state,
-            skill_state,
-            mcp_registry,
-            HashSet::new(),
-        );
+        let tool = make_tool();
 
         let result = tool
             .execute(serde_json::json!({
@@ -513,22 +399,7 @@ mod tests {
 
     #[tokio::test]
     async fn task_required() {
-        let (spawner, _rx) = make_spawner();
-        let project_state = ProjectState::new_shared(
-            ProjectIndex::default(),
-            WorkspaceLayout::new(PathBuf::from("/tmp")),
-        );
-        let skill_state = SkillState::new_shared(SkillIndex::default(), vec![]);
-        let mcp_registry = McpRegistry::new_shared();
-
-        let tool = SubAgentSpawnTool::new(
-            spawner,
-            make_test_spawn_context(),
-            project_state,
-            skill_state,
-            mcp_registry,
-            HashSet::new(),
-        );
+        let tool = make_tool();
 
         // Missing task
         let missing_result = tool.execute(serde_json::json!({})).await;
@@ -539,24 +410,9 @@ mod tests {
         assert!(empty_result.is_err(), "should error on empty task");
     }
 
-    #[test]
-    fn definition_has_required_task() {
-        let (spawner, _rx) = make_spawner();
-        let project_state = ProjectState::new_shared(
-            ProjectIndex::default(),
-            WorkspaceLayout::new(PathBuf::from("/tmp")),
-        );
-        let skill_state = SkillState::new_shared(SkillIndex::default(), vec![]);
-        let mcp_registry = McpRegistry::new_shared();
-
-        let tool = SubAgentSpawnTool::new(
-            spawner,
-            make_test_spawn_context(),
-            project_state,
-            skill_state,
-            mcp_registry,
-            HashSet::new(),
-        );
+    #[tokio::test]
+    async fn definition_has_required_task() {
+        let tool = make_tool();
 
         let def = tool.definition();
         assert_eq!(def.name, "subagent_spawn");
@@ -571,22 +427,7 @@ mod tests {
 
     #[tokio::test]
     async fn main_preset_name_rejected() {
-        let (spawner, _rx) = make_spawner();
-        let project_state = ProjectState::new_shared(
-            ProjectIndex::default(),
-            WorkspaceLayout::new(PathBuf::from("/tmp")),
-        );
-        let skill_state = SkillState::new_shared(SkillIndex::default(), vec![]);
-        let mcp_registry = McpRegistry::new_shared();
-
-        let tool = SubAgentSpawnTool::new(
-            spawner,
-            make_test_spawn_context(),
-            project_state,
-            skill_state,
-            mcp_registry,
-            HashSet::new(),
-        );
+        let tool = make_tool();
 
         let result = tool
             .execute(serde_json::json!({
@@ -605,22 +446,7 @@ mod tests {
 
     #[tokio::test]
     async fn main_preset_name_rejected_case_insensitive() {
-        let (spawner, _rx) = make_spawner();
-        let project_state = ProjectState::new_shared(
-            ProjectIndex::default(),
-            WorkspaceLayout::new(PathBuf::from("/tmp")),
-        );
-        let skill_state = SkillState::new_shared(SkillIndex::default(), vec![]);
-        let mcp_registry = McpRegistry::new_shared();
-
-        let tool = SubAgentSpawnTool::new(
-            spawner,
-            make_test_spawn_context(),
-            project_state,
-            skill_state,
-            mcp_registry,
-            HashSet::new(),
-        );
+        let tool = make_tool();
 
         let result = tool
             .execute(serde_json::json!({
@@ -634,22 +460,7 @@ mod tests {
 
     #[tokio::test]
     async fn unknown_preset_name_returns_error() {
-        let (spawner, _rx) = make_spawner();
-        let project_state = ProjectState::new_shared(
-            ProjectIndex::default(),
-            WorkspaceLayout::new(PathBuf::from("/tmp")),
-        );
-        let skill_state = SkillState::new_shared(SkillIndex::default(), vec![]);
-        let mcp_registry = McpRegistry::new_shared();
-
-        let tool = SubAgentSpawnTool::new(
-            spawner,
-            make_test_spawn_context(),
-            project_state,
-            skill_state,
-            mcp_registry,
-            HashSet::new(),
-        );
+        let tool = make_tool();
 
         let result = tool
             .execute(serde_json::json!({
@@ -671,22 +482,7 @@ mod tests {
     async fn default_preset_general_purpose_used_when_no_agent_name() {
         // When no agent_name is provided, the general-purpose preset is used.
         // We test this indirectly — the call should not fail with an unknown-preset error.
-        let (spawner, _rx) = make_spawner();
-        let project_state = ProjectState::new_shared(
-            ProjectIndex::default(),
-            WorkspaceLayout::new(PathBuf::from("/tmp")),
-        );
-        let skill_state = SkillState::new_shared(SkillIndex::default(), vec![]);
-        let mcp_registry = McpRegistry::new_shared();
-
-        let tool = SubAgentSpawnTool::new(
-            spawner,
-            make_test_spawn_context(),
-            project_state,
-            skill_state,
-            mcp_registry,
-            HashSet::new(),
-        );
+        let tool = make_tool();
 
         // No agent_name → should not fail with "unknown preset"
         let result = tool

@@ -16,7 +16,6 @@ use crate::tools::ToolRegistry;
 use crate::workspace::identity::IdentityFiles;
 use crate::workspace::layout::WorkspaceLayout;
 
-use super::SpawnContext;
 use super::memory::MemoryComponents;
 
 /// Shared subsystem handles needed for tool registration.
@@ -28,8 +27,8 @@ pub(super) struct ToolRegistryDeps<'a> {
     pub skill_state: &'a SharedSkillState,
     pub mcp_registry: &'a SharedMcpRegistry,
     pub background_spawner: &'a Arc<BackgroundTaskSpawner>,
-    pub spawn_context: &'a Arc<SpawnContext>,
     pub endpoint_registry: &'a EndpointRegistry,
+    pub publisher: &'a crate::bus::Publisher,
 }
 
 /// Arguments for creating the agent, bundled to stay under the argument limit.
@@ -93,12 +92,9 @@ pub(super) fn init_tool_registry(
     tools.register_inbox_tools(layout.inbox_dir(), layout.inbox_archive_dir(), tz);
     tools.register_background_tools(Arc::clone(deps.background_spawner));
     tools.register_spawn_tool(
-        Arc::clone(deps.background_spawner),
-        Arc::clone(deps.spawn_context),
-        Arc::clone(deps.project_state),
-        Arc::clone(deps.skill_state),
-        Arc::clone(deps.mcp_registry),
+        deps.publisher.clone(),
         deps.valid_external_channels.clone(),
+        layout.subagents_dir(),
     );
 
     tools.register_send_message_tool(deps.endpoint_registry.clone(), layout.inbox_dir(), tz);

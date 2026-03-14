@@ -321,7 +321,10 @@ pub(crate) async fn spawn_notify_subscribers(
 ///
 /// # Errors
 /// Returns `ResiduumError` if any subsystem fails to initialize.
-pub(crate) async fn initialize(cfg: &Config) -> Result<GatewayComponents, ResiduumError> {
+pub(crate) async fn initialize(
+    cfg: &Config,
+    publisher: &crate::bus::Publisher,
+) -> Result<GatewayComponents, ResiduumError> {
     let (layout, tz) = init_workspace(cfg).await?;
     let (identity, http) = init_identity_and_http(&layout, cfg).await?;
     let providers = providers::init_providers(cfg, tz, http.clone())?;
@@ -363,8 +366,8 @@ pub(crate) async fn initialize(cfg: &Config) -> Result<GatewayComponents, Residu
         skill_state: &skill_state,
         mcp_registry: &mcp_registry,
         background_spawner: &background_spawner,
-        spawn_context: &spawn_context,
         endpoint_registry: &endpoint_registry,
+        publisher,
     };
     let (tools, tool_filter, path_policy_for_runtime) =
         tools::init_tool_registry(cfg, &layout, &mem, tz, &tool_deps);

@@ -60,7 +60,8 @@ pub(crate) async fn run_telegram_subscriber(mut subscriber: Subscriber, bot: Bot
             | BusEvent::Message(_)
             | BusEvent::Notification(_)
             | BusEvent::AgentResult(_)
-            | BusEvent::WebhookPayload { .. } => {}
+            | BusEvent::WebhookPayload { .. }
+            | BusEvent::SpawnRequest(_) => {}
         }
     }
 

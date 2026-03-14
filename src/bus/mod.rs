@@ -16,8 +16,8 @@ pub use broker::{BusHandle, spawn_broker};
 pub use endpoint::{EndpointCapabilities, EndpointId};
 pub use events::{
     AgentResultEvent, AgentResultStatus, BusEvent, EventTrigger, HeartbeatStatus,
-    IntermediateEvent, MessageEvent, NotificationEvent, ResponseEvent, SystemEventData,
-    ToolCallEvent, ToolResultEvent,
+    IntermediateEvent, MessageEvent, NotificationEvent, ResponseEvent, SpawnRequestEvent,
+    SystemEventData, ToolCallEvent, ToolResultEvent,
 };
 pub use handle::{Publisher, Subscriber};
 pub use registry::{EndpointEntry, EndpointRegistry};

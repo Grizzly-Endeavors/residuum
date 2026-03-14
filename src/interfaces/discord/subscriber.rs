@@ -69,7 +69,8 @@ pub(crate) async fn run_discord_subscriber(
             | BusEvent::Message(_)
             | BusEvent::Notification(_)
             | BusEvent::AgentResult(_)
-            | BusEvent::WebhookPayload { .. } => {}
+            | BusEvent::WebhookPayload { .. }
+            | BusEvent::SpawnRequest(_) => {}
         }
     }
 

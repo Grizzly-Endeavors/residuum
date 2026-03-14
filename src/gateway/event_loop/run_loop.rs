@@ -14,7 +14,6 @@ use crate::gateway::types::{GatewayCore, GatewayExit, GatewayRuntime, GatewaySta
 use crate::memory::types::Visibility;
 use crate::pulse::scheduler::PulseScheduler;
 
-use super::background::{BackgroundContext, handle_background_result};
 use super::commands::handle_server_command;
 use super::http::{AdapterSenders, build_gateway_app, spawn_adapters, spawn_http_server};
 use super::pulse::handle_pulse_tick;
@@ -34,8 +33,8 @@ use crate::gateway::{actions, idle, reload, watcher, web};
 pub async fn run_gateway(cfg: Config) -> Result<GatewayExit, ResiduumError> {
     reload::backup_config(&cfg.config_dir);
 
-    let parts = crate::gateway::startup::initialize(&cfg).await?;
     let (core, receivers) = GatewayCore::new(cfg.config_dir.clone());
+    let parts = crate::gateway::startup::initialize(&cfg, &core.publisher).await?;
 
     let update_status = crate::update::new_shared_status();
     let (restart_tx, restart_rx) = tokio::sync::mpsc::channel::<()>(1);
@@ -159,7 +158,7 @@ async fn build_runtime(
         .map_err(|e| ResiduumError::Gateway(format!("failed to subscribe to agent:main: {e}")))?;
 
     // Spawn notify channel subscribers on the bus
-    let notify_handles = crate::gateway::startup::spawn_notify_subscribers(
+    let mut notify_handles = crate::gateway::startup::spawn_notify_subscribers(
         &spawned.bus_handle,
         &parts.channel_configs,
         &parts.http_client,
@@ -167,6 +166,34 @@ async fn build_runtime(
         parts.tz,
     )
     .await;
+
+    // Spawn the result bridge: reads from spawner's mpsc channel, publishes to bus
+    let bridge_handle = crate::background::bridge::spawn_result_bridge(
+        parts.background_result_rx,
+        core.publisher.clone(),
+        parts.tz,
+    );
+    notify_handles.push(bridge_handle);
+
+    // Spawn the result router: subscribes to BackgroundResult topic, routes to channels
+    if let Some(router_handle) =
+        super::background::spawn_result_router(&spawned.bus_handle, core.publisher.clone()).await
+    {
+        notify_handles.push(router_handle);
+    }
+
+    // Spawn the subagent registry: subscribes to preset topics, handles spawn requests
+    let registry = crate::subagents::SubagentRegistry::new(
+        Arc::clone(&parts.background_spawner),
+        Arc::clone(&parts.spawn_context),
+        Arc::clone(&parts.project_state),
+        Arc::clone(&parts.skill_state),
+        Arc::clone(&parts.mcp_registry),
+        parts.layout.subagents_dir(),
+    );
+    let registry_handle =
+        crate::subagents::registry::spawn_registry(registry, &spawned.bus_handle).await;
+    notify_handles.push(registry_handle);
 
     Ok(GatewayRuntime {
         layout: parts.layout,
@@ -187,7 +214,6 @@ async fn build_runtime(
         notify_handles,
         http_client: parts.http_client,
         background_spawner: parts.background_spawner,
-        background_result_rx: parts.background_result_rx,
         spawn_context: parts.spawn_context,
         inbound_rx: receivers.inbound,
         bus_handle: spawned.bus_handle,
@@ -294,20 +320,6 @@ async fn handle_workspace_reload(rt: &mut GatewayRuntime) {
             message: "workspace configuration reloaded".to_string(),
         })
         .ok();
-}
-
-/// Handle a background task result in the event loop: publish to notification topics.
-async fn handle_event_loop_bg_result(
-    result: crate::background::types::BackgroundResult,
-    rt: &mut GatewayRuntime,
-    _observe_deadline: &mut Option<tokio::time::Instant>,
-) -> Option<GatewayExit> {
-    let bg_ctx = BackgroundContext {
-        publisher: &rt.publisher,
-        tz: rt.tz,
-    };
-    handle_background_result(result, &bg_ctx).await;
-    None
 }
 
 /// Apply a reload signal's idle action to the idle deadline.
@@ -587,14 +599,6 @@ async fn run_event_loop(mut rt: GatewayRuntime) -> GatewayExit {
             () = wait_for_deadline(idle_deadline) => {
                 idle::execute_idle_transition(&mut rt, &mut observe_deadline).await;
                 idle_deadline = None;
-            }
-
-            bg_result = rt.background_result_rx.recv() => {
-                if let Some(result) = bg_result
-                    && let Some(exit) = handle_event_loop_bg_result(result, &mut rt, &mut observe_deadline).await
-                {
-                    return exit;
-                }
             }
 
             cmd = rt.command_rx.recv() => {

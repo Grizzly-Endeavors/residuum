@@ -43,7 +43,8 @@ pub async fn run_ws_subscriber(
             | BusEvent::Message(_)
             | BusEvent::Notification(_)
             | BusEvent::AgentResult(_)
-            | BusEvent::WebhookPayload { .. } => None,
+            | BusEvent::WebhookPayload { .. }
+            | BusEvent::SpawnRequest(_) => None,
         };
 
         if let Some(msg) = msg

@@ -1,13 +1,10 @@
 //! Pulse execution handling and scheduling in the event loop.
 
-use crate::background::spawn_context::load_preset_for_spawn;
-use crate::config::BackgroundModelTier;
+use crate::bus::{BusEvent, EventTrigger, PresetName, SpawnRequestEvent, TopicId};
 use crate::gateway::types::GatewayRuntime;
 use crate::memory::types::Visibility;
 use crate::models::Message;
 use crate::pulse::executor::PulseExecution;
-
-use crate::background::spawn_context as spawn_helpers;
 
 /// Handle a single pulse execution entry (main-turn or sub-agent).
 pub async fn handle_pulse_execution(
@@ -37,39 +34,23 @@ pub async fn handle_pulse_execution(
             task,
             preset_name: Some(name),
         } => {
-            match load_preset_for_spawn(
-                &rt.layout.subagents_dir(),
-                &name,
-                BackgroundModelTier::Small,
-            )
-            .await
+            let crate::background::types::Execution::SubAgent(cfg) = &task.execution;
+            let crate::background::types::ResultRouting::Direct(channels) = &task.routing;
+            let spawn_event = SpawnRequestEvent {
+                task_name: task.task_name.clone(),
+                prompt: cfg.prompt.clone(),
+                context: cfg.context.clone(),
+                source: EventTrigger::Pulse,
+                model_tier_override: Some(cfg.model_tier),
+                routing_override: Some(channels.clone()),
+            };
+            let topic = TopicId::AgentPreset(PresetName::from(name.as_str()));
+            if let Err(e) = rt
+                .publisher
+                .publish(topic, BusEvent::SpawnRequest(spawn_event))
+                .await
             {
-                Ok((tier, preset)) => {
-                    let preset_arg = preset.as_ref().map(|(fm, body)| (fm, body.clone()));
-                    match spawn_helpers::build_spawn_resources(
-                        &rt.spawn_context,
-                        &tier,
-                        &rt.project_state,
-                        &rt.skill_state,
-                        std::sync::Arc::clone(&rt.mcp_registry),
-                        preset_arg,
-                    )
-                    .await
-                    {
-                        Ok(resources) => {
-                            if let Err(e) = rt.background_spawner.spawn(task, Some(resources)).await
-                            {
-                                tracing::warn!(pulse = %pulse_name, error = %e, "failed to spawn pulse task with preset");
-                            }
-                        }
-                        Err(e) => {
-                            tracing::warn!(pulse = %pulse_name, error = %e, "failed to build pulse resources with preset");
-                        }
-                    }
-                }
-                Err(e) => {
-                    tracing::warn!(pulse = %pulse_name, preset = %name, error = %e, "failed to load preset for pulse");
-                }
+                tracing::warn!(pulse = %pulse_name, error = %e, "failed to publish pulse spawn request");
             }
             false
         }
@@ -78,25 +59,22 @@ pub async fn handle_pulse_execution(
             preset_name: None,
         } => {
             let crate::background::types::Execution::SubAgent(cfg) = &task.execution;
-            let tier = cfg.model_tier;
-            match spawn_helpers::build_spawn_resources(
-                &rt.spawn_context,
-                &tier,
-                &rt.project_state,
-                &rt.skill_state,
-                std::sync::Arc::clone(&rt.mcp_registry),
-                None,
-            )
-            .await
+            let crate::background::types::ResultRouting::Direct(channels) = &task.routing;
+            let spawn_event = SpawnRequestEvent {
+                task_name: task.task_name.clone(),
+                prompt: cfg.prompt.clone(),
+                context: cfg.context.clone(),
+                source: EventTrigger::Pulse,
+                model_tier_override: Some(cfg.model_tier),
+                routing_override: Some(channels.clone()),
+            };
+            let topic = TopicId::AgentPreset(PresetName::from("general-purpose"));
+            if let Err(e) = rt
+                .publisher
+                .publish(topic, BusEvent::SpawnRequest(spawn_event))
+                .await
             {
-                Ok(resources) => {
-                    if let Err(e) = rt.background_spawner.spawn(task, Some(resources)).await {
-                        tracing::warn!(pulse = %pulse_name, error = %e, "failed to spawn pulse task");
-                    }
-                }
-                Err(e) => {
-                    tracing::warn!(pulse = %pulse_name, error = %e, "failed to build pulse resources");
-                }
+                tracing::warn!(pulse = %pulse_name, error = %e, "failed to publish pulse spawn request");
             }
             false
         }

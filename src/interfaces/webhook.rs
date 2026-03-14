@@ -83,22 +83,40 @@ pub async fn webhook_handler(
         timestamp: crate::time::now_local(chrono_tz::UTC),
     };
 
-    // TODO(phase-7): for WebhookRouting::Agent(preset), route to TopicId::AgentPreset(preset)
-    let topic = match &endpoint.routing {
-        WebhookRouting::Inbox => crate::bus::TopicId::Inbox,
-        WebhookRouting::Agent(_preset) => {
-            // Phase 7 will route to TopicId::AgentPreset; fall back to inbox for now
-            crate::bus::TopicId::Inbox
+    match &endpoint.routing {
+        WebhookRouting::Inbox => {
+            if let Err(e) = state
+                .publisher
+                .publish(
+                    crate::bus::TopicId::Inbox,
+                    crate::bus::BusEvent::Notification(notification),
+                )
+                .await
+            {
+                tracing::warn!(webhook = %name, error = %e, "bus publish failed, dropping webhook message");
+                return StatusCode::SERVICE_UNAVAILABLE;
+            }
         }
-    };
-
-    if let Err(e) = state
-        .publisher
-        .publish(topic, crate::bus::BusEvent::Notification(notification))
-        .await
-    {
-        tracing::warn!(webhook = %name, error = %e, "bus publish failed, dropping webhook message");
-        return StatusCode::SERVICE_UNAVAILABLE;
+        WebhookRouting::Agent(preset) => {
+            let spawn_event = crate::bus::SpawnRequestEvent {
+                task_name: format!("webhook:{name}"),
+                prompt: notification.content,
+                context: None,
+                source: crate::bus::EventTrigger::Webhook(name.clone()),
+                model_tier_override: None,
+                routing_override: None,
+            };
+            let topic =
+                crate::bus::TopicId::AgentPreset(crate::bus::PresetName::from(preset.as_str()));
+            if let Err(e) = state
+                .publisher
+                .publish(topic, crate::bus::BusEvent::SpawnRequest(spawn_event))
+                .await
+            {
+                tracing::warn!(webhook = %name, error = %e, "bus publish failed, dropping webhook message");
+                return StatusCode::SERVICE_UNAVAILABLE;
+            }
+        }
     }
 
     StatusCode::ACCEPTED
@@ -467,14 +485,29 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn webhook_agent_routing_falls_back_to_inbox() {
+    async fn webhook_agent_routing_publishes_spawn_request() {
         let endpoint = WebhookEndpointState {
             secret: None,
             format: WebhookFormat::Parsed,
             content_fields: None,
             routing: WebhookRouting::Agent("code_reviewer".to_string()),
         };
-        let (app, mut sub) = make_app(single_webhook("agent-hook", endpoint)).await;
+        let bus_handle = crate::bus::spawn_broker();
+        let publisher = bus_handle.publisher();
+        let mut preset_sub = bus_handle
+            .subscribe(crate::bus::TopicId::AgentPreset(
+                crate::bus::PresetName::from("code_reviewer"),
+            ))
+            .await
+            .unwrap();
+
+        let state = WebhookState {
+            publisher,
+            webhooks: single_webhook("agent-hook", endpoint),
+        };
+        let app = axum::Router::new()
+            .route("/webhook/{name}", post(webhook_handler))
+            .with_state(state);
 
         let req = Request::builder()
             .method("POST")
@@ -485,15 +518,16 @@ mod tests {
         let resp = app.oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::ACCEPTED);
 
-        let event = tokio::time::timeout(std::time::Duration::from_millis(100), sub.recv())
+        let event = tokio::time::timeout(std::time::Duration::from_millis(100), preset_sub.recv())
             .await
             .unwrap()
             .unwrap();
         match event {
-            crate::bus::BusEvent::Notification(n) => {
-                assert_eq!(n.content, "review this");
+            crate::bus::BusEvent::SpawnRequest(sr) => {
+                assert_eq!(sr.prompt, "review this");
+                assert_eq!(sr.task_name, "webhook:agent-hook");
             }
-            other => panic!("expected Notification, got {other:?}"),
+            other => panic!("expected SpawnRequest, got {other:?}"),
         }
     }
 

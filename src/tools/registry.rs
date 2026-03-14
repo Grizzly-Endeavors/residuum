@@ -7,7 +7,6 @@ use tokio::sync::{Mutex, Notify};
 
 use crate::actions::store::ActionStore;
 use crate::background::BackgroundTaskSpawner;
-use crate::background::spawn_context::SpawnContext;
 use crate::bus::EndpointRegistry;
 use crate::mcp::SharedMcpRegistry;
 use crate::memory::search::HybridSearcher;
@@ -182,20 +181,14 @@ impl ToolRegistry {
     /// Register the `subagent_spawn` tool for on-demand sub-agent delegation.
     pub(crate) fn register_spawn_tool(
         &mut self,
-        spawner: Arc<BackgroundTaskSpawner>,
-        spawn_context: Arc<SpawnContext>,
-        project_state: SharedProjectState,
-        skill_state: SharedSkillState,
-        mcp_registry: SharedMcpRegistry,
+        publisher: crate::bus::Publisher,
         valid_external_channels: HashSet<String>,
+        subagents_dir: std::path::PathBuf,
     ) {
         self.register(Box::new(background::SubAgentSpawnTool::new(
-            spawner,
-            spawn_context,
-            project_state,
-            skill_state,
-            mcp_registry,
+            publisher,
             valid_external_channels,
+            subagents_dir,
         )));
     }
 
