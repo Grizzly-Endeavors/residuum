@@ -1,6 +1,6 @@
 //! Server command handler in the event loop.
 
-use crate::gateway::protocol::ServerMessage;
+use crate::bus::{BusEvent, TopicId};
 use crate::gateway::types::GatewayRuntime;
 use crate::gateway::types::ServerCommand;
 
@@ -24,10 +24,10 @@ pub async fn handle_server_command(
                 vector_store: rt.vector_store.as_ref(),
                 embedding_provider: rt.embedding_provider.as_ref(),
             };
-            run_forced_observe(&mem, &mut rt.agent, &rt.broadcast_tx).await;
+            run_forced_observe(&mem, &mut rt.agent, &rt.publisher).await;
         }
         "reflect" => {
-            run_forced_reflect(&rt.reflector, &rt.layout, &mut rt.agent, &rt.broadcast_tx).await;
+            run_forced_reflect(&rt.reflector, &rt.layout, &mut rt.agent, &rt.publisher).await;
         }
         "context" => {
             let ctx_strings =
@@ -51,17 +51,27 @@ pub async fn handle_server_command(
             if let Some(tx) = cmd.reply_tx {
                 tx.send(msg.clone()).ok();
             }
-            rt.broadcast_tx
-                .send(ServerMessage::Notice { message: msg })
-                .ok();
+            if let Err(e) = rt
+                .publisher
+                .publish(TopicId::SystemBroadcast, BusEvent::Notice { message: msg })
+                .await
+            {
+                tracing::warn!(error = %e, "failed to publish context notice");
+            }
         }
         unknown => {
-            rt.broadcast_tx
-                .send(ServerMessage::Error {
-                    reply_to: None,
-                    message: format!("unknown server command: {unknown}"),
-                })
-                .ok();
+            if let Err(e) = rt
+                .publisher
+                .publish(
+                    TopicId::SystemBroadcast,
+                    BusEvent::Notice {
+                        message: format!("unknown server command: {unknown}"),
+                    },
+                )
+                .await
+            {
+                tracing::warn!(error = %e, "failed to publish error notice");
+            }
         }
     }
 }

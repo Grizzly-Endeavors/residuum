@@ -2,10 +2,8 @@
 
 use std::sync::Arc;
 
-use tokio::sync::broadcast;
-
 use crate::agent::Agent;
-use crate::gateway::protocol::ServerMessage;
+use crate::bus::{BusEvent, Publisher, TopicId};
 use crate::memory::log_store::load_observation_log;
 use crate::memory::observer::{ObserveAction, ObserveResult, Observer};
 use crate::memory::recent_context::{RecentContext, save_recent_context};
@@ -271,41 +269,40 @@ async fn run_reflector_check(reflector: &Reflector, layout: &WorkspaceLayout) ->
     }
 }
 
+/// Publish a notice to `SystemBroadcast`.
+async fn publish_notice(publisher: &Publisher, message: String) {
+    if let Err(e) = publisher
+        .publish(TopicId::SystemBroadcast, BusEvent::Notice { message })
+        .await
+    {
+        tracing::warn!(error = %e, "failed to publish notice to bus");
+    }
+}
+
 /// Force an observation cycle regardless of token threshold.
 ///
 /// Loads recent messages, runs the observer, clears recent messages, updates
-/// the search index, optionally triggers reflection, and broadcasts a `Notice`.
+/// the search index, optionally triggers reflection, and publishes a notice.
 pub(super) async fn run_forced_observe(
     mem: &MemorySubsystems<'_>,
     agent: &mut Agent,
-    broadcast_tx: &broadcast::Sender<ServerMessage>,
+    publisher: &Publisher,
 ) {
     let recent = match load_recent_messages(&mem.layout.recent_messages_json()).await {
         Ok(msgs) => msgs,
         Err(e) => {
             tracing::warn!(error = %e, "forced observe failed to load recent messages");
-            if broadcast_tx
-                .send(ServerMessage::Error {
-                    reply_to: None,
-                    message: format!("observe failed: {e}"),
-                })
-                .is_err()
-            {
-                tracing::trace!("no broadcast receivers for error");
-            }
+            publish_notice(publisher, format!("observe failed: {e}")).await;
             return;
         }
     };
 
     if recent.is_empty() {
-        if broadcast_tx
-            .send(ServerMessage::Notice {
-                message: "[memory] observe: no recent messages".to_string(),
-            })
-            .is_err()
-        {
-            tracing::trace!("no broadcast receivers for notice");
-        }
+        publish_notice(
+            publisher,
+            "[memory] observe: no recent messages".to_string(),
+        )
+        .await;
         return;
     }
 
@@ -313,15 +310,7 @@ pub(super) async fn run_forced_observe(
         Ok(r) => r,
         Err(e) => {
             tracing::warn!(error = %e, "forced observe failed");
-            if broadcast_tx
-                .send(ServerMessage::Error {
-                    reply_to: None,
-                    message: format!("observe failed: {e}"),
-                })
-                .is_err()
-            {
-                tracing::trace!("no broadcast receivers for error");
-            }
+            publish_notice(publisher, format!("observe failed: {e}")).await;
             return;
         }
     };
@@ -354,12 +343,7 @@ pub(super) async fn run_forced_observe(
         "[memory] observed: {} ({} observations){suffix}",
         result.id, result.observation_count
     );
-    if broadcast_tx
-        .send(ServerMessage::Notice { message: notice })
-        .is_err()
-    {
-        tracing::trace!("no broadcast receivers for notice");
-    }
+    publish_notice(publisher, notice).await;
 }
 
 /// Mark an episode's `.obs.json` and `.idx.jsonl` as embedded in the manifest.
@@ -421,38 +405,27 @@ async fn mark_episode_embedded(layout: &WorkspaceLayout, result: &ObserveResult)
 
 /// Force a reflection cycle regardless of observation log size.
 ///
-/// Runs the reflector, reloads observations into the agent, and broadcasts a `Notice`.
+/// Runs the reflector, reloads observations into the agent, and publishes a notice.
 pub(super) async fn run_forced_reflect(
     reflector: &Reflector,
     layout: &WorkspaceLayout,
     agent: &mut Agent,
-    broadcast_tx: &broadcast::Sender<ServerMessage>,
+    publisher: &Publisher,
 ) {
     match reflector.reflect(layout).await {
         Ok(compressed) => {
             if let Err(e) = agent.reload_observations(layout).await {
                 tracing::warn!(error = %e, "failed to reload observations after forced reflect");
             }
-            if broadcast_tx
-                .send(ServerMessage::Notice {
-                    message: format!("[memory] reflected: {} observations", compressed.len()),
-                })
-                .is_err()
-            {
-                tracing::trace!("no broadcast receivers for notice");
-            }
+            publish_notice(
+                publisher,
+                format!("[memory] reflected: {} observations", compressed.len()),
+            )
+            .await;
         }
         Err(e) => {
             tracing::warn!(error = %e, "forced reflect failed");
-            if broadcast_tx
-                .send(ServerMessage::Error {
-                    reply_to: None,
-                    message: format!("reflect failed: {e}"),
-                })
-                .is_err()
-            {
-                tracing::trace!("no broadcast receivers for error");
-            }
+            publish_notice(publisher, format!("reflect failed: {e}")).await;
         }
     }
 }

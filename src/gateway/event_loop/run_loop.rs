@@ -9,7 +9,6 @@ use tokio::time::Duration;
 
 use crate::config::Config;
 use crate::error::ResiduumError;
-use crate::gateway::protocol::ServerMessage;
 use crate::gateway::types::{GatewayCore, GatewayExit, GatewayRuntime, GatewayState, ReloadSignal};
 use crate::memory::types::Visibility;
 use crate::pulse::scheduler::PulseScheduler;
@@ -325,11 +324,18 @@ async fn handle_workspace_reload(rt: &mut GatewayRuntime) {
         }
     }
 
-    rt.broadcast_tx
-        .send(ServerMessage::Notice {
-            message: "workspace configuration reloaded".to_string(),
-        })
-        .ok();
+    if let Err(e) = rt
+        .publisher
+        .publish(
+            crate::bus::TopicId::SystemBroadcast,
+            crate::bus::BusEvent::Notice {
+                message: "workspace configuration reloaded".to_string(),
+            },
+        )
+        .await
+    {
+        tracing::warn!(error = %e, "failed to publish workspace reload notice");
+    }
 }
 
 /// Apply a reload signal's idle action to the idle deadline.

@@ -5,8 +5,8 @@ use std::sync::Arc;
 use tokio::time::Duration;
 
 use crate::background::spawn_context::SpawnContext;
+use crate::bus::{BusEvent, Publisher, TopicId};
 use crate::config::Config;
-use crate::gateway::protocol::ServerMessage;
 use crate::gateway::startup;
 use crate::models::CompletionOptions;
 
@@ -184,6 +184,16 @@ pub fn rollback_config(config_dir: &std::path::Path) -> bool {
     any_restored
 }
 
+/// Publish a notice to `SystemBroadcast`.
+async fn publish_notice(publisher: &Publisher, message: String) {
+    if let Err(e) = publisher
+        .publish(TopicId::SystemBroadcast, BusEvent::Notice { message })
+        .await
+    {
+        tracing::warn!(error = %e, "failed to publish notice to bus");
+    }
+}
+
 /// Handle an in-place root config reload.
 ///
 /// Backs up current config files, loads new config, diffs old vs new, and
@@ -198,11 +208,11 @@ pub(super) async fn handle_root_reload(rt: &mut GatewayRuntime) -> IdleAction {
         Err(err) => {
             tracing::warn!(error = %err, "config reload failed, keeping current config");
             rollback_config(&rt.config_dir);
-            rt.broadcast_tx
-                .send(ServerMessage::Notice {
-                    message: format!("config reload failed (keeping current config): {err}"),
-                })
-                .ok();
+            publish_notice(
+                &rt.publisher,
+                format!("config reload failed (keeping current config): {err}"),
+            )
+            .await;
             return IdleAction::None;
         }
     };
@@ -210,11 +220,11 @@ pub(super) async fn handle_root_reload(rt: &mut GatewayRuntime) -> IdleAction {
     let diff = diff_config(&rt.cfg, &new_cfg);
 
     if diff.is_empty() {
-        rt.broadcast_tx
-            .send(ServerMessage::Notice {
-                message: "configuration reloaded: no changes detected".to_string(),
-            })
-            .ok();
+        publish_notice(
+            &rt.publisher,
+            "configuration reloaded: no changes detected".to_string(),
+        )
+        .await;
         tracing::info!("config reload: no changes detected");
         return IdleAction::None;
     }
@@ -222,7 +232,7 @@ pub(super) async fn handle_root_reload(rt: &mut GatewayRuntime) -> IdleAction {
     let summary = diff.summary();
 
     if diff.providers_changed {
-        reload_providers(rt, &new_cfg);
+        reload_providers(rt, &new_cfg).await;
     }
     if diff.memory_changed {
         reload_memory_thresholds(rt, &new_cfg);
@@ -256,11 +266,7 @@ pub(super) async fn handle_root_reload(rt: &mut GatewayRuntime) -> IdleAction {
     // ── Store new config ────────────────────────────────────────────────
     rt.cfg = new_cfg;
 
-    rt.broadcast_tx
-        .send(ServerMessage::Notice {
-            message: format!("configuration reloaded: {summary}"),
-        })
-        .ok();
+    publish_notice(&rt.publisher, format!("configuration reloaded: {summary}")).await;
     tracing::info!(changes = %summary, "configuration reloaded successfully");
 
     if diff.idle_changed {
@@ -298,7 +304,7 @@ fn build_spawn_context(rt: &GatewayRuntime, new_cfg: &Config) -> Arc<SpawnContex
 }
 
 /// Rebuild providers and swap them into the runtime.
-fn reload_providers(rt: &mut GatewayRuntime, new_cfg: &Config) {
+async fn reload_providers(rt: &mut GatewayRuntime, new_cfg: &Config) {
     match startup::init_providers(new_cfg, rt.tz, rt.http_client.clone()) {
         Ok(components) => {
             rt.agent.swap_provider(components.provider);
@@ -310,11 +316,11 @@ fn reload_providers(rt: &mut GatewayRuntime, new_cfg: &Config) {
         }
         Err(err) => {
             tracing::warn!(error = %err, "provider rebuild failed, keeping current providers");
-            rt.broadcast_tx
-                .send(ServerMessage::Notice {
-                    message: format!("provider rebuild failed (keeping current): {err}"),
-                })
-                .ok();
+            publish_notice(
+                &rt.publisher,
+                format!("provider rebuild failed (keeping current): {err}"),
+            )
+            .await;
         }
     }
 }
@@ -401,13 +407,11 @@ async fn reload_gateway(rt: &mut GatewayRuntime, new_cfg: &Config) {
                 error = %e,
                 "failed to bind to new gateway address, keeping current server"
             );
-            rt.broadcast_tx
-                .send(ServerMessage::Notice {
-                    message: format!(
-                        "gateway rebind failed ({new_addr}): {e} — keeping current server"
-                    ),
-                })
-                .ok();
+            publish_notice(
+                &rt.publisher,
+                format!("gateway rebind failed ({new_addr}): {e} — keeping current server"),
+            )
+            .await;
         }
     }
 }
