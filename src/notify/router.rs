@@ -190,7 +190,7 @@ fn build_routing_prompt(
     available_targets: &[&str],
     alerts_content: &str,
 ) -> String {
-    let source_kind = event.source.as_str();
+    let source_display = event.source.display_label();
     let status = match &event.status {
         crate::bus::AgentResultStatus::Completed => "completed",
         crate::bus::AgentResultStatus::Cancelled => "cancelled",
@@ -202,7 +202,7 @@ fn build_routing_prompt(
     format!(
         "You are a notification routing system. Decide where to deliver a background task result.\n\n\
          ## Result\n\
-         - Source: {source_kind}\n\
+         - Source: {source_display}\n\
          - Label: {label}\n\
          - Preset: {preset}\n\
          - Status: {status}\n\
@@ -303,10 +303,6 @@ fn format_agent_result_message(event: &AgentResultEvent) -> String {
 
     if !event.summary.is_empty() {
         parts.push(format!("Output:\n{}", event.summary));
-    }
-
-    if let crate::bus::AgentResultStatus::Failed { error } = &event.status {
-        parts.push(format!("Error: {error}"));
     }
 
     if let Some(path) = &event.transcript_path {
@@ -461,6 +457,9 @@ mod tests {
 
         let msg = format_agent_result_message(&event);
         assert!(msg.contains("failed: connection refused"));
-        assert!(msg.contains("Error: connection refused"));
+        assert!(
+            !msg.contains("Error: connection refused"),
+            "error should not be duplicated in a separate Error: line"
+        );
     }
 }

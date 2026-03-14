@@ -60,9 +60,14 @@ impl NotificationChannel for InboxChannel {
         let source_label = format!("{}:{}", notification.source.as_str(), notification.title);
 
         let now = crate::time::now_local(self.tz);
+        let event_time = notification
+            .timestamp
+            .format("%Y-%m-%d %H:%M:%S")
+            .to_string();
+        let body = format!("[Originally at {event_time}]\n{}", notification.content);
         let item = inbox::InboxItem {
             title: notification.title.clone(),
-            body: notification.content.clone(),
+            body,
             source: source_label,
             timestamp: now,
             read: false,
@@ -113,7 +118,14 @@ mod tests {
         let first_entry = entries.first().unwrap();
         let item = inbox::load_item(&first_entry.path()).await.unwrap();
         assert_eq!(item.title, "test_task");
-        assert_eq!(item.body, "Something happened");
+        assert!(
+            item.body.contains("[Originally at 2026-03-14 12:00:00]"),
+            "body should contain event timestamp"
+        );
+        assert!(
+            item.body.contains("Something happened"),
+            "body should contain original content"
+        );
         assert!(item.source.starts_with("pulse:"));
         assert!(!item.read);
     }

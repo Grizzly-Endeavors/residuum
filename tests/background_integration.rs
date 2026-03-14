@@ -17,7 +17,8 @@ mod background_integration {
     use tokio::sync::mpsc;
 
     use residuum::background::BackgroundTaskSpawner;
-    use residuum::background::types::{BackgroundResult, TaskStatus, format_background_result};
+    use residuum::background::types::{BackgroundResult, format_background_result};
+    use residuum::bus::AgentResultStatus;
     use residuum::bus::{
         BusEvent, EventTrigger, NotificationEvent, PresetName, TopicId, spawn_broker,
     };
@@ -82,7 +83,7 @@ mod background_integration {
             source: EventTrigger::Agent,
             summary: "result that goes nowhere".to_string(),
             transcript_path: Some(dir.path().join("bg-unrouted-1.log")),
-            status: TaskStatus::Completed,
+            status: AgentResultStatus::Completed,
             timestamp: chrono::Utc::now(),
 
             agent_preset: PresetName::from("general-purpose"),
@@ -187,7 +188,7 @@ mod background_integration {
             source: EventTrigger::Action,
             summary: "task completed successfully".to_string(),
             transcript_path: Some(PathBuf::from("/tmp/bg-fmt-1.log")),
-            status: TaskStatus::Completed,
+            status: AgentResultStatus::Completed,
             timestamp: chrono::Utc::now(),
 
             agent_preset: PresetName::from("general-purpose"),
@@ -217,7 +218,7 @@ mod background_integration {
             source: EventTrigger::Action,
             summary: "time to stretch".to_string(),
             transcript_path: None,
-            status: TaskStatus::Completed,
+            status: AgentResultStatus::Completed,
             timestamp: chrono::Utc::now(),
 
             agent_preset: PresetName::from("general-purpose"),
@@ -230,7 +231,7 @@ mod background_integration {
         assert_eq!(received.source_label, "action:reminder");
         assert_eq!(received.summary, "time to stretch");
         assert!(matches!(received.source, EventTrigger::Action));
-        assert!(matches!(received.status, TaskStatus::Completed));
+        assert!(matches!(received.status, AgentResultStatus::Completed));
     }
 
     // ── Pulse execution builds correct structure ──────────────────────

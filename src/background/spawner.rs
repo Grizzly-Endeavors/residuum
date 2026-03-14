@@ -9,9 +9,8 @@ use tokio::sync::{Mutex, Semaphore, mpsc};
 use tokio_util::sync::CancellationToken;
 
 use super::subagent::{SubAgentOutput, SubAgentResources, execute_subagent};
-use super::types::{
-    ActiveTaskInfo, BackgroundResult, BackgroundTask, Execution, TaskStatus, execution_info,
-};
+use super::types::{ActiveTaskInfo, BackgroundResult, BackgroundTask, Execution, execution_info};
+use crate::bus::AgentResultStatus;
 use crate::models::Message;
 
 /// Spawns and manages background tasks with bounded concurrency.
@@ -200,7 +199,7 @@ async fn build_cancelled_result(
         source: task.source.clone(),
         summary: String::new(),
         transcript_path: None,
-        status: TaskStatus::Cancelled,
+        status: AgentResultStatus::Cancelled,
         timestamp: Utc::now(),
         agent_preset: task.agent_preset.clone(),
     }
@@ -214,13 +213,13 @@ async fn build_completed_result(
 ) -> BackgroundResult {
     let (status, summary, messages) = match outcome {
         Ok(SubAgentOutput { summary, messages }) => {
-            (TaskStatus::Completed, summary, Some(messages))
+            (AgentResultStatus::Completed, summary, Some(messages))
         }
         Err(e) => {
             let error_msg = e.to_string();
             tracing::warn!(task_id = %task.id, source_label = %task.source_label, error = %e, "background task failed");
             (
-                TaskStatus::Failed {
+                AgentResultStatus::Failed {
                     error: error_msg.clone(),
                 },
                 format!("[FAILED] {error_msg}"),
@@ -323,7 +322,7 @@ mod tests {
             source: EventTrigger::Action,
             summary: "system alert".to_string(),
             transcript_path: None,
-            status: super::TaskStatus::Completed,
+            status: super::AgentResultStatus::Completed,
             timestamp: chrono::Utc::now(),
 
             agent_preset: PresetName::from("general-purpose"),
@@ -363,7 +362,7 @@ mod tests {
 
         let result = rx.recv().await.unwrap();
         assert!(
-            matches!(result.status, TaskStatus::Failed { .. }),
+            matches!(result.status, AgentResultStatus::Failed { .. }),
             "should be failed"
         );
         assert!(

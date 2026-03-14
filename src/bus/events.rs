@@ -1,5 +1,6 @@
 //! Event types carried on the bus.
 
+use std::fmt;
 use std::path::PathBuf;
 
 use chrono::NaiveDateTime;
@@ -37,6 +38,15 @@ impl EventTrigger {
             Self::Webhook(_) => "webhook",
         }
     }
+
+    /// Human-readable label that includes the webhook name when applicable.
+    #[must_use]
+    pub fn display_label(&self) -> String {
+        match self {
+            Self::Webhook(name) => format!("webhook:{name}"),
+            Self::Pulse | Self::Action | Self::Agent => self.as_str().to_string(),
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -68,6 +78,16 @@ pub enum AgentResultStatus {
         /// Description of what went wrong.
         error: String,
     },
+}
+
+impl fmt::Display for AgentResultStatus {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Completed => write!(f, "completed"),
+            Self::Cancelled => write!(f, "cancelled"),
+            Self::Failed { error } => write!(f, "failed: {error}"),
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------

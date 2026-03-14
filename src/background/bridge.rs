@@ -4,11 +4,8 @@
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
-use crate::background::types::{BackgroundResult, TaskStatus};
-use crate::bus::{
-    AgentResultEvent, AgentResultStatus, BusEvent, EventTrigger, HeartbeatStatus, Publisher,
-    TopicId,
-};
+use crate::background::types::BackgroundResult;
+use crate::bus::{AgentResultEvent, BusEvent, EventTrigger, HeartbeatStatus, Publisher, TopicId};
 
 /// Spawn the bridge task that forwards background results to the bus.
 ///
@@ -48,21 +45,13 @@ fn convert_to_agent_result(result: &BackgroundResult, tz: chrono_tz::Tz) -> Agen
         HeartbeatStatus::Substantive
     };
 
-    let status = match &result.status {
-        TaskStatus::Completed => AgentResultStatus::Completed,
-        TaskStatus::Cancelled => AgentResultStatus::Cancelled,
-        TaskStatus::Failed { error } => AgentResultStatus::Failed {
-            error: error.clone(),
-        },
-    };
-
     AgentResultEvent {
         task_id: result.id.clone(),
         source_label: result.source_label.clone(),
         agent_preset: result.agent_preset.clone(),
         source: result.source.clone(),
         heartbeat_status,
-        status,
+        status: result.status.clone(),
         summary: result.summary.clone(),
         transcript_path: result.transcript_path.clone(),
         timestamp: result.timestamp.with_timezone(&tz).naive_local(),
@@ -82,7 +71,7 @@ mod tests {
     use chrono::Utc;
 
     use super::*;
-    use crate::bus::PresetName;
+    use crate::bus::{AgentResultStatus, PresetName};
 
     #[test]
     fn convert_completed_result() {
@@ -92,7 +81,7 @@ mod tests {
             source: EventTrigger::Action,
             summary: "3 new emails".into(),
             transcript_path: Some(PathBuf::from("/tmp/bg-1.log")),
-            status: TaskStatus::Completed,
+            status: AgentResultStatus::Completed,
             timestamp: Utc::now(),
 
             agent_preset: PresetName::from("general-purpose"),
@@ -113,7 +102,7 @@ mod tests {
             source: EventTrigger::Pulse,
             summary: "HEARTBEAT_OK".into(),
             transcript_path: None,
-            status: TaskStatus::Completed,
+            status: AgentResultStatus::Completed,
             timestamp: Utc::now(),
 
             agent_preset: PresetName::from("general-purpose"),
@@ -131,7 +120,7 @@ mod tests {
             source: EventTrigger::Agent,
             summary: String::new(),
             transcript_path: None,
-            status: TaskStatus::Failed {
+            status: AgentResultStatus::Failed {
                 error: "timeout".into(),
             },
             timestamp: Utc::now(),
@@ -164,7 +153,7 @@ mod tests {
             source: EventTrigger::Agent,
             summary: "done".into(),
             transcript_path: None,
-            status: TaskStatus::Completed,
+            status: AgentResultStatus::Completed,
             timestamp: Utc::now(),
 
             agent_preset: PresetName::from("general-purpose"),

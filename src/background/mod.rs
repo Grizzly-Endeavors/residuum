@@ -9,6 +9,5 @@ pub mod types;
 pub use spawner::BackgroundTaskSpawner;
 pub use subagent::{SubAgentBuildConfig, SubAgentResources, build_resources};
 pub use types::{
-    ActiveTaskInfo, BackgroundResult, Execution, SubAgentConfig, TaskStatus,
-    format_background_result,
+    ActiveTaskInfo, BackgroundResult, Execution, SubAgentConfig, format_background_result,
 };

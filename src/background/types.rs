@@ -1,12 +1,10 @@
 //! Background task types: task definitions, execution configs, and results.
 
-use std::fmt;
 use std::path::PathBuf;
 
 use chrono::{DateTime, Utc};
 
-use crate::bus::EventTrigger;
-use crate::bus::PresetName;
+use crate::bus::{AgentResultStatus, EventTrigger, PresetName};
 use crate::config::BackgroundModelTier;
 
 /// A background task to be executed by the spawner.
@@ -56,7 +54,7 @@ pub struct BackgroundResult {
     /// Path to the transcript/log file (if written).
     pub transcript_path: Option<PathBuf>,
     /// Completion status.
-    pub status: TaskStatus,
+    pub status: AgentResultStatus,
     /// When the task completed.
     pub timestamp: DateTime<Utc>,
     /// The agent preset that ran this task.
@@ -85,30 +83,6 @@ pub(crate) fn execution_info(execution: &Execution) -> (&'static str, String) {
     ("sub_agent", preview)
 }
 
-/// Completion status of a background task.
-#[derive(Debug, Clone)]
-pub enum TaskStatus {
-    /// Task completed successfully.
-    Completed,
-    /// Task was cancelled via its cancellation token.
-    Cancelled,
-    /// Task failed with an error.
-    Failed {
-        /// Error description.
-        error: String,
-    },
-}
-
-impl fmt::Display for TaskStatus {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Completed => write!(f, "completed"),
-            Self::Cancelled => write!(f, "cancelled"),
-            Self::Failed { error } => write!(f, "failed: {error}"),
-        }
-    }
-}
-
 /// Format a `BackgroundResult` for injection into the agent message stream.
 #[must_use]
 pub fn format_background_result(result: &BackgroundResult) -> String {
@@ -121,10 +95,6 @@ pub fn format_background_result(result: &BackgroundResult) -> String {
 
     if !result.summary.is_empty() {
         parts.push(format!("Output:\n{}", result.summary));
-    }
-
-    if let TaskStatus::Failed { error } = &result.status {
-        parts.push(format!("Error: {error}"));
     }
 
     if let Some(path) = &result.transcript_path {
@@ -155,7 +125,7 @@ mod tests {
             source: EventTrigger::Action,
             summary: "3 new emails found".to_string(),
             transcript_path: None,
-            status: TaskStatus::Completed,
+            status: AgentResultStatus::Completed,
             timestamp: Utc::now(),
 
             agent_preset: PresetName::from("general-purpose"),
@@ -183,7 +153,7 @@ mod tests {
             source: EventTrigger::Agent,
             summary: String::new(),
             transcript_path: Some(PathBuf::from("/tmp/bg-002.log")),
-            status: TaskStatus::Failed {
+            status: AgentResultStatus::Failed {
                 error: "connection refused".to_string(),
             },
             timestamp: Utc::now(),
@@ -211,7 +181,7 @@ mod tests {
             source: EventTrigger::Pulse,
             summary: "partial output".to_string(),
             transcript_path: None,
-            status: TaskStatus::Cancelled,
+            status: AgentResultStatus::Cancelled,
             timestamp: Utc::now(),
 
             agent_preset: PresetName::from("general-purpose"),
@@ -244,11 +214,11 @@ mod tests {
     }
 
     #[test]
-    fn task_status_display() {
-        assert_eq!(TaskStatus::Completed.to_string(), "completed");
-        assert_eq!(TaskStatus::Cancelled.to_string(), "cancelled");
+    fn agent_result_status_display() {
+        assert_eq!(AgentResultStatus::Completed.to_string(), "completed");
+        assert_eq!(AgentResultStatus::Cancelled.to_string(), "cancelled");
         assert_eq!(
-            TaskStatus::Failed {
+            AgentResultStatus::Failed {
                 error: "timeout".to_string()
             }
             .to_string(),
