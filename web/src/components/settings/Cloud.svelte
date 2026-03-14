@@ -46,7 +46,12 @@
     actionInProgress = true;
     try {
       await disconnectCloud();
-      await pollStatus();
+      cloudStatus = {
+        status: "disconnected" as const,
+        user_id: cloudStatus?.user_id ?? null,
+        has_token: cloudStatus?.has_token ?? false,
+        enabled: false,
+      };
     } catch {
       // disconnect failure handled by status poll
     } finally {
@@ -77,7 +82,7 @@
 
   function handleRemoveAccount() {
     fields.cloud_token = "";
-    fields.cloud_enabled = true;
+    fields.cloud_enabled = false;
   }
 </script>
 

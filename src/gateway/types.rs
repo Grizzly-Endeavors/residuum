@@ -168,6 +168,7 @@ pub(crate) struct GatewayRuntime {
     // Adapter lifecycle handles
     pub tunnel_handle: Option<tokio::task::JoinHandle<()>>,
     pub tunnel_shutdown_tx: Option<tokio::sync::watch::Sender<bool>>,
+    pub tunnel_status_tx: Arc<tokio::sync::watch::Sender<TunnelStatus>>,
     pub tunnel_status_rx: tokio::sync::watch::Receiver<TunnelStatus>,
     pub discord_handle: Option<tokio::task::JoinHandle<()>>,
     pub telegram_handle: Option<tokio::task::JoinHandle<()>>,

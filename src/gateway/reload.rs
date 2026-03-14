@@ -502,15 +502,17 @@ async fn reload_tunnel(rt: &mut GatewayRuntime, new_cfg: &Config) {
         }
     }
 
+    // Ensure status reflects disconnected after old tunnel shutdown
+    rt.tunnel_status_tx.send(TunnelStatus::Disconnected).ok();
+
     if let Some(ref cloud_cfg) = new_cfg.cloud {
         let cloud = cloud_cfg.clone();
         let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
-        let (status_tx, status_rx) = tokio::sync::watch::channel(TunnelStatus::Disconnected);
+        let status_tx = std::sync::Arc::clone(&rt.tunnel_status_tx);
         rt.tunnel_handle = Some(crate::spawn::spawn_monitored("tunnel", async move {
             crate::tunnel::start_tunnel(cloud, shutdown_rx, status_tx).await;
         }));
         rt.tunnel_shutdown_tx = Some(shutdown_tx);
-        rt.tunnel_status_rx = status_rx;
         rt.cloud_config.clone_from(&new_cfg.cloud);
         tracing::info!("tunnel restarted with new config");
     } else {

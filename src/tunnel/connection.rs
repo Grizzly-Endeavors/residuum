@@ -55,7 +55,7 @@ fn next_backoff(current: Duration) -> Duration {
 pub(crate) async fn start_tunnel(
     cfg: CloudConfig,
     mut shutdown_rx: watch::Receiver<bool>,
-    status_tx: watch::Sender<TunnelStatus>,
+    status_tx: Arc<watch::Sender<TunnelStatus>>,
 ) {
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(25))
