@@ -18,7 +18,7 @@ use super::background::{BackgroundContext, handle_background_result};
 use super::commands::handle_server_command;
 use super::http::{AdapterSenders, build_gateway_app, spawn_adapters, spawn_http_server};
 use super::pulse::handle_pulse_tick;
-use super::turns::{handle_inbound_message, persist_and_maybe_observe, run_wake_turn_handler};
+use super::turns::{handle_inbound_message, persist_and_maybe_observe};
 
 use crate::gateway::memory::{MemorySubsystems, execute_observation};
 use crate::gateway::{actions, idle, reload, watcher, web};
@@ -304,11 +304,6 @@ async fn handle_event_loop_bg_result(
         };
         execute_observation(&mem, &mut rt.agent).await;
     }
-    if bg_outcome.wake_requested
-        && let Some(exit) = run_wake_turn_handler(rt, observe_deadline).await
-    {
-        return Some(exit);
-    }
     None
 }
 
@@ -383,7 +378,7 @@ async fn handle_action_main_turns(
         persist_and_maybe_observe(rt, &msgs, Visibility::Background, observe_deadline).await;
     }
 
-    run_wake_turn_handler(rt, observe_deadline).await
+    None
 }
 
 /// Gracefully shut down all adapters, MCP servers, and the HTTP server.

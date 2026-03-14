@@ -7,7 +7,6 @@ use crate::memory::types::Visibility;
 use crate::models::Message;
 use crate::pulse::executor::PulseExecution;
 
-use super::turns::run_wake_turn_handler;
 use crate::background::spawn_context as spawn_helpers;
 
 /// Handle a single pulse execution entry (main-turn or sub-agent).
@@ -124,8 +123,6 @@ pub async fn handle_pulse_tick(
             wake_requested = true;
         }
     }
-    if wake_requested {
-        return run_wake_turn_handler(rt, observe_deadline).await;
-    }
+    let _ = wake_requested;
     None
 }
