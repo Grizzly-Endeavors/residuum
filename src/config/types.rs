@@ -127,13 +127,85 @@ pub struct TelegramConfig {
     pub token: String,
 }
 
-/// Validated webhook endpoint configuration.
-#[derive(Debug, Clone, Default, PartialEq)]
-pub struct WebhookConfig {
-    /// Whether the webhook endpoint is enabled.
-    pub enabled: bool,
+/// Routing target for a named webhook.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub enum WebhookRouting {
+    /// Route to the default inbox.
+    #[default]
+    Inbox,
+    /// Route to a named agent preset.
+    Agent(String),
+}
+
+impl fmt::Display for WebhookRouting {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Inbox => f.write_str("inbox"),
+            Self::Agent(name) => write!(f, "agent:{name}"),
+        }
+    }
+}
+
+impl std::str::FromStr for WebhookRouting {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "inbox" => Ok(Self::Inbox),
+            other => match other.strip_prefix("agent:") {
+                Some(name) if !name.is_empty() => Ok(Self::Agent(name.to_string())),
+                _ => Err(format!(
+                    "invalid webhook routing '{s}': must be \"inbox\" or \"agent:<name>\""
+                )),
+            },
+        }
+    }
+}
+
+/// Payload format for a named webhook.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum WebhookFormat {
+    /// Parse JSON body and extract specific fields (default).
+    #[default]
+    Parsed,
+    /// Pass the full HTTP body as-is.
+    Raw,
+}
+
+impl fmt::Display for WebhookFormat {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Parsed => f.write_str("parsed"),
+            Self::Raw => f.write_str("raw"),
+        }
+    }
+}
+
+impl std::str::FromStr for WebhookFormat {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "parsed" => Ok(Self::Parsed),
+            "raw" => Ok(Self::Raw),
+            other => Err(format!(
+                "invalid webhook format '{other}': must be \"parsed\" or \"raw\""
+            )),
+        }
+    }
+}
+
+/// Validated configuration for a single named webhook endpoint.
+#[derive(Debug, Clone, PartialEq)]
+pub struct WebhookEntry {
     /// Optional bearer token for authenticating incoming requests.
     pub secret: Option<String>,
+    /// Where to route incoming messages.
+    pub routing: WebhookRouting,
+    /// Payload extraction format.
+    pub format: WebhookFormat,
+    /// JSON dot-path fields to extract (only used with `Parsed` format).
+    pub content_fields: Option<Vec<String>>,
 }
 
 /// Validated skills subsystem configuration.
@@ -367,8 +439,8 @@ pub struct Config {
     pub discord: Option<DiscordConfig>,
     /// Telegram bot configuration (None if `[telegram]` section absent or no token).
     pub telegram: Option<TelegramConfig>,
-    /// Webhook endpoint configuration.
-    pub webhook: WebhookConfig,
+    /// Named webhook endpoint configurations.
+    pub webhooks: HashMap<String, WebhookEntry>,
     /// Skills subsystem configuration.
     pub skills: SkillsConfig,
     /// Retry configuration for model provider calls.
@@ -410,7 +482,10 @@ impl fmt::Debug for Config {
             .field("cloud", &self.cloud.as_ref().map(|_| "[configured]"))
             .field("discord", &self.discord.as_ref().map(|_| "[configured]"))
             .field("telegram", &self.telegram.as_ref().map(|_| "[configured]"))
-            .field("webhook", &self.webhook)
+            .field(
+                "webhooks",
+                &format_args!("{} configured", self.webhooks.len()),
+            )
             .field("skills", &self.skills)
             .field("retry", &self.retry)
             .field("background", &self.background)
@@ -462,6 +537,55 @@ mod tests {
         ] {
             let s = tier.to_string();
             assert_eq!(s.parse::<BackgroundModelTier>().unwrap(), tier);
+        }
+    }
+
+    #[test]
+    fn webhook_routing_from_str() {
+        assert_eq!(
+            "inbox".parse::<super::WebhookRouting>().unwrap(),
+            super::WebhookRouting::Inbox
+        );
+        assert_eq!(
+            "agent:code_reviewer"
+                .parse::<super::WebhookRouting>()
+                .unwrap(),
+            super::WebhookRouting::Agent("code_reviewer".to_string())
+        );
+        assert!("agent:".parse::<super::WebhookRouting>().is_err());
+        assert!("invalid".parse::<super::WebhookRouting>().is_err());
+        assert!("".parse::<super::WebhookRouting>().is_err());
+    }
+
+    #[test]
+    fn webhook_routing_display_round_trips() {
+        for routing in [
+            super::WebhookRouting::Inbox,
+            super::WebhookRouting::Agent("test".to_string()),
+        ] {
+            let s = routing.to_string();
+            assert_eq!(s.parse::<super::WebhookRouting>().unwrap(), routing);
+        }
+    }
+
+    #[test]
+    fn webhook_format_from_str() {
+        assert_eq!(
+            "parsed".parse::<super::WebhookFormat>().unwrap(),
+            super::WebhookFormat::Parsed
+        );
+        assert_eq!(
+            "raw".parse::<super::WebhookFormat>().unwrap(),
+            super::WebhookFormat::Raw
+        );
+        assert!("invalid".parse::<super::WebhookFormat>().is_err());
+    }
+
+    #[test]
+    fn webhook_format_display_round_trips() {
+        for fmt in [super::WebhookFormat::Parsed, super::WebhookFormat::Raw] {
+            let s = fmt.to_string();
+            assert_eq!(s.parse::<super::WebhookFormat>().unwrap(), fmt);
         }
     }
 

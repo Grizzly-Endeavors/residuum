@@ -27,5 +27,5 @@ pub use types::{
     AgentAbilitiesConfig, BackgroundConfig, BackgroundModelTier, BackgroundModelsConfig,
     CloudConfig, Config, DiscordConfig, GatewayConfig, IdleConfig, MemoryConfig,
     ProviderNativeSearchConfig, RoleOverrides, SearchConfig, SkillsConfig, StandaloneBackendConfig,
-    TelegramConfig, WebSearchConfig, WebhookConfig,
+    TelegramConfig, WebSearchConfig, WebhookEntry, WebhookFormat, WebhookRouting,
 };

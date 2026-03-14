@@ -568,7 +568,7 @@ mod tests {
     use super::*;
     use crate::config::{
         AgentAbilitiesConfig, BackgroundConfig, CloudConfig, DiscordConfig, GatewayConfig,
-        MemoryConfig, SkillsConfig, TelegramConfig, WebhookConfig,
+        MemoryConfig, SkillsConfig, TelegramConfig,
     };
     use crate::models::retry::RetryConfig;
 
@@ -591,7 +591,7 @@ mod tests {
             cloud: None,
             discord: None,
             telegram: None,
-            webhook: WebhookConfig::default(),
+            webhooks: std::collections::HashMap::new(),
             skills: SkillsConfig { dirs: vec![] },
             retry: RetryConfig::default(),
             background: BackgroundConfig::default(),

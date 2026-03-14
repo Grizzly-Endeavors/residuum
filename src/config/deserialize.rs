@@ -31,8 +31,8 @@ pub(crate) struct ConfigFile {
     pub(super) discord: Option<DiscordConfigFile>,
     /// Telegram bot configuration.
     pub(super) telegram: Option<TelegramConfigFile>,
-    /// Webhook endpoint configuration.
-    pub(super) webhook: Option<WebhookConfigFile>,
+    /// Named webhook endpoint configurations.
+    pub(super) webhooks: Option<HashMap<String, WebhookEntryFile>>,
     /// Skills subsystem configuration.
     pub(super) skills: Option<SkillsConfigFile>,
     /// Retry configuration.
@@ -249,14 +249,18 @@ pub(super) struct TelegramConfigFile {
     pub(super) token: Option<String>,
 }
 
-/// Raw TOML `[webhook]` section.
+/// Raw TOML `[webhooks.<name>]` entry.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(super) struct WebhookConfigFile {
-    /// Whether the webhook endpoint is enabled.
-    pub(super) enabled: Option<bool>,
+pub(super) struct WebhookEntryFile {
     /// Optional bearer token for authentication.
     pub(super) secret: Option<String>,
+    /// Routing target (`"inbox"` or `"agent:<preset>"`).
+    pub(super) routing: Option<String>,
+    /// Payload format (`"parsed"` or `"raw"`).
+    pub(super) format: Option<String>,
+    /// JSON dot-path fields to extract (parsed format only).
+    pub(super) content_fields: Option<Vec<String>>,
 }
 
 /// Raw TOML `[skills]` section.

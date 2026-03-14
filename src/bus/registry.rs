@@ -96,13 +96,13 @@ impl EndpointRegistry {
             });
         }
 
-        // Webhook — if enabled
-        if config.webhook.enabled {
+        // Named webhooks
+        for name in config.webhooks.keys() {
             registry.register(EndpointEntry {
-                id: EndpointId::from("webhook"),
-                topic: TopicId::Webhook(WebhookName::from("default")),
+                id: EndpointId::from(format!("webhook:{name}").as_str()),
+                topic: TopicId::Webhook(WebhookName::from(name.as_str())),
                 capabilities: EndpointCapabilities::INPUT_ONLY,
-                display_name: "Webhook".to_string(),
+                display_name: format!("Webhook ({name})"),
             });
         }
 
@@ -226,7 +226,6 @@ mod tests {
     use super::*;
     use crate::config::{
         BackgroundConfig, GatewayConfig, IdleConfig, MemoryConfig, SkillsConfig, WebSearchConfig,
-        WebhookConfig,
     };
     use crate::models::retry::RetryConfig;
 
@@ -249,7 +248,7 @@ mod tests {
             cloud: None,
             discord: None,
             telegram: None,
-            webhook: WebhookConfig::default(),
+            webhooks: HashMap::new(),
             skills: SkillsConfig { dirs: vec![] },
             retry: RetryConfig::default(),
             background: BackgroundConfig::default(),
@@ -510,15 +509,42 @@ mod tests {
     }
 
     #[test]
-    fn from_config_excludes_disabled_webhook() {
+    fn from_config_empty_webhooks() {
+        let config = minimal_config();
+        let reg = EndpointRegistry::from_config(&config, &[]);
+        assert!(reg.get(&EndpointId::from("webhook:test")).is_none());
+    }
+
+    #[test]
+    fn from_config_named_webhooks() {
         let mut config = minimal_config();
-        config.webhook = WebhookConfig {
-            enabled: false,
-            secret: None,
-        };
+        config.webhooks.insert(
+            "github".to_string(),
+            crate::config::WebhookEntry {
+                secret: None,
+                routing: crate::config::WebhookRouting::Inbox,
+                format: crate::config::WebhookFormat::Parsed,
+                content_fields: None,
+            },
+        );
+        config.webhooks.insert(
+            "deploy".to_string(),
+            crate::config::WebhookEntry {
+                secret: Some("tok".to_string()),
+                routing: crate::config::WebhookRouting::Agent("deployer".to_string()),
+                format: crate::config::WebhookFormat::Raw,
+                content_fields: None,
+            },
+        );
 
         let reg = EndpointRegistry::from_config(&config, &[]);
-        assert!(reg.get(&EndpointId::from("webhook")).is_none());
+        let gh = reg.get(&EndpointId::from("webhook:github")).unwrap();
+        assert_eq!(gh.display_name, "Webhook (github)");
+        assert!(gh.capabilities.contains(EndpointCapabilities::INPUT_ONLY));
+        assert_eq!(gh.topic, TopicId::Webhook(WebhookName::from("github")));
+
+        let deploy = reg.get(&EndpointId::from("webhook:deploy")).unwrap();
+        assert_eq!(deploy.display_name, "Webhook (deploy)");
     }
 
     #[test]

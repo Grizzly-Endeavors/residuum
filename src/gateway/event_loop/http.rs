@@ -35,18 +35,33 @@ pub fn build_gateway_app(
 ) -> axum::Router {
     use axum::routing::{get, post};
 
-    let webhook_router = cfg.webhook.enabled.then(|| {
+    let webhook_router = if cfg.webhooks.is_empty() {
+        None
+    } else {
+        let mut endpoints = std::collections::HashMap::new();
+        for (name, entry) in &cfg.webhooks {
+            endpoints.insert(
+                name.clone(),
+                crate::interfaces::webhook::WebhookEndpointState {
+                    secret: entry.secret.clone(),
+                    format: entry.format.clone(),
+                    content_fields: entry.content_fields.clone(),
+                },
+            );
+        }
         let webhook_state = crate::interfaces::webhook::WebhookState {
             inbound_tx: state.inbound_tx.clone(),
-            secret: cfg.webhook.secret.clone(),
+            webhooks: endpoints,
         };
-        axum::Router::new()
-            .route(
-                "/webhook",
-                axum::routing::post(crate::interfaces::webhook::webhook_handler),
-            )
-            .with_state(webhook_state)
-    });
+        Some(
+            axum::Router::new()
+                .route(
+                    "/webhook/{name}",
+                    axum::routing::post(crate::interfaces::webhook::webhook_handler),
+                )
+                .with_state(webhook_state),
+        )
+    };
 
     let cloud_router = {
         let cloud_state = web::cloud::CloudApiState {

@@ -15,14 +15,14 @@ use super::constants::{DEFAULT_IDLE_TIMEOUT_MINUTES, DEFAULT_MAX_TOKENS, DEFAULT
 use super::deserialize::{
     AgentConfigFile, BackgroundConfigFile, BackgroundModelsFile, CloudConfigFile, ConfigFile,
     DiscordConfigFile, GatewayConfigFile, MemoryConfigFile, ProviderEntryFile, ProvidersFile,
-    SearchConfigFile, SkillsConfigFile, TelegramConfigFile, WebSearchConfigFile, WebhookConfigFile,
+    SearchConfigFile, SkillsConfigFile, TelegramConfigFile, WebSearchConfigFile, WebhookEntryFile,
 };
 use super::provider::ProviderKind;
 use super::secrets::SecretStore;
 use super::types::{
     AgentAbilitiesConfig, BackgroundConfig, CloudConfig, DiscordConfig, GatewayConfig, IdleConfig,
     MemoryConfig, ProviderNativeSearchConfig, SearchConfig, SkillsConfig, StandaloneBackendConfig,
-    TelegramConfig, WebSearchConfig, WebhookConfig,
+    TelegramConfig, WebSearchConfig, WebhookEntry, WebhookFormat, WebhookRouting,
 };
 
 /// Build a `Config` from an optional config file and environment variables.
@@ -73,7 +73,7 @@ pub(crate) fn from_file_and_env(
     let cloud = resolve_cloud_config(file.and_then(|f| f.cloud.as_ref()), &secrets, &gateway);
     let discord = resolve_discord_config(file.and_then(|f| f.discord.as_ref()), &secrets);
     let telegram = resolve_telegram_config(file.and_then(|f| f.telegram.as_ref()), &secrets);
-    let webhook = resolve_webhook_config(file.and_then(|f| f.webhook.as_ref()), &secrets);
+    let webhooks = resolve_webhooks_config(file.and_then(|f| f.webhooks.as_ref()), &secrets)?;
     let skills = resolve_skills_config(file.and_then(|f| f.skills.as_ref()), &workspace_dir);
 
     let agent = resolve_agent_config(file.and_then(|f| f.agent.as_ref()));
@@ -124,7 +124,7 @@ pub(crate) fn from_file_and_env(
         cloud,
         discord,
         telegram,
-        webhook,
+        webhooks,
         skills,
         retry,
         background,
@@ -332,22 +332,63 @@ pub(super) fn resolve_secret_value(raw: &str, secrets: &SecretStore) -> Option<S
     expand_env_token(raw)
 }
 
-/// Resolve webhook configuration from TOML section.
-fn resolve_webhook_config(
-    section: Option<&WebhookConfigFile>,
+/// Resolve named webhook configurations from TOML `[webhooks.<name>]` sections.
+///
+/// # Errors
+/// Returns `ResiduumError::Config` if a routing or format string is invalid,
+/// or if `content_fields` entries are empty.
+fn resolve_webhooks_config(
+    section: Option<&HashMap<String, WebhookEntryFile>>,
     secrets: &SecretStore,
-) -> WebhookConfig {
-    let mut cfg = WebhookConfig::default();
-    if let Some(s) = section {
-        if let Some(v) = s.enabled {
-            cfg.enabled = v;
-        }
-        cfg.secret = s
+) -> Result<HashMap<String, WebhookEntry>, ResiduumError> {
+    let Some(entries) = section else {
+        return Ok(HashMap::new());
+    };
+
+    let mut result = HashMap::with_capacity(entries.len());
+
+    for (name, entry) in entries {
+        let secret = entry
             .secret
             .as_deref()
             .and_then(|raw| resolve_secret_value(raw, secrets));
+
+        let routing: WebhookRouting = match entry.routing.as_deref() {
+            Some(s) => s
+                .parse()
+                .map_err(|e: String| ResiduumError::Config(format!("webhooks.{name}: {e}")))?,
+            None => WebhookRouting::default(),
+        };
+
+        let format: WebhookFormat = match entry.format.as_deref() {
+            Some(s) => s
+                .parse()
+                .map_err(|e: String| ResiduumError::Config(format!("webhooks.{name}: {e}")))?,
+            None => WebhookFormat::default(),
+        };
+
+        if let Some(ref fields) = entry.content_fields {
+            for (i, field) in fields.iter().enumerate() {
+                if field.trim().is_empty() {
+                    return Err(ResiduumError::Config(format!(
+                        "webhooks.{name}: content_fields[{i}] is empty"
+                    )));
+                }
+            }
+        }
+
+        result.insert(
+            name.clone(),
+            WebhookEntry {
+                secret,
+                routing,
+                format,
+                content_fields: entry.content_fields.clone(),
+            },
+        );
     }
-    cfg
+
+    Ok(result)
 }
 
 /// Resolve skills configuration from TOML section.
@@ -724,6 +765,7 @@ fn warn_deprecated_env_vars() {
 
 #[cfg(test)]
 #[expect(clippy::unwrap_used, reason = "test code uses unwrap for clarity")]
+#[expect(clippy::indexing_slicing, reason = "test assertions")]
 #[expect(
     unsafe_code,
     reason = "std::env::set_var/remove_var require unsafe in edition 2024"
@@ -924,7 +966,7 @@ main = "anthropic/claude-sonnet-4-6"
     }
 
     #[test]
-    fn webhook_defaults_when_absent() {
+    fn webhooks_empty_when_absent() {
         let cfg_file = parse_config("timezone = \"UTC\"\n");
         let prov_file = parse_providers(
             r#"
@@ -933,22 +975,22 @@ main = "anthropic/claude-sonnet-4-6"
 "#,
         );
         let cfg = from_file_and_env(Some(&cfg_file), Some(&prov_file), &test_config_dir()).unwrap();
-        assert!(!cfg.webhook.enabled, "webhook should default to disabled");
         assert!(
-            cfg.webhook.secret.is_none(),
-            "webhook secret should default to None"
+            cfg.webhooks.is_empty(),
+            "webhooks should be empty when absent"
         );
     }
 
     #[test]
-    fn webhook_enabled_with_secret() {
+    fn webhooks_single_entry() {
         let cfg_file = parse_config(
             r#"
 timezone = "UTC"
 
-[webhook]
-enabled = true
+[webhooks.github-issues]
 secret = "my-secret"
+routing = "agent:code_reviewer"
+content_fields = ["issue.title", "issue.body"]
 "#,
         );
         let prov_file = parse_providers(
@@ -958,11 +1000,130 @@ main = "anthropic/claude-sonnet-4-6"
 "#,
         );
         let cfg = from_file_and_env(Some(&cfg_file), Some(&prov_file), &test_config_dir()).unwrap();
-        assert!(cfg.webhook.enabled, "webhook should be enabled");
+        assert_eq!(cfg.webhooks.len(), 1);
+        let entry = &cfg.webhooks["github-issues"];
+        assert_eq!(entry.secret.as_deref(), Some("my-secret"));
         assert_eq!(
-            cfg.webhook.secret.as_deref(),
-            Some("my-secret"),
-            "webhook secret should match"
+            entry.routing,
+            crate::config::WebhookRouting::Agent("code_reviewer".to_string())
+        );
+        assert_eq!(entry.format, crate::config::WebhookFormat::Parsed);
+        assert_eq!(
+            entry.content_fields.as_deref(),
+            Some(&["issue.title".to_string(), "issue.body".to_string()][..])
+        );
+    }
+
+    #[test]
+    fn webhooks_multiple_entries() {
+        let cfg_file = parse_config(
+            r#"
+timezone = "UTC"
+
+[webhooks.github]
+secret = "gh-secret"
+routing = "inbox"
+
+[webhooks.deploy]
+format = "raw"
+"#,
+        );
+        let prov_file = parse_providers(
+            r#"
+[models]
+main = "anthropic/claude-sonnet-4-6"
+"#,
+        );
+        let cfg = from_file_and_env(Some(&cfg_file), Some(&prov_file), &test_config_dir()).unwrap();
+        assert_eq!(cfg.webhooks.len(), 2);
+
+        let gh = &cfg.webhooks["github"];
+        assert_eq!(gh.secret.as_deref(), Some("gh-secret"));
+        assert_eq!(gh.routing, crate::config::WebhookRouting::Inbox);
+
+        let deploy = &cfg.webhooks["deploy"];
+        assert!(deploy.secret.is_none());
+        assert_eq!(deploy.format, crate::config::WebhookFormat::Raw);
+        assert_eq!(deploy.routing, crate::config::WebhookRouting::Inbox);
+    }
+
+    #[test]
+    fn webhooks_default_routing() {
+        let cfg_file = parse_config(
+            r#"
+timezone = "UTC"
+
+[webhooks.simple]
+secret = "tok"
+"#,
+        );
+        let prov_file = parse_providers(
+            r#"
+[models]
+main = "anthropic/claude-sonnet-4-6"
+"#,
+        );
+        let cfg = from_file_and_env(Some(&cfg_file), Some(&prov_file), &test_config_dir()).unwrap();
+        let entry = &cfg.webhooks["simple"];
+        assert_eq!(
+            entry.routing,
+            crate::config::WebhookRouting::Inbox,
+            "routing should default to inbox"
+        );
+        assert_eq!(
+            entry.format,
+            crate::config::WebhookFormat::Parsed,
+            "format should default to parsed"
+        );
+    }
+
+    #[test]
+    fn webhooks_invalid_routing_rejected() {
+        let cfg_file = parse_config(
+            r#"
+timezone = "UTC"
+
+[webhooks.bad]
+routing = "nowhere"
+"#,
+        );
+        let prov_file = parse_providers(
+            r#"
+[models]
+main = "anthropic/claude-sonnet-4-6"
+"#,
+        );
+        let result = from_file_and_env(Some(&cfg_file), Some(&prov_file), &test_config_dir());
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("webhooks.bad"),
+            "error should mention webhook name: {err}"
+        );
+    }
+
+    #[test]
+    fn webhooks_empty_content_field_rejected() {
+        let cfg_file = parse_config(
+            r#"
+timezone = "UTC"
+
+[webhooks.bad]
+content_fields = ["valid", ""]
+"#,
+        );
+        let prov_file = parse_providers(
+            r#"
+[models]
+main = "anthropic/claude-sonnet-4-6"
+"#,
+        );
+        let result = from_file_and_env(Some(&cfg_file), Some(&prov_file), &test_config_dir());
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("content_fields"),
+            "error should mention content_fields: {err}"
         );
     }
 
