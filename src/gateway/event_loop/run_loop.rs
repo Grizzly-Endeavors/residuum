@@ -60,6 +60,7 @@ struct SpawnedHandles {
     adapters: super::http::AdapterHandles,
     tunnel_handle: Option<tokio::task::JoinHandle<()>>,
     tunnel_shutdown_tx: Option<tokio::sync::watch::Sender<bool>>,
+    tunnel_status_tx: Arc<tokio::sync::watch::Sender<crate::tunnel::TunnelStatus>>,
     tunnel_status_rx: tokio::sync::watch::Receiver<crate::tunnel::TunnelStatus>,
     sigterm: tokio::signal::unix::Signal,
 }
@@ -84,6 +85,7 @@ async fn spawn_server_and_adapters(
     };
     let (tunnel_status_tx, tunnel_status_rx) =
         tokio::sync::watch::channel(crate::tunnel::TunnelStatus::Disconnected);
+    let tunnel_status_tx = Arc::new(tunnel_status_tx);
 
     let state = GatewayState {
         inbound_tx: core.inbound_tx.clone(),
@@ -109,7 +111,7 @@ async fn spawn_server_and_adapters(
     let app = build_gateway_app(state, cfg, config_api_state, update_api_state);
     let server_handle = spawn_http_server(cfg, app, &core.shutdown_tx).await?;
     let adapters = spawn_adapters(cfg, discord_senders, telegram_senders, parts.tz);
-    let (tunnel_handle, tunnel_shutdown_tx) = spawn_tunnel(cfg, tunnel_status_tx);
+    let (tunnel_handle, tunnel_shutdown_tx) = spawn_tunnel(cfg, Arc::clone(&tunnel_status_tx));
     let sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
         .map_err(|e| ResiduumError::Gateway(format!("failed to register SIGTERM handler: {e}")))?;
     let _watcher_handle = watcher::spawn_workspace_watcher(
@@ -123,6 +125,7 @@ async fn spawn_server_and_adapters(
         adapters,
         tunnel_handle,
         tunnel_shutdown_tx,
+        tunnel_status_tx,
         tunnel_status_rx,
         sigterm,
     })
@@ -180,6 +183,7 @@ fn build_runtime(
         cloud_config,
         tunnel_handle: spawned.tunnel_handle,
         tunnel_shutdown_tx: spawned.tunnel_shutdown_tx,
+        tunnel_status_tx: spawned.tunnel_status_tx,
         tunnel_status_rx: spawned.tunnel_status_rx,
         discord_handle: spawned.adapters.discord_handle,
         telegram_handle: spawned.adapters.telegram_handle,
@@ -199,7 +203,7 @@ fn build_runtime(
 /// Spawn the cloud tunnel task if configured, returning its handle and shutdown sender.
 fn spawn_tunnel(
     cfg: &Config,
-    status_tx: tokio::sync::watch::Sender<crate::tunnel::TunnelStatus>,
+    status_tx: Arc<tokio::sync::watch::Sender<crate::tunnel::TunnelStatus>>,
 ) -> (
     Option<tokio::task::JoinHandle<()>>,
     Option<tokio::sync::watch::Sender<bool>>,
@@ -212,7 +216,6 @@ fn spawn_tunnel(
         });
         (Some(handle), Some(shutdown_tx))
     } else {
-        drop(status_tx);
         (None, None)
     }
 }
@@ -420,13 +423,14 @@ fn respawn_tunnel(rt: &mut GatewayRuntime) {
     if let Some(ref cloud_cfg) = rt.cloud_config {
         let cloud = cloud_cfg.clone();
         let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
-        let (status_tx, status_rx) =
-            tokio::sync::watch::channel(crate::tunnel::TunnelStatus::Disconnected);
+        let status_tx = Arc::clone(&rt.tunnel_status_tx);
+        status_tx
+            .send(crate::tunnel::TunnelStatus::Disconnected)
+            .ok();
         rt.tunnel_handle = Some(crate::spawn::spawn_monitored("tunnel", async move {
             crate::tunnel::start_tunnel(cloud, shutdown_rx, status_tx).await;
         }));
         rt.tunnel_shutdown_tx = Some(shutdown_tx);
-        rt.tunnel_status_rx = status_rx;
         tracing::info!("tunnel respawned after unexpected exit");
     }
 }
