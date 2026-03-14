@@ -85,7 +85,11 @@ async fn handle_connection(socket: WebSocket, state: GatewayState) {
 /// Dispatch a single client message. Returns `false` to break the read loop.
 async fn handle_client_message(msg: ClientMessage, state: &GatewayState) -> bool {
     match msg {
-        ClientMessage::SendMessage { id, content, images } => {
+        ClientMessage::SendMessage {
+            id,
+            content,
+            images,
+        } => {
             let origin = MessageOrigin {
                 interface: "websocket".to_string(),
                 sender_name: "ws-client".to_string(),

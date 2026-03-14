@@ -5,6 +5,7 @@
   import { parseCommand } from "./lib/commands";
   import ChatFeed from "./components/ChatFeed.svelte";
   import ChatInput from "./components/ChatInput.svelte";
+  import type { ImageAttachment } from "./lib/types";
 
   let feedIdCounter = 0;
   function nextId(): number {
@@ -25,7 +26,7 @@
     ws.disconnect();
   });
 
-  function handleSend(text: string, images?: import("./lib/types").ImageAttachment[]) {
+  function handleSend(text: string, images?: ImageAttachment[]) {
     const result = parseCommand(text, {
       connectionStatus: ws.status,
       verbose: ws.verbose,

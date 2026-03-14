@@ -1439,6 +1439,10 @@ main = "anthropic/claude-sonnet-4-6"
 
     #[test]
     fn cloud_local_port_defaults_to_gateway_port() {
+        // Guard against env pollution from parallel tests
+        unsafe {
+            std::env::remove_var("RESIDUUM_GATEWAY_PORT");
+        }
         let cfg_file = parse_config(
             r#"
 timezone = "UTC"

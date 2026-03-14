@@ -450,6 +450,10 @@ async fn build_macos_channel(
 }
 
 #[cfg(not(target_os = "macos"))]
+#[expect(
+    clippy::unused_async,
+    reason = "signature must match the async macOS variant"
+)]
 async fn build_macos_channel(
     name: &str,
     _default_category: Option<&String>,

@@ -12,7 +12,7 @@
   {/if}
   {#if images?.length}
     <div class="msg-user-images">
-      {#each images as img}
+      {#each images as img, i (i)}
         <img src="data:{img.media_type};base64,{img.data}" alt="attachment" />
       {/each}
     </div>

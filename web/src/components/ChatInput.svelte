@@ -6,6 +6,7 @@
   import ThinkingSelector from "./ThinkingSelector.svelte";
 
   const MAX_IMAGE_BYTES = 5 * 1024 * 1024; // 5 MB
+  const MAX_IMAGES = 5;
   const ACCEPTED_TYPES = ["image/jpeg", "image/png", "image/gif", "image/webp"];
 
   let {
@@ -16,6 +17,16 @@
   let textarea: HTMLTextAreaElement | undefined = $state();
   let fileInput: HTMLInputElement | undefined = $state();
   let pendingImages = $state<ImageAttachment[]>([]);
+  let rejectionMsg = $state("");
+  let rejectionTimer: ReturnType<typeof setTimeout> | undefined;
+
+  function showRejection(msg: string) {
+    rejectionMsg = msg;
+    clearTimeout(rejectionTimer);
+    rejectionTimer = setTimeout(() => {
+      rejectionMsg = "";
+    }, 3000);
+  }
 
   // Autocomplete state
   let showMenu = $state(false);
@@ -114,15 +125,25 @@
         const base64 = result.split(",")[1] ?? "";
         resolve({ media_type: file.type, data: base64 });
       };
-      reader.onerror = () => reject(reader.error);
+      reader.onerror = () => reject(reader.error ?? new Error("FileReader failed"));
       reader.readAsDataURL(file);
     });
   }
 
   async function handleFiles(files: FileList | File[]) {
     for (const file of files) {
-      if (!ACCEPTED_TYPES.includes(file.type)) continue;
-      if (file.size > MAX_IMAGE_BYTES) continue;
+      if (pendingImages.length >= MAX_IMAGES) {
+        showRejection(`Maximum ${MAX_IMAGES} images`);
+        break;
+      }
+      if (!ACCEPTED_TYPES.includes(file.type)) {
+        showRejection("Unsupported file type");
+        continue;
+      }
+      if (file.size > MAX_IMAGE_BYTES) {
+        showRejection("File too large (5MB max)");
+        continue;
+      }
       const img = await readFileAsBase64(file);
       pendingImages = [...pendingImages, img];
     }
@@ -130,7 +151,7 @@
 
   function handleFileSelect(e: Event) {
     const input = e.target as HTMLInputElement;
-    if (input.files?.length) handleFiles(input.files);
+    if (input.files?.length) void handleFiles(input.files);
     input.value = ""; // allow re-selecting the same file
   }
 
@@ -150,7 +171,7 @@
     }
     if (imageFiles.length) {
       e.preventDefault();
-      handleFiles(imageFiles);
+      void handleFiles(imageFiles);
     }
   }
 
@@ -190,12 +211,21 @@
       <CommandMenu commands={filtered} selectedIndex={menuIndex} onSelect={handleCommandSelect} />
     {/if}
     <div class="chat-input-wrap">
+      {#if rejectionMsg}
+        <div class="image-rejection-msg">{rejectionMsg}</div>
+      {/if}
       {#if pendingImages.length > 0}
         <div class="image-preview-strip">
-          {#each pendingImages as img, i}
+          {#each pendingImages as img, i (i)}
             <div class="image-preview-item">
-              <img src="data:{img.media_type};base64,{img.data}" alt="attachment" class="image-preview-thumb" />
-              <button class="image-preview-remove" onclick={() => removeImage(i)} title="Remove">&times;</button>
+              <img
+                src="data:{img.media_type};base64,{img.data}"
+                alt="attachment"
+                class="image-preview-thumb"
+              />
+              <button class="image-preview-remove" onclick={() => removeImage(i)} title="Remove"
+                >&times;</button
+              >
             </div>
           {/each}
         </div>
@@ -212,7 +242,11 @@
           oninput={handleInput}
           onpaste={handlePaste}
         ></textarea>
-        <button class="send-btn" onclick={submit} disabled={disabled || (!value.trim() && !pendingImages.length)}>Send</button>
+        <button
+          class="send-btn"
+          onclick={submit}
+          disabled={disabled || (!value.trim() && !pendingImages.length)}>Send</button
+        >
       </div>
       <input
         bind:this={fileInput}
@@ -224,20 +258,39 @@
       />
       <div class="chat-toolbar">
         <div class="chat-toolbar-left">
+          <button
+            class="attach-btn"
+            onclick={() => fileInput?.click()}
+            {disabled}
+            title="Attach image"
+          >
+            <svg
+              width="16"
+              height="16"
+              viewBox="0 0 16 16"
+              fill="none"
+              xmlns="http://www.w3.org/2000/svg"
+            >
+              <path
+                d="M13.5 7.5l-5.793 5.793a3.5 3.5 0 01-4.95-4.95L9.05 2.05a2.25 2.25 0 013.182 3.182L5.94 11.525a1 1 0 01-1.414-1.414L10.818 3.818"
+                stroke="currentColor"
+                stroke-width="1.3"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              />
+            </svg>
+          </button>
           <button class="cmd-menu-btn" onclick={toggleCommandMenu} {disabled} title="Commands">
             /
-          </button>
-          <button class="attach-btn" onclick={() => fileInput?.click()} {disabled} title="Attach image">
-            <svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
-              <path d="M13.5 7.5l-5.793 5.793a3.5 3.5 0 01-4.95-4.95L9.05 2.05a2.25 2.25 0 013.182 3.182L5.94 11.525a1 1 0 01-1.414-1.414L10.818 3.818" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>
-            </svg>
           </button>
         </div>
         <div class="chat-toolbar-right">
           <ModelSelector {disabled} />
           <ThinkingSelector {disabled} />
-          <button class="send-btn-toolbar" onclick={submit} disabled={disabled || (!value.trim() && !pendingImages.length)}
-            >Send</button
+          <button
+            class="send-btn-toolbar"
+            onclick={submit}
+            disabled={disabled || (!value.trim() && !pendingImages.length)}>Send</button
           >
         </div>
       </div>

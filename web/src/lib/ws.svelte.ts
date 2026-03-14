@@ -101,7 +101,7 @@ class WsConnection {
       ? { type: "send_message", id, content, images }
       : { type: "send_message", id, content };
     this.send(msg);
-    this.feed.push({ id: nextId(), kind: "user", content, images: images ?? undefined });
+    this.feed.push({ id: nextId(), kind: "user", content, images });
     this.isProcessing = true;
   }
 
