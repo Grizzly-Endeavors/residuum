@@ -25,7 +25,7 @@
     ws.disconnect();
   });
 
-  function handleSend(text: string) {
+  function handleSend(text: string, images?: import("./lib/types").ImageAttachment[]) {
     const result = parseCommand(text, {
       connectionStatus: ws.status,
       verbose: ws.verbose,
@@ -43,7 +43,7 @@
       return;
     }
 
-    ws.sendChat(text);
+    ws.sendChat(text, images);
   }
 </script>
 

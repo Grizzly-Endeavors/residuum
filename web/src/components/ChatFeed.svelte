@@ -41,7 +41,7 @@
   <div class="chat-feed-inner">
     {#each items as item (item.id)}
       {#if item.kind === "user"}
-        <MessageUser content={item.content} />
+        <MessageUser content={item.content} images={item.images} />
       {:else if item.kind === "assistant"}
         <MessageAssistant content={item.content} />
       {:else if item.kind === "system"}

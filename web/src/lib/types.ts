@@ -2,8 +2,13 @@
 
 // ── Client -> Server ─────────────────────────────────────────────────
 
+export interface ImageAttachment {
+  media_type: string;
+  data: string;
+}
+
 export type ClientMessage =
-  | { type: "send_message"; id: string; content: string }
+  | { type: "send_message"; id: string; content: string; images?: ImageAttachment[] }
   | { type: "set_verbose"; enabled: boolean }
   | { type: "ping" }
   | { type: "reload" }
@@ -244,6 +249,7 @@ interface FeedItemBase {
 export interface UserFeedItem extends FeedItemBase {
   kind: "user";
   content: string;
+  images?: ImageAttachment[];
 }
 
 export interface AssistantFeedItem extends FeedItemBase {

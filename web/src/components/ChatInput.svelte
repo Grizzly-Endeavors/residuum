@@ -1,13 +1,21 @@
 <script lang="ts">
   import { filterCommands, COMMAND_REGISTRY } from "../lib/commands";
+  import type { ImageAttachment } from "../lib/types";
   import CommandMenu from "./CommandMenu.svelte";
   import ModelSelector from "./ModelSelector.svelte";
   import ThinkingSelector from "./ThinkingSelector.svelte";
 
-  let { onSend, disabled = false }: { onSend: (text: string) => void; disabled?: boolean } =
-    $props();
+  const MAX_IMAGE_BYTES = 5 * 1024 * 1024; // 5 MB
+  const ACCEPTED_TYPES = ["image/jpeg", "image/png", "image/gif", "image/webp"];
+
+  let {
+    onSend,
+    disabled = false,
+  }: { onSend: (text: string, images?: ImageAttachment[]) => void; disabled?: boolean } = $props();
   let value = $state("");
   let textarea: HTMLTextAreaElement | undefined = $state();
+  let fileInput: HTMLInputElement | undefined = $state();
+  let pendingImages = $state<ImageAttachment[]>([]);
 
   // Autocomplete state
   let showMenu = $state(false);
@@ -97,11 +105,62 @@
     }
   }
 
+  function readFileAsBase64(file: File): Promise<ImageAttachment> {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => {
+        const result = reader.result as string;
+        // Strip data URL prefix: "data:image/png;base64,..."
+        const base64 = result.split(",")[1] ?? "";
+        resolve({ media_type: file.type, data: base64 });
+      };
+      reader.onerror = () => reject(reader.error);
+      reader.readAsDataURL(file);
+    });
+  }
+
+  async function handleFiles(files: FileList | File[]) {
+    for (const file of files) {
+      if (!ACCEPTED_TYPES.includes(file.type)) continue;
+      if (file.size > MAX_IMAGE_BYTES) continue;
+      const img = await readFileAsBase64(file);
+      pendingImages = [...pendingImages, img];
+    }
+  }
+
+  function handleFileSelect(e: Event) {
+    const input = e.target as HTMLInputElement;
+    if (input.files?.length) handleFiles(input.files);
+    input.value = ""; // allow re-selecting the same file
+  }
+
+  function removeImage(index: number) {
+    pendingImages = pendingImages.filter((_, i) => i !== index);
+  }
+
+  function handlePaste(e: ClipboardEvent) {
+    const items = e.clipboardData?.items;
+    if (!items) return;
+    const imageFiles: File[] = [];
+    for (const item of items) {
+      if (item.kind === "file" && ACCEPTED_TYPES.includes(item.type)) {
+        const file = item.getAsFile();
+        if (file) imageFiles.push(file);
+      }
+    }
+    if (imageFiles.length) {
+      e.preventDefault();
+      handleFiles(imageFiles);
+    }
+  }
+
   function submit() {
     const text = value.trim();
-    if (!text || disabled) return;
-    onSend(text);
+    if ((!text && !pendingImages.length) || disabled) return;
+    const images = pendingImages.length ? pendingImages : undefined;
+    onSend(text, images);
     value = "";
+    pendingImages = [];
     showMenu = false;
     if (textarea) textarea.style.height = "auto";
   }
@@ -131,6 +190,16 @@
       <CommandMenu commands={filtered} selectedIndex={menuIndex} onSelect={handleCommandSelect} />
     {/if}
     <div class="chat-input-wrap">
+      {#if pendingImages.length > 0}
+        <div class="image-preview-strip">
+          {#each pendingImages as img, i}
+            <div class="image-preview-item">
+              <img src="data:{img.media_type};base64,{img.data}" alt="attachment" class="image-preview-thumb" />
+              <button class="image-preview-remove" onclick={() => removeImage(i)} title="Remove">&times;</button>
+            </div>
+          {/each}
+        </div>
+      {/if}
       <div class="chat-input-row">
         <textarea
           bind:this={textarea}
@@ -141,19 +210,33 @@
           {disabled}
           onkeydown={handleKeydown}
           oninput={handleInput}
+          onpaste={handlePaste}
         ></textarea>
-        <button class="send-btn" onclick={submit} disabled={disabled || !value.trim()}>Send</button>
+        <button class="send-btn" onclick={submit} disabled={disabled || (!value.trim() && !pendingImages.length)}>Send</button>
       </div>
+      <input
+        bind:this={fileInput}
+        type="file"
+        accept="image/jpeg,image/png,image/gif,image/webp"
+        multiple
+        class="hidden-file-input"
+        onchange={handleFileSelect}
+      />
       <div class="chat-toolbar">
         <div class="chat-toolbar-left">
           <button class="cmd-menu-btn" onclick={toggleCommandMenu} {disabled} title="Commands">
             /
           </button>
+          <button class="attach-btn" onclick={() => fileInput?.click()} {disabled} title="Attach image">
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <path d="M13.5 7.5l-5.793 5.793a3.5 3.5 0 01-4.95-4.95L9.05 2.05a2.25 2.25 0 013.182 3.182L5.94 11.525a1 1 0 01-1.414-1.414L10.818 3.818" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+          </button>
         </div>
         <div class="chat-toolbar-right">
           <ModelSelector {disabled} />
           <ThinkingSelector {disabled} />
-          <button class="send-btn-toolbar" onclick={submit} disabled={disabled || !value.trim()}
+          <button class="send-btn-toolbar" onclick={submit} disabled={disabled || (!value.trim() && !pendingImages.length)}
             >Send</button
           >
         </div>

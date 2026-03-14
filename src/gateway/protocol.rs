@@ -2,6 +2,8 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::models::ImageData;
+
 /// Messages sent from a WebSocket client to the server.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -12,6 +14,9 @@ pub enum ClientMessage {
         id: String,
         /// The user message content.
         content: String,
+        /// Optional image attachments (base64-encoded).
+        #[serde(default)]
+        images: Vec<ImageData>,
     },
     /// Toggle verbose mode (tool call/result events).
     SetVerbose {
@@ -114,8 +119,8 @@ mod tests {
         assert!(
             matches!(
                 &msg,
-                ClientMessage::SendMessage { id, content }
-                    if id == "abc-123" && content == "hello"
+                ClientMessage::SendMessage { id, content, images }
+                    if id == "abc-123" && content == "hello" && images.is_empty()
             ),
             "should deserialize to SendMessage with correct fields"
         );

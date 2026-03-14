@@ -235,7 +235,7 @@ mod gateway_integration {
             };
 
             match client_msg {
-                ClientMessage::SendMessage { id, content } => {
+                ClientMessage::SendMessage { id, content, .. } => {
                     if state
                         .inbound_tx
                         .send(InboundMessage { id, content })
@@ -353,6 +353,7 @@ mod gateway_integration {
             &ClientMessage::SendMessage {
                 id: "msg-1".to_string(),
                 content: "hello".to_string(),
+                images: vec![],
             },
         )
         .await;
@@ -440,6 +441,7 @@ mod gateway_integration {
             &ClientMessage::SendMessage {
                 id: "multi-1".to_string(),
                 content: "hello from A".to_string(),
+                images: vec![],
             },
         )
         .await;
@@ -505,6 +507,7 @@ mod gateway_integration {
                 &ClientMessage::SendMessage {
                     id: "d-1".to_string(),
                     content: "before disconnect".to_string(),
+                    images: vec![],
                 },
             )
             .await;
@@ -522,6 +525,7 @@ mod gateway_integration {
             &ClientMessage::SendMessage {
                 id: "d-2".to_string(),
                 content: "after disconnect".to_string(),
+                images: vec![],
             },
         )
         .await;

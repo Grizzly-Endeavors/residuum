@@ -9,6 +9,7 @@ import type {
   ToolGroupFeedItem,
   ToolCallState,
   ConnectionStatus,
+  ImageAttachment,
 } from "./types";
 
 let feedIdCounter = 0;
@@ -93,11 +94,14 @@ class WsConnection {
     }
   }
 
-  sendChat(content: string): void {
+  sendChat(content: string, images?: ImageAttachment[]): void {
     this.msgCounter++;
     const id = `web-${this.msgCounter}`;
-    this.send({ type: "send_message", id, content });
-    this.feed.push({ id: nextId(), kind: "user", content });
+    const msg: ClientMessage = images?.length
+      ? { type: "send_message", id, content, images }
+      : { type: "send_message", id, content };
+    this.send(msg);
+    this.feed.push({ id: nextId(), kind: "user", content, images: images ?? undefined });
     this.isProcessing = true;
   }
 
