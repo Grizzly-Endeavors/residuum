@@ -1,6 +1,5 @@
 //! Core types for the gateway module.
 
-use std::collections::HashMap;
 use std::sync::Arc;
 
 use tokio::sync::{broadcast, mpsc};
@@ -12,7 +11,7 @@ use crate::background::spawn_context::SpawnContext;
 use crate::background::types::BackgroundResult;
 use crate::bus::{BusHandle, Publisher, Subscriber, TopicId};
 use crate::config::Config;
-use crate::interfaces::types::{ReplyHandle, RoutedMessage};
+use crate::interfaces::types::RoutedMessage;
 use crate::mcp::SharedMcpRegistry;
 use crate::memory::observer::Observer;
 use crate::memory::reflector::Reflector;
@@ -116,7 +115,7 @@ impl GatewayCore {
 #[derive(Clone)]
 #[expect(
     dead_code,
-    reason = "bus fields will be consumed in endpoint migration"
+    reason = "bus_handle will be consumed in endpoint subscriber migration"
 )]
 pub(crate) struct GatewayState {
     pub inbound_tx: mpsc::Sender<RoutedMessage>,
@@ -131,10 +130,6 @@ pub(crate) struct GatewayState {
 }
 
 /// All state needed by the main event loop.
-#[expect(
-    dead_code,
-    reason = "bus fields will be consumed in event loop migration"
-)]
 pub(crate) struct GatewayRuntime {
     // Current running config (for diffing on reload)
     pub cfg: Config,
@@ -180,12 +175,6 @@ pub(crate) struct GatewayRuntime {
     pub shutdown_tx: tokio::sync::watch::Sender<bool>,
     /// Path to the config directory (for backup/rollback during reload).
     pub config_dir: std::path::PathBuf,
-    /// Most recent reply handle from a user message. Used by wake turns to
-    /// deliver responses to the channel the user last interacted from.
-    pub last_reply: Option<Arc<dyn ReplyHandle>>,
-    /// Unsolicited send handles keyed by interface name. Populated on first
-    /// message from each interface for use during idle channel switching.
-    pub unsolicited_handles: HashMap<String, Arc<dyn ReplyHandle>>,
     /// When the last user message was received (for idle deadline recalculation on reload).
     pub last_user_message_instant: Option<tokio::time::Instant>,
     // Cloud config for tunnel respawn

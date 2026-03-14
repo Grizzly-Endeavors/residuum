@@ -1,7 +1,8 @@
 //! Agent struct, configuration, and turn dispatch.
 
+use crate::bus::{Publisher, TopicId};
 use crate::error::ResiduumError;
-use crate::interfaces::types::{MessageOrigin, ReplyHandle};
+use crate::interfaces::types::MessageOrigin;
 use crate::mcp::SharedMcpRegistry;
 use crate::models::{CompletionOptions, Message, ModelProvider};
 use crate::tools::{SharedToolFilter, ToolRegistry};
@@ -189,7 +190,8 @@ impl Agent {
     /// are unrecoverable.
     pub async fn run_wake_turn(
         &mut self,
-        reply: &dyn ReplyHandle,
+        publisher: &Publisher,
+        output_topic: &TopicId,
         prompt_ctx: &PromptContext<'_>,
         interrupt_rx: &mut tokio::sync::mpsc::Receiver<interrupt::Interrupt>,
     ) -> Result<Vec<String>, ResiduumError> {
@@ -226,7 +228,8 @@ impl Agent {
             &memory_ctx,
             prompt_ctx,
             &mut self.recent_messages,
-            reply,
+            publisher,
+            output_topic,
             Some(&status_line),
             interrupt_rx,
         )
@@ -242,10 +245,15 @@ impl Agent {
     /// # Errors
     /// Returns `ResiduumError` if the model call fails or tool execution errors
     /// are unrecoverable.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "publisher and topic params added during bus migration"
+    )]
     pub async fn process_message(
         &mut self,
         user_input: &str,
-        reply: &dyn ReplyHandle,
+        publisher: &Publisher,
+        output_topic: &TopicId,
         origin: Option<&MessageOrigin>,
         prompt_ctx: &PromptContext<'_>,
         interrupt_rx: &mut tokio::sync::mpsc::Receiver<interrupt::Interrupt>,
@@ -286,7 +294,8 @@ impl Agent {
             &memory_ctx,
             prompt_ctx,
             &mut self.recent_messages,
-            reply,
+            publisher,
+            output_topic,
             Some(&status_line),
             interrupt_rx,
         )
@@ -307,7 +316,8 @@ impl Agent {
     pub async fn run_system_turn(
         &self,
         prompt: &str,
-        reply: &dyn ReplyHandle,
+        publisher: &Publisher,
+        output_topic: &TopicId,
         provider_override: Option<&dyn ModelProvider>,
         prompt_ctx: &PromptContext<'_>,
     ) -> Result<SystemTurnResult, ResiduumError> {
@@ -339,7 +349,8 @@ impl Agent {
             &memory_ctx,
             prompt_ctx,
             &mut thread_messages,
-            reply,
+            publisher,
+            output_topic,
             None,
             &mut sys_interrupt_rx,
         )
@@ -413,7 +424,7 @@ impl Agent {
 mod tests {
     use super::super::turn::MAX_TOOL_ITERATIONS;
     use super::*;
-    use crate::interfaces::null::NullReplyHandle;
+    use crate::bus;
     use crate::mcp::McpRegistry;
     use crate::models::{ModelError, ModelResponse, ToolCall, ToolDefinition};
     use crate::tools::{FileTracker, PathPolicy, ToolFilter};
@@ -428,6 +439,14 @@ mod tests {
 
     fn empty_mcp() -> SharedMcpRegistry {
         McpRegistry::new_shared()
+    }
+
+    /// Create a test publisher and topic for bus-based tests.
+    fn test_bus() -> (Publisher, TopicId) {
+        let handle = bus::spawn_broker();
+        let publisher = handle.publisher();
+        let topic = TopicId::Interactive(bus::EndpointName::from("test"));
+        (publisher, topic)
     }
 
     /// Mock provider that returns pre-configured responses in sequence.
@@ -486,10 +505,18 @@ mod tests {
             },
         );
 
-        let reply = NullReplyHandle;
+        let (publisher, topic) = test_bus();
         let mut irx = interrupt::dead_interrupt_rx();
         let result = agent
-            .process_message("hi", &reply, None, &PromptContext::none(), &mut irx, &[])
+            .process_message(
+                "hi",
+                &publisher,
+                &topic,
+                None,
+                &PromptContext::none(),
+                &mut irx,
+                &[],
+            )
             .await
             .unwrap();
         assert_eq!(result, vec!["hello there"], "should return model text");
@@ -528,12 +555,13 @@ mod tests {
             },
         );
 
-        let reply = NullReplyHandle;
+        let (publisher, topic) = test_bus();
         let mut irx = interrupt::dead_interrupt_rx();
         let result = agent
             .process_message(
                 "run echo test",
-                &reply,
+                &publisher,
+                &topic,
                 None,
                 &PromptContext::none(),
                 &mut irx,
@@ -582,12 +610,13 @@ mod tests {
             },
         );
 
-        let reply = NullReplyHandle;
+        let (publisher, topic) = test_bus();
         let mut irx = interrupt::dead_interrupt_rx();
         let result = agent
             .process_message(
                 "what does echo test print?",
-                &reply,
+                &publisher,
+                &topic,
                 None,
                 &PromptContext::none(),
                 &mut irx,
@@ -637,12 +666,13 @@ mod tests {
             },
         );
 
-        let reply = NullReplyHandle;
+        let (publisher, topic) = test_bus();
         let mut irx = interrupt::dead_interrupt_rx();
         let result = agent
             .process_message(
                 "loop forever",
-                &reply,
+                &publisher,
+                &topic,
                 None,
                 &PromptContext::none(),
                 &mut irx,
@@ -670,9 +700,15 @@ mod tests {
             },
         );
 
-        let reply = NullReplyHandle;
+        let (publisher, topic) = test_bus();
         let result = agent
-            .run_system_turn("check status", &reply, None, &PromptContext::none())
+            .run_system_turn(
+                "check status",
+                &publisher,
+                &topic,
+                None,
+                &PromptContext::none(),
+            )
             .await
             .unwrap();
         assert_eq!(result.response, "HEARTBEAT_OK", "response should match");
@@ -747,10 +783,10 @@ mod tests {
         // Inject a background result first (simulates what the gateway does)
         agent.inject_system_message("bg result: task completed");
 
-        let reply = NullReplyHandle;
+        let (publisher, topic) = test_bus();
         let mut irx = interrupt::dead_interrupt_rx();
         let result = agent
-            .run_wake_turn(&reply, &PromptContext::none(), &mut irx)
+            .run_wake_turn(&publisher, &topic, &PromptContext::none(), &mut irx)
             .await
             .unwrap();
         assert_eq!(result, vec!["I'll handle it"]);
@@ -1041,11 +1077,12 @@ mod tests {
             },
         );
 
-        let reply = NullReplyHandle;
+        let (publisher, topic) = test_bus();
         let result = agent
             .process_message(
                 "hello",
-                &reply,
+                &publisher,
+                &topic,
                 None,
                 &PromptContext::none(),
                 &mut interrupt_rx,
@@ -1113,11 +1150,12 @@ mod tests {
             },
         );
 
-        let reply = NullReplyHandle;
+        let (publisher, topic) = test_bus();
         agent
             .process_message(
                 "hello",
-                &reply,
+                &publisher,
+                &topic,
                 None,
                 &PromptContext::none(),
                 &mut interrupt_rx,
@@ -1173,11 +1211,12 @@ mod tests {
             },
         );
 
-        let reply = NullReplyHandle;
+        let (publisher, topic) = test_bus();
         let result = agent
             .process_message(
                 "hello",
-                &reply,
+                &publisher,
+                &topic,
                 None,
                 &PromptContext::none(),
                 &mut interrupt_rx,
@@ -1212,10 +1251,18 @@ mod tests {
             },
         );
 
-        let reply = NullReplyHandle;
+        let (publisher, topic) = test_bus();
         let mut irx = interrupt::dead_interrupt_rx();
         let result = agent
-            .process_message("hello", &reply, None, &PromptContext::none(), &mut irx, &[])
+            .process_message(
+                "hello",
+                &publisher,
+                &topic,
+                None,
+                &PromptContext::none(),
+                &mut irx,
+                &[],
+            )
             .await;
         assert!(result.is_err(), "empty response should return error");
 
@@ -1284,11 +1331,12 @@ mod tests {
             },
         );
 
-        let reply = NullReplyHandle;
+        let (publisher, topic) = test_bus();
         agent
             .process_message(
                 "hello",
-                &reply,
+                &publisher,
+                &topic,
                 None,
                 &PromptContext::none(),
                 &mut interrupt_rx,

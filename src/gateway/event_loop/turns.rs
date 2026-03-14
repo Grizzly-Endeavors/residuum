@@ -1,14 +1,17 @@
 //! Agent turn handling and message processing in the event loop.
 
-use std::sync::Arc;
-
 use tokio::sync::mpsc;
 
+use crate::agent::Agent;
 use crate::agent::context::{ProjectsContext, PromptContext, SkillsContext, SubagentsContext};
 use crate::agent::interrupt::Interrupt;
-use crate::gateway::types::{GatewayExit, GatewayRuntime};
-use crate::interfaces::types::RoutedMessage;
+use crate::background::types::BackgroundResult;
+use crate::bus::{BusEvent, EndpointName, Publisher, ResponseEvent, Subscriber, TopicId};
+use crate::error::ResiduumError;
+use crate::gateway::types::{GatewayExit, GatewayRuntime, ReloadSignal};
+use crate::interfaces::types::{MessageOrigin, RoutedMessage};
 use crate::memory::types::Visibility;
+use crate::models::ImageData;
 use crate::projects::activation::SharedProjectState;
 use crate::skills::SharedSkillState;
 use crate::workspace::layout::WorkspaceLayout;
@@ -191,8 +194,8 @@ pub async fn run_wake_turn_handler(
 ) -> Option<GatewayExit> {
     use crate::gateway::protocol::ServerMessage;
 
-    let Some(reply) = rt.last_reply.as_ref().map(Arc::clone) else {
-        tracing::warn!("wake turn requested but no channel has connected yet, skipping");
+    let Some(output_topic) = rt.last_output_topic.clone() else {
+        tracing::warn!("wake turn requested but no endpoint has connected yet, skipping");
         return None;
     };
 
@@ -204,12 +207,12 @@ pub async fn run_wake_turn_handler(
         load_prompt_context_strings(&rt.project_state, &rt.skill_state, &rt.layout).await;
     let prompt_ctx = ctx_strings.as_prompt_context();
 
-    let typing_guard = reply.start_typing();
     let (interrupt_tx, mut interrupt_rx) = mpsc::channel::<Interrupt>(32);
 
     let turn_result = {
         let mut turn = std::pin::pin!(rt.agent.run_wake_turn(
-            &*reply,
+            &rt.publisher,
+            &output_topic,
             &prompt_ctx,
             &mut interrupt_rx,
         ));
@@ -217,11 +220,19 @@ pub async fn run_wake_turn_handler(
         loop {
             tokio::select! {
                 result = &mut turn => break result,
-                next_msg = rt.inbound_rx.recv() => {
-                    if let Some(next_routed) = next_msg
-                        && interrupt_tx.try_send(Interrupt::UserMessage(next_routed.message)).is_err() {
+                next_msg = rt.agent_subscriber.recv() => {
+                    if let Some(BusEvent::Message(msg_event)) = next_msg {
+                        let inbound = crate::interfaces::types::InboundMessage {
+                            id: msg_event.id,
+                            content: msg_event.content,
+                            origin: msg_event.origin,
+                            timestamp: chrono::Utc::now(),
+                            images: msg_event.images,
+                        };
+                        if interrupt_tx.try_send(Interrupt::UserMessage(inbound)).is_err() {
                             tracing::warn!("interrupt channel full, dropping user message mid-turn");
                         }
+                    }
                 }
                 bg_result = rt.background_result_rx.recv() => {
                     if let Some(result) = bg_result
@@ -241,13 +252,22 @@ pub async fn run_wake_turn_handler(
 
     match turn_result {
         Ok(texts) => {
-            drop(typing_guard);
             for text in &texts {
-                reply.send_response(text).await;
+                drop(
+                    rt.publisher
+                        .publish(
+                            output_topic.clone(),
+                            BusEvent::Response(ResponseEvent {
+                                correlation_id: "wake".to_string(),
+                                content: text.clone(),
+                                timestamp: crate::time::now_local(rt.tz),
+                            }),
+                        )
+                        .await,
+                );
             }
         }
         Err(e) => {
-            drop(typing_guard);
             tracing::warn!(error = %e, "wake turn processing error");
             if rt
                 .broadcast_tx
@@ -271,6 +291,72 @@ pub async fn run_wake_turn_handler(
     None
 }
 
+/// Run an agent turn while monitoring interrupt sources (bus messages, background
+/// results, reload signals). Returns the turn result and any leftover interrupts
+/// that arrived after the turn completed.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "publisher and topic params added during bus migration"
+)]
+async fn run_agent_turn_with_interrupts(
+    agent: &mut Agent,
+    content: &str,
+    publisher: &Publisher,
+    output_topic: &TopicId,
+    origin: Option<&MessageOrigin>,
+    prompt_ctx: &PromptContext<'_>,
+    images: &[ImageData],
+    agent_subscriber: &mut Subscriber,
+    background_result_rx: &mut mpsc::Receiver<BackgroundResult>,
+    reload_rx: &mut tokio::sync::watch::Receiver<ReloadSignal>,
+) -> (Result<Vec<String>, ResiduumError>, Vec<Interrupt>) {
+    let (interrupt_tx, mut interrupt_rx) = mpsc::channel::<Interrupt>(32);
+    let turn_result = {
+        let mut turn = std::pin::pin!(agent.process_message(
+            content,
+            publisher,
+            output_topic,
+            origin,
+            prompt_ctx,
+            &mut interrupt_rx,
+            images,
+        ));
+        loop {
+            tokio::select! {
+                result = &mut turn => break result,
+                next_msg = agent_subscriber.recv() => {
+                    if let Some(BusEvent::Message(msg_event)) = next_msg {
+                        let inbound = crate::interfaces::types::InboundMessage {
+                            id: msg_event.id,
+                            content: msg_event.content,
+                            origin: msg_event.origin,
+                            timestamp: chrono::Utc::now(),
+                            images: msg_event.images,
+                        };
+                        if interrupt_tx.try_send(Interrupt::UserMessage(inbound)).is_err() {
+                            tracing::warn!("interrupt channel full, dropping user message mid-turn");
+                        }
+                    }
+                }
+                bg_result = background_result_rx.recv() => {
+                    if let Some(result) = bg_result
+                        && interrupt_tx.try_send(Interrupt::BackgroundResult(result)).is_err() {
+                            tracing::warn!("interrupt channel full, dropping background result mid-turn");
+                        }
+                }
+                _ = reload_rx.changed() => {
+                    tracing::info!("reload signal received during active turn, deferring");
+                }
+            }
+        }
+    };
+
+    drop(interrupt_tx);
+    let leftover_interrupts = drain_interrupts(&mut interrupt_rx);
+
+    (turn_result, leftover_interrupts)
+}
+
 /// Handle an inbound user message: run agent turn, persist, observe, and process leftovers.
 ///
 /// Returns `Some(GatewayExit)` if a shutdown-worthy event occurs during processing.
@@ -285,73 +371,79 @@ pub async fn handle_inbound_message(
     let reply_id = routed.message.id.clone();
     let origin = routed.message.origin.clone();
 
-    // TurnStarted is WS-specific protocol sugar
-    if origin.endpoint == "websocket" {
-        rt.broadcast_tx
-            .send(ServerMessage::TurnStarted {
-                reply_to: reply_id.clone(),
-            })
-            .ok();
-    }
+    let output_topic = TopicId::Interactive(EndpointName::from(origin.endpoint.as_str()));
+    rt.last_output_topic = Some(output_topic.clone());
 
-    rt.last_reply = Some(Arc::clone(&routed.reply));
-    if let std::collections::hash_map::Entry::Vacant(e) =
-        rt.unsolicited_handles.entry(origin.endpoint.clone())
-        && let Some(h) = routed.reply.unsolicited_clone()
-    {
-        e.insert(h);
-    }
-    let typing_guard = routed.reply.start_typing();
+    drop(
+        rt.publisher
+            .publish(
+                output_topic.clone(),
+                BusEvent::TurnStarted {
+                    correlation_id: reply_id.clone(),
+                },
+            )
+            .await,
+    );
+
     let before = rt.agent.message_count();
 
     let ctx_strings =
         load_prompt_context_strings(&rt.project_state, &rt.skill_state, &rt.layout).await;
     let prompt_ctx = ctx_strings.as_prompt_context();
 
-    let (interrupt_tx, mut interrupt_rx) = mpsc::channel::<Interrupt>(32);
-    let turn_result = {
-        let mut turn = std::pin::pin!(rt.agent.process_message(
-            &routed.message.content,
-            &*routed.reply,
-            Some(&origin),
-            &prompt_ctx,
-            &mut interrupt_rx,
-            &routed.message.images,
-        ));
-        loop {
-            tokio::select! {
-                result = &mut turn => break result,
-                next_msg = rt.inbound_rx.recv() => {
-                    if let Some(next_routed) = next_msg
-                        && interrupt_tx.try_send(Interrupt::UserMessage(next_routed.message)).is_err() {
-                            tracing::warn!("interrupt channel full, dropping user message mid-turn");
-                        }
-                }
-                bg_result = rt.background_result_rx.recv() => {
-                    if let Some(result) = bg_result
-                        && interrupt_tx.try_send(Interrupt::BackgroundResult(result)).is_err() {
-                            tracing::warn!("interrupt channel full, dropping background result mid-turn");
-                        }
-                }
-                _ = rt.reload_rx.changed() => {
-                    tracing::info!("reload signal received during active turn, deferring");
-                }
-            }
-        }
-    };
+    let (turn_result, leftover_interrupts) = run_agent_turn_with_interrupts(
+        &mut rt.agent,
+        &routed.message.content,
+        &rt.publisher,
+        &output_topic,
+        Some(&origin),
+        &prompt_ctx,
+        &routed.message.images,
+        &mut rt.agent_subscriber,
+        &mut rt.background_result_rx,
+        &mut rt.reload_rx,
+    )
+    .await;
 
-    drop(interrupt_tx);
-    let leftover_interrupts = drain_interrupts(&mut interrupt_rx);
-
-    drop(typing_guard);
     match turn_result {
         Ok(texts) => {
             for text in &texts {
-                routed.reply.send_response(text).await;
+                drop(
+                    rt.publisher
+                        .publish(
+                            output_topic.clone(),
+                            BusEvent::Response(ResponseEvent {
+                                correlation_id: reply_id.clone(),
+                                content: text.clone(),
+                                timestamp: crate::time::now_local(rt.tz),
+                            }),
+                        )
+                        .await,
+                );
             }
+            drop(
+                rt.publisher
+                    .publish(
+                        output_topic.clone(),
+                        BusEvent::TurnEnded {
+                            correlation_id: reply_id.clone(),
+                        },
+                    )
+                    .await,
+            );
         }
         Err(e) => {
             tracing::warn!(error = %e, "agent processing error");
+            drop(
+                rt.publisher
+                    .publish(
+                        output_topic.clone(),
+                        BusEvent::TurnEnded {
+                            correlation_id: reply_id.clone(),
+                        },
+                    )
+                    .await,
+            );
             rt.broadcast_tx
                 .send(ServerMessage::Error {
                     reply_to: Some(reply_id),

@@ -7,7 +7,7 @@ use crate::gateway::protocol::ServerMessage;
 
 /// Receives events from the bus and forwards them as `ServerMessage` frames
 /// through the WebSocket broadcast channel.
-pub(crate) async fn run_ws_subscriber(
+pub async fn run_ws_subscriber(
     mut subscriber: Subscriber,
     broadcast_tx: broadcast::Sender<ServerMessage>,
 ) {

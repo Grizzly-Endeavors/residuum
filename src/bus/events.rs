@@ -14,7 +14,7 @@ use crate::models::ImageData;
 
 /// What triggered a background event or notification.
 #[derive(Debug, Clone)]
-pub(crate) enum EventTrigger {
+pub enum EventTrigger {
     /// A recurring pulse (cron-style schedule).
     Pulse,
     /// A one-shot action.
@@ -31,7 +31,7 @@ pub(crate) enum EventTrigger {
 
 /// Whether a background task's periodic heartbeat carried content.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum HeartbeatStatus {
+pub enum HeartbeatStatus {
     /// Heartbeat with no meaningful content.
     Ok,
     /// Heartbeat that produced user-visible output.
@@ -44,7 +44,7 @@ pub(crate) enum HeartbeatStatus {
 
 /// Terminal status of a background/subagent task.
 #[derive(Debug, Clone)]
-pub(crate) enum AgentResultStatus {
+pub enum AgentResultStatus {
     /// Task finished successfully.
     Completed,
     /// Task was cancelled before completion.
@@ -62,114 +62,114 @@ pub(crate) enum AgentResultStatus {
 
 /// Inbound message from a user or external source.
 #[derive(Debug, Clone)]
-pub(crate) struct MessageEvent {
+pub struct MessageEvent {
     /// Correlation ID for reply routing.
-    pub(crate) id: String,
+    pub id: String,
     /// Message content.
-    pub(crate) content: String,
+    pub content: String,
     /// Where this message originated.
-    pub(crate) origin: MessageOrigin,
+    pub origin: MessageOrigin,
     /// Local timestamp (see `crate::time::now_local`).
-    pub(crate) timestamp: NaiveDateTime,
+    pub timestamp: NaiveDateTime,
     /// Inline images attached to the message.
-    pub(crate) images: Vec<ImageData>,
+    pub images: Vec<ImageData>,
 }
 
 /// Agent response destined for an endpoint.
 #[derive(Debug, Clone)]
-pub(crate) struct ResponseEvent {
+pub struct ResponseEvent {
     /// Links back to the originating message.
-    pub(crate) correlation_id: String,
+    pub correlation_id: String,
     /// Response body.
-    pub(crate) content: String,
+    pub content: String,
     /// Local timestamp.
-    pub(crate) timestamp: NaiveDateTime,
+    pub timestamp: NaiveDateTime,
 }
 
 /// Push notification for notify channels.
 #[derive(Debug, Clone)]
-pub(crate) struct NotificationEvent {
+pub struct NotificationEvent {
     /// Short label for the notification.
-    pub(crate) title: String,
+    pub title: String,
     /// Body/details.
-    pub(crate) content: String,
+    pub content: String,
     /// What produced this notification.
-    pub(crate) source: EventTrigger,
+    pub source: EventTrigger,
     /// Local timestamp.
-    pub(crate) timestamp: NaiveDateTime,
+    pub timestamp: NaiveDateTime,
 }
 
 /// Tool invocation sent by the agent during a turn.
 #[derive(Debug, Clone)]
-pub(crate) struct ToolCallEvent {
+pub struct ToolCallEvent {
     /// Links back to the originating message.
-    pub(crate) correlation_id: String,
+    pub correlation_id: String,
     /// Unique identifier for this tool invocation.
-    pub(crate) tool_call_id: String,
+    pub tool_call_id: String,
     /// Tool name.
-    pub(crate) name: String,
+    pub name: String,
     /// Tool arguments.
-    pub(crate) arguments: serde_json::Value,
+    pub arguments: serde_json::Value,
 }
 
 /// Result of a tool execution.
 #[derive(Debug, Clone)]
-pub(crate) struct ToolResultEvent {
+pub struct ToolResultEvent {
     /// Links back to the originating message.
-    pub(crate) correlation_id: String,
+    pub correlation_id: String,
     /// Matches the originating tool call.
-    pub(crate) tool_call_id: String,
+    pub tool_call_id: String,
     /// Tool name.
-    pub(crate) name: String,
+    pub name: String,
     /// Tool output text.
-    pub(crate) output: String,
+    pub output: String,
     /// Whether the tool reported an error.
-    pub(crate) is_error: bool,
+    pub is_error: bool,
 }
 
 /// Intermediate model text emitted during a turn.
 #[derive(Debug, Clone)]
-pub(crate) struct IntermediateEvent {
+pub struct IntermediateEvent {
     /// Links back to the originating message.
-    pub(crate) correlation_id: String,
+    pub correlation_id: String,
     /// Partial/intermediate content.
-    pub(crate) content: String,
+    pub content: String,
 }
 
 /// System event surfaced to endpoints.
 #[derive(Debug, Clone)]
-pub(crate) struct SystemEventData {
+pub struct SystemEventData {
     /// Links back to the originating message.
-    pub(crate) correlation_id: String,
+    pub correlation_id: String,
     /// Source label (e.g. pulse name, action name).
-    pub(crate) source: String,
+    pub source: String,
     /// Event content.
-    pub(crate) content: String,
+    pub content: String,
     /// Local timestamp.
-    pub(crate) timestamp: NaiveDateTime,
+    pub timestamp: NaiveDateTime,
 }
 
 /// Result from a completed background or subagent task.
 #[derive(Debug, Clone)]
-pub(crate) struct AgentResultEvent {
+pub struct AgentResultEvent {
     /// Unique task identifier.
-    pub(crate) task_id: String,
+    pub task_id: String,
     /// Human-readable task name.
-    pub(crate) task_name: String,
+    pub task_name: String,
     /// Subagent preset from the registry.
-    pub(crate) preset: PresetName,
+    pub preset: PresetName,
     /// What triggered this task.
-    pub(crate) source: EventTrigger,
+    pub source: EventTrigger,
     /// Whether the last heartbeat was substantive.
-    pub(crate) heartbeat_status: HeartbeatStatus,
+    pub heartbeat_status: HeartbeatStatus,
     /// Terminal status.
-    pub(crate) status: AgentResultStatus,
+    pub status: AgentResultStatus,
     /// Human-readable summary of the result.
-    pub(crate) summary: String,
+    pub summary: String,
     /// Path to the full conversation transcript, if saved.
-    pub(crate) transcript_path: Option<PathBuf>,
+    pub transcript_path: Option<PathBuf>,
     /// Local timestamp.
-    pub(crate) timestamp: NaiveDateTime,
+    pub timestamp: NaiveDateTime,
 }
 
 // ---------------------------------------------------------------------------
@@ -178,7 +178,7 @@ pub(crate) struct AgentResultEvent {
 
 /// An event published onto the bus.
 #[derive(Debug, Clone)]
-pub(crate) enum BusEvent {
+pub enum BusEvent {
     /// Inbound user/external message.
     Message(MessageEvent),
     /// Agent response to an endpoint.

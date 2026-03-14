@@ -75,12 +75,12 @@ async fn spawn_server_and_adapters(
     restart_tx: &tokio::sync::mpsc::Sender<()>,
 ) -> Result<SpawnedHandles, ResiduumError> {
     let discord_senders = AdapterSenders {
-        inbound: core.inbound_tx.clone(),
+        publisher: core.publisher.clone(),
         reload: core.reload_tx.clone(),
         command: core.command_tx.clone(),
     };
     let telegram_senders = AdapterSenders {
-        inbound: core.inbound_tx.clone(),
+        publisher: core.publisher.clone(),
         reload: core.reload_tx.clone(),
         command: core.command_tx.clone(),
     };
@@ -191,8 +191,6 @@ async fn build_runtime(
         sigterm: spawned.sigterm,
         shutdown_tx: core.shutdown_tx,
         config_dir: core.config_dir.clone(),
-        last_reply: None,
-        unsolicited_handles: std::collections::HashMap::new(),
         last_user_message_instant: None,
         cloud_config,
         tunnel_handle: spawned.tunnel_handle,
@@ -465,6 +463,50 @@ async fn poll_handle(
     }
 }
 
+/// Action from processing a bus event in the event loop.
+enum BusEventAction {
+    Continue,
+    Exit(GatewayExit),
+    Shutdown,
+}
+
+/// Handle a single bus event received on the agent subscriber.
+async fn handle_bus_event(
+    event: Option<crate::bus::BusEvent>,
+    rt: &mut GatewayRuntime,
+    observe_deadline: &mut Option<tokio::time::Instant>,
+    idle_deadline: &mut Option<tokio::time::Instant>,
+) -> BusEventAction {
+    match event {
+        Some(crate::bus::BusEvent::Message(msg_event)) => {
+            let routed = crate::interfaces::types::RoutedMessage {
+                message: crate::interfaces::types::InboundMessage {
+                    id: msg_event.id,
+                    content: msg_event.content,
+                    origin: msg_event.origin,
+                    timestamp: chrono::Utc::now(),
+                    images: msg_event.images,
+                },
+                reply: std::sync::Arc::new(crate::interfaces::null::NullReplyHandle),
+            };
+            if let Some(exit) =
+                handle_inbound_message(routed, rt, observe_deadline, idle_deadline).await
+            {
+                return BusEventAction::Exit(exit);
+            }
+            BusEventAction::Continue
+        }
+        None => {
+            tracing::info!("bus subscriber closed, shutting down");
+            BusEventAction::Shutdown
+        }
+        _ => {
+            tracing::trace!("ignoring non-message event on agent:main");
+            BusEventAction::Continue
+        }
+    }
+}
+
 /// Run the main gateway event loop.
 ///
 /// Processes inbound messages, pulse ticks, action ticks, and memory pipeline
@@ -504,13 +546,17 @@ async fn run_event_loop(mut rt: GatewayRuntime) -> GatewayExit {
             }
 
             msg = rt.inbound_rx.recv() => {
-                let Some(routed) = msg else {
-                    tracing::info!("inbound channel closed, shutting down");
-                    graceful_shutdown(&mut rt).await;
-                    break;
-                };
-                if let Some(exit) = handle_inbound_message(routed, &mut rt, &mut observe_deadline, &mut idle_deadline).await {
+                if let Some(routed) = msg
+                    && let Some(exit) = handle_inbound_message(routed, &mut rt, &mut observe_deadline, &mut idle_deadline).await
+                {
                     return exit;
+                }
+            }
+            event = rt.agent_subscriber.recv() => {
+                match handle_bus_event(event, &mut rt, &mut observe_deadline, &mut idle_deadline).await {
+                    BusEventAction::Continue => {}
+                    BusEventAction::Exit(exit) => return exit,
+                    BusEventAction::Shutdown => { graceful_shutdown(&mut rt).await; break; }
                 }
             }
 

@@ -1,10 +1,9 @@
 //! Telegram interface adapter (DM-only).
 //!
-//! Uses the teloxide Bot API for long-polling message reception and routes
-//! private messages through the standard `RoutedMessage` pipeline.
+//! Uses the teloxide Bot API for long-polling message reception and publishes
+//! private messages onto the bus for agent processing.
 
 mod handler;
-mod reply;
 #[expect(dead_code, reason = "subscriber will be wired in during bus migration")]
 pub(crate) mod subscriber;
 
@@ -12,14 +11,14 @@ use std::path::PathBuf;
 
 use tokio::sync::mpsc;
 
+use crate::bus::Publisher;
 use crate::config::TelegramConfig;
 use crate::gateway::types::{ReloadSignal, ServerCommand};
-use crate::interfaces::types::RoutedMessage;
 
 /// Telegram interface adapter that routes private messages to the agent inbound channel.
 pub struct TelegramInterface {
     cfg: TelegramConfig,
-    inbound_tx: mpsc::Sender<RoutedMessage>,
+    publisher: Publisher,
     workspace_dir: PathBuf,
     reload_tx: tokio::sync::watch::Sender<ReloadSignal>,
     command_tx: mpsc::Sender<ServerCommand>,
@@ -32,7 +31,7 @@ impl TelegramInterface {
     #[must_use]
     pub(crate) fn new(
         cfg: TelegramConfig,
-        inbound_tx: mpsc::Sender<RoutedMessage>,
+        publisher: Publisher,
         workspace_dir: PathBuf,
         reload_tx: tokio::sync::watch::Sender<ReloadSignal>,
         command_tx: mpsc::Sender<ServerCommand>,
@@ -41,7 +40,7 @@ impl TelegramInterface {
     ) -> Self {
         Self {
             cfg,
-            inbound_tx,
+            publisher,
             workspace_dir,
             reload_tx,
             command_tx,
@@ -60,7 +59,7 @@ impl TelegramInterface {
     pub(crate) async fn start(self) -> anyhow::Result<()> {
         handler::run_telegram_polling(
             &self.cfg.token,
-            self.inbound_tx,
+            self.publisher,
             self.workspace_dir,
             self.reload_tx,
             self.command_tx,

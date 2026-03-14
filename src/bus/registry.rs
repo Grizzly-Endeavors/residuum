@@ -15,11 +15,11 @@ use super::types::{EndpointName, NotifyName, TopicId, WebhookName};
 
 /// A single endpoint registered in the catalog.
 #[derive(Debug, Clone)]
-pub(crate) struct EndpointEntry {
-    pub(crate) id: EndpointId,
-    pub(crate) topic: TopicId,
-    pub(crate) capabilities: EndpointCapabilities,
-    pub(crate) display_name: String,
+pub struct EndpointEntry {
+    pub id: EndpointId,
+    pub topic: TopicId,
+    pub capabilities: EndpointCapabilities,
+    pub display_name: String,
 }
 
 // ---------------------------------------------------------------------------
@@ -28,14 +28,20 @@ pub(crate) struct EndpointEntry {
 
 /// Thread-safe, cheaply cloneable catalog of all configured I/O endpoints.
 #[derive(Debug, Clone)]
-pub(crate) struct EndpointRegistry {
+pub struct EndpointRegistry {
     inner: Arc<RwLock<HashMap<EndpointId, EndpointEntry>>>,
+}
+
+impl Default for EndpointRegistry {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl EndpointRegistry {
     /// Create an empty registry.
     #[must_use]
-    pub(crate) fn new() -> Self {
+    pub fn new() -> Self {
         Self {
             inner: Arc::new(RwLock::new(HashMap::new())),
         }
@@ -43,7 +49,7 @@ impl EndpointRegistry {
 
     /// Build a registry from the runtime config and external channel definitions.
     #[must_use]
-    pub(crate) fn from_config(config: &Config, channels: &[ExternalChannelConfig]) -> Self {
+    pub fn from_config(config: &Config, channels: &[ExternalChannelConfig]) -> Self {
         let registry = Self::new();
 
         // WebSocket — always present
@@ -112,7 +118,7 @@ impl EndpointRegistry {
     }
 
     /// Add or overwrite an endpoint entry.
-    pub(crate) fn register(&self, entry: EndpointEntry) {
+    pub fn register(&self, entry: EndpointEntry) {
         let mut map = self
             .inner
             .write()
@@ -121,7 +127,7 @@ impl EndpointRegistry {
     }
 
     /// Remove an endpoint, returning the entry if it existed.
-    pub(crate) fn unregister(&self, id: &EndpointId) -> Option<EndpointEntry> {
+    pub fn unregister(&self, id: &EndpointId) -> Option<EndpointEntry> {
         let mut map = self
             .inner
             .write()
@@ -131,7 +137,7 @@ impl EndpointRegistry {
 
     /// Look up an endpoint by its ID.
     #[must_use]
-    pub(crate) fn get(&self, id: &EndpointId) -> Option<EndpointEntry> {
+    pub fn get(&self, id: &EndpointId) -> Option<EndpointEntry> {
         let map = self
             .inner
             .read()
@@ -141,7 +147,7 @@ impl EndpointRegistry {
 
     /// Look up an endpoint by its topic.
     #[must_use]
-    pub(crate) fn get_by_topic(&self, topic: &TopicId) -> Option<EndpointEntry> {
+    pub fn get_by_topic(&self, topic: &TopicId) -> Option<EndpointEntry> {
         let map = self
             .inner
             .read()
@@ -151,7 +157,7 @@ impl EndpointRegistry {
 
     /// Return all endpoints whose capabilities contain all flags in `caps`.
     #[must_use]
-    pub(crate) fn filter_by(&self, caps: EndpointCapabilities) -> Vec<EndpointEntry> {
+    pub fn filter_by(&self, caps: EndpointCapabilities) -> Vec<EndpointEntry> {
         let map = self
             .inner
             .read()
@@ -164,19 +170,19 @@ impl EndpointRegistry {
 
     /// Convenience: all interactive endpoints.
     #[must_use]
-    pub(crate) fn interactive(&self) -> Vec<EndpointEntry> {
+    pub fn interactive(&self) -> Vec<EndpointEntry> {
         self.filter_by(EndpointCapabilities::INTERACTIVE)
     }
 
     /// Convenience: all notify-only endpoints.
     #[must_use]
-    pub(crate) fn notify(&self) -> Vec<EndpointEntry> {
+    pub fn notify(&self) -> Vec<EndpointEntry> {
         self.filter_by(EndpointCapabilities::NOTIFY_ONLY)
     }
 
     /// Return all registered endpoints.
     #[must_use]
-    pub(crate) fn all(&self) -> Vec<EndpointEntry> {
+    pub fn all(&self) -> Vec<EndpointEntry> {
         let map = self
             .inner
             .read()
@@ -186,7 +192,7 @@ impl EndpointRegistry {
 
     /// Number of registered endpoints.
     #[must_use]
-    pub(crate) fn len(&self) -> usize {
+    pub fn len(&self) -> usize {
         let map = self
             .inner
             .read()
@@ -196,7 +202,7 @@ impl EndpointRegistry {
 
     /// Whether the registry has no endpoints.
     #[must_use]
-    pub(crate) fn is_empty(&self) -> bool {
+    pub fn is_empty(&self) -> bool {
         let map = self
             .inner
             .read()

@@ -469,7 +469,7 @@ async fn reload_discord_adapter(rt: &mut GatewayRuntime, new_cfg: &Config) {
         let (tx, rx) = tokio::sync::watch::channel(false);
         let discord = crate::interfaces::discord::DiscordInterface::new(
             discord_cfg.clone(),
-            rt.inbound_tx.clone(),
+            rt.publisher.clone(),
             new_cfg.workspace_dir.clone(),
             rt.reload_tx.clone(),
             rt.command_tx.clone(),
@@ -543,7 +543,7 @@ async fn reload_telegram_adapter(rt: &mut GatewayRuntime, new_cfg: &Config) {
         let (tx, rx) = tokio::sync::watch::channel(false);
         let telegram = crate::interfaces::telegram::TelegramInterface::new(
             telegram_cfg.clone(),
-            rt.inbound_tx.clone(),
+            rt.publisher.clone(),
             new_cfg.workspace_dir.clone(),
             rt.reload_tx.clone(),
             rt.command_tx.clone(),

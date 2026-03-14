@@ -1,15 +1,12 @@
 //! WebSocket connection handler.
 
-use std::sync::Arc;
-
 use axum::extract::State;
 use axum::extract::ws::{Message as WsMessage, WebSocket};
 use axum::response::IntoResponse;
 use futures_util::{SinkExt, StreamExt};
 
 use crate::gateway::protocol::{ClientMessage, ServerMessage};
-use crate::interfaces::types::{InboundMessage, MessageOrigin, RoutedMessage};
-use crate::interfaces::websocket::WsReplyHandle;
+use crate::interfaces::types::MessageOrigin;
 
 use crate::gateway::types::GatewayState;
 
@@ -95,20 +92,22 @@ async fn handle_client_message(msg: ClientMessage, state: &GatewayState) -> bool
                 sender_name: "ws-client".to_string(),
                 sender_id: "ws-client".to_string(),
             };
-            let inbound = InboundMessage {
+            let msg_event = crate::bus::MessageEvent {
                 id: id.clone(),
                 content,
                 origin,
-                timestamp: chrono::Utc::now(),
+                timestamp: crate::time::now_local(chrono_tz::UTC),
                 images,
             };
-            let reply = Arc::new(WsReplyHandle::new(state.broadcast_tx.clone(), id));
-            let routed = RoutedMessage {
-                message: inbound,
-                reply,
-            };
-            if state.inbound_tx.send(routed).await.is_err() {
-                tracing::warn!("inbound channel closed, dropping message");
+            if let Err(e) = state
+                .publisher
+                .publish(
+                    crate::bus::TopicId::AgentMain,
+                    crate::bus::BusEvent::Message(msg_event),
+                )
+                .await
+            {
+                tracing::warn!(error = %e, "failed to publish message to bus");
                 return false;
             }
         }

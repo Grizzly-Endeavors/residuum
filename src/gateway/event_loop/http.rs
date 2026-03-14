@@ -7,14 +7,13 @@ use tokio::sync::mpsc;
 use crate::config::Config;
 use crate::error::ResiduumError;
 use crate::gateway::types::{GatewayState, ReloadSignal, ServerCommand};
-use crate::interfaces::types::RoutedMessage;
 
 use crate::gateway::web;
 use crate::gateway::ws::ws_handler;
 
 /// Bundled senders for spawning a chat adapter (Discord or Telegram).
 pub struct AdapterSenders {
-    pub inbound: mpsc::Sender<RoutedMessage>,
+    pub publisher: crate::bus::Publisher,
     pub reload: tokio::sync::watch::Sender<ReloadSignal>,
     pub command: mpsc::Sender<ServerCommand>,
 }
@@ -132,7 +131,7 @@ pub fn spawn_adapters(
         let (tx, rx) = tokio::sync::watch::channel(false);
         let iface = crate::interfaces::discord::DiscordInterface::new(
             discord_cfg.clone(),
-            discord.inbound,
+            discord.publisher,
             cfg.workspace_dir.clone(),
             discord.reload,
             discord.command,
@@ -153,7 +152,7 @@ pub fn spawn_adapters(
         let (tx, rx) = tokio::sync::watch::channel(false);
         let iface = crate::interfaces::telegram::TelegramInterface::new(
             telegram_cfg.clone(),
-            telegram.inbound,
+            telegram.publisher,
             cfg.workspace_dir.clone(),
             telegram.reload,
             telegram.command,

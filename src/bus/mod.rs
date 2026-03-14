@@ -12,13 +12,13 @@ mod handle;
 mod registry;
 mod types;
 
-pub(crate) use broker::{BusHandle, spawn_broker};
-pub(crate) use endpoint::{EndpointCapabilities, EndpointId};
-pub(crate) use events::{
+pub use broker::{BusHandle, spawn_broker};
+pub use endpoint::{EndpointCapabilities, EndpointId};
+pub use events::{
     AgentResultEvent, AgentResultStatus, BusEvent, EventTrigger, HeartbeatStatus,
     IntermediateEvent, MessageEvent, NotificationEvent, ResponseEvent, SystemEventData,
     ToolCallEvent, ToolResultEvent,
 };
-pub(crate) use handle::{Publisher, Subscriber};
-pub(crate) use registry::{EndpointEntry, EndpointRegistry};
-pub(crate) use types::{BusError, EndpointName, NotifyName, PresetName, TopicId, WebhookName};
+pub use handle::{Publisher, Subscriber};
+pub use registry::{EndpointEntry, EndpointRegistry};
+pub use types::{BusError, EndpointName, NotifyName, PresetName, TopicId, WebhookName};

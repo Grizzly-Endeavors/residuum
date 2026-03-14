@@ -1,15 +1,14 @@
 //! Telegram long-polling message handler and command dispatch.
 
 use std::path::Path;
-use std::sync::Arc;
 use std::time::Duration;
 
 use teloxide::Bot;
 use teloxide::payloads::GetUpdatesSetters;
 use teloxide::requests::Requester;
 use teloxide::types::{BotCommand, ChatId, UpdateKind};
-use tokio::sync::mpsc;
 
+use crate::bus::Publisher;
 use crate::gateway::types::{ReloadSignal, ServerCommand};
 use crate::inbox;
 use crate::interfaces::attachment::{
@@ -18,17 +17,15 @@ use crate::interfaces::attachment::{
 use crate::interfaces::cli::commands::{
     CommandContext, CommandSideEffect, all_commands, execute_command,
 };
-use crate::interfaces::types::{InboundMessage, MessageOrigin, RoutedMessage};
+use crate::interfaces::types::MessageOrigin;
 use crate::models::ImageData;
-
-use super::reply::TelegramReplyHandle;
 
 /// Shared gateway references threaded through telegram message dispatch.
 struct TelegramContext<'a> {
-    inbound_tx: &'a mpsc::Sender<RoutedMessage>,
+    publisher: &'a Publisher,
     inbox_dir: &'a Path,
     reload_tx: &'a tokio::sync::watch::Sender<ReloadSignal>,
-    command_tx: &'a mpsc::Sender<ServerCommand>,
+    command_tx: &'a tokio::sync::mpsc::Sender<ServerCommand>,
     tz: chrono_tz::Tz,
 }
 
@@ -50,10 +47,10 @@ struct AttachmentMeta<'a> {
 /// Returns an error if the initial `get_me` verification fails.
 pub(super) async fn run_telegram_polling(
     token: &str,
-    inbound_tx: mpsc::Sender<RoutedMessage>,
+    publisher: Publisher,
     workspace_dir: std::path::PathBuf,
     reload_tx: tokio::sync::watch::Sender<ReloadSignal>,
-    command_tx: mpsc::Sender<ServerCommand>,
+    command_tx: tokio::sync::mpsc::Sender<ServerCommand>,
     tz: chrono_tz::Tz,
     mut shutdown_rx: tokio::sync::watch::Receiver<bool>,
 ) -> anyhow::Result<()> {
@@ -142,7 +139,7 @@ pub(super) async fn run_telegram_polling(
             }
 
             let ctx = TelegramContext {
-                inbound_tx: &inbound_tx,
+                publisher: &publisher,
                 inbox_dir: &inbox_dir,
                 reload_tx: &reload_tx,
                 command_tx: &command_tx,
@@ -226,23 +223,23 @@ async fn dispatch_message(
         sender_id: from.id.to_string(),
     };
 
-    let inbound = InboundMessage {
+    let msg_event = crate::bus::MessageEvent {
         id: msg.id.to_string(),
         content,
         origin,
-        timestamp: chrono::Utc::now(),
+        timestamp: crate::time::now_local(ctx.tz),
         images,
     };
 
-    let reply = Arc::new(TelegramReplyHandle::new(bot.clone(), chat_id));
-
-    let routed = RoutedMessage {
-        message: inbound,
-        reply,
-    };
-
-    if ctx.inbound_tx.send(routed).await.is_err() {
-        tracing::warn!("inbound channel closed, dropping telegram message");
+    if let Err(e) = ctx
+        .publisher
+        .publish(
+            crate::bus::TopicId::AgentMain,
+            crate::bus::BusEvent::Message(msg_event),
+        )
+        .await
+    {
+        tracing::warn!(error = %e, "failed to publish telegram message to bus");
     }
 }
 

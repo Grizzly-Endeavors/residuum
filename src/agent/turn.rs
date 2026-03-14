@@ -2,8 +2,8 @@
 
 use tokio::sync::mpsc;
 
+use crate::bus::{BusEvent, IntermediateEvent, Publisher, ToolCallEvent, ToolResultEvent, TopicId};
 use crate::error::ResiduumError;
-use crate::interfaces::types::ReplyHandle;
 use crate::mcp::SharedMcpRegistry;
 use crate::models::{CompletionOptions, Message, ModelProvider, ModelResponse, ToolCall};
 use crate::tools::{SharedToolFilter, ToolError, ToolFilter, ToolRegistry};
@@ -37,12 +37,17 @@ pub(crate) struct TurnResources<'a> {
 /// Returns a vec containing the final text-only response. Intermediate texts
 /// emitted alongside tool calls are sent via `reply` in real-time but not
 /// included in the return value.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "publisher and topic params added during bus migration"
+)]
 pub(crate) async fn execute_turn(
     resources: &TurnResources<'_>,
     memory_ctx: &MemoryContext<'_>,
     prompt_ctx: &PromptContext<'_>,
     recent_messages: &mut RecentMessages,
-    reply: &dyn ReplyHandle,
+    publisher: &Publisher,
+    output_topic: &TopicId,
     status_line: Option<&StatusLine>,
     interrupt_rx: &mut mpsc::Receiver<Interrupt>,
 ) -> Result<Vec<String>, ResiduumError> {
@@ -78,29 +83,24 @@ pub(crate) async fn execute_turn(
             .await
             .map_err(ResiduumError::Model)?;
 
-        // Log structured thinking if the provider returned it natively
         if let Some(ref thinking) = response.thinking {
             tracing::debug!(
                 thinking_len = thinking.len(),
                 "structured thinking received"
             );
         }
-
-        // Strip <think>...</think> blocks emitted by reasoning models (e.g. DeepSeek-R1)
         let mut response = response;
         response.content = crate::models::think_tags::strip_think_tags(&response.content);
 
         if response.tool_calls.is_empty() {
             recent_messages.push(Message::assistant(response.content.clone(), None));
             log_usage(&response);
-
             if response.content.is_empty() {
                 tracing::warn!("model returned empty response with no tool calls");
                 return Err(ResiduumError::Other(anyhow::anyhow!(
                     "model returned empty response with no tool calls"
                 )));
             }
-
             texts.push(response.content);
             return Ok(texts);
         }
@@ -111,9 +111,18 @@ pub(crate) async fn execute_turn(
             "processing tool calls"
         );
 
-        // Send any text the model emitted alongside tool calls in real-time.
         if !response.content.is_empty() {
-            reply.send_intermediate(&response.content).await;
+            drop(
+                publisher
+                    .publish(
+                        output_topic.clone(),
+                        BusEvent::Intermediate(IntermediateEvent {
+                            correlation_id: String::new(),
+                            content: response.content.clone(),
+                        }),
+                    )
+                    .await,
+            );
         }
 
         recent_messages.push(Message::assistant(
@@ -121,7 +130,6 @@ pub(crate) async fn execute_turn(
             Some(response.tool_calls.clone()),
         ));
 
-        // TODO(phase-4): add security boundary before Discord integration
         for tool_call in &response.tool_calls {
             execute_tool(
                 tool_call,
@@ -129,7 +137,8 @@ pub(crate) async fn execute_turn(
                 resources.mcp_registry,
                 &filter,
                 recent_messages,
-                reply,
+                publisher,
+                output_topic,
             )
             .await;
         }
@@ -174,11 +183,22 @@ async fn execute_tool(
     mcp_registry: &SharedMcpRegistry,
     filter: &ToolFilter,
     recent_messages: &mut RecentMessages,
-    reply: &dyn ReplyHandle,
+    publisher: &Publisher,
+    output_topic: &TopicId,
 ) {
-    reply
-        .send_tool_call(&tool_call.id, &tool_call.name, &tool_call.arguments)
-        .await;
+    drop(
+        publisher
+            .publish(
+                output_topic.clone(),
+                BusEvent::ToolCall(ToolCallEvent {
+                    correlation_id: String::new(),
+                    tool_call_id: tool_call.id.clone(),
+                    name: tool_call.name.clone(),
+                    arguments: tool_call.arguments.clone(),
+                }),
+            )
+            .await,
+    );
 
     // Try built-in tools first, fall back to MCP servers
     let result = match tools
@@ -208,9 +228,20 @@ async fn execute_tool(
         }
     };
 
-    reply
-        .send_tool_result(&tool_call.id, &tool_call.name, &output, is_error)
-        .await;
+    drop(
+        publisher
+            .publish(
+                output_topic.clone(),
+                BusEvent::ToolResult(ToolResultEvent {
+                    correlation_id: String::new(),
+                    tool_call_id: tool_call.id.clone(),
+                    name: tool_call.name.clone(),
+                    output: output.clone(),
+                    is_error,
+                }),
+            )
+            .await,
+    );
 
     if images.is_empty() {
         recent_messages.push(Message::tool(output, tool_call.id.clone()));

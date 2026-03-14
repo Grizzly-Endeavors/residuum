@@ -1,7 +1,7 @@
 //! Discord interface adapter (DM-only).
 //!
-//! Implements the serenity `EventHandler` trait to receive DMs and route them
-//! through the standard `RoutedMessage` pipeline.
+//! Implements the serenity `EventHandler` trait to receive DMs and publish them
+//! onto the bus for agent processing.
 //!
 //! Supports:
 //! - Hot-reloadable presence via `PRESENCE.toml`
@@ -9,7 +9,6 @@
 //! - Attachment downloading to the workspace inbox
 
 mod handler;
-mod reply;
 #[expect(dead_code, reason = "subscriber will be wired in during bus migration")]
 pub(crate) mod subscriber;
 
@@ -19,16 +18,16 @@ use std::sync::Arc;
 use serenity::prelude::*;
 use tokio::sync::mpsc;
 
+use crate::bus::Publisher;
 use crate::config::DiscordConfig;
 use crate::gateway::types::{ReloadSignal, ServerCommand};
-use crate::interfaces::types::RoutedMessage;
 
 use self::handler::DiscordHandler;
 
 /// Discord interface adapter that routes DMs to the agent inbound channel.
 pub struct DiscordInterface {
     cfg: DiscordConfig,
-    inbound_tx: mpsc::Sender<RoutedMessage>,
+    publisher: Publisher,
     workspace_dir: PathBuf,
     reload_tx: tokio::sync::watch::Sender<ReloadSignal>,
     command_tx: mpsc::Sender<ServerCommand>,
@@ -41,7 +40,7 @@ impl DiscordInterface {
     ///
     /// # Arguments
     /// - `cfg`: Discord bot configuration (token).
-    /// - `inbound_tx`: Channel for routing messages to the agent.
+    /// - `publisher`: Bus publisher for routing messages to the agent.
     /// - `workspace_dir`: Path to the workspace root (for PRESENCE.toml and inbox).
     /// - `reload_tx`: Watch channel to trigger config reload.
     /// - `command_tx`: Channel for dispatching named server commands.
@@ -50,7 +49,7 @@ impl DiscordInterface {
     #[must_use]
     pub(crate) fn new(
         cfg: DiscordConfig,
-        inbound_tx: mpsc::Sender<RoutedMessage>,
+        publisher: Publisher,
         workspace_dir: PathBuf,
         reload_tx: tokio::sync::watch::Sender<ReloadSignal>,
         command_tx: mpsc::Sender<ServerCommand>,
@@ -59,7 +58,7 @@ impl DiscordInterface {
     ) -> Self {
         Self {
             cfg,
-            inbound_tx,
+            publisher,
             workspace_dir,
             reload_tx,
             command_tx,
@@ -82,7 +81,7 @@ impl DiscordInterface {
         let inbox_dir = self.workspace_dir.join("inbox");
 
         let handler = DiscordHandler {
-            inbound_tx: self.inbound_tx,
+            publisher: self.publisher,
             presence_path,
             inbox_dir,
             reload_tx: self.reload_tx,

@@ -10,7 +10,7 @@ macro_rules! newtype_string {
     ($name:ident, $doc:expr) => {
         #[doc = $doc]
         #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-        pub(crate) struct $name(String);
+        pub struct $name(String);
 
         impl fmt::Display for $name {
             fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -49,7 +49,7 @@ newtype_string!(NotifyName, "Notification channel identifier.");
 
 /// Identifies a pub/sub topic on the bus.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub(crate) enum TopicId {
+pub enum TopicId {
     /// The main agent processing loop.
     AgentMain,
     /// A subagent preset topic.
@@ -89,7 +89,7 @@ impl fmt::Display for TopicId {
 
 /// Errors returned by bus operations.
 #[derive(Debug, thiserror::Error)]
-pub(crate) enum BusError {
+pub enum BusError {
     /// The broker task has shut down.
     #[error("bus broker is shut down")]
     BrokerShutdown,

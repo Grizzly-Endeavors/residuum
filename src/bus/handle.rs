@@ -10,7 +10,7 @@ use super::types::{BusError, TopicId};
 // ---------------------------------------------------------------------------
 
 /// Commands sent from handles to the broker task.
-pub(crate) enum BrokerCommand {
+pub enum BrokerCommand {
     /// Publish an event to a topic.
     Publish { topic: TopicId, event: BusEvent },
     /// Register a subscriber for a topic.
@@ -29,7 +29,7 @@ pub(crate) enum BrokerCommand {
 
 /// A cloneable handle for publishing events to the bus.
 #[derive(Clone)]
-pub(crate) struct Publisher {
+pub struct Publisher {
     cmd_tx: mpsc::Sender<BrokerCommand>,
 }
 
@@ -44,7 +44,7 @@ impl Publisher {
     /// # Errors
     ///
     /// Returns `BusError::BrokerShutdown` if the broker has stopped.
-    pub(crate) async fn publish(&self, topic: TopicId, event: BusEvent) -> Result<(), BusError> {
+    pub async fn publish(&self, topic: TopicId, event: BusEvent) -> Result<(), BusError> {
         self.cmd_tx
             .send(BrokerCommand::Publish { topic, event })
             .await
@@ -57,7 +57,7 @@ impl Publisher {
 // ---------------------------------------------------------------------------
 
 /// A single-consumer handle for receiving events from a bus topic.
-pub(crate) struct Subscriber {
+pub struct Subscriber {
     id: u64,
     topic: TopicId,
     event_rx: mpsc::Receiver<BusEvent>,
@@ -81,7 +81,7 @@ impl Subscriber {
     }
 
     /// Receive the next event, or `None` if the broker has shut down.
-    pub(crate) async fn recv(&mut self) -> Option<BusEvent> {
+    pub async fn recv(&mut self) -> Option<BusEvent> {
         self.event_rx.recv().await
     }
 }

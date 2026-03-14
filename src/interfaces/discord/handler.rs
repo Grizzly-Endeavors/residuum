@@ -1,7 +1,6 @@
 //! Serenity event handler, slash command registration, and presence watcher.
 
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::time::Duration;
 
 use serenity::async_trait;
@@ -12,8 +11,8 @@ use serenity::model::application::Interaction;
 use serenity::model::channel::Message;
 use serenity::model::gateway::Ready;
 use serenity::prelude::*;
-use tokio::sync::mpsc;
 
+use crate::bus::Publisher;
 use crate::gateway::types::{ReloadSignal, ServerCommand};
 use crate::inbox;
 use crate::interfaces::attachment::{
@@ -24,10 +23,8 @@ use crate::interfaces::cli::commands::{
     CommandContext, CommandSideEffect, all_commands, execute_command,
 };
 use crate::interfaces::presence::{load_presence, to_activity, to_online_status};
-use crate::interfaces::types::{InboundMessage, MessageOrigin, RoutedMessage};
+use crate::interfaces::types::MessageOrigin;
 use crate::models::ImageData;
-
-use super::reply::DiscordReplyHandle;
 
 /// Interval for polling PRESENCE.toml changes (seconds).
 const PRESENCE_POLL_SECS: u64 = 30;
@@ -35,11 +32,11 @@ const PRESENCE_POLL_SECS: u64 = 30;
 /// Serenity event handler that filters for DMs, manages presence,
 /// registers slash commands, and handles attachments.
 pub(super) struct DiscordHandler {
-    pub(super) inbound_tx: mpsc::Sender<RoutedMessage>,
+    pub(super) publisher: Publisher,
     pub(super) presence_path: PathBuf,
     pub(super) inbox_dir: PathBuf,
     pub(super) reload_tx: tokio::sync::watch::Sender<ReloadSignal>,
-    pub(super) command_tx: mpsc::Sender<ServerCommand>,
+    pub(super) command_tx: tokio::sync::mpsc::Sender<ServerCommand>,
     pub(super) tz: chrono_tz::Tz,
 }
 
@@ -68,7 +65,7 @@ impl EventHandler for DiscordHandler {
         });
     }
 
-    async fn message(&self, ctx: Context, msg: Message) {
+    async fn message(&self, _ctx: Context, msg: Message) {
         // Ignore bot messages
         if msg.author.bot {
             return;
@@ -95,26 +92,23 @@ impl EventHandler for DiscordHandler {
             sender_id: msg.author.id.to_string(),
         };
 
-        let inbound = InboundMessage {
+        let msg_event = crate::bus::MessageEvent {
             id: msg.id.to_string(),
             content,
             origin,
-            timestamp: chrono::Utc::now(),
+            timestamp: crate::time::now_local(self.tz),
             images,
         };
 
-        let reply = Arc::new(DiscordReplyHandle::new(
-            Arc::clone(&ctx.http),
-            msg.channel_id,
-        ));
-
-        let routed = RoutedMessage {
-            message: inbound,
-            reply,
-        };
-
-        if self.inbound_tx.send(routed).await.is_err() {
-            tracing::warn!("inbound channel closed, dropping discord message");
+        if let Err(e) = self
+            .publisher
+            .publish(
+                crate::bus::TopicId::AgentMain,
+                crate::bus::BusEvent::Message(msg_event),
+            )
+            .await
+        {
+            tracing::warn!(error = %e, "failed to publish discord message to bus");
         }
     }
 

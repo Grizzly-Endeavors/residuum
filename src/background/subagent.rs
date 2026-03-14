@@ -8,7 +8,7 @@ use crate::agent::context::{
 use crate::agent::interrupt::dead_interrupt_rx;
 use crate::agent::recent_messages::RecentMessages;
 use crate::agent::turn::{TurnResources, execute_turn};
-use crate::interfaces::null::NullReplyHandle;
+use crate::bus;
 use crate::mcp::SharedMcpRegistry;
 use crate::models::{CompletionOptions, Message, ModelProvider};
 use crate::projects::activation::{ProjectState, SharedProjectState};
@@ -224,7 +224,9 @@ pub(crate) async fn execute_subagent(
     let mut recent_messages = RecentMessages::new();
     recent_messages.push(Message::user(combined_prompt));
 
-    let reply = NullReplyHandle;
+    let bus_handle = bus::spawn_broker();
+    let publisher = bus_handle.publisher();
+    let output_topic = bus::TopicId::AgentPreset(bus::PresetName::from(task_id));
     let mut interrupt_rx = dead_interrupt_rx();
 
     let memory_ctx = crate::agent::context::MemoryContext {
@@ -252,7 +254,8 @@ pub(crate) async fn execute_subagent(
         &memory_ctx,
         &prompt_ctx,
         &mut recent_messages,
-        &reply,
+        &publisher,
+        &output_topic,
         None,
         &mut interrupt_rx,
     )
@@ -265,7 +268,8 @@ pub(crate) async fn execute_subagent(
         &memory_ctx,
         &prompt_ctx,
         &mut recent_messages,
-        &reply,
+        &publisher,
+        &output_topic,
     )
     .await;
 
@@ -280,6 +284,10 @@ pub(crate) async fn execute_subagent(
 /// If a project is still active after the main turn, give the sub-agent one
 /// more turn with a deactivation prompt so it can write a proper session log.
 /// If the retry turn also fails, fall back to a manual ref-count decrement.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "publisher and topic params added during bus migration"
+)]
 async fn ensure_project_deactivated(
     task_id: &str,
     config: &SubAgentConfig,
@@ -287,7 +295,8 @@ async fn ensure_project_deactivated(
     memory_ctx: &crate::agent::context::MemoryContext<'_>,
     prompt_ctx: &PromptContext<'_>,
     recent_messages: &mut RecentMessages,
-    reply: &dyn crate::interfaces::types::ReplyHandle,
+    publisher: &bus::Publisher,
+    output_topic: &bus::TopicId,
 ) {
     let active_name = resources
         .project_state
@@ -328,7 +337,8 @@ async fn ensure_project_deactivated(
         memory_ctx,
         prompt_ctx,
         recent_messages,
-        reply,
+        publisher,
+        output_topic,
         None,
         &mut deactivation_interrupt_rx,
     )

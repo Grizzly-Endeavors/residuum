@@ -27,7 +27,7 @@ const SUBSCRIBER_CAPACITY: usize = 64;
 /// Cloning a `BusHandle` is cheap — it shares the command channel and the
 /// atomic subscriber-id counter.
 #[derive(Clone)]
-pub(crate) struct BusHandle {
+pub struct BusHandle {
     cmd_tx: mpsc::Sender<BrokerCommand>,
     next_id: Arc<AtomicU64>,
 }
@@ -35,7 +35,7 @@ pub(crate) struct BusHandle {
 impl BusHandle {
     /// Create a [`Publisher`] that can send events to the bus.
     #[must_use]
-    pub(crate) fn publisher(&self) -> Publisher {
+    pub fn publisher(&self) -> Publisher {
         Publisher::new(self.cmd_tx.clone())
     }
 
@@ -44,7 +44,7 @@ impl BusHandle {
     /// # Errors
     ///
     /// Returns `BusError::BrokerShutdown` if the broker has stopped.
-    pub(crate) async fn subscribe(&self, topic: TopicId) -> Result<Subscriber, BusError> {
+    pub async fn subscribe(&self, topic: TopicId) -> Result<Subscriber, BusError> {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let (event_tx, event_rx) = mpsc::channel(SUBSCRIBER_CAPACITY);
 
@@ -66,7 +66,8 @@ impl BusHandle {
 // ---------------------------------------------------------------------------
 
 /// Spawn the broker task and return a [`BusHandle`].
-pub(crate) fn spawn_broker() -> BusHandle {
+#[must_use]
+pub fn spawn_broker() -> BusHandle {
     let (cmd_tx, cmd_rx) = mpsc::channel(BROKER_COMMAND_CAPACITY);
 
     spawn_monitored("bus-broker", run_broker(cmd_rx));

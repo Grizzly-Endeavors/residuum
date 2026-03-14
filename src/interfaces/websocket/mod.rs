@@ -1,10 +1,6 @@
 //! WebSocket interface — reply handle and bus subscriber.
 
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "subscriber will be wired in during bus migration")
-)]
-pub(crate) mod subscriber;
+pub mod subscriber;
 
 use std::sync::Arc;
 

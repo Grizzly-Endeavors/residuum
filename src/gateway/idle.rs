@@ -4,8 +4,6 @@
 //! active projects and skills, fires the observer, clears the message
 //! buffer, and injects a continuity system message.
 
-use std::sync::Arc;
-
 use crate::config::BackgroundModelTier;
 use crate::memory::recent_messages::load_recent_messages;
 use crate::models::factory::build_provider_chain;
@@ -52,20 +50,12 @@ pub(super) async fn execute_idle_transition(
     rt.agent.inject_system_message(&summary);
 }
 
-/// Switch `last_reply` to the unsolicited handle for the configured idle channel.
+/// Switch `last_output_topic` to the configured idle channel.
 fn switch_idle_interface(rt: &mut GatewayRuntime, channel_name: &str) {
-    match rt.unsolicited_handles.get(channel_name) {
-        Some(handle) => {
-            rt.last_reply = Some(Arc::clone(handle));
-            tracing::info!(channel = %channel_name, "switched to idle interface");
-        }
-        None => {
-            tracing::warn!(
-                channel = %channel_name,
-                "idle_channel configured but no message received on that interface yet"
-            );
-        }
-    }
+    rt.last_output_topic = Some(crate::bus::TopicId::Interactive(
+        crate::bus::EndpointName::from(channel_name),
+    ));
+    tracing::info!(channel = %channel_name, "switched to idle interface");
 }
 
 /// Deactivate the currently active project, generating an LLM summary log.

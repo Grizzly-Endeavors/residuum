@@ -26,8 +26,8 @@ mod gateway_integration {
     use residuum::agent::Agent;
     use residuum::agent::context::PromptContext;
     use residuum::agent::interrupt;
+    use residuum::bus::{EndpointName, TopicId, spawn_broker};
     use residuum::gateway::protocol::{ClientMessage, ServerMessage};
-    use residuum::interfaces::websocket::WsReplyHandle;
     use residuum::models::{
         CompletionOptions, Message, ModelError, ModelProvider, ModelResponse, ToolDefinition,
     };
@@ -103,6 +103,18 @@ mod gateway_integration {
         let (inbound_tx, mut inbound_rx) = mpsc::channel::<InboundMessage>(32);
         let (broadcast_tx, _) = broadcast::channel::<ServerMessage>(256);
 
+        // Set up bus broker and wire the ws subscriber loop to forward
+        // bus events to the broadcast channel.
+        let bus = spawn_broker();
+        let publisher = bus.publisher();
+        let output_topic = TopicId::Interactive(EndpointName::from("ws"));
+
+        let sub = bus.subscribe(output_topic.clone()).await.unwrap();
+        let sub_broadcast = broadcast_tx.clone();
+        tokio::spawn(
+            residuum::interfaces::websocket::subscriber::run_ws_subscriber(sub, sub_broadcast),
+        );
+
         let state = TestGatewayState {
             inbound_tx: inbound_tx.clone(),
             broadcast_tx: broadcast_tx.clone(),
@@ -120,26 +132,31 @@ mod gateway_integration {
         });
 
         let loop_broadcast_tx = broadcast_tx.clone();
+        let loop_publisher = publisher.clone();
+        let loop_topic = output_topic.clone();
         tokio::spawn(async move {
             let mut agent = agent;
             while let Some(inbound) = inbound_rx.recv().await {
                 let reply_id = inbound.id.clone();
-                let reply = WsReplyHandle::new(loop_broadcast_tx.clone(), reply_id.clone());
 
-                if loop_broadcast_tx
-                    .send(ServerMessage::TurnStarted {
-                        reply_to: reply_id.clone(),
-                    })
-                    .is_err()
-                {
-                    break;
-                }
+                // Publish TurnStarted (normally done by the event loop)
+                drop(
+                    loop_publisher
+                        .publish(
+                            loop_topic.clone(),
+                            residuum::bus::BusEvent::TurnStarted {
+                                correlation_id: reply_id.clone(),
+                            },
+                        )
+                        .await,
+                );
 
                 let mut irx = interrupt::dead_interrupt_rx();
                 match agent
                     .process_message(
                         &inbound.content,
-                        &reply,
+                        &loop_publisher,
+                        &loop_topic,
                         None,
                         &PromptContext::none(),
                         &mut irx,
@@ -148,16 +165,21 @@ mod gateway_integration {
                     .await
                 {
                     Ok(texts) => {
-                        for text in texts {
-                            if loop_broadcast_tx
-                                .send(ServerMessage::Response {
-                                    reply_to: reply_id.clone(),
-                                    content: text,
-                                })
-                                .is_err()
-                            {
-                                break;
-                            }
+                        for text in &texts {
+                            drop(
+                                loop_publisher
+                                    .publish(
+                                        loop_topic.clone(),
+                                        residuum::bus::BusEvent::Response(
+                                            residuum::bus::ResponseEvent {
+                                                correlation_id: reply_id.clone(),
+                                                content: text.clone(),
+                                                timestamp: chrono::NaiveDateTime::default(),
+                                            },
+                                        ),
+                                    )
+                                    .await,
+                            );
                         }
                     }
                     Err(e) => {

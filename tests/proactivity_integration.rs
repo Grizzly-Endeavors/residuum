@@ -17,8 +17,8 @@ mod proactivity_integration {
     use residuum::agent::Agent;
     use residuum::agent::context::PromptContext;
     use residuum::background::types::{Execution, ResultRouting};
+    use residuum::bus::{EndpointName, TopicId, spawn_broker};
     use residuum::config::BackgroundModelTier;
-    use residuum::interfaces::null::NullReplyHandle;
     use residuum::models::{
         CompletionOptions, Message, ModelError, ModelProvider, ModelResponse, Role, ToolDefinition,
     };
@@ -404,12 +404,16 @@ mod proactivity_integration {
     #[tokio::test]
     async fn run_system_turn_does_not_modify_main_history() {
         let agent = make_agent(vec!["I ran a background check.".to_string()]);
-        let reply = NullReplyHandle;
+
+        let bus = spawn_broker();
+        let publisher = bus.publisher();
+        let output_topic = TopicId::Interactive(EndpointName::from("test"));
 
         let result = agent
             .run_system_turn(
                 "background check prompt",
-                &reply,
+                &publisher,
+                &output_topic,
                 None,
                 &PromptContext::none(),
             )
