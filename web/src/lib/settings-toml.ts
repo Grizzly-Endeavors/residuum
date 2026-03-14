@@ -14,6 +14,14 @@ import type {
 
 // ── Config form fields (config.toml) ─────────────────────────────────
 
+export interface WebhookFormEntry {
+  name: string;
+  secret: string;
+  routing: string;
+  format: string;
+  content_fields: string;
+}
+
 export interface ConfigFields {
   name: string;
   timezone: string;
@@ -57,8 +65,7 @@ export interface ConfigFields {
   // integrations
   discord_token: string;
   telegram_token: string;
-  webhook_enabled: boolean;
-  webhook_secret: string;
+  webhooks: WebhookFormEntry[];
   // cloud
   cloud_enabled: boolean;
   cloud_token: string;
@@ -113,8 +120,7 @@ export function defaultConfigFields(): ConfigFields {
     thinking: "",
     discord_token: "",
     telegram_token: "",
-    webhook_enabled: false,
-    webhook_secret: "",
+    webhooks: [],
     cloud_enabled: true,
     cloud_token: "",
     cloud_relay_url: "",
@@ -227,10 +233,19 @@ export function parseConfigToml(raw: string): ConfigFields {
     fields.telegram_token = str(telegram.token);
   }
 
-  const webhook = doc.webhook as Record<string, unknown> | undefined;
-  if (webhook) {
-    fields.webhook_enabled = bool(webhook.enabled, false);
-    fields.webhook_secret = str(webhook.secret);
+  const webhooks = doc.webhooks as Record<string, Record<string, unknown>> | undefined;
+  if (webhooks) {
+    for (const [name, entry] of Object.entries(webhooks)) {
+      fields.webhooks.push({
+        name,
+        secret: str(entry.secret),
+        routing: str(entry.routing),
+        format: str(entry.format),
+        content_fields: Array.isArray(entry.content_fields)
+          ? (entry.content_fields as string[]).join(", ")
+          : "",
+      });
+    }
   }
 
   const cloud = doc.cloud as Record<string, unknown> | undefined;
@@ -493,12 +508,23 @@ export function serializeConfigToml(f: ConfigFields): string {
     lines.push(`token = "${f.telegram_token}"`);
   }
 
-  // webhook
-  if (f.webhook_enabled || f.webhook_secret) {
+  // webhooks
+  for (const wh of f.webhooks) {
+    if (!wh.name.trim()) continue;
     lines.push("");
-    lines.push("[webhook]");
-    if (f.webhook_enabled) lines.push("enabled = true");
-    if (f.webhook_secret) lines.push(`secret = "${f.webhook_secret}"`);
+    lines.push(`[webhooks.${wh.name.trim()}]`);
+    if (wh.secret) lines.push(`secret = "${wh.secret}"`);
+    if (wh.routing && wh.routing !== "inbox") lines.push(`routing = "${wh.routing}"`);
+    if (wh.format && wh.format !== "parsed") lines.push(`format = "${wh.format}"`);
+    if (wh.content_fields) {
+      const cfParts = wh.content_fields
+        .split(",")
+        .map((s) => s.trim())
+        .filter(Boolean);
+      if (cfParts.length > 0) {
+        lines.push(`content_fields = [${cfParts.map((s) => `"${s}"`).join(", ")}]`);
+      }
+    }
   }
 
   // cloud

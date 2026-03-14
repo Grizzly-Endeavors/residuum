@@ -90,13 +90,28 @@ port = 7700
 # [skills]
 # dirs = ["~/my-skills", "/opt/shared-skills"]
 
-# ── Webhook endpoint (optional) ──────────────────────────────────────────────
-# Enables POST /webhook on the gateway server. If secret is set, requests
-# must include an Authorization: Bearer <secret> header.
+# ── Named webhooks (optional) ────────────────────────────────────────────────
+# Each [webhooks.<name>] section creates a POST /webhook/<name> endpoint.
+# Presence in config = enabled; remove to disable.
 #
-# [webhook]
-# enabled = false
-# secret = "your-webhook-secret"
+# Options:
+#   secret         - Bearer token for auth (supports ${ENV_VAR} / secret:name)
+#   routing        - "inbox" (default) or "agent:<preset_name>"
+#   format         - "parsed" (default) or "raw"
+#   content_fields - JSON dot-paths to extract (parsed format only)
+#
+# [webhooks.github-issues]
+# secret = "secret:github_webhook"
+# routing = "agent:code_reviewer"
+# content_fields = ["issue.title", "issue.body", "issue.labels"]
+#
+# [webhooks.deploy-hook]
+# secret = "${DEPLOY_SECRET}"
+# routing = "inbox"
+#
+# [webhooks.raw-events]
+# routing = "inbox"
+# format = "raw"
 
 # ── Agent ability gates (optional) ───────────────────────────────────────────
 # Controls what the agent can modify at runtime.

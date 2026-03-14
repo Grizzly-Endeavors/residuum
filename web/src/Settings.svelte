@@ -290,14 +290,13 @@
   async function storeNewSecrets() {
     // Collect secrets that need storing (non-empty, non-secret: values)
     const secretOps: {
-      field: "discord_token" | "telegram_token" | "webhook_secret" | "cloud_token";
+      field: "discord_token" | "telegram_token" | "cloud_token";
       name: string;
     }[] = [];
 
     const secretFields = [
       { field: "discord_token" as const, name: "discord" },
       { field: "telegram_token" as const, name: "telegram" },
-      { field: "webhook_secret" as const, name: "webhook_secret" },
       { field: "cloud_token" as const, name: "cloud_token" },
     ];
 
@@ -305,6 +304,15 @@
       const val = configFields[field];
       if (val && !val.startsWith("secret:")) {
         secretOps.push({ field, name });
+      }
+    }
+
+    // Webhook secrets
+    const webhookSecretOps: { idx: number; name: string }[] = [];
+    for (let i = 0; i < configFields.webhooks.length; i++) {
+      const wh = configFields.webhooks[i];
+      if (wh?.secret && !wh.secret.startsWith("secret:")) {
+        webhookSecretOps.push({ idx: i, name: `webhook_${wh.name}` });
       }
     }
 
@@ -321,6 +329,13 @@
     for (const { field, name } of secretOps) {
       const result = await storeSecret(name, configFields[field]);
       configFields[field] = result.reference;
+    }
+
+    for (const { idx, name } of webhookSecretOps) {
+      const wh = configFields.webhooks[idx];
+      if (!wh) continue;
+      const result = await storeSecret(name, wh.secret);
+      wh.secret = result.reference;
     }
 
     for (const { idx, name } of provKeyOps) {

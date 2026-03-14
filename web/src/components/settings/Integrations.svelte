@@ -16,6 +16,17 @@
   function removeSkillDir(idx: number) {
     fields.skills_dirs = fields.skills_dirs.filter((_, i) => i !== idx);
   }
+
+  function addWebhook() {
+    fields.webhooks = [
+      ...fields.webhooks,
+      { name: "", secret: "", routing: "inbox", format: "parsed", content_fields: "" },
+    ];
+  }
+
+  function removeWebhook(idx: number) {
+    fields.webhooks = fields.webhooks.filter((_, i) => i !== idx);
+  }
 </script>
 
 <div class="settings-section">
@@ -88,41 +99,91 @@
   </div>
 
   <div class="settings-group">
-    <div class="settings-group-label">Webhook</div>
+    <div class="settings-group-label">Webhooks</div>
     <div class="integration-card">
-      <div class="integration-desc">Enable an HTTP webhook endpoint for external integrations.</div>
-      <div class="settings-field">
-        <label>
-          <span class="toggle-switch">
-            <input type="checkbox" bind:checked={fields.webhook_enabled} />
-            <span class="toggle-slider"></span>
-          </span>
-          Webhook Enabled
-        </label>
+      <div class="integration-desc">
+        Named HTTP webhook endpoints for external integrations. Each webhook gets its own
+        <code>/webhook/&lbrace;name&rbrace;</code> route with independent auth and payload handling.
       </div>
-      {#if fields.webhook_enabled}
-        <div class="settings-field">
-          <label for="integ-webhook-secret">Secret</label>
-          {#if fields.webhook_secret.startsWith("secret:")}
-            <div class="secret-stored">
-              <span class="secret-badge">Stored securely</span>
-              <button
-                class="btn btn-sm btn-secondary"
-                onclick={() => {
-                  fields.webhook_secret = "";
-                }}>Change</button
-              >
+
+      {#each fields.webhooks as wh, i (i)}
+        <div class="webhook-entry">
+          <div class="webhook-entry-header">
+            <span class="webhook-entry-label">
+              {wh.name ? `/webhook/${wh.name}` : "New webhook"}
+            </span>
+            <button class="btn btn-sm btn-danger" onclick={() => removeWebhook(i)}>Remove</button>
+          </div>
+
+          <div class="webhook-entry-fields">
+            <div class="settings-field">
+              <label for="wh-name-{i}">Name</label>
+              <input
+                id="wh-name-{i}"
+                type="text"
+                bind:value={wh.name}
+                placeholder="e.g. github-issues"
+              />
             </div>
-          {:else}
-            <input
-              id="integ-webhook-secret"
-              type="password"
-              bind:value={fields.webhook_secret}
-              placeholder="Bearer token for authentication (optional)"
-            />
-          {/if}
+
+            <div class="settings-field">
+              <label for="wh-secret-{i}">Secret</label>
+              {#if wh.secret.startsWith("secret:")}
+                <div class="secret-stored">
+                  <span class="secret-badge">Stored securely</span>
+                  <button
+                    class="btn btn-sm btn-secondary"
+                    onclick={() => {
+                      wh.secret = "";
+                    }}>Change</button
+                  >
+                </div>
+              {:else}
+                <input
+                  id="wh-secret-{i}"
+                  type="password"
+                  bind:value={wh.secret}
+                  placeholder="Bearer token (optional)"
+                />
+              {/if}
+            </div>
+
+            <div class="settings-field">
+              <label for="wh-routing-{i}">Routing</label>
+              <input
+                id="wh-routing-{i}"
+                type="text"
+                bind:value={wh.routing}
+                placeholder="inbox or agent:preset_name"
+              />
+            </div>
+
+            <div class="settings-field">
+              <label for="wh-format-{i}">Format</label>
+              <select id="wh-format-{i}" bind:value={wh.format}>
+                <option value="parsed">Parsed (extract JSON fields)</option>
+                <option value="raw">Raw (pass body as-is)</option>
+              </select>
+            </div>
+
+            {#if wh.format !== "raw"}
+              <div class="settings-field">
+                <label for="wh-fields-{i}">Content Fields</label>
+                <input
+                  id="wh-fields-{i}"
+                  type="text"
+                  bind:value={wh.content_fields}
+                  placeholder="e.g. issue.title, issue.body (comma-separated, dot-notation)"
+                />
+              </div>
+            {/if}
+          </div>
         </div>
-      {/if}
+      {/each}
+
+      <button class="btn btn-sm btn-secondary webhook-add-btn" onclick={addWebhook}
+        >Add Webhook</button
+      >
     </div>
   </div>
 
@@ -150,3 +211,36 @@
     </div>
   </div>
 </div>
+
+<style>
+  .webhook-entry {
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 12px;
+    margin-bottom: 10px;
+    background: var(--bg);
+  }
+
+  .webhook-entry-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 10px;
+  }
+
+  .webhook-entry-label {
+    font-family: var(--font-mono);
+    font-size: 12px;
+    color: var(--accent);
+  }
+
+  .webhook-entry-fields {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .webhook-add-btn {
+    margin-top: 8px;
+  }
+</style>
