@@ -357,8 +357,6 @@ async fn reload_gateway(rt: &mut GatewayRuntime, new_cfg: &Config) {
             let (new_shutdown_tx, mut new_shutdown_rx) = tokio::sync::watch::channel(false);
 
             let state = GatewayState {
-                inbound_tx: rt.inbound_tx.clone(),
-                broadcast_tx: rt.broadcast_tx.clone(),
                 reload_tx: rt.reload_tx.clone(),
                 command_tx: rt.command_tx.clone(),
                 inbox_dir: rt.layout.inbox_dir(),

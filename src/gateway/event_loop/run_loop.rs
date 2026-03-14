@@ -89,8 +89,6 @@ async fn spawn_server_and_adapters(
     let tunnel_status_tx = Arc::new(tunnel_status_tx);
 
     let state = GatewayState {
-        inbound_tx: core.inbound_tx.clone(),
-        broadcast_tx: core.broadcast_tx.clone(),
         reload_tx: core.reload_tx.clone(),
         command_tx: core.command_tx.clone(),
         inbox_dir: parts.layout.inbox_dir(),
@@ -226,12 +224,10 @@ async fn build_runtime(
         bus_infra_handles,
         http_client: parts.http_client,
         spawn_context: parts.spawn_context,
-        inbound_rx: receivers.inbound,
         bus_handle: spawned.bus_handle,
         publisher: core.publisher,
         agent_subscriber,
         last_output_topic: None,
-        broadcast_tx: core.broadcast_tx,
         reload_rx: receivers.reload,
         command_rx: receivers.command,
         server_handle: spawned.server_handle,
@@ -249,7 +245,6 @@ async fn build_runtime(
         telegram_handle: spawned.adapters.telegram_handle,
         discord_shutdown_tx: spawned.adapters.discord_shutdown_tx,
         telegram_shutdown_tx: spawned.adapters.telegram_shutdown_tx,
-        inbound_tx: core.inbound_tx,
         reload_tx: core.reload_tx,
         command_tx: core.command_tx,
         path_policy: parts.path_policy,
@@ -504,18 +499,15 @@ async fn handle_bus_event(
 ) -> BusEventAction {
     match event {
         Some(crate::bus::BusEvent::Message(msg_event)) => {
-            let routed = crate::interfaces::types::RoutedMessage {
-                message: crate::interfaces::types::InboundMessage {
-                    id: msg_event.id,
-                    content: msg_event.content,
-                    origin: msg_event.origin,
-                    timestamp: chrono::Utc::now(),
-                    images: msg_event.images,
-                },
-                reply: std::sync::Arc::new(crate::interfaces::null::NullReplyHandle),
+            let message = crate::interfaces::types::InboundMessage {
+                id: msg_event.id,
+                content: msg_event.content,
+                origin: msg_event.origin,
+                timestamp: chrono::Utc::now(),
+                images: msg_event.images,
             };
             if let Some(exit) =
-                handle_inbound_message(routed, rt, observe_deadline, idle_deadline).await
+                handle_inbound_message(message, rt, observe_deadline, idle_deadline).await
             {
                 return BusEventAction::Exit(exit);
             }
@@ -570,13 +562,6 @@ async fn run_event_loop(mut rt: GatewayRuntime) -> GatewayExit {
                 }
             }
 
-            msg = rt.inbound_rx.recv() => {
-                if let Some(routed) = msg
-                    && let Some(exit) = handle_inbound_message(routed, &mut rt, &mut observe_deadline, &mut idle_deadline).await
-                {
-                    return exit;
-                }
-            }
             event = rt.agent_subscriber.recv() => {
                 match handle_bus_event(event, &mut rt, &mut observe_deadline, &mut idle_deadline).await {
                     BusEventAction::Continue => {}

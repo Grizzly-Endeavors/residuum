@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use tokio::sync::{broadcast, mpsc};
+use tokio::sync::mpsc;
 
 use crate::actions::store::ActionStore;
 use crate::agent::Agent;
@@ -10,7 +10,6 @@ use crate::background::spawn_context::SpawnContext;
 use crate::bus::EndpointRegistry;
 use crate::bus::{BusHandle, Publisher, Subscriber, TopicId};
 use crate::config::Config;
-use crate::interfaces::types::RoutedMessage;
 use crate::mcp::SharedMcpRegistry;
 use crate::memory::observer::Observer;
 use crate::memory::reflector::Reflector;
@@ -23,8 +22,6 @@ use crate::skills::SharedSkillState;
 use crate::tunnel::TunnelStatus;
 use crate::update::SharedUpdateStatus;
 use crate::workspace::layout::WorkspaceLayout;
-
-use super::protocol::ServerMessage;
 
 /// Describes what kind of configuration reload was requested.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -61,8 +58,6 @@ pub struct ServerCommand {
 /// Created once at startup and persists across configuration reloads.
 /// The senders are cloned into adapters, the web server, and event loop state.
 pub(crate) struct GatewayCore {
-    pub inbound_tx: mpsc::Sender<RoutedMessage>,
-    pub broadcast_tx: broadcast::Sender<ServerMessage>,
     pub reload_tx: tokio::sync::watch::Sender<ReloadSignal>,
     pub command_tx: mpsc::Sender<ServerCommand>,
     /// Dedicated shutdown signal for the HTTP server (not tied to reload).
@@ -74,7 +69,6 @@ pub(crate) struct GatewayCore {
 
 /// Receiver halves consumed by the event loop.
 pub(crate) struct CoreReceivers {
-    pub inbound: mpsc::Receiver<RoutedMessage>,
     pub reload: tokio::sync::watch::Receiver<ReloadSignal>,
     pub command: mpsc::Receiver<ServerCommand>,
 }
@@ -82,8 +76,6 @@ pub(crate) struct CoreReceivers {
 impl GatewayCore {
     /// Create a new gateway core with fresh channels.
     pub fn new(config_dir: std::path::PathBuf) -> (Self, CoreReceivers) {
-        let (inbound_tx, inbound_rx) = mpsc::channel::<RoutedMessage>(32);
-        let (broadcast_tx, _broadcast_rx) = broadcast::channel::<ServerMessage>(256);
         let (reload_tx, reload_rx) = tokio::sync::watch::channel(ReloadSignal::None);
         let (command_tx, command_rx) = mpsc::channel::<ServerCommand>(32);
         let (shutdown_tx, _shutdown_rx) = tokio::sync::watch::channel(false);
@@ -91,8 +83,6 @@ impl GatewayCore {
         let publisher = bus_handle.publisher();
 
         let core = Self {
-            inbound_tx,
-            broadcast_tx,
             reload_tx,
             command_tx,
             shutdown_tx,
@@ -101,7 +91,6 @@ impl GatewayCore {
             publisher,
         };
         let receivers = CoreReceivers {
-            inbound: inbound_rx,
             reload: reload_rx,
             command: command_rx,
         };
@@ -112,10 +101,6 @@ impl GatewayCore {
 /// Shared state for the axum WebSocket server.
 #[derive(Clone)]
 pub(crate) struct GatewayState {
-    #[expect(dead_code, reason = "removed in upcoming channel cleanup commit")]
-    pub inbound_tx: mpsc::Sender<RoutedMessage>,
-    #[expect(dead_code, reason = "removed in upcoming channel cleanup commit")]
-    pub broadcast_tx: broadcast::Sender<ServerMessage>,
     pub reload_tx: tokio::sync::watch::Sender<ReloadSignal>,
     pub command_tx: mpsc::Sender<ServerCommand>,
     pub inbox_dir: std::path::PathBuf,
@@ -155,7 +140,6 @@ pub(crate) struct GatewayRuntime {
     pub http_client: SharedHttpClient,
     pub spawn_context: Arc<SpawnContext>,
     // Runtime channels + handles
-    pub inbound_rx: mpsc::Receiver<RoutedMessage>,
     /// Bus handle for creating publishers/subscribers.
     pub bus_handle: BusHandle,
     /// Publisher for sending events onto the bus.
@@ -164,7 +148,6 @@ pub(crate) struct GatewayRuntime {
     pub agent_subscriber: Subscriber,
     /// Topic for the last endpoint that sent a message (for response routing).
     pub last_output_topic: Option<TopicId>,
-    pub broadcast_tx: broadcast::Sender<ServerMessage>,
     pub reload_rx: tokio::sync::watch::Receiver<ReloadSignal>,
     pub command_rx: mpsc::Receiver<ServerCommand>,
     /// Kept alive so the HTTP server task isn't dropped; shut down via `shutdown_tx`.
@@ -190,7 +173,6 @@ pub(crate) struct GatewayRuntime {
     pub discord_shutdown_tx: Option<tokio::sync::watch::Sender<bool>>,
     pub telegram_shutdown_tx: Option<tokio::sync::watch::Sender<bool>>,
     /// Cloned core senders for rebuilding adapters on reload.
-    pub inbound_tx: mpsc::Sender<RoutedMessage>,
     pub reload_tx: tokio::sync::watch::Sender<ReloadSignal>,
     pub command_tx: mpsc::Sender<ServerCommand>,
     /// Shared path policy for updating blocked paths on reload.
@@ -217,49 +199,36 @@ mod tests {
     #[tokio::test]
     async fn core_channels_survive_reload_signal() {
         let dir = tempfile::tempdir().unwrap();
-        let (core, receivers) = GatewayCore::new(dir.path().to_path_buf());
+        let (core, _receivers) = GatewayCore::new(dir.path().to_path_buf());
 
-        // Send a message through inbound before reload
-        assert!(
-            core.inbound_tx
-                .send(crate::interfaces::types::RoutedMessage {
-                    message: crate::interfaces::types::InboundMessage {
-                        id: "test-1".to_string(),
-                        content: "hello".to_string(),
-                        origin: crate::interfaces::types::MessageOrigin {
-                            endpoint: "test".to_string(),
-                            sender_name: "tester".to_string(),
-                            sender_id: "t1".to_string(),
-                        },
-                        timestamp: chrono::Utc::now(),
-                        images: vec![],
-                    },
-                    reply: std::sync::Arc::new(crate::interfaces::websocket::WsReplyHandle::new(
-                        core.broadcast_tx.clone(),
-                        "test-1".to_string(),
-                    ),),
-                })
-                .await
-                .is_ok(),
-            "inbound send should succeed before reload"
-        );
+        // Bus publish should work before reload
+        let result = core
+            .publisher
+            .publish(
+                crate::bus::TopicId::SystemBroadcast,
+                crate::bus::BusEvent::Notice {
+                    message: "test".to_string(),
+                },
+            )
+            .await;
+        assert!(result.is_ok(), "bus publish should succeed before reload");
 
         // Fire a reload signal
         core.reload_tx.send(ReloadSignal::Root).unwrap();
 
         // Channels still work after the reload signal
-        let _broadcast_rx = core.broadcast_tx.subscribe();
+        let result_after = core
+            .publisher
+            .publish(
+                crate::bus::TopicId::SystemBroadcast,
+                crate::bus::BusEvent::Notice {
+                    message: "after reload".to_string(),
+                },
+            )
+            .await;
         assert!(
-            core.broadcast_tx
-                .send(crate::gateway::protocol::ServerMessage::Pong)
-                .is_ok(),
-            "broadcast should still work after reload signal"
+            result_after.is_ok(),
+            "bus publish should still work after reload signal"
         );
-
-        // Inbound receiver still has the message
-        drop(core);
-        let mut inbound = receivers.inbound;
-        let msg = inbound.recv().await.unwrap();
-        assert_eq!(msg.message.content, "hello");
     }
 }

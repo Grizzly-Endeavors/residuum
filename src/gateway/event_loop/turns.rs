@@ -8,7 +8,7 @@ use crate::agent::interrupt::Interrupt;
 use crate::bus::{BusEvent, EndpointName, Publisher, ResponseEvent, Subscriber, TopicId};
 use crate::error::ResiduumError;
 use crate::gateway::types::{GatewayExit, GatewayRuntime, ReloadSignal};
-use crate::interfaces::types::{MessageOrigin, RoutedMessage};
+use crate::interfaces::types::{InboundMessage, MessageOrigin};
 use crate::memory::types::Visibility;
 use crate::models::ImageData;
 use crate::projects::activation::SharedProjectState;
@@ -204,15 +204,13 @@ async fn run_agent_turn_with_interrupts(
 ///
 /// Returns `Some(GatewayExit)` if a shutdown-worthy event occurs during processing.
 pub async fn handle_inbound_message(
-    routed: RoutedMessage,
+    message: InboundMessage,
     rt: &mut GatewayRuntime,
     observe_deadline: &mut Option<tokio::time::Instant>,
     idle_deadline: &mut Option<tokio::time::Instant>,
 ) -> Option<GatewayExit> {
-    use crate::gateway::protocol::ServerMessage;
-
-    let reply_id = routed.message.id.clone();
-    let origin = routed.message.origin.clone();
+    let reply_id = message.id.clone();
+    let origin = message.origin.clone();
 
     let output_topic = TopicId::Interactive(EndpointName::from(origin.endpoint.as_str()));
     rt.last_output_topic = Some(output_topic.clone());
@@ -236,12 +234,12 @@ pub async fn handle_inbound_message(
 
     let (turn_result, leftover_interrupts) = run_agent_turn_with_interrupts(
         &mut rt.agent,
-        &routed.message.content,
+        &message.content,
         &rt.publisher,
         &output_topic,
         Some(&origin),
         &prompt_ctx,
-        &routed.message.images,
+        &message.images,
         &mut rt.agent_subscriber,
         &mut rt.reload_rx,
     )
@@ -280,18 +278,23 @@ pub async fn handle_inbound_message(
                 rt.publisher
                     .publish(
                         output_topic.clone(),
+                        BusEvent::Error {
+                            correlation_id: reply_id.clone(),
+                            message: e.to_string(),
+                        },
+                    )
+                    .await,
+            );
+            drop(
+                rt.publisher
+                    .publish(
+                        output_topic.clone(),
                         BusEvent::TurnEnded {
                             correlation_id: reply_id.clone(),
                         },
                     )
                     .await,
             );
-            rt.broadcast_tx
-                .send(ServerMessage::Error {
-                    reply_to: Some(reply_id),
-                    message: e.to_string(),
-                })
-                .ok();
         }
     }
 
