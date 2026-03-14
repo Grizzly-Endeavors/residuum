@@ -6,7 +6,6 @@ use tokio::sync::{broadcast, mpsc};
 
 use crate::actions::store::ActionStore;
 use crate::agent::Agent;
-use crate::background::BackgroundTaskSpawner;
 use crate::background::spawn_context::SpawnContext;
 use crate::bus::EndpointRegistry;
 use crate::bus::{BusHandle, Publisher, Subscriber, TopicId};
@@ -154,7 +153,6 @@ pub(crate) struct GatewayRuntime {
     pub endpoint_registry: EndpointRegistry,
     pub notify_handles: Vec<tokio::task::JoinHandle<()>>,
     pub http_client: SharedHttpClient,
-    pub background_spawner: Arc<BackgroundTaskSpawner>,
     pub spawn_context: Arc<SpawnContext>,
     // Runtime channels + handles
     pub inbound_rx: mpsc::Receiver<RoutedMessage>,

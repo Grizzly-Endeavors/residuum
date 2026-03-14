@@ -213,7 +213,6 @@ async fn build_runtime(
         endpoint_registry: parts.endpoint_registry,
         notify_handles,
         http_client: parts.http_client,
-        background_spawner: parts.background_spawner,
         spawn_context: parts.spawn_context,
         inbound_rx: receivers.inbound,
         bus_handle: spawned.bus_handle,
@@ -363,16 +362,7 @@ async fn check_and_run_due_actions(
     rt: &mut GatewayRuntime,
     observe_deadline: &mut Option<tokio::time::Instant>,
 ) -> Option<GatewayExit> {
-    let main_turns = actions::spawn_due_actions(
-        &rt.action_store,
-        &rt.layout,
-        &rt.spawn_context,
-        &rt.project_state,
-        &rt.skill_state,
-        &rt.mcp_registry,
-        &rt.background_spawner,
-    )
-    .await;
+    let main_turns = actions::spawn_due_actions(&rt.action_store, &rt.publisher).await;
     handle_action_main_turns(main_turns, rt, observe_deadline).await
 }
 
