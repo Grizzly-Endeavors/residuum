@@ -177,6 +177,9 @@ async fn init_mcp_servers(layout: &WorkspaceLayout) -> SharedMcpRegistry {
                     failures = report.failures.len(),
                     "workspace MCP servers loaded"
                 );
+                for (server_name, err) in &report.failures {
+                    tracing::warn!(server = %server_name, error = %err, "mcp server failed to start");
+                }
             }
         }
         Err(err) => {
@@ -222,11 +225,7 @@ async fn connect_web_search_mcp(cfg: &Config, mcp_registry: &SharedMcpRegistry) 
         _ => return,
     };
 
-    let report = mcp_registry
-        .write()
-        .await
-        .reconcile_and_connect(&[entry])
-        .await;
+    let report = mcp_registry.write().await.connect_servers(&[entry]).await;
     tracing::info!(
         backend = %backend.name,
         started = report.started,

@@ -235,6 +235,47 @@ impl McpRegistry {
         names
     }
 
+    /// Connect additional servers without reconciling existing state.
+    ///
+    /// Unlike `reconcile_and_connect`, this is purely additive — it never stops
+    /// or removes servers that are already tracked. Servers that are already
+    /// Running or Pending are silently skipped.
+    pub async fn connect_servers(&mut self, entries: &[McpServerEntry]) -> McpReconcileReport {
+        let mut report = McpReconcileReport::default();
+
+        for entry in entries {
+            let existing = self.servers.iter().find(|s| s.name == entry.name);
+            if let Some(tracked) = existing {
+                if tracked.status == McpStatus::Running || tracked.status == McpStatus::Pending {
+                    continue;
+                }
+                // Remove failed entry so we can re-add as Pending
+                self.servers.retain(|s| s.name != entry.name);
+            }
+
+            self.servers.push(TrackedServer {
+                name: entry.name.clone(),
+                command: entry.command.clone(),
+                args: entry.args.clone(),
+                status: McpStatus::Pending,
+                client: None,
+                tools: Vec::new(),
+            });
+
+            if let Err(e) = self.connect(entry).await {
+                let reason = e.to_string();
+                if let Some(server) = self.servers.iter_mut().find(|s| s.name == entry.name) {
+                    server.status = McpStatus::Failed(reason.clone());
+                }
+                report.failures.push((entry.name.clone(), reason));
+            } else {
+                report.started += 1;
+            }
+        }
+
+        report
+    }
+
     /// Reconcile and connect/disconnect in one step.
     ///
     /// Runs the state diff, then connects new servers and disconnects removed ones.
@@ -749,6 +790,57 @@ mod tests {
             stopped.is_empty(),
             "force deactivating unknown project is a no-op"
         );
+    }
+
+    // ── connect_servers (additive, no reconciliation) ──────────────────────
+
+    #[tokio::test]
+    async fn connect_servers_does_not_remove_existing() {
+        let mut registry = McpRegistry::new();
+
+        // Pre-populate with two running servers
+        registry.reconcile(&[entry("fs", "mcp-fs"), entry("git", "mcp-git")]);
+        registry.mark_running("fs");
+        registry.mark_running("git");
+
+        // connect_servers with a new entry (will fail to connect, but that's fine)
+        let report = registry
+            .connect_servers(&[entry("new-server", "/nonexistent")])
+            .await;
+
+        // The new server should fail, but existing servers must still be tracked
+        assert_eq!(report.failures.len(), 1, "new server should fail");
+        assert_eq!(report.stopped, 0, "nothing should be stopped");
+
+        let servers = registry.servers();
+        let names: Vec<&str> = servers.iter().map(|s| s.name.as_str()).collect();
+        assert!(names.contains(&"fs"), "fs should still be tracked");
+        assert!(names.contains(&"git"), "git should still be tracked");
+        assert!(
+            names.contains(&"new-server"),
+            "new-server should be tracked (failed)"
+        );
+    }
+
+    #[tokio::test]
+    async fn connect_servers_skips_already_running() {
+        let mut registry = McpRegistry::new();
+
+        // Pre-populate with a running server
+        registry.reconcile(&[entry("fs", "mcp-fs")]);
+        registry.mark_running("fs");
+
+        // Attempt to connect the same server again
+        let report = registry.connect_servers(&[entry("fs", "mcp-fs")]).await;
+
+        assert_eq!(report.started, 0, "should not re-connect running server");
+        assert!(report.failures.is_empty(), "no failures expected");
+        assert_eq!(report.stopped, 0, "nothing stopped");
+
+        // Server should still be running (unchanged)
+        let servers = registry.servers();
+        assert_eq!(servers.len(), 1, "still one server");
+        assert_eq!(servers.first().unwrap().status, McpStatus::Running);
     }
 
     #[tokio::test]
