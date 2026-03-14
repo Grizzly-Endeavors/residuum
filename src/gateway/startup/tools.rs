@@ -9,7 +9,7 @@ use crate::config::Config;
 use crate::mcp::SharedMcpRegistry;
 use crate::memory::recent_messages::load_messages_for_agent;
 
-use crate::notify::router::NotificationRouter;
+use crate::bus::EndpointRegistry;
 use crate::projects::activation::SharedProjectState;
 use crate::skills::SharedSkillState;
 use crate::tools::ToolRegistry;
@@ -29,7 +29,7 @@ pub(super) struct ToolRegistryDeps<'a> {
     pub mcp_registry: &'a SharedMcpRegistry,
     pub background_spawner: &'a Arc<BackgroundTaskSpawner>,
     pub spawn_context: &'a Arc<SpawnContext>,
-    pub notification_router: &'a Arc<NotificationRouter>,
+    pub endpoint_registry: &'a EndpointRegistry,
 }
 
 /// Arguments for creating the agent, bundled to stay under the argument limit.
@@ -101,7 +101,7 @@ pub(super) fn init_tool_registry(
         deps.valid_external_channels.clone(),
     );
 
-    tools.register_send_message_tool(Arc::clone(deps.notification_router), layout.inbox_dir(), tz);
+    tools.register_send_message_tool(deps.endpoint_registry.clone(), layout.inbox_dir(), tz);
     tools.register_web_fetch_tool();
 
     // Register Ollama Cloud web search tool if configured

@@ -14,6 +14,7 @@ use crate::actions::store::ActionStore;
 use crate::agent::Agent;
 use crate::background::BackgroundTaskSpawner;
 use crate::background::types::BackgroundResult;
+use crate::bus::EndpointRegistry;
 use crate::config::Config;
 use crate::error::ResiduumError;
 use crate::mcp::SharedMcpRegistry;
@@ -22,7 +23,6 @@ use crate::memory::reflector::Reflector;
 use crate::memory::search::MemoryIndex;
 use crate::models::{EmbeddingProvider, SharedHttpClient};
 use crate::notify::channels::InboxChannel;
-use crate::notify::router::NotificationRouter;
 use crate::projects::activation::{ProjectState, SharedProjectState};
 use crate::projects::scanner::ProjectIndex;
 use crate::skills::{SharedSkillState, SkillIndex, SkillState};
@@ -50,7 +50,8 @@ pub(crate) struct GatewayComponents {
     pub skill_state: SharedSkillState,
     pub embedding_provider: Option<Arc<dyn EmbeddingProvider>>,
     pub pulse_enabled: bool,
-    pub notification_router: Arc<NotificationRouter>,
+    pub endpoint_registry: EndpointRegistry,
+    pub channel_configs: Vec<crate::notify::types::ExternalChannelConfig>,
     pub http_client: SharedHttpClient,
     pub background_spawner: Arc<BackgroundTaskSpawner>,
     pub background_result_rx: mpsc::Receiver<BackgroundResult>,
@@ -239,12 +240,15 @@ async fn connect_web_search_mcp(cfg: &Config, mcp_registry: &SharedMcpRegistry) 
     }
 }
 
-/// Load notification channels from workspace config and build the router.
-async fn init_notification_channels(
+/// Load channel configs and build the endpoint registry.
+fn init_channels_and_registry(
     layout: &WorkspaceLayout,
-    http: &SharedHttpClient,
     cfg: &Config,
-) -> (Arc<NotificationRouter>, std::collections::HashSet<String>) {
+) -> (
+    Vec<crate::notify::types::ExternalChannelConfig>,
+    std::collections::HashSet<String>,
+    EndpointRegistry,
+) {
     let channel_configs =
         match crate::workspace::config::load_channel_configs(&layout.channels_toml()) {
             Ok(configs) => configs,
@@ -255,14 +259,58 @@ async fn init_notification_channels(
         };
     let valid_external_channels: std::collections::HashSet<String> =
         channel_configs.iter().map(|c| c.name.clone()).collect();
+    let endpoint_registry = EndpointRegistry::from_config(cfg, &channel_configs);
+    (channel_configs, valid_external_channels, endpoint_registry)
+}
+
+/// Spawn notify subscribers for each configured channel and the inbox.
+///
+/// Each channel subscribes to its `TopicId::Notify(name)` topic on the bus.
+/// The inbox subscribes to `TopicId::Inbox`.
+pub(crate) async fn spawn_notify_subscribers(
+    bus_handle: &crate::bus::BusHandle,
+    channel_configs: &[crate::notify::types::ExternalChannelConfig],
+    http: &SharedHttpClient,
+    layout: &WorkspaceLayout,
+    tz: chrono_tz::Tz,
+) -> Vec<tokio::task::JoinHandle<()>> {
+    use crate::bus::{NotifyName, TopicId};
+    use crate::notify::subscriber::run_notify_subscriber;
+
     let external_channels =
-        crate::workspace::config::build_external_channels(&channel_configs, http.client()).await;
-    let inbox_channel = InboxChannel::new(layout.inbox_dir(), cfg.timezone);
-    let notification_router = Arc::new(NotificationRouter::new(
-        external_channels,
-        Some(inbox_channel),
-    ));
-    (notification_router, valid_external_channels)
+        crate::workspace::config::build_external_channels(channel_configs, http.client()).await;
+
+    let mut handles = Vec::new();
+
+    // Spawn a subscriber for each external channel
+    for (name, channel) in external_channels {
+        let topic = TopicId::Notify(NotifyName::from(name.as_str()));
+        match bus_handle.subscribe(topic).await {
+            Ok(subscriber) => {
+                let handle = tokio::spawn(run_notify_subscriber(subscriber, channel));
+                handles.push(handle);
+                tracing::info!(channel = %name, "notify subscriber spawned");
+            }
+            Err(e) => {
+                tracing::warn!(channel = %name, error = %e, "failed to subscribe notify channel");
+            }
+        }
+    }
+
+    // Spawn inbox subscriber
+    let inbox_channel = InboxChannel::new(layout.inbox_dir(), tz);
+    match bus_handle.subscribe(TopicId::Inbox).await {
+        Ok(subscriber) => {
+            let handle = tokio::spawn(run_notify_subscriber(subscriber, Box::new(inbox_channel)));
+            handles.push(handle);
+            tracing::info!("inbox notify subscriber spawned");
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "failed to subscribe inbox channel");
+        }
+    }
+
+    handles
 }
 
 /// Initialize all gateway subsystems from config.
@@ -304,8 +352,8 @@ pub(crate) async fn initialize(cfg: &Config) -> Result<GatewayComponents, Residu
 
     let mcp_registry = init_mcp_servers(&layout).await;
     connect_web_search_mcp(cfg, &mcp_registry).await;
-    let (notification_router, valid_external_channels) =
-        init_notification_channels(&layout, &http_for_channels, cfg).await;
+    let (channel_configs, valid_external_channels, endpoint_registry) =
+        init_channels_and_registry(&layout, cfg);
 
     let tool_deps = ToolRegistryDeps {
         action_store: &action_store,
@@ -316,7 +364,7 @@ pub(crate) async fn initialize(cfg: &Config) -> Result<GatewayComponents, Residu
         mcp_registry: &mcp_registry,
         background_spawner: &background_spawner,
         spawn_context: &spawn_context,
-        notification_router: &notification_router,
+        endpoint_registry: &endpoint_registry,
     };
     let (tools, tool_filter, path_policy_for_runtime) =
         tools::init_tool_registry(cfg, &layout, &mem, tz, &tool_deps);
@@ -350,7 +398,8 @@ pub(crate) async fn initialize(cfg: &Config) -> Result<GatewayComponents, Residu
         skill_state,
         embedding_provider: providers.embedding_provider,
         pulse_enabled: cfg.pulse_enabled,
-        notification_router,
+        endpoint_registry,
+        channel_configs,
         http_client: http_for_channels,
         background_spawner,
         background_result_rx: bg_result_rx,

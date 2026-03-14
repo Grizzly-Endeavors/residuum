@@ -3,8 +3,9 @@
 use async_trait::async_trait;
 use reqwest::Client;
 
+use crate::bus::NotificationEvent;
+
 use super::channels::NotificationChannel;
-use super::types::Notification;
 
 /// Ntfy push notification channel.
 pub struct NtfyChannel {
@@ -45,20 +46,16 @@ impl NotificationChannel for NtfyChannel {
         "ntfy"
     }
 
-    async fn deliver(&self, notification: &Notification) -> anyhow::Result<()> {
+    async fn deliver(&self, notification: &NotificationEvent) -> anyhow::Result<()> {
         let endpoint = format!("{}/{}", self.url.trim_end_matches('/'), self.topic);
-        let title = format!(
-            "[{}] {}",
-            notification.source.as_str(),
-            notification.task_name
-        );
+        let title = format!("[{}] {}", notification.source.as_str(), notification.title);
 
         let resp = self
             .client
             .post(&endpoint)
             .header("Title", title)
             .header("Priority", &self.priority)
-            .body(notification.summary.clone())
+            .body(notification.content.clone())
             .send()
             .await?;
 
@@ -113,12 +110,12 @@ impl NotificationChannel for WebhookChannel {
         "webhook"
     }
 
-    async fn deliver(&self, notification: &Notification) -> anyhow::Result<()> {
+    async fn deliver(&self, notification: &NotificationEvent) -> anyhow::Result<()> {
         let payload = serde_json::json!({
-            "task_name": notification.task_name,
-            "summary": notification.summary,
-            "timestamp": notification.timestamp.to_rfc3339(),
-            "source_type": notification.source.as_str(),
+            "title": notification.title,
+            "content": notification.content,
+            "timestamp": notification.timestamp.to_string(),
+            "source": notification.source.as_str(),
         });
 
         let mut builder = match self.method.to_uppercase().as_str() {

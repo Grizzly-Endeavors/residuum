@@ -20,7 +20,7 @@ use super::background::{BackgroundContext, handle_background_result};
 use crate::agent::context::loading::{
     build_project_context_strings, build_skill_context_strings, build_subagents_context_string,
 };
-use crate::gateway::memory::{MemorySubsystems, execute_observation};
+use crate::gateway::memory::MemorySubsystems;
 
 /// Raw prompt context strings for constructing a `PromptContext`.
 ///
@@ -72,49 +72,27 @@ pub async fn load_prompt_context_strings(
 
 /// Process leftover interrupts that arrived during an agent turn but weren't consumed.
 ///
-/// Background results are routed and observed; user messages are injected into
-/// the agent's conversation. Returns `true` if any leftover triggered a wake request
-/// (callers decide whether to act on it).
+/// Background results are published to notification topics; user messages are
+/// injected into the agent's conversation.
 pub async fn process_leftover_interrupts(
     leftovers: Vec<Interrupt>,
     rt: &mut GatewayRuntime,
-    observe_deadline: &mut Option<tokio::time::Instant>,
-) -> bool {
-    let mut wake = false;
+    _observe_deadline: &mut Option<tokio::time::Instant>,
+) {
     for intr in leftovers {
         match intr {
             Interrupt::BackgroundResult(bg_leftover) => {
                 let bg_ctx = BackgroundContext {
-                    router: &rt.notification_router,
-                    layout: &rt.layout,
-                    observer: &rt.observer,
-                    project_state: &rt.project_state,
+                    publisher: &rt.publisher,
                     tz: rt.tz,
                 };
-                let bg_outcome =
-                    handle_background_result(bg_leftover, &bg_ctx, &mut rt.agent, observe_deadline)
-                        .await;
-                if bg_outcome.force_observe {
-                    let mem = MemorySubsystems {
-                        observer: &rt.observer,
-                        reflector: &rt.reflector,
-                        search_index: &rt.search_index,
-                        layout: &rt.layout,
-                        vector_store: rt.vector_store.as_ref(),
-                        embedding_provider: rt.embedding_provider.as_ref(),
-                    };
-                    execute_observation(&mem, &mut rt.agent).await;
-                }
-                if bg_outcome.wake_requested {
-                    wake = true;
-                }
+                handle_background_result(bg_leftover, &bg_ctx).await;
             }
             Interrupt::UserMessage(leftover_msg) => {
                 rt.agent.inject_user_message(leftover_msg.content);
             }
         }
     }
-    wake
 }
 
 /// Drain remaining interrupts from an interrupt channel after a turn completes.
@@ -178,117 +156,6 @@ fn apply_observe_action(
             true
         }
     }
-}
-
-/// Run an autonomous agent wake turn triggered by a background result.
-///
-/// Follows the same pattern as the inbound message handler but does not push
-/// a user message — uses `run_wake_turn` which injects a system kickoff.
-/// Broadcasts responses with `reply_to: "wake"` and persists messages with
-/// `Visibility::Background`.
-///
-/// Returns `Some(GatewayExit)` if a reload signal fires during the turn.
-pub async fn run_wake_turn_handler(
-    rt: &mut GatewayRuntime,
-    observe_deadline: &mut Option<tokio::time::Instant>,
-) -> Option<GatewayExit> {
-    use crate::gateway::protocol::ServerMessage;
-
-    let Some(output_topic) = rt.last_output_topic.clone() else {
-        tracing::warn!("wake turn requested but no endpoint has connected yet, skipping");
-        return None;
-    };
-
-    tracing::info!("starting autonomous wake turn from background result");
-
-    let before = rt.agent.message_count();
-
-    let ctx_strings =
-        load_prompt_context_strings(&rt.project_state, &rt.skill_state, &rt.layout).await;
-    let prompt_ctx = ctx_strings.as_prompt_context();
-
-    let (interrupt_tx, mut interrupt_rx) = mpsc::channel::<Interrupt>(32);
-
-    let turn_result = {
-        let mut turn = std::pin::pin!(rt.agent.run_wake_turn(
-            &rt.publisher,
-            &output_topic,
-            &prompt_ctx,
-            &mut interrupt_rx,
-        ));
-
-        loop {
-            tokio::select! {
-                result = &mut turn => break result,
-                next_msg = rt.agent_subscriber.recv() => {
-                    if let Some(BusEvent::Message(msg_event)) = next_msg {
-                        let inbound = crate::interfaces::types::InboundMessage {
-                            id: msg_event.id,
-                            content: msg_event.content,
-                            origin: msg_event.origin,
-                            timestamp: chrono::Utc::now(),
-                            images: msg_event.images,
-                        };
-                        if interrupt_tx.try_send(Interrupt::UserMessage(inbound)).is_err() {
-                            tracing::warn!("interrupt channel full, dropping user message mid-turn");
-                        }
-                    }
-                }
-                bg_result = rt.background_result_rx.recv() => {
-                    if let Some(result) = bg_result
-                        && interrupt_tx.try_send(Interrupt::BackgroundResult(result)).is_err() {
-                            tracing::warn!("interrupt channel full, dropping background result mid-turn");
-                        }
-                }
-                _ = rt.reload_rx.changed() => {
-                    tracing::info!("reload signal received during wake turn, deferring");
-                }
-            }
-        }
-    };
-
-    drop(interrupt_tx);
-    let leftover_interrupts = drain_interrupts(&mut interrupt_rx);
-
-    match turn_result {
-        Ok(texts) => {
-            for text in &texts {
-                drop(
-                    rt.publisher
-                        .publish(
-                            output_topic.clone(),
-                            BusEvent::Response(ResponseEvent {
-                                correlation_id: "wake".to_string(),
-                                content: text.clone(),
-                                timestamp: crate::time::now_local(rt.tz),
-                            }),
-                        )
-                        .await,
-                );
-            }
-        }
-        Err(e) => {
-            tracing::warn!(error = %e, "wake turn processing error");
-            if rt
-                .broadcast_tx
-                .send(ServerMessage::Error {
-                    reply_to: Some("wake".to_string()),
-                    message: e.to_string(),
-                })
-                .is_err()
-            {
-                tracing::trace!("no broadcast receivers for wake error");
-            }
-        }
-    }
-
-    let new_messages: Vec<_> = rt.agent.messages_since(before).to_vec();
-    persist_and_maybe_observe(rt, &new_messages, Visibility::Background, observe_deadline).await;
-
-    // Don't recursively trigger wake turns from leftovers
-    process_leftover_interrupts(leftover_interrupts, rt, observe_deadline).await;
-
-    None
 }
 
 /// Run an agent turn while monitoring interrupt sources (bus messages, background
@@ -456,11 +323,7 @@ pub async fn handle_inbound_message(
     let new_messages: Vec<_> = rt.agent.messages_since(before).to_vec();
     persist_and_maybe_observe(rt, &new_messages, Visibility::User, observe_deadline).await;
 
-    if process_leftover_interrupts(leftover_interrupts, rt, observe_deadline).await
-        && let Some(exit) = run_wake_turn_handler(rt, observe_deadline).await
-    {
-        return Some(exit);
-    }
+    process_leftover_interrupts(leftover_interrupts, rt, observe_deadline).await;
 
     if !rt.cfg.idle.timeout.is_zero() {
         let now = tokio::time::Instant::now();

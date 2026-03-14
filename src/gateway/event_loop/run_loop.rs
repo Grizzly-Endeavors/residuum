@@ -158,6 +158,16 @@ async fn build_runtime(
         .await
         .map_err(|e| ResiduumError::Gateway(format!("failed to subscribe to agent:main: {e}")))?;
 
+    // Spawn notify channel subscribers on the bus
+    let notify_handles = crate::gateway::startup::spawn_notify_subscribers(
+        &spawned.bus_handle,
+        &parts.channel_configs,
+        &parts.http_client,
+        &parts.layout,
+        parts.tz,
+    )
+    .await;
+
     Ok(GatewayRuntime {
         layout: parts.layout,
         tz: parts.tz,
@@ -173,7 +183,8 @@ async fn build_runtime(
         project_state: parts.project_state,
         skill_state: parts.skill_state,
         pulse_enabled: parts.pulse_enabled,
-        notification_router: parts.notification_router,
+        endpoint_registry: parts.endpoint_registry,
+        notify_handles,
         http_client: parts.http_client,
         background_spawner: parts.background_spawner,
         background_result_rx: parts.background_result_rx,
@@ -256,15 +267,22 @@ async fn handle_workspace_reload(rt: &mut GatewayRuntime) {
         }
     }
 
-    // Reload notification channels
+    // Reload notification channel subscribers
+    // Abort old subscriber handles
+    for h in rt.notify_handles.drain(..) {
+        h.abort();
+    }
     match crate::workspace::config::load_channel_configs(&rt.layout.channels_toml()) {
         Ok(configs) => {
-            let channels = crate::workspace::config::build_external_channels(
+            let new_handles = crate::gateway::startup::spawn_notify_subscribers(
+                &rt.bus_handle,
                 &configs,
-                rt.http_client.client(),
+                &rt.http_client,
+                &rt.layout,
+                rt.tz,
             )
             .await;
-            rt.notification_router.reload_channels(channels).await;
+            rt.notify_handles = new_handles;
         }
         Err(e) => {
             tracing::warn!(error = %e, "failed to reload channels.toml, keeping current channels");
@@ -278,32 +296,17 @@ async fn handle_workspace_reload(rt: &mut GatewayRuntime) {
         .ok();
 }
 
-/// Handle a background task result in the event loop: route, observe, and optionally wake.
+/// Handle a background task result in the event loop: publish to notification topics.
 async fn handle_event_loop_bg_result(
     result: crate::background::types::BackgroundResult,
     rt: &mut GatewayRuntime,
-    observe_deadline: &mut Option<tokio::time::Instant>,
+    _observe_deadline: &mut Option<tokio::time::Instant>,
 ) -> Option<GatewayExit> {
     let bg_ctx = BackgroundContext {
-        router: &rt.notification_router,
-        layout: &rt.layout,
-        observer: &rt.observer,
-        project_state: &rt.project_state,
+        publisher: &rt.publisher,
         tz: rt.tz,
     };
-    let bg_outcome =
-        handle_background_result(result, &bg_ctx, &mut rt.agent, observe_deadline).await;
-    if bg_outcome.force_observe {
-        let mem = MemorySubsystems {
-            observer: &rt.observer,
-            reflector: &rt.reflector,
-            search_index: &rt.search_index,
-            layout: &rt.layout,
-            vector_store: rt.vector_store.as_ref(),
-            embedding_provider: rt.embedding_provider.as_ref(),
-        };
-        execute_observation(&mem, &mut rt.agent).await;
-    }
+    handle_background_result(result, &bg_ctx).await;
     None
 }
 
@@ -383,6 +386,9 @@ async fn handle_action_main_turns(
 
 /// Gracefully shut down all adapters, MCP servers, and the HTTP server.
 async fn graceful_shutdown(rt: &mut GatewayRuntime) {
+    for h in rt.notify_handles.drain(..) {
+        h.abort();
+    }
     rt.mcp_registry.write().await.disconnect_all().await;
     if let Some(tx) = rt.tunnel_shutdown_tx.take() {
         tx.send(true).ok();

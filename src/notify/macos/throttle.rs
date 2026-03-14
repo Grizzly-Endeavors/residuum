@@ -11,14 +11,14 @@ use tokio::time::{Instant, sleep_until};
 
 use super::MacosChannelConfig;
 use super::bridge::MacosBridge;
-use crate::notify::types::Notification;
+use crate::bus::NotificationEvent;
 
 pub struct BatchAggregator;
 
 impl BatchAggregator {
     #[must_use]
     pub fn spawn(
-        rx: mpsc::Receiver<Notification>,
+        rx: mpsc::Receiver<NotificationEvent>,
         bridge: MacosBridge,
         config: MacosChannelConfig,
     ) -> JoinHandle<()> {
@@ -26,12 +26,12 @@ impl BatchAggregator {
     }
 
     async fn run(
-        mut rx: mpsc::Receiver<Notification>,
+        mut rx: mpsc::Receiver<NotificationEvent>,
         bridge: MacosBridge,
         config: MacosChannelConfig,
     ) {
         let throttle_duration = Duration::from_secs(config.throttle_window_secs);
-        let mut buffer: Vec<Notification> = Vec::new();
+        let mut buffer: Vec<NotificationEvent> = Vec::new();
         let mut window_deadline: Option<Instant> = None;
         // Far future sentinel for select! when no window is active
         let far_future = Instant::now() + Duration::from_secs(86400 * 365);
@@ -70,7 +70,7 @@ impl BatchAggregator {
 /// Notification Center when many tasks complete in one window.
 /// - 1-3 items: deliver each individually
 /// - 4+  items: deliver top 2 + 1 summary
-async fn flush(bridge: &MacosBridge, buffer: &[Notification], config: &MacosChannelConfig) {
+async fn flush(bridge: &MacosBridge, buffer: &[NotificationEvent], config: &MacosChannelConfig) {
     let count = buffer.len();
     tracing::info!(count, "flushing macOS notification batch");
 
@@ -109,16 +109,16 @@ async fn flush(bridge: &MacosBridge, buffer: &[Notification], config: &MacosChan
 
 async fn deliver_individual(
     bridge: &MacosBridge,
-    notif: &Notification,
+    notif: &NotificationEvent,
     config: &MacosChannelConfig,
 ) {
     let id = format!("residuum-{}", uuid::Uuid::new_v4());
     let text = super::bridge::NotificationText {
         title: config.app_name.clone(),
-        subtitle: notif.task_name.replace('_', " "),
-        body: truncate_body(&notif.summary, 200),
+        subtitle: notif.title.replace('_', " "),
+        body: truncate_body(&notif.content, 200),
     };
-    let category = super::categories::resolve_category(notif.source, config.default_category);
+    let category = super::categories::resolve_category(&notif.source, config.default_category);
 
     if let Err(e) = bridge
         .post_notification(
@@ -132,20 +132,20 @@ async fn deliver_individual(
         .await
     {
         tracing::warn!(
-            task = %notif.task_name,
+            task = %notif.title,
             error = %e,
             "failed to post individual notification"
         );
     }
 }
 
-fn build_summary_body(buffer: &[Notification]) -> String {
+fn build_summary_body(buffer: &[NotificationEvent]) -> String {
     let mut body = String::new();
     for notif in buffer {
         if !body.is_empty() {
             body.push('\n');
         }
-        body.push_str(&notif.task_name);
+        body.push_str(&notif.title);
     }
     truncate_body(&body, 200)
 }
@@ -161,16 +161,19 @@ fn truncate_body(s: &str, max_len: usize) -> String {
 }
 
 #[cfg(test)]
+#[expect(clippy::unwrap_used, reason = "test code uses unwrap for clarity")]
 mod tests {
     use super::*;
-    use crate::notify::types::TaskSource;
 
-    fn make_notification(task_name: &str) -> Notification {
-        Notification {
-            task_name: task_name.to_string(),
-            summary: format!("Summary for {task_name}"),
-            source: TaskSource::Pulse,
-            timestamp: chrono::Utc::now(),
+    fn make_notification(task_name: &str) -> NotificationEvent {
+        NotificationEvent {
+            title: task_name.to_string(),
+            content: format!("Summary for {task_name}"),
+            source: crate::bus::EventTrigger::Pulse,
+            timestamp: chrono::NaiveDate::from_ymd_opt(2026, 3, 14)
+                .unwrap()
+                .and_hms_opt(12, 0, 0)
+                .unwrap(),
         }
     }
 

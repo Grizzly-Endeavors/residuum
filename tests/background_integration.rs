@@ -9,7 +9,6 @@
     reason = "integration tests live in tests/ directory, not inside #[cfg(test)] modules"
 )]
 mod background_integration {
-    use std::collections::HashMap;
     use std::path::PathBuf;
     use std::sync::Arc;
 
@@ -20,42 +19,46 @@ mod background_integration {
     use residuum::background::types::{
         BackgroundTask, ResultRouting, TaskStatus, format_background_result,
     };
+    use residuum::bus::{BusEvent, EventTrigger, NotificationEvent, TopicId, spawn_broker};
     use residuum::notify::channels::InboxChannel;
-    use residuum::notify::router::NotificationRouter;
+    use residuum::notify::subscriber::run_notify_subscriber;
     use residuum::notify::types::TaskSource;
 
-    // ── Result routing to inbox via channels ───────────────────────────
+    // ── Result routing to inbox via bus subscriber ────────────────────
 
     #[tokio::test]
-    async fn result_routes_to_inbox_via_channels() {
+    async fn result_routes_to_inbox_via_bus() {
         let dir = tempdir().unwrap();
         let inbox_dir = dir.path().join("inbox");
         std::fs::create_dir_all(&inbox_dir).unwrap();
 
+        let handle = spawn_broker();
+        let publisher = handle.publisher();
+        let subscriber = handle.subscribe(TopicId::Inbox).await.unwrap();
         let inbox_channel = InboxChannel::new(&inbox_dir, chrono_tz::UTC);
-        let router = NotificationRouter::new(HashMap::new(), Some(inbox_channel));
 
-        // Simulate a background result with direct inbox routing
-        let result = residuum::background::types::BackgroundResult {
-            id: "route-1".to_string(),
-            task_name: "test_script".to_string(),
-            source: TaskSource::Agent,
-            summary: "found 5 items".to_string(),
-            transcript_path: None,
-            status: TaskStatus::Completed,
-            timestamp: chrono::Utc::now(),
-            routing: ResultRouting::Direct(vec!["inbox".to_string()]),
+        let loop_task = tokio::spawn(run_notify_subscriber(subscriber, Box::new(inbox_channel)));
+
+        let notification = NotificationEvent {
+            title: "test_script".to_string(),
+            content: "found 5 items".to_string(),
+            source: EventTrigger::Agent,
+            timestamp: chrono::NaiveDate::from_ymd_opt(2026, 3, 14)
+                .unwrap()
+                .and_hms_opt(12, 0, 0)
+                .unwrap(),
         };
 
-        let notification = residuum::notify::types::Notification {
-            task_name: result.task_name.clone(),
-            summary: result.summary.clone(),
-            source: result.source,
-            timestamp: result.timestamp,
-        };
+        publisher
+            .publish(TopicId::Inbox, BusEvent::Notification(notification))
+            .await
+            .unwrap();
 
-        let delivered = router.deliver_to_inbox(&notification).await.unwrap();
-        assert!(delivered, "should deliver to inbox");
+        // Give subscriber time to process
+        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+
+        // Abort the subscriber loop
+        loop_task.abort();
 
         // Verify inbox item was created
         let items: Vec<_> = std::fs::read_dir(&inbox_dir)

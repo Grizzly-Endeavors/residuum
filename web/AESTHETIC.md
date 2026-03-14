@@ -1,4 +1,4 @@
-# Residuum Landing Page — Aesthetic Guide
+# Residuum — Aesthetic Guide
 
 ## Palette
 

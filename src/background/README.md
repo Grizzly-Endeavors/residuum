@@ -18,7 +18,7 @@ The module owns:
 - **Result routing:** formatting `BackgroundResult` for injection into the main agent's message stream or direct delivery to notification channels.
 
 The module does **not** handle:
-- **Notification routing/delivery.** The gateway (via `SpawnContext` and `NotificationRouter`) determines where results go (inbox, external channels).
+- **Notification routing/delivery.** The gateway publishes results to bus topics; notify subscribers deliver to channels.
 - **Preset discovery or validation.** The `subagent_spawn` tool (in `tools/background.rs`) loads and validates presets; this module just receives preset metadata if provided.
 - **Interrupt channel mechanics.** The gateway owns the interrupt channel; the spawner just sends results through it.
 - **Model tier fallback logic.** The `SpawnContext` resolves tier → provider spec (with fallback: small → medium → large → main agent model).

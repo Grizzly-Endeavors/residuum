@@ -9,6 +9,7 @@ use crate::agent::Agent;
 use crate::background::BackgroundTaskSpawner;
 use crate::background::spawn_context::SpawnContext;
 use crate::background::types::BackgroundResult;
+use crate::bus::EndpointRegistry;
 use crate::bus::{BusHandle, Publisher, Subscriber, TopicId};
 use crate::config::Config;
 use crate::interfaces::types::RoutedMessage;
@@ -18,7 +19,6 @@ use crate::memory::reflector::Reflector;
 use crate::memory::search::MemoryIndex;
 use crate::memory::vector_store::VectorStore;
 use crate::models::{EmbeddingProvider, SharedHttpClient};
-use crate::notify::router::NotificationRouter;
 use crate::projects::activation::SharedProjectState;
 use crate::pulse::scheduler::PulseScheduler;
 use crate::skills::SharedSkillState;
@@ -148,7 +148,12 @@ pub(crate) struct GatewayRuntime {
     pub project_state: SharedProjectState,
     pub skill_state: SharedSkillState,
     pub pulse_enabled: bool,
-    pub notification_router: Arc<NotificationRouter>,
+    #[expect(
+        dead_code,
+        reason = "endpoint_registry will be consumed by future endpoint routing phases"
+    )]
+    pub endpoint_registry: EndpointRegistry,
+    pub notify_handles: Vec<tokio::task::JoinHandle<()>>,
     pub http_client: SharedHttpClient,
     pub background_spawner: Arc<BackgroundTaskSpawner>,
     pub background_result_rx: mpsc::Receiver<BackgroundResult>,

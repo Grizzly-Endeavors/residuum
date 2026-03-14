@@ -90,12 +90,12 @@ web_url = "http://localhost:3000"
     reason = "integration tests live in tests/ directory"
 )]
 mod macos_unit_tests {
+    use residuum::bus::EventTrigger;
     use residuum::notify::macos::MacosChannelConfig;
     use residuum::notify::macos::categories::{
         MacosCategory, MacosInterruptionLevel, MacosNotificationAction,
         default_category_for_source, parse_category, parse_priority, resolve_category,
     };
-    use residuum::notify::types::TaskSource;
 
     #[test]
     fn config_valid_minimal() {
@@ -165,22 +165,22 @@ mod macos_unit_tests {
     #[test]
     fn source_to_category_defaults() {
         assert_eq!(
-            default_category_for_source(TaskSource::Pulse),
+            default_category_for_source(&EventTrigger::Pulse),
             MacosCategory::BackgroundResults
         );
         assert_eq!(
-            default_category_for_source(TaskSource::Action),
+            default_category_for_source(&EventTrigger::Action),
             MacosCategory::Reminders
         );
         assert_eq!(
-            default_category_for_source(TaskSource::Agent),
+            default_category_for_source(&EventTrigger::Agent),
             MacosCategory::BackgroundResults
         );
     }
 
     #[test]
     fn resolve_uses_channel_default() {
-        let resolved = resolve_category(TaskSource::Pulse, MacosCategory::Alerts);
+        let resolved = resolve_category(&EventTrigger::Pulse, MacosCategory::Alerts);
         assert_eq!(
             resolved,
             MacosCategory::Alerts,

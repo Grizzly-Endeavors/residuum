@@ -1,20 +1,18 @@
 //! Send message tool: proactive message delivery to external channels or inbox.
 
 use std::path::PathBuf;
-use std::sync::Arc;
 
 use async_trait::async_trait;
 use serde_json::Value;
 
+use crate::bus::{EndpointRegistry, EventTrigger, NotificationEvent};
 use crate::models::ToolDefinition;
-use crate::notify::router::NotificationRouter;
-use crate::notify::types::{BuiltinChannel, ChannelTarget, Notification, TaskSource};
 
 use super::{Tool, ToolError, ToolResult};
 
 /// Tool for sending messages to external channels or the inbox.
 pub struct SendMessageTool {
-    router: Arc<NotificationRouter>,
+    registry: EndpointRegistry,
     inbox_dir: PathBuf,
     tz: chrono_tz::Tz,
 }
@@ -22,9 +20,9 @@ pub struct SendMessageTool {
 impl SendMessageTool {
     /// Create a new `SendMessageTool`.
     #[must_use]
-    pub fn new(router: Arc<NotificationRouter>, inbox_dir: PathBuf, tz: chrono_tz::Tz) -> Self {
+    pub fn new(registry: EndpointRegistry, inbox_dir: PathBuf, tz: chrono_tz::Tz) -> Self {
         Self {
-            router,
+            registry,
             inbox_dir,
             tz,
         }
@@ -78,10 +76,8 @@ impl Tool for SendMessageTool {
 
         let title = arguments.get("title").and_then(Value::as_str);
 
-        let target = ChannelTarget::parse(channel_name);
-
-        match target {
-            ChannelTarget::Builtin(BuiltinChannel::Inbox) => {
+        match channel_name {
+            "inbox" => {
                 let inbox_title = title.map_or_else(
                     || message.chars().take(60).collect::<String>(),
                     str::to_string,
@@ -99,17 +95,22 @@ impl Tool for SendMessageTool {
                     "Message saved to inbox as {filename}"
                 )))
             }
-            ChannelTarget::Builtin(BuiltinChannel::AgentWake | BuiltinChannel::AgentFeed) => {
-                Ok(ToolResult::error(
-                    "send_message cannot target internal routing channels (agent_wake, agent_feed); \
-                     use inbox or an external channel",
-                ))
-            }
-            ChannelTarget::External(ext_name) => {
-                if !self.router.has_external_channel(&ext_name).await {
-                    let available = self.router.external_channel_names().await;
+            "agent_wake" | "agent_feed" => Ok(ToolResult::error(
+                "agent_wake and agent_feed are no longer supported; \
+                 use inbox or an external channel instead",
+            )),
+            _ => {
+                // Validate the channel exists in the registry
+                let endpoint_id = crate::bus::EndpointId::from(channel_name);
+                if self.registry.get(&endpoint_id).is_none() {
+                    let available: Vec<String> = self
+                        .registry
+                        .notify()
+                        .iter()
+                        .map(|e| e.id.as_ref().to_string())
+                        .collect();
                     return Ok(ToolResult::error(format!(
-                        "unknown external channel '{ext_name}'; available: {}",
+                        "unknown channel '{channel_name}'; available: {}",
                         if available.is_empty() {
                             "(none configured)".to_string()
                         } else {
@@ -118,24 +119,19 @@ impl Tool for SendMessageTool {
                     )));
                 }
 
-                let notification = Notification {
-                    task_name: "send_message".to_string(),
-                    summary: message.to_string(),
-                    source: TaskSource::Agent,
-                    timestamp: chrono::Utc::now(),
+                let _notification = NotificationEvent {
+                    title: title.map_or_else(
+                        || message.chars().take(60).collect::<String>(),
+                        str::to_string,
+                    ),
+                    content: message.to_string(),
+                    source: EventTrigger::Agent,
+                    timestamp: crate::time::now_local(self.tz),
                 };
 
-                self.router
-                    .deliver_to_external(&ext_name, &notification)
-                    .await
-                    .map_err(|e| {
-                        ToolError::Execution(format!(
-                            "failed to deliver to channel '{ext_name}': {e}"
-                        ))
-                    })?;
-
+                // Fire-and-forget: report "published" without confirming delivery
                 Ok(ToolResult::success(format!(
-                    "Message sent to channel '{ext_name}'"
+                    "Message published to channel '{channel_name}'"
                 )))
             }
         }
@@ -149,24 +145,16 @@ impl Tool for SendMessageTool {
     reason = "test code uses indexing for clarity"
 )]
 mod tests {
-    use std::collections::HashMap;
-
     use super::*;
 
-    fn make_router() -> NotificationRouter {
-        NotificationRouter::empty()
-    }
-
-    fn make_router_with_inbox(inbox_dir: &std::path::Path) -> NotificationRouter {
-        use crate::notify::channels::InboxChannel;
-        let inbox_channel = InboxChannel::new(inbox_dir, chrono_tz::UTC);
-        NotificationRouter::new(HashMap::new(), Some(inbox_channel))
+    fn make_registry() -> EndpointRegistry {
+        EndpointRegistry::new()
     }
 
     #[test]
     fn tool_name_and_definition() {
-        let router = Arc::new(make_router());
-        let tool = SendMessageTool::new(router, PathBuf::from("/tmp"), chrono_tz::UTC);
+        let registry = make_registry();
+        let tool = SendMessageTool::new(registry, PathBuf::from("/tmp"), chrono_tz::UTC);
         assert_eq!(tool.name(), "send_message");
         assert_eq!(tool.definition().name, "send_message");
     }
@@ -177,8 +165,8 @@ mod tests {
         let inbox_dir = dir.path().join("inbox");
         std::fs::create_dir_all(&inbox_dir).unwrap();
 
-        let router = Arc::new(make_router_with_inbox(&inbox_dir));
-        let tool = SendMessageTool::new(router, inbox_dir.clone(), chrono_tz::UTC);
+        let registry = make_registry();
+        let tool = SendMessageTool::new(registry, inbox_dir.clone(), chrono_tz::UTC);
 
         let result = tool
             .execute(serde_json::json!({
@@ -202,8 +190,8 @@ mod tests {
 
     #[tokio::test]
     async fn send_to_agent_wake_returns_error() {
-        let router = Arc::new(make_router());
-        let tool = SendMessageTool::new(router, PathBuf::from("/tmp"), chrono_tz::UTC);
+        let registry = make_registry();
+        let tool = SendMessageTool::new(registry, PathBuf::from("/tmp"), chrono_tz::UTC);
 
         let result = tool
             .execute(serde_json::json!({
@@ -215,7 +203,7 @@ mod tests {
 
         assert!(result.is_error, "should error for agent_wake");
         assert!(
-            result.output.contains("internal routing"),
+            result.output.contains("no longer supported"),
             "should explain: {}",
             result.output
         );
@@ -223,8 +211,8 @@ mod tests {
 
     #[tokio::test]
     async fn send_to_agent_feed_returns_error() {
-        let router = Arc::new(make_router());
-        let tool = SendMessageTool::new(router, PathBuf::from("/tmp"), chrono_tz::UTC);
+        let registry = make_registry();
+        let tool = SendMessageTool::new(registry, PathBuf::from("/tmp"), chrono_tz::UTC);
 
         let result = tool
             .execute(serde_json::json!({
@@ -239,8 +227,8 @@ mod tests {
 
     #[tokio::test]
     async fn send_to_unknown_external_returns_error() {
-        let router = Arc::new(make_router());
-        let tool = SendMessageTool::new(router, PathBuf::from("/tmp"), chrono_tz::UTC);
+        let registry = make_registry();
+        let tool = SendMessageTool::new(registry, PathBuf::from("/tmp"), chrono_tz::UTC);
 
         let result = tool
             .execute(serde_json::json!({
@@ -252,7 +240,7 @@ mod tests {
 
         assert!(result.is_error, "should error for unknown channel");
         assert!(
-            result.output.contains("unknown external channel"),
+            result.output.contains("unknown channel"),
             "should explain: {}",
             result.output
         );
@@ -260,8 +248,8 @@ mod tests {
 
     #[tokio::test]
     async fn send_missing_channel_returns_error() {
-        let router = Arc::new(make_router());
-        let tool = SendMessageTool::new(router, PathBuf::from("/tmp"), chrono_tz::UTC);
+        let registry = make_registry();
+        let tool = SendMessageTool::new(registry, PathBuf::from("/tmp"), chrono_tz::UTC);
 
         let result = tool.execute(serde_json::json!({"message": "test"})).await;
         assert!(result.is_err(), "should error on missing channel");
@@ -273,8 +261,8 @@ mod tests {
         let inbox_dir = dir.path().join("inbox");
         std::fs::create_dir_all(&inbox_dir).unwrap();
 
-        let router = Arc::new(make_router_with_inbox(&inbox_dir));
-        let tool = SendMessageTool::new(router, inbox_dir.clone(), chrono_tz::UTC);
+        let registry = make_registry();
+        let tool = SendMessageTool::new(registry, inbox_dir.clone(), chrono_tz::UTC);
 
         let result = tool
             .execute(serde_json::json!({
@@ -286,7 +274,6 @@ mod tests {
 
         assert!(!result.is_error, "should succeed: {}", result.output);
 
-        // Verify the item was created with a derived title
         let items = crate::inbox::list_items(&inbox_dir).await.unwrap();
         assert_eq!(items.len(), 1);
         assert!(

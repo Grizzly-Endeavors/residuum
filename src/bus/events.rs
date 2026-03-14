@@ -7,6 +7,7 @@ use chrono::NaiveDateTime;
 use crate::bus::types::PresetName;
 use crate::interfaces::types::MessageOrigin;
 use crate::models::ImageData;
+use crate::notify::types::TaskSource;
 
 // ---------------------------------------------------------------------------
 // EventTrigger
@@ -23,6 +24,29 @@ pub enum EventTrigger {
     Agent,
     /// An inbound webhook with the given name.
     Webhook(String),
+}
+
+impl EventTrigger {
+    /// Lowercase label for display and serialization.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        match self {
+            Self::Pulse => "pulse",
+            Self::Action => "action",
+            Self::Agent => "agent",
+            Self::Webhook(_) => "webhook",
+        }
+    }
+}
+
+impl From<TaskSource> for EventTrigger {
+    fn from(source: TaskSource) -> Self {
+        match source {
+            TaskSource::Pulse => Self::Pulse,
+            TaskSource::Action => Self::Action,
+            TaskSource::Agent => Self::Agent,
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -513,5 +537,33 @@ mod tests {
         };
         let cloned_se = se.clone();
         assert_eq!(cloned_se.source, "pulse");
+    }
+
+    #[test]
+    fn event_trigger_as_str() {
+        assert_eq!(EventTrigger::Pulse.as_str(), "pulse");
+        assert_eq!(EventTrigger::Action.as_str(), "action");
+        assert_eq!(EventTrigger::Agent.as_str(), "agent");
+        assert_eq!(EventTrigger::Webhook("github".into()).as_str(), "webhook");
+        // Webhook name does not affect the label.
+        assert_eq!(EventTrigger::Webhook("custom".into()).as_str(), "webhook");
+    }
+
+    #[test]
+    fn event_trigger_from_task_source() {
+        use crate::notify::types::TaskSource;
+
+        assert!(matches!(
+            EventTrigger::from(TaskSource::Pulse),
+            EventTrigger::Pulse
+        ));
+        assert!(matches!(
+            EventTrigger::from(TaskSource::Action),
+            EventTrigger::Action
+        ));
+        assert!(matches!(
+            EventTrigger::from(TaskSource::Agent),
+            EventTrigger::Agent
+        ));
     }
 }

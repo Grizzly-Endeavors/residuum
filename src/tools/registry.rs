@@ -8,10 +8,10 @@ use tokio::sync::{Mutex, Notify};
 use crate::actions::store::ActionStore;
 use crate::background::BackgroundTaskSpawner;
 use crate::background::spawn_context::SpawnContext;
+use crate::bus::EndpointRegistry;
 use crate::mcp::SharedMcpRegistry;
 use crate::memory::search::HybridSearcher;
 use crate::models::ToolDefinition;
-use crate::notify::router::NotificationRouter;
 use crate::projects::activation::SharedProjectState;
 use crate::skills::SharedSkillState;
 
@@ -162,12 +162,12 @@ impl ToolRegistry {
     /// Register the `send_message` tool for proactive message delivery.
     pub fn register_send_message_tool(
         &mut self,
-        router: Arc<NotificationRouter>,
+        registry: EndpointRegistry,
         inbox_dir: PathBuf,
         tz: chrono_tz::Tz,
     ) {
         self.register(Box::new(send_message::SendMessageTool::new(
-            router, inbox_dir, tz,
+            registry, inbox_dir, tz,
         )));
     }
 

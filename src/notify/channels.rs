@@ -4,9 +4,8 @@ use std::path::{Path, PathBuf};
 
 use async_trait::async_trait;
 
+use crate::bus::NotificationEvent;
 use crate::inbox;
-
-use super::types::Notification;
 
 /// A channel that can deliver notifications.
 #[async_trait]
@@ -21,7 +20,7 @@ pub trait NotificationChannel: Send + Sync {
     ///
     /// Errors are logged, not propagated — a failed channel should not block
     /// other deliveries.
-    async fn deliver(&self, notification: &Notification) -> anyhow::Result<()>;
+    async fn deliver(&self, notification: &NotificationEvent) -> anyhow::Result<()>;
 }
 
 /// Inbox channel: creates an `InboxItem` from the notification.
@@ -57,24 +56,20 @@ impl NotificationChannel for InboxChannel {
         "inbox"
     }
 
-    async fn deliver(&self, notification: &Notification) -> anyhow::Result<()> {
-        let source_label = format!(
-            "{}:{}",
-            notification.source.as_str(),
-            notification.task_name
-        );
+    async fn deliver(&self, notification: &NotificationEvent) -> anyhow::Result<()> {
+        let source_label = format!("{}:{}", notification.source.as_str(), notification.title);
 
         let now = crate::time::now_local(self.tz);
         let item = inbox::InboxItem {
-            title: notification.task_name.clone(),
-            body: notification.summary.clone(),
+            title: notification.title.clone(),
+            body: notification.content.clone(),
             source: source_label,
             timestamp: now,
             read: false,
             attachments: Vec::new(),
         };
 
-        let filename = inbox::generate_filename(&notification.task_name, self.tz);
+        let filename = inbox::generate_filename(&notification.title, self.tz);
         inbox::save_item(&self.inbox_dir, &filename, &item).await?;
 
         Ok(())
@@ -85,14 +80,17 @@ impl NotificationChannel for InboxChannel {
 #[expect(clippy::unwrap_used, reason = "test code uses unwrap for clarity")]
 mod tests {
     use super::*;
-    use crate::notify::types::TaskSource;
+    use crate::bus::EventTrigger;
 
-    fn make_notification() -> Notification {
-        Notification {
-            task_name: "test_task".to_string(),
-            summary: "Something happened".to_string(),
-            source: TaskSource::Pulse,
-            timestamp: chrono::Utc::now(),
+    fn make_notification() -> NotificationEvent {
+        NotificationEvent {
+            title: "test_task".to_string(),
+            content: "Something happened".to_string(),
+            source: EventTrigger::Pulse,
+            timestamp: chrono::NaiveDate::from_ymd_opt(2026, 3, 14)
+                .unwrap()
+                .and_hms_opt(12, 0, 0)
+                .unwrap(),
         }
     }
 

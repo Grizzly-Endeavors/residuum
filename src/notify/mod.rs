@@ -1,20 +1,12 @@
-//! Notification routing: dispatch to built-in and external channels.
+//! Notification channels: deliver events to external services and the inbox.
 //!
-//! Background task results (pulse checks, scheduled actions) are routed through
-//! `NotificationRouter` which dispatches to channels specified by the caller.
-//!
-//! Built-in channels:
-//! - `agent_wake` — inject into agent feed, start a turn if idle
-//! - `agent_feed` — inject into agent feed, wait for next interaction
-//! - `inbox` — store as an `InboxItem`, surface as unread count
-//!
-//! External channels (ntfy, webhook) are configured in `config.toml` under
-//! `[notifications.channels]`.
+//! Each notification channel subscribes to its bus topic and delivers events
+//! independently. Channels are configured in `channels.toml`.
 
 pub mod channels;
 pub mod external;
 pub mod loader;
 #[cfg(target_os = "macos")]
 pub mod macos;
-pub mod router;
+pub mod subscriber;
 pub mod types;

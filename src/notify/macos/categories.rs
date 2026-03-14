@@ -4,7 +4,7 @@ use std::fmt;
 
 use serde::{Deserialize, Serialize};
 
-use crate::notify::types::TaskSource;
+use crate::bus::EventTrigger;
 
 /// Notification category mapped to macOS `UNNotificationCategory` identifiers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -95,15 +95,16 @@ pub fn parse_priority(s: &str) -> anyhow::Result<MacosInterruptionLevel> {
 }
 
 #[must_use]
-pub fn default_category_for_source(source: TaskSource) -> MacosCategory {
+pub fn default_category_for_source(source: &EventTrigger) -> MacosCategory {
     match source {
-        TaskSource::Pulse | TaskSource::Agent => MacosCategory::BackgroundResults,
-        TaskSource::Action => MacosCategory::Reminders,
+        EventTrigger::Pulse | EventTrigger::Agent => MacosCategory::BackgroundResults,
+        EventTrigger::Action => MacosCategory::Reminders,
+        EventTrigger::Webhook(_) => MacosCategory::BackgroundResults,
     }
 }
 
 #[must_use]
-pub fn resolve_category(_source: TaskSource, channel_default: MacosCategory) -> MacosCategory {
+pub fn resolve_category(_source: &EventTrigger, channel_default: MacosCategory) -> MacosCategory {
     // Channel config default takes precedence over source-based mapping
     // when explicitly configured. Since we always have a default, use it.
     channel_default
@@ -301,20 +302,24 @@ mod tests {
         assert!(parse_priority("ACTIVE").is_err());
     }
 
-    // ── TaskSource-to-Category mapping tests ────────────────────────────
+    // ── EventTrigger-to-Category mapping tests ───────────────────────────
 
     #[test]
     fn default_category_for_source_mapping() {
         assert_eq!(
-            default_category_for_source(TaskSource::Pulse),
+            default_category_for_source(&EventTrigger::Pulse),
             MacosCategory::BackgroundResults
         );
         assert_eq!(
-            default_category_for_source(TaskSource::Action),
+            default_category_for_source(&EventTrigger::Action),
             MacosCategory::Reminders
         );
         assert_eq!(
-            default_category_for_source(TaskSource::Agent),
+            default_category_for_source(&EventTrigger::Agent),
+            MacosCategory::BackgroundResults
+        );
+        assert_eq!(
+            default_category_for_source(&EventTrigger::Webhook("github".to_string())),
             MacosCategory::BackgroundResults
         );
     }

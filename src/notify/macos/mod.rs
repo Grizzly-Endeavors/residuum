@@ -9,8 +9,9 @@ use async_trait::async_trait;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
+use crate::bus::NotificationEvent;
+
 use super::channels::NotificationChannel;
-use super::types::Notification;
 
 #[derive(Debug, Clone)]
 pub struct MacosChannelConfig {
@@ -54,7 +55,7 @@ impl Default for MacosChannelConfig {
 /// actual macOS delivery happens asynchronously after the throttle window.
 pub struct MacosNativeChannel {
     channel_name: String,
-    batch_tx: mpsc::Sender<Notification>,
+    batch_tx: mpsc::Sender<NotificationEvent>,
 }
 
 impl MacosNativeChannel {
@@ -95,15 +96,9 @@ impl NotificationChannel for MacosNativeChannel {
         "macos"
     }
 
-    async fn deliver(&self, notification: &Notification) -> anyhow::Result<()> {
-        let queued = Notification {
-            task_name: notification.task_name.clone(),
-            summary: notification.summary.clone(),
-            source: notification.source,
-            timestamp: notification.timestamp,
-        };
+    async fn deliver(&self, notification: &NotificationEvent) -> anyhow::Result<()> {
         self.batch_tx
-            .send(queued)
+            .send(notification.clone())
             .await
             .map_err(|e| anyhow::anyhow!("macOS notification aggregator is not running: {e}"))?;
         Ok(())
