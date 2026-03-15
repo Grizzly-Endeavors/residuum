@@ -1,31 +1,43 @@
-//! Send message tool: proactive message delivery to external channels or inbox.
-
-use std::path::PathBuf;
+//! Send message tool: proactive message delivery to notification and interactive endpoints.
 
 use async_trait::async_trait;
 use serde_json::Value;
 
-use crate::bus::{EndpointRegistry, EventTrigger, NotificationEvent};
+use crate::bus::{
+    BusEvent, EndpointCapabilities, EndpointId, EndpointRegistry, EventTrigger, NotificationEvent,
+    Publisher, ResponseEvent,
+};
 use crate::models::ToolDefinition;
 
 use super::{Tool, ToolError, ToolResult};
 
-/// Tool for sending messages to external channels or the inbox.
+/// Tool for sending messages to notification or interactive endpoints.
 pub struct SendMessageTool {
     registry: EndpointRegistry,
-    inbox_dir: PathBuf,
-    tz: chrono_tz::Tz,
+    publisher: Publisher,
 }
 
 impl SendMessageTool {
     /// Create a new `SendMessageTool`.
     #[must_use]
-    pub fn new(registry: EndpointRegistry, inbox_dir: PathBuf, tz: chrono_tz::Tz) -> Self {
+    pub fn new(registry: EndpointRegistry, publisher: Publisher) -> Self {
         Self {
             registry,
-            inbox_dir,
-            tz,
+            publisher,
         }
+    }
+
+    /// Collect names of all sendable endpoints (interactive + notify).
+    fn sendable_endpoint_names(&self) -> Vec<String> {
+        let mut names: Vec<String> = self
+            .registry
+            .interactive()
+            .iter()
+            .chain(self.registry.notify().iter())
+            .map(|e| e.id.as_ref().to_string())
+            .collect();
+        names.sort();
+        names
     }
 }
 
@@ -38,16 +50,15 @@ impl Tool for SendMessageTool {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: "send_message".to_string(),
-            description: "Send a message to an external notification channel or the inbox. \
-                Use this to proactively notify the user via configured channels (ntfy, webhook) \
-                or to save a message to the inbox for later review."
+            description: "Send a one-off message to a notification or interactive endpoint. \
+                Use list_endpoints to see available targets."
                 .to_string(),
             parameters: serde_json::json!({
                 "type": "object",
                 "properties": {
-                    "channel": {
+                    "endpoint": {
                         "type": "string",
-                        "description": "Target channel name: 'inbox' or any configured external channel"
+                        "description": "Target endpoint name (any interactive or notification endpoint)"
                     },
                     "message": {
                         "type": "string",
@@ -55,19 +66,19 @@ impl Tool for SendMessageTool {
                     },
                     "title": {
                         "type": "string",
-                        "description": "Optional title (used for inbox items; defaults to first 60 chars of message)"
+                        "description": "Optional title for notifications (defaults to first 60 chars of message)"
                     }
                 },
-                "required": ["channel", "message"]
+                "required": ["endpoint", "message"]
             }),
         }
     }
 
     async fn execute(&self, arguments: Value) -> Result<ToolResult, ToolError> {
-        let channel_name = arguments
-            .get("channel")
+        let endpoint_name = arguments
+            .get("endpoint")
             .and_then(Value::as_str)
-            .ok_or_else(|| ToolError::InvalidArguments("channel is required".to_string()))?;
+            .ok_or_else(|| ToolError::InvalidArguments("endpoint is required".to_string()))?;
 
         let message = arguments
             .get("message")
@@ -76,202 +87,231 @@ impl Tool for SendMessageTool {
 
         let title = arguments.get("title").and_then(Value::as_str);
 
-        if channel_name == "inbox" {
-            let inbox_title = title.map_or_else(
-                || message.chars().take(60).collect::<String>(),
-                str::to_string,
-            );
-            let filename =
-                crate::inbox::quick_add(&self.inbox_dir, &inbox_title, message, "agent", self.tz)
-                    .await
-                    .map_err(|e| ToolError::Execution(format!("failed to add inbox item: {e}")))?;
-            Ok(ToolResult::success(format!(
-                "Message saved to inbox as {filename}"
-            )))
-        } else {
-            // Validate the channel exists in the registry
-            let endpoint_id = crate::bus::EndpointId::from(channel_name);
-            if self.registry.get(&endpoint_id).is_none() {
-                let available: Vec<String> = self
-                    .registry
-                    .notify()
-                    .iter()
-                    .map(|e| e.id.as_ref().to_string())
-                    .collect();
-                return Ok(ToolResult::error(format!(
-                    "unknown channel '{channel_name}'; available: {}",
-                    if available.is_empty() {
-                        "(none configured)".to_string()
-                    } else {
-                        available.join(", ")
-                    }
-                )));
-            }
+        let endpoint_id = EndpointId::from(endpoint_name);
+        let Some(entry) = self.registry.get(&endpoint_id) else {
+            let available = self.sendable_endpoint_names();
+            return Ok(ToolResult::error(format!(
+                "unknown endpoint '{endpoint_name}'; available: {}",
+                if available.is_empty() {
+                    "(none configured)".to_string()
+                } else {
+                    available.join(", ")
+                }
+            )));
+        };
 
-            let _notification = NotificationEvent {
+        let is_interactive = entry
+            .capabilities
+            .contains(EndpointCapabilities::INTERACTIVE);
+        let is_notify = entry
+            .capabilities
+            .contains(EndpointCapabilities::NOTIFY_ONLY);
+
+        if !is_interactive && !is_notify {
+            let available = self.sendable_endpoint_names();
+            return Ok(ToolResult::error(format!(
+                "endpoint '{endpoint_name}' does not accept messages; available: {}",
+                if available.is_empty() {
+                    "(none configured)".to_string()
+                } else {
+                    available.join(", ")
+                }
+            )));
+        }
+
+        let now = chrono::Utc::now().naive_utc();
+
+        let event = if is_notify {
+            BusEvent::Notification(NotificationEvent {
                 title: title.map_or_else(
                     || message.chars().take(60).collect::<String>(),
                     str::to_string,
                 ),
                 content: message.to_string(),
                 source: EventTrigger::Agent,
-                timestamp: crate::time::now_local(self.tz),
-            };
+                timestamp: now,
+            })
+        } else {
+            BusEvent::Response(ResponseEvent {
+                correlation_id: String::new(),
+                content: message.to_string(),
+                timestamp: now,
+            })
+        };
 
-            // Fire-and-forget: report "published" without confirming delivery
-            Ok(ToolResult::success(format!(
-                "Message published to channel '{channel_name}'"
-            )))
-        }
+        self.publisher
+            .publish(entry.topic, event)
+            .await
+            .map_err(|e| {
+                ToolError::Execution(format!(
+                    "failed to publish message to '{endpoint_name}': {e}"
+                ))
+            })?;
+
+        Ok(ToolResult::success(format!(
+            "Message published to endpoint '{endpoint_name}'"
+        )))
     }
 }
 
 #[cfg(test)]
 #[expect(clippy::unwrap_used, reason = "test code uses unwrap for clarity")]
 #[expect(
-    clippy::indexing_slicing,
-    reason = "test code uses indexing for clarity"
+    clippy::wildcard_enum_match_arm,
+    reason = "test assertions use wildcard for non-matching variants"
 )]
+#[expect(clippy::panic, reason = "test assertions")]
 mod tests {
     use super::*;
+    use crate::bus::{EndpointEntry, EndpointName, NotifyName, TopicId};
 
     fn make_registry() -> EndpointRegistry {
-        EndpointRegistry::new()
+        let registry = EndpointRegistry::new();
+        registry.register(EndpointEntry {
+            id: EndpointId::from("ws"),
+            topic: TopicId::Interactive(EndpointName::from("ws")),
+            capabilities: EndpointCapabilities::INTERACTIVE,
+            display_name: "WebSocket".to_string(),
+        });
+        registry.register(EndpointEntry {
+            id: EndpointId::from("my-ntfy"),
+            topic: TopicId::Notify(NotifyName::from("my-ntfy")),
+            capabilities: EndpointCapabilities::NOTIFY_ONLY,
+            display_name: "Ntfy (my-ntfy)".to_string(),
+        });
+        registry.register(EndpointEntry {
+            id: EndpointId::from("inbox"),
+            topic: TopicId::Inbox,
+            capabilities: EndpointCapabilities::INPUT_ONLY,
+            display_name: "Inbox".to_string(),
+        });
+        registry
     }
 
-    #[test]
-    fn tool_name_and_definition() {
-        let registry = make_registry();
-        let tool = SendMessageTool::new(registry, PathBuf::from("/tmp"), chrono_tz::UTC);
+    fn make_publisher() -> Publisher {
+        let bus_handle = crate::bus::spawn_broker();
+        bus_handle.publisher()
+    }
+
+    #[tokio::test]
+    async fn tool_name_and_definition() {
+        let registry = EndpointRegistry::new();
+        let publisher = make_publisher();
+        let tool = SendMessageTool::new(registry, publisher);
         assert_eq!(tool.name(), "send_message");
         assert_eq!(tool.definition().name, "send_message");
     }
 
     #[tokio::test]
-    async fn send_to_inbox_creates_item() {
-        let dir = tempfile::tempdir().unwrap();
-        let inbox_dir = dir.path().join("inbox");
-        std::fs::create_dir_all(&inbox_dir).unwrap();
-
+    async fn send_to_notify_endpoint_publishes() {
         let registry = make_registry();
-        let tool = SendMessageTool::new(registry, inbox_dir.clone(), chrono_tz::UTC);
+        let bus_handle = crate::bus::spawn_broker();
+        let publisher = bus_handle.publisher();
+        let mut subscriber = bus_handle
+            .subscribe(TopicId::Notify(NotifyName::from("my-ntfy")))
+            .await
+            .unwrap();
+        let tool = SendMessageTool::new(registry, publisher);
 
         let result = tool
             .execute(serde_json::json!({
-                "channel": "inbox",
-                "message": "test message body",
-                "title": "test title"
+                "endpoint": "my-ntfy",
+                "message": "test notification",
+                "title": "alert"
             }))
             .await
             .unwrap();
 
         assert!(!result.is_error, "should succeed: {}", result.output);
-        assert!(result.output.contains("inbox"), "should mention inbox");
+        assert!(result.output.contains("my-ntfy"));
 
-        let items: Vec<_> = std::fs::read_dir(&inbox_dir)
-            .unwrap()
-            .filter_map(Result::ok)
-            .filter(|e| e.path().extension().is_some_and(|ext| ext == "json"))
-            .collect();
-        assert_eq!(items.len(), 1, "should create one inbox item");
+        let event = subscriber.recv().await.unwrap();
+        match event {
+            BusEvent::Notification(n) => {
+                assert_eq!(n.title, "alert");
+                assert_eq!(n.content, "test notification");
+            }
+            other => panic!("expected Notification, got {other:?}"),
+        }
     }
 
     #[tokio::test]
-    async fn send_to_agent_wake_returns_error() {
+    async fn send_to_interactive_endpoint_publishes_response() {
         let registry = make_registry();
-        let tool = SendMessageTool::new(registry, PathBuf::from("/tmp"), chrono_tz::UTC);
+        let bus_handle = crate::bus::spawn_broker();
+        let publisher = bus_handle.publisher();
+        let mut subscriber = bus_handle
+            .subscribe(TopicId::Interactive(EndpointName::from("ws")))
+            .await
+            .unwrap();
+        let tool = SendMessageTool::new(registry, publisher);
 
         let result = tool
             .execute(serde_json::json!({
-                "channel": "agent_wake",
+                "endpoint": "ws",
+                "message": "proactive message"
+            }))
+            .await
+            .unwrap();
+
+        assert!(!result.is_error, "should succeed: {}", result.output);
+
+        let event = subscriber.recv().await.unwrap();
+        match event {
+            BusEvent::Response(r) => {
+                assert_eq!(r.content, "proactive message");
+            }
+            other => panic!("expected Response, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn send_to_inbox_returns_error() {
+        let registry = make_registry();
+        let publisher = make_publisher();
+        let tool = SendMessageTool::new(registry, publisher);
+
+        let result = tool
+            .execute(serde_json::json!({
+                "endpoint": "inbox",
                 "message": "test"
             }))
             .await
             .unwrap();
 
-        assert!(result.is_error, "should error for agent_wake");
+        assert!(result.is_error, "should error for inbox");
         assert!(
-            result.output.contains("unknown channel"),
+            result.output.contains("does not accept messages"),
             "should explain: {}",
             result.output
         );
     }
 
     #[tokio::test]
-    async fn send_to_agent_feed_returns_error() {
+    async fn send_to_unknown_endpoint_returns_error() {
         let registry = make_registry();
-        let tool = SendMessageTool::new(registry, PathBuf::from("/tmp"), chrono_tz::UTC);
+        let publisher = make_publisher();
+        let tool = SendMessageTool::new(registry, publisher);
 
         let result = tool
             .execute(serde_json::json!({
-                "channel": "agent_feed",
+                "endpoint": "nonexistent",
                 "message": "test"
             }))
             .await
             .unwrap();
 
-        assert!(result.is_error, "should error for agent_feed");
-        assert!(
-            result.output.contains("unknown channel"),
-            "should explain: {}",
-            result.output
-        );
+        assert!(result.is_error, "should error for unknown");
+        assert!(result.output.contains("unknown endpoint"));
     }
 
     #[tokio::test]
-    async fn send_to_unknown_external_returns_error() {
-        let registry = make_registry();
-        let tool = SendMessageTool::new(registry, PathBuf::from("/tmp"), chrono_tz::UTC);
-
-        let result = tool
-            .execute(serde_json::json!({
-                "channel": "nonexistent",
-                "message": "test"
-            }))
-            .await
-            .unwrap();
-
-        assert!(result.is_error, "should error for unknown channel");
-        assert!(
-            result.output.contains("unknown channel"),
-            "should explain: {}",
-            result.output
-        );
-    }
-
-    #[tokio::test]
-    async fn send_missing_channel_returns_error() {
-        let registry = make_registry();
-        let tool = SendMessageTool::new(registry, PathBuf::from("/tmp"), chrono_tz::UTC);
+    async fn send_missing_endpoint_returns_error() {
+        let registry = EndpointRegistry::new();
+        let publisher = make_publisher();
+        let tool = SendMessageTool::new(registry, publisher);
 
         let result = tool.execute(serde_json::json!({"message": "test"})).await;
-        assert!(result.is_err(), "should error on missing channel");
-    }
-
-    #[tokio::test]
-    async fn send_to_inbox_default_title() {
-        let dir = tempfile::tempdir().unwrap();
-        let inbox_dir = dir.path().join("inbox");
-        std::fs::create_dir_all(&inbox_dir).unwrap();
-
-        let registry = make_registry();
-        let tool = SendMessageTool::new(registry, inbox_dir.clone(), chrono_tz::UTC);
-
-        let result = tool
-            .execute(serde_json::json!({
-                "channel": "inbox",
-                "message": "A longer message that should be truncated for the title"
-            }))
-            .await
-            .unwrap();
-
-        assert!(!result.is_error, "should succeed: {}", result.output);
-
-        let items = crate::inbox::list_items(&inbox_dir).await.unwrap();
-        assert_eq!(items.len(), 1);
-        assert!(
-            items[0].1.title.len() <= 60,
-            "default title should be at most 60 chars"
-        );
+        assert!(result.is_err(), "should error on missing endpoint");
     }
 }

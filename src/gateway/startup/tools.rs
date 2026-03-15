@@ -49,6 +49,7 @@ pub(super) fn init_tool_registry(
     ToolRegistry,
     crate::tools::SharedToolFilter,
     crate::tools::SharedPathPolicy,
+    tokio::sync::watch::Receiver<Option<crate::bus::TopicId>>,
 ) {
     let mut blocked_paths: Vec<std::path::PathBuf> = vec![
         cfg.config_dir.join("config.toml"),
@@ -87,11 +88,16 @@ pub(super) fn init_tool_registry(
         tz,
     );
     tools.register_skill_tools(Arc::clone(deps.skill_state));
-    tools.register_inbox_tools(layout.inbox_dir(), layout.inbox_archive_dir(), tz);
+    tools.register_inbox_tools(layout.inbox_dir(), layout.inbox_archive_dir());
     tools.register_background_tools(Arc::clone(deps.background_spawner));
     tools.register_spawn_tool(deps.publisher.clone(), layout.subagents_dir());
 
-    tools.register_send_message_tool(deps.endpoint_registry.clone(), layout.inbox_dir(), tz);
+    tools.register_send_message_tool(deps.endpoint_registry.clone(), deps.publisher.clone());
+    tools.register_list_endpoints_tool(deps.endpoint_registry.clone());
+
+    let (override_tx, override_rx) = tokio::sync::watch::channel(None);
+    tools.register_switch_endpoint_tool(deps.endpoint_registry.clone(), override_tx);
+
     tools.register_web_fetch_tool();
 
     // Register Ollama Cloud web search tool if configured
@@ -106,7 +112,7 @@ pub(super) fn init_tool_registry(
         tracing::info!("registered ollama_web_search tool");
     }
 
-    (tools, tool_filter, path_policy_for_runtime)
+    (tools, tool_filter, path_policy_for_runtime, override_rx)
 }
 
 /// Create the agent, load observations, recent context, and restore messages.

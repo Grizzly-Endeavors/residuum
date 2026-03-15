@@ -212,7 +212,11 @@ pub async fn handle_inbound_message(
     let reply_id = message.id.clone();
     let origin = message.origin.clone();
 
-    let output_topic = TopicId::Interactive(EndpointName::from(origin.endpoint.as_str()));
+    let output_topic = rt
+        .output_topic_override_rx
+        .borrow()
+        .clone()
+        .unwrap_or_else(|| TopicId::Interactive(EndpointName::from(origin.endpoint.as_str())));
     rt.last_output_topic = Some(output_topic.clone());
 
     drop(

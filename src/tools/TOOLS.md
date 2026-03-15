@@ -496,31 +496,6 @@ On error: item not found or read failure.
 
 ---
 
-## `inbox_add`
-
-**Source:** `inbox.rs` · `InboxAddTool`
-
-**Description sent to LLM:**
-> Add a new item to the inbox. Use this to save reminders, notes, or anything to deal with later.
-
-### Input
-
-| Parameter | Type   | Required | Description                            |
-|-----------|--------|----------|----------------------------------------|
-| `title`   | string | yes      | Short summary of the inbox item        |
-| `body`    | string | yes      | Full body text of the item             |
-| `source`  | string | no       | Origin label (default: `"agent"`)      |
-
-### Output
-
-On success: `"Added inbox item '{title}' as {filename}"`
-
-On error: save failure.
-
-**Side effect:** Creates a new `.json` file in the inbox directory.
-
----
-
 ## `inbox_archive`
 
 **Source:** `inbox.rs` · `InboxArchiveTool`
@@ -551,29 +526,83 @@ On total failure: error with failure details.
 **Source:** `send_message.rs` · `SendMessageTool`
 
 **Description sent to LLM:**
-> Send a message to an external notification channel or the inbox. Use this to proactively notify the user via configured channels (ntfy, webhook) or to save a message to the inbox for later review.
+> Send a one-off message to a notification or interactive endpoint. Use list_endpoints to see available targets.
 
 ### Input
 
-| Parameter | Type   | Required | Description                                                                    |
-|-----------|--------|----------|--------------------------------------------------------------------------------|
-| `channel` | string | yes      | Target channel name: `"inbox"` or any configured external channel             |
-| `message` | string | yes      | The message body to send                                                       |
-| `title`   | string | no       | Optional title (used for inbox items; defaults to first 60 chars of message)  |
+| Parameter  | Type   | Required | Description                                                                    |
+|------------|--------|----------|--------------------------------------------------------------------------------|
+| `endpoint` | string | yes      | Target endpoint name (any interactive or notification endpoint)               |
+| `message`  | string | yes      | The message body to send                                                       |
+| `title`    | string | no       | Optional title for notifications (defaults to first 60 chars of message)      |
 
 ### Output
 
-On success (inbox): `"Message saved to inbox as {filename}"`
-
-On success (external): `"Message sent to channel '{name}'"`
+On success: `"Message published to endpoint '{name}'"`
 
 On error:
-- Unknown channel → `"unknown channel '{name}'; available: {list}"`
-- Delivery failure → execution error with details
+- Unknown endpoint → `"unknown endpoint '{name}'; available: {list}"`
+- Endpoint does not accept messages (e.g. inbox) → `"endpoint '{name}' does not accept messages; available: {list}"`
+- Bus publish failure → execution error with details
 
 **Side effects:**
-- Inbox: creates a new `.json` file in the inbox directory with source `"agent"`
-- External: sends the message via the configured channel transport (HTTP POST, etc.)
+- Notify endpoints: publishes `BusEvent::Notification` to the endpoint's topic
+- Interactive endpoints: publishes `BusEvent::Response` to the endpoint's topic
+- **Cannot send to inbox** — the agent has no write path to inbox
+
+---
+
+## `list_endpoints`
+
+**Source:** `list_endpoints.rs` · `ListEndpointsTool`
+
+**Description sent to LLM:**
+> List available communication endpoints. Shows interactive endpoints (for switch_endpoint and send_message) and notification endpoints (for send_message only).
+
+### Input
+
+No parameters required (empty object accepted).
+
+### Output
+
+On success with endpoints:
+```
+Interactive endpoints (for switch_endpoint / send_message):
+  ws — WebSocket
+  discord — Discord
+
+Notification endpoints (for send_message):
+  my-ntfy — Ntfy (my-ntfy)
+```
+
+When no endpoints configured: `"No endpoints configured."`
+
+Excludes inbox, webhook, and other input-only or system endpoints.
+
+---
+
+## `switch_endpoint`
+
+**Source:** `switch_endpoint.rs` · `SwitchEndpointTool`
+
+**Description sent to LLM:**
+> Switch the active endpoint for subsequent responses. Takes effect on the next turn. Use list_endpoints to see available interactive endpoints.
+
+### Input
+
+| Parameter  | Type   | Required | Description                                                       |
+|------------|--------|----------|-------------------------------------------------------------------|
+| `endpoint` | string | yes      | Endpoint identifier (e.g. `"discord"`, `"telegram"`, `"ws"`)    |
+
+### Output
+
+On success: `"Switched output to '{display_name}'. Subsequent responses will be sent there."`
+
+On error:
+- Unknown endpoint → `"unknown endpoint '{name}'; available interactive endpoints: {list}"`
+- Non-interactive endpoint → `"endpoint '{name}' is not interactive; available: {list}"`
+
+**Side effects:** Sets the output topic override via a `watch` channel. The gateway reads this before each turn and routes agent responses to the overridden endpoint. The switch takes effect on the **next turn**, not mid-turn — the confirmation response goes to the current endpoint.
 
 ---
 

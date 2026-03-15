@@ -141,19 +141,32 @@ impl ToolRegistry {
         self.register(Box::new(skills::SkillDeactivateTool::new(state)));
     }
 
-    /// Register inbox management tools (`inbox_list`, `inbox_read`, `inbox_add`, `inbox_archive`).
-    pub fn register_inbox_tools(
-        &mut self,
-        inbox_dir: PathBuf,
-        archive_dir: PathBuf,
-        tz: chrono_tz::Tz,
-    ) {
+    /// Register inbox management tools (`inbox_list`, `inbox_read`, `inbox_archive`).
+    pub fn register_inbox_tools(&mut self, inbox_dir: PathBuf, archive_dir: PathBuf) {
         self.register(Box::new(inbox::InboxListTool::new(inbox_dir.clone())));
         self.register(Box::new(inbox::InboxReadTool::new(inbox_dir.clone())));
-        self.register(Box::new(inbox::InboxAddTool::new(inbox_dir.clone(), tz)));
         self.register(Box::new(inbox::InboxArchiveTool::new(
             inbox_dir,
             archive_dir,
+        )));
+    }
+
+    /// Register the `list_endpoints` tool for querying available endpoints.
+    pub fn register_list_endpoints_tool(&mut self, registry: EndpointRegistry) {
+        self.register(Box::new(super::list_endpoints::ListEndpointsTool::new(
+            registry,
+        )));
+    }
+
+    /// Register the `switch_endpoint` tool for changing the active output endpoint.
+    pub fn register_switch_endpoint_tool(
+        &mut self,
+        registry: EndpointRegistry,
+        override_tx: tokio::sync::watch::Sender<Option<crate::bus::TopicId>>,
+    ) {
+        self.register(Box::new(super::switch_endpoint::SwitchEndpointTool::new(
+            registry,
+            override_tx,
         )));
     }
 
@@ -161,11 +174,10 @@ impl ToolRegistry {
     pub fn register_send_message_tool(
         &mut self,
         registry: EndpointRegistry,
-        inbox_dir: PathBuf,
-        tz: chrono_tz::Tz,
+        publisher: crate::bus::Publisher,
     ) {
         self.register(Box::new(send_message::SendMessageTool::new(
-            registry, inbox_dir, tz,
+            registry, publisher,
         )));
     }
 

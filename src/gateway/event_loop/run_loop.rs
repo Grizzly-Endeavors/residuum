@@ -220,6 +220,7 @@ async fn build_runtime(
         publisher: core.publisher,
         agent_subscriber,
         last_output_topic: None,
+        output_topic_override_rx: parts.output_topic_override_rx,
         reload_rx: receivers.reload,
         command_rx: receivers.command,
         server_handle: spawned.server_handle,

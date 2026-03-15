@@ -7,6 +7,7 @@ mod exec;
 pub(crate) mod file_tracker;
 pub mod inbox;
 mod line_hash;
+pub(crate) mod list_endpoints;
 pub mod memory_get;
 pub mod memory_search;
 pub(crate) mod ollama_web_search;
@@ -16,6 +17,7 @@ mod read;
 mod registry;
 pub mod send_message;
 pub mod skills;
+pub(crate) mod switch_endpoint;
 pub(crate) mod web_fetch;
 mod write;
 

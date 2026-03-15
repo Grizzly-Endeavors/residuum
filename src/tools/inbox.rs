@@ -1,4 +1,4 @@
-//! Inbox management tools: list, read, add, and archive inbox items.
+//! Inbox management tools: list, read, and archive inbox items.
 
 use std::fmt::Write as _;
 use std::path::PathBuf;
@@ -153,79 +153,6 @@ impl Tool for InboxReadTool {
     }
 }
 
-// ─── inbox_add ──────────────────────────────────────────────────────────────
-
-/// Tool for adding a new inbox item.
-pub struct InboxAddTool {
-    inbox_dir: PathBuf,
-    tz: chrono_tz::Tz,
-}
-
-impl InboxAddTool {
-    /// Create a new `InboxAddTool`.
-    #[must_use]
-    pub fn new(inbox_dir: PathBuf, tz: chrono_tz::Tz) -> Self {
-        Self { inbox_dir, tz }
-    }
-}
-
-#[async_trait]
-impl Tool for InboxAddTool {
-    fn name(&self) -> &'static str {
-        "inbox_add"
-    }
-
-    fn definition(&self) -> ToolDefinition {
-        ToolDefinition {
-            name: "inbox_add".to_string(),
-            description: "Add a new item to the inbox. Use this to save reminders, notes, or anything to deal with later.".to_string(),
-            parameters: serde_json::json!({
-                "type": "object",
-                "properties": {
-                    "title": {
-                        "type": "string",
-                        "description": "Short summary of the inbox item"
-                    },
-                    "body": {
-                        "type": "string",
-                        "description": "Full body text of the item"
-                    },
-                    "source": {
-                        "type": "string",
-                        "description": "Origin label (default: 'agent')"
-                    }
-                },
-                "required": ["title", "body"]
-            }),
-        }
-    }
-
-    async fn execute(&self, arguments: Value) -> Result<ToolResult, ToolError> {
-        let title = arguments
-            .get("title")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| ToolError::InvalidArguments("title is required".to_string()))?;
-
-        let body = arguments
-            .get("body")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| ToolError::InvalidArguments("body is required".to_string()))?;
-
-        let source = arguments
-            .get("source")
-            .and_then(|v| v.as_str())
-            .unwrap_or("agent");
-
-        let filename = inbox::quick_add(&self.inbox_dir, title, body, source, self.tz)
-            .await
-            .map_err(|e| ToolError::Execution(format!("failed to save inbox item: {e}")))?;
-
-        Ok(ToolResult::success(format!(
-            "Added inbox item '{title}' as {filename}"
-        )))
-    }
-}
-
 // ─── inbox_archive ──────────────────────────────────────────────────────────
 
 /// Tool for archiving inbox items.
@@ -334,10 +261,6 @@ mod tests {
 
         assert_eq!(InboxListTool::new(dir.clone()).name(), "inbox_list");
         assert_eq!(InboxReadTool::new(dir.clone()).name(), "inbox_read");
-        assert_eq!(
-            InboxAddTool::new(dir.clone(), chrono_tz::UTC).name(),
-            "inbox_add"
-        );
         assert_eq!(InboxArchiveTool::new(dir, archive).name(), "inbox_archive");
     }
 
@@ -352,9 +275,6 @@ mod tests {
         let read = InboxReadTool::new(dir.clone());
         assert_eq!(read.definition().name, read.name());
 
-        let add = InboxAddTool::new(dir.clone(), chrono_tz::UTC);
-        assert_eq!(add.definition().name, add.name());
-
         let archive_tool = InboxArchiveTool::new(dir, archive);
         assert_eq!(archive_tool.definition().name, archive_tool.name());
     }
@@ -366,35 +286,17 @@ mod tests {
         let archive_dir = dir.path().join("archive/inbox");
         tokio::fs::create_dir_all(&inbox_dir).await.unwrap();
 
-        // Add an item
-        let add_tool = InboxAddTool::new(inbox_dir.clone(), chrono_tz::UTC);
-        let add_result = add_tool
-            .execute(serde_json::json!({
-                "title": "test item",
-                "body": "test body content",
-                "source": "test"
-            }))
-            .await
-            .unwrap();
-        assert!(
-            !add_result.is_error,
-            "add should succeed: {}",
-            add_result.output
-        );
-        assert!(
-            add_result.output.contains("Added inbox item"),
-            "should confirm add: {}",
-            add_result.output
-        );
-
-        // Extract filename from output
-        let filename = add_result
-            .output
-            .split(" as ")
-            .nth(1)
-            .unwrap()
-            .trim_end_matches(".json")
-            .to_string();
+        // Add an item via quick_add directly
+        let filename = crate::inbox::quick_add(
+            &inbox_dir,
+            "test item",
+            "test body content",
+            "test",
+            chrono_tz::UTC,
+        )
+        .await
+        .unwrap();
+        let filename = filename.trim_end_matches(".json").to_string();
 
         // List items
         let list_tool = InboxListTool::new(inbox_dir.clone());
@@ -491,14 +393,6 @@ mod tests {
         let tool = InboxArchiveTool::new(dir.path().to_path_buf(), archive_dir);
         let result = tool.execute(serde_json::json!({"ids": []})).await.unwrap();
         assert!(result.is_error, "empty ids should error");
-    }
-
-    #[tokio::test]
-    async fn inbox_add_missing_title() {
-        let dir = tempfile::tempdir().unwrap();
-        let tool = InboxAddTool::new(dir.path().to_path_buf(), chrono_tz::UTC);
-        let result = tool.execute(serde_json::json!({"body": "no title"})).await;
-        assert!(result.is_err(), "missing title should error");
     }
 
     #[tokio::test]
