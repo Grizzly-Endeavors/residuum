@@ -69,6 +69,8 @@ pub enum TopicId {
     Webhook(WebhookName),
     /// Broadcast to all connected interactive endpoints.
     SystemBroadcast,
+    /// Delivery errors (e.g. publish to topic with no subscribers).
+    BusErrors,
 }
 
 impl fmt::Display for TopicId {
@@ -83,6 +85,7 @@ impl fmt::Display for TopicId {
             Self::BackgroundEvent => f.write_str("background:event"),
             Self::Webhook(name) => write!(f, "webhook:{name}"),
             Self::SystemBroadcast => f.write_str("system:broadcast"),
+            Self::BusErrors => f.write_str("bus:errors"),
         }
     }
 }

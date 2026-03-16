@@ -142,6 +142,8 @@ pub(crate) struct GatewayRuntime {
     pub agent_subscriber: Subscriber,
     /// Endpoint registry for looking up configured endpoints.
     pub endpoint_registry: EndpointRegistry,
+    /// Subscriber for bus delivery errors (e.g. no subscribers on a topic).
+    pub error_subscriber: Subscriber,
     /// Topic for the last endpoint that sent a message (for response routing).
     pub last_output_topic: Option<TopicId>,
     /// Override for the output topic, set by the `switch_endpoint` tool.

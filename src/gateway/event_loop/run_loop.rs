@@ -149,6 +149,12 @@ async fn build_runtime(
         .await
         .map_err(|e| ResiduumError::Gateway(format!("failed to subscribe to agent:main: {e}")))?;
 
+    let error_subscriber = core
+        .bus_handle
+        .subscribe(crate::bus::TopicId::BusErrors)
+        .await
+        .map_err(|e| ResiduumError::Gateway(format!("failed to subscribe to bus:errors: {e}")))?;
+
     // Spawn notify channel subscribers on the bus
     let notify_handles = crate::gateway::startup::spawn_notify_subscribers(
         &core.bus_handle,
@@ -220,6 +226,7 @@ async fn build_runtime(
         publisher: core.publisher,
         agent_subscriber,
         endpoint_registry: parts.endpoint_registry,
+        error_subscriber,
         last_output_topic: None,
         output_topic_override_rx: parts.output_topic_override_rx,
         reload_rx: receivers.reload,
@@ -561,6 +568,13 @@ async fn run_event_loop(mut rt: GatewayRuntime) -> GatewayExit {
                     BusEventAction::Continue => {}
                     BusEventAction::Exit(exit) => return exit,
                     BusEventAction::Shutdown => { graceful_shutdown(&mut rt).await; break; }
+                }
+            }
+
+            error_event = rt.error_subscriber.recv() => {
+                if let Some(crate::bus::BusEvent::Error { message, .. }) = error_event {
+                    tracing::debug!(message = %message, "bus delivery error");
+                    rt.agent.inject_system_message(format!("[Bus] {message}"));
                 }
             }
 

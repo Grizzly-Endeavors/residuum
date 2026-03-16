@@ -87,7 +87,7 @@ async fn run_broker(mut cmd_rx: mpsc::Receiver<BrokerCommand>) {
     while let Some(cmd) = cmd_rx.recv().await {
         match cmd {
             BrokerCommand::Publish { topic, event } => {
-                if let Some(subscribers) = subscriptions.get_mut(&topic) {
+                let had_subscribers = if let Some(subscribers) = subscriptions.get_mut(&topic) {
                     subscribers.retain(|(id, tx)| {
                         match tx.try_send(event.clone()) {
                             Ok(()) => true,
@@ -109,8 +109,27 @@ async fn run_broker(mut cmd_rx: mpsc::Receiver<BrokerCommand>) {
                             }
                         }
                     });
+                    let count = subscribers.len();
                     if subscribers.is_empty() {
                         subscriptions.remove(&topic);
+                    }
+                    count > 0
+                } else {
+                    false
+                };
+
+                // Publish error when no subscribers received the event.
+                // Guard: skip if the original topic is BusErrors to prevent recursion.
+                if !had_subscribers && topic != TopicId::BusErrors {
+                    let error_event = BusEvent::Error {
+                        correlation_id: String::new(),
+                        message: format!("no active subscribers for topic {topic}"),
+                    };
+                    if let Some(error_subs) = subscriptions.get_mut(&TopicId::BusErrors) {
+                        error_subs.retain(|(_, tx)| tx.try_send(error_event.clone()).is_ok());
+                        if error_subs.is_empty() {
+                            subscriptions.remove(&TopicId::BusErrors);
+                        }
                     }
                 }
             }
@@ -323,5 +342,51 @@ mod tests {
             BusEvent::Message(msg) => assert_eq!(msg.content, "after prune"),
             _ => panic!("expected Message variant"),
         }
+    }
+
+    #[tokio::test]
+    async fn publish_to_empty_topic_emits_bus_error() {
+        let handle = spawn_broker();
+        let pub_ = handle.publisher();
+        let mut error_sub = handle.subscribe(TopicId::BusErrors).await.unwrap();
+
+        // Publish to a topic with no subscribers.
+        pub_.publish(TopicId::Inbox, test_message("err-1", "nowhere"))
+            .await
+            .unwrap();
+
+        let event = tokio::time::timeout(tokio::time::Duration::from_millis(200), error_sub.recv())
+            .await
+            .unwrap()
+            .unwrap();
+
+        match event {
+            BusEvent::Error { message, .. } => {
+                assert!(
+                    message.contains("no active subscribers"),
+                    "error should mention no subscribers: {message}"
+                );
+                assert!(message.contains("inbox"), "error should mention the topic");
+            }
+            _ => panic!("expected Error variant, got {event:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn bus_error_topic_no_recursion() {
+        let handle = spawn_broker();
+        let pub_ = handle.publisher();
+
+        // Publish to BusErrors with no subscribers — should not recurse.
+        let result = pub_
+            .publish(
+                TopicId::BusErrors,
+                BusEvent::Error {
+                    correlation_id: String::new(),
+                    message: "test".into(),
+                },
+            )
+            .await;
+        assert!(result.is_ok());
     }
 }
