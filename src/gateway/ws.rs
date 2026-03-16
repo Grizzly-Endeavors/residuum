@@ -144,10 +144,7 @@ async fn handle_client_message(
             };
             if let Err(e) = state
                 .publisher
-                .publish(
-                    crate::bus::TopicId::AgentMain,
-                    crate::bus::BusEvent::Message(msg_event),
-                )
+                .publish_typed(crate::bus::topics::UserMessage, msg_event)
                 .await
             {
                 tracing::warn!(error = %e, "failed to publish message to bus");

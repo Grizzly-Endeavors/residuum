@@ -5,7 +5,9 @@ use tokio::sync::mpsc;
 use crate::agent::Agent;
 use crate::agent::context::{ProjectsContext, PromptContext, SkillsContext, SubagentsContext};
 use crate::agent::interrupt::Interrupt;
-use crate::bus::{BusEvent, EndpointName, Publisher, ResponseEvent, Subscriber, TopicId};
+use crate::bus::{
+    BusEvent, EndpointName, MessageEvent, Publisher, ResponseEvent, TopicId, TypedSubscriber,
+};
 use crate::error::ResiduumError;
 use crate::gateway::types::{GatewayExit, GatewayRuntime, ReloadSignal};
 use crate::interfaces::types::{InboundMessage, MessageOrigin};
@@ -162,7 +164,7 @@ async fn run_agent_turn_with_interrupts(
     origin: Option<&MessageOrigin>,
     prompt_ctx: &PromptContext<'_>,
     images: &[ImageData],
-    agent_subscriber: &mut Subscriber,
+    agent_subscriber: &mut TypedSubscriber<MessageEvent>,
     reload_rx: &mut tokio::sync::watch::Receiver<ReloadSignal>,
 ) -> (Result<Vec<String>, ResiduumError>, Vec<Interrupt>) {
     let (interrupt_tx, mut interrupt_rx) = mpsc::channel::<Interrupt>(32);
@@ -181,7 +183,7 @@ async fn run_agent_turn_with_interrupts(
                 result = &mut turn => break result,
                 next_msg = agent_subscriber.recv() => {
                     match next_msg {
-                        Some(BusEvent::Message(msg_event)) => {
+                        Ok(Some(msg_event)) => {
                             let inbound = crate::interfaces::types::InboundMessage {
                                 id: msg_event.id,
                                 content: msg_event.content,
@@ -193,12 +195,12 @@ async fn run_agent_turn_with_interrupts(
                                 tracing::warn!("interrupt channel full, dropping user message mid-turn");
                             }
                         }
-                        Some(BusEvent::AgentResult(result)) => {
-                            if interrupt_tx.try_send(Interrupt::BackgroundResult(result)).is_err() {
-                                tracing::warn!("interrupt channel full, dropping background result mid-turn");
-                            }
+                        Ok(None) => {
+                            tracing::debug!("agent subscriber closed during turn");
                         }
-                        _ => {}
+                        Err(e) => {
+                            tracing::warn!(error = %e, "type mismatch on user:message during turn");
+                        }
                     }
                 }
                 _ = reload_rx.changed() => {

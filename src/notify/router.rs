@@ -11,8 +11,8 @@ use tokio::task::JoinHandle;
 
 use crate::background::spawn_context::SpawnContext;
 use crate::bus::{
-    AgentResultEvent, BusEvent, BusHandle, EndpointRegistry, EventTrigger, HeartbeatStatus,
-    NotificationEvent, Publisher, TopicId, TypedSubscriber, topics,
+    AgentResultEvent, BusHandle, EndpointRegistry, EventTrigger, HeartbeatStatus,
+    NotificationEvent, Publisher, TypedSubscriber, topics,
 };
 use crate::config::BackgroundModelTier;
 use crate::models::factory::build_provider_chain;
@@ -289,9 +289,8 @@ fn parse_routing_response(response: &str, valid_targets: &[&str]) -> Vec<String>
     }
 }
 
-/// Publish a result as a `BusEvent::Message` to `TopicId::AgentMain`.
+/// Publish a result as a `MessageEvent` to the `UserMessage` topic.
 async fn publish_to_agent_main(event: &AgentResultEvent, publisher: &Publisher) {
-    // Build a BackgroundResult-like structure to format the message
     let content = format_agent_result_message(event);
 
     let msg_event = crate::bus::MessageEvent {
@@ -307,13 +306,13 @@ async fn publish_to_agent_main(event: &AgentResultEvent, publisher: &Publisher) 
     };
 
     if let Err(e) = publisher
-        .publish(TopicId::AgentMain, BusEvent::Message(msg_event))
+        .publish_typed(topics::UserMessage, msg_event)
         .await
     {
         tracing::warn!(
             task_id = %event.task_id,
             error = %e,
-            "failed to publish background result to agent:main"
+            "failed to publish background result to user:message"
         );
     }
 }

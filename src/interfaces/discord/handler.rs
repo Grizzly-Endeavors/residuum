@@ -137,10 +137,7 @@ impl EventHandler for DiscordHandler {
 
         if let Err(e) = self
             .publisher
-            .publish(
-                crate::bus::TopicId::AgentMain,
-                crate::bus::BusEvent::Message(msg_event),
-            )
+            .publish_typed(crate::bus::topics::UserMessage, msg_event)
             .await
         {
             tracing::warn!(error = %e, "failed to publish discord message to bus");

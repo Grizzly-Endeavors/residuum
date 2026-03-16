@@ -8,7 +8,9 @@ use crate::actions::store::ActionStore;
 use crate::agent::Agent;
 use crate::background::BackgroundTaskSpawner;
 use crate::background::spawn_context::SpawnContext;
-use crate::bus::{BusHandle, EndpointRegistry, Publisher, Subscriber, TopicId};
+use crate::bus::{
+    BusHandle, EndpointRegistry, MessageEvent, Publisher, Subscriber, TopicId, TypedSubscriber,
+};
 use crate::config::Config;
 use crate::mcp::SharedMcpRegistry;
 use crate::memory::observer::Observer;
@@ -141,8 +143,8 @@ pub(crate) struct GatewayRuntime {
     pub bus_handle: BusHandle,
     /// Publisher for sending events onto the bus.
     pub publisher: Publisher,
-    /// Subscriber for receiving inbound messages from the bus.
-    pub agent_subscriber: Subscriber,
+    /// Typed subscriber for receiving inbound user messages from the bus.
+    pub agent_subscriber: TypedSubscriber<MessageEvent>,
     /// Endpoint registry for looking up configured endpoints.
     pub endpoint_registry: EndpointRegistry,
     /// Subscriber for bus delivery errors (e.g. no subscribers on a topic).
