@@ -8,7 +8,8 @@ use tokio::sync::mpsc;
 use tracing::{debug, warn};
 
 use super::events::BusEvent;
-use super::handle::{BrokerCommand, Publisher, Subscriber};
+use super::handle::{BrokerCommand, ErasedEvent, Publisher, Subscriber, TypedSubscriber};
+use super::topics::Topic;
 use super::types::{BusError, TopicId};
 use crate::spawn::spawn_monitored;
 
@@ -39,7 +40,7 @@ impl BusHandle {
         Publisher::new(self.cmd_tx.clone())
     }
 
-    /// Create a [`Subscriber`] for the given topic.
+    /// Create a [`Subscriber`] for the given topic (legacy untyped API).
     ///
     /// # Errors
     ///
@@ -58,6 +59,36 @@ impl BusHandle {
             .map_err(|_closed| BusError::BrokerShutdown)?;
 
         Ok(Subscriber::new(id, topic, event_rx, self.cmd_tx.clone()))
+    }
+
+    /// Create a typed subscriber for the given topic.
+    ///
+    /// # Errors
+    ///
+    /// Returns `BusError::BrokerShutdown` if the broker has stopped.
+    pub async fn subscribe_typed<T: Topic>(
+        &self,
+        topic: T,
+    ) -> Result<TypedSubscriber<T::Event>, BusError> {
+        let id = self.next_id.fetch_add(1, Ordering::Relaxed);
+        let (event_tx, event_rx) = mpsc::channel(SUBSCRIBER_CAPACITY);
+        let topic_id = topic.topic_id();
+
+        self.cmd_tx
+            .send(BrokerCommand::Subscribe {
+                id,
+                topic: topic_id.clone(),
+                sender: event_tx,
+            })
+            .await
+            .map_err(|_closed| BusError::BrokerShutdown)?;
+
+        Ok(TypedSubscriber::new(
+            id,
+            topic_id,
+            event_rx,
+            self.cmd_tx.clone(),
+        ))
     }
 }
 
@@ -82,14 +113,14 @@ pub fn spawn_broker() -> BusHandle {
 ///
 /// Exits naturally when every `BusHandle` (and derived sender) is dropped.
 async fn run_broker(mut cmd_rx: mpsc::Receiver<BrokerCommand>) {
-    let mut subscriptions: HashMap<TopicId, Vec<(u64, mpsc::Sender<BusEvent>)>> = HashMap::new();
+    let mut subscriptions: HashMap<TopicId, Vec<(u64, mpsc::Sender<ErasedEvent>)>> = HashMap::new();
 
     while let Some(cmd) = cmd_rx.recv().await {
         match cmd {
             BrokerCommand::Publish { topic, event } => {
                 let had_subscribers = if let Some(subscribers) = subscriptions.get_mut(&topic) {
                     subscribers.retain(|(id, tx)| {
-                        match tx.try_send(event.clone()) {
+                        match tx.try_send(Arc::clone(&event)) {
                             Ok(()) => true,
                             Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
                                 warn!(
@@ -121,12 +152,12 @@ async fn run_broker(mut cmd_rx: mpsc::Receiver<BrokerCommand>) {
                 // Publish error when no subscribers received the event.
                 // Guard: skip if the original topic is BusErrors to prevent recursion.
                 if !had_subscribers && topic != TopicId::BusErrors {
-                    let error_event = BusEvent::Error {
+                    let error_event: ErasedEvent = Arc::new(BusEvent::Error {
                         correlation_id: String::new(),
                         message: format!("no active subscribers for topic {topic}"),
-                    };
+                    });
                     if let Some(error_subs) = subscriptions.get_mut(&TopicId::BusErrors) {
-                        error_subs.retain(|(_, tx)| tx.try_send(error_event.clone()).is_ok());
+                        error_subs.retain(|(_, tx)| tx.try_send(Arc::clone(&error_event)).is_ok());
                         if error_subs.is_empty() {
                             subscriptions.remove(&TopicId::BusErrors);
                         }
@@ -164,6 +195,8 @@ mod tests {
 
     use super::*;
     use crate::bus::events::MessageEvent;
+    use crate::bus::topics;
+    use crate::bus::types::EndpointName;
     use crate::interfaces::types::MessageOrigin;
 
     fn test_message(id: &str, content: &str) -> BusEvent {
@@ -276,14 +309,6 @@ mod tests {
         let handle = spawn_broker();
         let mut sub = handle.subscribe(TopicId::Inbox).await.unwrap();
 
-        // Drop the handle — but the subscriber still holds a cmd_tx clone,
-        // so the broker stays alive. Drop the subscriber's event sender
-        // indirectly: the broker exits only when ALL cmd_tx clones are gone.
-        // To test recv() returning None, we need to drop the subscriber's
-        // cmd_tx too. We do this by dropping handle and relying on the
-        // subscriber being the last sender — when we drop it, recv returns
-        // None on next call. Instead, test that dropping the handle and
-        // publishing nothing causes recv to block (i.e., broker is still alive).
         drop(handle);
 
         // The broker is still alive because sub holds a cmd_tx clone.
@@ -387,6 +412,110 @@ mod tests {
                 },
             )
             .await;
+        assert!(result.is_ok());
+    }
+
+    // -----------------------------------------------------------------------
+    // Typed API tests
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn typed_publish_and_subscribe() {
+        let handle = spawn_broker();
+        let pub_ = handle.publisher();
+        let ep = EndpointName::from("ws");
+        let mut sub = handle
+            .subscribe_typed(topics::Response(ep.clone()))
+            .await
+            .unwrap();
+
+        let event = crate::bus::ResponseEvent {
+            correlation_id: "c1".into(),
+            content: "hello typed".into(),
+            timestamp: NaiveDate::from_ymd_opt(2026, 3, 16)
+                .unwrap()
+                .and_hms_opt(12, 0, 0)
+                .unwrap(),
+        };
+
+        pub_.publish_typed(topics::Response(ep), event)
+            .await
+            .unwrap();
+
+        let received = sub.recv().await.unwrap().unwrap();
+        assert_eq!(received.correlation_id, "c1");
+        assert_eq!(received.content, "hello typed");
+    }
+
+    #[tokio::test]
+    async fn typed_fan_out() {
+        let handle = spawn_broker();
+        let pub_ = handle.publisher();
+        let ep = EndpointName::from("ws");
+        let mut sub1 = handle
+            .subscribe_typed(topics::Response(ep.clone()))
+            .await
+            .unwrap();
+        let mut sub2 = handle
+            .subscribe_typed(topics::Response(ep.clone()))
+            .await
+            .unwrap();
+
+        let event = crate::bus::ResponseEvent {
+            correlation_id: "c2".into(),
+            content: "fanout typed".into(),
+            timestamp: NaiveDate::from_ymd_opt(2026, 3, 16)
+                .unwrap()
+                .and_hms_opt(12, 0, 0)
+                .unwrap(),
+        };
+
+        pub_.publish_typed(topics::Response(ep), event)
+            .await
+            .unwrap();
+
+        let e1 = sub1.recv().await.unwrap().unwrap();
+        let e2 = sub2.recv().await.unwrap().unwrap();
+        assert_eq!(e1.content, "fanout typed");
+        assert_eq!(e2.content, "fanout typed");
+    }
+
+    #[tokio::test]
+    async fn typed_subscriber_returns_none_on_shutdown() {
+        let handle = spawn_broker();
+        let ep = EndpointName::from("ws");
+        let mut sub = handle.subscribe_typed(topics::Response(ep)).await.unwrap();
+
+        // Drop handle so broker eventually shuts down
+        drop(handle);
+
+        let result = tokio::time::timeout(tokio::time::Duration::from_millis(50), sub.recv()).await;
+        assert!(result.is_err(), "recv should timeout while broker is alive");
+    }
+
+    #[tokio::test]
+    async fn typed_subscriber_drop_unsubscribes() {
+        let handle = spawn_broker();
+        let pub_ = handle.publisher();
+        let ep = EndpointName::from("ws");
+        let sub = handle
+            .subscribe_typed(topics::Response(ep.clone()))
+            .await
+            .unwrap();
+
+        drop(sub);
+        tokio::task::yield_now().await;
+
+        // Should not error
+        let event = crate::bus::ResponseEvent {
+            correlation_id: "c3".into(),
+            content: "gone".into(),
+            timestamp: NaiveDate::from_ymd_opt(2026, 3, 16)
+                .unwrap()
+                .and_hms_opt(12, 0, 0)
+                .unwrap(),
+        };
+        let result = pub_.publish_typed(topics::Response(ep), event).await;
         assert!(result.is_ok());
     }
 }

@@ -22,7 +22,7 @@ pub use events::{
     SystemEventData, SystemMessageEvent, ToolActivityEvent, ToolCallEvent, ToolResultEvent,
     TurnLifecycleEvent,
 };
-pub use handle::{Publisher, Subscriber};
+pub use handle::{Publisher, Subscriber, TypedSubscriber};
 pub use registry::{EndpointEntry, EndpointRegistry};
 pub use topics::Topic;
 pub use types::{BusError, EndpointId, EndpointName, NotifyName, PresetName, TopicId, WebhookName};
