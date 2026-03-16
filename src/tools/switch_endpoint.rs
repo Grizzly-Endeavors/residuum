@@ -4,7 +4,9 @@ use async_trait::async_trait;
 use serde_json::Value;
 use tokio::sync::watch;
 
-use crate::bus::{EndpointCapabilities, EndpointId, EndpointRegistry, TopicId};
+use crate::bus::{
+    BusEvent, EndpointCapabilities, EndpointId, EndpointRegistry, Publisher, TopicId,
+};
 use crate::models::ToolDefinition;
 
 use super::{Tool, ToolError, ToolResult};
@@ -13,15 +15,21 @@ use super::{Tool, ToolError, ToolResult};
 pub struct SwitchEndpointTool {
     registry: EndpointRegistry,
     override_tx: watch::Sender<Option<TopicId>>,
+    publisher: Publisher,
 }
 
 impl SwitchEndpointTool {
     /// Create a new `SwitchEndpointTool`.
     #[must_use]
-    pub fn new(registry: EndpointRegistry, override_tx: watch::Sender<Option<TopicId>>) -> Self {
+    pub fn new(
+        registry: EndpointRegistry,
+        override_tx: watch::Sender<Option<TopicId>>,
+        publisher: Publisher,
+    ) -> Self {
         Self {
             registry,
             override_tx,
+            publisher,
         }
     }
 }
@@ -96,7 +104,20 @@ impl Tool for SwitchEndpointTool {
             )));
         }
 
+        let new_topic = entry.topic.clone();
         self.override_tx.send_replace(Some(entry.topic));
+
+        // Notify the new endpoint so the user there knows the agent switched to them.
+        drop(
+            self.publisher
+                .publish(
+                    new_topic,
+                    BusEvent::Notice {
+                        message: "Agent switched output to this endpoint.".to_string(),
+                    },
+                )
+                .await,
+        );
 
         Ok(ToolResult::success(format!(
             "Switched output to '{}'. Subsequent responses will be sent there.",
@@ -109,7 +130,7 @@ impl Tool for SwitchEndpointTool {
 #[expect(clippy::unwrap_used, reason = "test code uses unwrap for clarity")]
 mod tests {
     use super::*;
-    use crate::bus::{EndpointEntry, EndpointName, NotifyName};
+    use crate::bus::{self, EndpointEntry, EndpointName, NotifyName};
 
     fn make_registry() -> EndpointRegistry {
         let registry = EndpointRegistry::new();
@@ -134,10 +155,11 @@ mod tests {
         registry
     }
 
-    #[test]
-    fn tool_name_and_definition() {
+    #[tokio::test]
+    async fn tool_name_and_definition() {
         let (tx, _rx) = watch::channel(None);
-        let tool = SwitchEndpointTool::new(EndpointRegistry::new(), tx);
+        let bus_handle = bus::spawn_broker();
+        let tool = SwitchEndpointTool::new(EndpointRegistry::new(), tx, bus_handle.publisher());
         assert_eq!(tool.name(), "switch_endpoint");
         assert_eq!(tool.definition().name, "switch_endpoint");
     }
@@ -146,7 +168,8 @@ mod tests {
     async fn switch_to_valid_interactive_endpoint() {
         let registry = make_registry();
         let (tx, rx) = watch::channel(None);
-        let tool = SwitchEndpointTool::new(registry, tx);
+        let bus_handle = bus::spawn_broker();
+        let tool = SwitchEndpointTool::new(registry, tx, bus_handle.publisher());
 
         let result = tool
             .execute(serde_json::json!({"endpoint": "discord"}))
@@ -169,7 +192,8 @@ mod tests {
     async fn switch_to_nonexistent_endpoint_errors() {
         let registry = make_registry();
         let (tx, _rx) = watch::channel(None);
-        let tool = SwitchEndpointTool::new(registry, tx);
+        let bus_handle = bus::spawn_broker();
+        let tool = SwitchEndpointTool::new(registry, tx, bus_handle.publisher());
 
         let result = tool
             .execute(serde_json::json!({"endpoint": "nonexistent"}))
@@ -183,7 +207,8 @@ mod tests {
     async fn switch_to_notify_only_endpoint_errors() {
         let registry = make_registry();
         let (tx, _rx) = watch::channel(None);
-        let tool = SwitchEndpointTool::new(registry, tx);
+        let bus_handle = bus::spawn_broker();
+        let tool = SwitchEndpointTool::new(registry, tx, bus_handle.publisher());
 
         let result = tool
             .execute(serde_json::json!({"endpoint": "my-ntfy"}))
@@ -196,7 +221,8 @@ mod tests {
     #[tokio::test]
     async fn missing_endpoint_param_errors() {
         let (tx, _rx) = watch::channel(None);
-        let tool = SwitchEndpointTool::new(EndpointRegistry::new(), tx);
+        let bus_handle = bus::spawn_broker();
+        let tool = SwitchEndpointTool::new(EndpointRegistry::new(), tx, bus_handle.publisher());
 
         let result = tool.execute(serde_json::json!({})).await;
         assert!(result.is_err(), "should error on missing endpoint");

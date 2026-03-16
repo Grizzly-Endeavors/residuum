@@ -163,10 +163,12 @@ impl ToolRegistry {
         &mut self,
         registry: EndpointRegistry,
         override_tx: tokio::sync::watch::Sender<Option<crate::bus::TopicId>>,
+        publisher: crate::bus::Publisher,
     ) {
         self.register(Box::new(super::switch_endpoint::SwitchEndpointTool::new(
             registry,
             override_tx,
+            publisher,
         )));
     }
 

@@ -96,7 +96,11 @@ pub(super) fn init_tool_registry(
     tools.register_list_endpoints_tool(deps.endpoint_registry.clone());
 
     let (override_tx, override_rx) = tokio::sync::watch::channel(None);
-    tools.register_switch_endpoint_tool(deps.endpoint_registry.clone(), override_tx);
+    tools.register_switch_endpoint_tool(
+        deps.endpoint_registry.clone(),
+        override_tx,
+        deps.publisher.clone(),
+    );
 
     tools.register_web_fetch_tool();
 
