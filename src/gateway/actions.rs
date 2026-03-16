@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use crate::actions::store::ActionStore;
-use crate::bus::{EventTrigger, PresetName, Publisher, SpawnRequestEvent, TopicId};
+use crate::bus::{EventTrigger, PresetName, Publisher, SpawnRequestEvent, topics};
 use crate::config::BackgroundModelTier;
 
 /// A scheduled action that should run as a main agent wake turn rather than a sub-agent.
@@ -79,11 +79,8 @@ async fn publish_action_spawn(
         model_tier_override: Some(tier),
     };
 
-    let topic = TopicId::AgentPreset(PresetName::from(preset_name));
-    if let Err(e) = publisher
-        .publish(topic, crate::bus::BusEvent::SpawnRequest(spawn_event))
-        .await
-    {
+    let topic = topics::SpawnRequest(PresetName::from(preset_name));
+    if let Err(e) = publisher.publish_typed(topic, spawn_event).await {
         tracing::warn!(
             action = %action.name,
             error = %e,

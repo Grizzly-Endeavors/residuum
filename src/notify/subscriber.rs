@@ -1,24 +1,21 @@
 //! Generic subscriber loop for notification channels.
 
 use super::channels::NotificationChannel;
-use crate::bus::{BusEvent, Subscriber};
+use crate::bus::{NotificationEvent, TypedSubscriber};
 
-/// Run a subscriber loop that delivers `BusEvent::Notification` events to a channel.
+/// Run a subscriber loop that delivers `NotificationEvent`s to a channel.
 ///
-/// Non-notification events are silently ignored. Delivery errors are logged
-/// but do not stop the loop. The function returns when the subscriber closes.
+/// Delivery errors are logged but do not stop the loop.
+/// The function returns when the subscriber closes.
 pub async fn run_notify_subscriber(
-    mut subscriber: Subscriber,
+    mut subscriber: TypedSubscriber<NotificationEvent>,
     channel: Box<dyn NotificationChannel>,
 ) {
     let channel_name = channel.name().to_string();
     tracing::info!(channel = %channel_name, "notify subscriber started");
 
-    while let Some(event) = subscriber.recv().await {
-        let BusEvent::Notification(ref notification) = event else {
-            continue;
-        };
-        if let Err(e) = channel.deliver(notification).await {
+    while let Ok(Some(notification)) = subscriber.recv().await {
+        if let Err(e) = channel.deliver(&notification).await {
             tracing::warn!(
                 channel = %channel_name,
                 error = %e,
@@ -43,8 +40,8 @@ mod tests {
     use async_trait::async_trait;
     use tokio::sync::Mutex;
 
-    use crate::bus::{BusEvent, NotifyName, TopicId, spawn_broker};
-    use crate::bus::{EventTrigger, NotificationEvent};
+    use crate::bus::EventTrigger;
+    use crate::bus::{NotificationEvent, NotifyName, spawn_broker, topics};
     use crate::notify::channels::NotificationChannel;
 
     use super::run_notify_subscriber;
@@ -88,8 +85,8 @@ mod tests {
         }
     }
 
-    fn make_notification_event() -> BusEvent {
-        BusEvent::Notification(NotificationEvent {
+    fn make_notification_event() -> NotificationEvent {
+        NotificationEvent {
             title: "test-title".to_string(),
             content: "test-content".to_string(),
             source: EventTrigger::Pulse,
@@ -97,7 +94,7 @@ mod tests {
                 .unwrap()
                 .and_hms_opt(12, 0, 0)
                 .unwrap(),
-        })
+        }
     }
 
     // -----------------------------------------------------------------------
@@ -108,23 +105,24 @@ mod tests {
     async fn notification_events_are_delivered() {
         let handle = spawn_broker();
         let pub_ = handle.publisher();
-        let topic = TopicId::Notify(NotifyName::from("test"));
-        let sub = handle.subscribe(topic.clone()).await.unwrap();
+        let topic = topics::Notification(NotifyName::from("test"));
+        let sub = handle
+            .subscribe_typed(topics::Notification(NotifyName::from("test")))
+            .await
+            .unwrap();
 
         let should_fail = Arc::new(AtomicBool::new(false));
         let (channel, delivered) = MockChannel::new(Arc::clone(&should_fail));
 
         let loop_task = tokio::spawn(run_notify_subscriber(sub, Box::new(channel)));
 
-        pub_.publish(topic, make_notification_event())
+        pub_.publish_typed(topic, make_notification_event())
             .await
             .unwrap();
 
         // Give the loop time to process
         tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
 
-        // Abort the subscriber loop (it won't exit naturally since the
-        // subscriber itself holds a cmd_tx keeping the broker alive)
         loop_task.abort();
 
         let received = delivered.lock().await;
@@ -134,45 +132,15 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn non_notification_events_are_ignored() {
-        let handle = spawn_broker();
-        let pub_ = handle.publisher();
-        let topic = TopicId::Notify(NotifyName::from("test"));
-        let sub = handle.subscribe(topic.clone()).await.unwrap();
-
-        let should_fail = Arc::new(AtomicBool::new(false));
-        let (channel, delivered) = MockChannel::new(Arc::clone(&should_fail));
-
-        let loop_task = tokio::spawn(run_notify_subscriber(sub, Box::new(channel)));
-
-        // Publish a non-notification event
-        pub_.publish(
-            topic,
-            BusEvent::TurnStarted {
-                correlation_id: "c1".to_string(),
-            },
-        )
-        .await
-        .unwrap();
-
-        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
-
-        loop_task.abort();
-
-        let received = delivered.lock().await;
-        assert_eq!(
-            received.len(),
-            0,
-            "non-notification events should be ignored"
-        );
-    }
-
-    #[tokio::test]
     async fn delivery_errors_do_not_stop_loop() {
         let handle = spawn_broker();
         let pub_ = handle.publisher();
-        let topic = TopicId::Notify(NotifyName::from("test"));
-        let sub = handle.subscribe(topic.clone()).await.unwrap();
+        let topic_name = NotifyName::from("test");
+
+        let sub = handle
+            .subscribe_typed(topics::Notification(topic_name.clone()))
+            .await
+            .unwrap();
 
         let should_fail = Arc::new(AtomicBool::new(true));
         let (channel, delivered) = MockChannel::new(Arc::clone(&should_fail));
@@ -180,9 +148,12 @@ mod tests {
         let loop_task = tokio::spawn(run_notify_subscriber(sub, Box::new(channel)));
 
         // First notification — delivery will fail
-        pub_.publish(topic.clone(), make_notification_event())
-            .await
-            .unwrap();
+        pub_.publish_typed(
+            topics::Notification(topic_name.clone()),
+            make_notification_event(),
+        )
+        .await
+        .unwrap();
 
         tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
 
@@ -190,7 +161,7 @@ mod tests {
         should_fail.store(false, Ordering::SeqCst);
 
         // Second notification — delivery should succeed
-        pub_.publish(topic, make_notification_event())
+        pub_.publish_typed(topics::Notification(topic_name), make_notification_event())
             .await
             .unwrap();
 

@@ -1,6 +1,6 @@
 //! Pulse execution handling and scheduling in the event loop.
 
-use crate::bus::{BusEvent, PresetName, TopicId};
+use crate::bus::{PresetName, topics};
 use crate::gateway::types::GatewayRuntime;
 use crate::memory::types::Visibility;
 use crate::models::Message;
@@ -34,12 +34,8 @@ pub async fn handle_pulse_execution(
             spawn_event,
             preset_name,
         } => {
-            let topic = TopicId::AgentPreset(PresetName::from(preset_name.as_str()));
-            if let Err(e) = rt
-                .publisher
-                .publish(topic, BusEvent::SpawnRequest(spawn_event))
-                .await
-            {
+            let topic = topics::SpawnRequest(PresetName::from(preset_name.as_str()));
+            if let Err(e) = rt.publisher.publish_typed(topic, spawn_event).await {
                 tracing::warn!(pulse = %pulse_name, error = %e, "failed to publish pulse spawn request");
             }
             false

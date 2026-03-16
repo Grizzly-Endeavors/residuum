@@ -87,10 +87,7 @@ pub async fn webhook_handler(
         WebhookRouting::Inbox => {
             if let Err(e) = state
                 .publisher
-                .publish(
-                    crate::bus::TopicId::Inbox,
-                    crate::bus::BusEvent::Notification(notification),
-                )
+                .publish_typed(crate::bus::topics::Inbox, notification)
                 .await
             {
                 tracing::warn!(webhook = %name, error = %e, "bus publish failed, dropping webhook message");
@@ -106,12 +103,8 @@ pub async fn webhook_handler(
                 model_tier_override: None,
             };
             let topic =
-                crate::bus::TopicId::AgentPreset(crate::bus::PresetName::from(preset.as_str()));
-            if let Err(e) = state
-                .publisher
-                .publish(topic, crate::bus::BusEvent::SpawnRequest(spawn_event))
-                .await
-            {
+                crate::bus::topics::SpawnRequest(crate::bus::PresetName::from(preset.as_str()));
+            if let Err(e) = state.publisher.publish_typed(topic, spawn_event).await {
                 tracing::warn!(webhook = %name, error = %e, "bus publish failed, dropping webhook message");
                 return StatusCode::SERVICE_UNAVAILABLE;
             }
@@ -175,11 +168,6 @@ fn extract_json_field(value: &serde_json::Value, path: &str) -> Option<String> {
 
 #[cfg(test)]
 #[expect(clippy::unwrap_used, reason = "test code uses unwrap for clarity")]
-#[expect(clippy::panic, reason = "test assertions")]
-#[expect(
-    clippy::wildcard_enum_match_arm,
-    reason = "test assertions use wildcard for non-matching variants"
-)]
 mod tests {
     use super::*;
     use axum::body::Body;
@@ -191,11 +179,14 @@ mod tests {
 
     async fn make_app(
         webhooks: HashMap<String, WebhookEndpointState>,
-    ) -> (axum::Router, crate::bus::Subscriber) {
+    ) -> (
+        axum::Router,
+        crate::bus::TypedSubscriber<crate::bus::NotificationEvent>,
+    ) {
         let bus_handle = crate::bus::spawn_broker();
         let publisher = bus_handle.publisher();
         let subscriber = bus_handle
-            .subscribe(crate::bus::TopicId::Inbox)
+            .subscribe_typed(crate::bus::topics::Inbox)
             .await
             .unwrap();
         let state = WebhookState {
@@ -254,14 +245,11 @@ mod tests {
         let resp = app.oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::ACCEPTED);
 
-        let event = tokio::time::timeout(std::time::Duration::from_millis(100), sub.recv())
+        let notification = tokio::time::timeout(std::time::Duration::from_millis(100), sub.recv())
             .await
             .unwrap()
+            .unwrap()
             .unwrap();
-        let notification = match event {
-            crate::bus::BusEvent::Notification(n) => n,
-            other => panic!("expected Notification, got {other:?}"),
-        };
         assert_eq!(notification.content, "hello from webhook");
         assert_eq!(notification.title, "webhook:test");
     }
@@ -279,14 +267,11 @@ mod tests {
         let resp = app.oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::ACCEPTED);
 
-        let event = tokio::time::timeout(std::time::Duration::from_millis(100), sub.recv())
+        let notification = tokio::time::timeout(std::time::Duration::from_millis(100), sub.recv())
             .await
             .unwrap()
+            .unwrap()
             .unwrap();
-        let notification = match event {
-            crate::bus::BusEvent::Notification(n) => n,
-            other => panic!("expected Notification, got {other:?}"),
-        };
         assert_eq!(notification.content, "plain text message");
     }
 
@@ -362,14 +347,11 @@ mod tests {
         let resp = app.oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::ACCEPTED);
 
-        let event = tokio::time::timeout(std::time::Duration::from_millis(100), sub.recv())
+        let notification = tokio::time::timeout(std::time::Duration::from_millis(100), sub.recv())
             .await
             .unwrap()
+            .unwrap()
             .unwrap();
-        let notification = match event {
-            crate::bus::BusEvent::Notification(n) => n,
-            other => panic!("expected Notification, got {other:?}"),
-        };
         assert_eq!(notification.content, "hello");
     }
 
@@ -393,14 +375,11 @@ mod tests {
         let resp = app.oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::ACCEPTED);
 
-        let event = tokio::time::timeout(std::time::Duration::from_millis(100), sub.recv())
+        let notification = tokio::time::timeout(std::time::Duration::from_millis(100), sub.recv())
             .await
             .unwrap()
+            .unwrap()
             .unwrap();
-        let notification = match event {
-            crate::bus::BusEvent::Notification(n) => n,
-            other => panic!("expected Notification, got {other:?}"),
-        };
         assert_eq!(notification.content, body);
     }
 
@@ -425,14 +404,11 @@ mod tests {
         let resp = app.oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::ACCEPTED);
 
-        let event = tokio::time::timeout(std::time::Duration::from_millis(100), sub.recv())
+        let notification = tokio::time::timeout(std::time::Duration::from_millis(100), sub.recv())
             .await
             .unwrap()
+            .unwrap()
             .unwrap();
-        let notification = match event {
-            crate::bus::BusEvent::Notification(n) => n,
-            other => panic!("expected Notification, got {other:?}"),
-        };
         assert_eq!(notification.content, "Bug report\n\nSomething broke");
     }
 
@@ -494,7 +470,7 @@ mod tests {
         let bus_handle = crate::bus::spawn_broker();
         let publisher = bus_handle.publisher();
         let mut preset_sub = bus_handle
-            .subscribe(crate::bus::TopicId::AgentPreset(
+            .subscribe_typed(crate::bus::topics::SpawnRequest(
                 crate::bus::PresetName::from("code_reviewer"),
             ))
             .await
@@ -520,14 +496,10 @@ mod tests {
         let event = tokio::time::timeout(std::time::Duration::from_millis(100), preset_sub.recv())
             .await
             .unwrap()
+            .unwrap()
             .unwrap();
-        match event {
-            crate::bus::BusEvent::SpawnRequest(sr) => {
-                assert_eq!(sr.prompt, "review this");
-                assert_eq!(sr.source_label, "webhook:agent-hook");
-            }
-            other => panic!("expected SpawnRequest, got {other:?}"),
-        }
+        assert_eq!(event.prompt, "review this");
+        assert_eq!(event.source_label, "webhook:agent-hook");
     }
 
     #[tokio::test]
@@ -549,17 +521,13 @@ mod tests {
         let resp = app.oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::ACCEPTED);
 
-        let event = tokio::time::timeout(std::time::Duration::from_millis(100), sub.recv())
+        let notification = tokio::time::timeout(std::time::Duration::from_millis(100), sub.recv())
             .await
             .unwrap()
+            .unwrap()
             .unwrap();
-        match event {
-            crate::bus::BusEvent::Notification(n) => {
-                assert_eq!(n.content, "notify me");
-                assert_eq!(n.title, "webhook:inbox-hook");
-            }
-            other => panic!("expected Notification, got {other:?}"),
-        }
+        assert_eq!(notification.content, "notify me");
+        assert_eq!(notification.title, "webhook:inbox-hook");
     }
 
     #[test]

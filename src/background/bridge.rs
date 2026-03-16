@@ -6,7 +6,7 @@ use std::sync::Arc;
 use tokio::sync::mpsc;
 
 use crate::background::types::BackgroundResult;
-use crate::bus::{AgentResultEvent, BusEvent, EventTrigger, HeartbeatStatus, Publisher, TopicId};
+use crate::bus::{AgentResultEvent, EventTrigger, HeartbeatStatus, Publisher, topics};
 
 /// Shared receiver for the bridge task, enabling supervision restarts.
 pub(crate) type SharedResultReceiver = Arc<tokio::sync::Mutex<mpsc::Receiver<BackgroundResult>>>;
@@ -41,7 +41,7 @@ async fn run_bridge(result_rx: SharedResultReceiver, publisher: Publisher, tz: c
     while let Some(result) = rx.recv().await {
         let event = convert_to_agent_result(&result, tz);
         if let Err(e) = publisher
-            .publish(TopicId::BackgroundResult, BusEvent::AgentResult(event))
+            .publish_typed(topics::BackgroundResult, event)
             .await
         {
             tracing::warn!(
@@ -160,7 +160,7 @@ mod tests {
         let bus_handle = crate::bus::spawn_broker();
         let publisher = bus_handle.publisher();
         let mut subscriber = bus_handle
-            .subscribe(TopicId::BackgroundResult)
+            .subscribe_typed(topics::BackgroundResult)
             .await
             .unwrap();
 
@@ -184,15 +184,11 @@ mod tests {
         let event = tokio::time::timeout(std::time::Duration::from_millis(200), subscriber.recv())
             .await
             .unwrap()
+            .unwrap()
             .unwrap();
 
-        match event {
-            BusEvent::AgentResult(ar) => {
-                assert_eq!(ar.task_id, "bg-test");
-                assert_eq!(ar.source_label, "agent:test-task");
-            }
-            _ => panic!("expected AgentResult event"),
-        }
+        assert_eq!(event.task_id, "bg-test");
+        assert_eq!(event.source_label, "agent:test-task");
 
         drop(tx);
         handle.await.unwrap();

@@ -12,7 +12,7 @@ use tokio::task::JoinHandle;
 use crate::background::spawn_context::SpawnContext;
 use crate::bus::{
     AgentResultEvent, BusEvent, BusHandle, EndpointRegistry, EventTrigger, HeartbeatStatus,
-    NotificationEvent, Publisher, TopicId,
+    NotificationEvent, Publisher, TopicId, TypedSubscriber, topics,
 };
 use crate::config::BackgroundModelTier;
 use crate::models::factory::build_provider_chain;
@@ -32,7 +32,7 @@ pub(crate) async fn spawn_notification_router(
     publisher: Publisher,
     alerts_path: PathBuf,
 ) -> Option<JoinHandle<()>> {
-    let subscriber = match bus_handle.subscribe(TopicId::BackgroundResult).await {
+    let subscriber = match bus_handle.subscribe_typed(topics::BackgroundResult).await {
         Ok(s) => s,
         Err(e) => {
             tracing::warn!(error = %e, "failed to subscribe to background:result topic");
@@ -79,33 +79,35 @@ struct NotificationRouter {
 }
 
 /// Main loop: receive agent results and route them.
-async fn router_loop(mut subscriber: crate::bus::Subscriber, router: NotificationRouter) {
-    while let Some(event) = subscriber.recv().await {
-        if let BusEvent::AgentResult(agent_result) = event {
-            route_agent_result(&agent_result, &router).await;
-        }
+async fn router_loop(
+    mut subscriber: TypedSubscriber<AgentResultEvent>,
+    router: NotificationRouter,
+) {
+    while let Ok(Some(agent_result)) = subscriber.recv().await {
+        route_agent_result(&agent_result, &router).await;
     }
     tracing::info!("notification router shutting down");
 }
 
 /// Fallback loop when LLM provider is unavailable: routes everything to inbox.
-async fn fallback_router_loop(mut subscriber: crate::bus::Subscriber, publisher: Publisher) {
-    while let Some(event) = subscriber.recv().await {
-        if let BusEvent::AgentResult(agent_result) = event {
-            if agent_result.heartbeat_status == HeartbeatStatus::Ok {
-                tracing::info!(source_label = %agent_result.source_label, "pulse check: HEARTBEAT_OK");
-                continue;
-            }
-
-            if matches!(agent_result.source, EventTrigger::Agent) {
-                tracing::info!(source_label = %agent_result.source_label, "fallback router: routing agent-spawned result to main agent");
-                publish_to_agent_main(&agent_result, &publisher).await;
-                continue;
-            }
-
-            tracing::info!(source_label = %agent_result.source_label, "fallback router: routing to inbox");
-            publish_to_inbox(&agent_result, &publisher).await;
+async fn fallback_router_loop(
+    mut subscriber: TypedSubscriber<AgentResultEvent>,
+    publisher: Publisher,
+) {
+    while let Ok(Some(agent_result)) = subscriber.recv().await {
+        if agent_result.heartbeat_status == HeartbeatStatus::Ok {
+            tracing::info!(source_label = %agent_result.source_label, "pulse check: HEARTBEAT_OK");
+            continue;
         }
+
+        if matches!(agent_result.source, EventTrigger::Agent) {
+            tracing::info!(source_label = %agent_result.source_label, "fallback router: routing agent-spawned result to main agent");
+            publish_to_agent_main(&agent_result, &publisher).await;
+            continue;
+        }
+
+        tracing::info!(source_label = %agent_result.source_label, "fallback router: routing to inbox");
+        publish_to_inbox(&agent_result, &publisher).await;
     }
     tracing::info!("fallback notification router shutting down");
 }
@@ -356,21 +358,28 @@ async fn publish_to_targets(event: &AgentResultEvent, targets: &[String], publis
     };
 
     for target in targets {
-        let topic = if target == "inbox" {
-            TopicId::Inbox
+        if target == "inbox" {
+            if let Err(e) = publisher
+                .publish_typed(topics::Inbox, notification.clone())
+                .await
+            {
+                tracing::warn!(
+                    topic = "inbox",
+                    source_label = %event.source_label,
+                    error = %e,
+                    "failed to publish notification to bus"
+                );
+            }
         } else {
-            TopicId::Notify(crate::bus::NotifyName::from(target.as_str()))
-        };
-        if let Err(e) = publisher
-            .publish(topic.clone(), BusEvent::Notification(notification.clone()))
-            .await
-        {
-            tracing::warn!(
-                topic = %topic,
-                source_label = %event.source_label,
-                error = %e,
-                "failed to publish notification to bus"
-            );
+            let topic = topics::Notification(crate::bus::NotifyName::from(target.as_str()));
+            if let Err(e) = publisher.publish_typed(topic, notification.clone()).await {
+                tracing::warn!(
+                    topic = %target,
+                    source_label = %event.source_label,
+                    error = %e,
+                    "failed to publish notification to bus"
+                );
+            }
         }
     }
 }

@@ -16,7 +16,7 @@ use crate::background::spawn_context::{
     SpawnContext, build_spawn_resources, load_preset_for_spawn,
 };
 use crate::background::types::{BackgroundTask, Execution, SubAgentConfig};
-use crate::bus::{BusEvent, BusHandle, PresetName, SpawnRequestEvent, TopicId};
+use crate::bus::{BusHandle, PresetName, SpawnRequestEvent, TypedSubscriber, topics};
 use crate::config::BackgroundModelTier;
 use crate::mcp::SharedMcpRegistry;
 use crate::projects::activation::SharedProjectState;
@@ -78,8 +78,8 @@ pub async fn spawn_registry(registry: SubagentRegistry, bus_handle: &BusHandle) 
     };
 
     for entry in index.entries() {
-        let topic = TopicId::AgentPreset(PresetName::from(entry.name.as_str()));
-        match bus_handle.subscribe(topic.clone()).await {
+        let topic = topics::SpawnRequest(PresetName::from(entry.name.as_str()));
+        match bus_handle.subscribe_typed(topic).await {
             Ok(subscriber) => {
                 let tx = fwd_tx.clone();
                 let preset_name = entry.name.clone();
@@ -103,24 +103,17 @@ pub async fn spawn_registry(registry: SubagentRegistry, bus_handle: &BusHandle) 
 
 /// Forward `SpawnRequest` events from a single preset subscription to the shared channel.
 async fn forward_subscription(
-    mut subscriber: crate::bus::Subscriber,
+    mut subscriber: TypedSubscriber<SpawnRequestEvent>,
     tx: mpsc::Sender<TaggedRequest>,
     preset_name: String,
 ) {
-    while let Some(event) = subscriber.recv().await {
-        if let BusEvent::SpawnRequest(spawn_event) = event {
-            let tagged = TaggedRequest {
-                preset_name: preset_name.clone(),
-                event: spawn_event,
-            };
-            if tx.send(tagged).await.is_err() {
-                break;
-            }
-        } else {
-            tracing::trace!(
-                preset = %preset_name,
-                "ignoring non-SpawnRequest event on preset topic"
-            );
+    while let Ok(Some(spawn_event)) = subscriber.recv().await {
+        let tagged = TaggedRequest {
+            preset_name: preset_name.clone(),
+            event: spawn_event,
+        };
+        if tx.send(tagged).await.is_err() {
+            break;
         }
     }
 }

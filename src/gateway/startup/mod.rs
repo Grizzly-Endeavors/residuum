@@ -273,7 +273,7 @@ pub(crate) async fn spawn_notify_subscribers(
     layout: &WorkspaceLayout,
     tz: chrono_tz::Tz,
 ) -> Vec<tokio::task::JoinHandle<()>> {
-    use crate::bus::{NotifyName, TopicId};
+    use crate::bus::{NotifyName, topics};
     use crate::notify::subscriber::run_notify_subscriber;
 
     let external_channels =
@@ -283,8 +283,8 @@ pub(crate) async fn spawn_notify_subscribers(
 
     // Spawn a subscriber for each external channel
     for (name, channel) in external_channels {
-        let topic = TopicId::Notify(NotifyName::from(name.as_str()));
-        match bus_handle.subscribe(topic).await {
+        let topic = topics::Notification(NotifyName::from(name.as_str()));
+        match bus_handle.subscribe_typed(topic).await {
             Ok(subscriber) => {
                 let handle = tokio::spawn(run_notify_subscriber(subscriber, channel));
                 handles.push(handle);
@@ -298,7 +298,7 @@ pub(crate) async fn spawn_notify_subscribers(
 
     // Spawn inbox subscriber
     let inbox_channel = InboxChannel::new(layout.inbox_dir(), tz);
-    match bus_handle.subscribe(TopicId::Inbox).await {
+    match bus_handle.subscribe_typed(topics::Inbox).await {
         Ok(subscriber) => {
             let handle = tokio::spawn(run_notify_subscriber(subscriber, Box::new(inbox_channel)));
             handles.push(handle);

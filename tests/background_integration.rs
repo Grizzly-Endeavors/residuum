@@ -19,9 +19,7 @@ mod background_integration {
     use residuum::background::BackgroundTaskSpawner;
     use residuum::background::types::{BackgroundResult, format_background_result};
     use residuum::bus::AgentResultStatus;
-    use residuum::bus::{
-        BusEvent, EventTrigger, NotificationEvent, PresetName, TopicId, spawn_broker,
-    };
+    use residuum::bus::{EventTrigger, NotificationEvent, PresetName, spawn_broker, topics};
     use residuum::notify::channels::InboxChannel;
     use residuum::notify::subscriber::run_notify_subscriber;
 
@@ -35,7 +33,7 @@ mod background_integration {
 
         let handle = spawn_broker();
         let publisher = handle.publisher();
-        let subscriber = handle.subscribe(TopicId::Inbox).await.unwrap();
+        let subscriber = handle.subscribe_typed(topics::Inbox).await.unwrap();
         let inbox_channel = InboxChannel::new(&inbox_dir, chrono_tz::UTC);
 
         let loop_task = tokio::spawn(run_notify_subscriber(subscriber, Box::new(inbox_channel)));
@@ -51,7 +49,7 @@ mod background_integration {
         };
 
         publisher
-            .publish(TopicId::Inbox, BusEvent::Notification(notification))
+            .publish_typed(topics::Inbox, notification)
             .await
             .unwrap();
 

@@ -224,10 +224,10 @@ impl Tool for SubAgentSpawnTool {
             model_tier_override: Some(resolved.tier),
         };
 
-        let topic = crate::bus::TopicId::AgentPreset(crate::bus::PresetName::from(preset_name));
+        let topic = crate::bus::topics::SpawnRequest(crate::bus::PresetName::from(preset_name));
 
         self.publisher
-            .publish(topic, crate::bus::BusEvent::SpawnRequest(spawn_event))
+            .publish_typed(topic, spawn_event)
             .await
             .map_err(|err| {
                 ToolError::Execution(format!("failed to publish spawn request: {err}"))
