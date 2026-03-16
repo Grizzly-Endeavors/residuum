@@ -246,6 +246,53 @@ pub struct SpawnRequestEvent {
 }
 
 // ---------------------------------------------------------------------------
+// Typed topic event enums
+// ---------------------------------------------------------------------------
+
+/// Tool activity during a turn (call or result).
+#[derive(Debug, Clone)]
+pub enum ToolActivityEvent {
+    /// A tool was invoked by the agent.
+    Call(ToolCallEvent),
+    /// A tool execution completed.
+    Result(ToolResultEvent),
+}
+
+/// Turn lifecycle transitions.
+#[derive(Debug, Clone)]
+pub enum TurnLifecycleEvent {
+    /// Agent turn has started processing.
+    Started {
+        /// Links back to the originating message.
+        correlation_id: String,
+    },
+    /// Agent turn has finished processing.
+    Ended {
+        /// Links back to the originating message.
+        correlation_id: String,
+    },
+}
+
+/// System-wide messages (notices, errors, events).
+#[derive(Debug, Clone)]
+pub enum SystemMessageEvent {
+    /// Operational notice (reload status, memory progress, command responses).
+    Notice {
+        /// Human-readable notice message.
+        message: String,
+    },
+    /// An error tied to a specific agent turn.
+    Error {
+        /// Links back to the originating message.
+        correlation_id: String,
+        /// Error description.
+        message: String,
+    },
+    /// System event surfaced to endpoints (pulse, action, etc.).
+    Event(SystemEventData),
+}
+
+// ---------------------------------------------------------------------------
 // BusEvent
 // ---------------------------------------------------------------------------
 

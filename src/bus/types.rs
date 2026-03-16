@@ -51,6 +51,7 @@ newtype_string!(NotifyName, "Notification channel identifier.");
 /// Identifies a pub/sub topic on the bus.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum TopicId {
+    // -- Legacy variants (will be removed in Phase 4) --
     /// The main agent processing loop.
     AgentMain,
     /// A subagent preset topic.
@@ -59,33 +60,61 @@ pub enum TopicId {
     Interactive(EndpointName),
     /// A notification channel.
     Notify(NotifyName),
-    /// The user inbox.
-    Inbox,
-    /// Results from completed background tasks.
-    BackgroundResult,
-    /// Events emitted by running background tasks.
-    BackgroundEvent,
     /// A named webhook.
     Webhook(WebhookName),
     /// Broadcast to all connected interactive endpoints.
     SystemBroadcast,
     /// Delivery errors (e.g. publish to topic with no subscribers).
     BusErrors,
+
+    // -- New typed variants --
+    /// Inbound user messages for the main agent loop.
+    UserMessage,
+    /// Agent responses routed to a specific endpoint.
+    Response(EndpointName),
+    /// Tool call/result activity during a turn.
+    ToolActivity(EndpointName),
+    /// Turn start/end lifecycle events.
+    TurnLifecycle(EndpointName),
+    /// Intermediate model text during a turn.
+    Intermediate(EndpointName),
+    /// The user inbox.
+    Inbox,
+    /// Results from completed background tasks.
+    BackgroundResult,
+    /// Events emitted by running background tasks.
+    BackgroundEvent,
+    /// Request to spawn a sub-agent for a preset.
+    SpawnRequest(PresetName),
+    /// Push notifications for a named channel.
+    Notification(NotifyName),
+    /// System-wide messages (notices, errors, events).
+    SystemMessage,
 }
 
 impl fmt::Display for TopicId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            // Legacy
             Self::AgentMain => f.write_str("agent:main"),
             Self::AgentPreset(name) => write!(f, "agent:preset:{name}"),
             Self::Interactive(name) => write!(f, "interactive:{name}"),
             Self::Notify(name) => write!(f, "notify:{name}"),
-            Self::Inbox => f.write_str("inbox"),
-            Self::BackgroundResult => f.write_str("background:result"),
-            Self::BackgroundEvent => f.write_str("background:event"),
             Self::Webhook(name) => write!(f, "webhook:{name}"),
             Self::SystemBroadcast => f.write_str("system:broadcast"),
             Self::BusErrors => f.write_str("bus:errors"),
+            // New typed
+            Self::UserMessage => f.write_str("user:message"),
+            Self::Response(name) => write!(f, "response:{name}"),
+            Self::ToolActivity(name) => write!(f, "tool-activity:{name}"),
+            Self::TurnLifecycle(name) => write!(f, "turn-lifecycle:{name}"),
+            Self::Intermediate(name) => write!(f, "intermediate:{name}"),
+            Self::Inbox => f.write_str("inbox"),
+            Self::BackgroundResult => f.write_str("background:result"),
+            Self::BackgroundEvent => f.write_str("background:event"),
+            Self::SpawnRequest(name) => write!(f, "spawn-request:{name}"),
+            Self::Notification(name) => write!(f, "notification:{name}"),
+            Self::SystemMessage => f.write_str("system:message"),
         }
     }
 }
@@ -103,6 +132,14 @@ pub enum BusError {
     /// Failed to send a command to the broker.
     #[error("failed to send to bus broker: {0}")]
     SendFailed(String),
+    /// Received an event that could not be downcast to the expected type.
+    #[error("type mismatch: expected {expected} on topic {topic}")]
+    TypeMismatch {
+        /// Name of the expected type.
+        expected: &'static str,
+        /// Topic where the mismatch occurred.
+        topic: String,
+    },
 }
 
 // ---------------------------------------------------------------------------

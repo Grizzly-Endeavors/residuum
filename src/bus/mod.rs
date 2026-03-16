@@ -11,6 +11,7 @@ mod events;
 mod handle;
 mod registry;
 pub(crate) mod supervision;
+pub mod topics;
 mod types;
 
 pub use broker::{BusHandle, spawn_broker};
@@ -18,8 +19,10 @@ pub use endpoint::EndpointCapabilities;
 pub use events::{
     AgentResultEvent, AgentResultStatus, BusEvent, EventTrigger, HeartbeatStatus,
     IntermediateEvent, MessageEvent, NotificationEvent, ResponseEvent, SpawnRequestEvent,
-    SystemEventData, ToolCallEvent, ToolResultEvent,
+    SystemEventData, SystemMessageEvent, ToolActivityEvent, ToolCallEvent, ToolResultEvent,
+    TurnLifecycleEvent,
 };
 pub use handle::{Publisher, Subscriber};
 pub use registry::{EndpointEntry, EndpointRegistry};
+pub use topics::Topic;
 pub use types::{BusError, EndpointId, EndpointName, NotifyName, PresetName, TopicId, WebhookName};
