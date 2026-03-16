@@ -157,9 +157,20 @@ fn drain_interrupts(
     recent_messages: &mut RecentMessages,
 ) {
     while let Ok(interrupt) = interrupt_rx.try_recv() {
-        let Interrupt::UserMessage(msg) = interrupt;
-        tracing::info!(msg_id = %msg.id, "injecting mid-turn user message");
-        recent_messages.push(Message::user(msg.content));
+        match interrupt {
+            Interrupt::UserMessage(msg) => {
+                tracing::info!(msg_id = %msg.id, "injecting mid-turn user message");
+                recent_messages.push(Message::user(msg.content));
+            }
+            Interrupt::BackgroundResult(result) => {
+                tracing::info!(
+                    task_id = %result.task_id,
+                    source = %result.source_label,
+                    "injecting background result mid-turn"
+                );
+                recent_messages.push(Message::user(result.format_for_agent()));
+            }
+        }
     }
 }
 

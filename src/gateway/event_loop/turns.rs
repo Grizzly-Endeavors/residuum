@@ -73,8 +73,14 @@ pub async fn load_prompt_context_strings(
 /// User messages are injected into the agent's conversation for the next turn.
 pub fn process_leftover_interrupts(leftovers: Vec<Interrupt>, rt: &mut GatewayRuntime) {
     for intr in leftovers {
-        let Interrupt::UserMessage(leftover_msg) = intr;
-        rt.agent.inject_user_message(leftover_msg.content);
+        match intr {
+            Interrupt::UserMessage(leftover_msg) => {
+                rt.agent.inject_user_message(leftover_msg.content);
+            }
+            Interrupt::BackgroundResult(result) => {
+                rt.agent.inject_system_message(result.format_for_agent());
+            }
+        }
     }
 }
 
@@ -174,17 +180,25 @@ async fn run_agent_turn_with_interrupts(
             tokio::select! {
                 result = &mut turn => break result,
                 next_msg = agent_subscriber.recv() => {
-                    if let Some(BusEvent::Message(msg_event)) = next_msg {
-                        let inbound = crate::interfaces::types::InboundMessage {
-                            id: msg_event.id,
-                            content: msg_event.content,
-                            origin: msg_event.origin,
-                            timestamp: chrono::Utc::now(),
-                            images: msg_event.images,
-                        };
-                        if interrupt_tx.try_send(Interrupt::UserMessage(inbound)).is_err() {
-                            tracing::warn!("interrupt channel full, dropping user message mid-turn");
+                    match next_msg {
+                        Some(BusEvent::Message(msg_event)) => {
+                            let inbound = crate::interfaces::types::InboundMessage {
+                                id: msg_event.id,
+                                content: msg_event.content,
+                                origin: msg_event.origin,
+                                timestamp: chrono::Utc::now(),
+                                images: msg_event.images,
+                            };
+                            if interrupt_tx.try_send(Interrupt::UserMessage(inbound)).is_err() {
+                                tracing::warn!("interrupt channel full, dropping user message mid-turn");
+                            }
                         }
+                        Some(BusEvent::AgentResult(result)) => {
+                            if interrupt_tx.try_send(Interrupt::BackgroundResult(result)).is_err() {
+                                tracing::warn!("interrupt channel full, dropping background result mid-turn");
+                            }
+                        }
+                        _ => {}
                     }
                 }
                 _ = reload_rx.changed() => {
@@ -212,11 +226,10 @@ pub async fn handle_inbound_message(
     let reply_id = message.id.clone();
     let origin = message.origin.clone();
 
-    let output_topic = rt
-        .output_topic_override_rx
-        .borrow()
-        .clone()
-        .unwrap_or_else(|| TopicId::Interactive(EndpointName::from(origin.endpoint.as_str())));
+    // Clear any switch_endpoint override so responses follow the user's endpoint.
+    rt.output_topic_override_tx.send_replace(None);
+
+    let output_topic = TopicId::Interactive(EndpointName::from(origin.endpoint.as_str()));
     rt.last_output_topic = Some(output_topic.clone());
 
     drop(

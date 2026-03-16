@@ -206,6 +206,30 @@ pub struct AgentResultEvent {
     pub timestamp: NaiveDateTime,
 }
 
+impl AgentResultEvent {
+    /// Format this result for injection into the agent's conversation context.
+    #[must_use]
+    pub fn format_for_agent(&self) -> String {
+        let mut parts = vec![format!(
+            "[Background Task Result]\nTask: {} ({})\nSource: {}\nStatus: {}",
+            self.source_label,
+            self.task_id,
+            self.source.as_str(),
+            self.status,
+        )];
+
+        if !self.summary.is_empty() {
+            parts.push(format!("Output:\n{}", self.summary));
+        }
+
+        if let Some(ref path) = self.transcript_path {
+            parts.push(format!("Transcript: {}", path.display()));
+        }
+
+        parts.join("\n")
+    }
+}
+
 /// Request to spawn a sub-agent from any source.
 #[derive(Debug, Clone)]
 pub struct SpawnRequestEvent {

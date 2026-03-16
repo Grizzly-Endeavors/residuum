@@ -57,7 +57,7 @@ pub(crate) struct GatewayComponents {
     pub background_result_rx: mpsc::Receiver<BackgroundResult>,
     pub spawn_context: Arc<SpawnContext>,
     pub path_policy: crate::tools::SharedPathPolicy,
-    pub output_topic_override_rx: tokio::sync::watch::Receiver<Option<crate::bus::TopicId>>,
+    pub output_topic_override_tx: tokio::sync::watch::Sender<Option<crate::bus::TopicId>>,
 }
 
 /// Bootstrap the workspace directory and return the layout and timezone.
@@ -364,7 +364,7 @@ pub(crate) async fn initialize(
         endpoint_registry: &endpoint_registry,
         publisher,
     };
-    let (tools, tool_filter, path_policy_for_runtime, output_topic_override_rx) =
+    let (tools, tool_filter, path_policy_for_runtime, output_topic_override_tx) =
         tools::init_tool_registry(cfg, &layout, &mem, tz, &tool_deps);
 
     let agent = tools::create_agent(
@@ -403,6 +403,6 @@ pub(crate) async fn initialize(
         background_result_rx: bg_result_rx,
         spawn_context,
         path_policy: path_policy_for_runtime,
-        output_topic_override_rx,
+        output_topic_override_tx,
     })
 }

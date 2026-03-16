@@ -146,8 +146,8 @@ pub(crate) struct GatewayRuntime {
     pub error_subscriber: Subscriber,
     /// Topic for the last endpoint that sent a message (for response routing).
     pub last_output_topic: Option<TopicId>,
-    /// Override for the output topic, set by the `switch_endpoint` tool.
-    pub output_topic_override_rx: tokio::sync::watch::Receiver<Option<TopicId>>,
+    /// Sender for clearing the output topic override on user message.
+    pub output_topic_override_tx: tokio::sync::watch::Sender<Option<TopicId>>,
     pub reload_rx: tokio::sync::watch::Receiver<ReloadSignal>,
     pub command_rx: mpsc::Receiver<ServerCommand>,
     /// Kept alive so the HTTP server task isn't dropped; shut down via `shutdown_tx`.
