@@ -219,6 +219,7 @@ async fn build_runtime(
         bus_handle: core.bus_handle,
         publisher: core.publisher,
         agent_subscriber,
+        endpoint_registry: parts.endpoint_registry,
         last_output_topic: None,
         output_topic_override_rx: parts.output_topic_override_rx,
         reload_rx: receivers.reload,

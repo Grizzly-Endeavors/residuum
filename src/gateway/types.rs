@@ -7,7 +7,7 @@ use tokio::sync::mpsc;
 use crate::actions::store::ActionStore;
 use crate::agent::Agent;
 use crate::background::spawn_context::SpawnContext;
-use crate::bus::{BusHandle, Publisher, Subscriber, TopicId};
+use crate::bus::{BusHandle, EndpointRegistry, Publisher, Subscriber, TopicId};
 use crate::config::Config;
 use crate::mcp::SharedMcpRegistry;
 use crate::memory::observer::Observer;
@@ -140,6 +140,8 @@ pub(crate) struct GatewayRuntime {
     pub publisher: Publisher,
     /// Subscriber for receiving inbound messages from the bus.
     pub agent_subscriber: Subscriber,
+    /// Endpoint registry for looking up configured endpoints.
+    pub endpoint_registry: EndpointRegistry,
     /// Topic for the last endpoint that sent a message (for response routing).
     pub last_output_topic: Option<TopicId>,
     /// Override for the output topic, set by the `switch_endpoint` tool.

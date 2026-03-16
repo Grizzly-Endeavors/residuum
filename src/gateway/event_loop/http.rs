@@ -42,14 +42,6 @@ pub fn build_gateway_app(
     } else {
         let mut endpoints = std::collections::HashMap::new();
         for (name, entry) in &cfg.webhooks {
-            if let crate::config::WebhookRouting::Agent(ref preset) = entry.routing {
-                tracing::warn!(
-                    webhook = %name,
-                    preset = %preset,
-                    "webhook agent routing is not yet implemented (phase-7); \
-                     falling back to inbox routing"
-                );
-            }
             endpoints.insert(
                 name.clone(),
                 crate::interfaces::webhook::WebhookEndpointState {

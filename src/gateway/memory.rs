@@ -279,6 +279,22 @@ async fn publish_notice(publisher: &Publisher, message: String) {
     }
 }
 
+/// Publish an error to `SystemBroadcast`.
+async fn publish_error(publisher: &Publisher, message: String) {
+    if let Err(e) = publisher
+        .publish(
+            TopicId::SystemBroadcast,
+            BusEvent::Error {
+                correlation_id: String::new(),
+                message,
+            },
+        )
+        .await
+    {
+        tracing::warn!(error = %e, "failed to publish error to bus");
+    }
+}
+
 /// Force an observation cycle regardless of token threshold.
 ///
 /// Loads recent messages, runs the observer, clears recent messages, updates
@@ -292,7 +308,7 @@ pub(super) async fn run_forced_observe(
         Ok(msgs) => msgs,
         Err(e) => {
             tracing::warn!(error = %e, "forced observe failed to load recent messages");
-            publish_notice(publisher, format!("observe failed: {e}")).await;
+            publish_error(publisher, format!("observe failed: {e}")).await;
             return;
         }
     };
@@ -310,7 +326,7 @@ pub(super) async fn run_forced_observe(
         Ok(r) => r,
         Err(e) => {
             tracing::warn!(error = %e, "forced observe failed");
-            publish_notice(publisher, format!("observe failed: {e}")).await;
+            publish_error(publisher, format!("observe failed: {e}")).await;
             return;
         }
     };
@@ -425,7 +441,7 @@ pub(super) async fn run_forced_reflect(
         }
         Err(e) => {
             tracing::warn!(error = %e, "forced reflect failed");
-            publish_notice(publisher, format!("reflect failed: {e}")).await;
+            publish_error(publisher, format!("reflect failed: {e}")).await;
         }
     }
 }

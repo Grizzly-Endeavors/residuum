@@ -51,11 +51,35 @@ pub(super) async fn execute_idle_transition(
 }
 
 /// Switch `last_output_topic` to the configured idle channel.
+///
+/// Validates the endpoint exists in the registry and has interactive capability
+/// before switching. Falls back to current topic if the endpoint is not found.
 fn switch_idle_interface(rt: &mut GatewayRuntime, channel_name: &str) {
-    rt.last_output_topic = Some(crate::bus::TopicId::Interactive(
-        crate::bus::EndpointName::from(channel_name),
-    ));
-    tracing::info!(channel = %channel_name, "switched to idle interface");
+    let endpoint_id = crate::bus::EndpointId::from(channel_name);
+    match rt.endpoint_registry.get(&endpoint_id) {
+        Some(entry)
+            if entry
+                .capabilities
+                .contains(crate::bus::EndpointCapabilities::INTERACTIVE) =>
+        {
+            rt.last_output_topic = Some(crate::bus::TopicId::Interactive(
+                crate::bus::EndpointName::from(channel_name),
+            ));
+            tracing::info!(channel = %channel_name, "switched to idle interface");
+        }
+        Some(_) => {
+            tracing::warn!(
+                channel = %channel_name,
+                "idle channel exists but is not interactive, keeping current output topic"
+            );
+        }
+        None => {
+            tracing::warn!(
+                channel = %channel_name,
+                "idle channel not found in endpoint registry, keeping current output topic"
+            );
+        }
+    }
 }
 
 /// Deactivate the currently active project, generating an LLM summary log.
