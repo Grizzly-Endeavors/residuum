@@ -98,10 +98,12 @@ async fn fallback_router_loop(mut subscriber: crate::bus::Subscriber, publisher:
             }
 
             if matches!(agent_result.source, EventTrigger::Agent) {
+                tracing::info!(source_label = %agent_result.source_label, "fallback router: routing agent-spawned result to main agent");
                 publish_to_agent_main(&agent_result, &publisher).await;
                 continue;
             }
 
+            tracing::info!(source_label = %agent_result.source_label, "fallback router: routing to inbox");
             publish_to_inbox(&agent_result, &publisher).await;
         }
     }
@@ -110,6 +112,13 @@ async fn fallback_router_loop(mut subscriber: crate::bus::Subscriber, publisher:
 
 /// Route a single `AgentResultEvent` through the two-layer system.
 async fn route_agent_result(event: &AgentResultEvent, router: &NotificationRouter) {
+    tracing::info!(
+        source_label = %event.source_label,
+        task_id = %event.task_id,
+        source = %event.source.display_label(),
+        "notification router received result"
+    );
+
     // Layer 1: Heartbeat-ok → silent discard
     if event.heartbeat_status == HeartbeatStatus::Ok {
         tracing::info!(source_label = %event.source_label, "pulse check: HEARTBEAT_OK");
@@ -118,12 +127,18 @@ async fn route_agent_result(event: &AgentResultEvent, router: &NotificationRoute
 
     // Layer 1: Agent-spawned results → relay to main agent
     if matches!(event.source, EventTrigger::Agent) {
+        tracing::info!(source_label = %event.source_label, "routing agent-spawned result to main agent");
         publish_to_agent_main(event, &router.publisher).await;
         return;
     }
 
     // Layer 2: LLM-based routing
     let targets = llm_route(event, router).await;
+    tracing::info!(
+        source_label = %event.source_label,
+        targets = ?targets,
+        "LLM routing decision"
+    );
     publish_to_targets(event, &targets, &router.publisher).await;
 }
 
@@ -143,6 +158,13 @@ async fn llm_route(event: &AgentResultEvent, router: &NotificationRouter) -> Vec
     let endpoint_names: Vec<&str> = notify_endpoints.iter().map(|e| e.id.as_ref()).collect();
     let mut available_targets: Vec<&str> = vec!["inbox"];
     available_targets.extend(endpoint_names.iter());
+
+    tracing::debug!(
+        source_label = %event.source_label,
+        available_targets = ?available_targets,
+        has_alerts_policy = !alerts_content.is_empty(),
+        "LLM routing: building prompt"
+    );
 
     // Build the routing prompt
     let prompt = build_routing_prompt(event, &available_targets, &alerts_content);
@@ -172,7 +194,14 @@ async fn llm_route(event: &AgentResultEvent, router: &NotificationRouter) -> Vec
     let messages = vec![Message::user(prompt)];
 
     match router.provider.complete(&messages, &[], &options).await {
-        Ok(response) => parse_routing_response(&response.content, &available_targets),
+        Ok(response) => {
+            tracing::debug!(
+                source_label = %event.source_label,
+                raw_response = %response.content,
+                "LLM routing response"
+            );
+            parse_routing_response(&response.content, &available_targets)
+        }
         Err(e) => {
             tracing::warn!(
                 error = %e,

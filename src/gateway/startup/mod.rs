@@ -20,7 +20,7 @@ use crate::error::ResiduumError;
 use crate::mcp::SharedMcpRegistry;
 use crate::memory::observer::Observer;
 use crate::memory::reflector::Reflector;
-use crate::memory::search::MemoryIndex;
+use crate::memory::search::{HybridSearcher, MemoryIndex};
 use crate::models::{EmbeddingProvider, SharedHttpClient};
 use crate::notify::channels::InboxChannel;
 use crate::projects::activation::{ProjectState, SharedProjectState};
@@ -49,6 +49,7 @@ pub(crate) struct GatewayComponents {
     pub project_state: SharedProjectState,
     pub skill_state: SharedSkillState,
     pub embedding_provider: Option<Arc<dyn EmbeddingProvider>>,
+    pub hybrid_searcher: Arc<HybridSearcher>,
     pub pulse_enabled: bool,
     pub endpoint_registry: EndpointRegistry,
     pub channel_configs: Vec<crate::notify::types::ExternalChannelConfig>,
@@ -332,6 +333,11 @@ pub(crate) async fn initialize(
     let (project_state, skill_state) = init_project_and_skills(cfg, &layout).await;
 
     let (bg_result_rx, background_spawner) = init_background_spawner(cfg, &layout);
+
+    let mcp_registry = init_mcp_servers(&layout).await;
+    connect_web_search_mcp(cfg, &mcp_registry).await;
+    let (channel_configs, endpoint_registry) = init_channels_and_registry(&layout, cfg);
+
     let spawn_context = Arc::new(SpawnContext {
         background_config: cfg.background.clone(),
         main_provider_specs: cfg.main.clone(),
@@ -348,11 +354,13 @@ pub(crate) async fn initialize(
         layout: layout.clone(),
         tz,
         role_overrides: cfg.role_overrides.clone(),
+        background_spawner: Arc::clone(&background_spawner),
+        endpoint_registry: endpoint_registry.clone(),
+        publisher: publisher.clone(),
+        action_store: Arc::clone(&action_store),
+        action_notify: Arc::clone(&action_notify),
+        hybrid_searcher: Arc::clone(&mem.hybrid_searcher),
     });
-
-    let mcp_registry = init_mcp_servers(&layout).await;
-    connect_web_search_mcp(cfg, &mcp_registry).await;
-    let (channel_configs, endpoint_registry) = init_channels_and_registry(&layout, cfg);
 
     let tool_deps = ToolRegistryDeps {
         action_store: &action_store,
@@ -395,6 +403,7 @@ pub(crate) async fn initialize(
         project_state,
         skill_state,
         embedding_provider: providers.embedding_provider,
+        hybrid_searcher: mem.hybrid_searcher,
         pulse_enabled: cfg.pulse_enabled,
         endpoint_registry,
         channel_configs,

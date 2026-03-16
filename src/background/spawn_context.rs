@@ -3,10 +3,17 @@
 
 use std::collections::HashSet;
 use std::path::Path;
+use std::sync::Arc;
 
+use tokio::sync::{Mutex, Notify};
+
+use crate::actions::store::ActionStore;
+use crate::background::BackgroundTaskSpawner;
+use crate::bus::{EndpointRegistry, Publisher};
 use crate::config::ProviderSpec;
 use crate::config::{BackgroundConfig, BackgroundModelTier};
 use crate::mcp::SharedMcpRegistry;
+use crate::memory::search::HybridSearcher;
 use crate::models::retry::RetryConfig;
 use crate::models::{CompletionOptions, SharedHttpClient, build_provider_chain};
 use crate::projects::activation::SharedProjectState;
@@ -32,6 +39,13 @@ pub(crate) struct SpawnContext {
     pub(crate) layout: WorkspaceLayout,
     pub(crate) tz: chrono_tz::Tz,
     pub(crate) role_overrides: std::collections::HashMap<String, crate::config::RoleOverrides>,
+    // ── Sub-agent tool dependencies ────────────────────────────────────
+    pub(crate) background_spawner: Arc<BackgroundTaskSpawner>,
+    pub(crate) endpoint_registry: EndpointRegistry,
+    pub(crate) publisher: Publisher,
+    pub(crate) action_store: Arc<Mutex<ActionStore>>,
+    pub(crate) action_notify: Arc<Notify>,
+    pub(crate) hybrid_searcher: Arc<HybridSearcher>,
 }
 
 /// Build isolated `SubAgentResources` for a background task at a given tier.
@@ -104,6 +118,12 @@ pub(crate) async fn build_spawn_resources(
         options,
         tz: ctx.tz,
         preset_instructions,
+        background_spawner: Arc::clone(&ctx.background_spawner),
+        endpoint_registry: ctx.endpoint_registry.clone(),
+        publisher: ctx.publisher.clone(),
+        action_store: Arc::clone(&ctx.action_store),
+        action_notify: Arc::clone(&ctx.action_notify),
+        hybrid_searcher: Arc::clone(&ctx.hybrid_searcher),
     };
 
     Ok(build_resources(

@@ -205,10 +205,13 @@ impl ToolRegistry {
 
     /// Build a tool registry for a background sub-agent.
     ///
-    /// Includes core tools (read, write, edit, exec), project tools (activate,
-    /// deactivate, list — not create or archive), and skill tools (activate,
-    /// deactivate). Excludes actions, inbox, memory, and background management
-    /// tools which are not appropriate for isolated sub-agent turns.
+    /// Includes all tools available to the main agent except `switch_endpoint`
+    /// and `subagent_spawn`. Sub-agents get their own isolated project/skill
+    /// state but share the same endpoint registry, action store, etc.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "sub-agent registry needs all tool dependencies"
+    )]
     #[must_use]
     pub fn build_subagent_registry(
         tracker: SharedFileTracker,
@@ -218,32 +221,53 @@ impl ToolRegistry {
         mcp_registry: SharedMcpRegistry,
         skill_state: SharedSkillState,
         tz: chrono_tz::Tz,
+        hybrid_searcher: Arc<HybridSearcher>,
+        episodes_dir: std::path::PathBuf,
+        inbox_dir: std::path::PathBuf,
+        inbox_archive_dir: std::path::PathBuf,
+        background_spawner: Arc<BackgroundTaskSpawner>,
+        endpoint_registry: EndpointRegistry,
+        publisher: crate::bus::Publisher,
+        action_store: Arc<Mutex<ActionStore>>,
+        action_notify: Arc<Notify>,
     ) -> Self {
         let mut registry = Self::new();
 
         // Core I/O tools
         registry.register_defaults(tracker, Arc::clone(&path_policy));
 
-        // Project tools: activate, deactivate, list (not create/archive)
-        registry.register(Box::new(projects::ProjectActivateTool::new(
-            Arc::clone(&project_state),
-            Arc::clone(&path_policy),
-            Arc::clone(&tool_filter),
-            Arc::clone(&mcp_registry),
-            Arc::clone(&skill_state),
-        )));
-        registry.register(Box::new(projects::ProjectDeactivateTool::new(
-            Arc::clone(&project_state),
+        // Full project tools (activate, deactivate, create, archive, list)
+        registry.register_project_tools(
+            project_state,
             path_policy,
             tool_filter,
             mcp_registry,
             Arc::clone(&skill_state),
             tz,
-        )));
-        registry.register(Box::new(projects::ProjectListTool::new(project_state)));
+        );
 
         // Skill tools: activate, deactivate
         registry.register_skill_tools(skill_state);
+
+        // Memory tools
+        registry.register_search_tool(hybrid_searcher);
+        registry.register_memory_get_tool(episodes_dir);
+
+        // Inbox tools
+        registry.register_inbox_tools(inbox_dir, inbox_archive_dir);
+
+        // Background task management (stop_agent, list_agents — NOT subagent_spawn)
+        registry.register_background_tools(background_spawner);
+
+        // Messaging tools
+        registry.register_send_message_tool(endpoint_registry.clone(), publisher);
+        registry.register_list_endpoints_tool(endpoint_registry);
+
+        // Web fetch
+        registry.register_web_fetch_tool();
+
+        // Action scheduling tools
+        registry.register_action_tools(action_store, action_notify, tz);
 
         registry
     }

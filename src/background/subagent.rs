@@ -2,14 +2,19 @@
 
 use std::sync::Arc;
 
+use tokio::sync::{Mutex, Notify};
+
+use crate::actions::store::ActionStore;
 use crate::agent::context::{
     ProjectsContext, PromptContext, SkillsContext, SubagentsContext, build_subagent_system_content,
 };
 use crate::agent::interrupt::dead_interrupt_rx;
 use crate::agent::recent_messages::RecentMessages;
 use crate::agent::turn::{TurnResources, execute_turn};
-use crate::bus;
+use crate::background::BackgroundTaskSpawner;
+use crate::bus::{self, EndpointRegistry, Publisher};
 use crate::mcp::SharedMcpRegistry;
+use crate::memory::search::HybridSearcher;
 use crate::models::{CompletionOptions, Message, ModelProvider};
 use crate::projects::activation::{ProjectState, SharedProjectState};
 use crate::skills::{SharedSkillState, SkillState};
@@ -75,6 +80,19 @@ pub struct SubAgentBuildConfig {
     pub tz: chrono_tz::Tz,
     /// Preset-specific instructions to inject into the subagent system prompt.
     pub preset_instructions: Option<String>,
+    // ── Sub-agent tool dependencies ────────────────────────────────────
+    /// Background task spawner for `stop_agent` / `list_agents` tools.
+    pub background_spawner: Arc<BackgroundTaskSpawner>,
+    /// Endpoint registry for `send_message` / `list_endpoints` tools.
+    pub endpoint_registry: EndpointRegistry,
+    /// Bus publisher for `send_message` tool.
+    pub publisher: Publisher,
+    /// Scheduled action store for action tools.
+    pub action_store: Arc<Mutex<ActionStore>>,
+    /// Notify handle for action tools.
+    pub action_notify: Arc<Notify>,
+    /// Hybrid searcher for `memory_search` tool.
+    pub hybrid_searcher: Arc<HybridSearcher>,
 }
 
 /// Build isolated sub-agent resources from the main agent's shared state.
@@ -98,6 +116,12 @@ pub async fn build_resources(
         options,
         tz,
         preset_instructions,
+        background_spawner,
+        endpoint_registry,
+        publisher,
+        action_store,
+        action_notify,
+        hybrid_searcher,
     } = config;
     // Clone project index and layout for an isolated ProjectState
     let (project_index, layout_clone) = {
@@ -150,6 +174,15 @@ pub async fn build_resources(
         Arc::clone(&mcp_registry),
         Arc::clone(&skill_state),
         tz,
+        hybrid_searcher,
+        workspace_layout.episodes_dir(),
+        workspace_layout.inbox_dir(),
+        workspace_layout.inbox_archive_dir(),
+        background_spawner,
+        endpoint_registry,
+        publisher,
+        action_store,
+        action_notify,
     );
 
     SubAgentResources {

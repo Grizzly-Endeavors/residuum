@@ -1236,7 +1236,11 @@ mod tests {
 
     #[tokio::test]
     async fn empty_response_returns_error() {
-        let provider = MockProvider::new(vec![ModelResponse::new(String::new(), vec![])]);
+        let provider = MockProvider::new(vec![
+            ModelResponse::new(String::new(), vec![]),
+            ModelResponse::new(String::new(), vec![]),
+            ModelResponse::new(String::new(), vec![]),
+        ]);
 
         let mut agent = Agent::new(
             Box::new(provider),

@@ -217,6 +217,10 @@ async fn run_agent_turn_with_interrupts(
 /// Handle an inbound user message: run agent turn, persist, observe, and process leftovers.
 ///
 /// Returns `Some(GatewayExit)` if a shutdown-worthy event occurs during processing.
+#[expect(
+    clippy::too_many_lines,
+    reason = "needs refactor — extract turn result publishing"
+)]
 pub async fn handle_inbound_message(
     message: InboundMessage,
     rt: &mut GatewayRuntime,
@@ -225,12 +229,21 @@ pub async fn handle_inbound_message(
 ) -> Option<GatewayExit> {
     let reply_id = message.id.clone();
     let origin = message.origin.clone();
+    let is_background = origin.endpoint == "background";
 
-    // Clear any switch_endpoint override so responses follow the user's endpoint.
-    rt.output_topic_override_tx.send_replace(None);
-
-    let output_topic = TopicId::Interactive(EndpointName::from(origin.endpoint.as_str()));
-    rt.last_output_topic = Some(output_topic.clone());
+    // Determine output topic: background turns reuse the user's last endpoint,
+    // user turns derive from the origin and become the new last endpoint.
+    let output_topic = if is_background {
+        rt.last_output_topic
+            .clone()
+            .unwrap_or(TopicId::SystemBroadcast)
+    } else {
+        // Clear any switch_endpoint override so responses follow the user's endpoint.
+        rt.output_topic_override_tx.send_replace(None);
+        let topic = TopicId::Interactive(EndpointName::from(origin.endpoint.as_str()));
+        rt.last_output_topic = Some(topic.clone());
+        topic
+    };
 
     drop(
         rt.publisher
@@ -315,12 +328,18 @@ pub async fn handle_inbound_message(
         }
     }
 
+    let visibility = if is_background {
+        Visibility::Background
+    } else {
+        Visibility::User
+    };
     let new_messages: Vec<_> = rt.agent.messages_since(before).to_vec();
-    persist_and_maybe_observe(rt, &new_messages, Visibility::User, observe_deadline).await;
+    persist_and_maybe_observe(rt, &new_messages, visibility, observe_deadline).await;
 
     process_leftover_interrupts(leftover_interrupts, rt);
 
-    if !rt.cfg.idle.timeout.is_zero() {
+    // Only update idle timer for user messages, not background turns.
+    if !is_background && !rt.cfg.idle.timeout.is_zero() {
         let now = tokio::time::Instant::now();
         rt.last_user_message_instant = Some(now);
         *idle_deadline = Some(now + rt.cfg.idle.timeout);

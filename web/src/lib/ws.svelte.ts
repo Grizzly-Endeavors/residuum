@@ -123,7 +123,7 @@ class WsConnection {
     // eslint-disable-next-line svelte/prefer-svelte-reactivity -- local non-reactive scratch map
     const toolCallItems = new Map<string, ToolCallState>();
 
-    for (const msg of messages) {
+    for (const msg of messages.filter((m) => m.visibility !== "background")) {
       const content = msg.content || "";
       switch (msg.role) {
         case "user":

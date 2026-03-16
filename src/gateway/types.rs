@@ -6,13 +6,14 @@ use tokio::sync::mpsc;
 
 use crate::actions::store::ActionStore;
 use crate::agent::Agent;
+use crate::background::BackgroundTaskSpawner;
 use crate::background::spawn_context::SpawnContext;
 use crate::bus::{BusHandle, EndpointRegistry, Publisher, Subscriber, TopicId};
 use crate::config::Config;
 use crate::mcp::SharedMcpRegistry;
 use crate::memory::observer::Observer;
 use crate::memory::reflector::Reflector;
-use crate::memory::search::MemoryIndex;
+use crate::memory::search::{HybridSearcher, MemoryIndex};
 use crate::memory::vector_store::VectorStore;
 use crate::models::{EmbeddingProvider, SharedHttpClient};
 use crate::projects::activation::SharedProjectState;
@@ -122,6 +123,8 @@ pub(crate) struct GatewayRuntime {
     pub search_index: Arc<MemoryIndex>,
     pub vector_store: Option<Arc<VectorStore>>,
     pub embedding_provider: Option<Arc<dyn EmbeddingProvider>>,
+    pub hybrid_searcher: Arc<HybridSearcher>,
+    pub background_spawner: Arc<BackgroundTaskSpawner>,
     pub action_store: Arc<tokio::sync::Mutex<ActionStore>>,
     pub action_notify: Arc<tokio::sync::Notify>,
     pub mcp_registry: SharedMcpRegistry,

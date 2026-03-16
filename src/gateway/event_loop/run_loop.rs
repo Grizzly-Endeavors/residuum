@@ -134,6 +134,10 @@ struct UpdateChannels {
 }
 
 /// Assemble the `GatewayRuntime` from initialized parts and spawned handles.
+#[expect(
+    clippy::too_many_lines,
+    reason = "needs refactor — extract bus infrastructure spawning"
+)]
 async fn build_runtime(
     parts: crate::gateway::startup::GatewayComponents,
     core: GatewayCore,
@@ -202,6 +206,8 @@ async fn build_runtime(
         search_index: parts.search_index,
         vector_store: parts.vector_store,
         embedding_provider: parts.embedding_provider,
+        hybrid_searcher: parts.hybrid_searcher,
+        background_spawner: parts.background_spawner,
         action_store: parts.action_store,
         action_notify: parts.action_notify,
         mcp_registry: parts.mcp_registry,

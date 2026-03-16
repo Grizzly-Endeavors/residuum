@@ -16,6 +16,9 @@ use super::recent_messages::RecentMessages;
 /// Maximum number of tool-call iterations before the agent stops.
 pub(crate) const MAX_TOOL_ITERATIONS: usize = 50;
 
+/// Maximum retries for empty responses (transient API glitches).
+const MAX_EMPTY_RESPONSE_RETRIES: u32 = 2;
+
 /// Shared subsystem references needed for each turn iteration.
 pub(crate) struct TurnResources<'a> {
     pub provider: &'a dyn ModelProvider,
@@ -52,6 +55,7 @@ pub(crate) async fn execute_turn(
     interrupt_rx: &mut mpsc::Receiver<Interrupt>,
 ) -> Result<Vec<String>, ResiduumError> {
     let mut texts: Vec<String> = Vec::new();
+    let mut empty_retries: u32 = 0;
 
     for iteration in 0..MAX_TOOL_ITERATIONS {
         drain_interrupts(interrupt_rx, recent_messages);
@@ -93,14 +97,24 @@ pub(crate) async fn execute_turn(
         response.content = crate::models::think_tags::strip_think_tags(&response.content);
 
         if response.tool_calls.is_empty() {
-            recent_messages.push(Message::assistant(response.content.clone(), None));
             log_usage(&response);
             if response.content.is_empty() {
-                tracing::warn!("model returned empty response with no tool calls");
+                if empty_retries < MAX_EMPTY_RESPONSE_RETRIES {
+                    empty_retries += 1;
+                    tracing::warn!(
+                        attempt = empty_retries,
+                        max = MAX_EMPTY_RESPONSE_RETRIES,
+                        "model returned empty response, retrying"
+                    );
+                    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                    continue;
+                }
+                tracing::warn!("model returned empty response with no tool calls after retries");
                 return Err(ResiduumError::Other(anyhow::anyhow!(
                     "model returned empty response with no tool calls"
                 )));
             }
+            recent_messages.push(Message::assistant(response.content.clone(), None));
             texts.push(response.content);
             return Ok(texts);
         }

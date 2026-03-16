@@ -300,6 +300,12 @@ fn build_spawn_context(rt: &GatewayRuntime, new_cfg: &Config) -> Arc<SpawnContex
         layout: rt.layout.clone(),
         tz: rt.tz,
         role_overrides: new_cfg.role_overrides.clone(),
+        background_spawner: Arc::clone(&rt.background_spawner),
+        endpoint_registry: rt.endpoint_registry.clone(),
+        publisher: rt.publisher.clone(),
+        action_store: Arc::clone(&rt.action_store),
+        action_notify: Arc::clone(&rt.action_notify),
+        hybrid_searcher: Arc::clone(&rt.hybrid_searcher),
     })
 }
 

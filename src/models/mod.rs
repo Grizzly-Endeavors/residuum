@@ -59,8 +59,9 @@ impl ModelError {
                     || lower.contains("overload")
                     || lower.contains("capacity")
                     || lower.contains("429")
-                    || lower.contains("503")
+                    || lower.contains("500")
                     || lower.contains("502")
+                    || lower.contains("503")
             }
         }
     }
@@ -406,6 +407,14 @@ mod tests {
         assert!(
             ModelError::Api("Error 429: too many requests".to_string()).is_retryable(),
             "429 should be retryable"
+        );
+
+        assert!(
+            ModelError::Api(
+                "anthropic api error 500 Internal Server Error: Internal server error".to_string()
+            )
+            .is_retryable(),
+            "500 should be retryable"
         );
     }
 
