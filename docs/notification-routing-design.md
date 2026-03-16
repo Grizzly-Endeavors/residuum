@@ -1,6 +1,14 @@
-# Notification Routing — CHANNELS.yml
+# Notification Routing
 
-## Overview
+> **Note (2026-03-16):** This document describes a CHANNELS.yml-based routing
+> design that was superseded by the I/O routing refactor. The actual
+> implementation uses a **pub/sub bus** with an **LLM-based notification
+> router** and **ALERTS.md** as the routing policy file. The architecture
+> details below are outdated — see `reference-mats/io-routing-refactor-plan.md`
+> for the current design. This document is kept for historical context and
+> will be rewritten.
+
+## Overview (outdated)
 
 This document describes how background task results get delivered to the user. It replaces the previous `Alerts.md` + `AlertLevel` system with a simpler, extensible model: a flat YAML file that maps notification channels to the task names they receive.
 

@@ -113,6 +113,13 @@ port = 7700
 # routing = "inbox"
 # format = "raw"
 
+# ── Notification routing ────────────────────────────────────────────────────
+# Background task results (pulses, actions, subagents) are routed by an LLM
+# notification router. Routing policy is defined in ALERTS.md at the workspace
+# root (~/.residuum/workspace/ALERTS.md). A default is created at bootstrap.
+# Edit ALERTS.md to control which results go to notification channels, inbox,
+# or interactive endpoints. Changes take effect immediately.
+
 # ── Agent ability gates (optional) ───────────────────────────────────────────
 # Controls what the agent can modify at runtime.
 # Both default to true when omitted.

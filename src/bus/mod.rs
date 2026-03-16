@@ -10,6 +10,7 @@ mod endpoint;
 mod events;
 mod handle;
 mod registry;
+pub(crate) mod supervision;
 mod types;
 
 pub use broker::{BusHandle, spawn_broker};

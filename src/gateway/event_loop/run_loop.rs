@@ -148,14 +148,12 @@ async fn build_runtime(
         .subscribe(crate::bus::TopicId::AgentMain)
         .await
         .map_err(|e| ResiduumError::Gateway(format!("failed to subscribe to agent:main: {e}")))?;
-
     let error_subscriber = core
         .bus_handle
         .subscribe(crate::bus::TopicId::BusErrors)
         .await
         .map_err(|e| ResiduumError::Gateway(format!("failed to subscribe to bus:errors: {e}")))?;
 
-    // Spawn notify channel subscribers on the bus
     let notify_handles = crate::gateway::startup::spawn_notify_subscribers(
         &core.bus_handle,
         &parts.channel_configs,
@@ -165,20 +163,15 @@ async fn build_runtime(
     )
     .await;
 
-    // Spawn bus infrastructure handles (not restarted on workspace reload)
+    // Spawn bus infrastructure (not restarted on workspace reload)
     let mut bus_infra_handles = Vec::new();
-
-    // Spawn the result bridge: reads from spawner's mpsc channel, publishes to bus
-    let bridge_handle = crate::background::bridge::spawn_result_bridge(
-        parts.background_result_rx,
+    let shared_result_rx = std::sync::Arc::new(tokio::sync::Mutex::new(parts.background_result_rx));
+    bus_infra_handles.push(crate::background::bridge::spawn_result_bridge(
+        shared_result_rx,
         core.publisher.clone(),
         parts.tz,
-    );
-    bus_infra_handles.push(bridge_handle);
-
-    // Spawn the LLM notification router: subscribes to BackgroundResult topic,
-    // applies content-aware routing via ALERTS.md policy
-    if let Some(router_handle) = crate::notify::router::spawn_notification_router(
+    ));
+    if let Some(h) = crate::notify::router::spawn_notification_router(
         &core.bus_handle,
         &parts.spawn_context,
         parts.endpoint_registry.clone(),
@@ -187,10 +180,8 @@ async fn build_runtime(
     )
     .await
     {
-        bus_infra_handles.push(router_handle);
+        bus_infra_handles.push(h);
     }
-
-    // Spawn the subagent registry: subscribes to preset topics, handles spawn requests
     let registry = crate::subagents::SubagentRegistry::new(
         Arc::clone(&parts.background_spawner),
         Arc::clone(&parts.spawn_context),
@@ -199,9 +190,8 @@ async fn build_runtime(
         Arc::clone(&parts.mcp_registry),
         parts.layout.subagents_dir(),
     );
-    let registry_handle =
-        crate::subagents::registry::spawn_registry(registry, &core.bus_handle).await;
-    bus_infra_handles.push(registry_handle);
+    bus_infra_handles
+        .push(crate::subagents::registry::spawn_registry(registry, &core.bus_handle).await);
 
     Ok(GatewayRuntime {
         layout: parts.layout,

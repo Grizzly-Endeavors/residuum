@@ -1,38 +1,57 @@
 //! Bridge task: reads background results from the spawner's mpsc channel and
 //! publishes them as `BusEvent::AgentResult` on the bus.
 
+use std::sync::Arc;
+
 use tokio::sync::mpsc;
-use tokio::task::JoinHandle;
 
 use crate::background::types::BackgroundResult;
 use crate::bus::{AgentResultEvent, BusEvent, EventTrigger, HeartbeatStatus, Publisher, TopicId};
 
+/// Shared receiver for the bridge task, enabling supervision restarts.
+pub(crate) type SharedResultReceiver = Arc<tokio::sync::Mutex<mpsc::Receiver<BackgroundResult>>>;
+
 /// Spawn the bridge task that forwards background results to the bus.
 ///
-/// Reads from `result_rx` (the spawner's output channel), converts each
-/// `BackgroundResult` to an `AgentResultEvent`, and publishes it to
-/// `TopicId::BackgroundResult`.
+/// Uses a shared receiver so the bridge can be restarted by a supervisor
+/// without losing the channel. The receiver is held behind an `Arc<Mutex>`
+/// and locked for the duration of each run.
 pub(crate) fn spawn_result_bridge(
-    mut result_rx: mpsc::Receiver<BackgroundResult>,
+    result_rx: SharedResultReceiver,
     publisher: Publisher,
     tz: chrono_tz::Tz,
-) -> JoinHandle<()> {
-    tokio::spawn(async move {
-        while let Some(result) = result_rx.recv().await {
-            let event = convert_to_agent_result(&result, tz);
-            if let Err(e) = publisher
-                .publish(TopicId::BackgroundResult, BusEvent::AgentResult(event))
-                .await
-            {
-                tracing::warn!(
-                    task_id = %result.id,
-                    error = %e,
-                    "bridge failed to publish background result to bus"
-                );
+) -> tokio::task::JoinHandle<()> {
+    crate::bus::supervision::spawn_supervised(
+        "result-bridge",
+        move || {
+            let rx = Arc::clone(&result_rx);
+            let pub_ = publisher.clone();
+            async move {
+                run_bridge(rx, pub_, tz).await;
             }
+        },
+        5,
+        std::time::Duration::from_secs(1),
+    )
+}
+
+/// Inner bridge loop: lock the shared receiver and forward results to the bus.
+async fn run_bridge(result_rx: SharedResultReceiver, publisher: Publisher, tz: chrono_tz::Tz) {
+    let mut rx = result_rx.lock().await;
+    while let Some(result) = rx.recv().await {
+        let event = convert_to_agent_result(&result, tz);
+        if let Err(e) = publisher
+            .publish(TopicId::BackgroundResult, BusEvent::AgentResult(event))
+            .await
+        {
+            tracing::warn!(
+                task_id = %result.id,
+                error = %e,
+                "bridge failed to publish background result to bus"
+            );
         }
-        tracing::info!("result bridge shutting down");
-    })
+    }
+    tracing::info!("result bridge shutting down (channel closed)");
 }
 
 /// Convert a `BackgroundResult` to an `AgentResultEvent` for the bus.
@@ -145,7 +164,8 @@ mod tests {
             .await
             .unwrap();
 
-        let handle = spawn_result_bridge(rx, publisher, chrono_tz::UTC);
+        let shared_rx = Arc::new(tokio::sync::Mutex::new(rx));
+        let handle = spawn_result_bridge(shared_rx, publisher, chrono_tz::UTC);
 
         let result = BackgroundResult {
             id: "bg-test".into(),
