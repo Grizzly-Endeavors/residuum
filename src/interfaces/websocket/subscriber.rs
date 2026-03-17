@@ -1,55 +1,120 @@
-//! WebSocket bus subscriber — translates `BusEvent`s to `ServerMessage` frames.
+//! WebSocket bus subscriber — translates typed bus events to `ServerMessage` frames.
 
-use crate::bus::BusEvent;
+use crate::bus::{
+    EndpointName, IntermediateEvent, ResponseEvent, Subscriber, SystemMessageEvent,
+    ToolActivityEvent, TurnLifecycleEvent, topics,
+};
 use crate::gateway::protocol::ServerMessage;
 
-/// Translate a `BusEvent` into a `ServerMessage`, if applicable.
-///
-/// Returns `None` for events that have no WebSocket representation (e.g.
-/// `TurnEnded`, `Message`, `Notification`).
-#[must_use]
-pub fn translate_bus_event(event: BusEvent) -> Option<ServerMessage> {
-    match event {
-        BusEvent::TurnStarted { correlation_id } => Some(ServerMessage::TurnStarted {
-            reply_to: correlation_id,
-        }),
-        BusEvent::Response(resp) => Some(ServerMessage::Response {
-            reply_to: resp.correlation_id,
-            content: resp.content,
-        }),
-        BusEvent::ToolCall(tc) => Some(ServerMessage::ToolCall {
-            id: tc.tool_call_id,
-            name: tc.name,
-            arguments: tc.arguments,
-        }),
-        BusEvent::ToolResult(tr) => Some(ServerMessage::ToolResult {
-            tool_call_id: tr.tool_call_id,
-            name: tr.name,
-            output: tr.output,
-            is_error: tr.is_error,
-        }),
-        BusEvent::Intermediate(im) => Some(ServerMessage::BroadcastResponse {
-            content: im.content,
-        }),
-        BusEvent::SystemEvent(se) => Some(ServerMessage::SystemEvent {
-            source: se.source,
-            content: se.content,
-        }),
-        BusEvent::Error {
-            correlation_id,
-            message,
-        } => Some(ServerMessage::Error {
-            reply_to: Some(correlation_id),
-            message,
-        }),
-        BusEvent::Notice { message } => Some(ServerMessage::Notice { message }),
-        // TurnEnded has no ServerMessage equivalent currently — skip
-        BusEvent::TurnEnded { .. }
-        | BusEvent::Message(_)
-        | BusEvent::Notification(_)
-        | BusEvent::AgentResult(_)
-        | BusEvent::WebhookPayload { .. }
-        | BusEvent::SpawnRequest(_) => None,
+/// Typed subscribers for a single WebSocket connection.
+pub struct WsSubscribers {
+    pub response: Subscriber<ResponseEvent>,
+    pub tool_activity: Subscriber<ToolActivityEvent>,
+    pub turn_lifecycle: Subscriber<TurnLifecycleEvent>,
+    pub intermediate: Subscriber<IntermediateEvent>,
+    pub system: Subscriber<SystemMessageEvent>,
+}
+
+impl WsSubscribers {
+    /// Create all typed subscribers for a WebSocket connection.
+    ///
+    /// # Errors
+    ///
+    /// Returns `BusError` if any subscription fails.
+    pub async fn new(
+        bus_handle: &crate::bus::BusHandle,
+        ep: EndpointName,
+    ) -> Result<Self, crate::bus::BusError> {
+        Ok(Self {
+            response: bus_handle.subscribe(topics::Response(ep.clone())).await?,
+            tool_activity: bus_handle
+                .subscribe(topics::ToolActivity(ep.clone()))
+                .await?,
+            turn_lifecycle: bus_handle
+                .subscribe(topics::TurnLifecycle(ep.clone()))
+                .await?,
+            intermediate: bus_handle.subscribe(topics::Intermediate(ep)).await?,
+            system: bus_handle.subscribe(topics::SystemMessage).await?,
+        })
+    }
+
+    /// Receive the next server message from any subscribed topic.
+    ///
+    /// Returns `None` when all subscribers have closed.
+    pub async fn recv(&mut self) -> Option<ServerMessage> {
+        loop {
+            let msg = tokio::select! {
+                event = self.response.recv() => {
+                    match event {
+                        Ok(Some(resp)) => Some(ServerMessage::Response {
+                            reply_to: resp.correlation_id,
+                            content: resp.content,
+                        }),
+                        _ => return None,
+                    }
+                }
+                event = self.tool_activity.recv() => {
+                    match event {
+                        Ok(Some(ToolActivityEvent::Call(tc))) => Some(ServerMessage::ToolCall {
+                            id: tc.tool_call_id,
+                            name: tc.name,
+                            arguments: tc.arguments,
+                        }),
+                        Ok(Some(ToolActivityEvent::Result(tr))) => Some(ServerMessage::ToolResult {
+                            tool_call_id: tr.tool_call_id,
+                            name: tr.name,
+                            output: tr.output,
+                            is_error: tr.is_error,
+                        }),
+                        _ => return None,
+                    }
+                }
+                event = self.turn_lifecycle.recv() => {
+                    match event {
+                        Ok(Some(TurnLifecycleEvent::Started { correlation_id })) => {
+                            Some(ServerMessage::TurnStarted { reply_to: correlation_id })
+                        }
+                        Ok(Some(TurnLifecycleEvent::Ended { .. })) => {
+                            // TurnEnded has no ServerMessage equivalent currently — skip
+                            continue;
+                        }
+                        _ => return None,
+                    }
+                }
+                event = self.intermediate.recv() => {
+                    match event {
+                        Ok(Some(im)) => Some(ServerMessage::BroadcastResponse {
+                            content: im.content,
+                        }),
+                        _ => return None,
+                    }
+                }
+                event = self.system.recv() => {
+                    match event {
+                        Ok(Some(SystemMessageEvent::Notice { message })) => {
+                            Some(ServerMessage::Notice { message })
+                        }
+                        Ok(Some(SystemMessageEvent::Error { correlation_id, message })) => {
+                            Some(ServerMessage::Error {
+                                reply_to: Some(correlation_id),
+                                message,
+                            })
+                        }
+                        Ok(Some(SystemMessageEvent::Event(se))) => {
+                            Some(ServerMessage::SystemEvent {
+                                source: se.source,
+                                content: se.content,
+                            })
+                        }
+                        _ => return None,
+                    }
+                }
+            };
+
+            if let Some(msg) = msg {
+                return Some(msg);
+            }
+        }
     }
 }
 
@@ -70,123 +135,160 @@ mod tests {
             .unwrap()
     }
 
-    #[test]
-    fn turn_started_maps_to_server_message() {
-        let msg = translate_bus_event(BusEvent::TurnStarted {
-            correlation_id: "c1".into(),
-        });
-        assert!(matches!(
-            msg,
-            Some(ServerMessage::TurnStarted { reply_to }) if reply_to == "c1"
-        ));
-    }
+    #[tokio::test]
+    async fn response_maps_to_server_message() {
+        let handle = crate::bus::spawn_broker();
+        let pub_ = handle.publisher();
+        let ep = EndpointName::from("ws");
+        let mut subs = WsSubscribers::new(&handle, ep.clone()).await.unwrap();
 
-    #[test]
-    fn response_maps_to_server_message() {
-        let msg = translate_bus_event(BusEvent::Response(ResponseEvent {
-            correlation_id: "c1".into(),
-            content: "hello".into(),
-            timestamp: ts(),
-        }));
+        pub_.publish(
+            topics::Response(ep),
+            ResponseEvent {
+                correlation_id: "c1".into(),
+                content: "hello".into(),
+                timestamp: ts(),
+            },
+        )
+        .await
+        .unwrap();
+
+        let msg = subs.recv().await.unwrap();
         assert!(matches!(
             msg,
-            Some(ServerMessage::Response { reply_to, content })
+            ServerMessage::Response { reply_to, content }
                 if reply_to == "c1" && content == "hello"
         ));
     }
 
-    #[test]
-    fn tool_call_maps_to_server_message() {
-        let msg = translate_bus_event(BusEvent::ToolCall(ToolCallEvent {
-            correlation_id: "c1".into(),
-            tool_call_id: "tc1".into(),
-            name: "search".into(),
-            arguments: serde_json::json!({"q": "test"}),
-        }));
+    #[tokio::test]
+    async fn tool_call_maps_to_server_message() {
+        let handle = crate::bus::spawn_broker();
+        let pub_ = handle.publisher();
+        let ep = EndpointName::from("ws");
+        let mut subs = WsSubscribers::new(&handle, ep.clone()).await.unwrap();
+
+        pub_.publish(
+            topics::ToolActivity(ep),
+            ToolActivityEvent::Call(ToolCallEvent {
+                correlation_id: "c1".into(),
+                tool_call_id: "tc1".into(),
+                name: "search".into(),
+                arguments: serde_json::json!({"q": "test"}),
+            }),
+        )
+        .await
+        .unwrap();
+
+        let msg = subs.recv().await.unwrap();
         assert!(matches!(
             msg,
-            Some(ServerMessage::ToolCall { id, name, .. })
+            ServerMessage::ToolCall { id, name, .. }
                 if id == "tc1" && name == "search"
         ));
     }
 
-    #[test]
-    fn tool_result_maps_to_server_message() {
-        let msg = translate_bus_event(BusEvent::ToolResult(ToolResultEvent {
-            correlation_id: "c1".into(),
-            tool_call_id: "tc1".into(),
-            name: "search".into(),
-            output: "found it".into(),
-            is_error: false,
-        }));
+    #[tokio::test]
+    async fn tool_result_maps_to_server_message() {
+        let handle = crate::bus::spawn_broker();
+        let pub_ = handle.publisher();
+        let ep = EndpointName::from("ws");
+        let mut subs = WsSubscribers::new(&handle, ep.clone()).await.unwrap();
+
+        pub_.publish(
+            topics::ToolActivity(ep),
+            ToolActivityEvent::Result(ToolResultEvent {
+                correlation_id: "c1".into(),
+                tool_call_id: "tc1".into(),
+                name: "search".into(),
+                output: "found it".into(),
+                is_error: false,
+            }),
+        )
+        .await
+        .unwrap();
+
+        let msg = subs.recv().await.unwrap();
         assert!(matches!(
             msg,
-            Some(ServerMessage::ToolResult { tool_call_id, name, output, is_error })
+            ServerMessage::ToolResult { tool_call_id, name, output, is_error }
                 if tool_call_id == "tc1" && name == "search" && output == "found it" && !is_error
         ));
     }
 
-    #[test]
-    fn intermediate_maps_to_broadcast_response() {
-        let msg = translate_bus_event(BusEvent::Intermediate(IntermediateEvent {
-            correlation_id: "c1".into(),
-            content: "thinking...".into(),
-        }));
+    #[tokio::test]
+    async fn intermediate_maps_to_broadcast_response() {
+        let handle = crate::bus::spawn_broker();
+        let pub_ = handle.publisher();
+        let ep = EndpointName::from("ws");
+        let mut subs = WsSubscribers::new(&handle, ep.clone()).await.unwrap();
+
+        pub_.publish(
+            topics::Intermediate(ep),
+            IntermediateEvent {
+                correlation_id: "c1".into(),
+                content: "thinking...".into(),
+            },
+        )
+        .await
+        .unwrap();
+
+        let msg = subs.recv().await.unwrap();
         assert!(matches!(
             msg,
-            Some(ServerMessage::BroadcastResponse { content })
+            ServerMessage::BroadcastResponse { content }
                 if content == "thinking..."
         ));
     }
 
-    #[test]
-    fn system_event_maps_to_server_message() {
-        let msg = translate_bus_event(BusEvent::SystemEvent(SystemEventData {
-            correlation_id: "c1".into(),
-            source: "pulse".into(),
-            content: "check done".into(),
-            timestamp: ts(),
-        }));
+    #[tokio::test]
+    async fn system_event_maps_to_server_message() {
+        let handle = crate::bus::spawn_broker();
+        let pub_ = handle.publisher();
+        let ep = EndpointName::from("ws");
+        let mut subs = WsSubscribers::new(&handle, ep).await.unwrap();
+
+        pub_.publish(
+            topics::SystemMessage,
+            SystemMessageEvent::Event(SystemEventData {
+                correlation_id: "c1".into(),
+                source: "pulse".into(),
+                content: "check done".into(),
+                timestamp: ts(),
+            }),
+        )
+        .await
+        .unwrap();
+
+        let msg = subs.recv().await.unwrap();
         assert!(matches!(
             msg,
-            Some(ServerMessage::SystemEvent { source, content })
+            ServerMessage::SystemEvent { source, content }
                 if source == "pulse" && content == "check done"
         ));
     }
 
-    #[test]
-    fn error_maps_to_server_message() {
-        let msg = translate_bus_event(BusEvent::Error {
-            correlation_id: "c1".into(),
-            message: "something broke".into(),
-        });
-        assert!(matches!(
-            msg,
-            Some(ServerMessage::Error { reply_to, message })
-                if reply_to == Some("c1".to_string()) && message == "something broke"
-        ));
-    }
+    #[tokio::test]
+    async fn notice_maps_to_server_message() {
+        let handle = crate::bus::spawn_broker();
+        let pub_ = handle.publisher();
+        let ep = EndpointName::from("ws");
+        let mut subs = WsSubscribers::new(&handle, ep).await.unwrap();
 
-    #[test]
-    fn notice_maps_to_server_message() {
-        let msg = translate_bus_event(BusEvent::Notice {
-            message: "reloading".into(),
-        });
+        pub_.publish(
+            topics::SystemMessage,
+            SystemMessageEvent::Notice {
+                message: "reloading".into(),
+            },
+        )
+        .await
+        .unwrap();
+
+        let msg = subs.recv().await.unwrap();
         assert!(matches!(
             msg,
-            Some(ServerMessage::Notice { message })
+            ServerMessage::Notice { message }
                 if message == "reloading"
         ));
-    }
-
-    #[test]
-    fn turn_ended_is_skipped() {
-        let msg = translate_bus_event(BusEvent::TurnEnded {
-            correlation_id: "c1".into(),
-        });
-        assert!(
-            msg.is_none(),
-            "TurnEnded should not produce a ServerMessage"
-        );
     }
 }

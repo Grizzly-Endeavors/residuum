@@ -1,9 +1,20 @@
 //! Publisher and subscriber handles for the bus.
 
+use std::any::Any;
+use std::marker::PhantomData;
+use std::sync::Arc;
+
 use tokio::sync::mpsc;
 
-use super::events::BusEvent;
+use super::topics::Topic;
 use super::types::{BusError, TopicId};
+
+// ---------------------------------------------------------------------------
+// Type-erased event wrapper
+// ---------------------------------------------------------------------------
+
+/// Type-erased event stored in the broker.
+pub(super) type ErasedEvent = Arc<dyn Any + Send + Sync>;
 
 // ---------------------------------------------------------------------------
 // BrokerCommand
@@ -11,13 +22,13 @@ use super::types::{BusError, TopicId};
 
 /// Commands sent from handles to the broker task.
 pub enum BrokerCommand {
-    /// Publish an event to a topic.
-    Publish { topic: TopicId, event: BusEvent },
+    /// Publish a type-erased event to a topic.
+    Publish { topic: TopicId, event: ErasedEvent },
     /// Register a subscriber for a topic.
     Subscribe {
         id: u64,
         topic: TopicId,
-        sender: mpsc::Sender<BusEvent>,
+        sender: mpsc::Sender<ErasedEvent>,
     },
     /// Remove a subscriber from a topic.
     Unsubscribe { id: u64, topic: TopicId },
@@ -39,37 +50,42 @@ impl Publisher {
         Self { cmd_tx }
     }
 
-    /// Publish an event to the given topic.
+    /// Publish a typed event to a typed topic.
     ///
     /// # Errors
     ///
     /// Returns `BusError::BrokerShutdown` if the broker has stopped.
-    pub async fn publish(&self, topic: TopicId, event: BusEvent) -> Result<(), BusError> {
+    pub async fn publish<T: Topic>(&self, topic: T, event: T::Event) -> Result<(), BusError> {
+        let erased: ErasedEvent = Arc::new(event);
         self.cmd_tx
-            .send(BrokerCommand::Publish { topic, event })
+            .send(BrokerCommand::Publish {
+                topic: topic.topic_id(),
+                event: erased,
+            })
             .await
             .map_err(|_closed| BusError::BrokerShutdown)
     }
 }
 
 // ---------------------------------------------------------------------------
-// Subscriber
+// Subscriber (typed, receives T::Event directly)
 // ---------------------------------------------------------------------------
 
-/// A single-consumer handle for receiving events from a bus topic.
-pub struct Subscriber {
+/// A single-consumer handle for receiving typed events from a bus topic.
+pub struct Subscriber<E> {
     id: u64,
     topic: TopicId,
-    event_rx: mpsc::Receiver<BusEvent>,
+    event_rx: mpsc::Receiver<ErasedEvent>,
     cmd_tx: mpsc::Sender<BrokerCommand>,
+    _phantom: PhantomData<E>,
 }
 
-impl Subscriber {
-    /// Create a new subscriber.
+impl<E: Clone + Send + Sync + 'static> Subscriber<E> {
+    /// Create a new typed subscriber.
     pub(super) fn new(
         id: u64,
         topic: TopicId,
-        event_rx: mpsc::Receiver<BusEvent>,
+        event_rx: mpsc::Receiver<ErasedEvent>,
         cmd_tx: mpsc::Sender<BrokerCommand>,
     ) -> Self {
         Self {
@@ -77,18 +93,32 @@ impl Subscriber {
             topic,
             event_rx,
             cmd_tx,
+            _phantom: PhantomData,
         }
     }
 
-    /// Receive the next event, or `None` if the broker has shut down.
-    pub async fn recv(&mut self) -> Option<BusEvent> {
-        self.event_rx.recv().await
+    /// Receive the next typed event, or `None` if the broker has shut down.
+    ///
+    /// # Errors
+    ///
+    /// Returns `BusError::TypeMismatch` if the event cannot be downcast to `E`.
+    pub async fn recv(&mut self) -> Result<Option<E>, BusError> {
+        let Some(erased) = self.event_rx.recv().await else {
+            return Ok(None);
+        };
+        // Try to unwrap the Arc (only owner) or clone via downcast
+        match erased.downcast::<E>() {
+            Ok(arc_e) => Ok(Some(Arc::unwrap_or_clone(arc_e))),
+            Err(_) => Err(BusError::TypeMismatch {
+                expected: std::any::type_name::<E>(),
+                topic: self.topic.to_string(),
+            }),
+        }
     }
 }
 
-impl Drop for Subscriber {
+impl<E> Drop for Subscriber<E> {
     fn drop(&mut self) {
-        // Best-effort unsubscribe — if the broker is already gone, this is a no-op.
         drop(self.cmd_tx.try_send(BrokerCommand::Unsubscribe {
             id: self.id,
             topic: self.topic.clone(),
@@ -112,7 +142,7 @@ mod tests {
 
     fn _assert_subscriber_traits()
     where
-        Subscriber: Send,
+        Subscriber<String>: Send,
     {
     }
 }

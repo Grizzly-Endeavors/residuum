@@ -7,8 +7,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use tokio::sync::mpsc;
 use tracing::{debug, warn};
 
-use super::events::BusEvent;
-use super::handle::{BrokerCommand, Publisher, Subscriber};
+use super::events::SystemMessageEvent;
+use super::handle::{BrokerCommand, ErasedEvent, Publisher, Subscriber};
+use super::topics::Topic;
 use super::types::{BusError, TopicId};
 use crate::spawn::spawn_monitored;
 
@@ -39,25 +40,26 @@ impl BusHandle {
         Publisher::new(self.cmd_tx.clone())
     }
 
-    /// Create a [`Subscriber`] for the given topic.
+    /// Create a typed [`Subscriber`] for the given topic.
     ///
     /// # Errors
     ///
     /// Returns `BusError::BrokerShutdown` if the broker has stopped.
-    pub async fn subscribe(&self, topic: TopicId) -> Result<Subscriber, BusError> {
+    pub async fn subscribe<T: Topic>(&self, topic: T) -> Result<Subscriber<T::Event>, BusError> {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let (event_tx, event_rx) = mpsc::channel(SUBSCRIBER_CAPACITY);
+        let topic_id = topic.topic_id();
 
         self.cmd_tx
             .send(BrokerCommand::Subscribe {
                 id,
-                topic: topic.clone(),
+                topic: topic_id.clone(),
                 sender: event_tx,
             })
             .await
             .map_err(|_closed| BusError::BrokerShutdown)?;
 
-        Ok(Subscriber::new(id, topic, event_rx, self.cmd_tx.clone()))
+        Ok(Subscriber::new(id, topic_id, event_rx, self.cmd_tx.clone()))
     }
 }
 
@@ -82,14 +84,14 @@ pub fn spawn_broker() -> BusHandle {
 ///
 /// Exits naturally when every `BusHandle` (and derived sender) is dropped.
 async fn run_broker(mut cmd_rx: mpsc::Receiver<BrokerCommand>) {
-    let mut subscriptions: HashMap<TopicId, Vec<(u64, mpsc::Sender<BusEvent>)>> = HashMap::new();
+    let mut subscriptions: HashMap<TopicId, Vec<(u64, mpsc::Sender<ErasedEvent>)>> = HashMap::new();
 
     while let Some(cmd) = cmd_rx.recv().await {
         match cmd {
             BrokerCommand::Publish { topic, event } => {
                 let had_subscribers = if let Some(subscribers) = subscriptions.get_mut(&topic) {
                     subscribers.retain(|(id, tx)| {
-                        match tx.try_send(event.clone()) {
+                        match tx.try_send(Arc::clone(&event)) {
                             Ok(()) => true,
                             Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
                                 warn!(
@@ -119,16 +121,16 @@ async fn run_broker(mut cmd_rx: mpsc::Receiver<BrokerCommand>) {
                 };
 
                 // Publish error when no subscribers received the event.
-                // Guard: skip if the original topic is BusErrors to prevent recursion.
-                if !had_subscribers && topic != TopicId::BusErrors {
-                    let error_event = BusEvent::Error {
+                // Guard: skip if the original topic is SystemMessage to prevent recursion.
+                if !had_subscribers && topic != TopicId::SystemMessage {
+                    let error_event: ErasedEvent = Arc::new(SystemMessageEvent::Error {
                         correlation_id: String::new(),
                         message: format!("no active subscribers for topic {topic}"),
-                    };
-                    if let Some(error_subs) = subscriptions.get_mut(&TopicId::BusErrors) {
-                        error_subs.retain(|(_, tx)| tx.try_send(error_event.clone()).is_ok());
+                    });
+                    if let Some(error_subs) = subscriptions.get_mut(&TopicId::SystemMessage) {
+                        error_subs.retain(|(_, tx)| tx.try_send(Arc::clone(&error_event)).is_ok());
                         if error_subs.is_empty() {
-                            subscriptions.remove(&TopicId::BusErrors);
+                            subscriptions.remove(&TopicId::SystemMessage);
                         }
                     }
                 }
@@ -154,20 +156,25 @@ async fn run_broker(mut cmd_rx: mpsc::Receiver<BrokerCommand>) {
 
 #[cfg(test)]
 #[expect(clippy::unwrap_used, reason = "test code uses unwrap for clarity")]
-#[expect(
-    clippy::wildcard_enum_match_arm,
-    reason = "test assertions use wildcard for non-matching variants"
-)]
 #[expect(clippy::panic, reason = "test assertions")]
 mod tests {
     use chrono::NaiveDate;
 
     use super::*;
-    use crate::bus::events::MessageEvent;
+    use crate::bus::events::{MessageEvent, ResponseEvent};
+    use crate::bus::topics;
+    use crate::bus::types::EndpointName;
     use crate::interfaces::types::MessageOrigin;
 
-    fn test_message(id: &str, content: &str) -> BusEvent {
-        BusEvent::Message(MessageEvent {
+    fn test_timestamp() -> chrono::NaiveDateTime {
+        NaiveDate::from_ymd_opt(2026, 3, 13)
+            .unwrap()
+            .and_hms_opt(12, 0, 0)
+            .unwrap()
+    }
+
+    fn test_message(id: &str, content: &str) -> MessageEvent {
+        MessageEvent {
             id: id.into(),
             content: content.into(),
             origin: MessageOrigin {
@@ -175,54 +182,41 @@ mod tests {
                 sender_name: "tester".into(),
                 sender_id: "t-1".into(),
             },
-            timestamp: NaiveDate::from_ymd_opt(2026, 3, 13)
-                .unwrap()
-                .and_hms_opt(12, 0, 0)
-                .unwrap(),
+            timestamp: test_timestamp(),
             images: vec![],
-        })
+        }
     }
 
     #[tokio::test]
     async fn publish_to_single_subscriber() {
         let handle = spawn_broker();
         let pub_ = handle.publisher();
-        let mut sub = handle.subscribe(TopicId::Inbox).await.unwrap();
+        let mut sub = handle.subscribe(topics::UserMessage).await.unwrap();
 
-        pub_.publish(TopicId::Inbox, test_message("1", "hello"))
+        pub_.publish(topics::UserMessage, test_message("1", "hello"))
             .await
             .unwrap();
 
-        let event = sub.recv().await.unwrap();
-        match event {
-            BusEvent::Message(msg) => {
-                assert_eq!(msg.id, "1");
-                assert_eq!(msg.content, "hello");
-            }
-            _ => panic!("expected Message variant"),
-        }
+        let msg = sub.recv().await.unwrap().unwrap();
+        assert_eq!(msg.id, "1");
+        assert_eq!(msg.content, "hello");
     }
 
     #[tokio::test]
     async fn publish_fan_out() {
         let handle = spawn_broker();
         let pub_ = handle.publisher();
-        let mut sub1 = handle.subscribe(TopicId::Inbox).await.unwrap();
-        let mut sub2 = handle.subscribe(TopicId::Inbox).await.unwrap();
+        let mut sub1 = handle.subscribe(topics::UserMessage).await.unwrap();
+        let mut sub2 = handle.subscribe(topics::UserMessage).await.unwrap();
 
-        pub_.publish(TopicId::Inbox, test_message("2", "fanout"))
+        pub_.publish(topics::UserMessage, test_message("2", "fanout"))
             .await
             .unwrap();
 
-        let e1 = sub1.recv().await.unwrap();
-        let e2 = sub2.recv().await.unwrap();
-        match (&e1, &e2) {
-            (BusEvent::Message(m1), BusEvent::Message(m2)) => {
-                assert_eq!(m1.content, "fanout");
-                assert_eq!(m2.content, "fanout");
-            }
-            _ => panic!("expected Message variants"),
-        }
+        let m1 = sub1.recv().await.unwrap().unwrap();
+        let m2 = sub2.recv().await.unwrap().unwrap();
+        assert_eq!(m1.content, "fanout");
+        assert_eq!(m2.content, "fanout");
     }
 
     #[tokio::test]
@@ -230,11 +224,15 @@ mod tests {
         let handle = spawn_broker();
         let pub_ = handle.publisher();
 
-        // Publishing to a topic with no subscribers should not error.
-        let result = pub_
-            .publish(TopicId::AgentMain, test_message("3", "void"))
-            .await;
+        let ep = EndpointName::from("ws");
+        let event = ResponseEvent {
+            correlation_id: "c1".into(),
+            content: "void".into(),
+            timestamp: test_timestamp(),
+        };
 
+        // Publishing to a topic with no subscribers should not error.
+        let result = pub_.publish(topics::Response(ep), event).await;
         assert!(result.is_ok());
     }
 
@@ -242,7 +240,7 @@ mod tests {
     async fn subscriber_drop_unsubscribes() {
         let handle = spawn_broker();
         let pub_ = handle.publisher();
-        let sub = handle.subscribe(TopicId::Inbox).await.unwrap();
+        let sub = handle.subscribe(topics::UserMessage).await.unwrap();
 
         // Drop subscriber, then publish — should not error.
         drop(sub);
@@ -251,9 +249,8 @@ mod tests {
         tokio::task::yield_now().await;
 
         let result = pub_
-            .publish(TopicId::Inbox, test_message("4", "gone"))
+            .publish(topics::UserMessage, test_message("4", "gone"))
             .await;
-
         assert!(result.is_ok());
     }
 
@@ -274,16 +271,9 @@ mod tests {
     #[tokio::test]
     async fn subscriber_recv_returns_none_after_drop() {
         let handle = spawn_broker();
-        let mut sub = handle.subscribe(TopicId::Inbox).await.unwrap();
+        let ep = EndpointName::from("ws");
+        let mut sub = handle.subscribe(topics::Response(ep)).await.unwrap();
 
-        // Drop the handle — but the subscriber still holds a cmd_tx clone,
-        // so the broker stays alive. Drop the subscriber's event sender
-        // indirectly: the broker exits only when ALL cmd_tx clones are gone.
-        // To test recv() returning None, we need to drop the subscriber's
-        // cmd_tx too. We do this by dropping handle and relying on the
-        // subscriber being the last sender — when we drop it, recv returns
-        // None on next call. Instead, test that dropping the handle and
-        // publishing nothing causes recv to block (i.e., broker is still alive).
         drop(handle);
 
         // The broker is still alive because sub holds a cmd_tx clone.
@@ -296,28 +286,31 @@ mod tests {
     async fn multiple_topics_independent() {
         let handle = spawn_broker();
         let pub_ = handle.publisher();
-        let mut sub_inbox = handle.subscribe(TopicId::Inbox).await.unwrap();
-        let mut sub_agent = handle.subscribe(TopicId::AgentMain).await.unwrap();
-
-        pub_.publish(TopicId::Inbox, test_message("5", "for inbox"))
+        let mut sub_msg = handle.subscribe(topics::UserMessage).await.unwrap();
+        let ep = EndpointName::from("ws");
+        let mut sub_resp = handle
+            .subscribe(topics::Response(ep.clone()))
             .await
             .unwrap();
 
-        pub_.publish(TopicId::AgentMain, test_message("6", "for agent"))
+        pub_.publish(topics::UserMessage, test_message("5", "for user"))
             .await
             .unwrap();
 
-        let inbox_event = sub_inbox.recv().await.unwrap();
-        let agent_event = sub_agent.recv().await.unwrap();
+        let resp_event = ResponseEvent {
+            correlation_id: "6".into(),
+            content: "for response".into(),
+            timestamp: test_timestamp(),
+        };
+        pub_.publish(topics::Response(ep), resp_event)
+            .await
+            .unwrap();
 
-        match inbox_event {
-            BusEvent::Message(msg) => assert_eq!(msg.content, "for inbox"),
-            _ => panic!("expected Message variant"),
-        }
-        match agent_event {
-            BusEvent::Message(msg) => assert_eq!(msg.content, "for agent"),
-            _ => panic!("expected Message variant"),
-        }
+        let msg = sub_msg.recv().await.unwrap().unwrap();
+        let resp = sub_resp.recv().await.unwrap().unwrap();
+
+        assert_eq!(msg.content, "for user");
+        assert_eq!(resp.content, "for response");
     }
 
     #[tokio::test]
@@ -325,63 +318,66 @@ mod tests {
         let handle = spawn_broker();
         let pub_ = handle.publisher();
 
-        let sub1 = handle.subscribe(TopicId::Inbox).await.unwrap();
-        let mut sub2 = handle.subscribe(TopicId::Inbox).await.unwrap();
+        let sub1 = handle.subscribe(topics::UserMessage).await.unwrap();
+        let mut sub2 = handle.subscribe(topics::UserMessage).await.unwrap();
 
         // Close sub1's receiver by dropping it.
         drop(sub1);
         tokio::task::yield_now().await;
 
         // Publish — sub1 should be pruned, sub2 should receive.
-        pub_.publish(TopicId::Inbox, test_message("7", "after prune"))
+        pub_.publish(topics::UserMessage, test_message("7", "after prune"))
             .await
             .unwrap();
 
-        let event = sub2.recv().await.unwrap();
-        match event {
-            BusEvent::Message(msg) => assert_eq!(msg.content, "after prune"),
-            _ => panic!("expected Message variant"),
-        }
+        let msg = sub2.recv().await.unwrap().unwrap();
+        assert_eq!(msg.content, "after prune");
     }
 
     #[tokio::test]
-    async fn publish_to_empty_topic_emits_bus_error() {
+    async fn publish_to_empty_topic_emits_system_error() {
         let handle = spawn_broker();
         let pub_ = handle.publisher();
-        let mut error_sub = handle.subscribe(TopicId::BusErrors).await.unwrap();
+        let mut error_sub = handle.subscribe(topics::SystemMessage).await.unwrap();
 
         // Publish to a topic with no subscribers.
-        pub_.publish(TopicId::Inbox, test_message("err-1", "nowhere"))
+        pub_.publish(topics::UserMessage, test_message("err-1", "nowhere"))
             .await
             .unwrap();
 
         let event = tokio::time::timeout(tokio::time::Duration::from_millis(200), error_sub.recv())
             .await
             .unwrap()
+            .unwrap()
             .unwrap();
 
         match event {
-            BusEvent::Error { message, .. } => {
+            SystemMessageEvent::Error { message, .. } => {
                 assert!(
                     message.contains("no active subscribers"),
                     "error should mention no subscribers: {message}"
                 );
-                assert!(message.contains("inbox"), "error should mention the topic");
+                assert!(
+                    message.contains("user:message"),
+                    "error should mention the topic: {message}"
+                );
             }
-            _ => panic!("expected Error variant, got {event:?}"),
+            SystemMessageEvent::Notice { .. } | SystemMessageEvent::Event(_) => {
+                panic!("expected SystemMessageEvent::Error, got {event:?}")
+            }
         }
     }
 
     #[tokio::test]
-    async fn bus_error_topic_no_recursion() {
+    async fn system_message_topic_no_recursion() {
         let handle = spawn_broker();
         let pub_ = handle.publisher();
 
-        // Publish to BusErrors with no subscribers — should not recurse.
+        // Publish to SystemMessage with no subscribers — should not recurse.
         let result = pub_
             .publish(
-                TopicId::BusErrors,
-                BusEvent::Error {
+                topics::SystemMessage,
+                SystemMessageEvent::Error {
                     correlation_id: String::new(),
                     message: "test".into(),
                 },

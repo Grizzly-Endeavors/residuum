@@ -1,6 +1,6 @@
 //! Agent struct, configuration, and turn dispatch.
 
-use crate::bus::{Publisher, TopicId};
+use crate::bus::{EndpointName, Publisher};
 use crate::error::ResiduumError;
 use crate::interfaces::types::MessageOrigin;
 use crate::mcp::SharedMcpRegistry;
@@ -191,7 +191,7 @@ impl Agent {
     pub async fn run_wake_turn(
         &mut self,
         publisher: &Publisher,
-        output_topic: &TopicId,
+        output_endpoint: Option<&EndpointName>,
         prompt_ctx: &PromptContext<'_>,
         interrupt_rx: &mut tokio::sync::mpsc::Receiver<interrupt::Interrupt>,
     ) -> Result<Vec<String>, ResiduumError> {
@@ -229,7 +229,7 @@ impl Agent {
             prompt_ctx,
             &mut self.recent_messages,
             publisher,
-            output_topic,
+            output_endpoint,
             Some(&status_line),
             interrupt_rx,
         )
@@ -253,7 +253,7 @@ impl Agent {
         &mut self,
         user_input: &str,
         publisher: &Publisher,
-        output_topic: &TopicId,
+        output_endpoint: Option<&EndpointName>,
         origin: Option<&MessageOrigin>,
         prompt_ctx: &PromptContext<'_>,
         interrupt_rx: &mut tokio::sync::mpsc::Receiver<interrupt::Interrupt>,
@@ -295,7 +295,7 @@ impl Agent {
             prompt_ctx,
             &mut self.recent_messages,
             publisher,
-            output_topic,
+            output_endpoint,
             Some(&status_line),
             interrupt_rx,
         )
@@ -317,7 +317,7 @@ impl Agent {
         &self,
         prompt: &str,
         publisher: &Publisher,
-        output_topic: &TopicId,
+        output_endpoint: Option<&EndpointName>,
         provider_override: Option<&dyn ModelProvider>,
         prompt_ctx: &PromptContext<'_>,
     ) -> Result<SystemTurnResult, ResiduumError> {
@@ -350,7 +350,7 @@ impl Agent {
             prompt_ctx,
             &mut thread_messages,
             publisher,
-            output_topic,
+            output_endpoint,
             None,
             &mut sys_interrupt_rx,
         )
@@ -441,12 +441,12 @@ mod tests {
         McpRegistry::new_shared()
     }
 
-    /// Create a test publisher and topic for bus-based tests.
-    fn test_bus() -> (Publisher, TopicId) {
+    /// Create a test publisher and endpoint for bus-based tests.
+    fn test_bus() -> (Publisher, bus::EndpointName) {
         let handle = bus::spawn_broker();
         let publisher = handle.publisher();
-        let topic = TopicId::Interactive(bus::EndpointName::from("test"));
-        (publisher, topic)
+        let ep = bus::EndpointName::from("test");
+        (publisher, ep)
     }
 
     /// Mock provider that returns pre-configured responses in sequence.
@@ -505,13 +505,13 @@ mod tests {
             },
         );
 
-        let (publisher, topic) = test_bus();
+        let (publisher, ep) = test_bus();
         let mut irx = interrupt::dead_interrupt_rx();
         let result = agent
             .process_message(
                 "hi",
                 &publisher,
-                &topic,
+                Some(&ep),
                 None,
                 &PromptContext::none(),
                 &mut irx,
@@ -555,13 +555,13 @@ mod tests {
             },
         );
 
-        let (publisher, topic) = test_bus();
+        let (publisher, ep) = test_bus();
         let mut irx = interrupt::dead_interrupt_rx();
         let result = agent
             .process_message(
                 "run echo test",
                 &publisher,
-                &topic,
+                Some(&ep),
                 None,
                 &PromptContext::none(),
                 &mut irx,
@@ -610,13 +610,13 @@ mod tests {
             },
         );
 
-        let (publisher, topic) = test_bus();
+        let (publisher, ep) = test_bus();
         let mut irx = interrupt::dead_interrupt_rx();
         let result = agent
             .process_message(
                 "what does echo test print?",
                 &publisher,
-                &topic,
+                Some(&ep),
                 None,
                 &PromptContext::none(),
                 &mut irx,
@@ -666,13 +666,13 @@ mod tests {
             },
         );
 
-        let (publisher, topic) = test_bus();
+        let (publisher, ep) = test_bus();
         let mut irx = interrupt::dead_interrupt_rx();
         let result = agent
             .process_message(
                 "loop forever",
                 &publisher,
-                &topic,
+                Some(&ep),
                 None,
                 &PromptContext::none(),
                 &mut irx,
@@ -700,12 +700,12 @@ mod tests {
             },
         );
 
-        let (publisher, topic) = test_bus();
+        let (publisher, ep) = test_bus();
         let result = agent
             .run_system_turn(
                 "check status",
                 &publisher,
-                &topic,
+                Some(&ep),
                 None,
                 &PromptContext::none(),
             )
@@ -783,10 +783,10 @@ mod tests {
         // Inject a background result first (simulates what the gateway does)
         agent.inject_system_message("bg result: task completed");
 
-        let (publisher, topic) = test_bus();
+        let (publisher, ep) = test_bus();
         let mut irx = interrupt::dead_interrupt_rx();
         let result = agent
-            .run_wake_turn(&publisher, &topic, &PromptContext::none(), &mut irx)
+            .run_wake_turn(&publisher, Some(&ep), &PromptContext::none(), &mut irx)
             .await
             .unwrap();
         assert_eq!(result, vec!["I'll handle it"]);
@@ -1077,12 +1077,12 @@ mod tests {
             },
         );
 
-        let (publisher, topic) = test_bus();
+        let (publisher, ep) = test_bus();
         let result = agent
             .process_message(
                 "hello",
                 &publisher,
-                &topic,
+                Some(&ep),
                 None,
                 &PromptContext::none(),
                 &mut interrupt_rx,
@@ -1150,12 +1150,12 @@ mod tests {
             },
         );
 
-        let (publisher, topic) = test_bus();
+        let (publisher, ep) = test_bus();
         agent
             .process_message(
                 "hello",
                 &publisher,
-                &topic,
+                Some(&ep),
                 None,
                 &PromptContext::none(),
                 &mut interrupt_rx,
@@ -1211,12 +1211,12 @@ mod tests {
             },
         );
 
-        let (publisher, topic) = test_bus();
+        let (publisher, ep) = test_bus();
         let result = agent
             .process_message(
                 "hello",
                 &publisher,
-                &topic,
+                Some(&ep),
                 None,
                 &PromptContext::none(),
                 &mut interrupt_rx,
@@ -1255,13 +1255,13 @@ mod tests {
             },
         );
 
-        let (publisher, topic) = test_bus();
+        let (publisher, ep) = test_bus();
         let mut irx = interrupt::dead_interrupt_rx();
         let result = agent
             .process_message(
                 "hello",
                 &publisher,
-                &topic,
+                Some(&ep),
                 None,
                 &PromptContext::none(),
                 &mut irx,

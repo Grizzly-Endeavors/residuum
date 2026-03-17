@@ -11,6 +11,10 @@
     reason = "test assertions use panic on unexpected variants"
 )]
 #[expect(
+    clippy::wildcard_enum_match_arm,
+    reason = "test assertions use wildcard for non-matching variants"
+)]
+#[expect(
     clippy::tests_outside_test_module,
     reason = "integration tests live in tests/ directory, not inside #[cfg(test)] modules"
 )]
@@ -26,7 +30,7 @@ mod gateway_integration {
     use residuum::agent::Agent;
     use residuum::agent::context::PromptContext;
     use residuum::agent::interrupt;
-    use residuum::bus::{EndpointName, TopicId, spawn_broker};
+    use residuum::bus::{EndpointName, spawn_broker, topics};
     use residuum::gateway::protocol::{ClientMessage, ServerMessage};
     use residuum::models::{
         CompletionOptions, Message, ModelError, ModelProvider, ModelResponse, ToolDefinition,
@@ -104,19 +108,19 @@ mod gateway_integration {
         let (broadcast_tx, _) = broadcast::channel::<ServerMessage>(256);
 
         // Set up bus broker and wire the ws subscriber loop to forward
-        // bus events to the broadcast channel.
+        // typed bus events to the broadcast channel.
         let bus = spawn_broker();
         let publisher = bus.publisher();
-        let output_topic = TopicId::Interactive(EndpointName::from("ws"));
+        let ep = EndpointName::from("ws");
 
-        let mut sub = bus.subscribe(output_topic.clone()).await.unwrap();
+        let mut subs =
+            residuum::interfaces::websocket::subscriber::WsSubscribers::new(&bus, ep.clone())
+                .await
+                .unwrap();
         let sub_broadcast = broadcast_tx.clone();
         tokio::spawn(async move {
-            while let Some(event) = sub.recv().await {
-                if let Some(msg) =
-                    residuum::interfaces::websocket::subscriber::translate_bus_event(event)
-                    && sub_broadcast.send(msg).is_err()
-                {
+            while let Some(msg) = subs.recv().await {
+                if sub_broadcast.send(msg).is_err() {
                     break;
                 }
             }
@@ -140,7 +144,7 @@ mod gateway_integration {
 
         let loop_broadcast_tx = broadcast_tx.clone();
         let loop_publisher = publisher.clone();
-        let loop_topic = output_topic.clone();
+        let loop_ep = ep.clone();
         tokio::spawn(async move {
             let mut agent = agent;
             while let Some(inbound) = inbound_rx.recv().await {
@@ -150,8 +154,8 @@ mod gateway_integration {
                 drop(
                     loop_publisher
                         .publish(
-                            loop_topic.clone(),
-                            residuum::bus::BusEvent::TurnStarted {
+                            topics::TurnLifecycle(loop_ep.clone()),
+                            residuum::bus::TurnLifecycleEvent::Started {
                                 correlation_id: reply_id.clone(),
                             },
                         )
@@ -163,7 +167,7 @@ mod gateway_integration {
                     .process_message(
                         &inbound.content,
                         &loop_publisher,
-                        &loop_topic,
+                        Some(&loop_ep),
                         None,
                         &PromptContext::none(),
                         &mut irx,
@@ -176,14 +180,12 @@ mod gateway_integration {
                             drop(
                                 loop_publisher
                                     .publish(
-                                        loop_topic.clone(),
-                                        residuum::bus::BusEvent::Response(
-                                            residuum::bus::ResponseEvent {
-                                                correlation_id: reply_id.clone(),
-                                                content: text.clone(),
-                                                timestamp: chrono::NaiveDateTime::default(),
-                                            },
-                                        ),
+                                        topics::Response(loop_ep.clone()),
+                                        residuum::bus::ResponseEvent {
+                                            correlation_id: reply_id.clone(),
+                                            content: text.clone(),
+                                            timestamp: chrono::NaiveDateTime::default(),
+                                        },
                                     )
                                     .await,
                             );
@@ -387,21 +389,26 @@ mod gateway_integration {
         )
         .await;
 
-        let msg1 = recv_msg(&mut rx).await;
-        assert!(
-            matches!(&msg1, ServerMessage::TurnStarted { reply_to } if reply_to == "msg-1"),
-            "should receive TurnStarted, got: {msg1:?}"
-        );
-
-        let msg2 = recv_msg(&mut rx).await;
-        assert!(
-            matches!(
-                &msg2,
-                ServerMessage::Response { reply_to, content }
-                    if reply_to == "msg-1" && content == "hello back!"
-            ),
-            "should receive Response with correct fields, got: {msg2:?}"
-        );
+        // With typed subscribers, TurnStarted and Response may arrive in either order
+        let mut got_turn_started = false;
+        let mut got_response = false;
+        for _ in 0..2 {
+            let msg = recv_msg(&mut rx).await;
+            match msg {
+                ServerMessage::TurnStarted { ref reply_to } if reply_to == "msg-1" => {
+                    got_turn_started = true;
+                }
+                ServerMessage::Response {
+                    ref reply_to,
+                    ref content,
+                } if reply_to == "msg-1" && content == "hello back!" => {
+                    got_response = true;
+                }
+                other => panic!("unexpected message: {other:?}"),
+            }
+        }
+        assert!(got_turn_started, "should have received TurnStarted");
+        assert!(got_response, "should have received Response");
     }
 
     #[tokio::test]
@@ -475,27 +482,23 @@ mod gateway_integration {
         )
         .await;
 
-        let a1 = recv_msg(&mut rx_a).await;
-        let b1 = recv_msg(&mut rx_b).await;
-        assert!(
-            matches!(&a1, ServerMessage::TurnStarted { .. }),
-            "client A should receive TurnStarted"
-        );
-        assert!(
-            matches!(&b1, ServerMessage::TurnStarted { .. }),
-            "client B should receive TurnStarted"
-        );
-
-        let a2 = recv_msg(&mut rx_a).await;
-        let b2 = recv_msg(&mut rx_b).await;
-        assert!(
-            matches!(&a2, ServerMessage::Response { content, .. } if content == "shared response"),
-            "client A should receive Response"
-        );
-        assert!(
-            matches!(&b2, ServerMessage::Response { content, .. } if content == "shared response"),
-            "client B should receive Response"
-        );
+        // Both clients should receive TurnStarted and Response (order may vary)
+        for (label, rx) in [("A", &mut rx_a), ("B", &mut rx_b)] {
+            let mut got_started = false;
+            let mut got_response = false;
+            for _ in 0..2 {
+                let msg = recv_msg(rx).await;
+                match msg {
+                    ServerMessage::TurnStarted { .. } => got_started = true,
+                    ServerMessage::Response { ref content, .. } if content == "shared response" => {
+                        got_response = true;
+                    }
+                    other => panic!("client {label}: unexpected {other:?}"),
+                }
+            }
+            assert!(got_started, "client {label} should receive TurnStarted");
+            assert!(got_response, "client {label} should receive Response");
+        }
     }
 
     #[tokio::test]
@@ -559,16 +562,21 @@ mod gateway_integration {
         )
         .await;
 
-        let msg1 = recv_msg(&mut rx_b).await;
+        // With typed subscribers, TurnStarted and Response may arrive in either order
+        let mut got_turn_started = false;
+        let mut got_response = false;
+        for _ in 0..2 {
+            let msg = recv_msg(&mut rx_b).await;
+            match msg {
+                ServerMessage::TurnStarted { .. } => got_turn_started = true,
+                ServerMessage::Response { .. } => got_response = true,
+                other => panic!("unexpected message after disconnect: {other:?}"),
+            }
+        }
         assert!(
-            matches!(&msg1, ServerMessage::TurnStarted { .. }),
-            "should receive TurnStarted after other client disconnected"
+            got_turn_started,
+            "should receive TurnStarted after disconnect"
         );
-
-        let msg2 = recv_msg(&mut rx_b).await;
-        assert!(
-            matches!(&msg2, ServerMessage::Response { .. }),
-            "should receive Response after other client disconnected"
-        );
+        assert!(got_response, "should receive Response after disconnect");
     }
 }

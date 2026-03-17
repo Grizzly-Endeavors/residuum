@@ -8,7 +8,7 @@ use teloxide::payloads::GetUpdatesSetters;
 use teloxide::requests::Requester;
 use teloxide::types::{BotCommand, ChatId, UpdateKind};
 
-use crate::bus::{BusHandle, EndpointName, Publisher, TopicId};
+use crate::bus::{BusHandle, EndpointName, Publisher};
 use crate::gateway::event_loop::AdapterSenders;
 use crate::gateway::types::{ReloadSignal, ServerCommand};
 use crate::inbox;
@@ -161,25 +161,18 @@ pub(super) async fn run_telegram_polling(
     }
 }
 
-/// Spawn bus subscriber loops for Telegram output.
+/// Spawn typed bus subscriber loop for Telegram output.
 async fn spawn_telegram_subscribers(bus_handle: &BusHandle, bot: &Bot, chat_id: ChatId) {
-    let interactive_sub = bus_handle
-        .subscribe(TopicId::Interactive(EndpointName::from("telegram")))
-        .await;
-    let broadcast_sub = bus_handle.subscribe(TopicId::SystemBroadcast).await;
-
-    if let Ok(sub) = interactive_sub {
-        let b = bot.clone();
-        tokio::spawn(super::subscriber::run_telegram_subscriber(sub, b, chat_id));
-    } else if let Err(e) = interactive_sub {
-        tracing::warn!(error = %e, "failed to subscribe to interactive:telegram");
-    }
-
-    if let Ok(sub) = broadcast_sub {
-        let b = bot.clone();
-        tokio::spawn(super::subscriber::run_telegram_subscriber(sub, b, chat_id));
-    } else if let Err(e) = broadcast_sub {
-        tracing::warn!(error = %e, "failed to subscribe to system:broadcast for telegram");
+    match super::subscriber::TelegramSubscribers::new(bus_handle, EndpointName::from("telegram"))
+        .await
+    {
+        Ok(subs) => {
+            let b = bot.clone();
+            tokio::spawn(super::subscriber::run_telegram_subscriber(subs, b, chat_id));
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "failed to subscribe to telegram bus topics");
+        }
     }
 
     tracing::debug!(%chat_id, "telegram subscriber loops spawned");
@@ -268,10 +261,7 @@ async fn dispatch_message(
 
     if let Err(e) = ctx
         .publisher
-        .publish(
-            crate::bus::TopicId::AgentMain,
-            crate::bus::BusEvent::Message(msg_event),
-        )
+        .publish(crate::bus::topics::UserMessage, msg_event)
         .await
     {
         tracing::warn!(error = %e, "failed to publish telegram message to bus");

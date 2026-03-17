@@ -2,7 +2,9 @@
 
 use tokio::sync::mpsc;
 
-use crate::bus::{BusEvent, IntermediateEvent, Publisher, ToolCallEvent, ToolResultEvent, TopicId};
+use crate::bus::{
+    EndpointName, Publisher, ToolActivityEvent, ToolCallEvent, ToolResultEvent, topics,
+};
 use crate::error::ResiduumError;
 use crate::mcp::SharedMcpRegistry;
 use crate::models::{CompletionOptions, Message, ModelProvider, ModelResponse, ToolCall};
@@ -50,7 +52,7 @@ pub(crate) async fn execute_turn(
     prompt_ctx: &PromptContext<'_>,
     recent_messages: &mut RecentMessages,
     publisher: &Publisher,
-    output_topic: &TopicId,
+    output_endpoint: Option<&EndpointName>,
     status_line: Option<&StatusLine>,
     interrupt_rx: &mut mpsc::Receiver<Interrupt>,
 ) -> Result<Vec<String>, ResiduumError> {
@@ -125,15 +127,17 @@ pub(crate) async fn execute_turn(
             "processing tool calls"
         );
 
-        if !response.content.is_empty() {
+        if !response.content.is_empty()
+            && let Some(ep) = output_endpoint
+        {
             drop(
                 publisher
                     .publish(
-                        output_topic.clone(),
-                        BusEvent::Intermediate(IntermediateEvent {
+                        topics::Intermediate(ep.clone()),
+                        crate::bus::IntermediateEvent {
                             correlation_id: String::new(),
                             content: response.content.clone(),
-                        }),
+                        },
                     )
                     .await,
             );
@@ -152,7 +156,7 @@ pub(crate) async fn execute_turn(
                 &filter,
                 recent_messages,
                 publisher,
-                output_topic,
+                output_endpoint,
             )
             .await;
         }
@@ -196,21 +200,23 @@ async fn execute_tool(
     filter: &ToolFilter,
     recent_messages: &mut RecentMessages,
     publisher: &Publisher,
-    output_topic: &TopicId,
+    output_endpoint: Option<&EndpointName>,
 ) {
-    drop(
-        publisher
-            .publish(
-                output_topic.clone(),
-                BusEvent::ToolCall(ToolCallEvent {
-                    correlation_id: String::new(),
-                    tool_call_id: tool_call.id.clone(),
-                    name: tool_call.name.clone(),
-                    arguments: tool_call.arguments.clone(),
-                }),
-            )
-            .await,
-    );
+    if let Some(ep) = output_endpoint {
+        drop(
+            publisher
+                .publish(
+                    topics::ToolActivity(ep.clone()),
+                    ToolActivityEvent::Call(ToolCallEvent {
+                        correlation_id: String::new(),
+                        tool_call_id: tool_call.id.clone(),
+                        name: tool_call.name.clone(),
+                        arguments: tool_call.arguments.clone(),
+                    }),
+                )
+                .await,
+        );
+    }
 
     // Try built-in tools first, fall back to MCP servers
     let result = match tools
@@ -240,20 +246,22 @@ async fn execute_tool(
         }
     };
 
-    drop(
-        publisher
-            .publish(
-                output_topic.clone(),
-                BusEvent::ToolResult(ToolResultEvent {
-                    correlation_id: String::new(),
-                    tool_call_id: tool_call.id.clone(),
-                    name: tool_call.name.clone(),
-                    output: output.clone(),
-                    is_error,
-                }),
-            )
-            .await,
-    );
+    if let Some(ep) = output_endpoint {
+        drop(
+            publisher
+                .publish(
+                    topics::ToolActivity(ep.clone()),
+                    ToolActivityEvent::Result(ToolResultEvent {
+                        correlation_id: String::new(),
+                        tool_call_id: tool_call.id.clone(),
+                        name: tool_call.name.clone(),
+                        output: output.clone(),
+                        is_error,
+                    }),
+                )
+                .await,
+        );
+    }
 
     if images.is_empty() {
         recent_messages.push(Message::tool(output, tool_call.id.clone()));

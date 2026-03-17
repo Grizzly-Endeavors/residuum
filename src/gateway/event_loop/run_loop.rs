@@ -149,14 +149,16 @@ async fn build_runtime(
 ) -> Result<GatewayRuntime, ResiduumError> {
     let agent_subscriber = core
         .bus_handle
-        .subscribe(crate::bus::TopicId::AgentMain)
+        .subscribe(crate::bus::topics::UserMessage)
         .await
-        .map_err(|e| ResiduumError::Gateway(format!("failed to subscribe to agent:main: {e}")))?;
+        .map_err(|e| ResiduumError::Gateway(format!("failed to subscribe to user:message: {e}")))?;
     let error_subscriber = core
         .bus_handle
-        .subscribe(crate::bus::TopicId::BusErrors)
+        .subscribe(crate::bus::topics::SystemMessage)
         .await
-        .map_err(|e| ResiduumError::Gateway(format!("failed to subscribe to bus:errors: {e}")))?;
+        .map_err(|e| {
+            ResiduumError::Gateway(format!("failed to subscribe to system:message: {e}"))
+        })?;
 
     let notify_handles = crate::gateway::startup::spawn_notify_subscribers(
         &core.bus_handle,
@@ -223,7 +225,7 @@ async fn build_runtime(
         agent_subscriber,
         endpoint_registry: parts.endpoint_registry,
         error_subscriber,
-        last_output_topic: None,
+        last_output_endpoint: None,
         output_topic_override_tx: parts.output_topic_override_tx,
         reload_rx: receivers.reload,
         command_rx: receivers.command,
@@ -321,8 +323,8 @@ async fn handle_workspace_reload(rt: &mut GatewayRuntime) {
     if let Err(e) = rt
         .publisher
         .publish(
-            crate::bus::TopicId::SystemBroadcast,
-            crate::bus::BusEvent::Notice {
+            crate::bus::topics::SystemMessage,
+            crate::bus::SystemMessageEvent::Notice {
                 message: "workspace configuration reloaded".to_string(),
             },
         )
@@ -487,15 +489,15 @@ enum BusEventAction {
     Shutdown,
 }
 
-/// Handle a single bus event received on the agent subscriber.
+/// Handle a single typed message event received on the agent subscriber.
 async fn handle_bus_event(
-    event: Option<crate::bus::BusEvent>,
+    event: Result<Option<crate::bus::MessageEvent>, crate::bus::BusError>,
     rt: &mut GatewayRuntime,
     observe_deadline: &mut Option<tokio::time::Instant>,
     idle_deadline: &mut Option<tokio::time::Instant>,
 ) -> BusEventAction {
     match event {
-        Some(crate::bus::BusEvent::Message(msg_event)) => {
+        Ok(Some(msg_event)) => {
             let message = crate::interfaces::types::InboundMessage {
                 id: msg_event.id,
                 content: msg_event.content,
@@ -510,12 +512,12 @@ async fn handle_bus_event(
             }
             BusEventAction::Continue
         }
-        None => {
+        Ok(None) => {
             tracing::info!("bus subscriber closed, shutting down");
             BusEventAction::Shutdown
         }
-        _ => {
-            tracing::trace!("ignoring non-message event on agent:main");
+        Err(e) => {
+            tracing::warn!(error = %e, "type mismatch on user:message topic");
             BusEventAction::Continue
         }
     }
@@ -568,7 +570,7 @@ async fn run_event_loop(mut rt: GatewayRuntime) -> GatewayExit {
             }
 
             error_event = rt.error_subscriber.recv() => {
-                if let Some(crate::bus::BusEvent::Error { message, .. }) = error_event {
+                if let Ok(Some(crate::bus::SystemMessageEvent::Error { message, .. })) = error_event {
                     tracing::debug!(message = %message, "bus delivery error");
                     rt.agent.inject_system_message(format!("[Bus] {message}"));
                 }

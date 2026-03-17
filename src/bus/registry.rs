@@ -8,7 +8,7 @@ use crate::notify::types::{ExternalChannelConfig, ExternalChannelKind};
 
 use super::endpoint::EndpointCapabilities;
 use super::types::EndpointId;
-use super::types::{EndpointName, NotifyName, TopicId, WebhookName};
+use super::types::{EndpointName, NotifyName, TopicId};
 
 // ---------------------------------------------------------------------------
 // EndpointEntry
@@ -56,7 +56,7 @@ impl EndpointRegistry {
         // WebSocket — always present
         registry.register(EndpointEntry {
             id: EndpointId::from("ws"),
-            topic: TopicId::Interactive(EndpointName::from("ws")),
+            topic: TopicId::Response(EndpointName::from("ws")),
             capabilities: EndpointCapabilities::INTERACTIVE.union(EndpointCapabilities::STREAMING),
             display_name: "WebSocket".to_string(),
         });
@@ -65,7 +65,7 @@ impl EndpointRegistry {
         if config.discord.is_some() {
             registry.register(EndpointEntry {
                 id: EndpointId::from("discord"),
-                topic: TopicId::Interactive(EndpointName::from("discord")),
+                topic: TopicId::Response(EndpointName::from("discord")),
                 capabilities: EndpointCapabilities::INTERACTIVE
                     .union(EndpointCapabilities::STREAMING),
                 display_name: "Discord".to_string(),
@@ -76,7 +76,7 @@ impl EndpointRegistry {
         if config.telegram.is_some() {
             registry.register(EndpointEntry {
                 id: EndpointId::from("telegram"),
-                topic: TopicId::Interactive(EndpointName::from("telegram")),
+                topic: TopicId::Response(EndpointName::from("telegram")),
                 capabilities: EndpointCapabilities::INTERACTIVE
                     .union(EndpointCapabilities::STREAMING),
                 display_name: "Telegram".to_string(),
@@ -92,7 +92,7 @@ impl EndpointRegistry {
             };
             registry.register(EndpointEntry {
                 id: EndpointId::from(ch.name.as_str()),
-                topic: TopicId::Notify(NotifyName::from(ch.name.as_str())),
+                topic: TopicId::Notification(NotifyName::from(ch.name.as_str())),
                 capabilities: EndpointCapabilities::NOTIFY_ONLY,
                 display_name: format!("{kind_label} ({name})", name = ch.name),
             });
@@ -102,7 +102,7 @@ impl EndpointRegistry {
         for name in config.webhooks.keys() {
             registry.register(EndpointEntry {
                 id: EndpointId::from(format!("webhook:{name}").as_str()),
-                topic: TopicId::Webhook(WebhookName::from(name.as_str())),
+                topic: TopicId::Inbox,
                 capabilities: EndpointCapabilities::INPUT_ONLY,
                 display_name: format!("Webhook ({name})"),
             });
@@ -267,7 +267,7 @@ mod tests {
     fn make_entry(id: &str, caps: EndpointCapabilities) -> EndpointEntry {
         EndpointEntry {
             id: EndpointId::from(id),
-            topic: TopicId::Interactive(EndpointName::from(id)),
+            topic: TopicId::Response(EndpointName::from(id)),
             capabilities: caps,
             display_name: id.to_string(),
         }
@@ -298,13 +298,13 @@ mod tests {
         let reg = EndpointRegistry::new();
         reg.register(EndpointEntry {
             id: EndpointId::from("ws"),
-            topic: TopicId::Interactive(EndpointName::from("ws")),
+            topic: TopicId::Response(EndpointName::from("ws")),
             capabilities: EndpointCapabilities::INTERACTIVE,
             display_name: "first".to_string(),
         });
         reg.register(EndpointEntry {
             id: EndpointId::from("ws"),
-            topic: TopicId::Interactive(EndpointName::from("ws")),
+            topic: TopicId::Response(EndpointName::from("ws")),
             capabilities: EndpointCapabilities::STREAMING,
             display_name: "second".to_string(),
         });
@@ -337,14 +337,14 @@ mod tests {
         let reg = EndpointRegistry::new();
         let entry = EndpointEntry {
             id: EndpointId::from("telegram"),
-            topic: TopicId::Interactive(EndpointName::from("telegram")),
+            topic: TopicId::Response(EndpointName::from("telegram")),
             capabilities: EndpointCapabilities::INTERACTIVE,
             display_name: "Telegram".to_string(),
         };
         reg.register(entry);
 
         let got = reg
-            .get_by_topic(&TopicId::Interactive(EndpointName::from("telegram")))
+            .get_by_topic(&TopicId::Response(EndpointName::from("telegram")))
             .unwrap();
         assert_eq!(got.id, EndpointId::from("telegram"));
     }
@@ -354,7 +354,7 @@ mod tests {
         let reg = EndpointRegistry::new();
         reg.register(make_entry("ws", EndpointCapabilities::INTERACTIVE));
         assert!(
-            reg.get_by_topic(&TopicId::Interactive(EndpointName::from("missing")))
+            reg.get_by_topic(&TopicId::Response(EndpointName::from("missing")))
                 .is_none()
         );
     }
@@ -368,7 +368,7 @@ mod tests {
         ));
         reg.register(EndpointEntry {
             id: EndpointId::from("ntfy"),
-            topic: TopicId::Notify(NotifyName::from("ntfy")),
+            topic: TopicId::Notification(NotifyName::from("ntfy")),
             capabilities: EndpointCapabilities::NOTIFY_ONLY,
             display_name: "ntfy".to_string(),
         });
@@ -390,7 +390,7 @@ mod tests {
         reg.register(make_entry("ws", EndpointCapabilities::INTERACTIVE));
         reg.register(EndpointEntry {
             id: EndpointId::from("ntfy"),
-            topic: TopicId::Notify(NotifyName::from("ntfy")),
+            topic: TopicId::Notification(NotifyName::from("ntfy")),
             capabilities: EndpointCapabilities::NOTIFY_ONLY,
             display_name: "ntfy".to_string(),
         });
@@ -406,7 +406,7 @@ mod tests {
         reg.register(make_entry("ws", EndpointCapabilities::INTERACTIVE));
         reg.register(EndpointEntry {
             id: EndpointId::from("ntfy"),
-            topic: TopicId::Notify(NotifyName::from("ntfy")),
+            topic: TopicId::Notification(NotifyName::from("ntfy")),
             capabilities: EndpointCapabilities::NOTIFY_ONLY,
             display_name: "ntfy".to_string(),
         });
@@ -422,7 +422,7 @@ mod tests {
         reg.register(make_entry("ws", EndpointCapabilities::INTERACTIVE));
         reg.register(EndpointEntry {
             id: EndpointId::from("ntfy"),
-            topic: TopicId::Notify(NotifyName::from("ntfy")),
+            topic: TopicId::Notification(NotifyName::from("ntfy")),
             capabilities: EndpointCapabilities::NOTIFY_ONLY,
             display_name: "ntfy".to_string(),
         });
@@ -439,7 +439,7 @@ mod tests {
         reg.register(make_entry("discord", EndpointCapabilities::INTERACTIVE));
         reg.register(EndpointEntry {
             id: EndpointId::from("ntfy"),
-            topic: TopicId::Notify(NotifyName::from("ntfy")),
+            topic: TopicId::Notification(NotifyName::from("ntfy")),
             capabilities: EndpointCapabilities::NOTIFY_ONLY,
             display_name: "ntfy".to_string(),
         });
@@ -507,7 +507,7 @@ mod tests {
         let ch = reg.get(&EndpointId::from("my-ntfy")).unwrap();
         assert_eq!(ch.display_name, "Ntfy (my-ntfy)");
         assert!(ch.capabilities.contains(EndpointCapabilities::NOTIFY_ONLY));
-        assert_eq!(ch.topic, TopicId::Notify(NotifyName::from("my-ntfy")));
+        assert_eq!(ch.topic, TopicId::Notification(NotifyName::from("my-ntfy")));
     }
 
     #[test]
@@ -543,7 +543,7 @@ mod tests {
         let gh = reg.get(&EndpointId::from("webhook:github")).unwrap();
         assert_eq!(gh.display_name, "Webhook (github)");
         assert!(gh.capabilities.contains(EndpointCapabilities::INPUT_ONLY));
-        assert_eq!(gh.topic, TopicId::Webhook(WebhookName::from("github")));
+        assert_eq!(gh.topic, TopicId::Inbox);
 
         let deploy = reg.get(&EndpointId::from("webhook:deploy")).unwrap();
         assert_eq!(deploy.display_name, "Webhook (deploy)");

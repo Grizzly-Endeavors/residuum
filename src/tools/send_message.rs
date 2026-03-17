@@ -4,8 +4,8 @@ use async_trait::async_trait;
 use serde_json::Value;
 
 use crate::bus::{
-    BusEvent, EndpointCapabilities, EndpointId, EndpointRegistry, EventTrigger, NotificationEvent,
-    Publisher, ResponseEvent,
+    EndpointCapabilities, EndpointId, EndpointName, EndpointRegistry, EventTrigger,
+    NotificationEvent, NotifyName, Publisher, ResponseEvent, topics,
 };
 use crate::models::ToolDefinition;
 
@@ -121,8 +121,8 @@ impl Tool for SendMessageTool {
 
         let now = chrono::Utc::now().naive_utc();
 
-        let event = if is_notify {
-            BusEvent::Notification(NotificationEvent {
+        if is_notify {
+            let notification = NotificationEvent {
                 title: title.map_or_else(
                     || message.chars().take(60).collect::<String>(),
                     str::to_string,
@@ -130,23 +130,29 @@ impl Tool for SendMessageTool {
                 content: message.to_string(),
                 source: EventTrigger::Agent,
                 timestamp: now,
-            })
+            };
+            let topic = topics::Notification(NotifyName::from(endpoint_name));
+            self.publisher
+                .publish(topic, notification)
+                .await
+                .map_err(|e| {
+                    ToolError::Execution(format!(
+                        "failed to publish message to '{endpoint_name}': {e}"
+                    ))
+                })?;
         } else {
-            BusEvent::Response(ResponseEvent {
+            let response = ResponseEvent {
                 correlation_id: String::new(),
                 content: message.to_string(),
                 timestamp: now,
-            })
-        };
-
-        self.publisher
-            .publish(entry.topic, event)
-            .await
-            .map_err(|e| {
+            };
+            let topic = topics::Response(EndpointName::from(endpoint_name));
+            self.publisher.publish(topic, response).await.map_err(|e| {
                 ToolError::Execution(format!(
                     "failed to publish message to '{endpoint_name}': {e}"
                 ))
             })?;
+        }
 
         Ok(ToolResult::success(format!(
             "Message published to endpoint '{endpoint_name}'"
@@ -156,26 +162,21 @@ impl Tool for SendMessageTool {
 
 #[cfg(test)]
 #[expect(clippy::unwrap_used, reason = "test code uses unwrap for clarity")]
-#[expect(
-    clippy::wildcard_enum_match_arm,
-    reason = "test assertions use wildcard for non-matching variants"
-)]
-#[expect(clippy::panic, reason = "test assertions")]
 mod tests {
     use super::*;
-    use crate::bus::{EndpointEntry, EndpointName, NotifyName, TopicId};
+    use crate::bus::{EndpointEntry, TopicId};
 
     fn make_registry() -> EndpointRegistry {
         let registry = EndpointRegistry::new();
         registry.register(EndpointEntry {
             id: EndpointId::from("ws"),
-            topic: TopicId::Interactive(EndpointName::from("ws")),
+            topic: TopicId::Response(EndpointName::from("ws")),
             capabilities: EndpointCapabilities::INTERACTIVE,
             display_name: "WebSocket".to_string(),
         });
         registry.register(EndpointEntry {
             id: EndpointId::from("my-ntfy"),
-            topic: TopicId::Notify(NotifyName::from("my-ntfy")),
+            topic: TopicId::Notification(NotifyName::from("my-ntfy")),
             capabilities: EndpointCapabilities::NOTIFY_ONLY,
             display_name: "Ntfy (my-ntfy)".to_string(),
         });
@@ -208,7 +209,7 @@ mod tests {
         let bus_handle = crate::bus::spawn_broker();
         let publisher = bus_handle.publisher();
         let mut subscriber = bus_handle
-            .subscribe(TopicId::Notify(NotifyName::from("my-ntfy")))
+            .subscribe(topics::Notification(NotifyName::from("my-ntfy")))
             .await
             .unwrap();
         let tool = SendMessageTool::new(registry, publisher);
@@ -225,14 +226,9 @@ mod tests {
         assert!(!result.is_error, "should succeed: {}", result.output);
         assert!(result.output.contains("my-ntfy"));
 
-        let event = subscriber.recv().await.unwrap();
-        match event {
-            BusEvent::Notification(n) => {
-                assert_eq!(n.title, "alert");
-                assert_eq!(n.content, "test notification");
-            }
-            other => panic!("expected Notification, got {other:?}"),
-        }
+        let event = subscriber.recv().await.unwrap().unwrap();
+        assert_eq!(event.title, "alert");
+        assert_eq!(event.content, "test notification");
     }
 
     #[tokio::test]
@@ -241,7 +237,7 @@ mod tests {
         let bus_handle = crate::bus::spawn_broker();
         let publisher = bus_handle.publisher();
         let mut subscriber = bus_handle
-            .subscribe(TopicId::Interactive(EndpointName::from("ws")))
+            .subscribe(topics::Response(EndpointName::from("ws")))
             .await
             .unwrap();
         let tool = SendMessageTool::new(registry, publisher);
@@ -256,13 +252,8 @@ mod tests {
 
         assert!(!result.is_error, "should succeed: {}", result.output);
 
-        let event = subscriber.recv().await.unwrap();
-        match event {
-            BusEvent::Response(r) => {
-                assert_eq!(r.content, "proactive message");
-            }
-            other => panic!("expected Response, got {other:?}"),
-        }
+        let event = subscriber.recv().await.unwrap().unwrap();
+        assert_eq!(event.content, "proactive message");
     }
 
     #[tokio::test]

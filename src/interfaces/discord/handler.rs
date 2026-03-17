@@ -13,7 +13,7 @@ use serenity::model::channel::Message;
 use serenity::model::gateway::Ready;
 use serenity::prelude::*;
 
-use crate::bus::{BusHandle, EndpointName, Publisher, TopicId};
+use crate::bus::{BusHandle, EndpointName, Publisher};
 use crate::gateway::types::{ReloadSignal, ServerCommand};
 use crate::inbox;
 use crate::interfaces::attachment::{
@@ -60,27 +60,21 @@ impl EventHandler for DiscordHandler {
             tracing::warn!(error = %e, "failed to register discord slash commands");
         }
 
-        // Subscribe to bus topics and spawn subscriber loops
-        let interactive_sub = self
-            .bus_handle
-            .subscribe(TopicId::Interactive(EndpointName::from("discord")))
-            .await;
-        let broadcast_sub = self.bus_handle.subscribe(TopicId::SystemBroadcast).await;
-
-        if let Ok(sub) = interactive_sub {
-            let h = Arc::clone(&ctx.http);
-            let cid = Arc::clone(&self.channel_id);
-            tokio::spawn(super::subscriber::run_discord_subscriber(sub, h, cid));
-        } else if let Err(e) = interactive_sub {
-            tracing::warn!(error = %e, "failed to subscribe to interactive:discord");
-        }
-
-        if let Ok(sub) = broadcast_sub {
-            let h = Arc::clone(&ctx.http);
-            let cid = Arc::clone(&self.channel_id);
-            tokio::spawn(super::subscriber::run_discord_subscriber(sub, h, cid));
-        } else if let Err(e) = broadcast_sub {
-            tracing::warn!(error = %e, "failed to subscribe to system:broadcast for discord");
+        // Subscribe to typed bus topics and spawn subscriber loop
+        match super::subscriber::DiscordSubscribers::new(
+            &self.bus_handle,
+            EndpointName::from("discord"),
+        )
+        .await
+        {
+            Ok(subs) => {
+                let h = Arc::clone(&ctx.http);
+                let cid = Arc::clone(&self.channel_id);
+                tokio::spawn(super::subscriber::run_discord_subscriber(subs, h, cid));
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "failed to subscribe to discord bus topics");
+            }
         }
 
         // Spawn presence watcher background task
@@ -137,10 +131,7 @@ impl EventHandler for DiscordHandler {
 
         if let Err(e) = self
             .publisher
-            .publish(
-                crate::bus::TopicId::AgentMain,
-                crate::bus::BusEvent::Message(msg_event),
-            )
+            .publish(crate::bus::topics::UserMessage, msg_event)
             .await
         {
             tracing::warn!(error = %e, "failed to publish discord message to bus");

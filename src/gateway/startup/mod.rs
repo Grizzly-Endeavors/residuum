@@ -58,7 +58,7 @@ pub(crate) struct GatewayComponents {
     pub background_result_rx: mpsc::Receiver<BackgroundResult>,
     pub spawn_context: Arc<SpawnContext>,
     pub path_policy: crate::tools::SharedPathPolicy,
-    pub output_topic_override_tx: tokio::sync::watch::Sender<Option<crate::bus::TopicId>>,
+    pub output_topic_override_tx: tokio::sync::watch::Sender<Option<crate::bus::EndpointName>>,
 }
 
 /// Bootstrap the workspace directory and return the layout and timezone.
@@ -264,7 +264,7 @@ fn init_channels_and_registry(
 
 /// Spawn notify subscribers for each configured channel and the inbox.
 ///
-/// Each channel subscribes to its `TopicId::Notify(name)` topic on the bus.
+/// Each channel subscribes to its `TopicId::Notification(name)` topic on the bus.
 /// The inbox subscribes to `TopicId::Inbox`.
 pub(crate) async fn spawn_notify_subscribers(
     bus_handle: &crate::bus::BusHandle,
@@ -273,7 +273,7 @@ pub(crate) async fn spawn_notify_subscribers(
     layout: &WorkspaceLayout,
     tz: chrono_tz::Tz,
 ) -> Vec<tokio::task::JoinHandle<()>> {
-    use crate::bus::{NotifyName, TopicId};
+    use crate::bus::{NotifyName, topics};
     use crate::notify::subscriber::run_notify_subscriber;
 
     let external_channels =
@@ -283,7 +283,7 @@ pub(crate) async fn spawn_notify_subscribers(
 
     // Spawn a subscriber for each external channel
     for (name, channel) in external_channels {
-        let topic = TopicId::Notify(NotifyName::from(name.as_str()));
+        let topic = topics::Notification(NotifyName::from(name.as_str()));
         match bus_handle.subscribe(topic).await {
             Ok(subscriber) => {
                 let handle = tokio::spawn(run_notify_subscriber(subscriber, channel));
@@ -298,7 +298,7 @@ pub(crate) async fn spawn_notify_subscribers(
 
     // Spawn inbox subscriber
     let inbox_channel = InboxChannel::new(layout.inbox_dir(), tz);
-    match bus_handle.subscribe(TopicId::Inbox).await {
+    match bus_handle.subscribe(topics::Inbox).await {
         Ok(subscriber) => {
             let handle = tokio::spawn(run_notify_subscriber(subscriber, Box::new(inbox_channel)));
             handles.push(handle);

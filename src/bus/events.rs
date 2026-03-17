@@ -246,46 +246,40 @@ pub struct SpawnRequestEvent {
 }
 
 // ---------------------------------------------------------------------------
-// BusEvent
+// Typed topic event enums
 // ---------------------------------------------------------------------------
 
-/// An event published onto the bus.
+/// Tool activity during a turn (call or result).
 #[derive(Debug, Clone)]
-pub enum BusEvent {
-    /// Inbound user/external message.
-    Message(MessageEvent),
-    /// Agent response to an endpoint.
-    Response(ResponseEvent),
-    /// Push notification.
-    Notification(NotificationEvent),
-    /// Completed background/subagent result.
-    AgentResult(AgentResultEvent),
-    /// Request to spawn a sub-agent.
-    SpawnRequest(SpawnRequestEvent),
-    /// Tool invocation from the agent.
-    ToolCall(ToolCallEvent),
-    /// Tool execution result.
-    ToolResult(ToolResultEvent),
-    /// Intermediate model text.
-    Intermediate(IntermediateEvent),
-    /// System event (pulse, action, etc.).
-    SystemEvent(SystemEventData),
+pub enum ToolActivityEvent {
+    /// A tool was invoked by the agent.
+    Call(ToolCallEvent),
+    /// A tool execution completed.
+    Result(ToolResultEvent),
+}
+
+/// Turn lifecycle transitions.
+#[derive(Debug, Clone)]
+pub enum TurnLifecycleEvent {
     /// Agent turn has started processing.
-    TurnStarted {
+    Started {
         /// Links back to the originating message.
         correlation_id: String,
     },
     /// Agent turn has finished processing.
-    TurnEnded {
+    Ended {
         /// Links back to the originating message.
         correlation_id: String,
     },
-    /// Raw webhook payload.
-    WebhookPayload {
-        /// The raw body content.
-        body: String,
-        /// MIME content type, if known.
-        content_type: Option<String>,
+}
+
+/// System-wide messages (notices, errors, events).
+#[derive(Debug, Clone)]
+pub enum SystemMessageEvent {
+    /// Operational notice (reload status, memory progress, command responses).
+    Notice {
+        /// Human-readable notice message.
+        message: String,
     },
     /// An error tied to a specific agent turn.
     Error {
@@ -294,11 +288,8 @@ pub enum BusEvent {
         /// Error description.
         message: String,
     },
-    /// Operational notice (reload status, memory progress, command responses).
-    Notice {
-        /// Human-readable notice message.
-        message: String,
-    },
+    /// System event surfaced to endpoints (pulse, action, etc.).
+    Event(SystemEventData),
 }
 
 // ---------------------------------------------------------------------------
@@ -307,10 +298,6 @@ pub enum BusEvent {
 
 #[cfg(test)]
 #[expect(clippy::unwrap_used, reason = "test code uses unwrap for clarity")]
-#[expect(
-    clippy::wildcard_enum_match_arm,
-    reason = "test assertions use wildcard for non-matching variants"
-)]
 #[expect(clippy::panic, reason = "test assertions")]
 #[expect(clippy::indexing_slicing, reason = "test assertions")]
 mod tests {
@@ -323,100 +310,6 @@ mod tests {
             .unwrap()
             .and_hms_opt(12, 0, 0)
             .unwrap()
-    }
-
-    fn sample_origin() -> MessageOrigin {
-        MessageOrigin {
-            endpoint: "test".to_string(),
-            sender_name: "tester".to_string(),
-            sender_id: "t-1".to_string(),
-        }
-    }
-
-    #[test]
-    fn bus_event_message_variant() {
-        let event = BusEvent::Message(MessageEvent {
-            id: "m1".into(),
-            content: "hello".into(),
-            origin: sample_origin(),
-            timestamp: sample_timestamp(),
-            images: vec![],
-        });
-        match event {
-            BusEvent::Message(msg) => {
-                assert_eq!(msg.id, "m1");
-                assert_eq!(msg.content, "hello");
-            }
-            _ => panic!("expected Message variant"),
-        }
-    }
-
-    #[test]
-    fn bus_event_response_variant() {
-        let event = BusEvent::Response(ResponseEvent {
-            correlation_id: "m1".into(),
-            content: "reply".into(),
-            timestamp: sample_timestamp(),
-        });
-        match event {
-            BusEvent::Response(resp) => assert_eq!(resp.correlation_id, "m1"),
-            _ => panic!("expected Response variant"),
-        }
-    }
-
-    #[test]
-    fn bus_event_notification_variant() {
-        let event = BusEvent::Notification(NotificationEvent {
-            title: "alert".into(),
-            content: "something happened".into(),
-            source: EventTrigger::Pulse,
-            timestamp: sample_timestamp(),
-        });
-        match event {
-            BusEvent::Notification(n) => assert_eq!(n.title, "alert"),
-            _ => panic!("expected Notification variant"),
-        }
-    }
-
-    #[test]
-    fn bus_event_agent_result_variant() {
-        let event = BusEvent::AgentResult(AgentResultEvent {
-            task_id: "t1".into(),
-            source_label: "action:summarize".into(),
-            agent_preset: PresetName::from("summarizer"),
-            source: EventTrigger::Action,
-            heartbeat_status: HeartbeatStatus::Substantive,
-            status: AgentResultStatus::Completed,
-            summary: "done".into(),
-            transcript_path: Some(PathBuf::from("/tmp/transcript.json")),
-            timestamp: sample_timestamp(),
-        });
-        match event {
-            BusEvent::AgentResult(ar) => {
-                assert_eq!(ar.task_id, "t1");
-                assert_eq!(
-                    ar.transcript_path,
-                    Some(PathBuf::from("/tmp/transcript.json"))
-                );
-            }
-            _ => panic!("expected AgentResult variant"),
-        }
-    }
-
-    #[test]
-    fn bus_event_webhook_payload_variant() {
-        let event = BusEvent::WebhookPayload {
-            body: r#"{"push":"data"}"#.into(),
-            content_type: Some("application/json".into()),
-        };
-        let cloned = event.clone();
-        match cloned {
-            BusEvent::WebhookPayload { body, content_type } => {
-                assert_eq!(body, r#"{"push":"data"}"#);
-                assert_eq!(content_type.as_deref(), Some("application/json"));
-            }
-            _ => panic!("expected WebhookPayload variant"),
-        }
     }
 
     #[test]
@@ -443,26 +336,6 @@ mod tests {
     }
 
     #[test]
-    fn bus_event_spawn_request_variant() {
-        let event = BusEvent::SpawnRequest(SpawnRequestEvent {
-            source_label: "agent:review".into(),
-            prompt: "review the PR".into(),
-            context: None,
-            source: EventTrigger::Agent,
-            model_tier_override: None,
-        });
-        match event {
-            BusEvent::SpawnRequest(sr) => {
-                assert_eq!(sr.source_label, "agent:review");
-                assert_eq!(sr.prompt, "review the PR");
-                assert!(sr.context.is_none());
-                assert!(sr.model_tier_override.is_none());
-            }
-            _ => panic!("expected SpawnRequest variant"),
-        }
-    }
-
-    #[test]
     fn heartbeat_status_equality() {
         assert_eq!(HeartbeatStatus::Ok, HeartbeatStatus::Ok);
         assert_eq!(HeartbeatStatus::Substantive, HeartbeatStatus::Substantive);
@@ -477,7 +350,9 @@ mod tests {
         let cloned = status.clone();
         match cloned {
             AgentResultStatus::Failed { error } => assert_eq!(error, "timeout"),
-            _ => panic!("expected Failed variant"),
+            AgentResultStatus::Completed | AgentResultStatus::Cancelled => {
+                panic!("expected Failed variant")
+            }
         }
     }
 
@@ -492,112 +367,13 @@ mod tests {
     }
 
     #[test]
-    fn bus_event_tool_call_variant() {
-        let event = BusEvent::ToolCall(ToolCallEvent {
-            correlation_id: "m1".into(),
-            tool_call_id: "tc1".into(),
-            name: "search".into(),
-            arguments: serde_json::json!({"query": "rust"}),
-        });
-        match event {
-            BusEvent::ToolCall(tc) => {
-                assert_eq!(tc.correlation_id, "m1");
-                assert_eq!(tc.tool_call_id, "tc1");
-                assert_eq!(tc.name, "search");
-                assert_eq!(tc.arguments["query"], "rust");
-            }
-            _ => panic!("expected ToolCall variant"),
-        }
-    }
-
-    #[test]
-    fn bus_event_tool_result_variant() {
-        let event = BusEvent::ToolResult(ToolResultEvent {
-            correlation_id: "m1".into(),
-            tool_call_id: "tc1".into(),
-            name: "search".into(),
-            output: "found 3 results".into(),
-            is_error: false,
-        });
-        match event {
-            BusEvent::ToolResult(tr) => {
-                assert_eq!(tr.tool_call_id, "tc1");
-                assert!(!tr.is_error);
-            }
-            _ => panic!("expected ToolResult variant"),
-        }
-    }
-
-    #[test]
-    fn bus_event_tool_result_error_variant() {
-        let event = BusEvent::ToolResult(ToolResultEvent {
-            correlation_id: "m1".into(),
-            tool_call_id: "tc2".into(),
-            name: "fetch".into(),
-            output: "connection refused".into(),
-            is_error: true,
-        });
-        match event {
-            BusEvent::ToolResult(tr) => {
-                assert!(tr.is_error);
-                assert_eq!(tr.output, "connection refused");
-            }
-            _ => panic!("expected ToolResult variant"),
-        }
-    }
-
-    #[test]
-    fn bus_event_intermediate_variant() {
-        let event = BusEvent::Intermediate(IntermediateEvent {
-            correlation_id: "m1".into(),
-            content: "thinking...".into(),
-        });
-        match event {
-            BusEvent::Intermediate(im) => {
-                assert_eq!(im.correlation_id, "m1");
-                assert_eq!(im.content, "thinking...");
-            }
-            _ => panic!("expected Intermediate variant"),
-        }
-    }
-
-    #[test]
-    fn bus_event_system_event_variant() {
-        let event = BusEvent::SystemEvent(SystemEventData {
-            correlation_id: "m1".into(),
-            source: "daily-summary".into(),
-            content: "3 tasks completed".into(),
-            timestamp: sample_timestamp(),
-        });
-        match event {
-            BusEvent::SystemEvent(se) => {
-                assert_eq!(se.source, "daily-summary");
-                assert_eq!(se.content, "3 tasks completed");
-            }
-            _ => panic!("expected SystemEvent variant"),
-        }
-    }
-
-    #[test]
-    fn bus_event_turn_started_variant() {
-        let event = BusEvent::TurnStarted {
-            correlation_id: "m1".into(),
-        };
-        match event {
-            BusEvent::TurnStarted { correlation_id } => assert_eq!(correlation_id, "m1"),
-            _ => panic!("expected TurnStarted variant"),
-        }
-    }
-
-    #[test]
-    fn bus_event_turn_ended_variant() {
-        let event = BusEvent::TurnEnded {
-            correlation_id: "m1".into(),
-        };
-        match event {
-            BusEvent::TurnEnded { correlation_id } => assert_eq!(correlation_id, "m1"),
-            _ => panic!("expected TurnEnded variant"),
-        }
+    fn event_trigger_as_str() {
+        assert_eq!(EventTrigger::Pulse.as_str(), "pulse");
+        assert_eq!(EventTrigger::Action.as_str(), "action");
+        assert_eq!(EventTrigger::Agent.as_str(), "agent");
+        assert_eq!(EventTrigger::Webhook("github".into()).as_str(), "webhook");
+        // Webhook name does not affect the label.
+        assert_eq!(EventTrigger::Webhook("custom".into()).as_str(), "webhook");
     }
 
     #[test]
@@ -620,44 +396,5 @@ mod tests {
         };
         let cloned_se = se.clone();
         assert_eq!(cloned_se.source, "pulse");
-    }
-
-    #[test]
-    fn bus_event_error_variant() {
-        let event = BusEvent::Error {
-            correlation_id: "c1".into(),
-            message: "something broke".into(),
-        };
-        match event {
-            BusEvent::Error {
-                correlation_id,
-                message,
-            } => {
-                assert_eq!(correlation_id, "c1");
-                assert_eq!(message, "something broke");
-            }
-            _ => panic!("expected Error variant"),
-        }
-    }
-
-    #[test]
-    fn bus_event_notice_variant() {
-        let event = BusEvent::Notice {
-            message: "reloading config".into(),
-        };
-        match event {
-            BusEvent::Notice { message } => assert_eq!(message, "reloading config"),
-            _ => panic!("expected Notice variant"),
-        }
-    }
-
-    #[test]
-    fn event_trigger_as_str() {
-        assert_eq!(EventTrigger::Pulse.as_str(), "pulse");
-        assert_eq!(EventTrigger::Action.as_str(), "action");
-        assert_eq!(EventTrigger::Agent.as_str(), "agent");
-        assert_eq!(EventTrigger::Webhook("github".into()).as_str(), "webhook");
-        // Webhook name does not affect the label.
-        assert_eq!(EventTrigger::Webhook("custom".into()).as_str(), "webhook");
     }
 }

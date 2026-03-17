@@ -62,9 +62,7 @@ fn switch_idle_interface(rt: &mut GatewayRuntime, channel_name: &str) {
                 .capabilities
                 .contains(crate::bus::EndpointCapabilities::INTERACTIVE) =>
         {
-            rt.last_output_topic = Some(crate::bus::TopicId::Interactive(
-                crate::bus::EndpointName::from(channel_name),
-            ));
+            rt.last_output_endpoint = Some(crate::bus::EndpointName::from(channel_name));
             tracing::info!(channel = %channel_name, "switched to idle interface");
         }
         Some(_) => {
