@@ -206,7 +206,7 @@ pub(super) async fn handle_root_reload(rt: &mut GatewayRuntime) -> IdleAction {
     tracing::info!("handling root config reload in-place");
     backup_config(&rt.config_dir);
 
-    let new_cfg = match Config::load() {
+    let new_cfg = match Config::load_at(&rt.config_dir) {
         Ok(cfg) => cfg,
         Err(err) => {
             tracing::warn!(error = %err, "config reload failed, keeping current config");
