@@ -1,10 +1,13 @@
-//! Telegram bus subscriber — translates `BusEvent`s to Telegram chat messages.
+//! Telegram bus subscriber — translates typed bus events to Telegram chat messages.
 
 use teloxide::Bot;
 use teloxide::requests::Requester;
 use teloxide::types::{ChatAction, ChatId};
 
-use crate::bus::{BusEvent, Subscriber};
+use crate::bus::{
+    EndpointName, IntermediateEvent, ResponseEvent, SystemMessageEvent, TurnLifecycleEvent,
+    TypedSubscriber, topics,
+};
 use crate::interfaces::chunking::chunk_text;
 
 /// Maximum message length for Telegram.
@@ -15,63 +18,96 @@ const TELEGRAM_MAX_CHARS: usize = 4096;
 /// Telegram's typing indicator lasts ~5s, so 4s provides overlap.
 const TYPING_INTERVAL_SECS: u64 = 4;
 
+/// Typed subscribers for a single Telegram connection.
+pub(crate) struct TelegramSubscribers {
+    response: TypedSubscriber<ResponseEvent>,
+    turn_lifecycle: TypedSubscriber<TurnLifecycleEvent>,
+    intermediate: TypedSubscriber<IntermediateEvent>,
+    system: TypedSubscriber<SystemMessageEvent>,
+}
+
+impl TelegramSubscribers {
+    /// Create all typed subscribers for a Telegram connection.
+    pub(crate) async fn new(
+        bus_handle: &crate::bus::BusHandle,
+        ep: EndpointName,
+    ) -> Result<Self, crate::bus::BusError> {
+        Ok(Self {
+            response: bus_handle
+                .subscribe_typed(topics::Response(ep.clone()))
+                .await?,
+            turn_lifecycle: bus_handle
+                .subscribe_typed(topics::TurnLifecycle(ep.clone()))
+                .await?,
+            intermediate: bus_handle.subscribe_typed(topics::Intermediate(ep)).await?,
+            system: bus_handle.subscribe_typed(topics::SystemMessage).await?,
+        })
+    }
+}
+
 /// Receives events from the bus and delivers them to the Telegram chat.
-pub(crate) async fn run_telegram_subscriber(mut subscriber: Subscriber, bot: Bot, chat_id: ChatId) {
+pub(crate) async fn run_telegram_subscriber(
+    mut subs: TelegramSubscribers,
+    bot: Bot,
+    chat_id: ChatId,
+) {
     let mut typing_cancel: Option<tokio::sync::watch::Sender<bool>> = None;
 
-    while let Some(event) = subscriber.recv().await {
-        match event {
-            BusEvent::TurnStarted { .. } => {
-                // Start a typing indicator loop
-                let b = bot.clone();
-                let cid = chat_id;
-                let (stop_tx, mut stop_rx) = tokio::sync::watch::channel(false);
-                typing_cancel = Some(stop_tx);
-
-                tokio::spawn(async move {
-                    loop {
-                        if let Err(e) = b.send_chat_action(cid, ChatAction::Typing).await {
-                            tracing::trace!(error = %e, "telegram typing indicator failed");
-                        }
-                        tokio::select! {
-                            () = tokio::time::sleep(tokio::time::Duration::from_secs(TYPING_INTERVAL_SECS)) => {}
-                            _ = stop_rx.changed() => break,
-                        }
+    loop {
+        tokio::select! {
+            event = subs.turn_lifecycle.recv() => {
+                match event {
+                    Ok(Some(TurnLifecycleEvent::Started { .. })) => {
+                        let b = bot.clone();
+                        let cid = chat_id;
+                        let (stop_tx, mut stop_rx) = tokio::sync::watch::channel(false);
+                        typing_cancel = Some(stop_tx);
+                        tokio::spawn(async move {
+                            loop {
+                                if let Err(e) = b.send_chat_action(cid, ChatAction::Typing).await {
+                                    tracing::trace!(error = %e, "telegram typing indicator failed");
+                                }
+                                tokio::select! {
+                                    () = tokio::time::sleep(tokio::time::Duration::from_secs(TYPING_INTERVAL_SECS)) => {}
+                                    _ = stop_rx.changed() => break,
+                                }
+                            }
+                        });
                     }
-                });
+                    Ok(Some(TurnLifecycleEvent::Ended { .. })) => {
+                        typing_cancel.take();
+                    }
+                    _ => break,
+                }
             }
-            BusEvent::TurnEnded { .. } => {
-                // Cancel typing loop
-                typing_cancel.take();
+            event = subs.response.recv() => {
+                match event {
+                    Ok(Some(resp)) => send_chunks(&bot, chat_id, &resp.content).await,
+                    _ => break,
+                }
             }
-            BusEvent::Response(resp) => {
-                send_chunks(&bot, chat_id, &resp.content).await;
+            event = subs.intermediate.recv() => {
+                match event {
+                    Ok(Some(im)) => send_chunks(&bot, chat_id, &im.content).await,
+                    _ => break,
+                }
             }
-            BusEvent::Intermediate(im) => {
-                send_chunks(&bot, chat_id, &im.content).await;
+            event = subs.system.recv() => {
+                match event {
+                    Ok(Some(SystemMessageEvent::Notice { message })) => {
+                        send_chunks(&bot, chat_id, &message).await;
+                    }
+                    Ok(Some(SystemMessageEvent::Error { message, .. })) => {
+                        let text = format!("**Error:** {message}");
+                        send_chunks(&bot, chat_id, &text).await;
+                    }
+                    Ok(Some(SystemMessageEvent::Event(se))) => {
+                        let text = format!("**[{}]** {}", se.source, se.content);
+                        send_chunks(&bot, chat_id, &text).await;
+                    }
+                    _ => break,
+                }
             }
-            BusEvent::SystemEvent(se) => {
-                let text = format!("**[{}]** {}", se.source, se.content);
-                send_chunks(&bot, chat_id, &text).await;
-            }
-            BusEvent::Error {
-                correlation_id: _,
-                message,
-            } => {
-                let text = format!("**Error:** {message}");
-                send_chunks(&bot, chat_id, &text).await;
-            }
-            BusEvent::Notice { message } => {
-                send_chunks(&bot, chat_id, &message).await;
-            }
-            // Tool calls/results are not surfaced in Telegram
-            BusEvent::ToolCall(_)
-            | BusEvent::ToolResult(_)
-            | BusEvent::Message(_)
-            | BusEvent::Notification(_)
-            | BusEvent::AgentResult(_)
-            | BusEvent::WebhookPayload { .. }
-            | BusEvent::SpawnRequest(_) => {}
         }
     }
 

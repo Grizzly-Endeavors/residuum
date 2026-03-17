@@ -6,11 +6,11 @@ use axum::response::IntoResponse;
 use futures_util::{SinkExt, StreamExt};
 use tokio::sync::mpsc;
 
-use crate::bus::{EndpointName, TopicId};
+use crate::bus::EndpointName;
 use crate::gateway::protocol::{ClientMessage, ServerMessage};
 use crate::gateway::types::GatewayState;
 use crate::interfaces::types::MessageOrigin;
-use crate::interfaces::websocket::subscriber::translate_bus_event;
+use crate::interfaces::websocket::subscriber::WsSubscribers;
 
 /// Axum handler that upgrades an HTTP request to a WebSocket connection.
 pub(super) async fn ws_handler(
@@ -22,23 +22,18 @@ pub(super) async fn ws_handler(
 
 /// Handle a single WebSocket connection.
 ///
-/// Each connection subscribes to `Interactive("ws")` and `SystemBroadcast` on
-/// the bus. A local channel carries per-connection messages (pong, errors,
-/// inbox confirmations) that bypass the bus. A forwarding task merges all
-/// three sources and writes `ServerMessage` frames to the WebSocket.
+/// Each connection subscribes to typed topics (`Response`, `ToolActivity`,
+/// `TurnLifecycle`, `Intermediate`, `SystemMessage`) on the bus. A local channel
+/// carries per-connection messages (pong, errors, inbox confirmations) that
+/// bypass the bus. A forwarding task merges all sources and writes
+/// `ServerMessage` frames to the WebSocket.
 async fn handle_connection(socket: WebSocket, state: GatewayState) {
     let (mut ws_tx, mut ws_rx) = socket.split();
 
-    // Subscribe to bus topics for this connection
-    let interactive_sub = state
-        .bus_handle
-        .subscribe(TopicId::Interactive(EndpointName::from("ws")))
-        .await;
-    let broadcast_sub = state.bus_handle.subscribe(TopicId::SystemBroadcast).await;
-
-    let (mut interactive_sub, mut broadcast_sub) = match (interactive_sub, broadcast_sub) {
-        (Ok(i), Ok(b)) => (i, b),
-        (Err(e), _) | (_, Err(e)) => {
+    // Subscribe to typed bus topics for this connection
+    let mut subs = match WsSubscribers::new(&state.bus_handle, EndpointName::from("ws")).await {
+        Ok(s) => s,
+        Err(e) => {
             tracing::warn!(error = %e, "failed to subscribe to bus topics for ws connection");
             return;
         }
@@ -51,15 +46,9 @@ async fn handle_connection(socket: WebSocket, state: GatewayState) {
     let fwd_handle = tokio::spawn(async move {
         loop {
             let msg = tokio::select! {
-                event = interactive_sub.recv() => {
-                    match event {
-                        Some(e) => translate_bus_event(e),
-                        None => break,
-                    }
-                }
-                event = broadcast_sub.recv() => {
-                    match event {
-                        Some(e) => translate_bus_event(e),
+                bus_msg = subs.recv() => {
+                    match bus_msg {
+                        Some(m) => Some(m),
                         None => break,
                     }
                 }

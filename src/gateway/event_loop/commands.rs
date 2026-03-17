@@ -1,6 +1,6 @@
 //! Server command handler in the event loop.
 
-use crate::bus::{BusEvent, TopicId};
+use crate::bus::{SystemMessageEvent, topics};
 use crate::gateway::types::GatewayRuntime;
 use crate::gateway::types::ServerCommand;
 
@@ -53,7 +53,10 @@ pub async fn handle_server_command(
             }
             if let Err(e) = rt
                 .publisher
-                .publish(TopicId::SystemBroadcast, BusEvent::Notice { message: msg })
+                .publish_typed(
+                    topics::SystemMessage,
+                    SystemMessageEvent::Notice { message: msg },
+                )
                 .await
             {
                 tracing::warn!(error = %e, "failed to publish context notice");
@@ -62,9 +65,9 @@ pub async fn handle_server_command(
         unknown => {
             if let Err(e) = rt
                 .publisher
-                .publish(
-                    TopicId::SystemBroadcast,
-                    BusEvent::Notice {
+                .publish_typed(
+                    topics::SystemMessage,
+                    SystemMessageEvent::Notice {
                         message: format!("unknown server command: {unknown}"),
                     },
                 )

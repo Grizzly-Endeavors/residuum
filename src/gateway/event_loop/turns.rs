@@ -6,7 +6,8 @@ use crate::agent::Agent;
 use crate::agent::context::{ProjectsContext, PromptContext, SkillsContext, SubagentsContext};
 use crate::agent::interrupt::Interrupt;
 use crate::bus::{
-    BusEvent, EndpointName, MessageEvent, Publisher, ResponseEvent, TopicId, TypedSubscriber,
+    EndpointName, MessageEvent, Publisher, ResponseEvent, SystemMessageEvent, TurnLifecycleEvent,
+    TypedSubscriber, topics,
 };
 use crate::error::ResiduumError;
 use crate::gateway::types::{GatewayExit, GatewayRuntime, ReloadSignal};
@@ -160,7 +161,7 @@ async fn run_agent_turn_with_interrupts(
     agent: &mut Agent,
     content: &str,
     publisher: &Publisher,
-    output_topic: &TopicId,
+    output_endpoint: Option<&EndpointName>,
     origin: Option<&MessageOrigin>,
     prompt_ctx: &PromptContext<'_>,
     images: &[ImageData],
@@ -172,7 +173,7 @@ async fn run_agent_turn_with_interrupts(
         let mut turn = std::pin::pin!(agent.process_message(
             content,
             publisher,
-            output_topic,
+            output_endpoint,
             origin,
             prompt_ctx,
             &mut interrupt_rx,
@@ -233,30 +234,30 @@ pub async fn handle_inbound_message(
     let origin = message.origin.clone();
     let is_background = origin.endpoint == "background";
 
-    // Determine output topic: background turns reuse the user's last endpoint,
+    // Determine output endpoint: background turns reuse the user's last endpoint,
     // user turns derive from the origin and become the new last endpoint.
-    let output_topic = if is_background {
-        rt.last_output_topic
-            .clone()
-            .unwrap_or(TopicId::SystemBroadcast)
+    let output_endpoint = if is_background {
+        rt.last_output_endpoint.clone()
     } else {
         // Clear any switch_endpoint override so responses follow the user's endpoint.
         rt.output_topic_override_tx.send_replace(None);
-        let topic = TopicId::Interactive(EndpointName::from(origin.endpoint.as_str()));
-        rt.last_output_topic = Some(topic.clone());
-        topic
+        let ep = EndpointName::from(origin.endpoint.as_str());
+        rt.last_output_endpoint = Some(ep.clone());
+        Some(ep)
     };
 
-    drop(
-        rt.publisher
-            .publish(
-                output_topic.clone(),
-                BusEvent::TurnStarted {
-                    correlation_id: reply_id.clone(),
-                },
-            )
-            .await,
-    );
+    if let Some(ref ep) = output_endpoint {
+        drop(
+            rt.publisher
+                .publish_typed(
+                    topics::TurnLifecycle(ep.clone()),
+                    TurnLifecycleEvent::Started {
+                        correlation_id: reply_id.clone(),
+                    },
+                )
+                .await,
+        );
+    }
 
     let before = rt.agent.message_count();
 
@@ -268,7 +269,7 @@ pub async fn handle_inbound_message(
         &mut rt.agent,
         &message.content,
         &rt.publisher,
-        &output_topic,
+        output_endpoint.as_ref(),
         Some(&origin),
         &prompt_ctx,
         &message.images,
@@ -279,54 +280,58 @@ pub async fn handle_inbound_message(
 
     match turn_result {
         Ok(texts) => {
-            for text in &texts {
+            if let Some(ref ep) = output_endpoint {
+                for text in &texts {
+                    drop(
+                        rt.publisher
+                            .publish_typed(
+                                topics::Response(ep.clone()),
+                                ResponseEvent {
+                                    correlation_id: reply_id.clone(),
+                                    content: text.clone(),
+                                    timestamp: crate::time::now_local(rt.tz),
+                                },
+                            )
+                            .await,
+                    );
+                }
                 drop(
                     rt.publisher
-                        .publish(
-                            output_topic.clone(),
-                            BusEvent::Response(ResponseEvent {
+                        .publish_typed(
+                            topics::TurnLifecycle(ep.clone()),
+                            TurnLifecycleEvent::Ended {
                                 correlation_id: reply_id.clone(),
-                                content: text.clone(),
-                                timestamp: crate::time::now_local(rt.tz),
-                            }),
+                            },
                         )
                         .await,
                 );
             }
-            drop(
-                rt.publisher
-                    .publish(
-                        output_topic.clone(),
-                        BusEvent::TurnEnded {
-                            correlation_id: reply_id.clone(),
-                        },
-                    )
-                    .await,
-            );
         }
         Err(e) => {
             tracing::warn!(error = %e, "agent processing error");
             drop(
                 rt.publisher
-                    .publish(
-                        output_topic.clone(),
-                        BusEvent::Error {
+                    .publish_typed(
+                        topics::SystemMessage,
+                        SystemMessageEvent::Error {
                             correlation_id: reply_id.clone(),
                             message: e.to_string(),
                         },
                     )
                     .await,
             );
-            drop(
-                rt.publisher
-                    .publish(
-                        output_topic.clone(),
-                        BusEvent::TurnEnded {
-                            correlation_id: reply_id.clone(),
-                        },
-                    )
-                    .await,
-            );
+            if let Some(ref ep) = output_endpoint {
+                drop(
+                    rt.publisher
+                        .publish_typed(
+                            topics::TurnLifecycle(ep.clone()),
+                            TurnLifecycleEvent::Ended {
+                                correlation_id: reply_id.clone(),
+                            },
+                        )
+                        .await,
+                );
+            }
         }
     }
 

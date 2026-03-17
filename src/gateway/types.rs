@@ -9,7 +9,7 @@ use crate::agent::Agent;
 use crate::background::BackgroundTaskSpawner;
 use crate::background::spawn_context::SpawnContext;
 use crate::bus::{
-    BusHandle, EndpointRegistry, MessageEvent, Publisher, Subscriber, TopicId, TypedSubscriber,
+    BusHandle, EndpointName, EndpointRegistry, MessageEvent, Publisher, TypedSubscriber,
 };
 use crate::config::Config;
 use crate::mcp::SharedMcpRegistry;
@@ -147,12 +147,12 @@ pub(crate) struct GatewayRuntime {
     pub agent_subscriber: TypedSubscriber<MessageEvent>,
     /// Endpoint registry for looking up configured endpoints.
     pub endpoint_registry: EndpointRegistry,
-    /// Subscriber for bus delivery errors (e.g. no subscribers on a topic).
-    pub error_subscriber: Subscriber,
-    /// Topic for the last endpoint that sent a message (for response routing).
-    pub last_output_topic: Option<TopicId>,
-    /// Sender for clearing the output topic override on user message.
-    pub output_topic_override_tx: tokio::sync::watch::Sender<Option<TopicId>>,
+    /// Typed subscriber for system messages (notices, errors, events).
+    pub error_subscriber: TypedSubscriber<crate::bus::SystemMessageEvent>,
+    /// Endpoint that last sent a message (for background turn response routing).
+    pub last_output_endpoint: Option<EndpointName>,
+    /// Sender for clearing the output endpoint override on user message.
+    pub output_topic_override_tx: tokio::sync::watch::Sender<Option<EndpointName>>,
     pub reload_rx: tokio::sync::watch::Receiver<ReloadSignal>,
     pub command_rx: mpsc::Receiver<ServerCommand>,
     /// Kept alive so the HTTP server task isn't dropped; shut down via `shutdown_tx`.
@@ -209,9 +209,9 @@ mod tests {
         // Bus publish should work before reload
         let result = core
             .publisher
-            .publish(
-                crate::bus::TopicId::SystemBroadcast,
-                crate::bus::BusEvent::Notice {
+            .publish_typed(
+                crate::bus::topics::SystemMessage,
+                crate::bus::SystemMessageEvent::Notice {
                     message: "test".to_string(),
                 },
             )
@@ -224,9 +224,9 @@ mod tests {
         // Channels still work after the reload signal
         let result_after = core
             .publisher
-            .publish(
-                crate::bus::TopicId::SystemBroadcast,
-                crate::bus::BusEvent::Notice {
+            .publish_typed(
+                crate::bus::topics::SystemMessage,
+                crate::bus::SystemMessageEvent::Notice {
                     message: "after reload".to_string(),
                 },
             )

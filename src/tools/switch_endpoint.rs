@@ -5,7 +5,8 @@ use serde_json::Value;
 use tokio::sync::watch;
 
 use crate::bus::{
-    BusEvent, EndpointCapabilities, EndpointId, EndpointRegistry, Publisher, TopicId,
+    EndpointCapabilities, EndpointId, EndpointName, EndpointRegistry, Publisher,
+    SystemMessageEvent, topics,
 };
 use crate::models::ToolDefinition;
 
@@ -14,7 +15,7 @@ use super::{Tool, ToolError, ToolResult};
 /// Tool for switching the agent's output endpoint.
 pub struct SwitchEndpointTool {
     registry: EndpointRegistry,
-    override_tx: watch::Sender<Option<TopicId>>,
+    override_tx: watch::Sender<Option<EndpointName>>,
     publisher: Publisher,
 }
 
@@ -23,7 +24,7 @@ impl SwitchEndpointTool {
     #[must_use]
     pub fn new(
         registry: EndpointRegistry,
-        override_tx: watch::Sender<Option<TopicId>>,
+        override_tx: watch::Sender<Option<EndpointName>>,
         publisher: Publisher,
     ) -> Self {
         Self {
@@ -104,15 +105,15 @@ impl Tool for SwitchEndpointTool {
             )));
         }
 
-        let new_topic = entry.topic.clone();
-        self.override_tx.send_replace(Some(entry.topic));
+        let ep = EndpointName::from(endpoint_name);
+        self.override_tx.send_replace(Some(ep.clone()));
 
-        // Notify the new endpoint so the user there knows the agent switched to them.
+        // Notify via system message so the user knows the agent switched.
         drop(
             self.publisher
-                .publish(
-                    new_topic,
-                    BusEvent::Notice {
+                .publish_typed(
+                    topics::SystemMessage,
+                    SystemMessageEvent::Notice {
                         message: "Agent switched output to this endpoint.".to_string(),
                     },
                 )
@@ -130,7 +131,7 @@ impl Tool for SwitchEndpointTool {
 #[expect(clippy::unwrap_used, reason = "test code uses unwrap for clarity")]
 mod tests {
     use super::*;
-    use crate::bus::{self, EndpointEntry, EndpointName, NotifyName};
+    use crate::bus::{self, EndpointEntry, NotifyName, TopicId};
 
     fn make_registry() -> EndpointRegistry {
         let registry = EndpointRegistry::new();
@@ -182,10 +183,7 @@ mod tests {
         );
 
         let override_val = rx.borrow().clone();
-        assert_eq!(
-            override_val,
-            Some(TopicId::Interactive(EndpointName::from("discord")))
-        );
+        assert_eq!(override_val, Some(EndpointName::from("discord")));
     }
 
     #[tokio::test]

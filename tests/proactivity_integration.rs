@@ -16,7 +16,7 @@ mod proactivity_integration {
 
     use residuum::agent::Agent;
     use residuum::agent::context::PromptContext;
-    use residuum::bus::{EndpointName, EventTrigger, TopicId, spawn_broker};
+    use residuum::bus::{EndpointName, EventTrigger, spawn_broker};
     use residuum::models::{
         CompletionOptions, Message, ModelError, ModelProvider, ModelResponse, Role, ToolDefinition,
     };
@@ -355,13 +355,13 @@ mod proactivity_integration {
 
         let bus = spawn_broker();
         let publisher = bus.publisher();
-        let output_topic = TopicId::Interactive(EndpointName::from("test"));
+        let ep = EndpointName::from("test");
 
         let result = agent
             .run_system_turn(
                 "background check prompt",
                 &publisher,
-                &output_topic,
+                Some(&ep),
                 None,
                 &PromptContext::none(),
             )

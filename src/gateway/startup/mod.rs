@@ -58,7 +58,7 @@ pub(crate) struct GatewayComponents {
     pub background_result_rx: mpsc::Receiver<BackgroundResult>,
     pub spawn_context: Arc<SpawnContext>,
     pub path_policy: crate::tools::SharedPathPolicy,
-    pub output_topic_override_tx: tokio::sync::watch::Sender<Option<crate::bus::TopicId>>,
+    pub output_topic_override_tx: tokio::sync::watch::Sender<Option<crate::bus::EndpointName>>,
 }
 
 /// Bootstrap the workspace directory and return the layout and timezone.

@@ -5,7 +5,7 @@ use std::sync::Arc;
 use tokio::time::Duration;
 
 use crate::background::spawn_context::SpawnContext;
-use crate::bus::{BusEvent, Publisher, TopicId};
+use crate::bus::{Publisher, SystemMessageEvent, topics};
 use crate::config::Config;
 use crate::gateway::startup;
 use crate::models::CompletionOptions;
@@ -184,10 +184,13 @@ pub fn rollback_config(config_dir: &std::path::Path) -> bool {
     any_restored
 }
 
-/// Publish a notice to `SystemBroadcast`.
+/// Publish a notice to `SystemMessage`.
 async fn publish_notice(publisher: &Publisher, message: String) {
     if let Err(e) = publisher
-        .publish(TopicId::SystemBroadcast, BusEvent::Notice { message })
+        .publish_typed(
+            topics::SystemMessage,
+            SystemMessageEvent::Notice { message },
+        )
         .await
     {
         tracing::warn!(error = %e, "failed to publish notice to bus");

@@ -162,7 +162,7 @@ impl ToolRegistry {
     pub fn register_switch_endpoint_tool(
         &mut self,
         registry: EndpointRegistry,
-        override_tx: tokio::sync::watch::Sender<Option<crate::bus::TopicId>>,
+        override_tx: tokio::sync::watch::Sender<Option<crate::bus::EndpointName>>,
         publisher: crate::bus::Publisher,
     ) {
         self.register(Box::new(super::switch_endpoint::SwitchEndpointTool::new(

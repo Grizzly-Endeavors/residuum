@@ -49,7 +49,7 @@ pub(super) fn init_tool_registry(
     ToolRegistry,
     crate::tools::SharedToolFilter,
     crate::tools::SharedPathPolicy,
-    tokio::sync::watch::Sender<Option<crate::bus::TopicId>>,
+    tokio::sync::watch::Sender<Option<crate::bus::EndpointName>>,
 ) {
     let mut blocked_paths: Vec<std::path::PathBuf> = vec![
         cfg.config_dir.join("config.toml"),

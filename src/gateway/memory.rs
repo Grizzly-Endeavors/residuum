@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use crate::agent::Agent;
-use crate::bus::{BusEvent, Publisher, TopicId};
+use crate::bus::{Publisher, SystemMessageEvent, topics};
 use crate::memory::log_store::load_observation_log;
 use crate::memory::observer::{ObserveAction, ObserveResult, Observer};
 use crate::memory::recent_context::{RecentContext, save_recent_context};
@@ -269,22 +269,25 @@ async fn run_reflector_check(reflector: &Reflector, layout: &WorkspaceLayout) ->
     }
 }
 
-/// Publish a notice to `SystemBroadcast`.
+/// Publish a notice to `SystemMessage`.
 async fn publish_notice(publisher: &Publisher, message: String) {
     if let Err(e) = publisher
-        .publish(TopicId::SystemBroadcast, BusEvent::Notice { message })
+        .publish_typed(
+            topics::SystemMessage,
+            SystemMessageEvent::Notice { message },
+        )
         .await
     {
         tracing::warn!(error = %e, "failed to publish notice to bus");
     }
 }
 
-/// Publish an error to `SystemBroadcast`.
+/// Publish an error to `SystemMessage`.
 async fn publish_error(publisher: &Publisher, message: String) {
     if let Err(e) = publisher
-        .publish(
-            TopicId::SystemBroadcast,
-            BusEvent::Error {
+        .publish_typed(
+            topics::SystemMessage,
+            SystemMessageEvent::Error {
                 correlation_id: String::new(),
                 message,
             },
