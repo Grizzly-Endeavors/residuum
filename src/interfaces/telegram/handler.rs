@@ -261,7 +261,7 @@ async fn dispatch_message(
 
     if let Err(e) = ctx
         .publisher
-        .publish_typed(crate::bus::topics::UserMessage, msg_event)
+        .publish(crate::bus::topics::UserMessage, msg_event)
         .await
     {
         tracing::warn!(error = %e, "failed to publish telegram message to bus");

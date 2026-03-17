@@ -111,7 +111,7 @@ impl Tool for SwitchEndpointTool {
         // Notify via system message so the user knows the agent switched.
         drop(
             self.publisher
-                .publish_typed(
+                .publish(
                     topics::SystemMessage,
                     SystemMessageEvent::Notice {
                         message: "Agent switched output to this endpoint.".to_string(),
@@ -137,19 +137,19 @@ mod tests {
         let registry = EndpointRegistry::new();
         registry.register(EndpointEntry {
             id: EndpointId::from("ws"),
-            topic: TopicId::Interactive(EndpointName::from("ws")),
+            topic: TopicId::Response(EndpointName::from("ws")),
             capabilities: EndpointCapabilities::INTERACTIVE,
             display_name: "WebSocket".to_string(),
         });
         registry.register(EndpointEntry {
             id: EndpointId::from("discord"),
-            topic: TopicId::Interactive(EndpointName::from("discord")),
+            topic: TopicId::Response(EndpointName::from("discord")),
             capabilities: EndpointCapabilities::INTERACTIVE,
             display_name: "Discord".to_string(),
         });
         registry.register(EndpointEntry {
             id: EndpointId::from("my-ntfy"),
-            topic: TopicId::Notify(NotifyName::from("my-ntfy")),
+            topic: TopicId::Notification(NotifyName::from("my-ntfy")),
             capabilities: EndpointCapabilities::NOTIFY_ONLY,
             display_name: "Ntfy (my-ntfy)".to_string(),
         });

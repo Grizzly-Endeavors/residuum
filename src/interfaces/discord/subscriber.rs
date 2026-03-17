@@ -6,8 +6,8 @@ use serenity::model::id::ChannelId;
 use tokio::sync::Mutex;
 
 use crate::bus::{
-    EndpointName, IntermediateEvent, ResponseEvent, SystemMessageEvent, TurnLifecycleEvent,
-    TypedSubscriber, topics,
+    EndpointName, IntermediateEvent, ResponseEvent, Subscriber, SystemMessageEvent,
+    TurnLifecycleEvent, topics,
 };
 use crate::interfaces::chunking::chunk_text;
 
@@ -21,10 +21,10 @@ const TYPING_INTERVAL_SECS: u64 = 8;
 
 /// Typed subscribers for a single Discord connection.
 pub(crate) struct DiscordSubscribers {
-    response: TypedSubscriber<ResponseEvent>,
-    turn_lifecycle: TypedSubscriber<TurnLifecycleEvent>,
-    intermediate: TypedSubscriber<IntermediateEvent>,
-    system: TypedSubscriber<SystemMessageEvent>,
+    response: Subscriber<ResponseEvent>,
+    turn_lifecycle: Subscriber<TurnLifecycleEvent>,
+    intermediate: Subscriber<IntermediateEvent>,
+    system: Subscriber<SystemMessageEvent>,
 }
 
 impl DiscordSubscribers {
@@ -34,14 +34,12 @@ impl DiscordSubscribers {
         ep: EndpointName,
     ) -> Result<Self, crate::bus::BusError> {
         Ok(Self {
-            response: bus_handle
-                .subscribe_typed(topics::Response(ep.clone()))
-                .await?,
+            response: bus_handle.subscribe(topics::Response(ep.clone())).await?,
             turn_lifecycle: bus_handle
-                .subscribe_typed(topics::TurnLifecycle(ep.clone()))
+                .subscribe(topics::TurnLifecycle(ep.clone()))
                 .await?,
-            intermediate: bus_handle.subscribe_typed(topics::Intermediate(ep)).await?,
-            system: bus_handle.subscribe_typed(topics::SystemMessage).await?,
+            intermediate: bus_handle.subscribe(topics::Intermediate(ep)).await?,
+            system: bus_handle.subscribe(topics::SystemMessage).await?,
         })
     }
 }

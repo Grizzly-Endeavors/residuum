@@ -1,7 +1,7 @@
 //! Subagent registry: a bus participant that spawns sub-agents on demand.
 //!
-//! Subscribes to every `TopicId::AgentPreset(name)` topic and handles
-//! `BusEvent::SpawnRequest` events by loading the preset, building resources,
+//! Subscribes to every `TopicId::SpawnRequest(name)` topic and handles
+//! `SpawnRequestEvent` events by loading the preset, building resources,
 //! and calling `BackgroundTaskSpawner::spawn()`.
 
 use std::path::PathBuf;
@@ -16,7 +16,7 @@ use crate::background::spawn_context::{
     SpawnContext, build_spawn_resources, load_preset_for_spawn,
 };
 use crate::background::types::{BackgroundTask, Execution, SubAgentConfig};
-use crate::bus::{BusHandle, PresetName, SpawnRequestEvent, TypedSubscriber, topics};
+use crate::bus::{BusHandle, PresetName, SpawnRequestEvent, Subscriber, topics};
 use crate::config::BackgroundModelTier;
 use crate::mcp::SharedMcpRegistry;
 use crate::projects::activation::SharedProjectState;
@@ -79,7 +79,7 @@ pub async fn spawn_registry(registry: SubagentRegistry, bus_handle: &BusHandle) 
 
     for entry in index.entries() {
         let topic = topics::SpawnRequest(PresetName::from(entry.name.as_str()));
-        match bus_handle.subscribe_typed(topic).await {
+        match bus_handle.subscribe(topic).await {
             Ok(subscriber) => {
                 let tx = fwd_tx.clone();
                 let preset_name = entry.name.clone();
@@ -103,7 +103,7 @@ pub async fn spawn_registry(registry: SubagentRegistry, bus_handle: &BusHandle) 
 
 /// Forward `SpawnRequest` events from a single preset subscription to the shared channel.
 async fn forward_subscription(
-    mut subscriber: TypedSubscriber<SpawnRequestEvent>,
+    mut subscriber: Subscriber<SpawnRequestEvent>,
     tx: mpsc::Sender<TaggedRequest>,
     preset_name: String,
 ) {

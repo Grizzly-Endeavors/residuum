@@ -133,7 +133,7 @@ async fn handle_client_message(
             };
             if let Err(e) = state
                 .publisher
-                .publish_typed(crate::bus::topics::UserMessage, msg_event)
+                .publish(crate::bus::topics::UserMessage, msg_event)
                 .await
             {
                 tracing::warn!(error = %e, "failed to publish message to bus");

@@ -53,7 +53,7 @@ pub async fn handle_server_command(
             }
             if let Err(e) = rt
                 .publisher
-                .publish_typed(
+                .publish(
                     topics::SystemMessage,
                     SystemMessageEvent::Notice { message: msg },
                 )
@@ -65,7 +65,7 @@ pub async fn handle_server_command(
         unknown => {
             if let Err(e) = rt
                 .publisher
-                .publish_typed(
+                .publish(
                     topics::SystemMessage,
                     SystemMessageEvent::Notice {
                         message: format!("unknown server command: {unknown}"),

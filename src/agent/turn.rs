@@ -132,7 +132,7 @@ pub(crate) async fn execute_turn(
         {
             drop(
                 publisher
-                    .publish_typed(
+                    .publish(
                         topics::Intermediate(ep.clone()),
                         crate::bus::IntermediateEvent {
                             correlation_id: String::new(),
@@ -205,7 +205,7 @@ async fn execute_tool(
     if let Some(ep) = output_endpoint {
         drop(
             publisher
-                .publish_typed(
+                .publish(
                     topics::ToolActivity(ep.clone()),
                     ToolActivityEvent::Call(ToolCallEvent {
                         correlation_id: String::new(),
@@ -249,7 +249,7 @@ async fn execute_tool(
     if let Some(ep) = output_endpoint {
         drop(
             publisher
-                .publish_typed(
+                .publish(
                     topics::ToolActivity(ep.clone()),
                     ToolActivityEvent::Result(ToolResultEvent {
                         correlation_id: String::new(),

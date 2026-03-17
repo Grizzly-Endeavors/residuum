@@ -5,8 +5,8 @@ use teloxide::requests::Requester;
 use teloxide::types::{ChatAction, ChatId};
 
 use crate::bus::{
-    EndpointName, IntermediateEvent, ResponseEvent, SystemMessageEvent, TurnLifecycleEvent,
-    TypedSubscriber, topics,
+    EndpointName, IntermediateEvent, ResponseEvent, Subscriber, SystemMessageEvent,
+    TurnLifecycleEvent, topics,
 };
 use crate::interfaces::chunking::chunk_text;
 
@@ -20,10 +20,10 @@ const TYPING_INTERVAL_SECS: u64 = 4;
 
 /// Typed subscribers for a single Telegram connection.
 pub(crate) struct TelegramSubscribers {
-    response: TypedSubscriber<ResponseEvent>,
-    turn_lifecycle: TypedSubscriber<TurnLifecycleEvent>,
-    intermediate: TypedSubscriber<IntermediateEvent>,
-    system: TypedSubscriber<SystemMessageEvent>,
+    response: Subscriber<ResponseEvent>,
+    turn_lifecycle: Subscriber<TurnLifecycleEvent>,
+    intermediate: Subscriber<IntermediateEvent>,
+    system: Subscriber<SystemMessageEvent>,
 }
 
 impl TelegramSubscribers {
@@ -33,14 +33,12 @@ impl TelegramSubscribers {
         ep: EndpointName,
     ) -> Result<Self, crate::bus::BusError> {
         Ok(Self {
-            response: bus_handle
-                .subscribe_typed(topics::Response(ep.clone()))
-                .await?,
+            response: bus_handle.subscribe(topics::Response(ep.clone())).await?,
             turn_lifecycle: bus_handle
-                .subscribe_typed(topics::TurnLifecycle(ep.clone()))
+                .subscribe(topics::TurnLifecycle(ep.clone()))
                 .await?,
-            intermediate: bus_handle.subscribe_typed(topics::Intermediate(ep)).await?,
-            system: bus_handle.subscribe_typed(topics::SystemMessage).await?,
+            intermediate: bus_handle.subscribe(topics::Intermediate(ep)).await?,
+            system: bus_handle.subscribe(topics::SystemMessage).await?,
         })
     }
 }

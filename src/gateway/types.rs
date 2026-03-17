@@ -8,9 +8,7 @@ use crate::actions::store::ActionStore;
 use crate::agent::Agent;
 use crate::background::BackgroundTaskSpawner;
 use crate::background::spawn_context::SpawnContext;
-use crate::bus::{
-    BusHandle, EndpointName, EndpointRegistry, MessageEvent, Publisher, TypedSubscriber,
-};
+use crate::bus::{BusHandle, EndpointName, EndpointRegistry, MessageEvent, Publisher, Subscriber};
 use crate::config::Config;
 use crate::mcp::SharedMcpRegistry;
 use crate::memory::observer::Observer;
@@ -144,11 +142,11 @@ pub(crate) struct GatewayRuntime {
     /// Publisher for sending events onto the bus.
     pub publisher: Publisher,
     /// Typed subscriber for receiving inbound user messages from the bus.
-    pub agent_subscriber: TypedSubscriber<MessageEvent>,
+    pub agent_subscriber: Subscriber<MessageEvent>,
     /// Endpoint registry for looking up configured endpoints.
     pub endpoint_registry: EndpointRegistry,
     /// Typed subscriber for system messages (notices, errors, events).
-    pub error_subscriber: TypedSubscriber<crate::bus::SystemMessageEvent>,
+    pub error_subscriber: Subscriber<crate::bus::SystemMessageEvent>,
     /// Endpoint that last sent a message (for background turn response routing).
     pub last_output_endpoint: Option<EndpointName>,
     /// Sender for clearing the output endpoint override on user message.
@@ -209,7 +207,7 @@ mod tests {
         // Bus publish should work before reload
         let result = core
             .publisher
-            .publish_typed(
+            .publish(
                 crate::bus::topics::SystemMessage,
                 crate::bus::SystemMessageEvent::Notice {
                     message: "test".to_string(),
@@ -224,7 +222,7 @@ mod tests {
         // Channels still work after the reload signal
         let result_after = core
             .publisher
-            .publish_typed(
+            .publish(
                 crate::bus::topics::SystemMessage,
                 crate::bus::SystemMessageEvent::Notice {
                     message: "after reload".to_string(),

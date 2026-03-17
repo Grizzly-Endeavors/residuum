@@ -80,7 +80,7 @@ async fn publish_action_spawn(
     };
 
     let topic = topics::SpawnRequest(PresetName::from(preset_name));
-    if let Err(e) = publisher.publish_typed(topic, spawn_event).await {
+    if let Err(e) = publisher.publish(topic, spawn_event).await {
         tracing::warn!(
             action = %action.name,
             error = %e,

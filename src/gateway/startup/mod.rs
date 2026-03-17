@@ -264,7 +264,7 @@ fn init_channels_and_registry(
 
 /// Spawn notify subscribers for each configured channel and the inbox.
 ///
-/// Each channel subscribes to its `TopicId::Notify(name)` topic on the bus.
+/// Each channel subscribes to its `TopicId::Notification(name)` topic on the bus.
 /// The inbox subscribes to `TopicId::Inbox`.
 pub(crate) async fn spawn_notify_subscribers(
     bus_handle: &crate::bus::BusHandle,
@@ -284,7 +284,7 @@ pub(crate) async fn spawn_notify_subscribers(
     // Spawn a subscriber for each external channel
     for (name, channel) in external_channels {
         let topic = topics::Notification(NotifyName::from(name.as_str()));
-        match bus_handle.subscribe_typed(topic).await {
+        match bus_handle.subscribe(topic).await {
             Ok(subscriber) => {
                 let handle = tokio::spawn(run_notify_subscriber(subscriber, channel));
                 handles.push(handle);
@@ -298,7 +298,7 @@ pub(crate) async fn spawn_notify_subscribers(
 
     // Spawn inbox subscriber
     let inbox_channel = InboxChannel::new(layout.inbox_dir(), tz);
-    match bus_handle.subscribe_typed(topics::Inbox).await {
+    match bus_handle.subscribe(topics::Inbox).await {
         Ok(subscriber) => {
             let handle = tokio::spawn(run_notify_subscriber(subscriber, Box::new(inbox_channel)));
             handles.push(handle);

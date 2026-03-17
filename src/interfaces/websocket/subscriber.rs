@@ -1,18 +1,18 @@
 //! WebSocket bus subscriber — translates typed bus events to `ServerMessage` frames.
 
 use crate::bus::{
-    EndpointName, IntermediateEvent, ResponseEvent, SystemMessageEvent, ToolActivityEvent,
-    TurnLifecycleEvent, TypedSubscriber, topics,
+    EndpointName, IntermediateEvent, ResponseEvent, Subscriber, SystemMessageEvent,
+    ToolActivityEvent, TurnLifecycleEvent, topics,
 };
 use crate::gateway::protocol::ServerMessage;
 
 /// Typed subscribers for a single WebSocket connection.
 pub struct WsSubscribers {
-    pub response: TypedSubscriber<ResponseEvent>,
-    pub tool_activity: TypedSubscriber<ToolActivityEvent>,
-    pub turn_lifecycle: TypedSubscriber<TurnLifecycleEvent>,
-    pub intermediate: TypedSubscriber<IntermediateEvent>,
-    pub system: TypedSubscriber<SystemMessageEvent>,
+    pub response: Subscriber<ResponseEvent>,
+    pub tool_activity: Subscriber<ToolActivityEvent>,
+    pub turn_lifecycle: Subscriber<TurnLifecycleEvent>,
+    pub intermediate: Subscriber<IntermediateEvent>,
+    pub system: Subscriber<SystemMessageEvent>,
 }
 
 impl WsSubscribers {
@@ -26,17 +26,15 @@ impl WsSubscribers {
         ep: EndpointName,
     ) -> Result<Self, crate::bus::BusError> {
         Ok(Self {
-            response: bus_handle
-                .subscribe_typed(topics::Response(ep.clone()))
-                .await?,
+            response: bus_handle.subscribe(topics::Response(ep.clone())).await?,
             tool_activity: bus_handle
-                .subscribe_typed(topics::ToolActivity(ep.clone()))
+                .subscribe(topics::ToolActivity(ep.clone()))
                 .await?,
             turn_lifecycle: bus_handle
-                .subscribe_typed(topics::TurnLifecycle(ep.clone()))
+                .subscribe(topics::TurnLifecycle(ep.clone()))
                 .await?,
-            intermediate: bus_handle.subscribe_typed(topics::Intermediate(ep)).await?,
-            system: bus_handle.subscribe_typed(topics::SystemMessage).await?,
+            intermediate: bus_handle.subscribe(topics::Intermediate(ep)).await?,
+            system: bus_handle.subscribe(topics::SystemMessage).await?,
         })
     }
 
@@ -144,7 +142,7 @@ mod tests {
         let ep = EndpointName::from("ws");
         let mut subs = WsSubscribers::new(&handle, ep.clone()).await.unwrap();
 
-        pub_.publish_typed(
+        pub_.publish(
             topics::Response(ep),
             ResponseEvent {
                 correlation_id: "c1".into(),
@@ -170,7 +168,7 @@ mod tests {
         let ep = EndpointName::from("ws");
         let mut subs = WsSubscribers::new(&handle, ep.clone()).await.unwrap();
 
-        pub_.publish_typed(
+        pub_.publish(
             topics::ToolActivity(ep),
             ToolActivityEvent::Call(ToolCallEvent {
                 correlation_id: "c1".into(),
@@ -197,7 +195,7 @@ mod tests {
         let ep = EndpointName::from("ws");
         let mut subs = WsSubscribers::new(&handle, ep.clone()).await.unwrap();
 
-        pub_.publish_typed(
+        pub_.publish(
             topics::ToolActivity(ep),
             ToolActivityEvent::Result(ToolResultEvent {
                 correlation_id: "c1".into(),
@@ -225,7 +223,7 @@ mod tests {
         let ep = EndpointName::from("ws");
         let mut subs = WsSubscribers::new(&handle, ep.clone()).await.unwrap();
 
-        pub_.publish_typed(
+        pub_.publish(
             topics::Intermediate(ep),
             IntermediateEvent {
                 correlation_id: "c1".into(),
@@ -250,7 +248,7 @@ mod tests {
         let ep = EndpointName::from("ws");
         let mut subs = WsSubscribers::new(&handle, ep).await.unwrap();
 
-        pub_.publish_typed(
+        pub_.publish(
             topics::SystemMessage,
             SystemMessageEvent::Event(SystemEventData {
                 correlation_id: "c1".into(),
@@ -277,7 +275,7 @@ mod tests {
         let ep = EndpointName::from("ws");
         let mut subs = WsSubscribers::new(&handle, ep).await.unwrap();
 
-        pub_.publish_typed(
+        pub_.publish(
             topics::SystemMessage,
             SystemMessageEvent::Notice {
                 message: "reloading".into(),

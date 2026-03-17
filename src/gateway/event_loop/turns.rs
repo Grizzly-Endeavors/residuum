@@ -6,8 +6,8 @@ use crate::agent::Agent;
 use crate::agent::context::{ProjectsContext, PromptContext, SkillsContext, SubagentsContext};
 use crate::agent::interrupt::Interrupt;
 use crate::bus::{
-    EndpointName, MessageEvent, Publisher, ResponseEvent, SystemMessageEvent, TurnLifecycleEvent,
-    TypedSubscriber, topics,
+    EndpointName, MessageEvent, Publisher, ResponseEvent, Subscriber, SystemMessageEvent,
+    TurnLifecycleEvent, topics,
 };
 use crate::error::ResiduumError;
 use crate::gateway::types::{GatewayExit, GatewayRuntime, ReloadSignal};
@@ -165,7 +165,7 @@ async fn run_agent_turn_with_interrupts(
     origin: Option<&MessageOrigin>,
     prompt_ctx: &PromptContext<'_>,
     images: &[ImageData],
-    agent_subscriber: &mut TypedSubscriber<MessageEvent>,
+    agent_subscriber: &mut Subscriber<MessageEvent>,
     reload_rx: &mut tokio::sync::watch::Receiver<ReloadSignal>,
 ) -> (Result<Vec<String>, ResiduumError>, Vec<Interrupt>) {
     let (interrupt_tx, mut interrupt_rx) = mpsc::channel::<Interrupt>(32);
@@ -249,7 +249,7 @@ pub async fn handle_inbound_message(
     if let Some(ref ep) = output_endpoint {
         drop(
             rt.publisher
-                .publish_typed(
+                .publish(
                     topics::TurnLifecycle(ep.clone()),
                     TurnLifecycleEvent::Started {
                         correlation_id: reply_id.clone(),
@@ -284,7 +284,7 @@ pub async fn handle_inbound_message(
                 for text in &texts {
                     drop(
                         rt.publisher
-                            .publish_typed(
+                            .publish(
                                 topics::Response(ep.clone()),
                                 ResponseEvent {
                                     correlation_id: reply_id.clone(),
@@ -297,7 +297,7 @@ pub async fn handle_inbound_message(
                 }
                 drop(
                     rt.publisher
-                        .publish_typed(
+                        .publish(
                             topics::TurnLifecycle(ep.clone()),
                             TurnLifecycleEvent::Ended {
                                 correlation_id: reply_id.clone(),
@@ -311,7 +311,7 @@ pub async fn handle_inbound_message(
             tracing::warn!(error = %e, "agent processing error");
             drop(
                 rt.publisher
-                    .publish_typed(
+                    .publish(
                         topics::SystemMessage,
                         SystemMessageEvent::Error {
                             correlation_id: reply_id.clone(),
@@ -323,7 +323,7 @@ pub async fn handle_inbound_message(
             if let Some(ref ep) = output_endpoint {
                 drop(
                     rt.publisher
-                        .publish_typed(
+                        .publish(
                             topics::TurnLifecycle(ep.clone()),
                             TurnLifecycleEvent::Ended {
                                 correlation_id: reply_id.clone(),

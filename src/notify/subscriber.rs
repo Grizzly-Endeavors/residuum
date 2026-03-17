@@ -1,14 +1,14 @@
 //! Generic subscriber loop for notification channels.
 
 use super::channels::NotificationChannel;
-use crate::bus::{NotificationEvent, TypedSubscriber};
+use crate::bus::{NotificationEvent, Subscriber};
 
 /// Run a subscriber loop that delivers `NotificationEvent`s to a channel.
 ///
 /// Delivery errors are logged but do not stop the loop.
 /// The function returns when the subscriber closes.
 pub async fn run_notify_subscriber(
-    mut subscriber: TypedSubscriber<NotificationEvent>,
+    mut subscriber: Subscriber<NotificationEvent>,
     channel: Box<dyn NotificationChannel>,
 ) {
     let channel_name = channel.name().to_string();
@@ -107,7 +107,7 @@ mod tests {
         let pub_ = handle.publisher();
         let topic = topics::Notification(NotifyName::from("test"));
         let sub = handle
-            .subscribe_typed(topics::Notification(NotifyName::from("test")))
+            .subscribe(topics::Notification(NotifyName::from("test")))
             .await
             .unwrap();
 
@@ -116,7 +116,7 @@ mod tests {
 
         let loop_task = tokio::spawn(run_notify_subscriber(sub, Box::new(channel)));
 
-        pub_.publish_typed(topic, make_notification_event())
+        pub_.publish(topic, make_notification_event())
             .await
             .unwrap();
 
@@ -138,7 +138,7 @@ mod tests {
         let topic_name = NotifyName::from("test");
 
         let sub = handle
-            .subscribe_typed(topics::Notification(topic_name.clone()))
+            .subscribe(topics::Notification(topic_name.clone()))
             .await
             .unwrap();
 
@@ -148,7 +148,7 @@ mod tests {
         let loop_task = tokio::spawn(run_notify_subscriber(sub, Box::new(channel)));
 
         // First notification — delivery will fail
-        pub_.publish_typed(
+        pub_.publish(
             topics::Notification(topic_name.clone()),
             make_notification_event(),
         )
@@ -161,7 +161,7 @@ mod tests {
         should_fail.store(false, Ordering::SeqCst);
 
         // Second notification — delivery should succeed
-        pub_.publish_typed(topics::Notification(topic_name), make_notification_event())
+        pub_.publish(topics::Notification(topic_name), make_notification_event())
             .await
             .unwrap();
 

@@ -6,7 +6,6 @@ use std::sync::Arc;
 
 use tokio::sync::mpsc;
 
-use super::events::BusEvent;
 use super::topics::Topic;
 use super::types::{BusError, TopicId};
 
@@ -51,28 +50,12 @@ impl Publisher {
         Self { cmd_tx }
     }
 
-    /// Publish a `BusEvent` to the given topic (legacy untyped API).
-    ///
-    /// # Errors
-    ///
-    /// Returns `BusError::BrokerShutdown` if the broker has stopped.
-    pub async fn publish(&self, topic: TopicId, event: BusEvent) -> Result<(), BusError> {
-        let erased: ErasedEvent = Arc::new(event);
-        self.cmd_tx
-            .send(BrokerCommand::Publish {
-                topic,
-                event: erased,
-            })
-            .await
-            .map_err(|_closed| BusError::BrokerShutdown)
-    }
-
     /// Publish a typed event to a typed topic.
     ///
     /// # Errors
     ///
     /// Returns `BusError::BrokerShutdown` if the broker has stopped.
-    pub async fn publish_typed<T: Topic>(&self, topic: T, event: T::Event) -> Result<(), BusError> {
+    pub async fn publish<T: Topic>(&self, topic: T, event: T::Event) -> Result<(), BusError> {
         let erased: ErasedEvent = Arc::new(event);
         self.cmd_tx
             .send(BrokerCommand::Publish {
@@ -85,65 +68,11 @@ impl Publisher {
 }
 
 // ---------------------------------------------------------------------------
-// Subscriber (legacy, receives BusEvent)
-// ---------------------------------------------------------------------------
-
-/// A single-consumer handle for receiving `BusEvent`s from a bus topic (legacy API).
-pub struct Subscriber {
-    id: u64,
-    topic: TopicId,
-    event_rx: mpsc::Receiver<ErasedEvent>,
-    cmd_tx: mpsc::Sender<BrokerCommand>,
-}
-
-impl Subscriber {
-    /// Create a new subscriber.
-    pub(super) fn new(
-        id: u64,
-        topic: TopicId,
-        event_rx: mpsc::Receiver<ErasedEvent>,
-        cmd_tx: mpsc::Sender<BrokerCommand>,
-    ) -> Self {
-        Self {
-            id,
-            topic,
-            event_rx,
-            cmd_tx,
-        }
-    }
-
-    /// Receive the next event, or `None` if the broker has shut down.
-    ///
-    /// Downcasts from the type-erased storage back to `BusEvent`. Events
-    /// that are not `BusEvent` (i.e. published via the typed API) are
-    /// silently skipped.
-    pub async fn recv(&mut self) -> Option<BusEvent> {
-        loop {
-            let erased = self.event_rx.recv().await?;
-            if let Some(bus_event) = erased.downcast_ref::<BusEvent>() {
-                return Some(bus_event.clone());
-            }
-            // Not a BusEvent (published via typed API) — skip
-        }
-    }
-}
-
-impl Drop for Subscriber {
-    fn drop(&mut self) {
-        // Best-effort unsubscribe — if the broker is already gone, this is a no-op.
-        drop(self.cmd_tx.try_send(BrokerCommand::Unsubscribe {
-            id: self.id,
-            topic: self.topic.clone(),
-        }));
-    }
-}
-
-// ---------------------------------------------------------------------------
-// TypedSubscriber (new, receives T::Event directly)
+// Subscriber (typed, receives T::Event directly)
 // ---------------------------------------------------------------------------
 
 /// A single-consumer handle for receiving typed events from a bus topic.
-pub struct TypedSubscriber<E> {
+pub struct Subscriber<E> {
     id: u64,
     topic: TopicId,
     event_rx: mpsc::Receiver<ErasedEvent>,
@@ -151,7 +80,7 @@ pub struct TypedSubscriber<E> {
     _phantom: PhantomData<E>,
 }
 
-impl<E: Clone + Send + Sync + 'static> TypedSubscriber<E> {
+impl<E: Clone + Send + Sync + 'static> Subscriber<E> {
     /// Create a new typed subscriber.
     pub(super) fn new(
         id: u64,
@@ -188,7 +117,7 @@ impl<E: Clone + Send + Sync + 'static> TypedSubscriber<E> {
     }
 }
 
-impl<E> Drop for TypedSubscriber<E> {
+impl<E> Drop for Subscriber<E> {
     fn drop(&mut self) {
         drop(self.cmd_tx.try_send(BrokerCommand::Unsubscribe {
             id: self.id,
@@ -213,13 +142,7 @@ mod tests {
 
     fn _assert_subscriber_traits()
     where
-        Subscriber: Send,
-    {
-    }
-
-    fn _assert_typed_subscriber_traits()
-    where
-        TypedSubscriber<String>: Send,
+        Subscriber<String>: Send,
     {
     }
 }

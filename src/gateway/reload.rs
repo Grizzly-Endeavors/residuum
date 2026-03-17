@@ -187,7 +187,7 @@ pub fn rollback_config(config_dir: &std::path::Path) -> bool {
 /// Publish a notice to `SystemMessage`.
 async fn publish_notice(publisher: &Publisher, message: String) {
     if let Err(e) = publisher
-        .publish_typed(
+        .publish(
             topics::SystemMessage,
             SystemMessageEvent::Notice { message },
         )

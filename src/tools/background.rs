@@ -227,7 +227,7 @@ impl Tool for SubAgentSpawnTool {
         let topic = crate::bus::topics::SpawnRequest(crate::bus::PresetName::from(preset_name));
 
         self.publisher
-            .publish_typed(topic, spawn_event)
+            .publish(topic, spawn_event)
             .await
             .map_err(|err| {
                 ToolError::Execution(format!("failed to publish spawn request: {err}"))

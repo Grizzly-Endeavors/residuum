@@ -546,8 +546,8 @@ On error:
 - Bus publish failure → execution error with details
 
 **Side effects:**
-- Notify endpoints: publishes `BusEvent::Notification` to the endpoint's topic
-- Interactive endpoints: publishes `BusEvent::Response` to the endpoint's topic
+- Notify endpoints: publishes `NotificationEvent` to the endpoint's topic
+- Interactive endpoints: publishes `ResponseEvent` to the endpoint's topic
 - **Cannot send to inbox** — the agent has no write path to inbox
 
 ---

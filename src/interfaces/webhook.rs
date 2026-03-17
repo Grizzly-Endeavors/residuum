@@ -87,7 +87,7 @@ pub async fn webhook_handler(
         WebhookRouting::Inbox => {
             if let Err(e) = state
                 .publisher
-                .publish_typed(crate::bus::topics::Inbox, notification)
+                .publish(crate::bus::topics::Inbox, notification)
                 .await
             {
                 tracing::warn!(webhook = %name, error = %e, "bus publish failed, dropping webhook message");
@@ -104,7 +104,7 @@ pub async fn webhook_handler(
             };
             let topic =
                 crate::bus::topics::SpawnRequest(crate::bus::PresetName::from(preset.as_str()));
-            if let Err(e) = state.publisher.publish_typed(topic, spawn_event).await {
+            if let Err(e) = state.publisher.publish(topic, spawn_event).await {
                 tracing::warn!(webhook = %name, error = %e, "bus publish failed, dropping webhook message");
                 return StatusCode::SERVICE_UNAVAILABLE;
             }
@@ -181,12 +181,12 @@ mod tests {
         webhooks: HashMap<String, WebhookEndpointState>,
     ) -> (
         axum::Router,
-        crate::bus::TypedSubscriber<crate::bus::NotificationEvent>,
+        crate::bus::Subscriber<crate::bus::NotificationEvent>,
     ) {
         let bus_handle = crate::bus::spawn_broker();
         let publisher = bus_handle.publisher();
         let subscriber = bus_handle
-            .subscribe_typed(crate::bus::topics::Inbox)
+            .subscribe(crate::bus::topics::Inbox)
             .await
             .unwrap();
         let state = WebhookState {
@@ -470,7 +470,7 @@ mod tests {
         let bus_handle = crate::bus::spawn_broker();
         let publisher = bus_handle.publisher();
         let mut preset_sub = bus_handle
-            .subscribe_typed(crate::bus::topics::SpawnRequest(
+            .subscribe(crate::bus::topics::SpawnRequest(
                 crate::bus::PresetName::from("code_reviewer"),
             ))
             .await

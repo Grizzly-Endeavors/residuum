@@ -33,7 +33,7 @@ mod background_integration {
 
         let handle = spawn_broker();
         let publisher = handle.publisher();
-        let subscriber = handle.subscribe_typed(topics::Inbox).await.unwrap();
+        let subscriber = handle.subscribe(topics::Inbox).await.unwrap();
         let inbox_channel = InboxChannel::new(&inbox_dir, chrono_tz::UTC);
 
         let loop_task = tokio::spawn(run_notify_subscriber(subscriber, Box::new(inbox_channel)));
@@ -49,7 +49,7 @@ mod background_integration {
         };
 
         publisher
-            .publish_typed(topics::Inbox, notification)
+            .publish(topics::Inbox, notification)
             .await
             .unwrap();
 

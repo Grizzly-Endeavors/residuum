@@ -149,12 +149,12 @@ async fn build_runtime(
 ) -> Result<GatewayRuntime, ResiduumError> {
     let agent_subscriber = core
         .bus_handle
-        .subscribe_typed(crate::bus::topics::UserMessage)
+        .subscribe(crate::bus::topics::UserMessage)
         .await
         .map_err(|e| ResiduumError::Gateway(format!("failed to subscribe to user:message: {e}")))?;
     let error_subscriber = core
         .bus_handle
-        .subscribe_typed(crate::bus::topics::SystemMessage)
+        .subscribe(crate::bus::topics::SystemMessage)
         .await
         .map_err(|e| {
             ResiduumError::Gateway(format!("failed to subscribe to system:message: {e}"))
@@ -322,7 +322,7 @@ async fn handle_workspace_reload(rt: &mut GatewayRuntime) {
 
     if let Err(e) = rt
         .publisher
-        .publish_typed(
+        .publish(
             crate::bus::topics::SystemMessage,
             crate::bus::SystemMessageEvent::Notice {
                 message: "workspace configuration reloaded".to_string(),

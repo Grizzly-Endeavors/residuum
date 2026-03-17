@@ -153,7 +153,7 @@ mod gateway_integration {
                 // Publish TurnStarted (normally done by the event loop)
                 drop(
                     loop_publisher
-                        .publish_typed(
+                        .publish(
                             topics::TurnLifecycle(loop_ep.clone()),
                             residuum::bus::TurnLifecycleEvent::Started {
                                 correlation_id: reply_id.clone(),
@@ -179,7 +179,7 @@ mod gateway_integration {
                         for text in &texts {
                             drop(
                                 loop_publisher
-                                    .publish_typed(
+                                    .publish(
                                         topics::Response(loop_ep.clone()),
                                         residuum::bus::ResponseEvent {
                                             correlation_id: reply_id.clone(),
@@ -482,27 +482,23 @@ mod gateway_integration {
         )
         .await;
 
-        let a1 = recv_msg(&mut rx_a).await;
-        let b1 = recv_msg(&mut rx_b).await;
-        assert!(
-            matches!(&a1, ServerMessage::TurnStarted { .. }),
-            "client A should receive TurnStarted"
-        );
-        assert!(
-            matches!(&b1, ServerMessage::TurnStarted { .. }),
-            "client B should receive TurnStarted"
-        );
-
-        let a2 = recv_msg(&mut rx_a).await;
-        let b2 = recv_msg(&mut rx_b).await;
-        assert!(
-            matches!(&a2, ServerMessage::Response { content, .. } if content == "shared response"),
-            "client A should receive Response"
-        );
-        assert!(
-            matches!(&b2, ServerMessage::Response { content, .. } if content == "shared response"),
-            "client B should receive Response"
-        );
+        // Both clients should receive TurnStarted and Response (order may vary)
+        for (label, rx) in [("A", &mut rx_a), ("B", &mut rx_b)] {
+            let mut got_started = false;
+            let mut got_response = false;
+            for _ in 0..2 {
+                let msg = recv_msg(rx).await;
+                match msg {
+                    ServerMessage::TurnStarted { .. } => got_started = true,
+                    ServerMessage::Response { ref content, .. } if content == "shared response" => {
+                        got_response = true;
+                    }
+                    other => panic!("client {label}: unexpected {other:?}"),
+                }
+            }
+            assert!(got_started, "client {label} should receive TurnStarted");
+            assert!(got_response, "client {label} should receive Response");
+        }
     }
 
     #[tokio::test]
@@ -566,16 +562,21 @@ mod gateway_integration {
         )
         .await;
 
-        let msg1 = recv_msg(&mut rx_b).await;
+        // With typed subscribers, TurnStarted and Response may arrive in either order
+        let mut got_turn_started = false;
+        let mut got_response = false;
+        for _ in 0..2 {
+            let msg = recv_msg(&mut rx_b).await;
+            match msg {
+                ServerMessage::TurnStarted { .. } => got_turn_started = true,
+                ServerMessage::Response { .. } => got_response = true,
+                other => panic!("unexpected message after disconnect: {other:?}"),
+            }
+        }
         assert!(
-            matches!(&msg1, ServerMessage::TurnStarted { .. }),
-            "should receive TurnStarted after other client disconnected"
+            got_turn_started,
+            "should receive TurnStarted after disconnect"
         );
-
-        let msg2 = recv_msg(&mut rx_b).await;
-        assert!(
-            matches!(&msg2, ServerMessage::Response { .. }),
-            "should receive Response after other client disconnected"
-        );
+        assert!(got_response, "should receive Response after disconnect");
     }
 }

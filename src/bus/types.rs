@@ -41,7 +41,6 @@ macro_rules! newtype_string {
 newtype_string!(EndpointId, "Unique identifier for a bus endpoint.");
 newtype_string!(EndpointName, "Interactive endpoint identifier.");
 newtype_string!(PresetName, "Subagent preset identifier.");
-newtype_string!(WebhookName, "Named webhook identifier.");
 newtype_string!(NotifyName, "Notification channel identifier.");
 
 // ---------------------------------------------------------------------------
@@ -51,23 +50,6 @@ newtype_string!(NotifyName, "Notification channel identifier.");
 /// Identifies a pub/sub topic on the bus.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum TopicId {
-    // -- Legacy variants (will be removed in Phase 4) --
-    /// The main agent processing loop.
-    AgentMain,
-    /// A subagent preset topic.
-    AgentPreset(PresetName),
-    /// An interactive endpoint (e.g. websocket, telegram).
-    Interactive(EndpointName),
-    /// A notification channel.
-    Notify(NotifyName),
-    /// A named webhook.
-    Webhook(WebhookName),
-    /// Broadcast to all connected interactive endpoints.
-    SystemBroadcast,
-    /// Delivery errors (e.g. publish to topic with no subscribers).
-    BusErrors,
-
-    // -- New typed variants --
     /// Inbound user messages for the main agent loop.
     UserMessage,
     /// Agent responses routed to a specific endpoint.
@@ -95,15 +77,6 @@ pub enum TopicId {
 impl fmt::Display for TopicId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            // Legacy
-            Self::AgentMain => f.write_str("agent:main"),
-            Self::AgentPreset(name) => write!(f, "agent:preset:{name}"),
-            Self::Interactive(name) => write!(f, "interactive:{name}"),
-            Self::Notify(name) => write!(f, "notify:{name}"),
-            Self::Webhook(name) => write!(f, "webhook:{name}"),
-            Self::SystemBroadcast => f.write_str("system:broadcast"),
-            Self::BusErrors => f.write_str("bus:errors"),
-            // New typed
             Self::UserMessage => f.write_str("user:message"),
             Self::Response(name) => write!(f, "response:{name}"),
             Self::ToolActivity(name) => write!(f, "tool-activity:{name}"),
@@ -154,20 +127,20 @@ mod tests {
 
     #[test]
     fn topic_id_equality() {
-        assert_eq!(TopicId::AgentMain, TopicId::AgentMain);
+        assert_eq!(TopicId::UserMessage, TopicId::UserMessage);
         assert_eq!(TopicId::Inbox, TopicId::Inbox);
         assert_eq!(
-            TopicId::Interactive(EndpointName::from("ws")),
-            TopicId::Interactive(EndpointName::from("ws"))
+            TopicId::Response(EndpointName::from("ws")),
+            TopicId::Response(EndpointName::from("ws"))
         );
     }
 
     #[test]
     fn topic_id_inequality() {
-        assert_ne!(TopicId::AgentMain, TopicId::Inbox);
+        assert_ne!(TopicId::UserMessage, TopicId::Inbox);
         assert_ne!(
-            TopicId::Interactive(EndpointName::from("ws")),
-            TopicId::Interactive(EndpointName::from("telegram"))
+            TopicId::Response(EndpointName::from("ws")),
+            TopicId::Response(EndpointName::from("telegram"))
         );
         assert_ne!(TopicId::BackgroundResult, TopicId::BackgroundEvent);
     }
@@ -175,10 +148,10 @@ mod tests {
     #[test]
     fn topic_id_hash_consistency() {
         let mut set = HashSet::new();
-        let topic = TopicId::AgentPreset(PresetName::from("summarizer"));
+        let topic = TopicId::SpawnRequest(PresetName::from("summarizer"));
         set.insert(topic.clone());
         assert!(set.contains(&topic));
-        assert!(set.contains(&TopicId::AgentPreset(PresetName::from("summarizer"))));
+        assert!(set.contains(&TopicId::SpawnRequest(PresetName::from("summarizer"))));
     }
 
     #[test]
@@ -212,37 +185,29 @@ mod tests {
 
     #[test]
     fn newtype_display() {
-        let name = WebhookName::from("github");
-        assert_eq!(name.to_string(), "github");
+        let name = NotifyName::from("my-ntfy");
+        assert_eq!(name.to_string(), "my-ntfy");
     }
 
     #[test]
     fn topic_id_display() {
-        assert_eq!(TopicId::AgentMain.to_string(), "agent:main");
+        assert_eq!(TopicId::UserMessage.to_string(), "user:message");
         assert_eq!(TopicId::Inbox.to_string(), "inbox");
         assert_eq!(TopicId::BackgroundResult.to_string(), "background:result");
         assert_eq!(TopicId::BackgroundEvent.to_string(), "background:event");
+        assert_eq!(TopicId::SystemMessage.to_string(), "system:message");
         assert_eq!(
-            TopicId::AgentPreset(PresetName::from("review")).to_string(),
-            "agent:preset:review"
+            TopicId::SpawnRequest(PresetName::from("review")).to_string(),
+            "spawn-request:review"
         );
         assert_eq!(
-            TopicId::Interactive(EndpointName::from("ws")).to_string(),
-            "interactive:ws"
+            TopicId::Response(EndpointName::from("ws")).to_string(),
+            "response:ws"
         );
         assert_eq!(
-            TopicId::Notify(NotifyName::from("ntfy")).to_string(),
-            "notify:ntfy"
+            TopicId::Notification(NotifyName::from("ntfy")).to_string(),
+            "notification:ntfy"
         );
-        assert_eq!(
-            TopicId::Webhook(WebhookName::from("deploy")).to_string(),
-            "webhook:deploy"
-        );
-    }
-
-    #[test]
-    fn topic_id_system_broadcast_display() {
-        assert_eq!(TopicId::SystemBroadcast.to_string(), "system:broadcast");
     }
 
     #[test]

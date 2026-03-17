@@ -35,7 +35,7 @@ pub async fn handle_pulse_execution(
             preset_name,
         } => {
             let topic = topics::SpawnRequest(PresetName::from(preset_name.as_str()));
-            if let Err(e) = rt.publisher.publish_typed(topic, spawn_event).await {
+            if let Err(e) = rt.publisher.publish(topic, spawn_event).await {
                 tracing::warn!(pulse = %pulse_name, error = %e, "failed to publish pulse spawn request");
             }
             false

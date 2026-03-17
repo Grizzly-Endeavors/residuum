@@ -272,7 +272,7 @@ async fn run_reflector_check(reflector: &Reflector, layout: &WorkspaceLayout) ->
 /// Publish a notice to `SystemMessage`.
 async fn publish_notice(publisher: &Publisher, message: String) {
     if let Err(e) = publisher
-        .publish_typed(
+        .publish(
             topics::SystemMessage,
             SystemMessageEvent::Notice { message },
         )
@@ -285,7 +285,7 @@ async fn publish_notice(publisher: &Publisher, message: String) {
 /// Publish an error to `SystemMessage`.
 async fn publish_error(publisher: &Publisher, message: String) {
     if let Err(e) = publisher
-        .publish_typed(
+        .publish(
             topics::SystemMessage,
             SystemMessageEvent::Error {
                 correlation_id: String::new(),

@@ -1,5 +1,5 @@
 //! Bridge task: reads background results from the spawner's mpsc channel and
-//! publishes them as `BusEvent::AgentResult` on the bus.
+//! publishes them as `AgentResultEvent` on the bus.
 
 use std::sync::Arc;
 
@@ -40,10 +40,7 @@ async fn run_bridge(result_rx: SharedResultReceiver, publisher: Publisher, tz: c
     let mut rx = result_rx.lock().await;
     while let Some(result) = rx.recv().await {
         let event = convert_to_agent_result(&result, tz);
-        if let Err(e) = publisher
-            .publish_typed(topics::BackgroundResult, event)
-            .await
-        {
+        if let Err(e) = publisher.publish(topics::BackgroundResult, event).await {
             tracing::warn!(
                 task_id = %result.id,
                 error = %e,
@@ -160,7 +157,7 @@ mod tests {
         let bus_handle = crate::bus::spawn_broker();
         let publisher = bus_handle.publisher();
         let mut subscriber = bus_handle
-            .subscribe_typed(topics::BackgroundResult)
+            .subscribe(topics::BackgroundResult)
             .await
             .unwrap();
 
