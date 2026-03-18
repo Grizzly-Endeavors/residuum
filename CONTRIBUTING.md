@@ -5,13 +5,20 @@ Thanks for your interest in contributing. This document covers the workflow and 
 ## Getting Started
 
 1. Fork the repository and clone your fork
-2. Install Rust 1.85+ and set up the project:
+2. Install [Rust 1.85+](https://rustup.rs/) and [Node.js](https://nodejs.org/) (for the web frontend)
+3. Build the web frontend first — the Rust binary embeds the built assets, so `cargo build` will fail without them:
    ```bash
-   cd residuum
+   cd web
+   npm install
+   npm run build
+   cd ..
+   ```
+4. Build and test the Rust project:
+   ```bash
    cargo build
    cargo test --quiet
    ```
-3. Git hooks are installed automatically — they enforce formatting, linting, and tests on every commit
+5. Git hooks are installed automatically — they enforce formatting, linting, and tests on every commit
 
 ## Branch & PR Workflow
 

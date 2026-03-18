@@ -5,8 +5,8 @@
 <h3 align="center"><em>What Remains</em></h3>
 
 <p align="center">
-  <a href="https://github.com/Grizzly-Endeavors/residuum/actions/workflows/ci.yml">
-    <img src="https://github.com/Grizzly-Endeavors/residuum/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI">
+  <a href="https://github.com/Grizzly-Endeavors/residuum/actions/workflows/release.yml">
+    <img src="https://github.com/Grizzly-Endeavors/residuum/actions/workflows/release.yml/badge.svg" alt="CI">
   </a>
   <a href="https://github.com/Grizzly-Endeavors/residuum/releases/latest">
     <img src="https://img.shields.io/github/v/release/Grizzly-Endeavors/residuum?label=release&color=blue" alt="Latest Release">
@@ -26,39 +26,33 @@
 
 ---
 
-**A personal AI agent framework that eliminates session boundaries.** One agent, continuous memory, every channel.
+**Agents that last.**
 
-## The Problem
+Residuum is an AI agent with continuous memory, multi-channel access, and proactive scheduling. Install it, talk to it, come back tomorrow — it already knows what you were working on.
 
-AI agent frameworks are built on sessions. Start a conversation, do some work, close it. Start another one tomorrow and re-explain everything. Some try to patch this with RAG or pinned memory files, but the model still treats each conversation as an isolated event.
+## What It Does
 
-## What Residuum Does
+### No more re-explaining yourself
 
-**No sessions.** One agent, one continuous thread. Residuum compresses your conversation history into a dense observation log that lives in context *at all times*. It doesn't retrieve what you talked about last week — it already has it. When it needs the full details of an older conversation, it knows exactly where to look.
+Your agent carries a compressed history of every conversation. Come back after a week — it knows what you were working on, what decisions were made, what's still open. When it needs older details, it searches its memory automatically.
 
-**No boundaries.** CLI, Discord, webhooks — all channels feed the same agent, the same memory, the same thread. Message it from your terminal, pick up from Discord on your phone. The conversation never stopped.
+### No more juggling apps
 
-**No wasted tokens.** Proactivity doesn't mean burning frontier-model calls to ask "is there anything to do?" every thirty minutes. Residuum uses structured pulse scheduling — you define what to check, when, and where to send results. The LLM fires when a check is due, runs on a cheap model, stays silent when there's nothing to report. Email scans, deployment checks, daily reviews — each one is a few lines of YAML.
+CLI, Discord, Telegram, webhooks — all feed the same agent, same memory, same thread. Start a thought on your terminal, pick it up on your phone. The conversation never splits.
 
-## How It's Different
+### No more checking things yourself
 
-**vs. [OpenClaw](https://github.com/openclaw/openclaw)** — OpenClaw established the personal agent pattern and Residuum builds on its architecture (gateway, channel normalization, file-first workspace, skill format). But OpenClaw has a memory cliff — context older than two days requires the agent to guess it should search. Its heartbeat fires a full LLM turn every 30 minutes to read a checklist, burning tokens on scheduling logic. Residuum solves both: observational memory keeps history in context continuously, and YAML pulse scheduling moves timing logic out of the LLM entirely. Rust implementation, not a fork. OpenClaw-compatible skills.
+Define what to check and when — email scans, deployment status, daily reviews. The agent handles the routine on a schedule, stays silent when there's nothing to report, and routes results where you want them.
 
-**vs. [NanoClaw](https://github.com/qwibitai/nanoclaw)** — NanoClaw optimizes for minimalism and container isolation (~500 lines of TypeScript). Residuum optimizes for continuity — persistent memory compression, structured proactive scheduling, background task delegation with model tiering, and multi-channel convergence into a single thread. Different goals, different tradeoffs.
+## Features
 
-**vs. RAG-based agents** — No retrieval step for recent history. The observation log is always in context. Deep retrieval exists for older episodes via hybrid search (BM25 + vector embeddings), but working memory is continuous, not query-dependent.
-
-## Core Systems
-
-| System | What it does | Docs |
-|--------|-------------|------|
-| **Observational Memory** | Two-tier compression (Observer + Reflector) keeps conversation history in context at all times. No RAG latency, no retrieval misses. | [Design](docs/memory-search-design.md) |
-| **Multi-Channel Gateway** | CLI, Discord, Telegram, webhooks — all channels feed the same agent, same memory, same thread. | [Architecture](docs/residuum-design.md) |
-| **Pulse Scheduling** | YAML-defined proactive checks. Gateway handles timing; LLM fires only when work is due. Zero token cost when nothing is scheduled. | [Design](docs/background-tasks-design.md) |
-| **SubAgent Tasks** | Delegate work to background agents with automatic model tiering — cheap models first, expensive fallback only when needed. | [Design](docs/background-tasks-design.md) |
-| **Projects** | Scoped knowledge folders with notes, references, and project-specific skills. Agent activates relevant context automatically. | [Design](docs/projects-context-design.md) |
-| **Skills & MCP** | Extensible tool system with Model Context Protocol integration. OpenClaw-compatible skill format. | [Architecture](docs/residuum-design.md) |
-| **Notification Routing** | Declarative channel routing via CHANNELS.yml — control where alerts land, per-task. | [Design](docs/notification-routing-design.md) |
+- **Observational memory** — Compressed conversation history stays in context at all times. Older details are searchable by keyword, date, or project. [docs →](docs/memory-search-design.md)
+- **Multi-channel** — CLI, Discord, Telegram, webhooks. Talk to it from anywhere, same conversation. [docs →](docs/residuum-design.md)
+- **Pulse scheduling** — Scheduled checks defined in YAML. The agent fires when work is due, stays quiet otherwise. [docs →](docs/background-tasks-design.md)
+- **Background tasks** — Hand it something and walk away. Cheap models handle routine work; expensive ones step in when needed. [docs →](docs/background-tasks-design.md)
+- **Projects** — Scoped knowledge folders with notes, references, and project-specific tools. The agent activates relevant context automatically. [docs →](docs/projects-context-design.md)
+- **Skills & MCP** — Extensible tools with Model Context Protocol integration. [docs →](docs/residuum-design.md)
+- **Notification routing** — Control where alerts land — agent, inbox, push, webhooks — via simple YAML config. [docs →](docs/notification-routing-design.md)
 
 ## Quick Start
 
@@ -127,7 +121,7 @@ Full rationale: [Design Philosophy](docs/design-philosophy.md)
 
 Contributions are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for the full workflow, code standards, and lint rules.
 
-The short version: fork, branch from `dev`, make your changes, open a PR. Pre-commit hooks handle formatting and linting. CI must pass before merge.
+The short version: fork, branch from `main`, make your changes, open a PR. Pre-commit hooks handle formatting and linting. CI must pass before merge.
 
 ## License
 
