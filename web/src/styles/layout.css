@@ -16,7 +16,7 @@
   align-items: center;
   justify-content: center;
   font-size: 18px;
-  transition: all 0.15s;
+  transition: all 0.3s ease;
 }
 
 .hamburger-btn:hover {
@@ -50,7 +50,7 @@
   border: none;
   text-align: left;
   cursor: pointer;
-  transition: all 0.15s;
+  transition: all 0.3s ease;
 }
 
 .hamburger-menu-item:hover {
@@ -140,7 +140,7 @@
   align-items: center;
   justify-content: center;
   font-size: 14px;
-  transition: all 0.15s;
+  transition: all 0.3s ease;
   flex-shrink: 0;
 }
 
@@ -162,7 +162,7 @@
   align-items: center;
   justify-content: center;
   font-size: 16px;
-  transition: all 0.15s;
+  transition: all 0.3s ease;
 }
 
 .workspace-mobile-back:hover {
@@ -233,7 +233,7 @@
   align-items: center;
   justify-content: center;
   flex: 1;
-  color: var(--text-dim);
+  color: var(--text-muted);
   font-size: 14px;
   gap: 8px;
   position: relative;
@@ -279,7 +279,7 @@
   border: none;
   text-align: left;
   cursor: pointer;
-  transition: all 0.1s;
+  transition: all 0.3s ease;
   white-space: nowrap;
   overflow: hidden;
 }
@@ -305,7 +305,7 @@
 .tree-dir-chevron {
   font-size: 10px;
   color: var(--text-dim);
-  transition: transform 0.15s;
+  transition: transform 0.3s ease;
   flex-shrink: 0;
   display: inline-block;
   width: 10px;

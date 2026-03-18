@@ -49,7 +49,7 @@
   height: 8px;
   border-radius: 50%;
   background: var(--border);
-  transition: background 0.2s;
+  transition: background 0.3s ease;
 }
 
 .step-dot.active {
@@ -86,7 +86,7 @@
   border-radius: var(--radius-sm);
   cursor: pointer;
   margin-bottom: 8px;
-  transition: all 0.15s;
+  transition: all 0.3s ease;
 }
 
 .provider-option:hover {
@@ -120,7 +120,7 @@
   font-size: 13px;
   color: var(--ember);
   flex-shrink: 0;
-  transition: all 0.15s;
+  transition: all 0.3s ease;
 }
 
 .provider-option.selected .provider-check {
@@ -276,8 +276,8 @@
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
   z-index: 100;
   transition:
-    opacity 0.15s,
-    visibility 0.15s;
+    opacity 0.3s ease,
+    visibility 0.3s ease;
   pointer-events: none;
 }
 
@@ -328,8 +328,8 @@
   border-right: 1px solid var(--border);
   cursor: pointer;
   transition:
-    background 0.15s,
-    color 0.15s;
+    background 0.3s ease,
+    color 0.3s ease;
 }
 
 .seg-btn:last-child {
@@ -358,8 +358,8 @@
   border-radius: var(--radius-sm);
   outline: none;
   transition:
-    border-color 0.15s,
-    box-shadow 0.15s;
+    border-color 0.3s ease,
+    box-shadow 0.3s ease;
 }
 
 .thinking-mobile-select.setup-thinking-select:focus {
@@ -391,8 +391,8 @@
   border-radius: var(--radius-sm);
   outline: none;
   transition:
-    border-color 0.15s,
-    box-shadow 0.15s;
+    border-color 0.3s ease,
+    box-shadow 0.3s ease;
 }
 
 .model-other-input:focus {
@@ -424,7 +424,7 @@
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
   margin-bottom: 8px;
-  transition: all 0.15s;
+  transition: all 0.3s ease;
 }
 
 .mcp-item:hover {
@@ -462,7 +462,7 @@
   border: 1px solid var(--border);
   background: transparent;
   color: var(--text-muted);
-  transition: all 0.15s;
+  transition: all 0.3s ease;
 }
 
 .mcp-add-btn:hover {

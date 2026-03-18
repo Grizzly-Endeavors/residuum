@@ -58,7 +58,7 @@
   background: transparent;
   border: none;
   cursor: pointer;
-  transition: background 0.15s;
+  transition: background 0.3s ease;
 }
 
 .settings-nav-toggle:hover {
@@ -67,7 +67,7 @@
 
 .settings-nav-toggle .nav-chevron {
   font-size: 10px;
-  transition: transform 0.2s var(--ease-out-expo);
+  transition: transform 0.3s var(--ease-out-expo);
 }
 
 .settings-nav-toggle .nav-chevron.open {
@@ -86,7 +86,7 @@
   border: none;
   text-align: left;
   cursor: pointer;
-  transition: all 0.15s;
+  transition: all 0.3s ease;
   border-left: 3px solid transparent;
 }
 
@@ -112,7 +112,7 @@
 .settings-status {
   font-size: 11px;
   padding: 2px 8px;
-  border-radius: 10px;
+  border-radius: var(--radius);
   white-space: nowrap;
   transition: opacity 0.3s;
 }
@@ -173,7 +173,7 @@
   border: none;
   border-bottom: 2px solid transparent;
   cursor: pointer;
-  transition: all 0.15s;
+  transition: all 0.3s ease;
 }
 
 .advanced-tab:hover {
@@ -213,8 +213,8 @@
   justify-content: center;
   opacity: 0.6;
   transition:
-    opacity 0.15s,
-    background 0.15s;
+    opacity 0.3s ease,
+    background 0.3s ease;
 }
 
 .provider-remove-btn:hover {
@@ -314,7 +314,7 @@
   bottom: 0;
   background: var(--border);
   border-radius: 9px;
-  transition: background 0.2s;
+  transition: background 0.3s ease;
 }
 
 .toggle-slider::before {
@@ -327,8 +327,8 @@
   background: var(--text-muted);
   border-radius: 50%;
   transition:
-    transform 0.2s,
-    background 0.2s;
+    transform 0.3s ease,
+    background 0.3s ease;
 }
 
 .toggle-switch input:checked + .toggle-slider {

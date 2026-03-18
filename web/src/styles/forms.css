@@ -7,13 +7,23 @@
   font-weight: 600;
   border-radius: var(--radius-sm);
   cursor: pointer;
-  transition: all 0.15s;
+  transition: all 0.3s ease;
   border: 1px solid transparent;
+}
+
+.btn:active {
+  box-shadow: inset 0 2px 4px rgba(0, 0, 0, 0.3);
+  transform: scale(0.98);
+}
+
+.btn:focus-visible {
+  outline: 2px solid var(--ember);
+  outline-offset: 2px;
 }
 
 .btn-primary {
   background: var(--ember);
-  color: var(--bg-deep);
+  color: var(--text);
 }
 .btn-primary:hover {
   background: var(--ember-bright);
@@ -25,7 +35,7 @@
   border-color: var(--border);
 }
 .btn-secondary:hover {
-  background: var(--bg-raised);
+  background: var(--vein-faint);
   color: var(--text);
 }
 
@@ -46,6 +56,10 @@
 .btn:disabled {
   opacity: 0.4;
   cursor: not-allowed;
+  color: var(--moss-dust);
+  background: transparent;
+  box-shadow: none;
+  transform: none;
 }
 
 /* ── Form fields ──────────────────────────────────────────────────────── */
@@ -76,8 +90,8 @@
   border-radius: var(--radius-sm);
   outline: none;
   transition:
-    border-color 0.15s,
-    box-shadow 0.15s;
+    border-color 0.3s ease,
+    box-shadow 0.3s ease;
 }
 
 .settings-field input:focus,
@@ -86,6 +100,12 @@
   box-shadow:
     0 0 0 1px rgba(59, 139, 219, 0.15),
     0 0 8px rgba(59, 139, 219, 0.06);
+}
+
+.settings-field input:focus-visible,
+.settings-field select:focus-visible {
+  outline: 2px solid var(--ember);
+  outline-offset: 1px;
 }
 
 .settings-field input[type="password"] {

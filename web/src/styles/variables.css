@@ -1,6 +1,6 @@
 /* ── Residuum Web UI — Stone + Vein Theme ─────────────────────────────── */
 
-@import url("https://fonts.googleapis.com/css2?family=Cinzel:wght@400;600;700&family=JetBrains+Mono:wght@400;500&family=Literata:ital,opsz,wght@0,7..72,300..700;1,7..72,300..700&display=swap");
+@import url("https://fonts.googleapis.com/css2?family=Cinzel:wght@400;500;600;700&family=JetBrains+Mono:wght@300;400;500&family=Literata:ital,opsz,wght@0,7..72,300..700;1,7..72,300..700&display=swap");
 
 :root {
   /* Stone + Vein palette */
@@ -20,9 +20,13 @@
   --ember-bright: #5aa3f0;
   --ember-glow: rgba(59, 139, 219, 0.15);
   --ember-dim: #2a6cb5;
+  --vein-faint: rgba(59, 139, 219, 0.08);
+  --vein-subtle: rgba(59, 139, 219, 0.15);
 
-  --steel: #6b7a4a;
-  --steel-dim: #7a7d6e;
+  --moss: #6b7a4a;
+  --moss-dust: #5a693a;
+  --moss-faint: rgba(107, 122, 74, 0.25);
+  --moss-hover: #8a9e62;
 
   --error: #c0392b;
   --error-bg: rgba(192, 57, 43, 0.1);
