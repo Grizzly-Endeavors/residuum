@@ -14,25 +14,61 @@ import type {
   UpdateStatusResponse,
 } from "./types";
 
-export async function fetchStatus(): Promise<StatusResponse> {
-  const resp = await fetch("/api/status");
-  if (!resp.ok) throw new Error(`status check failed: ${resp.status}`);
-  return (await resp.json()) as StatusResponse;
+// ── Error class + fetch helpers ─────────────────────────────────────
+
+/** Structured error from a failed API response. */
+export class ApiError extends Error {
+  constructor(
+    public readonly status: number,
+    public readonly statusText: string,
+    public readonly body: string,
+  ) {
+    super(`${status} ${statusText}: ${body}`);
+    this.name = "ApiError";
+  }
 }
 
+/** Fetch wrapper that throws `ApiError` on non-ok responses. */
+async function apiFetch<T>(input: RequestInfo | URL, init?: RequestInit): Promise<T> {
+  const resp = await fetch(input, init);
+  if (!resp.ok) {
+    const body = await resp.text();
+    throw new ApiError(resp.status, resp.statusText, body);
+  }
+  return (await resp.json()) as T;
+}
+
+/** Fetch wrapper for plain text responses that throws `ApiError` on non-ok. */
+async function apiFetchText(input: RequestInfo | URL, init?: RequestInit): Promise<string> {
+  const resp = await fetch(input, init);
+  if (!resp.ok) {
+    const body = await resp.text();
+    throw new ApiError(resp.status, resp.statusText, body);
+  }
+  return resp.text();
+}
+
+// ── Core API wrappers ───────────────────────────────────────────────
+
+export async function fetchStatus(): Promise<StatusResponse> {
+  return apiFetch<StatusResponse>("/api/status");
+}
+
+/** Graceful fallback: returns empty array on failure (history is optional at startup). */
 export async function fetchChatHistory(): Promise<RecentMessage[]> {
-  const resp = await fetch("/api/chat/history");
-  if (!resp.ok) return [];
-  return (await resp.json()) as RecentMessage[];
+  try {
+    return await apiFetch<RecentMessage[]>("/api/chat/history");
+  } catch {
+    return [];
+  }
 }
 
 // ── Setup API wrappers ──────────────────────────────────────────────
 
+/** Graceful fallback: uses browser timezone when server is unreachable during setup. */
 export async function fetchTimezone(): Promise<string> {
   try {
-    const resp = await fetch("/api/system/timezone");
-    if (!resp.ok) throw new Error("failed");
-    const data = (await resp.json()) as TimezoneResponse;
+    const data = await apiFetch<TimezoneResponse>("/api/system/timezone");
     return data.timezone || Intl.DateTimeFormat().resolvedOptions().timeZone || "";
   } catch {
     return Intl.DateTimeFormat().resolvedOptions().timeZone || "";
@@ -48,35 +84,28 @@ export async function fetchProviderModels(
   if (apiKey) body.api_key = apiKey;
   if (url) body.url = url;
 
-  const resp = await fetch("/api/providers/models", {
+  return apiFetch<ModelsResponse>("/api/providers/models", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
   });
-  return (await resp.json()) as ModelsResponse;
 }
 
+/** Graceful fallback: catalog is optional — returns empty on failure. */
 export async function fetchMcpCatalog(): Promise<McpCatalogEntry[]> {
   try {
-    const resp = await fetch("/api/mcp-catalog");
-    if (!resp.ok) return [];
-    return (await resp.json()) as McpCatalogEntry[];
+    return await apiFetch<McpCatalogEntry[]>("/api/mcp-catalog");
   } catch {
     return [];
   }
 }
 
 export async function storeSecret(name: string, value: string): Promise<SecretResponse> {
-  const resp = await fetch("/api/secrets", {
+  return apiFetch<SecretResponse>("/api/secrets", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ name, value }),
   });
-  if (!resp.ok) {
-    const text = await resp.text();
-    throw new Error(`failed to store secret "${name}": ${text}`);
-  }
-  return (await resp.json()) as SecretResponse;
 }
 
 export async function completeSetup(
@@ -86,158 +115,122 @@ export async function completeSetup(
 ): Promise<ValidateResponse> {
   const payload: Record<string, string> = { config, providers };
   if (mcpJson) payload.mcp_json = mcpJson;
-  const resp = await fetch("/api/config/complete-setup", {
+  return apiFetch<ValidateResponse>("/api/config/complete-setup", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
   });
-  return (await resp.json()) as ValidateResponse;
 }
 
 // ── Settings API wrappers ────────────────────────────────────────────
 
 export async function fetchConfigRaw(): Promise<string> {
-  const resp = await fetch("/api/config/raw");
-  if (!resp.ok) throw new Error(`failed to read config: ${resp.status}`);
-  return resp.text();
+  return apiFetchText("/api/config/raw");
 }
 
 export async function putConfigRaw(toml: string): Promise<ValidateResponse> {
-  const resp = await fetch("/api/config/raw", {
+  return apiFetch<ValidateResponse>("/api/config/raw", {
     method: "PUT",
     headers: { "Content-Type": "text/plain" },
     body: toml,
   });
-  return (await resp.json()) as ValidateResponse;
 }
 
 export async function validateConfig(toml: string): Promise<ValidateResponse> {
-  const resp = await fetch("/api/config/validate", {
+  return apiFetch<ValidateResponse>("/api/config/validate", {
     method: "POST",
     headers: { "Content-Type": "text/plain" },
     body: toml,
   });
-  return (await resp.json()) as ValidateResponse;
 }
 
 export async function fetchProvidersRaw(): Promise<string> {
-  const resp = await fetch("/api/providers/raw");
-  if (!resp.ok) throw new Error(`failed to read providers: ${resp.status}`);
-  return resp.text();
+  return apiFetchText("/api/providers/raw");
 }
 
 export async function putProvidersRaw(toml: string): Promise<ValidateResponse> {
-  const resp = await fetch("/api/providers/raw", {
+  return apiFetch<ValidateResponse>("/api/providers/raw", {
     method: "PUT",
     headers: { "Content-Type": "text/plain" },
     body: toml,
   });
-  return (await resp.json()) as ValidateResponse;
 }
 
 export async function validateProviders(toml: string): Promise<ValidateResponse> {
-  const resp = await fetch("/api/providers/validate", {
+  return apiFetch<ValidateResponse>("/api/providers/validate", {
     method: "POST",
     headers: { "Content-Type": "text/plain" },
     body: toml,
   });
-  return (await resp.json()) as ValidateResponse;
 }
 
 export async function fetchMcpRaw(): Promise<string> {
-  const resp = await fetch("/api/mcp/raw");
-  if (!resp.ok) throw new Error(`failed to read mcp.json: ${resp.status}`);
-  return resp.text();
+  return apiFetchText("/api/mcp/raw");
 }
 
 export async function putMcpRaw(json: string): Promise<ValidateResponse> {
-  const resp = await fetch("/api/mcp/raw", {
+  return apiFetch<ValidateResponse>("/api/mcp/raw", {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
     body: json,
   });
-  return (await resp.json()) as ValidateResponse;
 }
 
+/** Graceful fallback: returns empty on failure (secrets list is non-critical). */
 export async function listSecrets(): Promise<string[]> {
-  const resp = await fetch("/api/secrets");
-  if (!resp.ok) return [];
-  const data = (await resp.json()) as SecretsListResponse;
-  return data.names;
+  try {
+    const data = await apiFetch<SecretsListResponse>("/api/secrets");
+    return data.names;
+  } catch {
+    return [];
+  }
 }
 
 export async function deleteSecret(name: string): Promise<void> {
-  const resp = await fetch(`/api/secrets/${encodeURIComponent(name)}`, {
+  await apiFetchText(`/api/secrets/${encodeURIComponent(name)}`, {
     method: "DELETE",
   });
-  if (!resp.ok) {
-    const text = await resp.text();
-    throw new Error(`failed to delete secret "${name}": ${text}`);
-  }
 }
 
 // ── Workspace API wrappers ──────────────────────────────────────────
 
 export async function fetchWorkspaceFiles(path?: string): Promise<WorkspaceEntry[]> {
   const params = path ? `?path=${encodeURIComponent(path)}` : "";
-  const resp = await fetch(`/api/workspace/files${params}`);
-  if (!resp.ok) throw new Error(`failed to list workspace: ${resp.status}`);
-  return (await resp.json()) as WorkspaceEntry[];
+  return apiFetch<WorkspaceEntry[]>(`/api/workspace/files${params}`);
 }
 
 export async function fetchWorkspaceFile(path: string): Promise<string> {
-  const resp = await fetch(`/api/workspace/file?path=${encodeURIComponent(path)}`);
-  if (!resp.ok) throw new Error(`failed to read file: ${resp.status}`);
-  return resp.text();
+  return apiFetchText(`/api/workspace/file?path=${encodeURIComponent(path)}`);
 }
 
 export async function putWorkspaceFile(path: string, content: string): Promise<void> {
-  const resp = await fetch("/api/workspace/file", {
+  await apiFetch<unknown>("/api/workspace/file", {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ path, content }),
   });
-  if (!resp.ok) {
-    const text = await resp.text();
-    throw new Error(`failed to save file: ${text}`);
-  }
 }
 
 // ── Cloud API wrappers ──────────────────────────────────────────────
 
 export async function fetchCloudStatus(): Promise<CloudStatusResponse> {
-  const resp = await fetch("/api/cloud/status");
-  if (!resp.ok) throw new Error(`cloud status check failed: ${resp.status}`);
-  return (await resp.json()) as CloudStatusResponse;
+  return apiFetch<CloudStatusResponse>("/api/cloud/status");
 }
 
 export async function disconnectCloud(): Promise<void> {
-  const resp = await fetch("/api/cloud/disconnect", { method: "POST" });
-  if (!resp.ok) {
-    const text = await resp.text();
-    throw new Error(`cloud disconnect failed: ${text}`);
-  }
+  await apiFetchText("/api/cloud/disconnect", { method: "POST" });
 }
 
 // ── Update API wrappers ──────────────────────────────────────────────
 
 export async function fetchUpdateStatus(): Promise<UpdateStatusResponse> {
-  const resp = await fetch("/api/update/status");
-  if (!resp.ok) throw new Error(`update status check failed: ${resp.status}`);
-  return (await resp.json()) as UpdateStatusResponse;
+  return apiFetch<UpdateStatusResponse>("/api/update/status");
 }
 
 export async function triggerUpdateCheck(): Promise<UpdateStatusResponse> {
-  const resp = await fetch("/api/update/check", { method: "POST" });
-  if (!resp.ok) throw new Error(`update check failed: ${resp.status}`);
-  return (await resp.json()) as UpdateStatusResponse;
+  return apiFetch<UpdateStatusResponse>("/api/update/check", { method: "POST" });
 }
 
 export async function applyUpdate(): Promise<UpdateStatusResponse> {
-  const resp = await fetch("/api/update/apply", { method: "POST" });
-  if (!resp.ok) {
-    const text = await resp.text();
-    throw new Error(`update apply failed: ${text}`);
-  }
-  return (await resp.json()) as UpdateStatusResponse;
+  return apiFetch<UpdateStatusResponse>("/api/update/apply", { method: "POST" });
 }
