@@ -6,12 +6,15 @@ export interface CommandResult {
   handled: boolean;
   feedItem?: FeedItem;
   wsMessage?: ClientMessage;
+  /** Side effect to execute after feed/ws updates are applied. */
+  action?: () => void;
 }
 
 interface CommandContext {
   connectionStatus: ConnectionStatus;
   verbose: boolean;
   nextId: () => number;
+  setVerbose: (enabled: boolean) => void;
 }
 
 // ── Command registry ────────────────────────────────────────────────
@@ -58,15 +61,20 @@ export function parseCommand(input: string, ctx: CommandContext): CommandResult 
         },
       };
 
-    case "/verbose":
+    case "/verbose": {
+      const newState = !ctx.verbose;
       return {
         handled: true,
         feedItem: {
           id: ctx.nextId(),
           kind: "notice",
-          content: `verbose mode will be ${ctx.verbose ? "disabled" : "enabled"}`,
+          content: `verbose mode will be ${newState ? "enabled" : "disabled"}`,
+        },
+        action: () => {
+          ctx.setVerbose(newState);
         },
       };
+    }
 
     case "/status":
       return {

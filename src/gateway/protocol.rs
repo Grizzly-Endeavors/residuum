@@ -1,12 +1,14 @@
 //! WebSocket protocol types: client and server message frames.
 
 use serde::{Deserialize, Serialize};
+use ts_rs::TS;
 
 use crate::models::ImageData;
 
 /// Messages sent from a WebSocket client to the server.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[serde(tag = "type", rename_all = "snake_case")]
+#[ts(export)]
 pub enum ClientMessage {
     /// Send a user message to the agent.
     SendMessage {
@@ -15,7 +17,7 @@ pub enum ClientMessage {
         /// The user message content.
         content: String,
         /// Optional image attachments (base64-encoded).
-        #[serde(default)]
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
         images: Vec<ImageData>,
     },
     /// Toggle verbose mode (tool call/result events).
@@ -42,8 +44,9 @@ pub enum ClientMessage {
 }
 
 /// Messages sent from the server to WebSocket clients.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[serde(tag = "type", rename_all = "snake_case")]
+#[ts(export)]
 pub enum ServerMessage {
     /// The agent began processing a queued message.
     TurnStarted {

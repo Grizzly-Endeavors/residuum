@@ -3,14 +3,10 @@
   import { ws } from "./lib/ws.svelte";
   import { fetchChatHistory } from "./lib/api";
   import { parseCommand } from "./lib/commands";
+  import { nextFeedId } from "./lib/feed-id";
   import ChatFeed from "./components/ChatFeed.svelte";
   import ChatInput from "./components/ChatInput.svelte";
   import type { ImageAttachment } from "./lib/types";
-
-  let feedIdCounter = 0;
-  function nextId(): number {
-    return --feedIdCounter; // negative IDs to avoid collision with ws module
-  }
 
   onMount(async () => {
     try {
@@ -30,17 +26,14 @@
     const result = parseCommand(text, {
       connectionStatus: ws.status,
       verbose: ws.verbose,
-      nextId,
+      nextId: nextFeedId,
+      setVerbose: (enabled) => ws.setVerbose(enabled),
     });
 
     if (result) {
       if (result.feedItem) ws.appendFeedItem(result.feedItem);
       if (result.wsMessage) ws.send(result.wsMessage);
-
-      // Handle verbose toggle specially
-      if (text.toLowerCase() === "/verbose") {
-        ws.setVerbose(!ws.verbose);
-      }
+      result.action?.();
       return;
     }
 
