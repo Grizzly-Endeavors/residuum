@@ -85,25 +85,26 @@ impl Config {
         };
 
         let providers_config = if providers_path.exists() {
-            let contents = std::fs::read_to_string(&providers_path).map_err(|e| {
-                ResiduumError::Config(format!(
-                    "failed to read providers config at {}: {e}",
-                    providers_path.display()
-                ))
-            })?;
-            Some(
-                toml::from_str::<deserialize::ProvidersFile>(&contents).map_err(|e| {
-                    ResiduumError::Config(format!(
-                        "failed to parse providers config at {}: {e}",
-                        providers_path.display()
-                    ))
-                })?,
-            )
+            Some(load_providers(&providers_path)?)
         } else {
-            return Err(ResiduumError::Config(format!(
-                "providers.toml not found at {}; run 'residuum setup' to create it",
-                providers_path.display()
-            )));
+            // Fall back to global ~/.residuum/providers.toml for named agents
+            // (their config dirs are under ~/.residuum/agent_registry/<name>/)
+            let global_dir = bootstrap::default_config_dir()?;
+            let global_path = global_dir.join("providers.toml");
+            let is_agent_subdir = global_dir
+                .join("agent_registry")
+                .as_path()
+                .to_str()
+                .zip(config_dir.to_str())
+                .is_some_and(|(prefix, dir)| dir.starts_with(prefix));
+            if is_agent_subdir && global_path.exists() {
+                Some(load_providers(&global_path)?)
+            } else {
+                return Err(ResiduumError::Config(format!(
+                    "providers.toml not found at {}; run 'residuum setup' to create it",
+                    providers_path.display()
+                )));
+            }
         };
 
         let mut cfg = resolve::from_file_and_env(
@@ -191,6 +192,22 @@ impl Config {
             ..crate::models::CompletionOptions::default()
         }
     }
+}
+
+/// Load and parse a `providers.toml` file from the given path.
+fn load_providers(path: &std::path::Path) -> Result<deserialize::ProvidersFile, ResiduumError> {
+    let contents = std::fs::read_to_string(path).map_err(|e| {
+        ResiduumError::Config(format!(
+            "failed to read providers config at {}: {e}",
+            path.display()
+        ))
+    })?;
+    toml::from_str::<deserialize::ProvidersFile>(&contents).map_err(|e| {
+        ResiduumError::Config(format!(
+            "failed to parse providers config at {}: {e}",
+            path.display()
+        ))
+    })
 }
 
 #[cfg(test)]
@@ -326,6 +343,23 @@ main = "invalid-format"
             err.contains("expected 'provider/model' format"),
             "error should mention expected format: {err}"
         );
+    }
+
+    #[test]
+    fn load_providers_helper_parses_valid_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("providers.toml");
+        std::fs::write(&path, VALID_PROVIDERS).unwrap();
+        let result = super::load_providers(&path);
+        assert!(result.is_ok(), "valid providers should parse: {result:?}");
+    }
+
+    #[test]
+    fn load_providers_helper_fails_on_missing_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("nonexistent.toml");
+        let result = super::load_providers(&path);
+        assert!(result.is_err(), "missing file should fail");
     }
 
     #[test]

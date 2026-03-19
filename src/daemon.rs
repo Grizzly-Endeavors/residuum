@@ -148,11 +148,14 @@ impl DebugMode {
 
 /// Initialize tracing with file-only output for daemonized operation.
 ///
-/// Logs are written to `~/.residuum/logs/serve.YYYY-MM-DD.log` with daily
-/// rotation and 30-day retention. When `debug_mode` is `Some`, the filter
-/// is overridden accordingly and stderr output is added so debug output
-/// appears in the terminal.
-pub fn init_daemon_tracing(debug_mode: Option<DebugMode>) {
+/// Logs are written to `<log_dir>/serve.YYYY-MM-DD.log` (or `serve-<name>`)
+/// with daily rotation and 30-day retention. When `debug_mode` is `Some`,
+/// the filter is overridden accordingly and stderr output is added so debug
+/// output appears in the terminal.
+///
+/// When `agent_name` is `Some`, logs go to the agent-specific log directory
+/// and the file prefix includes the agent name for identification.
+pub fn init_daemon_tracing(debug_mode: Option<DebugMode>, agent_name: Option<&str>) {
     use tracing_subscriber::layer::SubscriberExt;
     use tracing_subscriber::util::SubscriberInitExt;
 
@@ -160,18 +163,18 @@ pub fn init_daemon_tracing(debug_mode: Option<DebugMode>) {
     let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(default_filter));
 
-    let log_dir = dirs::home_dir().map_or_else(
-        || {
-            eprintln!(
-                "warning: could not determine home directory; logs will be written to ./logs"
-            );
-            std::path::PathBuf::from("logs")
-        },
-        |h| h.join(".residuum").join("logs"),
-    );
+    let log_dir = crate::agent_registry::paths::resolve_log_dir(agent_name).unwrap_or_else(|_| {
+        eprintln!("warning: could not determine log directory; logs will be written to ./logs");
+        std::path::PathBuf::from("logs")
+    });
+
+    let log_prefix = match agent_name {
+        Some(name) => format!("serve-{name}"),
+        None => "serve".to_string(),
+    };
 
     let file_appender = tracing_appender::rolling::RollingFileAppender::builder()
-        .filename_prefix("serve")
+        .filename_prefix(&log_prefix)
         .filename_suffix("log")
         .rotation(tracing_appender::rolling::Rotation::DAILY)
         .max_log_files(30)
@@ -182,7 +185,7 @@ pub fn init_daemon_tracing(debug_mode: Option<DebugMode>) {
                 std::env::temp_dir().display()
             );
             tracing_appender::rolling::RollingFileAppender::builder()
-                .filename_prefix("serve")
+                .filename_prefix(&log_prefix)
                 .filename_suffix("log")
                 .rotation(tracing_appender::rolling::Rotation::DAILY)
                 .build(std::env::temp_dir())
@@ -191,7 +194,10 @@ pub fn init_daemon_tracing(debug_mode: Option<DebugMode>) {
                         "warning: fallback log appender also failed: {e2}; falling back to {}",
                         std::env::temp_dir().display()
                     );
-                    tracing_appender::rolling::daily(std::env::temp_dir(), "serve.log")
+                    tracing_appender::rolling::daily(
+                        std::env::temp_dir(),
+                        format!("{log_prefix}.log"),
+                    )
                 })
         });
 

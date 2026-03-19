@@ -4,10 +4,12 @@
 //! - `serve` (default): starts the gateway as a background daemon
 //! - `serve --foreground`: runs the gateway in the foreground
 //! - `serve --debug[=mode]`: run with debug logging (modes: all, trace)
-//! - `stop`: stops a running gateway daemon
-//! - `connect [url]`: connects a CLI client to a running gateway
-//! - `logs [--watch]`: display CLI log files
+//! - `serve --agent <name>`: start a named agent instance
+//! - `stop [--agent <name>]`: stops a running gateway daemon
+//! - `connect [--agent <name>] [url]`: connects a CLI client to a running gateway
+//! - `logs [--agent <name>] [--watch]`: display CLI log files
 //! - `setup`: interactive configuration wizard
+//! - `agent <create|list|delete|info>`: manage named agent instances
 
 use residuum::config::Config;
 use residuum::error::ResiduumError;
@@ -48,24 +50,44 @@ async fn run() -> Result<(), ResiduumError> {
     let args: Vec<String> = std::env::args().collect();
     let subcommand = args.get(1).map(String::as_str);
 
+    // Parse --agent <name> flag from args (applies to serve, stop, connect, logs)
+    let agent_name = extract_flag_value(&args, "--agent");
+
     match subcommand {
         Some("secret") => run_secret_command(&args),
+        Some("agent") => residuum::agent_registry::commands::run_agent_command(&args),
         Some("connect") => {
             init_cli_tracing();
-            let url = args.get(2).map_or("ws://127.0.0.1:7700/ws", String::as_str);
+            let url = if let Some(ref name) = agent_name {
+                // Look up port from registry
+                let registry_dir = residuum::agent_registry::paths::registry_base_dir()?;
+                let registry =
+                    residuum::agent_registry::registry::AgentRegistry::load(&registry_dir)?;
+                let entry = registry.get(name).ok_or_else(|| {
+                    ResiduumError::Config(format!("agent '{name}' not found in registry"))
+                })?;
+                format!("ws://127.0.0.1:{}/ws", entry.port)
+            } else {
+                // Use explicit URL arg or default
+                args.iter()
+                    .skip(2)
+                    .find(|a| !a.starts_with('-') && *a != "--agent")
+                    .cloned()
+                    .unwrap_or_else(|| "ws://127.0.0.1:7700/ws".to_string())
+            };
             let verbose = args.iter().any(|a| a == "--verbose" || a == "-v");
-            run_connect(url, verbose).await
+            run_connect(&url, verbose).await
         }
         Some("logs") => {
             init_default_tracing();
             let watch = args.iter().any(|a| a == "--watch" || a == "-w");
-            run_logs_command(watch).await
+            run_logs_command(watch, agent_name.as_deref()).await
         }
         Some("setup") => {
             init_default_tracing();
             run_setup_command(&args)
         }
-        Some("stop") => run_stop_command(),
+        Some("stop") => run_stop_command(agent_name.as_deref()),
         Some("update") => run_update_command(&args).await,
         // "serve" or no subcommand → start gateway
         Some("serve") | None => {
@@ -74,15 +96,15 @@ async fn run() -> Result<(), ResiduumError> {
 
             if foreground {
                 // Foreground mode: file-only logging (+ stderr if --debug), run gateway directly
-                residuum::daemon::init_daemon_tracing(debug_mode);
-                run_serve_foreground(&args).await
+                residuum::daemon::init_daemon_tracing(debug_mode, agent_name.as_deref());
+                run_serve_foreground(&args, agent_name.as_deref()).await
             } else {
                 // Daemon mode: spawn foreground child, poll for PID file, exit
-                run_daemonize(&args)
+                run_daemonize(&args, agent_name.as_deref())
             }
         }
         Some(other) => Err(ResiduumError::Config(format!(
-            "unknown subcommand '{other}', expected one of: serve, connect, logs, setup, secret, stop, update"
+            "unknown subcommand '{other}', expected one of: serve, connect, logs, setup, secret, stop, update, agent"
         ))),
     }
 }
@@ -95,13 +117,16 @@ async fn run() -> Result<(), ResiduumError> {
 /// # Errors
 ///
 /// Returns `ResiduumError` if initialization or the gateway loop fails.
-async fn run_serve_foreground(args: &[String]) -> Result<(), ResiduumError> {
+async fn run_serve_foreground(
+    args: &[String],
+    agent_name: Option<&str>,
+) -> Result<(), ResiduumError> {
     // Write PID file early so the daemon parent (and `residuum stop`) can find us,
     // even during setup wizard before the gateway starts.
-    let pid_path = residuum::daemon::pid_file_path()?;
+    let pid_path = residuum::agent_registry::paths::resolve_pid_path(agent_name)?;
     residuum::daemon::write_pid_file(&pid_path, std::process::id())?;
 
-    let result = run_serve_foreground_inner(args).await;
+    let result = run_serve_foreground_inner(args, agent_name).await;
 
     // Always clean up PID file on exit
     if let Err(e) = residuum::daemon::remove_pid_file(&pid_path) {
@@ -111,63 +136,74 @@ async fn run_serve_foreground(args: &[String]) -> Result<(), ResiduumError> {
     result
 }
 
-/// Inner implementation of foreground serve, wrapped by PID file lifecycle.
-async fn run_serve_foreground_inner(args: &[String]) -> Result<(), ResiduumError> {
-    // --setup: run the onboarding wizard in an isolated temp directory,
-    // then boot the gateway with the resulting config for end-to-end testing
-    if args.iter().any(|a| a == "--setup") {
-        let tmp_dir = std::env::temp_dir().join("residuum-setup");
-        if tmp_dir.exists() {
-            std::fs::remove_dir_all(&tmp_dir).map_err(|e| {
-                ResiduumError::Config(format!(
-                    "failed to clean setup directory {}: {e}",
-                    tmp_dir.display()
-                ))
-            })?;
+/// Run the onboarding wizard in an isolated temp directory, then boot gateway.
+async fn run_setup_mode() -> Result<(), ResiduumError> {
+    let tmp_dir = std::env::temp_dir().join("residuum-setup");
+    if tmp_dir.exists() {
+        std::fs::remove_dir_all(&tmp_dir).map_err(|e| {
+            ResiduumError::Config(format!(
+                "failed to clean setup directory {}: {e}",
+                tmp_dir.display()
+            ))
+        })?;
+    }
+    residuum::config::Config::bootstrap_at_dir(&tmp_dir)?;
+    eprintln!(
+        "setup mode: config will be written to {}",
+        tmp_dir.display()
+    );
+    match Box::pin(residuum::gateway::setup::run_setup_server_at(
+        tmp_dir.clone(),
+    ))
+    .await?
+    {
+        residuum::gateway::setup::SetupExit::ConfigSaved => {
+            tracing::info!("setup complete, loading config from temp directory");
         }
-        residuum::config::Config::bootstrap_at_dir(&tmp_dir)?;
-        eprintln!(
-            "setup mode: config will be written to {}",
-            tmp_dir.display()
-        );
-        match Box::pin(residuum::gateway::setup::run_setup_server_at(
-            tmp_dir.clone(),
-        ))
-        .await?
-        {
-            residuum::gateway::setup::SetupExit::ConfigSaved => {
-                tracing::info!("setup complete, loading config from temp directory");
-            }
-            residuum::gateway::setup::SetupExit::Shutdown => return Ok(()),
-        }
-
-        // Load the config written by the wizard and run the gateway
-        let mut cfg = Config::load_at(&tmp_dir)?;
-        cfg.workspace_dir = tmp_dir.join("workspace");
-        if let Some(first) = cfg.skills.dirs.first_mut() {
-            *first =
-                residuum::workspace::layout::WorkspaceLayout::new(&cfg.workspace_dir).skills_dir();
-        }
-        tracing::info!(
-            model = cfg.main.first().map_or("(none)", |s| s.model.model.as_str()),
-            provider_url = cfg.main.first().map_or("(none)", |s| s.provider_url.as_str()),
-            workspace = %cfg.workspace_dir.display(),
-            "setup-mode: configuration loaded, starting gateway"
-        );
-        let _ = Box::pin(residuum::gateway::run_gateway(cfg)).await?;
-        return Ok(());
+        residuum::gateway::setup::SetupExit::Shutdown => return Ok(()),
     }
 
-    let config_dir = Config::config_dir()?;
+    // Load the config written by the wizard and run the gateway
+    let mut cfg = Config::load_at(&tmp_dir)?;
+    cfg.workspace_dir = tmp_dir.join("workspace");
+    if let Some(first) = cfg.skills.dirs.first_mut() {
+        *first = residuum::workspace::layout::WorkspaceLayout::new(&cfg.workspace_dir).skills_dir();
+    }
+    tracing::info!(
+        model = cfg.main.first().map_or("(none)", |s| s.model.model.as_str()),
+        provider_url = cfg.main.first().map_or("(none)", |s| s.provider_url.as_str()),
+        workspace = %cfg.workspace_dir.display(),
+        "setup-mode: configuration loaded, starting gateway"
+    );
+    let _ = Box::pin(residuum::gateway::run_gateway(cfg)).await?;
+    Ok(())
+}
+
+/// Inner implementation of foreground serve, wrapped by PID file lifecycle.
+async fn run_serve_foreground_inner(
+    args: &[String],
+    agent_name: Option<&str>,
+) -> Result<(), ResiduumError> {
+    if args.iter().any(|a| a == "--setup") {
+        return Box::pin(run_setup_mode()).await;
+    }
+
+    let config_dir = residuum::agent_registry::paths::resolve_config_dir(agent_name)?;
     // Determine first-boot from disk state: if a backup exists, the gateway
     // has previously loaded a valid config, so this is a restart.
     let is_first_boot = !config_dir.join("config.toml.bak").exists();
 
     loop {
-        Config::bootstrap_config_dir()?;
-        match Config::load() {
+        Config::bootstrap_at_dir(&config_dir)?;
+        let mut cfg_result = Config::load_at(&config_dir);
+        // Set config_dir on success so the gateway knows where config lives
+        if let Ok(ref mut cfg) = cfg_result {
+            cfg.config_dir.clone_from(&config_dir);
+        }
+        match cfg_result {
             Ok(cfg) => {
                 tracing::info!(
+                    agent = agent_name.unwrap_or("(default)"),
                     model = cfg.main.first().map_or("(none)", |s| s.model.model.as_str()),
                     provider_url = cfg.main.first().map_or("(none)", |s| s.provider_url.as_str()),
                     workspace = %cfg.workspace_dir.display(),
@@ -187,8 +223,9 @@ async fn run_serve_foreground_inner(args: &[String]) -> Result<(), ResiduumError
                 tracing::warn!(error = %err, "config invalid, attempting rollback from backup");
                 if residuum::gateway::rollback_config(&config_dir) {
                     // Backup restored — retry loading
-                    match Config::load() {
-                        Ok(cfg) => {
+                    match Config::load_at(&config_dir) {
+                        Ok(mut cfg) => {
+                            cfg.config_dir.clone_from(&config_dir);
                             tracing::info!("config restored from backup, starting gateway");
                             match Box::pin(residuum::gateway::run_gateway(cfg)).await? {
                                 residuum::gateway::GatewayExit::Shutdown => break,
@@ -200,7 +237,8 @@ async fn run_serve_foreground_inner(args: &[String]) -> Result<(), ResiduumError
                         Err(retry_err) => {
                             return Err(ResiduumError::Config(format!(
                                 "config invalid after rollback: {retry_err}\n\n\
-                                 fix ~/.residuum/config.toml and ~/.residuum/providers.toml manually, then restart"
+                                 fix {}/config.toml and providers.toml manually, then restart",
+                                config_dir.display()
                             )));
                         }
                     }
@@ -208,11 +246,21 @@ async fn run_serve_foreground_inner(args: &[String]) -> Result<(), ResiduumError
                 tracing::warn!(error = %err, "config rollback failed (no backup exists or I/O error)");
                 return Err(ResiduumError::Config(format!(
                     "config invalid and rollback failed: {err}\n\n\
-                     fix ~/.residuum/config.toml and ~/.residuum/providers.toml manually, then restart"
+                     fix {}/config.toml and providers.toml manually, then restart",
+                    config_dir.display()
+                )));
+            }
+            Err(err) if agent_name.is_some() => {
+                // Named agents don't get setup wizard — config must be ready
+                return Err(ResiduumError::Config(format!(
+                    "config invalid for agent '{}': {err}\n\n\
+                     edit {}/config.toml manually or recreate the agent",
+                    agent_name.unwrap_or_default(),
+                    config_dir.display()
                 )));
             }
             Err(err) => {
-                // First boot — setup wizard
+                // First boot — setup wizard (default agent only)
                 tracing::warn!(error = %err, "config invalid, starting setup wizard");
                 match Box::pin(residuum::gateway::setup::run_setup_server()).await? {
                     residuum::gateway::setup::SetupExit::ConfigSaved => {
@@ -278,30 +326,32 @@ fn re_exec_serve_foreground() -> Result<(), ResiduumError> {
 ///
 /// Returns `ResiduumError` if the child process cannot be spawned or
 /// startup times out.
-fn run_daemonize(args: &[String]) -> Result<(), ResiduumError> {
+fn run_daemonize(args: &[String], agent_name: Option<&str>) -> Result<(), ResiduumError> {
     use residuum::config::GatewayConfig;
-    use residuum::daemon::{is_process_running, pid_file_path, read_pid_file};
+    use residuum::daemon::{is_process_running, read_pid_file};
 
-    let pid_path = pid_file_path()?;
+    let pid_path = residuum::agent_registry::paths::resolve_pid_path(agent_name)?;
+    let label = agent_name.map_or("gateway".to_string(), |n| format!("agent '{n}'"));
 
     // Check for an already-running instance
     if let Ok(existing_pid) = read_pid_file(&pid_path)
         && is_process_running(existing_pid)
     {
-        eprintln!("residuum: gateway is already running (pid {existing_pid})");
+        eprintln!("residuum: {label} is already running (pid {existing_pid})");
         return Ok(());
     }
 
     // Resolve gateway address from config or defaults
-    let gateway_addr = Config::load().map_or_else(
+    let config_dir = residuum::agent_registry::paths::resolve_config_dir(agent_name)?;
+    let gateway_addr = Config::load_at(&config_dir).map_or_else(
         |_| GatewayConfig::default().addr(),
         |cfg| cfg.gateway.addr(),
     );
 
     // Detect whether the child will enter setup mode (no PID file until setup completes)
-    let config_dir = Config::config_dir()?;
-    let needs_setup =
-        args.iter().any(|a| a == "--setup") || !config_dir.join("config.toml").exists();
+    // Named agents never enter setup mode.
+    let needs_setup = agent_name.is_none()
+        && (args.iter().any(|a| a == "--setup") || !config_dir.join("config.toml").exists());
 
     // First-launch welcome (or --setup which mimics it)
     if needs_setup {
@@ -329,6 +379,12 @@ fn run_daemonize(args: &[String]) -> Result<(), ResiduumError> {
         if arg != "--foreground" {
             child_args.push(arg.clone());
         }
+    }
+
+    // Ensure --agent is forwarded if present
+    if agent_name.is_some() && !child_args.iter().any(|a| a == "--agent") {
+        child_args.push("--agent".to_string());
+        child_args.push(agent_name.unwrap_or_default().to_string());
     }
 
     let mut child = std::process::Command::new(&exe)
@@ -371,11 +427,11 @@ fn run_daemonize(args: &[String]) -> Result<(), ResiduumError> {
     loop {
         if start.elapsed() > timeout {
             if let Ok(Some(status)) = child.try_wait() {
-                eprintln!("residuum: gateway crashed during startup (exit status: {status})");
+                eprintln!("residuum: {label} crashed during startup (exit status: {status})");
                 eprintln!("  check logs: residuum logs");
                 eprintln!("  note: if no log files exist, the daemon crashed before writing any");
             } else {
-                eprintln!("residuum: gateway did not start within 10 seconds");
+                eprintln!("residuum: {label} did not start within 10 seconds");
                 eprintln!("  check logs: residuum logs");
             }
             return Err(ResiduumError::Gateway(
@@ -386,7 +442,7 @@ fn run_daemonize(args: &[String]) -> Result<(), ResiduumError> {
         if let Ok(pid) = read_pid_file(&pid_path)
             && is_process_running(pid)
         {
-            eprintln!("residuum: gateway started at http://{gateway_addr} (pid {pid})");
+            eprintln!("residuum: {label} started at http://{gateway_addr} (pid {pid})");
             return Ok(());
         }
 
@@ -479,20 +535,19 @@ async fn run_update_command(args: &[String]) -> Result<(), ResiduumError> {
 ///
 /// Returns `ResiduumError` if the PID file cannot be read or the signal
 /// cannot be sent.
-fn run_stop_command() -> Result<(), ResiduumError> {
-    use residuum::daemon::{
-        is_process_running, pid_file_path, read_pid_file, remove_pid_file, send_sigterm,
-    };
+fn run_stop_command(agent_name: Option<&str>) -> Result<(), ResiduumError> {
+    use residuum::daemon::{is_process_running, read_pid_file, remove_pid_file, send_sigterm};
 
-    let pid_path = pid_file_path()?;
+    let pid_path = residuum::agent_registry::paths::resolve_pid_path(agent_name)?;
+    let label = agent_name.map_or("gateway".to_string(), |n| format!("agent '{n}'"));
 
     let Ok(pid) = read_pid_file(&pid_path) else {
-        eprintln!("residuum: no gateway running (no pid file)");
+        eprintln!("residuum: no {label} running (no pid file)");
         return Ok(());
     };
 
     if !is_process_running(pid) {
-        eprintln!("residuum: no gateway running (stale pid file for pid {pid})");
+        eprintln!("residuum: no {label} running (stale pid file for pid {pid})");
         remove_pid_file(&pid_path)?;
         return Ok(());
     }
@@ -508,14 +563,14 @@ fn run_stop_command() -> Result<(), ResiduumError> {
         if !is_process_running(pid) {
             // Process exited; clean up PID file if still present
             remove_pid_file(&pid_path)?;
-            eprintln!("residuum: gateway stopped (pid {pid})");
+            eprintln!("residuum: {label} stopped (pid {pid})");
             return Ok(());
         }
 
         if start.elapsed() > timeout {
-            eprintln!("residuum: gateway (pid {pid}) did not stop within 5 seconds");
+            eprintln!("residuum: {label} (pid {pid}) did not stop within 5 seconds");
             return Err(ResiduumError::Gateway(format!(
-                "gateway pid {pid} did not exit after SIGTERM"
+                "{label} pid {pid} did not exit after SIGTERM"
             )));
         }
 
@@ -679,10 +734,8 @@ fn init_cli_tracing() {
 ///
 /// Finds the most recent log file in `~/.residuum/logs/` and prints its
 /// contents. With `--watch`, polls for new lines every 500ms.
-async fn run_logs_command(watch: bool) -> Result<(), ResiduumError> {
-    let log_dir = dirs::home_dir()
-        .map(|h| h.join(".residuum").join("logs"))
-        .ok_or_else(|| ResiduumError::Config("could not determine home directory".to_string()))?;
+async fn run_logs_command(watch: bool, agent_name: Option<&str>) -> Result<(), ResiduumError> {
+    let log_dir = residuum::agent_registry::paths::resolve_log_dir(agent_name)?;
 
     if !log_dir.exists() {
         eprintln!(
