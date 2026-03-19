@@ -72,6 +72,9 @@ serenity = { version = "0.12", default-features = false, features = ["client", "
 # Telegram
 teloxide = { version = "0.17", default-features = false, features = ["rustls"] }
 
+# TypeScript type generation (zero-cost at runtime, derive-only)
+ts-rs = { version = "12.0", features = ["serde-json-impl"] }
+
 # macOS native notifications (Apple Silicon only)
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"

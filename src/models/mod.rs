@@ -20,6 +20,7 @@ pub use http::{HttpClientConfig, SharedHttpClient};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
+use ts_rs::TS;
 
 /// Errors from model provider operations.
 #[derive(Error, Debug)]
@@ -68,7 +69,8 @@ impl ModelError {
 }
 
 /// Base64-encoded image data for multimodal messages.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export, rename = "ImageAttachment")]
 pub struct ImageData {
     /// MIME type (e.g. `"image/jpeg"`, `"image/png"`).
     pub media_type: String,
