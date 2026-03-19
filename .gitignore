@@ -10,3 +10,4 @@ web/dist/
 .specify/
 specs/
 audit-results/
+bindings/
