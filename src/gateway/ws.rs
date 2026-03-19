@@ -14,6 +14,7 @@ use crate::gateway::protocol::{ClientMessage, ServerMessage};
 use crate::gateway::types::GatewayState;
 use crate::interfaces::types::MessageOrigin;
 use crate::interfaces::websocket::subscriber::WsSubscribers;
+use crate::models::ImageData;
 
 /// Axum handler that upgrades an HTTP request to a WebSocket connection.
 pub(super) async fn ws_handler(
@@ -140,6 +141,16 @@ async fn handle_client_message(
             content,
             images,
         } => {
+            if !images.is_empty()
+                && let Err(reason) = validate_images(&images)
+            {
+                drop(local_tx.send(ServerMessage::Error {
+                    reply_to: Some(id),
+                    message: reason,
+                }));
+                return true;
+            }
+
             let origin = MessageOrigin {
                 endpoint: "ws".to_string(),
                 sender_name: "ws-client".to_string(),
@@ -221,6 +232,52 @@ async fn handle_client_message(
     true
 }
 
+/// Maximum number of images per message.
+const MAX_IMAGES: usize = 5;
+
+/// Maximum raw image size in bytes (5 MB).
+const MAX_IMAGE_BYTES: usize = 5 * 1024 * 1024;
+
+/// Allowed MIME types for image uploads.
+const ALLOWED_MIME_TYPES: &[&str] = &["image/jpeg", "image/png", "image/gif", "image/webp"];
+
+/// Validate image attachments before publishing to the bus.
+///
+/// Enforces the same limits as the client: max 5 images, 5 MB each,
+/// and only JPEG/PNG/GIF/WebP MIME types.
+///
+/// # Errors
+///
+/// Returns a human-readable error describing the first violation found.
+fn validate_images(images: &[ImageData]) -> Result<(), String> {
+    if images.len() > MAX_IMAGES {
+        return Err(format!(
+            "too many images: {} (max {MAX_IMAGES})",
+            images.len()
+        ));
+    }
+
+    for img in images {
+        if !ALLOWED_MIME_TYPES.contains(&img.media_type.as_str()) {
+            return Err(format!(
+                "unsupported image type: {} (allowed: {})",
+                img.media_type,
+                ALLOWED_MIME_TYPES.join(", ")
+            ));
+        }
+
+        // Estimate raw bytes from base64 length: every 4 base64 chars = 3 bytes
+        let estimated_bytes = img.data.len() * 3 / 4;
+        if estimated_bytes > MAX_IMAGE_BYTES {
+            return Err(format!(
+                "image too large: ~{estimated_bytes} bytes (max {MAX_IMAGE_BYTES})"
+            ));
+        }
+    }
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -240,5 +297,81 @@ mod tests {
             !flag.load(Ordering::Relaxed),
             "should be false after storing false"
         );
+    }
+
+    fn make_image(media_type: &str, data_len: usize) -> ImageData {
+        ImageData {
+            media_type: media_type.to_string(),
+            data: "A".repeat(data_len),
+        }
+    }
+
+    #[test]
+    fn validate_images_accepts_valid_input() {
+        let images = vec![make_image("image/jpeg", 100), make_image("image/png", 200)];
+        assert!(
+            validate_images(&images).is_ok(),
+            "valid images should pass validation"
+        );
+    }
+
+    #[test]
+    fn validate_images_accepts_empty() {
+        assert!(
+            validate_images(&[]).is_ok(),
+            "empty images should pass validation"
+        );
+    }
+
+    #[test]
+    fn validate_images_rejects_too_many() {
+        let images: Vec<_> = (0..6).map(|_| make_image("image/png", 100)).collect();
+        let result = validate_images(&images);
+        assert!(result.is_err(), "should reject more than 5 images");
+        assert!(
+            result
+                .as_ref()
+                .err()
+                .is_some_and(|e| e.contains("too many")),
+            "error should mention 'too many'"
+        );
+    }
+
+    #[test]
+    fn validate_images_rejects_bad_mime_type() {
+        let images = vec![make_image("image/bmp", 100)];
+        let result = validate_images(&images);
+        assert!(result.is_err(), "should reject unsupported MIME type");
+        assert!(
+            result
+                .as_ref()
+                .err()
+                .is_some_and(|e| e.contains("unsupported")),
+            "error should mention 'unsupported'"
+        );
+    }
+
+    #[test]
+    fn validate_images_rejects_oversized() {
+        // 7 MB worth of base64 (~9.3M base64 chars encode ~7M raw bytes)
+        let oversized_len = 7 * 1024 * 1024 * 4 / 3;
+        let images = vec![make_image("image/jpeg", oversized_len)];
+        let result = validate_images(&images);
+        assert!(result.is_err(), "should reject oversized image");
+        assert!(
+            result
+                .as_ref()
+                .err()
+                .is_some_and(|e| e.contains("too large")),
+            "error should mention 'too large'"
+        );
+    }
+
+    #[test]
+    fn validate_images_allows_all_mime_types() {
+        for mime in ALLOWED_MIME_TYPES {
+            let images = vec![make_image(mime, 100)];
+            assert!(validate_images(&images).is_ok(), "{mime} should be allowed");
+        }
     }
 }
