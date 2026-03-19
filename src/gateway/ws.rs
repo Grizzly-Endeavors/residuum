@@ -1,5 +1,8 @@
 //! WebSocket connection handler.
 
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+
 use axum::extract::State;
 use axum::extract::ws::{Message as WsMessage, WebSocket};
 use axum::response::IntoResponse;
@@ -27,6 +30,9 @@ pub(super) async fn ws_handler(
 /// carries per-connection messages (pong, errors, inbox confirmations) that
 /// bypass the bus. A forwarding task merges all sources and writes
 /// `ServerMessage` frames to the WebSocket.
+///
+/// Verbose filtering is server-side: `ToolCall` and `ToolResult` events are
+/// dropped in the forwarding task when verbose mode is off.
 async fn handle_connection(socket: WebSocket, state: GatewayState) {
     let (mut ws_tx, mut ws_rx) = socket.split();
 
@@ -41,6 +47,10 @@ async fn handle_connection(socket: WebSocket, state: GatewayState) {
 
     // Local channel for per-connection messages (pong, errors, inbox responses)
     let (local_tx, mut local_rx) = mpsc::unbounded_channel::<ServerMessage>();
+
+    // Per-connection verbose flag shared between read loop and forwarding task
+    let verbose = Arc::new(AtomicBool::new(false));
+    let verbose_fwd = Arc::clone(&verbose);
 
     // Forwarding task: bus subscribers + local channel → WebSocket client
     let fwd_handle = tokio::spawn(async move {
@@ -61,6 +71,16 @@ async fn handle_connection(socket: WebSocket, state: GatewayState) {
             };
 
             if let Some(msg) = msg {
+                // Skip tool events when verbose mode is off
+                if !verbose_fwd.load(Ordering::Relaxed)
+                    && matches!(
+                        msg,
+                        ServerMessage::ToolCall { .. } | ServerMessage::ToolResult { .. }
+                    )
+                {
+                    continue;
+                }
+
                 let Ok(json) = serde_json::to_string(&msg) else {
                     tracing::warn!("failed to serialize server message");
                     continue;
@@ -97,7 +117,7 @@ async fn handle_connection(socket: WebSocket, state: GatewayState) {
             }
         };
 
-        if !handle_client_message(client_msg, &state, &local_tx).await {
+        if !handle_client_message(client_msg, &state, &local_tx, &verbose).await {
             break;
         }
     }
@@ -112,6 +132,7 @@ async fn handle_client_message(
     msg: ClientMessage,
     state: &GatewayState,
     local_tx: &mpsc::UnboundedSender<ServerMessage>,
+    verbose: &AtomicBool,
 ) -> bool {
     match msg {
         ClientMessage::SendMessage {
@@ -140,8 +161,8 @@ async fn handle_client_message(
                 return false;
             }
         }
-        ClientMessage::SetVerbose { .. } => {
-            // Verbose filtering is handled client-side; acknowledge silently.
+        ClientMessage::SetVerbose { enabled } => {
+            verbose.store(enabled, Ordering::Relaxed);
         }
         ClientMessage::Ping => {
             drop(local_tx.send(ServerMessage::Pong));
@@ -198,4 +219,26 @@ async fn handle_client_message(
         }
     }
     true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn set_verbose_updates_flag() {
+        let flag = AtomicBool::new(false);
+
+        flag.store(true, Ordering::Relaxed);
+        assert!(
+            flag.load(Ordering::Relaxed),
+            "should be true after storing true"
+        );
+
+        flag.store(false, Ordering::Relaxed);
+        assert!(
+            !flag.load(Ordering::Relaxed),
+            "should be false after storing false"
+        );
+    }
 }
