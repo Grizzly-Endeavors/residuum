@@ -5,8 +5,8 @@
 <h3 align="center"><em>What Remains</em></h3>
 
 <p align="center">
-  <a href="https://github.com/Grizzly-Endeavors/residuum/actions/workflows/release.yml">
-    <img src="https://github.com/Grizzly-Endeavors/residuum/actions/workflows/release.yml/badge.svg" alt="CI">
+  <a href="https://agent-residuum.com/signup">
+    <img src="https://img.shields.io/badge/try_cloud-free_in_alpha-3b8bdb" alt="Try Cloud — Free in Alpha">
   </a>
   <a href="https://github.com/Grizzly-Endeavors/residuum/releases/latest">
     <img src="https://img.shields.io/github/v/release/Grizzly-Endeavors/residuum?label=release&color=blue" alt="Latest Release">
@@ -14,55 +14,63 @@
   <a href="LICENSE">
     <img src="https://img.shields.io/badge/license-MIT-green" alt="MIT License">
   </a>
-  <img src="https://img.shields.io/badge/rust-1.85%2B-orange?logo=rust" alt="Rust 1.85+">
 </p>
 
 <p align="center">
   <a href="https://agent-residuum.com">Website</a> &middot;
-  <a href="docs/">Documentation</a> &middot;
-  <a href="#quick-start">Quick Start</a> &middot;
+  <a href="#get-started">Get Started</a> &middot;
   <a href="CONTRIBUTING.md">Contributing</a>
 </p>
 
 ---
 
-**Agents that last.**
+Create an agent. Tell it what you need. That's it.
 
-Residuum is an AI agent with continuous memory, multi-channel access, and proactive scheduling. Install it, talk to it, come back tomorrow — it already knows what you were working on.
+Residuum is the foundation for personal AI agents — ones that remember you, work together, and grow with you over time. No coding. No setup. No complexity.
 
-## What It Does
+## What Your Agents Do
 
 ### No more re-explaining yourself
 
-Your agent carries a compressed history of every conversation. Come back after a week — it knows what you were working on, what decisions were made, what's still open. When it needs older details, it searches its memory automatically.
+Your agents remember everything. Come back after a week — they know what you were working on, what decisions were made, what's still open. The conversation never stopped.
 
 ### No more juggling apps
 
-CLI, Discord, Telegram, webhooks — all feed the same agent, same memory, same thread. Start a thought on your terminal, pick it up on your phone. The conversation never splits.
+Talk to your agents from anywhere — your computer, your phone, the web. Start a thought in one place, pick it up in another. It's all the same conversation.
 
-### No more checking things yourself
+### No more busywork
 
-Define what to check and when — email scans, deployment status, daily reviews. The agent handles the routine on a schedule, stays silent when there's nothing to report, and routes results where you want them.
+Your agents check on the routine stuff so you don't have to. Morning briefings, tracking deadlines, keeping tabs on what matters — they handle it, and stay quiet when there's nothing to report.
 
-## Features
+### No more starting over
 
-- **Observational memory** — Compressed conversation history stays in context at all times. Older details are searchable by keyword, date, or project. [docs →](docs/memory-search-design.md)
-- **Multi-channel** — CLI, Discord, Telegram, webhooks. Talk to it from anywhere, same conversation. [docs →](docs/residuum-design.md)
-- **Pulse scheduling** — Scheduled checks defined in YAML. The agent fires when work is due, stays quiet otherwise. [docs →](docs/background-tasks-design.md)
-- **Background tasks** — Hand it something and walk away. Cheap models handle routine work; expensive ones step in when needed. [docs →](docs/background-tasks-design.md)
-- **Projects** — Scoped knowledge folders with notes, references, and project-specific tools. The agent activates relevant context automatically. [docs →](docs/projects-context-design.md)
-- **Skills & MCP** — Extensible tools with Model Context Protocol integration. [docs →](docs/residuum-design.md)
-- **Notification routing** — Control where alerts land — agent, inbox, push, webhooks — via simple YAML config. [docs →](docs/notification-routing-design.md)
+Hand something to your agent and walk away. It'll be done when you get back. Your agents pick up where you left off, every time.
 
-## Quick Start
+## Build a Team
 
-### Install
+Start with one agent. Shape it through conversation — tell it what you care about, how you work, what to keep track of. Over time, build a team of agents, each one shaped for a different part of your life. They learn as you go. Residuum coordinates them all.
+
+## Residuum Cloud
+
+Connect your agents to the world.
+
+Your agents run on your machine — Residuum Cloud extends their reach. Access them from your phone, keep them running while your laptop sleeps, and let them stay connected to the things that matter.
+
+Free while in alpha. Core features stay free forever — Cloud expands what your agents can do, it doesn't gate what they already can.
+
+<p align="center">
+  <a href="https://agent-residuum.com/signup">Sign up for the alpha →</a>
+</p>
+
+## Get Started
+
+### Download
 
 ```bash
 curl -fsSL https://agent-residuum.com/install | sh
 ```
 
-Detects your platform automatically. Supports Linux (x86_64, aarch64) and macOS (Apple Silicon).
+Works on Linux and macOS (Windows coming soon). Detects your system automatically.
 
 ### First Run
 
@@ -70,58 +78,15 @@ Detects your platform automatically. Supports Linux (x86_64, aarch64) and macOS 
 residuum serve
 ```
 
-On first launch, a web UI opens for initial setup — API keys, personality preferences, and channel connections.
+A setup screen walks you through connecting your AI provider and creating your first agent. Once it's running, just talk to it.
 
-```bash
-residuum setup  # terminal alternative
-```
+## Works With
 
-Once running, just talk to it.
+Claude, ChatGPT, Gemini, and local models. If one goes down, your agents switch to a backup automatically.
 
-### Build from Source
+## For Developers
 
-Requires Rust 1.85+ and one supported LLM API key.
-
-```bash
-git clone https://github.com/Grizzly-Endeavors/residuum.git
-cd residuum
-cargo build --release
-```
-
-Pre-commit hooks enforce formatting, linting, and tests on every commit. See [Architecture docs](docs/residuum-design.md) for structure and design decisions.
-
-## Supported Providers
-
-- **Anthropic** (Claude)
-- **OpenAI** (GPT-4o, o-series)
-- **Google** (Gemini)
-- **Ollama** (local models)
-
-Provider failover is built in — configure a primary and fallback.
-
-## Design Philosophy
-
-- **File-first** — All state lives in human-readable files you can inspect, edit, and version control. No opaque databases.
-- **Right work, right place** — The gateway handles scheduling and file watching. The LLM handles judgment.
-- **Independent systems** — Memory, Projects, Pulses, and Skills are designed independently. They compose through shared data, not tight coupling.
-
-Full rationale: [Design Philosophy](docs/design-philosophy.md)
-
-## Documentation
-
-- [Architecture & System Design](docs/residuum-design.md)
-- [Design Philosophy](docs/design-philosophy.md)
-- [Memory & Search](docs/memory-search-design.md)
-- [Projects Context](docs/projects-context-design.md)
-- [Background Tasks](docs/background-tasks-design.md)
-- [Notification Routing](docs/notification-routing-design.md)
-- [Systems Usage Guide](docs/systems-usage/)
-
-## Contributing
-
-Contributions are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for the full workflow, code standards, and lint rules.
-
-The short version: fork, branch from `main`, make your changes, open a PR. Pre-commit hooks handle formatting and linting. CI must pass before merge.
+Architecture, design decisions, build instructions, and code standards: [CONTRIBUTING.md](CONTRIBUTING.md) and the [docs/](docs/) directory.
 
 ## License
 
