@@ -10,6 +10,8 @@
 - [Notification Routing](./docs/notification-routing-design.md)
 - [Systems Usage](./docs/systems-usage/) (authoritative reference for how systems are intended to work)
 
+**Web interface:** The Residuum web UI lives in `residuum/web/` (Svelte 5 SPA). See `web/CLAUDE.md` for details. **Do not confuse with `relay/web/`**, which is only a marketing landing page.
+
 ## Commit Requirements, Linting, and Formatting
 
 ### Git Hooks
@@ -156,6 +158,3 @@ Releases use **CalVer** (`YYYY.0M.0D`), not SemVer. Tags like `v2026.03.02`, wit
 ## Active Technologies
 - Rust (edition 2024), targeting stable toolchain + `objc2` 0.6, `objc2-foundation` 0.3, `objc2-user-notifications` 0.3, `block2` 0.6 (all macOS-only via `cfg(target_os = "macos")`) (001-macos-notifications)
 - N/A — notifications are fire-and-forget; throttle state is in-memory only (001-macos-notifications)
-
-## Recent Changes
-- 001-macos-notifications: Added Rust (edition 2024), targeting stable toolchain + `objc2` 0.6, `objc2-foundation` 0.3, `objc2-user-notifications` 0.3, `block2` 0.6 (all macOS-only via `cfg(target_os = "macos")`)
