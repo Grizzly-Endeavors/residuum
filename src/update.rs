@@ -132,53 +132,135 @@ pub fn is_up_to_date(current: &str, latest: &str) -> bool {
     false
 }
 
-/// Download and run the install script to replace the current binary.
+/// Download the latest release binary and replace the current executable.
 ///
-/// Returns the version tag that was installed (the latest release tag).
+/// Downloads directly from GitHub Releases, avoiding the install script
+/// (which requires an interactive terminal for `sudo` on macOS).
+///
+/// Returns the version tag that was installed.
 ///
 /// # Errors
 ///
-/// Returns `ResiduumError::Gateway` if the download or script execution fails.
+/// Returns `ResiduumError::Gateway` if the download, platform detection,
+/// or binary replacement fails.
 pub async fn download_and_install() -> Result<String, ResiduumError> {
     let latest = fetch_latest_version().await?;
+    let platform = detect_platform()?;
+    let url = format!(
+        "https://github.com/grizzly-endeavors/residuum/releases/download/{latest}/residuum-{platform}"
+    );
 
-    let client = reqwest::Client::new();
-    let script = client
-        .get("https://agent-residuum.com/install")
-        .send()
-        .await
-        .map_err(|e| ResiduumError::Gateway(format!("failed to download install script: {e}")))?
-        .text()
-        .await
-        .map_err(|e| ResiduumError::Gateway(format!("failed to read install script body: {e}")))?;
+    tracing::info!(version = %latest, %platform, "downloading update binary");
 
-    let tmp_dir = std::env::temp_dir();
-    let script_path = tmp_dir.join("residuum-install.sh");
-    std::fs::write(&script_path, &script)
-        .map_err(|e| ResiduumError::Gateway(format!("failed to write install script: {e}")))?;
+    let client = reqwest::Client::builder()
+        .user_agent("residuum-updater")
+        .build()
+        .map_err(|e| ResiduumError::Gateway(format!("failed to build http client: {e}")))?;
 
-    tracing::info!("starting self-update download and install");
+    let response =
+        client.get(&url).send().await.map_err(|e| {
+            ResiduumError::Gateway(format!("failed to download update binary: {e}"))
+        })?;
 
-    let output = std::process::Command::new("sh")
-        .arg(&script_path)
-        .output()
-        .map_err(|e| ResiduumError::Gateway(format!("failed to execute install script: {e}")))?;
-
-    if let Err(e) = std::fs::remove_file(&script_path) {
-        tracing::warn!(error = %e, path = %script_path.display(), "failed to remove temp install script");
-    }
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
+    if !response.status().is_success() {
         return Err(ResiduumError::Gateway(format!(
-            "install script exited with {}: {}",
-            output.status,
-            stderr.trim()
+            "update binary download returned HTTP {} — asset may not exist for {platform}",
+            response.status()
         )));
     }
 
-    tracing::info!(version = %latest, "update downloaded and installed successfully");
+    let bytes = response
+        .bytes()
+        .await
+        .map_err(|e| ResiduumError::Gateway(format!("failed to read update binary: {e}")))?;
+
+    let current_exe = std::env::current_exe().map_err(|e| {
+        ResiduumError::Gateway(format!("failed to determine current executable path: {e}"))
+    })?;
+
+    // On Linux, the kernel appends " (deleted)" to /proc/self/exe when the
+    // binary has been atomically replaced. Strip it to get the real path.
+    let exe_path = {
+        let s = current_exe.to_string_lossy();
+        if let Some(stripped) = s.strip_suffix(" (deleted)") {
+            std::path::PathBuf::from(stripped)
+        } else {
+            current_exe
+        }
+    };
+
+    let exe_dir = exe_path.parent().ok_or_else(|| {
+        ResiduumError::Gateway("current executable has no parent directory".to_string())
+    })?;
+
+    // Write to a temp file in the same directory for atomic rename
+    let tmp_path = exe_dir.join(".residuum-update.tmp");
+
+    std::fs::write(&tmp_path, &bytes).map_err(|e| {
+        ResiduumError::Gateway(format!(
+            "failed to write update binary to {} — check directory permissions: {e}",
+            tmp_path.display()
+        ))
+    })?;
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&tmp_path, std::fs::Permissions::from_mode(0o755)).map_err(
+            |e| {
+                drop(std::fs::remove_file(&tmp_path));
+                ResiduumError::Gateway(format!("failed to set executable permissions: {e}"))
+            },
+        )?;
+    }
+
+    // Atomic rename replaces the binary on disk while the running process
+    // keeps its handle to the old inode
+    std::fs::rename(&tmp_path, &exe_path).map_err(|e| {
+        drop(std::fs::remove_file(&tmp_path));
+        ResiduumError::Gateway(format!(
+            "failed to replace binary at {} — check directory permissions: {e}",
+            exe_path.display()
+        ))
+    })?;
+
+    tracing::info!(version = %latest, path = %exe_path.display(), "update binary installed successfully");
     Ok(latest)
+}
+
+/// Detect the current platform in the format used by release asset names.
+///
+/// # Errors
+///
+/// Returns `ResiduumError::Gateway` for unsupported OS/architecture combinations.
+fn detect_platform() -> Result<String, ResiduumError> {
+    let os = match std::env::consts::OS {
+        "linux" => "linux",
+        "macos" => "darwin",
+        other => {
+            return Err(ResiduumError::Gateway(format!(
+                "unsupported operating system for self-update: {other}"
+            )));
+        }
+    };
+
+    let arch = match std::env::consts::ARCH {
+        "x86_64" => "x86_64",
+        "aarch64" => "aarch64",
+        other => {
+            return Err(ResiduumError::Gateway(format!(
+                "unsupported architecture for self-update: {other}"
+            )));
+        }
+    };
+
+    if os == "darwin" && arch == "x86_64" {
+        return Err(ResiduumError::Gateway(
+            "macOS x86_64 (Intel) is not supported — Apple Silicon only".to_string(),
+        ));
+    }
+
+    Ok(format!("{os}-{arch}"))
 }
 
 #[cfg(test)]
