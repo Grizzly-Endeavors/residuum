@@ -81,14 +81,15 @@ impl Agent {
         &self.mcp_registry
     }
 
-    /// Replace the model provider in-place (e.g. after a config reload).
-    pub fn swap_provider(&mut self, provider: Box<dyn ModelProvider>) {
+    /// Replace the model provider and completion options in-place (e.g. after a config reload).
+    pub fn swap_provider(&mut self, provider: Box<dyn ModelProvider>, options: CompletionOptions) {
         tracing::info!(
             old_model = self.provider.model_name(),
             new_model = provider.model_name(),
             "swapping model provider"
         );
         self.provider = provider;
+        self.options = options;
     }
 
     /// Reload observations from the observation log file.
@@ -1384,7 +1385,10 @@ mod tests {
 
         assert_eq!(agent.provider.model_name(), "model-a");
 
-        agent.swap_provider(Box::new(NamedMockProvider { name: "model-b" }));
+        agent.swap_provider(
+            Box::new(NamedMockProvider { name: "model-b" }),
+            CompletionOptions::default(),
+        );
 
         assert_eq!(agent.provider.model_name(), "model-b");
     }
@@ -1411,7 +1415,10 @@ mod tests {
         assert!(before_count >= 2, "should have at least 2 messages");
 
         // Swap the provider
-        agent.swap_provider(Box::new(NamedMockProvider { name: "model-b" }));
+        agent.swap_provider(
+            Box::new(NamedMockProvider { name: "model-b" }),
+            CompletionOptions::default(),
+        );
 
         // History should be preserved
         assert_eq!(

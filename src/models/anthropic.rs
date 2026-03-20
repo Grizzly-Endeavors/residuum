@@ -245,8 +245,11 @@ impl AnthropicClient {
             req_builder = req_builder.header("x-api-key", api_key);
         }
 
+        let request_json = serde_json::to_string(request)
+            .unwrap_or_else(|e| format!("(serialization failed: {e})"));
+
         let response = req_builder
-            .json(request)
+            .body(request_json.clone())
             .send()
             .await
             .map_err(|e| map_request_error(e, timeout_secs))?;
@@ -261,9 +264,25 @@ impl AnthropicClient {
                 }
             };
 
+            tracing::warn!(
+                status = %status,
+                response_body = %body,
+                request_body = %request_json,
+                "anthropic API error — full request/response for diagnosis"
+            );
+
             let error_msg = serde_json::from_str::<AnthropicErrorResponse>(&body).map_or_else(
                 |_| format!("anthropic api error {status}: {body}"),
-                |parsed| format!("anthropic api error {status}: {}", parsed.error.message),
+                |parsed| {
+                    if parsed.error.r#type.is_empty() {
+                        format!("anthropic api error {status}: {}", parsed.error.message)
+                    } else {
+                        format!(
+                            "anthropic api error {status} ({}): {}",
+                            parsed.error.r#type, parsed.error.message
+                        )
+                    }
+                },
             );
 
             return Err(ModelError::Api(error_msg));
@@ -651,6 +670,9 @@ struct AnthropicErrorResponse {
 
 #[derive(Debug, Deserialize)]
 struct AnthropicErrorDetail {
+    /// Error classification (e.g. `invalid_request_error`, `authentication_error`).
+    #[serde(default)]
+    r#type: String,
     message: String,
 }
 

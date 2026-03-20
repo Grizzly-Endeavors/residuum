@@ -316,7 +316,8 @@ fn build_spawn_context(rt: &GatewayRuntime, new_cfg: &Config) -> Arc<SpawnContex
 async fn reload_providers(rt: &mut GatewayRuntime, new_cfg: &Config) {
     match startup::init_providers(new_cfg, rt.tz, rt.http_client.clone()) {
         Ok(components) => {
-            rt.agent.swap_provider(components.provider);
+            rt.agent
+                .swap_provider(components.provider, components.options);
             rt.observer = components.observer;
             rt.reflector = components.reflector;
             rt.embedding_provider = components.embedding_provider;

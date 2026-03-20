@@ -5,7 +5,8 @@ use crate::error::ResiduumError;
 use crate::memory::observer::Observer;
 use crate::memory::reflector::Reflector;
 use crate::models::{
-    EmbeddingProvider, SharedHttpClient, build_embedding_provider, build_provider_chain,
+    CompletionOptions, EmbeddingProvider, SharedHttpClient, WebSearchNativeConfig,
+    build_embedding_provider, build_provider_chain,
 };
 
 use super::memory::build_memory_components;
@@ -13,6 +14,7 @@ use super::memory::build_memory_components;
 /// Model providers and memory pipeline observers built from config.
 pub struct ProviderComponents {
     pub provider: Box<dyn crate::models::ModelProvider>,
+    pub options: CompletionOptions,
     pub observer: Observer,
     pub reflector: Reflector,
     pub embedding_provider: Option<std::sync::Arc<dyn EmbeddingProvider>>,
@@ -57,8 +59,23 @@ pub fn init_providers(
         }
     };
 
+    let web_search = cfg
+        .web_search
+        .provider_native
+        .as_ref()
+        .map(|pn| WebSearchNativeConfig {
+            max_uses: pn.max_uses,
+            allowed_domains: pn.allowed_domains.clone(),
+            blocked_domains: pn.blocked_domains.clone(),
+            search_context_size: pn.search_context_size.clone(),
+            exclude_domains: pn.exclude_domains.clone(),
+        });
+    let mut options = cfg.completion_options_for_role("main");
+    options.web_search = web_search;
+
     Ok(ProviderComponents {
         provider,
+        options,
         observer,
         reflector,
         embedding_provider,
