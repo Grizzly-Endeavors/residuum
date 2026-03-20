@@ -110,7 +110,9 @@ async fn fetch_anthropic_models(
     if key.starts_with("sk-ant-oat01-") {
         req_builder = req_builder
             .header("Authorization", format!("Bearer {key}"))
-            .header("anthropic-beta", "oauth-2025-04-20");
+            .header("anthropic-beta", crate::models::anthropic::OAUTH_BETA)
+            .header("user-agent", crate::models::anthropic::OAUTH_USER_AGENT)
+            .header("x-app", "cli");
     } else {
         req_builder = req_builder.header("X-Api-Key", key);
     }

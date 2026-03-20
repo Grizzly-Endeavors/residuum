@@ -15,6 +15,14 @@ use super::{
 /// Anthropic Messages API version header value.
 const ANTHROPIC_VERSION: &str = "2023-06-01";
 
+/// Beta headers and identity required for OAuth token access to newer models.
+/// OAuth tokens (sk-ant-oat01-*) are issued via the Claude Code OAuth flow and
+/// require Claude Code identity markers to access models like claude-sonnet-4-6
+/// and claude-opus-4-6.
+pub(crate) const OAUTH_BETA: &str = "claude-code-20250219,oauth-2025-04-20";
+pub(crate) const OAUTH_USER_AGENT: &str = "claude-cli/2.1.75";
+const OAUTH_IDENTITY: &str = "You are Claude Code, Anthropic's official CLI for Claude.";
+
 // ---------------------------------------------------------------------------
 // Public client
 // ---------------------------------------------------------------------------
@@ -66,6 +74,11 @@ impl AnthropicClient {
     /// Build the full endpoint URL.
     fn endpoint(&self) -> String {
         format!("{}/v1/messages", self.base_url)
+    }
+
+    /// Whether this client uses an OAuth token (requiring Claude Code identity).
+    fn is_oauth(&self) -> bool {
+        self.api_key.starts_with("sk-ant-oat01-")
     }
 
     /// Convert our generic messages into Anthropic-specific format.
@@ -215,7 +228,7 @@ impl AnthropicClient {
         endpoint: &str,
         api_key: &str,
         model: &str,
-        request: &AnthropicRequest<'_>,
+        request: &AnthropicRequest,
         message_count: usize,
         tool_count: usize,
     ) -> Result<ModelResponse, ModelError> {
@@ -234,13 +247,15 @@ impl AnthropicClient {
             .header("anthropic-version", ANTHROPIC_VERSION)
             .header("content-type", "application/json");
 
-        // OAuth tokens (sk-ant-oat01-*) use Bearer auth + beta header;
-        // standard API keys use x-api-key.
+        // OAuth tokens (sk-ant-oat01-*) use Bearer auth + Claude Code identity
+        // headers; standard API keys use x-api-key.
         // NOTE: this logic is duplicated in gateway::web::fetch_anthropic_models
         if api_key.starts_with("sk-ant-oat01-") {
             req_builder = req_builder
                 .header("Authorization", format!("Bearer {api_key}"))
-                .header("anthropic-beta", "oauth-2025-04-20");
+                .header("anthropic-beta", OAUTH_BETA)
+                .header("user-agent", OAUTH_USER_AGENT)
+                .header("x-app", "cli");
         } else {
             req_builder = req_builder.header("x-api-key", api_key);
         }
@@ -378,6 +393,24 @@ impl ModelProvider for AnthropicClient {
         let has_web_search = options.web_search.is_some();
         let api_tools = (!tools.is_empty() || has_web_search)
             .then(|| Self::convert_tools(tools, options.web_search.as_ref()));
+
+        // OAuth tokens require the Claude Code identity as an isolated first block
+        // in the system prompt to access newer models (sonnet 4.6, opus 4.6).
+        let system: Option<AnthropicSystem> = if self.is_oauth() {
+            let mut blocks = vec![AnthropicSystemBlock {
+                r#type: "text".to_string(),
+                text: OAUTH_IDENTITY.to_string(),
+            }];
+            if let Some(s) = system {
+                blocks.push(AnthropicSystemBlock {
+                    r#type: "text".to_string(),
+                    text: s,
+                });
+            }
+            Some(AnthropicSystem::Blocks(blocks))
+        } else {
+            system.map(AnthropicSystem::Text)
+        };
         let model = self.model.clone();
         let endpoint = self.endpoint();
         let api_key = self.api_key.clone();
@@ -414,9 +447,9 @@ impl ModelProvider for AnthropicClient {
 
             async move {
                 let request = AnthropicRequest {
-                    model: &model,
+                    model: model.clone(),
                     max_tokens,
-                    system: system.as_deref(),
+                    system,
                     messages: api_messages,
                     tools: api_tools,
                     output_config,
@@ -516,12 +549,29 @@ struct AnthropicThinking {
     budget_tokens: u32,
 }
 
+/// System prompt content — plain string or array of text blocks.
+///
+/// OAuth tokens require the Claude Code identity as an isolated first block,
+/// so the system prompt must be sent as an array for OAuth requests.
+#[derive(Debug, Serialize, Clone)]
+#[serde(untagged)]
+enum AnthropicSystem {
+    Text(String),
+    Blocks(Vec<AnthropicSystemBlock>),
+}
+
+#[derive(Debug, Serialize, Clone)]
+struct AnthropicSystemBlock {
+    r#type: String,
+    text: String,
+}
+
 #[derive(Debug, Serialize)]
-struct AnthropicRequest<'a> {
-    model: &'a str,
+struct AnthropicRequest {
+    model: String,
     max_tokens: u32,
     #[serde(skip_serializing_if = "Option::is_none")]
-    system: Option<&'a str>,
+    system: Option<AnthropicSystem>,
     messages: Vec<AnthropicMessage>,
     #[serde(skip_serializing_if = "Option::is_none")]
     tools: Option<Vec<AnthropicToolEntry>>,
