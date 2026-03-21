@@ -2,6 +2,7 @@
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
+use tracing::{debug, info};
 
 use super::embedding::{EmbeddingProvider, EmbeddingResponse};
 use super::http::{SharedHttpClient, map_request_error, warn_if_insecure_remote};
@@ -79,6 +80,10 @@ impl OllamaClient {
 
 #[async_trait]
 impl ModelProvider for OllamaClient {
+    #[expect(
+        clippy::too_many_lines,
+        reason = "logging audit requires inline request/response context"
+    )]
     async fn complete(
         &self,
         messages: &[Message],
@@ -99,6 +104,8 @@ impl ModelProvider for OllamaClient {
             })
             .collect();
         let has_tools = !ollama_tools.is_empty();
+        let message_count = messages.len();
+        let tool_count = tools.len();
         let model = self.model.clone();
         let api_key = self.api_key.clone();
         let keep_alive = self.keep_alive.clone();
@@ -141,6 +148,13 @@ impl ModelProvider for OllamaClient {
                     think,
                 };
 
+                debug!(
+                    model = %model,
+                    message_count,
+                    tool_count,
+                    "sending ollama completion request"
+                );
+
                 let mut req_builder = http.client().post(&url).json(&request);
 
                 if let Some(ref key) = api_key {
@@ -154,11 +168,21 @@ impl ModelProvider for OllamaClient {
 
                 if !response.status().is_success() {
                     let status = response.status();
-                    let error_body = response
-                        .json::<OllamaErrorResponse>()
-                        .await
-                        .map_or_else(|_| format!("{status}: unknown error"), |e| e.error);
-                    return Err(ModelError::Api(error_body));
+                    let raw_body = match response.text().await {
+                        Ok(b) => b,
+                        Err(e) => {
+                            tracing::warn!(error = %e, "failed to read error response body");
+                            format!("failed to read response body: {e}")
+                        }
+                    };
+                    tracing::warn!(
+                        status = %status,
+                        response_body = %raw_body,
+                        "ollama API error"
+                    );
+                    let error_msg = serde_json::from_str::<OllamaErrorResponse>(&raw_body)
+                        .map_or_else(|_| format!("{status}: {raw_body}"), |e| e.error);
+                    return Err(ModelError::Api(error_msg));
                 }
 
                 let body = response
@@ -186,6 +210,12 @@ impl ModelProvider for OllamaClient {
 
                 let mut resp = ModelResponse::new(content, tool_calls);
                 resp.thinking = chat_response.message.thinking;
+                info!(
+                    model = %model,
+                    content_len = resp.content.len(),
+                    tool_calls = resp.tool_calls.len(),
+                    "ollama completion received"
+                );
                 Ok(resp)
             }
         })
@@ -380,6 +410,8 @@ impl EmbeddingProvider for OllamaEmbeddingClient {
                     keep_alive,
                 };
 
+                debug!(model = %model, count = texts.len(), "sending ollama embed request");
+
                 let mut req_builder = http.client().post(&url).json(&request);
 
                 if let Some(ref key) = api_key {
@@ -393,11 +425,21 @@ impl EmbeddingProvider for OllamaEmbeddingClient {
 
                 if !response.status().is_success() {
                     let status = response.status();
-                    let error_body = response
-                        .json::<OllamaErrorResponse>()
-                        .await
-                        .map_or_else(|_| format!("{status}: unknown error"), |e| e.error);
-                    return Err(ModelError::Api(error_body));
+                    let raw_body = match response.text().await {
+                        Ok(b) => b,
+                        Err(e) => {
+                            tracing::warn!(error = %e, "failed to read error response body");
+                            format!("failed to read response body: {e}")
+                        }
+                    };
+                    tracing::warn!(
+                        status = %status,
+                        response_body = %raw_body,
+                        "ollama embed API error"
+                    );
+                    let error_msg = serde_json::from_str::<OllamaErrorResponse>(&raw_body)
+                        .map_or_else(|_| format!("{status}: {raw_body}"), |e| e.error);
+                    return Err(ModelError::Api(error_msg));
                 }
 
                 let body = response
@@ -418,6 +460,7 @@ impl EmbeddingProvider for OllamaEmbeddingClient {
                             ModelError::Parse("embeddings response contained no data".to_string())
                         })?;
 
+                info!(model = %model, count = embed_response.embeddings.len(), dimensions, "ollama embeddings received");
                 Ok(EmbeddingResponse {
                     embeddings: embed_response.embeddings,
                     dimensions,

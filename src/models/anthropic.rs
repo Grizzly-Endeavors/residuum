@@ -344,11 +344,14 @@ impl AnthropicClient {
                         arguments: input,
                     });
                 }
-                AnthropicContentBlock::Image { .. }
-                | AnthropicContentBlock::ToolResult { .. }
-                | AnthropicContentBlock::ServerToolUse { .. }
-                | AnthropicContentBlock::WebSearchToolResult { .. } => {
-                    // request-only or server-side informational blocks — skip in response parsing
+                AnthropicContentBlock::Image { .. } | AnthropicContentBlock::ToolResult { .. } => {
+                    // request-only blocks — skip in response parsing
+                }
+                AnthropicContentBlock::ServerToolUse { id, name, .. } => {
+                    debug!(id = %id, name = %name, "server tool use block in response");
+                }
+                AnthropicContentBlock::WebSearchToolResult { tool_use_id, .. } => {
+                    debug!(tool_use_id = %tool_use_id, "web search tool result in response");
                 }
             }
         }
