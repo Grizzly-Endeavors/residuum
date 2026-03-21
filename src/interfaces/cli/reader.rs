@@ -66,7 +66,7 @@ impl CliReader {
                     // Ctrl+C: cancel current input, prompt again
                 }
                 Err(e) => {
-                    eprintln!("readline error: {e}");
+                    tracing::error!(error = %e, "readline error, exiting input loop");
                     return;
                 }
             }

@@ -207,6 +207,8 @@ async fn dispatch_message(
 ) {
     let chat_id = msg.chat.id;
 
+    tracing::debug!(sender = %build_sender_name(from), chat_id = %chat_id, "telegram message received");
+
     // Check for /command prefix
     if let Some(text) = msg.text()
         && let Some(cmd_text) = text.strip_prefix('/')
@@ -240,6 +242,7 @@ async fn dispatch_message(
 
     // Skip empty messages (no text, no attachments processed)
     if content.is_empty() {
+        tracing::debug!(sender = %build_sender_name(from), chat_id = %chat_id, "telegram message had no content, dropping");
         return;
     }
 
@@ -247,7 +250,7 @@ async fn dispatch_message(
 
     let origin = MessageOrigin {
         endpoint: "telegram".to_string(),
-        sender_name,
+        sender_name: sender_name.clone(),
         sender_id: from.id.to_string(),
     };
 
@@ -264,7 +267,7 @@ async fn dispatch_message(
         .publish(crate::bus::topics::UserMessage, msg_event)
         .await
     {
-        tracing::warn!(error = %e, "failed to publish telegram message to bus");
+        tracing::warn!(sender = %sender_name, chat_id = %chat_id, error = %e, "failed to publish telegram message to bus");
     }
 }
 
@@ -313,7 +316,14 @@ async fn handle_command(
             }
             match tokio::time::timeout(Duration::from_secs(10), reply_rx).await {
                 Ok(Ok(msg)) => msg,
-                _ => result.response,
+                Ok(Err(_)) => {
+                    tracing::warn!(command = %name, "server command reply channel closed before response");
+                    result.response
+                }
+                Err(_) => {
+                    tracing::warn!(command = %name, timeout_secs = 10, "server command timed out waiting for reply");
+                    result.response
+                }
             }
         }
         Some(CommandSideEffect::InboxAdd(body)) => {
@@ -484,6 +494,7 @@ async fn handle_attachment(
                 tracing::warn!(
                     filename = %filename,
                     size = info.size,
+                    max = MAX_IMAGE_INLINE_SIZE,
                     "telegram image exceeds inline size limit, saved but not sent to model"
                 );
             }
