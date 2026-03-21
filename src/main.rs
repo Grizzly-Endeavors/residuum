@@ -19,7 +19,7 @@ use residuum::interfaces::cli::commands::CommandEffect;
 
 #[tokio::main]
 async fn main() {
-    if let Err(e) = Box::pin(run()).await {
+    if let Err(e) = run().await {
         // tracing::error goes to the log file; println is for the terminal user
         tracing::error!(error = %e, "fatal error");
         println!("error: {e}");
@@ -75,7 +75,7 @@ async fn run() -> Result<(), FatalError> {
                 // Use explicit URL arg or default
                 args.iter()
                     .skip(2)
-                    .find(|a| !a.starts_with('-') && *a != "--agent")
+                    .find(|a| !a.starts_with('-'))
                     .cloned()
                     .unwrap_or_else(|| "ws://127.0.0.1:7700/ws".to_string())
             };
@@ -159,11 +159,7 @@ async fn run_setup_mode() -> Result<(), FatalError> {
         "setup mode: config will be written to {}",
         tmp_dir.display()
     );
-    match Box::pin(residuum::gateway::setup::run_setup_server_at(
-        tmp_dir.clone(),
-    ))
-    .await?
-    {
+    match residuum::gateway::setup::run_setup_server_at(tmp_dir.clone()).await? {
         residuum::gateway::setup::SetupExit::ConfigSaved => {
             tracing::info!("setup complete, loading config from temp directory");
         }
@@ -182,8 +178,15 @@ async fn run_setup_mode() -> Result<(), FatalError> {
         workspace = %cfg.workspace_dir.display(),
         "setup-mode: configuration loaded, starting gateway"
     );
-    let _ = Box::pin(residuum::gateway::run_gateway(cfg)).await?;
+    let _ = residuum::gateway::run_gateway(cfg).await?;
     Ok(())
+}
+
+async fn run_and_handle_exit(cfg: Config) -> Result<bool, FatalError> {
+    match Box::pin(residuum::gateway::run_gateway(cfg)).await? {
+        residuum::gateway::GatewayExit::Shutdown => Ok(false),
+        residuum::gateway::GatewayExit::Restart => Ok(true),
+    }
 }
 
 /// Inner implementation of foreground serve, wrapped by PID file lifecycle.
@@ -218,15 +221,10 @@ async fn run_serve_foreground_inner(
                 );
                 // Gateway handles reloads in-place and only returns on shutdown
                 // or fatal error. Backup is created inside run_gateway().
-                match Box::pin(residuum::gateway::run_gateway(cfg)).await? {
-                    residuum::gateway::GatewayExit::Shutdown => {
-                        tracing::info!("gateway shutting down");
-                        break;
-                    }
-                    residuum::gateway::GatewayExit::Restart => {
-                        return re_exec_serve_foreground();
-                    }
+                if run_and_handle_exit(cfg).await? {
+                    return re_exec_serve_foreground();
                 }
+                break;
             }
             Err(err) if !is_first_boot => {
                 // Config broken on restart — try restoring from backup
@@ -237,15 +235,10 @@ async fn run_serve_foreground_inner(
                         Ok(mut cfg) => {
                             cfg.config_dir.clone_from(&config_dir);
                             tracing::info!("config restored from backup, starting gateway");
-                            match Box::pin(residuum::gateway::run_gateway(cfg)).await? {
-                                residuum::gateway::GatewayExit::Shutdown => {
-                                    tracing::info!("gateway shutting down");
-                                    break;
-                                }
-                                residuum::gateway::GatewayExit::Restart => {
-                                    return re_exec_serve_foreground();
-                                }
+                            if run_and_handle_exit(cfg).await? {
+                                return re_exec_serve_foreground();
                             }
+                            break;
                         }
                         Err(retry_err) => {
                             return Err(FatalError::Config(format!(
@@ -393,12 +386,6 @@ fn run_daemonize(args: &[String], agent_name: Option<&str>) -> Result<(), FatalE
         if arg != "--foreground" {
             child_args.push(arg.clone());
         }
-    }
-
-    // Ensure --agent is forwarded if present
-    if agent_name.is_some() && !child_args.iter().any(|a| a == "--agent") {
-        child_args.push("--agent".to_string());
-        child_args.push(agent_name.unwrap_or_default().to_string());
     }
 
     let mut child = std::process::Command::new(&exe)
@@ -1170,24 +1157,6 @@ where
 #[expect(clippy::unwrap_used, reason = "test code uses unwrap for clarity")]
 mod tests {
     #[test]
-    fn first_boot_detected_when_no_backup_exists() {
-        let dir = tempfile::tempdir().unwrap();
-        let is_first = !dir.path().join("config.toml.bak").exists();
-        assert!(is_first, "no backup file should indicate first boot");
-    }
-
-    #[test]
-    fn not_first_boot_when_backup_exists() {
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("config.toml.bak"), "# previous config").unwrap();
-        let is_first = !dir.path().join("config.toml.bak").exists();
-        assert!(
-            !is_first,
-            "existing backup should indicate prior successful boot"
-        );
-    }
-
-    #[test]
     fn backup_config_creates_bak_file() {
         use residuum::gateway::backup_config;
 
@@ -1235,18 +1204,6 @@ mod tests {
         assert!(
             !rollback_config(dir.path()),
             "rollback should fail when no backup exists"
-        );
-    }
-
-    #[test]
-    fn extract_check_flag() {
-        let args: Vec<String> = vec!["residuum", "update", "--check"]
-            .into_iter()
-            .map(String::from)
-            .collect();
-        assert!(
-            args.iter().any(|a| a == "--check"),
-            "--check flag should be detected"
         );
     }
 
