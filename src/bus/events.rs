@@ -170,19 +170,6 @@ pub struct IntermediateEvent {
     pub content: String,
 }
 
-/// System event surfaced to endpoints.
-#[derive(Debug, Clone)]
-pub struct SystemEventData {
-    /// Links back to the originating message.
-    pub correlation_id: String,
-    /// Source label (e.g. pulse name, action name).
-    pub source: String,
-    /// Event content.
-    pub content: String,
-    /// Local timestamp.
-    pub timestamp: NaiveDateTime,
-}
-
 /// Result from a completed background or subagent task.
 #[derive(Debug, Clone)]
 pub struct AgentResultEvent {
@@ -291,25 +278,6 @@ pub enum TurnLifecycleEvent {
     },
 }
 
-/// System-wide messages (notices, errors, events).
-#[derive(Debug, Clone)]
-pub enum SystemMessageEvent {
-    /// Operational notice (reload status, memory progress, command responses).
-    Notice {
-        /// Human-readable notice message.
-        message: String,
-    },
-    /// An error tied to a specific agent turn.
-    Error {
-        /// Links back to the originating message.
-        correlation_id: String,
-        /// Error description.
-        message: String,
-    },
-    /// System event surfaced to endpoints (pulse, action, etc.).
-    Event(SystemEventData),
-}
-
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -405,14 +373,21 @@ mod tests {
         let cloned = tc.clone();
         assert_eq!(cloned.name, "read");
         assert_eq!(cloned.arguments["path"], "/tmp");
+    }
 
-        let se = SystemEventData {
-            correlation_id: "c1".into(),
-            source: "pulse".into(),
-            content: "check".into(),
-            timestamp: sample_timestamp(),
+    #[test]
+    fn notice_and_error_event_clone() {
+        let notice = NoticeEvent {
+            message: "reloaded".into(),
         };
-        let cloned_se = se.clone();
-        assert_eq!(cloned_se.source, "pulse");
+        assert_eq!(notice.clone().message, "reloaded");
+
+        let error = ErrorEvent {
+            correlation_id: "c1".into(),
+            message: "failed".into(),
+        };
+        let cloned = error.clone();
+        assert_eq!(cloned.correlation_id, "c1");
+        assert_eq!(cloned.message, "failed");
     }
 }

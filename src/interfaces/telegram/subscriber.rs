@@ -5,8 +5,8 @@ use teloxide::requests::Requester;
 use teloxide::types::{ChatAction, ChatId};
 
 use crate::bus::{
-    EndpointName, IntermediateEvent, ResponseEvent, Subscriber, SystemMessageEvent,
-    TurnLifecycleEvent, topics,
+    EndpointName, ErrorEvent, IntermediateEvent, NoticeEvent, NotifyName, ResponseEvent,
+    Subscriber, TurnLifecycleEvent, topics,
 };
 use crate::interfaces::chunking::chunk_text;
 
@@ -23,7 +23,8 @@ pub(crate) struct TelegramSubscribers {
     response: Subscriber<ResponseEvent>,
     turn_lifecycle: Subscriber<TurnLifecycleEvent>,
     intermediate: Subscriber<IntermediateEvent>,
-    system: Subscriber<SystemMessageEvent>,
+    notice: Subscriber<NoticeEvent>,
+    error: Subscriber<ErrorEvent>,
 }
 
 impl TelegramSubscribers {
@@ -32,13 +33,13 @@ impl TelegramSubscribers {
         bus_handle: &crate::bus::BusHandle,
         ep: EndpointName,
     ) -> Result<Self, crate::bus::BusError> {
+        let system_topic = || topics::Notification(NotifyName::from(crate::bus::SYSTEM_CHANNEL));
         Ok(Self {
-            response: bus_handle.subscribe(topics::Response(ep.clone())).await?,
-            turn_lifecycle: bus_handle
-                .subscribe(topics::TurnLifecycle(ep.clone()))
-                .await?,
-            intermediate: bus_handle.subscribe(topics::Intermediate(ep)).await?,
-            system: bus_handle.subscribe(topics::SystemMessage).await?,
+            response: bus_handle.subscribe(topics::Endpoint(ep.clone())).await?,
+            turn_lifecycle: bus_handle.subscribe(topics::Endpoint(ep.clone())).await?,
+            intermediate: bus_handle.subscribe(topics::Endpoint(ep)).await?,
+            notice: bus_handle.subscribe(system_topic()).await?,
+            error: bus_handle.subscribe(system_topic()).await?,
         })
     }
 }
@@ -94,17 +95,19 @@ pub(crate) async fn run_telegram_subscriber(
                     Err(_) => { clean_exit = false; break; }
                 }
             }
-            event = subs.system.recv() => {
+            event = subs.notice.recv() => {
                 match event {
-                    Ok(Some(SystemMessageEvent::Notice { message })) => {
+                    Ok(Some(NoticeEvent { message })) => {
                         send_chunks(&bot, chat_id, &message).await;
                     }
-                    Ok(Some(SystemMessageEvent::Error { message, .. })) => {
+                    Ok(None) => break,
+                    Err(_) => { clean_exit = false; break; }
+                }
+            }
+            event = subs.error.recv() => {
+                match event {
+                    Ok(Some(ErrorEvent { message, .. })) => {
                         let text = format!("**Error:** {message}");
-                        send_chunks(&bot, chat_id, &text).await;
-                    }
-                    Ok(Some(SystemMessageEvent::Event(se))) => {
-                        let text = format!("**[{}]** {}", se.source, se.content);
                         send_chunks(&bot, chat_id, &text).await;
                     }
                     Ok(None) => break,

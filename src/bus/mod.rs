@@ -2,8 +2,9 @@
 //!
 //! The bus provides topic-based event routing between subsystems. Publishers
 //! send events to named topics; subscribers receive events from topics they
-//! have registered interest in. The broker task fans out each event to all
-//! active subscribers on the target topic.
+//! have registered interest in. The broker routes each event by `(TopicId,
+//! TypeId)` composite key, delivering only to subscribers that match both
+//! the topic and event type.
 
 mod broker;
 mod endpoint;
@@ -19,10 +20,11 @@ pub use endpoint::EndpointCapabilities;
 pub use events::{
     AgentResultEvent, AgentResultStatus, ErrorEvent, EventTrigger, HeartbeatStatus,
     IntermediateEvent, MessageEvent, NoticeEvent, NotificationEvent, ResponseEvent,
-    SpawnRequestEvent, SystemEventData, SystemMessageEvent, ToolActivityEvent, ToolCallEvent,
-    ToolResultEvent, TurnLifecycleEvent,
+    SpawnRequestEvent, ToolActivityEvent, ToolCallEvent, ToolResultEvent, TurnLifecycleEvent,
 };
 pub use handle::{Publisher, Subscriber};
 pub use registry::{EndpointEntry, EndpointRegistry};
-pub use topics::Topic;
-pub use types::{BusError, EndpointId, EndpointName, NotifyName, PresetName, TopicId};
+pub use topics::{Carries, Topic};
+pub use types::{
+    BusError, EndpointId, EndpointName, NotifyName, PresetName, SYSTEM_CHANNEL, TopicId,
+};

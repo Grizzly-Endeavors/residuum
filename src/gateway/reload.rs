@@ -5,7 +5,7 @@ use std::sync::Arc;
 use tokio::time::Duration;
 
 use crate::background::spawn_context::SpawnContext;
-use crate::bus::{Publisher, SystemMessageEvent, topics};
+use crate::bus::{NoticeEvent, NotifyName, Publisher, SYSTEM_CHANNEL, topics};
 use crate::config::Config;
 use crate::gateway::startup;
 use crate::models::CompletionOptions;
@@ -184,12 +184,12 @@ pub fn rollback_config(config_dir: &std::path::Path) -> bool {
     any_restored
 }
 
-/// Publish a notice to `SystemMessage`.
+/// Publish a notice to the system notification channel.
 async fn publish_notice(publisher: &Publisher, message: String) {
     if let Err(e) = publisher
         .publish(
-            topics::SystemMessage,
-            SystemMessageEvent::Notice { message },
+            topics::Notification(NotifyName::from(SYSTEM_CHANNEL)),
+            NoticeEvent { message },
         )
         .await
     {

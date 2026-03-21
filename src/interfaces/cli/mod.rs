@@ -142,11 +142,6 @@ impl CliClient {
                 let rendered = self.renderer.render(content);
                 println!("{header}{rendered}");
             }
-            ServerMessage::SystemEvent { source, content } => {
-                self.indicator.finish();
-                let line = format!("[{source}] {content}");
-                println!("\n{}\n", self.theme.format_system_event(&line));
-            }
             ServerMessage::Error { message, .. } => {
                 self.indicator.finish();
                 let line = format!("error: {message}");

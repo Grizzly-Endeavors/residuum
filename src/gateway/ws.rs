@@ -26,8 +26,9 @@ pub(super) async fn ws_handler(
 
 /// Handle a single WebSocket connection.
 ///
-/// Each connection subscribes to typed topics (`Response`, `ToolActivity`,
-/// `TurnLifecycle`, `Intermediate`, `SystemMessage`) on the bus. A local channel
+/// Each connection subscribes to typed topics (`Endpoint` for responses, tool
+/// activity, turn lifecycle, and intermediates; `Notification` for system
+/// notices and errors) on the bus. A local channel
 /// carries per-connection messages (pong, errors, inbox confirmations) that
 /// bypass the bus. A forwarding task merges all sources and writes
 /// `ServerMessage` frames to the WebSocket.
