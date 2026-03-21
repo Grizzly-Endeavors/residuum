@@ -118,7 +118,9 @@ impl Topic for Notification {
     }
 }
 
-/// The user inbox for incoming notifications.
+/// The agent inbox for incoming notifications.
+/// NOTE: This is a separate topic because it represents the agent's personal inbox for notifications,
+/// which is distinct from user facing push notifications.
 pub struct Inbox;
 
 impl Topic for Inbox {
