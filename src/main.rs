@@ -20,7 +20,8 @@ use residuum::interfaces::cli::commands::CommandEffect;
 #[tokio::main]
 async fn main() {
     if let Err(e) = Box::pin(run()).await {
-        eprintln!("error: {e}");
+        tracing::error!(error = %e, "fatal error");
+        println!("error: {e}");
         std::process::exit(1);
     }
 }
@@ -33,17 +34,17 @@ async fn run() -> Result<(), ResiduumError> {
     drop(rustls::crypto::ring::default_provider().install_default());
 
     // Install a panic hook that logs to tracing and stderr.
-    // tracing::error! is a no-op until a subscriber is initialized; eprintln! is the real fallback.
+    // tracing::error! is a no-op until a subscriber is initialized; write_crash_note is the real fallback.
     std::panic::set_hook(Box::new(|info| {
         tracing::error!(%info, "panic in spawned task");
-        eprintln!("PANIC: {info}");
+        residuum::daemon::write_crash_note(&format!("PANIC: {info}"));
     }));
 
     // Load .env early (ignore if missing, warn on parse errors)
     if let Err(e) = dotenvy::dotenv()
         && !e.not_found()
     {
-        eprintln!("warning: failed to parse .env file: {e}");
+        residuum::daemon::write_crash_note(&format!("warning: failed to parse .env file: {e}"));
     }
 
     // Parse subcommand from argv
@@ -154,7 +155,7 @@ async fn run_setup_mode() -> Result<(), ResiduumError> {
         })?;
     }
     residuum::config::Config::bootstrap_at_dir(&tmp_dir)?;
-    eprintln!(
+    println!(
         "setup mode: config will be written to {}",
         tmp_dir.display()
     );
@@ -351,7 +352,7 @@ fn run_daemonize(args: &[String], agent_name: Option<&str>) -> Result<(), Residu
     if let Ok(existing_pid) = read_pid_file(&pid_path)
         && is_process_running(existing_pid)
     {
-        eprintln!("residuum: {label} is already running (pid {existing_pid})");
+        println!("residuum: {label} is already running (pid {existing_pid})");
         return Ok(());
     }
 
@@ -369,12 +370,12 @@ fn run_daemonize(args: &[String], agent_name: Option<&str>) -> Result<(), Residu
 
     // First-launch welcome (or --setup which mimics it)
     if needs_setup {
-        eprintln!("welcome to residuum!");
-        eprintln!();
-        eprintln!("  it looks like this is your first time running residuum.");
-        eprintln!("  configure your agent at: http://{gateway_addr}");
-        eprintln!("  or run: residuum setup");
-        eprintln!();
+        println!("welcome to residuum!");
+        println!();
+        println!("  it looks like this is your first time running residuum.");
+        println!("  configure your agent at: http://{gateway_addr}");
+        println!("  or run: residuum setup");
+        println!();
     }
 
     // Build child args: forward any extra flags (like --setup) plus --foreground
@@ -422,7 +423,7 @@ fn run_daemonize(args: &[String], agent_name: Option<&str>) -> Result<(), Residu
                 )));
             }
             Ok(None) => {
-                eprintln!("residuum: setup server starting at http://{gateway_addr}");
+                println!("residuum: setup server starting at http://{gateway_addr}");
                 return Ok(());
             }
             Err(e) => {
@@ -441,12 +442,12 @@ fn run_daemonize(args: &[String], agent_name: Option<&str>) -> Result<(), Residu
     loop {
         if start.elapsed() > timeout {
             if let Ok(Some(status)) = child.try_wait() {
-                eprintln!("residuum: {label} crashed during startup (exit status: {status})");
-                eprintln!("  check logs: residuum logs");
-                eprintln!("  note: if no log files exist, the daemon crashed before writing any");
+                println!("residuum: {label} crashed during startup (exit status: {status})");
+                println!("  check logs: residuum logs");
+                println!("  note: if no log files exist, the daemon crashed before writing any");
             } else {
-                eprintln!("residuum: {label} did not start within 10 seconds");
-                eprintln!("  check logs: residuum logs");
+                println!("residuum: {label} did not start within 10 seconds");
+                println!("  check logs: residuum logs");
             }
             return Err(ResiduumError::Gateway(
                 "daemon startup timed out".to_string(),
@@ -456,7 +457,7 @@ fn run_daemonize(args: &[String], agent_name: Option<&str>) -> Result<(), Residu
         if let Ok(pid) = read_pid_file(&pid_path)
             && is_process_running(pid)
         {
-            eprintln!("residuum: {label} started at http://{gateway_addr} (pid {pid})");
+            println!("residuum: {label} started at http://{gateway_addr} (pid {pid})");
             return Ok(());
         }
 
@@ -481,26 +482,26 @@ async fn run_update_command(args: &[String]) -> Result<(), ResiduumError> {
     let check_only = args.iter().any(|a| a == "--check");
     let auto_yes = args.iter().any(|a| a == "-y" || a == "--yes");
 
-    eprintln!("residuum: checking for updates...");
+    println!("residuum: checking for updates...");
 
     let latest = update::fetch_latest_version().await?;
 
     if update::is_up_to_date(CURRENT_VERSION, &latest) {
-        eprintln!("residuum: already up to date ({CURRENT_VERSION})");
+        println!("residuum: already up to date ({CURRENT_VERSION})");
         return Ok(());
     }
 
-    eprintln!("residuum: current version: {CURRENT_VERSION}");
-    eprintln!("residuum: latest version:  {latest}");
+    println!("residuum: current version: {CURRENT_VERSION}");
+    println!("residuum: latest version:  {latest}");
 
     if check_only {
         return Ok(());
     }
 
-    eprintln!("residuum: downloading and installing {latest}...");
+    println!("residuum: downloading and installing {latest}...");
 
     let installed = update::download_and_install().await?;
-    eprintln!("residuum: updated to {installed}");
+    println!("residuum: updated to {installed}");
 
     // Check if gateway is running and try to restart it
     if let Ok(pid_path) = residuum::daemon::pid_file_path()
@@ -516,22 +517,22 @@ async fn run_update_command(args: &[String]) -> Result<(), ResiduumError> {
             let url = format!("http://{gateway_addr}/api/update/restart");
             match reqwest::Client::new().post(&url).send().await {
                 Ok(resp) if resp.status().is_success() => {
-                    eprintln!("residuum: restart signal sent to gateway (pid {pid})");
+                    println!("residuum: restart signal sent to gateway (pid {pid})");
                 }
                 Ok(resp) => {
-                    eprintln!(
+                    println!(
                         "residuum: failed to signal gateway restart (status {}) — restart it manually",
                         resp.status()
                     );
                 }
                 Err(e) => {
-                    eprintln!(
+                    println!(
                         "residuum: failed to signal gateway restart ({e}) — restart it manually"
                     );
                 }
             }
         } else {
-            eprintln!(
+            println!(
                 "residuum: gateway is still running (pid {pid}) — restart it to use the new version"
             );
         }
@@ -556,12 +557,12 @@ fn run_stop_command(agent_name: Option<&str>) -> Result<(), ResiduumError> {
     let label = agent_name.map_or("gateway".to_string(), |n| format!("agent '{n}'"));
 
     let Ok(pid) = read_pid_file(&pid_path) else {
-        eprintln!("residuum: no {label} running (no pid file)");
+        println!("residuum: no {label} running (no pid file)");
         return Ok(());
     };
 
     if !is_process_running(pid) {
-        eprintln!("residuum: no {label} running (stale pid file for pid {pid})");
+        println!("residuum: no {label} running (stale pid file for pid {pid})");
         remove_pid_file(&pid_path)?;
         return Ok(());
     }
@@ -577,12 +578,12 @@ fn run_stop_command(agent_name: Option<&str>) -> Result<(), ResiduumError> {
         if !is_process_running(pid) {
             // Process exited; clean up PID file if still present
             remove_pid_file(&pid_path)?;
-            eprintln!("residuum: {label} stopped (pid {pid})");
+            println!("residuum: {label} stopped (pid {pid})");
             return Ok(());
         }
 
         if start.elapsed() > timeout {
-            eprintln!("residuum: {label} (pid {pid}) did not stop within 5 seconds");
+            println!("residuum: {label} (pid {pid}) did not stop within 5 seconds");
             return Err(ResiduumError::Gateway(format!(
                 "{label} pid {pid} did not exit after SIGTERM"
             )));
@@ -626,7 +627,7 @@ async fn run_connect(url: &str, verbose: bool) -> Result<(), ResiduumError> {
     let (input_tx, mut input_rx) = tokio::sync::mpsc::channel::<String>(1);
     tokio::task::spawn_blocking(move || match CliReader::new() {
         Ok(reader) => reader.run(input_tx, prompt, gate_rx),
-        Err(e) => eprintln!("error initializing readline: {e}"),
+        Err(e) => println!("error initializing readline: {e}"),
     });
 
     let mut msg_counter: u64 = 0;
@@ -639,7 +640,7 @@ async fn run_connect(url: &str, verbose: bool) -> Result<(), ResiduumError> {
             // User input → check for commands, then send to gateway
             input = input_rx.recv() => {
                 let Some(line) = input else {
-                    eprintln!("\nGoodbye!");
+                    println!("\nGoodbye!");
                     break;
                 };
 
@@ -655,7 +656,7 @@ async fn run_connect(url: &str, verbose: bool) -> Result<(), ResiduumError> {
             // Gateway → display to user
             frame = ws_rx.next() => {
                 let Some(frame_result) = frame else {
-                    eprintln!("connection closed by server");
+                    println!("connection closed by server");
                     break;
                 };
 
@@ -712,20 +713,24 @@ fn init_cli_tracing() {
         .max_log_files(30)
         .build(&log_dir)
         .or_else(|e| {
-            eprintln!("warning: failed to create log file appender: {e}");
-            eprintln!(
+            residuum::daemon::write_crash_note(&format!(
+                "warning: failed to create log file appender: {e}"
+            ));
+            residuum::daemon::write_crash_note(&format!(
                 "warning: logs will be written to {} instead — 'residuum logs' will not find them",
                 std::env::temp_dir().display()
-            );
+            ));
             tracing_appender::rolling::RollingFileAppender::builder()
                 .filename_prefix("cli")
                 .filename_suffix("log")
                 .rotation(tracing_appender::rolling::Rotation::DAILY)
                 .build(std::env::temp_dir())
                 .map_err(|e2| {
-                    eprintln!("warning: fallback log appender also failed: {e2}");
-                    eprintln!(
-                        "warning: log file output disabled — 'residuum logs' will not find them"
+                    residuum::daemon::write_crash_note(&format!(
+                        "warning: fallback log appender also failed: {e2}"
+                    ));
+                    residuum::daemon::write_crash_note(
+                        "warning: log file output disabled — 'residuum logs' will not find them",
                     );
                 })
         })
@@ -753,7 +758,7 @@ async fn run_logs_command(watch: bool, agent_name: Option<&str>) -> Result<(), R
     let log_dir = residuum::agent_registry::paths::resolve_log_dir(agent_name)?;
 
     if !log_dir.exists() {
-        eprintln!(
+        println!(
             "no log files found (directory does not exist: {})",
             log_dir.display()
         );
@@ -768,7 +773,7 @@ async fn run_logs_command(watch: bool, agent_name: Option<&str>) -> Result<(), R
         .collect();
 
     if entries.is_empty() {
-        eprintln!("no log files found in {}", log_dir.display());
+        println!("no log files found in {}", log_dir.display());
         return Ok(());
     }
 
@@ -788,8 +793,8 @@ async fn run_logs_command(watch: bool, agent_name: Option<&str>) -> Result<(), R
         .map(std::fs::DirEntry::path)
         .ok_or_else(|| ResiduumError::Config("no log files found".to_string()))?;
 
-    eprintln!("showing: {}", latest.display());
-    eprintln!();
+    println!("showing: {}", latest.display());
+    println!();
 
     let content = std::fs::read_to_string(&latest)
         .map_err(|e| ResiduumError::Config(format!("failed to read log file: {e}")))?;
@@ -824,8 +829,8 @@ async fn run_logs_command(watch: bool, agent_name: Option<&str>) -> Result<(), R
                     print!("{line_buf}");
                 }
                 Err(e) => {
-                    eprintln!("error reading log file: {e}");
-                    eprintln!(
+                    println!("error reading log file: {e}");
+                    println!(
                         "  hint: the log file may have been rotated — re-run 'residuum logs --watch' to follow the new file"
                     );
                     break;
@@ -845,8 +850,8 @@ fn run_setup_command(args: &[String]) -> Result<(), ResiduumError> {
     let config_path = config_dir.join("config.toml");
 
     if config_path.exists() {
-        eprintln!("config.toml already exists at {}", config_path.display());
-        eprintln!("edit it directly or delete it to re-run setup");
+        println!("config.toml already exists at {}", config_path.display());
+        println!("edit it directly or delete it to re-run setup");
         return Ok(());
     }
 
@@ -889,19 +894,19 @@ fn run_setup_command(args: &[String]) -> Result<(), ResiduumError> {
     // Validate the result
     match Config::load_at(&config_dir) {
         Ok(cfg) => {
-            eprintln!("configuration saved to {}", config_path.display());
-            eprintln!("  timezone: {}", answers.timezone);
-            eprintln!("  model: {}/{}", answers.provider, answers.model);
+            println!("configuration saved to {}", config_path.display());
+            println!("  timezone: {}", answers.timezone);
+            println!("  model: {}/{}", answers.provider, answers.model);
             if cfg.main.first().and_then(|s| s.api_key.as_ref()).is_some() {
-                eprintln!("  api key: configured");
+                println!("  api key: configured");
             }
             if let Some(ref backend) = answers.web_search_backend {
-                eprintln!("  web search: {backend}");
+                println!("  web search: {backend}");
             }
         }
         Err(err) => {
-            eprintln!("warning: config was written but validation failed: {err}");
-            eprintln!("you may need to edit {} manually", config_path.display());
+            println!("warning: config was written but validation failed: {err}");
+            println!("you may need to edit {} manually", config_path.display());
         }
     }
 
@@ -923,7 +928,7 @@ fn run_secret_command(args: &[String]) -> Result<(), ResiduumError> {
     match sub {
         Some("set") => {
             let Some(name) = args.get(3) else {
-                eprintln!("usage: residuum secret set <name> [value]");
+                println!("usage: residuum secret set <name> [value]");
                 return Ok(());
             };
 
@@ -938,13 +943,13 @@ fn run_secret_command(args: &[String]) -> Result<(), ResiduumError> {
 
             let mut store = SecretStore::load(&config_dir)?;
             store.set(name, &value, &config_dir)?;
-            eprintln!("secret '{name}' saved");
+            println!("secret '{name}' saved");
         }
         Some("list") => {
             let store = SecretStore::load(&config_dir)?;
             let names = store.names();
             if names.is_empty() {
-                eprintln!("no secrets stored");
+                println!("no secrets stored");
             } else {
                 for name in &names {
                     println!("{name}");
@@ -953,20 +958,20 @@ fn run_secret_command(args: &[String]) -> Result<(), ResiduumError> {
         }
         Some("delete") => {
             let Some(name) = args.get(3) else {
-                eprintln!("usage: residuum secret delete <name>");
+                println!("usage: residuum secret delete <name>");
                 return Ok(());
             };
 
             let mut store = SecretStore::load(&config_dir)?;
             store.delete(name, &config_dir)?;
-            eprintln!("secret '{name}' deleted");
+            println!("secret '{name}' deleted");
         }
         _ => {
-            eprintln!("usage: residuum secret <set|list|delete>");
-            eprintln!();
-            eprintln!("  set <name> [value]  store a secret (prompts if value omitted)");
-            eprintln!("  list                list stored secret names");
-            eprintln!("  delete <name>       remove a secret");
+            println!("usage: residuum secret <set|list|delete>");
+            println!();
+            println!("  set <name> [value]  store a secret (prompts if value omitted)");
+            println!("  list                list stored secret names");
+            println!("  delete <name>       remove a secret");
         }
     }
 
@@ -1022,19 +1027,19 @@ fn handle_ws_frame(
     let raw = match frame_result {
         Ok(TungsteniteMessage::Text(txt)) => txt,
         Ok(TungsteniteMessage::Close(_)) => {
-            eprintln!("server closed connection");
+            println!("server closed connection");
             return std::ops::ControlFlow::Break(());
         }
         Ok(_) => return std::ops::ControlFlow::Continue(()),
         Err(e) => {
-            eprintln!("websocket error: {e}");
+            println!("websocket error: {e}");
             return std::ops::ControlFlow::Break(());
         }
     };
 
     match serde_json::from_str::<ServerMessage>(&raw) {
         Ok(ServerMessage::Reloading) => {
-            eprintln!("server is reloading configuration...");
+            println!("server is reloading configuration...");
         }
         Ok(ref server_msg @ ServerMessage::Response { ref reply_to, .. })
             if *turn_active && !reply_to.is_empty() =>
@@ -1089,7 +1094,7 @@ where
                 let new_verbose = !client.verbose();
                 client.set_verbose(new_verbose);
                 let label = if new_verbose { "on" } else { "off" };
-                eprintln!("verbose mode: {label}");
+                println!("verbose mode: {label}");
                 send_client_message(
                     ws_tx,
                     &ClientMessage::SetVerbose {
@@ -1115,7 +1120,7 @@ where
                 send_client_message(ws_tx, &ClientMessage::InboxAdd { body }).await?;
             }
             CommandEffect::Quit => return Ok(std::ops::ControlFlow::Break(())),
-            CommandEffect::PrintLocal(text) => eprintln!("{text}"),
+            CommandEffect::PrintLocal(text) => println!("{text}"),
         }
         // Slash commands don't trigger agent turns; unblock prompt immediately
         if gate_tx.send(()).is_err() {

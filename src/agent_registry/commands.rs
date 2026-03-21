@@ -24,7 +24,7 @@ pub fn run_agent_command(args: &[String]) -> Result<(), ResiduumError> {
     match sub {
         Some("create") => {
             let Some(name) = args.get(3) else {
-                eprintln!("usage: residuum agent create <name>");
+                println!("usage: residuum agent create <name>");
                 return Ok(());
             };
             run_agent_create(name)
@@ -32,25 +32,25 @@ pub fn run_agent_command(args: &[String]) -> Result<(), ResiduumError> {
         Some("list") => run_agent_list(),
         Some("delete") => {
             let Some(name) = args.get(3) else {
-                eprintln!("usage: residuum agent delete <name>");
+                println!("usage: residuum agent delete <name>");
                 return Ok(());
             };
             run_agent_delete(name)
         }
         Some("info") => {
             let Some(name) = args.get(3) else {
-                eprintln!("usage: residuum agent info <name>");
+                println!("usage: residuum agent info <name>");
                 return Ok(());
             };
             run_agent_info(name)
         }
         _ => {
-            eprintln!("usage: residuum agent <create|list|delete|info>");
-            eprintln!();
-            eprintln!("  create <name>   create a new named agent");
-            eprintln!("  list            list all agents and their status");
-            eprintln!("  delete <name>   remove a named agent");
-            eprintln!("  info <name>     show agent details");
+            println!("usage: residuum agent <create|list|delete|info>");
+            println!();
+            println!("  create <name>   create a new named agent");
+            println!("  list            list all agents and their status");
+            println!("  delete <name>   remove a named agent");
+            println!("  info <name>     show agent details");
             Ok(())
         }
     }
@@ -168,9 +168,9 @@ fn run_agent_create(name: &str) -> Result<(), ResiduumError> {
     registry.add(name.to_string(), port);
     registry.save(&registry_dir)?;
 
-    eprintln!("agent '{name}' created (port {port})");
-    eprintln!("  config: {}", agent_dir.display());
-    eprintln!("  start:  residuum serve --agent {name}");
+    println!("agent '{name}' created (port {port})");
+    println!("  config: {}", agent_dir.display());
+    println!("  start:  residuum serve --agent {name}");
 
     Ok(())
 }
@@ -180,17 +180,17 @@ fn run_agent_list() -> Result<(), ResiduumError> {
     let registry_dir = paths::registry_base_dir()?;
     let registry = AgentRegistry::load(&registry_dir)?;
 
-    eprintln!("{:<16} {:<7} STATUS", "NAME", "PORT");
+    println!("{:<16} {:<7} STATUS", "NAME", "PORT");
 
     // Default agent
     let default_status = check_agent_status(None)?;
     let default_port = Config::load().map(|c| c.gateway.port).unwrap_or(7700);
-    eprintln!("{:<16} {:<7} {default_status}", "(default)", default_port);
+    println!("{:<16} {:<7} {default_status}", "(default)", default_port);
 
     // Named agents
     for agent in registry.list() {
         let status = check_agent_status(Some(&agent.name))?;
-        eprintln!("{:<16} {:<7} {status}", agent.name, agent.port);
+        println!("{:<16} {:<7} {status}", agent.name, agent.port);
     }
 
     Ok(())
@@ -232,7 +232,7 @@ fn run_agent_delete(name: &str) -> Result<(), ResiduumError> {
     registry.remove(name);
     registry.save(&registry_dir)?;
 
-    eprintln!("agent '{name}' deleted");
+    println!("agent '{name}' deleted");
 
     Ok(())
 }
@@ -251,20 +251,20 @@ fn run_agent_info(name: &str) -> Result<(), ResiduumError> {
     let agent_dir = paths::agent_config_dir(name)?;
     let status = check_agent_status(Some(name))?;
 
-    eprintln!("agent: {name}");
-    eprintln!("  port:      {}", entry.port);
-    eprintln!("  status:    {status}");
-    eprintln!("  config:    {}", agent_dir.display());
-    eprintln!("  workspace: {}", agent_dir.join("workspace").display());
-    eprintln!("  logs:      {}", agent_dir.join("logs").display());
+    println!("agent: {name}");
+    println!("  port:      {}", entry.port);
+    println!("  status:    {status}");
+    println!("  config:    {}", agent_dir.display());
+    println!("  workspace: {}", agent_dir.join("workspace").display());
+    println!("  logs:      {}", agent_dir.join("logs").display());
 
     // Check providers source
     let local_providers = agent_dir.join("providers.toml");
     if local_providers.exists() {
-        eprintln!("  providers: {} (local)", local_providers.display());
+        println!("  providers: {} (local)", local_providers.display());
     } else {
         let global = Config::config_dir()?.join("providers.toml");
-        eprintln!("  providers: {} (inherited)", global.display());
+        println!("  providers: {} (inherited)", global.display());
     }
 
     Ok(())

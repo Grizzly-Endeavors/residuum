@@ -7,6 +7,29 @@ use std::path::{Path, PathBuf};
 
 use crate::error::ResiduumError;
 
+/// Write a diagnostic message to the crash log.
+///
+/// Used for errors that occur before tracing is initialized
+/// or when the tracing subsystem itself fails. Messages are
+/// appended to `~/.residuum/crash.log` (falls back to
+/// `/tmp/residuum-crash.log` if the home directory is unavailable).
+pub fn write_crash_note(msg: &str) {
+    let path = dirs::home_dir().map_or_else(
+        || std::env::temp_dir().join("residuum-crash.log"),
+        |h| h.join(".residuum").join("crash.log"),
+    );
+    drop(
+        std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+            .and_then(|mut f| {
+                use std::io::Write;
+                writeln!(f, "{}: {msg}", chrono::Utc::now())
+            }),
+    );
+}
+
 /// Return the path to the PID file: `~/.residuum/residuum.pid`.
 ///
 /// # Errors
@@ -179,13 +202,15 @@ pub fn init_daemon_tracing(debug_mode: Option<DebugMode>, agent_name: Option<&st
 
     let default_filter = debug_mode.map_or("info", DebugMode::filter_str);
     if std::env::var("RUST_LOG").is_ok() {
-        eprintln!("note: RUST_LOG is set; overriding --debug filter");
+        write_crash_note("note: RUST_LOG is set; overriding --debug filter");
     }
     let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(default_filter));
 
     let log_dir = crate::agent_registry::paths::resolve_log_dir(agent_name).unwrap_or_else(|_| {
-        eprintln!("warning: could not determine log directory; logs will be written to ./logs");
+        write_crash_note(
+            "warning: could not determine log directory; logs will be written to ./logs",
+        );
         std::path::PathBuf::from("logs")
     });
 
@@ -201,21 +226,21 @@ pub fn init_daemon_tracing(debug_mode: Option<DebugMode>, agent_name: Option<&st
         .max_log_files(30)
         .build(&log_dir)
         .unwrap_or_else(|e| {
-            eprintln!(
+            write_crash_note(&format!(
                 "warning: failed to create log file appender at {}: {e}; falling back to {}",
                 log_dir.display(),
                 std::env::temp_dir().display()
-            );
+            ));
             tracing_appender::rolling::RollingFileAppender::builder()
                 .filename_prefix(&log_prefix)
                 .filename_suffix("log")
                 .rotation(tracing_appender::rolling::Rotation::DAILY)
                 .build(std::env::temp_dir())
                 .unwrap_or_else(|e2| {
-                    eprintln!(
+                    write_crash_note(&format!(
                         "warning: fallback log appender also failed: {e2}; falling back to {}",
                         std::env::temp_dir().display()
-                    );
+                    ));
                     tracing_appender::rolling::daily(
                         std::env::temp_dir(),
                         format!("{log_prefix}.log"),

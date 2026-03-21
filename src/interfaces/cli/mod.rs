@@ -71,16 +71,16 @@ impl CliClient {
         self.theme.format_user_prompt()
     }
 
-    /// Print the startup banner to stderr.
+    /// Print the startup banner.
     pub fn print_banner(&self) {
         let banner = format!(
             "residuum {} \u{2014} connected to {}",
             env!("RESIDUUM_VERSION"),
             self.url
         );
-        eprintln!("{}", self.theme.format_banner(&banner));
+        println!("{}", self.theme.format_banner(&banner));
         let http_url = ws_url_to_http(&self.url);
-        eprintln!("  web UI: {http_url}");
+        println!("  web UI: {http_url}");
     }
 
     /// Display a server message with appropriate formatting.
@@ -96,7 +96,7 @@ impl CliClient {
                 self.indicator.on_tool_call();
                 if self.verbose {
                     let line = format!("[tool: {name}] {arguments}");
-                    eprintln!("{}", self.theme.format_tool(&line));
+                    println!("{}", self.theme.format_tool(&line));
                 }
             }
             ServerMessage::ToolResult {
@@ -108,7 +108,7 @@ impl CliClient {
                 if self.verbose {
                     if *is_error {
                         let line = format!("[tool: {name} ERROR] {output}");
-                        eprintln!("{}", self.theme.format_error(&line));
+                        println!("{}", self.theme.format_error(&line));
                     } else {
                         let preview = truncate_preview(output, 200);
                         let line = if preview.len() < output.len() {
@@ -116,7 +116,7 @@ impl CliClient {
                         } else {
                             format!("[tool: {name}] {preview}")
                         };
-                        eprintln!("{}", self.theme.format_tool(&line));
+                        println!("{}", self.theme.format_tool(&line));
                     }
                 }
             }
@@ -150,7 +150,7 @@ impl CliClient {
             ServerMessage::Error { message, .. } => {
                 self.indicator.finish();
                 let line = format!("error: {message}");
-                eprintln!("{}", self.theme.format_error(&line));
+                println!("{}", self.theme.format_error(&line));
             }
             ServerMessage::Notice { message } => {
                 self.indicator.finish();

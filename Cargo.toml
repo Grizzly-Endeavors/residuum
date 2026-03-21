@@ -146,6 +146,9 @@ allow_attributes = "deny"
 # Every suppression must explain why
 allow_attributes_without_reason = "deny"
 
+# --- Output channels: no stderr in a daemon ---
+print_stderr = "deny"
+
 # --- Code quality enforcement ---
 format_push_string = "deny"
 redundant_type_annotations = "deny"

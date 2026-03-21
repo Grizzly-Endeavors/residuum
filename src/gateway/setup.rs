@@ -72,7 +72,7 @@ pub async fn run_setup_server_at(config_dir: PathBuf) -> Result<SetupExit, Resid
         ResiduumError::Gateway(format!("failed to bind setup server to {addr}: {e}"))
     })?;
 
-    eprintln!("Setup wizard available at http://{addr}");
+    println!("Setup wizard available at http://{addr}");
     tracing::info!(addr = %addr, "setup wizard listening");
 
     let server = axum::serve(listener, app).with_graceful_shutdown(async move {

@@ -2,7 +2,7 @@
 
 use std::io::Write;
 
-/// Animated working indicator displayed on stderr while the agent is processing.
+/// Animated working indicator displayed on stdout while the agent is processing.
 ///
 /// Shows `Working.   (N tools)` with cycling dots, overwriting the same line.
 pub struct WorkingIndicator {
@@ -52,9 +52,9 @@ impl WorkingIndicator {
     /// intermediate content while the agent is still working.
     pub fn clear_line(&mut self) {
         if self.active {
-            eprint!("\r\x1b[2K");
-            if std::io::stderr().flush().is_err() {
-                tracing::trace!("failed to flush stderr");
+            print!("\r\x1b[2K");
+            if std::io::stdout().flush().is_err() {
+                tracing::trace!("failed to flush stdout");
             }
         }
     }
@@ -63,9 +63,9 @@ impl WorkingIndicator {
     pub fn finish(&mut self) {
         if self.active {
             self.active = false;
-            eprint!("\r\x1b[2K");
-            if std::io::stderr().flush().is_err() {
-                tracing::trace!("failed to flush stderr");
+            print!("\r\x1b[2K");
+            if std::io::stdout().flush().is_err() {
+                tracing::trace!("failed to flush stdout");
             }
         }
     }
@@ -88,9 +88,9 @@ impl WorkingIndicator {
         } else {
             String::new()
         };
-        eprint!("\x1b[2K\rWorking{dots}{tool_suffix}");
-        if std::io::stderr().flush().is_err() {
-            tracing::trace!("failed to flush stderr");
+        print!("\x1b[2K\rWorking{dots}{tool_suffix}");
+        if std::io::stdout().flush().is_err() {
+            tracing::trace!("failed to flush stdout");
         }
     }
 }
