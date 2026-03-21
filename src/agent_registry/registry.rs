@@ -6,6 +6,7 @@
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
+use tracing::{trace, warn};
 
 use crate::error::ResiduumError;
 
@@ -47,12 +48,14 @@ impl AgentRegistry {
             ))
         })?;
 
-        toml::from_str(&contents).map_err(|e| {
+        let registry: Self = toml::from_str(&contents).map_err(|e| {
             ResiduumError::Config(format!(
                 "failed to parse agent registry at {}: {e}",
                 path.display()
             ))
-        })
+        })?;
+        trace!(path = %path.display(), agents = registry.agents.len(), "loaded agent registry");
+        Ok(registry)
     }
 
     /// Save the registry to `base_dir/registry.toml`.
@@ -77,6 +80,7 @@ impl AgentRegistry {
         })?;
 
         let path = base_dir.join("registry.toml");
+        trace!(path = %path.display(), agents = self.agents.len(), "saving agent registry");
         std::fs::write(&path, contents).map_err(|e| {
             ResiduumError::Config(format!(
                 "failed to write agent registry at {}: {e}",
@@ -120,6 +124,13 @@ impl AgentRegistry {
         let used: std::collections::HashSet<u16> = self.agents.iter().map(|a| a.port).collect();
         while used.contains(&port) {
             port = port.saturating_add(1);
+        }
+        let scan_steps = port.saturating_sub(AGENT_PORT_START);
+        if scan_steps > 20 {
+            warn!(
+                agents = self.agents.len(),
+                port, scan_steps, "port scan advanced far from starting port"
+            );
         }
         port
     }

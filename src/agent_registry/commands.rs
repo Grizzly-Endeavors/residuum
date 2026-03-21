@@ -5,6 +5,8 @@
 //! - `residuum agent delete <name>` — remove a named agent
 //! - `residuum agent info <name>` — show agent details
 
+use tracing::{debug, trace, warn};
+
 use crate::config::Config;
 use crate::daemon;
 use crate::error::ResiduumError;
@@ -95,14 +97,20 @@ fn run_agent_create(name: &str) -> Result<(), ResiduumError> {
     // Read timezone from default agent's config
     let timezone = match Config::load() {
         Ok(cfg) => cfg.timezone.to_string(),
-        Err(_) => "UTC".to_string(),
+        Err(e) => {
+            warn!(error = %e, "failed to load config for timezone, defaulting to UTC");
+            "UTC".to_string()
+        }
     };
 
     let port = registry.next_available_port();
     let agent_dir = paths::agent_config_dir(name)?;
     let workspace_dir = agent_dir.join("workspace");
 
+    debug!(agent = name, port, "creating new agent");
+
     // Create agent directory
+    trace!(agent = name, path = %agent_dir.display(), "creating agent directory");
     std::fs::create_dir_all(&agent_dir).map_err(|e| {
         ResiduumError::Config(format!(
             "failed to create agent directory {}: {e}",
@@ -111,6 +119,7 @@ fn run_agent_create(name: &str) -> Result<(), ResiduumError> {
     })?;
 
     // Write ready-to-run config.toml
+    trace!(agent = name, "writing config.toml");
     let config_content = format!(
         "# Agent: {name}\n\
          # Created automatically. Edit as needed.\n\
@@ -126,9 +135,11 @@ fn run_agent_create(name: &str) -> Result<(), ResiduumError> {
         .map_err(|e| ResiduumError::Config(format!("failed to write agent config.toml: {e}")))?;
 
     // Write example files for reference
+    trace!(agent = name, "bootstrapping example files");
     Config::bootstrap_at_dir(&agent_dir)?;
 
     // Create workspace/config/ with starter files
+    trace!(agent = name, path = %workspace_dir.join("config").display(), "creating workspace/config directory");
     let ws_config_dir = workspace_dir.join("config");
     std::fs::create_dir_all(&ws_config_dir).map_err(|e| {
         ResiduumError::Config(format!(
@@ -138,11 +149,13 @@ fn run_agent_create(name: &str) -> Result<(), ResiduumError> {
     })?;
 
     if !ws_config_dir.join("mcp.json").exists() {
+        trace!(agent = name, "writing mcp.json");
         std::fs::write(ws_config_dir.join("mcp.json"), "{ \"mcpServers\": {} }\n")
             .map_err(|e| ResiduumError::Config(format!("failed to write mcp.json: {e}")))?;
     }
 
     if !ws_config_dir.join("channels.toml").exists() {
+        trace!(agent = name, "writing channels.toml");
         std::fs::write(
             ws_config_dir.join("channels.toml"),
             "# Notification channel configuration. See channels.example.toml for options.\n",
@@ -151,6 +164,7 @@ fn run_agent_create(name: &str) -> Result<(), ResiduumError> {
     }
 
     // Register in registry
+    trace!(agent = name, port, "saving agent to registry");
     registry.add(name.to_string(), port);
     registry.save(&registry_dir)?;
 
@@ -170,7 +184,8 @@ fn run_agent_list() -> Result<(), ResiduumError> {
 
     // Default agent
     let default_status = check_agent_status(None)?;
-    eprintln!("{:<16} {:<7} {default_status}", "(default)", "7700");
+    let default_port = Config::load().map(|c| c.gateway.port).unwrap_or(7700);
+    eprintln!("{:<16} {:<7} {default_status}", "(default)", default_port);
 
     // Named agents
     for agent in registry.list() {
@@ -261,7 +276,12 @@ fn check_agent_status(agent_name: Option<&str>) -> Result<String, ResiduumError>
     match daemon::read_pid_file(&pid_path) {
         Ok(pid) if daemon::is_process_running(pid) => Ok(format!("running (pid {pid})")),
         Ok(pid) => Ok(format!("stopped (stale pid {pid})")),
-        Err(_) => Ok("stopped".to_string()),
+        Err(e) => {
+            if pid_path.exists() {
+                debug!(error = %e, path = %pid_path.display(), "could not read pid file");
+            }
+            Ok("stopped".to_string())
+        }
     }
 }
 
