@@ -208,7 +208,7 @@ export type ConnectionStatus = "connecting" | "connected" | "disconnected";
 export interface ToolCallState {
   id: string;
   name: string;
-  arguments: string;
+  arguments: Record<string, unknown>;
   status: "running" | "done" | "error";
   result?: string;
 }
