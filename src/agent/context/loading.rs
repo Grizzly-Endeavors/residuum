@@ -18,7 +18,13 @@ pub(crate) async fn load_observations(path: &Path) -> anyhow::Result<Option<Stri
     match tokio::fs::read_to_string(path).await {
         Ok(content) if !content.trim().is_empty() => {
             let log: crate::memory::types::ObservationLog = serde_json::from_str(&content)
-                .with_context(|| format!("failed to parse observations at {}", path.display()))?;
+                .with_context(|| {
+                    format!(
+                        "corrupt observation log on disk at {} \
+                         (a .json.bak backup may exist alongside it with a valid prior version)",
+                        path.display()
+                    )
+                })?;
             let formatted = log.display_formatted();
             if formatted.is_empty() {
                 Ok(None)

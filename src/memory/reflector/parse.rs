@@ -59,11 +59,16 @@ pub(super) fn parse_reflection_response(content: &str, tz: Tz) -> anyhow::Result
     // Fallback: Value-based parsing for legacy bare arrays
     tracing::debug!("reflector structured output failed, falling back to value-based parsing");
     let value: serde_json::Value = serde_json::from_str(json_str).map_err(|e| {
-        anyhow::anyhow!("failed to parse reflector response as JSON: {e}\nresponse: {trimmed}")
+        anyhow::anyhow!(
+            "malformed reflector LLM response (not valid JSON): {e}\nraw response: {trimmed}"
+        )
     })?;
 
     let items = value.as_array().ok_or_else(|| {
-        anyhow::anyhow!("reflector response is not a JSON array or object\nresponse: {trimmed}")
+        anyhow::anyhow!(
+            "malformed reflector LLM response: expected a JSON array or \
+             {{\"observations\": [...]}}, got neither\nraw response: {trimmed}"
+        )
     })?;
 
     let mut log = ObservationLog::new();

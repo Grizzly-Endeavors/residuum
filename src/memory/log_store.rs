@@ -16,8 +16,13 @@ use crate::memory::types::{Observation, ObservationLog};
 /// Returns an error if the file exists but cannot be read or parsed.
 pub async fn load_observation_log(path: &Path) -> anyhow::Result<ObservationLog> {
     match tokio::fs::read_to_string(path).await {
-        Ok(contents) => serde_json::from_str(&contents)
-            .with_context(|| format!("failed to parse observation log at {}", path.display())),
+        Ok(contents) => serde_json::from_str(&contents).with_context(|| {
+            format!(
+                "corrupt observation log on disk at {} \
+                 (a .json.bak backup may exist alongside it with a valid prior version)",
+                path.display()
+            )
+        }),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(ObservationLog::new()),
         Err(e) => Err(anyhow::Error::new(e).context(format!(
             "failed to read observation log at {}",
