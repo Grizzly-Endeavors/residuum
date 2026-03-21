@@ -107,11 +107,9 @@ impl AgentRegistry {
         self.agents.push(AgentEntry { name, port });
     }
 
-    /// Remove an agent by name. Returns `true` if found and removed.
-    pub fn remove(&mut self, name: &str) -> bool {
-        let len_before = self.agents.len();
+    /// Remove an agent by name.
+    pub fn remove(&mut self, name: &str) {
         self.agents.retain(|a| a.name != name);
-        self.agents.len() < len_before
     }
 
     /// Find the next available port starting from 7701.
@@ -120,8 +118,7 @@ impl AgentRegistry {
     #[must_use]
     pub fn next_available_port(&self) -> u16 {
         let mut port = AGENT_PORT_START;
-        let used: std::collections::HashSet<u16> = self.agents.iter().map(|a| a.port).collect();
-        while used.contains(&port) {
+        while self.agents.iter().any(|a| a.port == port) {
             port = port.saturating_add(1);
         }
         let scan_steps = port.saturating_sub(AGENT_PORT_START);
@@ -179,9 +176,10 @@ mod tests {
     fn remove_removes_agent() {
         let mut reg = AgentRegistry::default();
         reg.add("researcher".to_string(), 7701);
-        assert!(reg.remove("researcher"));
+        reg.remove("researcher");
         assert!(reg.agents.is_empty());
-        assert!(!reg.remove("nonexistent"));
+        reg.remove("nonexistent");
+        assert!(reg.agents.is_empty());
     }
 
     #[test]

@@ -57,7 +57,9 @@ async fn run() -> Result<(), FatalError> {
 
     match subcommand {
         Some("secret") => run_secret_command(&args),
-        Some("agent") => residuum::agent_registry::commands::run_agent_command(&args),
+        Some("agent") => {
+            residuum::agent_registry::commands::run_agent_command(args.get(2..).unwrap_or(&[]))
+        }
         Some("connect") => {
             init_cli_tracing();
             let url = if let Some(ref name) = agent_name {
