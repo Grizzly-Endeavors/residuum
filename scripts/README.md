@@ -20,7 +20,7 @@ Audits every Rust module in `src/` in parallel, then runs a review pass to filte
 
 **How it works:**
 
-1. Discovers all modules under `src/` (directories + standalone `.rs` files, excluding `lib.rs`)
+1. Discovers all modules under `src/` (directories + standalone `.rs` files, excluding `lib.rs` and `error.rs`)
 2. Feeds each module's source files to Claude with your prompt, writing per-module markdown to the output directory
 3. Runs a review pass that removes findings requiring cross-module/architectural changes, deletes empty files, and writes a `SUMMARY.md`
 
@@ -53,10 +53,10 @@ Takes audit results from `audit-modules.sh` and applies fixes in parallel using 
 
 **How it works:**
 
-1. **Phase 1 — Parallel fixes:** Creates a git worktree per module, runs Claude in each to apply fixes concurrently. Changes are committed in worktrees without hooks (temporary commits).
-2. **Phase 2 — Sequential cherry-pick:** Cherry-picks each worktree commit onto the audit branch. Pre-commit hooks (fmt, clippy, test) run on each commit to validate the combined state.
-3. **Conflict resolution:** If a cherry-pick conflicts (rare, since the audit review pass filters cross-module findings), Claude is called to resolve the conflict markers, keeping changes from both sides.
-4. Successfully applied audits are moved to `applied/`; failures and unresolvable conflicts are logged and skipped.
+1. **Phase 1 — Parallel fixes:** Creates a git worktree per module, runs Claude in each to apply fixes and commit concurrently. Claude handles pre-commit hook failures (fmt, clippy, test) directly — it sees the output, fixes the issues, and retries.
+2. **Phase 2 — Sequential cherry-pick:** Cherry-picks each worktree commit onto the audit branch. Claude handles the commit so it can fix any hook failures from the combined state.
+3. **Conflict resolution:** If a cherry-pick conflicts (rare, since the audit review pass filters cross-module findings), Claude resolves the conflict markers (keeping both sides), commits, and handles any hook failures.
+4. Successfully applied audits are moved to `applied/`; failures are logged and skipped.
 
 ```bash
 # Apply with defaults

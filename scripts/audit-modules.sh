@@ -60,7 +60,7 @@ for dir in src/*/; do
     MODULES+=("${dir%/}")
 done
 for file in src/*.rs; do
-    [[ -f "$file" && "$(basename "$file")" != "lib.rs" ]] && MODULES+=("$file")
+    [[ -f "$file" && "$(basename "$file")" != "lib.rs" && "$(basename "$file")" != "error.rs" ]] && MODULES+=("$file")
 done
 
 echo "Auditing ${#MODULES[@]} modules with model=$MODEL, jobs=$JOBS"

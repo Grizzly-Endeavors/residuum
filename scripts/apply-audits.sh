@@ -5,7 +5,9 @@ set -euo pipefail
 #
 # Each module gets its own worktree where Claude applies fixes independently.
 # Commits are then cherry-picked onto the audit branch sequentially. If a
-# cherry-pick conflicts, Claude resolves the conflict automatically.
+# cherry-pick conflicts, Claude resolves the conflict automatically. In all
+# cases, Claude handles the commit directly so it can see and fix any
+# pre-commit hook failures (fmt, clippy, test).
 #
 # Usage:
 #   ./scripts/apply-audits.sh [OPTIONS]
@@ -111,6 +113,8 @@ cleanup() {
 }
 trap cleanup EXIT
 
+CLAUDE_TOOLS="Edit Read Glob Grep Bash(git:*) Bash(cargo:*)"
+
 # =============================================================================
 # Phase 1: Apply fixes in parallel worktrees
 # =============================================================================
@@ -164,8 +168,13 @@ Rules:
 - Do NOT refactor, rename, or "improve" code beyond what the audit asks for
 - Do NOT add comments explaining your fixes
 - Do NOT touch files outside the module being audited
-- Do NOT run any git commands — just edit the files
 - If an audit finding is vague or you're unsure how to fix it, skip it
+
+After making your changes, stage and commit them using `git add` and `git commit -m "message"`.
+Write a good commit message: concise summary (<=72 chars) on the first line.
+Do NOT use `git commit -m "$(cat ...)"` or heredocs — just a plain `-m "message"` string.
+
+If the pre-commit hooks fail, read the error output, fix the issues, and retry the commit.
 
 INSTRUCTIONS
         echo "## Audit Findings"
@@ -183,26 +192,22 @@ INSTRUCTIONS
     } > "$tmpfile"
 
     # Run Claude in the worktree directory
+    local pre_head
+    pre_head=$(cd "$worktree_path" && git rev-parse HEAD)
+
     if (cd "$worktree_path" && claude -p --model "$MODEL" --no-session-persistence \
-        --allowedTools "Edit Read Glob Grep" \
+        --allowedTools "$CLAUDE_TOOLS" \
         < "$tmpfile" > /dev/null 2>&1); then
 
-        # Check if Claude made any changes
-        if (cd "$worktree_path" && git diff --quiet && git diff --cached --quiet); then
-            echo "[no-op] $module_name — no changes made"
+        # Check if Claude actually committed something
+        local post_head
+        post_head=$(cd "$worktree_path" && git rev-parse HEAD)
+        if [[ "$post_head" == "$pre_head" ]]; then
+            echo "[no-op] $module_name — no changes committed"
             echo "skip:no-changes" > "$result_file"
         else
-            # Commit in worktree (no hooks — validation happens on cherry-pick)
-            if (cd "$worktree_path" && git add -A && \
-                git commit --no-verify -m "audit: fix $module_name" > /dev/null 2>&1); then
-                local sha
-                sha=$(cd "$worktree_path" && git rev-parse HEAD)
-                echo "[done]  $module_name ($sha)"
-                echo "commit:$sha" > "$result_file"
-            else
-                echo "[FAIL]  $module_name — commit failed in worktree"
-                echo "fail:commit" > "$result_file"
-            fi
+            echo "[done]  $module_name ($post_head)"
+            echo "commit:$post_head" > "$result_file"
         fi
     else
         echo "[FAIL]  $module_name — Claude exited with error"
@@ -213,7 +218,7 @@ INSTRUCTIONS
 }
 
 export -f apply_in_worktree
-export WORKTREE_BASE RESULTS_DIR MODEL INPUT_DIR
+export WORKTREE_BASE RESULTS_DIR MODEL INPUT_DIR CLAUDE_TOOLS
 
 echo ""
 echo "Phase 1: Applying fixes in parallel (jobs=$JOBS)..."
@@ -283,18 +288,45 @@ for i in "${!COMMITS[@]}"; do
     echo ""
     echo "=== $module ==="
 
+    pre_head=$(git rev-parse HEAD)
+
     if git cherry-pick --no-commit "$sha" 2>/dev/null; then
-        # Clean apply — commit with hooks
-        if git commit -m "audit: fix $module" 2>/dev/null; then
-            echo "  [done] Applied cleanly"
-            mkdir -p "$INPUT_DIR/applied"
-            [[ -f "$INPUT_DIR/${module}.md" ]] && mv "$INPUT_DIR/${module}.md" "$INPUT_DIR/applied/"
-            APPLIED=$((APPLIED + 1))
+        # Clean apply — have Claude commit so it can handle hook failures
+        echo "  Cherry-picked cleanly, committing..."
+
+        commit_prompt=$(mktemp)
+        {
+            cat <<INSTRUCTIONS
+Changes from an audit fix for module "$module" have been staged.
+
+Stage any unstaged files and commit with: git commit -m "audit: fix $module"
+Do NOT use \$() or heredocs — just a plain -m "message" string.
+
+If the pre-commit hooks fail, read the error output, fix the issues, and retry the commit.
+INSTRUCTIONS
+        } > "$commit_prompt"
+
+        if claude -p --model "$MODEL" --no-session-persistence \
+            --allowedTools "$CLAUDE_TOOLS" \
+            < "$commit_prompt" > /dev/null 2>&1; then
+
+            if [[ "$(git rev-parse HEAD)" != "$pre_head" ]]; then
+                echo "  [done] Applied cleanly"
+                mkdir -p "$INPUT_DIR/applied"
+                [[ -f "$INPUT_DIR/${module}.md" ]] && mv "$INPUT_DIR/${module}.md" "$INPUT_DIR/applied/"
+                APPLIED=$((APPLIED + 1))
+            else
+                echo "  [FAIL] Claude did not commit"
+                git reset --hard HEAD 2>/dev/null
+                CHERRY_FAILED=$((CHERRY_FAILED + 1))
+            fi
         else
-            echo "  [FAIL] Pre-commit hooks rejected the commit"
+            echo "  [FAIL] Claude exited with error"
             git reset --hard HEAD 2>/dev/null
             CHERRY_FAILED=$((CHERRY_FAILED + 1))
         fi
+
+        rm -f "$commit_prompt"
         continue
     fi
 
@@ -323,9 +355,15 @@ Rules:
 - Resolve ALL conflict markers (<<<<<<< / ======= / >>>>>>>)
 - Keep changes from BOTH sides — do not discard either
 - Do NOT make any changes beyond resolving the conflicts
-- Do NOT run any git commands — just edit the files
 
 INSTRUCTIONS
+        cat <<COMMIT_INSTRUCTIONS
+After resolving, stage and commit: git add -A && git commit -m "audit: fix $module (conflict resolved)"
+Do NOT use \$() or heredocs — just a plain -m "message" string.
+
+If the pre-commit hooks fail, read the error output, fix the issues, and retry the commit.
+COMMIT_INSTRUCTIONS
+        echo ""
         echo "## Conflicted Files"
         echo ""
         for cf in $conflicted_files; do
@@ -342,19 +380,17 @@ INSTRUCTIONS
     } > "$resolve_prompt"
 
     if claude -p --model "$MODEL" --no-session-persistence \
-        --allowedTools "Edit Read Glob Grep" \
+        --allowedTools "$CLAUDE_TOOLS" \
         < "$resolve_prompt" > /dev/null 2>&1; then
 
-        # Stage resolved files and commit (hooks run here)
-        git add -A
-        if git commit -m "audit: fix $module (conflict resolved)" 2>/dev/null; then
+        if [[ "$(git rev-parse HEAD)" != "$pre_head" ]]; then
             echo "  [done] Conflict resolved and committed"
             mkdir -p "$INPUT_DIR/applied"
             [[ -f "$INPUT_DIR/${module}.md" ]] && mv "$INPUT_DIR/${module}.md" "$INPUT_DIR/applied/"
             APPLIED=$((APPLIED + 1))
             CONFLICTS_RESOLVED=$((CONFLICTS_RESOLVED + 1))
         else
-            echo "  [FAIL] Pre-commit hooks rejected the resolution"
+            echo "  [FAIL] Claude did not commit after resolution"
             git reset --hard HEAD 2>/dev/null
             CHERRY_FAILED=$((CHERRY_FAILED + 1))
         fi
