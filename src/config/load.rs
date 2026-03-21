@@ -98,6 +98,7 @@ impl Config {
                 .zip(config_dir.to_str())
                 .is_some_and(|(prefix, dir)| dir.starts_with(prefix));
             if is_agent_subdir && global_path.exists() {
+                tracing::debug!(path = %global_path.display(), "using global providers.toml for agent subdir");
                 Some(load_providers(&global_path)?)
             } else {
                 return Err(ResiduumError::Config(format!(
@@ -113,6 +114,13 @@ impl Config {
             config_dir,
         )?;
         cfg.config_dir = config_dir.to_path_buf();
+        tracing::info!(
+            config = %config_path.display(),
+            providers = %providers_path.display(),
+            main_model = %cfg.main.first().map(|p| p.model.to_string()).unwrap_or_default(),
+            timezone = %cfg.timezone,
+            "config loaded"
+        );
         Ok(cfg)
     }
 

@@ -92,6 +92,12 @@ pub(super) fn bootstrap_at(dir: &Path) -> Result<(), ResiduumError> {
         ))
     })?;
 
+    tracing::debug!(
+        config_example = %example_path.display(),
+        providers_example = %providers_example_path.display(),
+        "regenerated example config files"
+    );
+
     // workspace/config/ directory with starter files
     let ws_config_dir = dir.join("workspace").join("config");
     if !ws_config_dir.exists() {

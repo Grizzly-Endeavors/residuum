@@ -175,6 +175,7 @@ fn resolve_gateway_config(section: Option<&GatewayConfigFile>) -> GatewayConfig 
 
     // Env > file > default for bind
     if let Ok(val) = std::env::var("RESIDUUM_GATEWAY_BIND") {
+        tracing::debug!(env = "RESIDUUM_GATEWAY_BIND", value = %val, "gateway bind overridden by env var");
         cfg.bind = val;
     } else if let Some(val) = section.and_then(|s| s.bind.clone()) {
         cfg.bind = val;
@@ -183,7 +184,14 @@ fn resolve_gateway_config(section: Option<&GatewayConfigFile>) -> GatewayConfig 
     // Env > file > default for port
     match std::env::var("RESIDUUM_GATEWAY_PORT") {
         Ok(val) => match val.parse::<u16>() {
-            Ok(p) => cfg.port = p,
+            Ok(p) => {
+                tracing::debug!(
+                    env = "RESIDUUM_GATEWAY_PORT",
+                    value = p,
+                    "gateway port overridden by env var"
+                );
+                cfg.port = p;
+            }
             Err(e) => {
                 tracing::warn!(val, error = %e, "RESIDUUM_GATEWAY_PORT is not a valid port");
             }
@@ -219,7 +227,8 @@ fn resolve_discord_config(
         (_, Some(tok)) => Some(DiscordConfig { token: tok }),
         (Some(_), None) => {
             tracing::warn!(
-                "[discord] section present but no token found; set RESIDUUM_DISCORD_TOKEN or token in config"
+                section = "discord",
+                "section present but no token found; set RESIDUUM_DISCORD_TOKEN or token in config"
             );
             None
         }
@@ -270,7 +279,8 @@ fn resolve_cloud_config(
         })
     } else {
         tracing::warn!(
-            "[cloud] section present but no token found; set RESIDUUM_CLOUD_TOKEN or token in config"
+            section = "cloud",
+            "section present but no token found; set RESIDUUM_CLOUD_TOKEN or token in config"
         );
         None
     }
@@ -297,7 +307,8 @@ fn resolve_telegram_config(
         (_, Some(tok)) => Some(TelegramConfig { token: tok }),
         (Some(_), None) => {
             tracing::warn!(
-                "[telegram] section present but no token found; set RESIDUUM_TELEGRAM_TOKEN or token in config"
+                section = "telegram",
+                "section present but no token found; set RESIDUUM_TELEGRAM_TOKEN or token in config"
             );
             None
         }

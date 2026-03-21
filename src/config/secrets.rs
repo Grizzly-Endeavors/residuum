@@ -56,7 +56,9 @@ impl SecretStore {
         let plaintext = decrypt(&ciphertext, &key)?;
         let table = parse_secrets_toml(&plaintext)?;
 
-        Ok(Self { secrets: table })
+        let store = Self { secrets: table };
+        tracing::debug!(count = store.secrets.len(), "secrets loaded");
+        Ok(store)
     }
 
     /// Get a secret by name.
@@ -155,6 +157,8 @@ fn load_or_create_key(config_dir: &Path) -> Result<[u8; 32], ResiduumError> {
 
     // Set permissions to 0o600 (owner-only read/write)
     set_file_mode_600(&key_path)?;
+
+    tracing::info!(path = %key_path.display(), "generated new encryption key");
 
     Ok(key)
 }
