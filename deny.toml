@@ -6,6 +6,7 @@ db-path = "~/.cargo/advisory-db"
 db-urls = ["https://github.com/rustsec/advisory-db"]
 ignore = [
     "RUSTSEC-2024-0384", # `instant` is unmaintained — transitive dep, recommend `web-time`
+    "RUSTSEC-2026-0049", # rustls-webpki CRL matching — transitive via serenity/tokio-tungstenite/rustls 0.22; no patched 0.102.x available
 ]
 
 [licenses]

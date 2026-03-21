@@ -38,6 +38,7 @@ impl ActionStore {
                             path.display()
                         ))
                     })?;
+                debug!(path = %path.display(), count = actions.len(), "loaded scheduled actions");
                 Ok(Self { actions, path })
             }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Self {
@@ -105,6 +106,7 @@ impl ActionStore {
                 ))
             })?;
 
+        debug!(path = %self.path.display(), count = self.actions.len(), "saved scheduled actions");
         Ok(())
     }
 
@@ -114,7 +116,6 @@ impl ActionStore {
     #[must_use]
     pub fn new_empty(path: impl Into<PathBuf>) -> Self {
         let path = path.into();
-        warn!(path = %path.display(), "starting with empty actions store — any previously scheduled actions are unavailable");
         Self {
             actions: Vec::new(),
             path,
@@ -129,6 +130,7 @@ impl ActionStore {
 
     /// Add an action to the store (does not save; call [`save`] separately).
     pub fn add(&mut self, action: ScheduledAction) {
+        debug!(id = %action.id, name = %action.name, run_at = %action.run_at, "scheduled action added");
         self.actions.push(action);
     }
 
@@ -137,7 +139,9 @@ impl ActionStore {
         let before = self.actions.len();
         self.actions.retain(|a| a.id != id);
         let found = self.actions.len() < before;
-        if !found {
+        if found {
+            debug!(id = %id, "scheduled action removed");
+        } else {
             warn!(id = %id, "attempted to remove action that does not exist in store");
         }
         found
@@ -164,7 +168,10 @@ impl ActionStore {
         }
 
         self.actions = remaining;
-        debug!(count = due.len(), "draining due actions");
+        if !due.is_empty() {
+            let ids: Vec<&str> = due.iter().map(|a| a.id.as_str()).collect();
+            debug!(count = due.len(), ids = ?ids, "draining due actions");
+        }
         due
     }
 
