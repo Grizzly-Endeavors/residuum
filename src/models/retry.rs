@@ -1,6 +1,4 @@
 //! Retry logic with exponential backoff for model provider calls.
-//!
-//! Implemented and tested but not yet wired up to model providers. See notes.md.
 
 use std::time::Duration;
 

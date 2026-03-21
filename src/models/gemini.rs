@@ -57,12 +57,6 @@ impl GeminiClient {
         }
     }
 
-    /// Deserialize a Gemini API response body from text.
-    fn parse_response_body(text: &str) -> Result<GeminiResponse, ModelError> {
-        serde_json::from_str(text)
-            .map_err(|e| ModelError::Parse(format!("failed to parse gemini response: {e}")))
-    }
-
     /// Parse a successful Gemini response into our generic `ModelResponse`.
     fn parse_response(gemini_response: GeminiResponse) -> Result<ModelResponse, ModelError> {
         let candidate = gemini_response
@@ -363,7 +357,9 @@ impl ModelProvider for GeminiClient {
                     .text()
                     .await
                     .map_err(|e| map_request_error(e, timeout_secs))?;
-                let result = Self::parse_response(Self::parse_response_body(&text)?)?;
+                let result = Self::parse_response(serde_json::from_str(&text).map_err(|e| {
+                    ModelError::Parse(format!("failed to parse gemini response: {e}"))
+                })?)?;
                 info!(
                     model = %model,
                     content_len = result.content.len(),
@@ -618,15 +614,12 @@ impl GeminiEmbeddingClient {
         }
     }
 
-    async fn embed_single(
-        &self,
-        text: String,
-        base_url: String,
-        api_key: String,
-        model: String,
-        http: SharedHttpClient,
-        timeout_secs: u64,
-    ) -> Result<EmbeddingResponse, ModelError> {
+    async fn embed_single(&self, text: String) -> Result<EmbeddingResponse, ModelError> {
+        let base_url = self.base_url.clone();
+        let api_key = self.api_key.clone();
+        let model = self.model.clone();
+        let http = self.http.clone();
+        let timeout_secs = self.http.timeout_secs();
         with_retry(&self.retry, || {
             let url = format!("{base_url}/models/{model}:embedContent?key={api_key}");
             let request_body = GeminiEmbedContentRequest {
@@ -672,15 +665,12 @@ impl GeminiEmbeddingClient {
         .await
     }
 
-    async fn embed_batch(
-        &self,
-        owned_texts: Vec<String>,
-        base_url: String,
-        api_key: String,
-        model: String,
-        http: SharedHttpClient,
-        timeout_secs: u64,
-    ) -> Result<EmbeddingResponse, ModelError> {
+    async fn embed_batch(&self, owned_texts: Vec<String>) -> Result<EmbeddingResponse, ModelError> {
+        let base_url = self.base_url.clone();
+        let api_key = self.api_key.clone();
+        let model = self.model.clone();
+        let http = self.http.clone();
+        let timeout_secs = self.http.timeout_secs();
         with_retry(&self.retry, || {
             let url = format!("{base_url}/models/{model}:batchEmbedContents?key={api_key}");
             let requests: Vec<GeminiEmbedContentRequest> = owned_texts
@@ -746,21 +736,13 @@ impl EmbeddingProvider for GeminiEmbeddingClient {
             });
         }
 
-        let base_url = self.base_url.clone();
-        let api_key = self.api_key.clone();
-        let model = self.model.clone();
-        let http = self.http.clone();
-        let timeout_secs = self.http.timeout_secs();
-
         if texts.len() == 1 {
             // Safe: we checked `texts.is_empty()` above
             let text = texts.first().map(|t| (*t).to_string()).unwrap_or_default();
-            self.embed_single(text, base_url, api_key, model, http, timeout_secs)
-                .await
+            self.embed_single(text).await
         } else {
             let owned_texts: Vec<String> = texts.iter().map(|t| (*t).to_string()).collect();
-            self.embed_batch(owned_texts, base_url, api_key, model, http, timeout_secs)
-                .await
+            self.embed_batch(owned_texts).await
         }
     }
 
