@@ -72,7 +72,7 @@ impl MacosNativeChannel {
 
         let macos_bridge = bridge::MacosBridge::new(config.clone())?;
 
-        permissions::check_and_request(&macos_bridge).await;
+        permissions::check_and_request().await;
 
         let aggregator_handle = throttle::BatchAggregator::spawn(rx, macos_bridge, config);
 

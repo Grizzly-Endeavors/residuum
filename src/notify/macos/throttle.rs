@@ -33,11 +33,9 @@ impl BatchAggregator {
         let throttle_duration = Duration::from_secs(config.throttle_window_secs);
         let mut buffer: Vec<NotificationEvent> = Vec::new();
         let mut window_deadline: Option<Instant> = None;
-        // Far future sentinel for select! when no window is active
-        let far_future = Instant::now() + Duration::from_secs(86400 * 365);
 
         loop {
-            let deadline = window_deadline.unwrap_or(far_future);
+            let deadline = window_deadline.unwrap_or(Instant::now() + Duration::MAX);
             tokio::select! {
                 maybe_notif = rx.recv() => {
                     if let Some(notif) = maybe_notif {
@@ -117,7 +115,7 @@ async fn deliver_individual(
         subtitle: notif.title.replace('_', " "),
         body: truncate_body(&notif.content, 200),
     };
-    let category = super::categories::resolve_category(&notif.source, config.default_category);
+    let category = config.default_category;
 
     if let Err(e) = bridge
         .post_notification(
@@ -221,46 +219,5 @@ mod tests {
         ];
         let body = build_summary_body(&buffer);
         assert_eq!(body, "email_check\ndeploy_status\nbackup");
-    }
-
-    // ── Flush decision logic tests ──────────────────────────────────────
-
-    // These test the flush decision boundaries without calling macOS APIs.
-    // The actual flush() function is tested via integration tests.
-
-    #[test]
-    fn flush_decision_1_to_3_delivers_individually() {
-        for count in 1..=3 {
-            assert!(count <= 3, "1-3 items should deliver individually");
-        }
-    }
-
-    #[test]
-    fn flush_decision_4_to_9_delivers_top_2_plus_summary() {
-        for count in 4..=9 {
-            assert!(
-                count > 3 && count < 10,
-                "4-9 items should deliver top 2 + summary"
-            );
-            // max 3 notifications total: 2 individual + 1 summary
-            let total_notifications = 2 + 1;
-            assert_eq!(
-                total_notifications, 3,
-                "should produce exactly 3 notifications"
-            );
-        }
-    }
-
-    #[test]
-    fn flush_decision_10_plus_delivers_top_2_plus_summary() {
-        for count in [10, 20, 100] {
-            assert!(count >= 10, "10+ items should deliver top 2 + summary");
-            // max 3 notifications total per SC-004
-            let total_notifications = 2 + 1;
-            assert_eq!(
-                total_notifications, 3,
-                "should produce exactly 3 notifications (SC-004)"
-            );
-        }
     }
 }

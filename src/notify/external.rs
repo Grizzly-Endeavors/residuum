@@ -133,8 +133,13 @@ impl NotificationChannel for WebhookChannel {
         });
 
         let mut builder = match self.method.to_uppercase().as_str() {
+            "POST" => self.client.post(&self.url),
             "PUT" => self.client.put(&self.url),
-            _ => self.client.post(&self.url),
+            m => anyhow::bail!(
+                "unsupported webhook method '{}' for channel '{}'",
+                m,
+                self.channel_name
+            ),
         };
 
         for (key, val) in &self.headers {

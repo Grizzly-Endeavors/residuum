@@ -4,8 +4,6 @@ use std::fmt;
 
 use serde::{Deserialize, Serialize};
 
-use crate::bus::EventTrigger;
-
 /// Notification category mapped to macOS `UNNotificationCategory` identifiers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -92,22 +90,6 @@ pub fn parse_priority(s: &str) -> anyhow::Result<MacosInterruptionLevel> {
         "time_sensitive" => Ok(MacosInterruptionLevel::TimeSensitive),
         _ => anyhow::bail!("unknown macOS notification priority: {s}"),
     }
-}
-
-#[must_use]
-pub fn default_category_for_source(source: &EventTrigger) -> MacosCategory {
-    match source {
-        EventTrigger::Pulse | EventTrigger::Agent => MacosCategory::BackgroundResults,
-        EventTrigger::Action => MacosCategory::Reminders,
-        EventTrigger::Webhook(_) => MacosCategory::BackgroundResults,
-    }
-}
-
-#[must_use]
-pub fn resolve_category(_source: &EventTrigger, channel_default: MacosCategory) -> MacosCategory {
-    // Channel config default takes precedence over source-based mapping
-    // when explicitly configured. Since we always have a default, use it.
-    channel_default
 }
 
 /// Action buttons displayed on notification banners.
@@ -300,28 +282,6 @@ mod tests {
         assert!(parse_priority("critical").is_err());
         assert!(parse_priority("").is_err());
         assert!(parse_priority("ACTIVE").is_err());
-    }
-
-    // ── EventTrigger-to-Category mapping tests ───────────────────────────
-
-    #[test]
-    fn default_category_for_source_mapping() {
-        assert_eq!(
-            default_category_for_source(&EventTrigger::Pulse),
-            MacosCategory::BackgroundResults
-        );
-        assert_eq!(
-            default_category_for_source(&EventTrigger::Action),
-            MacosCategory::Reminders
-        );
-        assert_eq!(
-            default_category_for_source(&EventTrigger::Agent),
-            MacosCategory::BackgroundResults
-        );
-        assert_eq!(
-            default_category_for_source(&EventTrigger::Webhook("github".to_string())),
-            MacosCategory::BackgroundResults
-        );
     }
 
     // ── MacosNotificationAction tests ───────────────────────────────────
