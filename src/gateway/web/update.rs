@@ -25,11 +25,8 @@ pub(crate) struct UpdateStatusResponse {
     checking: bool,
 }
 
-/// `GET /api/update/status` — return current update state.
-pub(crate) async fn api_update_status(
-    State(state): State<UpdateApiState>,
-) -> Json<UpdateStatusResponse> {
-    let s = state.update_status.read().await;
+async fn read_update_status(status: &SharedUpdateStatus) -> Json<UpdateStatusResponse> {
+    let s = status.read().await;
     Json(UpdateStatusResponse {
         current: s.current.clone(),
         latest: s.latest.clone(),
@@ -39,19 +36,19 @@ pub(crate) async fn api_update_status(
     })
 }
 
+/// `GET /api/update/status` — return current update state.
+pub(crate) async fn api_update_status(
+    State(state): State<UpdateApiState>,
+) -> Json<UpdateStatusResponse> {
+    read_update_status(&state.update_status).await
+}
+
 /// `POST /api/update/check` — trigger an immediate check, return refreshed status.
 pub(crate) async fn api_update_check(
     State(state): State<UpdateApiState>,
 ) -> Json<UpdateStatusResponse> {
     crate::update::check_for_update(&state.update_status).await;
-    let s = state.update_status.read().await;
-    Json(UpdateStatusResponse {
-        current: s.current.clone(),
-        latest: s.latest.clone(),
-        update_available: s.update_available,
-        last_checked: s.last_checked.map(|dt| dt.to_rfc3339()),
-        checking: s.checking,
-    })
+    read_update_status(&state.update_status).await
 }
 
 /// `POST /api/update/apply` — download, install, then restart.
@@ -74,14 +71,7 @@ pub(crate) async fn api_update_apply(
     // Signal the event loop to restart
     state.restart_tx.send(()).await.ok();
 
-    let s = state.update_status.read().await;
-    Ok(Json(UpdateStatusResponse {
-        current: s.current.clone(),
-        latest: s.latest.clone(),
-        update_available: s.update_available,
-        last_checked: s.last_checked.map(|dt| dt.to_rfc3339()),
-        checking: s.checking,
-    }))
+    Ok(read_update_status(&state.update_status).await)
 }
 
 /// `POST /api/update/restart` — send restart signal only (binary already replaced).

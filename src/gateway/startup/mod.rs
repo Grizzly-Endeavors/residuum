@@ -375,9 +375,9 @@ pub(crate) async fn initialize(
         tools::init_tool_registry(cfg, &layout, &mem, tz, &tool_deps);
 
     let agent = tools::create_agent(
-        cfg,
         CreateAgentArgs {
             provider: providers.provider,
+            options: providers.options,
             tools,
             tool_filter,
             identity,

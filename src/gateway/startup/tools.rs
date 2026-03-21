@@ -33,6 +33,7 @@ pub(super) struct ToolRegistryDeps<'a> {
 /// Arguments for creating the agent, bundled to stay under the argument limit.
 pub(super) struct CreateAgentArgs {
     pub provider: Box<dyn crate::models::ModelProvider>,
+    pub options: crate::models::CompletionOptions,
     pub tools: ToolRegistry,
     pub tool_filter: crate::tools::SharedToolFilter,
     pub identity: IdentityFiles,
@@ -128,25 +129,11 @@ pub(super) fn init_tool_registry(
 
 /// Create the agent, load observations, recent context, and restore messages.
 pub(super) async fn create_agent(
-    cfg: &Config,
     args: CreateAgentArgs,
     mcp_registry: &SharedMcpRegistry,
     tz: chrono_tz::Tz,
     layout: &WorkspaceLayout,
 ) -> Agent {
-    let web_search =
-        cfg.web_search
-            .provider_native
-            .as_ref()
-            .map(|pn| crate::models::WebSearchNativeConfig {
-                max_uses: pn.max_uses,
-                allowed_domains: pn.allowed_domains.clone(),
-                blocked_domains: pn.blocked_domains.clone(),
-                search_context_size: pn.search_context_size.clone(),
-                exclude_domains: pn.exclude_domains.clone(),
-            });
-    let mut options = cfg.completion_options_for_role("main");
-    options.web_search = web_search;
     let mut agent = Agent::new(
         args.provider,
         args.tools,
@@ -154,7 +141,7 @@ pub(super) async fn create_agent(
         Arc::clone(mcp_registry),
         args.identity,
         AgentConfig {
-            options,
+            options: args.options,
             tz,
             inbox_dir: layout.inbox_dir(),
         },

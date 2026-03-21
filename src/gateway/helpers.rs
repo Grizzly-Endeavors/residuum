@@ -1,7 +1,21 @@
 //! Gateway-specific helpers: workspace naming and project context labels.
 
+use crate::bus::{NoticeEvent, NotifyName, Publisher, SYSTEM_CHANNEL, topics};
 use crate::projects::activation::SharedProjectState;
 use crate::workspace::layout::WorkspaceLayout;
+
+/// Publish a notice to the system notification channel.
+pub(super) async fn publish_notice(publisher: &Publisher, message: String) {
+    if let Err(e) = publisher
+        .publish(
+            topics::Notification(NotifyName::from(SYSTEM_CHANNEL)),
+            NoticeEvent { message },
+        )
+        .await
+    {
+        tracing::warn!(error = %e, "failed to publish notice to bus");
+    }
+}
 
 /// Derive the workspace name from the root directory for use as project context.
 pub(super) fn workspace_name(layout: &WorkspaceLayout) -> String {

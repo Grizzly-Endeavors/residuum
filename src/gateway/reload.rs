@@ -4,8 +4,8 @@ use std::sync::Arc;
 
 use tokio::time::Duration;
 
+use super::helpers::publish_notice;
 use crate::background::spawn_context::SpawnContext;
-use crate::bus::{NoticeEvent, NotifyName, Publisher, SYSTEM_CHANNEL, topics};
 use crate::config::Config;
 use crate::gateway::startup;
 use crate::models::CompletionOptions;
@@ -184,16 +184,24 @@ pub fn rollback_config(config_dir: &std::path::Path) -> bool {
     any_restored
 }
 
-/// Publish a notice to the system notification channel.
-async fn publish_notice(publisher: &Publisher, message: String) {
-    if let Err(e) = publisher
-        .publish(
-            topics::Notification(NotifyName::from(SYSTEM_CHANNEL)),
-            NoticeEvent { message },
-        )
-        .await
-    {
-        tracing::warn!(error = %e, "failed to publish notice to bus");
+/// Shut down an adapter task and wait up to 5 seconds for it to stop.
+async fn shutdown_adapter(
+    shutdown_tx: &mut Option<tokio::sync::watch::Sender<bool>>,
+    handle: &mut Option<tokio::task::JoinHandle<()>>,
+    name: &str,
+) {
+    if let Some(tx) = shutdown_tx.take() {
+        tx.send(true).ok();
+    }
+    if let Some(h) = handle.take() {
+        if tokio::time::timeout(Duration::from_secs(5), h)
+            .await
+            .is_ok()
+        {
+            tracing::info!("{name} adapter stopped");
+        } else {
+            tracing::warn!("{name} adapter shutdown timed out after 5s");
+        }
     }
 }
 
@@ -364,7 +372,8 @@ async fn reload_gateway(rt: &mut GatewayRuntime, new_cfg: &Config) {
         Ok(listener) => {
             rt.shutdown_tx.send(true).ok();
 
-            let (new_shutdown_tx, mut new_shutdown_rx) = tokio::sync::watch::channel(false);
+            let (new_shutdown_tx, new_shutdown_rx) = tokio::sync::watch::channel(false);
+            drop(new_shutdown_rx);
 
             let state = GatewayState {
                 reload_tx: rt.reload_tx.clone(),
@@ -394,16 +403,11 @@ async fn reload_gateway(rt: &mut GatewayRuntime, new_cfg: &Config) {
                 update_api_state,
             );
 
-            let new_handle = tokio::spawn(async move {
-                if let Err(e) = axum::serve(listener, app)
-                    .with_graceful_shutdown(async move {
-                        new_shutdown_rx.wait_for(|v| *v).await.ok();
-                    })
-                    .await
-                {
-                    tracing::error!(error = %e, "gateway server error after rebind");
-                }
-            });
+            let new_handle = crate::gateway::event_loop::spawn_server_with_listener(
+                listener,
+                app,
+                &new_shutdown_tx,
+            );
 
             rt.server_handle = new_handle;
             rt.shutdown_tx = new_shutdown_tx;
@@ -467,19 +471,12 @@ async fn reload_agent_abilities(rt: &mut GatewayRuntime, new_cfg: &Config) {
 
 /// Stop the existing Discord adapter (if running) and start a new one if configured.
 async fn reload_discord_adapter(rt: &mut GatewayRuntime, new_cfg: &Config) {
-    if let Some(tx) = rt.discord_shutdown_tx.take() {
-        tx.send(true).ok();
-    }
-    if let Some(handle) = rt.discord_handle.take() {
-        if tokio::time::timeout(Duration::from_secs(5), handle)
-            .await
-            .is_ok()
-        {
-            tracing::info!("discord adapter stopped");
-        } else {
-            tracing::warn!("discord adapter shutdown timed out after 5s");
-        }
-    }
+    shutdown_adapter(
+        &mut rt.discord_shutdown_tx,
+        &mut rt.discord_handle,
+        "discord",
+    )
+    .await;
 
     if let Some(ref discord_cfg) = new_cfg.discord {
         let (tx, rx) = tokio::sync::watch::channel(false);
@@ -545,19 +542,12 @@ async fn reload_tunnel(rt: &mut GatewayRuntime, new_cfg: &Config) {
 
 /// Stop the existing Telegram adapter (if running) and start a new one if configured.
 async fn reload_telegram_adapter(rt: &mut GatewayRuntime, new_cfg: &Config) {
-    if let Some(tx) = rt.telegram_shutdown_tx.take() {
-        tx.send(true).ok();
-    }
-    if let Some(handle) = rt.telegram_handle.take() {
-        if tokio::time::timeout(Duration::from_secs(5), handle)
-            .await
-            .is_ok()
-        {
-            tracing::info!("telegram adapter stopped");
-        } else {
-            tracing::warn!("telegram adapter shutdown timed out after 5s");
-        }
-    }
+    shutdown_adapter(
+        &mut rt.telegram_shutdown_tx,
+        &mut rt.telegram_handle,
+        "telegram",
+    )
+    .await;
 
     if let Some(ref telegram_cfg) = new_cfg.telegram {
         let (tx, rx) = tokio::sync::watch::channel(false);

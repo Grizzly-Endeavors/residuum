@@ -2,8 +2,9 @@
 
 use std::sync::Arc;
 
+use super::helpers::publish_notice;
 use crate::agent::Agent;
-use crate::bus::{ErrorEvent, NoticeEvent, NotifyName, Publisher, SYSTEM_CHANNEL, topics};
+use crate::bus::{ErrorEvent, NotifyName, Publisher, SYSTEM_CHANNEL, topics};
 use crate::memory::log_store::load_observation_log;
 use crate::memory::observer::{ObserveAction, ObserveResult, Observer};
 use crate::memory::recent_context::{RecentContext, save_recent_context};
@@ -266,19 +267,6 @@ async fn run_reflector_check(reflector: &Reflector, layout: &WorkspaceLayout) ->
         }
     } else {
         false
-    }
-}
-
-/// Publish a notice to the system notification channel.
-async fn publish_notice(publisher: &Publisher, message: String) {
-    if let Err(e) = publisher
-        .publish(
-            topics::Notification(NotifyName::from(SYSTEM_CHANNEL)),
-            NoticeEvent { message },
-        )
-        .await
-    {
-        tracing::warn!(error = %e, "failed to publish notice to bus");
     }
 }
 
