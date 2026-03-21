@@ -1,7 +1,8 @@
 <script lang="ts">
   import type { ConfigFields } from "../../lib/settings-toml";
 
-  let { fields = $bindable() }: { fields: ConfigFields } = $props();
+  let { fields = $bindable(), simple = false }: { fields: ConfigFields; simple?: boolean } =
+    $props();
 </script>
 
 <div class="settings-section">
@@ -49,73 +50,75 @@
     </div>
   </div>
 
-  <div class="settings-group">
-    <div class="settings-group-label">Search Tuning</div>
-    <div class="settings-field">
-      <label for="mem-vector-weight">Vector Weight</label>
-      <input
-        id="mem-vector-weight"
-        type="number"
-        step="0.05"
-        bind:value={fields.search_vector_weight}
-        placeholder="Default: 0.6"
-      />
-      <span class="field-hint">Weight for vector similarity in hybrid search (0.0-1.0).</span>
-    </div>
-    <div class="settings-field">
-      <label for="mem-text-weight">Text Weight</label>
-      <input
-        id="mem-text-weight"
-        type="number"
-        step="0.05"
-        bind:value={fields.search_text_weight}
-        placeholder="Default: 0.4"
-      />
-      <span class="field-hint">Weight for BM25 text scores in hybrid search (0.0-1.0).</span>
-    </div>
-    <div class="settings-field">
-      <label for="mem-min-score">Min Score</label>
-      <input
-        id="mem-min-score"
-        type="number"
-        step="0.01"
-        bind:value={fields.search_min_score}
-        placeholder="Default: 0.3"
-      />
-      <span class="field-hint">Minimum hybrid score threshold for results.</span>
-    </div>
-    <div class="settings-field">
-      <label for="mem-candidate-multiplier">Candidate Multiplier</label>
-      <input
-        id="mem-candidate-multiplier"
-        type="number"
-        bind:value={fields.search_candidate_multiplier}
-        placeholder="Default: 3"
-      />
-      <span class="field-hint">Multiplier on limit for candidate retrieval before merge.</span>
-    </div>
-    <div class="settings-field">
-      <label>
-        <span class="toggle-switch">
-          <input type="checkbox" bind:checked={fields.search_temporal_decay} />
-          <span class="toggle-slider"></span>
-        </span>
-        Temporal Decay
-      </label>
-      <span class="field-hint">Reduce relevance of older memories over time.</span>
-    </div>
-    {#if fields.search_temporal_decay}
+  {#if !simple}
+    <div class="settings-group">
+      <div class="settings-group-label">Search Tuning</div>
       <div class="settings-field">
-        <label for="mem-decay-half-life">Decay Half-Life (days)</label>
+        <label for="mem-vector-weight">Vector Weight</label>
         <input
-          id="mem-decay-half-life"
+          id="mem-vector-weight"
           type="number"
-          step="1"
-          bind:value={fields.search_temporal_decay_half_life_days}
-          placeholder="Default: 30"
+          step="0.05"
+          bind:value={fields.search_vector_weight}
+          placeholder="Default: 0.6"
         />
-        <span class="field-hint">Number of days for memory relevance to halve.</span>
+        <span class="field-hint">Weight for vector similarity in hybrid search (0.0-1.0).</span>
       </div>
-    {/if}
-  </div>
+      <div class="settings-field">
+        <label for="mem-text-weight">Text Weight</label>
+        <input
+          id="mem-text-weight"
+          type="number"
+          step="0.05"
+          bind:value={fields.search_text_weight}
+          placeholder="Default: 0.4"
+        />
+        <span class="field-hint">Weight for BM25 text scores in hybrid search (0.0-1.0).</span>
+      </div>
+      <div class="settings-field">
+        <label for="mem-min-score">Min Score</label>
+        <input
+          id="mem-min-score"
+          type="number"
+          step="0.01"
+          bind:value={fields.search_min_score}
+          placeholder="Default: 0.3"
+        />
+        <span class="field-hint">Minimum hybrid score threshold for results.</span>
+      </div>
+      <div class="settings-field">
+        <label for="mem-candidate-multiplier">Candidate Multiplier</label>
+        <input
+          id="mem-candidate-multiplier"
+          type="number"
+          bind:value={fields.search_candidate_multiplier}
+          placeholder="Default: 3"
+        />
+        <span class="field-hint">Multiplier on limit for candidate retrieval before merge.</span>
+      </div>
+      <div class="settings-field">
+        <label>
+          <span class="toggle-switch">
+            <input type="checkbox" bind:checked={fields.search_temporal_decay} />
+            <span class="toggle-slider"></span>
+          </span>
+          Temporal Decay
+        </label>
+        <span class="field-hint">Reduce relevance of older memories over time.</span>
+      </div>
+      {#if fields.search_temporal_decay}
+        <div class="settings-field">
+          <label for="mem-decay-half-life">Decay Half-Life (days)</label>
+          <input
+            id="mem-decay-half-life"
+            type="number"
+            step="1"
+            bind:value={fields.search_temporal_decay_half_life_days}
+            placeholder="Default: 30"
+          />
+          <span class="field-hint">Number of days for memory relevance to halve.</span>
+        </div>
+      {/if}
+    </div>
+  {/if}
 </div>

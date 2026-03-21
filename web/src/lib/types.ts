@@ -121,15 +121,9 @@ export interface ValidateResponse {
 
 // ── Settings types ───────────────────────────────────────────────────
 
-export type SettingsSection =
-  | "runtime"
-  | "providers"
-  | "memory"
-  | "integrations"
-  | "cloud"
-  | "mcp"
-  | "web_search"
-  | "update";
+export type SettingsSection = "runtime" | "providers" | "memory" | "integrations" | "mcp";
+
+export type SettingsMode = "simple" | "advanced" | "raw";
 
 export interface UpdateStatusResponse {
   current: string;

@@ -30,6 +30,41 @@
   gap: 8px;
 }
 
+/* ── Mode selector (segmented control) ────────────────────────────── */
+
+.settings-mode-selector {
+  display: flex;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+
+.settings-mode-btn {
+  padding: 4px 12px;
+  font-family: var(--font-body);
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--text-muted);
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  transition: all 0.3s ease;
+}
+
+.settings-mode-btn:not(:last-child) {
+  border-right: 1px solid var(--border);
+}
+
+.settings-mode-btn:hover {
+  color: var(--text);
+  background: var(--bg-raised);
+}
+
+.settings-mode-btn.active {
+  color: var(--ember);
+  background: var(--ember-glow);
+}
+
 .settings-body {
   display: flex;
   flex: 1;
