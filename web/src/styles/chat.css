@@ -545,6 +545,17 @@
   display: none;
 }
 
+/* ── Drag-and-drop overlay ────────────────────────────────────────────── */
+
+.chat-input-wrap.dragging {
+  border: 1px dashed var(--ember);
+  background: var(--ember-glow);
+  border-radius: var(--radius);
+  transition:
+    border 0.3s ease,
+    background 0.3s ease;
+}
+
 /* ── Image rejection message ──────────────────────────────────────────── */
 
 .image-rejection-msg {

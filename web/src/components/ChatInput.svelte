@@ -19,6 +19,7 @@
   let pendingImages = $state<ImageAttachment[]>([]);
   let rejectionMsg = $state("");
   let rejectionTimer: ReturnType<typeof setTimeout> | undefined;
+  let dragging = $state(false);
 
   function showRejection(msg: string) {
     rejectionMsg = msg;
@@ -175,6 +176,24 @@
     }
   }
 
+  function handleDragOver(e: DragEvent) {
+    e.preventDefault();
+    if (e.dataTransfer) e.dataTransfer.dropEffect = "copy";
+    dragging = true;
+  }
+
+  function handleDragLeave(e: DragEvent) {
+    if (containerEl && !containerEl.contains(e.relatedTarget as Node)) {
+      dragging = false;
+    }
+  }
+
+  function handleDrop(e: DragEvent) {
+    e.preventDefault();
+    dragging = false;
+    if (e.dataTransfer?.files.length) void handleFiles(e.dataTransfer.files);
+  }
+
   function submit() {
     const text = value.trim();
     if ((!text && !pendingImages.length) || disabled) return;
@@ -210,7 +229,14 @@
     {#if showMenu && filtered.length > 0}
       <CommandMenu commands={filtered} selectedIndex={menuIndex} onSelect={handleCommandSelect} />
     {/if}
-    <div class="chat-input-wrap">
+    <!-- svelte-ignore a11y_no_static_element_interactions -->
+    <div
+      class="chat-input-wrap"
+      class:dragging
+      ondragover={handleDragOver}
+      ondragleave={handleDragLeave}
+      ondrop={handleDrop}
+    >
       {#if rejectionMsg}
         <div class="image-rejection-msg">{rejectionMsg}</div>
       {/if}
