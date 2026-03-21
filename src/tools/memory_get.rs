@@ -92,6 +92,7 @@ impl Tool for MemoryGetTool {
                 )));
             }
             Err(e) => {
+                tracing::error!(error = %e, episode_id = %episode_id, "failed to search for episode");
                 return Ok(ToolResult::error(format!(
                     "failed to search for episode: {e}"
                 )));
@@ -100,9 +101,12 @@ impl Tool for MemoryGetTool {
 
         match read_episode_lines(&path, from_line, lines).await {
             Ok(output) => Ok(ToolResult::success(output)),
-            Err(e) => Ok(ToolResult::error(format!(
-                "failed to read episode transcript: {e}"
-            ))),
+            Err(e) => {
+                tracing::error!(error = %e, episode_id = %episode_id, "failed to read episode transcript");
+                Ok(ToolResult::error(format!(
+                    "failed to read episode transcript: {e}"
+                )))
+            }
         }
     }
 }

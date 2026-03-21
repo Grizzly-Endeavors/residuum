@@ -54,9 +54,10 @@ impl Tool for InboxListTool {
             .and_then(Value::as_bool)
             .unwrap_or(false);
 
-        let items = inbox::list_items(&self.inbox_dir)
-            .await
-            .map_err(|e| ToolError::Execution(format!("failed to list inbox items: {e}")))?;
+        let items = inbox::list_items(&self.inbox_dir).await.map_err(|e| {
+            tracing::error!(error = %e, "failed to list inbox items");
+            ToolError::Execution(format!("failed to list inbox items: {e}"))
+        })?;
 
         let filtered: Vec<&(String, InboxItem)> = if unread_only {
             items.iter().filter(|(_, item)| !item.read).collect()
@@ -128,9 +129,10 @@ impl Tool for InboxReadTool {
             .and_then(|v| v.as_str())
             .ok_or_else(|| ToolError::InvalidArguments("id is required".to_string()))?;
 
-        let item = inbox::mark_read(&self.inbox_dir, id)
-            .await
-            .map_err(|e| ToolError::Execution(format!("failed to read inbox item '{id}': {e}")))?;
+        let item = inbox::mark_read(&self.inbox_dir, id).await.map_err(|e| {
+            tracing::error!(error = %e, id = %id, "failed to read inbox item");
+            ToolError::Execution(format!("failed to read inbox item '{id}': {e}"))
+        })?;
 
         let ts = item.timestamp.format("%Y-%m-%dT%H:%M");
         let mut output = format!(
@@ -217,7 +219,10 @@ impl Tool for InboxArchiveTool {
 
             match inbox::archive_item(&self.inbox_dir, &self.archive_dir, id).await {
                 Ok(()) => archived.push(id.to_string()),
-                Err(e) => errors.push(format!("{id}: {e}")),
+                Err(e) => {
+                    tracing::warn!(error = %e, id = %id, "failed to archive inbox item");
+                    errors.push(format!("{id}: {e}"));
+                }
             }
         }
 

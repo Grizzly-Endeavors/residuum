@@ -144,6 +144,7 @@ impl Tool for ProjectActivateTool {
                 {
                     tracing::warn!(error = %e, "failed to rescan skills after project activation");
                 }
+                tracing::info!(project = %project_name, tools = ?tools_list, "project activated");
                 let output = if warnings.is_empty() {
                     manifest_summary
                 } else {

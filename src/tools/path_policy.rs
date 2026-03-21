@@ -95,6 +95,7 @@ impl PathPolicy {
 
         // Rule 0: blocked paths (config files) are never writable
         if self.blocked_paths.contains(&canonical) {
+            tracing::warn!(path = %path.display(), "write rejected: blocked path");
             return Err(
                 "writes to config files are not allowed — config.toml is user-managed".to_string(),
             );
@@ -105,6 +106,7 @@ impl PathPolicy {
 
         // Rule 1: archive/ is always read-only
         if canonical.starts_with(&archive_dir) {
+            tracing::warn!(path = %path.display(), "write rejected: archive is read-only");
             return Err(
                 "writes to archive/ are not allowed — archived projects are read-only".to_string(),
             );
@@ -112,20 +114,19 @@ impl PathPolicy {
 
         // Rule 2: writes inside projects/ must target the active project
         if canonical.starts_with(&projects_dir) {
-            return match &self.active_project_root {
-                Some(active_root) => {
-                    if canonical.starts_with(active_root) {
-                        Ok(())
-                    } else {
-                        Err(format!(
-                            "write rejected — path is in projects/ but outside the active project ({})",
-                            active_root.display()
-                        ))
-                    }
+            return if let Some(active_root) = &self.active_project_root {
+                if canonical.starts_with(active_root) {
+                    Ok(())
+                } else {
+                    tracing::warn!(path = %path.display(), active = %active_root.display(), "write rejected: outside active project");
+                    Err(format!(
+                        "write rejected — path is in projects/ but outside the active project ({})",
+                        active_root.display()
+                    ))
                 }
-                None => Err(
-                    "write rejected — path is in projects/ but no project is active".to_string(),
-                ),
+            } else {
+                tracing::warn!(path = %path.display(), "write rejected: no active project");
+                Err("write rejected — path is in projects/ but no project is active".to_string())
             };
         }
 
