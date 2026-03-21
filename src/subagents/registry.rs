@@ -95,6 +95,11 @@ pub async fn spawn_registry(registry: SubagentRegistry, bus_handle: &BusHandle) 
         }
     }
 
+    tracing::info!(
+        count = index.entries().len(),
+        "subagent registry subscribed to preset topics"
+    );
+
     // Drop the original sender — forwarding tasks hold their own clones
     drop(fwd_tx);
 
@@ -113,6 +118,7 @@ async fn forward_subscription(
             event: spawn_event,
         };
         if tx.send(tagged).await.is_err() {
+            tracing::debug!(preset = %preset_name, "forwarding channel closed, stopping subscription");
             break;
         }
     }
@@ -120,10 +126,13 @@ async fn forward_subscription(
 
 /// Main loop: reads tagged spawn requests and executes them.
 async fn registry_loop(registry: SubagentRegistry, mut rx: mpsc::Receiver<TaggedRequest>) {
+    tracing::info!("subagent registry started");
     while let Some(tagged) = rx.recv().await {
+        let source_label = tagged.event.source_label.clone();
         if let Err(e) = handle_spawn_request(&registry, &tagged.preset_name, tagged.event).await {
             tracing::warn!(
                 preset = %tagged.preset_name,
+                source = %source_label,
                 error = %e,
                 "subagent registry failed to handle spawn request"
             );
@@ -173,7 +182,15 @@ async fn handle_spawn_request(
         agent_preset: PresetName::from(preset_name),
     };
 
+    let log_task_id = task.id.clone();
+    let log_source_label = task.source_label.clone();
     registry.spawner.spawn(task, Some(resources)).await?;
+    tracing::info!(
+        preset = %preset_name,
+        task_id = %log_task_id,
+        source = %log_source_label,
+        "spawned subagent"
+    );
     Ok(())
 }
 

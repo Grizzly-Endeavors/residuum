@@ -49,6 +49,8 @@ pub async fn webhook_handler(
         return StatusCode::NOT_FOUND;
     };
 
+    tracing::debug!(webhook = %name, content_length = body.len(), "webhook request received");
+
     // Validate bearer token if secret is configured
     if let Some(ref expected) = endpoint.secret {
         let auth = headers
@@ -58,6 +60,7 @@ pub async fn webhook_handler(
 
         let provided = auth.strip_prefix("Bearer ").unwrap_or("");
         if provided != expected.as_str() {
+            tracing::warn!(webhook = %name, "webhook authentication failed");
             return StatusCode::UNAUTHORIZED;
         }
     }
@@ -111,6 +114,7 @@ pub async fn webhook_handler(
         }
     }
 
+    tracing::debug!(webhook = %name, "webhook message published");
     StatusCode::ACCEPTED
 }
 

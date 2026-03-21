@@ -3,9 +3,9 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use anyhow::Context;
 use chrono::NaiveDateTime;
 
-use crate::error::ResiduumError;
 use crate::workspace::layout::WorkspaceLayout;
 
 use super::manifest::{build_manifest, format_manifest};
@@ -45,19 +45,19 @@ impl ProjectState {
     /// the manifest, and stores it as the active project.
     ///
     /// # Errors
-    /// Returns `ResiduumError::Projects` if the project is not found, cannot
-    /// be read, or is archived.
-    pub async fn activate(&mut self, name: &str) -> Result<&ActiveProject, ResiduumError> {
+    /// Returns an error if the project is not found, cannot be read, or is
+    /// archived.
+    pub async fn activate(&mut self, name: &str) -> anyhow::Result<&ActiveProject> {
         let entry = self
             .index
             .find_by_name(name)
-            .ok_or_else(|| ResiduumError::Projects(format!("project '{name}' not found")))?;
+            .ok_or_else(|| anyhow::anyhow!("project '{name}' not found"))?;
 
         if entry.status == ProjectStatus::Archived {
-            return Err(ResiduumError::Projects(format!(
+            anyhow::bail!(
                 "project '{}' is archived and cannot be activated",
                 entry.name
-            )));
+            );
         }
 
         let dir_name = entry.dir_name.clone();
@@ -65,12 +65,7 @@ impl ProjectState {
 
         let content = tokio::fs::read_to_string(project_root.join("PROJECT.md"))
             .await
-            .map_err(|e| {
-                ResiduumError::Projects(format!(
-                    "failed to read PROJECT.md for '{}': {e}",
-                    entry.name
-                ))
-            })?;
+            .with_context(|| format!("failed to read PROJECT.md for '{}'", entry.name))?;
 
         let (frontmatter, body) = parse_project_md(&content)?;
         let manifest = build_manifest(&project_root).await?;
@@ -87,11 +82,17 @@ impl ProjectState {
             project_root,
         };
 
+        tracing::info!(project = name, dir = %active.dir_name, has_recent_log = active.recent_log.is_some(), "activated project");
+
         self.active = Some(active);
 
         // Safe: we just set it to Some
         self.active.as_ref().ok_or_else(|| {
-            ResiduumError::Projects("unexpected: active project not set after activation".into())
+            tracing::error!(
+                project = name,
+                "unexpected: active project not set after activation"
+            );
+            anyhow::anyhow!("unexpected: active project not set after activation")
         })
     }
 
@@ -100,29 +101,29 @@ impl ProjectState {
     /// Rejects empty log entries. Writes the log to `notes/log/YYYY-MM/log-DD.md`.
     ///
     /// # Errors
-    /// Returns `ResiduumError::Projects` if no project is active, the log is empty,
-    /// or the log file cannot be written.
+    /// Returns an error if no project is active, the log is empty, or the
+    /// log file cannot be written.
     pub async fn deactivate(
         &mut self,
         log_entry: &str,
         now: NaiveDateTime,
-    ) -> Result<String, ResiduumError> {
+    ) -> anyhow::Result<String> {
         let trimmed = log_entry.trim();
         if trimmed.is_empty() {
-            return Err(ResiduumError::Projects(
-                "deactivation requires a non-empty log entry".to_string(),
-            ));
+            anyhow::bail!("deactivation requires a non-empty log entry");
         }
 
         let active = self
             .active
             .as_ref()
-            .ok_or_else(|| ResiduumError::Projects("no project is currently active".to_string()))?;
+            .ok_or_else(|| anyhow::anyhow!("no project is currently active"))?;
 
         let name = active.name.clone();
         write_deactivation_log(&active.project_root, trimmed, now).await?;
 
         self.active = None;
+
+        tracing::info!(project = %name, "deactivated project");
 
         Ok(name)
     }
@@ -130,9 +131,13 @@ impl ProjectState {
     /// Rescan the project directories to rebuild the index.
     ///
     /// # Errors
-    /// Returns `ResiduumError::Projects` if scanning fails.
-    pub async fn rescan(&mut self) -> Result<(), ResiduumError> {
+    /// Returns an error if scanning fails.
+    pub async fn rescan(&mut self) -> anyhow::Result<()> {
         self.index = ProjectIndex::scan(&self.layout).await?;
+        tracing::debug!(
+            total = self.index.entries().len(),
+            "rescanned project index"
+        );
         Ok(())
     }
 
@@ -205,19 +210,16 @@ async fn write_deactivation_log(
     project_root: &Path,
     log_text: &str,
     now: NaiveDateTime,
-) -> Result<(), ResiduumError> {
+) -> anyhow::Result<()> {
     let date_dir = now.format("%Y-%m").to_string();
     let day_file = now.format("log-%d").to_string();
     let date_header = now.format("%Y-%m-%d").to_string();
     let time_str = now.format("%H:%M").to_string();
 
     let log_dir = project_root.join("notes/log").join(&date_dir);
-    tokio::fs::create_dir_all(&log_dir).await.map_err(|e| {
-        ResiduumError::Projects(format!(
-            "failed to create log directory {}: {e}",
-            log_dir.display()
-        ))
-    })?;
+    tokio::fs::create_dir_all(&log_dir)
+        .await
+        .with_context(|| format!("failed to create log directory {}", log_dir.display()))?;
 
     let log_file = log_dir.join(format!("{day_file}.md"));
     let entry = format!("- **{time_str}** {log_text}\n");
@@ -233,12 +235,11 @@ async fn write_deactivation_log(
         }
     };
 
-    tokio::fs::write(&log_file, &content).await.map_err(|e| {
-        ResiduumError::Projects(format!(
-            "failed to write log file {}: {e}",
-            log_file.display()
-        ))
-    })?;
+    tokio::fs::write(&log_file, &content)
+        .await
+        .with_context(|| format!("failed to write log file {}", log_file.display()))?;
+
+    tracing::debug!(path = %log_file.display(), "wrote deactivation log entry");
 
     Ok(())
 }
@@ -336,6 +337,7 @@ async fn read_recent_logs(project_root: &Path) -> Option<String> {
                     if content.len() <= remaining {
                         collected.push_str(&content);
                     } else {
+                        tracing::debug!(path = %day_file.display(), content_len = content.len(), remaining, "truncating log file to fit context limit");
                         // Truncate at a char boundary
                         let truncated: String = content.chars().take(remaining).collect();
                         collected.push_str(&truncated);

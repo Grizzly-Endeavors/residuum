@@ -8,7 +8,7 @@ use chrono::{DateTime, Utc};
 use rand::Rng;
 use tracing::{debug, error, warn};
 
-use crate::error::ResiduumError;
+use anyhow::Context;
 
 use super::types::ScheduledAction;
 
@@ -24,20 +24,20 @@ impl ActionStore {
     /// Returns an empty store if the file does not exist.
     ///
     /// # Errors
-    /// Returns `ResiduumError::Scheduling` if the file exists but cannot be
-    /// read or is not valid JSON.
-    pub async fn load(path: impl Into<PathBuf>) -> Result<Self, ResiduumError> {
+    /// Returns an error if the file exists but cannot be read or is not valid JSON.
+    pub async fn load(path: impl Into<PathBuf>) -> anyhow::Result<Self> {
         let path = path.into();
         match tokio::fs::read_to_string(&path).await {
             Ok(contents) => {
                 let actions: Vec<ScheduledAction> =
                     serde_json::from_str(&contents).map_err(|e| {
                         error!(path = %path.display(), error = %e, "failed to parse scheduled actions");
-                        ResiduumError::Scheduling(format!(
-                            "failed to parse scheduled actions at {}: {e}",
-                            path.display()
-                        ))
-                    })?;
+                        e
+                    }).with_context(|| format!(
+                        "failed to parse scheduled actions at {}",
+                        path.display()
+                    ))?;
+                debug!(path = %path.display(), count = actions.len(), "loaded scheduled actions");
                 Ok(Self { actions, path })
             }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Self {
@@ -46,10 +46,9 @@ impl ActionStore {
             }),
             Err(e) => {
                 error!(path = %path.display(), error = %e, "failed to read scheduled actions");
-                Err(ResiduumError::Scheduling(format!(
-                    "failed to read scheduled actions at {}: {e}",
-                    path.display()
-                )))
+                Err(e).with_context(|| {
+                    format!("failed to read scheduled actions at {}", path.display())
+                })
             }
         }
     }
@@ -57,19 +56,19 @@ impl ActionStore {
     /// Save the store to disk atomically (write temp file, then rename).
     ///
     /// # Errors
-    /// Returns `ResiduumError::Scheduling` if serialization or writing fails.
-    pub async fn save(&self) -> Result<(), ResiduumError> {
+    /// Returns an error if serialization or writing fails.
+    pub async fn save(&self) -> anyhow::Result<()> {
         let json = serde_json::to_string_pretty(&self.actions).map_err(|e| {
             error!(path = %self.path.display(), error = %e, "failed to serialize scheduled actions");
-            ResiduumError::Scheduling(format!("failed to serialize scheduled actions: {e}"))
-        })?;
+            e
+        }).context("failed to serialize scheduled actions")?;
 
         let dir = self.path.parent().ok_or_else(|| {
             error!(path = %self.path.display(), "scheduled actions path has no parent directory");
-            ResiduumError::Scheduling(format!(
+            anyhow::anyhow!(
                 "scheduled actions path has no parent directory: {}",
                 self.path.display()
-            ))
+            )
         })?;
 
         // Ensure the parent directory exists (actions file lives at workspace root,
@@ -77,34 +76,36 @@ impl ActionStore {
         if !dir.exists() {
             tokio::fs::create_dir_all(dir).await.map_err(|e| {
                 error!(dir = %dir.display(), error = %e, "failed to create directory for scheduled actions");
-                ResiduumError::Scheduling(format!(
-                    "failed to create directory for scheduled actions at {}: {e}",
-                    dir.display()
-                ))
-            })?;
+                e
+            }).with_context(|| format!(
+                "failed to create directory for scheduled actions at {}",
+                dir.display()
+            ))?;
         }
 
         let tmp_path = dir.join(".scheduled_actions.json.tmp");
 
         tokio::fs::write(&tmp_path, &json).await.map_err(|e| {
             error!(path = %tmp_path.display(), error = %e, "failed to write temporary scheduled actions");
-            ResiduumError::Scheduling(format!(
-                "failed to write temporary scheduled actions at {}: {e}",
-                tmp_path.display()
-            ))
-        })?;
+            e
+        }).with_context(|| format!(
+            "failed to write temporary scheduled actions at {}",
+            tmp_path.display()
+        ))?;
 
         tokio::fs::rename(&tmp_path, &self.path)
             .await
             .map_err(|e| {
                 error!(src = %tmp_path.display(), dst = %self.path.display(), error = %e, "failed to rename scheduled actions");
-                ResiduumError::Scheduling(format!(
-                    "failed to rename scheduled actions from {} to {}: {e}",
-                    tmp_path.display(),
-                    self.path.display()
-                ))
-            })?;
+                e
+            })
+            .with_context(|| format!(
+                "failed to rename scheduled actions from {} to {}",
+                tmp_path.display(),
+                self.path.display()
+            ))?;
 
+        debug!(path = %self.path.display(), count = self.actions.len(), "saved scheduled actions");
         Ok(())
     }
 
@@ -114,7 +115,6 @@ impl ActionStore {
     #[must_use]
     pub fn new_empty(path: impl Into<PathBuf>) -> Self {
         let path = path.into();
-        warn!(path = %path.display(), "starting with empty actions store — any previously scheduled actions are unavailable");
         Self {
             actions: Vec::new(),
             path,
@@ -129,6 +129,7 @@ impl ActionStore {
 
     /// Add an action to the store (does not save; call [`save`] separately).
     pub fn add(&mut self, action: ScheduledAction) {
+        debug!(id = %action.id, name = %action.name, run_at = %action.run_at, "scheduled action added");
         self.actions.push(action);
     }
 
@@ -137,7 +138,9 @@ impl ActionStore {
         let before = self.actions.len();
         self.actions.retain(|a| a.id != id);
         let found = self.actions.len() < before;
-        if !found {
+        if found {
+            debug!(id = %id, "scheduled action removed");
+        } else {
             warn!(id = %id, "attempted to remove action that does not exist in store");
         }
         found
@@ -164,7 +167,10 @@ impl ActionStore {
         }
 
         self.actions = remaining;
-        debug!(count = due.len(), "draining due actions");
+        if !due.is_empty() {
+            let ids: Vec<&str> = due.iter().map(|a| a.id.as_str()).collect();
+            debug!(count = due.len(), ids = ?ids, "draining due actions");
+        }
         due
     }
 

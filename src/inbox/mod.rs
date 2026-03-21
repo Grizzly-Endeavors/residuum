@@ -88,6 +88,7 @@ pub async fn quick_add(
         attachments: Vec::new(),
     };
     save_item(inbox_dir, &filename, &item).await?;
+    tracing::debug!(filename = %filename, source = %source, title = %title, "inbox item created via quick_add");
     Ok(filename)
 }
 
@@ -138,8 +139,12 @@ pub async fn load_item(path: &Path) -> anyhow::Result<InboxItem> {
 /// # Errors
 /// Returns an error if the directory cannot be read.
 pub async fn list_items(inbox_dir: &Path) -> anyhow::Result<Vec<(String, InboxItem)>> {
+    use anyhow::Context as _;
+
     let mut entries = Vec::new();
-    let mut dir = tokio::fs::read_dir(inbox_dir).await?;
+    let mut dir = tokio::fs::read_dir(inbox_dir)
+        .await
+        .with_context(|| format!("failed to read inbox directory {}", inbox_dir.display()))?;
 
     while let Some(entry) = dir.next_entry().await? {
         let path = entry.path();
@@ -187,7 +192,7 @@ pub fn count_unread(inbox_dir: &Path) -> usize {
         let entry = match entry_result {
             Ok(e) => e,
             Err(e) => {
-                tracing::warn!(error = %e, "failed to read inbox directory entry");
+                tracing::warn!(path = %inbox_dir.display(), error = %e, "failed to read inbox directory entry");
                 continue;
             }
         };
@@ -231,6 +236,7 @@ pub async fn mark_read(inbox_dir: &Path, filename: &str) -> anyhow::Result<Inbox
     save_item(inbox_dir, &json_name, &item)
         .await
         .with_context(|| format!("failed to save inbox item {json_name} after mark_read"))?;
+    tracing::debug!(filename = %json_name, "inbox item marked read");
 
     Ok(item)
 }
@@ -244,6 +250,8 @@ pub async fn archive_item(
     archive_dir: &Path,
     filename: &str,
 ) -> anyhow::Result<()> {
+    use anyhow::Context as _;
+
     let json_name = ensure_json_ext(filename);
     let src = inbox_dir.join(&json_name);
 
@@ -251,9 +259,14 @@ pub async fn archive_item(
         anyhow::bail!("inbox item '{json_name}' not found");
     }
 
-    tokio::fs::create_dir_all(archive_dir).await?;
+    tokio::fs::create_dir_all(archive_dir)
+        .await
+        .with_context(|| format!("failed to create archive dir {}", archive_dir.display()))?;
     let dst = archive_dir.join(&json_name);
-    tokio::fs::rename(&src, &dst).await?;
+    tokio::fs::rename(&src, &dst)
+        .await
+        .with_context(|| format!("failed to archive {} to {}", src.display(), dst.display()))?;
+    tracing::debug!(src = %src.display(), dst = %dst.display(), "inbox item archived");
 
     Ok(())
 }

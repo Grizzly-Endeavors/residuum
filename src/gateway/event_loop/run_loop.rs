@@ -8,7 +8,7 @@ use std::sync::Arc;
 use tokio::time::Duration;
 
 use crate::config::Config;
-use crate::error::ResiduumError;
+use crate::error::FatalError;
 use crate::gateway::types::{GatewayCore, GatewayExit, GatewayRuntime, GatewayState, ReloadSignal};
 use crate::memory::types::Visibility;
 use crate::pulse::scheduler::PulseScheduler;
@@ -28,8 +28,8 @@ use crate::gateway::{actions, idle, reload, watcher, web};
 ///
 /// # Errors
 ///
-/// Returns `ResiduumError` if initialization fails or the server cannot bind.
-pub async fn run_gateway(cfg: Config) -> Result<GatewayExit, ResiduumError> {
+/// Returns `FatalError` if initialization fails or the server cannot bind.
+pub async fn run_gateway(cfg: Config) -> Result<GatewayExit, FatalError> {
     reload::backup_config(&cfg.config_dir);
 
     let (core, receivers) = GatewayCore::new(cfg.config_dir.clone());
@@ -70,7 +70,7 @@ async fn spawn_server_and_adapters(
     cfg: &Config,
     update_status: &crate::update::SharedUpdateStatus,
     restart_tx: &tokio::sync::mpsc::Sender<()>,
-) -> Result<SpawnedHandles, ResiduumError> {
+) -> Result<SpawnedHandles, FatalError> {
     let discord_senders = AdapterSenders {
         publisher: core.publisher.clone(),
         bus_handle: core.bus_handle.clone(),
@@ -108,7 +108,7 @@ async fn spawn_server_and_adapters(
     let adapters = spawn_adapters(cfg, discord_senders, telegram_senders, parts.tz);
     let (tunnel_handle, tunnel_shutdown_tx) = spawn_tunnel(cfg, Arc::clone(&tunnel_status_tx));
     let sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
-        .map_err(|e| ResiduumError::Gateway(format!("failed to register SIGTERM handler: {e}")))?;
+        .map_err(|e| FatalError::Gateway(format!("failed to register SIGTERM handler: {e}")))?;
     let _watcher_handle = watcher::spawn_workspace_watcher(
         parts.layout.mcp_json(),
         parts.layout.channels_toml(),
@@ -146,19 +146,17 @@ async fn build_runtime(
     spawned: SpawnedHandles,
     update: UpdateChannels,
     cloud_config: Option<crate::config::CloudConfig>,
-) -> Result<GatewayRuntime, ResiduumError> {
+) -> Result<GatewayRuntime, FatalError> {
     let agent_subscriber = core
         .bus_handle
         .subscribe(crate::bus::topics::UserMessage)
         .await
-        .map_err(|e| ResiduumError::Gateway(format!("failed to subscribe to user:message: {e}")))?;
+        .map_err(|e| FatalError::Gateway(format!("failed to subscribe to user:message: {e}")))?;
     let error_subscriber = core
         .bus_handle
         .subscribe(crate::bus::topics::SystemMessage)
         .await
-        .map_err(|e| {
-            ResiduumError::Gateway(format!("failed to subscribe to system:message: {e}"))
-        })?;
+        .map_err(|e| FatalError::Gateway(format!("failed to subscribe to system:message: {e}")))?;
 
     let notify_handles = crate::gateway::startup::spawn_notify_subscribers(
         &core.bus_handle,
@@ -389,7 +387,12 @@ async fn handle_action_main_turns(
         return None;
     }
 
+    tracing::info!(
+        count = main_turns.len(),
+        "running scheduled action main turns"
+    );
     for turn in &main_turns {
+        tracing::debug!(action = %turn.action_name, "injecting action main turn");
         let formatted = format!("[Scheduled action: {}]\n{}", turn.action_name, turn.prompt);
         rt.agent.inject_system_message(formatted.clone());
         let msgs = [crate::models::Message::system(&formatted)];
@@ -401,6 +404,11 @@ async fn handle_action_main_turns(
 
 /// Gracefully shut down all adapters, MCP servers, and the HTTP server.
 async fn graceful_shutdown(rt: &mut GatewayRuntime) {
+    tracing::info!(
+        notify_handles = rt.notify_handles.len(),
+        bus_infra_handles = rt.bus_infra_handles.len(),
+        "beginning graceful shutdown"
+    );
     for h in rt.notify_handles.drain(..) {
         h.abort();
     }
@@ -418,6 +426,7 @@ async fn graceful_shutdown(rt: &mut GatewayRuntime) {
         tx.send(true).ok();
     }
     rt.shutdown_tx.send(true).ok();
+    tracing::info!("graceful shutdown complete");
 }
 
 /// Spawn a fire-and-forget update check task.
@@ -611,6 +620,7 @@ async fn run_event_loop(mut rt: GatewayRuntime) -> GatewayExit {
             }
 
             _ = update_check_tick.tick() => {
+                tracing::debug!("scheduled update check triggered");
                 spawn_update_check(&rt.update_status);
             }
 

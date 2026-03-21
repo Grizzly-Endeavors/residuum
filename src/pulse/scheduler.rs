@@ -69,7 +69,10 @@ impl PulseScheduler {
     pub fn load_heartbeat(path: &Path) -> Option<HeartbeatConfig> {
         match std::fs::read_to_string(path) {
             Ok(contents) => match serde_yml::from_str::<HeartbeatConfig>(&contents) {
-                Ok(cfg) => Some(cfg),
+                Ok(cfg) => {
+                    tracing::trace!(path = %path.display(), pulses = cfg.pulses.len(), "loaded HEARTBEAT.yml");
+                    Some(cfg)
+                }
                 Err(e) => {
                     tracing::warn!(
                         path = %path.display(),
@@ -151,6 +154,7 @@ impl PulseScheduler {
             // Check active hours if configured
             if let Some((start, end)) = active_window {
                 if !is_within_active_hours(now, start, end) {
+                    tracing::trace!(pulse = %pulse.name, "skipped: outside active hours");
                     continue;
                 }
 
@@ -161,38 +165,15 @@ impl PulseScheduler {
                     // Check if trigger_count exhausted
                     let current_count = self.run_counts.get(&pulse.name).copied().unwrap_or(0);
                     if current_count >= trigger_count {
+                        tracing::trace!(pulse = %pulse.name, count = current_count, limit = trigger_count, "skipped: trigger_count exhausted");
                         continue;
                     }
                 }
             }
 
             // Compute effective interval: if trigger_count is set, space evenly across active period
-            let effective_interval = match pulse.trigger_count {
-                Some(tc) if tc > 0 => {
-                    let active_duration = active_window.map_or_else(
-                        || Duration::hours(24),
-                        |(start, end)| active_period_duration(start, end),
-                    );
-                    let spacing = if let Ok(tc_i32) = i32::try_from(tc) {
-                        active_duration / tc_i32
-                    } else {
-                        tracing::warn!(
-                            pulse = %pulse.name,
-                            trigger_count = tc,
-                            "trigger_count exceeds i32::MAX, spacing collapsed to near-zero; pulse will fire at schedule rate"
-                        );
-                        active_duration / i32::MAX
-                    };
-                    let jittered = apply_jitter(spacing, &pulse.name, now);
-                    // Effective interval is max(schedule_duration, spacing_with_jitter)
-                    if jittered > duration {
-                        jittered
-                    } else {
-                        duration
-                    }
-                }
-                _ => duration,
-            };
+            let effective_interval =
+                compute_effective_interval(&pulse, duration, active_window, now);
 
             // Check if due: fire immediately if never run, otherwise after the effective interval
             let is_due = match self.last_run.get(&pulse.name) {
@@ -201,6 +182,7 @@ impl PulseScheduler {
             };
 
             if is_due {
+                tracing::debug!(pulse = %pulse.name, "pulse due, queuing execution");
                 self.last_run.insert(pulse.name.clone(), now);
                 if pulse.trigger_count.is_some() {
                     let count = self.run_counts.entry(pulse.name.clone()).or_insert(0);
@@ -240,6 +222,7 @@ impl PulseScheduler {
         // calendar day (for non-overnight windows), reset the count.
         if !is_within_active_hours(*last, window_start, window_end) || now.date() != last.date() {
             self.run_counts.remove(pulse_name);
+            tracing::debug!(pulse = %pulse_name, "run count reset for new active period");
         }
     }
 
@@ -280,7 +263,53 @@ impl PulseScheduler {
                 return Err(err.into());
             }
         }
+        tracing::trace!(path = %path.display(), "pulse state saved");
         Ok(())
+    }
+}
+
+/// Compute the effective firing interval for a pulse.
+///
+/// When `trigger_count` is set, spaces firings evenly across the active window
+/// (with jitter), using at least the configured schedule duration.
+fn compute_effective_interval(
+    pulse: &PulseDef,
+    duration: Duration,
+    active_window: Option<(NaiveTime, NaiveTime)>,
+    now: NaiveDateTime,
+) -> Duration {
+    match pulse.trigger_count {
+        Some(tc) if tc > 0 => {
+            let active_duration = active_window.map_or_else(
+                || Duration::hours(24),
+                |(start, end)| active_period_duration(start, end),
+            );
+            let spacing = if let Ok(tc_i32) = i32::try_from(tc) {
+                active_duration / tc_i32
+            } else {
+                tracing::warn!(
+                    pulse = %pulse.name,
+                    trigger_count = tc,
+                    "trigger_count exceeds i32::MAX, spacing collapsed to near-zero; pulse will fire at schedule rate"
+                );
+                active_duration / i32::MAX
+            };
+            let jittered = apply_jitter(spacing, &pulse.name, now);
+            let effective = if jittered > duration {
+                jittered
+            } else {
+                duration
+            };
+            tracing::debug!(
+                pulse = %pulse.name,
+                schedule_secs = duration.num_seconds(),
+                spacing_secs = jittered.num_seconds(),
+                effective_secs = effective.num_seconds(),
+                "computed effective interval"
+            );
+            effective
+        }
+        _ => duration,
     }
 }
 
@@ -288,7 +317,10 @@ impl PulseScheduler {
 fn load_state(path: &Path) -> PulseState {
     match std::fs::read_to_string(path) {
         Ok(contents) => match serde_json::from_str::<PulseState>(&contents) {
-            Ok(state) => state,
+            Ok(state) => {
+                tracing::debug!(path = %path.display(), pulses = state.last_run.len(), "loaded pulse state");
+                state
+            }
             Err(err) => {
                 tracing::warn!(
                     path = %path.display(),

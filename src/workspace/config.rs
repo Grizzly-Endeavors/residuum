@@ -5,7 +5,8 @@ use std::path::Path;
 
 use serde::Deserialize;
 
-use crate::error::ResiduumError;
+use anyhow::Context;
+
 use crate::notify::channels::NotificationChannel;
 use crate::notify::external::{NtfyChannel, WebhookChannel};
 use crate::notify::types::{ExternalChannelConfig, ExternalChannelKind};
@@ -55,26 +56,18 @@ struct McpServerRaw {
 ///
 /// # Errors
 /// Returns an error if the file exists but cannot be read or parsed.
-pub fn load_mcp_servers_map(path: &Path) -> Result<HashMap<String, McpServerEntry>, ResiduumError> {
+pub fn load_mcp_servers_map(path: &Path) -> anyhow::Result<HashMap<String, McpServerEntry>> {
     if !path.exists() {
         return Ok(HashMap::new());
     }
 
-    let contents = std::fs::read_to_string(path).map_err(|e| {
-        ResiduumError::Config(format!(
-            "failed to read mcp.json at {}: {e}",
-            path.display()
-        ))
-    })?;
+    let contents = std::fs::read_to_string(path)
+        .with_context(|| format!("failed to read mcp.json at {}", path.display()))?;
 
-    let file: McpConfigFile = serde_json::from_str(&contents).map_err(|e| {
-        ResiduumError::Config(format!(
-            "failed to parse mcp.json at {}: {e}",
-            path.display()
-        ))
-    })?;
+    let file: McpConfigFile = serde_json::from_str(&contents)
+        .with_context(|| format!("failed to parse mcp.json at {}", path.display()))?;
 
-    let servers = file
+    let servers: HashMap<String, McpServerEntry> = file
         .mcp_servers
         .into_iter()
         .filter_map(|(name, raw)| {
@@ -140,6 +133,7 @@ pub fn load_mcp_servers_map(path: &Path) -> Result<HashMap<String, McpServerEntr
         })
         .collect();
 
+    tracing::debug!(count = servers.len(), path = %path.display(), "loaded MCP servers");
     Ok(servers)
 }
 
@@ -149,7 +143,7 @@ pub fn load_mcp_servers_map(path: &Path) -> Result<HashMap<String, McpServerEntr
 ///
 /// # Errors
 /// Returns an error if the file exists but cannot be read or parsed.
-pub fn load_mcp_servers(path: &Path) -> Result<Vec<McpServerEntry>, ResiduumError> {
+pub fn load_mcp_servers(path: &Path) -> anyhow::Result<Vec<McpServerEntry>> {
     Ok(load_mcp_servers_map(path)?.into_values().collect())
 }
 
@@ -167,7 +161,7 @@ pub fn resolve_mcp_references(
     project_mcp_json: &Path,
     global_mcp_json: &Path,
     project_name: &str,
-) -> Result<Vec<McpServerEntry>, ResiduumError> {
+) -> anyhow::Result<Vec<McpServerEntry>> {
     if references.is_empty() {
         return Ok(Vec::new());
     }
@@ -182,9 +176,9 @@ pub fn resolve_mcp_references(
         } else if let Some(entry) = global_map.get(name) {
             resolved.push(entry.clone());
         } else {
-            return Err(ResiduumError::Projects(format!(
+            anyhow::bail!(
                 "mcp server '{name}' referenced in project '{project_name}' not found in project-local or global mcp.json"
-            )));
+            );
         }
     }
 
@@ -237,29 +231,21 @@ struct ChannelEntryRaw {
 ///
 /// # Errors
 /// Returns an error if the file exists but cannot be read or parsed.
-pub fn load_channel_configs(path: &Path) -> Result<Vec<ExternalChannelConfig>, ResiduumError> {
+pub fn load_channel_configs(path: &Path) -> anyhow::Result<Vec<ExternalChannelConfig>> {
     if !path.exists() {
         return Ok(Vec::new());
     }
 
-    let contents = std::fs::read_to_string(path).map_err(|e| {
-        ResiduumError::Config(format!(
-            "failed to read channels.toml at {}: {e}",
-            path.display()
-        ))
-    })?;
+    let contents = std::fs::read_to_string(path)
+        .with_context(|| format!("failed to read channels.toml at {}", path.display()))?;
 
     // Empty file → empty vec (no channels section)
     if contents.trim().is_empty() {
         return Ok(Vec::new());
     }
 
-    let file: ChannelsFile = toml::from_str(&contents).map_err(|e| {
-        ResiduumError::Config(format!(
-            "failed to parse channels.toml at {}: {e}",
-            path.display()
-        ))
-    })?;
+    let file: ChannelsFile = toml::from_str(&contents)
+        .with_context(|| format!("failed to parse channels.toml at {}", path.display()))?;
 
     let configs = file
         .channels
@@ -304,7 +290,7 @@ pub fn load_channel_configs(path: &Path) -> Result<Vec<ExternalChannelConfig>, R
                     tracing::warn!(
                         channel = %name,
                         type_ = %unknown,
-                        "unrecognized channel type, falling back to webhook"
+                        "unrecognized channel type, falling back to webhook; this channel will likely fail at send time"
                     );
                     let url = raw.url.unwrap_or_default();
                     if url.is_empty() {
@@ -382,6 +368,7 @@ pub async fn build_external_channels(
         }
     }
 
+    tracing::debug!(count = channels.len(), "built external channels");
     channels
 }
 
@@ -408,7 +395,6 @@ async fn build_macos_channel(
             Ok(c) => config.default_category = c,
             Err(e) => {
                 tracing::warn!(channel = name, error = %e, "invalid macOS channel config, skipping");
-                eprintln!("warning: invalid macOS channel '{name}' config: {e}");
                 return None;
             }
         }
@@ -419,7 +405,6 @@ async fn build_macos_channel(
             Ok(p) => config.default_priority = p,
             Err(e) => {
                 tracing::warn!(channel = name, error = %e, "invalid macOS channel config, skipping");
-                eprintln!("warning: invalid macOS channel '{name}' config: {e}");
                 return None;
             }
         }
@@ -443,7 +428,6 @@ async fn build_macos_channel(
         }
         Err(e) => {
             tracing::warn!(channel = name, error = %e, "failed to initialize macOS channel, skipping");
-            eprintln!("warning: failed to initialize macOS channel '{name}': {e}");
             None
         }
     }
@@ -466,9 +450,6 @@ async fn build_macos_channel(
     tracing::warn!(
         channel = name,
         "macOS notification channel configured but not available on this platform"
-    );
-    eprintln!(
-        "warning: macOS notification channel '{name}' configured but not available on this platform"
     );
     None
 }

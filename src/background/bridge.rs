@@ -37,6 +37,7 @@ pub(crate) fn spawn_result_bridge(
 
 /// Inner bridge loop: lock the shared receiver and forward results to the bus.
 async fn run_bridge(result_rx: SharedResultReceiver, publisher: Publisher, tz: chrono_tz::Tz) {
+    tracing::debug!("result bridge started");
     let mut rx = result_rx.lock().await;
     while let Some(result) = rx.recv().await {
         let event = convert_to_agent_result(&result, tz);

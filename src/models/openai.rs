@@ -5,6 +5,7 @@
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
+use tracing::{debug, info};
 
 use super::embedding::{EmbeddingProvider, EmbeddingResponse};
 use super::http::{SharedHttpClient, map_request_error, warn_if_insecure_remote};
@@ -90,7 +91,21 @@ impl OpenAiClient {
         request: &ChatCompletionRequest<'_>,
     ) -> Result<ModelResponse, ModelError> {
         let timeout_secs = http.timeout_secs();
-        let mut req_builder = http.client().post(url).json(request);
+        let request_json = serde_json::to_string(request)
+            .unwrap_or_else(|e| format!("(serialization failed: {e})"));
+
+        debug!(
+            model = %request.model,
+            message_count = request.messages.len(),
+            tool_count = request.tools.as_ref().map_or(0, Vec::len),
+            "sending openai completion request"
+        );
+
+        let mut req_builder = http
+            .client()
+            .post(url)
+            .body(request_json.clone())
+            .header("content-type", "application/json");
 
         if let Some(key) = api_key {
             req_builder = req_builder.header("Authorization", format!("Bearer {key}"));
@@ -110,6 +125,12 @@ impl OpenAiClient {
                     format!("failed to read response body: {e}")
                 }
             };
+            tracing::warn!(
+                status = %status,
+                response_body = %raw_body,
+                request_body = %request_json,
+                "openai API error — full request/response for diagnosis"
+            );
             let error_body = serde_json::from_str::<OpenAiErrorResponse>(&raw_body)
                 .map_or_else(|_| raw_body, |e| e.error.message);
             return Err(ModelError::Api(format!("{status}: {error_body}")));
@@ -160,6 +181,12 @@ impl OpenAiClient {
 
         let mut resp = ModelResponse::new(content, tool_calls);
         resp.usage = usage;
+        info!(
+            model = %request.model,
+            content_len = resp.content.len(),
+            tool_calls = resp.tool_calls.len(),
+            "openai completion received"
+        );
         Ok(resp)
     }
 }
@@ -536,6 +563,8 @@ impl EmbeddingProvider for OpenAiEmbeddingClient {
                     input: texts,
                 };
 
+                debug!(model = %model, count = texts.len(), "sending openai embed request");
+
                 let mut req_builder = http.client().post(&url).json(&request);
 
                 if let Some(ref key) = api_key {
@@ -580,7 +609,9 @@ impl EmbeddingProvider for OpenAiEmbeddingClient {
 
                 let dimensions = api_response.data.first().map_or(0, |d| d.embedding.len());
 
-                let embeddings = api_response.data.into_iter().map(|d| d.embedding).collect();
+                let embeddings: Vec<Vec<f32>> =
+                    api_response.data.into_iter().map(|d| d.embedding).collect();
+                info!(model = %model, count = embeddings.len(), dimensions, "openai embeddings received");
 
                 Ok(EmbeddingResponse {
                     embeddings,

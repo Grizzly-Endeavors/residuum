@@ -10,7 +10,7 @@ use std::sync::Arc;
 use axum::routing::get;
 
 use crate::config::Config;
-use crate::error::ResiduumError;
+use crate::error::FatalError;
 
 use super::web::{self, ConfigApiState};
 
@@ -29,9 +29,9 @@ pub enum SetupExit {
 ///
 /// # Errors
 ///
-/// Returns `ResiduumError::Gateway` if the server cannot bind or the config
+/// Returns `FatalError::Gateway` if the server cannot bind or the config
 /// directory cannot be determined.
-pub async fn run_setup_server() -> Result<SetupExit, ResiduumError> {
+pub async fn run_setup_server() -> Result<SetupExit, FatalError> {
     let config_dir = Config::config_dir()?;
     run_setup_server_at(config_dir).await
 }
@@ -40,8 +40,8 @@ pub async fn run_setup_server() -> Result<SetupExit, ResiduumError> {
 ///
 /// # Errors
 ///
-/// Returns `ResiduumError::Gateway` if the server cannot bind.
-pub async fn run_setup_server_at(config_dir: PathBuf) -> Result<SetupExit, ResiduumError> {
+/// Returns `FatalError::Gateway` if the server cannot bind.
+pub async fn run_setup_server_at(config_dir: PathBuf) -> Result<SetupExit, FatalError> {
     let (setup_done_tx, mut setup_done_rx) = tokio::sync::watch::channel(false);
     let setup_done_tx = Arc::new(setup_done_tx);
 
@@ -68,11 +68,11 @@ pub async fn run_setup_server_at(config_dir: PathBuf) -> Result<SetupExit, Resid
         );
     }
     let addr = gateway_cfg.addr();
-    let listener = tokio::net::TcpListener::bind(&addr).await.map_err(|e| {
-        ResiduumError::Gateway(format!("failed to bind setup server to {addr}: {e}"))
-    })?;
+    let listener = tokio::net::TcpListener::bind(&addr)
+        .await
+        .map_err(|e| FatalError::Gateway(format!("failed to bind setup server to {addr}: {e}")))?;
 
-    eprintln!("Setup wizard available at http://{addr}");
+    println!("Setup wizard available at http://{addr}");
     tracing::info!(addr = %addr, "setup wizard listening");
 
     let server = axum::serve(listener, app).with_graceful_shutdown(async move {

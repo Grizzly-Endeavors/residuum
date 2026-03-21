@@ -50,6 +50,7 @@ pub(crate) async fn run_telegram_subscriber(
     chat_id: ChatId,
 ) {
     let mut typing_cancel: Option<tokio::sync::watch::Sender<bool>> = None;
+    let mut clean_exit = true;
 
     loop {
         tokio::select! {
@@ -75,19 +76,22 @@ pub(crate) async fn run_telegram_subscriber(
                     Ok(Some(TurnLifecycleEvent::Ended { .. })) => {
                         typing_cancel.take();
                     }
-                    _ => break,
+                    Ok(None) => break,
+                    Err(_) => { clean_exit = false; break; }
                 }
             }
             event = subs.response.recv() => {
                 match event {
                     Ok(Some(resp)) => send_chunks(&bot, chat_id, &resp.content).await,
-                    _ => break,
+                    Ok(None) => break,
+                    Err(_) => { clean_exit = false; break; }
                 }
             }
             event = subs.intermediate.recv() => {
                 match event {
                     Ok(Some(im)) => send_chunks(&bot, chat_id, &im.content).await,
-                    _ => break,
+                    Ok(None) => break,
+                    Err(_) => { clean_exit = false; break; }
                 }
             }
             event = subs.system.recv() => {
@@ -103,20 +107,25 @@ pub(crate) async fn run_telegram_subscriber(
                         let text = format!("**[{}]** {}", se.source, se.content);
                         send_chunks(&bot, chat_id, &text).await;
                     }
-                    _ => break,
+                    Ok(None) => break,
+                    Err(_) => { clean_exit = false; break; }
                 }
             }
         }
     }
 
-    tracing::debug!("telegram subscriber loop ended (broker shut down)");
+    if clean_exit {
+        tracing::debug!("telegram subscriber loop ended");
+    } else {
+        tracing::warn!("telegram subscriber loop ended unexpectedly");
+    }
 }
 
 async fn send_chunks(bot: &Bot, chat_id: ChatId, content: &str) {
     let chunks = chunk_text(content, TELEGRAM_MAX_CHARS);
     for chunk in chunks {
         if let Err(e) = bot.send_message(chat_id, &chunk).await {
-            tracing::warn!(error = %e, "failed to send telegram message");
+            tracing::warn!(chat_id = %chat_id, error = %e, "failed to send telegram message");
         }
     }
 }

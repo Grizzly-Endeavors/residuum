@@ -96,6 +96,8 @@ impl EventHandler for DiscordHandler {
             return;
         }
 
+        tracing::debug!(author = %msg.author.name, content_len = msg.content.len(), "discord DM received");
+
         // Track the DM channel for subscriber output
         {
             let mut cid = self.channel_id.lock().await;
@@ -180,7 +182,14 @@ impl EventHandler for DiscordHandler {
                 }
                 match tokio::time::timeout(Duration::from_secs(10), reply_rx).await {
                     Ok(Ok(msg)) => msg,
-                    _ => result.response,
+                    Ok(Err(_)) => {
+                        tracing::warn!(command = %name, "server command reply channel closed before response");
+                        result.response
+                    }
+                    Err(_) => {
+                        tracing::warn!(command = %name, timeout_secs = 10, "server command timed out waiting for reply");
+                        result.response
+                    }
                 }
             }
             Some(CommandSideEffect::InboxAdd(body)) => {
@@ -261,6 +270,7 @@ async fn process_discord_attachments(
                     tracing::warn!(
                         filename = %info.filename,
                         size = info.size,
+                        max = MAX_IMAGE_INLINE_SIZE,
                         "discord image exceeds inline size limit, saved but not sent to model"
                     );
                 }
@@ -355,7 +365,7 @@ async fn presence_watcher(presence_path: PathBuf, shard: serenity::gateway::Shar
             let status = to_online_status(&pf);
 
             shard.set_presence(Some(activity), status);
-            tracing::info!("discord presence updated from PRESENCE.toml");
+            tracing::info!(status = ?status, activity_type = ?pf.activity_type, "discord presence updated from PRESENCE.toml");
         }
     }
 }

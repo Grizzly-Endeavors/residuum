@@ -63,6 +63,7 @@ pub async fn handle_server_command(
             }
         }
         unknown => {
+            tracing::debug!(command = %unknown, "received unknown server command");
             if let Err(e) = rt
                 .publisher
                 .publish(

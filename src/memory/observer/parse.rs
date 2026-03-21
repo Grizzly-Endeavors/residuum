@@ -4,7 +4,6 @@ use chrono::NaiveDateTime;
 use chrono_tz::Tz;
 use serde::Deserialize;
 
-use crate::error::ResiduumError;
 use crate::memory::types::Visibility;
 use crate::models::ModelResponse;
 use crate::time::now_local;
@@ -49,7 +48,7 @@ pub(super) struct ObserverParseResult {
 pub(super) fn parse_observer_response(
     response: &ModelResponse,
     tz: Tz,
-) -> Result<ObserverParseResult, ResiduumError> {
+) -> anyhow::Result<ObserverParseResult> {
     let content = response.content.trim();
     let json_str = crate::memory::strip_code_fences(content);
 
@@ -58,9 +57,7 @@ pub(super) fn parse_observer_response(
         let extractions = typed_items_to_extractions(&typed.observations, tz);
 
         if extractions.is_empty() {
-            return Err(ResiduumError::Memory(
-                "observer returned empty observations array".to_string(),
-            ));
+            anyhow::bail!("observer returned empty observations array");
         }
 
         let narrative = if typed.narrative.is_empty() {
@@ -76,10 +73,9 @@ pub(super) fn parse_observer_response(
     }
 
     // Fallback: Value-based parsing for legacy bare arrays and malformed objects
+    tracing::debug!("observer structured output failed, falling back to value-based parsing");
     let value: serde_json::Value = serde_json::from_str(json_str).map_err(|e| {
-        ResiduumError::Memory(format!(
-            "failed to parse observer response as JSON: {e}\nresponse: {content}"
-        ))
+        anyhow::anyhow!("failed to parse observer response as JSON: {e}\nresponse: {content}")
     })?;
 
     let (items, narrative) = if let Some(arr) = value.as_array() {
@@ -89,9 +85,9 @@ pub(super) fn parse_observer_response(
             .get("observations")
             .and_then(serde_json::Value::as_array)
             .ok_or_else(|| {
-                ResiduumError::Memory(format!(
+                anyhow::anyhow!(
                     "observer response object missing 'observations' array\nresponse: {content}"
-                ))
+                )
             })?
             .clone();
 
@@ -103,17 +99,13 @@ pub(super) fn parse_observer_response(
 
         (obs_array, narr)
     } else {
-        return Err(ResiduumError::Memory(format!(
-            "observer response is not a JSON array or object\nresponse: {content}"
-        )));
+        anyhow::bail!("observer response is not a JSON array or object\nresponse: {content}");
     };
 
     let extractions = parse_extraction_items(&items, tz);
 
     if extractions.is_empty() {
-        return Err(ResiduumError::Memory(
-            "observer returned empty observations array".to_string(),
-        ));
+        anyhow::bail!("observer returned empty observations array");
     }
 
     Ok(ObserverParseResult {
@@ -126,7 +118,14 @@ pub(super) fn parse_observer_response(
 fn typed_items_to_extractions(items: &[ObservationItem], tz: Tz) -> Vec<ObserverExtraction> {
     items
         .iter()
-        .filter(|item| !item.content.is_empty())
+        .filter(|item| {
+            if item.content.is_empty() {
+                tracing::debug!("observer typed item has empty content, skipping");
+                false
+            } else {
+                true
+            }
+        })
         .map(|item| {
             let timestamp = crate::memory::parse_minute_timestamp(&item.timestamp, tz);
             let visibility = if item.visibility == "background" {

@@ -118,8 +118,16 @@ impl MacosBridge {
             );
         });
 
-        if result.is_err() {
-            tracing::warn!("failed to register macOS notification categories");
+        if let Err(panic_val) = result {
+            let msg = panic_val
+                .downcast_ref::<&str>()
+                .copied()
+                .or_else(|| panic_val.downcast_ref::<String>().map(String::as_str))
+                .unwrap_or("unknown");
+            tracing::warn!(
+                panic = msg,
+                "failed to register macOS notification categories"
+            );
         }
     }
 
@@ -149,7 +157,7 @@ impl MacosBridge {
         tracing::info!(
             identifier,
             category = category_id,
-            "macOS notification delivered"
+            "macOS notification submitted"
         );
 
         Ok(())
@@ -200,6 +208,11 @@ impl MacosBridge {
                     if tx.try_send(ack).is_err() {
                         tracing::warn!(notification_id, "failed to send mark-read acknowledgment");
                     }
+                } else {
+                    tracing::warn!(
+                        notification_id,
+                        "mark-read action received but no ack sender configured"
+                    );
                 }
             }
             // "dismiss" is the default macOS action — no-op
@@ -255,9 +268,10 @@ fn post_notification_sync(
 
         let center = UNUserNotificationCenter::currentNotificationCenter();
 
-        let block = RcBlock::new(|error: *mut NSError| {
+        let id_for_block = identifier.to_string();
+        let block = RcBlock::new(move |error: *mut NSError| {
             if !error.is_null() {
-                tracing::warn!("macOS notification delivery error");
+                tracing::warn!(identifier = %id_for_block, "macOS notification delivery error");
             }
         });
 
@@ -265,7 +279,11 @@ fn post_notification_sync(
     });
 
     if result.is_err() {
-        tracing::warn!("panic in macOS notification posting");
+        tracing::warn!(
+            identifier,
+            category_id,
+            "panic in macOS notification posting"
+        );
     }
 }
 

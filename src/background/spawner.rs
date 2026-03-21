@@ -78,6 +78,8 @@ impl BackgroundTaskSpawner {
             .await
             .insert(task_id.clone(), (token, active_info));
 
+        tracing::info!(task_id = %task_id, source_label = %task.source_label, "spawning background task");
+
         tokio::spawn(async move {
             // Acquire semaphore permit (waits if at capacity)
             let _permit = match semaphore.acquire().await {
@@ -114,7 +116,11 @@ impl BackgroundTaskSpawner {
 
             // Send result to gateway channel
             if let Err(e) = result_tx.send(result).await {
-                tracing::warn!(error = %e, "failed to send background task result");
+                tracing::warn!(
+                    task_id = %e.0.id,
+                    source_label = %e.0.source_label,
+                    "failed to send background task result; result lost"
+                );
             }
         });
 
@@ -175,6 +181,7 @@ async fn build_cancelled_result(
         crate::tools::SharedToolFilter,
     )>,
 ) -> BackgroundResult {
+    tracing::info!(task_id = %spawn_task_id, "background task cancelled");
     if let Some((project_state, mcp_registry, path_policy, tool_filter)) = cleanup_handles {
         let active_name = project_state
             .lock()
@@ -182,11 +189,6 @@ async fn build_cancelled_result(
             .active_project_name()
             .map(str::to_string);
         if let Some(name) = active_name {
-            tracing::info!(
-                task_id = %spawn_task_id,
-                project = %name,
-                "[cancelled] SubAgent {spawn_task_id} was stopped. Work may be incomplete."
-            );
             mcp_registry.write().await.deactivate_project(&name).await;
             path_policy.write().await.set_active_project(None);
             tool_filter.write().await.clear_enabled();
@@ -227,6 +229,10 @@ async fn build_completed_result(
             )
         }
     };
+
+    if matches!(status, AgentResultStatus::Completed) {
+        tracing::info!(task_id = %task.id, source_label = %task.source_label, "background task completed");
+    }
 
     let transcript_path =
         write_transcript(background_dir, &task.id, &summary, messages.as_deref()).await;

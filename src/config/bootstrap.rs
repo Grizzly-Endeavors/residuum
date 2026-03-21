@@ -2,7 +2,7 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::error::ResiduumError;
+use crate::error::FatalError;
 
 /// Minimal config.toml written on first run — user edits this.
 const MINIMAL_CONFIG: &str = "# Residuum configuration. See config.example.toml for all options.\n\
@@ -22,26 +22,26 @@ const EXAMPLE_CONFIG: &str = include_str!("../../assets/config.example.toml");
 const EXAMPLE_PROVIDERS: &str = include_str!("../../assets/providers.example.toml");
 
 /// Get the default config directory (`~/.residuum/`).
-pub(crate) fn default_config_dir() -> Result<PathBuf, ResiduumError> {
+pub(crate) fn default_config_dir() -> Result<PathBuf, FatalError> {
     dirs::home_dir()
         .map(|h| h.join(".residuum"))
-        .ok_or_else(|| ResiduumError::Config("could not determine home directory".to_string()))
+        .ok_or_else(|| FatalError::Config("could not determine home directory".to_string()))
 }
 
 /// Get the default workspace directory (`~/.residuum/workspace/`).
-pub(super) fn default_workspace_dir() -> Result<PathBuf, ResiduumError> {
+pub(super) fn default_workspace_dir() -> Result<PathBuf, FatalError> {
     default_config_dir().map(|d| d.join("workspace"))
 }
 
 /// Write a file only if it doesn't already exist.
 ///
 /// Returns `true` if the file was written, `false` if it already existed.
-fn write_if_absent(path: &Path, content: &str) -> Result<bool, ResiduumError> {
+fn write_if_absent(path: &Path, content: &str) -> Result<bool, FatalError> {
     if path.exists() {
         return Ok(false);
     }
     std::fs::write(path, content).map_err(|e| {
-        ResiduumError::Config(format!(
+        FatalError::Config(format!(
             "failed to write {} at {}: {e}",
             path.file_name().and_then(|n| n.to_str()).unwrap_or("file"),
             path.display()
@@ -56,11 +56,11 @@ fn write_if_absent(path: &Path, content: &str) -> Result<bool, ResiduumError> {
 /// and always regenerates `config.example.toml`.
 ///
 /// # Errors
-/// Returns `ResiduumError::Config` if the directory or files cannot be written.
-pub(super) fn bootstrap_at(dir: &Path) -> Result<(), ResiduumError> {
+/// Returns `FatalError::Config` if the directory or files cannot be written.
+pub(super) fn bootstrap_at(dir: &Path) -> Result<(), FatalError> {
     if !dir.exists() {
         std::fs::create_dir_all(dir).map_err(|e| {
-            ResiduumError::Config(format!(
+            FatalError::Config(format!(
                 "failed to create config directory {}: {e}",
                 dir.display()
             ))
@@ -78,7 +78,7 @@ pub(super) fn bootstrap_at(dir: &Path) -> Result<(), ResiduumError> {
     // Always regenerate example files
     let example_path = dir.join("config.example.toml");
     std::fs::write(&example_path, EXAMPLE_CONFIG).map_err(|e| {
-        ResiduumError::Config(format!(
+        FatalError::Config(format!(
             "failed to write config.example.toml at {}: {e}",
             example_path.display()
         ))
@@ -86,17 +86,23 @@ pub(super) fn bootstrap_at(dir: &Path) -> Result<(), ResiduumError> {
 
     let providers_example_path = dir.join("providers.example.toml");
     std::fs::write(&providers_example_path, EXAMPLE_PROVIDERS).map_err(|e| {
-        ResiduumError::Config(format!(
+        FatalError::Config(format!(
             "failed to write providers.example.toml at {}: {e}",
             providers_example_path.display()
         ))
     })?;
 
+    tracing::debug!(
+        config_example = %example_path.display(),
+        providers_example = %providers_example_path.display(),
+        "regenerated example config files"
+    );
+
     // workspace/config/ directory with starter files
     let ws_config_dir = dir.join("workspace").join("config");
     if !ws_config_dir.exists() {
         std::fs::create_dir_all(&ws_config_dir).map_err(|e| {
-            ResiduumError::Config(format!(
+            FatalError::Config(format!(
                 "failed to create workspace/config at {}: {e}",
                 ws_config_dir.display()
             ))

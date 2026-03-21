@@ -30,6 +30,7 @@ fn check_permissions_sync() {
 
         let block = RcBlock::new(move |granted: Bool, error: *mut NSError| {
             if !error.is_null() {
+                tracing::debug!("macOS notification permission request: NSError is non-nil");
                 tracing::warn!(
                     "macOS notification permission request failed. \
                      To enable: System Settings > Notifications > Residuum > Allow Notifications"

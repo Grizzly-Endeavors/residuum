@@ -109,16 +109,18 @@ impl Tool for SwitchEndpointTool {
         self.override_tx.send_replace(Some(ep.clone()));
 
         // Notify via system message so the user knows the agent switched.
-        drop(
-            self.publisher
-                .publish(
-                    topics::SystemMessage,
-                    SystemMessageEvent::Notice {
-                        message: "Agent switched output to this endpoint.".to_string(),
-                    },
-                )
-                .await,
-        );
+        if let Err(e) = self
+            .publisher
+            .publish(
+                topics::SystemMessage,
+                SystemMessageEvent::Notice {
+                    message: "Agent switched output to this endpoint.".to_string(),
+                },
+            )
+            .await
+        {
+            tracing::warn!(error = %e, "failed to publish endpoint switch notice");
+        }
 
         Ok(ToolResult::success(format!(
             "Switched output to '{}'. Subsequent responses will be sent there.",

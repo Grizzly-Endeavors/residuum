@@ -1,6 +1,6 @@
 //! Broker task and `BusHandle` factory.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -84,24 +84,40 @@ pub fn spawn_broker() -> BusHandle {
 ///
 /// Exits naturally when every `BusHandle` (and derived sender) is dropped.
 async fn run_broker(mut cmd_rx: mpsc::Receiver<BrokerCommand>) {
+    debug!("bus broker running");
     let mut subscriptions: HashMap<TopicId, Vec<(u64, mpsc::Sender<ErasedEvent>)>> = HashMap::new();
+    let mut full_subscribers: HashSet<u64> = HashSet::new();
 
     while let Some(cmd) = cmd_rx.recv().await {
         match cmd {
             BrokerCommand::Publish { topic, event } => {
                 let had_subscribers = if let Some(subscribers) = subscriptions.get_mut(&topic) {
+                    let mut any_delivered = false;
                     subscribers.retain(|(id, tx)| {
                         match tx.try_send(Arc::clone(&event)) {
-                            Ok(()) => true,
+                            Ok(()) => {
+                                any_delivered = true;
+                                if full_subscribers.remove(id) {
+                                    debug!(
+                                        topic = %topic,
+                                        subscriber_id = id,
+                                        "subscriber recovered from backpressure"
+                                    );
+                                }
+                                true
+                            }
                             Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
-                                warn!(
-                                    topic = %topic,
-                                    subscriber_id = id,
-                                    "subscriber full, event dropped"
-                                );
+                                if full_subscribers.insert(*id) {
+                                    warn!(
+                                        topic = %topic,
+                                        subscriber_id = id,
+                                        "subscriber full, dropping events"
+                                    );
+                                }
                                 true // keep subscriber
                             }
                             Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
+                                full_subscribers.remove(id);
                                 debug!(
                                     topic = %topic,
                                     subscriber_id = id,
@@ -111,11 +127,10 @@ async fn run_broker(mut cmd_rx: mpsc::Receiver<BrokerCommand>) {
                             }
                         }
                     });
-                    let count = subscribers.len();
                     if subscribers.is_empty() {
                         subscriptions.remove(&topic);
                     }
-                    count > 0
+                    any_delivered
                 } else {
                     false
                 };
@@ -128,7 +143,17 @@ async fn run_broker(mut cmd_rx: mpsc::Receiver<BrokerCommand>) {
                         message: format!("no active subscribers for topic {topic}"),
                     });
                     if let Some(error_subs) = subscriptions.get_mut(&TopicId::SystemMessage) {
-                        error_subs.retain(|(_, tx)| tx.try_send(Arc::clone(&error_event)).is_ok());
+                        error_subs.retain(|(id, tx)| match tx.try_send(Arc::clone(&error_event)) {
+                            Ok(()) => true,
+                            Err(e) => {
+                                warn!(
+                                    subscriber_id = id,
+                                    error = %e,
+                                    "failed to deliver error event to SystemMessage subscriber"
+                                );
+                                false
+                            }
+                        });
                         if error_subs.is_empty() {
                             subscriptions.remove(&TopicId::SystemMessage);
                         }
@@ -136,18 +161,22 @@ async fn run_broker(mut cmd_rx: mpsc::Receiver<BrokerCommand>) {
                 }
             }
             BrokerCommand::Subscribe { id, topic, sender } => {
+                debug!(subscriber_id = id, topic = %topic, "subscriber registered");
                 subscriptions.entry(topic).or_default().push((id, sender));
             }
             BrokerCommand::Unsubscribe { id, topic } => {
+                full_subscribers.remove(&id);
                 if let Some(subscribers) = subscriptions.get_mut(&topic) {
                     subscribers.retain(|(sub_id, _)| *sub_id != id);
                     if subscribers.is_empty() {
                         subscriptions.remove(&topic);
                     }
                 }
+                debug!(subscriber_id = id, topic = %topic, "subscriber unregistered");
             }
         }
     }
+    debug!("bus broker shut down");
 }
 
 // ---------------------------------------------------------------------------

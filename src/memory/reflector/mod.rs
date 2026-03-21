@@ -6,10 +6,10 @@
 mod parse;
 mod prompt;
 
+use anyhow::Context;
 use chrono_tz::Tz;
 
 use crate::config::DEFAULT_REFLECTOR_THRESHOLD;
-use crate::error::ResiduumError;
 use crate::memory::log_store::{load_observation_log, save_observation_log};
 use crate::memory::tokens::estimate_tokens;
 use crate::memory::types::ObservationLog;
@@ -73,6 +73,8 @@ impl Reflector {
         tracing::info!(
             old_threshold = self.config.threshold_tokens,
             new_threshold = config.threshold_tokens,
+            old_tz = %self.config.tz,
+            new_tz = %config.tz,
             "updating reflector config"
         );
         self.config = config;
@@ -104,7 +106,7 @@ impl Reflector {
     ///
     /// # Errors
     /// Returns an error if the LLM call fails or file persistence fails.
-    pub async fn reflect(&self, layout: &WorkspaceLayout) -> Result<ObservationLog, ResiduumError> {
+    pub async fn reflect(&self, layout: &WorkspaceLayout) -> anyhow::Result<ObservationLog> {
         let log = load_observation_log(&layout.observations_json()).await?;
 
         if log.is_empty() {
@@ -127,7 +129,7 @@ impl Reflector {
         // Serialize the flat observations for the LLM prompt — keep full objects
         // so the model has project_context and timestamp info for intelligent merging.
         let serialized = serde_json::to_string_pretty(&log.observations)
-            .map_err(|e| ResiduumError::Memory(format!("failed to serialize observations: {e}")))?;
+            .context("failed to serialize observations")?;
 
         let messages = build_reflection_prompt(&serialized, &content_guidance);
 
@@ -146,15 +148,15 @@ impl Reflector {
             .provider
             .complete(&messages, &[], &options)
             .await
-            .map_err(ResiduumError::Model)?;
+            .context("reflector LLM call failed")?;
 
         // Parse the object-array response into a compressed log.
         let compressed = parse_reflection_response(&response.content, self.config.tz)?;
 
         if compressed.is_empty() {
-            return Err(ResiduumError::Memory(
-                "reflector returned empty observations, refusing to replace observation log".into(),
-            ));
+            anyhow::bail!(
+                "reflector returned empty observations, refusing to replace observation log"
+            );
         }
 
         // Backup observation log before replacement
@@ -162,6 +164,8 @@ impl Reflector {
         let backup_path = obs_path.with_extension("json.bak");
         if let Err(e) = tokio::fs::copy(&obs_path, &backup_path).await {
             tracing::warn!(error = %e, "failed to create observation log backup before reflection");
+        } else {
+            tracing::debug!(path = %backup_path.display(), "created observation log backup");
         }
 
         // Replace the observation log

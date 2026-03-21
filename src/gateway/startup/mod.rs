@@ -16,7 +16,7 @@ use crate::background::BackgroundTaskSpawner;
 use crate::background::types::BackgroundResult;
 use crate::bus::EndpointRegistry;
 use crate::config::Config;
-use crate::error::ResiduumError;
+use crate::error::FatalError;
 use crate::mcp::SharedMcpRegistry;
 use crate::memory::observer::Observer;
 use crate::memory::reflector::Reflector;
@@ -64,16 +64,16 @@ pub(crate) struct GatewayComponents {
 /// Bootstrap the workspace directory and return the layout and timezone.
 ///
 /// # Errors
-/// Returns `ResiduumError` if workspace bootstrapping fails.
+/// Returns `FatalError` if workspace bootstrapping fails.
 pub(super) async fn init_workspace(
     cfg: &Config,
-) -> Result<(WorkspaceLayout, chrono_tz::Tz), ResiduumError> {
+) -> Result<(WorkspaceLayout, chrono_tz::Tz), FatalError> {
     let layout = WorkspaceLayout::new(&cfg.workspace_dir);
     let tz = cfg.timezone;
     ensure_workspace(&layout, cfg.name.as_deref(), Some(cfg.timezone.name())).await?;
 
     std::env::set_current_dir(&cfg.workspace_dir).map_err(|e| {
-        ResiduumError::Config(format!(
+        FatalError::Config(format!(
             "failed to change to workspace directory {}: {e}",
             cfg.workspace_dir.display()
         ))
@@ -86,16 +86,16 @@ pub(super) async fn init_workspace(
 /// Load identity files and build the shared HTTP client.
 ///
 /// # Errors
-/// Returns `ResiduumError` if identity loading or HTTP client construction fails.
+/// Returns `FatalError` if identity loading or HTTP client construction fails.
 pub(super) async fn init_identity_and_http(
     layout: &WorkspaceLayout,
     cfg: &Config,
-) -> Result<(IdentityFiles, SharedHttpClient), ResiduumError> {
+) -> Result<(IdentityFiles, SharedHttpClient), FatalError> {
     let identity = IdentityFiles::load(layout).await?;
     let http = SharedHttpClient::new(&crate::models::HttpClientConfig::with_timeout(
         cfg.timeout_secs,
     ))
-    .map_err(|e| ResiduumError::Config(format!("failed to build HTTP client: {e}")))?;
+    .map_err(|e| FatalError::Config(format!("failed to build HTTP client: {e}")))?;
     Ok((identity, http))
 }
 
@@ -319,11 +319,11 @@ pub(crate) async fn spawn_notify_subscribers(
 /// and remaining subsystems.
 ///
 /// # Errors
-/// Returns `ResiduumError` if any subsystem fails to initialize.
+/// Returns `FatalError` if any subsystem fails to initialize.
 pub(crate) async fn initialize(
     cfg: &Config,
     publisher: &crate::bus::Publisher,
-) -> Result<GatewayComponents, ResiduumError> {
+) -> Result<GatewayComponents, FatalError> {
     let (layout, tz) = init_workspace(cfg).await?;
     let (identity, http) = init_identity_and_http(&layout, cfg).await?;
     let providers = providers::init_providers(cfg, tz, http.clone())?;

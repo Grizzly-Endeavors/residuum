@@ -75,7 +75,10 @@ impl ToolRegistry {
             )));
         }
 
-        tool.execute(arguments).await
+        tracing::debug!(tool = %name, "tool invocation");
+        let result = tool.execute(arguments).await?;
+        tracing::debug!(tool = %name, is_error = result.is_error, "tool result");
+        Ok(result)
     }
 
     /// Register the default set of tools (read, write, edit, exec).

@@ -17,7 +17,7 @@ use std::path::Path;
 use aes_gcm_siv::aead::Aead;
 use aes_gcm_siv::{Aes256GcmSiv, KeyInit, Nonce};
 
-use crate::error::ResiduumError;
+use crate::error::FatalError;
 
 /// File names within the config directory.
 const KEY_FILE: &str = "secrets.key";
@@ -35,9 +35,9 @@ impl SecretStore {
     /// Load from the encrypted file. Returns an empty store if the file doesn't exist.
     ///
     /// # Errors
-    /// Returns `ResiduumError::Config` if the key or encrypted file cannot be
+    /// Returns `FatalError::Config` if the key or encrypted file cannot be
     /// read, or if decryption or TOML parsing fails.
-    pub fn load(config_dir: &Path) -> Result<Self, ResiduumError> {
+    pub fn load(config_dir: &Path) -> Result<Self, FatalError> {
         let enc_path = config_dir.join(ENCRYPTED_FILE);
         if !enc_path.exists() {
             return Ok(Self {
@@ -47,7 +47,7 @@ impl SecretStore {
 
         let key = load_key(config_dir)?;
         let ciphertext = std::fs::read(&enc_path).map_err(|e| {
-            ResiduumError::Config(format!(
+            FatalError::Config(format!(
                 "failed to read secrets file at {}: {e}",
                 enc_path.display()
             ))
@@ -56,7 +56,9 @@ impl SecretStore {
         let plaintext = decrypt(&ciphertext, &key)?;
         let table = parse_secrets_toml(&plaintext)?;
 
-        Ok(Self { secrets: table })
+        let store = Self { secrets: table };
+        tracing::debug!(count = store.secrets.len(), "secrets loaded");
+        Ok(store)
     }
 
     /// Get a secret by name.
@@ -70,8 +72,8 @@ impl SecretStore {
     /// Creates the key file if it doesn't exist yet.
     ///
     /// # Errors
-    /// Returns `ResiduumError::Config` if the store cannot be saved.
-    pub fn set(&mut self, name: &str, value: &str, config_dir: &Path) -> Result<(), ResiduumError> {
+    /// Returns `FatalError::Config` if the store cannot be saved.
+    pub fn set(&mut self, name: &str, value: &str, config_dir: &Path) -> Result<(), FatalError> {
         self.secrets.insert(name.to_owned(), value.to_owned());
         self.save(config_dir)
     }
@@ -79,8 +81,8 @@ impl SecretStore {
     /// Delete a secret and persist. No-op if the secret doesn't exist.
     ///
     /// # Errors
-    /// Returns `ResiduumError::Config` if the store cannot be saved.
-    pub fn delete(&mut self, name: &str, config_dir: &Path) -> Result<(), ResiduumError> {
+    /// Returns `FatalError::Config` if the store cannot be saved.
+    pub fn delete(&mut self, name: &str, config_dir: &Path) -> Result<(), FatalError> {
         self.secrets.remove(name);
         self.save(config_dir)
     }
@@ -94,14 +96,14 @@ impl SecretStore {
     }
 
     /// Serialize and encrypt the store to disk.
-    fn save(&self, config_dir: &Path) -> Result<(), ResiduumError> {
+    fn save(&self, config_dir: &Path) -> Result<(), FatalError> {
         let key = load_or_create_key(config_dir)?;
         let plaintext = serialize_secrets_toml(&self.secrets);
         let ciphertext = encrypt(&plaintext, &key)?;
 
         let enc_path = config_dir.join(ENCRYPTED_FILE);
         std::fs::write(&enc_path, &ciphertext).map_err(|e| {
-            ResiduumError::Config(format!(
+            FatalError::Config(format!(
                 "failed to write secrets file at {}: {e}",
                 enc_path.display()
             ))
@@ -110,17 +112,17 @@ impl SecretStore {
 }
 
 /// Load an existing key file, or return an error if it doesn't exist.
-fn load_key(config_dir: &Path) -> Result<[u8; 32], ResiduumError> {
+fn load_key(config_dir: &Path) -> Result<[u8; 32], FatalError> {
     let key_path = config_dir.join(KEY_FILE);
     let bytes = std::fs::read(&key_path).map_err(|e| {
-        ResiduumError::Config(format!(
+        FatalError::Config(format!(
             "failed to read secret key at {}: {e}",
             key_path.display()
         ))
     })?;
 
     <[u8; 32]>::try_from(bytes.as_slice()).map_err(|err| {
-        ResiduumError::Config(format!(
+        FatalError::Config(format!(
             "secret key at {} has invalid length (expected 32 bytes, got {}): {err}",
             key_path.display(),
             bytes.len()
@@ -129,7 +131,7 @@ fn load_key(config_dir: &Path) -> Result<[u8; 32], ResiduumError> {
 }
 
 /// Load an existing key or generate a new one on first use.
-fn load_or_create_key(config_dir: &Path) -> Result<[u8; 32], ResiduumError> {
+fn load_or_create_key(config_dir: &Path) -> Result<[u8; 32], FatalError> {
     let key_path = config_dir.join(KEY_FILE);
     if key_path.exists() {
         return load_key(config_dir);
@@ -140,14 +142,14 @@ fn load_or_create_key(config_dir: &Path) -> Result<[u8; 32], ResiduumError> {
 
     // Ensure config dir exists
     std::fs::create_dir_all(config_dir).map_err(|e| {
-        ResiduumError::Config(format!(
+        FatalError::Config(format!(
             "failed to create config directory {}: {e}",
             config_dir.display()
         ))
     })?;
 
     std::fs::write(&key_path, key).map_err(|e| {
-        ResiduumError::Config(format!(
+        FatalError::Config(format!(
             "failed to write secret key at {}: {e}",
             key_path.display()
         ))
@@ -156,16 +158,18 @@ fn load_or_create_key(config_dir: &Path) -> Result<[u8; 32], ResiduumError> {
     // Set permissions to 0o600 (owner-only read/write)
     set_file_mode_600(&key_path)?;
 
+    tracing::info!(path = %key_path.display(), "generated new encryption key");
+
     Ok(key)
 }
 
 /// Set file permissions to 0600 (Unix only).
 #[cfg(unix)]
-fn set_file_mode_600(path: &Path) -> Result<(), ResiduumError> {
+fn set_file_mode_600(path: &Path) -> Result<(), FatalError> {
     use std::os::unix::fs::PermissionsExt;
     let perms = std::fs::Permissions::from_mode(0o600);
     std::fs::set_permissions(path, perms).map_err(|e| {
-        ResiduumError::Config(format!(
+        FatalError::Config(format!(
             "failed to set permissions on {}: {e}",
             path.display()
         ))
@@ -173,7 +177,7 @@ fn set_file_mode_600(path: &Path) -> Result<(), ResiduumError> {
 }
 
 #[cfg(not(unix))]
-fn set_file_mode_600(_path: &Path) -> Result<(), ResiduumError> {
+fn set_file_mode_600(_path: &Path) -> Result<(), FatalError> {
     // No-op on non-Unix platforms
     Ok(())
 }
@@ -181,14 +185,14 @@ fn set_file_mode_600(_path: &Path) -> Result<(), ResiduumError> {
 /// Encrypt plaintext using AES-256-GCM-SIV with a random nonce.
 ///
 /// Output format: nonce (12 bytes) || ciphertext + auth tag.
-fn encrypt(plaintext: &str, key: &[u8; 32]) -> Result<Vec<u8>, ResiduumError> {
+fn encrypt(plaintext: &str, key: &[u8; 32]) -> Result<Vec<u8>, FatalError> {
     let cipher = Aes256GcmSiv::new(key.into());
     let nonce_bytes: [u8; NONCE_SIZE] = rand::random();
     let nonce = Nonce::from_slice(&nonce_bytes);
 
     let ciphertext = cipher
         .encrypt(nonce, plaintext.as_bytes())
-        .map_err(|e| ResiduumError::Config(format!("failed to encrypt secrets: {e}")))?;
+        .map_err(|e| FatalError::Config(format!("failed to encrypt secrets: {e}")))?;
 
     let mut output = Vec::with_capacity(NONCE_SIZE + ciphertext.len());
     output.extend_from_slice(&nonce_bytes);
@@ -197,9 +201,9 @@ fn encrypt(plaintext: &str, key: &[u8; 32]) -> Result<Vec<u8>, ResiduumError> {
 }
 
 /// Decrypt ciphertext produced by [`encrypt`].
-fn decrypt(data: &[u8], key: &[u8; 32]) -> Result<String, ResiduumError> {
+fn decrypt(data: &[u8], key: &[u8; 32]) -> Result<String, FatalError> {
     if data.len() < NONCE_SIZE {
-        return Err(ResiduumError::Config(
+        return Err(FatalError::Config(
             "encrypted secrets file is too short (missing nonce)".to_string(),
         ));
     }
@@ -210,23 +214,22 @@ fn decrypt(data: &[u8], key: &[u8; 32]) -> Result<String, ResiduumError> {
 
     let plaintext = cipher
         .decrypt(nonce, ciphertext)
-        .map_err(|e| ResiduumError::Config(format!("failed to decrypt secrets: {e}")))?;
+        .map_err(|e| FatalError::Config(format!("failed to decrypt secrets: {e}")))?;
 
     String::from_utf8(plaintext)
-        .map_err(|e| ResiduumError::Config(format!("decrypted secrets contain invalid UTF-8: {e}")))
+        .map_err(|e| FatalError::Config(format!("decrypted secrets contain invalid UTF-8: {e}")))
 }
 
 /// Parse the decrypted TOML into a flat key→value map.
-fn parse_secrets_toml(toml_str: &str) -> Result<HashMap<String, String>, ResiduumError> {
+fn parse_secrets_toml(toml_str: &str) -> Result<HashMap<String, String>, FatalError> {
     #[derive(serde::Deserialize)]
     struct SecretsFile {
         #[serde(default)]
         secrets: HashMap<String, String>,
     }
 
-    let file: SecretsFile = toml::from_str(toml_str).map_err(|e| {
-        ResiduumError::Config(format!("failed to parse decrypted secrets TOML: {e}"))
-    })?;
+    let file: SecretsFile = toml::from_str(toml_str)
+        .map_err(|e| FatalError::Config(format!("failed to parse decrypted secrets TOML: {e}")))?;
 
     Ok(file.secrets)
 }

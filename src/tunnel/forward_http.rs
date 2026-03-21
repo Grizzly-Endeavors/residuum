@@ -1,6 +1,7 @@
 //! HTTP request forwarding to the local residuum instance.
 
 use std::collections::HashMap;
+use std::time::Instant;
 
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use futures_util::StreamExt;
@@ -94,10 +95,11 @@ pub(super) async fn forward(
     }
 
     // Send the request.
+    let start = Instant::now();
     let response = match req.send().await {
         Ok(resp) => resp,
         Err(e) => {
-            warn!(request_id, error = %e, "failed to forward request to local");
+            warn!(request_id, method, path, elapsed_ms = start.elapsed().as_millis(), error = %e, "failed to forward request to local");
             return error_response(request_id, 502, &format!("upstream error: {e}"));
         }
     };
@@ -107,50 +109,34 @@ pub(super) async fn forward(
     // Collect response headers, filtering hop-by-hop.
     let mut response_headers = HashMap::new();
     for (name, value) in response.headers() {
-        if !is_hop_by_hop(name.as_str())
-            && let Ok(v) = value.to_str()
-        {
-            response_headers.insert(name.to_string(), v.to_string());
+        if !is_hop_by_hop(name.as_str()) {
+            match value.to_str() {
+                Ok(v) => {
+                    response_headers.insert(name.to_string(), v.to_string());
+                }
+                Err(_) => {
+                    debug!(
+                        header_name = name.as_str(),
+                        "dropping non-UTF8 response header"
+                    );
+                }
+            }
         }
     }
 
     // Stream the response body in chunks, enforcing the size limit without
     // buffering the entire response before checking.
-    let response_body = {
-        let mut buf = Vec::new();
-        let mut stream = response.bytes_stream();
-        let mut exceeded = false;
-        while let Some(chunk_result) = stream.next().await {
-            match chunk_result {
-                Ok(chunk) => {
-                    buf.extend_from_slice(&chunk);
-                    if buf.len() > MAX_RESPONSE_SIZE {
-                        warn!(request_id, size = buf.len(), "response body too large");
-                        exceeded = true;
-                        break;
-                    }
-                }
-                Err(e) => {
-                    warn!(request_id, error = %e, "failed to read response body");
-                    return error_response(
-                        request_id,
-                        502,
-                        &format!("failed to read response: {e}"),
-                    );
-                }
-            }
-        }
-        if exceeded {
-            return error_response(request_id, 502, "response body too large");
-        }
-        if buf.is_empty() {
-            None
-        } else {
-            Some(STANDARD.encode(&buf))
-        }
+    let response_body = match collect_response_body(response, &request_id, &method, &path).await {
+        Ok(collected) => collected,
+        Err(frame) => return frame,
     };
 
-    debug!(request_id, status, "forwarded HTTP request successfully");
+    debug!(
+        request_id,
+        status,
+        elapsed_ms = start.elapsed().as_millis(),
+        "forwarded HTTP request successfully"
+    );
 
     TunnelFrame::HttpResponse {
         request_id,
@@ -158,6 +144,51 @@ pub(super) async fn forward(
         headers: response_headers,
         body: response_body,
     }
+}
+
+/// Stream and collect the response body, enforcing the size limit.
+async fn collect_response_body(
+    response: reqwest::Response,
+    request_id: &str,
+    method: &str,
+    path: &str,
+) -> Result<Option<String>, TunnelFrame> {
+    let mut buf = Vec::new();
+    let mut stream = response.bytes_stream();
+    while let Some(chunk_result) = stream.next().await {
+        match chunk_result {
+            Ok(chunk) => {
+                buf.extend_from_slice(&chunk);
+                if buf.len() > MAX_RESPONSE_SIZE {
+                    warn!(
+                        request_id,
+                        method,
+                        path,
+                        size = buf.len(),
+                        "response body too large"
+                    );
+                    return Err(error_response(
+                        request_id.to_string(),
+                        502,
+                        "response body too large",
+                    ));
+                }
+            }
+            Err(e) => {
+                warn!(request_id, error = %e, "failed to read response body");
+                return Err(error_response(
+                    request_id.to_string(),
+                    502,
+                    &format!("failed to read response: {e}"),
+                ));
+            }
+        }
+    }
+    Ok(if buf.is_empty() {
+        None
+    } else {
+        Some(STANDARD.encode(&buf))
+    })
 }
 
 /// Build a 502-style error response frame.

@@ -50,6 +50,13 @@ impl NotificationChannel for NtfyChannel {
         let endpoint = format!("{}/{}", self.url.trim_end_matches('/'), self.topic);
         let title = format!("[{}] {}", notification.source.as_str(), notification.title);
 
+        tracing::debug!(
+            channel = %self.channel_name,
+            endpoint = %endpoint,
+            title = %notification.title,
+            "delivering ntfy notification"
+        );
+
         let resp = self
             .client
             .post(&endpoint)
@@ -111,6 +118,13 @@ impl NotificationChannel for WebhookChannel {
     }
 
     async fn deliver(&self, notification: &NotificationEvent) -> anyhow::Result<()> {
+        tracing::debug!(
+            channel = %self.channel_name,
+            endpoint = %self.url,
+            title = %notification.title,
+            "delivering webhook notification"
+        );
+
         let payload = serde_json::json!({
             "title": notification.title,
             "content": notification.content,

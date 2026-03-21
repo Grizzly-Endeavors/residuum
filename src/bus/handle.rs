@@ -5,6 +5,7 @@ use std::marker::PhantomData;
 use std::sync::Arc;
 
 use tokio::sync::mpsc;
+use tracing::error;
 
 use super::topics::Topic;
 use super::types::{BusError, TopicId};
@@ -107,12 +108,18 @@ impl<E: Clone + Send + Sync + 'static> Subscriber<E> {
             return Ok(None);
         };
         // Try to unwrap the Arc (only owner) or clone via downcast
-        match erased.downcast::<E>() {
-            Ok(arc_e) => Ok(Some(Arc::unwrap_or_clone(arc_e))),
-            Err(_) => Err(BusError::TypeMismatch {
+        if let Ok(arc_e) = erased.downcast::<E>() {
+            Ok(Some(Arc::unwrap_or_clone(arc_e)))
+        } else {
+            error!(
+                expected = std::any::type_name::<E>(),
+                topic = %self.topic,
+                "type mismatch on bus receive: programmer error"
+            );
+            Err(BusError::TypeMismatch {
                 expected: std::any::type_name::<E>(),
                 topic: self.topic.to_string(),
-            }),
+            })
         }
     }
 }

@@ -2,7 +2,8 @@
 
 use std::path::Path;
 
-use crate::error::ResiduumError;
+use anyhow::Context;
+
 use crate::workspace::layout::WorkspaceLayout;
 
 use super::types::{ProjectFrontmatter, ProjectIndexEntry};
@@ -20,12 +21,14 @@ impl ProjectIndex {
     /// missing frontmatter is logged as a warning and skipped.
     ///
     /// # Errors
-    /// Returns `ResiduumError::Projects` if the directories cannot be read.
-    pub async fn scan(layout: &WorkspaceLayout) -> Result<Self, ResiduumError> {
+    /// Returns an error if the directories cannot be read.
+    pub async fn scan(layout: &WorkspaceLayout) -> anyhow::Result<Self> {
         let mut entries = Vec::new();
 
         scan_directory(&layout.projects_dir(), false, &mut entries).await?;
         scan_directory(&layout.archive_dir(), true, &mut entries).await?;
+
+        tracing::debug!(total = entries.len(), "project index scan complete");
 
         Ok(Self { entries })
     }
@@ -79,15 +82,13 @@ async fn scan_directory(
     dir: &Path,
     is_archive: bool,
     entries: &mut Vec<ProjectIndexEntry>,
-) -> Result<(), ResiduumError> {
+) -> anyhow::Result<()> {
     let mut read_dir = match tokio::fs::read_dir(dir).await {
         Ok(rd) => rd,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
         Err(e) => {
-            return Err(ResiduumError::Projects(format!(
-                "failed to read directory {}: {e}",
-                dir.display()
-            )));
+            return Err(anyhow::Error::new(e)
+                .context(format!("failed to read directory {}", dir.display())));
         }
     };
 
@@ -164,6 +165,7 @@ async fn scan_directory(
             Err(e) => {
                 tracing::warn!(
                     path = %project_md.display(),
+                    scan_root = %dir.display(),
                     error = %e,
                     "skipping project with invalid frontmatter"
                 );
@@ -179,34 +181,29 @@ async fn scan_directory(
 /// Expects YAML frontmatter delimited by `---` at the start of the file.
 ///
 /// # Errors
-/// Returns `ResiduumError::Projects` if the frontmatter is missing or invalid YAML.
-pub fn parse_project_md(content: &str) -> Result<(ProjectFrontmatter, String), ResiduumError> {
+/// Returns an error if the frontmatter is missing or invalid YAML.
+pub fn parse_project_md(content: &str) -> anyhow::Result<(ProjectFrontmatter, String)> {
     let trimmed = content.trim_start();
 
     if !trimmed.starts_with("---") {
-        return Err(ResiduumError::Projects(
-            "PROJECT.md missing frontmatter delimiter '---'".to_string(),
-        ));
+        anyhow::bail!("PROJECT.md missing frontmatter delimiter '---'");
     }
 
     // Skip the opening "---" and find the closing "---"
     let after_open = trimmed
         .get(3..)
-        .ok_or_else(|| ResiduumError::Projects("PROJECT.md is too short".to_string()))?;
+        .ok_or_else(|| anyhow::anyhow!("PROJECT.md is too short"))?;
 
-    let close_pos = after_open.find("\n---").ok_or_else(|| {
-        ResiduumError::Projects(
-            "PROJECT.md missing closing frontmatter delimiter '---'".to_string(),
-        )
-    })?;
+    let close_pos = after_open
+        .find("\n---")
+        .ok_or_else(|| anyhow::anyhow!("PROJECT.md missing closing frontmatter delimiter '---'"))?;
 
     let yaml_str = after_open
         .get(..close_pos)
-        .ok_or_else(|| ResiduumError::Projects("failed to extract YAML content".to_string()))?;
+        .ok_or_else(|| anyhow::anyhow!("failed to extract YAML content"))?;
 
-    let frontmatter: ProjectFrontmatter = serde_yml::from_str(yaml_str).map_err(|e| {
-        ResiduumError::Projects(format!("failed to parse PROJECT.md frontmatter: {e}"))
-    })?;
+    let frontmatter: ProjectFrontmatter =
+        serde_yml::from_str(yaml_str).context("failed to parse PROJECT.md frontmatter")?;
 
     // Body is everything after the closing "---" and its newline
     let body_start = 3 + close_pos + 4; // "---" prefix + yaml + "\n---"
@@ -218,13 +215,12 @@ pub fn parse_project_md(content: &str) -> Result<(ProjectFrontmatter, String), R
 /// Reconstruct a `PROJECT.md` file from frontmatter and body.
 ///
 /// # Errors
-/// Returns `ResiduumError::Projects` if YAML serialization fails.
+/// Returns an error if YAML serialization fails.
 pub fn write_project_md_content(
     frontmatter: &ProjectFrontmatter,
     body: &str,
-) -> Result<String, ResiduumError> {
-    let yaml = serde_yml::to_string(frontmatter)
-        .map_err(|e| ResiduumError::Projects(format!("failed to serialize frontmatter: {e}")))?;
+) -> anyhow::Result<String> {
+    let yaml = serde_yml::to_string(frontmatter).context("failed to serialize frontmatter")?;
 
     let mut output = format!("---\n{yaml}---\n");
 

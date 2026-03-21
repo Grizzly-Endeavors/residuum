@@ -102,6 +102,7 @@ impl Tool for OllamaWebSearchTool {
         let status = response.status();
         if !status.is_success() {
             let error_body = response.text().await.unwrap_or_default();
+            tracing::warn!(status = %status, "ollama web search API returned non-2xx response");
             return Ok(ToolResult::error(format!(
                 "ollama web search API returned HTTP {status}: {error_body}"
             )));

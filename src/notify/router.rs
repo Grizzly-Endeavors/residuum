@@ -80,28 +80,44 @@ struct NotificationRouter {
 
 /// Main loop: receive agent results and route them.
 async fn router_loop(mut subscriber: Subscriber<AgentResultEvent>, router: NotificationRouter) {
-    while let Ok(Some(agent_result)) = subscriber.recv().await {
-        route_agent_result(&agent_result, &router).await;
+    loop {
+        match subscriber.recv().await {
+            Ok(Some(agent_result)) => route_agent_result(&agent_result, &router).await,
+            Ok(None) => break,
+            Err(e) => {
+                tracing::error!(error = %e, "notification router subscriber error, shutting down");
+                break;
+            }
+        }
     }
     tracing::info!("notification router shutting down");
 }
 
 /// Fallback loop when LLM provider is unavailable: routes everything to inbox.
 async fn fallback_router_loop(mut subscriber: Subscriber<AgentResultEvent>, publisher: Publisher) {
-    while let Ok(Some(agent_result)) = subscriber.recv().await {
-        if agent_result.heartbeat_status == HeartbeatStatus::Ok {
-            tracing::info!(source_label = %agent_result.source_label, "pulse check: HEARTBEAT_OK");
-            continue;
-        }
+    loop {
+        match subscriber.recv().await {
+            Ok(Some(agent_result)) => {
+                if agent_result.heartbeat_status == HeartbeatStatus::Ok {
+                    tracing::info!(source_label = %agent_result.source_label, "pulse check: HEARTBEAT_OK");
+                    continue;
+                }
 
-        if matches!(agent_result.source, EventTrigger::Agent) {
-            tracing::info!(source_label = %agent_result.source_label, "fallback router: routing agent-spawned result to main agent");
-            publish_to_agent_main(&agent_result, &publisher).await;
-            continue;
-        }
+                if matches!(agent_result.source, EventTrigger::Agent) {
+                    tracing::info!(source_label = %agent_result.source_label, "fallback router: routing agent-spawned result to main agent");
+                    publish_to_agent_main(&agent_result, &publisher).await;
+                    continue;
+                }
 
-        tracing::info!(source_label = %agent_result.source_label, "fallback router: routing to inbox");
-        publish_to_inbox(&agent_result, &publisher).await;
+                tracing::info!(source_label = %agent_result.source_label, "fallback router: routing to inbox");
+                publish_to_inbox(&agent_result, &publisher).await;
+            }
+            Ok(None) => break,
+            Err(e) => {
+                tracing::error!(error = %e, "fallback router subscriber error, shutting down");
+                break;
+            }
+        }
     }
     tracing::info!("fallback notification router shutting down");
 }
@@ -144,7 +160,7 @@ async fn llm_route(event: &AgentResultEvent, router: &NotificationRouter) -> Vec
     let alerts_content = match tokio::fs::read_to_string(&router.alerts_path).await {
         Ok(content) => content,
         Err(e) => {
-            tracing::debug!(error = %e, "failed to read ALERTS.md, using empty policy");
+            tracing::warn!(error = %e, "failed to read ALERTS.md, using empty policy");
             String::new()
         }
     };
@@ -265,7 +281,7 @@ fn parse_routing_response(response: &str, valid_targets: &[&str]) -> Vec<String>
             })
             .unwrap_or_default(),
         Err(e) => {
-            tracing::warn!(error = %e, "failed to parse LLM routing response, falling back to inbox");
+            tracing::warn!(error = %e, raw_response = %response, "failed to parse LLM routing response, falling back to inbox");
             return vec!["inbox".to_string()];
         }
     };

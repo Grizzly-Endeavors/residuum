@@ -2,9 +2,10 @@
 
 use std::path::Path;
 
+use anyhow::Context;
+
 use super::parser::parse_preset_md;
 use super::types::{SubagentPresetEntry, SubagentPresetFrontmatter};
-use crate::error::ResiduumError;
 
 /// Built-in general-purpose preset name.
 const GENERAL_PURPOSE_NAME: &str = "general-purpose";
@@ -29,9 +30,9 @@ impl SubagentPresetIndex {
     /// Invalid or unparseable files are warned and skipped.
     ///
     /// # Errors
-    /// Returns `ResiduumError::Subagents` if the directory cannot be read
-    /// (except `NotFound`, which is silently skipped).
-    pub async fn scan(dir: &Path) -> Result<Self, ResiduumError> {
+    /// Returns an error if the directory cannot be read (except `NotFound`,
+    /// which is silently skipped).
+    pub async fn scan(dir: &Path) -> anyhow::Result<Self> {
         let mut entries = Vec::new();
         let mut seen_names: Vec<String> = Vec::new();
         let mut builtin_bodies = Vec::new();
@@ -43,6 +44,7 @@ impl SubagentPresetIndex {
         builtin_bodies.push((GENERAL_PURPOSE_NAME.to_string(), builtin_fm, builtin_body));
 
         // Scan user-defined presets from disk
+        tracing::debug!(dir = %dir.display(), "scanning subagent presets");
         scan_preset_directory(dir, &mut entries, &mut seen_names).await?;
 
         Ok(Self {
@@ -61,31 +63,30 @@ impl SubagentPresetIndex {
     /// Load a preset's full frontmatter and body from disk (or from built-in).
     ///
     /// # Errors
-    /// Returns `ResiduumError::Subagents` if the preset file cannot be read or parsed,
-    /// or if the name is not found in the index.
+    /// Returns an error if the preset file cannot be read or parsed, or if
+    /// the name is not found in the index.
     pub async fn load_preset(
         &self,
         name: &str,
-    ) -> Result<(SubagentPresetFrontmatter, String), ResiduumError> {
+    ) -> anyhow::Result<(SubagentPresetFrontmatter, String)> {
         let lower = name.to_lowercase();
 
         let entry = self.find_by_name(name).ok_or_else(|| {
             let available: Vec<&str> = self.entries.iter().map(|e| e.name.as_str()).collect();
-            ResiduumError::Subagents(format!(
+            anyhow::anyhow!(
                 "unknown preset '{name}'. Available: {}",
                 available.join(", ")
-            ))
+            )
         })?;
 
         // If it has a path, load from disk
         if let Some(path) = &entry.preset_path {
-            let content = tokio::fs::read_to_string(path).await.map_err(|e| {
-                ResiduumError::Subagents(format!(
-                    "failed to read preset file {}: {e}",
-                    path.display()
-                ))
-            })?;
-            return parse_preset_md(&content);
+            let content = tokio::fs::read_to_string(path)
+                .await
+                .with_context(|| format!("failed to read preset file {}", path.display()))?;
+            let result = parse_preset_md(&content)?;
+            tracing::debug!(name = %name, path = %path.display(), "loaded preset from disk");
+            return Ok(result);
         }
 
         // Otherwise, check built-in presets
@@ -96,9 +97,9 @@ impl SubagentPresetIndex {
         }
 
         tracing::error!(name = %name, "preset found in index but has no path and is not a built-in — this is a bug in scan()");
-        Err(ResiduumError::Subagents(format!(
+        Err(anyhow::anyhow!(
             "preset '{name}' found in index but has no path and is not a built-in"
-        )))
+        ))
     }
 
     /// Format the index as XML for the system prompt.
@@ -157,7 +158,7 @@ async fn scan_preset_directory(
     dir: &Path,
     entries: &mut Vec<SubagentPresetEntry>,
     seen_names: &mut Vec<String>,
-) -> Result<(), ResiduumError> {
+) -> anyhow::Result<()> {
     let mut read_dir = match tokio::fs::read_dir(dir).await {
         Ok(rd) => rd,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
@@ -165,8 +166,8 @@ async fn scan_preset_directory(
             return Ok(());
         }
         Err(e) => {
-            return Err(ResiduumError::Subagents(format!(
-                "failed to read subagents directory {}: {e}",
+            return Err(anyhow::Error::new(e).context(format!(
+                "failed to read subagents directory {}",
                 dir.display()
             )));
         }
@@ -235,6 +236,12 @@ async fn scan_preset_directory(
         }
     }
 
+    tracing::debug!(
+        dir = %dir.display(),
+        loaded = entries.len(),
+        "finished scanning subagents directory"
+    );
+
     Ok(())
 }
 
@@ -263,9 +270,14 @@ fn register_preset(
             return;
         }
 
+        let kept_path = entries
+            .get(pos)
+            .and_then(|e| e.preset_path.as_ref())
+            .map_or_else(|| "built-in".to_string(), |p| p.display().to_string());
         tracing::warn!(
             name = %fm.name,
-            path = %path.display(),
+            rejected = %path.display(),
+            kept = %kept_path,
             "duplicate preset name, keeping first found"
         );
         return;

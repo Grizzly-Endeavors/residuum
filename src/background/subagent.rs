@@ -385,7 +385,8 @@ async fn ensure_project_deactivated(
         tracing::warn!(
             task_id = %task_id,
             project = %still_name,
-            "[auto] SubAgent {task_id} completed without deactivating after retry. Task: {prompt_preview}"
+            prompt_preview = %prompt_preview,
+            "sub-agent completed without deactivating project after retry"
         );
         resources
             .mcp_registry

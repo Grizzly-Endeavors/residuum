@@ -5,7 +5,7 @@ use std::sync::Arc;
 use tokio::sync::mpsc;
 
 use crate::config::Config;
-use crate::error::ResiduumError;
+use crate::error::FatalError;
 use crate::gateway::types::{GatewayState, ReloadSignal, ServerCommand};
 
 use crate::gateway::web;
@@ -105,16 +105,16 @@ pub fn build_gateway_app(
 /// Bind the HTTP server and spawn it as a background task.
 ///
 /// # Errors
-/// Returns `ResiduumError` if the listener cannot bind to the configured address.
+/// Returns `FatalError` if the listener cannot bind to the configured address.
 pub async fn spawn_http_server(
     cfg: &Config,
     app: axum::Router,
     shutdown_tx: &tokio::sync::watch::Sender<bool>,
-) -> Result<tokio::task::JoinHandle<()>, ResiduumError> {
+) -> Result<tokio::task::JoinHandle<()>, FatalError> {
     let addr = cfg.gateway.addr();
     let listener = tokio::net::TcpListener::bind(&addr)
         .await
-        .map_err(|e| ResiduumError::Gateway(format!("failed to bind to {addr}: {e}")))?;
+        .map_err(|e| FatalError::Gateway(format!("failed to bind to {addr}: {e}")))?;
     tracing::info!(addr = %addr, "gateway listening");
     if cfg.gateway.bind != "127.0.0.1" && cfg.gateway.bind != "localhost" {
         tracing::warn!(

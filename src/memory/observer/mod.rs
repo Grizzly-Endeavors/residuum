@@ -6,12 +6,12 @@
 mod parse;
 mod prompt;
 
+use anyhow::Context;
 use chrono_tz::Tz;
 
 use crate::config::{
     DEFAULT_OBSERVER_COOLDOWN_SECS, DEFAULT_OBSERVER_FORCE_THRESHOLD, DEFAULT_OBSERVER_THRESHOLD,
 };
-use crate::error::ResiduumError;
 use crate::memory::chunk_extractor::{extract_chunks, write_idx_jsonl};
 use crate::memory::episode_store::{episode_idx_path, episode_obs_path, write_episode_transcript};
 use crate::memory::log_store::{append_observations, next_episode_id, save_episode_observations};
@@ -142,6 +142,10 @@ impl Observer {
         tracing::info!(
             old_threshold = self.config.threshold_tokens,
             new_threshold = config.threshold_tokens,
+            old_cooldown_secs = self.config.cooldown_secs,
+            new_cooldown_secs = config.cooldown_secs,
+            old_force_threshold = self.config.force_threshold_tokens,
+            new_force_threshold = config.force_threshold_tokens,
             "updating observer config"
         );
         self.config = config;
@@ -187,11 +191,9 @@ impl Observer {
         &self,
         recent_messages: &[RecentMessage],
         layout: &WorkspaceLayout,
-    ) -> Result<ObserveResult, ResiduumError> {
+    ) -> anyhow::Result<ObserveResult> {
         if recent_messages.is_empty() {
-            return Err(ResiduumError::Memory(
-                "no recent messages to extract from".to_string(),
-            ));
+            anyhow::bail!("no recent messages to extract from");
         }
 
         // Generate the next episode ID by scanning the episodes directory
@@ -229,7 +231,7 @@ impl Observer {
             .provider
             .complete(&extraction_messages, &[], &options)
             .await
-            .map_err(ResiduumError::Model)?;
+            .context("observer LLM call failed")?;
 
         // Parse the response into extraction results and optional narrative.
         let parsed = parse_observer_response(&response, self.config.tz)?;
@@ -273,7 +275,7 @@ async fn build_episode_and_persist(
     recent_messages: &[RecentMessage],
     layout: &WorkspaceLayout,
     tz: Tz,
-) -> Result<ObserveResult, ResiduumError> {
+) -> anyhow::Result<ObserveResult> {
     // Extract inner messages for the episode transcript.
     let messages: Vec<Message> = recent_messages
         .iter()
@@ -307,6 +309,7 @@ async fn build_episode_and_persist(
     let transcript_path =
         crate::memory::episode_store::episode_jsonl_path(&layout.episodes_dir(), &episode);
     write_episode_transcript(&layout.episodes_dir(), &episode, &messages).await?;
+    tracing::debug!(episode_id = %episode.id, "episode transcript written");
 
     // Convert episode observations → flat Observations with per-extraction context
     let observation_count = episode.observations.len();
@@ -324,7 +327,9 @@ async fn build_episode_and_persist(
 
     let obs_path = episode_obs_path(&layout.episodes_dir(), &episode);
     save_episode_observations(&obs_path, &observations).await?;
+    tracing::debug!(episode_id = %episode.id, count = observations.len(), "per-episode observations archived");
     append_observations(&layout.observations_json(), observations.clone()).await?;
+    tracing::debug!(episode_id = %episode.id, "global observations updated");
 
     // Extract interaction-pair chunks from recent messages and persist as idx.jsonl.
     // line_offset=2 because line 1 is the meta object in the JSONL transcript.
@@ -332,6 +337,7 @@ async fn build_episode_and_persist(
     let chunks = extract_chunks(recent_messages, &episode.id, &date_str, 2);
     let idx_path = episode_idx_path(&layout.episodes_dir(), &episode);
     write_idx_jsonl(&idx_path, &chunks).await?;
+    tracing::debug!(episode_id = %episode.id, chunks = chunks.len(), "interaction-pair chunks written");
 
     tracing::info!(
         episode_id = %episode.id,

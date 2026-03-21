@@ -42,6 +42,37 @@ fn next_backoff(current: Duration) -> Duration {
     base.mul_f64(jitter)
 }
 
+/// Extract the keepalive timeout from a `Connected` frame and update status.
+fn extract_keepalive_timeout(
+    connected: &TunnelFrame,
+    status_tx: &watch::Sender<TunnelStatus>,
+) -> Duration {
+    if let TunnelFrame::Connected {
+        ref user_id,
+        keepalive_interval_secs,
+    } = *connected
+    {
+        status_tx
+            .send(TunnelStatus::Connected {
+                user_id: user_id.clone(),
+            })
+            .unwrap_or_else(|_| {
+                debug!("status receiver dropped");
+            });
+        let timeout = Duration::from_secs(keepalive_interval_secs * 3);
+        info!(
+            user_id = %user_id,
+            keepalive_interval_secs,
+            keepalive_timeout_secs = timeout.as_secs(),
+            "tunnel connected for user {user_id}, keepalive every {keepalive_interval_secs}s"
+        );
+        timeout
+    } else {
+        warn!("received non-Connected frame where Connected was expected, using default keepalive");
+        DEFAULT_KEEPALIVE_TIMEOUT
+    }
+}
+
 /// Start the tunnel client, maintaining a persistent connection to the cloud
 /// relay with exponential backoff reconnection.
 ///
@@ -65,8 +96,10 @@ pub(crate) async fn start_tunnel(
             reqwest::Client::default()
         });
     let mut backoff = MIN_BACKOFF;
+    let mut attempt: u32 = 0;
 
     loop {
+        attempt += 1;
         // Check for shutdown before attempting connection.
         if *shutdown_rx.borrow() {
             info!("tunnel shutting down before reconnect");
@@ -74,8 +107,12 @@ pub(crate) async fn start_tunnel(
             return;
         }
 
-        status_tx.send(TunnelStatus::Connecting).ok();
-        info!(url = %cfg.relay_url, "connecting to relay at {}", cfg.relay_url);
+        status_tx
+            .send(TunnelStatus::Connecting)
+            .unwrap_or_else(|_| {
+                debug!("status receiver dropped");
+            });
+        info!(url = %cfg.relay_url, "connecting to relay");
 
         let request = match build_ws_request(&cfg) {
             Ok(r) => r,
@@ -106,13 +143,13 @@ pub(crate) async fn start_tunnel(
             tokio::time::timeout(Duration::from_secs(15), wait_for_connected(&mut read)).await;
         let connected = match connected_result {
             Err(_) => {
-                warn!("timed out waiting for Connected frame from relay");
+                warn!(url = %cfg.relay_url, "timed out waiting for Connected frame from relay");
                 tokio::time::sleep(backoff).await;
                 backoff = next_backoff(backoff);
                 continue;
             }
             Ok(None) => {
-                warn!("relay closed connection before sending Connected frame");
+                warn!(url = %cfg.relay_url, "relay closed connection before sending Connected frame");
                 tokio::time::sleep(backoff).await;
                 backoff = next_backoff(backoff);
                 continue;
@@ -120,27 +157,7 @@ pub(crate) async fn start_tunnel(
             Ok(Some(frame)) => frame,
         };
 
-        let keepalive_timeout = if let TunnelFrame::Connected {
-            ref user_id,
-            keepalive_interval_secs,
-        } = connected
-        {
-            status_tx
-                .send(TunnelStatus::Connected {
-                    user_id: user_id.clone(),
-                })
-                .ok();
-            let timeout = Duration::from_secs(keepalive_interval_secs * 3);
-            info!(
-                user_id = %user_id,
-                keepalive_interval_secs,
-                keepalive_timeout_secs = timeout.as_secs(),
-                "tunnel connected for user {user_id}, keepalive every {keepalive_interval_secs}s"
-            );
-            timeout
-        } else {
-            DEFAULT_KEEPALIVE_TIMEOUT
-        };
+        let keepalive_timeout = extract_keepalive_timeout(&connected, &status_tx);
 
         // Reset backoff on successful connection.
         backoff = MIN_BACKOFF;
@@ -158,8 +175,8 @@ pub(crate) async fn start_tunnel(
 
         match action {
             LoopExit::Shutdown => return,
-            LoopExit::Reconnect(reason) => {
-                warn!(reason = %reason, "disconnected from relay, reconnecting");
+            LoopExit::Reconnect(reason, open_ws_channels) => {
+                warn!(reason = %reason, attempt, open_ws_channels, "disconnected from relay, reconnecting");
             }
         }
     }
@@ -169,8 +186,8 @@ pub(crate) async fn start_tunnel(
 enum LoopExit {
     /// Graceful shutdown was requested.
     Shutdown,
-    /// Connection was lost; includes the reason string for logging.
-    Reconnect(String),
+    /// Connection was lost; includes the reason string and open channel count.
+    Reconnect(String, usize),
 }
 
 /// Process tunnel frames until disconnection or shutdown.
@@ -218,7 +235,8 @@ where
                 }
             }
             Some((channel_id, sender)) = ws_open_rx.recv() => {
-                local_ws_channels.insert(channel_id, sender);
+                local_ws_channels.insert(channel_id.clone(), sender);
+                debug!(channel_id, total = local_ws_channels.len(), "registered local WS channel");
             }
             _ = shutdown_rx.changed() => {
                 if *shutdown_rx.borrow() {
@@ -237,8 +255,9 @@ where
         }
     };
 
+    let open_ws_channels = local_ws_channels.len();
     local_ws_channels.clear();
-    LoopExit::Reconnect(disconnect_reason)
+    LoopExit::Reconnect(disconnect_reason, open_ws_channels)
 }
 
 /// Build the HTTP request used to initiate the WebSocket connection with auth.

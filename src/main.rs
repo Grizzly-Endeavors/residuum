@@ -12,7 +12,7 @@
 //! - `agent <create|list|delete|info>`: manage named agent instances
 
 use residuum::config::Config;
-use residuum::error::ResiduumError;
+use residuum::error::FatalError;
 use residuum::gateway::protocol::{ClientMessage, ServerMessage};
 use residuum::interfaces::cli::CliClient;
 use residuum::interfaces::cli::commands::CommandEffect;
@@ -20,30 +20,32 @@ use residuum::interfaces::cli::commands::CommandEffect;
 #[tokio::main]
 async fn main() {
     if let Err(e) = Box::pin(run()).await {
-        eprintln!("error: {e}");
+        // tracing::error goes to the log file; println is for the terminal user
+        tracing::error!(error = %e, "fatal error");
+        println!("error: {e}");
         std::process::exit(1);
     }
 }
 
-async fn run() -> Result<(), ResiduumError> {
+async fn run() -> Result<(), FatalError> {
     // Install rustls CryptoProvider before any TLS usage. Required since
     // rustls 0.23 when both `ring` and `aws-lc-rs` appear in the dep tree.
     // Err means a provider was already installed by a dependency — that's
     // expected and fine; we just continue with whatever was registered first.
     drop(rustls::crypto::ring::default_provider().install_default());
 
-    // Install a panic hook that logs to both tracing and stderr.
-    // Tracing may not be initialized yet, and stderr is always available.
+    // Install a panic hook that logs to tracing and stderr.
+    // tracing::error! is a no-op until a subscriber is initialized; write_crash_note is the real fallback.
     std::panic::set_hook(Box::new(|info| {
         tracing::error!(%info, "panic in spawned task");
-        eprintln!("PANIC: {info}");
+        residuum::daemon::write_crash_note(&format!("PANIC: {info}"));
     }));
 
     // Load .env early (ignore if missing, warn on parse errors)
     if let Err(e) = dotenvy::dotenv()
         && !e.not_found()
     {
-        eprintln!("warning: failed to parse .env file: {e}");
+        residuum::daemon::write_crash_note(&format!("warning: failed to parse .env file: {e}"));
     }
 
     // Parse subcommand from argv
@@ -64,7 +66,7 @@ async fn run() -> Result<(), ResiduumError> {
                 let registry =
                     residuum::agent_registry::registry::AgentRegistry::load(&registry_dir)?;
                 let entry = registry.get(name).ok_or_else(|| {
-                    ResiduumError::Config(format!("agent '{name}' not found in registry"))
+                    FatalError::Config(format!("agent '{name}' not found in registry"))
                 })?;
                 format!("ws://127.0.0.1:{}/ws", entry.port)
             } else {
@@ -87,8 +89,14 @@ async fn run() -> Result<(), ResiduumError> {
             init_default_tracing();
             run_setup_command(&args)
         }
-        Some("stop") => run_stop_command(agent_name.as_deref()),
-        Some("update") => run_update_command(&args).await,
+        Some("stop") => {
+            init_default_tracing();
+            run_stop_command(agent_name.as_deref())
+        }
+        Some("update") => {
+            init_default_tracing();
+            run_update_command(&args).await
+        }
         // "serve" or no subcommand → start gateway
         Some("serve") | None => {
             let foreground = args.iter().any(|a| a == "--foreground");
@@ -103,7 +111,7 @@ async fn run() -> Result<(), ResiduumError> {
                 run_daemonize(&args, agent_name.as_deref())
             }
         }
-        Some(other) => Err(ResiduumError::Config(format!(
+        Some(other) => Err(FatalError::Config(format!(
             "unknown subcommand '{other}', expected one of: serve, connect, logs, setup, secret, stop, update, agent"
         ))),
     }
@@ -116,11 +124,8 @@ async fn run() -> Result<(), ResiduumError> {
 ///
 /// # Errors
 ///
-/// Returns `ResiduumError` if initialization or the gateway loop fails.
-async fn run_serve_foreground(
-    args: &[String],
-    agent_name: Option<&str>,
-) -> Result<(), ResiduumError> {
+/// Returns `FatalError` if initialization or the gateway loop fails.
+async fn run_serve_foreground(args: &[String], agent_name: Option<&str>) -> Result<(), FatalError> {
     // Write PID file early so the daemon parent (and `residuum stop`) can find us,
     // even during setup wizard before the gateway starts.
     let pid_path = residuum::agent_registry::paths::resolve_pid_path(agent_name)?;
@@ -137,18 +142,18 @@ async fn run_serve_foreground(
 }
 
 /// Run the onboarding wizard in an isolated temp directory, then boot gateway.
-async fn run_setup_mode() -> Result<(), ResiduumError> {
+async fn run_setup_mode() -> Result<(), FatalError> {
     let tmp_dir = std::env::temp_dir().join("residuum-setup");
     if tmp_dir.exists() {
         std::fs::remove_dir_all(&tmp_dir).map_err(|e| {
-            ResiduumError::Config(format!(
+            FatalError::Config(format!(
                 "failed to clean setup directory {}: {e}",
                 tmp_dir.display()
             ))
         })?;
     }
     residuum::config::Config::bootstrap_at_dir(&tmp_dir)?;
-    eprintln!(
+    println!(
         "setup mode: config will be written to {}",
         tmp_dir.display()
     );
@@ -183,7 +188,7 @@ async fn run_setup_mode() -> Result<(), ResiduumError> {
 async fn run_serve_foreground_inner(
     args: &[String],
     agent_name: Option<&str>,
-) -> Result<(), ResiduumError> {
+) -> Result<(), FatalError> {
     if args.iter().any(|a| a == "--setup") {
         return Box::pin(run_setup_mode()).await;
     }
@@ -212,7 +217,10 @@ async fn run_serve_foreground_inner(
                 // Gateway handles reloads in-place and only returns on shutdown
                 // or fatal error. Backup is created inside run_gateway().
                 match Box::pin(residuum::gateway::run_gateway(cfg)).await? {
-                    residuum::gateway::GatewayExit::Shutdown => break,
+                    residuum::gateway::GatewayExit::Shutdown => {
+                        tracing::info!("gateway shutting down");
+                        break;
+                    }
                     residuum::gateway::GatewayExit::Restart => {
                         return re_exec_serve_foreground();
                     }
@@ -228,14 +236,17 @@ async fn run_serve_foreground_inner(
                             cfg.config_dir.clone_from(&config_dir);
                             tracing::info!("config restored from backup, starting gateway");
                             match Box::pin(residuum::gateway::run_gateway(cfg)).await? {
-                                residuum::gateway::GatewayExit::Shutdown => break,
+                                residuum::gateway::GatewayExit::Shutdown => {
+                                    tracing::info!("gateway shutting down");
+                                    break;
+                                }
                                 residuum::gateway::GatewayExit::Restart => {
                                     return re_exec_serve_foreground();
                                 }
                             }
                         }
                         Err(retry_err) => {
-                            return Err(ResiduumError::Config(format!(
+                            return Err(FatalError::Config(format!(
                                 "config invalid after rollback: {retry_err}\n\n\
                                  fix {}/config.toml and providers.toml manually, then restart",
                                 config_dir.display()
@@ -243,8 +254,8 @@ async fn run_serve_foreground_inner(
                         }
                     }
                 }
-                tracing::warn!(error = %err, "config rollback failed (no backup exists or I/O error)");
-                return Err(ResiduumError::Config(format!(
+                tracing::warn!("config rollback failed: no backup available");
+                return Err(FatalError::Config(format!(
                     "config invalid and rollback failed: {err}\n\n\
                      fix {}/config.toml and providers.toml manually, then restart",
                     config_dir.display()
@@ -252,7 +263,7 @@ async fn run_serve_foreground_inner(
             }
             Err(err) if agent_name.is_some() => {
                 // Named agents don't get setup wizard — config must be ready
-                return Err(ResiduumError::Config(format!(
+                return Err(FatalError::Config(format!(
                     "config invalid for agent '{}': {err}\n\n\
                      edit {}/config.toml manually or recreate the agent",
                     agent_name.unwrap_or_default(),
@@ -281,13 +292,13 @@ async fn run_serve_foreground_inner(
 ///
 /// # Errors
 ///
-/// Returns `ResiduumError::Gateway` if the current executable path cannot be
+/// Returns `FatalError::Gateway` if the current executable path cannot be
 /// determined. On Unix, `exec()` does not return on success.
-fn re_exec_serve_foreground() -> Result<(), ResiduumError> {
+fn re_exec_serve_foreground() -> Result<(), FatalError> {
     use std::os::unix::process::CommandExt;
 
     let raw_exe = std::env::current_exe().map_err(|e| {
-        ResiduumError::Gateway(format!(
+        FatalError::Gateway(format!(
             "failed to determine current executable for re-exec: {e}"
         ))
     })?;
@@ -313,7 +324,7 @@ fn re_exec_serve_foreground() -> Result<(), ResiduumError> {
     let err = std::process::Command::new(&exe).args(&original_args).exec();
 
     // exec() only returns on error
-    Err(ResiduumError::Gateway(format!("re-exec failed: {err}")))
+    Err(FatalError::Gateway(format!("re-exec failed: {err}")))
 }
 
 /// Spawn the gateway as a background daemon process.
@@ -324,11 +335,13 @@ fn re_exec_serve_foreground() -> Result<(), ResiduumError> {
 ///
 /// # Errors
 ///
-/// Returns `ResiduumError` if the child process cannot be spawned or
+/// Returns `FatalError` if the child process cannot be spawned or
 /// startup times out.
-fn run_daemonize(args: &[String], agent_name: Option<&str>) -> Result<(), ResiduumError> {
+fn run_daemonize(args: &[String], agent_name: Option<&str>) -> Result<(), FatalError> {
     use residuum::config::GatewayConfig;
     use residuum::daemon::{is_process_running, read_pid_file};
+
+    init_default_tracing();
 
     let pid_path = residuum::agent_registry::paths::resolve_pid_path(agent_name)?;
     let label = agent_name.map_or("gateway".to_string(), |n| format!("agent '{n}'"));
@@ -337,7 +350,7 @@ fn run_daemonize(args: &[String], agent_name: Option<&str>) -> Result<(), Residu
     if let Ok(existing_pid) = read_pid_file(&pid_path)
         && is_process_running(existing_pid)
     {
-        eprintln!("residuum: {label} is already running (pid {existing_pid})");
+        println!("residuum: {label} is already running (pid {existing_pid})");
         return Ok(());
     }
 
@@ -355,18 +368,17 @@ fn run_daemonize(args: &[String], agent_name: Option<&str>) -> Result<(), Residu
 
     // First-launch welcome (or --setup which mimics it)
     if needs_setup {
-        eprintln!("welcome to residuum!");
-        eprintln!();
-        eprintln!("  it looks like this is your first time running residuum.");
-        eprintln!("  configure your agent at: http://{gateway_addr}");
-        eprintln!("  or run: residuum setup");
-        eprintln!();
+        println!("welcome to residuum!");
+        println!();
+        println!("  it looks like this is your first time running residuum.");
+        println!("  configure your agent at: http://{gateway_addr}");
+        println!("  or run: residuum setup");
+        println!();
     }
 
     // Build child args: forward any extra flags (like --setup) plus --foreground
-    let exe = std::env::current_exe().map_err(|e| {
-        ResiduumError::Gateway(format!("failed to determine current executable: {e}"))
-    })?;
+    let exe = std::env::current_exe()
+        .map_err(|e| FatalError::Gateway(format!("failed to determine current executable: {e}")))?;
 
     let mut child_args = vec!["serve".to_string(), "--foreground".to_string()];
     // Forward flags from the original invocation (skip argv[0] and "serve")
@@ -393,7 +405,7 @@ fn run_daemonize(args: &[String], agent_name: Option<&str>) -> Result<(), Residu
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .spawn()
-        .map_err(|e| ResiduumError::Gateway(format!("failed to spawn daemon process: {e}")))?;
+        .map_err(|e| FatalError::Gateway(format!("failed to spawn daemon process: {e}")))?;
 
     // When setup is needed, the setup wizard runs before the gateway and
     // no PID file is written until setup completes. Just verify the child
@@ -403,16 +415,16 @@ fn run_daemonize(args: &[String], agent_name: Option<&str>) -> Result<(), Residu
         std::thread::sleep(std::time::Duration::from_millis(500));
         match child.try_wait() {
             Ok(Some(status)) => {
-                return Err(ResiduumError::Gateway(format!(
+                return Err(FatalError::Gateway(format!(
                     "daemon exited immediately with {status}"
                 )));
             }
             Ok(None) => {
-                eprintln!("residuum: setup server starting at http://{gateway_addr}");
+                println!("residuum: setup server starting at http://{gateway_addr}");
                 return Ok(());
             }
             Err(e) => {
-                return Err(ResiduumError::Gateway(format!(
+                return Err(FatalError::Gateway(format!(
                     "failed to check daemon status: {e}"
                 )));
             }
@@ -427,22 +439,20 @@ fn run_daemonize(args: &[String], agent_name: Option<&str>) -> Result<(), Residu
     loop {
         if start.elapsed() > timeout {
             if let Ok(Some(status)) = child.try_wait() {
-                eprintln!("residuum: {label} crashed during startup (exit status: {status})");
-                eprintln!("  check logs: residuum logs");
-                eprintln!("  note: if no log files exist, the daemon crashed before writing any");
+                println!("residuum: {label} crashed during startup (exit status: {status})");
+                println!("  check logs: residuum logs");
+                println!("  note: if no log files exist, the daemon crashed before writing any");
             } else {
-                eprintln!("residuum: {label} did not start within 10 seconds");
-                eprintln!("  check logs: residuum logs");
+                println!("residuum: {label} did not start within 10 seconds");
+                println!("  check logs: residuum logs");
             }
-            return Err(ResiduumError::Gateway(
-                "daemon startup timed out".to_string(),
-            ));
+            return Err(FatalError::Gateway("daemon startup timed out".to_string()));
         }
 
         if let Ok(pid) = read_pid_file(&pid_path)
             && is_process_running(pid)
         {
-            eprintln!("residuum: {label} started at http://{gateway_addr} (pid {pid})");
+            println!("residuum: {label} started at http://{gateway_addr} (pid {pid})");
             return Ok(());
         }
 
@@ -459,34 +469,34 @@ fn run_daemonize(args: &[String], agent_name: Option<&str>) -> Result<(), Residu
 ///
 /// # Errors
 ///
-/// Returns `ResiduumError::Gateway` if the GitHub API request fails or
+/// Returns `FatalError::Gateway` if the GitHub API request fails or
 /// the install script cannot be executed.
-async fn run_update_command(args: &[String]) -> Result<(), ResiduumError> {
+async fn run_update_command(args: &[String]) -> Result<(), FatalError> {
     use residuum::update::{self, CURRENT_VERSION};
 
     let check_only = args.iter().any(|a| a == "--check");
     let auto_yes = args.iter().any(|a| a == "-y" || a == "--yes");
 
-    eprintln!("residuum: checking for updates...");
+    println!("residuum: checking for updates...");
 
     let latest = update::fetch_latest_version().await?;
 
     if update::is_up_to_date(CURRENT_VERSION, &latest) {
-        eprintln!("residuum: already up to date ({CURRENT_VERSION})");
+        println!("residuum: already up to date ({CURRENT_VERSION})");
         return Ok(());
     }
 
-    eprintln!("residuum: current version: {CURRENT_VERSION}");
-    eprintln!("residuum: latest version:  {latest}");
+    println!("residuum: current version: {CURRENT_VERSION}");
+    println!("residuum: latest version:  {latest}");
 
     if check_only {
         return Ok(());
     }
 
-    eprintln!("residuum: downloading and installing {latest}...");
+    println!("residuum: downloading and installing {latest}...");
 
     let installed = update::download_and_install().await?;
-    eprintln!("residuum: updated to {installed}");
+    println!("residuum: updated to {installed}");
 
     // Check if gateway is running and try to restart it
     if let Ok(pid_path) = residuum::daemon::pid_file_path()
@@ -502,22 +512,22 @@ async fn run_update_command(args: &[String]) -> Result<(), ResiduumError> {
             let url = format!("http://{gateway_addr}/api/update/restart");
             match reqwest::Client::new().post(&url).send().await {
                 Ok(resp) if resp.status().is_success() => {
-                    eprintln!("residuum: restart signal sent to gateway (pid {pid})");
+                    println!("residuum: restart signal sent to gateway (pid {pid})");
                 }
                 Ok(resp) => {
-                    eprintln!(
+                    println!(
                         "residuum: failed to signal gateway restart (status {}) — restart it manually",
                         resp.status()
                     );
                 }
                 Err(e) => {
-                    eprintln!(
+                    println!(
                         "residuum: failed to signal gateway restart ({e}) — restart it manually"
                     );
                 }
             }
         } else {
-            eprintln!(
+            println!(
                 "residuum: gateway is still running (pid {pid}) — restart it to use the new version"
             );
         }
@@ -533,21 +543,21 @@ async fn run_update_command(args: &[String]) -> Result<(), ResiduumError> {
 ///
 /// # Errors
 ///
-/// Returns `ResiduumError` if the PID file cannot be read or the signal
+/// Returns `FatalError` if the PID file cannot be read or the signal
 /// cannot be sent.
-fn run_stop_command(agent_name: Option<&str>) -> Result<(), ResiduumError> {
+fn run_stop_command(agent_name: Option<&str>) -> Result<(), FatalError> {
     use residuum::daemon::{is_process_running, read_pid_file, remove_pid_file, send_sigterm};
 
     let pid_path = residuum::agent_registry::paths::resolve_pid_path(agent_name)?;
     let label = agent_name.map_or("gateway".to_string(), |n| format!("agent '{n}'"));
 
     let Ok(pid) = read_pid_file(&pid_path) else {
-        eprintln!("residuum: no {label} running (no pid file)");
+        println!("residuum: no {label} running (no pid file)");
         return Ok(());
     };
 
     if !is_process_running(pid) {
-        eprintln!("residuum: no {label} running (stale pid file for pid {pid})");
+        println!("residuum: no {label} running (stale pid file for pid {pid})");
         remove_pid_file(&pid_path)?;
         return Ok(());
     }
@@ -563,13 +573,13 @@ fn run_stop_command(agent_name: Option<&str>) -> Result<(), ResiduumError> {
         if !is_process_running(pid) {
             // Process exited; clean up PID file if still present
             remove_pid_file(&pid_path)?;
-            eprintln!("residuum: {label} stopped (pid {pid})");
+            println!("residuum: {label} stopped (pid {pid})");
             return Ok(());
         }
 
         if start.elapsed() > timeout {
-            eprintln!("residuum: {label} (pid {pid}) did not stop within 5 seconds");
-            return Err(ResiduumError::Gateway(format!(
+            println!("residuum: {label} (pid {pid}) did not stop within 5 seconds");
+            return Err(FatalError::Gateway(format!(
                 "{label} pid {pid} did not exit after SIGTERM"
             )));
         }
@@ -585,14 +595,14 @@ fn run_stop_command(agent_name: Option<&str>) -> Result<(), ResiduumError> {
 ///
 /// # Errors
 ///
-/// Returns `ResiduumError::Gateway` if the WebSocket connection fails.
-async fn run_connect(url: &str, verbose: bool) -> Result<(), ResiduumError> {
+/// Returns `FatalError::Gateway` if the WebSocket connection fails.
+async fn run_connect(url: &str, verbose: bool) -> Result<(), FatalError> {
     use futures_util::StreamExt;
     use residuum::interfaces::cli::CliReader;
 
     let (ws_stream, _response) = tokio_tungstenite::connect_async(url)
         .await
-        .map_err(|e| ResiduumError::Gateway(format!("failed to connect to {url}: {e}")))?;
+        .map_err(|e| FatalError::Gateway(format!("failed to connect to {url}: {e}")))?;
 
     let mut client = CliClient::new(url, verbose);
     client.print_banner();
@@ -612,7 +622,7 @@ async fn run_connect(url: &str, verbose: bool) -> Result<(), ResiduumError> {
     let (input_tx, mut input_rx) = tokio::sync::mpsc::channel::<String>(1);
     tokio::task::spawn_blocking(move || match CliReader::new() {
         Ok(reader) => reader.run(input_tx, prompt, gate_rx),
-        Err(e) => eprintln!("error initializing readline: {e}"),
+        Err(e) => println!("error initializing readline: {e}"),
     });
 
     let mut msg_counter: u64 = 0;
@@ -625,7 +635,7 @@ async fn run_connect(url: &str, verbose: bool) -> Result<(), ResiduumError> {
             // User input → check for commands, then send to gateway
             input = input_rx.recv() => {
                 let Some(line) = input else {
-                    eprintln!("\nGoodbye!");
+                    println!("\nGoodbye!");
                     break;
                 };
 
@@ -641,7 +651,7 @@ async fn run_connect(url: &str, verbose: bool) -> Result<(), ResiduumError> {
             // Gateway → display to user
             frame = ws_rx.next() => {
                 let Some(frame_result) = frame else {
-                    eprintln!("connection closed by server");
+                    println!("connection closed by server");
                     break;
                 };
 
@@ -697,31 +707,36 @@ fn init_cli_tracing() {
         .rotation(tracing_appender::rolling::Rotation::DAILY)
         .max_log_files(30)
         .build(&log_dir)
-        .unwrap_or_else(|e| {
-            eprintln!("warning: failed to create log file appender: {e}");
-            eprintln!(
+        .or_else(|e| {
+            residuum::daemon::write_crash_note(&format!(
+                "warning: failed to create log file appender: {e}"
+            ));
+            residuum::daemon::write_crash_note(&format!(
                 "warning: logs will be written to {} instead — 'residuum logs' will not find them",
                 std::env::temp_dir().display()
-            );
+            ));
             tracing_appender::rolling::RollingFileAppender::builder()
                 .filename_prefix("cli")
                 .filename_suffix("log")
                 .rotation(tracing_appender::rolling::Rotation::DAILY)
                 .build(std::env::temp_dir())
-                .unwrap_or_else(|e2| {
-                    eprintln!("warning: fallback log appender also failed: {e2}");
-                    eprintln!(
-                        "warning: logs will be written to {} — 'residuum logs' will not find them",
-                        std::env::temp_dir().display()
+                .map_err(|e2| {
+                    residuum::daemon::write_crash_note(&format!(
+                        "warning: fallback log appender also failed: {e2}"
+                    ));
+                    residuum::daemon::write_crash_note(
+                        "warning: log file output disabled — 'residuum logs' will not find them",
                     );
-                    tracing_appender::rolling::daily(std::env::temp_dir(), "cli.log")
                 })
-        });
+        })
+        .ok();
 
-    let file_layer = tracing_subscriber::fmt::layer()
-        .with_target(false)
-        .with_ansi(false)
-        .with_writer(file_appender);
+    let file_layer = file_appender.map(|appender| {
+        tracing_subscriber::fmt::layer()
+            .with_target(false)
+            .with_ansi(false)
+            .with_writer(appender)
+    });
 
     tracing_subscriber::registry()
         .with(env_filter)
@@ -734,11 +749,11 @@ fn init_cli_tracing() {
 ///
 /// Finds the most recent log file in `~/.residuum/logs/` and prints its
 /// contents. With `--watch`, polls for new lines every 500ms.
-async fn run_logs_command(watch: bool, agent_name: Option<&str>) -> Result<(), ResiduumError> {
+async fn run_logs_command(watch: bool, agent_name: Option<&str>) -> Result<(), FatalError> {
     let log_dir = residuum::agent_registry::paths::resolve_log_dir(agent_name)?;
 
     if !log_dir.exists() {
-        eprintln!(
+        println!(
             "no log files found (directory does not exist: {})",
             log_dir.display()
         );
@@ -747,13 +762,13 @@ async fn run_logs_command(watch: bool, agent_name: Option<&str>) -> Result<(), R
 
     // Find the most recent log file
     let mut entries: Vec<_> = std::fs::read_dir(&log_dir)
-        .map_err(|e| ResiduumError::Config(format!("failed to read log directory: {e}")))?
+        .map_err(|e| FatalError::Config(format!("failed to read log directory: {e}")))?
         .filter_map(std::result::Result::ok)
         .filter(|entry| entry.path().extension().is_some_and(|ext| ext == "log"))
         .collect();
 
     if entries.is_empty() {
-        eprintln!("no log files found in {}", log_dir.display());
+        println!("no log files found in {}", log_dir.display());
         return Ok(());
     }
 
@@ -771,31 +786,31 @@ async fn run_logs_command(watch: bool, agent_name: Option<&str>) -> Result<(), R
     let latest = entries
         .last()
         .map(std::fs::DirEntry::path)
-        .ok_or_else(|| ResiduumError::Config("no log files found".to_string()))?;
+        .ok_or_else(|| FatalError::Config("no log files found".to_string()))?;
 
-    eprintln!("showing: {}", latest.display());
-    eprintln!();
+    println!("showing: {}", latest.display());
+    println!();
 
     let content = std::fs::read_to_string(&latest)
-        .map_err(|e| ResiduumError::Config(format!("failed to read log file: {e}")))?;
+        .map_err(|e| FatalError::Config(format!("failed to read log file: {e}")))?;
     print!("{content}");
 
     if watch {
         use tokio::io::{AsyncBufReadExt, AsyncSeekExt};
 
-        let file = tokio::fs::File::open(&latest).await.map_err(|e| {
-            ResiduumError::Config(format!("failed to open log file for watch: {e}"))
-        })?;
+        let file = tokio::fs::File::open(&latest)
+            .await
+            .map_err(|e| FatalError::Config(format!("failed to open log file for watch: {e}")))?;
         let mut reader = tokio::io::BufReader::new(file);
 
         // Seek to current end
         let metadata = std::fs::metadata(&latest)
-            .map_err(|e| ResiduumError::Config(format!("failed to stat log file: {e}")))?;
+            .map_err(|e| FatalError::Config(format!("failed to stat log file: {e}")))?;
         let file_len = metadata.len();
         reader
             .seek(std::io::SeekFrom::Start(file_len))
             .await
-            .map_err(|e| ResiduumError::Config(format!("failed to seek log file: {e}")))?;
+            .map_err(|e| FatalError::Config(format!("failed to seek log file: {e}")))?;
 
         let mut line_buf = String::new();
         loop {
@@ -809,7 +824,10 @@ async fn run_logs_command(watch: bool, agent_name: Option<&str>) -> Result<(), R
                     print!("{line_buf}");
                 }
                 Err(e) => {
-                    eprintln!("error reading log file: {e}");
+                    println!("error reading log file: {e}");
+                    println!(
+                        "  hint: the log file may have been rotated — re-run 'residuum logs --watch' to follow the new file"
+                    );
                     break;
                 }
             }
@@ -820,15 +838,15 @@ async fn run_logs_command(watch: bool, agent_name: Option<&str>) -> Result<(), R
 }
 
 /// Run the `setup` subcommand — interactive or flag-driven config wizard.
-fn run_setup_command(args: &[String]) -> Result<(), ResiduumError> {
+fn run_setup_command(args: &[String]) -> Result<(), FatalError> {
     use residuum::config::wizard;
 
     let config_dir = Config::config_dir()?;
     let config_path = config_dir.join("config.toml");
 
     if config_path.exists() {
-        eprintln!("config.toml already exists at {}", config_path.display());
-        eprintln!("edit it directly or delete it to re-run setup");
+        println!("config.toml already exists at {}", config_path.display());
+        println!("edit it directly or delete it to re-run setup");
         return Ok(());
     }
 
@@ -871,19 +889,19 @@ fn run_setup_command(args: &[String]) -> Result<(), ResiduumError> {
     // Validate the result
     match Config::load_at(&config_dir) {
         Ok(cfg) => {
-            eprintln!("configuration saved to {}", config_path.display());
-            eprintln!("  timezone: {}", answers.timezone);
-            eprintln!("  model: {}/{}", answers.provider, answers.model);
+            println!("configuration saved to {}", config_path.display());
+            println!("  timezone: {}", answers.timezone);
+            println!("  model: {}/{}", answers.provider, answers.model);
             if cfg.main.first().and_then(|s| s.api_key.as_ref()).is_some() {
-                eprintln!("  api key: configured");
+                println!("  api key: configured");
             }
             if let Some(ref backend) = answers.web_search_backend {
-                eprintln!("  web search: {backend}");
+                println!("  web search: {backend}");
             }
         }
         Err(err) => {
-            eprintln!("warning: config was written but validation failed: {err}");
-            eprintln!("you may need to edit {} manually", config_path.display());
+            println!("warning: config was written but validation failed: {err}");
+            println!("you may need to edit {} manually", config_path.display());
         }
     }
 
@@ -896,7 +914,7 @@ fn run_setup_command(args: &[String]) -> Result<(), ResiduumError> {
 /// - `residuum secret set <name> [value]` — store a secret (prompts for value if omitted)
 /// - `residuum secret list` — list stored secret names
 /// - `residuum secret delete <name>` — remove a secret
-fn run_secret_command(args: &[String]) -> Result<(), ResiduumError> {
+fn run_secret_command(args: &[String]) -> Result<(), FatalError> {
     use residuum::config::SecretStore;
 
     let config_dir = Config::config_dir()?;
@@ -905,7 +923,7 @@ fn run_secret_command(args: &[String]) -> Result<(), ResiduumError> {
     match sub {
         Some("set") => {
             let Some(name) = args.get(3) else {
-                eprintln!("usage: residuum secret set <name> [value]");
+                println!("usage: residuum secret set <name> [value]");
                 return Ok(());
             };
 
@@ -913,20 +931,19 @@ fn run_secret_command(args: &[String]) -> Result<(), ResiduumError> {
                 v.clone()
             } else {
                 // Prompt for value with masked input
-                rpassword::prompt_password(format!("value for '{name}': ")).map_err(|e| {
-                    ResiduumError::Config(format!("failed to read secret value: {e}"))
-                })?
+                rpassword::prompt_password(format!("value for '{name}': "))
+                    .map_err(|e| FatalError::Config(format!("failed to read secret value: {e}")))?
             };
 
             let mut store = SecretStore::load(&config_dir)?;
             store.set(name, &value, &config_dir)?;
-            eprintln!("secret '{name}' saved");
+            println!("secret '{name}' saved");
         }
         Some("list") => {
             let store = SecretStore::load(&config_dir)?;
             let names = store.names();
             if names.is_empty() {
-                eprintln!("no secrets stored");
+                println!("no secrets stored");
             } else {
                 for name in &names {
                     println!("{name}");
@@ -935,20 +952,20 @@ fn run_secret_command(args: &[String]) -> Result<(), ResiduumError> {
         }
         Some("delete") => {
             let Some(name) = args.get(3) else {
-                eprintln!("usage: residuum secret delete <name>");
+                println!("usage: residuum secret delete <name>");
                 return Ok(());
             };
 
             let mut store = SecretStore::load(&config_dir)?;
             store.delete(name, &config_dir)?;
-            eprintln!("secret '{name}' deleted");
+            println!("secret '{name}' deleted");
         }
         _ => {
-            eprintln!("usage: residuum secret <set|list|delete>");
-            eprintln!();
-            eprintln!("  set <name> [value]  store a secret (prompts if value omitted)");
-            eprintln!("  list                list stored secret names");
-            eprintln!("  delete <name>       remove a secret");
+            println!("usage: residuum secret <set|list|delete>");
+            println!();
+            println!("  set <name> [value]  store a secret (prompts if value omitted)");
+            println!("  list                list stored secret names");
+            println!("  delete <name>       remove a secret");
         }
     }
 
@@ -967,7 +984,7 @@ fn extract_flag_value(args: &[String], flag: &str) -> Option<String> {
 ///
 /// Returns `Ok(None)` if no `--debug` flag is present, `Ok(Some(mode))` for
 /// valid modes, or an error for unrecognized mode values.
-fn parse_debug_flag(args: &[String]) -> Result<Option<residuum::daemon::DebugMode>, ResiduumError> {
+fn parse_debug_flag(args: &[String]) -> Result<Option<residuum::daemon::DebugMode>, FatalError> {
     use residuum::daemon::DebugMode;
 
     for arg in args {
@@ -978,7 +995,7 @@ fn parse_debug_flag(args: &[String]) -> Result<Option<residuum::daemon::DebugMod
             return DebugMode::from_flag_value(Some(value))
                 .map(Some)
                 .ok_or_else(|| {
-                    ResiduumError::Config(format!(
+                    FatalError::Config(format!(
                         "unknown debug mode '{value}', expected one of: all, trace"
                     ))
                 });
@@ -1004,19 +1021,19 @@ fn handle_ws_frame(
     let raw = match frame_result {
         Ok(TungsteniteMessage::Text(txt)) => txt,
         Ok(TungsteniteMessage::Close(_)) => {
-            eprintln!("server closed connection");
+            println!("server closed connection");
             return std::ops::ControlFlow::Break(());
         }
         Ok(_) => return std::ops::ControlFlow::Continue(()),
         Err(e) => {
-            eprintln!("websocket error: {e}");
+            println!("websocket error: {e}");
             return std::ops::ControlFlow::Break(());
         }
     };
 
     match serde_json::from_str::<ServerMessage>(&raw) {
         Ok(ServerMessage::Reloading) => {
-            eprintln!("server is reloading configuration...");
+            println!("server is reloading configuration...");
         }
         Ok(ref server_msg @ ServerMessage::Response { ref reply_to, .. })
             if *turn_active && !reply_to.is_empty() =>
@@ -1035,7 +1052,7 @@ fn handle_ws_frame(
             }
         }
         Ok(server_msg) => client.display(&server_msg),
-        Err(e) => eprintln!("warning: failed to parse server message: {e}"),
+        Err(e) => tracing::warn!(error = %e, "failed to parse server message"),
     }
 
     std::ops::ControlFlow::Continue(())
@@ -1047,7 +1064,7 @@ fn handle_ws_frame(
 ///
 /// # Errors
 ///
-/// Returns `ResiduumError::Gateway` on serialization or send failure.
+/// Returns `FatalError::Gateway` on serialization or send failure.
 async fn handle_cli_input<S>(
     line: &str,
     client: &mut CliClient,
@@ -1055,7 +1072,7 @@ async fn handle_cli_input<S>(
     gate_tx: &std::sync::mpsc::Sender<()>,
     msg_counter: &mut u64,
     turn_active: &mut bool,
-) -> Result<std::ops::ControlFlow<()>, ResiduumError>
+) -> Result<std::ops::ControlFlow<()>, FatalError>
 where
     S: futures_util::Sink<
             tokio_tungstenite::tungstenite::Message,
@@ -1071,7 +1088,7 @@ where
                 let new_verbose = !client.verbose();
                 client.set_verbose(new_verbose);
                 let label = if new_verbose { "on" } else { "off" };
-                eprintln!("verbose mode: {label}");
+                println!("verbose mode: {label}");
                 send_client_message(
                     ws_tx,
                     &ClientMessage::SetVerbose {
@@ -1097,7 +1114,7 @@ where
                 send_client_message(ws_tx, &ClientMessage::InboxAdd { body }).await?;
             }
             CommandEffect::Quit => return Ok(std::ops::ControlFlow::Break(())),
-            CommandEffect::PrintLocal(text) => eprintln!("{text}"),
+            CommandEffect::PrintLocal(text) => println!("{text}"),
         }
         // Slash commands don't trigger agent turns; unblock prompt immediately
         if gate_tx.send(()).is_err() {
@@ -1113,9 +1130,9 @@ where
         images: vec![],
     };
     let json = serde_json::to_string(&client_msg)
-        .map_err(|e| ResiduumError::Gateway(format!("failed to serialize message: {e}")))?;
+        .map_err(|e| FatalError::Gateway(format!("failed to serialize message: {e}")))?;
     if let Err(e) = ws_tx.send(TungsteniteMessage::text(json)).await {
-        eprintln!("connection closed: {e}");
+        tracing::warn!(error = %e, "connection closed");
         return Ok(std::ops::ControlFlow::Break(()));
     }
     *turn_active = true;
@@ -1127,8 +1144,8 @@ where
 ///
 /// # Errors
 ///
-/// Returns `ResiduumError::Gateway` on serialization or send failure.
-async fn send_client_message<S>(ws_tx: &mut S, msg: &ClientMessage) -> Result<(), ResiduumError>
+/// Returns `FatalError::Gateway` on serialization or send failure.
+async fn send_client_message<S>(ws_tx: &mut S, msg: &ClientMessage) -> Result<(), FatalError>
 where
     S: futures_util::Sink<
             tokio_tungstenite::tungstenite::Message,
@@ -1139,11 +1156,11 @@ where
     use tokio_tungstenite::tungstenite::Message as TungsteniteMessage;
 
     let json = serde_json::to_string(msg)
-        .map_err(|e| ResiduumError::Gateway(format!("failed to serialize message: {e}")))?;
+        .map_err(|e| FatalError::Gateway(format!("failed to serialize message: {e}")))?;
     ws_tx
         .send(TungsteniteMessage::text(json))
         .await
-        .map_err(|e| ResiduumError::Gateway(format!("failed to send message: {e}")))?;
+        .map_err(|e| FatalError::Gateway(format!("failed to send message: {e}")))?;
     Ok(())
 }
 

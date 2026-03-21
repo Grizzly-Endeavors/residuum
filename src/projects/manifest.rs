@@ -2,8 +2,6 @@
 
 use std::path::Path;
 
-use crate::error::ResiduumError;
-
 use super::types::{ManifestEntry, ProjectManifest};
 
 /// Build a manifest by listing files under the standard project subdirectories.
@@ -11,14 +9,20 @@ use super::types::{ManifestEntry, ProjectManifest};
 /// Non-existent subdirectories are treated as empty.
 ///
 /// # Errors
-/// Returns `ResiduumError::Projects` if a directory cannot be read.
-pub async fn build_manifest(project_root: &Path) -> Result<ProjectManifest, ResiduumError> {
-    Ok(ProjectManifest {
+/// Returns an error if a directory cannot be read.
+pub async fn build_manifest(project_root: &Path) -> anyhow::Result<ProjectManifest> {
+    let manifest = ProjectManifest {
         notes: list_files_recursive(&project_root.join("notes"), project_root).await?,
         references: list_files_recursive(&project_root.join("references"), project_root).await?,
         workspace: list_files_recursive(&project_root.join("workspace"), project_root).await?,
         skills: list_files_recursive(&project_root.join("skills"), project_root).await?,
-    })
+    };
+    let total = manifest.notes.len()
+        + manifest.references.len()
+        + manifest.workspace.len()
+        + manifest.skills.len();
+    tracing::debug!(total, "built project manifest");
+    Ok(manifest)
 }
 
 /// Format a manifest as a human-readable grouped listing with sizes.
@@ -78,7 +82,7 @@ fn format_size(bytes: u64) -> String {
 async fn list_files_recursive(
     dir: &Path,
     project_root: &Path,
-) -> Result<Vec<ManifestEntry>, ResiduumError> {
+) -> anyhow::Result<Vec<ManifestEntry>> {
     let mut entries = Vec::new();
     collect_files(dir, project_root, &mut entries).await?;
     entries.sort_by(|a, b| a.relative_path.cmp(&b.relative_path));
@@ -90,15 +94,13 @@ async fn collect_files(
     dir: &Path,
     project_root: &Path,
     entries: &mut Vec<ManifestEntry>,
-) -> Result<(), ResiduumError> {
+) -> anyhow::Result<()> {
     let mut read_dir = match tokio::fs::read_dir(dir).await {
         Ok(rd) => rd,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
         Err(e) => {
-            return Err(ResiduumError::Projects(format!(
-                "failed to read directory {}: {e}",
-                dir.display()
-            )));
+            return Err(anyhow::Error::new(e)
+                .context(format!("failed to read directory {}", dir.display())));
         }
     };
 

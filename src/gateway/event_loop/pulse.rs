@@ -18,6 +18,7 @@ pub async fn handle_pulse_execution(
             pulse_name: _,
             prompt,
         } => {
+            tracing::info!(pulse = %pulse_name, "scheduled pulse firing as main wake turn");
             let formatted = format!("[Scheduled pulse: {pulse_name}]\n{prompt}");
             rt.agent.inject_system_message(formatted.clone());
             let msgs = [Message::system(&formatted)];
@@ -55,6 +56,9 @@ pub async fn handle_pulse_tick(
     let due = rt
         .pulse_scheduler
         .due_pulses(now, &rt.layout.heartbeat_yml());
+    if !due.is_empty() {
+        tracing::debug!(count = due.len(), "processing due pulses");
+    }
     for pulse in &due {
         let name = pulse.name.clone();
         let exec = build_pulse_execution(pulse);

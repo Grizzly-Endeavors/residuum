@@ -83,7 +83,7 @@ pub(super) async fn handle_ws_open(
     let (ws_stream, _response) = match tokio_tungstenite::connect_async(request).await {
         Ok(pair) => pair,
         Err(e) => {
-            warn!(channel_id, error = %e, "failed to connect to local WebSocket");
+            warn!(channel_id, url, error = %e, "failed to connect to local WebSocket");
             send_ws_open_result(&tunnel_tx, &channel_id, false).await;
             return None;
         }
@@ -91,6 +91,7 @@ pub(super) async fn handle_ws_open(
 
     // Connection succeeded — notify the relay.
     send_ws_open_result(&tunnel_tx, &channel_id, true).await;
+    debug!(channel_id, url, "local WebSocket channel established");
 
     let (local_write, mut local_read) = ws_stream.split();
     let local_write = Arc::new(Mutex::new(local_write));
@@ -140,15 +141,19 @@ pub(super) async fn handle_ws_open(
     // Task: read from mpsc rx, send to local WS.
     let ch_id_writer = channel_id;
     tokio::spawn(async move {
+        let mut error_exit = false;
         while let Some(data) = rx.recv().await {
             let mut guard = local_write.lock().await;
             if let Err(e) = guard.send(Message::Text(data.into())).await {
                 warn!(channel_id = ch_id_writer, error = %e, "failed to forward tunnel message to local WS");
+                error_exit = true;
                 break;
             }
         }
-        // Channel closed — the tunnel side dropped the sender.
-        debug!(channel_id = ch_id_writer, "tunnel→local WS channel closed");
+        if !error_exit {
+            // Channel closed — the tunnel side dropped the sender.
+            debug!(channel_id = ch_id_writer, "tunnel→local WS channel closed");
+        }
     });
 
     Some(tx)
@@ -161,7 +166,7 @@ async fn send_ws_open_result(tunnel_tx: &Arc<Mutex<TunnelSink>>, channel_id: &st
         success,
     };
     if let Err(e) = send_tunnel_frame(tunnel_tx, &frame).await {
-        warn!(channel_id, error = %e, "failed to send WsOpenResult");
+        warn!(channel_id, success, error = %e, "failed to send WsOpenResult");
     }
 }
 

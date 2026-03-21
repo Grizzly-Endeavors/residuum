@@ -60,6 +60,8 @@ impl Tool for ExecTool {
             .and_then(Value::as_u64)
             .unwrap_or(DEFAULT_TIMEOUT_SECS);
 
+        tracing::debug!(command = %command, timeout_secs = %timeout_secs, "exec");
+
         let result = tokio::time::timeout(
             Duration::from_secs(timeout_secs),
             Command::new("sh").arg("-c").arg(command).output(),

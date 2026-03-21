@@ -6,7 +6,8 @@
 
 use std::path::Path;
 
-use crate::error::ResiduumError;
+use anyhow::Context;
+
 use crate::memory::recent_messages::RecentMessage;
 use crate::memory::types::IndexChunk;
 use crate::models::Role;
@@ -59,6 +60,12 @@ pub(crate) fn extract_chunks(
                         line_end: line_num,
                         content: format!("user: {user_content}\nassistant: {text}"),
                     });
+                } else {
+                    tracing::debug!(
+                        episode_id,
+                        line = line_num,
+                        "orphaned assistant message with no pending user"
+                    );
                 }
                 // If no pending user, this assistant message is orphaned — skip
             }
@@ -77,17 +84,10 @@ pub(crate) fn extract_chunks(
 ///
 /// # Errors
 /// Returns an error if the file cannot be written.
-pub(crate) async fn write_idx_jsonl(
-    path: &Path,
-    chunks: &[IndexChunk],
-) -> Result<(), ResiduumError> {
+pub(crate) async fn write_idx_jsonl(path: &Path, chunks: &[IndexChunk]) -> anyhow::Result<()> {
     let mut lines = Vec::with_capacity(chunks.len());
     for chunk in chunks {
-        lines.push(
-            serde_json::to_string(chunk).map_err(|e| {
-                ResiduumError::Memory(format!("failed to serialize index chunk: {e}"))
-            })?,
-        );
+        lines.push(serde_json::to_string(chunk).context("failed to serialize index chunk")?);
     }
     let content = if lines.is_empty() {
         String::new()
@@ -96,26 +96,20 @@ pub(crate) async fn write_idx_jsonl(
     };
 
     let dir = path.parent().ok_or_else(|| {
-        ResiduumError::Memory(format!(
-            "idx.jsonl path has no parent directory: {}",
-            path.display()
-        ))
+        anyhow::anyhow!("idx.jsonl path has no parent directory: {}", path.display())
     })?;
 
     let tmp_path = dir.join(".idx.jsonl.tmp");
-    tokio::fs::write(&tmp_path, &content).await.map_err(|e| {
-        ResiduumError::Memory(format!(
-            "failed to write idx.jsonl at {}: {e}",
-            tmp_path.display()
-        ))
-    })?;
+    tokio::fs::write(&tmp_path, &content)
+        .await
+        .with_context(|| format!("failed to write idx.jsonl at {}", tmp_path.display()))?;
 
-    tokio::fs::rename(&tmp_path, path).await.map_err(|e| {
-        ResiduumError::Memory(format!(
-            "failed to rename idx.jsonl from {} to {}: {e}",
+    tokio::fs::rename(&tmp_path, path).await.with_context(|| {
+        format!(
+            "failed to rename idx.jsonl from {} to {}",
             tmp_path.display(),
             path.display()
-        ))
+        )
     })?;
 
     Ok(())

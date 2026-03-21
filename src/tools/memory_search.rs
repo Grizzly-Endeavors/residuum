@@ -165,7 +165,10 @@ impl Tool for MemorySearchTool {
                     formatted.join("\n\n")
                 )))
             }
-            Err(e) => Ok(ToolResult::error(format!("search failed: {e}"))),
+            Err(e) => {
+                tracing::error!(error = %e, "memory search failed");
+                Ok(ToolResult::error(format!("search failed: {e}")))
+            }
         }
     }
 }

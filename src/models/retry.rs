@@ -5,7 +5,7 @@
 use std::time::Duration;
 
 use tokio::time::sleep;
-use tracing::warn;
+use tracing::{debug, warn};
 
 use super::ModelError;
 
@@ -76,6 +76,13 @@ where
                         max_retries = config.max_retries,
                         error = %e,
                         "transient error, retrying"
+                    );
+                } else {
+                    debug!(
+                        attempt = attempts + 1,
+                        max_retries = config.max_retries,
+                        error = %e,
+                        "retry attempt"
                     );
                 }
                 attempts += 1;

@@ -5,17 +5,40 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::error::ResiduumError;
+use crate::error::FatalError;
+
+/// Write a diagnostic message to the crash log.
+///
+/// Used for errors that occur before tracing is initialized
+/// or when the tracing subsystem itself fails. Messages are
+/// appended to `~/.residuum/crash.log` (falls back to
+/// `/tmp/residuum-crash.log` if the home directory is unavailable).
+pub fn write_crash_note(msg: &str) {
+    let path = dirs::home_dir().map_or_else(
+        || std::env::temp_dir().join("residuum-crash.log"),
+        |h| h.join(".residuum").join("crash.log"),
+    );
+    drop(
+        std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+            .and_then(|mut f| {
+                use std::io::Write;
+                writeln!(f, "{}: {msg}", chrono::Utc::now())
+            }),
+    );
+}
 
 /// Return the path to the PID file: `~/.residuum/residuum.pid`.
 ///
 /// # Errors
 ///
-/// Returns `ResiduumError::Config` if the home directory cannot be determined.
-pub fn pid_file_path() -> Result<PathBuf, ResiduumError> {
+/// Returns `FatalError::Config` if the home directory cannot be determined.
+pub fn pid_file_path() -> Result<PathBuf, FatalError> {
     dirs::home_dir()
         .map(|h| h.join(".residuum").join("residuum.pid"))
-        .ok_or_else(|| ResiduumError::Config("could not determine home directory".to_string()))
+        .ok_or_else(|| FatalError::Config("could not determine home directory".to_string()))
 }
 
 /// Write a PID to the given file path.
@@ -24,34 +47,36 @@ pub fn pid_file_path() -> Result<PathBuf, ResiduumError> {
 ///
 /// # Errors
 ///
-/// Returns `ResiduumError::Gateway` if the file cannot be written.
-pub fn write_pid_file(path: &Path, pid: u32) -> Result<(), ResiduumError> {
+/// Returns `FatalError::Gateway` if the file cannot be written.
+pub fn write_pid_file(path: &Path, pid: u32) -> Result<(), FatalError> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|e| {
-            ResiduumError::Gateway(format!(
+            FatalError::Gateway(format!(
                 "failed to create pid file directory {}: {e}",
                 parent.display()
             ))
         })?;
     }
     std::fs::write(path, pid.to_string()).map_err(|e| {
-        ResiduumError::Gateway(format!("failed to write pid file {}: {e}", path.display()))
-    })
+        FatalError::Gateway(format!("failed to write pid file {}: {e}", path.display()))
+    })?;
+    tracing::debug!(path = %path.display(), pid, "wrote pid file");
+    Ok(())
 }
 
 /// Read a PID from the given file path.
 ///
 /// # Errors
 ///
-/// Returns `ResiduumError::Gateway` if the file cannot be read or parsed.
-pub fn read_pid_file(path: &Path) -> Result<u32, ResiduumError> {
+/// Returns `FatalError::Gateway` if the file cannot be read or parsed.
+pub fn read_pid_file(path: &Path) -> Result<u32, FatalError> {
     let content = std::fs::read_to_string(path).map_err(|e| {
-        ResiduumError::Gateway(format!("failed to read pid file {}: {e}", path.display()))
+        FatalError::Gateway(format!("failed to read pid file {}: {e}", path.display()))
     })?;
     content
         .trim()
         .parse::<u32>()
-        .map_err(|e| ResiduumError::Gateway(format!("invalid pid in {}: {e}", path.display())))
+        .map_err(|e| FatalError::Gateway(format!("invalid pid in {}: {e}", path.display())))
 }
 
 /// Remove the PID file at the given path.
@@ -60,13 +85,16 @@ pub fn read_pid_file(path: &Path) -> Result<u32, ResiduumError> {
 ///
 /// # Errors
 ///
-/// Returns `ResiduumError::Gateway` if removal fails for a reason other than
+/// Returns `FatalError::Gateway` if removal fails for a reason other than
 /// the file not existing.
-pub fn remove_pid_file(path: &Path) -> Result<(), ResiduumError> {
+pub fn remove_pid_file(path: &Path) -> Result<(), FatalError> {
     match std::fs::remove_file(path) {
-        Ok(()) => Ok(()),
+        Ok(()) => {
+            tracing::debug!(path = %path.display(), "removed pid file");
+            Ok(())
+        }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(e) => Err(ResiduumError::Gateway(format!(
+        Err(e) => Err(FatalError::Gateway(format!(
             "failed to remove pid file {}: {e}",
             path.display()
         ))),
@@ -89,25 +117,38 @@ pub fn is_process_running(pid: u32) -> bool {
     // Returns Ok if the process exists and we have permission to signal it.
     // Returns ESRCH if no such process, EPERM if it exists but we lack permission.
     // EPERM means the process is running, but since we own the daemon this shouldn't occur.
-    kill(nix_pid, None).is_ok()
+    match kill(nix_pid, None) {
+        Ok(()) => true,
+        Err(nix::errno::Errno::ESRCH) => false,
+        Err(nix::errno::Errno::EPERM) => {
+            tracing::warn!(pid, "got EPERM checking process; assuming running");
+            true
+        }
+        Err(e) => {
+            tracing::warn!(pid, error = %e, "unexpected error checking process status");
+            false
+        }
+    }
 }
 
 /// Send `SIGTERM` to the process with the given PID.
 ///
 /// # Errors
 ///
-/// Returns `ResiduumError::Gateway` if the signal cannot be sent.
-pub fn send_sigterm(pid: u32) -> Result<(), ResiduumError> {
+/// Returns `FatalError::Gateway` if the signal cannot be sent.
+pub fn send_sigterm(pid: u32) -> Result<(), FatalError> {
     use nix::sys::signal::{Signal, kill};
     use nix::unistd::Pid;
 
-    let nix_pid =
-        Pid::from_raw(i32::try_from(pid).map_err(|e| {
-            ResiduumError::Gateway(format!("pid {pid} out of range for signal: {e}"))
-        })?);
+    let nix_pid = Pid::from_raw(
+        i32::try_from(pid)
+            .map_err(|e| FatalError::Gateway(format!("pid {pid} out of range for signal: {e}")))?,
+    );
 
     kill(nix_pid, Signal::SIGTERM)
-        .map_err(|e| ResiduumError::Gateway(format!("failed to send SIGTERM to pid {pid}: {e}")))
+        .map_err(|e| FatalError::Gateway(format!("failed to send SIGTERM to pid {pid}: {e}")))?;
+    tracing::info!(pid, "sent SIGTERM");
+    Ok(())
 }
 
 /// Debug logging modes for the `--debug` flag.
@@ -160,11 +201,16 @@ pub fn init_daemon_tracing(debug_mode: Option<DebugMode>, agent_name: Option<&st
     use tracing_subscriber::util::SubscriberInitExt;
 
     let default_filter = debug_mode.map_or("info", DebugMode::filter_str);
+    if std::env::var("RUST_LOG").is_ok() {
+        write_crash_note("note: RUST_LOG is set; overriding --debug filter");
+    }
     let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(default_filter));
 
     let log_dir = crate::agent_registry::paths::resolve_log_dir(agent_name).unwrap_or_else(|_| {
-        eprintln!("warning: could not determine log directory; logs will be written to ./logs");
+        write_crash_note(
+            "warning: could not determine log directory; logs will be written to ./logs",
+        );
         std::path::PathBuf::from("logs")
     });
 
@@ -180,20 +226,21 @@ pub fn init_daemon_tracing(debug_mode: Option<DebugMode>, agent_name: Option<&st
         .max_log_files(30)
         .build(&log_dir)
         .unwrap_or_else(|e| {
-            eprintln!(
-                "warning: failed to create log file appender: {e}; falling back to {}",
+            write_crash_note(&format!(
+                "warning: failed to create log file appender at {}: {e}; falling back to {}",
+                log_dir.display(),
                 std::env::temp_dir().display()
-            );
+            ));
             tracing_appender::rolling::RollingFileAppender::builder()
                 .filename_prefix(&log_prefix)
                 .filename_suffix("log")
                 .rotation(tracing_appender::rolling::Rotation::DAILY)
                 .build(std::env::temp_dir())
                 .unwrap_or_else(|e2| {
-                    eprintln!(
+                    write_crash_note(&format!(
                         "warning: fallback log appender also failed: {e2}; falling back to {}",
                         std::env::temp_dir().display()
-                    );
+                    ));
                     tracing_appender::rolling::daily(
                         std::env::temp_dir(),
                         format!("{log_prefix}.log"),
@@ -223,6 +270,10 @@ pub fn init_daemon_tracing(debug_mode: Option<DebugMode>, agent_name: Option<&st
             .with(file_layer)
             .init();
     }
+    tracing::info!(
+        path = %log_dir.join(format!("{log_prefix}.log")).display(),
+        "logging initialized"
+    );
 }
 
 #[cfg(test)]

@@ -5,7 +5,7 @@ use std::path::Path;
 use std::str::FromStr;
 
 use super::provider::ProviderKind;
-use crate::error::ResiduumError;
+use crate::error::FatalError;
 
 /// Answers collected from the setup wizard (interactive or flags).
 #[derive(Debug)]
@@ -32,12 +32,12 @@ pub struct WizardAnswers {
 /// the collected answers for config generation.
 ///
 /// # Errors
-/// Returns `ResiduumError::Config` if stdin/stdout interaction fails or
+/// Returns `FatalError::Config` if stdin/stdout interaction fails or
 /// input validation fails.
-pub fn run_interactive() -> Result<WizardAnswers, ResiduumError> {
-    eprintln!("residuum setup");
-    eprintln!("==============");
-    eprintln!();
+pub fn run_interactive() -> Result<WizardAnswers, FatalError> {
+    println!("residuum setup");
+    println!("==============");
+    println!();
 
     // 1. Timezone
     let system_tz = iana_time_zone::get_timezone().unwrap_or_default();
@@ -51,16 +51,16 @@ pub fn run_interactive() -> Result<WizardAnswers, ResiduumError> {
         if chrono_tz::Tz::from_str(&input).is_ok() {
             break input;
         }
-        eprintln!("  invalid timezone, please enter an IANA timezone (e.g. America/New_York)");
+        println!("  invalid timezone, please enter an IANA timezone (e.g. America/New_York)");
     };
 
     // 2. Provider
-    eprintln!();
-    eprintln!("  providers:");
-    eprintln!("    1. anthropic");
-    eprintln!("    2. openai");
-    eprintln!("    3. ollama");
-    eprintln!("    4. gemini");
+    println!();
+    println!("  providers:");
+    println!("    1. anthropic");
+    println!("    2. openai");
+    println!("    3. ollama");
+    println!("    4. gemini");
     let provider = loop {
         let input = prompt_with_default("provider [1]", "1")?;
         match input.as_str() {
@@ -72,22 +72,22 @@ pub fn run_interactive() -> Result<WizardAnswers, ResiduumError> {
                 if let Ok(kind) = ProviderKind::from_str(other) {
                     break kind;
                 }
-                eprintln!("  invalid choice, enter 1-4 or a provider name");
+                println!("  invalid choice, enter 1-4 or a provider name");
             }
         }
     };
 
     // 3. API key (skip for Ollama)
     let api_key = if provider == ProviderKind::Ollama {
-        eprintln!();
-        eprintln!("  ollama runs locally, no API key needed");
+        println!();
+        println!("  ollama runs locally, no API key needed");
         None
     } else {
-        eprintln!();
-        eprint!("  api key (press enter to skip, set via env var later): ");
-        std::io::stderr().flush().ok();
+        println!();
+        print!("  api key (press enter to skip, set via env var later): ");
+        std::io::stdout().flush().ok();
         let key = rpassword::read_password()
-            .map_err(|e| ResiduumError::Config(format!("failed to read api key: {e}")))?;
+            .map_err(|e| FatalError::Config(format!("failed to read api key: {e}")))?;
         if key.trim().is_empty() {
             None
         } else {
@@ -97,13 +97,13 @@ pub fn run_interactive() -> Result<WizardAnswers, ResiduumError> {
 
     // 4. Model
     let default_model = default_model_for_provider(provider);
-    eprintln!();
+    println!();
     let model = prompt_with_default(&format!("model [{default_model}]"), default_model)?;
 
     // 5. Web search (optional)
     let ws = prompt_web_search(provider)?;
 
-    eprintln!();
+    println!();
     Ok(WizardAnswers {
         timezone,
         provider,
@@ -118,7 +118,7 @@ pub fn run_interactive() -> Result<WizardAnswers, ResiduumError> {
 /// Build answers from CLI flags (non-interactive mode).
 ///
 /// # Errors
-/// Returns `ResiduumError::Config` if required fields are missing or
+/// Returns `FatalError::Config` if required fields are missing or
 /// timezone validation fails.
 pub fn from_flags(
     timezone: Option<&str>,
@@ -128,19 +128,19 @@ pub fn from_flags(
     web_search_backend: Option<&str>,
     web_search_api_key: Option<&str>,
     web_search_base_url: Option<&str>,
-) -> Result<WizardAnswers, ResiduumError> {
+) -> Result<WizardAnswers, FatalError> {
     let timezone = timezone.ok_or_else(|| {
-        ResiduumError::Config("--timezone is required in non-interactive mode".to_string())
+        FatalError::Config("--timezone is required in non-interactive mode".to_string())
     })?;
 
     // Validate timezone
     chrono_tz::Tz::from_str(timezone)
-        .map_err(|err| ResiduumError::Config(format!("invalid timezone '{timezone}': {err}")))?;
+        .map_err(|err| FatalError::Config(format!("invalid timezone '{timezone}': {err}")))?;
 
     let provider_str = provider.ok_or_else(|| {
-        ResiduumError::Config("--provider is required in non-interactive mode".to_string())
+        FatalError::Config("--provider is required in non-interactive mode".to_string())
     })?;
-    let provider_kind = ProviderKind::from_str(provider_str).map_err(ResiduumError::Config)?;
+    let provider_kind = ProviderKind::from_str(provider_str).map_err(FatalError::Config)?;
 
     let default_model = default_model_for_provider(provider_kind);
     let model = model.unwrap_or(default_model).to_string();
@@ -150,7 +150,7 @@ pub fn from_flags(
         match backend {
             "brave" | "tavily" | "ollama" => {}
             other => {
-                return Err(ResiduumError::Config(format!(
+                return Err(FatalError::Config(format!(
                     "invalid web search backend '{other}': must be brave, tavily, or ollama"
                 )));
             }
@@ -180,8 +180,8 @@ pub fn from_flags(
 /// Write config.toml and providers.toml from wizard answers.
 ///
 /// # Errors
-/// Returns `ResiduumError::Config` if writing either file fails.
-pub fn write_config(dir: &Path, answers: &WizardAnswers) -> Result<(), ResiduumError> {
+/// Returns `FatalError::Config` if writing either file fails.
+pub fn write_config(dir: &Path, answers: &WizardAnswers) -> Result<(), FatalError> {
     // config.toml — timezone only
     let config_path = dir.join("config.toml");
     let mut config_lines = Vec::new();
@@ -208,7 +208,7 @@ pub fn write_config(dir: &Path, answers: &WizardAnswers) -> Result<(), ResiduumE
 
     let config_content = config_lines.join("\n");
     std::fs::write(&config_path, &config_content).map_err(|e| {
-        ResiduumError::Config(format!(
+        FatalError::Config(format!(
             "failed to write config.toml at {}: {e}",
             config_path.display()
         ))
@@ -233,7 +233,7 @@ pub fn write_config(dir: &Path, answers: &WizardAnswers) -> Result<(), ResiduumE
 
     let prov_content = prov_lines.join("\n");
     std::fs::write(&providers_path, &prov_content).map_err(|e| {
-        ResiduumError::Config(format!(
+        FatalError::Config(format!(
             "failed to write providers.toml at {}: {e}",
             providers_path.display()
         ))
@@ -250,11 +250,11 @@ struct WebSearchWizardAnswers {
 }
 
 /// Prompt the user for optional web search backend configuration.
-fn prompt_web_search(provider: ProviderKind) -> Result<WebSearchWizardAnswers, ResiduumError> {
-    eprintln!();
-    eprintln!("  step 5: web search (optional)");
-    eprintln!();
-    eprintln!("  web search lets the agent look up real-time information.");
+fn prompt_web_search(provider: ProviderKind) -> Result<WebSearchWizardAnswers, FatalError> {
+    println!();
+    println!("  step 5: web search (optional)");
+    println!();
+    println!("  web search lets the agent look up real-time information.");
 
     let has_native_search = matches!(
         provider,
@@ -262,14 +262,14 @@ fn prompt_web_search(provider: ProviderKind) -> Result<WebSearchWizardAnswers, R
     );
 
     let configure_standalone = if has_native_search {
-        eprintln!("  provider-native search is automatically enabled for {provider}.");
-        eprintln!();
+        println!("  provider-native search is automatically enabled for {provider}.");
+        println!();
         let answer =
             prompt_with_default("configure a standalone web search backend too? [y/N]", "n")?;
         answer.eq_ignore_ascii_case("y") || answer.eq_ignore_ascii_case("yes")
     } else {
-        eprintln!("  {provider} does not support native web search.");
-        eprintln!();
+        println!("  {provider} does not support native web search.");
+        println!();
         let answer = prompt_with_default("configure a web search backend? [y/N]", "n")?;
         answer.eq_ignore_ascii_case("y") || answer.eq_ignore_ascii_case("yes")
     };
@@ -282,26 +282,26 @@ fn prompt_web_search(provider: ProviderKind) -> Result<WebSearchWizardAnswers, R
         });
     }
 
-    eprintln!();
-    eprintln!("  backends:");
-    eprintln!("    1. brave search");
-    eprintln!("    2. tavily");
-    eprintln!("    3. ollama cloud");
+    println!();
+    println!("  backends:");
+    println!("    1. brave search");
+    println!("    2. tavily");
+    println!("    3. ollama cloud");
     let backend = loop {
         let input = prompt_with_default("backend [1]", "1")?;
         match input.as_str() {
             "1" | "brave" => break "brave".to_string(),
             "2" | "tavily" => break "tavily".to_string(),
             "3" | "ollama" => break "ollama".to_string(),
-            _ => eprintln!("  invalid choice, enter 1-3 or a backend name"),
+            _ => println!("  invalid choice, enter 1-3 or a backend name"),
         }
     };
 
-    eprintln!();
-    eprint!("  web search api key: ");
-    std::io::stderr().flush().ok();
+    println!();
+    print!("  web search api key: ");
+    std::io::stdout().flush().ok();
     let ws_key = rpassword::read_password()
-        .map_err(|e| ResiduumError::Config(format!("failed to read web search api key: {e}")))?;
+        .map_err(|e| FatalError::Config(format!("failed to read web search api key: {e}")))?;
     let ws_key = if ws_key.trim().is_empty() {
         None
     } else {
@@ -309,7 +309,7 @@ fn prompt_web_search(provider: ProviderKind) -> Result<WebSearchWizardAnswers, R
     };
 
     let ws_base_url = if backend == "ollama" {
-        eprintln!();
+        println!();
         let url = prompt_with_default(
             "base url [https://api.ollama.com]",
             "https://api.ollama.com",
@@ -338,14 +338,14 @@ fn default_model_for_provider(provider: ProviderKind) -> &'static str {
 }
 
 /// Prompt the user with a default value, returning the default on empty input.
-fn prompt_with_default(prompt: &str, default: &str) -> Result<String, ResiduumError> {
-    eprint!("  {prompt}: ");
-    std::io::stderr().flush().ok();
+fn prompt_with_default(prompt: &str, default: &str) -> Result<String, FatalError> {
+    print!("  {prompt}: ");
+    std::io::stdout().flush().ok();
 
     let mut input = String::new();
     std::io::stdin()
         .read_line(&mut input)
-        .map_err(|e| ResiduumError::Config(format!("failed to read input: {e}")))?;
+        .map_err(|e| FatalError::Config(format!("failed to read input: {e}")))?;
 
     let trimmed = input.trim();
     if trimmed.is_empty() {

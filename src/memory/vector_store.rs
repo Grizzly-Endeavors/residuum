@@ -9,7 +9,8 @@ use std::sync::Mutex;
 use rusqlite::Connection;
 use zerocopy::IntoBytes;
 
-use crate::error::ResiduumError;
+use anyhow::Context;
+
 use crate::memory::types::{IndexChunk, Observation};
 
 /// A vector search result from either the observation or chunk table.
@@ -84,29 +85,23 @@ impl VectorStore {
     ///
     /// # Errors
     /// Returns an error if the database cannot be opened or schema creation fails.
-    pub fn open_or_create(db_path: &Path, dim: usize) -> Result<Self, ResiduumError> {
+    pub fn open_or_create(db_path: &Path, dim: usize) -> anyhow::Result<Self> {
         register_sqlite_vec_extension();
 
         if let Some(parent) = db_path.parent() {
-            std::fs::create_dir_all(parent).map_err(|e| {
-                ResiduumError::Memory(format!(
-                    "failed to create vector store directory at {}: {e}",
+            std::fs::create_dir_all(parent).with_context(|| {
+                format!(
+                    "failed to create vector store directory at {}",
                     parent.display()
-                ))
+                )
             })?;
         }
 
-        let conn = Connection::open(db_path).map_err(|e| {
-            ResiduumError::Memory(format!(
-                "failed to open vector store at {}: {e}",
-                db_path.display()
-            ))
-        })?;
+        let conn = Connection::open(db_path)
+            .with_context(|| format!("failed to open vector store at {}", db_path.display()))?;
 
         conn.pragma_update(None, "journal_mode", "WAL")
-            .map_err(|e| {
-                ResiduumError::Memory(format!("failed to set WAL mode for vector store: {e}"))
-            })?;
+            .context("failed to set WAL mode for vector store")?;
 
         create_tables(&conn, dim)?;
 
@@ -134,22 +129,22 @@ impl VectorStore {
         date: &str,
         observations: &[Observation],
         embeddings: &[Vec<f32>],
-    ) -> Result<Vec<String>, ResiduumError> {
+    ) -> anyhow::Result<Vec<String>> {
         if observations.is_empty() {
             return Ok(Vec::new());
         }
         if observations.len() != embeddings.len() {
-            return Err(ResiduumError::Memory(format!(
+            anyhow::bail!(
                 "observation count ({}) does not match embedding count ({})",
                 observations.len(),
                 embeddings.len()
-            )));
+            );
         }
 
         let mut conn = self.lock_conn()?;
         let tx = conn
             .transaction()
-            .map_err(|e| ResiduumError::Memory(format!("failed to start obs transaction: {e}")))?;
+            .context("failed to start obs transaction")?;
 
         let mut doc_ids = Vec::with_capacity(observations.len());
         {
@@ -158,7 +153,7 @@ impl VectorStore {
                     "INSERT INTO obs_vectors(obs_id, episode_id, date, context, content, embedding)
                      VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
                 )
-                .map_err(|e| ResiduumError::Memory(format!("failed to prepare obs insert: {e}")))?;
+                .context("failed to prepare obs insert")?;
 
             for (i, (obs, emb)) in observations.iter().zip(embeddings.iter()).enumerate() {
                 self.check_dim(emb)?;
@@ -176,17 +171,15 @@ impl VectorStore {
                         tracing::debug!(doc_id, "observation vector already exists, skipping");
                     }
                     Err(e) => {
-                        return Err(ResiduumError::Memory(format!(
-                            "failed to insert observation vector {doc_id}: {e}"
-                        )));
+                        return Err(anyhow::Error::new(e)
+                            .context(format!("failed to insert observation vector {doc_id}")));
                     }
                 }
                 doc_ids.push(doc_id);
             }
         }
 
-        tx.commit()
-            .map_err(|e| ResiduumError::Memory(format!("failed to commit obs transaction: {e}")))?;
+        tx.commit().context("failed to commit obs transaction")?;
 
         Ok(doc_ids)
     }
@@ -199,22 +192,22 @@ impl VectorStore {
         &self,
         chunks: &[IndexChunk],
         embeddings: &[Vec<f32>],
-    ) -> Result<Vec<String>, ResiduumError> {
+    ) -> anyhow::Result<Vec<String>> {
         if chunks.is_empty() {
             return Ok(Vec::new());
         }
         if chunks.len() != embeddings.len() {
-            return Err(ResiduumError::Memory(format!(
+            anyhow::bail!(
                 "chunk count ({}) does not match embedding count ({})",
                 chunks.len(),
                 embeddings.len()
-            )));
+            );
         }
 
         let mut conn = self.lock_conn()?;
-        let tx = conn.transaction().map_err(|e| {
-            ResiduumError::Memory(format!("failed to start chunk transaction: {e}"))
-        })?;
+        let tx = conn
+            .transaction()
+            .context("failed to start chunk transaction")?;
 
         let mut doc_ids = Vec::with_capacity(chunks.len());
         {
@@ -224,9 +217,7 @@ impl VectorStore {
                      line_start, line_end, embedding)
                      VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
                 )
-                .map_err(|e| {
-                    ResiduumError::Memory(format!("failed to prepare chunk insert: {e}"))
-                })?;
+                .context("failed to prepare chunk insert")?;
 
             for (chunk, emb) in chunks.iter().zip(embeddings.iter()) {
                 self.check_dim(emb)?;
@@ -250,19 +241,15 @@ impl VectorStore {
                         );
                     }
                     Err(e) => {
-                        return Err(ResiduumError::Memory(format!(
-                            "failed to insert chunk vector {}: {e}",
-                            chunk.chunk_id
-                        )));
+                        return Err(anyhow::Error::new(e)
+                            .context(format!("failed to insert chunk vector {}", chunk.chunk_id)));
                     }
                 }
                 doc_ids.push(chunk.chunk_id.clone());
             }
         }
 
-        tx.commit().map_err(|e| {
-            ResiduumError::Memory(format!("failed to commit chunk transaction: {e}"))
-        })?;
+        tx.commit().context("failed to commit chunk transaction")?;
 
         Ok(doc_ids)
     }
@@ -278,7 +265,7 @@ impl VectorStore {
         query_embedding: &[f32],
         limit: usize,
         filters: &VectorSearchFilters,
-    ) -> Result<Vec<VectorSearchResult>, ResiduumError> {
+    ) -> anyhow::Result<Vec<VectorSearchResult>> {
         self.check_dim(query_embedding)?;
         let conn = self.lock_conn()?;
 
@@ -286,10 +273,12 @@ impl VectorStore {
 
         // Search observations
         let obs_results = search_obs_table(&conn, query_embedding, limit, filters)?;
+        let obs_count = obs_results.len();
         results.extend(obs_results);
 
         // Search chunks
         let chunk_results = search_chunk_table(&conn, query_embedding, limit, filters)?;
+        let chunk_count = chunk_results.len();
         results.extend(chunk_results);
 
         // Sort by distance ascending (most similar first)
@@ -300,6 +289,12 @@ impl VectorStore {
         });
         results.truncate(limit);
 
+        tracing::trace!(
+            obs_candidates = obs_count,
+            chunk_candidates = chunk_count,
+            returned = results.len(),
+            "vector search complete"
+        );
         Ok(results)
     }
 
@@ -307,31 +302,25 @@ impl VectorStore {
     ///
     /// # Errors
     /// Returns an error if the delete fails.
-    pub fn delete_by_doc_ids(&self, ids: &[String]) -> Result<(), ResiduumError> {
+    pub fn delete_by_doc_ids(&self, ids: &[String]) -> anyhow::Result<()> {
         if ids.is_empty() {
             return Ok(());
         }
 
         let mut conn = self.lock_conn()?;
-        let tx = conn.transaction().map_err(|e| {
-            ResiduumError::Memory(format!("failed to begin delete transaction: {e}"))
-        })?;
+        let tx = conn
+            .transaction()
+            .context("failed to begin delete transaction")?;
 
         for id in ids {
             // Try both tables — a given ID only exists in one
             tx.execute("DELETE FROM obs_vectors WHERE obs_id = ?1", [id])
-                .map_err(|e| {
-                    ResiduumError::Memory(format!("failed to delete from obs_vectors: {e}"))
-                })?;
+                .context("failed to delete from obs_vectors")?;
             tx.execute("DELETE FROM chunk_vectors WHERE chunk_id = ?1", [id])
-                .map_err(|e| {
-                    ResiduumError::Memory(format!("failed to delete from chunk_vectors: {e}"))
-                })?;
+                .context("failed to delete from chunk_vectors")?;
         }
 
-        tx.commit().map_err(|e| {
-            ResiduumError::Memory(format!("failed to commit delete transaction: {e}"))
-        })?;
+        tx.commit().context("failed to commit delete transaction")?;
 
         Ok(())
     }
@@ -340,16 +329,14 @@ impl VectorStore {
     ///
     /// # Errors
     /// Returns an error if the query fails.
-    pub fn has_observation(&self, obs_id: &str) -> Result<bool, ResiduumError> {
+    pub fn has_observation(&self, obs_id: &str) -> anyhow::Result<bool> {
         let conn = self.lock_conn()?;
         let mut stmt = conn
             .prepare_cached("SELECT 1 FROM obs_vectors WHERE obs_id = ?1 LIMIT 1")
-            .map_err(|e| {
-                ResiduumError::Memory(format!("failed to prepare obs existence check: {e}"))
-            })?;
+            .context("failed to prepare obs existence check")?;
         let exists = stmt
             .exists(rusqlite::params![obs_id])
-            .map_err(|e| ResiduumError::Memory(format!("obs existence check failed: {e}")))?;
+            .context("obs existence check failed")?;
         Ok(exists)
     }
 
@@ -357,16 +344,14 @@ impl VectorStore {
     ///
     /// # Errors
     /// Returns an error if the query fails.
-    pub fn has_chunk(&self, chunk_id: &str) -> Result<bool, ResiduumError> {
+    pub fn has_chunk(&self, chunk_id: &str) -> anyhow::Result<bool> {
         let conn = self.lock_conn()?;
         let mut stmt = conn
             .prepare_cached("SELECT 1 FROM chunk_vectors WHERE chunk_id = ?1 LIMIT 1")
-            .map_err(|e| {
-                ResiduumError::Memory(format!("failed to prepare chunk existence check: {e}"))
-            })?;
+            .context("failed to prepare chunk existence check")?;
         let exists = stmt
             .exists(rusqlite::params![chunk_id])
-            .map_err(|e| ResiduumError::Memory(format!("chunk existence check failed: {e}")))?;
+            .context("chunk existence check failed")?;
         Ok(exists)
     }
 
@@ -374,29 +359,29 @@ impl VectorStore {
     ///
     /// # Errors
     /// Returns an error if the tables cannot be recreated.
-    pub fn clear(&self) -> Result<(), ResiduumError> {
+    pub fn clear(&self) -> anyhow::Result<()> {
         let conn = self.lock_conn()?;
         conn.execute_batch("DROP TABLE IF EXISTS obs_vectors; DROP TABLE IF EXISTS chunk_vectors;")
-            .map_err(|e| ResiduumError::Memory(format!("failed to drop vector tables: {e}")))?;
+            .context("failed to drop vector tables")?;
         create_tables(&conn, self.dim)?;
         Ok(())
     }
 
     /// Lock the connection mutex.
-    fn lock_conn(&self) -> Result<std::sync::MutexGuard<'_, Connection>, ResiduumError> {
+    fn lock_conn(&self) -> anyhow::Result<std::sync::MutexGuard<'_, Connection>> {
         self.conn
             .lock()
-            .map_err(|e| ResiduumError::Memory(format!("vector store lock poisoned: {e}")))
+            .map_err(|e| anyhow::anyhow!("vector store lock poisoned: {e}"))
     }
 
     /// Validate that an embedding has the expected dimension.
-    fn check_dim(&self, embedding: &[f32]) -> Result<(), ResiduumError> {
+    fn check_dim(&self, embedding: &[f32]) -> anyhow::Result<()> {
         if embedding.len() != self.dim {
-            return Err(ResiduumError::Memory(format!(
+            anyhow::bail!(
                 "embedding dimension mismatch: expected {}, got {}",
                 self.dim,
                 embedding.len()
-            )));
+            );
         }
         Ok(())
     }
@@ -418,7 +403,7 @@ fn is_unique_violation(err: &rusqlite::Error) -> bool {
 }
 
 /// Create the vec0 virtual tables if they don't exist.
-fn create_tables(conn: &Connection, dim: usize) -> Result<(), ResiduumError> {
+fn create_tables(conn: &Connection, dim: usize) -> anyhow::Result<()> {
     conn.execute_batch(&format!(
         "CREATE VIRTUAL TABLE IF NOT EXISTS obs_vectors USING vec0(
             obs_id TEXT PRIMARY KEY,
@@ -440,7 +425,7 @@ fn create_tables(conn: &Connection, dim: usize) -> Result<(), ResiduumError> {
             embedding FLOAT[{dim}] DISTANCE_METRIC=cosine
         );"
     ))
-    .map_err(|e| ResiduumError::Memory(format!("failed to create vector tables: {e}")))?;
+    .context("failed to create vector tables")?;
     Ok(())
 }
 
@@ -450,7 +435,7 @@ fn search_obs_table(
     query_embedding: &[f32],
     limit: usize,
     filters: &VectorSearchFilters,
-) -> Result<Vec<VectorSearchResult>, ResiduumError> {
+) -> anyhow::Result<Vec<VectorSearchResult>> {
     let (where_clause, params) = build_filter_clauses(filters);
 
     let sql = format!(
@@ -467,7 +452,7 @@ fn search_obs_table(
     let conn_ref = conn;
     let mut stmt = conn_ref
         .prepare_cached(&sql)
-        .map_err(|e| ResiduumError::Memory(format!("failed to prepare obs search: {e}")))?;
+        .context("failed to prepare obs search")?;
 
     // Build parameter list: embedding bytes, limit, then filter values
     let mut all_params: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
@@ -492,13 +477,11 @@ fn search_obs_table(
                 distance: row.get(5)?,
             })
         })
-        .map_err(|e| ResiduumError::Memory(format!("obs vector search failed: {e}")))?;
+        .context("obs vector search failed")?;
 
     let mut results = Vec::new();
     for row in rows {
-        results.push(
-            row.map_err(|e| ResiduumError::Memory(format!("failed to read obs search row: {e}")))?,
-        );
+        results.push(row.context("failed to read obs search row")?);
     }
     Ok(results)
 }
@@ -509,7 +492,7 @@ fn search_chunk_table(
     query_embedding: &[f32],
     limit: usize,
     filters: &VectorSearchFilters,
-) -> Result<Vec<VectorSearchResult>, ResiduumError> {
+) -> anyhow::Result<Vec<VectorSearchResult>> {
     let (where_clause, params) = build_filter_clauses(filters);
 
     let sql = format!(
@@ -525,7 +508,7 @@ fn search_chunk_table(
 
     let mut stmt = conn
         .prepare_cached(&sql)
-        .map_err(|e| ResiduumError::Memory(format!("failed to prepare chunk search: {e}")))?;
+        .context("failed to prepare chunk search")?;
 
     let mut all_params: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
     all_params.push(Box::new(query_embedding.as_bytes().to_vec()));
@@ -551,15 +534,11 @@ fn search_chunk_table(
                 distance: row.get(7)?,
             })
         })
-        .map_err(|e| ResiduumError::Memory(format!("chunk vector search failed: {e}")))?;
+        .context("chunk vector search failed")?;
 
     let mut results = Vec::new();
     for row in rows {
-        results.push(
-            row.map_err(|e| {
-                ResiduumError::Memory(format!("failed to read chunk search row: {e}"))
-            })?,
-        );
+        results.push(row.context("failed to read chunk search row")?);
     }
     Ok(results)
 }

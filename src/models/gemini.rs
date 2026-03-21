@@ -7,7 +7,7 @@
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
-use tracing::debug;
+use tracing::{debug, info};
 
 use super::embedding::{EmbeddingProvider, EmbeddingResponse};
 use super::http::{SharedHttpClient, map_request_error, warn_if_insecure_remote};
@@ -233,6 +233,10 @@ impl GeminiClient {
 
 #[async_trait]
 impl ModelProvider for GeminiClient {
+    #[expect(
+        clippy::too_many_lines,
+        reason = "logging audit requires inline request/response context"
+    )]
     async fn complete(
         &self,
         messages: &[Message],
@@ -260,6 +264,8 @@ impl ModelProvider for GeminiClient {
             }]
         });
         let max_output_tokens = options.max_tokens.unwrap_or(self.max_tokens);
+        let message_count = messages.len();
+        let tool_count = tools.len();
         let model = self.model.clone();
         let http = self.http.clone();
         let timeout_secs = self.http.timeout_secs();
@@ -313,12 +319,22 @@ impl ModelProvider for GeminiClient {
                     thinking_config,
                 };
 
-                debug!(model = %model, "sending Gemini generateContent request");
+                let request_json = serde_json::to_string(&request)
+                    .unwrap_or_else(|e| format!("(serialization failed: {e})"));
+
+                debug!(
+                    model = %model,
+                    max_output_tokens,
+                    message_count,
+                    tool_count,
+                    "sending gemini generateContent request"
+                );
 
                 let response = http
                     .client()
                     .post(&url)
-                    .json(&request)
+                    .body(request_json.clone())
+                    .header("content-type", "application/json")
                     .send()
                     .await
                     .map_err(|e| map_request_error(e, timeout_secs))?;
@@ -332,6 +348,12 @@ impl ModelProvider for GeminiClient {
                             format!("failed to read response body: {e}")
                         }
                     };
+                    tracing::warn!(
+                        status = %status,
+                        response_body = %raw_body,
+                        request_body = %request_json,
+                        "gemini API error — full request/response for diagnosis"
+                    );
                     let error_body = serde_json::from_str::<GeminiErrorResponse>(&raw_body)
                         .map_or_else(|_| raw_body, |e| e.error.message);
                     return Err(ModelError::Api(format!("{status}: {error_body}")));
@@ -341,7 +363,14 @@ impl ModelProvider for GeminiClient {
                     .text()
                     .await
                     .map_err(|e| map_request_error(e, timeout_secs))?;
-                Self::parse_response(Self::parse_response_body(&text)?)
+                let result = Self::parse_response(Self::parse_response_body(&text)?)?;
+                info!(
+                    model = %model,
+                    content_len = result.content.len(),
+                    tool_calls = result.tool_calls.len(),
+                    "gemini completion received"
+                );
+                Ok(result)
             }
         })
         .await
@@ -607,8 +636,11 @@ impl GeminiEmbeddingClient {
                 },
             };
             let http = http.clone();
+            let model = model.clone();
 
             async move {
+                debug!(model = %model, "sending gemini embed request");
+
                 let response = http
                     .client()
                     .post(&url)
@@ -630,6 +662,7 @@ impl GeminiEmbeddingClient {
                         ModelError::Parse(format!("failed to parse gemini embed response: {e}"))
                     })?;
                 let dimensions = parsed.embedding.values.len();
+                info!(model = %model, dimensions, "gemini embedding received");
                 Ok(EmbeddingResponse {
                     embeddings: vec![parsed.embedding.values],
                     dimensions,
@@ -661,8 +694,12 @@ impl GeminiEmbeddingClient {
                 .collect();
             let request_body = GeminiBatchEmbedRequest { requests };
             let http = http.clone();
+            let model = model.clone();
+            let batch_count = owned_texts.len();
 
             async move {
+                debug!(model = %model, count = batch_count, "sending gemini batch embed request");
+
                 let response = http
                     .client()
                     .post(&url)
@@ -686,7 +723,9 @@ impl GeminiEmbeddingClient {
                         ))
                     })?;
                 let dimensions = parsed.embeddings.first().map_or(0, |e| e.values.len());
-                let embeddings = parsed.embeddings.into_iter().map(|e| e.values).collect();
+                let embeddings: Vec<Vec<f32>> =
+                    parsed.embeddings.into_iter().map(|e| e.values).collect();
+                info!(model = %model, count = embeddings.len(), dimensions, "gemini batch embeddings received");
                 Ok(EmbeddingResponse {
                     embeddings,
                     dimensions,

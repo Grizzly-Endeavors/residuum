@@ -51,6 +51,7 @@ pub(crate) async fn run_discord_subscriber(
     channel_id: Arc<Mutex<Option<ChannelId>>>,
 ) {
     let mut typing_cancel: Option<tokio::sync::watch::Sender<bool>> = None;
+    let mut clean_exit = true;
 
     loop {
         let Some(cid) = *channel_id.lock().await else {
@@ -81,19 +82,22 @@ pub(crate) async fn run_discord_subscriber(
                     Ok(Some(TurnLifecycleEvent::Ended { .. })) => {
                         typing_cancel.take();
                     }
-                    _ => break,
+                    Ok(None) => break,
+                    Err(_) => { clean_exit = false; break; }
                 }
             }
             event = subs.response.recv() => {
                 match event {
                     Ok(Some(resp)) => send_chunks(&http, cid, &resp.content).await,
-                    _ => break,
+                    Ok(None) => break,
+                    Err(_) => { clean_exit = false; break; }
                 }
             }
             event = subs.intermediate.recv() => {
                 match event {
                     Ok(Some(im)) => send_chunks(&http, cid, &im.content).await,
-                    _ => break,
+                    Ok(None) => break,
+                    Err(_) => { clean_exit = false; break; }
                 }
             }
             event = subs.system.recv() => {
@@ -109,20 +113,25 @@ pub(crate) async fn run_discord_subscriber(
                         let text = format!("**[{}]** {}", se.source, se.content);
                         send_chunks(&http, cid, &text).await;
                     }
-                    _ => break,
+                    Ok(None) => break,
+                    Err(_) => { clean_exit = false; break; }
                 }
             }
         }
     }
 
-    tracing::debug!("discord subscriber loop ended (broker shut down)");
+    if clean_exit {
+        tracing::debug!("discord subscriber loop ended");
+    } else {
+        tracing::warn!("discord subscriber loop ended unexpectedly");
+    }
 }
 
 async fn send_chunks(http: &serenity::http::Http, channel_id: ChannelId, content: &str) {
     let chunks = chunk_text(content, DISCORD_MAX_CHARS);
     for chunk in chunks {
         if let Err(e) = channel_id.say(http, &chunk).await {
-            tracing::warn!(error = %e, "failed to send discord message");
+            tracing::warn!(channel_id = %channel_id, error = %e, "failed to send discord message");
         }
     }
 }

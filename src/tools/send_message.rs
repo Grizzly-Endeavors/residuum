@@ -136,6 +136,7 @@ impl Tool for SendMessageTool {
                 .publish(topic, notification)
                 .await
                 .map_err(|e| {
+                    tracing::error!(error = %e, endpoint = %endpoint_name, "failed to publish notification");
                     ToolError::Execution(format!(
                         "failed to publish message to '{endpoint_name}': {e}"
                     ))
@@ -148,6 +149,7 @@ impl Tool for SendMessageTool {
             };
             let topic = topics::Response(EndpointName::from(endpoint_name));
             self.publisher.publish(topic, response).await.map_err(|e| {
+                tracing::error!(error = %e, endpoint = %endpoint_name, "failed to publish response");
                 ToolError::Execution(format!(
                     "failed to publish message to '{endpoint_name}': {e}"
                 ))

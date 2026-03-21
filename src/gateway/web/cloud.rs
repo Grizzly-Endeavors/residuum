@@ -126,7 +126,7 @@ pub(crate) async fn cloud_callback(
         tokio::task::spawn_blocking(move || {
             let mut store = SecretStore::load(&dir)?;
             store.set("cloud_token", &tok, &dir)?;
-            Ok::<(), crate::error::ResiduumError>(())
+            Ok::<(), crate::error::FatalError>(())
         })
         .await
     };
@@ -140,7 +140,7 @@ pub(crate) async fn cloud_callback(
             .into_response();
     }
     if let Ok(Err(e)) = store_result {
-        tracing::error!(error = %e, "failed to store cloud token");
+        tracing::error!(error = %e, "cloud token store operation failed");
         return (
             StatusCode::INTERNAL_SERVER_ERROR,
             Html(format!("<h1>Error</h1><p>Failed to store token: {e}</p>")),
@@ -188,6 +188,7 @@ pub(crate) async fn api_cloud_disconnect(
         )
     })?;
 
+    tracing::info!("cloud tunnel disconnected");
     state.reload_tx.send(ReloadSignal::Root).ok();
 
     Ok(Json(serde_json::json!({ "ok": true })))

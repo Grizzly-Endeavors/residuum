@@ -1,6 +1,6 @@
 //! Workspace bootstrapping: creates required directories and default identity files.
 
-use crate::error::ResiduumError;
+use crate::error::FatalError;
 
 use super::layout::WorkspaceLayout;
 
@@ -340,17 +340,17 @@ const GETTING_STARTED_ALWAYS_ON: &str = include_str!(
 /// This is idempotent: existing files and directories are not modified.
 ///
 /// # Errors
-/// Returns `ResiduumError::Workspace` if directories cannot be created or
+/// Returns `FatalError::Workspace` if directories cannot be created or
 /// default files cannot be written.
 pub async fn ensure_workspace(
     layout: &WorkspaceLayout,
     user_name: Option<&str>,
     timezone: Option<&str>,
-) -> Result<(), ResiduumError> {
+) -> Result<(), FatalError> {
     // Create all required directories
     for dir in layout.required_dirs() {
         tokio::fs::create_dir_all(&dir).await.map_err(|e| {
-            ResiduumError::Workspace(format!("failed to create directory {}: {e}", dir.display()))
+            FatalError::Workspace(format!("failed to create directory {}: {e}", dir.display()))
         })?;
     }
 
@@ -367,16 +367,18 @@ pub async fn ensure_workspace(
     // BOOTSTRAP.md is first-run only: write it once, then drop a sentinel so it
     // is never recreated after the agent deletes it.
     let sentinel = layout.root().join(".bootstrapped");
-    if !sentinel.exists() {
+    let fresh_bootstrap = !sentinel.exists();
+    if fresh_bootstrap {
         write_if_missing(&layout.bootstrap_md(), DEFAULT_BOOTSTRAP).await?;
         // Create the sentinel after writing BOOTSTRAP.md so that if we crash
         // between writing and sentinel creation, the next startup will retry.
         tokio::fs::write(&sentinel, "").await.map_err(|e| {
-            ResiduumError::Workspace(format!(
+            FatalError::Workspace(format!(
                 "failed to write bootstrap sentinel {}: {e}",
                 sentinel.display()
             ))
         })?;
+        tracing::debug!(sentinel = %sentinel.display(), "bootstrap sentinel written");
     }
 
     write_if_missing(&layout.observer_md(), DEFAULT_OBSERVER_PROMPT).await?;
@@ -391,6 +393,7 @@ pub async fn ensure_workspace(
 
     tracing::info!(
         workspace = %layout.root().display(),
+        fresh_bootstrap,
         "workspace ready"
     );
 
@@ -427,12 +430,12 @@ fn build_user_content(user_name: Option<&str>, timezone: Option<&str>) -> String
 ///
 /// Each file is written with `write_if_missing`, so user edits are preserved
 /// and files are only recreated if deleted.
-async fn write_bundled_skills(layout: &WorkspaceLayout) -> Result<(), ResiduumError> {
+async fn write_bundled_skills(layout: &WorkspaceLayout) -> Result<(), FatalError> {
     // residuum-system skill
     let system_dir = layout.residuum_system_skill_dir();
     let system_refs = system_dir.join("references");
     tokio::fs::create_dir_all(&system_refs).await.map_err(|e| {
-        ResiduumError::Workspace(format!(
+        FatalError::Workspace(format!(
             "failed to create skill directory {}: {e}",
             system_refs.display()
         ))
@@ -466,7 +469,7 @@ async fn write_bundled_skills(layout: &WorkspaceLayout) -> Result<(), ResiduumEr
     tokio::fs::create_dir_all(&started_workflows)
         .await
         .map_err(|e| {
-            ResiduumError::Workspace(format!(
+            FatalError::Workspace(format!(
                 "failed to create skill directory {}: {e}",
                 started_workflows.display()
             ))
@@ -499,14 +502,18 @@ async fn write_bundled_skills(layout: &WorkspaceLayout) -> Result<(), ResiduumEr
     )
     .await?;
 
+    tracing::debug!(count = 15, "wrote bundled skills");
+
     Ok(())
 }
 
 /// Write content to a file only if it does not already exist.
-async fn write_if_missing(path: &std::path::Path, content: &str) -> Result<(), ResiduumError> {
-    if !path.exists() {
+async fn write_if_missing(path: &std::path::Path, content: &str) -> Result<(), FatalError> {
+    if path.exists() {
+        tracing::trace!(path = %path.display(), "identity file already exists, skipping");
+    } else {
         tokio::fs::write(path, content).await.map_err(|e| {
-            ResiduumError::Workspace(format!("failed to write default {}: {e}", path.display()))
+            FatalError::Workspace(format!("failed to write default {}: {e}", path.display()))
         })?;
         tracing::debug!(path = %path.display(), "created default identity file");
     }

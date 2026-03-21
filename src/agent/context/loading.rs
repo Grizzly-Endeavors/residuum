@@ -2,7 +2,8 @@
 
 use std::path::Path;
 
-use crate::error::ResiduumError;
+use anyhow::Context;
+
 use crate::projects::activation::SharedProjectState;
 use crate::skills::SharedSkillState;
 use crate::subagents::SubagentPresetIndex;
@@ -13,29 +14,23 @@ use crate::subagents::SubagentPresetIndex;
 ///
 /// # Errors
 /// Returns an error if the file exists but cannot be read or parsed.
-pub(crate) async fn load_observations(path: &Path) -> Result<Option<String>, ResiduumError> {
+pub(crate) async fn load_observations(path: &Path) -> anyhow::Result<Option<String>> {
     match tokio::fs::read_to_string(path).await {
         Ok(content) if !content.trim().is_empty() => {
             let log: crate::memory::types::ObservationLog = serde_json::from_str(&content)
-                .map_err(|e| {
-                    ResiduumError::Memory(format!(
-                        "failed to parse observations at {}: {e}",
-                        path.display()
-                    ))
-                })?;
+                .with_context(|| format!("failed to parse observations at {}", path.display()))?;
             let formatted = log.display_formatted();
             if formatted.is_empty() {
                 Ok(None)
             } else {
+                tracing::debug!(len = formatted.len(), "loaded observations");
                 Ok(Some(formatted))
             }
         }
         Ok(_) => Ok(None),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(e) => Err(ResiduumError::Memory(format!(
-            "failed to read observations at {}: {e}",
-            path.display()
-        ))),
+        Err(e) => Err(anyhow::Error::new(e)
+            .context(format!("failed to read observations at {}", path.display()))),
     }
 }
 
@@ -45,12 +40,14 @@ pub(crate) async fn load_observations(path: &Path) -> Result<Option<String>, Res
 ///
 /// # Errors
 /// Returns an error if the file exists but cannot be parsed.
-pub(crate) async fn load_recent_context_narrative(
-    path: &Path,
-) -> Result<Option<String>, ResiduumError> {
-    Ok(crate::memory::recent_context::load_recent_context(path)
+pub(crate) async fn load_recent_context_narrative(path: &Path) -> anyhow::Result<Option<String>> {
+    let result = crate::memory::recent_context::load_recent_context(path)
         .await?
-        .map(|ctx| ctx.narrative))
+        .map(|ctx| ctx.narrative);
+    if let Some(ref narrative) = result {
+        tracing::debug!(len = narrative.len(), "loaded recent context narrative");
+    }
+    Ok(result)
 }
 
 /// Build formatted strings for project context from shared project state.
@@ -86,7 +83,8 @@ pub(crate) async fn build_skill_context_strings(
 
 /// Scan the subagents directory and format the index for the system prompt.
 ///
-/// Returns `None` if the index is empty (shouldn't happen — built-in presets are always present).
+/// Returns `None` if the formatted index is empty (the scan succeeded but produced no output),
+/// or if the scan itself fails (logged at `error` level).
 pub(crate) async fn build_subagents_context_string(subagents_dir: &Path) -> Option<String> {
     match SubagentPresetIndex::scan(subagents_dir).await {
         Ok(index) => {

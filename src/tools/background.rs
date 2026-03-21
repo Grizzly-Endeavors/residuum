@@ -230,6 +230,7 @@ impl Tool for SubAgentSpawnTool {
             .publish(topic, spawn_event)
             .await
             .map_err(|err| {
+                tracing::error!(error = %err, preset = %preset_name, "failed to publish spawn request");
                 ToolError::Execution(format!("failed to publish spawn request: {err}"))
             })?;
 

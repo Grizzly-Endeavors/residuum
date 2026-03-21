@@ -16,10 +16,17 @@ pub fn spawn_monitored<F>(name: &'static str, future: F) -> tokio::task::JoinHan
 where
     F: Future<Output = ()> + Send + 'static,
 {
+    let span = tracing::info_span!("monitored_task", task = name);
     tokio::spawn(async move {
+        let _guard = span.enter();
+        tracing::debug!(task = name, "task started");
+        // SAFETY: We do not observe the future's state after a panic — we only
+        // log the panic payload and discard the result. This is safe as long as
+        // callers don't rely on internal task state after this function returns,
+        // which they can't since the JoinHandle output is ().
         match std::panic::AssertUnwindSafe(future).catch_unwind().await {
             Ok(()) => {
-                tracing::warn!(task = name, "task exited unexpectedly");
+                tracing::warn!(task = name, "task exited (returned normally)");
             }
             Err(e) => {
                 let msg = e
