@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use super::{
@@ -24,7 +25,7 @@ impl SkillIndex {
     #[tracing::instrument(skip(dirs, project_skills_dir), fields(dirs_count = dirs.len()))]
     pub async fn scan(dirs: &[PathBuf], project_skills_dir: Option<&Path>) -> anyhow::Result<Self> {
         let mut entries = Vec::new();
-        let mut seen_names: Vec<String> = Vec::new();
+        let mut seen_names: HashSet<String> = HashSet::new();
 
         // Project skills have highest priority — scan first
         if let Some(project_dir) = project_skills_dir {
@@ -38,8 +39,8 @@ impl SkillIndex {
         }
 
         // Then workspace and user-global (workspace is dirs[0], user-global are the rest)
-        for dir in dirs {
-            let source = if dirs.first().is_some_and(|first| first == dir) {
+        for (i, dir) in dirs.iter().enumerate() {
+            let source = if i == 0 {
                 SkillSource::Workspace
             } else {
                 SkillSource::UserGlobal
@@ -96,7 +97,7 @@ async fn scan_skill_directory(
     dir: &Path,
     source: SkillSource,
     entries: &mut Vec<SkillIndexEntry>,
-    seen_names: &mut Vec<String>,
+    seen_names: &mut HashSet<String>,
 ) -> anyhow::Result<()> {
     let entries_before = entries.len();
     let mut read_dir = match tokio::fs::read_dir(dir).await {
@@ -170,7 +171,7 @@ async fn scan_skill_directory(
                     );
                     continue;
                 }
-                seen_names.push(lower);
+                seen_names.insert(lower);
 
                 entries.push(SkillIndexEntry {
                     name: fm.name,

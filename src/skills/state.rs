@@ -66,15 +66,15 @@ impl SkillState {
         })?;
 
         let skill_name = entry.name.clone();
+        let idx = self.active.len();
         self.active.push(ActiveSkill {
             name: skill_name,
             body,
         });
 
         tracing::info!(name = %name, "skill activated");
-        // Safe: we just pushed
         self.active
-            .last()
+            .get(idx)
             .ok_or_else(|| anyhow::anyhow!("unexpected: active skill not set after activation"))
     }
 
@@ -115,13 +115,13 @@ impl SkillState {
         );
 
         // Remove active skills that no longer exist in the index
-        for skill in &self.active {
-            if self.index.find_by_name(&skill.name).is_none() {
-                tracing::warn!(name = %skill.name, "deactivating skill: no longer found after rescan");
+        self.active.retain(|a| {
+            let found = self.index.find_by_name(&a.name).is_some();
+            if !found {
+                tracing::warn!(name = %a.name, "deactivating skill: no longer found after rescan");
             }
-        }
-        self.active
-            .retain(|a| self.index.find_by_name(&a.name).is_some());
+            found
+        });
 
         Ok(())
     }

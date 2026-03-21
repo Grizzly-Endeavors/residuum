@@ -35,7 +35,7 @@ pub(super) fn parse_skill_md(content: &str) -> anyhow::Result<(SkillFrontmatter,
 
     validate_skill_name(&frontmatter.name)?;
 
-    let body_start = 3 + close_pos + 4; // "---" prefix + yaml + "\n---"
+    let body_start = "---".len() + close_pos + "\n---".len();
     let body = trimmed.get(body_start..).unwrap_or("").trim().to_string();
 
     Ok((frontmatter, body))
