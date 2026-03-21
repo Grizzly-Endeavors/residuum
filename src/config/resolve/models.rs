@@ -221,25 +221,10 @@ pub(super) fn resolve_assignment_chain(
 
 /// Extract per-role overrides from a `ModelAssignment` and insert into the map.
 ///
-/// Public within the resolve module for use by background tier resolution.
-///
 /// # Errors
 /// Returns `FatalError::Config` if the thinking string is invalid or temperature
 /// is out of range.
-pub(super) fn extract_role_overrides_pub(
-    role: &str,
-    assignment: &ModelAssignment,
-    overrides: &mut HashMap<String, RoleOverrides>,
-) -> Result<(), FatalError> {
-    extract_role_overrides(role, assignment, overrides)
-}
-
-/// Extract per-role overrides from a `ModelAssignment` and insert into the map.
-///
-/// # Errors
-/// Returns `FatalError::Config` if the thinking string is invalid or temperature
-/// is out of range.
-fn extract_role_overrides(
+pub(super) fn extract_role_overrides(
     role: &str,
     assignment: &ModelAssignment,
     overrides: &mut HashMap<String, RoleOverrides>,

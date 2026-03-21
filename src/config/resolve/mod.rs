@@ -134,7 +134,7 @@ pub(crate) fn from_file_and_env(
         thinking,
         web_search,
         role_overrides: resolved_models.role_overrides,
-        config_dir: PathBuf::new(),
+        config_dir: config_dir.to_path_buf(),
     })
 }
 
@@ -747,7 +747,7 @@ fn resolve_bg_tier(
     let Some(spec) = assignment else {
         return Ok(None);
     };
-    models::extract_role_overrides_pub(role_key, &spec, role_overrides)?;
+    models::extract_role_overrides(role_key, &spec, role_overrides)?;
     Ok(Some(models::resolve_assignment_chain(
         spec,
         providers_map,
