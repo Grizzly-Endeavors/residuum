@@ -22,6 +22,7 @@ impl SkillIndex {
     /// # Errors
     /// Returns `ResiduumError::Skills` if a directory cannot be read (except
     /// `NotFound`, which is silently skipped).
+    #[tracing::instrument(skip(dirs, project_skills_dir), fields(dirs_count = dirs.len()))]
     pub async fn scan(
         dirs: &[PathBuf],
         project_skills_dir: Option<&Path>,
@@ -47,9 +48,11 @@ impl SkillIndex {
             } else {
                 SkillSource::UserGlobal
             };
+            tracing::debug!(dir = %dir.display(), source = %source, "scanning skill dir");
             scan_skill_directory(dir, source, &mut entries, &mut seen_names).await?;
         }
 
+        tracing::info!(total = entries.len(), "skill index built");
         Ok(Self { entries })
     }
 
@@ -92,12 +95,14 @@ impl SkillIndex {
 }
 
 /// Scan a single directory for skill subfolders.
+#[tracing::instrument(skip(entries, seen_names))]
 async fn scan_skill_directory(
     dir: &Path,
     source: SkillSource,
     entries: &mut Vec<SkillIndexEntry>,
     seen_names: &mut Vec<String>,
 ) -> Result<(), ResiduumError> {
+    let entries_before = entries.len();
     let mut read_dir = match tokio::fs::read_dir(dir).await {
         Ok(rd) => rd,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
@@ -166,6 +171,7 @@ async fn scan_skill_directory(
                     tracing::warn!(
                         name = %fm.name,
                         path = %skill_md.display(),
+                        source = %source,
                         "duplicate skill name, keeping first found"
                     );
                     continue;
@@ -183,12 +189,14 @@ async fn scan_skill_directory(
                 tracing::warn!(
                     path = %skill_md.display(),
                     error = %e,
+                    source = %source,
                     "skipping skill with invalid frontmatter"
                 );
             }
         }
     }
 
+    tracing::debug!(dir = %dir.display(), source = %source, count = entries.len() - entries_before, "skill directory scanned");
     Ok(())
 }
 
