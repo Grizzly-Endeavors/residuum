@@ -57,6 +57,8 @@ fn convert_to_agent_result(result: &BackgroundResult, tz: chrono_tz::Tz) -> Agen
     // "HEARTBEAT_OK" is the agreed sentinel string that pulse agents include in
     // their summary to signal "nothing needs surfacing". Its presence suppresses
     // notification routing. This is intentional protocol, not content-sniffing.
+    // Agents MUST be able to exit silently when they have nothing to report.
+    // This value cannot be set earlier in the pipeline by producers; it must be determined here.
     let heartbeat_status = if matches!(result.source, EventTrigger::Pulse)
         && result.summary.contains("HEARTBEAT_OK")
     {
