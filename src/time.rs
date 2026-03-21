@@ -31,13 +31,8 @@ pub fn ordinal_suffix(day: u32) -> &'static str {
 #[must_use]
 pub fn format_display_datetime(dt: NaiveDateTime) -> String {
     let suffix = ordinal_suffix(dt.day());
-    let result = dt
-        .format(&format!("%A %b %-d{suffix} %Y | %H:%M"))
-        .to_string();
-    if result.is_empty() {
-        warn!(?dt, "format_display_datetime produced empty output");
-    }
-    result
+    dt.format(&format!("%A %b %-d{suffix} %Y | %H:%M"))
+        .to_string()
 }
 
 /// Format a time delta as a human-readable relative string.
@@ -59,16 +54,19 @@ pub fn format_relative_time(delta: TimeDelta) -> String {
 
     let mins = delta.num_minutes();
     if mins < 60 {
-        return format!("{mins} mins ago");
+        let label = if mins == 1 { "min" } else { "mins" };
+        return format!("{mins} {label} ago");
     }
 
     let hours = delta.num_hours();
     if hours < 24 {
-        return format!("{hours} hours ago");
+        let label = if hours == 1 { "hour" } else { "hours" };
+        return format!("{hours} {label} ago");
     }
 
     let days = delta.num_days();
-    format!("{days} days ago")
+    let label = if days == 1 { "day" } else { "days" };
+    format!("{days} {label} ago")
 }
 
 const MINUTE_FMT: &str = "%Y-%m-%dT%H:%M";
@@ -196,20 +194,20 @@ mod tests {
 
     #[test]
     fn format_relative_time_minutes() {
-        assert_eq!(format_relative_time(TimeDelta::minutes(1)), "1 mins ago");
+        assert_eq!(format_relative_time(TimeDelta::minutes(1)), "1 min ago");
         assert_eq!(format_relative_time(TimeDelta::minutes(15)), "15 mins ago");
         assert_eq!(format_relative_time(TimeDelta::minutes(59)), "59 mins ago");
     }
 
     #[test]
     fn format_relative_time_hours() {
-        assert_eq!(format_relative_time(TimeDelta::hours(1)), "1 hours ago");
+        assert_eq!(format_relative_time(TimeDelta::hours(1)), "1 hour ago");
         assert_eq!(format_relative_time(TimeDelta::hours(23)), "23 hours ago");
     }
 
     #[test]
     fn format_relative_time_days() {
-        assert_eq!(format_relative_time(TimeDelta::days(1)), "1 days ago");
+        assert_eq!(format_relative_time(TimeDelta::days(1)), "1 day ago");
         assert_eq!(format_relative_time(TimeDelta::days(7)), "7 days ago");
     }
 }
