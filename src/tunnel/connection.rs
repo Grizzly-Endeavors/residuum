@@ -14,8 +14,8 @@ use tracing::{debug, error, info, warn};
 use super::TunnelStatus;
 use super::forward_http;
 use super::forward_ws;
-use super::forward_ws::TunnelSink;
 use super::protocol::TunnelFrame;
+use super::{TunnelSink, send_frame};
 use crate::config::CloudConfig;
 
 /// Minimum backoff duration between reconnection attempts.
@@ -33,32 +33,18 @@ const DEFAULT_KEEPALIVE_TIMEOUT: Duration = Duration::from_secs(90);
 #[must_use]
 fn next_backoff(current: Duration) -> Duration {
     let doubled = current.saturating_mul(2);
-    let base = if doubled > MAX_BACKOFF {
-        MAX_BACKOFF
-    } else {
-        doubled
-    };
+    let base = doubled.min(MAX_BACKOFF);
     let jitter = rand::thread_rng().gen_range(0.5_f64..1.5);
     base.mul_f64(jitter)
 }
 
-/// Extract the keepalive timeout from a `Connected` frame and update status.
-fn extract_keepalive_timeout(
-    connected: &TunnelFrame,
-    status_tx: &watch::Sender<TunnelStatus>,
-) -> Duration {
+/// Extract the keepalive timeout from a `Connected` frame.
+fn keepalive_timeout_from_frame(connected: &TunnelFrame) -> Duration {
     if let TunnelFrame::Connected {
         ref user_id,
         keepalive_interval_secs,
     } = *connected
     {
-        status_tx
-            .send(TunnelStatus::Connected {
-                user_id: user_id.clone(),
-            })
-            .unwrap_or_else(|_| {
-                debug!("status receiver dropped");
-            });
         let timeout = Duration::from_secs(keepalive_interval_secs * 3);
         info!(
             user_id = %user_id,
@@ -157,7 +143,16 @@ pub(crate) async fn start_tunnel(
             Ok(Some(frame)) => frame,
         };
 
-        let keepalive_timeout = extract_keepalive_timeout(&connected, &status_tx);
+        if let TunnelFrame::Connected { ref user_id, .. } = connected {
+            status_tx
+                .send(TunnelStatus::Connected {
+                    user_id: user_id.clone(),
+                })
+                .unwrap_or_else(|_| {
+                    debug!("status receiver dropped");
+                });
+        }
+        let keepalive_timeout = keepalive_timeout_from_frame(&connected);
 
         // Reset backoff on successful connection.
         backoff = MIN_BACKOFF;
@@ -407,17 +402,6 @@ async fn handle_frame(
             );
         }
     }
-}
-
-/// Serialize and send a `TunnelFrame` over the WebSocket.
-async fn send_frame(
-    write: &Arc<Mutex<TunnelSink>>,
-    frame: &TunnelFrame,
-) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let json = serde_json::to_string(frame)?;
-    let mut guard = write.lock().await;
-    guard.send(Message::Text(json.into())).await?;
-    Ok(())
 }
 
 /// Send a WebSocket close frame.

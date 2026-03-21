@@ -26,8 +26,9 @@ const HOP_BY_HOP_HEADERS: &[&str] = &[
 /// Returns `true` if the given header name is a hop-by-hop header.
 #[must_use]
 fn is_hop_by_hop(name: &str) -> bool {
-    let lower = name.to_lowercase();
-    HOP_BY_HOP_HEADERS.iter().any(|h| *h == lower)
+    HOP_BY_HOP_HEADERS
+        .iter()
+        .any(|h| name.eq_ignore_ascii_case(h))
 }
 
 /// Forward an HTTP request to the local residuum instance and return the
@@ -55,17 +56,11 @@ pub(super) async fn forward(
     let url = format!("http://localhost:{port}{path}");
     debug!(request_id, method, url, "forwarding HTTP request to local");
 
-    let http_method = match method.to_uppercase().as_str() {
-        "GET" => reqwest::Method::GET,
-        "POST" => reqwest::Method::POST,
-        "PUT" => reqwest::Method::PUT,
-        "DELETE" => reqwest::Method::DELETE,
-        "PATCH" => reqwest::Method::PATCH,
-        "HEAD" => reqwest::Method::HEAD,
-        "OPTIONS" => reqwest::Method::OPTIONS,
-        other => {
-            warn!(request_id, method = other, "unsupported HTTP method");
-            return error_response(request_id, 502, &format!("unsupported method: {other}"));
+    let http_method = match method.parse::<reqwest::Method>() {
+        Ok(m) => m,
+        Err(e) => {
+            warn!(request_id, method = %method, "unsupported HTTP method");
+            return error_response(request_id, 502, &format!("unsupported method: {e}"));
         }
     };
 
