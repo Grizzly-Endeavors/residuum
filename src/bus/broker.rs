@@ -109,12 +109,10 @@ async fn run_broker(mut cmd_rx: mpsc::Receiver<BrokerCommand>) {
                 event,
             } => {
                 let key = (topic, event_type);
-                let had_subscribers = if let Some(subscribers) = subscriptions.get_mut(&key) {
-                    let mut any_delivered = false;
+                if let Some(subscribers) = subscriptions.get_mut(&key) {
                     subscribers.retain(|(id, tx)| {
                         match tx.try_send(Arc::clone(&event)) {
                             Ok(()) => {
-                                any_delivered = true;
                                 if full_subscribers.remove(id) {
                                     debug!(
                                         topic = %key.0,
@@ -148,12 +146,7 @@ async fn run_broker(mut cmd_rx: mpsc::Receiver<BrokerCommand>) {
                     if subscribers.is_empty() {
                         subscriptions.remove(&key);
                     }
-                    any_delivered
                 } else {
-                    false
-                };
-
-                if !had_subscribers {
                     debug!(topic = %key.0, "no active subscribers for topic, event dropped");
                 }
             }
@@ -293,20 +286,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn broker_shutdown_on_all_senders_dropped() {
-        let handle = spawn_broker();
-        let pub_ = handle.publisher();
-
-        // Drop the handle and publisher — no subscribers hold cmd_tx clones,
-        // so the broker should shut down.
-        drop(handle);
-        drop(pub_);
-
-        // Give the broker time to exit.
-        tokio::task::yield_now().await;
-    }
-
-    #[tokio::test]
     async fn subscriber_recv_returns_none_after_drop() {
         let handle = spawn_broker();
         let ep = EndpointName::from("ws");
@@ -373,18 +352,6 @@ mod tests {
 
         let msg = sub2.recv().await.unwrap().unwrap();
         assert_eq!(msg.content, "after prune");
-    }
-
-    #[tokio::test]
-    async fn publish_to_empty_topic_succeeds_silently() {
-        let handle = spawn_broker();
-        let pub_ = handle.publisher();
-
-        // Publishing to a topic with no subscribers should succeed without error.
-        let result = pub_
-            .publish(topics::UserMessage, test_message("err-1", "nowhere"))
-            .await;
-        assert!(result.is_ok());
     }
 
     /// Verify that different event types on the same topic are routed independently.

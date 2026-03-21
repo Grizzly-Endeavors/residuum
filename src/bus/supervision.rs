@@ -64,12 +64,11 @@ where
                 }
             }
 
-            // Reset failure count if the task ran long enough to be considered healthy.
-            if elapsed >= HEALTHY_THRESHOLD {
-                consecutive_failures = 0;
-            }
-
-            consecutive_failures += 1;
+            consecutive_failures = if elapsed >= HEALTHY_THRESHOLD {
+                1
+            } else {
+                consecutive_failures + 1
+            };
 
             if consecutive_failures > max_failures {
                 tracing::error!(
