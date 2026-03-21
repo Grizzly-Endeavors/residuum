@@ -402,22 +402,18 @@ pub async fn ensure_workspace(
 
 /// Build USER.md content from optional name and timezone.
 fn build_user_content(user_name: Option<&str>, timezone: Option<&str>) -> String {
-    let has_name = user_name.is_some_and(|n| !n.is_empty());
-    let has_tz = timezone.is_some_and(|t| !t.is_empty());
+    let name = user_name.filter(|n| !n.is_empty());
+    let tz = timezone.filter(|t| !t.is_empty());
 
-    if !has_name && !has_tz {
+    if name.is_none() && tz.is_none() {
         return DEFAULT_USER.to_string();
     }
 
     let mut parts = vec!["# User Preferences\n".to_string()];
-    if let Some(name) = user_name
-        && !name.is_empty()
-    {
+    if let Some(name) = name {
         parts.push(format!("**Name**: {name}"));
     }
-    if let Some(tz) = timezone
-        && !tz.is_empty()
-    {
+    if let Some(tz) = tz {
         parts.push(format!("**Timezone**: {tz}"));
     }
     parts.push(
@@ -502,7 +498,7 @@ async fn write_bundled_skills(layout: &WorkspaceLayout) -> Result<(), FatalError
     )
     .await?;
 
-    tracing::debug!(count = 15, "wrote bundled skills");
+    tracing::debug!("wrote bundled skills");
 
     Ok(())
 }

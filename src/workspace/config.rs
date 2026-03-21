@@ -250,7 +250,7 @@ pub fn load_channel_configs(path: &Path) -> anyhow::Result<Vec<ExternalChannelCo
     let configs = file
         .channels
         .into_iter()
-        .map(|(name, raw)| {
+        .filter_map(|(name, raw)| {
             let kind = match raw.type_.as_str() {
                 "ntfy" => {
                     let url = raw.url.unwrap_or_default();
@@ -290,20 +290,12 @@ pub fn load_channel_configs(path: &Path) -> anyhow::Result<Vec<ExternalChannelCo
                     tracing::warn!(
                         channel = %name,
                         type_ = %unknown,
-                        "unrecognized channel type, falling back to webhook; this channel will likely fail at send time"
+                        "unrecognized channel type, skipping"
                     );
-                    let url = raw.url.unwrap_or_default();
-                    if url.is_empty() {
-                        tracing::warn!(channel = %name, "channel is missing required 'url' field");
-                    }
-                    ExternalChannelKind::Webhook {
-                        url,
-                        method: raw.method,
-                        headers: raw.headers.unwrap_or_default().into_iter().collect(),
-                    }
+                    return None;
                 }
             };
-            ExternalChannelConfig { name, kind }
+            Some(ExternalChannelConfig { name, kind })
         })
         .collect();
 
@@ -320,29 +312,39 @@ pub async fn build_external_channels(
     let mut channels: HashMap<String, Box<dyn NotificationChannel>> = HashMap::new();
 
     for cfg in configs {
-        let channel: Option<Box<dyn NotificationChannel>> = match &cfg.kind {
+        match &cfg.kind {
             ExternalChannelKind::Ntfy {
                 url,
                 topic,
                 priority,
-            } => Some(Box::new(NtfyChannel::new(
-                cfg.name.clone(),
-                client.clone(),
-                url.clone(),
-                topic.clone(),
-                priority.clone(),
-            ))),
+            } => {
+                channels.insert(
+                    cfg.name.clone(),
+                    Box::new(NtfyChannel::new(
+                        cfg.name.clone(),
+                        client.clone(),
+                        url.clone(),
+                        topic.clone(),
+                        priority.clone(),
+                    )),
+                );
+            }
             ExternalChannelKind::Webhook {
                 url,
                 method,
                 headers,
-            } => Some(Box::new(WebhookChannel::new(
-                cfg.name.clone(),
-                client.clone(),
-                url.clone(),
-                method.clone(),
-                headers.clone(),
-            ))),
+            } => {
+                channels.insert(
+                    cfg.name.clone(),
+                    Box::new(WebhookChannel::new(
+                        cfg.name.clone(),
+                        client.clone(),
+                        url.clone(),
+                        method.clone(),
+                        headers.clone(),
+                    )),
+                );
+            }
             ExternalChannelKind::Macos {
                 default_category,
                 default_priority,
@@ -351,7 +353,7 @@ pub async fn build_external_channels(
                 app_name,
                 web_url,
             } => {
-                build_macos_channel(
+                if let Some(ch) = build_macos_channel(
                     &cfg.name,
                     default_category.as_ref(),
                     default_priority.as_ref(),
@@ -361,10 +363,10 @@ pub async fn build_external_channels(
                     web_url.as_ref(),
                 )
                 .await
+                {
+                    channels.insert(cfg.name.clone(), ch);
+                }
             }
-        };
-        if let Some(ch) = channel {
-            channels.insert(cfg.name.clone(), ch);
         }
     }
 
