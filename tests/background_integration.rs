@@ -97,12 +97,7 @@ mod background_integration {
     async fn cancel_nonexistent_task_returns_false() {
         let dir = tempdir().unwrap();
         let (tx, _rx) = mpsc::channel(32);
-        let spawner = Arc::new(BackgroundTaskSpawner::new(
-            tx,
-            3,
-            PathBuf::from("/tmp"),
-            dir.path().to_path_buf(),
-        ));
+        let spawner = Arc::new(BackgroundTaskSpawner::new(tx, 3, dir.path().to_path_buf()));
 
         let not_found = spawner.cancel("does-not-exist").await;
         assert!(!not_found, "cancel should return false for unknown task");
@@ -207,8 +202,7 @@ mod background_integration {
     async fn send_result_delivers_action_event() {
         let dir = tempdir().unwrap();
         let (tx, mut rx) = mpsc::channel(32);
-        let spawner =
-            BackgroundTaskSpawner::new(tx, 3, PathBuf::from("/tmp"), dir.path().to_path_buf());
+        let spawner = BackgroundTaskSpawner::new(tx, 3, dir.path().to_path_buf());
 
         let result = BackgroundResult {
             id: "action-evt-test-1".to_string(),

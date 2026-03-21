@@ -140,7 +140,7 @@ pub(crate) async fn build_spawn_resources(
 
 /// Load a sub-agent preset and resolve its model tier.
 ///
-/// Returns the resolved tier and the preset frontmatter+body (if loaded successfully).
+/// Returns the resolved tier and the preset frontmatter+body.
 /// Used by pulse, scheduled actions, and on-demand spawning.
 ///
 /// # Errors
@@ -149,13 +149,7 @@ pub(crate) async fn load_preset_for_spawn(
     subagents_dir: &Path,
     preset_name: &str,
     fallback_tier: BackgroundModelTier,
-) -> Result<
-    (
-        BackgroundModelTier,
-        Option<(SubagentPresetFrontmatter, String)>,
-    ),
-    anyhow::Error,
-> {
+) -> Result<(BackgroundModelTier, SubagentPresetFrontmatter, String), anyhow::Error> {
     let index = crate::subagents::SubagentPresetIndex::scan(subagents_dir).await?;
     let (fm, body) = index.load_preset(preset_name).await?;
 
@@ -167,5 +161,5 @@ pub(crate) async fn load_preset_for_spawn(
         None => fallback_tier,
     };
 
-    Ok((tier, Some((fm, body))))
+    Ok((tier, fm, body))
 }

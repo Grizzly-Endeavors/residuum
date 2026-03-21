@@ -115,28 +115,26 @@ async fn handle_spawn_request(
     )
     .await;
 
-    let (preset_tier, preset, effective_preset_name) = match preset_result {
-        Ok((tier, preset)) => (tier, preset, preset_name.clone()),
+    let (preset_tier, preset_fm, preset_body, effective_preset_name) = match preset_result {
+        Ok((tier, fm, body)) => (tier, fm, body, preset_name.clone()),
         Err(e) => {
             tracing::warn!(
                 preset = %preset_name,
                 error = %e,
                 "failed to load preset, falling back to general-purpose"
             );
-            let fallback = load_preset_for_spawn(
+            let (tier, fm, body) = load_preset_for_spawn(
                 &registry.subagents_dir,
                 "general-purpose",
                 BackgroundModelTier::Medium,
             )
             .await?;
-            (fallback.0, fallback.1, "general-purpose".to_string())
+            (tier, fm, body, "general-purpose".to_string())
         }
     };
 
     // Use override tier if provided, otherwise use preset-resolved tier
     let final_tier = event.model_tier_override.unwrap_or(preset_tier);
-
-    let preset_arg = preset.as_ref().map(|(fm, body)| (fm, body.clone()));
 
     let resources = build_spawn_resources(
         &registry.spawn_context,
@@ -144,7 +142,7 @@ async fn handle_spawn_request(
         &registry.project_state,
         &registry.skill_state,
         Arc::clone(&registry.mcp_registry),
-        preset_arg,
+        Some((&preset_fm, preset_body)),
     )
     .await?;
 

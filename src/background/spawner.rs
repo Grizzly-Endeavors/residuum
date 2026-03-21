@@ -18,7 +18,6 @@ pub struct BackgroundTaskSpawner {
     result_tx: mpsc::Sender<BackgroundResult>,
     semaphore: Arc<Semaphore>,
     active_tasks: Arc<Mutex<HashMap<String, (CancellationToken, ActiveTaskInfo)>>>,
-    workspace_root: PathBuf,
     background_dir: PathBuf,
 }
 
@@ -28,14 +27,12 @@ impl BackgroundTaskSpawner {
     pub fn new(
         result_tx: mpsc::Sender<BackgroundResult>,
         max_concurrent: usize,
-        workspace_root: PathBuf,
         background_dir: PathBuf,
     ) -> Self {
         Self {
             result_tx,
             semaphore: Arc::new(Semaphore::new(max_concurrent)),
             active_tasks: Arc::new(Mutex::new(HashMap::new())),
-            workspace_root,
             background_dir,
         }
     }
@@ -58,7 +55,6 @@ impl BackgroundTaskSpawner {
         let semaphore = Arc::clone(&self.semaphore);
         let active_tasks = Arc::clone(&self.active_tasks);
         let result_tx = self.result_tx.clone();
-        let workspace_root = self.workspace_root.clone();
         let background_dir = self.background_dir.clone();
         let child_token = token.clone();
         let spawn_task_id = task_id.clone();
@@ -106,7 +102,7 @@ impl BackgroundTaskSpawner {
                 () = child_token.cancelled() => {
                     build_cancelled_result(&task, &spawn_task_id, cleanup_handles).await
                 }
-                outcome = execute_task(&task, resources.as_ref(), &workspace_root) => {
+                outcome = execute_task(&task, resources.as_ref()) => {
                     build_completed_result(&task, outcome, &background_dir).await
                 }
             };
@@ -161,12 +157,6 @@ impl BackgroundTaskSpawner {
             .iter()
             .map(|(id, (_token, info))| (id.clone(), info.clone()))
             .collect()
-    }
-
-    /// List IDs of currently active tasks.
-    pub async fn active_task_ids(&self) -> Vec<String> {
-        let guard = self.active_tasks.lock().await;
-        guard.keys().cloned().collect()
     }
 }
 
@@ -253,7 +243,6 @@ async fn build_completed_result(
 async fn execute_task(
     task: &BackgroundTask,
     resources: Option<&SubAgentResources>,
-    _workspace_root: &std::path::Path,
 ) -> Result<SubAgentOutput, anyhow::Error> {
     let Execution::SubAgent(config) = &task.execution;
     let res =
@@ -319,8 +308,7 @@ mod tests {
     async fn send_result_delivers_to_channel() {
         let (tx, mut rx) = mpsc::channel(32);
         let dir = tempfile::tempdir().unwrap();
-        let spawner =
-            BackgroundTaskSpawner::new(tx, 3, PathBuf::from("/tmp"), dir.path().to_path_buf());
+        let spawner = BackgroundTaskSpawner::new(tx, 3, dir.path().to_path_buf());
 
         let result = BackgroundResult {
             id: "direct-1".to_string(),
@@ -347,8 +335,7 @@ mod tests {
     async fn failed_task_transcript_contains_error() {
         let (tx, mut rx) = mpsc::channel(32);
         let dir = tempfile::tempdir().unwrap();
-        let spawner =
-            BackgroundTaskSpawner::new(tx, 3, PathBuf::from("/tmp"), dir.path().to_path_buf());
+        let spawner = BackgroundTaskSpawner::new(tx, 3, dir.path().to_path_buf());
 
         // SubAgent without resources → guaranteed failure
         let task = BackgroundTask {

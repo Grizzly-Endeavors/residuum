@@ -157,7 +157,6 @@ fn init_background_spawner(
     let background_spawner = Arc::new(BackgroundTaskSpawner::new(
         bg_result_tx,
         cfg.background.max_concurrent,
-        layout.root().to_path_buf(),
         layout.background_dir(),
     ));
     (bg_result_rx, background_spawner)
