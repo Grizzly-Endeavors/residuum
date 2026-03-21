@@ -35,11 +35,15 @@ pub fn build_pulse_execution(pulse: &PulseDef) -> PulseExecution {
     let source_label = format!("pulse:{}", pulse.name);
 
     match pulse.agent.as_deref() {
-        Some("main") => PulseExecution::MainWakeTurn {
-            pulse_name: pulse.name.clone(),
-            prompt,
-        },
+        Some("main") => {
+            tracing::debug!(pulse = %pulse.name, "routing pulse to main wake turn");
+            PulseExecution::MainWakeTurn {
+                pulse_name: pulse.name.clone(),
+                prompt,
+            }
+        }
         Some(preset) => {
+            tracing::debug!(pulse = %pulse.name, preset = %preset, "routing pulse to sub-agent");
             let spawn_event = SpawnRequestEvent {
                 source_label,
                 prompt,
@@ -53,6 +57,7 @@ pub fn build_pulse_execution(pulse: &PulseDef) -> PulseExecution {
             }
         }
         None => {
+            tracing::debug!(pulse = %pulse.name, "routing pulse to sub-agent (general-purpose)");
             let spawn_event = SpawnRequestEvent {
                 source_label,
                 prompt,
