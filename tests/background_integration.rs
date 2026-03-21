@@ -247,11 +247,8 @@ mod background_integration {
         };
 
         match build_pulse_execution(&pulse) {
-            PulseExecution::SubAgent {
-                spawn_event,
-                preset_name,
-            } => {
-                assert_eq!(preset_name, "general-purpose");
+            PulseExecution::SubAgent { spawn_event } => {
+                assert_eq!(spawn_event.preset.as_ref(), "general-purpose");
                 assert_eq!(spawn_event.source_label, "pulse:status_check");
                 assert!(spawn_event.prompt.contains("status_check"));
                 assert!(spawn_event.prompt.contains("HEARTBEAT_OK"));

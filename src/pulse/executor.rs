@@ -12,8 +12,6 @@ pub enum PulseExecution {
     SubAgent {
         /// The spawn request event to publish.
         spawn_event: SpawnRequestEvent,
-        /// Preset name for topic routing (defaults to `"general-purpose"`).
-        preset_name: String,
     },
     /// Inject the prompt and trigger a main agent wake turn.
     MainWakeTurn {
@@ -33,16 +31,17 @@ pub enum PulseExecution {
 pub fn build_pulse_execution(pulse: &PulseDef) -> PulseExecution {
     let prompt = build_pulse_prompt(pulse);
     let source_label = format!("pulse:{}", pulse.name);
+    let preset = pulse.agent.as_deref().unwrap_or("general-purpose");
 
-    match pulse.agent.as_deref() {
-        Some("main") => {
+    match preset {
+        "main" => {
             tracing::debug!(pulse = %pulse.name, "routing pulse to main wake turn");
             PulseExecution::MainWakeTurn {
                 pulse_name: pulse.name.clone(),
                 prompt,
             }
         }
-        Some(preset) => {
+        preset => {
             tracing::debug!(pulse = %pulse.name, preset = %preset, "routing pulse to sub-agent");
             let spawn_event = SpawnRequestEvent {
                 preset: crate::bus::PresetName::from(preset),
@@ -52,25 +51,7 @@ pub fn build_pulse_execution(pulse: &PulseDef) -> PulseExecution {
                 source: EventTrigger::Pulse,
                 model_tier_override: Some(crate::config::BackgroundModelTier::Small),
             };
-            PulseExecution::SubAgent {
-                spawn_event,
-                preset_name: preset.to_string(),
-            }
-        }
-        None => {
-            tracing::debug!(pulse = %pulse.name, "routing pulse to sub-agent (general-purpose)");
-            let spawn_event = SpawnRequestEvent {
-                preset: crate::bus::PresetName::from("general-purpose"),
-                source_label,
-                prompt,
-                context: None,
-                source: EventTrigger::Pulse,
-                model_tier_override: Some(crate::config::BackgroundModelTier::Small),
-            };
-            PulseExecution::SubAgent {
-                spawn_event,
-                preset_name: "general-purpose".to_string(),
-            }
+            PulseExecution::SubAgent { spawn_event }
         }
     }
 }
@@ -131,11 +112,8 @@ mod tests {
     fn execution_no_agent_returns_subagent_general_purpose() {
         let pulse = sample_pulse();
         match build_pulse_execution(&pulse) {
-            PulseExecution::SubAgent {
-                preset_name,
-                spawn_event,
-            } => {
-                assert_eq!(preset_name, "general-purpose");
+            PulseExecution::SubAgent { spawn_event } => {
+                assert_eq!(spawn_event.preset.as_ref(), "general-purpose");
                 assert_eq!(spawn_event.source_label, "pulse:email_check");
                 assert!(spawn_event.prompt.contains("email_check"));
                 assert!(spawn_event.prompt.contains("HEARTBEAT_OK"));
@@ -163,11 +141,8 @@ mod tests {
         let mut pulse = sample_pulse();
         pulse.agent = Some("memory-agent".to_string());
         match build_pulse_execution(&pulse) {
-            PulseExecution::SubAgent {
-                preset_name,
-                spawn_event,
-            } => {
-                assert_eq!(preset_name, "memory-agent");
+            PulseExecution::SubAgent { spawn_event } => {
+                assert_eq!(spawn_event.preset.as_ref(), "memory-agent");
                 assert_eq!(spawn_event.source_label, "pulse:email_check");
             }
             PulseExecution::MainWakeTurn { .. } => panic!("expected SubAgent"),
