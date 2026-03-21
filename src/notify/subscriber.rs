@@ -14,13 +14,22 @@ pub async fn run_notify_subscriber(
     let channel_name = channel.name().to_string();
     tracing::info!(channel = %channel_name, "notify subscriber started");
 
-    while let Ok(Some(notification)) = subscriber.recv().await {
-        if let Err(e) = channel.deliver(&notification).await {
-            tracing::warn!(
-                channel = %channel_name,
-                error = %e,
-                "notification delivery failed"
-            );
+    loop {
+        match subscriber.recv().await {
+            Ok(Some(notification)) => {
+                if let Err(e) = channel.deliver(&notification).await {
+                    tracing::warn!(
+                        channel = %channel_name,
+                        error = %e,
+                        "notification delivery failed"
+                    );
+                }
+            }
+            Ok(None) => break,
+            Err(e) => {
+                tracing::error!(error = %e, channel = %channel_name, "subscriber error, shutting down");
+                break;
+            }
         }
     }
 

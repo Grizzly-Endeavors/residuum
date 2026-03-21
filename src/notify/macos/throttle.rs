@@ -96,7 +96,6 @@ async fn flush(bridge: &MacosBridge, buffer: &[NotificationEvent], config: &Maco
             .await
         {
             tracing::warn!(error = %e, "failed to post summary notification");
-            eprintln!("warning: failed to post macOS summary notification: {e}");
         }
 
         tracing::debug!(
