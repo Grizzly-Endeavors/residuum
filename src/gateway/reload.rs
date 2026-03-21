@@ -458,7 +458,11 @@ async fn reload_agent_abilities(rt: &mut GatewayRuntime, new_cfg: &Config) {
         .write()
         .await
         .set_blocked_paths(blocked.into_iter().collect());
-    tracing::info!("agent ability gates updated");
+    tracing::info!(
+        modify_mcp = new_cfg.agent.modify_mcp,
+        modify_channels = new_cfg.agent.modify_channels,
+        "agent ability gates updated"
+    );
 }
 
 /// Stop the existing Discord adapter (if running) and start a new one if configured.

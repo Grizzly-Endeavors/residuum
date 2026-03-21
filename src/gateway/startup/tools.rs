@@ -65,6 +65,7 @@ pub(super) fn init_tool_registry(
     }
     let blocked: std::collections::HashSet<std::path::PathBuf> =
         blocked_paths.into_iter().collect();
+    tracing::debug!(blocked_paths = ?blocked, "path policy configured");
     let path_policy =
         crate::tools::PathPolicy::new_shared_with_blocked(layout.root().to_path_buf(), blocked);
     let tool_filter = crate::tools::ToolFilter::new_shared(std::collections::HashSet::new());

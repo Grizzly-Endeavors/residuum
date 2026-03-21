@@ -389,7 +389,12 @@ async fn handle_action_main_turns(
         return None;
     }
 
+    tracing::info!(
+        count = main_turns.len(),
+        "running scheduled action main turns"
+    );
     for turn in &main_turns {
+        tracing::debug!(action = %turn.action_name, "injecting action main turn");
         let formatted = format!("[Scheduled action: {}]\n{}", turn.action_name, turn.prompt);
         rt.agent.inject_system_message(formatted.clone());
         let msgs = [crate::models::Message::system(&formatted)];
@@ -401,6 +406,11 @@ async fn handle_action_main_turns(
 
 /// Gracefully shut down all adapters, MCP servers, and the HTTP server.
 async fn graceful_shutdown(rt: &mut GatewayRuntime) {
+    tracing::info!(
+        notify_handles = rt.notify_handles.len(),
+        bus_infra_handles = rt.bus_infra_handles.len(),
+        "beginning graceful shutdown"
+    );
     for h in rt.notify_handles.drain(..) {
         h.abort();
     }
@@ -418,6 +428,7 @@ async fn graceful_shutdown(rt: &mut GatewayRuntime) {
         tx.send(true).ok();
     }
     rt.shutdown_tx.send(true).ok();
+    tracing::info!("graceful shutdown complete");
 }
 
 /// Spawn a fire-and-forget update check task.
@@ -611,6 +622,7 @@ async fn run_event_loop(mut rt: GatewayRuntime) -> GatewayExit {
             }
 
             _ = update_check_tick.tick() => {
+                tracing::debug!("scheduled update check triggered");
                 spawn_update_check(&rt.update_status);
             }
 
