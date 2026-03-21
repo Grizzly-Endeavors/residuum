@@ -175,7 +175,7 @@ async fn handle_spawn_request(
 fn generate_registry_task_id(preset_name: &str) -> String {
     let timestamp_ms = chrono::Utc::now().timestamp_millis();
     let rand_part: u32 = rand::thread_rng().r#gen();
-    format!("{preset_name}-{rand_part:08x}-{timestamp_ms}")
+    format!("{preset_name}-{timestamp_ms}-{rand_part:08x}")
 }
 
 #[cfg(test)]
