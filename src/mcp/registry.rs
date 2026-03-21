@@ -184,8 +184,13 @@ impl McpRegistry {
     /// # Errors
     /// Returns the connection error (server is already marked failed internally).
     pub async fn connect(&mut self, entry: &McpServerEntry) -> Result<(), anyhow::Error> {
+        tracing::debug!(server = %entry.name, "attempting mcp server connection");
         let client = McpClient::connect(entry).await?;
-        let tools = client.list_tools().await?;
+        let tools = client.list_tools().await.inspect_err(|e| {
+            if let Some(server) = self.servers.iter_mut().find(|s| s.name == entry.name) {
+                server.status = McpStatus::Failed(e.to_string());
+            }
+        })?;
 
         if let Some(server) = self.servers.iter_mut().find(|s| s.name == entry.name) {
             server.status = McpStatus::Running;
@@ -264,6 +269,7 @@ impl McpRegistry {
 
             if let Err(e) = self.connect(entry).await {
                 let reason = e.to_string();
+                tracing::warn!(server = %entry.name, error = %reason, "mcp server failed to connect");
                 if let Some(server) = self.servers.iter_mut().find(|s| s.name == entry.name) {
                     server.status = McpStatus::Failed(reason.clone());
                 }
@@ -293,6 +299,7 @@ impl McpRegistry {
         for entry in &diff.to_start {
             if let Err(e) = self.connect(entry).await {
                 let reason = e.to_string();
+                tracing::warn!(server = %entry.name, error = %reason, "mcp server failed to connect");
                 // Mark server as failed
                 if let Some(server) = self.servers.iter_mut().find(|s| s.name == entry.name) {
                     server.status = McpStatus::Failed(reason.clone());
@@ -310,7 +317,7 @@ impl McpRegistry {
         // the TrackedServer was removed. This is fine because ChildWithCleanup
         // handles process cleanup on drop.
         for name in &diff.to_stop {
-            tracing::info!(server = %name, "mcp server stopped");
+            tracing::info!(server = %name, "mcp server killed (process dropped)");
         }
 
         report
@@ -419,10 +426,10 @@ impl McpRegistry {
             self.disconnect(&server.name).await;
             stopped.push(server.name.clone());
         }
-        tracing::debug!(
+        tracing::warn!(
             project = %project_name,
             count = stopped.len(),
-            "project mcp servers force-stopped"
+            "project mcp servers force-stopped (ref count bypassed — crash recovery)"
         );
         stopped
     }
@@ -462,6 +469,7 @@ impl McpRegistry {
             ))
         })?;
 
+        tracing::debug!(tool = %name, server = %server.name, "routing tool call to server");
         client.call_tool(name, args).await
     }
 

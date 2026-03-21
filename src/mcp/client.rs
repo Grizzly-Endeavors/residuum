@@ -48,6 +48,7 @@ impl McpClient {
     }
 
     async fn connect_stdio(entry: &McpServerEntry) -> Result<Self, anyhow::Error> {
+        tracing::debug!(server = %entry.name, command = %entry.command, "connecting to mcp server (stdio)");
         let mut cmd = tokio::process::Command::new(&entry.command);
         cmd.args(&entry.args);
         for (key, val) in &entry.env {
@@ -68,6 +69,7 @@ impl McpClient {
     }
 
     async fn connect_http(entry: &McpServerEntry) -> Result<Self, anyhow::Error> {
+        tracing::debug!(server = %entry.name, url = %entry.command, "connecting to mcp server (http)");
         let mut config = StreamableHttpClientTransportConfig::with_uri(entry.command.as_str());
 
         if !entry.headers.is_empty() {
@@ -122,6 +124,7 @@ impl McpClient {
     /// # Errors
     /// Returns `ToolError::Execution` if the RPC call fails.
     pub async fn call_tool(&self, name: &str, args: Value) -> Result<ToolResult, ToolError> {
+        tracing::debug!(tool = %name, server = %self.server_name, "dispatching mcp tool call");
         let arguments = match args {
             Value::Object(map) => Some(map),
             Value::Null => None,
@@ -160,11 +163,14 @@ impl McpClient {
         let output = extract_text_content(&result.content);
 
         if is_error {
-            tracing::debug!(
+            tracing::warn!(
                 tool = %name,
                 server = %self.server_name,
+                output = %output,
                 "mcp tool returned error response"
             );
+        } else {
+            tracing::debug!(tool = %name, server = %self.server_name, "mcp tool call completed");
         }
 
         Ok(ToolResult {
@@ -182,6 +188,8 @@ impl McpClient {
                 error = %e,
                 "mcp server shutdown returned error"
             );
+        } else {
+            tracing::debug!(server = %self.server_name, "mcp server shutdown complete");
         }
     }
 }
@@ -193,6 +201,7 @@ impl McpClient {
 pub fn expand_env_vars(input: &str) -> String {
     let re = regex::Regex::new(r"\$\{([^}:]+?)(?::-(.*?))?\}");
     let Ok(re) = re else {
+        tracing::error!("failed to compile env var expansion regex — returning input unexpanded");
         return input.to_string();
     };
     re.replace_all(input, |caps: &regex::Captures<'_>| {
