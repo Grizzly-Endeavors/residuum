@@ -59,6 +59,12 @@ pub(crate) fn extract_chunks(
                         line_end: line_num,
                         content: format!("user: {user_content}\nassistant: {text}"),
                     });
+                } else {
+                    tracing::debug!(
+                        episode_id,
+                        line = line_num,
+                        "orphaned assistant message with no pending user"
+                    );
                 }
                 // If no pending user, this assistant message is orphaned — skip
             }

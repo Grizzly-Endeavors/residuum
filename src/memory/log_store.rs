@@ -99,7 +99,9 @@ pub async fn append_observations(
 /// Returns an error if the directory cannot be read.
 pub async fn next_episode_id(episodes_dir: &Path) -> Result<String, crate::error::ResiduumError> {
     let max_num = max_episode_num(episodes_dir)?;
-    Ok(format!("ep-{:03}", max_num + 1))
+    let id = format!("ep-{:03}", max_num + 1);
+    tracing::debug!(episode_id = %id, "assigned next episode ID");
+    Ok(id)
 }
 
 /// Save per-episode observations to an archive file atomically.

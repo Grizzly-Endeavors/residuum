@@ -423,6 +423,11 @@ impl MemoryIndex {
         }
 
         self.commit_and_reload(&mut writer)?;
+        tracing::info!(
+            obs_count = result.obs_count,
+            chunk_count = result.chunk_count,
+            "memory index rebuild complete"
+        );
         Ok(result)
     }
 
@@ -498,6 +503,13 @@ impl MemoryIndex {
         }
 
         self.commit_and_reload(&mut writer)?;
+        tracing::info!(
+            added = stats.added,
+            updated = stats.updated,
+            removed = stats.removed,
+            unchanged = stats.unchanged,
+            "incremental sync complete"
+        );
         Ok((new_manifest, stats))
     }
 
@@ -887,6 +899,7 @@ impl HybridSearcher {
 
         // If no vector search available, return BM25 results directly
         let (Some(vs), Some(ep)) = (&self.vector, &self.embedding) else {
+            tracing::debug!("vector search unavailable, using BM25-only search");
             // BM25-only: apply temporal decay if enabled, re-sort, then truncate
             let mut results = bm25_results;
             if self.cfg.temporal_decay {

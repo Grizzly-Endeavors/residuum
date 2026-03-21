@@ -142,6 +142,10 @@ impl Observer {
         tracing::info!(
             old_threshold = self.config.threshold_tokens,
             new_threshold = config.threshold_tokens,
+            old_cooldown_secs = self.config.cooldown_secs,
+            new_cooldown_secs = config.cooldown_secs,
+            old_force_threshold = self.config.force_threshold_tokens,
+            new_force_threshold = config.force_threshold_tokens,
             "updating observer config"
         );
         self.config = config;
@@ -307,6 +311,7 @@ async fn build_episode_and_persist(
     let transcript_path =
         crate::memory::episode_store::episode_jsonl_path(&layout.episodes_dir(), &episode);
     write_episode_transcript(&layout.episodes_dir(), &episode, &messages).await?;
+    tracing::debug!(episode_id = %episode.id, "episode transcript written");
 
     // Convert episode observations → flat Observations with per-extraction context
     let observation_count = episode.observations.len();
@@ -324,7 +329,9 @@ async fn build_episode_and_persist(
 
     let obs_path = episode_obs_path(&layout.episodes_dir(), &episode);
     save_episode_observations(&obs_path, &observations).await?;
+    tracing::debug!(episode_id = %episode.id, count = observations.len(), "per-episode observations archived");
     append_observations(&layout.observations_json(), observations.clone()).await?;
+    tracing::debug!(episode_id = %episode.id, "global observations updated");
 
     // Extract interaction-pair chunks from recent messages and persist as idx.jsonl.
     // line_offset=2 because line 1 is the meta object in the JSONL transcript.
@@ -332,6 +339,7 @@ async fn build_episode_and_persist(
     let chunks = extract_chunks(recent_messages, &episode.id, &date_str, 2);
     let idx_path = episode_idx_path(&layout.episodes_dir(), &episode);
     write_idx_jsonl(&idx_path, &chunks).await?;
+    tracing::debug!(episode_id = %episode.id, chunks = chunks.len(), "interaction-pair chunks written");
 
     tracing::info!(
         episode_id = %episode.id,

@@ -286,10 +286,12 @@ impl VectorStore {
 
         // Search observations
         let obs_results = search_obs_table(&conn, query_embedding, limit, filters)?;
+        let obs_count = obs_results.len();
         results.extend(obs_results);
 
         // Search chunks
         let chunk_results = search_chunk_table(&conn, query_embedding, limit, filters)?;
+        let chunk_count = chunk_results.len();
         results.extend(chunk_results);
 
         // Sort by distance ascending (most similar first)
@@ -300,6 +302,12 @@ impl VectorStore {
         });
         results.truncate(limit);
 
+        tracing::trace!(
+            obs_candidates = obs_count,
+            chunk_candidates = chunk_count,
+            returned = results.len(),
+            "vector search complete"
+        );
         Ok(results)
     }
 

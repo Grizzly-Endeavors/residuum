@@ -76,6 +76,7 @@ pub(super) fn parse_observer_response(
     }
 
     // Fallback: Value-based parsing for legacy bare arrays and malformed objects
+    tracing::debug!("observer structured output failed, falling back to value-based parsing");
     let value: serde_json::Value = serde_json::from_str(json_str).map_err(|e| {
         ResiduumError::Memory(format!(
             "failed to parse observer response as JSON: {e}\nresponse: {content}"
@@ -126,7 +127,14 @@ pub(super) fn parse_observer_response(
 fn typed_items_to_extractions(items: &[ObservationItem], tz: Tz) -> Vec<ObserverExtraction> {
     items
         .iter()
-        .filter(|item| !item.content.is_empty())
+        .filter(|item| {
+            if item.content.is_empty() {
+                tracing::debug!("observer typed item has empty content, skipping");
+                false
+            } else {
+                true
+            }
+        })
         .map(|item| {
             let timestamp = crate::memory::parse_minute_timestamp(&item.timestamp, tz);
             let visibility = if item.visibility == "background" {

@@ -73,6 +73,8 @@ impl Reflector {
         tracing::info!(
             old_threshold = self.config.threshold_tokens,
             new_threshold = config.threshold_tokens,
+            old_tz = %self.config.tz,
+            new_tz = %config.tz,
             "updating reflector config"
         );
         self.config = config;
@@ -162,6 +164,8 @@ impl Reflector {
         let backup_path = obs_path.with_extension("json.bak");
         if let Err(e) = tokio::fs::copy(&obs_path, &backup_path).await {
             tracing::warn!(error = %e, "failed to create observation log backup before reflection");
+        } else {
+            tracing::debug!(path = %backup_path.display(), "created observation log backup");
         }
 
         // Replace the observation log

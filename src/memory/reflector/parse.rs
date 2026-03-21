@@ -61,6 +61,7 @@ pub(super) fn parse_reflection_response(
     }
 
     // Fallback: Value-based parsing for legacy bare arrays
+    tracing::debug!("reflector structured output failed, falling back to value-based parsing");
     let value: serde_json::Value = serde_json::from_str(json_str).map_err(|e| {
         ResiduumError::Memory(format!(
             "failed to parse reflector response as JSON: {e}\nresponse: {trimmed}"
