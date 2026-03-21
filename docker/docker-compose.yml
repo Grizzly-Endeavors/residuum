@@ -1,0 +1,12 @@
+services:
+  residuum:
+    build: ../docker
+    container_name: residuum
+
+    volumes:
+      - residuum-data:/home/residuum/.residuum
+    
+    restart: unless-stopped
+
+volumes:
+  residuum-data:
