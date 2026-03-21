@@ -34,10 +34,9 @@ pub fn format_display_datetime(dt: NaiveDateTime) -> String {
     let result = dt
         .format(&format!("%A %b %-d{suffix} %Y | %H:%M"))
         .to_string();
-    debug_assert!(
-        !result.is_empty(),
-        "format_display_datetime produced empty output"
-    );
+    if result.is_empty() {
+        warn!(?dt, "format_display_datetime produced empty output");
+    }
     result
 }
 
@@ -95,7 +94,8 @@ pub mod minute_format {
         D: Deserializer<'de>,
     {
         let s = String::deserialize(deserializer)?;
-        NaiveDateTime::parse_from_str(&s, super::MINUTE_FMT).map_err(serde::de::Error::custom)
+        NaiveDateTime::parse_from_str(&s, super::MINUTE_FMT)
+            .map_err(|e| serde::de::Error::custom(format!("invalid datetime {s:?}: {e}")))
     }
 }
 
@@ -126,7 +126,7 @@ pub mod minute_format_opt {
         match opt {
             Some(s) => NaiveDateTime::parse_from_str(&s, super::MINUTE_FMT)
                 .map(Some)
-                .map_err(serde::de::Error::custom),
+                .map_err(|e| serde::de::Error::custom(format!("invalid datetime {s:?}: {e}"))),
             None => Ok(None),
         }
     }
