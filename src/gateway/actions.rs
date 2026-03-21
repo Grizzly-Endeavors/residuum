@@ -72,6 +72,7 @@ async fn publish_action_spawn(
         .unwrap_or(BackgroundModelTier::Medium);
 
     let spawn_event = SpawnRequestEvent {
+        preset: PresetName::from(preset_name),
         source_label: format!("action:{}", action.name),
         prompt: action.prompt.clone(),
         context: None,

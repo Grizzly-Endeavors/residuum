@@ -99,6 +99,7 @@ pub async fn webhook_handler(
         }
         WebhookRouting::Agent(preset) => {
             let spawn_event = crate::bus::SpawnRequestEvent {
+                preset: crate::bus::PresetName::from(preset.as_str()),
                 source_label: format!("webhook:{name}"),
                 prompt: notification.content,
                 context: None,

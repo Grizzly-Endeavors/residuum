@@ -217,6 +217,7 @@ impl Tool for SubAgentSpawnTool {
             };
 
         let spawn_event = crate::bus::SpawnRequestEvent {
+            preset: crate::bus::PresetName::from(preset_name),
             source_label: format!("agent:{}", resolved.preset_name),
             prompt: task_prompt.to_string(),
             context: None,

@@ -45,6 +45,7 @@ pub fn build_pulse_execution(pulse: &PulseDef) -> PulseExecution {
         Some(preset) => {
             tracing::debug!(pulse = %pulse.name, preset = %preset, "routing pulse to sub-agent");
             let spawn_event = SpawnRequestEvent {
+                preset: crate::bus::PresetName::from(preset),
                 source_label,
                 prompt,
                 context: None,
@@ -59,6 +60,7 @@ pub fn build_pulse_execution(pulse: &PulseDef) -> PulseExecution {
         None => {
             tracing::debug!(pulse = %pulse.name, "routing pulse to sub-agent (general-purpose)");
             let spawn_event = SpawnRequestEvent {
+                preset: crate::bus::PresetName::from("general-purpose"),
                 source_label,
                 prompt,
                 context: None,

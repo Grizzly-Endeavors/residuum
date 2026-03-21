@@ -233,6 +233,8 @@ impl AgentResultEvent {
 /// Request to spawn a sub-agent from any source.
 #[derive(Debug, Clone)]
 pub struct SpawnRequestEvent {
+    /// Subagent preset to use for this spawn.
+    pub preset: PresetName,
     /// Human-readable source label (e.g. `"pulse:email_check"`, `"agent:researcher"`).
     pub source_label: String,
     /// The prompt/instructions for the sub-agent.
@@ -243,6 +245,22 @@ pub struct SpawnRequestEvent {
     pub source: EventTrigger,
     /// Override the preset's model tier.
     pub model_tier_override: Option<BackgroundModelTier>,
+}
+
+/// Operational notice broadcast to connected endpoints.
+#[derive(Debug, Clone)]
+pub struct NoticeEvent {
+    /// Human-readable notice message.
+    pub message: String,
+}
+
+/// An error tied to a specific agent turn, broadcast to connected endpoints.
+#[derive(Debug, Clone)]
+pub struct ErrorEvent {
+    /// Links back to the originating message.
+    pub correlation_id: String,
+    /// Error description.
+    pub message: String,
 }
 
 // ---------------------------------------------------------------------------
