@@ -363,6 +363,7 @@ mod proactivity_integration {
                 &publisher,
                 Some(&ep),
                 None,
+                None,
                 &PromptContext::none(),
             )
             .await

@@ -192,6 +192,7 @@ impl Agent {
         &mut self,
         publisher: &Publisher,
         output_endpoint: Option<&EndpointName>,
+        tool_activity_endpoint: Option<&EndpointName>,
         prompt_ctx: &PromptContext<'_>,
         interrupt_rx: &mut tokio::sync::mpsc::Receiver<interrupt::Interrupt>,
     ) -> anyhow::Result<Vec<String>> {
@@ -231,6 +232,7 @@ impl Agent {
             &mut self.recent_messages,
             publisher,
             output_endpoint,
+            tool_activity_endpoint,
             Some(&status_line),
             interrupt_rx,
         )
@@ -255,6 +257,7 @@ impl Agent {
         user_input: &str,
         publisher: &Publisher,
         output_endpoint: Option<&EndpointName>,
+        tool_activity_endpoint: Option<&EndpointName>,
         origin: Option<&MessageOrigin>,
         prompt_ctx: &PromptContext<'_>,
         interrupt_rx: &mut tokio::sync::mpsc::Receiver<interrupt::Interrupt>,
@@ -298,6 +301,7 @@ impl Agent {
             &mut self.recent_messages,
             publisher,
             output_endpoint,
+            tool_activity_endpoint,
             Some(&status_line),
             interrupt_rx,
         )
@@ -320,6 +324,7 @@ impl Agent {
         prompt: &str,
         publisher: &Publisher,
         output_endpoint: Option<&EndpointName>,
+        tool_activity_endpoint: Option<&EndpointName>,
         provider_override: Option<&dyn ModelProvider>,
         prompt_ctx: &PromptContext<'_>,
     ) -> anyhow::Result<SystemTurnResult> {
@@ -353,6 +358,7 @@ impl Agent {
             &mut thread_messages,
             publisher,
             output_endpoint,
+            tool_activity_endpoint,
             None,
             &mut sys_interrupt_rx,
         )
@@ -514,6 +520,7 @@ mod tests {
                 &publisher,
                 Some(&ep),
                 None,
+                None,
                 &PromptContext::none(),
                 &mut irx,
                 &[],
@@ -563,6 +570,7 @@ mod tests {
                 "run echo test",
                 &publisher,
                 Some(&ep),
+                None,
                 None,
                 &PromptContext::none(),
                 &mut irx,
@@ -618,6 +626,7 @@ mod tests {
                 "what does echo test print?",
                 &publisher,
                 Some(&ep),
+                None,
                 None,
                 &PromptContext::none(),
                 &mut irx,
@@ -675,6 +684,7 @@ mod tests {
                 &publisher,
                 Some(&ep),
                 None,
+                None,
                 &PromptContext::none(),
                 &mut irx,
                 &[],
@@ -707,6 +717,7 @@ mod tests {
                 "check status",
                 &publisher,
                 Some(&ep),
+                None,
                 None,
                 &PromptContext::none(),
             )
@@ -787,7 +798,13 @@ mod tests {
         let (publisher, ep) = test_bus();
         let mut irx = interrupt::dead_interrupt_rx();
         let result = agent
-            .run_wake_turn(&publisher, Some(&ep), &PromptContext::none(), &mut irx)
+            .run_wake_turn(
+                &publisher,
+                Some(&ep),
+                None,
+                &PromptContext::none(),
+                &mut irx,
+            )
             .await
             .unwrap();
         assert_eq!(result, vec!["I'll handle it"]);
@@ -1085,6 +1102,7 @@ mod tests {
                 &publisher,
                 Some(&ep),
                 None,
+                None,
                 &PromptContext::none(),
                 &mut interrupt_rx,
                 &[],
@@ -1158,6 +1176,7 @@ mod tests {
                 &publisher,
                 Some(&ep),
                 None,
+                None,
                 &PromptContext::none(),
                 &mut interrupt_rx,
                 &[],
@@ -1219,6 +1238,7 @@ mod tests {
                 &publisher,
                 Some(&ep),
                 None,
+                None,
                 &PromptContext::none(),
                 &mut interrupt_rx,
                 &[],
@@ -1263,6 +1283,7 @@ mod tests {
                 "hello",
                 &publisher,
                 Some(&ep),
+                None,
                 None,
                 &PromptContext::none(),
                 &mut irx,

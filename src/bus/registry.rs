@@ -66,8 +66,7 @@ impl EndpointRegistry {
             registry.register(EndpointEntry {
                 id: EndpointId::from("discord"),
                 topic: TopicId::Response(EndpointName::from("discord")),
-                capabilities: EndpointCapabilities::INTERACTIVE
-                    .union(EndpointCapabilities::STREAMING),
+                capabilities: EndpointCapabilities::INTERACTIVE,
                 display_name: "Discord".to_string(),
             });
         }
@@ -77,8 +76,7 @@ impl EndpointRegistry {
             registry.register(EndpointEntry {
                 id: EndpointId::from("telegram"),
                 topic: TopicId::Response(EndpointName::from("telegram")),
-                capabilities: EndpointCapabilities::INTERACTIVE
-                    .union(EndpointCapabilities::STREAMING),
+                capabilities: EndpointCapabilities::INTERACTIVE,
                 display_name: "Telegram".to_string(),
             });
         }

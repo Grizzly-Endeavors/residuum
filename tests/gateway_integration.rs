@@ -169,6 +169,7 @@ mod gateway_integration {
                         &loop_publisher,
                         Some(&loop_ep),
                         None,
+                        None,
                         &PromptContext::none(),
                         &mut irx,
                         &[],

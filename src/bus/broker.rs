@@ -7,7 +7,6 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use tokio::sync::mpsc;
 use tracing::{debug, warn};
 
-use super::events::SystemMessageEvent;
 use super::handle::{BrokerCommand, ErasedEvent, Publisher, Subscriber};
 use super::topics::Topic;
 use super::types::{BusError, TopicId};
@@ -135,29 +134,8 @@ async fn run_broker(mut cmd_rx: mpsc::Receiver<BrokerCommand>) {
                     false
                 };
 
-                // Publish error when no subscribers received the event.
-                // Guard: skip if the original topic is SystemMessage to prevent recursion.
-                if !had_subscribers && topic != TopicId::SystemMessage {
-                    let error_event: ErasedEvent = Arc::new(SystemMessageEvent::Error {
-                        correlation_id: String::new(),
-                        message: format!("no active subscribers for topic {topic}"),
-                    });
-                    if let Some(error_subs) = subscriptions.get_mut(&TopicId::SystemMessage) {
-                        error_subs.retain(|(id, tx)| match tx.try_send(Arc::clone(&error_event)) {
-                            Ok(()) => true,
-                            Err(e) => {
-                                warn!(
-                                    subscriber_id = id,
-                                    error = %e,
-                                    "failed to deliver error event to SystemMessage subscriber"
-                                );
-                                false
-                            }
-                        });
-                        if error_subs.is_empty() {
-                            subscriptions.remove(&TopicId::SystemMessage);
-                        }
-                    }
+                if !had_subscribers {
+                    debug!(topic = %topic, "no active subscribers for topic, event dropped");
                 }
             }
             BrokerCommand::Subscribe { id, topic, sender } => {
@@ -185,7 +163,6 @@ async fn run_broker(mut cmd_rx: mpsc::Receiver<BrokerCommand>) {
 
 #[cfg(test)]
 #[expect(clippy::unwrap_used, reason = "test code uses unwrap for clarity")]
-#[expect(clippy::panic, reason = "test assertions")]
 mod tests {
     use chrono::NaiveDate;
 
@@ -364,53 +341,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn publish_to_empty_topic_emits_system_error() {
-        let handle = spawn_broker();
-        let pub_ = handle.publisher();
-        let mut error_sub = handle.subscribe(topics::SystemMessage).await.unwrap();
-
-        // Publish to a topic with no subscribers.
-        pub_.publish(topics::UserMessage, test_message("err-1", "nowhere"))
-            .await
-            .unwrap();
-
-        let event = tokio::time::timeout(tokio::time::Duration::from_millis(200), error_sub.recv())
-            .await
-            .unwrap()
-            .unwrap()
-            .unwrap();
-
-        match event {
-            SystemMessageEvent::Error { message, .. } => {
-                assert!(
-                    message.contains("no active subscribers"),
-                    "error should mention no subscribers: {message}"
-                );
-                assert!(
-                    message.contains("user:message"),
-                    "error should mention the topic: {message}"
-                );
-            }
-            SystemMessageEvent::Notice { .. } | SystemMessageEvent::Event(_) => {
-                panic!("expected SystemMessageEvent::Error, got {event:?}")
-            }
-        }
-    }
-
-    #[tokio::test]
-    async fn system_message_topic_no_recursion() {
+    async fn publish_to_empty_topic_succeeds_silently() {
         let handle = spawn_broker();
         let pub_ = handle.publisher();
 
-        // Publish to SystemMessage with no subscribers — should not recurse.
+        // Publishing to a topic with no subscribers should succeed without
+        // generating any SystemMessageEvent — the broker just logs at debug.
         let result = pub_
-            .publish(
-                topics::SystemMessage,
-                SystemMessageEvent::Error {
-                    correlation_id: String::new(),
-                    message: "test".into(),
-                },
-            )
+            .publish(topics::UserMessage, test_message("err-1", "nowhere"))
             .await;
         assert!(result.is_ok());
     }

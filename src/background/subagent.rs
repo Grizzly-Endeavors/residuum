@@ -289,6 +289,7 @@ pub(crate) async fn execute_subagent(
         &publisher,
         None,
         None,
+        None,
         &mut interrupt_rx,
     )
     .await?;
@@ -364,6 +365,7 @@ async fn ensure_project_deactivated(
         prompt_ctx,
         recent_messages,
         publisher,
+        None,
         None,
         None,
         &mut deactivation_interrupt_rx,
