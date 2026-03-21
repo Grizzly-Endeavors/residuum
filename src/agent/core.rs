@@ -134,14 +134,6 @@ impl Agent {
         self.last_user_message_at = at;
     }
 
-    /// Clear all messages from the recent history.
-    ///
-    /// Called after the observer fires so observed messages don't linger
-    /// in both the recent messages and the observation log.
-    pub fn clear_recent_messages(&mut self) {
-        self.recent_messages.clear();
-    }
-
     /// Clear all in-memory messages (used after idle transition + observer).
     pub fn clear_messages(&mut self) {
         self.recent_messages.clear();
@@ -949,14 +941,23 @@ mod tests {
 
     #[test]
     fn clear_messages_empties_buffer() {
-        // Build a minimal agent
-        use crate::models::Message;
-        let mut msgs = crate::agent::recent_messages::RecentMessages::new();
-        msgs.push(Message::user("hello"));
-        msgs.push(Message::assistant("hi", None));
-        assert!(!msgs.is_empty());
-        msgs.clear();
-        assert_eq!(msgs.len(), 0);
+        let mut agent = Agent::new(
+            Box::new(MockProvider::new(vec![])),
+            ToolRegistry::new(),
+            no_filter(),
+            empty_mcp(),
+            IdentityFiles::default(),
+            AgentConfig {
+                options: CompletionOptions::default(),
+                tz: chrono_tz::UTC,
+                inbox_dir: std::path::PathBuf::from("/tmp/residuum-test-inbox"),
+            },
+        );
+        agent.inject_user_message("hello");
+        agent.inject_user_message("world");
+        assert_eq!(agent.message_count(), 2);
+        agent.clear_messages();
+        assert_eq!(agent.message_count(), 0);
     }
 
     type InjectEntry = (usize, Vec<interrupt::Interrupt>);

@@ -84,7 +84,7 @@ pub(crate) async fn execute_turn(
             status_line,
         );
 
-        let response = resources
+        let mut response = resources
             .provider
             .complete(&messages, &tool_definitions, resources.options)
             .await
@@ -96,7 +96,6 @@ pub(crate) async fn execute_turn(
                 "structured thinking received"
             );
         }
-        let mut response = response;
         response.content = crate::models::think_tags::strip_think_tags(&response.content);
 
         if response.tool_calls.is_empty() {
