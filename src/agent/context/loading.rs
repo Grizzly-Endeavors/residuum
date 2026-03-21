@@ -27,6 +27,7 @@ pub(crate) async fn load_observations(path: &Path) -> Result<Option<String>, Res
             if formatted.is_empty() {
                 Ok(None)
             } else {
+                tracing::debug!(len = formatted.len(), "loaded observations");
                 Ok(Some(formatted))
             }
         }
@@ -48,9 +49,13 @@ pub(crate) async fn load_observations(path: &Path) -> Result<Option<String>, Res
 pub(crate) async fn load_recent_context_narrative(
     path: &Path,
 ) -> Result<Option<String>, ResiduumError> {
-    Ok(crate::memory::recent_context::load_recent_context(path)
+    let result = crate::memory::recent_context::load_recent_context(path)
         .await?
-        .map(|ctx| ctx.narrative))
+        .map(|ctx| ctx.narrative);
+    if let Some(ref narrative) = result {
+        tracing::debug!(len = narrative.len(), "loaded recent context narrative");
+    }
+    Ok(result)
 }
 
 /// Build formatted strings for project context from shared project state.
@@ -86,7 +91,8 @@ pub(crate) async fn build_skill_context_strings(
 
 /// Scan the subagents directory and format the index for the system prompt.
 ///
-/// Returns `None` if the index is empty (shouldn't happen — built-in presets are always present).
+/// Returns `None` if the formatted index is empty (the scan succeeded but produced no output),
+/// or if the scan itself fails (logged at `error` level).
 pub(crate) async fn build_subagents_context_string(subagents_dir: &Path) -> Option<String> {
     match SubagentPresetIndex::scan(subagents_dir).await {
         Ok(index) => {

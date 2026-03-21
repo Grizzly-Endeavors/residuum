@@ -111,11 +111,11 @@ pub(crate) async fn execute_turn(
                     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
                     continue;
                 }
-                tracing::warn!("model returned empty response with no tool calls after retries");
                 return Err(ResiduumError::Other(anyhow::anyhow!(
                     "model returned empty response with no tool calls"
                 )));
             }
+            tracing::debug!(iterations = iteration, "turn complete");
             recent_messages.push(Message::assistant(response.content.clone(), None));
             texts.push(response.content);
             return Ok(texts);
@@ -129,18 +129,17 @@ pub(crate) async fn execute_turn(
 
         if !response.content.is_empty()
             && let Some(ep) = output_endpoint
+            && let Err(e) = publisher
+                .publish(
+                    topics::Intermediate(ep.clone()),
+                    crate::bus::IntermediateEvent {
+                        correlation_id: String::new(),
+                        content: response.content.clone(),
+                    },
+                )
+                .await
         {
-            drop(
-                publisher
-                    .publish(
-                        topics::Intermediate(ep.clone()),
-                        crate::bus::IntermediateEvent {
-                            correlation_id: String::new(),
-                            content: response.content.clone(),
-                        },
-                    )
-                    .await,
-            );
+            tracing::debug!(error = %e, "failed to publish intermediate text event");
         }
 
         recent_messages.push(Message::assistant(
@@ -202,28 +201,31 @@ async fn execute_tool(
     publisher: &Publisher,
     output_endpoint: Option<&EndpointName>,
 ) {
-    if let Some(ep) = output_endpoint {
-        drop(
-            publisher
-                .publish(
-                    topics::ToolActivity(ep.clone()),
-                    ToolActivityEvent::Call(ToolCallEvent {
-                        correlation_id: String::new(),
-                        tool_call_id: tool_call.id.clone(),
-                        name: tool_call.name.clone(),
-                        arguments: tool_call.arguments.clone(),
-                    }),
-                )
-                .await,
-        );
+    if let Some(ep) = output_endpoint
+        && let Err(e) = publisher
+            .publish(
+                topics::ToolActivity(ep.clone()),
+                ToolActivityEvent::Call(ToolCallEvent {
+                    correlation_id: String::new(),
+                    tool_call_id: tool_call.id.clone(),
+                    name: tool_call.name.clone(),
+                    arguments: tool_call.arguments.clone(),
+                }),
+            )
+            .await
+    {
+        tracing::debug!(error = %e, tool_name = %tool_call.name, "failed to publish tool call event");
     }
 
     // Try built-in tools first, fall back to MCP servers
+    let mut source = "built-in";
     let result = match tools
         .execute(&tool_call.name, tool_call.arguments.clone(), filter)
         .await
     {
         Err(ToolError::NotFound(_)) => {
+            tracing::debug!(tool_name = %tool_call.name, "tool not found in built-in registry, falling back to MCP");
+            source = "mcp";
             mcp_registry
                 .read()
                 .await
@@ -240,27 +242,28 @@ async fn execute_tool(
                 error = %e,
                 tool_name = %tool_call.name,
                 tool_call_id = %tool_call.id,
+                source,
                 "tool execution failed"
             );
             (e.to_string(), true, vec![])
         }
     };
 
-    if let Some(ep) = output_endpoint {
-        drop(
-            publisher
-                .publish(
-                    topics::ToolActivity(ep.clone()),
-                    ToolActivityEvent::Result(ToolResultEvent {
-                        correlation_id: String::new(),
-                        tool_call_id: tool_call.id.clone(),
-                        name: tool_call.name.clone(),
-                        output: output.clone(),
-                        is_error,
-                    }),
-                )
-                .await,
-        );
+    if let Some(ep) = output_endpoint
+        && let Err(e) = publisher
+            .publish(
+                topics::ToolActivity(ep.clone()),
+                ToolActivityEvent::Result(ToolResultEvent {
+                    correlation_id: String::new(),
+                    tool_call_id: tool_call.id.clone(),
+                    name: tool_call.name.clone(),
+                    output: output.clone(),
+                    is_error,
+                }),
+            )
+            .await
+    {
+        tracing::debug!(error = %e, tool_name = %tool_call.name, "failed to publish tool result event");
     }
 
     if images.is_empty() {
@@ -284,5 +287,7 @@ fn log_usage(response: &ModelResponse) {
             cache_read_tokens = usage.cache_read_tokens,
             "token usage"
         );
+    } else {
+        tracing::debug!("token usage not available in response");
     }
 }

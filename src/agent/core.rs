@@ -196,6 +196,7 @@ impl Agent {
         prompt_ctx: &PromptContext<'_>,
         interrupt_rx: &mut tokio::sync::mpsc::Receiver<interrupt::Interrupt>,
     ) -> Result<Vec<String>, ResiduumError> {
+        tracing::debug!("processing wake turn");
         let now = crate::time::now_local(self.tz);
         let unread = crate::inbox::count_unread(&self.inbox_dir);
         let status_line = StatusLine {
@@ -260,6 +261,7 @@ impl Agent {
         interrupt_rx: &mut tokio::sync::mpsc::Receiver<interrupt::Interrupt>,
         images: &[crate::models::ImageData],
     ) -> Result<Vec<String>, ResiduumError> {
+        tracing::debug!(source = ?origin, "processing user message");
         let now = crate::time::now_local(self.tz);
         let unread = crate::inbox::count_unread(&self.inbox_dir);
         let status_line = StatusLine {
@@ -357,10 +359,9 @@ impl Agent {
         )
         .await?;
 
-        let response = texts.pop().unwrap_or_else(|| {
-            tracing::warn!("system turn returned no text responses");
-            String::new()
-        });
+        let response = texts.pop().ok_or_else(|| {
+            ResiduumError::Other(anyhow::anyhow!("system turn returned no text responses"))
+        })?;
 
         Ok(SystemTurnResult {
             response,
