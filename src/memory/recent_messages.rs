@@ -9,7 +9,8 @@ use std::path::Path;
 use chrono::NaiveDateTime;
 use serde::{Deserialize, Serialize};
 
-use crate::error::FatalError;
+use anyhow::Context;
+
 use crate::memory::types::Visibility;
 use crate::models::Message;
 
@@ -40,18 +41,14 @@ pub struct RecentMessage {
 ///
 /// # Errors
 /// Returns an error if the file exists but cannot be read or parsed.
-pub async fn load_recent_messages(path: &Path) -> Result<Vec<RecentMessage>, FatalError> {
+pub async fn load_recent_messages(path: &Path) -> anyhow::Result<Vec<RecentMessage>> {
     match tokio::fs::read_to_string(path).await {
         Ok(contents) if contents.trim().is_empty() => Ok(Vec::new()),
-        Ok(contents) => serde_json::from_str(&contents).map_err(|e| {
-            FatalError::Memory(format!(
-                "failed to parse recent messages at {}: {e}",
-                path.display()
-            ))
-        }),
+        Ok(contents) => serde_json::from_str(&contents)
+            .with_context(|| format!("failed to parse recent messages at {}", path.display())),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
-        Err(e) => Err(FatalError::Memory(format!(
-            "failed to read recent messages at {}: {e}",
+        Err(e) => Err(anyhow::Error::new(e).context(format!(
+            "failed to read recent messages at {}",
             path.display()
         ))),
     }
@@ -73,7 +70,7 @@ pub struct AgentRestore {
 ///
 /// # Errors
 /// Returns an error if the file exists but cannot be read or parsed.
-pub async fn load_messages_for_agent(path: &Path) -> Result<AgentRestore, FatalError> {
+pub async fn load_messages_for_agent(path: &Path) -> anyhow::Result<AgentRestore> {
     let recent = load_recent_messages(path).await?;
 
     let last_user_message_at = recent
@@ -96,32 +93,32 @@ pub async fn load_messages_for_agent(path: &Path) -> Result<AgentRestore, FatalE
 ///
 /// # Errors
 /// Returns an error if the file cannot be written.
-async fn save_recent_messages(path: &Path, messages: &[RecentMessage]) -> Result<(), FatalError> {
-    let json = serde_json::to_string_pretty(messages)
-        .map_err(|e| FatalError::Memory(format!("failed to serialize recent messages: {e}")))?;
+async fn save_recent_messages(path: &Path, messages: &[RecentMessage]) -> anyhow::Result<()> {
+    let json =
+        serde_json::to_string_pretty(messages).context("failed to serialize recent messages")?;
 
     let dir = path.parent().ok_or_else(|| {
-        FatalError::Memory(format!(
+        anyhow::anyhow!(
             "recent messages path has no parent directory: {}",
             path.display()
-        ))
+        )
     })?;
 
     let tmp_path = dir.join(".recent_messages.json.tmp");
 
-    tokio::fs::write(&tmp_path, &json).await.map_err(|e| {
-        FatalError::Memory(format!(
-            "failed to write temporary recent messages at {}: {e}",
+    tokio::fs::write(&tmp_path, &json).await.with_context(|| {
+        format!(
+            "failed to write temporary recent messages at {}",
             tmp_path.display()
-        ))
+        )
     })?;
 
-    tokio::fs::rename(&tmp_path, path).await.map_err(|e| {
-        FatalError::Memory(format!(
-            "failed to rename recent messages from {} to {}: {e}",
+    tokio::fs::rename(&tmp_path, path).await.with_context(|| {
+        format!(
+            "failed to rename recent messages from {} to {}",
             tmp_path.display(),
             path.display()
-        ))
+        )
     })?;
 
     Ok(())
@@ -140,7 +137,7 @@ pub async fn append_recent_messages(
     project_context: &str,
     visibility: Visibility,
     tz: chrono_tz::Tz,
-) -> Result<(), FatalError> {
+) -> anyhow::Result<()> {
     if new_messages.is_empty() {
         return Ok(());
     }
@@ -159,7 +156,7 @@ pub async fn append_recent_messages(
 ///
 /// # Errors
 /// Returns an error if the file cannot be written.
-pub async fn clear_recent_messages(path: &Path) -> Result<(), FatalError> {
+pub async fn clear_recent_messages(path: &Path) -> anyhow::Result<()> {
     save_recent_messages(path, &[]).await
 }
 

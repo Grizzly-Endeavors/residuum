@@ -1,7 +1,7 @@
 use chrono::{Duration, NaiveDateTime, NaiveTime};
 use serde::Deserialize;
 
-use crate::error::FatalError;
+use anyhow::bail;
 
 /// Top-level HEARTBEAT.yml structure.
 #[derive(Debug, Clone, Deserialize)]
@@ -44,28 +44,22 @@ pub struct PulseTask {
 ///
 /// # Errors
 ///
-/// Returns `FatalError::Scheduling` if the string is empty, has no unit suffix,
+/// Returns an error if the string is empty, has no unit suffix,
 /// or contains a non-numeric value before the suffix.
-pub fn parse_schedule_duration(s: &str) -> Result<Duration, FatalError> {
+pub fn parse_schedule_duration(s: &str) -> anyhow::Result<Duration> {
     if s.is_empty() {
-        return Err(FatalError::Scheduling(
-            "schedule duration cannot be empty".to_string(),
-        ));
+        bail!("schedule duration cannot be empty");
     }
     let (num_part, unit) = s.split_at(s.len() - 1);
     let value: i64 = num_part.parse().map_err(|_parse_err| {
-        FatalError::Scheduling(format!(
-            "invalid schedule duration '{s}': expected number followed by s/m/h/d",
-        ))
+        anyhow::anyhow!("invalid schedule duration '{s}': expected number followed by s/m/h/d",)
     })?;
     match unit {
         "s" => Ok(Duration::seconds(value)),
         "m" => Ok(Duration::seconds(value * 60)),
         "h" => Ok(Duration::seconds(value * 3600)),
         "d" => Ok(Duration::seconds(value * 86_400)),
-        other => Err(FatalError::Scheduling(format!(
-            "unknown duration unit '{other}' in '{s}': expected s, m, h, or d",
-        ))),
+        other => bail!("unknown duration unit '{other}' in '{s}': expected s, m, h, or d",),
     }
 }
 
@@ -75,40 +69,29 @@ pub fn parse_schedule_duration(s: &str) -> Result<Duration, FatalError> {
 ///
 /// # Errors
 ///
-/// Returns `FatalError::Scheduling` if the string is malformed or contains
+/// Returns an error if the string is malformed or contains
 /// out-of-range hour/minute values.
-pub fn parse_active_hours(s: &str) -> Result<(NaiveTime, NaiveTime), FatalError> {
-    let (start_str, end_str) = s.split_once('-').ok_or_else(|| {
-        FatalError::Scheduling(format!(
-            "invalid active_hours '{s}': expected 'HH:MM-HH:MM'",
-        ))
-    })?;
+pub fn parse_active_hours(s: &str) -> anyhow::Result<(NaiveTime, NaiveTime)> {
+    let (start_str, end_str) = s
+        .split_once('-')
+        .ok_or_else(|| anyhow::anyhow!("invalid active_hours '{s}': expected 'HH:MM-HH:MM'",))?;
     let start = parse_naive_time(start_str, s)?;
     let end = parse_naive_time(end_str, s)?;
     Ok((start, end))
 }
 
-fn parse_naive_time(t: &str, context: &str) -> Result<NaiveTime, FatalError> {
+fn parse_naive_time(t: &str, context: &str) -> anyhow::Result<NaiveTime> {
     let (hour_str, min_str) = t.split_once(':').ok_or_else(|| {
-        FatalError::Scheduling(format!(
-            "invalid time '{t}' in active_hours '{context}': expected HH:MM",
-        ))
+        anyhow::anyhow!("invalid time '{t}' in active_hours '{context}': expected HH:MM",)
     })?;
     let hour: u32 = hour_str.parse().map_err(|_parse_err| {
-        FatalError::Scheduling(format!(
-            "invalid hour '{hour_str}' in active_hours '{context}'",
-        ))
+        anyhow::anyhow!("invalid hour '{hour_str}' in active_hours '{context}'",)
     })?;
     let min: u32 = min_str.parse().map_err(|_parse_err| {
-        FatalError::Scheduling(format!(
-            "invalid minute '{min_str}' in active_hours '{context}'",
-        ))
+        anyhow::anyhow!("invalid minute '{min_str}' in active_hours '{context}'",)
     })?;
-    NaiveTime::from_hms_opt(hour, min, 0).ok_or_else(|| {
-        FatalError::Scheduling(format!(
-            "out-of-range time '{t}' in active_hours '{context}'",
-        ))
-    })
+    NaiveTime::from_hms_opt(hour, min, 0)
+        .ok_or_else(|| anyhow::anyhow!("out-of-range time '{t}' in active_hours '{context}'",))
 }
 
 /// Check whether `now` falls within the active hours window (inclusive of start, exclusive of end).

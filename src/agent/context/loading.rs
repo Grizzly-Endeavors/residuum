@@ -2,7 +2,8 @@
 
 use std::path::Path;
 
-use crate::error::FatalError;
+use anyhow::Context;
+
 use crate::projects::activation::SharedProjectState;
 use crate::skills::SharedSkillState;
 use crate::subagents::SubagentPresetIndex;
@@ -13,16 +14,11 @@ use crate::subagents::SubagentPresetIndex;
 ///
 /// # Errors
 /// Returns an error if the file exists but cannot be read or parsed.
-pub(crate) async fn load_observations(path: &Path) -> Result<Option<String>, FatalError> {
+pub(crate) async fn load_observations(path: &Path) -> anyhow::Result<Option<String>> {
     match tokio::fs::read_to_string(path).await {
         Ok(content) if !content.trim().is_empty() => {
             let log: crate::memory::types::ObservationLog = serde_json::from_str(&content)
-                .map_err(|e| {
-                    FatalError::Memory(format!(
-                        "failed to parse observations at {}: {e}",
-                        path.display()
-                    ))
-                })?;
+                .with_context(|| format!("failed to parse observations at {}", path.display()))?;
             let formatted = log.display_formatted();
             if formatted.is_empty() {
                 Ok(None)
@@ -33,10 +29,8 @@ pub(crate) async fn load_observations(path: &Path) -> Result<Option<String>, Fat
         }
         Ok(_) => Ok(None),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(e) => Err(FatalError::Memory(format!(
-            "failed to read observations at {}: {e}",
-            path.display()
-        ))),
+        Err(e) => Err(anyhow::Error::new(e)
+            .context(format!("failed to read observations at {}", path.display()))),
     }
 }
 
@@ -46,9 +40,7 @@ pub(crate) async fn load_observations(path: &Path) -> Result<Option<String>, Fat
 ///
 /// # Errors
 /// Returns an error if the file exists but cannot be parsed.
-pub(crate) async fn load_recent_context_narrative(
-    path: &Path,
-) -> Result<Option<String>, FatalError> {
+pub(crate) async fn load_recent_context_narrative(path: &Path) -> anyhow::Result<Option<String>> {
     let result = crate::memory::recent_context::load_recent_context(path)
         .await?
         .map(|ctx| ctx.narrative);

@@ -8,7 +8,7 @@ use chrono::{DateTime, Utc};
 use rand::Rng;
 use tracing::{debug, error, warn};
 
-use crate::error::FatalError;
+use anyhow::Context;
 
 use super::types::ScheduledAction;
 
@@ -24,20 +24,19 @@ impl ActionStore {
     /// Returns an empty store if the file does not exist.
     ///
     /// # Errors
-    /// Returns `FatalError::Scheduling` if the file exists but cannot be
-    /// read or is not valid JSON.
-    pub async fn load(path: impl Into<PathBuf>) -> Result<Self, FatalError> {
+    /// Returns an error if the file exists but cannot be read or is not valid JSON.
+    pub async fn load(path: impl Into<PathBuf>) -> anyhow::Result<Self> {
         let path = path.into();
         match tokio::fs::read_to_string(&path).await {
             Ok(contents) => {
                 let actions: Vec<ScheduledAction> =
                     serde_json::from_str(&contents).map_err(|e| {
                         error!(path = %path.display(), error = %e, "failed to parse scheduled actions");
-                        FatalError::Scheduling(format!(
-                            "failed to parse scheduled actions at {}: {e}",
-                            path.display()
-                        ))
-                    })?;
+                        e
+                    }).with_context(|| format!(
+                        "failed to parse scheduled actions at {}",
+                        path.display()
+                    ))?;
                 debug!(path = %path.display(), count = actions.len(), "loaded scheduled actions");
                 Ok(Self { actions, path })
             }
@@ -47,10 +46,9 @@ impl ActionStore {
             }),
             Err(e) => {
                 error!(path = %path.display(), error = %e, "failed to read scheduled actions");
-                Err(FatalError::Scheduling(format!(
-                    "failed to read scheduled actions at {}: {e}",
-                    path.display()
-                )))
+                Err(e).with_context(|| {
+                    format!("failed to read scheduled actions at {}", path.display())
+                })
             }
         }
     }
@@ -58,19 +56,19 @@ impl ActionStore {
     /// Save the store to disk atomically (write temp file, then rename).
     ///
     /// # Errors
-    /// Returns `FatalError::Scheduling` if serialization or writing fails.
-    pub async fn save(&self) -> Result<(), FatalError> {
+    /// Returns an error if serialization or writing fails.
+    pub async fn save(&self) -> anyhow::Result<()> {
         let json = serde_json::to_string_pretty(&self.actions).map_err(|e| {
             error!(path = %self.path.display(), error = %e, "failed to serialize scheduled actions");
-            FatalError::Scheduling(format!("failed to serialize scheduled actions: {e}"))
-        })?;
+            e
+        }).context("failed to serialize scheduled actions")?;
 
         let dir = self.path.parent().ok_or_else(|| {
             error!(path = %self.path.display(), "scheduled actions path has no parent directory");
-            FatalError::Scheduling(format!(
+            anyhow::anyhow!(
                 "scheduled actions path has no parent directory: {}",
                 self.path.display()
-            ))
+            )
         })?;
 
         // Ensure the parent directory exists (actions file lives at workspace root,
@@ -78,33 +76,34 @@ impl ActionStore {
         if !dir.exists() {
             tokio::fs::create_dir_all(dir).await.map_err(|e| {
                 error!(dir = %dir.display(), error = %e, "failed to create directory for scheduled actions");
-                FatalError::Scheduling(format!(
-                    "failed to create directory for scheduled actions at {}: {e}",
-                    dir.display()
-                ))
-            })?;
+                e
+            }).with_context(|| format!(
+                "failed to create directory for scheduled actions at {}",
+                dir.display()
+            ))?;
         }
 
         let tmp_path = dir.join(".scheduled_actions.json.tmp");
 
         tokio::fs::write(&tmp_path, &json).await.map_err(|e| {
             error!(path = %tmp_path.display(), error = %e, "failed to write temporary scheduled actions");
-            FatalError::Scheduling(format!(
-                "failed to write temporary scheduled actions at {}: {e}",
-                tmp_path.display()
-            ))
-        })?;
+            e
+        }).with_context(|| format!(
+            "failed to write temporary scheduled actions at {}",
+            tmp_path.display()
+        ))?;
 
         tokio::fs::rename(&tmp_path, &self.path)
             .await
             .map_err(|e| {
                 error!(src = %tmp_path.display(), dst = %self.path.display(), error = %e, "failed to rename scheduled actions");
-                FatalError::Scheduling(format!(
-                    "failed to rename scheduled actions from {} to {}: {e}",
-                    tmp_path.display(),
-                    self.path.display()
-                ))
-            })?;
+                e
+            })
+            .with_context(|| format!(
+                "failed to rename scheduled actions from {} to {}",
+                tmp_path.display(),
+                self.path.display()
+            ))?;
 
         debug!(path = %self.path.display(), count = self.actions.len(), "saved scheduled actions");
         Ok(())

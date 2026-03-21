@@ -3,7 +3,6 @@
 use chrono_tz::Tz;
 use serde::Deserialize;
 
-use crate::error::FatalError;
 use crate::memory::types::{Observation, ObservationLog, Visibility};
 use crate::time::now_local;
 
@@ -29,10 +28,7 @@ struct ReflectorItem {
 ///
 /// # Errors
 /// Returns an error if the response cannot be parsed.
-pub(super) fn parse_reflection_response(
-    content: &str,
-    tz: Tz,
-) -> Result<ObservationLog, FatalError> {
+pub(super) fn parse_reflection_response(content: &str, tz: Tz) -> anyhow::Result<ObservationLog> {
     let trimmed = content.trim();
     let json_str = crate::memory::strip_code_fences(trimmed);
 
@@ -63,15 +59,11 @@ pub(super) fn parse_reflection_response(
     // Fallback: Value-based parsing for legacy bare arrays
     tracing::debug!("reflector structured output failed, falling back to value-based parsing");
     let value: serde_json::Value = serde_json::from_str(json_str).map_err(|e| {
-        FatalError::Memory(format!(
-            "failed to parse reflector response as JSON: {e}\nresponse: {trimmed}"
-        ))
+        anyhow::anyhow!("failed to parse reflector response as JSON: {e}\nresponse: {trimmed}")
     })?;
 
     let items = value.as_array().ok_or_else(|| {
-        FatalError::Memory(format!(
-            "reflector response is not a JSON array or object\nresponse: {trimmed}"
-        ))
+        anyhow::anyhow!("reflector response is not a JSON array or object\nresponse: {trimmed}")
     })?;
 
     let mut log = ObservationLog::new();

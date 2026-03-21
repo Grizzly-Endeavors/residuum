@@ -6,12 +6,12 @@
 mod parse;
 mod prompt;
 
+use anyhow::Context;
 use chrono_tz::Tz;
 
 use crate::config::{
     DEFAULT_OBSERVER_COOLDOWN_SECS, DEFAULT_OBSERVER_FORCE_THRESHOLD, DEFAULT_OBSERVER_THRESHOLD,
 };
-use crate::error::FatalError;
 use crate::memory::chunk_extractor::{extract_chunks, write_idx_jsonl};
 use crate::memory::episode_store::{episode_idx_path, episode_obs_path, write_episode_transcript};
 use crate::memory::log_store::{append_observations, next_episode_id, save_episode_observations};
@@ -191,11 +191,9 @@ impl Observer {
         &self,
         recent_messages: &[RecentMessage],
         layout: &WorkspaceLayout,
-    ) -> Result<ObserveResult, FatalError> {
+    ) -> anyhow::Result<ObserveResult> {
         if recent_messages.is_empty() {
-            return Err(FatalError::Memory(
-                "no recent messages to extract from".to_string(),
-            ));
+            anyhow::bail!("no recent messages to extract from");
         }
 
         // Generate the next episode ID by scanning the episodes directory
@@ -233,7 +231,7 @@ impl Observer {
             .provider
             .complete(&extraction_messages, &[], &options)
             .await
-            .map_err(FatalError::Model)?;
+            .context("observer LLM call failed")?;
 
         // Parse the response into extraction results and optional narrative.
         let parsed = parse_observer_response(&response, self.config.tz)?;
@@ -277,7 +275,7 @@ async fn build_episode_and_persist(
     recent_messages: &[RecentMessage],
     layout: &WorkspaceLayout,
     tz: Tz,
-) -> Result<ObserveResult, FatalError> {
+) -> anyhow::Result<ObserveResult> {
     // Extract inner messages for the episode transcript.
     let messages: Vec<Message> = recent_messages
         .iter()

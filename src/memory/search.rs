@@ -11,8 +11,9 @@ use tantivy::query::{BooleanQuery, QueryParser};
 use tantivy::schema::{Field, OwnedValue, STORED, STRING, Schema, TEXT};
 use tantivy::{Index, IndexReader, IndexWriter, ReloadPolicy, TantivyDocument, Term};
 
+use anyhow::Context;
+
 use crate::config::SearchConfig;
-use crate::error::FatalError;
 use crate::memory::chunk_extractor::read_idx_jsonl;
 use crate::memory::types::{IndexChunk, IndexManifest, ManifestFileEntry, Observation};
 use crate::memory::vector_store::{VectorSearchFilters, VectorStore};
@@ -103,12 +104,12 @@ impl MemoryIndex {
     ///
     /// # Errors
     /// Returns an error if the directory is inaccessible or the index is corrupt.
-    pub fn open_or_create(index_dir: &Path) -> Result<Self, FatalError> {
-        std::fs::create_dir_all(index_dir).map_err(|e| {
-            FatalError::Memory(format!(
-                "failed to create search index directory at {}: {e}",
+    pub fn open_or_create(index_dir: &Path) -> anyhow::Result<Self> {
+        std::fs::create_dir_all(index_dir).with_context(|| {
+            format!(
+                "failed to create search index directory at {}",
                 index_dir.display()
-            ))
+            )
         })?;
 
         let mut builder = Schema::builder();
@@ -122,25 +123,17 @@ impl MemoryIndex {
         let line_end_field = builder.add_text_field("line_end", STRING | STORED);
         let schema = builder.build();
 
-        let mmap_dir = MmapDirectory::open(index_dir).map_err(|e| {
-            FatalError::Memory(format!(
-                "failed to open mmap directory at {}: {e}",
-                index_dir.display()
-            ))
-        })?;
+        let mmap_dir = MmapDirectory::open(index_dir)
+            .with_context(|| format!("failed to open mmap directory at {}", index_dir.display()))?;
 
-        let index = Index::open_or_create(mmap_dir, schema).map_err(|e| {
-            FatalError::Memory(format!(
-                "failed to open search index at {}: {e}",
-                index_dir.display()
-            ))
-        })?;
+        let index = Index::open_or_create(mmap_dir, schema)
+            .with_context(|| format!("failed to open search index at {}", index_dir.display()))?;
 
         let reader: IndexReader = index
             .reader_builder()
             .reload_policy(ReloadPolicy::OnCommitWithDelay)
             .try_into()
-            .map_err(|e| FatalError::Memory(format!("failed to create index reader: {e}")))?;
+            .context("failed to create index reader")?;
 
         Ok(Self {
             index,
@@ -163,7 +156,7 @@ impl MemoryIndex {
     ///
     /// # Errors
     /// Returns an error if the in-memory index cannot be created.
-    pub fn empty() -> Result<Self, FatalError> {
+    pub fn empty() -> anyhow::Result<Self> {
         let mut builder = Schema::builder();
         let id_field = builder.add_text_field("id", STRING | STORED);
         let source_type_field = builder.add_text_field("source_type", STRING | STORED);
@@ -181,9 +174,7 @@ impl MemoryIndex {
             .reader_builder()
             .reload_policy(ReloadPolicy::OnCommitWithDelay)
             .try_into()
-            .map_err(|e| {
-                FatalError::Memory(format!("failed to create in-ram index reader: {e}"))
-            })?;
+            .context("failed to create in-ram index reader")?;
 
         Ok(Self {
             index,
@@ -210,7 +201,7 @@ impl MemoryIndex {
         episode_id: &str,
         date: &str,
         observations: &[Observation],
-    ) -> Result<Vec<String>, FatalError> {
+    ) -> anyhow::Result<Vec<String>> {
         if observations.is_empty() {
             return Ok(Vec::new());
         }
@@ -230,9 +221,9 @@ impl MemoryIndex {
             doc.add_text(self.line_start_field, "");
             doc.add_text(self.line_end_field, "");
 
-            writer.add_document(doc).map_err(|e| {
-                FatalError::Memory(format!("failed to add observation to search index: {e}"))
-            })?;
+            writer
+                .add_document(doc)
+                .context("failed to add observation to search index")?;
             doc_ids.push(doc_id);
         }
 
@@ -246,7 +237,7 @@ impl MemoryIndex {
     ///
     /// # Errors
     /// Returns an error if the index writer fails.
-    pub fn index_chunks(&self, chunks: &[IndexChunk]) -> Result<Vec<String>, FatalError> {
+    pub fn index_chunks(&self, chunks: &[IndexChunk]) -> anyhow::Result<Vec<String>> {
         if chunks.is_empty() {
             return Ok(Vec::new());
         }
@@ -265,9 +256,9 @@ impl MemoryIndex {
             doc.add_text(self.line_start_field, chunk.line_start.to_string());
             doc.add_text(self.line_end_field, chunk.line_end.to_string());
 
-            writer.add_document(doc).map_err(|e| {
-                FatalError::Memory(format!("failed to add chunk to search index: {e}"))
-            })?;
+            writer
+                .add_document(doc)
+                .context("failed to add chunk to search index")?;
             doc_ids.push(chunk.chunk_id.clone());
         }
 
@@ -279,7 +270,7 @@ impl MemoryIndex {
     ///
     /// # Errors
     /// Returns an error if the index writer fails.
-    pub fn delete_documents(&self, ids: &[String]) -> Result<(), FatalError> {
+    pub fn delete_documents(&self, ids: &[String]) -> anyhow::Result<()> {
         if ids.is_empty() {
             return Ok(());
         }
@@ -301,7 +292,7 @@ impl MemoryIndex {
         query_str: &str,
         limit: usize,
         filters: &SearchFilters,
-    ) -> Result<Vec<SearchResult>, FatalError> {
+    ) -> anyhow::Result<Vec<SearchResult>> {
         if query_str.trim().is_empty() {
             return Ok(Vec::new());
         }
@@ -338,7 +329,7 @@ impl MemoryIndex {
 
         let top_docs = searcher
             .search(&*query, &TopDocs::with_limit(fetch_limit))
-            .map_err(|e| FatalError::Memory(format!("search failed: {e}")))?;
+            .context("search failed")?;
 
         let mut results = Vec::with_capacity(limit);
         for (score, doc_address) in &top_docs {
@@ -348,7 +339,7 @@ impl MemoryIndex {
 
             let doc: TantivyDocument = searcher
                 .doc(*doc_address)
-                .map_err(|e| FatalError::Memory(format!("failed to fetch document: {e}")))?;
+                .context("failed to fetch document")?;
 
             let date = get_text(&doc, self.date_field);
             let ctx = get_text(&doc, self.ctx_field);
@@ -404,12 +395,12 @@ impl MemoryIndex {
     ///
     /// # Errors
     /// Returns an error if files cannot be read or the index cannot be written.
-    pub fn rebuild(&self, memory_dir: &Path) -> Result<RebuildResult, FatalError> {
+    pub fn rebuild(&self, memory_dir: &Path) -> anyhow::Result<RebuildResult> {
         let mut writer = self.writer()?;
 
         writer
             .delete_all_documents()
-            .map_err(|e| FatalError::Memory(format!("failed to clear search index: {e}")))?;
+            .context("failed to clear search index")?;
 
         let mut result = RebuildResult {
             obs_count: 0,
@@ -439,7 +430,7 @@ impl MemoryIndex {
         &self,
         memory_dir: &Path,
         manifest: &IndexManifest,
-    ) -> Result<(IndexManifest, SyncStats), FatalError> {
+    ) -> anyhow::Result<(IndexManifest, SyncStats)> {
         let mut stats = SyncStats {
             added: 0,
             updated: 0,
@@ -514,20 +505,18 @@ impl MemoryIndex {
     }
 
     /// Create an index writer with a reasonable memory budget.
-    fn writer(&self) -> Result<IndexWriter, FatalError> {
+    fn writer(&self) -> anyhow::Result<IndexWriter> {
         self.index
             .writer(WRITER_MEMORY_BUDGET_BYTES)
-            .map_err(|e| FatalError::Memory(format!("failed to create index writer: {e}")))
+            .context("failed to create index writer")
     }
 
     /// Commit the writer and reload the reader.
-    fn commit_and_reload(&self, writer: &mut IndexWriter) -> Result<(), FatalError> {
-        writer
-            .commit()
-            .map_err(|e| FatalError::Memory(format!("failed to commit search index: {e}")))?;
-        self.reader.reload().map_err(|e| {
-            FatalError::Memory(format!("failed to reload search index reader: {e}"))
-        })?;
+    fn commit_and_reload(&self, writer: &mut IndexWriter) -> anyhow::Result<()> {
+        writer.commit().context("failed to commit search index")?;
+        self.reader
+            .reload()
+            .context("failed to reload search index reader")?;
         Ok(())
     }
 
@@ -538,14 +527,12 @@ impl MemoryIndex {
         dir: &Path,
         memory_dir: &Path,
         result: &mut RebuildResult,
-    ) -> Result<(), FatalError> {
-        let entries = std::fs::read_dir(dir).map_err(|e| {
-            FatalError::Memory(format!("failed to read directory {}: {e}", dir.display()))
-        })?;
+    ) -> anyhow::Result<()> {
+        let entries = std::fs::read_dir(dir)
+            .with_context(|| format!("failed to read directory {}", dir.display()))?;
 
         for entry in entries {
-            let entry = entry
-                .map_err(|e| FatalError::Memory(format!("failed to read directory entry: {e}")))?;
+            let entry = entry.context("failed to read directory entry")?;
             let path = entry.path();
 
             if path.is_dir() {
@@ -618,7 +605,7 @@ impl MemoryIndex {
         writer: &mut IndexWriter,
         abs_path: &Path,
         rel_path: &str,
-    ) -> Result<Vec<String>, FatalError> {
+    ) -> anyhow::Result<Vec<String>> {
         let mut doc_ids = Vec::new();
 
         if rel_path.ends_with(".obs.json") {
@@ -657,7 +644,7 @@ fn add_obs_document(
     date: &str,
     ctx: &str,
     content: &str,
-) -> Result<(), FatalError> {
+) -> anyhow::Result<()> {
     let mut doc = TantivyDocument::default();
     doc.add_text(idx.id_field, doc_id);
     doc.add_text(idx.source_type_field, "observation");
@@ -668,9 +655,9 @@ fn add_obs_document(
     doc.add_text(idx.line_start_field, "");
     doc.add_text(idx.line_end_field, "");
 
-    writer.add_document(doc).map_err(|e| {
-        FatalError::Memory(format!("failed to add observation to search index: {e}"))
-    })?;
+    writer
+        .add_document(doc)
+        .context("failed to add observation to search index")?;
     Ok(())
 }
 
@@ -679,7 +666,7 @@ fn add_chunk_document(
     writer: &mut IndexWriter,
     idx: &MemoryIndex,
     chunk: &IndexChunk,
-) -> Result<(), FatalError> {
+) -> anyhow::Result<()> {
     let mut doc = TantivyDocument::default();
     doc.add_text(idx.id_field, &chunk.chunk_id);
     doc.add_text(idx.source_type_field, "chunk");
@@ -692,7 +679,7 @@ fn add_chunk_document(
 
     writer
         .add_document(doc)
-        .map_err(|e| FatalError::Memory(format!("failed to add chunk to search index: {e}")))?;
+        .context("failed to add chunk to search index")?;
     Ok(())
 }
 
@@ -733,18 +720,12 @@ fn parse_line_num(doc: &TantivyDocument, field: Field) -> Option<usize> {
 ///
 /// The `episode_id` and date are derived from the filename: `ep-NNN.obs.json`
 /// lives under `episodes/YYYY-MM/DD/`.
-pub(crate) fn parse_obs_file(
-    path: &Path,
-) -> Result<(String, String, Vec<Observation>), FatalError> {
+pub(crate) fn parse_obs_file(path: &Path) -> anyhow::Result<(String, String, Vec<Observation>)> {
     let content = std::fs::read_to_string(path)
-        .map_err(|e| FatalError::Memory(format!("failed to read {}: {e}", path.display())))?;
+        .with_context(|| format!("failed to read {}", path.display()))?;
 
-    let observations: Vec<Observation> = serde_json::from_str(&content).map_err(|e| {
-        FatalError::Memory(format!(
-            "failed to parse obs file at {}: {e}",
-            path.display()
-        ))
-    })?;
+    let observations: Vec<Observation> = serde_json::from_str(&content)
+        .with_context(|| format!("failed to parse obs file at {}", path.display()))?;
 
     // Extract episode_id from filename: ep-NNN.obs.json → ep-NNN
     let episode_id = path
@@ -811,14 +792,12 @@ fn collect_indexable_files(
     dir: &Path,
     base: &Path,
     out: &mut Vec<(String, String)>,
-) -> Result<(), FatalError> {
-    let entries = std::fs::read_dir(dir).map_err(|e| {
-        FatalError::Memory(format!("failed to read directory {}: {e}", dir.display()))
-    })?;
+) -> anyhow::Result<()> {
+    let entries = std::fs::read_dir(dir)
+        .with_context(|| format!("failed to read directory {}", dir.display()))?;
 
     for entry in entries {
-        let entry = entry
-            .map_err(|e| FatalError::Memory(format!("failed to read directory entry: {e}")))?;
+        let entry = entry.context("failed to read directory entry")?;
         let path = entry.path();
 
         if path.is_dir() {
@@ -840,7 +819,7 @@ fn collect_indexable_files(
 ///
 /// # Errors
 /// Returns an error if the index cannot be opened.
-pub fn create_shared_index(index_dir: &Path) -> Result<Arc<MemoryIndex>, FatalError> {
+pub fn create_shared_index(index_dir: &Path) -> anyhow::Result<Arc<MemoryIndex>> {
     let index = MemoryIndex::open_or_create(index_dir)?;
     Ok(Arc::new(index))
 }
@@ -890,7 +869,7 @@ impl HybridSearcher {
         query: &str,
         limit: usize,
         filters: &SearchFilters,
-    ) -> Result<Vec<SearchResult>, FatalError> {
+    ) -> anyhow::Result<Vec<SearchResult>> {
         let candidates = limit * self.cfg.candidate_multiplier;
 
         // BM25 search
@@ -918,14 +897,12 @@ impl HybridSearcher {
         let embed_response = ep
             .embed(&[query])
             .await
-            .map_err(|e| FatalError::Memory(format!("failed to embed search query: {e}")))?;
+            .context("failed to embed search query")?;
         let query_vec = embed_response
             .embeddings
             .into_iter()
             .next()
-            .ok_or_else(|| {
-                FatalError::Memory("embedding provider returned no embeddings".to_string())
-            })?;
+            .ok_or_else(|| anyhow::anyhow!("embedding provider returned no embeddings"))?;
 
         // Vector search (sync, so use spawn_blocking)
         let vs_clone = Arc::clone(vs);
@@ -939,7 +916,7 @@ impl HybridSearcher {
             vs_clone.search(&query_vec, vec_limit, &vec_filters)
         })
         .await
-        .map_err(|e| FatalError::Memory(format!("vector search task failed: {e}")))??;
+        .context("vector search task failed")??;
 
         // Merge results
         let mut merged = merge_hybrid_results(&bm25_results, &vec_results, &self.cfg, limit);

@@ -8,7 +8,7 @@ use std::sync::Arc;
 use chrono::{DateTime, Utc};
 use tokio::sync::RwLock;
 
-use crate::error::FatalError;
+use anyhow::{Context, bail};
 
 /// Build-time version injected by the release workflow.
 pub const CURRENT_VERSION: &str = env!("RESIDUUM_VERSION");
@@ -83,42 +83,37 @@ pub async fn check_for_update(status: &SharedUpdateStatus) {
 ///
 /// # Errors
 ///
-/// Returns `FatalError::Gateway` if the HTTP request or JSON parsing fails.
-pub async fn fetch_latest_version() -> Result<String, FatalError> {
+/// Returns an error if the HTTP request or JSON parsing fails.
+pub async fn fetch_latest_version() -> anyhow::Result<String> {
     let url = "https://api.github.com/repos/grizzly-endeavors/residuum/releases/latest";
     tracing::debug!(url = %url, "fetching latest release");
 
     let client = reqwest::Client::builder()
         .user_agent("residuum-updater")
         .build()
-        .map_err(|e| FatalError::Gateway(format!("failed to build http client: {e}")))?;
+        .context("failed to build http client")?;
 
     let resp = client
         .get(url)
         .header("Accept", "application/vnd.github+json")
         .send()
         .await
-        .map_err(|e| FatalError::Gateway(format!("failed to fetch latest release: {e}")))?;
+        .context("failed to fetch latest release")?;
 
     if !resp.status().is_success() {
-        return Err(FatalError::Gateway(format!(
-            "github api returned {} — are you online?",
-            resp.status()
-        )));
+        bail!("github api returned {} — are you online?", resp.status());
     }
 
     let body: serde_json::Value = resp
         .json()
         .await
-        .map_err(|e| FatalError::Gateway(format!("failed to parse release response: {e}")))?;
+        .context("failed to parse release response")?;
 
     let tag = body
         .get("tag_name")
         .and_then(|v| v.as_str())
         .map(String::from)
-        .ok_or_else(|| {
-            FatalError::Gateway("release response missing tag_name field".to_string())
-        })?;
+        .ok_or_else(|| anyhow::anyhow!("release response missing tag_name field"))?;
 
     tracing::debug!(tag_name = %tag, "fetched latest release tag");
     Ok(tag)
@@ -151,9 +146,9 @@ pub fn is_up_to_date(current: &str, latest: &str) -> bool {
 ///
 /// # Errors
 ///
-/// Returns `FatalError::Gateway` if the download, platform detection,
+/// Returns an error if the download, platform detection,
 /// or binary replacement fails.
-pub async fn download_and_install() -> Result<String, FatalError> {
+pub async fn download_and_install() -> anyhow::Result<String> {
     let latest = fetch_latest_version().await?;
     let platform = detect_platform()?;
     let url = format!(
@@ -165,31 +160,30 @@ pub async fn download_and_install() -> Result<String, FatalError> {
     let client = reqwest::Client::builder()
         .user_agent("residuum-updater")
         .build()
-        .map_err(|e| FatalError::Gateway(format!("failed to build http client: {e}")))?;
+        .context("failed to build http client")?;
 
     let response = client
         .get(&url)
         .send()
         .await
-        .map_err(|e| FatalError::Gateway(format!("failed to download update binary: {e}")))?;
+        .context("failed to download update binary")?;
 
     if !response.status().is_success() {
-        return Err(FatalError::Gateway(format!(
+        bail!(
             "update binary download returned HTTP {} — asset may not exist for {platform}",
             response.status()
-        )));
+        );
     }
 
     let bytes = response
         .bytes()
         .await
-        .map_err(|e| FatalError::Gateway(format!("failed to read update binary: {e}")))?;
+        .context("failed to read update binary")?;
 
     tracing::debug!(bytes = bytes.len(), version = %latest, "download complete");
 
-    let current_exe = std::env::current_exe().map_err(|e| {
-        FatalError::Gateway(format!("failed to determine current executable path: {e}"))
-    })?;
+    let current_exe =
+        std::env::current_exe().context("failed to determine current executable path")?;
 
     // On Linux, the kernel appends " (deleted)" to /proc/self/exe when the
     // binary has been atomically replaced. Strip it to get the real path.
@@ -202,44 +196,42 @@ pub async fn download_and_install() -> Result<String, FatalError> {
         }
     };
 
-    let exe_dir = exe_path.parent().ok_or_else(|| {
-        FatalError::Gateway("current executable has no parent directory".to_string())
-    })?;
+    let exe_dir = exe_path
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("current executable has no parent directory"))?;
 
     // Write to a temp file in the same directory for atomic rename
     let tmp_path = exe_dir.join(".residuum-update.tmp");
 
-    std::fs::write(&tmp_path, &bytes).map_err(|e| {
-        FatalError::Gateway(format!(
-            "failed to write update binary to {} — check directory permissions: {e}",
+    std::fs::write(&tmp_path, &bytes).with_context(|| {
+        format!(
+            "failed to write update binary to {} — check directory permissions",
             tmp_path.display()
-        ))
+        )
     })?;
 
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&tmp_path, std::fs::Permissions::from_mode(0o755)).map_err(
-            |e| {
+        std::fs::set_permissions(&tmp_path, std::fs::Permissions::from_mode(0o755)).inspect_err(
+            |_| {
                 if let Err(re) = std::fs::remove_file(&tmp_path) {
                     tracing::warn!(error = %re, path = %tmp_path.display(), "failed to remove temp file during cleanup");
                 }
-                FatalError::Gateway(format!("failed to set executable permissions: {e}"))
             },
-        )?;
+        ).context("failed to set executable permissions")?;
     }
 
     // Atomic rename replaces the binary on disk while the running process
     // keeps its handle to the old inode
-    std::fs::rename(&tmp_path, &exe_path).map_err(|e| {
+    std::fs::rename(&tmp_path, &exe_path).inspect_err(|_| {
         if let Err(re) = std::fs::remove_file(&tmp_path) {
             tracing::warn!(error = %re, path = %tmp_path.display(), "failed to remove temp file during cleanup");
         }
-        FatalError::Gateway(format!(
-            "failed to replace binary at {} — check directory permissions: {e}",
-            exe_path.display()
-        ))
-    })?;
+    }).with_context(|| format!(
+        "failed to replace binary at {} — check directory permissions",
+        exe_path.display()
+    ))?;
 
     tracing::info!(version = %latest, path = %exe_path.display(), "update binary installed successfully");
     Ok(latest)
@@ -249,15 +241,13 @@ pub async fn download_and_install() -> Result<String, FatalError> {
 ///
 /// # Errors
 ///
-/// Returns `FatalError::Gateway` for unsupported OS/architecture combinations.
-fn detect_platform() -> Result<String, FatalError> {
+/// Returns an error for unsupported OS/architecture combinations.
+fn detect_platform() -> anyhow::Result<String> {
     let os = match std::env::consts::OS {
         "linux" => "linux",
         "macos" => "darwin",
         other => {
-            return Err(FatalError::Gateway(format!(
-                "unsupported operating system for self-update: {other}"
-            )));
+            bail!("unsupported operating system for self-update: {other}");
         }
     };
 
@@ -265,16 +255,12 @@ fn detect_platform() -> Result<String, FatalError> {
         "x86_64" => "x86_64",
         "aarch64" => "aarch64",
         other => {
-            return Err(FatalError::Gateway(format!(
-                "unsupported architecture for self-update: {other}"
-            )));
+            bail!("unsupported architecture for self-update: {other}");
         }
     };
 
     if os == "darwin" && arch == "x86_64" {
-        return Err(FatalError::Gateway(
-            "macOS x86_64 (Intel) is not supported — Apple Silicon only".to_string(),
-        ));
+        bail!("macOS x86_64 (Intel) is not supported — Apple Silicon only");
     }
 
     Ok(format!("{os}-{arch}"))

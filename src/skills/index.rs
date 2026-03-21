@@ -4,7 +4,6 @@ use super::{
     parser::parse_skill_md,
     types::{SkillIndexEntry, SkillSource},
 };
-use crate::error::FatalError;
 
 /// In-memory index of discovered skills.
 #[derive(Debug, Clone, Default)]
@@ -20,13 +19,10 @@ impl SkillIndex {
     /// skipped. Duplicate names keep the first found.
     ///
     /// # Errors
-    /// Returns `FatalError::Skills` if a directory cannot be read (except
-    /// `NotFound`, which is silently skipped).
+    /// Returns an error if a directory cannot be read (except `NotFound`,
+    /// which is silently skipped).
     #[tracing::instrument(skip(dirs, project_skills_dir), fields(dirs_count = dirs.len()))]
-    pub async fn scan(
-        dirs: &[PathBuf],
-        project_skills_dir: Option<&Path>,
-    ) -> Result<Self, FatalError> {
+    pub async fn scan(dirs: &[PathBuf], project_skills_dir: Option<&Path>) -> anyhow::Result<Self> {
         let mut entries = Vec::new();
         let mut seen_names: Vec<String> = Vec::new();
 
@@ -101,16 +97,14 @@ async fn scan_skill_directory(
     source: SkillSource,
     entries: &mut Vec<SkillIndexEntry>,
     seen_names: &mut Vec<String>,
-) -> Result<(), FatalError> {
+) -> anyhow::Result<()> {
     let entries_before = entries.len();
     let mut read_dir = match tokio::fs::read_dir(dir).await {
         Ok(rd) => rd,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
         Err(e) => {
-            return Err(FatalError::Skills(format!(
-                "failed to read skills directory {}: {e}",
-                dir.display()
-            )));
+            return Err(anyhow::Error::new(e)
+                .context(format!("failed to read skills directory {}", dir.display())));
         }
     };
 

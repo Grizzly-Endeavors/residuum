@@ -2,9 +2,9 @@
 
 use std::path::PathBuf;
 
+use anyhow::Context;
 use chrono::NaiveDate;
 
-use crate::error::FatalError;
 use crate::workspace::layout::WorkspaceLayout;
 
 use super::scanner::write_project_md_content;
@@ -15,40 +15,36 @@ use super::types::{ProjectFrontmatter, ProjectStatus};
 /// Returns the path to the newly created project directory.
 ///
 /// # Errors
-/// Returns `FatalError::Projects` if the name is invalid, a project with
-/// the same dir name already exists, or filesystem operations fail.
+/// Returns an error if the name is invalid, a project with the same dir
+/// name already exists, or filesystem operations fail.
 pub async fn create_project(
     layout: &WorkspaceLayout,
     name: &str,
     description: &str,
     tools: Vec<String>,
     today: NaiveDate,
-) -> Result<PathBuf, FatalError> {
+) -> anyhow::Result<PathBuf> {
     let dir_name = sanitize_dir_name(name);
 
     if dir_name.is_empty() {
-        return Err(FatalError::Projects(format!(
-            "project name '{name}' produces an empty directory name"
-        )));
+        anyhow::bail!("project name '{name}' produces an empty directory name");
     }
 
     let project_dir = layout.projects_dir().join(&dir_name);
 
     if project_dir.exists() {
-        return Err(FatalError::Projects(format!(
-            "project directory '{dir_name}' already exists"
-        )));
+        anyhow::bail!("project directory '{dir_name}' already exists");
     }
 
     // Create directory structure
     for subdir in &["notes/log", "references", "workspace", "skills"] {
         tokio::fs::create_dir_all(project_dir.join(subdir))
             .await
-            .map_err(|e| {
-                FatalError::Projects(format!(
-                    "failed to create directory {}: {e}",
+            .with_context(|| {
+                format!(
+                    "failed to create directory {}",
                     project_dir.join(subdir).display()
-                ))
+                )
             })?;
     }
 
@@ -66,12 +62,7 @@ pub async fn create_project(
     let content = write_project_md_content(&frontmatter, "")?;
     tokio::fs::write(project_dir.join("PROJECT.md"), &content)
         .await
-        .map_err(|e| {
-            FatalError::Projects(format!(
-                "failed to write PROJECT.md at {}: {e}",
-                project_dir.display()
-            ))
-        })?;
+        .with_context(|| format!("failed to write PROJECT.md at {}", project_dir.display()))?;
 
     tracing::info!(project = name, dir = %dir_name, "created project");
 
@@ -81,50 +72,42 @@ pub async fn create_project(
 /// Archive a project: update its frontmatter and move from projects/ to archive/.
 ///
 /// # Errors
-/// Returns `FatalError::Projects` if the project doesn't exist, can't be
-/// read, or the move fails.
+/// Returns an error if the project doesn't exist, can't be read, or the
+/// move fails.
 pub async fn archive_project(
     layout: &WorkspaceLayout,
     dir_name: &str,
     today: NaiveDate,
-) -> Result<(), FatalError> {
+) -> anyhow::Result<()> {
     let source = layout.projects_dir().join(dir_name);
 
     if !source.exists() {
-        return Err(FatalError::Projects(format!(
-            "project directory '{dir_name}' not found in projects/"
-        )));
+        anyhow::bail!("project directory '{dir_name}' not found in projects/");
     }
 
     // Read and update PROJECT.md
     let project_md = source.join("PROJECT.md");
-    let content = tokio::fs::read_to_string(&project_md).await.map_err(|e| {
-        FatalError::Projects(format!(
-            "failed to read PROJECT.md at {}: {e}",
-            project_md.display()
-        ))
-    })?;
+    let content = tokio::fs::read_to_string(&project_md)
+        .await
+        .with_context(|| format!("failed to read PROJECT.md at {}", project_md.display()))?;
 
     let (mut frontmatter, body) = super::scanner::parse_project_md(&content)?;
     frontmatter.status = ProjectStatus::Archived;
     frontmatter.archived = Some(today);
 
     let updated = write_project_md_content(&frontmatter, &body)?;
-    tokio::fs::write(&project_md, &updated).await.map_err(|e| {
-        FatalError::Projects(format!(
-            "failed to update PROJECT.md at {}: {e}",
-            project_md.display()
-        ))
-    })?;
+    tokio::fs::write(&project_md, &updated)
+        .await
+        .with_context(|| format!("failed to update PROJECT.md at {}", project_md.display()))?;
 
     // Move to archive
     let dest = layout.archive_dir().join(dir_name);
-    tokio::fs::rename(&source, &dest).await.map_err(|e| {
-        FatalError::Projects(format!(
-            "failed to move project from {} to {}: {e}",
+    tokio::fs::rename(&source, &dest).await.with_context(|| {
+        format!(
+            "failed to move project from {} to {}",
             source.display(),
             dest.display()
-        ))
+        )
     })?;
 
     tracing::info!(project = dir_name, dest = %dest.display(), "archived project");
