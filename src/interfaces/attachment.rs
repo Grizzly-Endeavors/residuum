@@ -44,8 +44,6 @@ pub async fn encode_image_from_file(path: &Path, media_type: &str) -> Result<Ima
 pub struct AttachmentInfo {
     /// Original filename.
     pub filename: String,
-    /// Download URL.
-    pub url: String,
     /// File size in bytes.
     pub size: u32,
     /// MIME content type, if known.
@@ -69,6 +67,7 @@ pub struct SavedAttachment {
 /// Returns an error if the download or file write fails.
 pub async fn download_attachment(
     info: &AttachmentInfo,
+    url: &str,
     inbox_dir: &Path,
 ) -> Result<SavedAttachment, String> {
     if info.size > MAX_ATTACHMENT_SIZE {
@@ -82,7 +81,7 @@ pub async fn download_attachment(
     let saved_name = format!("{timestamp}_{}", info.filename);
     let local_path = inbox_dir.join(&saved_name);
 
-    let response = reqwest::get(&info.url)
+    let response = reqwest::get(url)
         .await
         .map_err(|e| format!("failed to download attachment '{}': {e}", info.filename,))?;
 
@@ -134,7 +133,6 @@ mod tests {
         };
         let info = AttachmentInfo {
             filename: "photo.jpg".to_string(),
-            url: String::new(),
             size: 1024,
             content_type: Some("image/jpeg".to_string()),
         };
@@ -154,7 +152,6 @@ mod tests {
     fn format_failed_line_output() {
         let info = AttachmentInfo {
             filename: "doc.pdf".to_string(),
-            url: String::new(),
             size: 2048,
             content_type: None,
         };
@@ -178,14 +175,14 @@ mod tests {
             .await;
 
         let dir = tempfile::tempdir().unwrap();
+        let url = format!("{}/file", mock_server.uri());
         let info = AttachmentInfo {
             filename: "test.txt".to_string(),
-            url: format!("{}/file", mock_server.uri()),
             size: 11,
             content_type: Some("text/plain".to_string()),
         };
 
-        let saved = download_attachment(&info, dir.path()).await.unwrap();
+        let saved = download_attachment(&info, &url, dir.path()).await.unwrap();
         assert!(saved.local_path.exists(), "file should exist on disk");
 
         let content = tokio::fs::read_to_string(&saved.local_path).await.unwrap();
@@ -196,12 +193,11 @@ mod tests {
     async fn skip_oversized_attachment() {
         let info = AttachmentInfo {
             filename: "huge.bin".to_string(),
-            url: String::new(),
             size: MAX_ATTACHMENT_SIZE + 1,
             content_type: None,
         };
         let dir = tempfile::tempdir().unwrap();
-        let result = download_attachment(&info, dir.path()).await;
+        let result = download_attachment(&info, "", dir.path()).await;
         assert!(result.is_err(), "should reject oversized attachment");
         let err = result.unwrap_err();
         assert!(

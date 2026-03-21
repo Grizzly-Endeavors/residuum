@@ -41,6 +41,8 @@ pub struct CommandInfo {
     pub help: &'static str,
     /// Whether the command takes a text argument.
     pub takes_arg: bool,
+    /// Whether this command is CLI-only and should not be registered on remote interfaces.
+    pub cli_only: bool,
 }
 
 /// Context for executing a command from any interface.
@@ -49,8 +51,6 @@ pub struct CommandContext<'a> {
     pub url: &'a str,
     /// Whether verbose mode is enabled.
     pub verbose: bool,
-    /// Name of the interface dispatching the command (e.g. "cli", "discord", "websocket").
-    pub interface_name: &'a str,
 }
 
 /// Result of executing a command through the shared registry.
@@ -85,6 +85,8 @@ struct CommandDef {
     names: &'static [&'static str],
     help: &'static str,
     takes_arg: bool,
+    is_server_cmd: bool,
+    cli_only: bool,
     effect: fn(arg: Option<&str>, url: &str, verbose: bool) -> CommandEffect,
 }
 
@@ -93,30 +95,40 @@ static COMMANDS: &[CommandDef] = &[
         names: &["help", "h"],
         help: "show this help",
         takes_arg: false,
+        is_server_cmd: false,
+        cli_only: false,
         effect: |_, _, _| CommandEffect::PrintLocal(help_text()),
     },
     CommandDef {
         names: &["status"],
         help: "show connection info",
         takes_arg: false,
+        is_server_cmd: false,
+        cli_only: false,
         effect: |_, url, verbose| CommandEffect::PrintLocal(status_text(url, verbose)),
     },
     CommandDef {
         names: &["verbose", "v"],
         help: "toggle verbose mode (tool events)",
         takes_arg: false,
+        is_server_cmd: false,
+        cli_only: true,
         effect: |_, _, _| CommandEffect::ToggleVerbose,
     },
     CommandDef {
         names: &["reload", "r"],
         help: "reload server configuration",
         takes_arg: false,
+        is_server_cmd: false,
+        cli_only: false,
         effect: |_, _, _| CommandEffect::Reload,
     },
     CommandDef {
         names: &["observe", "obs"],
         help: "force a memory observation cycle",
         takes_arg: false,
+        is_server_cmd: true,
+        cli_only: false,
         effect: |_, _, _| CommandEffect::ServerCommand {
             name: "observe",
             args: None,
@@ -126,6 +138,8 @@ static COMMANDS: &[CommandDef] = &[
         names: &["reflect", "ref"],
         help: "force a reflection cycle",
         takes_arg: false,
+        is_server_cmd: true,
+        cli_only: false,
         effect: |_, _, _| CommandEffect::ServerCommand {
             name: "reflect",
             args: None,
@@ -135,6 +149,8 @@ static COMMANDS: &[CommandDef] = &[
         names: &["context", "ctx"],
         help: "show context token usage",
         takes_arg: false,
+        is_server_cmd: true,
+        cli_only: false,
         effect: |_, _, _| CommandEffect::ServerCommand {
             name: "context",
             args: None,
@@ -144,6 +160,8 @@ static COMMANDS: &[CommandDef] = &[
         names: &["inbox"],
         help: "add a message to the agent's inbox",
         takes_arg: true,
+        is_server_cmd: false,
+        cli_only: false,
         effect: |arg, _, _| match arg {
             Some(body) if !body.is_empty() => CommandEffect::InboxAdd(body.to_string()),
             _ => CommandEffect::PrintLocal("usage: /inbox <text>".to_string()),
@@ -153,6 +171,8 @@ static COMMANDS: &[CommandDef] = &[
         names: &["quit", "exit", "q"],
         help: "disconnect and exit",
         takes_arg: false,
+        is_server_cmd: false,
+        cli_only: true,
         effect: |_, _, _| CommandEffect::Quit,
     },
 ];
@@ -239,13 +259,13 @@ fn effect_to_result(effect: CommandEffect) -> CommandResult {
 /// Used by Discord (and potentially other interfaces) to auto-register
 /// server commands without duplicating the list.
 pub fn server_commands() -> impl Iterator<Item = ServerCommandInfo> {
-    COMMANDS.iter().filter_map(|def| {
-        let effect = (def.effect)(None, "", false);
-        matches!(effect, CommandEffect::ServerCommand { .. }).then(|| ServerCommandInfo {
+    COMMANDS
+        .iter()
+        .filter(|def| def.is_server_cmd)
+        .map(|def| ServerCommandInfo {
             name: def.names.first().copied().unwrap_or(""),
             help: def.help,
         })
-    })
 }
 
 /// Iterate over all commands in the registry.
@@ -257,6 +277,7 @@ pub fn all_commands() -> impl Iterator<Item = CommandInfo> {
         name: def.names.first().copied().unwrap_or(""),
         help: def.help,
         takes_arg: def.takes_arg,
+        cli_only: def.cli_only,
     })
 }
 
@@ -494,7 +515,6 @@ mod tests {
         CommandContext {
             url: "ws://localhost/ws",
             verbose: false,
-            interface_name: "cli",
         }
     }
 
