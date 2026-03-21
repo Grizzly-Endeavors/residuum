@@ -133,7 +133,8 @@ Single-branch model: all work lands on `main`.
 
 1. **Create a feature branch from `main`** with a descriptive name (e.g., `feat/add-telegram-retry`, `fix/memory-search-ranking`)
 2. **Commit frequently** — pre-commit hooks enforce fmt, clippy, and tests
-3. **Push the branch** and merge into `main`
+3. **Wrapup** Check for anything unfinished, ensure documents and guides are updated, create migration guides for breaking changes.
+4. **Push the branch** and merge into `main`
 
 ### Branch Naming
 
