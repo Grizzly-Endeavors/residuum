@@ -113,6 +113,10 @@ cleanup() {
 }
 trap cleanup EXIT
 
+# Share the root target dir across all worktrees to avoid duplicating build caches
+CARGO_TARGET_DIR="$(pwd)/target"
+export CARGO_TARGET_DIR
+
 CLAUDE_TOOLS="Edit Read Glob Grep Bash(git:*) Bash(cargo:*)"
 
 # =============================================================================
