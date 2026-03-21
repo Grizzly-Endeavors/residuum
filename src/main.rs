@@ -484,8 +484,8 @@ async fn run_update_command(args: &[String]) -> Result<(), FatalError> {
 
     println!("residuum: downloading and installing {latest}...");
 
-    let installed = update::download_and_install().await?;
-    println!("residuum: updated to {installed}");
+    update::download_and_install(&latest).await?;
+    println!("residuum: updated to {latest}");
 
     // Check if gateway is running and try to restart it
     if let Ok(pid_path) = residuum::daemon::pid_file_path()

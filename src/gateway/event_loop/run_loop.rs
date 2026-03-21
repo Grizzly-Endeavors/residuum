@@ -35,7 +35,7 @@ pub async fn run_gateway(cfg: Config) -> Result<GatewayExit, FatalError> {
     let (core, receivers) = GatewayCore::new(cfg.config_dir.clone());
     let parts = crate::gateway::startup::initialize(&cfg, &core.publisher).await?;
 
-    let update_status = crate::update::new_shared_status();
+    let update_status = crate::update::SharedUpdateStatus::default();
     let (restart_tx, restart_rx) = tokio::sync::mpsc::channel::<()>(1);
 
     let spawned =

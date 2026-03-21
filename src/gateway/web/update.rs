@@ -55,16 +55,28 @@ pub(crate) async fn api_update_check(
 pub(crate) async fn api_update_apply(
     State(state): State<UpdateApiState>,
 ) -> Result<Json<UpdateStatusResponse>, (StatusCode, String)> {
-    let installed = crate::update::download_and_install()
+    let version = state
+        .update_status
+        .read()
+        .await
+        .latest
+        .clone()
+        .ok_or_else(|| {
+            (
+                StatusCode::BAD_REQUEST,
+                "no update version known — run a check first".to_string(),
+            )
+        })?;
+
+    crate::update::download_and_install(&version)
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e}")))?;
 
-    tracing::info!(version = %installed, "update installed, sending restart signal");
+    tracing::info!(version = %version, "update installed, sending restart signal");
 
     // Update shared status to reflect the install
     {
         let mut s = state.update_status.write().await;
-        s.latest = Some(installed);
         s.update_available = false;
     }
 
