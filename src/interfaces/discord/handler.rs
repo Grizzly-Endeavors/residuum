@@ -2,7 +2,6 @@
 
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::Duration;
 
 use serenity::async_trait;
 use serenity::builder::{
@@ -156,7 +155,6 @@ impl EventHandler for DiscordHandler {
         let command_ctx = CommandContext {
             url: "",
             verbose: false,
-            interface_name: "discord",
         };
 
         let result = execute_command(cmd.data.name.as_str(), cmd_args.as_deref(), &command_ctx);
@@ -171,26 +169,14 @@ impl EventHandler for DiscordHandler {
                 result.response
             }
             Some(CommandSideEffect::ServerCommand { name, args }) => {
-                tracing::info!(command = %name, "server command via discord slash command");
-                let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
-                if let Err(e) = self.command_tx.try_send(ServerCommand {
-                    name: name.to_string(),
+                crate::interfaces::dispatch_server_command(
+                    &self.command_tx,
+                    name,
                     args,
-                    reply_tx: Some(reply_tx),
-                }) {
-                    tracing::warn!(command = %name, error = %e, "failed to dispatch server command");
-                }
-                match tokio::time::timeout(Duration::from_secs(10), reply_rx).await {
-                    Ok(Ok(msg)) => msg,
-                    Ok(Err(_)) => {
-                        tracing::warn!(command = %name, "server command reply channel closed before response");
-                        result.response
-                    }
-                    Err(_) => {
-                        tracing::warn!(command = %name, timeout_secs = 10, "server command timed out waiting for reply");
-                        result.response
-                    }
-                }
+                    result.response,
+                    "discord slash command",
+                )
+                .await
             }
             Some(CommandSideEffect::InboxAdd(body)) => {
                 let title: String = body
@@ -238,12 +224,11 @@ async fn process_discord_attachments(
     for attachment in attachments {
         let info = AttachmentInfo {
             filename: attachment.filename.clone(),
-            url: attachment.url.clone(),
             size: attachment.size,
             content_type: attachment.content_type.clone(),
         };
 
-        match download_attachment(&info, inbox_dir).await {
+        match download_attachment(&info, &attachment.url, inbox_dir).await {
             Ok(saved) => {
                 let line = format_attachment_line(&saved, &info);
                 content.push('\n');
@@ -293,7 +278,7 @@ async fn process_discord_attachments(
                     read: false,
                     attachments: vec![PathBuf::from("inbox").join(&saved_name)],
                 };
-                let filename = inbox::generate_filename(&companion.title, tz);
+                let filename = inbox::generate_filename(&companion.title, companion.timestamp);
                 if let Err(e) = inbox::save_item(inbox_dir, &filename, &companion).await {
                     tracing::warn!(
                         filename = %info.filename,
@@ -323,13 +308,7 @@ async fn process_discord_attachments(
 /// Commands that take arguments (like `/inbox`) get a `text` string option.
 /// Client-only commands (quit, verbose) are skipped — they don't apply to Discord.
 async fn register_slash_commands(ctx: &Context) -> Result<(), serenity::Error> {
-    let skip = ["quit", "exit", "q", "verbose", "v"];
-
-    for info in all_commands() {
-        if skip.contains(&info.name) {
-            continue;
-        }
-
+    for info in all_commands().filter(|c| !c.cli_only) {
         let mut cmd = CreateCommand::new(info.name).description(info.help);
         if info.takes_arg {
             cmd = cmd.add_option(

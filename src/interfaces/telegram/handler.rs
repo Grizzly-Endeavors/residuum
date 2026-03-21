@@ -186,10 +186,8 @@ async fn spawn_telegram_subscribers(bus_handle: &BusHandle, bot: &Bot, chat_id: 
 /// # Errors
 /// Returns an error if the Telegram `setMyCommands` API call fails.
 async fn register_commands(bot: &Bot) -> anyhow::Result<()> {
-    let skip = ["quit", "exit", "q", "verbose", "v"];
-
     let commands: Vec<BotCommand> = all_commands()
-        .filter(|info| !skip.contains(&info.name))
+        .filter(|info| !info.cli_only)
         .map(|info| BotCommand::new(info.name, info.help))
         .collect();
 
@@ -291,7 +289,6 @@ async fn handle_command(
     let command_ctx = CommandContext {
         url: "",
         verbose: false,
-        interface_name: "telegram",
     };
 
     let result = execute_command(cmd_name, cmd_args, &command_ctx);
@@ -305,26 +302,14 @@ async fn handle_command(
             result.response
         }
         Some(CommandSideEffect::ServerCommand { name, args }) => {
-            tracing::info!(command = %name, "server command via telegram command");
-            let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
-            if let Err(e) = ctx.command_tx.try_send(ServerCommand {
-                name: name.to_string(),
+            crate::interfaces::dispatch_server_command(
+                ctx.command_tx,
+                name,
                 args,
-                reply_tx: Some(reply_tx),
-            }) {
-                tracing::warn!(command = %name, error = %e, "failed to dispatch server command");
-            }
-            match tokio::time::timeout(Duration::from_secs(10), reply_rx).await {
-                Ok(Ok(msg)) => msg,
-                Ok(Err(_)) => {
-                    tracing::warn!(command = %name, "server command reply channel closed before response");
-                    result.response
-                }
-                Err(_) => {
-                    tracing::warn!(command = %name, timeout_secs = 10, "server command timed out waiting for reply");
-                    result.response
-                }
-            }
+                result.response,
+                "telegram command",
+            )
+            .await
         }
         Some(CommandSideEffect::InboxAdd(body)) => {
             let title: String = body
@@ -439,7 +424,6 @@ async fn handle_attachment(
 
     let info = AttachmentInfo {
         filename: filename.to_string(),
-        url: String::new(), // Telegram doesn't use URL-based download
         size: meta.size,
         content_type: meta.content_type.clone(),
     };
@@ -518,7 +502,7 @@ async fn handle_attachment(
                 read: false,
                 attachments: vec![std::path::PathBuf::from("inbox").join(&saved_name)],
             };
-            let item_filename = inbox::generate_filename(&companion.title, tz);
+            let item_filename = inbox::generate_filename(&companion.title, companion.timestamp);
             if let Err(e) = inbox::save_item(inbox_dir, &item_filename, &companion).await {
                 tracing::warn!(
                     filename = %filename,

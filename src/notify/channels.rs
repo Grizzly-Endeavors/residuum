@@ -74,7 +74,7 @@ impl NotificationChannel for InboxChannel {
             attachments: Vec::new(),
         };
 
-        let filename = inbox::generate_filename(&notification.title, self.tz);
+        let filename = inbox::generate_filename(&notification.title, now);
         inbox::save_item(&self.inbox_dir, &filename, &item).await?;
 
         Ok(())

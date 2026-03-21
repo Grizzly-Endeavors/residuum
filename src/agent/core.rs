@@ -10,7 +10,7 @@ use crate::workspace::identity::IdentityFiles;
 use super::context::{MemoryContext, PromptContext, StatusLine};
 use super::interrupt;
 use super::recent_messages::RecentMessages;
-use super::turn::{TurnResources, execute_turn};
+use super::turn::{EventContext, TurnResources, execute_turn};
 
 /// Result of a background system turn (pulse or scheduled action).
 pub struct SystemTurnResult {
@@ -134,14 +134,6 @@ impl Agent {
         self.last_user_message_at = at;
     }
 
-    /// Clear all messages from the recent history.
-    ///
-    /// Called after the observer fires so observed messages don't linger
-    /// in both the recent messages and the observation log.
-    pub fn clear_recent_messages(&mut self) {
-        self.recent_messages.clear();
-    }
-
     /// Clear all in-memory messages (used after idle transition + observer).
     pub fn clear_messages(&mut self) {
         self.recent_messages.clear();
@@ -198,7 +190,7 @@ impl Agent {
     ) -> anyhow::Result<Vec<String>> {
         tracing::debug!("processing wake turn");
         let now = crate::time::now_local(self.tz);
-        let unread = crate::inbox::count_unread(&self.inbox_dir);
+        let unread = crate::inbox::count_unread(&self.inbox_dir).await;
         let status_line = StatusLine {
             now,
             last_message_at: self.last_user_message_at,
@@ -225,14 +217,18 @@ impl Agent {
             identity: &self.identity,
             options: &self.options,
         };
+        let events = EventContext {
+            publisher,
+            output_endpoint,
+            tool_activity_endpoint,
+            correlation_id: "",
+        };
         execute_turn(
             &resources,
             &memory_ctx,
             prompt_ctx,
             &mut self.recent_messages,
-            publisher,
-            output_endpoint,
-            tool_activity_endpoint,
+            &events,
             Some(&status_line),
             interrupt_rx,
         )
@@ -258,6 +254,7 @@ impl Agent {
         publisher: &Publisher,
         output_endpoint: Option<&EndpointName>,
         tool_activity_endpoint: Option<&EndpointName>,
+        correlation_id: &str,
         origin: Option<&MessageOrigin>,
         prompt_ctx: &PromptContext<'_>,
         interrupt_rx: &mut tokio::sync::mpsc::Receiver<interrupt::Interrupt>,
@@ -265,7 +262,7 @@ impl Agent {
     ) -> anyhow::Result<Vec<String>> {
         tracing::debug!(source = ?origin, "processing user message");
         let now = crate::time::now_local(self.tz);
-        let unread = crate::inbox::count_unread(&self.inbox_dir);
+        let unread = crate::inbox::count_unread(&self.inbox_dir).await;
         let status_line = StatusLine {
             now,
             last_message_at: self.last_user_message_at,
@@ -294,14 +291,18 @@ impl Agent {
             identity: &self.identity,
             options: &self.options,
         };
+        let events = EventContext {
+            publisher,
+            output_endpoint,
+            tool_activity_endpoint,
+            correlation_id,
+        };
         execute_turn(
             &resources,
             &memory_ctx,
             prompt_ctx,
             &mut self.recent_messages,
-            publisher,
-            output_endpoint,
-            tool_activity_endpoint,
+            &events,
             Some(&status_line),
             interrupt_rx,
         )
@@ -350,15 +351,19 @@ impl Agent {
             options: &self.options,
         };
 
+        let events = EventContext {
+            publisher,
+            output_endpoint,
+            tool_activity_endpoint,
+            correlation_id: "",
+        };
         // System turns don't inject time context (no user-facing timestamps)
         let mut texts = execute_turn(
             &resources,
             &memory_ctx,
             prompt_ctx,
             &mut thread_messages,
-            publisher,
-            output_endpoint,
-            tool_activity_endpoint,
+            &events,
             None,
             &mut sys_interrupt_rx,
         )
@@ -520,6 +525,7 @@ mod tests {
                 &publisher,
                 Some(&ep),
                 None,
+                "",
                 None,
                 &PromptContext::none(),
                 &mut irx,
@@ -571,6 +577,7 @@ mod tests {
                 &publisher,
                 Some(&ep),
                 None,
+                "",
                 None,
                 &PromptContext::none(),
                 &mut irx,
@@ -627,6 +634,7 @@ mod tests {
                 &publisher,
                 Some(&ep),
                 None,
+                "",
                 None,
                 &PromptContext::none(),
                 &mut irx,
@@ -684,6 +692,7 @@ mod tests {
                 &publisher,
                 Some(&ep),
                 None,
+                "",
                 None,
                 &PromptContext::none(),
                 &mut irx,
@@ -949,14 +958,23 @@ mod tests {
 
     #[test]
     fn clear_messages_empties_buffer() {
-        // Build a minimal agent
-        use crate::models::Message;
-        let mut msgs = crate::agent::recent_messages::RecentMessages::new();
-        msgs.push(Message::user("hello"));
-        msgs.push(Message::assistant("hi", None));
-        assert!(!msgs.is_empty());
-        msgs.clear();
-        assert_eq!(msgs.len(), 0);
+        let mut agent = Agent::new(
+            Box::new(MockProvider::new(vec![])),
+            ToolRegistry::new(),
+            no_filter(),
+            empty_mcp(),
+            IdentityFiles::default(),
+            AgentConfig {
+                options: CompletionOptions::default(),
+                tz: chrono_tz::UTC,
+                inbox_dir: std::path::PathBuf::from("/tmp/residuum-test-inbox"),
+            },
+        );
+        agent.inject_user_message("hello");
+        agent.inject_user_message("world");
+        assert_eq!(agent.message_count(), 2);
+        agent.clear_messages();
+        assert_eq!(agent.message_count(), 0);
     }
 
     type InjectEntry = (usize, Vec<interrupt::Interrupt>);
@@ -1102,6 +1120,7 @@ mod tests {
                 &publisher,
                 Some(&ep),
                 None,
+                "",
                 None,
                 &PromptContext::none(),
                 &mut interrupt_rx,
@@ -1176,6 +1195,7 @@ mod tests {
                 &publisher,
                 Some(&ep),
                 None,
+                "",
                 None,
                 &PromptContext::none(),
                 &mut interrupt_rx,
@@ -1238,6 +1258,7 @@ mod tests {
                 &publisher,
                 Some(&ep),
                 None,
+                "",
                 None,
                 &PromptContext::none(),
                 &mut interrupt_rx,
@@ -1284,6 +1305,7 @@ mod tests {
                 &publisher,
                 Some(&ep),
                 None,
+                "",
                 None,
                 &PromptContext::none(),
                 &mut irx,

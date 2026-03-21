@@ -5,6 +5,7 @@
 
 use std::borrow::Cow;
 use std::collections::HashMap;
+use std::sync::LazyLock;
 use std::time::Duration;
 
 use http::{HeaderName, HeaderValue};
@@ -194,14 +195,15 @@ impl McpClient {
     }
 }
 
+static ENV_VAR_RE: LazyLock<Option<regex::Regex>> =
+    LazyLock::new(|| regex::Regex::new(r"\$\{([^}:]+?)(?::-(.*?))?\}").ok());
+
 /// Expand `${VAR}` and `${VAR:-default}` patterns in a string using environment variables.
 ///
 /// Unresolved variables with no default are replaced with an empty string.
 #[must_use]
 pub fn expand_env_vars(input: &str) -> String {
-    let re = regex::Regex::new(r"\$\{([^}:]+?)(?::-(.*?))?\}");
-    let Ok(re) = re else {
-        tracing::error!("failed to compile env var expansion regex — returning input unexpanded");
+    let Some(re) = ENV_VAR_RE.as_ref() else {
         return input.to_string();
     };
     re.replace_all(input, |caps: &regex::Captures<'_>| {

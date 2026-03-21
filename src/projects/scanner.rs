@@ -183,6 +183,9 @@ async fn scan_directory(
 /// # Errors
 /// Returns an error if the frontmatter is missing or invalid YAML.
 pub fn parse_project_md(content: &str) -> anyhow::Result<(ProjectFrontmatter, String)> {
+    const OPEN: &str = "---";
+    const CLOSE: &str = "\n---";
+
     let trimmed = content.trim_start();
 
     if !trimmed.starts_with("---") {
@@ -191,11 +194,11 @@ pub fn parse_project_md(content: &str) -> anyhow::Result<(ProjectFrontmatter, St
 
     // Skip the opening "---" and find the closing "---"
     let after_open = trimmed
-        .get(3..)
+        .get(OPEN.len()..)
         .ok_or_else(|| anyhow::anyhow!("PROJECT.md is too short"))?;
 
     let close_pos = after_open
-        .find("\n---")
+        .find(CLOSE)
         .ok_or_else(|| anyhow::anyhow!("PROJECT.md missing closing frontmatter delimiter '---'"))?;
 
     let yaml_str = after_open
@@ -205,8 +208,7 @@ pub fn parse_project_md(content: &str) -> anyhow::Result<(ProjectFrontmatter, St
     let frontmatter: ProjectFrontmatter =
         serde_yml::from_str(yaml_str).context("failed to parse PROJECT.md frontmatter")?;
 
-    // Body is everything after the closing "---" and its newline
-    let body_start = 3 + close_pos + 4; // "---" prefix + yaml + "\n---"
+    let body_start = OPEN.len() + close_pos + CLOSE.len();
     let body = trimmed.get(body_start..).unwrap_or("").trim().to_string();
 
     Ok((frontmatter, body))

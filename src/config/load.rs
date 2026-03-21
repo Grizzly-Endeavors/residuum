@@ -48,9 +48,7 @@ impl Config {
     /// read or parsed, or if required values are missing.
     pub fn load() -> Result<Self, FatalError> {
         let config_dir = bootstrap::default_config_dir()?;
-        let mut cfg = Self::load_at(&config_dir)?;
-        cfg.config_dir = config_dir;
-        Ok(cfg)
+        Self::load_at(&config_dir)
     }
 
     /// Load configuration from a specific directory.
@@ -91,12 +89,7 @@ impl Config {
             // (their config dirs are under ~/.residuum/agent_registry/<name>/)
             let global_dir = bootstrap::default_config_dir()?;
             let global_path = global_dir.join("providers.toml");
-            let is_agent_subdir = global_dir
-                .join("agent_registry")
-                .as_path()
-                .to_str()
-                .zip(config_dir.to_str())
-                .is_some_and(|(prefix, dir)| dir.starts_with(prefix));
+            let is_agent_subdir = config_dir.starts_with(global_dir.join("agent_registry"));
             if is_agent_subdir && global_path.exists() {
                 tracing::debug!(path = %global_path.display(), "using global providers.toml for agent subdir");
                 Some(load_providers(&global_path)?)
@@ -108,12 +101,11 @@ impl Config {
             }
         };
 
-        let mut cfg = resolve::from_file_and_env(
+        let cfg = resolve::from_file_and_env(
             file_config.as_ref(),
             providers_config.as_ref(),
             config_dir,
         )?;
-        cfg.config_dir = config_dir.to_path_buf();
         tracing::info!(
             config = %config_path.display(),
             providers = %providers_path.display(),

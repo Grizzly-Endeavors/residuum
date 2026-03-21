@@ -43,12 +43,6 @@ impl Default for UpdateStatus {
 /// Thread-safe shared update status.
 pub type SharedUpdateStatus = Arc<RwLock<UpdateStatus>>;
 
-/// Create a new shared update status with defaults.
-#[must_use]
-pub fn new_shared_status() -> SharedUpdateStatus {
-    Arc::new(RwLock::new(UpdateStatus::default()))
-}
-
 /// Fetch the latest release, update shared state, log on failure.
 pub async fn check_for_update(status: &SharedUpdateStatus) {
     tracing::debug!("checking for updates");
@@ -60,8 +54,7 @@ pub async fn check_for_update(status: &SharedUpdateStatus) {
     match fetch_latest_version().await {
         Ok(latest) => {
             let mut s = status.write().await;
-            let current = &s.current;
-            s.update_available = !is_up_to_date(current, &latest);
+            s.update_available = !is_up_to_date(&s.current, &latest);
             if s.update_available {
                 tracing::info!(current = %s.current, latest = %latest, "update available");
             } else {
@@ -142,20 +135,17 @@ pub fn is_up_to_date(current: &str, latest: &str) -> bool {
 /// Downloads directly from GitHub Releases, avoiding the install script
 /// (which requires an interactive terminal for `sudo` on macOS).
 ///
-/// Returns the version tag that was installed.
-///
 /// # Errors
 ///
 /// Returns an error if the download, platform detection,
 /// or binary replacement fails.
-pub async fn download_and_install() -> anyhow::Result<String> {
-    let latest = fetch_latest_version().await?;
+pub async fn download_and_install(version: &str) -> anyhow::Result<()> {
     let platform = detect_platform()?;
     let url = format!(
-        "https://github.com/grizzly-endeavors/residuum/releases/download/{latest}/residuum-{platform}"
+        "https://github.com/grizzly-endeavors/residuum/releases/download/{version}/residuum-{platform}"
     );
 
-    tracing::info!(version = %latest, %platform, "downloading update binary");
+    tracing::info!(version = %version, %platform, "downloading update binary");
 
     let client = reqwest::Client::builder()
         .user_agent("residuum-updater")
@@ -180,21 +170,18 @@ pub async fn download_and_install() -> anyhow::Result<String> {
         .await
         .context("failed to read update binary")?;
 
-    tracing::debug!(bytes = bytes.len(), version = %latest, "download complete");
+    tracing::debug!(bytes = bytes.len(), version = %version, "download complete");
 
     let current_exe =
         std::env::current_exe().context("failed to determine current executable path")?;
 
     // On Linux, the kernel appends " (deleted)" to /proc/self/exe when the
     // binary has been atomically replaced. Strip it to get the real path.
-    let exe_path = {
-        let s = current_exe.to_string_lossy();
-        if let Some(stripped) = s.strip_suffix(" (deleted)") {
-            std::path::PathBuf::from(stripped)
-        } else {
-            current_exe
-        }
-    };
+    let exe_path = current_exe
+        .to_string_lossy()
+        .strip_suffix(" (deleted)")
+        .map(std::path::PathBuf::from)
+        .unwrap_or(current_exe);
 
     let exe_dir = exe_path
         .parent()
@@ -202,6 +189,12 @@ pub async fn download_and_install() -> anyhow::Result<String> {
 
     // Write to a temp file in the same directory for atomic rename
     let tmp_path = exe_dir.join(".residuum-update.tmp");
+
+    let cleanup = || {
+        if let Err(re) = std::fs::remove_file(&tmp_path) {
+            tracing::warn!(error = %re, path = %tmp_path.display(), "failed to remove temp file during cleanup");
+        }
+    };
 
     std::fs::write(&tmp_path, &bytes).with_context(|| {
         format!(
@@ -213,28 +206,24 @@ pub async fn download_and_install() -> anyhow::Result<String> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&tmp_path, std::fs::Permissions::from_mode(0o755)).inspect_err(
-            |_| {
-                if let Err(re) = std::fs::remove_file(&tmp_path) {
-                    tracing::warn!(error = %re, path = %tmp_path.display(), "failed to remove temp file during cleanup");
-                }
-            },
-        ).context("failed to set executable permissions")?;
+        std::fs::set_permissions(&tmp_path, std::fs::Permissions::from_mode(0o755))
+            .inspect_err(|_| cleanup())
+            .context("failed to set executable permissions")?;
     }
 
     // Atomic rename replaces the binary on disk while the running process
     // keeps its handle to the old inode
-    std::fs::rename(&tmp_path, &exe_path).inspect_err(|_| {
-        if let Err(re) = std::fs::remove_file(&tmp_path) {
-            tracing::warn!(error = %re, path = %tmp_path.display(), "failed to remove temp file during cleanup");
-        }
-    }).with_context(|| format!(
-        "failed to replace binary at {} — check directory permissions",
-        exe_path.display()
-    ))?;
+    std::fs::rename(&tmp_path, &exe_path)
+        .inspect_err(|_| cleanup())
+        .with_context(|| {
+            format!(
+                "failed to replace binary at {} — check directory permissions",
+                exe_path.display()
+            )
+        })?;
 
-    tracing::info!(version = %latest, path = %exe_path.display(), "update binary installed successfully");
-    Ok(latest)
+    tracing::info!(version = %version, path = %exe_path.display(), "update binary installed successfully");
+    Ok(())
 }
 
 /// Detect the current platform in the format used by release asset names.
@@ -267,7 +256,6 @@ fn detect_platform() -> anyhow::Result<String> {
 }
 
 #[cfg(test)]
-#[expect(clippy::unwrap_used, reason = "test code uses unwrap for clarity")]
 mod tests {
     use super::*;
 
@@ -319,16 +307,5 @@ mod tests {
         assert!(status.latest.is_none());
         assert!(status.last_checked.is_none());
         assert!(!status.checking);
-    }
-
-    #[test]
-    fn new_shared_status_is_default() {
-        let rt = tokio::runtime::Runtime::new().unwrap();
-        rt.block_on(async {
-            let shared = new_shared_status();
-            let s = shared.read().await;
-            assert_eq!(s.current, CURRENT_VERSION);
-            assert!(!s.update_available);
-        });
     }
 }

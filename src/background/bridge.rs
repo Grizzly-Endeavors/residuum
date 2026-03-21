@@ -54,6 +54,9 @@ async fn run_bridge(result_rx: SharedResultReceiver, publisher: Publisher, tz: c
 
 /// Convert a `BackgroundResult` to an `AgentResultEvent` for the bus.
 fn convert_to_agent_result(result: &BackgroundResult, tz: chrono_tz::Tz) -> AgentResultEvent {
+    // "HEARTBEAT_OK" is the agreed sentinel string that pulse agents include in
+    // their summary to signal "nothing needs surfacing". Its presence suppresses
+    // notification routing. This is intentional protocol, not content-sniffing.
     let heartbeat_status = if matches!(result.source, EventTrigger::Pulse)
         && result.summary.contains("HEARTBEAT_OK")
     {

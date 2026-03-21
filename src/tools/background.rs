@@ -208,21 +208,21 @@ impl Tool for SubAgentSpawnTool {
         }
         let explicit_model_override = arguments.get("model_override").and_then(Value::as_str);
 
-        let resolved =
+        let tier =
             match resolve_spawn_params(&self.subagents_dir, preset_name, explicit_model_override)
                 .await
             {
-                Ok(r) => r,
-                Err(tool_result) => return Ok(tool_result),
+                Ok(tier) => tier,
+                Err(e) => return Ok(ToolResult::error(e.to_string())),
             };
 
         let spawn_event = crate::bus::SpawnRequestEvent {
             preset: crate::bus::PresetName::from(preset_name),
-            source_label: format!("agent:{}", resolved.preset_name),
+            source_label: format!("agent:{preset_name}"),
             prompt: task_prompt.to_string(),
             context: None,
             source: crate::bus::EventTrigger::Agent,
-            model_tier_override: Some(resolved.tier),
+            model_tier_override: Some(tier),
         };
 
         self.publisher
@@ -239,29 +239,23 @@ impl Tool for SubAgentSpawnTool {
     }
 }
 
-/// Resolved spawn parameters after loading a preset.
-struct ResolvedSpawn {
-    preset_name: String,
-    tier: BackgroundModelTier,
-}
-
 /// Load a preset and resolve tier defaults from arguments + preset.
 async fn resolve_spawn_params(
     subagents_dir: &std::path::Path,
     preset_name: &str,
     explicit_model_override: Option<&str>,
-) -> Result<ResolvedSpawn, ToolResult> {
+) -> Result<BackgroundModelTier, ToolError> {
     let index = SubagentPresetIndex::scan(subagents_dir)
         .await
-        .map_err(|e| ToolResult::error(format!("failed to load subagent presets: {e}")))?;
+        .map_err(|e| ToolError::Execution(format!("failed to load subagent presets: {e}")))?;
 
     let (preset_fm, _preset_body) = index
         .load_preset(preset_name)
         .await
-        .map_err(|e| ToolResult::error(e.to_string()))?;
+        .map_err(|e| ToolError::Execution(e.to_string()))?;
 
     let tier = if let Some(s) = explicit_model_override {
-        parse_model_tier(s).map_err(|e| ToolResult::error(e.to_string()))?
+        parse_model_tier(s)?
     } else if let Some(tier_str) = preset_fm.model_tier.as_deref() {
         match parse_model_tier(tier_str) {
             Ok(t) => t,
@@ -274,10 +268,7 @@ async fn resolve_spawn_params(
         BackgroundModelTier::Medium
     };
 
-    Ok(ResolvedSpawn {
-        preset_name: preset_name.to_string(),
-        tier,
-    })
+    Ok(tier)
 }
 
 fn parse_model_tier(s: &str) -> Result<BackgroundModelTier, ToolError> {

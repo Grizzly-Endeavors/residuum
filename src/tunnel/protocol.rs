@@ -70,9 +70,19 @@ mod tests {
 
     #[test]
     fn round_trip_ping_pong() {
-        for frame in [TunnelFrame::Ping, TunnelFrame::Pong] {
-            let json = serde_json::to_string(&frame).unwrap();
-            let _: TunnelFrame = serde_json::from_str(&json).unwrap();
+        {
+            let json = serde_json::to_string(&TunnelFrame::Ping).unwrap();
+            assert!(matches!(
+                serde_json::from_str::<TunnelFrame>(&json).unwrap(),
+                TunnelFrame::Ping
+            ));
+        }
+        {
+            let json = serde_json::to_string(&TunnelFrame::Pong).unwrap();
+            assert!(matches!(
+                serde_json::from_str::<TunnelFrame>(&json).unwrap(),
+                TunnelFrame::Pong
+            ));
         }
     }
 

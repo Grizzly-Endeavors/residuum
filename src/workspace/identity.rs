@@ -55,13 +55,15 @@ impl IdentityFiles {
             tracing::warn!(path = %layout.environment_md().display(), "ENVIRONMENT.md is missing or empty; expected after bootstrap");
         }
 
+        let bootstrap = read_optional(&layout.bootstrap_md()).await?;
+
         Ok(Self {
             soul,
             agents,
             user,
             memory,
             environment,
-            bootstrap: read_optional(&layout.bootstrap_md()).await?,
+            bootstrap,
         })
     }
 }

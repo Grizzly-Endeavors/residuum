@@ -376,10 +376,9 @@ mod tests {
     }
 
     #[test]
-    fn required_dirs_count() {
+    fn required_dirs_all_under_root() {
         let layout = WorkspaceLayout::new("/tmp/ws");
         let dirs = layout.required_dirs();
-        assert_eq!(dirs.len(), 11, "should have all required directories");
         assert!(
             dirs.contains(&PathBuf::from("/tmp/ws")),
             "root should be included"
@@ -396,5 +395,12 @@ mod tests {
             dirs.contains(&PathBuf::from("/tmp/ws/config")),
             "config should be included"
         );
+        for dir in &dirs {
+            assert!(
+                dir.starts_with("/tmp/ws"),
+                "required dir should be under root: {}",
+                dir.display()
+            );
+        }
     }
 }

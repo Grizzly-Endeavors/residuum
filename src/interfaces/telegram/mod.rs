@@ -66,7 +66,6 @@ mod tests {
         CommandContext {
             url: "",
             verbose: false,
-            interface_name: "telegram",
         }
     }
 

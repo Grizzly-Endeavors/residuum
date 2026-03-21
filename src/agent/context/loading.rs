@@ -63,7 +63,14 @@ pub(crate) async fn build_project_context_strings(
     project_state: &SharedProjectState,
 ) -> (Option<String>, Option<String>) {
     let state = project_state.lock().await;
-    let index_text = Some(state.format_index_for_prompt());
+    let index_text = {
+        let formatted = state.format_index_for_prompt();
+        if formatted.is_empty() {
+            None
+        } else {
+            Some(formatted)
+        }
+    };
     let active_text = state.format_active_context_for_prompt();
     (index_text, active_text)
 }

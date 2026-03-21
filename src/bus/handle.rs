@@ -60,6 +60,18 @@ impl Publisher {
         Self { cmd_tx }
     }
 
+    /// Create a publisher not backed by any broker.
+    ///
+    /// Publish calls return [`BusError::BrokerShutdown`]. Use in contexts
+    /// where event publishing is disabled (e.g., background sub-agent turns
+    /// with no output endpoints).
+    #[must_use]
+    pub fn noop() -> Self {
+        let (tx, _rx) = mpsc::channel(1);
+        // Dropping _rx closes the channel; any send returns BrokerShutdown.
+        Self { cmd_tx: tx }
+    }
+
     /// Publish a typed event to a topic that carries it.
     ///
     /// # Errors
@@ -157,6 +169,7 @@ impl<E> Drop for Subscriber<E> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::bus::{EndpointName, IntermediateEvent, topics};
 
     fn _assert_publisher_traits()
     where
@@ -168,5 +181,26 @@ mod tests {
     where
         Subscriber<String>: Send,
     {
+    }
+
+    #[tokio::test]
+    async fn noop_publisher_returns_broker_shutdown() {
+        use crate::bus::types::BusError;
+
+        let publisher = Publisher::noop();
+        let result = publisher
+            .publish(
+                topics::Endpoint(EndpointName::from("test")),
+                IntermediateEvent {
+                    correlation_id: String::new(),
+                    content: "hello".into(),
+                },
+            )
+            .await;
+
+        assert!(
+            matches!(result, Err(BusError::BrokerShutdown)),
+            "noop publisher should return BrokerShutdown"
+        );
     }
 }

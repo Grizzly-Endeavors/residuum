@@ -10,9 +10,9 @@ use crate::agent::context::{
 };
 use crate::agent::interrupt::dead_interrupt_rx;
 use crate::agent::recent_messages::RecentMessages;
-use crate::agent::turn::{TurnResources, execute_turn};
+use crate::agent::turn::{EventContext, TurnResources, execute_turn};
 use crate::background::BackgroundTaskSpawner;
-use crate::bus::{self, EndpointRegistry, Publisher};
+use crate::bus::{EndpointRegistry, Publisher};
 use crate::mcp::SharedMcpRegistry;
 use crate::memory::search::HybridSearcher;
 use crate::models::{CompletionOptions, Message, ModelProvider};
@@ -257,8 +257,10 @@ pub(crate) async fn execute_subagent(
     let mut recent_messages = RecentMessages::new();
     recent_messages.push(Message::user(combined_prompt));
 
-    let bus_handle = bus::spawn_broker();
-    let publisher = bus_handle.publisher();
+    // No broker needed: sub-agents pass `None` for both endpoints, so
+    // streaming events are never published.  A noop publisher satisfies
+    // the type without spawning a background task.
+    let publisher = Publisher::noop();
     let mut interrupt_rx = dead_interrupt_rx();
 
     let memory_ctx = crate::agent::context::MemoryContext {
@@ -281,14 +283,18 @@ pub(crate) async fn execute_subagent(
         options: &resources.options,
     };
 
+    let events = EventContext {
+        publisher: &publisher,
+        output_endpoint: None,
+        tool_activity_endpoint: None,
+        correlation_id: "",
+    };
     let mut texts: Vec<String> = execute_turn(
         &turn_resources,
         &memory_ctx,
         &prompt_ctx,
         &mut recent_messages,
-        &publisher,
-        None,
-        None,
+        &events,
         None,
         &mut interrupt_rx,
     )
@@ -323,7 +329,7 @@ async fn ensure_project_deactivated(
     memory_ctx: &crate::agent::context::MemoryContext<'_>,
     prompt_ctx: &PromptContext<'_>,
     recent_messages: &mut RecentMessages,
-    publisher: &bus::Publisher,
+    publisher: &Publisher,
 ) {
     let active_name = resources
         .project_state
@@ -358,15 +364,19 @@ async fn ensure_project_deactivated(
         options: &resources.options,
     };
 
+    let deactivation_events = EventContext {
+        publisher,
+        output_endpoint: None,
+        tool_activity_endpoint: None,
+        correlation_id: "",
+    };
     let mut deactivation_interrupt_rx = dead_interrupt_rx();
     if let Err(err) = execute_turn(
         &turn_resources,
         memory_ctx,
         prompt_ctx,
         recent_messages,
-        publisher,
-        None,
-        None,
+        &deactivation_events,
         None,
         &mut deactivation_interrupt_rx,
     )

@@ -243,11 +243,8 @@ fn serialize_secrets_toml(secrets: &HashMap<String, String>) -> String {
     keys.sort_unstable();
 
     for key in keys {
-        if let Some(value) = secrets.get(key) {
-            // Escape the value for TOML string literal
-            let escaped = value.replace('\\', "\\\\").replace('"', "\\\"");
-            lines.push(format!("{key} = \"{escaped}\""));
-        }
+        let escaped = secrets[key].replace('\\', "\\\\").replace('"', "\\\"");
+        lines.push(format!("{key} = \"{escaped}\""));
     }
 
     lines.join("\n")

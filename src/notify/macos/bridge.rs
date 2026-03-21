@@ -145,11 +145,9 @@ impl MacosBridge {
         let id = identifier.to_string();
         let cat_id = category_id.to_string();
         let thread = thread_id.to_string();
-        let level = interruption_level;
-        let play_sound = sound;
 
         tokio::task::spawn_blocking(move || {
-            post_notification_sync(&id, text, &cat_id, level, play_sound, &thread);
+            post_notification_sync(&id, text, &cat_id, interruption_level, sound, &thread);
         })
         .await
         .map_err(|e| anyhow::anyhow!("notification post task failed: {e}"))?;

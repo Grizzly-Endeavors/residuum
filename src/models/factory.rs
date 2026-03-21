@@ -1,6 +1,6 @@
 //! Provider factory functions for constructing `ModelProvider` instances from config.
 
-use crate::config::{ModelSpec, ProviderKind, ProviderSpec};
+use crate::config::{ProviderKind, ProviderSpec};
 use crate::error::FatalError;
 
 use super::anthropic::AnthropicClient;
@@ -22,34 +22,9 @@ pub(crate) fn build_provider_from_provider_spec(
     http: SharedHttpClient,
     retry: RetryConfig,
 ) -> Result<Box<dyn ModelProvider>, FatalError> {
-    build_provider_from_spec(
-        &spec.model,
-        &spec.provider_url,
-        spec.api_key.as_deref(),
-        spec.keep_alive.clone(),
-        max_tokens,
-        http,
-        retry,
-    )
-}
-
-/// Build a model provider from explicit parameters.
-///
-/// # Errors
-/// Returns `FatalError::Config` if the API key is missing for providers
-/// that require it.
-fn build_provider_from_spec(
-    spec: &ModelSpec,
-    url: &str,
-    api_key: Option<&str>,
-    keep_alive: Option<String>,
-    max_tokens: u32,
-    http: SharedHttpClient,
-    retry: RetryConfig,
-) -> Result<Box<dyn ModelProvider>, FatalError> {
-    match spec.kind {
+    match spec.model.kind {
         ProviderKind::Anthropic => {
-            let key = api_key.ok_or_else(|| {
+            let key = spec.api_key.as_deref().ok_or_else(|| {
                 FatalError::Config(
                     "anthropic requires an API key (set ANTHROPIC_API_KEY or api_key in config)"
                         .to_string(),
@@ -58,15 +33,15 @@ fn build_provider_from_spec(
 
             Ok(Box::new(AnthropicClient::new(
                 http,
-                url,
+                &spec.provider_url,
                 key,
-                &spec.model,
+                &spec.model.model,
                 max_tokens,
                 retry,
             )))
         }
         ProviderKind::Gemini => {
-            let key = api_key.ok_or_else(|| {
+            let key = spec.api_key.as_deref().ok_or_else(|| {
                 FatalError::Config(
                     "gemini requires an API key (set GEMINI_API_KEY or api_key in config)"
                         .to_string(),
@@ -75,47 +50,47 @@ fn build_provider_from_spec(
 
             Ok(Box::new(GeminiClient::new(
                 http,
-                url,
+                &spec.provider_url,
                 key,
-                &spec.model,
+                &spec.model.model,
                 max_tokens,
                 retry,
             )))
         }
         ProviderKind::Ollama => {
-            if let Some(key) = api_key {
+            if let Some(ref key) = spec.api_key {
                 Ok(Box::new(OllamaClient::with_http_client_and_api_key(
                     http,
-                    url,
-                    &spec.model,
+                    &spec.provider_url,
+                    &spec.model.model,
                     key,
-                    keep_alive,
+                    spec.keep_alive.clone(),
                     retry,
                 )))
             } else {
                 Ok(Box::new(OllamaClient::with_http_client(
                     http,
-                    url,
-                    &spec.model,
-                    keep_alive,
+                    &spec.provider_url,
+                    &spec.model.model,
+                    spec.keep_alive.clone(),
                     retry,
                 )))
             }
         }
         ProviderKind::OpenAi => {
-            if let Some(key) = api_key {
+            if let Some(ref key) = spec.api_key {
                 Ok(Box::new(OpenAiClient::with_http_client_and_api_key(
                     http,
-                    url,
-                    &spec.model,
+                    &spec.provider_url,
+                    &spec.model.model,
                     key,
                     retry,
                 )))
             } else {
                 Ok(Box::new(OpenAiClient::with_http_client(
                     http,
-                    url,
-                    &spec.model,
+                    &spec.provider_url,
+                    &spec.model.model,
                     retry,
                 )))
             }

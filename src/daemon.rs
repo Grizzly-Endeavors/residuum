@@ -7,6 +7,15 @@ use std::path::{Path, PathBuf};
 
 use crate::error::FatalError;
 
+#[expect(
+    clippy::panic,
+    reason = "deliberate termination when no log appender can be created"
+)]
+fn fatal_no_log_appender(msg: &str) -> ! {
+    write_crash_note(msg);
+    panic!("{msg}")
+}
+
 /// Write a diagnostic message to the crash log.
 ///
 /// Used for errors that occur before tracing is initialized
@@ -18,16 +27,14 @@ pub fn write_crash_note(msg: &str) {
         || std::env::temp_dir().join("residuum-crash.log"),
         |h| h.join(".residuum").join("crash.log"),
     );
-    drop(
-        std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&path)
-            .and_then(|mut f| {
-                use std::io::Write;
-                writeln!(f, "{}: {msg}", chrono::Utc::now())
-            }),
-    );
+    let _result = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+        .and_then(|mut f| {
+            use std::io::Write;
+            writeln!(f, "{}: {msg}", chrono::Utc::now())
+        });
 }
 
 /// Return the path to the PID file: `~/.residuum/residuum.pid`.
@@ -201,9 +208,6 @@ pub fn init_daemon_tracing(debug_mode: Option<DebugMode>, agent_name: Option<&st
     use tracing_subscriber::util::SubscriberInitExt;
 
     let default_filter = debug_mode.map_or("info", DebugMode::filter_str);
-    if std::env::var("RUST_LOG").is_ok() {
-        write_crash_note("note: RUST_LOG is set; overriding --debug filter");
-    }
     let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(default_filter));
 
@@ -237,14 +241,9 @@ pub fn init_daemon_tracing(debug_mode: Option<DebugMode>, agent_name: Option<&st
                 .rotation(tracing_appender::rolling::Rotation::DAILY)
                 .build(std::env::temp_dir())
                 .unwrap_or_else(|e2| {
-                    write_crash_note(&format!(
-                        "warning: fallback log appender also failed: {e2}; falling back to {}",
-                        std::env::temp_dir().display()
-                    ));
-                    tracing_appender::rolling::daily(
-                        std::env::temp_dir(),
-                        format!("{log_prefix}.log"),
-                    )
+                    fatal_no_log_appender(&format!(
+                        "fatal: could not create log appender in temp dir: {e2}"
+                    ))
                 })
         });
 
@@ -253,23 +252,17 @@ pub fn init_daemon_tracing(debug_mode: Option<DebugMode>, agent_name: Option<&st
         .with_ansi(false)
         .with_writer(file_appender);
 
-    if debug_mode.is_some() {
-        // Debug mode: also emit to stderr so output is visible in terminal
-        let stderr_layer = tracing_subscriber::fmt::layer()
+    let stderr_layer = debug_mode.is_some().then(|| {
+        tracing_subscriber::fmt::layer()
             .with_target(false)
-            .with_writer(std::io::stderr);
+            .with_writer(std::io::stderr)
+    });
 
-        tracing_subscriber::registry()
-            .with(env_filter)
-            .with(file_layer)
-            .with(stderr_layer)
-            .init();
-    } else {
-        tracing_subscriber::registry()
-            .with(env_filter)
-            .with(file_layer)
-            .init();
-    }
+    tracing_subscriber::registry()
+        .with(env_filter)
+        .with(file_layer)
+        .with(stderr_layer)
+        .init();
     tracing::info!(
         path = %log_dir.join(format!("{log_prefix}.log")).display(),
         "logging initialized"

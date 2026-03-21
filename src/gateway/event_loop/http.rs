@@ -102,6 +102,25 @@ pub fn build_gateway_app(
         .fallback(web::static_handler)
 }
 
+/// Spawn an axum server on a pre-bound listener with graceful shutdown.
+pub(crate) fn spawn_server_with_listener(
+    listener: tokio::net::TcpListener,
+    app: axum::Router,
+    shutdown_tx: &tokio::sync::watch::Sender<bool>,
+) -> tokio::task::JoinHandle<()> {
+    let mut shutdown_rx = shutdown_tx.subscribe();
+    tokio::spawn(async move {
+        if let Err(e) = axum::serve(listener, app)
+            .with_graceful_shutdown(async move {
+                shutdown_rx.wait_for(|v| *v).await.ok();
+            })
+            .await
+        {
+            tracing::error!(error = %e, "gateway server error");
+        }
+    })
+}
+
 /// Bind the HTTP server and spawn it as a background task.
 ///
 /// # Errors
@@ -122,19 +141,7 @@ pub async fn spawn_http_server(
             "web UI is exposed on a non-loopback address with no authentication"
         );
     }
-
-    let mut shutdown_rx = shutdown_tx.subscribe();
-    let handle = tokio::spawn(async move {
-        if let Err(e) = axum::serve(listener, app)
-            .with_graceful_shutdown(async move {
-                shutdown_rx.wait_for(|v| *v).await.ok();
-            })
-            .await
-        {
-            tracing::error!(error = %e, "gateway server error");
-        }
-    });
-    Ok(handle)
+    Ok(spawn_server_with_listener(listener, app, shutdown_tx))
 }
 
 /// Spawn Discord and Telegram adapters if configured.

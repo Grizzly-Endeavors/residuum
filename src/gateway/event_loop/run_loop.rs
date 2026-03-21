@@ -35,7 +35,7 @@ pub async fn run_gateway(cfg: Config) -> Result<GatewayExit, FatalError> {
     let (core, receivers) = GatewayCore::new(cfg.config_dir.clone());
     let parts = crate::gateway::startup::initialize(&cfg, &core.publisher).await?;
 
-    let update_status = crate::update::new_shared_status();
+    let update_status = crate::update::SharedUpdateStatus::default();
     let (restart_tx, restart_rx) = tokio::sync::mpsc::channel::<()>(1);
 
     let spawned =
@@ -378,9 +378,9 @@ async fn wait_for_deadline(deadline: Option<tokio::time::Instant>) {
 async fn check_and_run_due_actions(
     rt: &mut GatewayRuntime,
     observe_deadline: &mut Option<tokio::time::Instant>,
-) -> Option<GatewayExit> {
+) {
     let main_turns = actions::spawn_due_actions(&rt.action_store, &rt.publisher).await;
-    handle_action_main_turns(main_turns, rt, observe_deadline).await
+    handle_action_main_turns(main_turns, rt, observe_deadline).await;
 }
 
 /// Inject main-turn prompts from scheduled actions and run a wake turn.
@@ -388,9 +388,9 @@ async fn handle_action_main_turns(
     main_turns: Vec<actions::ActionMainTurn>,
     rt: &mut GatewayRuntime,
     observe_deadline: &mut Option<tokio::time::Instant>,
-) -> Option<GatewayExit> {
+) {
     if main_turns.is_empty() {
-        return None;
+        return;
     }
 
     tracing::info!(
@@ -404,8 +404,6 @@ async fn handle_action_main_turns(
         let msgs = [crate::models::Message::system(&formatted)];
         persist_and_maybe_observe(rt, &msgs, Visibility::Background, observe_deadline).await;
     }
-
-    None
 }
 
 /// Gracefully shut down all adapters, MCP servers, and the HTTP server.
@@ -592,21 +590,15 @@ async fn run_event_loop(mut rt: GatewayRuntime) -> GatewayExit {
             }
 
             _ = pulse_tick.tick(), if rt.pulse_enabled => {
-                if let Some(exit) = handle_pulse_tick(&mut rt, &mut observe_deadline).await {
-                    return exit;
-                }
+                handle_pulse_tick(&mut rt, &mut observe_deadline).await;
             }
 
             _ = action_tick.tick() => {
-                if let Some(exit) = check_and_run_due_actions(&mut rt, &mut observe_deadline).await {
-                    return exit;
-                }
+                check_and_run_due_actions(&mut rt, &mut observe_deadline).await;
             }
 
             () = rt.action_notify.notified() => {
-                if let Some(exit) = check_and_run_due_actions(&mut rt, &mut observe_deadline).await {
-                    return exit;
-                }
+                check_and_run_due_actions(&mut rt, &mut observe_deadline).await;
             }
 
             () = wait_for_deadline(observe_deadline) => {

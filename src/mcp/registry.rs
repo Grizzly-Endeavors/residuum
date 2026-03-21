@@ -185,12 +185,24 @@ impl McpRegistry {
     /// Returns the connection error (server is already marked failed internally).
     pub async fn connect(&mut self, entry: &McpServerEntry) -> Result<(), anyhow::Error> {
         tracing::debug!(server = %entry.name, "attempting mcp server connection");
-        let client = McpClient::connect(entry).await?;
-        let tools = client.list_tools().await.inspect_err(|e| {
-            if let Some(server) = self.servers.iter_mut().find(|s| s.name == entry.name) {
-                server.status = McpStatus::Failed(e.to_string());
+        let client = match McpClient::connect(entry).await {
+            Ok(c) => c,
+            Err(e) => {
+                if let Some(server) = self.servers.iter_mut().find(|s| s.name == entry.name) {
+                    server.status = McpStatus::Failed(e.to_string());
+                }
+                return Err(e);
             }
-        })?;
+        };
+        let tools = match client.list_tools().await {
+            Ok(t) => t,
+            Err(e) => {
+                if let Some(server) = self.servers.iter_mut().find(|s| s.name == entry.name) {
+                    server.status = McpStatus::Failed(e.to_string());
+                }
+                return Err(e);
+            }
+        };
 
         if let Some(server) = self.servers.iter_mut().find(|s| s.name == entry.name) {
             server.status = McpStatus::Running;
@@ -270,9 +282,6 @@ impl McpRegistry {
             if let Err(e) = self.connect(entry).await {
                 let reason = e.to_string();
                 tracing::warn!(server = %entry.name, error = %reason, "mcp server failed to connect");
-                if let Some(server) = self.servers.iter_mut().find(|s| s.name == entry.name) {
-                    server.status = McpStatus::Failed(reason.clone());
-                }
                 report.failures.push((entry.name.clone(), reason));
             } else {
                 report.started += 1;
@@ -300,25 +309,14 @@ impl McpRegistry {
             if let Err(e) = self.connect(entry).await {
                 let reason = e.to_string();
                 tracing::warn!(server = %entry.name, error = %reason, "mcp server failed to connect");
-                // Mark server as failed
-                if let Some(server) = self.servers.iter_mut().find(|s| s.name == entry.name) {
-                    server.status = McpStatus::Failed(reason.clone());
-                }
                 report.failures.push((entry.name.clone(), reason));
             } else {
                 report.started += 1;
             }
         }
 
-        // Disconnect servers that should be stopped (already removed from tracking
-        // by reconcile, but we need to shut down their clients).
-        // Note: reconcile already removed them from self.servers, so we handle
-        // disconnection through the to_stop list. The clients were dropped when
-        // the TrackedServer was removed. This is fine because ChildWithCleanup
-        // handles process cleanup on drop.
-        for name in &diff.to_stop {
-            tracing::info!(server = %name, "mcp server killed (process dropped)");
-        }
+        // Removed servers were already dropped by reconcile() (no graceful shutdown).
+        // ChildWithCleanup handles process cleanup on drop.
 
         report
     }
@@ -381,7 +379,9 @@ impl McpRegistry {
             return Vec::new();
         };
 
-        if state.active_count > 0 {
+        if state.active_count == 0 {
+            tracing::warn!(project = %project_name, "deactivate_project called with active_count already zero — possible double-deactivation");
+        } else {
             state.active_count -= 1;
         }
 

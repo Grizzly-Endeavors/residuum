@@ -78,7 +78,7 @@ impl AnthropicClient {
 
     /// Whether this client uses an OAuth token (requiring Claude Code identity).
     fn is_oauth(&self) -> bool {
-        self.api_key.starts_with("sk-ant-oat01-")
+        is_oauth_key(&self.api_key)
     }
 
     /// Convert our generic messages into Anthropic-specific format.
@@ -96,7 +96,7 @@ impl AnthropicClient {
                     system_parts.push(&msg.content);
                 }
                 Role::User => {
-                    let content = if has_images(msg.images.as_ref()) {
+                    let content = if msg.images.as_ref().is_some_and(|v| !v.is_empty()) {
                         let mut blocks = Vec::new();
                         if !msg.content.is_empty() {
                             blocks.push(AnthropicContentBlock::Text {
@@ -217,7 +217,7 @@ impl AnthropicClient {
         // budget_tokens must be > 0 and < max_tokens
         let budget = budget.max(1).min(max_tokens - 1);
         Some(AnthropicThinking {
-            r#type: "enabled".to_string(),
+            r#type: "enabled",
             budget_tokens: budget,
         })
     }
@@ -227,13 +227,12 @@ impl AnthropicClient {
         http: &SharedHttpClient,
         endpoint: &str,
         api_key: &str,
-        model: &str,
         request: &AnthropicRequest,
         message_count: usize,
         tool_count: usize,
     ) -> Result<ModelResponse, ModelError> {
         debug!(
-            model = %model,
+            model = %request.model,
             max_tokens = request.max_tokens,
             message_count = message_count,
             tool_count = tool_count,
@@ -250,7 +249,7 @@ impl AnthropicClient {
         // OAuth tokens (sk-ant-oat01-*) use Bearer auth + Claude Code identity
         // headers; standard API keys use x-api-key.
         // NOTE: this logic is duplicated in gateway::web::fetch_anthropic_models
-        if api_key.starts_with("sk-ant-oat01-") {
+        if is_oauth_key(api_key) {
             req_builder = req_builder
                 .header("Authorization", format!("Bearer {api_key}"))
                 .header("anthropic-beta", OAUTH_BETA)
@@ -314,7 +313,7 @@ impl AnthropicClient {
         let result = Self::parse_response(api_response);
 
         info!(
-            model = %model,
+            model = %request.model,
             content_len = result.content.len(),
             tool_calls = result.tool_calls.len(),
             "anthropic completion received"
@@ -401,12 +400,12 @@ impl ModelProvider for AnthropicClient {
         // in the system prompt to access newer models (sonnet 4.6, opus 4.6).
         let system: Option<AnthropicSystem> = if self.is_oauth() {
             let mut blocks = vec![AnthropicSystemBlock {
-                r#type: "text".to_string(),
+                r#type: "text",
                 text: OAUTH_IDENTITY.to_string(),
             }];
             if let Some(s) = system {
                 blocks.push(AnthropicSystemBlock {
-                    r#type: "text".to_string(),
+                    r#type: "text",
                     text: s,
                 });
             }
@@ -459,7 +458,7 @@ impl ModelProvider for AnthropicClient {
                     temperature,
                     thinking,
                     cache_control: Some(AnthropicCacheControl {
-                        r#type: "ephemeral".to_string(),
+                        r#type: "ephemeral",
                     }),
                 };
 
@@ -467,7 +466,6 @@ impl ModelProvider for AnthropicClient {
                     &http,
                     &endpoint,
                     &api_key,
-                    &model,
                     &request,
                     message_count,
                     tool_count,
@@ -483,14 +481,13 @@ impl ModelProvider for AnthropicClient {
     }
 }
 
+fn is_oauth_key(key: &str) -> bool {
+    key.starts_with("sk-ant-oat01-")
+}
+
 // ---------------------------------------------------------------------------
 // Image helpers
 // ---------------------------------------------------------------------------
-
-/// Returns `true` if the option contains a non-empty image vec.
-fn has_images(images: Option<&Vec<ImageData>>) -> bool {
-    images.is_some_and(|v| !v.is_empty())
-}
 
 /// Append `Image` content blocks for each `ImageData` entry.
 fn append_image_blocks(blocks: &mut Vec<AnthropicContentBlock>, images: Option<&Vec<ImageData>>) {
@@ -543,12 +540,12 @@ fn merge_consecutive_messages(messages: Vec<AnthropicMessage>) -> Vec<AnthropicM
 
 #[derive(Debug, Serialize, Clone)]
 struct AnthropicCacheControl {
-    r#type: String,
+    r#type: &'static str,
 }
 
 #[derive(Debug, Serialize, Clone)]
 struct AnthropicThinking {
-    r#type: String,
+    r#type: &'static str,
     budget_tokens: u32,
 }
 
@@ -565,7 +562,7 @@ enum AnthropicSystem {
 
 #[derive(Debug, Serialize, Clone)]
 struct AnthropicSystemBlock {
-    r#type: String,
+    r#type: &'static str,
     text: String,
 }
 

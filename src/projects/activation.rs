@@ -84,16 +84,7 @@ impl ProjectState {
 
         tracing::info!(project = name, dir = %active.dir_name, has_recent_log = active.recent_log.is_some(), "activated project");
 
-        self.active = Some(active);
-
-        // Safe: we just set it to Some
-        self.active.as_ref().ok_or_else(|| {
-            tracing::error!(
-                project = name,
-                "unexpected: active project not set after activation"
-            );
-            anyhow::anyhow!("unexpected: active project not set after activation")
-        })
+        Ok(self.active.insert(active))
     }
 
     /// Deactivate the current project, writing a log entry.
@@ -166,7 +157,7 @@ impl ProjectState {
             parts.push(format!("**Recent Session Log:**\n{log}"));
         }
 
-        parts.push(format!("\n**Files:**\n{manifest_text}"));
+        parts.push(format!("**Files:**\n{manifest_text}"));
 
         Some(parts.join("\n\n"))
     }

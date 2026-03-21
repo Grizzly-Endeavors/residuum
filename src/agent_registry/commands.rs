@@ -20,10 +20,10 @@ use super::registry::AgentRegistry;
 ///
 /// Returns `FatalError` if the subcommand fails.
 pub fn run_agent_command(args: &[String]) -> Result<(), FatalError> {
-    let sub = args.get(2).map(String::as_str);
+    let sub = args.first().map(String::as_str);
     match sub {
         Some("create") => {
-            let Some(name) = args.get(3) else {
+            let Some(name) = args.get(1) else {
                 println!("usage: residuum agent create <name>");
                 return Ok(());
             };
@@ -31,14 +31,14 @@ pub fn run_agent_command(args: &[String]) -> Result<(), FatalError> {
         }
         Some("list") => run_agent_list(),
         Some("delete") => {
-            let Some(name) = args.get(3) else {
+            let Some(name) = args.get(1) else {
                 println!("usage: residuum agent delete <name>");
                 return Ok(());
             };
             run_agent_delete(name)
         }
         Some("info") => {
-            let Some(name) = args.get(3) else {
+            let Some(name) = args.get(1) else {
                 println!("usage: residuum agent info <name>");
                 return Ok(());
             };
@@ -182,7 +182,8 @@ fn run_agent_list() -> Result<(), FatalError> {
 
     // Default agent
     let default_status = check_agent_status(None)?;
-    let default_port = Config::load().map(|c| c.gateway.port).unwrap_or(7700);
+    let default_port =
+        Config::load().map_or_else(|_| "?".to_string(), |c| c.gateway.port.to_string());
     println!("{:<16} {:<7} {default_status}", "(default)", default_port);
 
     // Named agents

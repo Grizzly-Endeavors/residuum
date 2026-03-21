@@ -155,30 +155,25 @@ pub(crate) fn find_episode_path(
         return Ok(None);
     }
     let target = format!("{episode_id}.jsonl");
-    let mut result = None;
-    walk_for_file(episodes_dir, &target, &mut result)?;
-    Ok(result)
+    walk_for_file(episodes_dir, &target)
 }
 
-fn walk_for_file(dir: &Path, target: &str, result: &mut Option<PathBuf>) -> anyhow::Result<()> {
+fn walk_for_file(dir: &Path, target: &str) -> anyhow::Result<Option<PathBuf>> {
     let entries = std::fs::read_dir(dir)
         .with_context(|| format!("failed to read episodes directory {}", dir.display()))?;
 
     for entry in entries {
-        if result.is_some() {
-            return Ok(());
-        }
-        let entry = entry.context("failed to read directory entry")?;
-        let path = entry.path();
-
+        let path = entry.context("failed to read directory entry")?.path();
         if path.is_dir() {
-            walk_for_file(&path, target, result)?;
+            if let Some(found) = walk_for_file(&path, target)? {
+                return Ok(Some(found));
+            }
         } else if path.file_name().is_some_and(|n| n == target) {
-            *result = Some(path);
+            return Ok(Some(path));
         }
     }
 
-    Ok(())
+    Ok(None)
 }
 
 /// Read a bounded range of lines from an episode JSONL file, formatted for LLM consumption.
@@ -200,10 +195,6 @@ pub(crate) async fn read_episode_lines(
 
     let all_lines: Vec<&str> = file_content.lines().collect();
     let total = all_lines.len();
-
-    if total == 0 {
-        anyhow::bail!("episode file is empty at {}", path.display());
-    }
 
     // Parse meta from line 1
     let meta_line = all_lines
@@ -264,9 +255,8 @@ pub(crate) async fn read_episode_lines(
 fn format_message_line(parts: &mut Vec<String>, line_num: usize, msg: &Message) {
     match msg.role {
         Role::Assistant if msg.tool_calls.is_some() => {
-            let tools: Vec<&str> = msg.tool_calls.as_ref().map_or(Vec::new(), |calls| {
-                calls.iter().map(|c| c.name.as_str()).collect()
-            });
+            let calls = msg.tool_calls.as_deref().unwrap_or_default();
+            let tools: Vec<&str> = calls.iter().map(|c| c.name.as_str()).collect();
             let calls_str = tools.join(", ");
             if msg.content.is_empty() {
                 parts.push(format!("[line {line_num}] Assistant: [calls: {calls_str}]"));
@@ -276,7 +266,8 @@ fn format_message_line(parts: &mut Vec<String>, line_num: usize, msg: &Message) 
             }
         }
         Role::Tool => {
-            let display_content = truncate_at_char_boundary(&msg.content, MAX_TOOL_RESULT_CHARS);
+            let display_content =
+                crate::memory::truncate_at_char_boundary(&msg.content, MAX_TOOL_RESULT_CHARS);
             parts.push(format!("[line {line_num}] Tool: {display_content}"));
         }
         Role::System | Role::User | Role::Assistant => {
@@ -294,20 +285,6 @@ fn role_label(role: Role) -> &'static str {
         Role::Assistant => "Assistant",
         Role::Tool => "Tool",
     }
-}
-
-/// Truncate a string at a char boundary, appending "...(truncated)" if truncated.
-fn truncate_at_char_boundary(s: &str, max: usize) -> String {
-    if s.len() <= max {
-        return s.to_string();
-    }
-    // Find the last char boundary at or before `max`
-    let mut end = max;
-    while !s.is_char_boundary(end) && end > 0 {
-        end -= 1;
-    }
-    let prefix = s.get(..end).unwrap_or_default();
-    format!("{prefix}...(truncated)")
 }
 
 #[cfg(test)]

@@ -40,11 +40,9 @@ pub(super) fn parse_reflection_response(content: &str, tz: Tz) -> anyhow::Result
                 continue;
             }
             let timestamp = crate::memory::parse_minute_timestamp(&item.timestamp, tz);
-            let visibility = if item.visibility == "background" {
-                Visibility::Background
-            } else {
-                Visibility::User
-            };
+            let visibility =
+                serde_json::from_value::<Visibility>(serde_json::json!(item.visibility))
+                    .unwrap_or_default();
             log.push(Observation {
                 timestamp,
                 project_context: item.project_context.clone(),

@@ -131,21 +131,24 @@ pub(crate) async fn cloud_callback(
         .await
     };
 
-    if let Err(e) = store_result {
-        tracing::error!(error = %e, "failed to store cloud token");
-        return (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Html(format!("<h1>Error</h1><p>Failed to store token: {e}</p>")),
-        )
-            .into_response();
-    }
-    if let Ok(Err(e)) = store_result {
-        tracing::error!(error = %e, "cloud token store operation failed");
-        return (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Html(format!("<h1>Error</h1><p>Failed to store token: {e}</p>")),
-        )
-            .into_response();
+    match store_result {
+        Err(e) => {
+            tracing::error!(error = %e, "failed to store cloud token");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Html(format!("<h1>Error</h1><p>Failed to store token: {e}</p>")),
+            )
+                .into_response();
+        }
+        Ok(Err(e)) => {
+            tracing::error!(error = %e, "cloud token store operation failed");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Html(format!("<h1>Error</h1><p>Failed to store token: {e}</p>")),
+            )
+                .into_response();
+        }
+        Ok(Ok(())) => {}
     }
 
     // Update config.toml to add/update [cloud] section

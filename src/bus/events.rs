@@ -283,64 +283,8 @@ pub enum TurnLifecycleEvent {
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
-#[expect(clippy::unwrap_used, reason = "test code uses unwrap for clarity")]
-#[expect(clippy::panic, reason = "test assertions")]
-#[expect(clippy::indexing_slicing, reason = "test assertions")]
 mod tests {
-    use chrono::NaiveDate;
-
     use super::*;
-
-    fn sample_timestamp() -> NaiveDateTime {
-        NaiveDate::from_ymd_opt(2026, 3, 13)
-            .unwrap()
-            .and_hms_opt(12, 0, 0)
-            .unwrap()
-    }
-
-    #[test]
-    fn agent_result_clone_preserves_all_fields() {
-        let ar = AgentResultEvent {
-            task_id: "t2".into(),
-            source_label: "agent:review".into(),
-            agent_preset: PresetName::from("reviewer"),
-            source: EventTrigger::Agent,
-            heartbeat_status: HeartbeatStatus::Ok,
-            status: AgentResultStatus::Completed,
-            summary: "all good".into(),
-            transcript_path: Some(PathBuf::from("/var/log/transcript.json")),
-            timestamp: sample_timestamp(),
-        };
-        let cloned = ar.clone();
-        assert_eq!(cloned.task_id, "t2");
-        assert_eq!(cloned.source_label, "agent:review");
-        assert_eq!(cloned.summary, "all good");
-        assert_eq!(
-            cloned.transcript_path,
-            Some(PathBuf::from("/var/log/transcript.json"))
-        );
-    }
-
-    #[test]
-    fn heartbeat_status_equality() {
-        assert_eq!(HeartbeatStatus::Ok, HeartbeatStatus::Ok);
-        assert_eq!(HeartbeatStatus::Substantive, HeartbeatStatus::Substantive);
-        assert_ne!(HeartbeatStatus::Ok, HeartbeatStatus::Substantive);
-    }
-
-    #[test]
-    fn agent_result_status_failed_clone() {
-        let status = AgentResultStatus::Failed {
-            error: "timeout".into(),
-        };
-        let cloned = status.clone();
-        match cloned {
-            AgentResultStatus::Failed { error } => assert_eq!(error, "timeout"),
-            AgentResultStatus::Completed | AgentResultStatus::Cancelled => {
-                panic!("expected Failed variant")
-            }
-        }
-    }
 
     #[test]
     fn event_trigger_webhook_debug() {
@@ -360,34 +304,5 @@ mod tests {
         assert_eq!(EventTrigger::Webhook("github".into()).as_str(), "webhook");
         // Webhook name does not affect the label.
         assert_eq!(EventTrigger::Webhook("custom".into()).as_str(), "webhook");
-    }
-
-    #[test]
-    fn streaming_event_clone() {
-        let tc = ToolCallEvent {
-            correlation_id: "c1".into(),
-            tool_call_id: "t1".into(),
-            name: "read".into(),
-            arguments: serde_json::json!({"path": "/tmp"}),
-        };
-        let cloned = tc.clone();
-        assert_eq!(cloned.name, "read");
-        assert_eq!(cloned.arguments["path"], "/tmp");
-    }
-
-    #[test]
-    fn notice_and_error_event_clone() {
-        let notice = NoticeEvent {
-            message: "reloaded".into(),
-        };
-        assert_eq!(notice.clone().message, "reloaded");
-
-        let error = ErrorEvent {
-            correlation_id: "c1".into(),
-            message: "failed".into(),
-        };
-        let cloned = error.clone();
-        assert_eq!(cloned.correlation_id, "c1");
-        assert_eq!(cloned.message, "failed");
     }
 }

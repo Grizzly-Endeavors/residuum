@@ -99,11 +99,8 @@ mod proactivity_integration {
     fn build_pulse_execution_no_agent_returns_subagent() {
         let pulse = sample_pulse();
         match build_pulse_execution(&pulse) {
-            PulseExecution::SubAgent {
-                spawn_event,
-                preset_name,
-            } => {
-                assert_eq!(preset_name, "general-purpose");
+            PulseExecution::SubAgent { spawn_event } => {
+                assert_eq!(spawn_event.preset.as_ref(), "general-purpose");
                 assert_eq!(spawn_event.source_label, "pulse:email_check");
                 assert!(matches!(spawn_event.source, EventTrigger::Pulse));
             }
@@ -180,11 +177,8 @@ mod proactivity_integration {
         let mut pulse = sample_pulse();
         pulse.agent = Some("memory-agent".to_string());
         match build_pulse_execution(&pulse) {
-            PulseExecution::SubAgent {
-                preset_name,
-                spawn_event,
-            } => {
-                assert_eq!(preset_name, "memory-agent");
+            PulseExecution::SubAgent { spawn_event } => {
+                assert_eq!(spawn_event.preset.as_ref(), "memory-agent");
                 assert_eq!(spawn_event.source_label, "pulse:email_check");
             }
             PulseExecution::MainWakeTurn { .. } => panic!("expected SubAgent"),

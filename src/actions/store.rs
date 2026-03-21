@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, Utc};
 use rand::Rng;
-use tracing::{debug, error, warn};
+use tracing::{debug, warn};
 
 use anyhow::Context;
 
@@ -30,13 +30,9 @@ impl ActionStore {
         match tokio::fs::read_to_string(&path).await {
             Ok(contents) => {
                 let actions: Vec<ScheduledAction> =
-                    serde_json::from_str(&contents).map_err(|e| {
-                        error!(path = %path.display(), error = %e, "failed to parse scheduled actions");
-                        e
-                    }).with_context(|| format!(
-                        "failed to parse scheduled actions at {}",
-                        path.display()
-                    ))?;
+                    serde_json::from_str(&contents).with_context(|| {
+                        format!("failed to parse scheduled actions at {}", path.display())
+                    })?;
                 debug!(path = %path.display(), count = actions.len(), "loaded scheduled actions");
                 Ok(Self { actions, path })
             }
@@ -44,12 +40,8 @@ impl ActionStore {
                 actions: Vec::new(),
                 path,
             }),
-            Err(e) => {
-                error!(path = %path.display(), error = %e, "failed to read scheduled actions");
-                Err(e).with_context(|| {
-                    format!("failed to read scheduled actions at {}", path.display())
-                })
-            }
+            Err(e) => Err(e)
+                .with_context(|| format!("failed to read scheduled actions at {}", path.display())),
         }
     }
 
@@ -58,52 +50,41 @@ impl ActionStore {
     /// # Errors
     /// Returns an error if serialization or writing fails.
     pub async fn save(&self) -> anyhow::Result<()> {
-        let json = serde_json::to_string_pretty(&self.actions).map_err(|e| {
-            error!(path = %self.path.display(), error = %e, "failed to serialize scheduled actions");
-            e
-        }).context("failed to serialize scheduled actions")?;
+        let json = serde_json::to_string_pretty(&self.actions)
+            .context("failed to serialize scheduled actions")?;
 
         let dir = self.path.parent().ok_or_else(|| {
-            error!(path = %self.path.display(), "scheduled actions path has no parent directory");
             anyhow::anyhow!(
                 "scheduled actions path has no parent directory: {}",
                 self.path.display()
             )
         })?;
 
-        // Ensure the parent directory exists (actions file lives at workspace root,
-        // which should already exist, but be defensive)
-        if !dir.exists() {
-            tokio::fs::create_dir_all(dir).await.map_err(|e| {
-                error!(dir = %dir.display(), error = %e, "failed to create directory for scheduled actions");
-                e
-            }).with_context(|| format!(
+        tokio::fs::create_dir_all(dir).await.with_context(|| {
+            format!(
                 "failed to create directory for scheduled actions at {}",
                 dir.display()
-            ))?;
-        }
+            )
+        })?;
 
         let tmp_path = dir.join(".scheduled_actions.json.tmp");
 
-        tokio::fs::write(&tmp_path, &json).await.map_err(|e| {
-            error!(path = %tmp_path.display(), error = %e, "failed to write temporary scheduled actions");
-            e
-        }).with_context(|| format!(
-            "failed to write temporary scheduled actions at {}",
-            tmp_path.display()
-        ))?;
+        tokio::fs::write(&tmp_path, &json).await.with_context(|| {
+            format!(
+                "failed to write temporary scheduled actions at {}",
+                tmp_path.display()
+            )
+        })?;
 
         tokio::fs::rename(&tmp_path, &self.path)
             .await
-            .map_err(|e| {
-                error!(src = %tmp_path.display(), dst = %self.path.display(), error = %e, "failed to rename scheduled actions");
-                e
-            })
-            .with_context(|| format!(
-                "failed to rename scheduled actions from {} to {}",
-                tmp_path.display(),
-                self.path.display()
-            ))?;
+            .with_context(|| {
+                format!(
+                    "failed to rename scheduled actions from {} to {}",
+                    tmp_path.display(),
+                    self.path.display()
+                )
+            })?;
 
         debug!(path = %self.path.display(), count = self.actions.len(), "saved scheduled actions");
         Ok(())
@@ -155,17 +136,7 @@ impl ActionStore {
     /// Drain and return all actions whose `run_at` is at or before `now`.
     #[must_use]
     pub fn take_due(&mut self, now: DateTime<Utc>) -> Vec<ScheduledAction> {
-        let mut due = Vec::new();
-        let mut remaining = Vec::new();
-
-        for action in self.actions.drain(..) {
-            if action.run_at <= now {
-                due.push(action);
-            } else {
-                remaining.push(action);
-            }
-        }
-
+        let (due, remaining) = self.actions.drain(..).partition(|a| a.run_at <= now);
         self.actions = remaining;
         if !due.is_empty() {
             let ids: Vec<&str> = due.iter().map(|a| a.id.as_str()).collect();

@@ -99,7 +99,7 @@ impl EndpointRegistry {
         // Named webhooks
         for name in config.webhooks.keys() {
             registry.register(EndpointEntry {
-                id: EndpointId::from(format!("webhook:{name}").as_str()),
+                id: EndpointId::from(format!("webhook:{name}")),
                 topic: TopicId::Inbox,
                 capabilities: EndpointCapabilities::INPUT_ONLY,
                 display_name: format!("Webhook ({name})"),
@@ -512,7 +512,7 @@ mod tests {
     fn from_config_empty_webhooks() {
         let config = minimal_config();
         let reg = EndpointRegistry::from_config(&config, &[]);
-        assert!(reg.get(&EndpointId::from("webhook:test")).is_none());
+        assert_eq!(reg.len(), 2); // ws + inbox only
     }
 
     #[test]

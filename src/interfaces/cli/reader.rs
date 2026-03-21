@@ -30,7 +30,7 @@ impl CliReader {
     /// a slash command is handled). This prevents the prompt from appearing
     /// while the agent is still responding.
     ///
-    /// Exits when EOF, `:q`, or `:quit` is entered, or when `tx` is closed.
+    /// Exits when EOF, `:q`, `:quit`, or a `/quit` command is processed, or when `tx` is closed.
     /// Ctrl+C cancels the current line and prompts again.
     #[expect(
         clippy::needless_pass_by_value,
@@ -49,7 +49,7 @@ impl CliReader {
                     if trimmed.is_empty() {
                         continue;
                     }
-                    if matches!(trimmed.as_str(), ":q" | ":quit" | "/quit" | "/exit" | "/q") {
+                    if matches!(trimmed.as_str(), ":q" | ":quit") {
                         return;
                     }
                     if tx.blocking_send(trimmed).is_err() {

@@ -4,46 +4,32 @@ import type { ImageAttachment } from "./ImageAttachment";
 /**
  * Messages sent from a WebSocket client to the server.
  */
-export type ClientMessage =
-  | {
-      type: "send_message";
-      /**
-       * Client-generated correlation ID.
-       */
-      id: string;
-      /**
-       * The user message content.
-       */
-      content: string;
-      /**
-       * Optional image attachments (base64-encoded).
-       */
-      images?: Array<ImageAttachment>;
-    }
-  | {
-      type: "set_verbose";
-      /**
-       * Whether to receive tool events.
-       */
-      enabled: boolean;
-    }
-  | { type: "ping" }
-  | { type: "reload" }
-  | {
-      type: "server_command";
-      /**
-       * Command name.
-       */
-      name: string;
-      /**
-       * Optional argument text.
-       */
-      args: string | null;
-    }
-  | {
-      type: "inbox_add";
-      /**
-       * The message body to add.
-       */
-      body: string;
-    };
+export type ClientMessage = { "type": "send_message", 
+/**
+ * Client-generated correlation ID.
+ */
+id: string, 
+/**
+ * The user message content.
+ */
+content: string, 
+/**
+ * Optional image attachments (base64-encoded).
+ */
+images?: Array<ImageAttachment>, } | { "type": "set_verbose", 
+/**
+ * Whether to receive tool events.
+ */
+enabled: boolean, } | { "type": "ping" } | { "type": "reload" } | { "type": "server_command", 
+/**
+ * Command name.
+ */
+name: string, 
+/**
+ * Optional argument text.
+ */
+args: string | null, } | { "type": "inbox_add", 
+/**
+ * The message body to add.
+ */
+body: string, };

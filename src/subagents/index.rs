@@ -19,8 +19,6 @@ project, deactivate it with a session log before finishing.";
 #[derive(Debug, Clone, Default)]
 pub struct SubagentPresetIndex {
     entries: Vec<SubagentPresetEntry>,
-    /// Bodies for built-in presets (keyed by name).
-    builtin_bodies: Vec<(String, SubagentPresetFrontmatter, String)>,
 }
 
 impl SubagentPresetIndex {
@@ -34,23 +32,15 @@ impl SubagentPresetIndex {
     /// which is silently skipped).
     pub async fn scan(dir: &Path) -> anyhow::Result<Self> {
         let mut entries = Vec::new();
-        let mut seen_names: Vec<String> = Vec::new();
-        let mut builtin_bodies = Vec::new();
 
         // Seed with built-in presets
-        let (builtin_entry, builtin_fm, builtin_body) = builtin_general_purpose();
-        entries.push(builtin_entry);
-        seen_names.push(GENERAL_PURPOSE_NAME.to_string());
-        builtin_bodies.push((GENERAL_PURPOSE_NAME.to_string(), builtin_fm, builtin_body));
+        entries.push(builtin_general_purpose().0);
 
         // Scan user-defined presets from disk
         tracing::debug!(dir = %dir.display(), "scanning subagent presets");
-        scan_preset_directory(dir, &mut entries, &mut seen_names).await?;
+        scan_preset_directory(dir, &mut entries).await?;
 
-        Ok(Self {
-            entries,
-            builtin_bodies,
-        })
+        Ok(Self { entries })
     }
 
     /// Look up a preset by name (case-insensitive).
@@ -72,10 +62,9 @@ impl SubagentPresetIndex {
         let lower = name.to_lowercase();
 
         let entry = self.find_by_name(name).ok_or_else(|| {
-            let available: Vec<&str> = self.entries.iter().map(|e| e.name.as_str()).collect();
             anyhow::anyhow!(
                 "unknown preset '{name}'. Available: {}",
-                available.join(", ")
+                self.available_names().join(", ")
             )
         })?;
 
@@ -89,11 +78,10 @@ impl SubagentPresetIndex {
             return Ok(result);
         }
 
-        // Otherwise, check built-in presets
-        for (builtin_name, fm, body) in &self.builtin_bodies {
-            if builtin_name.to_lowercase() == lower {
-                return Ok((fm.clone(), body.clone()));
-            }
+        // Otherwise, return the built-in body directly
+        if lower == GENERAL_PURPOSE_NAME {
+            let (_, fm, body) = builtin_general_purpose();
+            return Ok((fm, body));
         }
 
         tracing::error!(name = %name, "preset found in index but has no path and is not a built-in — this is a bug in scan()");
@@ -157,7 +145,6 @@ fn builtin_general_purpose() -> (SubagentPresetEntry, SubagentPresetFrontmatter,
 async fn scan_preset_directory(
     dir: &Path,
     entries: &mut Vec<SubagentPresetEntry>,
-    seen_names: &mut Vec<String>,
 ) -> anyhow::Result<()> {
     let mut read_dir = match tokio::fs::read_dir(dir).await {
         Ok(rd) => rd,
@@ -225,7 +212,7 @@ async fn scan_preset_directory(
         };
 
         match parse_preset_md(&file_content) {
-            Ok((fm, _body)) => register_preset(fm, path, entries, seen_names),
+            Ok((fm, _body)) => register_preset(fm, path, entries),
             Err(e) => {
                 tracing::warn!(
                     path = %path.display(),
@@ -249,30 +236,27 @@ fn register_preset(
     fm: SubagentPresetFrontmatter,
     path: std::path::PathBuf,
     entries: &mut Vec<SubagentPresetEntry>,
-    seen_names: &mut Vec<String>,
 ) {
     let lower = fm.name.to_lowercase();
 
-    if let Some(pos) = seen_names.iter().position(|n| *n == lower) {
-        if entries.get(pos).is_some_and(|e| e.preset_path.is_none()) {
+    if let Some(existing) = entries.iter_mut().find(|e| e.name.to_lowercase() == lower) {
+        if existing.preset_path.is_none() {
             tracing::info!(
                 name = %fm.name,
                 path = %path.display(),
                 "user preset overrides built-in"
             );
-            if let Some(slot) = entries.get_mut(pos) {
-                *slot = SubagentPresetEntry {
-                    name: fm.name,
-                    description: fm.description,
-                    preset_path: Some(path),
-                };
-            }
+            *existing = SubagentPresetEntry {
+                name: fm.name,
+                description: fm.description,
+                preset_path: Some(path),
+            };
             return;
         }
 
-        let kept_path = entries
-            .get(pos)
-            .and_then(|e| e.preset_path.as_ref())
+        let kept_path = existing
+            .preset_path
+            .as_ref()
             .map_or_else(|| "built-in".to_string(), |p| p.display().to_string());
         tracing::warn!(
             name = %fm.name,
@@ -283,7 +267,6 @@ fn register_preset(
         return;
     }
 
-    seen_names.push(lower);
     entries.push(SubagentPresetEntry {
         name: fm.name,
         description: fm.description,
@@ -451,7 +434,6 @@ mod tests {
                 description: "Research agent".to_string(),
                 preset_path: Some(PathBuf::from("/tmp/researcher.md")),
             }],
-            builtin_bodies: Vec::new(),
         };
 
         assert!(
@@ -468,7 +450,6 @@ mod tests {
     fn format_for_prompt_empty() {
         let index = SubagentPresetIndex {
             entries: Vec::new(),
-            builtin_bodies: Vec::new(),
         };
         assert!(
             index.format_for_prompt().is_empty(),
@@ -491,7 +472,6 @@ mod tests {
                     preset_path: Some(PathBuf::from("/tmp/researcher.md")),
                 },
             ],
-            builtin_bodies: Vec::new(),
         };
 
         let output = index.format_for_prompt();

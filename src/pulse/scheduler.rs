@@ -10,23 +10,18 @@ use super::types::{
     HeartbeatConfig, PulseDef, is_within_active_hours, parse_active_hours, parse_schedule_duration,
 };
 
-/// On-disk format for `pulse_state.json`.
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-struct PulseState {
-    #[serde(default)]
-    last_run: HashMap<String, NaiveDateTime>,
-    #[serde(default)]
-    run_counts: HashMap<String, u32>,
-}
-
 /// Tracks per-pulse last-run times and determines which pulses are due.
 ///
 /// When constructed with `with_state_path`, timestamps are persisted to
 /// `pulse_state.json` and survive restarts. Without a state path, timestamps
 /// are in-memory only (backward-compatible).
+#[derive(Debug, Serialize, Deserialize)]
 pub struct PulseScheduler {
+    #[serde(default)]
     last_run: HashMap<String, NaiveDateTime>,
+    #[serde(default)]
     run_counts: HashMap<String, u32>,
+    #[serde(skip)]
     state_path: Option<PathBuf>,
 }
 
@@ -53,45 +48,9 @@ impl PulseScheduler {
     /// files are treated as empty state (logged as a warning for corrupt files).
     #[must_use]
     pub fn with_state_path(path: &Path) -> Self {
-        let state = load_state(path);
-        Self {
-            last_run: state.last_run,
-            run_counts: state.run_counts,
-            state_path: Some(path.to_path_buf()),
-        }
-    }
-
-    /// Load HEARTBEAT.yml from the given path.
-    ///
-    /// On parse error, logs a warning and returns `None` so the caller keeps the last good config.
-    /// Returns `None` if the file does not exist.
-    #[must_use]
-    pub fn load_heartbeat(path: &Path) -> Option<HeartbeatConfig> {
-        match std::fs::read_to_string(path) {
-            Ok(contents) => match serde_yml::from_str::<HeartbeatConfig>(&contents) {
-                Ok(cfg) => {
-                    tracing::trace!(path = %path.display(), pulses = cfg.pulses.len(), "loaded HEARTBEAT.yml");
-                    Some(cfg)
-                }
-                Err(e) => {
-                    tracing::warn!(
-                        path = %path.display(),
-                        error = %e,
-                        "failed to parse HEARTBEAT.yml, keeping last good config"
-                    );
-                    None
-                }
-            },
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
-            Err(e) => {
-                tracing::warn!(
-                    path = %path.display(),
-                    error = %e,
-                    "failed to read HEARTBEAT.yml"
-                );
-                None
-            }
-        }
+        let mut scheduler = load_state(path);
+        scheduler.state_path = Some(path.to_path_buf());
+        scheduler
     }
 
     /// Find pulses that are due at `now`, hot-reloading HEARTBEAT.yml each call.
@@ -106,7 +65,7 @@ impl PulseScheduler {
     /// Due pulses have their `last_run` updated to `now` and persisted (if a state path is set).
     #[must_use]
     pub fn due_pulses(&mut self, now: NaiveDateTime, heartbeat_path: &Path) -> Vec<PulseDef> {
-        let Some(heartbeat) = Self::load_heartbeat(heartbeat_path) else {
+        let Some(heartbeat) = load_heartbeat(heartbeat_path) else {
             return Vec::new();
         };
 
@@ -231,38 +190,10 @@ impl PulseScheduler {
         let Some(ref path) = self.state_path else {
             return Ok(());
         };
-
-        let state = PulseState {
-            last_run: self.last_run.clone(),
-            run_counts: self.run_counts.clone(),
-        };
-
-        match serde_json::to_string_pretty(&state) {
-            Ok(json) => {
-                let tmp = path.with_extension("json.tmp");
-                if let Err(err) = std::fs::write(&tmp, &json) {
-                    tracing::warn!(
-                        path = %tmp.display(),
-                        error = %err,
-                        "failed to write pulse state temp file"
-                    );
-                    return Err(err.into());
-                }
-                if let Err(err) = std::fs::rename(&tmp, path) {
-                    tracing::warn!(
-                        tmp = %tmp.display(),
-                        path = %path.display(),
-                        error = %err,
-                        "failed to rename pulse state file"
-                    );
-                    return Err(err.into());
-                }
-            }
-            Err(err) => {
-                tracing::warn!(error = %err, "failed to serialize pulse state");
-                return Err(err.into());
-            }
-        }
+        let json = serde_json::to_string_pretty(self)?;
+        let tmp = path.with_extension("json.tmp");
+        std::fs::write(&tmp, &json)?;
+        std::fs::rename(&tmp, path)?;
         tracing::trace!(path = %path.display(), "pulse state saved");
         Ok(())
     }
@@ -313,10 +244,43 @@ fn compute_effective_interval(
     }
 }
 
-/// Load pulse state from disk; returns default on missing or corrupt file.
-fn load_state(path: &Path) -> PulseState {
+/// Load HEARTBEAT.yml from the given path.
+///
+/// On parse error, logs a warning and returns `None` so the caller keeps the last good config.
+/// Returns `None` if the file does not exist.
+#[must_use]
+pub(crate) fn load_heartbeat(path: &Path) -> Option<HeartbeatConfig> {
     match std::fs::read_to_string(path) {
-        Ok(contents) => match serde_json::from_str::<PulseState>(&contents) {
+        Ok(contents) => match serde_yml::from_str::<HeartbeatConfig>(&contents) {
+            Ok(cfg) => {
+                tracing::trace!(path = %path.display(), pulses = cfg.pulses.len(), "loaded HEARTBEAT.yml");
+                Some(cfg)
+            }
+            Err(e) => {
+                tracing::warn!(
+                    path = %path.display(),
+                    error = %e,
+                    "failed to parse HEARTBEAT.yml, keeping last good config"
+                );
+                None
+            }
+        },
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+        Err(e) => {
+            tracing::warn!(
+                path = %path.display(),
+                error = %e,
+                "failed to read HEARTBEAT.yml"
+            );
+            None
+        }
+    }
+}
+
+/// Load pulse state from disk; returns default on missing or corrupt file.
+fn load_state(path: &Path) -> PulseScheduler {
+    match std::fs::read_to_string(path) {
+        Ok(contents) => match serde_json::from_str::<PulseScheduler>(&contents) {
             Ok(state) => {
                 tracing::debug!(path = %path.display(), pulses = state.last_run.len(), "loaded pulse state");
                 state
@@ -327,17 +291,17 @@ fn load_state(path: &Path) -> PulseState {
                     error = %err,
                     "corrupt pulse_state.json, starting with empty state"
                 );
-                PulseState::default()
+                PulseScheduler::new()
             }
         },
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => PulseState::default(),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => PulseScheduler::new(),
         Err(err) => {
             tracing::warn!(
                 path = %path.display(),
                 error = %err,
                 "failed to read pulse_state.json, starting with empty state"
             );
-            PulseState::default()
+            PulseScheduler::new()
         }
     }
 }
@@ -352,8 +316,8 @@ fn active_period_duration(start: NaiveTime, end: NaiveTime) -> Duration {
     }
 }
 
-/// Apply ±15% jitter to a duration using a deterministic seed from
-/// pulse name and current date (for reproducibility in tests).
+/// Apply ±15% jitter to a duration using a within-run-consistent seed from
+/// pulse name and current date (within-run consistency only; not stable across process restarts).
 #[expect(
     clippy::cast_precision_loss,
     clippy::cast_possible_truncation,
@@ -397,7 +361,6 @@ pulses:
     tasks:
       - name: check
         prompt: "Do a check"
-        alert: low
 "#;
 
     #[test]
@@ -506,7 +469,7 @@ pulses:
         let dir = tempdir().unwrap();
         let path = dir.path().join("HEARTBEAT.yml");
         assert!(
-            PulseScheduler::load_heartbeat(&path).is_none(),
+            load_heartbeat(&path).is_none(),
             "missing file should return None"
         );
     }
@@ -517,7 +480,7 @@ pulses:
         let path = dir.path().join("HEARTBEAT.yml");
         std::fs::write(&path, "not: valid: yaml: [[[").unwrap();
         assert!(
-            PulseScheduler::load_heartbeat(&path).is_none(),
+            load_heartbeat(&path).is_none(),
             "invalid YAML should return None"
         );
     }

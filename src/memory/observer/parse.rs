@@ -128,11 +128,9 @@ fn typed_items_to_extractions(items: &[ObservationItem], tz: Tz) -> Vec<Observer
         })
         .map(|item| {
             let timestamp = crate::memory::parse_minute_timestamp(&item.timestamp, tz);
-            let visibility = if item.visibility == "background" {
-                Visibility::Background
-            } else {
-                Visibility::User
-            };
+            let visibility =
+                serde_json::from_value::<Visibility>(serde_json::json!(item.visibility))
+                    .unwrap_or_default();
             ObserverExtraction {
                 content: item.content.clone(),
                 timestamp,
@@ -175,14 +173,8 @@ pub(super) fn parse_extraction_items(
 
         let visibility = item
             .get("visibility")
-            .and_then(serde_json::Value::as_str)
-            .map_or(Visibility::User, |v| {
-                if v == "background" {
-                    Visibility::Background
-                } else {
-                    Visibility::User
-                }
-            });
+            .and_then(|v| serde_json::from_value::<Visibility>(v.clone()).ok())
+            .unwrap_or_default();
 
         let project_context = item
             .get("project_context")

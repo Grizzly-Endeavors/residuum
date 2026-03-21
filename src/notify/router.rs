@@ -110,7 +110,7 @@ async fn fallback_router_loop(mut subscriber: Subscriber<AgentResultEvent>, publ
                 }
 
                 tracing::info!(source_label = %agent_result.source_label, "fallback router: routing to inbox");
-                publish_to_inbox(&agent_result, &publisher).await;
+                publish_to_targets(&agent_result, &["inbox".to_string()], &publisher).await;
             }
             Ok(None) => break,
             Err(e) => {
@@ -167,9 +167,8 @@ async fn llm_route(event: &AgentResultEvent, router: &NotificationRouter) -> Vec
 
     // Enumerate available notification endpoints
     let notify_endpoints = router.endpoint_registry.notify();
-    let endpoint_names: Vec<&str> = notify_endpoints.iter().map(|e| e.id.as_ref()).collect();
     let mut available_targets: Vec<&str> = vec!["inbox"];
-    available_targets.extend(endpoint_names.iter());
+    available_targets.extend(notify_endpoints.iter().map(|e| e.id.as_ref()));
 
     tracing::debug!(
         source_label = %event.source_label,
@@ -347,11 +346,6 @@ fn format_agent_result_message(event: &AgentResultEvent) -> String {
     }
 
     parts.join("\n")
-}
-
-/// Publish a notification to the inbox.
-async fn publish_to_inbox(event: &AgentResultEvent, publisher: &Publisher) {
-    publish_to_targets(event, &["inbox".to_string()], publisher).await;
 }
 
 /// Publish notifications to the specified targets.
