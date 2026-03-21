@@ -27,6 +27,8 @@ impl ProjectIndex {
         scan_directory(&layout.projects_dir(), false, &mut entries).await?;
         scan_directory(&layout.archive_dir(), true, &mut entries).await?;
 
+        tracing::debug!(total = entries.len(), "project index scan complete");
+
         Ok(Self { entries })
     }
 
@@ -164,6 +166,7 @@ async fn scan_directory(
             Err(e) => {
                 tracing::warn!(
                     path = %project_md.display(),
+                    scan_root = %dir.display(),
                     error = %e,
                     "skipping project with invalid frontmatter"
                 );

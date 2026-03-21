@@ -127,7 +127,7 @@ pub async fn archive_project(
         ))
     })?;
 
-    tracing::info!(project = dir_name, "archived project");
+    tracing::info!(project = dir_name, dest = %dest.display(), "archived project");
 
     Ok(())
 }

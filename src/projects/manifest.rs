@@ -13,12 +13,18 @@ use super::types::{ManifestEntry, ProjectManifest};
 /// # Errors
 /// Returns `ResiduumError::Projects` if a directory cannot be read.
 pub async fn build_manifest(project_root: &Path) -> Result<ProjectManifest, ResiduumError> {
-    Ok(ProjectManifest {
+    let manifest = ProjectManifest {
         notes: list_files_recursive(&project_root.join("notes"), project_root).await?,
         references: list_files_recursive(&project_root.join("references"), project_root).await?,
         workspace: list_files_recursive(&project_root.join("workspace"), project_root).await?,
         skills: list_files_recursive(&project_root.join("skills"), project_root).await?,
-    })
+    };
+    let total = manifest.notes.len()
+        + manifest.references.len()
+        + manifest.workspace.len()
+        + manifest.skills.len();
+    tracing::debug!(total, "built project manifest");
+    Ok(manifest)
 }
 
 /// Format a manifest as a human-readable grouped listing with sizes.

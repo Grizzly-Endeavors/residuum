@@ -87,10 +87,16 @@ impl ProjectState {
             project_root,
         };
 
+        tracing::info!(project = name, dir = %active.dir_name, has_recent_log = active.recent_log.is_some(), "activated project");
+
         self.active = Some(active);
 
         // Safe: we just set it to Some
         self.active.as_ref().ok_or_else(|| {
+            tracing::error!(
+                project = name,
+                "unexpected: active project not set after activation"
+            );
             ResiduumError::Projects("unexpected: active project not set after activation".into())
         })
     }
@@ -124,6 +130,8 @@ impl ProjectState {
 
         self.active = None;
 
+        tracing::info!(project = %name, "deactivated project");
+
         Ok(name)
     }
 
@@ -133,6 +141,10 @@ impl ProjectState {
     /// Returns `ResiduumError::Projects` if scanning fails.
     pub async fn rescan(&mut self) -> Result<(), ResiduumError> {
         self.index = ProjectIndex::scan(&self.layout).await?;
+        tracing::debug!(
+            total = self.index.entries().len(),
+            "rescanned project index"
+        );
         Ok(())
     }
 
@@ -240,6 +252,8 @@ async fn write_deactivation_log(
         ))
     })?;
 
+    tracing::debug!(path = %log_file.display(), "wrote deactivation log entry");
+
     Ok(())
 }
 
@@ -336,6 +350,7 @@ async fn read_recent_logs(project_root: &Path) -> Option<String> {
                     if content.len() <= remaining {
                         collected.push_str(&content);
                     } else {
+                        tracing::debug!(path = %day_file.display(), content_len = content.len(), remaining, "truncating log file to fit context limit");
                         // Truncate at a char boundary
                         let truncated: String = content.chars().take(remaining).collect();
                         collected.push_str(&truncated);
