@@ -32,8 +32,8 @@ async fn run() -> Result<(), ResiduumError> {
     // expected and fine; we just continue with whatever was registered first.
     drop(rustls::crypto::ring::default_provider().install_default());
 
-    // Install a panic hook that logs to both tracing and stderr.
-    // Tracing may not be initialized yet, and stderr is always available.
+    // Install a panic hook that logs to tracing and stderr.
+    // tracing::error! is a no-op until a subscriber is initialized; eprintln! is the real fallback.
     std::panic::set_hook(Box::new(|info| {
         tracing::error!(%info, "panic in spawned task");
         eprintln!("PANIC: {info}");
@@ -87,8 +87,14 @@ async fn run() -> Result<(), ResiduumError> {
             init_default_tracing();
             run_setup_command(&args)
         }
-        Some("stop") => run_stop_command(agent_name.as_deref()),
-        Some("update") => run_update_command(&args).await,
+        Some("stop") => {
+            init_default_tracing();
+            run_stop_command(agent_name.as_deref())
+        }
+        Some("update") => {
+            init_default_tracing();
+            run_update_command(&args).await
+        }
         // "serve" or no subcommand → start gateway
         Some("serve") | None => {
             let foreground = args.iter().any(|a| a == "--foreground");
@@ -212,7 +218,10 @@ async fn run_serve_foreground_inner(
                 // Gateway handles reloads in-place and only returns on shutdown
                 // or fatal error. Backup is created inside run_gateway().
                 match Box::pin(residuum::gateway::run_gateway(cfg)).await? {
-                    residuum::gateway::GatewayExit::Shutdown => break,
+                    residuum::gateway::GatewayExit::Shutdown => {
+                        tracing::info!("gateway shutting down");
+                        break;
+                    }
                     residuum::gateway::GatewayExit::Restart => {
                         return re_exec_serve_foreground();
                     }
@@ -228,7 +237,10 @@ async fn run_serve_foreground_inner(
                             cfg.config_dir.clone_from(&config_dir);
                             tracing::info!("config restored from backup, starting gateway");
                             match Box::pin(residuum::gateway::run_gateway(cfg)).await? {
-                                residuum::gateway::GatewayExit::Shutdown => break,
+                                residuum::gateway::GatewayExit::Shutdown => {
+                                    tracing::info!("gateway shutting down");
+                                    break;
+                                }
                                 residuum::gateway::GatewayExit::Restart => {
                                     return re_exec_serve_foreground();
                                 }
@@ -243,7 +255,7 @@ async fn run_serve_foreground_inner(
                         }
                     }
                 }
-                tracing::warn!(error = %err, "config rollback failed (no backup exists or I/O error)");
+                tracing::warn!("config rollback failed: no backup available");
                 return Err(ResiduumError::Config(format!(
                     "config invalid and rollback failed: {err}\n\n\
                      fix {}/config.toml and providers.toml manually, then restart",
@@ -329,6 +341,8 @@ fn re_exec_serve_foreground() -> Result<(), ResiduumError> {
 fn run_daemonize(args: &[String], agent_name: Option<&str>) -> Result<(), ResiduumError> {
     use residuum::config::GatewayConfig;
     use residuum::daemon::{is_process_running, read_pid_file};
+
+    init_default_tracing();
 
     let pid_path = residuum::agent_registry::paths::resolve_pid_path(agent_name)?;
     let label = agent_name.map_or("gateway".to_string(), |n| format!("agent '{n}'"));
@@ -697,7 +711,7 @@ fn init_cli_tracing() {
         .rotation(tracing_appender::rolling::Rotation::DAILY)
         .max_log_files(30)
         .build(&log_dir)
-        .unwrap_or_else(|e| {
+        .or_else(|e| {
             eprintln!("warning: failed to create log file appender: {e}");
             eprintln!(
                 "warning: logs will be written to {} instead — 'residuum logs' will not find them",
@@ -708,20 +722,21 @@ fn init_cli_tracing() {
                 .filename_suffix("log")
                 .rotation(tracing_appender::rolling::Rotation::DAILY)
                 .build(std::env::temp_dir())
-                .unwrap_or_else(|e2| {
+                .map_err(|e2| {
                     eprintln!("warning: fallback log appender also failed: {e2}");
                     eprintln!(
-                        "warning: logs will be written to {} — 'residuum logs' will not find them",
-                        std::env::temp_dir().display()
+                        "warning: log file output disabled — 'residuum logs' will not find them"
                     );
-                    tracing_appender::rolling::daily(std::env::temp_dir(), "cli.log")
                 })
-        });
+        })
+        .ok();
 
-    let file_layer = tracing_subscriber::fmt::layer()
-        .with_target(false)
-        .with_ansi(false)
-        .with_writer(file_appender);
+    let file_layer = file_appender.map(|appender| {
+        tracing_subscriber::fmt::layer()
+            .with_target(false)
+            .with_ansi(false)
+            .with_writer(appender)
+    });
 
     tracing_subscriber::registry()
         .with(env_filter)
@@ -810,6 +825,9 @@ async fn run_logs_command(watch: bool, agent_name: Option<&str>) -> Result<(), R
                 }
                 Err(e) => {
                     eprintln!("error reading log file: {e}");
+                    eprintln!(
+                        "  hint: the log file may have been rotated — re-run 'residuum logs --watch' to follow the new file"
+                    );
                     break;
                 }
             }
@@ -1035,7 +1053,7 @@ fn handle_ws_frame(
             }
         }
         Ok(server_msg) => client.display(&server_msg),
-        Err(e) => eprintln!("warning: failed to parse server message: {e}"),
+        Err(e) => tracing::warn!(error = %e, "failed to parse server message"),
     }
 
     std::ops::ControlFlow::Continue(())
@@ -1115,7 +1133,7 @@ where
     let json = serde_json::to_string(&client_msg)
         .map_err(|e| ResiduumError::Gateway(format!("failed to serialize message: {e}")))?;
     if let Err(e) = ws_tx.send(TungsteniteMessage::text(json)).await {
-        eprintln!("connection closed: {e}");
+        tracing::warn!(error = %e, "connection closed");
         return Ok(std::ops::ControlFlow::Break(()));
     }
     *turn_active = true;
