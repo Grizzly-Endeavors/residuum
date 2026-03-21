@@ -117,6 +117,11 @@ trap cleanup EXIT
 CARGO_TARGET_DIR="$(pwd)/target"
 export CARGO_TARGET_DIR
 
+# Cap per-job cargo parallelism so total threads ≈ core count (jobs × build_jobs ≤ nproc)
+CARGO_BUILD_JOBS=$(( $(nproc) / JOBS ))
+[[ $CARGO_BUILD_JOBS -lt 1 ]] && CARGO_BUILD_JOBS=1
+export CARGO_BUILD_JOBS
+
 CLAUDE_TOOLS="Edit Read Glob Grep Bash(git:*) Bash(cargo:*)"
 
 # =============================================================================
@@ -212,6 +217,8 @@ INSTRUCTIONS
         else
             echo "[done]  $module_name ($post_head)"
             echo "commit:$post_head" > "$result_file"
+            mkdir -p "$INPUT_DIR/applied"
+            mv "$INPUT_DIR/${module_name}.md" "$INPUT_DIR/applied/"
         fi
     else
         echo "[FAIL]  $module_name — Claude exited with error"
