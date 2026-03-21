@@ -43,6 +43,7 @@ impl SubagentPresetIndex {
         builtin_bodies.push((GENERAL_PURPOSE_NAME.to_string(), builtin_fm, builtin_body));
 
         // Scan user-defined presets from disk
+        tracing::debug!(dir = %dir.display(), "scanning subagent presets");
         scan_preset_directory(dir, &mut entries, &mut seen_names).await?;
 
         Ok(Self {
@@ -85,7 +86,9 @@ impl SubagentPresetIndex {
                     path.display()
                 ))
             })?;
-            return parse_preset_md(&content);
+            let result = parse_preset_md(&content)?;
+            tracing::debug!(name = %name, path = %path.display(), "loaded preset from disk");
+            return Ok(result);
         }
 
         // Otherwise, check built-in presets
@@ -235,6 +238,12 @@ async fn scan_preset_directory(
         }
     }
 
+    tracing::debug!(
+        dir = %dir.display(),
+        loaded = entries.len(),
+        "finished scanning subagents directory"
+    );
+
     Ok(())
 }
 
@@ -263,9 +272,14 @@ fn register_preset(
             return;
         }
 
+        let kept_path = entries
+            .get(pos)
+            .and_then(|e| e.preset_path.as_ref())
+            .map_or_else(|| "built-in".to_string(), |p| p.display().to_string());
         tracing::warn!(
             name = %fm.name,
-            path = %path.display(),
+            rejected = %path.display(),
+            kept = %kept_path,
             "duplicate preset name, keeping first found"
         );
         return;
