@@ -518,7 +518,7 @@ async fn handle_attachment(
                 read: false,
                 attachments: vec![std::path::PathBuf::from("inbox").join(&saved_name)],
             };
-            let item_filename = inbox::generate_filename(&companion.title, tz);
+            let item_filename = inbox::generate_filename(&companion.title, companion.timestamp);
             if let Err(e) = inbox::save_item(inbox_dir, &item_filename, &companion).await {
                 tracing::warn!(
                     filename = %filename,

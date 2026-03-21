@@ -293,7 +293,7 @@ async fn process_discord_attachments(
                     read: false,
                     attachments: vec![PathBuf::from("inbox").join(&saved_name)],
                 };
-                let filename = inbox::generate_filename(&companion.title, tz);
+                let filename = inbox::generate_filename(&companion.title, companion.timestamp);
                 if let Err(e) = inbox::save_item(inbox_dir, &filename, &companion).await {
                     tracing::warn!(
                         filename = %info.filename,

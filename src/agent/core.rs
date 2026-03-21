@@ -190,7 +190,7 @@ impl Agent {
     ) -> anyhow::Result<Vec<String>> {
         tracing::debug!("processing wake turn");
         let now = crate::time::now_local(self.tz);
-        let unread = crate::inbox::count_unread(&self.inbox_dir);
+        let unread = crate::inbox::count_unread(&self.inbox_dir).await;
         let status_line = StatusLine {
             now,
             last_message_at: self.last_user_message_at,
@@ -257,7 +257,7 @@ impl Agent {
     ) -> anyhow::Result<Vec<String>> {
         tracing::debug!(source = ?origin, "processing user message");
         let now = crate::time::now_local(self.tz);
-        let unread = crate::inbox::count_unread(&self.inbox_dir);
+        let unread = crate::inbox::count_unread(&self.inbox_dir).await;
         let status_line = StatusLine {
             now,
             last_message_at: self.last_user_message_at,

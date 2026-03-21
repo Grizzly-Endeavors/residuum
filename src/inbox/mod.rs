@@ -31,8 +31,7 @@ pub struct InboxItem {
 ///
 /// Sanitizes: lowercase, non-alphanumeric → `_`, collapse consecutive `_`, truncate to 60 chars.
 #[must_use]
-pub fn generate_filename(title: &str, tz: chrono_tz::Tz) -> String {
-    let now = crate::time::now_local(tz);
+pub fn generate_filename(title: &str, now: NaiveDateTime) -> String {
     let date = now.format("%Y%m%d").to_string();
 
     let sanitized: String = title
@@ -41,24 +40,13 @@ pub fn generate_filename(title: &str, tz: chrono_tz::Tz) -> String {
         .map(|c| if c.is_alphanumeric() { c } else { '_' })
         .collect();
 
-    // Collapse consecutive underscores
-    let mut collapsed = String::with_capacity(sanitized.len());
-    let mut prev_underscore = false;
-    for ch in sanitized.chars() {
-        if ch == '_' {
-            if !prev_underscore {
-                collapsed.push('_');
-            }
-            prev_underscore = true;
-        } else {
-            collapsed.push(ch);
-            prev_underscore = false;
-        }
-    }
+    let slug = sanitized
+        .split('_')
+        .filter(|s| !s.is_empty())
+        .collect::<Vec<_>>()
+        .join("_");
 
-    // Trim leading/trailing underscores and truncate
-    let trimmed = collapsed.trim_matches('_');
-    let truncated: String = trimmed.chars().take(60).collect();
+    let truncated = slug.chars().take(60).collect::<String>();
     let truncated = truncated.trim_end_matches('_');
 
     format!("{date}_{truncated}.json")
@@ -78,7 +66,7 @@ pub async fn quick_add(
     tz: chrono_tz::Tz,
 ) -> anyhow::Result<String> {
     let now = crate::time::now_local(tz);
-    let filename = generate_filename(title, tz);
+    let filename = generate_filename(title, now);
     let item = InboxItem {
         title: title.to_string(),
         body: body.to_string(),
@@ -175,48 +163,11 @@ pub async fn list_items(inbox_dir: &Path) -> anyhow::Result<Vec<(String, InboxIt
 }
 
 /// Count unread inbox items.
-///
-/// Deserializes each `.json` file in the inbox directory — acceptable for low throughput.
-#[must_use]
-pub fn count_unread(inbox_dir: &Path) -> usize {
-    let dir = match std::fs::read_dir(inbox_dir) {
-        Ok(d) => d,
-        Err(e) => {
-            tracing::warn!(path = %inbox_dir.display(), error = %e, "failed to read inbox directory for unread count");
-            return 0;
-        }
-    };
-
-    let mut count = 0;
-    for entry_result in dir {
-        let entry = match entry_result {
-            Ok(e) => e,
-            Err(e) => {
-                tracing::warn!(path = %inbox_dir.display(), error = %e, "failed to read inbox directory entry");
-                continue;
-            }
-        };
-        let path = entry.path();
-        if !path.is_file() || path.extension().and_then(|x| x.to_str()) != Some("json") {
-            continue;
-        }
-        match std::fs::read_to_string(&path) {
-            Err(e) => {
-                tracing::warn!(path = %path.display(), error = %e, "failed to read inbox item for unread count");
-            }
-            Ok(content) => match serde_json::from_str::<InboxItem>(&content) {
-                Err(e) => {
-                    tracing::warn!(path = %path.display(), error = %e, "failed to parse inbox item for unread count");
-                }
-                Ok(item) => {
-                    if !item.read {
-                        count += 1;
-                    }
-                }
-            },
-        }
-    }
-    count
+pub async fn count_unread(inbox_dir: &Path) -> usize {
+    list_items(inbox_dir)
+        .await
+        .map(|items| items.iter().filter(|(_, i)| !i.read).count())
+        .unwrap_or(0)
 }
 
 /// Mark an inbox item as read and save it back atomically.
@@ -324,7 +275,11 @@ mod tests {
 
     #[test]
     fn generate_filename_basic() {
-        let name = generate_filename("Hello World", chrono_tz::UTC);
+        let now = NaiveDate::from_ymd_opt(2026, 2, 25)
+            .unwrap()
+            .and_hms_opt(12, 0, 0)
+            .unwrap();
+        let name = generate_filename("Hello World", now);
         // Date prefix + sanitized title
         assert!(
             name.ends_with("_hello_world.json"),
@@ -338,7 +293,11 @@ mod tests {
 
     #[test]
     fn generate_filename_special_chars() {
-        let name = generate_filename("foo/bar\\baz..qux!!", chrono_tz::UTC);
+        let now = NaiveDate::from_ymd_opt(2026, 2, 25)
+            .unwrap()
+            .and_hms_opt(12, 0, 0)
+            .unwrap();
+        let name = generate_filename("foo/bar\\baz..qux!!", now);
         assert!(!name.contains('/'), "should not contain slashes: {name}");
         assert!(
             !name.contains('\\'),
@@ -349,7 +308,11 @@ mod tests {
 
     #[test]
     fn generate_filename_unicode() {
-        let name = generate_filename("café résumé", chrono_tz::UTC);
+        let now = NaiveDate::from_ymd_opt(2026, 2, 25)
+            .unwrap()
+            .and_hms_opt(12, 0, 0)
+            .unwrap();
+        let name = generate_filename("café résumé", now);
         assert!(
             Path::new(&name)
                 .extension()
@@ -361,8 +324,12 @@ mod tests {
 
     #[test]
     fn generate_filename_truncation() {
+        let now = NaiveDate::from_ymd_opt(2026, 2, 25)
+            .unwrap()
+            .and_hms_opt(12, 0, 0)
+            .unwrap();
         let long_title = "a".repeat(100);
-        let name = generate_filename(&long_title, chrono_tz::UTC);
+        let name = generate_filename(&long_title, now);
         // Date prefix (8) + _ (1) + truncated (60) + .json (5) = 74
         let stem = name.trim_end_matches(".json");
         let title_part = &stem["20260225_".len()..];
@@ -483,7 +450,7 @@ mod tests {
             .unwrap();
 
         assert_eq!(
-            count_unread(dir.path()),
+            count_unread(dir.path()).await,
             2,
             "should count only unread items"
         );
@@ -492,13 +459,17 @@ mod tests {
     #[tokio::test]
     async fn count_unread_empty_dir() {
         let dir = tempfile::tempdir().unwrap();
-        assert_eq!(count_unread(dir.path()), 0);
+        assert_eq!(count_unread(dir.path()).await, 0);
     }
 
     #[tokio::test]
     async fn count_unread_missing_dir() {
         let missing = Path::new("/tmp/nonexistent_inbox_dir_test");
-        assert_eq!(count_unread(missing), 0, "missing dir should return 0");
+        assert_eq!(
+            count_unread(missing).await,
+            0,
+            "missing dir should return 0"
+        );
     }
 
     #[tokio::test]
