@@ -36,7 +36,9 @@ pub fn write_pid_file(path: &Path, pid: u32) -> Result<(), ResiduumError> {
     }
     std::fs::write(path, pid.to_string()).map_err(|e| {
         ResiduumError::Gateway(format!("failed to write pid file {}: {e}", path.display()))
-    })
+    })?;
+    tracing::debug!(path = %path.display(), pid, "wrote pid file");
+    Ok(())
 }
 
 /// Read a PID from the given file path.
@@ -64,7 +66,10 @@ pub fn read_pid_file(path: &Path) -> Result<u32, ResiduumError> {
 /// the file not existing.
 pub fn remove_pid_file(path: &Path) -> Result<(), ResiduumError> {
     match std::fs::remove_file(path) {
-        Ok(()) => Ok(()),
+        Ok(()) => {
+            tracing::debug!(path = %path.display(), "removed pid file");
+            Ok(())
+        }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(e) => Err(ResiduumError::Gateway(format!(
             "failed to remove pid file {}: {e}",
@@ -89,7 +94,18 @@ pub fn is_process_running(pid: u32) -> bool {
     // Returns Ok if the process exists and we have permission to signal it.
     // Returns ESRCH if no such process, EPERM if it exists but we lack permission.
     // EPERM means the process is running, but since we own the daemon this shouldn't occur.
-    kill(nix_pid, None).is_ok()
+    match kill(nix_pid, None) {
+        Ok(()) => true,
+        Err(nix::errno::Errno::ESRCH) => false,
+        Err(nix::errno::Errno::EPERM) => {
+            tracing::warn!(pid, "got EPERM checking process; assuming running");
+            true
+        }
+        Err(e) => {
+            tracing::warn!(pid, error = %e, "unexpected error checking process status");
+            false
+        }
+    }
 }
 
 /// Send `SIGTERM` to the process with the given PID.
@@ -107,7 +123,9 @@ pub fn send_sigterm(pid: u32) -> Result<(), ResiduumError> {
         })?);
 
     kill(nix_pid, Signal::SIGTERM)
-        .map_err(|e| ResiduumError::Gateway(format!("failed to send SIGTERM to pid {pid}: {e}")))
+        .map_err(|e| ResiduumError::Gateway(format!("failed to send SIGTERM to pid {pid}: {e}")))?;
+    tracing::info!(pid, "sent SIGTERM");
+    Ok(())
 }
 
 /// Debug logging modes for the `--debug` flag.
@@ -160,6 +178,9 @@ pub fn init_daemon_tracing(debug_mode: Option<DebugMode>, agent_name: Option<&st
     use tracing_subscriber::util::SubscriberInitExt;
 
     let default_filter = debug_mode.map_or("info", DebugMode::filter_str);
+    if std::env::var("RUST_LOG").is_ok() {
+        eprintln!("note: RUST_LOG is set; overriding --debug filter");
+    }
     let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(default_filter));
 
@@ -181,7 +202,8 @@ pub fn init_daemon_tracing(debug_mode: Option<DebugMode>, agent_name: Option<&st
         .build(&log_dir)
         .unwrap_or_else(|e| {
             eprintln!(
-                "warning: failed to create log file appender: {e}; falling back to {}",
+                "warning: failed to create log file appender at {}: {e}; falling back to {}",
+                log_dir.display(),
                 std::env::temp_dir().display()
             );
             tracing_appender::rolling::RollingFileAppender::builder()
@@ -223,6 +245,10 @@ pub fn init_daemon_tracing(debug_mode: Option<DebugMode>, agent_name: Option<&st
             .with(file_layer)
             .init();
     }
+    tracing::info!(
+        path = %log_dir.join(format!("{log_prefix}.log")).display(),
+        "logging initialized"
+    );
 }
 
 #[cfg(test)]
