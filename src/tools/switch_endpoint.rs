@@ -68,20 +68,21 @@ impl Tool for SwitchEndpointTool {
             .ok_or_else(|| ToolError::InvalidArguments("endpoint is required".to_string()))?;
 
         let endpoint_id = EndpointId::from(endpoint_name);
+        let interactive_names: Vec<String> = self
+            .registry
+            .interactive()
+            .iter()
+            .map(|e| e.id.as_ref().to_string())
+            .collect();
+        let available_str = if interactive_names.is_empty() {
+            "(none configured)".to_string()
+        } else {
+            interactive_names.join(", ")
+        };
+
         let Some(entry) = self.registry.get(&endpoint_id) else {
-            let available: Vec<String> = self
-                .registry
-                .interactive()
-                .iter()
-                .map(|e| e.id.as_ref().to_string())
-                .collect();
             return Ok(ToolResult::error(format!(
-                "unknown endpoint '{endpoint_name}'; available interactive endpoints: {}",
-                if available.is_empty() {
-                    "(none configured)".to_string()
-                } else {
-                    available.join(", ")
-                }
+                "unknown endpoint '{endpoint_name}'; available interactive endpoints: {available_str}",
             )));
         };
 
@@ -89,19 +90,8 @@ impl Tool for SwitchEndpointTool {
             .capabilities
             .contains(EndpointCapabilities::INTERACTIVE)
         {
-            let available: Vec<String> = self
-                .registry
-                .interactive()
-                .iter()
-                .map(|e| e.id.as_ref().to_string())
-                .collect();
             return Ok(ToolResult::error(format!(
-                "endpoint '{endpoint_name}' is not interactive; available: {}",
-                if available.is_empty() {
-                    "(none configured)".to_string()
-                } else {
-                    available.join(", ")
-                }
+                "endpoint '{endpoint_name}' is not interactive; available: {available_str}",
             )));
         }
 

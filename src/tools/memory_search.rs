@@ -56,8 +56,8 @@ impl Tool for MemorySearchTool {
                     },
                     "source": {
                         "type": "string",
-                        "description": "Filter by source type: 'observations', 'episodes', or 'both'",
-                        "enum": ["observations", "episodes", "both"]
+                        "description": "Filter by source type: 'observations' or 'episodes'. Omit to search both.",
+                        "enum": ["observations", "episodes"]
                     },
                     "date_from": {
                         "type": "string",
