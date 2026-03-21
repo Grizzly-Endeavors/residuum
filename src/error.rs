@@ -6,7 +6,6 @@
 //! and bus publishing.
 
 use crate::models::ModelError;
-use crate::tools::ToolError;
 
 /// Fatal errors that terminate the process.
 #[derive(Debug, thiserror::Error)]
@@ -22,10 +21,6 @@ pub enum FatalError {
     /// Model provider error
     #[error(transparent)]
     Model(#[from] ModelError),
-
-    /// Tool execution error
-    #[error(transparent)]
-    Tool(#[from] ToolError),
 
     /// Memory subsystem error
     #[error("memory error: {0}")]
@@ -54,10 +49,6 @@ pub enum FatalError {
     /// Subagent presets subsystem error
     #[error("subagents error: {0}")]
     Subagents(String),
-
-    /// Inbox subsystem error
-    #[error("inbox error: {0}")]
-    Inbox(String),
 
     /// Catch-all for other errors
     #[error(transparent)]
