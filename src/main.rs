@@ -20,6 +20,7 @@ use residuum::interfaces::cli::commands::CommandEffect;
 #[tokio::main]
 async fn main() {
     if let Err(e) = Box::pin(run()).await {
+        // tracing::error goes to the log file; println is for the terminal user
         tracing::error!(error = %e, "fatal error");
         println!("error: {e}");
         std::process::exit(1);
