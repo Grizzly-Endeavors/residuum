@@ -10,7 +10,7 @@ use crate::workspace::identity::IdentityFiles;
 use super::context::{MemoryContext, PromptContext, StatusLine};
 use super::interrupt;
 use super::recent_messages::RecentMessages;
-use super::turn::{TurnResources, execute_turn};
+use super::turn::{EventContext, TurnResources, execute_turn};
 
 /// Result of a background system turn (pulse or scheduled action).
 pub struct SystemTurnResult {
@@ -217,14 +217,18 @@ impl Agent {
             identity: &self.identity,
             options: &self.options,
         };
+        let events = EventContext {
+            publisher,
+            output_endpoint,
+            tool_activity_endpoint,
+            correlation_id: "",
+        };
         execute_turn(
             &resources,
             &memory_ctx,
             prompt_ctx,
             &mut self.recent_messages,
-            publisher,
-            output_endpoint,
-            tool_activity_endpoint,
+            &events,
             Some(&status_line),
             interrupt_rx,
         )
@@ -250,6 +254,7 @@ impl Agent {
         publisher: &Publisher,
         output_endpoint: Option<&EndpointName>,
         tool_activity_endpoint: Option<&EndpointName>,
+        correlation_id: &str,
         origin: Option<&MessageOrigin>,
         prompt_ctx: &PromptContext<'_>,
         interrupt_rx: &mut tokio::sync::mpsc::Receiver<interrupt::Interrupt>,
@@ -286,14 +291,18 @@ impl Agent {
             identity: &self.identity,
             options: &self.options,
         };
+        let events = EventContext {
+            publisher,
+            output_endpoint,
+            tool_activity_endpoint,
+            correlation_id,
+        };
         execute_turn(
             &resources,
             &memory_ctx,
             prompt_ctx,
             &mut self.recent_messages,
-            publisher,
-            output_endpoint,
-            tool_activity_endpoint,
+            &events,
             Some(&status_line),
             interrupt_rx,
         )
@@ -342,15 +351,19 @@ impl Agent {
             options: &self.options,
         };
 
+        let events = EventContext {
+            publisher,
+            output_endpoint,
+            tool_activity_endpoint,
+            correlation_id: "",
+        };
         // System turns don't inject time context (no user-facing timestamps)
         let mut texts = execute_turn(
             &resources,
             &memory_ctx,
             prompt_ctx,
             &mut thread_messages,
-            publisher,
-            output_endpoint,
-            tool_activity_endpoint,
+            &events,
             None,
             &mut sys_interrupt_rx,
         )
@@ -512,6 +525,7 @@ mod tests {
                 &publisher,
                 Some(&ep),
                 None,
+                "",
                 None,
                 &PromptContext::none(),
                 &mut irx,
@@ -563,6 +577,7 @@ mod tests {
                 &publisher,
                 Some(&ep),
                 None,
+                "",
                 None,
                 &PromptContext::none(),
                 &mut irx,
@@ -619,6 +634,7 @@ mod tests {
                 &publisher,
                 Some(&ep),
                 None,
+                "",
                 None,
                 &PromptContext::none(),
                 &mut irx,
@@ -676,6 +692,7 @@ mod tests {
                 &publisher,
                 Some(&ep),
                 None,
+                "",
                 None,
                 &PromptContext::none(),
                 &mut irx,
@@ -1103,6 +1120,7 @@ mod tests {
                 &publisher,
                 Some(&ep),
                 None,
+                "",
                 None,
                 &PromptContext::none(),
                 &mut interrupt_rx,
@@ -1177,6 +1195,7 @@ mod tests {
                 &publisher,
                 Some(&ep),
                 None,
+                "",
                 None,
                 &PromptContext::none(),
                 &mut interrupt_rx,
@@ -1239,6 +1258,7 @@ mod tests {
                 &publisher,
                 Some(&ep),
                 None,
+                "",
                 None,
                 &PromptContext::none(),
                 &mut interrupt_rx,
@@ -1285,6 +1305,7 @@ mod tests {
                 &publisher,
                 Some(&ep),
                 None,
+                "",
                 None,
                 &PromptContext::none(),
                 &mut irx,

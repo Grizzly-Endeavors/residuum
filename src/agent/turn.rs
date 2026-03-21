@@ -18,6 +18,14 @@ use super::recent_messages::RecentMessages;
 /// Maximum number of tool-call iterations before the agent stops.
 pub(crate) const MAX_TOOL_ITERATIONS: usize = 50;
 
+/// Context for publishing streaming events during a turn.
+pub(crate) struct EventContext<'a> {
+    pub publisher: &'a Publisher,
+    pub output_endpoint: Option<&'a EndpointName>,
+    pub tool_activity_endpoint: Option<&'a EndpointName>,
+    pub correlation_id: &'a str,
+}
+
 /// Maximum retries for empty responses (transient API glitches).
 const MAX_EMPTY_RESPONSE_RETRIES: u32 = 2;
 
@@ -42,18 +50,12 @@ pub(crate) struct TurnResources<'a> {
 /// Returns a vec containing the final text-only response. Intermediate texts
 /// emitted alongside tool calls are sent via `reply` in real-time but not
 /// included in the return value.
-#[expect(
-    clippy::too_many_arguments,
-    reason = "publisher and topic params added during bus migration"
-)]
 pub(crate) async fn execute_turn(
     resources: &TurnResources<'_>,
     memory_ctx: &MemoryContext<'_>,
     prompt_ctx: &PromptContext<'_>,
     recent_messages: &mut RecentMessages,
-    publisher: &Publisher,
-    output_endpoint: Option<&EndpointName>,
-    tool_activity_endpoint: Option<&EndpointName>,
+    events: &EventContext<'_>,
     status_line: Option<&StatusLine>,
     interrupt_rx: &mut mpsc::Receiver<Interrupt>,
 ) -> anyhow::Result<Vec<String>> {
@@ -126,12 +128,13 @@ pub(crate) async fn execute_turn(
         );
 
         if !response.content.is_empty()
-            && let Some(ep) = output_endpoint
-            && let Err(e) = publisher
+            && let Some(ep) = events.output_endpoint
+            && let Err(e) = events
+                .publisher
                 .publish(
                     topics::Endpoint(ep.clone()),
                     crate::bus::IntermediateEvent {
-                        correlation_id: String::new(),
+                        correlation_id: events.correlation_id.to_owned(),
                         content: response.content.clone(),
                     },
                 )
@@ -146,16 +149,7 @@ pub(crate) async fn execute_turn(
         ));
 
         for tool_call in &response.tool_calls {
-            execute_tool(
-                tool_call,
-                resources.tools,
-                resources.mcp_registry,
-                &filter,
-                recent_messages,
-                publisher,
-                tool_activity_endpoint,
-            )
-            .await;
+            execute_tool(tool_call, resources, &filter, recent_messages, events).await;
         }
 
         log_usage(&response);
@@ -190,19 +184,18 @@ fn drain_interrupts(
 /// Execute a single tool call, falling back to MCP servers.
 async fn execute_tool(
     tool_call: &ToolCall,
-    tools: &ToolRegistry,
-    mcp_registry: &SharedMcpRegistry,
+    resources: &TurnResources<'_>,
     filter: &ToolFilter,
     recent_messages: &mut RecentMessages,
-    publisher: &Publisher,
-    tool_activity_endpoint: Option<&EndpointName>,
+    events: &EventContext<'_>,
 ) {
-    if let Some(ep) = tool_activity_endpoint
-        && let Err(e) = publisher
+    if let Some(ep) = events.tool_activity_endpoint
+        && let Err(e) = events
+            .publisher
             .publish(
                 topics::Endpoint(ep.clone()),
                 ToolActivityEvent::Call(ToolCallEvent {
-                    correlation_id: String::new(),
+                    correlation_id: events.correlation_id.to_owned(),
                     tool_call_id: tool_call.id.clone(),
                     name: tool_call.name.clone(),
                     arguments: tool_call.arguments.clone(),
@@ -215,14 +208,16 @@ async fn execute_tool(
 
     // Try built-in tools first, fall back to MCP servers
     let mut source = "built-in";
-    let result = match tools
+    let result = match resources
+        .tools
         .execute(&tool_call.name, tool_call.arguments.clone(), filter)
         .await
     {
         Err(ToolError::NotFound(_)) => {
             tracing::debug!(tool_name = %tool_call.name, "tool not found in built-in registry, falling back to MCP");
             source = "mcp";
-            mcp_registry
+            resources
+                .mcp_registry
                 .read()
                 .await
                 .call_tool(&tool_call.name, tool_call.arguments.clone())
@@ -245,12 +240,13 @@ async fn execute_tool(
         }
     };
 
-    if let Some(ep) = tool_activity_endpoint
-        && let Err(e) = publisher
+    if let Some(ep) = events.tool_activity_endpoint
+        && let Err(e) = events
+            .publisher
             .publish(
                 topics::Endpoint(ep.clone()),
                 ToolActivityEvent::Result(ToolResultEvent {
-                    correlation_id: String::new(),
+                    correlation_id: events.correlation_id.to_owned(),
                     tool_call_id: tool_call.id.clone(),
                     name: tool_call.name.clone(),
                     output: output.clone(),
