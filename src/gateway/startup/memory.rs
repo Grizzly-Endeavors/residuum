@@ -15,6 +15,7 @@ use crate::memory::types::IndexManifest;
 use crate::memory::vector_store::VectorStore;
 use crate::models::{EmbeddingProvider, SharedHttpClient, build_provider_chain};
 use crate::workspace::layout::WorkspaceLayout;
+use anyhow::Context;
 
 /// Search index and vector store built during initialization.
 pub(super) struct MemoryComponents {
@@ -334,7 +335,7 @@ async fn backfill_obs_file(
     vs: &VectorStore,
     ep: &dyn EmbeddingProvider,
     path: &Path,
-) -> Result<(), FatalError> {
+) -> anyhow::Result<()> {
     let (episode_id, date, observations) = parse_obs_file(path)?;
     if observations.is_empty() {
         return Ok(());
@@ -351,7 +352,7 @@ async fn backfill_obs_file(
     let response = ep
         .embed(&texts)
         .await
-        .map_err(|e| FatalError::Memory(format!("embedding failed for {}: {e}", path.display())))?;
+        .with_context(|| format!("embedding failed for {}", path.display()))?;
 
     let embeddings = response.embeddings;
     vs.insert_observations(&episode_id, &date, &observations, &embeddings)?;
@@ -365,7 +366,7 @@ async fn backfill_idx_file(
     vs: &VectorStore,
     ep: &dyn EmbeddingProvider,
     path: &Path,
-) -> Result<(), FatalError> {
+) -> anyhow::Result<()> {
     let chunks = read_idx_jsonl(path);
     if chunks.is_empty() {
         return Ok(());
@@ -386,7 +387,7 @@ async fn backfill_idx_file(
     let response = ep
         .embed(&texts)
         .await
-        .map_err(|e| FatalError::Memory(format!("embedding failed for {}: {e}", path.display())))?;
+        .with_context(|| format!("embedding failed for {}", path.display()))?;
 
     let embeddings = response.embeddings;
     vs.insert_chunks(&chunks, &embeddings)?;
