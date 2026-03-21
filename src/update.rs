@@ -51,6 +51,7 @@ pub fn new_shared_status() -> SharedUpdateStatus {
 
 /// Fetch the latest release, update shared state, log on failure.
 pub async fn check_for_update(status: &SharedUpdateStatus) {
+    tracing::debug!("checking for updates");
     {
         let mut s = status.write().await;
         s.checking = true;
@@ -63,6 +64,8 @@ pub async fn check_for_update(status: &SharedUpdateStatus) {
             s.update_available = !is_up_to_date(current, &latest);
             if s.update_available {
                 tracing::info!(current = %s.current, latest = %latest, "update available");
+            } else {
+                tracing::debug!(current = %s.current, latest = %latest, "already up to date");
             }
             s.latest = Some(latest);
             s.last_checked = Some(Utc::now());
@@ -82,13 +85,16 @@ pub async fn check_for_update(status: &SharedUpdateStatus) {
 ///
 /// Returns `ResiduumError::Gateway` if the HTTP request or JSON parsing fails.
 pub async fn fetch_latest_version() -> Result<String, ResiduumError> {
+    let url = "https://api.github.com/repos/grizzly-endeavors/residuum/releases/latest";
+    tracing::debug!(url = %url, "fetching latest release");
+
     let client = reqwest::Client::builder()
         .user_agent("residuum-updater")
         .build()
         .map_err(|e| ResiduumError::Gateway(format!("failed to build http client: {e}")))?;
 
     let resp = client
-        .get("https://api.github.com/repos/grizzly-endeavors/residuum/releases/latest")
+        .get(url)
         .header("Accept", "application/vnd.github+json")
         .send()
         .await
@@ -106,12 +112,16 @@ pub async fn fetch_latest_version() -> Result<String, ResiduumError> {
         .await
         .map_err(|e| ResiduumError::Gateway(format!("failed to parse release response: {e}")))?;
 
-    body.get("tag_name")
+    let tag = body
+        .get("tag_name")
         .and_then(|v| v.as_str())
         .map(String::from)
         .ok_or_else(|| {
             ResiduumError::Gateway("release response missing tag_name field".to_string())
-        })
+        })?;
+
+    tracing::debug!(tag_name = %tag, "fetched latest release tag");
+    Ok(tag)
 }
 
 /// Compare the current build version against the latest release tag.
@@ -174,6 +184,8 @@ pub async fn download_and_install() -> Result<String, ResiduumError> {
         .await
         .map_err(|e| ResiduumError::Gateway(format!("failed to read update binary: {e}")))?;
 
+    tracing::debug!(bytes = bytes.len(), version = %latest, "download complete");
+
     let current_exe = std::env::current_exe().map_err(|e| {
         ResiduumError::Gateway(format!("failed to determine current executable path: {e}"))
     })?;
@@ -208,7 +220,9 @@ pub async fn download_and_install() -> Result<String, ResiduumError> {
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&tmp_path, std::fs::Permissions::from_mode(0o755)).map_err(
             |e| {
-                drop(std::fs::remove_file(&tmp_path));
+                if let Err(re) = std::fs::remove_file(&tmp_path) {
+                    tracing::warn!(error = %re, path = %tmp_path.display(), "failed to remove temp file during cleanup");
+                }
                 ResiduumError::Gateway(format!("failed to set executable permissions: {e}"))
             },
         )?;
@@ -217,7 +231,9 @@ pub async fn download_and_install() -> Result<String, ResiduumError> {
     // Atomic rename replaces the binary on disk while the running process
     // keeps its handle to the old inode
     std::fs::rename(&tmp_path, &exe_path).map_err(|e| {
-        drop(std::fs::remove_file(&tmp_path));
+        if let Err(re) = std::fs::remove_file(&tmp_path) {
+            tracing::warn!(error = %re, path = %tmp_path.display(), "failed to remove temp file during cleanup");
+        }
         ResiduumError::Gateway(format!(
             "failed to replace binary at {} — check directory permissions: {e}",
             exe_path.display()
