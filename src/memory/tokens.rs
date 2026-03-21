@@ -22,7 +22,7 @@ pub fn estimate_message_tokens(messages: &[Message]) -> usize {
 }
 
 /// Estimate tokens for a single message including metadata overhead.
-fn estimate_single_message(msg: &Message) -> usize {
+pub(crate) fn estimate_single_message(msg: &Message) -> usize {
     // Base content
     let mut chars = msg.content.len();
 

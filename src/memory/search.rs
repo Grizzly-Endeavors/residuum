@@ -99,6 +99,41 @@ pub struct MemoryIndex {
     line_end_field: Field,
 }
 
+/// Build the tantivy schema and return it with all field handles.
+fn build_schema() -> (
+    Schema,
+    Field,
+    Field,
+    Field,
+    Field,
+    Field,
+    Field,
+    Field,
+    Field,
+) {
+    let mut builder = Schema::builder();
+    let id_field = builder.add_text_field("id", STRING | STORED);
+    let source_type_field = builder.add_text_field("source_type", STRING | STORED);
+    let episode_id_field = builder.add_text_field("episode_id", STRING | STORED);
+    let date_field = builder.add_text_field("date", STRING | STORED);
+    let ctx_field = builder.add_text_field("context", STRING | STORED);
+    let content_field = builder.add_text_field("content", TEXT | STORED);
+    let line_start_field = builder.add_text_field("line_start", STRING | STORED);
+    let line_end_field = builder.add_text_field("line_end", STRING | STORED);
+    let schema = builder.build();
+    (
+        schema,
+        id_field,
+        source_type_field,
+        episode_id_field,
+        date_field,
+        ctx_field,
+        content_field,
+        line_start_field,
+        line_end_field,
+    )
+}
+
 impl MemoryIndex {
     /// Open or create a tantivy index at the given directory.
     ///
@@ -112,16 +147,17 @@ impl MemoryIndex {
             )
         })?;
 
-        let mut builder = Schema::builder();
-        let id_field = builder.add_text_field("id", STRING | STORED);
-        let source_type_field = builder.add_text_field("source_type", STRING | STORED);
-        let episode_id_field = builder.add_text_field("episode_id", STRING | STORED);
-        let date_field = builder.add_text_field("date", STRING | STORED);
-        let ctx_field = builder.add_text_field("context", STRING | STORED);
-        let content_field = builder.add_text_field("content", TEXT | STORED);
-        let line_start_field = builder.add_text_field("line_start", STRING | STORED);
-        let line_end_field = builder.add_text_field("line_end", STRING | STORED);
-        let schema = builder.build();
+        let (
+            schema,
+            id_field,
+            source_type_field,
+            episode_id_field,
+            date_field,
+            ctx_field,
+            content_field,
+            line_start_field,
+            line_end_field,
+        ) = build_schema();
 
         let mmap_dir = MmapDirectory::open(index_dir)
             .with_context(|| format!("failed to open mmap directory at {}", index_dir.display()))?;
@@ -157,16 +193,17 @@ impl MemoryIndex {
     /// # Errors
     /// Returns an error if the in-memory index cannot be created.
     pub fn empty() -> anyhow::Result<Self> {
-        let mut builder = Schema::builder();
-        let id_field = builder.add_text_field("id", STRING | STORED);
-        let source_type_field = builder.add_text_field("source_type", STRING | STORED);
-        let episode_id_field = builder.add_text_field("episode_id", STRING | STORED);
-        let date_field = builder.add_text_field("date", STRING | STORED);
-        let ctx_field = builder.add_text_field("context", STRING | STORED);
-        let content_field = builder.add_text_field("content", TEXT | STORED);
-        let line_start_field = builder.add_text_field("line_start", STRING | STORED);
-        let line_end_field = builder.add_text_field("line_end", STRING | STORED);
-        let schema = builder.build();
+        let (
+            schema,
+            id_field,
+            source_type_field,
+            episode_id_field,
+            date_field,
+            ctx_field,
+            content_field,
+            line_start_field,
+            line_end_field,
+        ) = build_schema();
 
         let index = Index::create_in_ram(schema);
 
@@ -548,9 +585,8 @@ impl MemoryIndex {
                                 let mut doc_ids = Vec::new();
                                 for (i, obs) in observations.iter().enumerate() {
                                     let doc_id = format!("{episode_id}-o{i}");
-                                    add_obs_document(
+                                    self.add_obs_document(
                                         writer,
-                                        self,
                                         &doc_id,
                                         &episode_id,
                                         &date,
@@ -578,7 +614,7 @@ impl MemoryIndex {
                         let chunks = read_idx_jsonl(&path);
                         let mut doc_ids = Vec::new();
                         for chunk in &chunks {
-                            add_chunk_document(writer, self, chunk)?;
+                            self.add_chunk_document(writer, chunk)?;
                             doc_ids.push(chunk.chunk_id.clone());
                         }
                         result.chunk_count += chunks.len();
@@ -612,9 +648,8 @@ impl MemoryIndex {
             let (episode_id, date, observations) = parse_obs_file(abs_path)?;
             for (i, obs) in observations.iter().enumerate() {
                 let doc_id = format!("{episode_id}-o{i}");
-                add_obs_document(
+                self.add_obs_document(
                     writer,
-                    self,
                     &doc_id,
                     &episode_id,
                     &date,
@@ -626,61 +661,59 @@ impl MemoryIndex {
         } else if rel_path.ends_with(".idx.jsonl") {
             let chunks = read_idx_jsonl(abs_path);
             for chunk in &chunks {
-                add_chunk_document(writer, self, chunk)?;
+                self.add_chunk_document(writer, chunk)?;
                 doc_ids.push(chunk.chunk_id.clone());
             }
         }
 
         Ok(doc_ids)
     }
-}
 
-/// Add an observation document to the writer.
-fn add_obs_document(
-    writer: &mut IndexWriter,
-    idx: &MemoryIndex,
-    doc_id: &str,
-    episode_id: &str,
-    date: &str,
-    ctx: &str,
-    content: &str,
-) -> anyhow::Result<()> {
-    let mut doc = TantivyDocument::default();
-    doc.add_text(idx.id_field, doc_id);
-    doc.add_text(idx.source_type_field, "observation");
-    doc.add_text(idx.episode_id_field, episode_id);
-    doc.add_text(idx.date_field, date);
-    doc.add_text(idx.ctx_field, ctx);
-    doc.add_text(idx.content_field, content);
-    doc.add_text(idx.line_start_field, "");
-    doc.add_text(idx.line_end_field, "");
+    fn add_obs_document(
+        &self,
+        writer: &mut IndexWriter,
+        doc_id: &str,
+        episode_id: &str,
+        date: &str,
+        ctx: &str,
+        content: &str,
+    ) -> anyhow::Result<()> {
+        let mut doc = TantivyDocument::default();
+        doc.add_text(self.id_field, doc_id);
+        doc.add_text(self.source_type_field, "observation");
+        doc.add_text(self.episode_id_field, episode_id);
+        doc.add_text(self.date_field, date);
+        doc.add_text(self.ctx_field, ctx);
+        doc.add_text(self.content_field, content);
+        doc.add_text(self.line_start_field, "");
+        doc.add_text(self.line_end_field, "");
 
-    writer
-        .add_document(doc)
-        .context("failed to add observation to search index")?;
-    Ok(())
-}
+        writer
+            .add_document(doc)
+            .context("failed to add observation to search index")?;
+        Ok(())
+    }
 
-/// Add a chunk document to the writer.
-fn add_chunk_document(
-    writer: &mut IndexWriter,
-    idx: &MemoryIndex,
-    chunk: &IndexChunk,
-) -> anyhow::Result<()> {
-    let mut doc = TantivyDocument::default();
-    doc.add_text(idx.id_field, &chunk.chunk_id);
-    doc.add_text(idx.source_type_field, "chunk");
-    doc.add_text(idx.episode_id_field, &chunk.episode_id);
-    doc.add_text(idx.date_field, &chunk.date);
-    doc.add_text(idx.ctx_field, &chunk.context);
-    doc.add_text(idx.content_field, &chunk.content);
-    doc.add_text(idx.line_start_field, chunk.line_start.to_string());
-    doc.add_text(idx.line_end_field, chunk.line_end.to_string());
+    fn add_chunk_document(
+        &self,
+        writer: &mut IndexWriter,
+        chunk: &IndexChunk,
+    ) -> anyhow::Result<()> {
+        let mut doc = TantivyDocument::default();
+        doc.add_text(self.id_field, &chunk.chunk_id);
+        doc.add_text(self.source_type_field, "chunk");
+        doc.add_text(self.episode_id_field, &chunk.episode_id);
+        doc.add_text(self.date_field, &chunk.date);
+        doc.add_text(self.ctx_field, &chunk.context);
+        doc.add_text(self.content_field, &chunk.content);
+        doc.add_text(self.line_start_field, chunk.line_start.to_string());
+        doc.add_text(self.line_end_field, chunk.line_end.to_string());
 
-    writer
-        .add_document(doc)
-        .context("failed to add chunk to search index")?;
-    Ok(())
+        writer
+            .add_document(doc)
+            .context("failed to add chunk to search index")?;
+        Ok(())
+    }
 }
 
 /// Extract a text field value from a tantivy document.
@@ -694,10 +727,7 @@ fn get_text(doc: &TantivyDocument, field: Field) -> String {
 /// Extract a snippet (first 200 chars of content) from a document.
 fn get_snippet(doc: &TantivyDocument, content_field: Field) -> String {
     match doc.get_first(content_field) {
-        Some(OwnedValue::Str(s)) => {
-            let end = s.len().min(200);
-            s.get(..end).unwrap_or_default().to_string()
-        }
+        Some(OwnedValue::Str(s)) => crate::memory::truncate_at_char_boundary(s, 200),
         Some(_) | None => String::new(),
     }
 }
@@ -1033,7 +1063,7 @@ fn merge_hybrid_results(
     )]
     let min_score = cfg.min_score as f32;
 
-    let mut scored: Vec<(f32, SearchResult)> = Vec::new();
+    let mut scored: Vec<SearchResult> = Vec::new();
     for id in &all_ids {
         let bm25_score = bm25_map.get(id).map_or(0.0, |(s, _)| *s);
         let vec_score = vec_map.get(id).map_or(0.0, |(s, _)| *s);
@@ -1050,11 +1080,7 @@ fn merge_hybrid_results(
                 ..(*bm25_r).clone()
             }
         } else if let Some((_, vec_r)) = vec_map.get(id) {
-            let snippet = if vec_r.content.len() > 200 {
-                vec_r.content.get(..200).unwrap_or_default().to_string()
-            } else {
-                vec_r.content.clone()
-            };
+            let snippet = crate::memory::truncate_at_char_boundary(&vec_r.content, 200);
             SearchResult {
                 id: vec_r.id.clone(),
                 source_type: vec_r.source_type.clone(),
@@ -1070,14 +1096,18 @@ fn merge_hybrid_results(
             continue;
         };
 
-        scored.push((hybrid, result));
+        scored.push(result);
     }
 
     // Sort descending by hybrid score
-    scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+    scored.sort_by(|a, b| {
+        b.score
+            .partial_cmp(&a.score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
     scored.truncate(limit);
 
-    scored.into_iter().map(|(_, r)| r).collect()
+    scored
 }
 
 /// Apply exponential temporal decay to search result scores.

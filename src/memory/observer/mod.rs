@@ -16,7 +16,6 @@ use crate::memory::chunk_extractor::{extract_chunks, write_idx_jsonl};
 use crate::memory::episode_store::{episode_idx_path, episode_obs_path, write_episode_transcript};
 use crate::memory::log_store::{append_observations, next_episode_id, save_episode_observations};
 use crate::memory::recent_messages::RecentMessage;
-use crate::memory::tokens::estimate_message_tokens;
 use crate::memory::types::{Episode, IndexChunk, Observation};
 use crate::models::{CompletionOptions, Message, ModelProvider, ResponseFormat};
 use crate::time::now_local;
@@ -160,8 +159,7 @@ impl Observer {
     /// Check whether the observer should fire based on recent message token count.
     #[must_use]
     pub fn should_observe(&self, recent_messages: &[RecentMessage]) -> bool {
-        let tokens = estimate_recent_tokens(recent_messages);
-        tokens >= self.config.threshold_tokens
+        self.check_thresholds(recent_messages) != ObserveAction::None
     }
 
     /// Check token thresholds and return the appropriate action.
@@ -242,11 +240,10 @@ impl Observer {
 
 /// Estimate the total token count of recent messages.
 fn estimate_recent_tokens(recent_messages: &[RecentMessage]) -> usize {
-    let messages: Vec<Message> = recent_messages
+    recent_messages
         .iter()
-        .map(|rm| rm.message.clone())
-        .collect();
-    estimate_message_tokens(&messages)
+        .map(|rm| crate::memory::tokens::estimate_single_message(&rm.message))
+        .sum()
 }
 
 /// Pick the most common context from a list of context strings.
