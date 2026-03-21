@@ -74,7 +74,7 @@ pub fn load_mcp_servers_map(path: &Path) -> Result<HashMap<String, McpServerEntr
         ))
     })?;
 
-    let servers = file
+    let servers: HashMap<String, McpServerEntry> = file
         .mcp_servers
         .into_iter()
         .filter_map(|(name, raw)| {
@@ -140,6 +140,7 @@ pub fn load_mcp_servers_map(path: &Path) -> Result<HashMap<String, McpServerEntr
         })
         .collect();
 
+    tracing::debug!(count = servers.len(), path = %path.display(), "loaded MCP servers");
     Ok(servers)
 }
 
@@ -304,7 +305,7 @@ pub fn load_channel_configs(path: &Path) -> Result<Vec<ExternalChannelConfig>, R
                     tracing::warn!(
                         channel = %name,
                         type_ = %unknown,
-                        "unrecognized channel type, falling back to webhook"
+                        "unrecognized channel type, falling back to webhook; this channel will likely fail at send time"
                     );
                     let url = raw.url.unwrap_or_default();
                     if url.is_empty() {
@@ -382,6 +383,7 @@ pub async fn build_external_channels(
         }
     }
 
+    tracing::debug!(count = channels.len(), "built external channels");
     channels
 }
 
@@ -408,7 +410,6 @@ async fn build_macos_channel(
             Ok(c) => config.default_category = c,
             Err(e) => {
                 tracing::warn!(channel = name, error = %e, "invalid macOS channel config, skipping");
-                eprintln!("warning: invalid macOS channel '{name}' config: {e}");
                 return None;
             }
         }
@@ -419,7 +420,6 @@ async fn build_macos_channel(
             Ok(p) => config.default_priority = p,
             Err(e) => {
                 tracing::warn!(channel = name, error = %e, "invalid macOS channel config, skipping");
-                eprintln!("warning: invalid macOS channel '{name}' config: {e}");
                 return None;
             }
         }
@@ -443,7 +443,6 @@ async fn build_macos_channel(
         }
         Err(e) => {
             tracing::warn!(channel = name, error = %e, "failed to initialize macOS channel, skipping");
-            eprintln!("warning: failed to initialize macOS channel '{name}': {e}");
             None
         }
     }
@@ -466,9 +465,6 @@ async fn build_macos_channel(
     tracing::warn!(
         channel = name,
         "macOS notification channel configured but not available on this platform"
-    );
-    eprintln!(
-        "warning: macOS notification channel '{name}' configured but not available on this platform"
     );
     None
 }

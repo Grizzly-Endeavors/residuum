@@ -367,7 +367,8 @@ pub async fn ensure_workspace(
     // BOOTSTRAP.md is first-run only: write it once, then drop a sentinel so it
     // is never recreated after the agent deletes it.
     let sentinel = layout.root().join(".bootstrapped");
-    if !sentinel.exists() {
+    let fresh_bootstrap = !sentinel.exists();
+    if fresh_bootstrap {
         write_if_missing(&layout.bootstrap_md(), DEFAULT_BOOTSTRAP).await?;
         // Create the sentinel after writing BOOTSTRAP.md so that if we crash
         // between writing and sentinel creation, the next startup will retry.
@@ -377,6 +378,7 @@ pub async fn ensure_workspace(
                 sentinel.display()
             ))
         })?;
+        tracing::debug!(sentinel = %sentinel.display(), "bootstrap sentinel written");
     }
 
     write_if_missing(&layout.observer_md(), DEFAULT_OBSERVER_PROMPT).await?;
@@ -391,6 +393,7 @@ pub async fn ensure_workspace(
 
     tracing::info!(
         workspace = %layout.root().display(),
+        fresh_bootstrap,
         "workspace ready"
     );
 
@@ -499,12 +502,16 @@ async fn write_bundled_skills(layout: &WorkspaceLayout) -> Result<(), ResiduumEr
     )
     .await?;
 
+    tracing::debug!(count = 15, "wrote bundled skills");
+
     Ok(())
 }
 
 /// Write content to a file only if it does not already exist.
 async fn write_if_missing(path: &std::path::Path, content: &str) -> Result<(), ResiduumError> {
-    if !path.exists() {
+    if path.exists() {
+        tracing::trace!(path = %path.display(), "identity file already exists, skipping");
+    } else {
         tokio::fs::write(path, content).await.map_err(|e| {
             ResiduumError::Workspace(format!("failed to write default {}: {e}", path.display()))
         })?;

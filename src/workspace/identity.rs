@@ -71,7 +71,7 @@ async fn read_optional(path: &std::path::Path) -> Result<Option<String>, Residuu
     match tokio::fs::read_to_string(path).await {
         Ok(content) => {
             if content.trim().is_empty() {
-                tracing::debug!(path = %path.display(), "identity file exists but is whitespace-only, treating as absent");
+                tracing::warn!(path = %path.display(), "identity file exists but is whitespace-only, treating as absent");
                 Ok(None)
             } else {
                 Ok(Some(content))
