@@ -6,8 +6,8 @@ use crate::agent::Agent;
 use crate::agent::context::{ProjectsContext, PromptContext, SkillsContext, SubagentsContext};
 use crate::agent::interrupt::Interrupt;
 use crate::bus::{
-    EndpointName, MessageEvent, Publisher, ResponseEvent, Subscriber, SystemMessageEvent,
-    TurnLifecycleEvent, topics,
+    EndpointCapabilities, EndpointId, EndpointName, MessageEvent, Publisher, ResponseEvent,
+    Subscriber, SystemMessageEvent, TurnLifecycleEvent, topics,
 };
 
 use crate::gateway::types::{GatewayExit, GatewayRuntime, ReloadSignal};
@@ -162,6 +162,7 @@ async fn run_agent_turn_with_interrupts(
     content: &str,
     publisher: &Publisher,
     output_endpoint: Option<&EndpointName>,
+    tool_activity_endpoint: Option<&EndpointName>,
     origin: Option<&MessageOrigin>,
     prompt_ctx: &PromptContext<'_>,
     images: &[ImageData],
@@ -174,6 +175,7 @@ async fn run_agent_turn_with_interrupts(
             content,
             publisher,
             output_endpoint,
+            tool_activity_endpoint,
             origin,
             prompt_ctx,
             &mut interrupt_rx,
@@ -246,6 +248,14 @@ pub async fn handle_inbound_message(
         Some(ep)
     };
 
+    // Only publish tool-activity events to endpoints with STREAMING capability.
+    let tool_activity_endpoint = output_endpoint.as_ref().filter(|ep| {
+        let endpoint_id = EndpointId::from(ep.as_ref());
+        rt.endpoint_registry
+            .get(&endpoint_id)
+            .is_some_and(|entry| entry.capabilities.contains(EndpointCapabilities::STREAMING))
+    });
+
     if let Some(ref ep) = output_endpoint
         && let Err(e) = rt
             .publisher
@@ -271,6 +281,7 @@ pub async fn handle_inbound_message(
         &message.content,
         &rt.publisher,
         output_endpoint.as_ref(),
+        tool_activity_endpoint,
         Some(&origin),
         &prompt_ctx,
         &message.images,

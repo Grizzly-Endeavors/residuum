@@ -53,6 +53,7 @@ pub(crate) async fn execute_turn(
     recent_messages: &mut RecentMessages,
     publisher: &Publisher,
     output_endpoint: Option<&EndpointName>,
+    tool_activity_endpoint: Option<&EndpointName>,
     status_line: Option<&StatusLine>,
     interrupt_rx: &mut mpsc::Receiver<Interrupt>,
 ) -> anyhow::Result<Vec<String>> {
@@ -153,7 +154,7 @@ pub(crate) async fn execute_turn(
                 &filter,
                 recent_messages,
                 publisher,
-                output_endpoint,
+                tool_activity_endpoint,
             )
             .await;
         }
@@ -195,9 +196,9 @@ async fn execute_tool(
     filter: &ToolFilter,
     recent_messages: &mut RecentMessages,
     publisher: &Publisher,
-    output_endpoint: Option<&EndpointName>,
+    tool_activity_endpoint: Option<&EndpointName>,
 ) {
-    if let Some(ep) = output_endpoint
+    if let Some(ep) = tool_activity_endpoint
         && let Err(e) = publisher
             .publish(
                 topics::ToolActivity(ep.clone()),
@@ -245,7 +246,7 @@ async fn execute_tool(
         }
     };
 
-    if let Some(ep) = output_endpoint
+    if let Some(ep) = tool_activity_endpoint
         && let Err(e) = publisher
             .publish(
                 topics::ToolActivity(ep.clone()),
