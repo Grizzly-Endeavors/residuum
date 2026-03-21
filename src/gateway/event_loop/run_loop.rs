@@ -154,9 +154,13 @@ async fn build_runtime(
         .map_err(|e| FatalError::Gateway(format!("failed to subscribe to user:message: {e}")))?;
     let error_subscriber = core
         .bus_handle
-        .subscribe(crate::bus::topics::SystemMessage)
+        .subscribe(crate::bus::topics::Notification(
+            crate::bus::NotifyName::from(crate::bus::SYSTEM_CHANNEL),
+        ))
         .await
-        .map_err(|e| FatalError::Gateway(format!("failed to subscribe to system:message: {e}")))?;
+        .map_err(|e| {
+            FatalError::Gateway(format!("failed to subscribe to system notifications: {e}"))
+        })?;
 
     let notify_handles = crate::gateway::startup::spawn_notify_subscribers(
         &core.bus_handle,
@@ -321,8 +325,10 @@ async fn handle_workspace_reload(rt: &mut GatewayRuntime) {
     if let Err(e) = rt
         .publisher
         .publish(
-            crate::bus::topics::SystemMessage,
-            crate::bus::SystemMessageEvent::Notice {
+            crate::bus::topics::Notification(crate::bus::NotifyName::from(
+                crate::bus::SYSTEM_CHANNEL,
+            )),
+            crate::bus::NoticeEvent {
                 message: "workspace configuration reloaded".to_string(),
             },
         )
@@ -579,9 +585,9 @@ async fn run_event_loop(mut rt: GatewayRuntime) -> GatewayExit {
             }
 
             error_event = rt.error_subscriber.recv() => {
-                if let Ok(Some(crate::bus::SystemMessageEvent::Error { message, .. })) = error_event {
-                    tracing::debug!(message = %message, "bus delivery error");
-                    rt.agent.inject_system_message(format!("[Bus] {message}"));
+                if let Ok(Some(event)) = error_event {
+                    tracing::debug!(message = %event.message, "bus delivery error");
+                    rt.agent.inject_system_message(format!("[Bus] {}", event.message));
                 }
             }
 

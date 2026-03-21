@@ -1,13 +1,13 @@
 //! Publisher and subscriber handles for the bus.
 
-use std::any::Any;
+use std::any::{Any, TypeId};
 use std::marker::PhantomData;
 use std::sync::Arc;
 
 use tokio::sync::mpsc;
 use tracing::error;
 
-use super::topics::Topic;
+use super::topics::{Carries, Topic};
 use super::types::{BusError, TopicId};
 
 // ---------------------------------------------------------------------------
@@ -23,16 +23,25 @@ pub(super) type ErasedEvent = Arc<dyn Any + Send + Sync>;
 
 /// Commands sent from handles to the broker task.
 pub enum BrokerCommand {
-    /// Publish a type-erased event to a topic.
-    Publish { topic: TopicId, event: ErasedEvent },
-    /// Register a subscriber for a topic.
+    /// Publish a type-erased event to a (topic, `event_type`) pair.
+    Publish {
+        topic: TopicId,
+        event_type: TypeId,
+        event: ErasedEvent,
+    },
+    /// Register a subscriber for a (topic, `event_type`) pair.
     Subscribe {
         id: u64,
         topic: TopicId,
+        event_type: TypeId,
         sender: mpsc::Sender<ErasedEvent>,
     },
-    /// Remove a subscriber from a topic.
-    Unsubscribe { id: u64, topic: TopicId },
+    /// Remove a subscriber from a (topic, `event_type`) pair.
+    Unsubscribe {
+        id: u64,
+        topic: TopicId,
+        event_type: TypeId,
+    },
 }
 
 // ---------------------------------------------------------------------------
@@ -51,16 +60,21 @@ impl Publisher {
         Self { cmd_tx }
     }
 
-    /// Publish a typed event to a typed topic.
+    /// Publish a typed event to a topic that carries it.
     ///
     /// # Errors
     ///
     /// Returns `BusError::BrokerShutdown` if the broker has stopped.
-    pub async fn publish<T: Topic>(&self, topic: T, event: T::Event) -> Result<(), BusError> {
+    pub async fn publish<T, E>(&self, topic: T, event: E) -> Result<(), BusError>
+    where
+        T: Topic + Carries<E>,
+        E: Clone + Send + Sync + 'static,
+    {
         let erased: ErasedEvent = Arc::new(event);
         self.cmd_tx
             .send(BrokerCommand::Publish {
                 topic: topic.topic_id(),
+                event_type: TypeId::of::<E>(),
                 event: erased,
             })
             .await
@@ -69,13 +83,14 @@ impl Publisher {
 }
 
 // ---------------------------------------------------------------------------
-// Subscriber (typed, receives T::Event directly)
+// Subscriber (typed, receives E directly)
 // ---------------------------------------------------------------------------
 
 /// A single-consumer handle for receiving typed events from a bus topic.
 pub struct Subscriber<E> {
     id: u64,
     topic: TopicId,
+    event_type: TypeId,
     event_rx: mpsc::Receiver<ErasedEvent>,
     cmd_tx: mpsc::Sender<BrokerCommand>,
     _phantom: PhantomData<E>,
@@ -92,6 +107,7 @@ impl<E: Clone + Send + Sync + 'static> Subscriber<E> {
         Self {
             id,
             topic,
+            event_type: TypeId::of::<E>(),
             event_rx,
             cmd_tx,
             _phantom: PhantomData,
@@ -129,6 +145,7 @@ impl<E> Drop for Subscriber<E> {
         drop(self.cmd_tx.try_send(BrokerCommand::Unsubscribe {
             id: self.id,
             topic: self.topic.clone(),
+            event_type: self.event_type,
         }));
     }
 }

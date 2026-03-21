@@ -58,17 +58,6 @@ export type ServerMessage =
       content: string;
     }
   | {
-      type: "system_event";
-      /**
-       * Source of the event (e.g. `"action: my_task"` or `"pulse: my_check"`).
-       */
-      source: string;
-      /**
-       * The event content.
-       */
-      content: string;
-    }
-  | {
       type: "broadcast_response";
       /**
        * The intermediate content.

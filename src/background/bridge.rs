@@ -41,7 +41,7 @@ async fn run_bridge(result_rx: SharedResultReceiver, publisher: Publisher, tz: c
     let mut rx = result_rx.lock().await;
     while let Some(result) = rx.recv().await {
         let event = convert_to_agent_result(&result, tz);
-        if let Err(e) = publisher.publish(topics::BackgroundResult, event).await {
+        if let Err(e) = publisher.publish(topics::Background, event).await {
             tracing::warn!(
                 task_id = %result.id,
                 error = %e,
@@ -157,10 +157,7 @@ mod tests {
         let (tx, rx) = mpsc::channel(8);
         let bus_handle = crate::bus::spawn_broker();
         let publisher = bus_handle.publisher();
-        let mut subscriber = bus_handle
-            .subscribe(topics::BackgroundResult)
-            .await
-            .unwrap();
+        let mut subscriber = bus_handle.subscribe(topics::Background).await.unwrap();
 
         let shared_rx = Arc::new(tokio::sync::Mutex::new(rx));
         let handle = spawn_result_bridge(shared_rx, publisher, chrono_tz::UTC);
@@ -179,11 +176,12 @@ mod tests {
 
         tx.send(result).await.unwrap();
 
-        let event = tokio::time::timeout(std::time::Duration::from_millis(200), subscriber.recv())
-            .await
-            .unwrap()
-            .unwrap()
-            .unwrap();
+        let event: AgentResultEvent =
+            tokio::time::timeout(std::time::Duration::from_millis(200), subscriber.recv())
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap();
 
         assert_eq!(event.task_id, "bg-test");
         assert_eq!(event.source_label, "agent:test-task");

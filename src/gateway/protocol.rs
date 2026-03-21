@@ -80,13 +80,6 @@ pub enum ServerMessage {
         /// The response content.
         content: String,
     },
-    /// A system event from a scheduled action or pulse.
-    SystemEvent {
-        /// Source of the event (e.g. `"action: my_task"` or `"pulse: my_check"`).
-        source: String,
-        /// The event content.
-        content: String,
-    },
     /// Intermediate text the agent emitted alongside tool calls.
     BroadcastResponse {
         /// The intermediate content.

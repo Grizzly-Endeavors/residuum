@@ -56,7 +56,7 @@ impl EndpointRegistry {
         // WebSocket — always present
         registry.register(EndpointEntry {
             id: EndpointId::from("ws"),
-            topic: TopicId::Response(EndpointName::from("ws")),
+            topic: TopicId::Endpoint(EndpointName::from("ws")),
             capabilities: EndpointCapabilities::INTERACTIVE.union(EndpointCapabilities::STREAMING),
             display_name: "WebSocket".to_string(),
         });
@@ -65,7 +65,7 @@ impl EndpointRegistry {
         if config.discord.is_some() {
             registry.register(EndpointEntry {
                 id: EndpointId::from("discord"),
-                topic: TopicId::Response(EndpointName::from("discord")),
+                topic: TopicId::Endpoint(EndpointName::from("discord")),
                 capabilities: EndpointCapabilities::INTERACTIVE,
                 display_name: "Discord".to_string(),
             });
@@ -75,7 +75,7 @@ impl EndpointRegistry {
         if config.telegram.is_some() {
             registry.register(EndpointEntry {
                 id: EndpointId::from("telegram"),
-                topic: TopicId::Response(EndpointName::from("telegram")),
+                topic: TopicId::Endpoint(EndpointName::from("telegram")),
                 capabilities: EndpointCapabilities::INTERACTIVE,
                 display_name: "Telegram".to_string(),
             });
@@ -265,7 +265,7 @@ mod tests {
     fn make_entry(id: &str, caps: EndpointCapabilities) -> EndpointEntry {
         EndpointEntry {
             id: EndpointId::from(id),
-            topic: TopicId::Response(EndpointName::from(id)),
+            topic: TopicId::Endpoint(EndpointName::from(id)),
             capabilities: caps,
             display_name: id.to_string(),
         }
@@ -296,13 +296,13 @@ mod tests {
         let reg = EndpointRegistry::new();
         reg.register(EndpointEntry {
             id: EndpointId::from("ws"),
-            topic: TopicId::Response(EndpointName::from("ws")),
+            topic: TopicId::Endpoint(EndpointName::from("ws")),
             capabilities: EndpointCapabilities::INTERACTIVE,
             display_name: "first".to_string(),
         });
         reg.register(EndpointEntry {
             id: EndpointId::from("ws"),
-            topic: TopicId::Response(EndpointName::from("ws")),
+            topic: TopicId::Endpoint(EndpointName::from("ws")),
             capabilities: EndpointCapabilities::STREAMING,
             display_name: "second".to_string(),
         });
@@ -335,14 +335,14 @@ mod tests {
         let reg = EndpointRegistry::new();
         let entry = EndpointEntry {
             id: EndpointId::from("telegram"),
-            topic: TopicId::Response(EndpointName::from("telegram")),
+            topic: TopicId::Endpoint(EndpointName::from("telegram")),
             capabilities: EndpointCapabilities::INTERACTIVE,
             display_name: "Telegram".to_string(),
         };
         reg.register(entry);
 
         let got = reg
-            .get_by_topic(&TopicId::Response(EndpointName::from("telegram")))
+            .get_by_topic(&TopicId::Endpoint(EndpointName::from("telegram")))
             .unwrap();
         assert_eq!(got.id, EndpointId::from("telegram"));
     }
@@ -352,7 +352,7 @@ mod tests {
         let reg = EndpointRegistry::new();
         reg.register(make_entry("ws", EndpointCapabilities::INTERACTIVE));
         assert!(
-            reg.get_by_topic(&TopicId::Response(EndpointName::from("missing")))
+            reg.get_by_topic(&TopicId::Endpoint(EndpointName::from("missing")))
                 .is_none()
         );
     }

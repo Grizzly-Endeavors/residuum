@@ -5,8 +5,8 @@ use serde_json::Value;
 use tokio::sync::watch;
 
 use crate::bus::{
-    EndpointCapabilities, EndpointId, EndpointName, EndpointRegistry, Publisher,
-    SystemMessageEvent, topics,
+    EndpointCapabilities, EndpointId, EndpointName, EndpointRegistry, NoticeEvent, NotifyName,
+    Publisher, SYSTEM_CHANNEL, topics,
 };
 use crate::models::ToolDefinition;
 
@@ -112,8 +112,8 @@ impl Tool for SwitchEndpointTool {
         if let Err(e) = self
             .publisher
             .publish(
-                topics::SystemMessage,
-                SystemMessageEvent::Notice {
+                topics::Notification(NotifyName::from(SYSTEM_CHANNEL)),
+                NoticeEvent {
                     message: "Agent switched output to this endpoint.".to_string(),
                 },
             )
@@ -139,13 +139,13 @@ mod tests {
         let registry = EndpointRegistry::new();
         registry.register(EndpointEntry {
             id: EndpointId::from("ws"),
-            topic: TopicId::Response(EndpointName::from("ws")),
+            topic: TopicId::Endpoint(EndpointName::from("ws")),
             capabilities: EndpointCapabilities::INTERACTIVE,
             display_name: "WebSocket".to_string(),
         });
         registry.register(EndpointEntry {
             id: EndpointId::from("discord"),
-            topic: TopicId::Response(EndpointName::from("discord")),
+            topic: TopicId::Endpoint(EndpointName::from("discord")),
             capabilities: EndpointCapabilities::INTERACTIVE,
             display_name: "Discord".to_string(),
         });

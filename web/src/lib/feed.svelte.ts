@@ -54,14 +54,6 @@ export class FeedStore {
         }
         break;
 
-      case "system_event":
-        this.feed.push({
-          id: nextFeedId(),
-          kind: "system",
-          content: `[${msg.source}] ${msg.content}`,
-        });
-        break;
-
       case "error":
         this.isProcessing = false;
         this.feed.push({

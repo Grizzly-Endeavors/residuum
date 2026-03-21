@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use crate::agent::Agent;
-use crate::bus::{Publisher, SystemMessageEvent, topics};
+use crate::bus::{ErrorEvent, NoticeEvent, NotifyName, Publisher, SYSTEM_CHANNEL, topics};
 use crate::memory::log_store::load_observation_log;
 use crate::memory::observer::{ObserveAction, ObserveResult, Observer};
 use crate::memory::recent_context::{RecentContext, save_recent_context};
@@ -269,12 +269,12 @@ async fn run_reflector_check(reflector: &Reflector, layout: &WorkspaceLayout) ->
     }
 }
 
-/// Publish a notice to `SystemMessage`.
+/// Publish a notice to the system notification channel.
 async fn publish_notice(publisher: &Publisher, message: String) {
     if let Err(e) = publisher
         .publish(
-            topics::SystemMessage,
-            SystemMessageEvent::Notice { message },
+            topics::Notification(NotifyName::from(SYSTEM_CHANNEL)),
+            NoticeEvent { message },
         )
         .await
     {
@@ -282,12 +282,12 @@ async fn publish_notice(publisher: &Publisher, message: String) {
     }
 }
 
-/// Publish an error to `SystemMessage`.
+/// Publish an error to the system notification channel.
 async fn publish_error(publisher: &Publisher, message: String) {
     if let Err(e) = publisher
         .publish(
-            topics::SystemMessage,
-            SystemMessageEvent::Error {
+            topics::Notification(NotifyName::from(SYSTEM_CHANNEL)),
+            ErrorEvent {
                 correlation_id: String::new(),
                 message,
             },

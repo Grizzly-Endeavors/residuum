@@ -72,6 +72,7 @@ async fn publish_action_spawn(
         .unwrap_or(BackgroundModelTier::Medium);
 
     let spawn_event = SpawnRequestEvent {
+        preset: PresetName::from(preset_name),
         source_label: format!("action:{}", action.name),
         prompt: action.prompt.clone(),
         context: None,
@@ -79,8 +80,7 @@ async fn publish_action_spawn(
         model_tier_override: Some(tier),
     };
 
-    let topic = topics::SpawnRequest(PresetName::from(preset_name));
-    if let Err(e) = publisher.publish(topic, spawn_event).await {
+    if let Err(e) = publisher.publish(topics::Background, spawn_event).await {
         tracing::warn!(
             action = %action.name,
             error = %e,

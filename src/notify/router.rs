@@ -32,7 +32,7 @@ pub(crate) async fn spawn_notification_router(
     publisher: Publisher,
     alerts_path: PathBuf,
 ) -> Option<JoinHandle<()>> {
-    let subscriber = match bus_handle.subscribe(topics::BackgroundResult).await {
+    let subscriber = match bus_handle.subscribe(topics::Background).await {
         Ok(s) => s,
         Err(e) => {
             tracing::warn!(error = %e, "failed to subscribe to background:result topic");

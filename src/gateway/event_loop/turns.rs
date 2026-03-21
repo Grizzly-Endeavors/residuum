@@ -6,8 +6,8 @@ use crate::agent::Agent;
 use crate::agent::context::{ProjectsContext, PromptContext, SkillsContext, SubagentsContext};
 use crate::agent::interrupt::Interrupt;
 use crate::bus::{
-    EndpointCapabilities, EndpointId, EndpointName, MessageEvent, Publisher, ResponseEvent,
-    Subscriber, SystemMessageEvent, TurnLifecycleEvent, topics,
+    EndpointCapabilities, EndpointId, EndpointName, ErrorEvent, MessageEvent, NotifyName,
+    Publisher, ResponseEvent, SYSTEM_CHANNEL, Subscriber, TurnLifecycleEvent, topics,
 };
 
 use crate::gateway::types::{GatewayExit, GatewayRuntime, ReloadSignal};
@@ -260,7 +260,7 @@ pub async fn handle_inbound_message(
         && let Err(e) = rt
             .publisher
             .publish(
-                topics::TurnLifecycle(ep.clone()),
+                topics::Endpoint(ep.clone()),
                 TurnLifecycleEvent::Started {
                     correlation_id: reply_id.clone(),
                 },
@@ -297,7 +297,7 @@ pub async fn handle_inbound_message(
                     if let Err(e) = rt
                         .publisher
                         .publish(
-                            topics::Response(ep.clone()),
+                            topics::Endpoint(ep.clone()),
                             ResponseEvent {
                                 correlation_id: reply_id.clone(),
                                 content: text.clone(),
@@ -312,7 +312,7 @@ pub async fn handle_inbound_message(
                 if let Err(e) = rt
                     .publisher
                     .publish(
-                        topics::TurnLifecycle(ep.clone()),
+                        topics::Endpoint(ep.clone()),
                         TurnLifecycleEvent::Ended {
                             correlation_id: reply_id.clone(),
                         },
@@ -328,8 +328,8 @@ pub async fn handle_inbound_message(
             if let Err(pub_err) = rt
                 .publisher
                 .publish(
-                    topics::SystemMessage,
-                    SystemMessageEvent::Error {
+                    topics::Notification(NotifyName::from(SYSTEM_CHANNEL)),
+                    ErrorEvent {
                         correlation_id: reply_id.clone(),
                         message: e.to_string(),
                     },
@@ -342,7 +342,7 @@ pub async fn handle_inbound_message(
                 && let Err(end_err) = rt
                     .publisher
                     .publish(
-                        topics::TurnLifecycle(ep.clone()),
+                        topics::Endpoint(ep.clone()),
                         TurnLifecycleEvent::Ended {
                             correlation_id: reply_id.clone(),
                         },

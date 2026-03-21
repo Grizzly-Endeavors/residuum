@@ -1,5 +1,6 @@
 //! Broker task and `BusHandle` factory.
 
+use std::any::TypeId;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -8,7 +9,7 @@ use tokio::sync::mpsc;
 use tracing::{debug, warn};
 
 use super::handle::{BrokerCommand, ErasedEvent, Publisher, Subscriber};
-use super::topics::Topic;
+use super::topics::{Carries, Topic};
 use super::types::{BusError, TopicId};
 use crate::spawn::spawn_monitored;
 
@@ -17,6 +18,9 @@ const BROKER_COMMAND_CAPACITY: usize = 256;
 
 /// Per-subscriber event channel capacity.
 const SUBSCRIBER_CAPACITY: usize = 64;
+
+/// Composite routing key: (topic, event type).
+type RouteKey = (TopicId, TypeId);
 
 // ---------------------------------------------------------------------------
 // BusHandle
@@ -39,12 +43,19 @@ impl BusHandle {
         Publisher::new(self.cmd_tx.clone())
     }
 
-    /// Create a typed [`Subscriber`] for the given topic.
+    /// Create a typed [`Subscriber`] for the given topic and event type.
+    ///
+    /// The topic must implement `Carries<E>` for the desired event type,
+    /// ensuring compile-time safety for the subscription.
     ///
     /// # Errors
     ///
     /// Returns `BusError::BrokerShutdown` if the broker has stopped.
-    pub async fn subscribe<T: Topic>(&self, topic: T) -> Result<Subscriber<T::Event>, BusError> {
+    pub async fn subscribe<T, E>(&self, topic: T) -> Result<Subscriber<E>, BusError>
+    where
+        T: Topic + Carries<E>,
+        E: Clone + Send + Sync + 'static,
+    {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let (event_tx, event_rx) = mpsc::channel(SUBSCRIBER_CAPACITY);
         let topic_id = topic.topic_id();
@@ -53,6 +64,7 @@ impl BusHandle {
             .send(BrokerCommand::Subscribe {
                 id,
                 topic: topic_id.clone(),
+                event_type: TypeId::of::<E>(),
                 sender: event_tx,
             })
             .await
@@ -81,16 +93,23 @@ pub fn spawn_broker() -> BusHandle {
 
 /// Broker event loop — owns all subscription state.
 ///
+/// Routes events by `(TopicId, TypeId)` composite key to matching subscribers.
 /// Exits naturally when every `BusHandle` (and derived sender) is dropped.
 async fn run_broker(mut cmd_rx: mpsc::Receiver<BrokerCommand>) {
     debug!("bus broker running");
-    let mut subscriptions: HashMap<TopicId, Vec<(u64, mpsc::Sender<ErasedEvent>)>> = HashMap::new();
+    let mut subscriptions: HashMap<RouteKey, Vec<(u64, mpsc::Sender<ErasedEvent>)>> =
+        HashMap::new();
     let mut full_subscribers: HashSet<u64> = HashSet::new();
 
     while let Some(cmd) = cmd_rx.recv().await {
         match cmd {
-            BrokerCommand::Publish { topic, event } => {
-                let had_subscribers = if let Some(subscribers) = subscriptions.get_mut(&topic) {
+            BrokerCommand::Publish {
+                topic,
+                event_type,
+                event,
+            } => {
+                let key = (topic, event_type);
+                let had_subscribers = if let Some(subscribers) = subscriptions.get_mut(&key) {
                     let mut any_delivered = false;
                     subscribers.retain(|(id, tx)| {
                         match tx.try_send(Arc::clone(&event)) {
@@ -98,7 +117,7 @@ async fn run_broker(mut cmd_rx: mpsc::Receiver<BrokerCommand>) {
                                 any_delivered = true;
                                 if full_subscribers.remove(id) {
                                     debug!(
-                                        topic = %topic,
+                                        topic = %key.0,
                                         subscriber_id = id,
                                         "subscriber recovered from backpressure"
                                     );
@@ -108,7 +127,7 @@ async fn run_broker(mut cmd_rx: mpsc::Receiver<BrokerCommand>) {
                             Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
                                 if full_subscribers.insert(*id) {
                                     warn!(
-                                        topic = %topic,
+                                        topic = %key.0,
                                         subscriber_id = id,
                                         "subscriber full, dropping events"
                                     );
@@ -118,7 +137,7 @@ async fn run_broker(mut cmd_rx: mpsc::Receiver<BrokerCommand>) {
                             Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
                                 full_subscribers.remove(id);
                                 debug!(
-                                    topic = %topic,
+                                    topic = %key.0,
                                     subscriber_id = id,
                                     "subscriber closed, removing"
                                 );
@@ -127,7 +146,7 @@ async fn run_broker(mut cmd_rx: mpsc::Receiver<BrokerCommand>) {
                         }
                     });
                     if subscribers.is_empty() {
-                        subscriptions.remove(&topic);
+                        subscriptions.remove(&key);
                     }
                     any_delivered
                 } else {
@@ -135,22 +154,35 @@ async fn run_broker(mut cmd_rx: mpsc::Receiver<BrokerCommand>) {
                 };
 
                 if !had_subscribers {
-                    debug!(topic = %topic, "no active subscribers for topic, event dropped");
+                    debug!(topic = %key.0, "no active subscribers for topic, event dropped");
                 }
             }
-            BrokerCommand::Subscribe { id, topic, sender } => {
+            BrokerCommand::Subscribe {
+                id,
+                topic,
+                event_type,
+                sender,
+            } => {
                 debug!(subscriber_id = id, topic = %topic, "subscriber registered");
-                subscriptions.entry(topic).or_default().push((id, sender));
+                subscriptions
+                    .entry((topic, event_type))
+                    .or_default()
+                    .push((id, sender));
             }
-            BrokerCommand::Unsubscribe { id, topic } => {
+            BrokerCommand::Unsubscribe {
+                id,
+                topic,
+                event_type,
+            } => {
                 full_subscribers.remove(&id);
-                if let Some(subscribers) = subscriptions.get_mut(&topic) {
+                let key = (topic, event_type);
+                if let Some(subscribers) = subscriptions.get_mut(&key) {
                     subscribers.retain(|(sub_id, _)| *sub_id != id);
                     if subscribers.is_empty() {
-                        subscriptions.remove(&topic);
+                        subscriptions.remove(&key);
                     }
                 }
-                debug!(subscriber_id = id, topic = %topic, "subscriber unregistered");
+                debug!(subscriber_id = id, topic = %key.0, "subscriber unregistered");
             }
         }
     }
@@ -167,9 +199,9 @@ mod tests {
     use chrono::NaiveDate;
 
     use super::*;
-    use crate::bus::events::{MessageEvent, ResponseEvent};
+    use crate::bus::events::{MessageEvent, NoticeEvent, ResponseEvent, TurnLifecycleEvent};
     use crate::bus::topics;
-    use crate::bus::types::EndpointName;
+    use crate::bus::types::{EndpointName, NotifyName, SYSTEM_CHANNEL};
     use crate::interfaces::types::MessageOrigin;
 
     fn test_timestamp() -> chrono::NaiveDateTime {
@@ -238,7 +270,7 @@ mod tests {
         };
 
         // Publishing to a topic with no subscribers should not error.
-        let result = pub_.publish(topics::Response(ep), event).await;
+        let result = pub_.publish(topics::Endpoint(ep), event).await;
         assert!(result.is_ok());
     }
 
@@ -246,7 +278,7 @@ mod tests {
     async fn subscriber_drop_unsubscribes() {
         let handle = spawn_broker();
         let pub_ = handle.publisher();
-        let sub = handle.subscribe(topics::UserMessage).await.unwrap();
+        let sub: Subscriber<MessageEvent> = handle.subscribe(topics::UserMessage).await.unwrap();
 
         // Drop subscriber, then publish — should not error.
         drop(sub);
@@ -278,7 +310,8 @@ mod tests {
     async fn subscriber_recv_returns_none_after_drop() {
         let handle = spawn_broker();
         let ep = EndpointName::from("ws");
-        let mut sub = handle.subscribe(topics::Response(ep)).await.unwrap();
+        let mut sub: Subscriber<ResponseEvent> =
+            handle.subscribe(topics::Endpoint(ep)).await.unwrap();
 
         drop(handle);
 
@@ -292,10 +325,11 @@ mod tests {
     async fn multiple_topics_independent() {
         let handle = spawn_broker();
         let pub_ = handle.publisher();
-        let mut sub_msg = handle.subscribe(topics::UserMessage).await.unwrap();
+        let mut sub_msg: Subscriber<MessageEvent> =
+            handle.subscribe(topics::UserMessage).await.unwrap();
         let ep = EndpointName::from("ws");
-        let mut sub_resp = handle
-            .subscribe(topics::Response(ep.clone()))
+        let mut sub_resp: Subscriber<ResponseEvent> = handle
+            .subscribe(topics::Endpoint(ep.clone()))
             .await
             .unwrap();
 
@@ -308,7 +342,7 @@ mod tests {
             content: "for response".into(),
             timestamp: test_timestamp(),
         };
-        pub_.publish(topics::Response(ep), resp_event)
+        pub_.publish(topics::Endpoint(ep), resp_event)
             .await
             .unwrap();
 
@@ -324,8 +358,9 @@ mod tests {
         let handle = spawn_broker();
         let pub_ = handle.publisher();
 
-        let sub1 = handle.subscribe(topics::UserMessage).await.unwrap();
-        let mut sub2 = handle.subscribe(topics::UserMessage).await.unwrap();
+        let sub1: Subscriber<MessageEvent> = handle.subscribe(topics::UserMessage).await.unwrap();
+        let mut sub2: Subscriber<MessageEvent> =
+            handle.subscribe(topics::UserMessage).await.unwrap();
 
         // Close sub1's receiver by dropping it.
         drop(sub1);
@@ -345,11 +380,75 @@ mod tests {
         let handle = spawn_broker();
         let pub_ = handle.publisher();
 
-        // Publishing to a topic with no subscribers should succeed without
-        // generating any SystemMessageEvent — the broker just logs at debug.
+        // Publishing to a topic with no subscribers should succeed without error.
         let result = pub_
             .publish(topics::UserMessage, test_message("err-1", "nowhere"))
             .await;
         assert!(result.is_ok());
+    }
+
+    /// Verify that different event types on the same topic are routed independently.
+    #[tokio::test]
+    async fn multi_event_routing_on_same_topic() {
+        let handle = spawn_broker();
+        let pub_ = handle.publisher();
+        let ep = EndpointName::from("ws");
+
+        let mut sub_resp: Subscriber<ResponseEvent> = handle
+            .subscribe(topics::Endpoint(ep.clone()))
+            .await
+            .unwrap();
+        let mut sub_lifecycle: Subscriber<TurnLifecycleEvent> = handle
+            .subscribe(topics::Endpoint(ep.clone()))
+            .await
+            .unwrap();
+
+        // Publish a ResponseEvent — only sub_resp should receive it
+        pub_.publish(
+            topics::Endpoint(ep.clone()),
+            ResponseEvent {
+                correlation_id: "c1".into(),
+                content: "hello".into(),
+                timestamp: test_timestamp(),
+            },
+        )
+        .await
+        .unwrap();
+
+        let resp = sub_resp.recv().await.unwrap().unwrap();
+        assert_eq!(resp.content, "hello");
+
+        // sub_lifecycle should NOT have received anything
+        let timeout_result: Result<Result<Option<TurnLifecycleEvent>, _>, _> =
+            tokio::time::timeout(tokio::time::Duration::from_millis(50), sub_lifecycle.recv())
+                .await;
+        assert!(
+            timeout_result.is_err(),
+            "lifecycle subscriber should not receive ResponseEvent"
+        );
+    }
+
+    /// Verify that system notices on Notification("system") are routed correctly.
+    #[tokio::test]
+    async fn system_notice_routing() {
+        let handle = spawn_broker();
+        let pub_ = handle.publisher();
+
+        let mut sub: Subscriber<NoticeEvent> = handle
+            .subscribe(topics::Notification(NotifyName::from(SYSTEM_CHANNEL)))
+            .await
+            .unwrap();
+
+        pub_.publish(
+            topics::Notification(NotifyName::from(SYSTEM_CHANNEL)),
+            NoticeEvent {
+                message: "config reloaded".into(),
+            },
+        )
+        .await
+        .unwrap();
+
+        let notice = sub.recv().await.unwrap().unwrap();
+        assert_eq!(notice.message, "config reloaded");
     }
 }

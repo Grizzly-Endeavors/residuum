@@ -170,19 +170,6 @@ pub struct IntermediateEvent {
     pub content: String,
 }
 
-/// System event surfaced to endpoints.
-#[derive(Debug, Clone)]
-pub struct SystemEventData {
-    /// Links back to the originating message.
-    pub correlation_id: String,
-    /// Source label (e.g. pulse name, action name).
-    pub source: String,
-    /// Event content.
-    pub content: String,
-    /// Local timestamp.
-    pub timestamp: NaiveDateTime,
-}
-
 /// Result from a completed background or subagent task.
 #[derive(Debug, Clone)]
 pub struct AgentResultEvent {
@@ -233,6 +220,8 @@ impl AgentResultEvent {
 /// Request to spawn a sub-agent from any source.
 #[derive(Debug, Clone)]
 pub struct SpawnRequestEvent {
+    /// Subagent preset to use for this spawn.
+    pub preset: PresetName,
     /// Human-readable source label (e.g. `"pulse:email_check"`, `"agent:researcher"`).
     pub source_label: String,
     /// The prompt/instructions for the sub-agent.
@@ -243,6 +232,22 @@ pub struct SpawnRequestEvent {
     pub source: EventTrigger,
     /// Override the preset's model tier.
     pub model_tier_override: Option<BackgroundModelTier>,
+}
+
+/// Operational notice broadcast to connected endpoints.
+#[derive(Debug, Clone)]
+pub struct NoticeEvent {
+    /// Human-readable notice message.
+    pub message: String,
+}
+
+/// An error tied to a specific agent turn, broadcast to connected endpoints.
+#[derive(Debug, Clone)]
+pub struct ErrorEvent {
+    /// Links back to the originating message.
+    pub correlation_id: String,
+    /// Error description.
+    pub message: String,
 }
 
 // ---------------------------------------------------------------------------
@@ -271,25 +276,6 @@ pub enum TurnLifecycleEvent {
         /// Links back to the originating message.
         correlation_id: String,
     },
-}
-
-/// System-wide messages (notices, errors, events).
-#[derive(Debug, Clone)]
-pub enum SystemMessageEvent {
-    /// Operational notice (reload status, memory progress, command responses).
-    Notice {
-        /// Human-readable notice message.
-        message: String,
-    },
-    /// An error tied to a specific agent turn.
-    Error {
-        /// Links back to the originating message.
-        correlation_id: String,
-        /// Error description.
-        message: String,
-    },
-    /// System event surfaced to endpoints (pulse, action, etc.).
-    Event(SystemEventData),
 }
 
 // ---------------------------------------------------------------------------
@@ -387,14 +373,21 @@ mod tests {
         let cloned = tc.clone();
         assert_eq!(cloned.name, "read");
         assert_eq!(cloned.arguments["path"], "/tmp");
+    }
 
-        let se = SystemEventData {
-            correlation_id: "c1".into(),
-            source: "pulse".into(),
-            content: "check".into(),
-            timestamp: sample_timestamp(),
+    #[test]
+    fn notice_and_error_event_clone() {
+        let notice = NoticeEvent {
+            message: "reloaded".into(),
         };
-        let cloned_se = se.clone();
-        assert_eq!(cloned_se.source, "pulse");
+        assert_eq!(notice.clone().message, "reloaded");
+
+        let error = ErrorEvent {
+            correlation_id: "c1".into(),
+            message: "failed".into(),
+        };
+        let cloned = error.clone();
+        assert_eq!(cloned.correlation_id, "c1");
+        assert_eq!(cloned.message, "failed");
     }
 }

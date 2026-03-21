@@ -147,7 +147,7 @@ impl Tool for SendMessageTool {
                 content: message.to_string(),
                 timestamp: now,
             };
-            let topic = topics::Response(EndpointName::from(endpoint_name));
+            let topic = topics::Endpoint(EndpointName::from(endpoint_name));
             self.publisher.publish(topic, response).await.map_err(|e| {
                 tracing::error!(error = %e, endpoint = %endpoint_name, "failed to publish response");
                 ToolError::Execution(format!(
@@ -172,7 +172,7 @@ mod tests {
         let registry = EndpointRegistry::new();
         registry.register(EndpointEntry {
             id: EndpointId::from("ws"),
-            topic: TopicId::Response(EndpointName::from("ws")),
+            topic: TopicId::Endpoint(EndpointName::from("ws")),
             capabilities: EndpointCapabilities::INTERACTIVE,
             display_name: "WebSocket".to_string(),
         });
@@ -228,7 +228,7 @@ mod tests {
         assert!(!result.is_error, "should succeed: {}", result.output);
         assert!(result.output.contains("my-ntfy"));
 
-        let event = subscriber.recv().await.unwrap().unwrap();
+        let event: crate::bus::NotificationEvent = subscriber.recv().await.unwrap().unwrap();
         assert_eq!(event.title, "alert");
         assert_eq!(event.content, "test notification");
     }
@@ -239,7 +239,7 @@ mod tests {
         let bus_handle = crate::bus::spawn_broker();
         let publisher = bus_handle.publisher();
         let mut subscriber = bus_handle
-            .subscribe(topics::Response(EndpointName::from("ws")))
+            .subscribe(topics::Endpoint(EndpointName::from("ws")))
             .await
             .unwrap();
         let tool = SendMessageTool::new(registry, publisher);
@@ -254,7 +254,7 @@ mod tests {
 
         assert!(!result.is_error, "should succeed: {}", result.output);
 
-        let event = subscriber.recv().await.unwrap().unwrap();
+        let event: crate::bus::ResponseEvent = subscriber.recv().await.unwrap().unwrap();
         assert_eq!(event.content, "proactive message");
     }
 

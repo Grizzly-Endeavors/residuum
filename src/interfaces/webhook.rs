@@ -99,15 +99,18 @@ pub async fn webhook_handler(
         }
         WebhookRouting::Agent(preset) => {
             let spawn_event = crate::bus::SpawnRequestEvent {
+                preset: crate::bus::PresetName::from(preset.as_str()),
                 source_label: format!("webhook:{name}"),
                 prompt: notification.content,
                 context: None,
                 source: crate::bus::EventTrigger::Webhook(name.clone()),
                 model_tier_override: None,
             };
-            let topic =
-                crate::bus::topics::SpawnRequest(crate::bus::PresetName::from(preset.as_str()));
-            if let Err(e) = state.publisher.publish(topic, spawn_event).await {
+            if let Err(e) = state
+                .publisher
+                .publish(crate::bus::topics::Background, spawn_event)
+                .await
+            {
                 tracing::warn!(webhook = %name, error = %e, "bus publish failed, dropping webhook message");
                 return StatusCode::SERVICE_UNAVAILABLE;
             }
@@ -474,9 +477,7 @@ mod tests {
         let bus_handle = crate::bus::spawn_broker();
         let publisher = bus_handle.publisher();
         let mut preset_sub = bus_handle
-            .subscribe(crate::bus::topics::SpawnRequest(
-                crate::bus::PresetName::from("code_reviewer"),
-            ))
+            .subscribe(crate::bus::topics::Background)
             .await
             .unwrap();
 
@@ -497,11 +498,12 @@ mod tests {
         let resp = app.oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::ACCEPTED);
 
-        let event = tokio::time::timeout(std::time::Duration::from_millis(100), preset_sub.recv())
-            .await
-            .unwrap()
-            .unwrap()
-            .unwrap();
+        let event: crate::bus::SpawnRequestEvent =
+            tokio::time::timeout(std::time::Duration::from_millis(100), preset_sub.recv())
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap();
         assert_eq!(event.prompt, "review this");
         assert_eq!(event.source_label, "webhook:agent-hook");
     }

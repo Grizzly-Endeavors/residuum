@@ -1,6 +1,6 @@
 //! Server command handler in the event loop.
 
-use crate::bus::{SystemMessageEvent, topics};
+use crate::bus::{NoticeEvent, NotifyName, SYSTEM_CHANNEL, topics};
 use crate::gateway::types::GatewayRuntime;
 use crate::gateway::types::ServerCommand;
 
@@ -54,8 +54,8 @@ pub async fn handle_server_command(
             if let Err(e) = rt
                 .publisher
                 .publish(
-                    topics::SystemMessage,
-                    SystemMessageEvent::Notice { message: msg },
+                    topics::Notification(NotifyName::from(SYSTEM_CHANNEL)),
+                    NoticeEvent { message: msg },
                 )
                 .await
             {
@@ -67,8 +67,8 @@ pub async fn handle_server_command(
             if let Err(e) = rt
                 .publisher
                 .publish(
-                    topics::SystemMessage,
-                    SystemMessageEvent::Notice {
+                    topics::Notification(NotifyName::from(SYSTEM_CHANNEL)),
+                    NoticeEvent {
                         message: format!("unknown server command: {unknown}"),
                     },
                 )

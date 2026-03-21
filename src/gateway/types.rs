@@ -145,8 +145,8 @@ pub(crate) struct GatewayRuntime {
     pub agent_subscriber: Subscriber<MessageEvent>,
     /// Endpoint registry for looking up configured endpoints.
     pub endpoint_registry: EndpointRegistry,
-    /// Typed subscriber for system messages (notices, errors, events).
-    pub error_subscriber: Subscriber<crate::bus::SystemMessageEvent>,
+    /// Typed subscriber for error events from the system notification channel.
+    pub error_subscriber: Subscriber<crate::bus::ErrorEvent>,
     /// Endpoint that last sent a message (for background turn response routing).
     pub last_output_endpoint: Option<EndpointName>,
     /// Sender for clearing the output endpoint override on user message.
@@ -205,11 +205,16 @@ mod tests {
         let (core, _receivers) = GatewayCore::new(dir.path().to_path_buf());
 
         // Bus publish should work before reload
+        let system_topic = || {
+            crate::bus::topics::Notification(crate::bus::NotifyName::from(
+                crate::bus::SYSTEM_CHANNEL,
+            ))
+        };
         let result = core
             .publisher
             .publish(
-                crate::bus::topics::SystemMessage,
-                crate::bus::SystemMessageEvent::Notice {
+                system_topic(),
+                crate::bus::NoticeEvent {
                     message: "test".to_string(),
                 },
             )
@@ -223,8 +228,8 @@ mod tests {
         let result_after = core
             .publisher
             .publish(
-                crate::bus::topics::SystemMessage,
-                crate::bus::SystemMessageEvent::Notice {
+                system_topic(),
+                crate::bus::NoticeEvent {
                     message: "after reload".to_string(),
                 },
             )

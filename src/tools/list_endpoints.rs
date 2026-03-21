@@ -114,13 +114,13 @@ mod tests {
         let registry = EndpointRegistry::new();
         registry.register(EndpointEntry {
             id: EndpointId::from("ws"),
-            topic: TopicId::Response(EndpointName::from("ws")),
+            topic: TopicId::Endpoint(EndpointName::from("ws")),
             capabilities: EndpointCapabilities::INTERACTIVE,
             display_name: "WebSocket".to_string(),
         });
         registry.register(EndpointEntry {
             id: EndpointId::from("discord"),
-            topic: TopicId::Response(EndpointName::from("discord")),
+            topic: TopicId::Endpoint(EndpointName::from("discord")),
             capabilities: EndpointCapabilities::INTERACTIVE,
             display_name: "Discord".to_string(),
         });
@@ -161,7 +161,7 @@ mod tests {
         let registry = EndpointRegistry::new();
         registry.register(EndpointEntry {
             id: EndpointId::from("ws"),
-            topic: TopicId::Response(EndpointName::from("ws")),
+            topic: TopicId::Endpoint(EndpointName::from("ws")),
             capabilities: EndpointCapabilities::INTERACTIVE,
             display_name: "WebSocket".to_string(),
         });
