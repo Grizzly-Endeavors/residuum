@@ -45,6 +45,7 @@ DO NOT, under any circumstance, change this config without explicit approval fro
 ### Naming
 - **Domain-specific names**: Prefer descriptive names that match the domain (`send_chat_completion` over generic `run`)
 - **Common abbreviations OK**: `cfg`, `dir`, `msg`, `ctx`, `cmd` are fine; avoid obscure ones
+- **Semantics matter**: Structs, enums, and functions should have names that make it abundantly clear what they do. Avoid vague names and catch-alls. If the logic doesn't match the semantics a refactor is needed.
 
 ### Error Messages
 - Always include context: `"failed to parse config at {path}"` not just `"parse error"`
