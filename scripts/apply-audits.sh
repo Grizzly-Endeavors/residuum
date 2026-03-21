@@ -1,7 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Apply audit findings one module at a time on a single branch, one commit per module.
+# Apply audit findings in parallel using git worktrees, one commit per module.
+#
+# Each module gets its own worktree where Claude applies fixes independently.
+# Commits are then cherry-picked onto the audit branch sequentially. If a
+# cherry-pick conflicts, Claude resolves the conflict automatically.
 #
 # Usage:
 #   ./scripts/apply-audits.sh [OPTIONS]
@@ -9,16 +13,18 @@ set -euo pipefail
 # Options:
 #   -i, --input DIR       Audit results directory (default: audit-results/)
 #   -m, --model MODEL     Model to use (default: sonnet)
+#   -j, --jobs N          Max parallel jobs (default: 4)
 #   -b, --branch NAME     Branch name (default: audit/apply-fixes)
 #   --dry-run             Show what would be done without doing it
 #   -h, --help            Show this help
 #
 # Examples:
 #   ./scripts/apply-audits.sh
-#   ./scripts/apply-audits.sh -i audit-results/ -m opus
-#   ./scripts/apply-audits.sh -b audit/no-silent-failures --dry-run
+#   ./scripts/apply-audits.sh -i audit-results/ -m opus -j 6
+#   ./scripts/apply-audits.sh -b audit/error-handling --dry-run
 
 MODEL="sonnet"
+JOBS=4
 INPUT_DIR="audit-results"
 BRANCH="audit/apply-fixes"
 DRY_RUN=false
@@ -32,6 +38,7 @@ while [[ $# -gt 0 ]]; do
     case "$1" in
         -i|--input)   INPUT_DIR="$2"; shift 2 ;;
         -m|--model)   MODEL="$2"; shift 2 ;;
+        -j|--jobs)    JOBS="$2"; shift 2 ;;
         -b|--branch)  BRANCH="$2"; shift 2 ;;
         --dry-run)    DRY_RUN=true; shift ;;
         -h|--help)    usage ;;
@@ -44,10 +51,11 @@ if [[ ! -d "$INPUT_DIR" ]]; then
     exit 1
 fi
 
-# Collect audit files, skipping failed audits
+# Collect audit files, skipping failed/empty/summary
 AUDIT_FILES=()
 for f in "$INPUT_DIR"/*.md; do
     [[ ! -f "$f" ]] && continue
+    [[ "$(basename "$f")" == "SUMMARY.md" ]] && continue
     if head -1 "$f" | grep -q "^# Audit failed"; then
         echo "[skip] $(basename "$f" .md) — audit had failed"
         continue
@@ -65,7 +73,7 @@ if [[ ${#AUDIT_FILES[@]} -eq 0 ]]; then
 fi
 
 echo "Found ${#AUDIT_FILES[@]} audit results to apply"
-echo "Model: $MODEL | Branch: $BRANCH"
+echo "Model: $MODEL | Jobs: $JOBS | Branch: $BRANCH"
 echo "---"
 
 if [[ -n $(git status --porcelain) ]]; then
@@ -73,60 +81,78 @@ if [[ -n $(git status --porcelain) ]]; then
     exit 1
 fi
 
-if ! $DRY_RUN; then
-    # Create or switch to the branch
-    if git show-ref --verify --quiet "refs/heads/$BRANCH"; then
-        git checkout "$BRANCH" 2>/dev/null
-        echo "Resuming on existing branch: $BRANCH"
-    else
-        git checkout -b "$BRANCH" main 2>/dev/null
-        echo "Created branch: $BRANCH"
-    fi
+if $DRY_RUN; then
+    for f in "${AUDIT_FILES[@]}"; do
+        echo "[dry-run] $(basename "$f" .md) — would apply in worktree"
+    done
+    exit 0
 fi
 
-APPLIED=0
-SKIPPED=0
-FAILED=0
+# Setup temp directories
+WORKTREE_BASE=$(mktemp -d "${TMPDIR:-/tmp}/apply-audits-wt-XXXXXX")
+RESULTS_DIR=$(mktemp -d "${TMPDIR:-/tmp}/apply-audits-results-XXXXXX")
+ORIGINAL_BRANCH=$(git rev-parse --abbrev-ref HEAD)
 
-apply_audit() {
+cleanup() {
+    echo ""
+    echo "Cleaning up worktrees..."
+    if [[ -n "$WORKTREE_BASE" && -d "$WORKTREE_BASE" ]]; then
+        for wt in "$WORKTREE_BASE"/*/; do
+            [[ -d "$wt" ]] || continue
+            git worktree remove --force "$wt" 2>/dev/null || true
+        done
+        rmdir "$WORKTREE_BASE" 2>/dev/null || true
+    fi
+    # Clean up temporary worktree branches
+    while IFS= read -r b; do
+        [[ -n "$b" ]] && git branch -D "$b" 2>/dev/null || true
+    done < <(git branch --list 'wt/apply-audit-*' --format='%(refname:short)')
+    [[ -n "$RESULTS_DIR" ]] && rm -rf "$RESULTS_DIR"
+}
+trap cleanup EXIT
+
+# =============================================================================
+# Phase 1: Apply fixes in parallel worktrees
+# =============================================================================
+
+apply_in_worktree() {
     local audit_file="$1"
     local module_name
     module_name=$(basename "$audit_file" .md)
+    local result_file="$RESULTS_DIR/${module_name}.result"
+    local worktree_path="$WORKTREE_BASE/$module_name"
+    local wt_branch="wt/apply-audit-${module_name}"
 
-    # Map module name back to source path
+    # Map module name to source path
     local module_path
     if [[ -f "src/${module_name}.rs" ]]; then
         module_path="src/${module_name}.rs"
     elif [[ -d "src/${module_name}" ]]; then
         module_path="src/${module_name}"
     else
-        echo "[skip] $module_name — no matching source at src/${module_name}{,.rs}"
-        SKIPPED=$((SKIPPED + 1))
+        echo "[skip] $module_name — no matching source"
+        echo "skip:no-source" > "$result_file"
         return 0
     fi
 
-    local audit_content
-    audit_content=$(cat "$audit_file")
+    echo "[start] $module_name"
 
-    echo ""
-    echo "=== $module_name ==="
-    echo "  Source: $module_path"
-
-    if $DRY_RUN; then
-        echo "  [dry-run] Would apply fixes and commit"
+    # Create worktree
+    if ! git worktree add "$worktree_path" -b "$wt_branch" main --quiet 2>/dev/null; then
+        echo "[FAIL]  $module_name — could not create worktree"
+        echo "fail:worktree-create" > "$result_file"
         return 0
     fi
 
-    # Build the prompt into a temp file to avoid ARG_MAX
+    # Build prompt
     local tmpfile
     tmpfile=$(mktemp)
-    trap "rm -f '$tmpfile'" RETURN
 
     local source_files
-    if [[ -d "$module_path" ]]; then
-        source_files=$(find "$module_path" -name '*.rs' -type f | sort)
+    if [[ -d "$worktree_path/$module_path" ]]; then
+        source_files=$(find "$worktree_path/$module_path" -name '*.rs' -type f | sort)
     else
-        source_files="$module_path"
+        source_files="$worktree_path/$module_path"
     fi
 
     {
@@ -138,67 +164,222 @@ Rules:
 - Do NOT refactor, rename, or "improve" code beyond what the audit asks for
 - Do NOT add comments explaining your fixes
 - Do NOT touch files outside the module being audited
+- Do NOT run any git commands — just edit the files
 - If an audit finding is vague or you're unsure how to fix it, skip it
-
-After making your changes, stage and commit them using `git add` and `git commit -m "message"`.
-Write a good commit message: concise summary (<=72 chars) on the first line.
-Do NOT use `git commit -m "$(cat ...)"` or heredocs — just a plain `-m "message"` string.
 
 INSTRUCTIONS
         echo "## Audit Findings"
         echo ""
-        echo "$audit_content"
+        cat "$audit_file"
         echo ""
         echo "## Source Files"
         echo ""
         for f in $source_files; do
-            echo "--- $f ---"
+            local rel_path="${f#"$worktree_path"/}"
+            echo "--- $rel_path ---"
             cat "$f"
             echo ""
         done
     } > "$tmpfile"
 
-    echo "  Applying fixes..."
+    # Run Claude in the worktree directory
+    if (cd "$worktree_path" && claude -p --model "$MODEL" --no-session-persistence \
+        --allowedTools "Edit Read Glob Grep" \
+        < "$tmpfile" > /dev/null 2>&1); then
 
-    local pre_head
-    pre_head=$(git rev-parse HEAD)
-
-    if claude -p --model "$MODEL" \
-        --allowedTools "Edit Read Glob Grep Bash(git:*) Bash(cargo:*)" \
-        < "$tmpfile" > /dev/null 2>&1; then
-
-        # Check if Claude actually committed something
-        if [[ "$(git rev-parse HEAD)" == "$pre_head" ]]; then
-            # No commit — clean up any uncommitted changes
-            git checkout -- . 2>/dev/null
-            git clean -fd 2>/dev/null
-            echo "  [no-op] No changes committed"
-            SKIPPED=$((SKIPPED + 1))
-            return 0
+        # Check if Claude made any changes
+        if (cd "$worktree_path" && git diff --quiet && git diff --cached --quiet); then
+            echo "[no-op] $module_name — no changes made"
+            echo "skip:no-changes" > "$result_file"
+        else
+            # Commit in worktree (no hooks — validation happens on cherry-pick)
+            if (cd "$worktree_path" && git add -A && \
+                git commit --no-verify -m "audit: fix $module_name" > /dev/null 2>&1); then
+                local sha
+                sha=$(cd "$worktree_path" && git rev-parse HEAD)
+                echo "[done]  $module_name ($sha)"
+                echo "commit:$sha" > "$result_file"
+            else
+                echo "[FAIL]  $module_name — commit failed in worktree"
+                echo "fail:commit" > "$result_file"
+            fi
         fi
-
-        mkdir -p "$INPUT_DIR/applied"
-        mv "$audit_file" "$INPUT_DIR/applied/"
-        echo "  [done] Committed"
-        APPLIED=$((APPLIED + 1))
     else
-        echo "  [FAIL] Claude exited with an error"
-        # Clean up any partial changes
-        git checkout -- . 2>/dev/null
-        git clean -fd 2>/dev/null
-        FAILED=$((FAILED + 1))
+        echo "[FAIL]  $module_name — Claude exited with error"
+        echo "fail:claude" > "$result_file"
     fi
+
+    rm -f "$tmpfile"
 }
 
-for audit_file in "${AUDIT_FILES[@]}"; do
-    apply_audit "$audit_file"
+export -f apply_in_worktree
+export WORKTREE_BASE RESULTS_DIR MODEL INPUT_DIR
+
+echo ""
+echo "Phase 1: Applying fixes in parallel (jobs=$JOBS)..."
+echo ""
+
+printf '%s\n' "${AUDIT_FILES[@]}" | xargs -P "$JOBS" -I {} bash -c 'apply_in_worktree "$@"' _ {}
+
+# =============================================================================
+# Phase 2: Cherry-pick onto audit branch
+# =============================================================================
+
+echo ""
+echo "Phase 2: Cherry-picking onto $BRANCH..."
+echo ""
+
+# Collect successful commits (sorted by module name for deterministic order)
+COMMITS=()
+COMMIT_MODULES=()
+PHASE1_SKIPPED=0
+PHASE1_FAILED=0
+
+for f in $(printf '%s\n' "$RESULTS_DIR"/*.result | sort); do
+    [[ -f "$f" ]] || continue
+    module_name=$(basename "$f" .result)
+    status=$(cat "$f")
+    case "$status" in
+        commit:*)
+            COMMITS+=("${status#commit:}")
+            COMMIT_MODULES+=("$module_name")
+            ;;
+        skip:*)
+            PHASE1_SKIPPED=$((PHASE1_SKIPPED + 1))
+            ;;
+        fail:*)
+            PHASE1_FAILED=$((PHASE1_FAILED + 1))
+            ;;
+    esac
 done
+
+if [[ ${#COMMITS[@]} -eq 0 ]]; then
+    echo "No commits to cherry-pick."
+    echo ""
+    echo "---"
+    echo "Applied: 0 | Skipped: $PHASE1_SKIPPED | Failed: $PHASE1_FAILED"
+    exit 0
+fi
+
+echo "Collected ${#COMMITS[@]} commits to cherry-pick"
+
+# Create or switch to the audit branch
+if git show-ref --verify --quiet "refs/heads/$BRANCH"; then
+    git checkout "$BRANCH" --quiet
+    echo "Resuming on existing branch: $BRANCH"
+else
+    git checkout -b "$BRANCH" main --quiet
+    echo "Created branch: $BRANCH"
+fi
+
+APPLIED=0
+CHERRY_FAILED=0
+CONFLICTS_RESOLVED=0
+
+for i in "${!COMMITS[@]}"; do
+    sha="${COMMITS[$i]}"
+    module="${COMMIT_MODULES[$i]}"
+
+    echo ""
+    echo "=== $module ==="
+
+    if git cherry-pick --no-commit "$sha" 2>/dev/null; then
+        # Clean apply — commit with hooks
+        if git commit -m "audit: fix $module" 2>/dev/null; then
+            echo "  [done] Applied cleanly"
+            mkdir -p "$INPUT_DIR/applied"
+            [[ -f "$INPUT_DIR/${module}.md" ]] && mv "$INPUT_DIR/${module}.md" "$INPUT_DIR/applied/"
+            APPLIED=$((APPLIED + 1))
+        else
+            echo "  [FAIL] Pre-commit hooks rejected the commit"
+            git reset --hard HEAD 2>/dev/null
+            CHERRY_FAILED=$((CHERRY_FAILED + 1))
+        fi
+        continue
+    fi
+
+    # Cherry-pick failed — check if it's a merge conflict we can resolve
+    conflicted_files=$(git diff --name-only --diff-filter=U 2>/dev/null || true)
+    if [[ -z "$conflicted_files" ]]; then
+        echo "  [FAIL] Cherry-pick failed (not a merge conflict)"
+        git cherry-pick --abort 2>/dev/null || git reset --hard HEAD 2>/dev/null
+        CHERRY_FAILED=$((CHERRY_FAILED + 1))
+        continue
+    fi
+
+    echo "  [conflict] $(echo "$conflicted_files" | wc -l) file(s) — resolving with Claude..."
+
+    # Build conflict resolution prompt
+    resolve_prompt=$(mktemp)
+    {
+        cat <<'INSTRUCTIONS'
+You are resolving git merge conflicts in Rust source files.
+
+These conflicts arose from cherry-picking parallel audit fixes onto a branch that
+already has other audit fixes applied. Both sides contain valid fixes for different
+audit findings. Your job is to keep BOTH sets of changes.
+
+Rules:
+- Resolve ALL conflict markers (<<<<<<< / ======= / >>>>>>>)
+- Keep changes from BOTH sides — do not discard either
+- Do NOT make any changes beyond resolving the conflicts
+- Do NOT run any git commands — just edit the files
+
+INSTRUCTIONS
+        echo "## Conflicted Files"
+        echo ""
+        for cf in $conflicted_files; do
+            echo "--- $cf ---"
+            cat "$cf"
+            echo ""
+        done
+        echo ""
+        echo "## Audit Context (module: $module)"
+        echo ""
+        if [[ -f "$INPUT_DIR/${module}.md" ]]; then
+            cat "$INPUT_DIR/${module}.md"
+        fi
+    } > "$resolve_prompt"
+
+    if claude -p --model "$MODEL" --no-session-persistence \
+        --allowedTools "Edit Read Glob Grep" \
+        < "$resolve_prompt" > /dev/null 2>&1; then
+
+        # Stage resolved files and commit (hooks run here)
+        git add -A
+        if git commit -m "audit: fix $module (conflict resolved)" 2>/dev/null; then
+            echo "  [done] Conflict resolved and committed"
+            mkdir -p "$INPUT_DIR/applied"
+            [[ -f "$INPUT_DIR/${module}.md" ]] && mv "$INPUT_DIR/${module}.md" "$INPUT_DIR/applied/"
+            APPLIED=$((APPLIED + 1))
+            CONFLICTS_RESOLVED=$((CONFLICTS_RESOLVED + 1))
+        else
+            echo "  [FAIL] Pre-commit hooks rejected the resolution"
+            git reset --hard HEAD 2>/dev/null
+            CHERRY_FAILED=$((CHERRY_FAILED + 1))
+        fi
+    else
+        echo "  [FAIL] Claude could not resolve the conflict"
+        git cherry-pick --abort 2>/dev/null || git reset --hard HEAD 2>/dev/null
+        CHERRY_FAILED=$((CHERRY_FAILED + 1))
+    fi
+
+    rm -f "$resolve_prompt"
+done
+
+# Switch back to original branch if nothing was applied
+if [[ $APPLIED -eq 0 ]]; then
+    git checkout "$ORIGINAL_BRANCH" --quiet 2>/dev/null || true
+fi
+
+TOTAL_SKIPPED=$PHASE1_SKIPPED
+TOTAL_FAILED=$((PHASE1_FAILED + CHERRY_FAILED))
 
 echo ""
 echo "---"
-echo "Applied: $APPLIED | Skipped: $SKIPPED | Failed: $FAILED"
+echo "Applied: $APPLIED | Skipped: $TOTAL_SKIPPED | Failed: $TOTAL_FAILED | Conflicts resolved: $CONFLICTS_RESOLVED"
 
-if ! $DRY_RUN && [[ $APPLIED -gt 0 ]]; then
+if [[ $APPLIED -gt 0 ]]; then
     echo ""
     echo "Review the branch:"
     echo "  git log --oneline main..$BRANCH"

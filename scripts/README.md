@@ -37,7 +37,7 @@ cat prompt.txt | ./scripts/audit-modules.sh -f -
 
 ## apply-audits.sh
 
-Takes audit results from `audit-modules.sh` and applies fixes one module at a time, each as its own commit on a dedicated branch.
+Takes audit results from `audit-modules.sh` and applies fixes in parallel using git worktrees, one commit per module on a dedicated branch.
 
 ```bash
 ./scripts/apply-audits.sh [OPTIONS]
@@ -47,22 +47,23 @@ Takes audit results from `audit-modules.sh` and applies fixes one module at a ti
 |---|---|---|
 | `-i, --input DIR` | Audit results directory | `audit-results/` |
 | `-m, --model MODEL` | Claude model to use | `sonnet` |
+| `-j, --jobs N` | Max parallel jobs | `4` |
 | `-b, --branch NAME` | Branch name | `audit/apply-fixes` |
 | `--dry-run` | Show what would be done without doing it | — |
 
 **How it works:**
 
-1. Requires a clean working tree; skips failed/empty audit files
-2. Creates a branch from `main` (or resumes an existing one)
-3. For each audit file, maps it back to its source module, feeds Claude the findings + source with strict instructions (only fix what's called out), and commits the result
-4. Successfully applied audits are moved to `applied/`; failures are cleaned up
+1. **Phase 1 — Parallel fixes:** Creates a git worktree per module, runs Claude in each to apply fixes concurrently. Changes are committed in worktrees without hooks (temporary commits).
+2. **Phase 2 — Sequential cherry-pick:** Cherry-picks each worktree commit onto the audit branch. Pre-commit hooks (fmt, clippy, test) run on each commit to validate the combined state.
+3. **Conflict resolution:** If a cherry-pick conflicts (rare, since the audit review pass filters cross-module findings), Claude is called to resolve the conflict markers, keeping changes from both sides.
+4. Successfully applied audits are moved to `applied/`; failures and unresolvable conflicts are logged and skipped.
 
 ```bash
 # Apply with defaults
 ./scripts/apply-audits.sh
 
-# Specify model and branch
-./scripts/apply-audits.sh -m opus -b audit/error-handling
+# Specify model, parallelism, and branch
+./scripts/apply-audits.sh -m opus -j 6 -b audit/error-handling
 
 # Preview without making changes
 ./scripts/apply-audits.sh --dry-run
