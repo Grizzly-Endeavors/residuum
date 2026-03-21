@@ -5,7 +5,7 @@ mod models;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use crate::error::ResiduumError;
+use crate::error::FatalError;
 use crate::models::retry::RetryConfig;
 use crate::models::{ThinkingConfig, ThinkingLevel};
 
@@ -28,13 +28,13 @@ use super::types::{
 /// Build a `Config` from an optional config file and environment variables.
 ///
 /// # Errors
-/// Returns `ResiduumError::Config` if the model spec cannot be parsed or
+/// Returns `FatalError::Config` if the model spec cannot be parsed or
 /// the workspace directory cannot be determined.
 pub(crate) fn from_file_and_env(
     file: Option<&ConfigFile>,
     providers_file: Option<&ProvidersFile>,
     config_dir: &Path,
-) -> Result<Config, ResiduumError> {
+) -> Result<Config, FatalError> {
     warn_deprecated_env_vars();
 
     let secrets = SecretStore::load(config_dir)?;
@@ -141,21 +141,21 @@ pub(crate) fn from_file_and_env(
 /// Resolve the timezone from env var or config file.
 ///
 /// # Errors
-/// Returns `ResiduumError::Config` if no timezone is set or the value is not a
+/// Returns `FatalError::Config` if no timezone is set or the value is not a
 /// valid IANA timezone name.
-fn resolve_timezone(file: Option<&ConfigFile>) -> Result<chrono_tz::Tz, ResiduumError> {
+fn resolve_timezone(file: Option<&ConfigFile>) -> Result<chrono_tz::Tz, FatalError> {
     let tz_name = std::env::var("RESIDUUM_TIMEZONE")
         .ok()
         .or_else(|| file.and_then(|f| f.timezone.clone()))
         .ok_or_else(|| {
-            ResiduumError::Config(
+            FatalError::Config(
                 "timezone is required: set RESIDUUM_TIMEZONE env var or 'timezone' in config.toml \
                  (IANA name, e.g. \"America/New_York\")"
                     .to_string(),
             )
         })?;
     tz_name.parse().map_err(|_err| {
-        ResiduumError::Config(format!(
+        FatalError::Config(format!(
             "invalid timezone '{tz_name}': expected IANA name like 'America/New_York' or 'UTC'"
         ))
     })
@@ -346,12 +346,12 @@ pub(super) fn resolve_secret_value(raw: &str, secrets: &SecretStore) -> Option<S
 /// Resolve named webhook configurations from TOML `[webhooks.<name>]` sections.
 ///
 /// # Errors
-/// Returns `ResiduumError::Config` if a routing or format string is invalid,
+/// Returns `FatalError::Config` if a routing or format string is invalid,
 /// or if `content_fields` entries are empty.
 fn resolve_webhooks_config(
     section: Option<&HashMap<String, WebhookEntryFile>>,
     secrets: &SecretStore,
-) -> Result<HashMap<String, WebhookEntry>, ResiduumError> {
+) -> Result<HashMap<String, WebhookEntry>, FatalError> {
     let Some(entries) = section else {
         return Ok(HashMap::new());
     };
@@ -367,21 +367,21 @@ fn resolve_webhooks_config(
         let routing: WebhookRouting = match entry.routing.as_deref() {
             Some(s) => s
                 .parse()
-                .map_err(|e: String| ResiduumError::Config(format!("webhooks.{name}: {e}")))?,
+                .map_err(|e: String| FatalError::Config(format!("webhooks.{name}: {e}")))?,
             None => WebhookRouting::default(),
         };
 
         let format: WebhookFormat = match entry.format.as_deref() {
             Some(s) => s
                 .parse()
-                .map_err(|e: String| ResiduumError::Config(format!("webhooks.{name}: {e}")))?,
+                .map_err(|e: String| FatalError::Config(format!("webhooks.{name}: {e}")))?,
             None => WebhookFormat::default(),
         };
 
         if let Some(ref fields) = entry.content_fields {
             for (i, field) in fields.iter().enumerate() {
                 if field.trim().is_empty() {
-                    return Err(ResiduumError::Config(format!(
+                    return Err(FatalError::Config(format!(
                         "webhooks.{name}: content_fields[{i}] is empty"
                     )));
                 }
@@ -445,13 +445,13 @@ fn resolve_memory_config(section: Option<&MemoryConfigFile>) -> MemoryConfig {
 /// against configured interfaces.
 ///
 /// # Errors
-/// Returns `ResiduumError::Config` if the idle channel references an unknown
+/// Returns `FatalError::Config` if the idle channel references an unknown
 /// or unconfigured interface.
 fn resolve_idle_config(
     file: Option<&ConfigFile>,
     telegram: Option<&TelegramConfig>,
     discord: Option<&DiscordConfig>,
-) -> Result<IdleConfig, ResiduumError> {
+) -> Result<IdleConfig, FatalError> {
     let section = file.and_then(|f| f.idle.as_ref());
     let timeout_minutes = section
         .and_then(|s| s.timeout_minutes)
@@ -464,13 +464,13 @@ fn resolve_idle_config(
             "discord" => discord.is_some(),
             "websocket" => true,
             other => {
-                return Err(ResiduumError::Config(format!(
+                return Err(FatalError::Config(format!(
                     "idle_channel \"{other}\" is not a recognized interface"
                 )));
             }
         };
         if !valid {
-            return Err(ResiduumError::Config(format!(
+            return Err(FatalError::Config(format!(
                 "idle_channel \"{channel}\" configured but [{channel}] section is missing"
             )));
         }
@@ -656,14 +656,14 @@ fn resolve_web_search_config(
 }
 
 /// Parse a thinking config string into a `ThinkingConfig`.
-fn parse_thinking_config(value: &str) -> Result<ThinkingConfig, ResiduumError> {
+fn parse_thinking_config(value: &str) -> Result<ThinkingConfig, FatalError> {
     match value.to_lowercase().as_str() {
         "off" | "false" => Ok(ThinkingConfig::Toggle(false)),
         "on" | "true" => Ok(ThinkingConfig::Toggle(true)),
         "low" => Ok(ThinkingConfig::Level(ThinkingLevel::Low)),
         "medium" => Ok(ThinkingConfig::Level(ThinkingLevel::Medium)),
         "high" => Ok(ThinkingConfig::Level(ThinkingLevel::High)),
-        other => Err(ResiduumError::Config(format!(
+        other => Err(FatalError::Config(format!(
             "invalid thinking value '{other}': expected one of: off, on, low, medium, high"
         ))),
     }
@@ -690,14 +690,14 @@ fn resolve_agent_config(section: Option<&AgentConfigFile>) -> AgentAbilitiesConf
 /// `[background.models]` section.
 ///
 /// # Errors
-/// Returns `ResiduumError::Config` if a model tier string cannot be resolved.
+/// Returns `FatalError::Config` if a model tier string cannot be resolved.
 fn resolve_background_config(
     section: Option<&BackgroundConfigFile>,
     models_section: Option<&BackgroundModelsFile>,
     providers_map: Option<&HashMap<String, ProviderEntryFile>>,
     secrets: &SecretStore,
     role_overrides: &mut HashMap<String, super::types::RoleOverrides>,
-) -> Result<BackgroundConfig, ResiduumError> {
+) -> Result<BackgroundConfig, FatalError> {
     let mut cfg = BackgroundConfig::default();
 
     if let Some(section) = section {
@@ -743,7 +743,7 @@ fn resolve_bg_tier(
     providers_map: Option<&HashMap<String, ProviderEntryFile>>,
     secrets: &SecretStore,
     role_overrides: &mut HashMap<String, super::types::RoleOverrides>,
-) -> Result<Option<Vec<super::provider::ProviderSpec>>, ResiduumError> {
+) -> Result<Option<Vec<super::provider::ProviderSpec>>, FatalError> {
     let Some(spec) = assignment else {
         return Ok(None);
     };

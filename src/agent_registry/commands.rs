@@ -9,7 +9,7 @@ use tracing::{debug, trace, warn};
 
 use crate::config::Config;
 use crate::daemon;
-use crate::error::ResiduumError;
+use crate::error::FatalError;
 
 use super::paths;
 use super::registry::AgentRegistry;
@@ -18,8 +18,8 @@ use super::registry::AgentRegistry;
 ///
 /// # Errors
 ///
-/// Returns `ResiduumError` if the subcommand fails.
-pub fn run_agent_command(args: &[String]) -> Result<(), ResiduumError> {
+/// Returns `FatalError` if the subcommand fails.
+pub fn run_agent_command(args: &[String]) -> Result<(), FatalError> {
     let sub = args.get(2).map(String::as_str);
     match sub {
         Some("create") => {
@@ -57,24 +57,24 @@ pub fn run_agent_command(args: &[String]) -> Result<(), ResiduumError> {
 }
 
 /// Validate an agent name: alphanumeric + hyphens, 1-32 chars, not "default".
-fn validate_name(name: &str) -> Result<(), ResiduumError> {
+fn validate_name(name: &str) -> Result<(), FatalError> {
     if name.is_empty() || name.len() > 32 {
-        return Err(ResiduumError::Config(
+        return Err(FatalError::Config(
             "agent name must be 1-32 characters".to_string(),
         ));
     }
     if name == "default" {
-        return Err(ResiduumError::Config(
+        return Err(FatalError::Config(
             "\"default\" is reserved for the unnamed agent".to_string(),
         ));
     }
     if !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') {
-        return Err(ResiduumError::Config(
+        return Err(FatalError::Config(
             "agent name must contain only alphanumeric characters and hyphens".to_string(),
         ));
     }
     if name.starts_with('-') || name.ends_with('-') {
-        return Err(ResiduumError::Config(
+        return Err(FatalError::Config(
             "agent name must not start or end with a hyphen".to_string(),
         ));
     }
@@ -82,16 +82,14 @@ fn validate_name(name: &str) -> Result<(), ResiduumError> {
 }
 
 /// Create a new named agent with ready-to-run config.
-fn run_agent_create(name: &str) -> Result<(), ResiduumError> {
+fn run_agent_create(name: &str) -> Result<(), FatalError> {
     validate_name(name)?;
 
     let registry_dir = paths::registry_base_dir()?;
     let mut registry = AgentRegistry::load(&registry_dir)?;
 
     if registry.get(name).is_some() {
-        return Err(ResiduumError::Config(format!(
-            "agent '{name}' already exists"
-        )));
+        return Err(FatalError::Config(format!("agent '{name}' already exists")));
     }
 
     // Read timezone from default agent's config
@@ -112,7 +110,7 @@ fn run_agent_create(name: &str) -> Result<(), ResiduumError> {
     // Create agent directory
     trace!(agent = name, path = %agent_dir.display(), "creating agent directory");
     std::fs::create_dir_all(&agent_dir).map_err(|e| {
-        ResiduumError::Config(format!(
+        FatalError::Config(format!(
             "failed to create agent directory {}: {e}",
             agent_dir.display()
         ))
@@ -132,7 +130,7 @@ fn run_agent_create(name: &str) -> Result<(), ResiduumError> {
         workspace = workspace_dir.display(),
     );
     std::fs::write(agent_dir.join("config.toml"), config_content)
-        .map_err(|e| ResiduumError::Config(format!("failed to write agent config.toml: {e}")))?;
+        .map_err(|e| FatalError::Config(format!("failed to write agent config.toml: {e}")))?;
 
     // Write example files for reference
     trace!(agent = name, "bootstrapping example files");
@@ -142,7 +140,7 @@ fn run_agent_create(name: &str) -> Result<(), ResiduumError> {
     trace!(agent = name, path = %workspace_dir.join("config").display(), "creating workspace/config directory");
     let ws_config_dir = workspace_dir.join("config");
     std::fs::create_dir_all(&ws_config_dir).map_err(|e| {
-        ResiduumError::Config(format!(
+        FatalError::Config(format!(
             "failed to create workspace/config at {}: {e}",
             ws_config_dir.display()
         ))
@@ -151,7 +149,7 @@ fn run_agent_create(name: &str) -> Result<(), ResiduumError> {
     if !ws_config_dir.join("mcp.json").exists() {
         trace!(agent = name, "writing mcp.json");
         std::fs::write(ws_config_dir.join("mcp.json"), "{ \"mcpServers\": {} }\n")
-            .map_err(|e| ResiduumError::Config(format!("failed to write mcp.json: {e}")))?;
+            .map_err(|e| FatalError::Config(format!("failed to write mcp.json: {e}")))?;
     }
 
     if !ws_config_dir.join("channels.toml").exists() {
@@ -160,7 +158,7 @@ fn run_agent_create(name: &str) -> Result<(), ResiduumError> {
             ws_config_dir.join("channels.toml"),
             "# Notification channel configuration. See channels.example.toml for options.\n",
         )
-        .map_err(|e| ResiduumError::Config(format!("failed to write channels.toml: {e}")))?;
+        .map_err(|e| FatalError::Config(format!("failed to write channels.toml: {e}")))?;
     }
 
     // Register in registry
@@ -176,7 +174,7 @@ fn run_agent_create(name: &str) -> Result<(), ResiduumError> {
 }
 
 /// List all agents and their status.
-fn run_agent_list() -> Result<(), ResiduumError> {
+fn run_agent_list() -> Result<(), FatalError> {
     let registry_dir = paths::registry_base_dir()?;
     let registry = AgentRegistry::load(&registry_dir)?;
 
@@ -197,12 +195,12 @@ fn run_agent_list() -> Result<(), ResiduumError> {
 }
 
 /// Delete a named agent.
-fn run_agent_delete(name: &str) -> Result<(), ResiduumError> {
+fn run_agent_delete(name: &str) -> Result<(), FatalError> {
     let registry_dir = paths::registry_base_dir()?;
     let mut registry = AgentRegistry::load(&registry_dir)?;
 
     if registry.get(name).is_none() {
-        return Err(ResiduumError::Config(format!(
+        return Err(FatalError::Config(format!(
             "agent '{name}' not found in registry"
         )));
     }
@@ -212,7 +210,7 @@ fn run_agent_delete(name: &str) -> Result<(), ResiduumError> {
     if let Ok(pid) = daemon::read_pid_file(&pid_path)
         && daemon::is_process_running(pid)
     {
-        return Err(ResiduumError::Config(format!(
+        return Err(FatalError::Config(format!(
             "agent '{name}' is still running (pid {pid}); stop it first with: residuum stop --agent {name}"
         )));
     }
@@ -221,7 +219,7 @@ fn run_agent_delete(name: &str) -> Result<(), ResiduumError> {
     let agent_dir = paths::agent_config_dir(name)?;
     if agent_dir.exists() {
         std::fs::remove_dir_all(&agent_dir).map_err(|e| {
-            ResiduumError::Config(format!(
+            FatalError::Config(format!(
                 "failed to remove agent directory {}: {e}",
                 agent_dir.display()
             ))
@@ -238,12 +236,12 @@ fn run_agent_delete(name: &str) -> Result<(), ResiduumError> {
 }
 
 /// Show details for a named agent.
-fn run_agent_info(name: &str) -> Result<(), ResiduumError> {
+fn run_agent_info(name: &str) -> Result<(), FatalError> {
     let registry_dir = paths::registry_base_dir()?;
     let registry = AgentRegistry::load(&registry_dir)?;
 
     let Some(entry) = registry.get(name) else {
-        return Err(ResiduumError::Config(format!(
+        return Err(FatalError::Config(format!(
             "agent '{name}' not found in registry"
         )));
     };
@@ -271,7 +269,7 @@ fn run_agent_info(name: &str) -> Result<(), ResiduumError> {
 }
 
 /// Check whether an agent is running and return a status string.
-fn check_agent_status(agent_name: Option<&str>) -> Result<String, ResiduumError> {
+fn check_agent_status(agent_name: Option<&str>) -> Result<String, FatalError> {
     let pid_path = paths::resolve_pid_path(agent_name)?;
     match daemon::read_pid_file(&pid_path) {
         Ok(pid) if daemon::is_process_running(pid) => Ok(format!("running (pid {pid})")),

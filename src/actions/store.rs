@@ -8,7 +8,7 @@ use chrono::{DateTime, Utc};
 use rand::Rng;
 use tracing::{debug, error, warn};
 
-use crate::error::ResiduumError;
+use crate::error::FatalError;
 
 use super::types::ScheduledAction;
 
@@ -24,16 +24,16 @@ impl ActionStore {
     /// Returns an empty store if the file does not exist.
     ///
     /// # Errors
-    /// Returns `ResiduumError::Scheduling` if the file exists but cannot be
+    /// Returns `FatalError::Scheduling` if the file exists but cannot be
     /// read or is not valid JSON.
-    pub async fn load(path: impl Into<PathBuf>) -> Result<Self, ResiduumError> {
+    pub async fn load(path: impl Into<PathBuf>) -> Result<Self, FatalError> {
         let path = path.into();
         match tokio::fs::read_to_string(&path).await {
             Ok(contents) => {
                 let actions: Vec<ScheduledAction> =
                     serde_json::from_str(&contents).map_err(|e| {
                         error!(path = %path.display(), error = %e, "failed to parse scheduled actions");
-                        ResiduumError::Scheduling(format!(
+                        FatalError::Scheduling(format!(
                             "failed to parse scheduled actions at {}: {e}",
                             path.display()
                         ))
@@ -47,7 +47,7 @@ impl ActionStore {
             }),
             Err(e) => {
                 error!(path = %path.display(), error = %e, "failed to read scheduled actions");
-                Err(ResiduumError::Scheduling(format!(
+                Err(FatalError::Scheduling(format!(
                     "failed to read scheduled actions at {}: {e}",
                     path.display()
                 )))
@@ -58,16 +58,16 @@ impl ActionStore {
     /// Save the store to disk atomically (write temp file, then rename).
     ///
     /// # Errors
-    /// Returns `ResiduumError::Scheduling` if serialization or writing fails.
-    pub async fn save(&self) -> Result<(), ResiduumError> {
+    /// Returns `FatalError::Scheduling` if serialization or writing fails.
+    pub async fn save(&self) -> Result<(), FatalError> {
         let json = serde_json::to_string_pretty(&self.actions).map_err(|e| {
             error!(path = %self.path.display(), error = %e, "failed to serialize scheduled actions");
-            ResiduumError::Scheduling(format!("failed to serialize scheduled actions: {e}"))
+            FatalError::Scheduling(format!("failed to serialize scheduled actions: {e}"))
         })?;
 
         let dir = self.path.parent().ok_or_else(|| {
             error!(path = %self.path.display(), "scheduled actions path has no parent directory");
-            ResiduumError::Scheduling(format!(
+            FatalError::Scheduling(format!(
                 "scheduled actions path has no parent directory: {}",
                 self.path.display()
             ))
@@ -78,7 +78,7 @@ impl ActionStore {
         if !dir.exists() {
             tokio::fs::create_dir_all(dir).await.map_err(|e| {
                 error!(dir = %dir.display(), error = %e, "failed to create directory for scheduled actions");
-                ResiduumError::Scheduling(format!(
+                FatalError::Scheduling(format!(
                     "failed to create directory for scheduled actions at {}: {e}",
                     dir.display()
                 ))
@@ -89,7 +89,7 @@ impl ActionStore {
 
         tokio::fs::write(&tmp_path, &json).await.map_err(|e| {
             error!(path = %tmp_path.display(), error = %e, "failed to write temporary scheduled actions");
-            ResiduumError::Scheduling(format!(
+            FatalError::Scheduling(format!(
                 "failed to write temporary scheduled actions at {}: {e}",
                 tmp_path.display()
             ))
@@ -99,7 +99,7 @@ impl ActionStore {
             .await
             .map_err(|e| {
                 error!(src = %tmp_path.display(), dst = %self.path.display(), error = %e, "failed to rename scheduled actions");
-                ResiduumError::Scheduling(format!(
+                FatalError::Scheduling(format!(
                     "failed to rename scheduled actions from {} to {}: {e}",
                     tmp_path.display(),
                     self.path.display()

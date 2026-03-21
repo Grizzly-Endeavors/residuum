@@ -5,7 +5,7 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::error::ResiduumError;
+use crate::error::FatalError;
 
 /// Write a diagnostic message to the crash log.
 ///
@@ -34,11 +34,11 @@ pub fn write_crash_note(msg: &str) {
 ///
 /// # Errors
 ///
-/// Returns `ResiduumError::Config` if the home directory cannot be determined.
-pub fn pid_file_path() -> Result<PathBuf, ResiduumError> {
+/// Returns `FatalError::Config` if the home directory cannot be determined.
+pub fn pid_file_path() -> Result<PathBuf, FatalError> {
     dirs::home_dir()
         .map(|h| h.join(".residuum").join("residuum.pid"))
-        .ok_or_else(|| ResiduumError::Config("could not determine home directory".to_string()))
+        .ok_or_else(|| FatalError::Config("could not determine home directory".to_string()))
 }
 
 /// Write a PID to the given file path.
@@ -47,18 +47,18 @@ pub fn pid_file_path() -> Result<PathBuf, ResiduumError> {
 ///
 /// # Errors
 ///
-/// Returns `ResiduumError::Gateway` if the file cannot be written.
-pub fn write_pid_file(path: &Path, pid: u32) -> Result<(), ResiduumError> {
+/// Returns `FatalError::Gateway` if the file cannot be written.
+pub fn write_pid_file(path: &Path, pid: u32) -> Result<(), FatalError> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|e| {
-            ResiduumError::Gateway(format!(
+            FatalError::Gateway(format!(
                 "failed to create pid file directory {}: {e}",
                 parent.display()
             ))
         })?;
     }
     std::fs::write(path, pid.to_string()).map_err(|e| {
-        ResiduumError::Gateway(format!("failed to write pid file {}: {e}", path.display()))
+        FatalError::Gateway(format!("failed to write pid file {}: {e}", path.display()))
     })?;
     tracing::debug!(path = %path.display(), pid, "wrote pid file");
     Ok(())
@@ -68,15 +68,15 @@ pub fn write_pid_file(path: &Path, pid: u32) -> Result<(), ResiduumError> {
 ///
 /// # Errors
 ///
-/// Returns `ResiduumError::Gateway` if the file cannot be read or parsed.
-pub fn read_pid_file(path: &Path) -> Result<u32, ResiduumError> {
+/// Returns `FatalError::Gateway` if the file cannot be read or parsed.
+pub fn read_pid_file(path: &Path) -> Result<u32, FatalError> {
     let content = std::fs::read_to_string(path).map_err(|e| {
-        ResiduumError::Gateway(format!("failed to read pid file {}: {e}", path.display()))
+        FatalError::Gateway(format!("failed to read pid file {}: {e}", path.display()))
     })?;
     content
         .trim()
         .parse::<u32>()
-        .map_err(|e| ResiduumError::Gateway(format!("invalid pid in {}: {e}", path.display())))
+        .map_err(|e| FatalError::Gateway(format!("invalid pid in {}: {e}", path.display())))
 }
 
 /// Remove the PID file at the given path.
@@ -85,16 +85,16 @@ pub fn read_pid_file(path: &Path) -> Result<u32, ResiduumError> {
 ///
 /// # Errors
 ///
-/// Returns `ResiduumError::Gateway` if removal fails for a reason other than
+/// Returns `FatalError::Gateway` if removal fails for a reason other than
 /// the file not existing.
-pub fn remove_pid_file(path: &Path) -> Result<(), ResiduumError> {
+pub fn remove_pid_file(path: &Path) -> Result<(), FatalError> {
     match std::fs::remove_file(path) {
         Ok(()) => {
             tracing::debug!(path = %path.display(), "removed pid file");
             Ok(())
         }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(e) => Err(ResiduumError::Gateway(format!(
+        Err(e) => Err(FatalError::Gateway(format!(
             "failed to remove pid file {}: {e}",
             path.display()
         ))),
@@ -135,18 +135,18 @@ pub fn is_process_running(pid: u32) -> bool {
 ///
 /// # Errors
 ///
-/// Returns `ResiduumError::Gateway` if the signal cannot be sent.
-pub fn send_sigterm(pid: u32) -> Result<(), ResiduumError> {
+/// Returns `FatalError::Gateway` if the signal cannot be sent.
+pub fn send_sigterm(pid: u32) -> Result<(), FatalError> {
     use nix::sys::signal::{Signal, kill};
     use nix::unistd::Pid;
 
-    let nix_pid =
-        Pid::from_raw(i32::try_from(pid).map_err(|e| {
-            ResiduumError::Gateway(format!("pid {pid} out of range for signal: {e}"))
-        })?);
+    let nix_pid = Pid::from_raw(
+        i32::try_from(pid)
+            .map_err(|e| FatalError::Gateway(format!("pid {pid} out of range for signal: {e}")))?,
+    );
 
     kill(nix_pid, Signal::SIGTERM)
-        .map_err(|e| ResiduumError::Gateway(format!("failed to send SIGTERM to pid {pid}: {e}")))?;
+        .map_err(|e| FatalError::Gateway(format!("failed to send SIGTERM to pid {pid}: {e}")))?;
     tracing::info!(pid, "sent SIGTERM");
     Ok(())
 }

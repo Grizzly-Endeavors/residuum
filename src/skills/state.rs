@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use super::{index::SkillIndex, parser::parse_skill_md, types::ActiveSkill};
-use crate::error::ResiduumError;
+use crate::error::FatalError;
 
 /// Shared skill state, following the `SharedProjectState` pattern.
 pub type SharedSkillState = Arc<tokio::sync::Mutex<SkillState>>;
@@ -36,31 +36,31 @@ impl SkillState {
     /// Reads the full `SKILL.md`, parses the body, and adds it to the active list.
     ///
     /// # Errors
-    /// Returns `ResiduumError::Skills` if the skill is not found, already active,
+    /// Returns `FatalError::Skills` if the skill is not found, already active,
     /// or the file cannot be read.
     #[tracing::instrument(skip(self))]
-    pub async fn activate(&mut self, name: &str) -> Result<&ActiveSkill, ResiduumError> {
+    pub async fn activate(&mut self, name: &str) -> Result<&ActiveSkill, FatalError> {
         if self
             .active
             .iter()
             .any(|a| a.name.eq_ignore_ascii_case(name))
         {
             tracing::debug!(name = %name, "skill already active");
-            return Err(ResiduumError::Skills(format!(
+            return Err(FatalError::Skills(format!(
                 "skill '{name}' is already active"
             )));
         }
 
         let entry = self.index.find_by_name(name).ok_or_else(|| {
             tracing::debug!(name = %name, "skill not found in index");
-            ResiduumError::Skills(format!("skill '{name}' not found"))
+            FatalError::Skills(format!("skill '{name}' not found"))
         })?;
 
         let skill_md_path = entry.skill_dir.join("SKILL.md");
         let file_content = tokio::fs::read_to_string(&skill_md_path)
             .await
             .map_err(|e| {
-                ResiduumError::Skills(format!("failed to read SKILL.md for '{}': {e}", entry.name))
+                FatalError::Skills(format!("failed to read SKILL.md for '{}': {e}", entry.name))
             })?;
 
         let (_fm, body) = parse_skill_md(&file_content).map_err(|e| {
@@ -77,22 +77,20 @@ impl SkillState {
         tracing::info!(name = %name, "skill activated");
         // Safe: we just pushed
         self.active.last().ok_or_else(|| {
-            ResiduumError::Skills("unexpected: active skill not set after activation".into())
+            FatalError::Skills("unexpected: active skill not set after activation".into())
         })
     }
 
     /// Deactivate a skill by name.
     ///
     /// # Errors
-    /// Returns `ResiduumError::Skills` if the skill is not currently active.
-    pub fn deactivate(&mut self, name: &str) -> Result<(), ResiduumError> {
+    /// Returns `FatalError::Skills` if the skill is not currently active.
+    pub fn deactivate(&mut self, name: &str) -> Result<(), FatalError> {
         let pos = self
             .active
             .iter()
             .position(|a| a.name.eq_ignore_ascii_case(name))
-            .ok_or_else(|| {
-                ResiduumError::Skills(format!("skill '{name}' is not currently active"))
-            })?;
+            .ok_or_else(|| FatalError::Skills(format!("skill '{name}' is not currently active")))?;
 
         self.active.remove(pos);
         tracing::info!(name = %name, "skill deactivated");
@@ -104,9 +102,9 @@ impl SkillState {
     /// Removes any active skills whose names no longer appear in the new index.
     ///
     /// # Errors
-    /// Returns `ResiduumError::Skills` if scanning fails.
+    /// Returns `FatalError::Skills` if scanning fails.
     #[tracing::instrument(skip(self, project_skills_dir))]
-    pub async fn rescan(&mut self, project_skills_dir: Option<&Path>) -> Result<(), ResiduumError> {
+    pub async fn rescan(&mut self, project_skills_dir: Option<&Path>) -> Result<(), FatalError> {
         let skills_before = self.index.entries().len();
         tracing::info!(
             skills_before = skills_before,

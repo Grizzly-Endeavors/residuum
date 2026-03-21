@@ -9,7 +9,7 @@ mod prompt;
 use chrono_tz::Tz;
 
 use crate::config::DEFAULT_REFLECTOR_THRESHOLD;
-use crate::error::ResiduumError;
+use crate::error::FatalError;
 use crate::memory::log_store::{load_observation_log, save_observation_log};
 use crate::memory::tokens::estimate_tokens;
 use crate::memory::types::ObservationLog;
@@ -106,7 +106,7 @@ impl Reflector {
     ///
     /// # Errors
     /// Returns an error if the LLM call fails or file persistence fails.
-    pub async fn reflect(&self, layout: &WorkspaceLayout) -> Result<ObservationLog, ResiduumError> {
+    pub async fn reflect(&self, layout: &WorkspaceLayout) -> Result<ObservationLog, FatalError> {
         let log = load_observation_log(&layout.observations_json()).await?;
 
         if log.is_empty() {
@@ -129,7 +129,7 @@ impl Reflector {
         // Serialize the flat observations for the LLM prompt — keep full objects
         // so the model has project_context and timestamp info for intelligent merging.
         let serialized = serde_json::to_string_pretty(&log.observations)
-            .map_err(|e| ResiduumError::Memory(format!("failed to serialize observations: {e}")))?;
+            .map_err(|e| FatalError::Memory(format!("failed to serialize observations: {e}")))?;
 
         let messages = build_reflection_prompt(&serialized, &content_guidance);
 
@@ -148,13 +148,13 @@ impl Reflector {
             .provider
             .complete(&messages, &[], &options)
             .await
-            .map_err(ResiduumError::Model)?;
+            .map_err(FatalError::Model)?;
 
         // Parse the object-array response into a compressed log.
         let compressed = parse_reflection_response(&response.content, self.config.tz)?;
 
         if compressed.is_empty() {
-            return Err(ResiduumError::Memory(
+            return Err(FatalError::Memory(
                 "reflector returned empty observations, refusing to replace observation log".into(),
             ));
         }

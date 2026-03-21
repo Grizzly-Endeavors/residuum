@@ -9,7 +9,7 @@ use crate::bus::{
     EndpointName, MessageEvent, Publisher, ResponseEvent, Subscriber, SystemMessageEvent,
     TurnLifecycleEvent, topics,
 };
-use crate::error::ResiduumError;
+use crate::error::FatalError;
 use crate::gateway::types::{GatewayExit, GatewayRuntime, ReloadSignal};
 use crate::interfaces::types::{InboundMessage, MessageOrigin};
 use crate::memory::types::Visibility;
@@ -167,7 +167,7 @@ async fn run_agent_turn_with_interrupts(
     images: &[ImageData],
     agent_subscriber: &mut Subscriber<MessageEvent>,
     reload_rx: &mut tokio::sync::watch::Receiver<ReloadSignal>,
-) -> (Result<Vec<String>, ResiduumError>, Vec<Interrupt>) {
+) -> (Result<Vec<String>, FatalError>, Vec<Interrupt>) {
     let (interrupt_tx, mut interrupt_rx) = mpsc::channel::<Interrupt>(32);
     let turn_result = {
         let mut turn = std::pin::pin!(agent.process_message(

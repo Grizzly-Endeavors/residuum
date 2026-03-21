@@ -12,18 +12,16 @@ use crate::memory::types::{Observation, ObservationLog};
 ///
 /// # Errors
 /// Returns an error if the file exists but cannot be read or parsed.
-pub async fn load_observation_log(
-    path: &Path,
-) -> Result<ObservationLog, crate::error::ResiduumError> {
+pub async fn load_observation_log(path: &Path) -> Result<ObservationLog, crate::error::FatalError> {
     match tokio::fs::read_to_string(path).await {
         Ok(contents) => serde_json::from_str(&contents).map_err(|e| {
-            crate::error::ResiduumError::Memory(format!(
+            crate::error::FatalError::Memory(format!(
                 "failed to parse observation log at {}: {e}",
                 path.display()
             ))
         }),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(ObservationLog::new()),
-        Err(e) => Err(crate::error::ResiduumError::Memory(format!(
+        Err(e) => Err(crate::error::FatalError::Memory(format!(
             "failed to read observation log at {}: {e}",
             path.display()
         ))),
@@ -40,13 +38,13 @@ pub async fn load_observation_log(
 pub async fn save_observation_log(
     path: &Path,
     log: &ObservationLog,
-) -> Result<(), crate::error::ResiduumError> {
+) -> Result<(), crate::error::FatalError> {
     let json = serde_json::to_string_pretty(log).map_err(|e| {
-        crate::error::ResiduumError::Memory(format!("failed to serialize observation log: {e}"))
+        crate::error::FatalError::Memory(format!("failed to serialize observation log: {e}"))
     })?;
 
     let dir = path.parent().ok_or_else(|| {
-        crate::error::ResiduumError::Memory(format!(
+        crate::error::FatalError::Memory(format!(
             "observation log path has no parent directory: {}",
             path.display()
         ))
@@ -55,14 +53,14 @@ pub async fn save_observation_log(
     let tmp_path = dir.join(".observations.json.tmp");
 
     tokio::fs::write(&tmp_path, &json).await.map_err(|e| {
-        crate::error::ResiduumError::Memory(format!(
+        crate::error::FatalError::Memory(format!(
             "failed to write temporary observation log at {}: {e}",
             tmp_path.display()
         ))
     })?;
 
     tokio::fs::rename(&tmp_path, path).await.map_err(|e| {
-        crate::error::ResiduumError::Memory(format!(
+        crate::error::FatalError::Memory(format!(
             "failed to rename observation log from {} to {}: {e}",
             tmp_path.display(),
             path.display()
@@ -81,7 +79,7 @@ pub async fn save_observation_log(
 pub async fn append_observations(
     path: &Path,
     observations: Vec<Observation>,
-) -> Result<(), crate::error::ResiduumError> {
+) -> Result<(), crate::error::FatalError> {
     let mut log = load_observation_log(path).await?;
     for obs in observations {
         log.push(obs);
@@ -97,7 +95,7 @@ pub async fn append_observations(
 ///
 /// # Errors
 /// Returns an error if the directory cannot be read.
-pub async fn next_episode_id(episodes_dir: &Path) -> Result<String, crate::error::ResiduumError> {
+pub async fn next_episode_id(episodes_dir: &Path) -> Result<String, crate::error::FatalError> {
     let max_num = max_episode_num(episodes_dir)?;
     let id = format!("ep-{:03}", max_num + 1);
     tracing::debug!(episode_id = %id, "assigned next episode ID");
@@ -113,15 +111,13 @@ pub async fn next_episode_id(episodes_dir: &Path) -> Result<String, crate::error
 pub(crate) async fn save_episode_observations(
     path: &Path,
     observations: &[Observation],
-) -> Result<(), crate::error::ResiduumError> {
+) -> Result<(), crate::error::FatalError> {
     let json = serde_json::to_string(observations).map_err(|e| {
-        crate::error::ResiduumError::Memory(format!(
-            "failed to serialize episode observations: {e}"
-        ))
+        crate::error::FatalError::Memory(format!("failed to serialize episode observations: {e}"))
     })?;
 
     let dir = path.parent().ok_or_else(|| {
-        crate::error::ResiduumError::Memory(format!(
+        crate::error::FatalError::Memory(format!(
             "episode obs path has no parent directory: {}",
             path.display()
         ))
@@ -130,14 +126,14 @@ pub(crate) async fn save_episode_observations(
     let tmp_path = dir.join(".obs.json.tmp");
 
     tokio::fs::write(&tmp_path, &json).await.map_err(|e| {
-        crate::error::ResiduumError::Memory(format!(
+        crate::error::FatalError::Memory(format!(
             "failed to write episode observations at {}: {e}",
             tmp_path.display()
         ))
     })?;
 
     tokio::fs::rename(&tmp_path, path).await.map_err(|e| {
-        crate::error::ResiduumError::Memory(format!(
+        crate::error::FatalError::Memory(format!(
             "failed to rename episode observations from {} to {}: {e}",
             tmp_path.display(),
             path.display()
@@ -150,7 +146,7 @@ pub(crate) async fn save_episode_observations(
 /// Recursively walk `dir` for `ep-NNN.jsonl` files and return the maximum `NNN` found.
 ///
 /// Returns `0` if the directory does not exist or contains no matching files.
-fn max_episode_num(dir: &Path) -> Result<u32, crate::error::ResiduumError> {
+fn max_episode_num(dir: &Path) -> Result<u32, crate::error::FatalError> {
     if !dir.exists() {
         return Ok(0);
     }
@@ -159,9 +155,9 @@ fn max_episode_num(dir: &Path) -> Result<u32, crate::error::ResiduumError> {
     Ok(max)
 }
 
-fn walk_for_max(dir: &Path, max: &mut u32) -> Result<(), crate::error::ResiduumError> {
+fn walk_for_max(dir: &Path, max: &mut u32) -> Result<(), crate::error::FatalError> {
     let entries = std::fs::read_dir(dir).map_err(|e| {
-        crate::error::ResiduumError::Memory(format!(
+        crate::error::FatalError::Memory(format!(
             "failed to read episodes directory {}: {e}",
             dir.display()
         ))
@@ -169,7 +165,7 @@ fn walk_for_max(dir: &Path, max: &mut u32) -> Result<(), crate::error::ResiduumE
 
     for entry in entries {
         let entry = entry.map_err(|e| {
-            crate::error::ResiduumError::Memory(format!("failed to read directory entry: {e}"))
+            crate::error::FatalError::Memory(format!("failed to read directory entry: {e}"))
         })?;
         let path = entry.path();
 

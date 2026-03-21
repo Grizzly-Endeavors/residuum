@@ -5,7 +5,7 @@ use std::path::Path;
 
 use serde::Deserialize;
 
-use crate::error::ResiduumError;
+use crate::error::FatalError;
 use crate::notify::channels::NotificationChannel;
 use crate::notify::external::{NtfyChannel, WebhookChannel};
 use crate::notify::types::{ExternalChannelConfig, ExternalChannelKind};
@@ -55,20 +55,20 @@ struct McpServerRaw {
 ///
 /// # Errors
 /// Returns an error if the file exists but cannot be read or parsed.
-pub fn load_mcp_servers_map(path: &Path) -> Result<HashMap<String, McpServerEntry>, ResiduumError> {
+pub fn load_mcp_servers_map(path: &Path) -> Result<HashMap<String, McpServerEntry>, FatalError> {
     if !path.exists() {
         return Ok(HashMap::new());
     }
 
     let contents = std::fs::read_to_string(path).map_err(|e| {
-        ResiduumError::Config(format!(
+        FatalError::Config(format!(
             "failed to read mcp.json at {}: {e}",
             path.display()
         ))
     })?;
 
     let file: McpConfigFile = serde_json::from_str(&contents).map_err(|e| {
-        ResiduumError::Config(format!(
+        FatalError::Config(format!(
             "failed to parse mcp.json at {}: {e}",
             path.display()
         ))
@@ -150,7 +150,7 @@ pub fn load_mcp_servers_map(path: &Path) -> Result<HashMap<String, McpServerEntr
 ///
 /// # Errors
 /// Returns an error if the file exists but cannot be read or parsed.
-pub fn load_mcp_servers(path: &Path) -> Result<Vec<McpServerEntry>, ResiduumError> {
+pub fn load_mcp_servers(path: &Path) -> Result<Vec<McpServerEntry>, FatalError> {
     Ok(load_mcp_servers_map(path)?.into_values().collect())
 }
 
@@ -168,7 +168,7 @@ pub fn resolve_mcp_references(
     project_mcp_json: &Path,
     global_mcp_json: &Path,
     project_name: &str,
-) -> Result<Vec<McpServerEntry>, ResiduumError> {
+) -> Result<Vec<McpServerEntry>, FatalError> {
     if references.is_empty() {
         return Ok(Vec::new());
     }
@@ -183,7 +183,7 @@ pub fn resolve_mcp_references(
         } else if let Some(entry) = global_map.get(name) {
             resolved.push(entry.clone());
         } else {
-            return Err(ResiduumError::Projects(format!(
+            return Err(FatalError::Projects(format!(
                 "mcp server '{name}' referenced in project '{project_name}' not found in project-local or global mcp.json"
             )));
         }
@@ -238,13 +238,13 @@ struct ChannelEntryRaw {
 ///
 /// # Errors
 /// Returns an error if the file exists but cannot be read or parsed.
-pub fn load_channel_configs(path: &Path) -> Result<Vec<ExternalChannelConfig>, ResiduumError> {
+pub fn load_channel_configs(path: &Path) -> Result<Vec<ExternalChannelConfig>, FatalError> {
     if !path.exists() {
         return Ok(Vec::new());
     }
 
     let contents = std::fs::read_to_string(path).map_err(|e| {
-        ResiduumError::Config(format!(
+        FatalError::Config(format!(
             "failed to read channels.toml at {}: {e}",
             path.display()
         ))
@@ -256,7 +256,7 @@ pub fn load_channel_configs(path: &Path) -> Result<Vec<ExternalChannelConfig>, R
     }
 
     let file: ChannelsFile = toml::from_str(&contents).map_err(|e| {
-        ResiduumError::Config(format!(
+        FatalError::Config(format!(
             "failed to parse channels.toml at {}: {e}",
             path.display()
         ))

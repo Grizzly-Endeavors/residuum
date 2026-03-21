@@ -1,11 +1,16 @@
-//! Crate-level error types for `Residuum`.
+//! Fatal error types for `Residuum`.
+//!
+//! [`FatalError`] is reserved for errors that terminate the process: startup
+//! failures, unrecoverable config issues, and CLI command failures. Runtime
+//! subsystem errors use `anyhow::Error` and are handled locally with tracing
+//! and bus publishing.
 
 use crate::models::ModelError;
 use crate::tools::ToolError;
 
-/// Top-level error type for the `Residuum` agent gateway.
+/// Fatal errors that terminate the process.
 #[derive(Debug, thiserror::Error)]
-pub enum ResiduumError {
+pub enum FatalError {
     /// Configuration loading or validation failed
     #[error("config error: {0}")]
     Config(String),

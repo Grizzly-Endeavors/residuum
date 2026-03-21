@@ -2,7 +2,7 @@
 
 use std::path::PathBuf;
 
-use crate::error::ResiduumError;
+use crate::error::FatalError;
 
 use super::Config;
 use super::{bootstrap, deserialize, resolve};
@@ -14,8 +14,8 @@ impl Config {
     /// - `config.example.toml` is always regenerated (kept in sync with the current schema).
     ///
     /// # Errors
-    /// Returns `ResiduumError::Config` if the config directory or files cannot be written.
-    pub fn bootstrap_config_dir() -> Result<(), ResiduumError> {
+    /// Returns `FatalError::Config` if the config directory or files cannot be written.
+    pub fn bootstrap_config_dir() -> Result<(), FatalError> {
         let dir = bootstrap::default_config_dir()?;
         bootstrap::bootstrap_at(&dir)
     }
@@ -26,16 +26,16 @@ impl Config {
     /// a caller-specified path instead of `~/.residuum/`.
     ///
     /// # Errors
-    /// Returns `ResiduumError::Config` if the directory or files cannot be written.
-    pub fn bootstrap_at_dir(dir: &std::path::Path) -> Result<(), ResiduumError> {
+    /// Returns `FatalError::Config` if the directory or files cannot be written.
+    pub fn bootstrap_at_dir(dir: &std::path::Path) -> Result<(), FatalError> {
         bootstrap::bootstrap_at(dir)
     }
 
     /// Get the default config directory path (`~/.residuum/`).
     ///
     /// # Errors
-    /// Returns `ResiduumError::Config` if the home directory cannot be determined.
-    pub fn config_dir() -> Result<PathBuf, ResiduumError> {
+    /// Returns `FatalError::Config` if the home directory cannot be determined.
+    pub fn config_dir() -> Result<PathBuf, FatalError> {
         bootstrap::default_config_dir()
     }
 
@@ -44,9 +44,9 @@ impl Config {
     /// Priority: env vars > config file > defaults.
     ///
     /// # Errors
-    /// Returns `ResiduumError::Config` if the config file exists but cannot be
+    /// Returns `FatalError::Config` if the config file exists but cannot be
     /// read or parsed, or if required values are missing.
-    pub fn load() -> Result<Self, ResiduumError> {
+    pub fn load() -> Result<Self, FatalError> {
         let config_dir = bootstrap::default_config_dir()?;
         let mut cfg = Self::load_at(&config_dir)?;
         cfg.config_dir = config_dir;
@@ -59,22 +59,22 @@ impl Config {
     /// directory instead of the default `~/.residuum/`.
     ///
     /// # Errors
-    /// Returns `ResiduumError::Config` if the config file exists but cannot be
+    /// Returns `FatalError::Config` if the config file exists but cannot be
     /// read or parsed, or if required values are missing.
-    pub fn load_at(config_dir: &std::path::Path) -> Result<Self, ResiduumError> {
+    pub fn load_at(config_dir: &std::path::Path) -> Result<Self, FatalError> {
         let config_path = config_dir.join("config.toml");
         let providers_path = config_dir.join("providers.toml");
 
         let file_config = if config_path.exists() {
             let contents = std::fs::read_to_string(&config_path).map_err(|e| {
-                ResiduumError::Config(format!(
+                FatalError::Config(format!(
                     "failed to read config at {}: {e}",
                     config_path.display()
                 ))
             })?;
             Some(
                 toml::from_str::<deserialize::ConfigFile>(&contents).map_err(|e| {
-                    ResiduumError::Config(format!(
+                    FatalError::Config(format!(
                         "failed to parse config at {}: {e}",
                         config_path.display()
                     ))
@@ -101,7 +101,7 @@ impl Config {
                 tracing::debug!(path = %global_path.display(), "using global providers.toml for agent subdir");
                 Some(load_providers(&global_path)?)
             } else {
-                return Err(ResiduumError::Config(format!(
+                return Err(FatalError::Config(format!(
                     "providers.toml not found at {}; run 'residuum setup' to create it",
                     providers_path.display()
                 )));
@@ -203,15 +203,15 @@ impl Config {
 }
 
 /// Load and parse a `providers.toml` file from the given path.
-fn load_providers(path: &std::path::Path) -> Result<deserialize::ProvidersFile, ResiduumError> {
+fn load_providers(path: &std::path::Path) -> Result<deserialize::ProvidersFile, FatalError> {
     let contents = std::fs::read_to_string(path).map_err(|e| {
-        ResiduumError::Config(format!(
+        FatalError::Config(format!(
             "failed to read providers config at {}: {e}",
             path.display()
         ))
     })?;
     toml::from_str::<deserialize::ProvidersFile>(&contents).map_err(|e| {
-        ResiduumError::Config(format!(
+        FatalError::Config(format!(
             "failed to parse providers config at {}: {e}",
             path.display()
         ))
@@ -296,8 +296,8 @@ main = "my-provider/claude-sonnet-4-6"
         );
         let err = result.unwrap_err();
         assert!(
-            matches!(err, ResiduumError::Config(_)),
-            "error should be of type ResiduumError::Config, got: {err:?}"
+            matches!(err, FatalError::Config(_)),
+            "error should be of type FatalError::Config, got: {err:?}"
         );
     }
 

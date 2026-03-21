@@ -4,7 +4,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use crate::config::Config;
-use crate::error::ResiduumError;
+use crate::error::FatalError;
 use crate::memory::chunk_extractor::read_idx_jsonl;
 use crate::memory::observer::{Observer, ObserverConfig};
 use crate::memory::reflector::{Reflector, ReflectorConfig};
@@ -26,12 +26,12 @@ pub(super) struct MemoryComponents {
 /// Build observer and reflector from fully-resolved provider specs on `Config`.
 ///
 /// # Errors
-/// Returns `ResiduumError::Config` if either provider cannot be built.
+/// Returns `FatalError::Config` if either provider cannot be built.
 pub(super) fn build_memory_components(
     cfg: &Config,
     tz: chrono_tz::Tz,
     http: SharedHttpClient,
-) -> Result<(Observer, Reflector), ResiduumError> {
+) -> Result<(Observer, Reflector), FatalError> {
     let observer_provider = build_provider_chain(
         &cfg.observer,
         cfg.max_tokens,
@@ -65,12 +65,12 @@ pub(super) fn build_memory_components(
 /// Build the search index, vector store, and hybrid searcher.
 ///
 /// # Errors
-/// Returns `ResiduumError` if the search index cannot be created.
+/// Returns `FatalError` if the search index cannot be created.
 pub(super) async fn init_memory(
     cfg: &Config,
     layout: &WorkspaceLayout,
     embedding_provider: Option<&Arc<dyn EmbeddingProvider>>,
-) -> Result<MemoryComponents, ResiduumError> {
+) -> Result<MemoryComponents, FatalError> {
     // Search index — schema migration + incremental sync
     let manifest_path = layout.index_manifest_json();
     let manifest = match IndexManifest::load(&manifest_path).await {
@@ -334,7 +334,7 @@ async fn backfill_obs_file(
     vs: &VectorStore,
     ep: &dyn EmbeddingProvider,
     path: &Path,
-) -> Result<(), ResiduumError> {
+) -> Result<(), FatalError> {
     let (episode_id, date, observations) = parse_obs_file(path)?;
     if observations.is_empty() {
         return Ok(());
@@ -348,9 +348,10 @@ async fn backfill_obs_file(
     }
 
     let texts: Vec<&str> = observations.iter().map(|o| o.content.as_str()).collect();
-    let response = ep.embed(&texts).await.map_err(|e| {
-        ResiduumError::Memory(format!("embedding failed for {}: {e}", path.display()))
-    })?;
+    let response = ep
+        .embed(&texts)
+        .await
+        .map_err(|e| FatalError::Memory(format!("embedding failed for {}: {e}", path.display())))?;
 
     let embeddings = response.embeddings;
     vs.insert_observations(&episode_id, &date, &observations, &embeddings)?;
@@ -364,7 +365,7 @@ async fn backfill_idx_file(
     vs: &VectorStore,
     ep: &dyn EmbeddingProvider,
     path: &Path,
-) -> Result<(), ResiduumError> {
+) -> Result<(), FatalError> {
     let chunks = read_idx_jsonl(path);
     if chunks.is_empty() {
         return Ok(());
@@ -382,9 +383,10 @@ async fn backfill_idx_file(
     }
 
     let texts: Vec<&str> = chunks.iter().map(|c| c.content.as_str()).collect();
-    let response = ep.embed(&texts).await.map_err(|e| {
-        ResiduumError::Memory(format!("embedding failed for {}: {e}", path.display()))
-    })?;
+    let response = ep
+        .embed(&texts)
+        .await
+        .map_err(|e| FatalError::Memory(format!("embedding failed for {}: {e}", path.display())))?;
 
     let embeddings = response.embeddings;
     vs.insert_chunks(&chunks, &embeddings)?;

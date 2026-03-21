@@ -1,7 +1,7 @@
 //! Agent struct, configuration, and turn dispatch.
 
 use crate::bus::{EndpointName, Publisher};
-use crate::error::ResiduumError;
+use crate::error::FatalError;
 use crate::interfaces::types::MessageOrigin;
 use crate::mcp::SharedMcpRegistry;
 use crate::models::{CompletionOptions, Message, ModelProvider};
@@ -99,7 +99,7 @@ impl Agent {
     pub async fn reload_observations(
         &mut self,
         layout: &crate::workspace::layout::WorkspaceLayout,
-    ) -> Result<(), ResiduumError> {
+    ) -> Result<(), FatalError> {
         self.observations =
             super::context::loading::load_observations(&layout.observations_json()).await?;
         Ok(())
@@ -112,7 +112,7 @@ impl Agent {
     pub async fn reload_recent_context(
         &mut self,
         layout: &crate::workspace::layout::WorkspaceLayout,
-    ) -> Result<(), ResiduumError> {
+    ) -> Result<(), FatalError> {
         self.recent_context =
             super::context::loading::load_recent_context_narrative(&layout.recent_context_json())
                 .await?;
@@ -187,7 +187,7 @@ impl Agent {
     /// assistant prefill) so the agent reviews injected background results.
     ///
     /// # Errors
-    /// Returns `ResiduumError` if the model call fails or tool execution errors
+    /// Returns `FatalError` if the model call fails or tool execution errors
     /// are unrecoverable.
     pub async fn run_wake_turn(
         &mut self,
@@ -195,7 +195,7 @@ impl Agent {
         output_endpoint: Option<&EndpointName>,
         prompt_ctx: &PromptContext<'_>,
         interrupt_rx: &mut tokio::sync::mpsc::Receiver<interrupt::Interrupt>,
-    ) -> Result<Vec<String>, ResiduumError> {
+    ) -> Result<Vec<String>, FatalError> {
         tracing::debug!("processing wake turn");
         let now = crate::time::now_local(self.tz);
         let unread = crate::inbox::count_unread(&self.inbox_dir);
@@ -245,7 +245,7 @@ impl Agent {
     /// included in the return value.
     ///
     /// # Errors
-    /// Returns `ResiduumError` if the model call fails or tool execution errors
+    /// Returns `FatalError` if the model call fails or tool execution errors
     /// are unrecoverable.
     #[expect(
         clippy::too_many_arguments,
@@ -260,7 +260,7 @@ impl Agent {
         prompt_ctx: &PromptContext<'_>,
         interrupt_rx: &mut tokio::sync::mpsc::Receiver<interrupt::Interrupt>,
         images: &[crate::models::ImageData],
-    ) -> Result<Vec<String>, ResiduumError> {
+    ) -> Result<Vec<String>, FatalError> {
         tracing::debug!(source = ?origin, "processing user message");
         let now = crate::time::now_local(self.tz);
         let unread = crate::inbox::count_unread(&self.inbox_dir);
@@ -315,7 +315,7 @@ impl Agent {
     /// agent's default provider for this turn only.
     ///
     /// # Errors
-    /// Returns `ResiduumError` if the model call fails.
+    /// Returns `FatalError` if the model call fails.
     pub async fn run_system_turn(
         &self,
         prompt: &str,
@@ -323,7 +323,7 @@ impl Agent {
         output_endpoint: Option<&EndpointName>,
         provider_override: Option<&dyn ModelProvider>,
         prompt_ctx: &PromptContext<'_>,
-    ) -> Result<SystemTurnResult, ResiduumError> {
+    ) -> Result<SystemTurnResult, FatalError> {
         let mut thread_messages = RecentMessages::new();
         thread_messages.push(Message::user(prompt));
 
@@ -360,7 +360,7 @@ impl Agent {
         .await?;
 
         let response = texts.pop().ok_or_else(|| {
-            ResiduumError::Other(anyhow::anyhow!("system turn returned no text responses"))
+            FatalError::Other(anyhow::anyhow!("system turn returned no text responses"))
         })?;
 
         Ok(SystemTurnResult {

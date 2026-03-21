@@ -5,7 +5,7 @@ use tokio::sync::mpsc;
 use crate::bus::{
     EndpointName, Publisher, ToolActivityEvent, ToolCallEvent, ToolResultEvent, topics,
 };
-use crate::error::ResiduumError;
+use crate::error::FatalError;
 use crate::mcp::SharedMcpRegistry;
 use crate::models::{CompletionOptions, Message, ModelProvider, ModelResponse, ToolCall};
 use crate::tools::{SharedToolFilter, ToolError, ToolFilter, ToolRegistry};
@@ -55,7 +55,7 @@ pub(crate) async fn execute_turn(
     output_endpoint: Option<&EndpointName>,
     status_line: Option<&StatusLine>,
     interrupt_rx: &mut mpsc::Receiver<Interrupt>,
-) -> Result<Vec<String>, ResiduumError> {
+) -> Result<Vec<String>, FatalError> {
     let mut texts: Vec<String> = Vec::new();
     let mut empty_retries: u32 = 0;
 
@@ -87,7 +87,7 @@ pub(crate) async fn execute_turn(
             .provider
             .complete(&messages, &tool_definitions, resources.options)
             .await
-            .map_err(ResiduumError::Model)?;
+            .map_err(FatalError::Model)?;
 
         if let Some(ref thinking) = response.thinking {
             tracing::debug!(
@@ -111,7 +111,7 @@ pub(crate) async fn execute_turn(
                     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
                     continue;
                 }
-                return Err(ResiduumError::Other(anyhow::anyhow!(
+                return Err(FatalError::Other(anyhow::anyhow!(
                     "model returned empty response with no tool calls"
                 )));
             }
@@ -163,7 +163,7 @@ pub(crate) async fn execute_turn(
         log_usage(&response);
     }
 
-    Err(ResiduumError::Other(anyhow::anyhow!(
+    Err(FatalError::Other(anyhow::anyhow!(
         "agent exceeded maximum tool iterations ({MAX_TOOL_ITERATIONS})"
     )))
 }

@@ -1,7 +1,7 @@
 //! Model providers and memory pipeline initialization.
 
 use crate::config::Config;
-use crate::error::ResiduumError;
+use crate::error::FatalError;
 use crate::memory::observer::Observer;
 use crate::memory::reflector::Reflector;
 use crate::models::{
@@ -23,12 +23,12 @@ pub struct ProviderComponents {
 /// Build model providers, observer, reflector, and embedding provider.
 ///
 /// # Errors
-/// Returns `ResiduumError` if the main model provider fails to build.
+/// Returns `FatalError` if the main model provider fails to build.
 pub fn init_providers(
     cfg: &Config,
     tz: chrono_tz::Tz,
     http: SharedHttpClient,
-) -> Result<ProviderComponents, ResiduumError> {
+) -> Result<ProviderComponents, FatalError> {
     let provider =
         build_provider_chain(&cfg.main, cfg.max_tokens, http.clone(), cfg.retry.clone())?;
     tracing::info!(model = provider.model_name(), "model provider ready");

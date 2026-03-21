@@ -3,7 +3,7 @@
 use rustyline::DefaultEditor;
 use rustyline::error::ReadlineError;
 
-use crate::error::ResiduumError;
+use crate::error::FatalError;
 
 /// Reads user input interactively using rustyline.
 ///
@@ -17,10 +17,10 @@ impl CliReader {
     /// Create a new `CliReader`.
     ///
     /// # Errors
-    /// Returns `ResiduumError::Interface` if the readline editor cannot be initialized.
-    pub fn new() -> Result<Self, ResiduumError> {
+    /// Returns `FatalError::Interface` if the readline editor cannot be initialized.
+    pub fn new() -> Result<Self, FatalError> {
         let editor = DefaultEditor::new()
-            .map_err(|e| ResiduumError::Interface(format!("failed to initialize readline: {e}")))?;
+            .map_err(|e| FatalError::Interface(format!("failed to initialize readline: {e}")))?;
         Ok(Self { editor })
     }
 

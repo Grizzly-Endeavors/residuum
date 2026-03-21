@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 
-use crate::error::ResiduumError;
+use crate::error::FatalError;
 use crate::memory::types::Episode;
 use crate::models::{Message, Role};
 
@@ -38,10 +38,10 @@ pub(crate) async fn write_episode_transcript(
     episodes_dir: &Path,
     episode: &Episode,
     messages: &[Message],
-) -> Result<(), ResiduumError> {
+) -> Result<(), FatalError> {
     let day_dir = episodes_dir.join(episode.date.format("%Y-%m/%d").to_string());
     tokio::fs::create_dir_all(&day_dir).await.map_err(|e| {
-        ResiduumError::Memory(format!(
+        FatalError::Memory(format!(
             "failed to create episode directory at {}: {e}",
             day_dir.display()
         ))
@@ -59,22 +59,22 @@ pub(crate) async fn write_episode_transcript(
     });
 
     let mut lines = Vec::with_capacity(messages.len() + 1);
-    lines
-        .push(serde_json::to_string(&meta).map_err(|e| {
-            ResiduumError::Memory(format!("failed to serialize episode meta: {e}"))
-        })?);
+    lines.push(
+        serde_json::to_string(&meta)
+            .map_err(|e| FatalError::Memory(format!("failed to serialize episode meta: {e}")))?,
+    );
 
     for msg in messages {
         lines.push(
             serde_json::to_string(msg)
-                .map_err(|e| ResiduumError::Memory(format!("failed to serialize message: {e}")))?,
+                .map_err(|e| FatalError::Memory(format!("failed to serialize message: {e}")))?,
         );
     }
 
     let file_content = lines.join("\n") + "\n";
 
     tokio::fs::write(&path, &file_content).await.map_err(|e| {
-        ResiduumError::Memory(format!(
+        FatalError::Memory(format!(
             "failed to write episode transcript at {}: {e}",
             path.display()
         ))
@@ -112,9 +112,9 @@ pub(crate) fn episode_idx_path(episodes_dir: &Path, episode: &Episode) -> PathBu
 ///
 /// # Errors
 /// Returns an error if the file cannot be read or any line fails to parse.
-pub async fn read_episode_jsonl(path: &Path) -> Result<(EpisodeMeta, Vec<Message>), ResiduumError> {
+pub async fn read_episode_jsonl(path: &Path) -> Result<(EpisodeMeta, Vec<Message>), FatalError> {
     let file_content = tokio::fs::read_to_string(path).await.map_err(|e| {
-        ResiduumError::Memory(format!(
+        FatalError::Memory(format!(
             "failed to read episode file at {}: {e}",
             path.display()
         ))
@@ -123,11 +123,11 @@ pub async fn read_episode_jsonl(path: &Path) -> Result<(EpisodeMeta, Vec<Message
     let mut lines = file_content.lines();
 
     let meta_line = lines.next().ok_or_else(|| {
-        ResiduumError::Memory(format!("episode file is empty at {}", path.display()))
+        FatalError::Memory(format!("episode file is empty at {}", path.display()))
     })?;
 
     let meta: EpisodeMeta = serde_json::from_str(meta_line).map_err(|e| {
-        ResiduumError::Memory(format!(
+        FatalError::Memory(format!(
             "failed to parse episode meta at {}: {e}",
             path.display()
         ))
@@ -139,7 +139,7 @@ pub async fn read_episode_jsonl(path: &Path) -> Result<(EpisodeMeta, Vec<Message
             continue;
         }
         let msg: Message = serde_json::from_str(line).map_err(|e| {
-            ResiduumError::Memory(format!(
+            FatalError::Memory(format!(
                 "failed to parse message line in {}: {e}",
                 path.display()
             ))
@@ -169,7 +169,7 @@ const MAX_TOOL_RESULT_CHARS: usize = 500;
 pub(crate) fn find_episode_path(
     episodes_dir: &Path,
     episode_id: &str,
-) -> Result<Option<PathBuf>, ResiduumError> {
+) -> Result<Option<PathBuf>, FatalError> {
     if !episodes_dir.exists() {
         return Ok(None);
     }
@@ -179,13 +179,9 @@ pub(crate) fn find_episode_path(
     Ok(result)
 }
 
-fn walk_for_file(
-    dir: &Path,
-    target: &str,
-    result: &mut Option<PathBuf>,
-) -> Result<(), ResiduumError> {
+fn walk_for_file(dir: &Path, target: &str, result: &mut Option<PathBuf>) -> Result<(), FatalError> {
     let entries = std::fs::read_dir(dir).map_err(|e| {
-        ResiduumError::Memory(format!(
+        FatalError::Memory(format!(
             "failed to read episodes directory {}: {e}",
             dir.display()
         ))
@@ -196,7 +192,7 @@ fn walk_for_file(
             return Ok(());
         }
         let entry = entry
-            .map_err(|e| ResiduumError::Memory(format!("failed to read directory entry: {e}")))?;
+            .map_err(|e| FatalError::Memory(format!("failed to read directory entry: {e}")))?;
         let path = entry.path();
 
         if path.is_dir() {
@@ -221,9 +217,9 @@ pub(crate) async fn read_episode_lines(
     path: &Path,
     from_line: Option<usize>,
     request_limit: Option<usize>,
-) -> Result<String, ResiduumError> {
+) -> Result<String, FatalError> {
     let file_content = tokio::fs::read_to_string(path).await.map_err(|e| {
-        ResiduumError::Memory(format!(
+        FatalError::Memory(format!(
             "failed to read episode file at {}: {e}",
             path.display()
         ))
@@ -233,7 +229,7 @@ pub(crate) async fn read_episode_lines(
     let total = all_lines.len();
 
     if total == 0 {
-        return Err(ResiduumError::Memory(format!(
+        return Err(FatalError::Memory(format!(
             "episode file is empty at {}",
             path.display()
         )));
@@ -241,10 +237,10 @@ pub(crate) async fn read_episode_lines(
 
     // Parse meta from line 1
     let meta_line = all_lines.first().ok_or_else(|| {
-        ResiduumError::Memory(format!("episode file is empty at {}", path.display()))
+        FatalError::Memory(format!("episode file is empty at {}", path.display()))
     })?;
     let meta: EpisodeMeta = serde_json::from_str(meta_line).map_err(|e| {
-        ResiduumError::Memory(format!(
+        FatalError::Memory(format!(
             "failed to parse episode meta at {}: {e}",
             path.display()
         ))

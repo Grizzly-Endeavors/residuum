@@ -2,7 +2,7 @@
 
 use std::path::Path;
 
-use crate::error::ResiduumError;
+use crate::error::FatalError;
 use crate::projects::activation::SharedProjectState;
 use crate::skills::SharedSkillState;
 use crate::subagents::SubagentPresetIndex;
@@ -13,12 +13,12 @@ use crate::subagents::SubagentPresetIndex;
 ///
 /// # Errors
 /// Returns an error if the file exists but cannot be read or parsed.
-pub(crate) async fn load_observations(path: &Path) -> Result<Option<String>, ResiduumError> {
+pub(crate) async fn load_observations(path: &Path) -> Result<Option<String>, FatalError> {
     match tokio::fs::read_to_string(path).await {
         Ok(content) if !content.trim().is_empty() => {
             let log: crate::memory::types::ObservationLog = serde_json::from_str(&content)
                 .map_err(|e| {
-                    ResiduumError::Memory(format!(
+                    FatalError::Memory(format!(
                         "failed to parse observations at {}: {e}",
                         path.display()
                     ))
@@ -33,7 +33,7 @@ pub(crate) async fn load_observations(path: &Path) -> Result<Option<String>, Res
         }
         Ok(_) => Ok(None),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(e) => Err(ResiduumError::Memory(format!(
+        Err(e) => Err(FatalError::Memory(format!(
             "failed to read observations at {}: {e}",
             path.display()
         ))),
@@ -48,7 +48,7 @@ pub(crate) async fn load_observations(path: &Path) -> Result<Option<String>, Res
 /// Returns an error if the file exists but cannot be parsed.
 pub(crate) async fn load_recent_context_narrative(
     path: &Path,
-) -> Result<Option<String>, ResiduumError> {
+) -> Result<Option<String>, FatalError> {
     let result = crate::memory::recent_context::load_recent_context(path)
         .await?
         .map(|ctx| ctx.narrative);

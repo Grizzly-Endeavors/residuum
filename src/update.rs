@@ -8,7 +8,7 @@ use std::sync::Arc;
 use chrono::{DateTime, Utc};
 use tokio::sync::RwLock;
 
-use crate::error::ResiduumError;
+use crate::error::FatalError;
 
 /// Build-time version injected by the release workflow.
 pub const CURRENT_VERSION: &str = env!("RESIDUUM_VERSION");
@@ -83,25 +83,25 @@ pub async fn check_for_update(status: &SharedUpdateStatus) {
 ///
 /// # Errors
 ///
-/// Returns `ResiduumError::Gateway` if the HTTP request or JSON parsing fails.
-pub async fn fetch_latest_version() -> Result<String, ResiduumError> {
+/// Returns `FatalError::Gateway` if the HTTP request or JSON parsing fails.
+pub async fn fetch_latest_version() -> Result<String, FatalError> {
     let url = "https://api.github.com/repos/grizzly-endeavors/residuum/releases/latest";
     tracing::debug!(url = %url, "fetching latest release");
 
     let client = reqwest::Client::builder()
         .user_agent("residuum-updater")
         .build()
-        .map_err(|e| ResiduumError::Gateway(format!("failed to build http client: {e}")))?;
+        .map_err(|e| FatalError::Gateway(format!("failed to build http client: {e}")))?;
 
     let resp = client
         .get(url)
         .header("Accept", "application/vnd.github+json")
         .send()
         .await
-        .map_err(|e| ResiduumError::Gateway(format!("failed to fetch latest release: {e}")))?;
+        .map_err(|e| FatalError::Gateway(format!("failed to fetch latest release: {e}")))?;
 
     if !resp.status().is_success() {
-        return Err(ResiduumError::Gateway(format!(
+        return Err(FatalError::Gateway(format!(
             "github api returned {} — are you online?",
             resp.status()
         )));
@@ -110,14 +110,14 @@ pub async fn fetch_latest_version() -> Result<String, ResiduumError> {
     let body: serde_json::Value = resp
         .json()
         .await
-        .map_err(|e| ResiduumError::Gateway(format!("failed to parse release response: {e}")))?;
+        .map_err(|e| FatalError::Gateway(format!("failed to parse release response: {e}")))?;
 
     let tag = body
         .get("tag_name")
         .and_then(|v| v.as_str())
         .map(String::from)
         .ok_or_else(|| {
-            ResiduumError::Gateway("release response missing tag_name field".to_string())
+            FatalError::Gateway("release response missing tag_name field".to_string())
         })?;
 
     tracing::debug!(tag_name = %tag, "fetched latest release tag");
@@ -151,9 +151,9 @@ pub fn is_up_to_date(current: &str, latest: &str) -> bool {
 ///
 /// # Errors
 ///
-/// Returns `ResiduumError::Gateway` if the download, platform detection,
+/// Returns `FatalError::Gateway` if the download, platform detection,
 /// or binary replacement fails.
-pub async fn download_and_install() -> Result<String, ResiduumError> {
+pub async fn download_and_install() -> Result<String, FatalError> {
     let latest = fetch_latest_version().await?;
     let platform = detect_platform()?;
     let url = format!(
@@ -165,15 +165,16 @@ pub async fn download_and_install() -> Result<String, ResiduumError> {
     let client = reqwest::Client::builder()
         .user_agent("residuum-updater")
         .build()
-        .map_err(|e| ResiduumError::Gateway(format!("failed to build http client: {e}")))?;
+        .map_err(|e| FatalError::Gateway(format!("failed to build http client: {e}")))?;
 
-    let response =
-        client.get(&url).send().await.map_err(|e| {
-            ResiduumError::Gateway(format!("failed to download update binary: {e}"))
-        })?;
+    let response = client
+        .get(&url)
+        .send()
+        .await
+        .map_err(|e| FatalError::Gateway(format!("failed to download update binary: {e}")))?;
 
     if !response.status().is_success() {
-        return Err(ResiduumError::Gateway(format!(
+        return Err(FatalError::Gateway(format!(
             "update binary download returned HTTP {} — asset may not exist for {platform}",
             response.status()
         )));
@@ -182,12 +183,12 @@ pub async fn download_and_install() -> Result<String, ResiduumError> {
     let bytes = response
         .bytes()
         .await
-        .map_err(|e| ResiduumError::Gateway(format!("failed to read update binary: {e}")))?;
+        .map_err(|e| FatalError::Gateway(format!("failed to read update binary: {e}")))?;
 
     tracing::debug!(bytes = bytes.len(), version = %latest, "download complete");
 
     let current_exe = std::env::current_exe().map_err(|e| {
-        ResiduumError::Gateway(format!("failed to determine current executable path: {e}"))
+        FatalError::Gateway(format!("failed to determine current executable path: {e}"))
     })?;
 
     // On Linux, the kernel appends " (deleted)" to /proc/self/exe when the
@@ -202,14 +203,14 @@ pub async fn download_and_install() -> Result<String, ResiduumError> {
     };
 
     let exe_dir = exe_path.parent().ok_or_else(|| {
-        ResiduumError::Gateway("current executable has no parent directory".to_string())
+        FatalError::Gateway("current executable has no parent directory".to_string())
     })?;
 
     // Write to a temp file in the same directory for atomic rename
     let tmp_path = exe_dir.join(".residuum-update.tmp");
 
     std::fs::write(&tmp_path, &bytes).map_err(|e| {
-        ResiduumError::Gateway(format!(
+        FatalError::Gateway(format!(
             "failed to write update binary to {} — check directory permissions: {e}",
             tmp_path.display()
         ))
@@ -223,7 +224,7 @@ pub async fn download_and_install() -> Result<String, ResiduumError> {
                 if let Err(re) = std::fs::remove_file(&tmp_path) {
                     tracing::warn!(error = %re, path = %tmp_path.display(), "failed to remove temp file during cleanup");
                 }
-                ResiduumError::Gateway(format!("failed to set executable permissions: {e}"))
+                FatalError::Gateway(format!("failed to set executable permissions: {e}"))
             },
         )?;
     }
@@ -234,7 +235,7 @@ pub async fn download_and_install() -> Result<String, ResiduumError> {
         if let Err(re) = std::fs::remove_file(&tmp_path) {
             tracing::warn!(error = %re, path = %tmp_path.display(), "failed to remove temp file during cleanup");
         }
-        ResiduumError::Gateway(format!(
+        FatalError::Gateway(format!(
             "failed to replace binary at {} — check directory permissions: {e}",
             exe_path.display()
         ))
@@ -248,13 +249,13 @@ pub async fn download_and_install() -> Result<String, ResiduumError> {
 ///
 /// # Errors
 ///
-/// Returns `ResiduumError::Gateway` for unsupported OS/architecture combinations.
-fn detect_platform() -> Result<String, ResiduumError> {
+/// Returns `FatalError::Gateway` for unsupported OS/architecture combinations.
+fn detect_platform() -> Result<String, FatalError> {
     let os = match std::env::consts::OS {
         "linux" => "linux",
         "macos" => "darwin",
         other => {
-            return Err(ResiduumError::Gateway(format!(
+            return Err(FatalError::Gateway(format!(
                 "unsupported operating system for self-update: {other}"
             )));
         }
@@ -264,14 +265,14 @@ fn detect_platform() -> Result<String, ResiduumError> {
         "x86_64" => "x86_64",
         "aarch64" => "aarch64",
         other => {
-            return Err(ResiduumError::Gateway(format!(
+            return Err(FatalError::Gateway(format!(
                 "unsupported architecture for self-update: {other}"
             )));
         }
     };
 
     if os == "darwin" && arch == "x86_64" {
-        return Err(ResiduumError::Gateway(
+        return Err(FatalError::Gateway(
             "macOS x86_64 (Intel) is not supported — Apple Silicon only".to_string(),
         ));
     }

@@ -1,6 +1,6 @@
 //! Identity file loading for agent context assembly.
 
-use crate::error::ResiduumError;
+use crate::error::FatalError;
 
 use super::layout::WorkspaceLayout;
 
@@ -30,8 +30,8 @@ impl IdentityFiles {
     /// warning when absent.
     ///
     /// # Errors
-    /// Returns `ResiduumError::Workspace` if a file exists but cannot be read.
-    pub async fn load(layout: &WorkspaceLayout) -> Result<Self, ResiduumError> {
+    /// Returns `FatalError::Workspace` if a file exists but cannot be read.
+    pub async fn load(layout: &WorkspaceLayout) -> Result<Self, FatalError> {
         let soul = read_optional(&layout.soul_md()).await?;
         let agents = read_optional(&layout.agents_md()).await?;
         let user = read_optional(&layout.user_md()).await?;
@@ -67,7 +67,7 @@ impl IdentityFiles {
 }
 
 /// Read a file if it exists, returning `None` if missing.
-async fn read_optional(path: &std::path::Path) -> Result<Option<String>, ResiduumError> {
+async fn read_optional(path: &std::path::Path) -> Result<Option<String>, FatalError> {
     match tokio::fs::read_to_string(path).await {
         Ok(content) => {
             if content.trim().is_empty() {
@@ -78,7 +78,7 @@ async fn read_optional(path: &std::path::Path) -> Result<Option<String>, Residuu
             }
         }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(e) => Err(ResiduumError::Workspace(format!(
+        Err(e) => Err(FatalError::Workspace(format!(
             "failed to read {}: {e}",
             path.display()
         ))),

@@ -7,7 +7,7 @@ use std::path::Path;
 use chrono::NaiveDateTime;
 use serde::{Deserialize, Serialize};
 
-use crate::error::ResiduumError;
+use crate::error::FatalError;
 
 /// A compressed episode extracted from a conversation segment.
 ///
@@ -203,16 +203,16 @@ impl IndexManifest {
     ///
     /// # Errors
     /// Returns an error if the file exists but cannot be read or parsed.
-    pub async fn load(path: &Path) -> Result<Self, ResiduumError> {
+    pub async fn load(path: &Path) -> Result<Self, FatalError> {
         match tokio::fs::read_to_string(path).await {
             Ok(contents) => serde_json::from_str(&contents).map_err(|e| {
-                ResiduumError::Memory(format!(
+                FatalError::Memory(format!(
                     "failed to parse index manifest at {}: {e}",
                     path.display()
                 ))
             }),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Self::new()),
-            Err(e) => Err(ResiduumError::Memory(format!(
+            Err(e) => Err(FatalError::Memory(format!(
                 "failed to read index manifest at {}: {e}",
                 path.display()
             ))),
@@ -223,13 +223,12 @@ impl IndexManifest {
     ///
     /// # Errors
     /// Returns an error if the file cannot be written.
-    pub async fn save(&self, path: &Path) -> Result<(), ResiduumError> {
-        let json = serde_json::to_string_pretty(self).map_err(|e| {
-            ResiduumError::Memory(format!("failed to serialize index manifest: {e}"))
-        })?;
+    pub async fn save(&self, path: &Path) -> Result<(), FatalError> {
+        let json = serde_json::to_string_pretty(self)
+            .map_err(|e| FatalError::Memory(format!("failed to serialize index manifest: {e}")))?;
 
         let dir = path.parent().ok_or_else(|| {
-            ResiduumError::Memory(format!(
+            FatalError::Memory(format!(
                 "index manifest path has no parent directory: {}",
                 path.display()
             ))
@@ -238,14 +237,14 @@ impl IndexManifest {
         let tmp_path = dir.join(".index_manifest.json.tmp");
 
         tokio::fs::write(&tmp_path, &json).await.map_err(|e| {
-            ResiduumError::Memory(format!(
+            FatalError::Memory(format!(
                 "failed to write temporary index manifest at {}: {e}",
                 tmp_path.display()
             ))
         })?;
 
         tokio::fs::rename(&tmp_path, path).await.map_err(|e| {
-            ResiduumError::Memory(format!(
+            FatalError::Memory(format!(
                 "failed to rename index manifest from {} to {}: {e}",
                 tmp_path.display(),
                 path.display()

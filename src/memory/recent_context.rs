@@ -8,7 +8,7 @@ use std::path::Path;
 use chrono::NaiveDateTime;
 use serde::{Deserialize, Serialize};
 
-use crate::error::ResiduumError;
+use crate::error::FatalError;
 
 /// Persisted narrative context from the most recent observation.
 ///
@@ -29,12 +29,12 @@ pub struct RecentContext {
 ///
 /// # Errors
 /// Returns an error if the file cannot be written.
-pub async fn save_recent_context(path: &Path, ctx: &RecentContext) -> Result<(), ResiduumError> {
+pub async fn save_recent_context(path: &Path, ctx: &RecentContext) -> Result<(), FatalError> {
     let json = serde_json::to_string_pretty(ctx)
-        .map_err(|e| ResiduumError::Memory(format!("failed to serialize recent context: {e}")))?;
+        .map_err(|e| FatalError::Memory(format!("failed to serialize recent context: {e}")))?;
 
     let dir = path.parent().ok_or_else(|| {
-        ResiduumError::Memory(format!(
+        FatalError::Memory(format!(
             "recent context path has no parent directory: {}",
             path.display()
         ))
@@ -43,14 +43,14 @@ pub async fn save_recent_context(path: &Path, ctx: &RecentContext) -> Result<(),
     let tmp_path = dir.join(".recent_context.json.tmp");
 
     tokio::fs::write(&tmp_path, &json).await.map_err(|e| {
-        ResiduumError::Memory(format!(
+        FatalError::Memory(format!(
             "failed to write temporary recent context at {}: {e}",
             tmp_path.display()
         ))
     })?;
 
     tokio::fs::rename(&tmp_path, path).await.map_err(|e| {
-        ResiduumError::Memory(format!(
+        FatalError::Memory(format!(
             "failed to rename recent context from {} to {}: {e}",
             tmp_path.display(),
             path.display()
@@ -66,12 +66,12 @@ pub async fn save_recent_context(path: &Path, ctx: &RecentContext) -> Result<(),
 ///
 /// # Errors
 /// Returns an error if the file exists but cannot be parsed.
-pub async fn load_recent_context(path: &Path) -> Result<Option<RecentContext>, ResiduumError> {
+pub async fn load_recent_context(path: &Path) -> Result<Option<RecentContext>, FatalError> {
     match tokio::fs::read_to_string(path).await {
         Ok(contents) if contents.trim().is_empty() => Ok(None),
         Ok(contents) => {
             let ctx: RecentContext = serde_json::from_str(&contents).map_err(|e| {
-                ResiduumError::Memory(format!(
+                FatalError::Memory(format!(
                     "failed to parse recent context at {}: {e}",
                     path.display()
                 ))
@@ -79,7 +79,7 @@ pub async fn load_recent_context(path: &Path) -> Result<Option<RecentContext>, R
             Ok(Some(ctx))
         }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(e) => Err(ResiduumError::Memory(format!(
+        Err(e) => Err(FatalError::Memory(format!(
             "failed to read recent context at {}: {e}",
             path.display()
         ))),

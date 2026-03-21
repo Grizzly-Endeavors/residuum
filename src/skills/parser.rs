@@ -1,5 +1,5 @@
 use super::types::SkillFrontmatter;
-use crate::error::ResiduumError;
+use crate::error::FatalError;
 
 /// Parse a `SKILL.md` file into frontmatter and body.
 ///
@@ -8,31 +8,31 @@ use crate::error::ResiduumError;
 /// no leading/trailing/consecutive hyphens.
 ///
 /// # Errors
-/// Returns `ResiduumError::Skills` if the frontmatter is missing, invalid
+/// Returns `FatalError::Skills` if the frontmatter is missing, invalid
 /// YAML, or the name fails validation.
-pub(super) fn parse_skill_md(content: &str) -> Result<(SkillFrontmatter, String), ResiduumError> {
+pub(super) fn parse_skill_md(content: &str) -> Result<(SkillFrontmatter, String), FatalError> {
     let trimmed = content.trim_start();
 
     if !trimmed.starts_with("---") {
-        return Err(ResiduumError::Skills(
+        return Err(FatalError::Skills(
             "SKILL.md missing frontmatter delimiter '---'".to_string(),
         ));
     }
 
     let after_open = trimmed
         .get(3..)
-        .ok_or_else(|| ResiduumError::Skills("SKILL.md is too short".to_string()))?;
+        .ok_or_else(|| FatalError::Skills("SKILL.md is too short".to_string()))?;
 
     let close_pos = after_open.find("\n---").ok_or_else(|| {
-        ResiduumError::Skills("SKILL.md missing closing frontmatter delimiter '---'".to_string())
+        FatalError::Skills("SKILL.md missing closing frontmatter delimiter '---'".to_string())
     })?;
 
     let yaml_str = after_open
         .get(..close_pos)
-        .ok_or_else(|| ResiduumError::Skills("failed to extract YAML content".to_string()))?;
+        .ok_or_else(|| FatalError::Skills("failed to extract YAML content".to_string()))?;
 
     let frontmatter: SkillFrontmatter = serde_yml::from_str(yaml_str)
-        .map_err(|e| ResiduumError::Skills(format!("failed to parse SKILL.md frontmatter: {e}")))?;
+        .map_err(|e| FatalError::Skills(format!("failed to parse SKILL.md frontmatter: {e}")))?;
 
     validate_skill_name(&frontmatter.name)?;
 
@@ -44,29 +44,29 @@ pub(super) fn parse_skill_md(content: &str) -> Result<(SkillFrontmatter, String)
 
 /// Validate a skill name: 1-64 chars, lowercase alphanumeric + hyphens,
 /// no leading/trailing/consecutive hyphens.
-pub(super) fn validate_skill_name(name: &str) -> Result<(), ResiduumError> {
+pub(super) fn validate_skill_name(name: &str) -> Result<(), FatalError> {
     if name.is_empty() || name.len() > 64 {
-        return Err(ResiduumError::Skills(format!(
+        return Err(FatalError::Skills(format!(
             "skill name must be 1-64 characters, got {len}",
             len = name.len()
         )));
     }
 
     if name.starts_with('-') || name.ends_with('-') {
-        return Err(ResiduumError::Skills(format!(
+        return Err(FatalError::Skills(format!(
             "skill name '{name}' must not start or end with a hyphen"
         )));
     }
 
     if name.contains("--") {
-        return Err(ResiduumError::Skills(format!(
+        return Err(FatalError::Skills(format!(
             "skill name '{name}' must not contain consecutive hyphens"
         )));
     }
 
     for ch in name.chars() {
         if !ch.is_ascii_lowercase() && !ch.is_ascii_digit() && ch != '-' {
-            return Err(ResiduumError::Skills(format!(
+            return Err(FatalError::Skills(format!(
                 "skill name '{name}' contains invalid character '{ch}' \
                  (only lowercase alphanumeric and hyphens allowed)"
             )));

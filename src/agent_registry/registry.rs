@@ -8,7 +8,7 @@ use std::path::Path;
 use serde::{Deserialize, Serialize};
 use tracing::{trace, warn};
 
-use crate::error::ResiduumError;
+use crate::error::FatalError;
 
 /// Starting port for named agents. Default agent uses 7700.
 const AGENT_PORT_START: u16 = 7701;
@@ -34,22 +34,22 @@ impl AgentRegistry {
     ///
     /// # Errors
     ///
-    /// Returns `ResiduumError::Config` if the file exists but cannot be read or parsed.
-    pub fn load(base_dir: &Path) -> Result<Self, ResiduumError> {
+    /// Returns `FatalError::Config` if the file exists but cannot be read or parsed.
+    pub fn load(base_dir: &Path) -> Result<Self, FatalError> {
         let path = base_dir.join("registry.toml");
         if !path.exists() {
             return Ok(Self::default());
         }
 
         let contents = std::fs::read_to_string(&path).map_err(|e| {
-            ResiduumError::Config(format!(
+            FatalError::Config(format!(
                 "failed to read agent registry at {}: {e}",
                 path.display()
             ))
         })?;
 
         let registry: Self = toml::from_str(&contents).map_err(|e| {
-            ResiduumError::Config(format!(
+            FatalError::Config(format!(
                 "failed to parse agent registry at {}: {e}",
                 path.display()
             ))
@@ -64,25 +64,24 @@ impl AgentRegistry {
     ///
     /// # Errors
     ///
-    /// Returns `ResiduumError::Config` if the file cannot be written.
-    pub fn save(&self, base_dir: &Path) -> Result<(), ResiduumError> {
+    /// Returns `FatalError::Config` if the file cannot be written.
+    pub fn save(&self, base_dir: &Path) -> Result<(), FatalError> {
         if !base_dir.exists() {
             std::fs::create_dir_all(base_dir).map_err(|e| {
-                ResiduumError::Config(format!(
+                FatalError::Config(format!(
                     "failed to create agent registry directory {}: {e}",
                     base_dir.display()
                 ))
             })?;
         }
 
-        let contents = toml::to_string_pretty(self).map_err(|e| {
-            ResiduumError::Config(format!("failed to serialize agent registry: {e}"))
-        })?;
+        let contents = toml::to_string_pretty(self)
+            .map_err(|e| FatalError::Config(format!("failed to serialize agent registry: {e}")))?;
 
         let path = base_dir.join("registry.toml");
         trace!(path = %path.display(), agents = self.agents.len(), "saving agent registry");
         std::fs::write(&path, contents).map_err(|e| {
-            ResiduumError::Config(format!(
+            FatalError::Config(format!(
                 "failed to write agent registry at {}: {e}",
                 path.display()
             ))
