@@ -20,6 +20,7 @@ use crate::projects::activation::SharedProjectState;
 use crate::skills::SharedSkillState;
 use crate::workspace::identity::IdentityFiles;
 use crate::workspace::layout::WorkspaceLayout;
+use anyhow::Context as _;
 
 use crate::subagents::types::SubagentPresetFrontmatter;
 
@@ -75,7 +76,8 @@ pub(crate) async fn build_spawn_resources(
         ctx.max_tokens,
         ctx.http_client.clone(),
         ctx.retry_config.clone(),
-    )?;
+    )
+    .with_context(|| format!("failed to build provider chain for tier {tier:?}"))?;
 
     let (preset_tool_restriction, preset_instructions) = match preset {
         Some((fm, body)) => {
