@@ -68,19 +68,19 @@ impl Tool for SwitchEndpointTool {
             .ok_or_else(|| ToolError::InvalidArguments("endpoint is required".to_string()))?;
 
         let endpoint_id = EndpointId::from(endpoint_name);
-        let interactive_names: Vec<String> = self
-            .registry
-            .interactive()
-            .iter()
-            .map(|e| e.id.as_ref().to_string())
-            .collect();
-        let available_str = if interactive_names.is_empty() {
-            "(none configured)".to_string()
-        } else {
-            interactive_names.join(", ")
-        };
 
         let Some(entry) = self.registry.get(&endpoint_id) else {
+            let interactive_names: Vec<String> = self
+                .registry
+                .interactive()
+                .iter()
+                .map(|e| e.id.as_ref().to_string())
+                .collect();
+            let available_str = if interactive_names.is_empty() {
+                "(none configured)".to_string()
+            } else {
+                interactive_names.join(", ")
+            };
             return Ok(ToolResult::error(format!(
                 "unknown endpoint '{endpoint_name}'; available interactive endpoints: {available_str}",
             )));
@@ -90,6 +90,17 @@ impl Tool for SwitchEndpointTool {
             .capabilities
             .contains(EndpointCapabilities::INTERACTIVE)
         {
+            let interactive_names: Vec<String> = self
+                .registry
+                .interactive()
+                .iter()
+                .map(|e| e.id.as_ref().to_string())
+                .collect();
+            let available_str = if interactive_names.is_empty() {
+                "(none configured)".to_string()
+            } else {
+                interactive_names.join(", ")
+            };
             return Ok(ToolResult::error(format!(
                 "endpoint '{endpoint_name}' is not interactive; available: {available_str}",
             )));

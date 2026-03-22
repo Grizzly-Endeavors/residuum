@@ -141,6 +141,10 @@ impl Tool for ReadTool {
         let start = (offset as usize).min(total_lines);
 
         // Apply default limit only when no explicit limit/offset given
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "limit from JSON u64 capped by line count"
+        )]
         let effective_limit = explicit_limit.map_or_else(
             || {
                 if offset == 0 {
@@ -149,14 +153,7 @@ impl Tool for ReadTool {
                     total_lines
                 }
             },
-            |l| {
-                #[expect(
-                    clippy::cast_possible_truncation,
-                    reason = "limit from JSON u64 capped by line count"
-                )]
-                let l_usize = l as usize;
-                l_usize
-            },
+            |l| l as usize,
         );
         let end = (start + effective_limit).min(total_lines);
         let line_limit_applied = end < total_lines && explicit_limit.is_none() && offset == 0;

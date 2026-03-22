@@ -406,15 +406,12 @@ mod tests {
             .await;
 
         // May fail with provider error (no valid API key in test), but not with preset error
-        match result {
-            Ok(res) if res.is_error => {
-                assert!(
-                    !res.output.contains("unknown preset"),
-                    "should not fail with unknown-preset error, got: {}",
-                    res.output
-                );
-            }
-            Ok(_) | Err(_) => {} // any other outcome is acceptable
+        if let Ok(res) = result {
+            assert!(
+                !res.output.contains("unknown preset"),
+                "should not fail with unknown-preset error, got: {}",
+                res.output
+            );
         }
     }
 }
