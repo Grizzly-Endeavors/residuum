@@ -99,18 +99,20 @@ pub struct MemoryIndex {
     line_end_field: Field,
 }
 
+struct SearchSchema {
+    schema: Schema,
+    id_field: Field,
+    source_type_field: Field,
+    episode_id_field: Field,
+    date_field: Field,
+    ctx_field: Field,
+    content_field: Field,
+    line_start_field: Field,
+    line_end_field: Field,
+}
+
 /// Build the tantivy schema and return it with all field handles.
-fn build_schema() -> (
-    Schema,
-    Field,
-    Field,
-    Field,
-    Field,
-    Field,
-    Field,
-    Field,
-    Field,
-) {
+fn build_schema() -> SearchSchema {
     let mut builder = Schema::builder();
     let id_field = builder.add_text_field("id", STRING | STORED);
     let source_type_field = builder.add_text_field("source_type", STRING | STORED);
@@ -121,7 +123,7 @@ fn build_schema() -> (
     let line_start_field = builder.add_text_field("line_start", STRING | STORED);
     let line_end_field = builder.add_text_field("line_end", STRING | STORED);
     let schema = builder.build();
-    (
+    SearchSchema {
         schema,
         id_field,
         source_type_field,
@@ -131,7 +133,7 @@ fn build_schema() -> (
         content_field,
         line_start_field,
         line_end_field,
-    )
+    }
 }
 
 impl MemoryIndex {
@@ -147,7 +149,7 @@ impl MemoryIndex {
             )
         })?;
 
-        let (
+        let SearchSchema {
             schema,
             id_field,
             source_type_field,
@@ -157,7 +159,7 @@ impl MemoryIndex {
             content_field,
             line_start_field,
             line_end_field,
-        ) = build_schema();
+        } = build_schema();
 
         let mmap_dir = MmapDirectory::open(index_dir)
             .with_context(|| format!("failed to open mmap directory at {}", index_dir.display()))?;
@@ -193,7 +195,7 @@ impl MemoryIndex {
     /// # Errors
     /// Returns an error if the in-memory index cannot be created.
     pub fn empty() -> anyhow::Result<Self> {
-        let (
+        let SearchSchema {
             schema,
             id_field,
             source_type_field,
@@ -203,7 +205,7 @@ impl MemoryIndex {
             content_field,
             line_start_field,
             line_end_field,
-        ) = build_schema();
+        } = build_schema();
 
         let index = Index::create_in_ram(schema);
 
@@ -949,7 +951,7 @@ impl HybridSearcher {
         .context("vector search task failed")??;
 
         // Merge results
-        let mut merged = merge_hybrid_results(&bm25_results, &vec_results, &self.cfg, limit);
+        let mut merged = merge_hybrid_results(&bm25_results, &vec_results, &self.cfg, candidates);
 
         // Apply temporal decay after merge if enabled
         if self.cfg.temporal_decay {
@@ -962,6 +964,7 @@ impl HybridSearcher {
             });
         }
 
+        merged.truncate(limit);
         Ok(merged)
     }
 
@@ -983,8 +986,8 @@ fn normalize_scores(scores: &[f32]) -> Vec<f32> {
         return vec![1.0];
     }
 
-    let min = scores.iter().copied().reduce(f32::min).unwrap_or_default();
-    let max = scores.iter().copied().reduce(f32::max).unwrap_or_default();
+    let min = scores.iter().copied().reduce(f32::min).unwrap_or(0.0);
+    let max = scores.iter().copied().reduce(f32::max).unwrap_or(0.0);
     let range = max - min;
 
     if range < f32::EPSILON {

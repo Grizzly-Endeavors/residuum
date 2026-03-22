@@ -18,7 +18,7 @@ struct ReflectorItem {
     content: String,
     timestamp: String,
     project_context: String,
-    visibility: String,
+    visibility: Visibility,
 }
 
 /// Parse the model's reflection response into an `ObservationLog`.
@@ -40,14 +40,11 @@ pub(super) fn parse_reflection_response(content: &str, tz: Tz) -> anyhow::Result
                 continue;
             }
             let timestamp = crate::memory::parse_minute_timestamp(&item.timestamp, tz);
-            let visibility =
-                serde_json::from_value::<Visibility>(serde_json::json!(item.visibility))
-                    .unwrap_or_default();
             log.push(Observation {
                 timestamp,
                 project_context: item.project_context.clone(),
                 source_episodes: vec![],
-                visibility,
+                visibility: item.visibility.clone(),
                 content: item.content.clone(),
             });
         }

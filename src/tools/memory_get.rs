@@ -124,8 +124,6 @@ mod tests {
         Episode {
             id: "ep-001".to_string(),
             date: NaiveDate::from_ymd_opt(2026, 2, 19).unwrap(),
-            start: "user asked about files".to_string(),
-            end: "listed directory contents".to_string(),
             context: "general".to_string(),
             observations: vec!["user prefers concise output".to_string()],
             source_episodes: vec![],

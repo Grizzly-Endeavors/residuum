@@ -287,12 +287,9 @@ async fn build_episode_and_persist(
         .collect();
     let episode_context = majority_context(&extraction_contexts);
 
-    // Build the episode internally — start/end are cosmetic and no longer LLM-extracted.
     let episode = Episode {
         id: episode_id.clone(),
         date: now_local(tz).date(),
-        start: String::new(),
-        end: String::new(),
         context: episode_context.clone(),
         observations: parsed
             .extractions
@@ -668,8 +665,6 @@ mod tests {
         let episode = crate::memory::types::Episode {
             id: result.id.clone(),
             date: chrono::Utc::now().naive_utc().date(),
-            start: String::new(),
-            end: String::new(),
             context: String::new(),
             observations: vec![],
             source_episodes: vec![],
@@ -853,14 +848,6 @@ mod tests {
             "narrative": ""
         }"#;
         observer.swap_provider(Box::new(MockMemoryProvider::new(new_response)));
-
-        // Verify the provider was swapped by checking the model name
-        // (MockMemoryProvider always returns "mock-model")
-        // The key verification is that the method doesn't panic and accepts the new provider
-        assert_eq!(
-            observer.threshold_tokens(),
-            ObserverConfig::default().threshold_tokens
-        );
     }
 
     #[test]

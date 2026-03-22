@@ -37,7 +37,7 @@ pub(crate) fn truncate_at_char_boundary(s: &str, max: usize) -> String {
     while !s.is_char_boundary(end) && end > 0 {
         end -= 1;
     }
-    let prefix = s.get(..end).unwrap_or_default();
+    let prefix = s.split_at(end).0;
     format!("{prefix}...(truncated)")
 }
 
