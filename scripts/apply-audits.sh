@@ -95,20 +95,64 @@ WORKTREE_BASE=$(mktemp -d "${TMPDIR:-/tmp}/apply-audits-wt-XXXXXX")
 RESULTS_DIR=$(mktemp -d "${TMPDIR:-/tmp}/apply-audits-results-XXXXXX")
 ORIGINAL_BRANCH=$(git rev-parse --abbrev-ref HEAD)
 
+mark_picked() {
+    touch "$RESULTS_DIR/${1}.picked"
+}
+
 cleanup() {
     echo ""
     echo "Cleaning up worktrees..."
+    local preserved=0
+
     if [[ -n "$WORKTREE_BASE" && -d "$WORKTREE_BASE" ]]; then
         for wt in "$WORKTREE_BASE"/*/; do
             [[ -d "$wt" ]] || continue
+            local wt_name
+            wt_name=$(basename "$wt")
+            local branch="wt/apply-audit-${wt_name}"
+
+            # Preserve worktrees with un-picked commits
+            if [[ -f "$RESULTS_DIR/${wt_name}.result" ]] \
+                && grep -q '^commit:' "$RESULTS_DIR/${wt_name}.result" \
+                && [[ ! -f "$RESULTS_DIR/${wt_name}.picked" ]]; then
+                local sha
+                sha=$(sed 's/^commit://' "$RESULTS_DIR/${wt_name}.result")
+                echo "  [preserved] $wt_name — commit $sha on branch $branch"
+                preserved=$((preserved + 1))
+                continue
+            fi
+
             git worktree remove --force "$wt" 2>/dev/null || true
+            git branch -D "$branch" 2>/dev/null || true
         done
         rmdir "$WORKTREE_BASE" 2>/dev/null || true
     fi
-    # Clean up temporary worktree branches
+
+    # Clean up branches whose worktrees were already removed
     while IFS= read -r b; do
-        [[ -n "$b" ]] && git branch -D "$b" 2>/dev/null || true
+        [[ -n "$b" ]] || continue
+        local mod="${b#wt/apply-audit-}"
+        if [[ -f "$RESULTS_DIR/${mod}.result" ]] \
+            && grep -q '^commit:' "$RESULTS_DIR/${mod}.result" \
+            && [[ ! -f "$RESULTS_DIR/${mod}.picked" ]]; then
+            continue
+        fi
+        git branch -D "$b" 2>/dev/null || true
     done < <(git branch --list 'wt/apply-audit-*' --format='%(refname:short)')
+
+    if [[ $preserved -gt 0 ]]; then
+        echo ""
+        echo "WARNING: $preserved worktree(s) preserved with un-applied commits."
+        echo "To recover manually:"
+        echo "  git branch --list 'wt/apply-audit-*'"
+        echo "  git log --oneline main..<branch>"
+        echo "  git cherry-pick <sha>"
+        echo ""
+        echo "To clean up:"
+        echo "  git worktree list | grep apply-audit"
+        echo "  git worktree remove <path> && git branch -D <branch>"
+    fi
+
     [[ -n "$RESULTS_DIR" ]] && rm -rf "$RESULTS_DIR"
 }
 trap cleanup EXIT
@@ -204,22 +248,24 @@ INSTRUCTIONS
     local pre_head
     pre_head=$(cd "$worktree_path" && git rev-parse HEAD)
 
-    if (cd "$worktree_path" && claude -p --model "$MODEL" --no-session-persistence \
+    local claude_exit=0
+    (cd "$worktree_path" && claude -p --model "$MODEL" --no-session-persistence \
         --allowedTools "$CLAUDE_TOOLS" \
-        < "$tmpfile" > /dev/null 2>&1); then
+        < "$tmpfile" > /dev/null 2>&1) || claude_exit=$?
 
-        # Check if Claude actually committed something
-        local post_head
-        post_head=$(cd "$worktree_path" && git rev-parse HEAD)
-        if [[ "$post_head" == "$pre_head" ]]; then
-            echo "[no-op] $module_name — no changes committed"
-            echo "skip:no-changes" > "$result_file"
-        else
-            echo "[done]  $module_name ($post_head)"
-            echo "commit:$post_head" > "$result_file"
-            mkdir -p "$INPUT_DIR/applied"
-            mv "$INPUT_DIR/${module_name}.md" "$INPUT_DIR/applied/"
-        fi
+    # Always check HEAD — Claude may have committed before exiting non-zero
+    local post_head
+    post_head=$(cd "$worktree_path" && git rev-parse HEAD)
+
+    if [[ "$post_head" != "$pre_head" ]]; then
+        # Commit exists regardless of exit code — treat as success
+        echo "[done]  $module_name ($post_head)"
+        echo "commit:$post_head" > "$result_file"
+        mkdir -p "$INPUT_DIR/applied"
+        mv "$INPUT_DIR/${module_name}.md" "$INPUT_DIR/applied/"
+    elif [[ $claude_exit -eq 0 ]]; then
+        echo "[no-op] $module_name — no changes committed"
+        echo "skip:no-changes" > "$result_file"
     else
         echo "[FAIL]  $module_name — Claude exited with error"
         echo "fail:claude" > "$result_file"
@@ -235,7 +281,27 @@ echo ""
 echo "Phase 1: Applying fixes in parallel (jobs=$JOBS)..."
 echo ""
 
-printf '%s\n' "${AUDIT_FILES[@]}" | xargs -P "$JOBS" -I {} bash -c 'apply_in_worktree "$@"' _ {}
+printf '%s\n' "${AUDIT_FILES[@]}" | xargs -P "$JOBS" -I {} bash -c 'apply_in_worktree "$@"' _ {} || true
+
+# Recovery sweep: find worktree commits that weren't recorded (e.g. worker killed mid-run)
+while IFS= read -r branch; do
+    [[ -n "$branch" ]] || continue
+    module_name="${branch#wt/apply-audit-}"
+    result_file="$RESULTS_DIR/${module_name}.result"
+    [[ -f "$result_file" ]] && continue
+
+    # No result file — check if branch has a commit beyond main
+    branch_head=$(git rev-parse "$branch" 2>/dev/null) || continue
+    main_head=$(git rev-parse main 2>/dev/null) || continue
+
+    if [[ "$branch_head" != "$main_head" ]]; then
+        echo "[recovered] $module_name ($branch_head)"
+        echo "commit:$branch_head" > "$result_file"
+    else
+        echo "[recovered] $module_name — no changes"
+        echo "skip:no-changes" > "$result_file"
+    fi
+done < <(git branch --list 'wt/apply-audit-*' --format='%(refname:short)')
 
 # =============================================================================
 # Phase 2: Cherry-pick onto audit branch
@@ -310,6 +376,7 @@ for i in "${!COMMITS[@]}"; do
             mkdir -p "$INPUT_DIR/applied"
             [[ -f "$INPUT_DIR/${module}.md" ]] && mv "$INPUT_DIR/${module}.md" "$INPUT_DIR/applied/"
             APPLIED=$((APPLIED + 1))
+            mark_picked "$module"
         else
             echo "  [FAIL] Could not commit"
             git reset --hard HEAD 2>/dev/null
@@ -377,10 +444,11 @@ COMMIT_INSTRUCTIONS
             mkdir -p "$INPUT_DIR/applied"
             [[ -f "$INPUT_DIR/${module}.md" ]] && mv "$INPUT_DIR/${module}.md" "$INPUT_DIR/applied/"
             APPLIED=$((APPLIED + 1))
+            mark_picked "$module"
             CONFLICTS_RESOLVED=$((CONFLICTS_RESOLVED + 1))
         else
             echo "  [FAIL] Claude did not commit after resolution"
-            git reset --hard HEAD 2>/dev/null
+            git cherry-pick --abort 2>/dev/null || git reset --hard HEAD 2>/dev/null
             CHERRY_FAILED=$((CHERRY_FAILED + 1))
         fi
     else
