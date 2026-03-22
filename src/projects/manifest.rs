@@ -17,11 +17,13 @@ pub async fn build_manifest(project_root: &Path) -> anyhow::Result<ProjectManife
         workspace: list_files_recursive(&project_root.join("workspace"), project_root).await?,
         skills: list_files_recursive(&project_root.join("skills"), project_root).await?,
     };
-    let total = manifest.notes.len()
-        + manifest.references.len()
-        + manifest.workspace.len()
-        + manifest.skills.len();
-    tracing::debug!(total, "built project manifest");
+    tracing::debug!(
+        notes = manifest.notes.len(),
+        references = manifest.references.len(),
+        workspace = manifest.workspace.len(),
+        skills = manifest.skills.len(),
+        "built project manifest"
+    );
     Ok(manifest)
 }
 
@@ -133,10 +135,16 @@ async fn collect_files(
         if metadata.is_dir() {
             Box::pin(collect_files(&entry.path(), project_root, entries)).await?;
         } else {
-            let rel = entry
-                .path()
+            let path = entry.path();
+            let rel = path
                 .strip_prefix(project_root)
-                .unwrap_or(&entry.path())
+                .map_err(|e| {
+                    anyhow::anyhow!(
+                        "entry {} is not under project root {}: {e}",
+                        path.display(),
+                        project_root.display()
+                    )
+                })?
                 .to_string_lossy()
                 .to_string();
 
