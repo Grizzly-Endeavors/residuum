@@ -7,6 +7,7 @@ use axum::response::Json;
 use serde::{Deserialize, Serialize};
 
 use crate::config::secrets::SecretStore;
+use crate::models::anthropic::is_oauth_key;
 
 use super::ConfigApiState;
 
@@ -106,8 +107,7 @@ async fn fetch_anthropic_models(
     let mut req_builder = client.get(&url).header("anthropic-version", "2023-06-01");
 
     // OAuth tokens use Bearer auth + beta header; standard keys use x-api-key.
-    // NOTE: this logic is duplicated in models::anthropic::AnthropicClient::complete
-    if key.starts_with("sk-ant-oat01-") {
+    if is_oauth_key(key) {
         req_builder = req_builder
             .header("Authorization", format!("Bearer {key}"))
             .header("anthropic-beta", crate::models::anthropic::OAUTH_BETA)

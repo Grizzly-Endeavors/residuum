@@ -165,7 +165,6 @@ mod memory_integration {
         let ObserveResult {
             id: episode_id,
             transcript_path,
-            observation_count,
             observations,
             chunks,
             date,
@@ -176,7 +175,7 @@ mod memory_integration {
 
         assert_eq!(episode_id, "ep-001", "first episode should be ep-001");
         // observer_response has 3 observation strings
-        assert_eq!(observation_count, 3, "should have 3 observations");
+        assert_eq!(observations.len(), 3, "should have 3 observations");
         assert_eq!(
             observations.len(),
             3,
@@ -604,7 +603,8 @@ mod memory_integration {
         let result = observer.observe(&recent, &layout).await.unwrap();
 
         assert_eq!(
-            result.observation_count, 3,
+            result.observations.len(),
+            3,
             "legacy format should still extract 3 observations"
         );
         assert!(

@@ -145,7 +145,7 @@ mod tests {
             content: content.to_string(),
             tool_calls: None,
             tool_call_id: None,
-            images: None,
+            images: Vec::new(),
         });
     }
 
@@ -193,7 +193,7 @@ mod tests {
             content: content.to_string(),
             tool_calls: None,
             tool_call_id: None,
-            images: None,
+            images: Vec::new(),
         });
     }
 
@@ -203,7 +203,7 @@ mod tests {
             content: content.to_string(),
             tool_calls: None,
             tool_call_id: Some("call_1".to_string()),
-            images: None,
+            images: Vec::new(),
         });
     }
 
@@ -217,7 +217,7 @@ mod tests {
                 arguments: serde_json::json!({"command": "echo test"}),
             }]),
             tool_call_id: None,
-            images: None,
+            images: Vec::new(),
         });
     }
 

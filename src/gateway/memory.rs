@@ -341,7 +341,8 @@ pub(super) async fn run_forced_observe(
     };
     let notice = format!(
         "[memory] observed: {} ({} observations){suffix}",
-        result.id, result.observation_count
+        result.id,
+        result.observations.len()
     );
     publish_notice(publisher, notice).await;
 }

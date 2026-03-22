@@ -41,31 +41,7 @@ pub async fn load_observation_log(path: &Path) -> anyhow::Result<ObservationLog>
 pub async fn save_observation_log(path: &Path, log: &ObservationLog) -> anyhow::Result<()> {
     let json = serde_json::to_string_pretty(log).context("failed to serialize observation log")?;
 
-    let dir = path.parent().ok_or_else(|| {
-        anyhow::anyhow!(
-            "observation log path has no parent directory: {}",
-            path.display()
-        )
-    })?;
-
-    let tmp_path = dir.join(".observations.json.tmp");
-
-    tokio::fs::write(&tmp_path, &json).await.with_context(|| {
-        format!(
-            "failed to write temporary observation log at {}",
-            tmp_path.display()
-        )
-    })?;
-
-    tokio::fs::rename(&tmp_path, path).await.with_context(|| {
-        format!(
-            "failed to rename observation log from {} to {}",
-            tmp_path.display(),
-            path.display()
-        )
-    })?;
-
-    Ok(())
+    crate::fs::atomic_write(path, &json).await
 }
 
 /// Append observations to the observation log on disk.
@@ -113,31 +89,7 @@ pub(crate) async fn save_episode_observations(
     let json =
         serde_json::to_string(observations).context("failed to serialize episode observations")?;
 
-    let dir = path.parent().ok_or_else(|| {
-        anyhow::anyhow!(
-            "episode obs path has no parent directory: {}",
-            path.display()
-        )
-    })?;
-
-    let tmp_path = dir.join(".obs.json.tmp");
-
-    tokio::fs::write(&tmp_path, &json).await.with_context(|| {
-        format!(
-            "failed to write episode observations at {}",
-            tmp_path.display()
-        )
-    })?;
-
-    tokio::fs::rename(&tmp_path, path).await.with_context(|| {
-        format!(
-            "failed to rename episode observations from {} to {}",
-            tmp_path.display(),
-            path.display()
-        )
-    })?;
-
-    Ok(())
+    crate::fs::atomic_write(path, &json).await
 }
 
 /// Recursively walk `dir` for `ep-NNN.jsonl` files and return the maximum `NNN` found.

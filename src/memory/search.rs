@@ -847,15 +847,6 @@ fn collect_indexable_files(
     Ok(())
 }
 
-/// Create a shared `MemoryIndex` wrapped in an `Arc` for tool sharing.
-///
-/// # Errors
-/// Returns an error if the index cannot be opened.
-pub fn create_shared_index(index_dir: &Path) -> anyhow::Result<Arc<MemoryIndex>> {
-    let index = MemoryIndex::open_or_create(index_dir)?;
-    Ok(Arc::new(index))
-}
-
 // ── Hybrid searcher ─────────────────────────────────────────────────────────
 
 /// Orchestrates BM25 + vector search with score normalization and merging.

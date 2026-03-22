@@ -32,31 +32,7 @@ pub struct RecentContext {
 pub async fn save_recent_context(path: &Path, ctx: &RecentContext) -> anyhow::Result<()> {
     let json = serde_json::to_string_pretty(ctx).context("failed to serialize recent context")?;
 
-    let dir = path.parent().ok_or_else(|| {
-        anyhow::anyhow!(
-            "recent context path has no parent directory: {}",
-            path.display()
-        )
-    })?;
-
-    let tmp_path = dir.join(".recent_context.json.tmp");
-
-    tokio::fs::write(&tmp_path, &json).await.with_context(|| {
-        format!(
-            "failed to write temporary recent context at {}",
-            tmp_path.display()
-        )
-    })?;
-
-    tokio::fs::rename(&tmp_path, path).await.with_context(|| {
-        format!(
-            "failed to rename recent context from {} to {}",
-            tmp_path.display(),
-            path.display()
-        )
-    })?;
-
-    Ok(())
+    crate::fs::atomic_write(path, &json).await
 }
 
 /// Load a recent context from disk.

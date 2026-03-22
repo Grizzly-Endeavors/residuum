@@ -138,9 +138,14 @@ impl GeminiClient {
                     system_parts.push(&msg.content);
                 }
                 Role::User => {
-                    let has_images = msg.images.as_ref().is_some_and(|imgs| !imgs.is_empty());
-
-                    if has_images {
+                    if msg.images.is_empty() {
+                        contents.push(GeminiContent {
+                            role: "user".to_string(),
+                            parts: vec![GeminiPart::Text {
+                                text: msg.content.clone(),
+                            }],
+                        });
+                    } else {
                         let mut parts: Vec<GeminiPart> = Vec::new();
 
                         if !msg.content.is_empty() {
@@ -149,7 +154,7 @@ impl GeminiClient {
                             });
                         }
 
-                        for img in msg.images.as_deref().unwrap_or(&[]) {
+                        for img in &msg.images {
                             parts.push(GeminiPart::InlineData {
                                 inline_data: GeminiInlineData {
                                     mime_type: img.media_type.clone(),
@@ -161,13 +166,6 @@ impl GeminiClient {
                         contents.push(GeminiContent {
                             role: "user".to_string(),
                             parts,
-                        });
-                    } else {
-                        contents.push(GeminiContent {
-                            role: "user".to_string(),
-                            parts: vec![GeminiPart::Text {
-                                text: msg.content.clone(),
-                            }],
                         });
                     }
                 }

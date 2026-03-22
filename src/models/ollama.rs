@@ -275,10 +275,11 @@ impl From<&Message> for OllamaMessage {
                     })
                     .collect()
             }),
-            images: msg
-                .images
-                .as_ref()
-                .map(|imgs| imgs.iter().map(|img| img.data.clone()).collect()),
+            images: if msg.images.is_empty() {
+                None
+            } else {
+                Some(msg.images.iter().map(|img| img.data.clone()).collect())
+            },
         }
     }
 }

@@ -29,8 +29,6 @@ pub struct ObserveResult {
     pub id: String,
     /// Path to the transcript file on disk.
     pub transcript_path: std::path::PathBuf,
-    /// Number of observation strings extracted from the conversation.
-    pub observation_count: usize,
     /// Narrative summary of the conversation at the time of observation.
     pub narrative: Option<String>,
     /// The extracted observations, for downstream indexing without re-reading disk.
@@ -306,7 +304,6 @@ async fn build_episode_and_persist(
     tracing::debug!(episode_id = %episode.id, "episode transcript written");
 
     // Convert episode observations → flat Observations with per-extraction context
-    let observation_count = episode.observations.len();
     let observations: Vec<Observation> = parsed
         .extractions
         .iter()
@@ -335,7 +332,7 @@ async fn build_episode_and_persist(
 
     tracing::info!(
         episode_id = %episode.id,
-        observations = observation_count,
+        observations = observations.len(),
         chunks = chunks.len(),
         has_narrative = parsed.narrative.is_some(),
         "episode extracted"
@@ -344,7 +341,6 @@ async fn build_episode_and_persist(
     Ok(ObserveResult {
         id: episode.id,
         transcript_path,
-        observation_count,
         narrative: parsed.narrative,
         observations,
         chunks,
@@ -643,7 +639,8 @@ mod tests {
 
         assert_eq!(result.id, "ep-001", "first episode should be ep-001");
         assert_eq!(
-            result.observation_count, 2,
+            result.observations.len(),
+            2,
             "SAMPLE_RESPONSE has 2 observations"
         );
         assert!(

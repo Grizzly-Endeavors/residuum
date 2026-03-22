@@ -6,6 +6,7 @@ pub mod bus;
 pub mod config;
 pub mod daemon;
 pub mod error;
+pub(crate) mod fs;
 pub mod gateway;
 pub mod inbox;
 pub mod interfaces;

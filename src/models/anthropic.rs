@@ -96,17 +96,17 @@ impl AnthropicClient {
                     system_parts.push(&msg.content);
                 }
                 Role::User => {
-                    let content = if msg.images.as_ref().is_some_and(|v| !v.is_empty()) {
+                    let content = if msg.images.is_empty() {
+                        AnthropicContent::Text(msg.content.clone())
+                    } else {
                         let mut blocks = Vec::new();
                         if !msg.content.is_empty() {
                             blocks.push(AnthropicContentBlock::Text {
                                 text: msg.content.clone(),
                             });
                         }
-                        append_image_blocks(&mut blocks, msg.images.as_ref());
+                        append_image_blocks(&mut blocks, &msg.images);
                         AnthropicContent::Blocks(blocks)
-                    } else {
-                        AnthropicContent::Text(msg.content.clone())
                     };
                     api_messages.push(AnthropicMessage {
                         role: String::from("user"),
@@ -152,7 +152,7 @@ impl AnthropicClient {
                         tool_use_id,
                         content: msg.content.clone(),
                     }];
-                    append_image_blocks(&mut blocks, msg.images.as_ref());
+                    append_image_blocks(&mut blocks, &msg.images);
                     api_messages.push(AnthropicMessage {
                         role: String::from("user"),
                         content: AnthropicContent::Blocks(blocks),
@@ -245,7 +245,6 @@ impl AnthropicClient {
 
         // OAuth tokens (sk-ant-oat01-*) use Bearer auth + Claude Code identity
         // headers; standard API keys use x-api-key.
-        // NOTE: this logic is duplicated in gateway::web::fetch_anthropic_models
         if is_oauth_key(api_key) {
             req_builder = req_builder
                 .header("Authorization", format!("Bearer {api_key}"))
@@ -462,7 +461,7 @@ impl ModelProvider for AnthropicClient {
     }
 }
 
-fn is_oauth_key(key: &str) -> bool {
+pub(crate) fn is_oauth_key(key: &str) -> bool {
     key.starts_with("sk-ant-oat01-")
 }
 
@@ -471,17 +470,15 @@ fn is_oauth_key(key: &str) -> bool {
 // ---------------------------------------------------------------------------
 
 /// Append `Image` content blocks for each `ImageData` entry.
-fn append_image_blocks(blocks: &mut Vec<AnthropicContentBlock>, images: Option<&Vec<ImageData>>) {
-    if let Some(imgs) = images {
-        for img in imgs {
-            blocks.push(AnthropicContentBlock::Image {
-                source: AnthropicImageSource {
-                    r#type: String::from("base64"),
-                    media_type: img.media_type.clone(),
-                    data: img.data.clone(),
-                },
-            });
-        }
+fn append_image_blocks(blocks: &mut Vec<AnthropicContentBlock>, images: &[ImageData]) {
+    for img in images {
+        blocks.push(AnthropicContentBlock::Image {
+            source: AnthropicImageSource {
+                r#type: String::from("base64"),
+                media_type: img.media_type.clone(),
+                data: img.data.clone(),
+            },
+        });
     }
 }
 

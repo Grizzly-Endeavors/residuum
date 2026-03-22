@@ -88,19 +88,14 @@ pub async fn save_item(inbox_dir: &Path, filename: &str, item: &InboxItem) -> an
     use anyhow::Context as _;
 
     let target = inbox_dir.join(filename);
-    let tmp = inbox_dir.join(format!(".{filename}.tmp"));
 
     let json = serde_json::to_string_pretty(item)
         .with_context(|| format!("failed to serialize inbox item for {}", target.display()))?;
-    tokio::fs::write(&tmp, json)
-        .await
-        .with_context(|| format!("failed to write inbox item to {}", tmp.display()))?;
-    if let Err(e) = tokio::fs::rename(&tmp, &target).await {
-        tracing::warn!(tmp = %tmp.display(), target = %target.display(), error = %e, "failed to rename tmp file, orphaned tmp may remain");
-        return Err(e).with_context(|| {
-            format!("failed to rename {} to {}", tmp.display(), target.display())
-        });
-    }
+
+    crate::fs::atomic_write(&target, &json).await.map_err(|e| {
+        tracing::warn!(path = %target.display(), error = %e, "atomic write failed, orphaned tmp may remain");
+        e
+    })?;
 
     Ok(())
 }
