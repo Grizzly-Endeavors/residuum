@@ -27,14 +27,15 @@ pub fn write_crash_note(msg: &str) {
         || std::env::temp_dir().join("residuum-crash.log"),
         |h| h.join(".residuum").join("crash.log"),
     );
-    let _result = std::fs::OpenOptions::new()
+    std::fs::OpenOptions::new()
         .create(true)
         .append(true)
         .open(&path)
         .and_then(|mut f| {
             use std::io::Write;
             writeln!(f, "{}: {msg}", chrono::Utc::now())
-        });
+        })
+        .ok();
 }
 
 /// Return the path to the PID file: `~/.residuum/residuum.pid`.
@@ -264,8 +265,9 @@ pub fn init_daemon_tracing(debug_mode: Option<DebugMode>, agent_name: Option<&st
         .with(stderr_layer)
         .init();
     tracing::info!(
-        path = %log_dir.join(format!("{log_prefix}.log")).display(),
-        "logging initialized"
+        dir = %log_dir.display(),
+        prefix = %log_prefix,
+        "logging initialized (daily rotation, 30-day retention)"
     );
 }
 
