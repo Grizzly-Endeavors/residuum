@@ -4,10 +4,7 @@ use teloxide::Bot;
 use teloxide::requests::Requester;
 use teloxide::types::{ChatAction, ChatId};
 
-use crate::bus::{
-    EndpointName, ErrorEvent, IntermediateEvent, NoticeEvent, NotifyName, ResponseEvent,
-    Subscriber, TurnLifecycleEvent, topics,
-};
+use crate::bus::{ErrorEvent, NoticeEvent, TurnLifecycleEvent};
 use crate::interfaces::chunking::chunk_text;
 
 /// Maximum message length for Telegram.
@@ -19,30 +16,7 @@ const TELEGRAM_MAX_CHARS: usize = 4096;
 const TYPING_INTERVAL_SECS: u64 = 4;
 
 /// Typed subscribers for a single Telegram connection.
-pub(crate) struct TelegramSubscribers {
-    response: Subscriber<ResponseEvent>,
-    turn_lifecycle: Subscriber<TurnLifecycleEvent>,
-    intermediate: Subscriber<IntermediateEvent>,
-    notice: Subscriber<NoticeEvent>,
-    error: Subscriber<ErrorEvent>,
-}
-
-impl TelegramSubscribers {
-    /// Create all typed subscribers for a Telegram connection.
-    pub(crate) async fn new(
-        bus_handle: &crate::bus::BusHandle,
-        ep: EndpointName,
-    ) -> Result<Self, crate::bus::BusError> {
-        let system_topic = || topics::Notification(NotifyName::from(crate::bus::SYSTEM_CHANNEL));
-        Ok(Self {
-            response: bus_handle.subscribe(topics::Endpoint(ep.clone())).await?,
-            turn_lifecycle: bus_handle.subscribe(topics::Endpoint(ep.clone())).await?,
-            intermediate: bus_handle.subscribe(topics::Endpoint(ep)).await?,
-            notice: bus_handle.subscribe(system_topic()).await?,
-            error: bus_handle.subscribe(system_topic()).await?,
-        })
-    }
-}
+pub(crate) type TelegramSubscribers = crate::interfaces::BaseSubscribers;
 
 /// Receives events from the bus and delivers them to the Telegram chat.
 pub(crate) async fn run_telegram_subscriber(

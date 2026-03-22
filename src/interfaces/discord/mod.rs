@@ -9,6 +9,7 @@
 //! - Attachment downloading to the workspace inbox
 
 mod handler;
+mod presence;
 pub(crate) mod subscriber;
 
 use std::path::PathBuf;

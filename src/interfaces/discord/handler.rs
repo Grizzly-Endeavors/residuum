@@ -12,16 +12,15 @@ use serenity::model::channel::Message;
 use serenity::model::gateway::Ready;
 use serenity::prelude::*;
 
+use super::presence::{load_presence, to_activity, to_online_status};
 use crate::bus::{BusHandle, EndpointName, Publisher};
 use crate::gateway::types::{ReloadSignal, ServerCommand};
-use crate::inbox;
 use crate::interfaces::attachment::{
     AttachmentInfo, download_attachment, finalize_attachment, format_failed_attachment_line,
 };
 use crate::interfaces::cli::commands::{
     CommandContext, CommandSideEffect, all_commands, execute_command,
 };
-use crate::interfaces::presence::{load_presence, to_activity, to_online_status};
 use crate::interfaces::types::MessageOrigin;
 use crate::models::ImageData;
 
@@ -55,7 +54,7 @@ impl EventHandler for DiscordHandler {
         tracing::info!("discord presence applied from PRESENCE.toml");
 
         // Register global slash commands
-        if let Err(e) = register_slash_commands(&ctx).await {
+        if let Err(e) = register_commands(&ctx).await {
             tracing::warn!(error = %e, "failed to register discord slash commands");
         }
 
@@ -180,18 +179,15 @@ impl EventHandler for DiscordHandler {
                 .await
             }
             Some(CommandSideEffect::InboxAdd(body)) => {
-                let title: String = body
-                    .lines()
-                    .next()
-                    .unwrap_or("Inbox message")
-                    .chars()
-                    .take(60)
-                    .collect();
                 let source = format!("discord:{}", cmd.user.name);
-                match inbox::quick_add(&self.inbox_dir, &title, &body, &source, self.tz).await {
-                    Ok(_) => result.response,
-                    Err(e) => format!("failed to add inbox item: {e}"),
-                }
+                crate::interfaces::inbox_add_from_command(
+                    &self.inbox_dir,
+                    &body,
+                    &source,
+                    self.tz,
+                    result.response,
+                )
+                .await
             }
             Some(CommandSideEffect::Quit | CommandSideEffect::ToggleVerbose) => {
                 // Not applicable to Discord
@@ -265,7 +261,7 @@ async fn process_discord_attachments(
 ///
 /// Commands that take arguments (like `/inbox`) get a `text` string option.
 /// Client-only commands (quit, verbose) are skipped — they don't apply to Discord.
-async fn register_slash_commands(ctx: &Context) -> Result<(), serenity::Error> {
+async fn register_commands(ctx: &Context) -> Result<(), serenity::Error> {
     for info in all_commands().filter(|c| !c.cli_only) {
         let mut cmd = CreateCommand::new(info.name).description(info.help);
         if info.takes_arg {

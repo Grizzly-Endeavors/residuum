@@ -5,10 +5,7 @@ use std::sync::Arc;
 use serenity::model::id::ChannelId;
 use tokio::sync::Mutex;
 
-use crate::bus::{
-    EndpointName, ErrorEvent, IntermediateEvent, NoticeEvent, NotifyName, ResponseEvent,
-    Subscriber, TurnLifecycleEvent, topics,
-};
+use crate::bus::{ErrorEvent, NoticeEvent, TurnLifecycleEvent};
 use crate::interfaces::chunking::chunk_text;
 
 /// Maximum message length for Discord.
@@ -20,30 +17,7 @@ const DISCORD_MAX_CHARS: usize = 2000;
 const TYPING_INTERVAL_SECS: u64 = 8;
 
 /// Typed subscribers for a single Discord connection.
-pub(crate) struct DiscordSubscribers {
-    response: Subscriber<ResponseEvent>,
-    turn_lifecycle: Subscriber<TurnLifecycleEvent>,
-    intermediate: Subscriber<IntermediateEvent>,
-    notice: Subscriber<NoticeEvent>,
-    error: Subscriber<ErrorEvent>,
-}
-
-impl DiscordSubscribers {
-    /// Create all typed subscribers for a Discord connection.
-    pub(crate) async fn new(
-        bus_handle: &crate::bus::BusHandle,
-        ep: EndpointName,
-    ) -> Result<Self, crate::bus::BusError> {
-        let system_topic = || topics::Notification(NotifyName::from(crate::bus::SYSTEM_CHANNEL));
-        Ok(Self {
-            response: bus_handle.subscribe(topics::Endpoint(ep.clone())).await?,
-            turn_lifecycle: bus_handle.subscribe(topics::Endpoint(ep.clone())).await?,
-            intermediate: bus_handle.subscribe(topics::Endpoint(ep)).await?,
-            notice: bus_handle.subscribe(system_topic()).await?,
-            error: bus_handle.subscribe(system_topic()).await?,
-        })
-    }
-}
+pub(crate) type DiscordSubscribers = crate::interfaces::BaseSubscribers;
 
 /// Receives events from the bus and delivers them to the Discord DM channel.
 pub(crate) async fn run_discord_subscriber(

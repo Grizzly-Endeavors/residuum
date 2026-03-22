@@ -6,12 +6,11 @@ use std::time::Duration;
 use teloxide::Bot;
 use teloxide::payloads::GetUpdatesSetters;
 use teloxide::requests::Requester;
-use teloxide::types::{BotCommand, ChatId, UpdateKind};
+use teloxide::types::{Audio, BotCommand, ChatId, Document, PhotoSize, UpdateKind, Video, Voice};
 
 use crate::bus::{BusHandle, EndpointName, Publisher};
 use crate::gateway::event_loop::AdapterSenders;
 use crate::gateway::types::{ReloadSignal, ServerCommand};
-use crate::inbox;
 use crate::interfaces::cli::commands::{
     CommandContext, CommandSideEffect, all_commands, execute_command,
 };
@@ -309,18 +308,15 @@ async fn handle_command(
             .await
         }
         Some(CommandSideEffect::InboxAdd(body)) => {
-            let title: String = body
-                .lines()
-                .next()
-                .unwrap_or("Inbox message")
-                .chars()
-                .take(60)
-                .collect();
             let source = format!("telegram:{}", build_sender_name(from));
-            match inbox::quick_add(ctx.inbox_dir, &title, &body, &source, ctx.tz).await {
-                Ok(_) => result.response,
-                Err(e) => format!("failed to add inbox item: {e}"),
-            }
+            crate::interfaces::inbox_add_from_command(
+                ctx.inbox_dir,
+                &body,
+                &source,
+                ctx.tz,
+                result.response,
+            )
+            .await
         }
         Some(CommandSideEffect::Quit | CommandSideEffect::ToggleVerbose) | None => result.response,
     };
@@ -334,6 +330,51 @@ async fn handle_command(
     }
 }
 
+fn doc_as_meta(doc: &Document) -> AttachmentMeta<'_> {
+    AttachmentMeta {
+        file_id: &doc.file.id.0,
+        filename: doc.file_name.as_deref().unwrap_or("document"),
+        size: doc.file.size,
+        content_type: doc.mime_type.as_ref().map(ToString::to_string),
+    }
+}
+
+fn photo_as_meta(photo: &PhotoSize) -> AttachmentMeta<'_> {
+    AttachmentMeta {
+        file_id: &photo.file.id.0,
+        filename: "photo.jpg",
+        size: photo.file.size,
+        content_type: Some("image/jpeg".to_string()),
+    }
+}
+
+fn audio_as_meta(audio: &Audio) -> AttachmentMeta<'_> {
+    AttachmentMeta {
+        file_id: &audio.file.id.0,
+        filename: audio.file_name.as_deref().unwrap_or("audio"),
+        size: audio.file.size,
+        content_type: audio.mime_type.as_ref().map(ToString::to_string),
+    }
+}
+
+fn voice_as_meta(voice: &Voice) -> AttachmentMeta<'_> {
+    AttachmentMeta {
+        file_id: &voice.file.id.0,
+        filename: "voice.ogg",
+        size: voice.file.size,
+        content_type: voice.mime_type.as_ref().map(ToString::to_string),
+    }
+}
+
+fn video_as_meta(video: &Video) -> AttachmentMeta<'_> {
+    AttachmentMeta {
+        file_id: &video.file.id.0,
+        filename: video.file_name.as_deref().unwrap_or("video.mp4"),
+        size: video.file.size,
+        content_type: video.mime_type.as_ref().map(ToString::to_string),
+    }
+}
+
 /// Extract and process all attachment types from a Telegram message.
 async fn process_attachments(
     bot: &Bot,
@@ -344,61 +385,62 @@ async fn process_attachments(
     from: &teloxide::types::User,
     tz: chrono_tz::Tz,
 ) {
-    // Handle document attachments
     if let Some(doc) = msg.document() {
-        let meta = AttachmentMeta {
-            file_id: &doc.file.id.0,
-            filename: doc.file_name.as_deref().unwrap_or("document"),
-            size: doc.file.size,
-            content_type: doc.mime_type.as_ref().map(ToString::to_string),
-        };
-        handle_attachment(bot, content, images, &meta, inbox_dir, from, tz).await;
+        handle_attachment(bot, content, images, &doc_as_meta(doc), inbox_dir, from, tz).await;
     }
 
-    // Handle photo attachments (use largest size)
     if let Some(photos) = msg.photo()
         && let Some(photo) = photos.last()
     {
-        let meta = AttachmentMeta {
-            file_id: &photo.file.id.0,
-            filename: "photo.jpg",
-            size: photo.file.size,
-            content_type: Some("image/jpeg".to_string()),
-        };
-        handle_attachment(bot, content, images, &meta, inbox_dir, from, tz).await;
+        handle_attachment(
+            bot,
+            content,
+            images,
+            &photo_as_meta(photo),
+            inbox_dir,
+            from,
+            tz,
+        )
+        .await;
     }
 
-    // Handle audio attachments
     if let Some(audio) = msg.audio() {
-        let meta = AttachmentMeta {
-            file_id: &audio.file.id.0,
-            filename: audio.file_name.as_deref().unwrap_or("audio"),
-            size: audio.file.size,
-            content_type: audio.mime_type.as_ref().map(ToString::to_string),
-        };
-        handle_attachment(bot, content, images, &meta, inbox_dir, from, tz).await;
+        handle_attachment(
+            bot,
+            content,
+            images,
+            &audio_as_meta(audio),
+            inbox_dir,
+            from,
+            tz,
+        )
+        .await;
     }
 
-    // Handle voice attachments
     if let Some(voice) = msg.voice() {
-        let meta = AttachmentMeta {
-            file_id: &voice.file.id.0,
-            filename: "voice.ogg",
-            size: voice.file.size,
-            content_type: voice.mime_type.as_ref().map(ToString::to_string),
-        };
-        handle_attachment(bot, content, images, &meta, inbox_dir, from, tz).await;
+        handle_attachment(
+            bot,
+            content,
+            images,
+            &voice_as_meta(voice),
+            inbox_dir,
+            from,
+            tz,
+        )
+        .await;
     }
 
-    // Handle video attachments
     if let Some(video) = msg.video() {
-        let meta = AttachmentMeta {
-            file_id: &video.file.id.0,
-            filename: video.file_name.as_deref().unwrap_or("video.mp4"),
-            size: video.file.size,
-            content_type: video.mime_type.as_ref().map(ToString::to_string),
-        };
-        handle_attachment(bot, content, images, &meta, inbox_dir, from, tz).await;
+        handle_attachment(
+            bot,
+            content,
+            images,
+            &video_as_meta(video),
+            inbox_dir,
+            from,
+            tz,
+        )
+        .await;
     }
 }
 
