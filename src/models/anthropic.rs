@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tracing::{debug, info};
 
-use super::http::{SharedHttpClient, map_request_error, warn_if_insecure_remote};
+use super::http::{SharedHttpClient, map_request_error, read_error_body, warn_if_insecure_remote};
 use super::retry::{RetryConfig, with_retry};
 use super::{
     CompletionOptions, ImageData, Message, ModelError, ModelProvider, ModelResponse,
@@ -262,13 +262,7 @@ impl AnthropicClient {
 
         let status = response.status();
         if !status.is_success() {
-            let body = match response.text().await {
-                Ok(b) => b,
-                Err(e) => {
-                    tracing::warn!(error = %e, "failed to read error response body");
-                    format!("failed to read response body: {e}")
-                }
-            };
+            let body = read_error_body(response).await;
 
             tracing::warn!(
                 status = %status,

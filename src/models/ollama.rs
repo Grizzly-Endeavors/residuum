@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use tracing::{debug, info};
 
 use super::embedding::{EmbeddingProvider, EmbeddingResponse};
-use super::http::{SharedHttpClient, map_request_error, warn_if_insecure_remote};
+use super::http::{SharedHttpClient, map_request_error, read_error_body, warn_if_insecure_remote};
 use super::retry::{RetryConfig, with_retry};
 use super::{
     CompletionOptions, Message, ModelError, ModelProvider, ModelResponse, ResponseFormat,
@@ -72,14 +72,98 @@ impl OllamaClient {
             retry,
         }
     }
+
+    async fn send_completion(
+        http: &SharedHttpClient,
+        url: &str,
+        model: &str,
+        message_count: usize,
+        tool_count: usize,
+        api_key: Option<&str>,
+        messages: Vec<OllamaMessage>,
+        tools: Option<Vec<OllamaTool>>,
+        format: Option<serde_json::Value>,
+        model_options: Option<OllamaModelOptions>,
+        keep_alive: Option<String>,
+        think: Option<bool>,
+    ) -> Result<ModelResponse, ModelError> {
+        let timeout_secs = http.timeout_secs();
+        let request = OllamaChatRequest {
+            model,
+            messages,
+            tools,
+            stream: false,
+            format,
+            options: model_options,
+            keep_alive,
+            think,
+        };
+
+        debug!(
+            model = %model,
+            message_count,
+            tool_count,
+            "sending ollama completion request"
+        );
+
+        let mut req_builder = http.client().post(url).json(&request);
+        if let Some(key) = api_key {
+            req_builder = req_builder.header("Authorization", format!("Bearer {key}"));
+        }
+
+        let response = req_builder
+            .send()
+            .await
+            .map_err(|e| map_request_error(e, timeout_secs))?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let raw_body = read_error_body(response).await;
+            tracing::warn!(
+                status = %status,
+                response_body = %raw_body,
+                "ollama API error"
+            );
+            let error_msg = serde_json::from_str::<OllamaErrorResponse>(&raw_body)
+                .map_or_else(|_| format!("{status}: {raw_body}"), |e| e.error);
+            return Err(ModelError::Api(error_msg));
+        }
+
+        let body = response
+            .text()
+            .await
+            .map_err(|e| map_request_error(e, timeout_secs))?;
+        let chat_response: OllamaChatResponse = serde_json::from_str(&body)
+            .map_err(|e| ModelError::Parse(format!("failed to parse ollama response: {e}")))?;
+
+        let content = chat_response.message.content.unwrap_or_default();
+        let tool_calls = chat_response
+            .message
+            .tool_calls
+            .unwrap_or_default()
+            .into_iter()
+            .enumerate()
+            .map(|(i, tc)| ToolCall {
+                id: format!("call_{i}"),
+                name: tc.function.name,
+                arguments: tc.function.arguments,
+            })
+            .collect();
+
+        let mut resp = ModelResponse::new(content, tool_calls);
+        resp.thinking = chat_response.message.thinking;
+        info!(
+            model = %model,
+            content_len = resp.content.len(),
+            tool_calls = resp.tool_calls.len(),
+            "ollama completion received"
+        );
+        Ok(resp)
+    }
 }
 
 #[async_trait]
 impl ModelProvider for OllamaClient {
-    #[expect(
-        clippy::too_many_lines,
-        reason = "logging audit requires inline request/response context"
-    )]
     async fn complete(
         &self,
         messages: &[Message],
@@ -106,7 +190,6 @@ impl ModelProvider for OllamaClient {
         let api_key = self.api_key.clone();
         let keep_alive = self.keep_alive.clone();
         let http = self.http.clone();
-        let timeout_secs = self.http.timeout_secs();
 
         let format = match &options.response_format {
             ResponseFormat::Text => None,
@@ -133,86 +216,21 @@ impl ModelProvider for OllamaClient {
             let model_options = model_options.clone();
 
             async move {
-                let request = OllamaChatRequest {
-                    model: &model,
-                    messages: ollama_messages,
-                    tools: has_tools.then_some(ollama_tools),
-                    stream: false,
-                    format,
-                    options: model_options,
-                    keep_alive,
-                    think,
-                };
-
-                debug!(
-                    model = %model,
+                Self::send_completion(
+                    &http,
+                    &url,
+                    &model,
                     message_count,
                     tool_count,
-                    "sending ollama completion request"
-                );
-
-                let mut req_builder = http.client().post(&url).json(&request);
-
-                if let Some(ref key) = api_key {
-                    req_builder = req_builder.header("Authorization", format!("Bearer {key}"));
-                }
-
-                let response = req_builder
-                    .send()
-                    .await
-                    .map_err(|e| map_request_error(e, timeout_secs))?;
-
-                if !response.status().is_success() {
-                    let status = response.status();
-                    let raw_body = match response.text().await {
-                        Ok(b) => b,
-                        Err(e) => {
-                            tracing::warn!(error = %e, "failed to read error response body");
-                            format!("failed to read response body: {e}")
-                        }
-                    };
-                    tracing::warn!(
-                        status = %status,
-                        response_body = %raw_body,
-                        "ollama API error"
-                    );
-                    let error_msg = serde_json::from_str::<OllamaErrorResponse>(&raw_body)
-                        .map_or_else(|_| format!("{status}: {raw_body}"), |e| e.error);
-                    return Err(ModelError::Api(error_msg));
-                }
-
-                let body = response
-                    .text()
-                    .await
-                    .map_err(|e| map_request_error(e, timeout_secs))?;
-                let chat_response: OllamaChatResponse =
-                    serde_json::from_str(&body).map_err(|e| {
-                        ModelError::Parse(format!("failed to parse ollama response: {e}"))
-                    })?;
-
-                let content = chat_response.message.content.unwrap_or_default();
-                let tool_calls = chat_response
-                    .message
-                    .tool_calls
-                    .unwrap_or_default()
-                    .into_iter()
-                    .enumerate()
-                    .map(|(i, tc)| ToolCall {
-                        id: format!("call_{i}"),
-                        name: tc.function.name,
-                        arguments: tc.function.arguments,
-                    })
-                    .collect();
-
-                let mut resp = ModelResponse::new(content, tool_calls);
-                resp.thinking = chat_response.message.thinking;
-                info!(
-                    model = %model,
-                    content_len = resp.content.len(),
-                    tool_calls = resp.tool_calls.len(),
-                    "ollama completion received"
-                );
-                Ok(resp)
+                    api_key.as_deref(),
+                    ollama_messages,
+                    has_tools.then_some(ollama_tools),
+                    format,
+                    model_options,
+                    keep_alive,
+                    think,
+                )
+                .await
             }
         })
         .await
@@ -422,13 +440,7 @@ impl EmbeddingProvider for OllamaEmbeddingClient {
 
                 if !response.status().is_success() {
                     let status = response.status();
-                    let raw_body = match response.text().await {
-                        Ok(b) => b,
-                        Err(e) => {
-                            tracing::warn!(error = %e, "failed to read error response body");
-                            format!("failed to read response body: {e}")
-                        }
-                    };
+                    let raw_body = read_error_body(response).await;
                     tracing::warn!(
                         status = %status,
                         response_body = %raw_body,

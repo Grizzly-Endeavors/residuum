@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use tracing::{debug, info};
 
 use super::embedding::{EmbeddingProvider, EmbeddingResponse};
-use super::http::{SharedHttpClient, map_request_error, warn_if_insecure_remote};
+use super::http::{SharedHttpClient, map_request_error, read_error_body, warn_if_insecure_remote};
 use super::retry::{RetryConfig, with_retry};
 use super::{
     CompletionOptions, Message, ModelError, ModelProvider, ModelResponse, ResponseFormat,
@@ -92,7 +92,7 @@ impl OpenAiClient {
     ) -> Result<ModelResponse, ModelError> {
         let timeout_secs = http.timeout_secs();
         let request_json = serde_json::to_string(request)
-            .unwrap_or_else(|e| format!("(serialization failed: {e})"));
+            .map_err(|e| ModelError::Parse(format!("failed to serialize request: {e}")))?;
 
         debug!(
             model = %request.model,
@@ -118,13 +118,7 @@ impl OpenAiClient {
 
         if !response.status().is_success() {
             let status = response.status();
-            let raw_body = match response.text().await {
-                Ok(body) => body,
-                Err(e) => {
-                    tracing::warn!(error = %e, "failed to read error response body");
-                    format!("failed to read response body: {e}")
-                }
-            };
+            let raw_body = read_error_body(response).await;
             tracing::warn!(
                 status = %status,
                 response_body = %raw_body,
@@ -574,13 +568,7 @@ impl EmbeddingProvider for OpenAiEmbeddingClient {
 
                 if !response.status().is_success() {
                     let status = response.status();
-                    let raw_body = match response.text().await {
-                        Ok(body) => body,
-                        Err(e) => {
-                            tracing::warn!(error = %e, "failed to read error response body");
-                            format!("failed to read response body: {e}")
-                        }
-                    };
+                    let raw_body = read_error_body(response).await;
                     let error_body = serde_json::from_str::<OpenAiErrorResponse>(&raw_body)
                         .map_or_else(|_| raw_body, |e| e.error.message);
                     return Err(ModelError::Api(format!("{status}: {error_body}")));

@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use tracing::{debug, info};
 
 use super::embedding::{EmbeddingProvider, EmbeddingResponse};
-use super::http::{SharedHttpClient, map_request_error, warn_if_insecure_remote};
+use super::http::{SharedHttpClient, map_request_error, read_error_body, warn_if_insecure_remote};
 use super::retry::{RetryConfig, with_retry};
 use super::{
     CompletionOptions, Message, ModelError, ModelProvider, ModelResponse, ResponseFormat, Role,
@@ -221,14 +221,71 @@ impl GeminiClient {
 
         (system_instruction, contents)
     }
+
+    async fn send_completion(
+        http: &SharedHttpClient,
+        url: &str,
+        model: &str,
+        max_output_tokens: u32,
+        message_count: usize,
+        tool_count: usize,
+        request: &GeminiRequest,
+    ) -> Result<ModelResponse, ModelError> {
+        let timeout_secs = http.timeout_secs();
+        let request_json = serde_json::to_string(request)
+            .map_err(|e| ModelError::Parse(format!("failed to serialize request: {e}")))?;
+
+        debug!(
+            model = %model,
+            max_output_tokens,
+            message_count,
+            tool_count,
+            "sending gemini generateContent request"
+        );
+
+        let response = http
+            .client()
+            .post(url)
+            .body(request_json.clone())
+            .header("content-type", "application/json")
+            .send()
+            .await
+            .map_err(|e| map_request_error(e, timeout_secs))?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let raw_body = read_error_body(response).await;
+            tracing::warn!(
+                status = %status,
+                response_body = %raw_body,
+                request_body = %request_json,
+                "gemini API error — full request/response for diagnosis"
+            );
+            let error_body = serde_json::from_str::<GeminiErrorResponse>(&raw_body)
+                .map_or_else(|_| raw_body, |e| e.error.message);
+            return Err(ModelError::Api(format!("{status}: {error_body}")));
+        }
+
+        let text = response
+            .text()
+            .await
+            .map_err(|e| map_request_error(e, timeout_secs))?;
+        let result =
+            Self::parse_response(serde_json::from_str(&text).map_err(|e| {
+                ModelError::Parse(format!("failed to parse gemini response: {e}"))
+            })?)?;
+        info!(
+            model = %model,
+            content_len = result.content.len(),
+            tool_calls = result.tool_calls.len(),
+            "gemini completion received"
+        );
+        Ok(result)
+    }
 }
 
 #[async_trait]
 impl ModelProvider for GeminiClient {
-    #[expect(
-        clippy::too_many_lines,
-        reason = "logging audit requires inline request/response context"
-    )]
     async fn complete(
         &self,
         messages: &[Message],
@@ -260,7 +317,6 @@ impl ModelProvider for GeminiClient {
         let tool_count = tools.len();
         let model = self.model.clone();
         let http = self.http.clone();
-        let timeout_secs = self.http.timeout_secs();
 
         let (response_mime_type, response_schema) = match &options.response_format {
             ResponseFormat::Text => (None, None),
@@ -310,61 +366,16 @@ impl ModelProvider for GeminiClient {
                     generation_config,
                     thinking_config,
                 };
-
-                let request_json = serde_json::to_string(&request)
-                    .map_err(|e| ModelError::Parse(format!("failed to serialize request: {e}")))?;
-
-                debug!(
-                    model = %model,
+                Self::send_completion(
+                    &http,
+                    &url,
+                    &model,
                     max_output_tokens,
                     message_count,
                     tool_count,
-                    "sending gemini generateContent request"
-                );
-
-                let response = http
-                    .client()
-                    .post(&url)
-                    .body(request_json.clone())
-                    .header("content-type", "application/json")
-                    .send()
-                    .await
-                    .map_err(|e| map_request_error(e, timeout_secs))?;
-
-                if !response.status().is_success() {
-                    let status = response.status();
-                    let raw_body = match response.text().await {
-                        Ok(body) => body,
-                        Err(e) => {
-                            tracing::warn!(error = %e, "failed to read error response body");
-                            format!("failed to read response body: {e}")
-                        }
-                    };
-                    tracing::warn!(
-                        status = %status,
-                        response_body = %raw_body,
-                        request_body = %request_json,
-                        "gemini API error — full request/response for diagnosis"
-                    );
-                    let error_body = serde_json::from_str::<GeminiErrorResponse>(&raw_body)
-                        .map_or_else(|_| raw_body, |e| e.error.message);
-                    return Err(ModelError::Api(format!("{status}: {error_body}")));
-                }
-
-                let text = response
-                    .text()
-                    .await
-                    .map_err(|e| map_request_error(e, timeout_secs))?;
-                let result = Self::parse_response(serde_json::from_str(&text).map_err(|e| {
-                    ModelError::Parse(format!("failed to parse gemini response: {e}"))
-                })?)?;
-                info!(
-                    model = %model,
-                    content_len = result.content.len(),
-                    tool_calls = result.tool_calls.len(),
-                    "gemini completion received"
-                );
-                Ok(result)
+                    &request,
+                )
+                .await
             }
         })
         .await
@@ -753,13 +764,7 @@ impl EmbeddingProvider for GeminiEmbeddingClient {
 /// Parse a Gemini error response into a `ModelError::Api`.
 async fn parse_gemini_embed_error(response: reqwest::Response) -> ModelError {
     let status = response.status();
-    let raw_body = match response.text().await {
-        Ok(b) => b,
-        Err(e) => {
-            tracing::warn!(error = %e, "failed to read error response body");
-            format!("failed to read response body: {e}")
-        }
-    };
+    let raw_body = read_error_body(response).await;
     let error_body = serde_json::from_str::<GeminiErrorResponse>(&raw_body)
         .map_or_else(|_| raw_body, |e| e.error.message);
     ModelError::Api(format!("{status}: {error_body}"))
