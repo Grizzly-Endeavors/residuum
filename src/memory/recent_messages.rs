@@ -97,31 +97,7 @@ async fn save_recent_messages(path: &Path, messages: &[RecentMessage]) -> anyhow
     let json =
         serde_json::to_string_pretty(messages).context("failed to serialize recent messages")?;
 
-    let dir = path.parent().ok_or_else(|| {
-        anyhow::anyhow!(
-            "recent messages path has no parent directory: {}",
-            path.display()
-        )
-    })?;
-
-    let tmp_path = dir.join(".recent_messages.json.tmp");
-
-    tokio::fs::write(&tmp_path, &json).await.with_context(|| {
-        format!(
-            "failed to write temporary recent messages at {}",
-            tmp_path.display()
-        )
-    })?;
-
-    tokio::fs::rename(&tmp_path, path).await.with_context(|| {
-        format!(
-            "failed to rename recent messages from {} to {}",
-            tmp_path.display(),
-            path.display()
-        )
-    })?;
-
-    Ok(())
+    crate::fs::atomic_write(path, &json).await
 }
 
 /// Append messages to the recent messages file, wrapping each with metadata.

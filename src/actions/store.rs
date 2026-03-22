@@ -67,27 +67,7 @@ impl ActionStore {
             )
         })?;
 
-        let tmp_path = dir.join(format!(
-            ".{}.tmp",
-            self.path.file_name().unwrap_or_default().to_string_lossy()
-        ));
-
-        tokio::fs::write(&tmp_path, &json).await.with_context(|| {
-            format!(
-                "failed to write temporary scheduled actions at {}",
-                tmp_path.display()
-            )
-        })?;
-
-        tokio::fs::rename(&tmp_path, &self.path)
-            .await
-            .with_context(|| {
-                format!(
-                    "failed to rename scheduled actions from {} to {}",
-                    tmp_path.display(),
-                    self.path.display()
-                )
-            })?;
+        crate::fs::atomic_write(&self.path, &json).await?;
 
         debug!(path = %self.path.display(), count = self.actions.len(), "saved scheduled actions");
         Ok(())

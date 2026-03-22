@@ -219,31 +219,7 @@ impl IndexManifest {
         let json =
             serde_json::to_string_pretty(self).context("failed to serialize index manifest")?;
 
-        let dir = path.parent().ok_or_else(|| {
-            anyhow::anyhow!(
-                "index manifest path has no parent directory: {}",
-                path.display()
-            )
-        })?;
-
-        let tmp_path = dir.join(".index_manifest.json.tmp");
-
-        tokio::fs::write(&tmp_path, &json).await.with_context(|| {
-            format!(
-                "failed to write temporary index manifest at {}",
-                tmp_path.display()
-            )
-        })?;
-
-        tokio::fs::rename(&tmp_path, path).await.with_context(|| {
-            format!(
-                "failed to rename index manifest from {} to {}",
-                tmp_path.display(),
-                path.display()
-            )
-        })?;
-
-        Ok(())
+        crate::fs::atomic_write(path, &json).await
     }
 }
 

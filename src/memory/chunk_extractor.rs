@@ -95,24 +95,7 @@ pub(crate) async fn write_idx_jsonl(path: &Path, chunks: &[IndexChunk]) -> anyho
         lines.join("\n") + "\n"
     };
 
-    let dir = path.parent().ok_or_else(|| {
-        anyhow::anyhow!("idx.jsonl path has no parent directory: {}", path.display())
-    })?;
-
-    let tmp_path = dir.join(".idx.jsonl.tmp");
-    tokio::fs::write(&tmp_path, &content)
-        .await
-        .with_context(|| format!("failed to write idx.jsonl at {}", tmp_path.display()))?;
-
-    tokio::fs::rename(&tmp_path, path).await.with_context(|| {
-        format!(
-            "failed to rename idx.jsonl from {} to {}",
-            tmp_path.display(),
-            path.display()
-        )
-    })?;
-
-    Ok(())
+    crate::fs::atomic_write(path, &content).await
 }
 
 /// Read and parse an idx.jsonl file, returning chunks.

@@ -340,23 +340,19 @@ struct OpenAiMessage {
 
 impl From<&Message> for OpenAiMessage {
     fn from(msg: &Message) -> Self {
-        let has_images = msg.images.as_ref().is_some_and(|imgs| !imgs.is_empty());
-
-        let content = if has_images {
+        let content = if !msg.images.is_empty() {
             let mut parts: Vec<OpenAiContentPart> = Vec::new();
             if !msg.content.is_empty() {
                 parts.push(OpenAiContentPart::Text {
                     text: msg.content.clone(),
                 });
             }
-            if let Some(images) = &msg.images {
-                for img in images {
-                    parts.push(OpenAiContentPart::ImageUrl {
-                        image_url: OpenAiImageUrl {
-                            url: format!("data:{};base64,{}", img.media_type, img.data),
-                        },
-                    });
-                }
+            for img in &msg.images {
+                parts.push(OpenAiContentPart::ImageUrl {
+                    image_url: OpenAiImageUrl {
+                        url: format!("data:{};base64,{}", img.media_type, img.data),
+                    },
+                });
             }
             Some(OpenAiContent::Parts(parts))
         } else if msg.content.is_empty() {
