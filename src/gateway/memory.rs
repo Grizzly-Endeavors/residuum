@@ -93,25 +93,7 @@ pub(super) async fn execute_observation(mem: &MemorySubsystems<'_>, agent: &mut 
     match mem.observer.observe(&recent, mem.layout).await {
         Ok(result) => {
             tracing::info!(episode_id = %result.id, "observer extracted episode");
-
-            // Save narrative context if present
-            if let Some(narrative) = &result.narrative {
-                let ctx = RecentContext {
-                    narrative: narrative.clone(),
-                    created_at: crate::time::now_local(mem.observer.timezone()),
-                    episode_id: result.id.clone(),
-                };
-                if let Err(e) = save_recent_context(&mem.layout.recent_context_json(), &ctx).await {
-                    tracing::warn!(error = %e, "failed to save recent context");
-                }
-            }
-
-            if let Err(e) = clear_recent_messages(&mem.layout.recent_messages_json()).await {
-                tracing::warn!(error = %e, "failed to clear recent messages");
-            }
-            agent.rotate_messages_after_observation();
-
-            finalize_observation(mem, agent, &result).await;
+            run_observation_result(mem, agent, &result).await;
         }
         Err(e) => {
             tracing::warn!(error = %e, "observer failed");
@@ -286,6 +268,34 @@ async fn publish_error(publisher: &Publisher, message: String) {
     }
 }
 
+/// Apply post-observe steps shared by silent and forced observation paths.
+///
+/// Saves the narrative context if present, clears recent messages, rotates
+/// agent messages, and finalizes. Returns `true` if reflection was triggered.
+async fn run_observation_result(
+    mem: &MemorySubsystems<'_>,
+    agent: &mut Agent,
+    result: &ObserveResult,
+) -> bool {
+    if let Some(narrative) = &result.narrative {
+        let ctx = RecentContext {
+            narrative: narrative.clone(),
+            created_at: crate::time::now_local(mem.observer.timezone()),
+            episode_id: result.id.clone(),
+        };
+        if let Err(e) = save_recent_context(&mem.layout.recent_context_json(), &ctx).await {
+            tracing::warn!(error = %e, "failed to save recent context");
+        }
+    }
+
+    if let Err(e) = clear_recent_messages(&mem.layout.recent_messages_json()).await {
+        tracing::warn!(error = %e, "failed to clear recent messages");
+    }
+    agent.rotate_messages_after_observation();
+
+    finalize_observation(mem, agent, result).await
+}
+
 /// Force an observation cycle regardless of token threshold.
 ///
 /// Loads recent messages, runs the observer, clears recent messages, updates
@@ -322,24 +332,7 @@ pub(super) async fn run_forced_observe(
         }
     };
 
-    // Save narrative context if present
-    if let Some(narrative) = &result.narrative {
-        let ctx = RecentContext {
-            narrative: narrative.clone(),
-            created_at: crate::time::now_local(mem.observer.timezone()),
-            episode_id: result.id.clone(),
-        };
-        if let Err(e) = save_recent_context(&mem.layout.recent_context_json(), &ctx).await {
-            tracing::warn!(error = %e, "failed to save recent context after forced observe");
-        }
-    }
-
-    if let Err(e) = clear_recent_messages(&mem.layout.recent_messages_json()).await {
-        tracing::warn!(error = %e, "failed to clear recent messages after forced observe");
-    }
-    agent.rotate_messages_after_observation();
-
-    let reflected = finalize_observation(mem, agent, &result).await;
+    let reflected = run_observation_result(mem, agent, &result).await;
 
     let suffix = if reflected {
         "; reflection triggered"

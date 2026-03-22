@@ -454,14 +454,6 @@ async fn run_observation(rt: &mut GatewayRuntime) {
     execute_observation(&mem, &mut rt.agent).await;
 }
 
-/// Format the reason a task handle completed.
-fn handle_exit_reason(result: &Result<(), tokio::task::JoinError>) -> String {
-    match result {
-        Ok(()) => "exited unexpectedly".to_string(),
-        Err(e) => format!("failed: {e}"),
-    }
-}
-
 /// Respawn the cloud tunnel after an unexpected exit.
 fn respawn_tunnel(rt: &mut GatewayRuntime) {
     if let Some(ref cloud_cfg) = rt.cloud_config {
@@ -629,16 +621,25 @@ async fn run_event_loop(mut rt: GatewayRuntime) -> GatewayExit {
             }
 
             result = poll_handle(&mut rt.tunnel_handle) => {
-                tracing::error!(reason = handle_exit_reason(&result), "tunnel task ended, attempting respawn");
+                match &result {
+                    Ok(()) => tracing::error!("tunnel task exited unexpectedly, attempting respawn"),
+                    Err(e) => tracing::error!(error = %e, "tunnel task failed, attempting respawn"),
+                }
                 respawn_tunnel(&mut rt);
             }
 
             result = poll_handle(&mut rt.discord_handle) => {
-                tracing::error!(reason = handle_exit_reason(&result), "discord adapter task ended");
+                match &result {
+                    Ok(()) => tracing::error!("discord adapter task exited unexpectedly"),
+                    Err(e) => tracing::error!(error = %e, "discord adapter task failed"),
+                }
             }
 
             result = poll_handle(&mut rt.telegram_handle) => {
-                tracing::error!(reason = handle_exit_reason(&result), "telegram adapter task ended");
+                match &result {
+                    Ok(()) => tracing::error!("telegram adapter task exited unexpectedly"),
+                    Err(e) => tracing::error!(error = %e, "telegram adapter task failed"),
+                }
             }
         }
     }

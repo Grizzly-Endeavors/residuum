@@ -78,8 +78,7 @@ impl GatewayCore {
     pub fn new(config_dir: std::path::PathBuf) -> (Self, CoreReceivers) {
         let (reload_tx, reload_rx) = tokio::sync::watch::channel(ReloadSignal::None);
         let (command_tx, command_rx) = mpsc::channel::<ServerCommand>(32);
-        let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
-        drop(shutdown_rx);
+        let shutdown_tx = tokio::sync::watch::channel::<bool>(false).0;
         let bus_handle = crate::bus::spawn_broker();
         let publisher = bus_handle.publisher();
 

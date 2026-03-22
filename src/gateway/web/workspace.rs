@@ -147,15 +147,9 @@ fn is_blocked_path(relative: &str) -> bool {
         return true;
     }
 
-    // Block by extension and exact name
+    // Block by extension
     if let Some(ext) = path.extension().and_then(|e| e.to_str())
         && (ext == "db" || ext == "sqlite")
-    {
-        return true;
-    }
-
-    if let Some(name) = path.file_name().and_then(|n| n.to_str())
-        && name == "vectors.db"
     {
         return true;
     }

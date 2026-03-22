@@ -372,8 +372,7 @@ async fn reload_gateway(rt: &mut GatewayRuntime, new_cfg: &Config) {
         Ok(listener) => {
             rt.shutdown_tx.send(true).ok();
 
-            let (new_shutdown_tx, new_shutdown_rx) = tokio::sync::watch::channel(false);
-            drop(new_shutdown_rx);
+            let new_shutdown_tx = tokio::sync::watch::channel::<bool>(false).0;
 
             let state = GatewayState {
                 reload_tx: rt.reload_tx.clone(),
