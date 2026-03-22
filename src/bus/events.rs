@@ -38,13 +38,13 @@ impl EventTrigger {
             Self::Webhook(_) => "webhook",
         }
     }
+}
 
-    /// Human-readable label that includes the webhook name when applicable.
-    #[must_use]
-    pub fn display_label(&self) -> String {
+impl fmt::Display for EventTrigger {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Webhook(name) => format!("webhook:{name}"),
-            Self::Pulse | Self::Action | Self::Agent => self.as_str().to_string(),
+            Self::Webhook(name) => write!(f, "webhook:{name}"),
+            other @ (Self::Pulse | Self::Action | Self::Agent) => f.write_str(other.as_str()),
         }
     }
 }

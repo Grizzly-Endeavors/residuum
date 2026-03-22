@@ -117,52 +117,49 @@ impl EndpointRegistry {
         registry
     }
 
+    fn read_map(&self) -> std::sync::RwLockReadGuard<'_, HashMap<EndpointId, EndpointEntry>> {
+        self.inner
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    fn write_map(&self) -> std::sync::RwLockWriteGuard<'_, HashMap<EndpointId, EndpointEntry>> {
+        self.inner
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
     /// Add or overwrite an endpoint entry.
     pub fn register(&self, entry: EndpointEntry) {
-        let mut map = self
-            .inner
-            .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        map.insert(entry.id.clone(), entry);
+        self.write_map().insert(entry.id.clone(), entry);
     }
 
     /// Remove an endpoint, returning the entry if it existed.
+    #[must_use]
     pub fn unregister(&self, id: &EndpointId) -> Option<EndpointEntry> {
-        let mut map = self
-            .inner
-            .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        map.remove(id)
+        self.write_map().remove(id)
     }
 
     /// Look up an endpoint by its ID.
     #[must_use]
     pub fn get(&self, id: &EndpointId) -> Option<EndpointEntry> {
-        let map = self
-            .inner
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        map.get(id).cloned()
+        self.read_map().get(id).cloned()
     }
 
     /// Look up an endpoint by its topic.
     #[must_use]
     pub fn get_by_topic(&self, topic: &TopicId) -> Option<EndpointEntry> {
-        let map = self
-            .inner
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        map.values().find(|e| e.topic == *topic).cloned()
+        self.read_map()
+            .values()
+            .find(|e| e.topic == *topic)
+            .cloned()
     }
 
     /// Return all endpoints whose capabilities contain all flags in `caps`.
     #[must_use]
     pub fn filter_by(&self, caps: EndpointCapabilities) -> Vec<EndpointEntry> {
-        let map = self
-            .inner
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        map.values()
+        self.read_map()
+            .values()
             .filter(|e| e.capabilities.contains(caps))
             .cloned()
             .collect()
@@ -183,31 +180,19 @@ impl EndpointRegistry {
     /// Return all registered endpoints.
     #[must_use]
     pub fn all(&self) -> Vec<EndpointEntry> {
-        let map = self
-            .inner
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        map.values().cloned().collect()
+        self.read_map().values().cloned().collect()
     }
 
     /// Number of registered endpoints.
     #[must_use]
     pub fn len(&self) -> usize {
-        let map = self
-            .inner
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        map.len()
+        self.read_map().len()
     }
 
     /// Whether the registry has no endpoints.
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        let map = self
-            .inner
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        map.is_empty()
+        self.read_map().is_empty()
     }
 }
 

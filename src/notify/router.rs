@@ -129,7 +129,7 @@ async fn route_agent_result(event: &AgentResultEvent, router: &NotificationRoute
     tracing::info!(
         source_label = %event.source_label,
         task_id = %event.task_id,
-        source = %event.source.display_label(),
+        source = %event.source,
         "notification router received result"
     );
 
@@ -232,7 +232,7 @@ fn build_routing_prompt(
     available_targets: &[&str],
     alerts_content: &str,
 ) -> String {
-    let source_display = event.source.display_label();
+    let source_display = event.source.to_string();
     let status = match &event.status {
         crate::bus::AgentResultStatus::Completed => "completed",
         crate::bus::AgentResultStatus::Cancelled => "cancelled",
