@@ -223,14 +223,10 @@ fn compute_effective_interval(
                     trigger_count = tc,
                     "trigger_count exceeds i32::MAX, spacing collapsed to near-zero; pulse will fire at schedule rate"
                 );
-                active_duration / i32::MAX
+                return duration;
             };
             let jittered = apply_jitter(spacing, &pulse.name, now);
-            let effective = if jittered > duration {
-                jittered
-            } else {
-                duration
-            };
+            let effective = jittered.max(duration);
             tracing::debug!(
                 pulse = %pulse.name,
                 schedule_secs = duration.num_seconds(),
@@ -316,21 +312,23 @@ fn active_period_duration(start: NaiveTime, end: NaiveTime) -> Duration {
     }
 }
 
-/// Apply ±15% jitter to a duration using a within-run-consistent seed from
-/// pulse name and current date (within-run consistency only; not stable across process restarts).
+/// Produces a stable, deterministic offset for the same pulse name and calendar date.
+/// Jitter changes day-to-day but is consistent within the same day across restarts.
 #[expect(
     clippy::cast_precision_loss,
     clippy::cast_possible_truncation,
     reason = "intentional float arithmetic for jitter; precision loss is acceptable for scheduling"
 )]
 fn apply_jitter(base: Duration, pulse_name: &str, now: NaiveDateTime) -> Duration {
+    const JITTER_RANGE: f64 = 0.30; // ±15%
+
     let mut hasher = DefaultHasher::new();
     pulse_name.hash(&mut hasher);
     now.date().hash(&mut hasher);
     let hash = hasher.finish();
 
-    // Map hash to [-0.15, +0.15] range
-    let fraction = (hash % 3001) as f64 / 10000.0 - 0.15;
+    // Maps hash uniformly to [-0.15, +0.15]
+    let fraction = (hash % 10_001) as f64 / 10_000.0 * JITTER_RANGE - JITTER_RANGE / 2.0;
     let base_secs = base.num_seconds() as f64;
     let jittered = base_secs * (1.0 + fraction);
 
