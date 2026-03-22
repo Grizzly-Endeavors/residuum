@@ -94,14 +94,14 @@ pub(super) struct ProviderEntryFile {
 /// `main = ["anthropic/claude-sonnet-4-6", "openai/gpt-4o"]`.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(untagged)]
-pub(super) enum ModelStringOrList {
+pub(super) enum ModelStringList {
     /// Single model string.
     Single(String),
     /// Ordered list of model strings (failover chain).
     List(Vec<String>),
 }
 
-impl ModelStringOrList {
+impl ModelStringList {
     /// Convert into a `Vec<String>` regardless of variant.
     #[must_use]
     pub(super) fn into_vec(self) -> Vec<String> {
@@ -135,7 +135,7 @@ pub(super) enum ModelAssignment {
 #[serde(deny_unknown_fields)]
 pub(super) struct ModelAssignmentTable {
     /// Model string or failover list.
-    pub(super) model: ModelStringOrList,
+    pub(super) model: ModelStringList,
     /// Per-role temperature override (0.0–2.0).
     pub(super) temperature: Option<f32>,
     /// Per-role thinking override (off, on, low, medium, high).
