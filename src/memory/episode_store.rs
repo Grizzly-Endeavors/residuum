@@ -247,15 +247,14 @@ pub(crate) async fn read_episode_lines(
 fn format_message_line(parts: &mut Vec<String>, line_num: usize, msg: &Message) {
     match msg.role {
         Role::Assistant if msg.tool_calls.is_some() => {
-            if let Some(calls) = msg.tool_calls.as_deref() {
-                let tools: Vec<&str> = calls.iter().map(|c| c.name.as_str()).collect();
-                let calls_str = tools.join(", ");
-                if msg.content.is_empty() {
-                    parts.push(format!("[line {line_num}] Assistant: [calls: {calls_str}]"));
-                } else {
-                    parts.push(format!("[line {line_num}] Assistant: {}", msg.content));
-                    parts.push(format!("  [calls: {calls_str}]"));
-                }
+            let calls = msg.tool_calls.as_deref().unwrap_or(&[]);
+            let tools: Vec<&str> = calls.iter().map(|c| c.name.as_str()).collect();
+            let calls_str = tools.join(", ");
+            if msg.content.is_empty() {
+                parts.push(format!("[line {line_num}] Assistant: [calls: {calls_str}]"));
+            } else {
+                parts.push(format!("[line {line_num}] Assistant: {}", msg.content));
+                parts.push(format!("  [calls: {calls_str}]"));
             }
         }
         Role::Tool => {
@@ -264,19 +263,13 @@ fn format_message_line(parts: &mut Vec<String>, line_num: usize, msg: &Message) 
             parts.push(format!("[line {line_num}] Tool: {display_content}"));
         }
         Role::System | Role::User | Role::Assistant => {
-            let label = role_label(msg.role);
+            let label = match msg.role {
+                Role::System => "System",
+                Role::User => "User",
+                Role::Assistant | Role::Tool => "Assistant",
+            };
             parts.push(format!("[line {line_num}] {label}: {}", msg.content));
         }
-    }
-}
-
-/// Capitalize the first letter of a role name for display labels.
-fn role_label(role: Role) -> &'static str {
-    match role {
-        Role::System => "System",
-        Role::User => "User",
-        Role::Assistant => "Assistant",
-        Role::Tool => "Tool",
     }
 }
 

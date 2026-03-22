@@ -158,7 +158,7 @@ mod memory_integration {
 
         let recent = load_recent_messages(&recent_path).await.unwrap();
         assert!(
-            observer.should_observe(&recent),
+            observer.check_thresholds(&recent) != ObserveAction::None,
             "should trigger observation"
         );
 
@@ -475,7 +475,7 @@ mod memory_integration {
         }];
 
         assert!(
-            !observer.should_observe(&messages),
+            observer.check_thresholds(&messages) == ObserveAction::None,
             "should not fire below threshold"
         );
     }

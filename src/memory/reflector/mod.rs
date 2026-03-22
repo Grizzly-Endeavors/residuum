@@ -89,10 +89,10 @@ impl Reflector {
     /// Check whether the observation log exceeds the reflection threshold.
     #[must_use]
     pub fn should_reflect(&self, log: &ObservationLog) -> bool {
-        let serialized = match serde_json::to_string(log) {
+        let serialized = match serde_json::to_string_pretty(&log.observations) {
             Ok(s) => s,
             Err(e) => {
-                tracing::warn!(error = %e, "failed to serialize observation log for threshold check");
+                tracing::warn!(error = %e, "failed to serialize observations for threshold check");
                 return false;
             }
         };

@@ -154,12 +154,6 @@ impl Observer {
         self.provider = provider;
     }
 
-    /// Check whether the observer should fire based on recent message token count.
-    #[must_use]
-    pub fn should_observe(&self, recent_messages: &[RecentMessage]) -> bool {
-        self.check_thresholds(recent_messages) != ObserveAction::None
-    }
-
     /// Check token thresholds and return the appropriate action.
     ///
     /// Returns `ForceNow` if tokens >= force threshold, `StartCooldown` if
@@ -538,7 +532,7 @@ mod tests {
         let messages = make_recent_messages(2);
 
         assert!(
-            !observer.should_observe(&messages),
+            observer.check_thresholds(&messages) == ObserveAction::None,
             "should not observe below threshold"
         );
     }
@@ -555,7 +549,7 @@ mod tests {
         let messages = make_recent_messages(5);
 
         assert!(
-            observer.should_observe(&messages),
+            observer.check_thresholds(&messages) != ObserveAction::None,
             "should observe above threshold"
         );
     }
