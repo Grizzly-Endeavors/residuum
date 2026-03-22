@@ -245,7 +245,6 @@ impl AnthropicClient {
 
         // OAuth tokens (sk-ant-oat01-*) use Bearer auth + Claude Code identity
         // headers; standard API keys use x-api-key.
-        // NOTE: this logic is duplicated in gateway::web::fetch_anthropic_models
         if is_oauth_key(api_key) {
             req_builder = req_builder
                 .header("Authorization", format!("Bearer {api_key}"))
@@ -462,7 +461,7 @@ impl ModelProvider for AnthropicClient {
     }
 }
 
-fn is_oauth_key(key: &str) -> bool {
+pub(crate) fn is_oauth_key(key: &str) -> bool {
     key.starts_with("sk-ant-oat01-")
 }
 
