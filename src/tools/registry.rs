@@ -200,7 +200,7 @@ impl ToolRegistry {
         publisher: crate::bus::Publisher,
         subagents_dir: std::path::PathBuf,
     ) {
-        self.register(Box::new(background::SubAgentSpawnTool::new(
+        self.register(Box::new(background::SubagentSpawnTool::new(
             publisher,
             subagents_dir,
         )));

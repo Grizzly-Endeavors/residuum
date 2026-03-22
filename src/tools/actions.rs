@@ -38,7 +38,7 @@ impl Tool for ScheduleActionTool {
 
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
-            name: "schedule_action".to_string(),
+            name: self.name().to_string(),
             description: "Schedule a one-off action to fire at a specific time. The action runs once and is removed after firing.".to_string(),
             parameters: serde_json::json!({
                 "type": "object",
@@ -71,22 +71,9 @@ impl Tool for ScheduleActionTool {
     }
 
     async fn execute(&self, arguments: Value) -> Result<ToolResult, ToolError> {
-        let name = arguments
-            .get("name")
-            .and_then(Value::as_str)
-            .ok_or_else(|| ToolError::InvalidArguments("name is required".to_string()))?
-            .to_string();
-
-        let prompt = arguments
-            .get("prompt")
-            .and_then(Value::as_str)
-            .ok_or_else(|| ToolError::InvalidArguments("prompt is required".to_string()))?
-            .to_string();
-
-        let run_at_str = arguments
-            .get("run_at")
-            .and_then(Value::as_str)
-            .ok_or_else(|| ToolError::InvalidArguments("run_at is required".to_string()))?;
+        let name = super::require_str(&arguments, "name")?.to_string();
+        let prompt = super::require_str(&arguments, "prompt")?.to_string();
+        let run_at_str = super::require_str(&arguments, "run_at")?;
 
         let run_at = parse_run_at(run_at_str, self.tz)?;
 
@@ -120,10 +107,7 @@ impl Tool for ScheduleActionTool {
         {
             let mut store = self.store.lock().await;
             store.add(action);
-            store.save().await.map_err(|e| {
-                tracing::error!(error = %e, "failed to persist action store");
-                ToolError::Execution(format!("failed to save action store: {e}"))
-            })?;
+            save_action_store(&mut store).await?;
         }
 
         self.notify.notify_one();
@@ -159,7 +143,7 @@ impl Tool for ListActionsTool {
 
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
-            name: "list_actions".to_string(),
+            name: self.name().to_string(),
             description:
                 "List all pending scheduled actions with their IDs, names, and fire times."
                     .to_string(),
@@ -227,7 +211,7 @@ impl Tool for CancelActionTool {
 
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
-            name: "cancel_action".to_string(),
+            name: self.name().to_string(),
             description: "Cancel a pending scheduled action by ID.".to_string(),
             parameters: serde_json::json!({
                 "type": "object",
@@ -243,26 +227,26 @@ impl Tool for CancelActionTool {
     }
 
     async fn execute(&self, arguments: Value) -> Result<ToolResult, ToolError> {
-        let id = arguments
-            .get("id")
-            .and_then(Value::as_str)
-            .ok_or_else(|| ToolError::InvalidArguments("id is required".to_string()))?
-            .to_string();
+        let id = super::require_str(&arguments, "id")?.to_string();
 
         {
             let mut store = self.store.lock().await;
             if !store.remove(&id) {
                 return Ok(ToolResult::error(format!("action '{id}' not found")));
             }
-            store.save().await.map_err(|e| {
-                tracing::error!(error = %e, "failed to persist action store");
-                ToolError::Execution(format!("failed to save action store: {e}"))
-            })?;
+            save_action_store(&mut store).await?;
         }
 
         self.notify.notify_one();
         Ok(ToolResult::success(format!("Cancelled action '{id}'")))
     }
+}
+
+async fn save_action_store(store: &mut ActionStore) -> Result<(), ToolError> {
+    store.save().await.map_err(|e| {
+        tracing::error!(error = %e, "failed to persist action store");
+        ToolError::Execution(format!("failed to save action store: {e}"))
+    })
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────

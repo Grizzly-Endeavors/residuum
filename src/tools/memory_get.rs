@@ -30,7 +30,7 @@ impl Tool for MemoryGetTool {
 
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
-            name: "memory_get".to_string(),
+            name: self.name().to_string(),
             description: "Retrieve a raw episode transcript by ID. Use after memory_search to \
                           drill into the full conversation transcript of a specific episode. \
                           Returns formatted message lines with role labels and line numbers."

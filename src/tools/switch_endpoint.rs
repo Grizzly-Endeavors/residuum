@@ -57,7 +57,7 @@ impl Tool for SwitchEndpointTool {
 
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
-            name: "switch_endpoint".to_string(),
+            name: self.name().to_string(),
             description: "Switch the active endpoint for subsequent responses. \
                 Takes effect on the next turn. Use list_endpoints to see available \
                 interactive endpoints."
@@ -76,10 +76,7 @@ impl Tool for SwitchEndpointTool {
     }
 
     async fn execute(&self, arguments: Value) -> Result<ToolResult, ToolError> {
-        let endpoint_name = arguments
-            .get("endpoint")
-            .and_then(Value::as_str)
-            .ok_or_else(|| ToolError::InvalidArguments("endpoint is required".to_string()))?;
+        let endpoint_name = super::require_str(&arguments, "endpoint")?;
 
         let endpoint_id = EndpointId::from(endpoint_name);
 

@@ -22,7 +22,7 @@ pub(crate) struct OllamaWebSearchTool {
 
 impl OllamaWebSearchTool {
     /// Create a new Ollama web search tool.
-    pub fn new(api_key: String, base_url: String) -> Self {
+    pub(crate) fn new(api_key: String, base_url: String) -> Self {
         let http = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(30))
             .build()
@@ -46,7 +46,7 @@ impl Tool for OllamaWebSearchTool {
 
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
-            name: "ollama_web_search".to_string(),
+            name: self.name().to_string(),
             description:
                 "Search the web using Ollama Cloud. Returns search results with titles, URLs, \
                  and snippets."

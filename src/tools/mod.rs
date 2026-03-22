@@ -191,7 +191,11 @@ impl ToolFilter {
     }
 }
 
-// TODO(phase-6): add runtime JSON Schema validation for third-party tools
+pub(super) fn require_str<'a>(args: &'a Value, field: &'static str) -> Result<&'a str, ToolError> {
+    args.get(field)
+        .and_then(Value::as_str)
+        .ok_or_else(|| ToolError::InvalidArguments(format!("{field} is required")))
+}
 
 /// Trait for tool implementations that the agent can invoke.
 #[async_trait]

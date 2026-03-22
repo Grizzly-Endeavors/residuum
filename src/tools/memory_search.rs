@@ -41,7 +41,7 @@ impl Tool for MemorySearchTool {
              context, and episode IDs."
         };
         ToolDefinition {
-            name: "memory_search".to_string(),
+            name: self.name().to_string(),
             description: desc.to_string(),
             parameters: serde_json::json!({
                 "type": "object",

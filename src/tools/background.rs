@@ -37,7 +37,7 @@ impl Tool for StopAgentTool {
 
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
-            name: "stop_agent".to_string(),
+            name: self.name().to_string(),
             description: "Cancel a running background task by ID. Returns an error if no task with that ID is active. Use list_agents to find active task IDs.".to_string(),
             parameters: serde_json::json!({
                 "type": "object",
@@ -53,10 +53,7 @@ impl Tool for StopAgentTool {
     }
 
     async fn execute(&self, arguments: Value) -> Result<ToolResult, ToolError> {
-        let task_id = arguments
-            .get("task_id")
-            .and_then(Value::as_str)
-            .ok_or_else(|| ToolError::InvalidArguments("task_id is required".to_string()))?;
+        let task_id = super::require_str(&arguments, "task_id")?;
 
         if self.spawner.cancel(task_id).await {
             Ok(ToolResult::success(format!("Cancelled task {task_id}.")))
@@ -91,7 +88,7 @@ impl Tool for ListAgentsTool {
 
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
-            name: "list_agents".to_string(),
+            name: self.name().to_string(),
             description: "List all currently running background tasks with their IDs, types, sources, prompt previews, and elapsed time.".to_string(),
             parameters: serde_json::json!({
                 "type": "object",
@@ -131,16 +128,16 @@ impl Tool for ListAgentsTool {
     }
 }
 
-// ─── SubAgentSpawnTool ──────────────────────────────────────────────────────
+// ─── SubagentSpawnTool ──────────────────────────────────────────────────────
 
 /// Tool for spawning background sub-agents on demand.
-pub struct SubAgentSpawnTool {
+pub struct SubagentSpawnTool {
     publisher: crate::bus::Publisher,
     subagents_dir: PathBuf,
 }
 
-impl SubAgentSpawnTool {
-    /// Create a new `SubAgentSpawnTool`.
+impl SubagentSpawnTool {
+    /// Create a new `SubagentSpawnTool`.
     #[must_use]
     pub(crate) fn new(publisher: crate::bus::Publisher, subagents_dir: PathBuf) -> Self {
         Self {
@@ -151,14 +148,14 @@ impl SubAgentSpawnTool {
 }
 
 #[async_trait]
-impl Tool for SubAgentSpawnTool {
+impl Tool for SubagentSpawnTool {
     fn name(&self) -> &'static str {
         "subagent_spawn"
     }
 
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
-            name: "subagent_spawn".to_string(),
+            name: self.name().to_string(),
             description: "Spawn a background sub-agent to handle a task. The agent_name selects a preset that configures the sub-agent's instructions, model tier, and tool restrictions. Unknown preset names fail immediately with a list of available presets. Runs asynchronously; results are routed by the notification router based on content and ALERTS.md policy.".to_string(),
             parameters: serde_json::json!({
                 "type": "object",
@@ -183,10 +180,7 @@ impl Tool for SubAgentSpawnTool {
     }
 
     async fn execute(&self, arguments: Value) -> Result<ToolResult, ToolError> {
-        let task_prompt = arguments
-            .get("task")
-            .and_then(Value::as_str)
-            .ok_or_else(|| ToolError::InvalidArguments("task is required".to_string()))?;
+        let task_prompt = super::require_str(&arguments, "task")?;
 
         if task_prompt.trim().is_empty() {
             return Err(ToolError::InvalidArguments(
@@ -282,10 +276,10 @@ mod tests {
 
     use super::*;
 
-    fn make_tool() -> SubAgentSpawnTool {
+    fn make_tool() -> SubagentSpawnTool {
         let bus_handle = crate::bus::spawn_broker();
         let publisher = bus_handle.publisher();
-        SubAgentSpawnTool::new(publisher, PathBuf::from("/tmp"))
+        SubagentSpawnTool::new(publisher, PathBuf::from("/tmp"))
     }
 
     #[test]
@@ -328,7 +322,7 @@ mod tests {
         let tool = make_tool();
 
         let def = tool.definition();
-        assert_eq!(def.name, "subagent_spawn");
+        assert_eq!(def.name, tool.name());
         let required = def.parameters.get("required").unwrap();
         assert!(
             required

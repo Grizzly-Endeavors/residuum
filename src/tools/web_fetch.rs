@@ -19,7 +19,7 @@ pub(crate) struct WebFetchTool {
 impl WebFetchTool {
     /// Create a new web fetch tool with a dedicated HTTP client.
     #[must_use]
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         let http = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(30))
             .user_agent("Mozilla/5.0 (compatible; Residuum/1.0; +https://github.com/residuum)")
@@ -41,7 +41,7 @@ impl Tool for WebFetchTool {
 
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
-            name: "web_fetch".to_string(),
+            name: self.name().to_string(),
             description: "Fetch a web page and extract its main content as readable text. \
                           Returns the page title and cleaned content, optimized for reading. \
                           Use this to read articles, documentation, or any web page."

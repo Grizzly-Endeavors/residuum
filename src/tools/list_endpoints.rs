@@ -29,7 +29,7 @@ impl Tool for ListEndpointsTool {
 
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
-            name: "list_endpoints".to_string(),
+            name: self.name().to_string(),
             description: "List available communication endpoints. \
                 Shows interactive endpoints (for switch_endpoint and send_message) \
                 and notification endpoints (for send_message only)."

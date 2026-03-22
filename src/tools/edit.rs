@@ -255,7 +255,7 @@ impl Tool for EditTool {
 
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
-            name: "edit_file".to_string(),
+            name: self.name().to_string(),
             description: "Edit a file using line:hash anchors from read_file output. \
                           Validates content hashes before applying changes to detect stale edits. \
                           Operations: 'replace' (replace exact range; end_line required — use the \

@@ -52,7 +52,7 @@ impl Tool for ProjectActivateTool {
 
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
-            name: "project_activate".to_string(),
+            name: self.name().to_string(),
             description: "Activate a project context. Loads the project's overview, manifest, and configuration into the agent's context.".to_string(),
             parameters: serde_json::json!({
                 "type": "object",
@@ -68,10 +68,7 @@ impl Tool for ProjectActivateTool {
     }
 
     async fn execute(&self, arguments: Value) -> Result<ToolResult, ToolError> {
-        let name = arguments
-            .get("name")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| ToolError::InvalidArguments("name is required".to_string()))?;
+        let name = super::require_str(&arguments, "name")?;
 
         let mut state = self.state.lock().await;
         let global_mcp = state.layout().mcp_json();
@@ -200,7 +197,7 @@ impl Tool for ProjectDeactivateTool {
 
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
-            name: "project_deactivate".to_string(),
+            name: self.name().to_string(),
             description: "Deactivate the current project context. Requires a non-empty session summary log entry.".to_string(),
             parameters: serde_json::json!({
                 "type": "object",
@@ -216,10 +213,7 @@ impl Tool for ProjectDeactivateTool {
     }
 
     async fn execute(&self, arguments: Value) -> Result<ToolResult, ToolError> {
-        let log = arguments
-            .get("log")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| ToolError::InvalidArguments("log is required".to_string()))?;
+        let log = super::require_str(&arguments, "log")?;
 
         let now = crate::time::now_local(self.tz);
         let mut state = self.state.lock().await;
@@ -280,7 +274,7 @@ impl Tool for ProjectCreateTool {
 
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
-            name: "project_create".to_string(),
+            name: self.name().to_string(),
             description:
                 "Create a new project with the standard directory structure and PROJECT.md."
                     .to_string(),
@@ -307,15 +301,8 @@ impl Tool for ProjectCreateTool {
     }
 
     async fn execute(&self, arguments: Value) -> Result<ToolResult, ToolError> {
-        let name = arguments
-            .get("name")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| ToolError::InvalidArguments("name is required".to_string()))?;
-
-        let description = arguments
-            .get("description")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| ToolError::InvalidArguments("description is required".to_string()))?;
+        let name = super::require_str(&arguments, "name")?;
+        let description = super::require_str(&arguments, "description")?;
 
         let tools: Vec<String> = arguments
             .get("tools")
@@ -371,7 +358,7 @@ impl Tool for ProjectArchiveTool {
 
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
-            name: "project_archive".to_string(),
+            name: self.name().to_string(),
             description: "Archive a completed project. Updates frontmatter to archived status and moves it to the archive directory.".to_string(),
             parameters: serde_json::json!({
                 "type": "object",
@@ -387,10 +374,7 @@ impl Tool for ProjectArchiveTool {
     }
 
     async fn execute(&self, arguments: Value) -> Result<ToolResult, ToolError> {
-        let name = arguments
-            .get("name")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| ToolError::InvalidArguments("name is required".to_string()))?;
+        let name = super::require_str(&arguments, "name")?;
 
         let mut state = self.state.lock().await;
 
@@ -450,7 +434,7 @@ impl Tool for ProjectListTool {
 
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
-            name: "project_list".to_string(),
+            name: self.name().to_string(),
             description: "List all projects and their status.".to_string(),
             parameters: serde_json::json!({
                 "type": "object",

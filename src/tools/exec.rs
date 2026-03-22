@@ -26,7 +26,7 @@ impl Tool for ExecTool {
 
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
-            name: "exec".to_string(),
+            name: self.name().to_string(),
             description: "Execute a shell command and return its output. Commands run via \
                           `sh -c` with a configurable timeout (default 120 seconds)."
                 .to_string(),

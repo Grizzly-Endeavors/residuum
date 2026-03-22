@@ -49,7 +49,7 @@ impl Tool for SendMessageTool {
 
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
-            name: "send_message".to_string(),
+            name: self.name().to_string(),
             description: "Send a one-off message to a notification or interactive endpoint. \
                 Use list_endpoints to see available targets."
                 .to_string(),
@@ -75,15 +75,8 @@ impl Tool for SendMessageTool {
     }
 
     async fn execute(&self, arguments: Value) -> Result<ToolResult, ToolError> {
-        let endpoint_name = arguments
-            .get("endpoint")
-            .and_then(Value::as_str)
-            .ok_or_else(|| ToolError::InvalidArguments("endpoint is required".to_string()))?;
-
-        let message = arguments
-            .get("message")
-            .and_then(Value::as_str)
-            .ok_or_else(|| ToolError::InvalidArguments("message is required".to_string()))?;
+        let endpoint_name = super::require_str(&arguments, "endpoint")?;
+        let message = super::require_str(&arguments, "message")?;
 
         let title = arguments.get("title").and_then(Value::as_str);
 

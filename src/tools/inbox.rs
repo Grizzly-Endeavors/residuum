@@ -34,7 +34,7 @@ impl Tool for InboxListTool {
 
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
-            name: "inbox_list".to_string(),
+            name: self.name().to_string(),
             description: "List inbox items. Shows unread/read status, title, source, and timestamp for each item.".to_string(),
             parameters: serde_json::json!({
                 "type": "object",
@@ -108,7 +108,7 @@ impl Tool for InboxReadTool {
 
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
-            name: "inbox_read".to_string(),
+            name: self.name().to_string(),
             description: "Read a single inbox item by filename stem. Marks the item as read and returns its full content.".to_string(),
             parameters: serde_json::json!({
                 "type": "object",
@@ -124,10 +124,7 @@ impl Tool for InboxReadTool {
     }
 
     async fn execute(&self, arguments: Value) -> Result<ToolResult, ToolError> {
-        let id = arguments
-            .get("id")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| ToolError::InvalidArguments("id is required".to_string()))?;
+        let id = super::require_str(&arguments, "id")?;
 
         let item = inbox::mark_read(&self.inbox_dir, id).await.map_err(|e| {
             tracing::error!(error = %e, id = %id, "failed to read inbox item");
@@ -182,7 +179,7 @@ impl Tool for InboxArchiveTool {
 
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
-            name: "inbox_archive".to_string(),
+            name: self.name().to_string(),
             description: "Archive one or more inbox items by filename stem. Moves them to the archive directory.".to_string(),
             parameters: serde_json::json!({
                 "type": "object",
