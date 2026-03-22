@@ -56,12 +56,6 @@ impl std::str::FromStr for MacosCategory {
     }
 }
 
-/// # Errors
-/// Returns an error if the string does not match any known category.
-pub fn parse_category(s: &str) -> anyhow::Result<MacosCategory> {
-    s.parse()
-}
-
 /// Maps to macOS `UNNotificationInterruptionLevel`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -102,12 +96,6 @@ impl std::str::FromStr for MacosInterruptionLevel {
     }
 }
 
-/// # Errors
-/// Returns an error if the string does not match any known priority.
-pub fn parse_priority(s: &str) -> anyhow::Result<MacosInterruptionLevel> {
-    s.parse()
-}
-
 /// Action buttons displayed on notification banners.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MacosNotificationAction {
@@ -133,7 +121,7 @@ impl MacosNotificationAction {
     }
 
     #[must_use]
-    pub fn for_category(_category: MacosCategory) -> &'static [Self] {
+    pub fn for_category() -> &'static [Self] {
         &[Self::Open, Self::Dismiss]
     }
 }
@@ -196,28 +184,36 @@ mod tests {
     #[test]
     fn parse_category_valid() {
         assert_eq!(
-            parse_category("background-results").unwrap_or(MacosCategory::Alerts),
+            "background-results"
+                .parse::<MacosCategory>()
+                .unwrap_or(MacosCategory::Alerts),
             MacosCategory::BackgroundResults
         );
         assert_eq!(
-            parse_category("reminders").unwrap_or(MacosCategory::Alerts),
+            "reminders"
+                .parse::<MacosCategory>()
+                .unwrap_or(MacosCategory::Alerts),
             MacosCategory::Reminders
         );
         assert_eq!(
-            parse_category("inbox-items").unwrap_or(MacosCategory::Alerts),
+            "inbox-items"
+                .parse::<MacosCategory>()
+                .unwrap_or(MacosCategory::Alerts),
             MacosCategory::InboxItems
         );
         assert_eq!(
-            parse_category("alerts").unwrap_or(MacosCategory::BackgroundResults),
+            "alerts"
+                .parse::<MacosCategory>()
+                .unwrap_or(MacosCategory::BackgroundResults),
             MacosCategory::Alerts
         );
     }
 
     #[test]
     fn parse_category_invalid() {
-        assert!(parse_category("unknown").is_err());
-        assert!(parse_category("").is_err());
-        assert!(parse_category("ALERTS").is_err());
+        assert!("unknown".parse::<MacosCategory>().is_err());
+        assert!("".parse::<MacosCategory>().is_err());
+        assert!("ALERTS".parse::<MacosCategory>().is_err());
     }
 
     // ── MacosInterruptionLevel tests ────────────────────────────────────
@@ -267,24 +263,30 @@ mod tests {
     #[test]
     fn parse_priority_valid() {
         assert_eq!(
-            parse_priority("passive").unwrap_or(MacosInterruptionLevel::Active),
+            "passive"
+                .parse::<MacosInterruptionLevel>()
+                .unwrap_or(MacosInterruptionLevel::Active),
             MacosInterruptionLevel::Passive
         );
         assert_eq!(
-            parse_priority("active").unwrap_or(MacosInterruptionLevel::Passive),
+            "active"
+                .parse::<MacosInterruptionLevel>()
+                .unwrap_or(MacosInterruptionLevel::Passive),
             MacosInterruptionLevel::Active
         );
         assert_eq!(
-            parse_priority("time_sensitive").unwrap_or(MacosInterruptionLevel::Active),
+            "time_sensitive"
+                .parse::<MacosInterruptionLevel>()
+                .unwrap_or(MacosInterruptionLevel::Active),
             MacosInterruptionLevel::TimeSensitive
         );
     }
 
     #[test]
     fn parse_priority_invalid() {
-        assert!(parse_priority("critical").is_err());
-        assert!(parse_priority("").is_err());
-        assert!(parse_priority("ACTIVE").is_err());
+        assert!("critical".parse::<MacosInterruptionLevel>().is_err());
+        assert!("".parse::<MacosInterruptionLevel>().is_err());
+        assert!("ACTIVE".parse::<MacosInterruptionLevel>().is_err());
     }
 
     // ── MacosNotificationAction tests ───────────────────────────────────
@@ -303,7 +305,7 @@ mod tests {
 
     #[test]
     fn actions_for_background_results() {
-        let actions = MacosNotificationAction::for_category(MacosCategory::BackgroundResults);
+        let actions = MacosNotificationAction::for_category();
         assert_eq!(actions.len(), 2, "BackgroundResults should have 2 actions");
         assert_eq!(actions[0], MacosNotificationAction::Open);
         assert_eq!(actions[1], MacosNotificationAction::Dismiss);
@@ -311,7 +313,7 @@ mod tests {
 
     #[test]
     fn actions_for_inbox_items() {
-        let actions = MacosNotificationAction::for_category(MacosCategory::InboxItems);
+        let actions = MacosNotificationAction::for_category();
         assert_eq!(actions.len(), 2, "InboxItems should have 2 actions");
         assert_eq!(actions[0], MacosNotificationAction::Open);
         assert_eq!(actions[1], MacosNotificationAction::Dismiss);
@@ -319,7 +321,7 @@ mod tests {
 
     #[test]
     fn actions_for_reminders() {
-        let actions = MacosNotificationAction::for_category(MacosCategory::Reminders);
+        let actions = MacosNotificationAction::for_category();
         assert_eq!(actions.len(), 2, "Reminders should have 2 actions");
         assert_eq!(actions[0], MacosNotificationAction::Open);
         assert_eq!(actions[1], MacosNotificationAction::Dismiss);
@@ -327,7 +329,7 @@ mod tests {
 
     #[test]
     fn actions_for_alerts() {
-        let actions = MacosNotificationAction::for_category(MacosCategory::Alerts);
+        let actions = MacosNotificationAction::for_category();
         assert_eq!(actions.len(), 2, "Alerts should have 2 actions");
         assert_eq!(actions[0], MacosNotificationAction::Open);
         assert_eq!(actions[1], MacosNotificationAction::Dismiss);

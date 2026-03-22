@@ -63,7 +63,7 @@ impl MacosBridge {
             let mut category_set: Vec<Retained<UNNotificationCategory>> = Vec::new();
 
             for cat in MacosCategory::all() {
-                let actions = MacosNotificationAction::for_category(*cat);
+                let actions = MacosNotificationAction::for_category();
                 let mut ns_actions: Vec<Retained<objc2_user_notifications::UNNotificationAction>> =
                     Vec::new();
 

@@ -7,8 +7,6 @@
 
 use std::path::PathBuf;
 
-const INBOX_TARGET: &str = "inbox";
-
 use tokio::task::JoinHandle;
 
 use crate::background::spawn_context::SpawnContext;
@@ -19,6 +17,8 @@ use crate::bus::{
 use crate::config::BackgroundModelTier;
 use crate::models::factory::build_provider_chain;
 use crate::models::{CompletionOptions, Message, ModelProvider, ResponseFormat};
+
+const INBOX_TARGET: &str = "inbox";
 
 /// Spawn the LLM notification router as a bus subscriber.
 ///

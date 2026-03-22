@@ -83,8 +83,8 @@ async fn flush(bridge: &MacosBridge, buffer: &[NotificationEvent], config: &Maco
         }
 
         let summarized = count - 2;
-        let summary_title = format!("Residuum \u{2014} {count} results");
-        let summary_body = build_summary_body(buffer);
+        let summary_title = format!("{} \u{2014} {count} results", config.app_name);
+        let summary_body = build_summary_body(&buffer[2..]);
 
         if let Err(e) = bridge
             .post_summary(&summary_title, &summary_body, config.default_priority)
