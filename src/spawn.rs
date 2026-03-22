@@ -20,14 +20,14 @@ where
     let span = tracing::info_span!("monitored_task", task = name);
     tokio::spawn(
         async move {
-            tracing::debug!(task = name, "task started");
+            tracing::debug!("task started");
             // NOTE: We do not observe the future's state after a panic — we only
             // log the panic payload and discard the result. This is safe as long as
             // callers don't rely on internal task state after this function returns,
             // which they can't since the JoinHandle output is ().
             match std::panic::AssertUnwindSafe(future).catch_unwind().await {
                 Ok(()) => {
-                    tracing::warn!(task = name, "task exited (returned normally)");
+                    tracing::debug!("task exited (returned normally)");
                 }
                 Err(e) => {
                     let msg = e
@@ -35,7 +35,7 @@ where
                         .copied()
                         .or_else(|| e.downcast_ref::<String>().map(String::as_str))
                         .unwrap_or("<non-string panic payload>");
-                    tracing::error!(task = name, panic = msg, "task panicked");
+                    tracing::error!(panic = msg, "task panicked");
                 }
             }
         }
