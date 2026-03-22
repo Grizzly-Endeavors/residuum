@@ -1,6 +1,5 @@
 //! Stop subcommand: gracefully shut down a running gateway daemon.
 
-use residuum::config::Config;
 use residuum::util::FatalError;
 
 #[derive(clap::Args)]
@@ -25,7 +24,7 @@ pub(super) async fn run_stop_command(args: &StopArgs) -> Result<(), FatalError> 
 
     let agent_name = args.agent.as_deref();
     let pid_path = residuum::agent_registry::paths::resolve_pid_path(agent_name)?;
-    let label = agent_name.map_or("gateway".to_string(), |n| format!("agent '{n}'"));
+    let label = super::agent_label(agent_name);
 
     // Layer 1: File lock check
     if !pid_path.exists() {
@@ -45,10 +44,7 @@ pub(super) async fn run_stop_command(args: &StopArgs) -> Result<(), FatalError> 
 
     // Layer 2: HTTP graceful shutdown
     let config_dir = residuum::agent_registry::paths::resolve_config_dir(agent_name)?;
-    let gateway_addr = Config::load_at(&config_dir).map_or_else(
-        |_| residuum::config::GatewayConfig::default().addr(),
-        |cfg| cfg.gateway.addr(),
-    );
+    let gateway_addr = super::resolve_gateway_addr(&config_dir);
 
     let http_ok = try_http_shutdown(&gateway_addr).await;
 

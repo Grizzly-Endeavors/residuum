@@ -49,7 +49,7 @@ pub(super) fn resolve_url(args: &ConnectArgs) -> Result<String, FatalError> {
 /// # Errors
 ///
 /// Returns `FatalError::Gateway` if the WebSocket connection fails.
-pub(super) async fn run_connect(url: &str, verbose: bool) -> Result<(), FatalError> {
+pub(super) async fn run_connect_command(url: &str, verbose: bool) -> Result<(), FatalError> {
     use futures_util::StreamExt;
     use residuum::interfaces::cli::CliReader;
 
@@ -205,9 +205,6 @@ where
             Error = tokio_tungstenite::tungstenite::Error,
         > + Unpin,
 {
-    use futures_util::SinkExt;
-    use tokio_tungstenite::tungstenite::Message as TungsteniteMessage;
-
     if let Some(effect) = client.handle_command(line) {
         match effect {
             CommandEffect::ToggleVerbose => {
@@ -255,12 +252,7 @@ where
         content: line.to_string(),
         images: vec![],
     };
-    let json = serde_json::to_string(&client_msg)
-        .map_err(|e| FatalError::Gateway(format!("failed to serialize message: {e}")))?;
-    if let Err(e) = ws_tx.send(TungsteniteMessage::text(json)).await {
-        tracing::warn!(error = %e, "connection closed");
-        return Ok(std::ops::ControlFlow::Break(()));
-    }
+    send_client_message(ws_tx, &client_msg).await?;
     *turn_active = true;
 
     Ok(std::ops::ControlFlow::Continue(()))

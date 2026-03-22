@@ -12,6 +12,18 @@ use clap::Parser;
 
 use residuum::util::FatalError;
 
+fn resolve_gateway_addr(config_dir: &std::path::Path) -> String {
+    use residuum::config::{Config, GatewayConfig};
+    Config::load_at(config_dir).map_or_else(
+        |_| GatewayConfig::default().addr(),
+        |cfg| cfg.gateway.addr(),
+    )
+}
+
+fn agent_label(agent_name: Option<&str>) -> String {
+    agent_name.map_or("gateway".to_string(), |n| format!("agent '{n}'"))
+}
+
 #[derive(Parser)]
 #[command(name = "residuum", about = "Personal AI agent gateway")]
 struct Cli {
@@ -79,7 +91,7 @@ pub async fn run() -> Result<(), FatalError> {
         Command::Connect(ref args) => {
             residuum::util::tracing_init::init_cli_tracing();
             let url = connect::resolve_url(args)?;
-            connect::run_connect(&url, args.verbose).await
+            connect::run_connect_command(&url, args.verbose).await
         }
         Command::Logs(ref args) => {
             residuum::util::tracing_init::init_default_tracing();
@@ -105,7 +117,7 @@ pub async fn run() -> Result<(), FatalError> {
                 );
                 serve::run_serve_foreground(args).await
             } else {
-                serve::run_daemonize(args)
+                serve::run_serve_command(args)
             }
         }
     }

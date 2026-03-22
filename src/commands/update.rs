@@ -1,6 +1,5 @@
 //! Update subcommand: check for and install updates from GitHub Releases.
 
-use residuum::config::Config;
 use residuum::util::FatalError;
 
 #[derive(clap::Args)]
@@ -55,10 +54,8 @@ pub(super) async fn run_update_command(args: &UpdateArgs) -> Result<(), FatalErr
     {
         if args.yes {
             // Try to trigger seamless restart via the API
-            let gateway_addr = Config::load().map_or_else(
-                |_| residuum::config::GatewayConfig::default().addr(),
-                |cfg| cfg.gateway.addr(),
-            );
+            let config_dir = residuum::agent_registry::paths::resolve_config_dir(None)?;
+            let gateway_addr = super::resolve_gateway_addr(&config_dir);
             let url = format!("http://{gateway_addr}/api/update/restart");
             match reqwest::Client::new().post(&url).send().await {
                 Ok(resp) if resp.status().is_success() => {
