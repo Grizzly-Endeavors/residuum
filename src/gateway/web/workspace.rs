@@ -170,7 +170,6 @@ fn is_identity_file(relative: &str) -> bool {
         "ENVIRONMENT.md",
         "PRESENCE.toml",
         "HEARTBEAT.yml",
-        "CHANNELS.yml",
     ];
 
     let file_name = Path::new(relative)

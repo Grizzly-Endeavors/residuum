@@ -62,12 +62,12 @@ schedules during active hours as sub-agents (or main wake turns).
 - **Inbox**: Captures items for later. Background task results can route here. \
 Unread count appears in your status line.
 - **Scheduled Actions**: One-off future tasks. Fire once at a specified time, \
-then auto-remove. Results route to channels specified at creation time. \
+then auto-remove. Results route through the notification router. \
 All times are in your local timezone — never convert to or from UTC.
 - **Skills**: Loadable knowledge packs. Activate with `skill_activate`, \
 deactivate with `skill_deactivate`. Create new ones in skills/.
-- **Notifications**: Pulse results route to channels declared on each pulse in HEARTBEAT.yml. \
-Scheduled actions and sub-agents specify their channels directly.
+- **Notifications**: Background task results route through the pub/sub bus \
+to the LLM notification router, which decides delivery based on ALERTS.md policy.
 - **Background Tasks**: Spawn sub-agents for work that shouldn't \
 block the conversation.
 
@@ -78,7 +78,7 @@ Files you own and should actively maintain:
 - `USER.md` — user preferences, communication style, interests
 - `ENVIRONMENT.md` — document local environment details you discover
 - `HEARTBEAT.yml` — evolve monitoring based on user needs
-- `CHANNELS.yml` — channel registry
+- `ALERTS.md` — notification routing policy
 - `PRESENCE.toml` — Discord status configuration
 - `memory/OBSERVER.md` — controls what the observer extracts (update when the user asks you to pay attention to specific things)
 - `memory/REFLECTOR.md` — controls how the reflector compresses observations (update when the user asks to change compression behavior)
@@ -200,14 +200,14 @@ const DEFAULT_HEARTBEAT: &str = "\
 # HEARTBEAT.yml — Pulse monitoring configuration
 #
 # Define ambient checks the agent performs on a schedule.
-# Results route to channels declared on each pulse (defaults to inbox).
+# Results route through the notification router based on ALERTS.md policy.
 #
 # Fields:
 #   schedule: duration string — \"30m\", \"2h\", \"24h\"
 #   active_hours: optional — \"HH:MM-HH:MM\" in configured timezone
 #                 supports overnight windows (e.g. \"22:00-06:00\")
 #   agent: ~ (sub-agent, small) | \"main\" (wake turn) | \"preset-name\"
-#   channels: where to route results (default: [inbox])
+#   trigger_count: optional — max firings per active period
 
 pulses: []
 
@@ -218,7 +218,6 @@ pulses: []
 #  - name: inbox_check
 #    enabled: true
 #    schedule: \"3h\"
-#    channels: [inbox]
 #    tasks:
 #      - name: check_inbox
 #        prompt: \"Check your inbox for unread items. If any need action, handle them or note what is needed. Report HEARTBEAT_OK if nothing new.\"
@@ -274,21 +273,6 @@ Route background task results based on content and urgency.
 - Security alerts, errors, and failures → notify channels (ntfy, etc.) + inbox
 - Routine findings and informational results → inbox only
 - Webhook-triggered results → inbox (unless content indicates urgency)
-";
-
-/// Default content for CHANNELS.yml when creating a new workspace.
-const DEFAULT_CHANNELS: &str = "\
-# CHANNELS.yml — Channel registry
-# Lists channels available for notification routing.
-#
-# Built-in channels (always available):
-#   inbox       — store silently, surface as unread count
-#
-# External channels (ntfy, webhook, etc.) are defined in config.toml
-# under [notifications.channels].
-
-channels:
-  - inbox
 ";
 
 // ── Bundled skill content (embedded at compile time from assets/) ────────────
@@ -389,7 +373,6 @@ pub async fn ensure_workspace(
     write_if_missing(&layout.observer_md(), DEFAULT_OBSERVER_PROMPT).await?;
     write_if_missing(&layout.reflector_md(), DEFAULT_REFLECTOR_PROMPT).await?;
     write_if_missing(&layout.heartbeat_yml(), DEFAULT_HEARTBEAT).await?;
-    write_if_missing(&layout.channels_yml(), DEFAULT_CHANNELS).await?;
     write_if_missing(&layout.alerts_md(), DEFAULT_ALERTS).await?;
     write_if_missing(&layout.presence_toml(), DEFAULT_PRESENCE).await?;
 
@@ -557,7 +540,6 @@ mod tests {
             layout.heartbeat_yml().exists(),
             "HEARTBEAT.yml should exist"
         );
-        assert!(layout.channels_yml().exists(), "CHANNELS.yml should exist");
         assert!(layout.alerts_md().exists(), "ALERTS.md should exist");
         assert!(
             layout.presence_toml().exists(),

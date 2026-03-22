@@ -177,12 +177,6 @@ impl WorkspaceLayout {
         self.root.join("HEARTBEAT.yml")
     }
 
-    /// Path to CHANNELS.yml -- channel registry.
-    #[must_use]
-    pub fn channels_yml(&self) -> PathBuf {
-        self.root.join("CHANNELS.yml")
-    }
-
     /// Path to ALERTS.md -- notification routing policy for the LLM router.
     #[must_use]
     pub fn alerts_md(&self) -> PathBuf {
@@ -357,11 +351,6 @@ mod tests {
             layout.heartbeat_yml(),
             PathBuf::from("/tmp/ws/HEARTBEAT.yml"),
             "heartbeat_yml path"
-        );
-        assert_eq!(
-            layout.channels_yml(),
-            PathBuf::from("/tmp/ws/CHANNELS.yml"),
-            "channels_yml path"
         );
         assert_eq!(
             layout.pulse_state_json(),

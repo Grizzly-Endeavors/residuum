@@ -102,9 +102,7 @@ When `execute_subagent()` runs:
 - `status`: `Completed`, `Cancelled`, or `Failed { error: String }`
 - `routing`: How to deliver it
 
-The gateway receives the result and routes to the channels listed in `ResultRouting::Direct`. Channels are specified at task creation time (e.g., by the pulse definition's `channels` field, or by the `subagent_spawn` tool).
-
-Results routed to `inbox` become inbox items. External channel results (ntfy, webhook) are delivered via HTTP.
+The gateway publishes the result to the bus `background:result` topic. The LLM notification router subscribes to this topic and decides where each result goes based on content analysis and the ALERTS.md policy. Agent-spawned task results are also relayed back to the main agent as an interrupt (Layer 1 programmatic rule).
 
 ### Resource Isolation
 
@@ -202,7 +200,7 @@ This isolation ensures:
 
 - **`crate::notify::types`** — `TaskSource` (Agent, Pulse, Action). Labels where a task originated.
 
-- **`crate::subagents`** — `SubagentPresetFrontmatter` (tool restrictions, model tier, channels). Optional preset metadata passed to `build_spawn_resources()`.
+- **`crate::subagents`** — `SubagentPresetFrontmatter` (tool restrictions, model tier). Optional preset metadata passed to `build_spawn_resources()`.
 
 - **`tokio`** — `tokio::sync::{Mutex, Semaphore, mpsc}`, `tokio_util::sync::CancellationToken`. Core async primitives for task spawning, concurrency control, and cancellation.
 
