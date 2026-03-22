@@ -11,7 +11,6 @@ pulses:
     schedule: 30m            # Duration: "30s", "5m", "2h", "1d"
     active_hours: "09:00-17:00"  # Optional — HH:MM-HH:MM window
     agent: ~                 # null → SubAgent (Small tier)
-    channels: [agent_feed]   # Where results are delivered
     tasks:
       - name: check_inbox
         prompt: "Check inbox for new items and summarize anything unread."
@@ -21,7 +20,6 @@ pulses:
     schedule: 1d
     active_hours: "08:00-09:00"
     agent: main              # "main" → MainWakeTurn (runs on main agent)
-    channels: [agent_wake]
     tasks:
       - name: morning_plan
         prompt: "Review memory and plan for today."
@@ -30,7 +28,7 @@ pulses:
     enabled: true
     schedule: 1h
     agent: deploy-watcher    # Any other string → SubAgent with named preset from subagents/
-    channels: [inbox, ntfy]
+    trigger_count: 5         # Max 5 firings per active period
     tasks:
       - name: check_status
         prompt: "Check deployment status."
@@ -67,11 +65,11 @@ The `agent` field controls how the pulse executes:
 
 - The scheduler **hot-reloads** `HEARTBEAT.yml` on every tick — edits take effect without restart.
 - A pulse fires **immediately on first run** after startup (no wait for the first interval).
-- Last-run timestamps are in-memory only; they reset on restart.
+- Last-run timestamps and run counts are persisted to `pulse_state.json`, so pulses resume their schedule across restarts.
 - Disabled pulses (`enabled: false`) are skipped entirely.
 - Each task in `tasks` is an object with `name` (string) and `prompt` (string). Task prompts are joined into the SubAgent prompt.
-- SubAgent pulses include a `"HEARTBEAT_OK"` instruction: the agent should respond with just that phrase if there is nothing to report.
-- The `channels` field declares where results are delivered (e.g. `[agent_feed, inbox]`). If omitted, results are dropped with a warning.
+- SubAgent pulses include a `"HEARTBEAT_OK"` instruction: the agent should respond with just that phrase if there is nothing to report. These results are silently discarded before reaching the notification router.
+- `trigger_count` limits how many times a pulse fires within its `active_hours` window. When set, firings are spaced evenly across the active period. Omit for unlimited.
 
 ## Gotchas
 

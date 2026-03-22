@@ -14,7 +14,6 @@ Everything inside the workspace directory is **agent-owned by default**. The age
 | `USER.md` | Medium | Agent records user preferences, communication style, active interests. |
 | `ENVIRONMENT.md` | Low | Agent documents local environment details it discovers. |
 | `HEARTBEAT.yml` | Medium | Agent creates during onboarding, evolves autonomously (adds/removes pulses, adjusts schedules, moves routing). |
-| `CHANNELS.yml` | Medium | Agent evolves channel registry based on what the user pays attention to. |
 | `PRESENCE.toml` | Low | Discord presence. Agent updates when context changes. |
 | `SOUL.md` | Rare | Foundational identity. Agent may refine wording but shouldn't overhaul without user input. |
 | `AGENTS.md` | Rare | Behavioral rules. Same as SOUL.md — low-churn, foundational. |
@@ -57,7 +56,7 @@ These are drawn from [design-philosophy.md](../design-philosophy.md) and inform 
 | [Inbox](inbox.md) | Capture and triage items | `inbox_list`, `inbox_read`, `inbox_archive` | *(none)* |
 | [Scheduled Actions](scheduled-actions.md) | One-off future tasks | `schedule_action`, `list_actions`, `cancel_action` | `scheduled_actions.json` |
 | [Skills](skills.md) | Loadable instruction modules | `skill_activate`, `skill_deactivate` | per-skill `SKILL.md` |
-| [Notifications](notifications.md) | Result routing from background tasks | *(automatic — no tools)* | `CHANNELS.yml`, `config.toml` channels |
+| [Notifications](notifications.md) | Result routing from background tasks | `list_endpoints`, `switch_endpoint`, `send_message` | `ALERTS.md`, `config/channels.toml` |
 | [Background Tasks](background-tasks.md) | Sub-agents and scripts | `subagent_spawn`, `list_agents`, `stop_agent` | `[background]` in `config.toml`, `subagents/` presets |
 
 ## What This Is Not

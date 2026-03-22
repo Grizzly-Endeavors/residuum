@@ -37,7 +37,6 @@ For shell commands and scripts, the agent uses its own `write_file` and `exec` t
 | `task` | string | yes | The prompt/instructions for the sub-agent. Must not be empty. |
 | `agent_name` | string | no | Preset name from `subagents/`. Default: `"general-purpose"`. `"main"` is rejected — you cannot spawn main as a sub-agent. |
 | `model_override` | string enum | no | `"small"`, `"medium"`, `"large"`. Overrides the preset's tier. |
-| `channels` | string[] | no | Result delivery channels. Defaults to `["agent_feed"]` (or the preset's `channels` if defined). |
 
 ### `list_agents`
 
@@ -68,8 +67,6 @@ Presets are markdown files in the workspace `subagents/` directory, these preset
 name: memory-agent
 description: Lightweight agent with only memory tools
 model_tier: small
-channels:
-  - agent_feed
 denied_tools:
   - exec
   - write_file
@@ -89,7 +86,6 @@ allowed_tools:
 | `name` | string | yes | Must match the filename (kebab-case) |
 | `description` | string | yes | Shown when listing available presets |
 | `model_tier` | string | no | `"small"`, `"medium"`, `"large"`. Default: inherited from spawn call or `"medium"`. |
-| `channels` | string[] | no | Default channels when not specified in `subagent_spawn`. |
 | `denied_tools` | string[] | no | Tools this preset cannot use. |
 | `allowed_tools` | string[] | no | If set, only these tools are available (allowlist). |
 
@@ -101,11 +97,7 @@ One built-in preset exists: `general-purpose`. A user-created file with `name: g
 
 ## Result Routing
 
-| Source | Routing Mode |
-|--------|-------------|
-| Heartbeat pulses | Direct — `channels` from pulse definition in HEARTBEAT.yml |
-| Scheduled actions | Direct — `channels` from `schedule_action` |
-| Agent-spawned tasks | Direct — `channels` from `subagent_spawn` |
+All background task results flow through the pub/sub bus to the LLM notification router, which decides where each result goes based on content analysis and the `ALERTS.md` policy file. Agent-spawned task results are also relayed back to the main agent as an interrupt (Layer 1 programmatic rule).
 
 See [notifications.md](notifications.md) for the full routing model.
 
@@ -127,4 +119,4 @@ Spawn → Acquire semaphore permit → Execute → Complete → Route result →
 - If a sub-agent ends with a project still active, the gateway force-deactivates with an auto-generated log entry
 - Cancellation also triggers force-deactivation
 
-All spawns are asynchronous — `subagent_spawn` returns immediately with a task ID. Results are delivered to the specified channels when the sub-agent completes.
+All spawns are asynchronous — `subagent_spawn` returns immediately with a task ID. Results are routed through the notification system when the sub-agent completes.
