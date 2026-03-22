@@ -37,7 +37,7 @@ pub(super) fn resolve_all_model_specs(
     let mut role_overrides = HashMap::new();
 
     // Resolve main: RESIDUUM_MODEL env > models.main > default
-    let main = if let Ok(env_model) = std::env::var("RESIDUUM_MODEL") {
+    let mut main = if let Ok(env_model) = std::env::var("RESIDUUM_MODEL") {
         vec![resolve_model_string(&env_model, providers_map, secrets)?]
     } else if let Some(main_spec) = models.and_then(|m| m.main.clone()) {
         extract_role_overrides("main", &main_spec, &mut role_overrides)?;
@@ -51,15 +51,11 @@ pub(super) fn resolve_all_model_specs(
     };
 
     // RESIDUUM_PROVIDER_URL overrides first provider in main chain only
-    let main = if let Ok(url) = std::env::var("RESIDUUM_PROVIDER_URL") {
-        let mut chain = main;
-        if let Some(first) = chain.first_mut() {
-            first.provider_url = url;
-        }
-        chain
-    } else {
-        main
-    };
+    if let Ok(url) = std::env::var("RESIDUUM_PROVIDER_URL")
+        && let Some(first) = main.first_mut()
+    {
+        first.provider_url = url;
+    }
 
     // Resolve each role: models.<role> > models.default > main
     let default_assignment = models.and_then(|m| m.default.clone());

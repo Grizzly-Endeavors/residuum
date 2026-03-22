@@ -272,7 +272,7 @@ pub(super) struct SkillsConfigFile {
 }
 
 /// Raw TOML `[retry]` section.
-#[derive(Debug, Deserialize, Default)]
+#[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct RetryConfigFile {
     /// Maximum number of retry attempts (0 = no retries).
