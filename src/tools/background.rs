@@ -119,9 +119,8 @@ impl Tool for ListAgentsTool {
                 format!("\n    preview: {}", info.prompt_preview)
             };
             lines.push(format!(
-                "  [{id}] {task} — type: {etype} — source: {src} — running {elapsed}s{sfx}",
+                "  [{id}] {task} — type: sub_agent — source: {src} — running {elapsed}s{sfx}",
                 task = info.source_label,
-                etype = info.execution_type,
                 src = source_kind,
                 elapsed = elapsed_secs,
                 sfx = preview_suffix,

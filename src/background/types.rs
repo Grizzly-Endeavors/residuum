@@ -61,8 +61,6 @@ pub struct ActiveTaskInfo {
     pub source_label: String,
     /// Where this task originated.
     pub source: EventTrigger,
-    /// Execution type label (always `"sub_agent"`).
-    pub execution_type: &'static str,
     /// Truncated prompt or command preview (at most 120 chars).
     pub prompt_preview: String,
     /// When the task was spawned (UTC).

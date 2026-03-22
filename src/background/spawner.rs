@@ -63,7 +63,6 @@ impl BackgroundTaskSpawner {
         let active_info = ActiveTaskInfo {
             source_label: task.source_label.clone(),
             source: task.source.clone(),
-            execution_type: "sub_agent",
             prompt_preview,
             started_at: Utc::now(),
         };
@@ -227,7 +226,10 @@ async fn build_completed_result(
 
     let transcript_summary = match &status {
         AgentResultStatus::Failed { error } => error.as_str(),
-        AgentResultStatus::Completed | AgentResultStatus::Cancelled => &summary,
+        AgentResultStatus::Completed => &summary,
+        AgentResultStatus::Cancelled => {
+            unreachable!("Cancelled is only produced by build_cancelled_result")
+        }
     };
     let transcript_path = write_transcript(
         background_dir,
