@@ -21,10 +21,8 @@ where
     tokio::spawn(
         async move {
             tracing::debug!("task started");
-            // NOTE: We do not observe the future's state after a panic — we only
-            // log the panic payload and discard the result. This is safe as long as
-            // callers don't rely on internal task state after this function returns,
-            // which they can't since the JoinHandle output is ().
+            // SAFETY: The wrapped future is dropped on panic; no inconsistent
+            // state escapes. Callers receive only () from the JoinHandle.
             match std::panic::AssertUnwindSafe(future).catch_unwind().await {
                 Ok(()) => {
                     tracing::debug!("task exited (returned normally)");
