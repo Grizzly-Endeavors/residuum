@@ -81,10 +81,6 @@ impl SubagentPresetIndex {
             return Ok(builtin_general_purpose_preset());
         }
 
-        debug_assert!(
-            false,
-            "preset '{name}' found in index but has no path and is not a built-in — this is a bug in scan()"
-        );
         unreachable!("preset '{name}' found in index but has no path and is not a built-in")
     }
 
