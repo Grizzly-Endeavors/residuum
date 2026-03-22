@@ -1,28 +1,28 @@
 //! Compile-time default values for configuration fields.
 
 /// Default base URL for the Anthropic API.
-pub(crate) const DEFAULT_ANTHROPIC_URL: &str = "https://api.anthropic.com";
+pub(super) const DEFAULT_ANTHROPIC_URL: &str = "https://api.anthropic.com";
 
 /// Default base URL for a local Ollama instance.
-pub(crate) const DEFAULT_OLLAMA_URL: &str = "http://localhost:11434";
+pub(super) const DEFAULT_OLLAMA_URL: &str = "http://localhost:11434";
 
 /// Default base URL for the `OpenAI` API.
-pub(crate) const DEFAULT_OPENAI_URL: &str = "https://api.openai.com/v1";
+pub(super) const DEFAULT_OPENAI_URL: &str = "https://api.openai.com/v1";
 
 /// Default base URL for the Google Gemini API.
-pub(crate) const DEFAULT_GEMINI_URL: &str = "https://generativelanguage.googleapis.com/v1beta";
+pub(super) const DEFAULT_GEMINI_URL: &str = "https://generativelanguage.googleapis.com/v1beta";
 
 /// Default request timeout in seconds.
-pub(crate) const DEFAULT_TIMEOUT_SECS: u64 = 120;
+pub(super) const DEFAULT_TIMEOUT_SECS: u64 = 120;
 
 /// Default gateway bind address.
-pub(crate) const DEFAULT_GATEWAY_BIND: &str = "127.0.0.1";
+pub(super) const DEFAULT_GATEWAY_BIND: &str = "127.0.0.1";
 
 /// Default gateway port.
-pub(crate) const DEFAULT_GATEWAY_PORT: u16 = 7700;
+pub(super) const DEFAULT_GATEWAY_PORT: u16 = 7700;
 
 /// Default max tokens for model responses.
-pub(crate) const DEFAULT_MAX_TOKENS: u32 = 8192;
+pub(super) const DEFAULT_MAX_TOKENS: u32 = 8192;
 
 /// Default observer token threshold before firing.
 pub(crate) const DEFAULT_OBSERVER_THRESHOLD: usize = 30_000;
@@ -37,28 +37,28 @@ pub(crate) const DEFAULT_OBSERVER_COOLDOWN_SECS: u64 = 120;
 pub(crate) const DEFAULT_OBSERVER_FORCE_THRESHOLD: usize = 60_000;
 
 /// Default weight for vector similarity in hybrid search merge.
-pub(crate) const DEFAULT_SEARCH_VECTOR_WEIGHT: f64 = 0.7;
+pub(super) const DEFAULT_SEARCH_VECTOR_WEIGHT: f64 = 0.7;
 
 /// Default weight for BM25 text scores in hybrid search merge.
-pub(crate) const DEFAULT_SEARCH_TEXT_WEIGHT: f64 = 0.3;
+pub(super) const DEFAULT_SEARCH_TEXT_WEIGHT: f64 = 0.3;
 
 /// Default minimum hybrid score threshold.
-pub(crate) const DEFAULT_SEARCH_MIN_SCORE: f64 = 0.35;
+pub(super) const DEFAULT_SEARCH_MIN_SCORE: f64 = 0.35;
 
 /// Default candidate multiplier for hybrid search over-fetch.
-pub(crate) const DEFAULT_SEARCH_CANDIDATE_MULTIPLIER: usize = 4;
+pub(super) const DEFAULT_SEARCH_CANDIDATE_MULTIPLIER: usize = 4;
 
 /// Whether temporal decay is enabled for search scoring by default.
-pub(crate) const DEFAULT_SEARCH_TEMPORAL_DECAY: bool = false;
+pub(super) const DEFAULT_SEARCH_TEMPORAL_DECAY: bool = false;
 
 /// Default half-life in days for temporal decay scoring.
-pub(crate) const DEFAULT_SEARCH_TEMPORAL_DECAY_HALF_LIFE_DAYS: f64 = 30.0;
+pub(super) const DEFAULT_SEARCH_TEMPORAL_DECAY_HALF_LIFE_DAYS: f64 = 30.0;
 
 /// Default maximum number of concurrent background tasks.
-pub(crate) const DEFAULT_MAX_CONCURRENT_BACKGROUND: usize = 3;
+pub(super) const DEFAULT_MAX_CONCURRENT_BACKGROUND: usize = 3;
 
 /// Default number of days to retain background task transcripts.
-pub(crate) const DEFAULT_TRANSCRIPT_RETENTION_DAYS: u64 = 30;
+pub(super) const DEFAULT_TRANSCRIPT_RETENTION_DAYS: u64 = 30;
 
 /// Whether the agent can modify MCP server configurations by default.
 pub(super) const DEFAULT_AGENT_MODIFY_MCP: bool = true;

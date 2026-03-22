@@ -61,7 +61,6 @@ impl Config {
     /// read or parsed, or if required values are missing.
     pub fn load_at(config_dir: &std::path::Path) -> Result<Self, FatalError> {
         let config_path = config_dir.join("config.toml");
-        let providers_path = config_dir.join("providers.toml");
 
         let file_config = if config_path.exists() {
             let contents = std::fs::read_to_string(&config_path).map_err(|e| {
@@ -82,27 +81,8 @@ impl Config {
             None
         };
 
-        let (providers_config, loaded_providers_path) = if providers_path.exists() {
-            (
-                Some(load_providers(&providers_path)?),
-                providers_path.clone(),
-            )
-        } else {
-            // Fall back to global ~/.residuum/providers.toml for named agents
-            // (their config dirs are under ~/.residuum/agent_registry/<name>/)
-            let global_dir = bootstrap::default_config_dir()?;
-            let global_path = global_dir.join("providers.toml");
-            let is_agent_subdir = config_dir.starts_with(global_dir.join("agent_registry"));
-            if is_agent_subdir && global_path.exists() {
-                tracing::debug!(path = %global_path.display(), "using global providers.toml for agent subdir");
-                (Some(load_providers(&global_path)?), global_path)
-            } else {
-                return Err(FatalError::Config(format!(
-                    "providers.toml not found at {}; run 'residuum setup' to create it",
-                    providers_path.display()
-                )));
-            }
-        };
+        let loaded_providers_path = find_providers_path(config_dir)?;
+        let providers_config = Some(load_providers(&loaded_providers_path)?);
 
         let cfg = resolve::from_file_and_env(
             file_config.as_ref(),
@@ -132,17 +112,10 @@ impl Config {
             .map_err(|e| format!("TOML parse error: {e}"))?;
 
         // Load providers.toml from disk for resolution (may not exist during setup)
-        let providers_path = config_dir.join("providers.toml");
-        let providers_file = if providers_path.exists() {
-            let prov_contents = std::fs::read_to_string(&providers_path)
-                .map_err(|e| format!("failed to read providers.toml: {e}"))?;
-            Some(
-                toml::from_str::<deserialize::ProvidersFile>(&prov_contents)
-                    .map_err(|e| format!("providers.toml parse error: {e}"))?,
-            )
-        } else {
-            None
-        };
+        let providers_file = read_optional_toml::<deserialize::ProvidersFile>(
+            &config_dir.join("providers.toml"),
+            "providers.toml",
+        )?;
 
         resolve::from_file_and_env(Some(&file), providers_file.as_ref(), config_dir)
             .map_err(|e| e.to_string())?;
@@ -164,17 +137,10 @@ impl Config {
             .map_err(|e| format!("TOML parse error: {e}"))?;
 
         // Load config.toml from disk for resolution
-        let config_path = config_dir.join("config.toml");
-        let config_file = if config_path.exists() {
-            let cfg_contents = std::fs::read_to_string(&config_path)
-                .map_err(|e| format!("failed to read config.toml: {e}"))?;
-            Some(
-                toml::from_str::<deserialize::ConfigFile>(&cfg_contents)
-                    .map_err(|e| format!("config.toml parse error: {e}"))?,
-            )
-        } else {
-            None
-        };
+        let config_file = read_optional_toml::<deserialize::ConfigFile>(
+            &config_dir.join("config.toml"),
+            "config.toml",
+        )?;
 
         resolve::from_file_and_env(config_file.as_ref(), Some(&providers_file), config_dir)
             .map_err(|e| e.to_string())?;
@@ -195,6 +161,53 @@ impl Config {
             ..crate::models::CompletionOptions::default()
         }
     }
+}
+
+/// Locate the `providers.toml` to load for the given config directory.
+///
+/// Checks the config directory first. For agent-registry subdirectories,
+/// falls back to the global `~/.residuum/providers.toml`.
+///
+/// # Errors
+/// Returns `FatalError::Config` if no providers file can be found.
+fn find_providers_path(config_dir: &std::path::Path) -> Result<std::path::PathBuf, FatalError> {
+    let providers_path = config_dir.join("providers.toml");
+    if providers_path.exists() {
+        return Ok(providers_path);
+    }
+
+    // Fall back to global ~/.residuum/providers.toml for named agents
+    // (their config dirs are under ~/.residuum/agent_registry/<name>/)
+    let global_dir = bootstrap::default_config_dir()?;
+    let global_path = global_dir.join("providers.toml");
+    let is_agent_subdir = config_dir.starts_with(global_dir.join("agent_registry"));
+    if is_agent_subdir && global_path.exists() {
+        tracing::debug!(path = %global_path.display(), "using global providers.toml for agent subdir");
+        return Ok(global_path);
+    }
+
+    Err(FatalError::Config(format!(
+        "providers.toml not found at {}; run 'residuum setup' to create it",
+        providers_path.display()
+    )))
+}
+
+/// Read and parse a TOML file if it exists, returning `None` if absent.
+///
+/// # Errors
+/// Returns a human-readable error string if the file cannot be read or parsed.
+fn read_optional_toml<T: serde::de::DeserializeOwned>(
+    path: &std::path::Path,
+    file_name: &str,
+) -> Result<Option<T>, String> {
+    if !path.exists() {
+        return Ok(None);
+    }
+    let contents =
+        std::fs::read_to_string(path).map_err(|e| format!("failed to read {file_name}: {e}"))?;
+    let parsed =
+        toml::from_str::<T>(&contents).map_err(|e| format!("{file_name} parse error: {e}"))?;
+    Ok(Some(parsed))
 }
 
 /// Load and parse a `providers.toml` file from the given path.

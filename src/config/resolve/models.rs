@@ -300,30 +300,9 @@ fn provider_api_key_env(kind: ProviderKind) -> Option<String> {
 )]
 mod tests {
     use super::super::super::constants::DEFAULT_ANTHROPIC_URL;
-    use super::super::super::deserialize::{ConfigFile, ProvidersFile};
     use super::super::from_file_and_env;
+    use super::super::test_helpers::*;
     use super::*;
-
-    /// Create an empty `SecretStore` for tests that don't need real secrets.
-    fn empty_secrets() -> SecretStore {
-        let dir = std::env::temp_dir().join("residuum-test-empty-secrets");
-        SecretStore::load(&dir).unwrap()
-    }
-
-    /// Create a temp dir for `from_file_and_env` calls.
-    fn test_config_dir() -> std::path::PathBuf {
-        std::env::temp_dir().join("residuum-test-config")
-    }
-
-    /// Parse a TOML string into a `ConfigFile` (config-only: timezone, memory, etc.).
-    fn parse_config(toml: &str) -> ConfigFile {
-        toml::from_str(toml).unwrap()
-    }
-
-    /// Parse a TOML string into a `ProvidersFile` (providers and models sections).
-    fn parse_providers(toml: &str) -> ProvidersFile {
-        toml::from_str(toml).unwrap()
-    }
 
     // ── Provider / model resolution ───────────────────────────────────────────
 

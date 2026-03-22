@@ -208,6 +208,18 @@ fn resolve_gateway_config(section: Option<&GatewayConfigFile>) -> GatewayConfig 
     cfg
 }
 
+/// Resolve a bot token from an env var, falling back to the raw TOML value with secret expansion.
+fn resolve_bot_token(
+    env_var: &str,
+    raw_token: Option<&str>,
+    secrets: &SecretStore,
+) -> Option<String> {
+    std::env::var(env_var)
+        .ok()
+        .or_else(|| raw_token.and_then(|t| resolve_secret_value(t, secrets)))
+        .filter(|t| !t.is_empty())
+}
+
 /// Resolve Discord configuration from TOML section and environment.
 ///
 /// Token resolution: `RESIDUUM_DISCORD_TOKEN` env > `token` field in TOML (with
@@ -216,14 +228,11 @@ fn resolve_discord_config(
     section: Option<&DiscordConfigFile>,
     secrets: &SecretStore,
 ) -> Option<DiscordConfig> {
-    let token = std::env::var("RESIDUUM_DISCORD_TOKEN")
-        .ok()
-        .or_else(|| {
-            section
-                .and_then(|s| s.token.as_ref())
-                .and_then(|t| resolve_secret_value(t, secrets))
-        })
-        .filter(|t| !t.is_empty());
+    let token = resolve_bot_token(
+        "RESIDUUM_DISCORD_TOKEN",
+        section.and_then(|s| s.token.as_deref()),
+        secrets,
+    );
 
     match (section, token) {
         (_, Some(tok)) => Some(DiscordConfig { token: tok }),
@@ -293,14 +302,11 @@ fn resolve_telegram_config(
     section: Option<&TelegramConfigFile>,
     secrets: &SecretStore,
 ) -> Option<TelegramConfig> {
-    let token = std::env::var("RESIDUUM_TELEGRAM_TOKEN")
-        .ok()
-        .or_else(|| {
-            section
-                .and_then(|s| s.token.as_ref())
-                .and_then(|t| resolve_secret_value(t, secrets))
-        })
-        .filter(|t| !t.is_empty());
+    let token = resolve_bot_token(
+        "RESIDUUM_TELEGRAM_TOKEN",
+        section.and_then(|s| s.token.as_deref()),
+        secrets,
+    );
 
     match (section, token) {
         (_, Some(tok)) => Some(TelegramConfig { token: tok }),
@@ -761,6 +767,30 @@ fn resolve_bg_tier(
     )?))
 }
 
+#[cfg(test)]
+#[expect(clippy::unwrap_used, reason = "test code uses unwrap for clarity")]
+pub(super) mod test_helpers {
+    pub(super) use super::super::deserialize::{ConfigFile, ProvidersFile};
+    pub(super) use super::super::secrets::SecretStore;
+
+    pub(super) fn empty_secrets() -> SecretStore {
+        let dir = std::env::temp_dir().join("residuum-test-empty-secrets");
+        SecretStore::load(&dir).unwrap()
+    }
+
+    pub(super) fn test_config_dir() -> std::path::PathBuf {
+        std::env::temp_dir().join("residuum-test-config")
+    }
+
+    pub(super) fn parse_config(toml: &str) -> ConfigFile {
+        toml::from_str(toml).unwrap()
+    }
+
+    pub(super) fn parse_providers(toml: &str) -> ProvidersFile {
+        toml::from_str(toml).unwrap()
+    }
+}
+
 /// Warn on deprecated environment variables that no longer have effect.
 fn warn_deprecated_env_vars() {
     let deprecated = [
@@ -792,29 +822,8 @@ mod tests {
         DEFAULT_OBSERVER_COOLDOWN_SECS, DEFAULT_OBSERVER_FORCE_THRESHOLD,
         DEFAULT_OBSERVER_THRESHOLD, DEFAULT_REFLECTOR_THRESHOLD,
     };
-    use super::super::deserialize::{ConfigFile, ProvidersFile};
+    use super::test_helpers::*;
     use super::*;
-
-    /// Create an empty `SecretStore` for tests that don't need real secrets.
-    fn empty_secrets() -> SecretStore {
-        let dir = std::env::temp_dir().join("residuum-test-empty-secrets");
-        SecretStore::load(&dir).unwrap()
-    }
-
-    /// Create a temp dir for `from_file_and_env` calls.
-    fn test_config_dir() -> std::path::PathBuf {
-        std::env::temp_dir().join("residuum-test-config")
-    }
-
-    /// Parse a TOML string into a `ConfigFile` (config-only: timezone, memory, etc.).
-    fn parse_config(toml: &str) -> ConfigFile {
-        toml::from_str(toml).unwrap()
-    }
-
-    /// Parse a TOML string into a `ProvidersFile` (providers and models sections).
-    fn parse_providers(toml: &str) -> ProvidersFile {
-        toml::from_str(toml).unwrap()
-    }
 
     // ── Section-specific resolution ───────────────────────────────────────────
 
