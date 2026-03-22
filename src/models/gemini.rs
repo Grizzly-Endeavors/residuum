@@ -287,7 +287,7 @@ impl ModelProvider for GeminiClient {
                 thinking_budget: 32768,
             }),
             ThinkingConfig::Toggle(true) => Some(GeminiThinkingConfig {
-                thinking_budget: -1,
+                thinking_budget: GEMINI_THINKING_BUDGET_DYNAMIC,
             }),
             ThinkingConfig::Toggle(false) => None,
         });
@@ -378,6 +378,9 @@ impl ModelProvider for GeminiClient {
 // ---------------------------------------------------------------------------
 // Gemini API request types
 // ---------------------------------------------------------------------------
+
+/// Gemini's sentinel value for "dynamic" thinking budget (let the model decide).
+const GEMINI_THINKING_BUDGET_DYNAMIC: i32 = -1;
 
 #[derive(Serialize, Clone)]
 struct GeminiThinkingConfig {

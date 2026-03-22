@@ -76,11 +76,6 @@ impl AnthropicClient {
         format!("{}/v1/messages", self.base_url)
     }
 
-    /// Whether this client uses an OAuth token (requiring Claude Code identity).
-    fn is_oauth(&self) -> bool {
-        is_oauth_key(&self.api_key)
-    }
-
     /// Convert our generic messages into Anthropic-specific format.
     ///
     /// System messages are extracted and returned separately as a concatenated
@@ -217,6 +212,7 @@ impl AnthropicClient {
         // budget_tokens must be > 0 and < max_tokens
         let budget = budget.max(1).min(max_tokens - 1);
         Some(AnthropicThinking {
+            r#type: "enabled",
             budget_tokens: budget,
         })
     }
@@ -390,7 +386,7 @@ impl ModelProvider for AnthropicClient {
 
         // OAuth tokens require the Claude Code identity as an isolated first block
         // in the system prompt to access newer models (sonnet 4.6, opus 4.6).
-        let system: Option<AnthropicSystem> = if self.is_oauth() {
+        let system: Option<AnthropicSystem> = if is_oauth_key(&self.api_key) {
             let mut blocks = vec![AnthropicSystemBlock {
                 r#type: "text",
                 text: OAUTH_IDENTITY.to_string(),
@@ -447,7 +443,9 @@ impl ModelProvider for AnthropicClient {
                     output_config,
                     temperature,
                     thinking,
-                    cache_control: Some(AnthropicCacheControl),
+                    cache_control: AnthropicCacheControl {
+                        r#type: "ephemeral",
+                    },
                 };
 
                 Self::send_completion(&http, &endpoint, &api_key, &request).await
@@ -516,31 +514,15 @@ fn merge_consecutive_messages(messages: Vec<AnthropicMessage>) -> Vec<AnthropicM
 // Anthropic API serde types (private)
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone)]
-struct AnthropicCacheControl;
-
-impl serde::Serialize for AnthropicCacheControl {
-    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
-        use serde::ser::SerializeStruct;
-        let mut state = s.serialize_struct("AnthropicCacheControl", 1)?;
-        state.serialize_field("type", "ephemeral")?;
-        state.end()
-    }
+#[derive(Debug, Clone, Serialize)]
+struct AnthropicCacheControl {
+    r#type: &'static str,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 struct AnthropicThinking {
+    r#type: &'static str,
     budget_tokens: u32,
-}
-
-impl serde::Serialize for AnthropicThinking {
-    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
-        use serde::ser::SerializeStruct;
-        let mut state = s.serialize_struct("AnthropicThinking", 2)?;
-        state.serialize_field("type", "enabled")?;
-        state.serialize_field("budget_tokens", &self.budget_tokens)?;
-        state.end()
-    }
 }
 
 /// System prompt content — plain string or array of text blocks.
@@ -575,8 +557,7 @@ struct AnthropicRequest {
     temperature: Option<f32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     thinking: Option<AnthropicThinking>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    cache_control: Option<AnthropicCacheControl>,
+    cache_control: AnthropicCacheControl,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
