@@ -34,7 +34,7 @@ impl SubagentPresetIndex {
         let mut entries = Vec::new();
 
         // Seed with built-in presets
-        entries.push(builtin_general_purpose().0);
+        entries.push(builtin_general_purpose_entry());
 
         // Scan user-defined presets from disk
         tracing::debug!(dir = %dir.display(), "scanning subagent presets");
@@ -59,8 +59,6 @@ impl SubagentPresetIndex {
         &self,
         name: &str,
     ) -> anyhow::Result<(SubagentPresetFrontmatter, String)> {
-        let lower = name.to_lowercase();
-
         let entry = self.find_by_name(name).ok_or_else(|| {
             anyhow::anyhow!(
                 "unknown preset '{name}'. Available: {}",
@@ -79,15 +77,15 @@ impl SubagentPresetIndex {
         }
 
         // Otherwise, return the built-in body directly
-        if lower == GENERAL_PURPOSE_NAME {
-            let (_, fm, body) = builtin_general_purpose();
-            return Ok((fm, body));
+        if name.eq_ignore_ascii_case(GENERAL_PURPOSE_NAME) {
+            return Ok(builtin_general_purpose_preset());
         }
 
-        tracing::error!(name = %name, "preset found in index but has no path and is not a built-in — this is a bug in scan()");
-        Err(anyhow::anyhow!(
-            "preset '{name}' found in index but has no path and is not a built-in"
-        ))
+        debug_assert!(
+            false,
+            "preset '{name}' found in index but has no path and is not a built-in — this is a bug in scan()"
+        );
+        unreachable!("preset '{name}' found in index but has no path and is not a built-in")
     }
 
     /// Format the index as XML for the system prompt.
@@ -124,13 +122,15 @@ impl SubagentPresetIndex {
     }
 }
 
-/// Construct the built-in general-purpose preset.
-fn builtin_general_purpose() -> (SubagentPresetEntry, SubagentPresetFrontmatter, String) {
-    let entry = SubagentPresetEntry {
+fn builtin_general_purpose_entry() -> SubagentPresetEntry {
+    SubagentPresetEntry {
         name: GENERAL_PURPOSE_NAME.to_string(),
         description: GENERAL_PURPOSE_DESCRIPTION.to_string(),
         preset_path: None,
-    };
+    }
+}
+
+fn builtin_general_purpose_preset() -> (SubagentPresetFrontmatter, String) {
     let fm = SubagentPresetFrontmatter {
         name: GENERAL_PURPOSE_NAME.to_string(),
         description: GENERAL_PURPOSE_DESCRIPTION.to_string(),
@@ -138,7 +138,7 @@ fn builtin_general_purpose() -> (SubagentPresetEntry, SubagentPresetFrontmatter,
         denied_tools: None,
         allowed_tools: None,
     };
-    (entry, fm, GENERAL_PURPOSE_BODY.to_string())
+    (fm, GENERAL_PURPOSE_BODY.to_string())
 }
 
 /// Scan a single directory for `*.md` preset files.
@@ -256,7 +256,7 @@ fn register_preset(
 
         let kept_path = existing
             .preset_path
-            .as_ref()
+            .as_deref()
             .map_or_else(|| "built-in".to_string(), |p| p.display().to_string());
         tracing::warn!(
             name = %fm.name,
