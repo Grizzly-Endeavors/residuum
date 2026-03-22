@@ -134,6 +134,10 @@ pub async fn list_items(inbox_dir: &Path) -> anyhow::Result<Vec<(String, InboxIt
         .with_context(|| format!("failed to read inbox directory {}", inbox_dir.display()))?;
 
     while let Some(entry) = dir.next_entry().await? {
+        let ftype = entry.file_type().await?;
+        if !ftype.is_file() {
+            continue;
+        }
         let path = entry.path();
         let ext = path.extension().and_then(|e| e.to_str());
         if ext != Some("json") {
@@ -240,6 +244,13 @@ mod tests {
     use super::*;
     use chrono::NaiveDate;
 
+    fn test_now() -> NaiveDateTime {
+        NaiveDate::from_ymd_opt(2026, 2, 25)
+            .unwrap()
+            .and_hms_opt(12, 0, 0)
+            .unwrap()
+    }
+
     fn make_item(title: &str, hour: u32, read: bool) -> InboxItem {
         InboxItem {
             title: title.to_string(),
@@ -256,10 +267,7 @@ mod tests {
 
     #[test]
     fn generate_filename_basic() {
-        let now = NaiveDate::from_ymd_opt(2026, 2, 25)
-            .unwrap()
-            .and_hms_opt(12, 0, 0)
-            .unwrap();
+        let now = test_now();
         let name = generate_filename("Hello World", now);
         // Date prefix + sanitized title
         assert!(
@@ -274,10 +282,7 @@ mod tests {
 
     #[test]
     fn generate_filename_special_chars() {
-        let now = NaiveDate::from_ymd_opt(2026, 2, 25)
-            .unwrap()
-            .and_hms_opt(12, 0, 0)
-            .unwrap();
+        let now = test_now();
         let name = generate_filename("foo/bar\\baz..qux!!", now);
         assert!(!name.contains('/'), "should not contain slashes: {name}");
         assert!(
@@ -289,10 +294,7 @@ mod tests {
 
     #[test]
     fn generate_filename_unicode() {
-        let now = NaiveDate::from_ymd_opt(2026, 2, 25)
-            .unwrap()
-            .and_hms_opt(12, 0, 0)
-            .unwrap();
+        let now = test_now();
         let name = generate_filename("café résumé", now);
         assert!(
             Path::new(&name)
@@ -305,10 +307,7 @@ mod tests {
 
     #[test]
     fn generate_filename_truncation() {
-        let now = NaiveDate::from_ymd_opt(2026, 2, 25)
-            .unwrap()
-            .and_hms_opt(12, 0, 0)
-            .unwrap();
+        let now = test_now();
         let long_title = "a".repeat(100);
         let name = generate_filename(&long_title, now);
         // Date prefix (8) + _ (1) + truncated (60) + .json (5) = 74
@@ -413,6 +412,21 @@ mod tests {
 
         let items = list_items(dir.path()).await.unwrap();
         assert_eq!(items.len(), 1, "should not recurse into archive/");
+        assert_eq!(items[0].1.title, "active");
+    }
+
+    #[tokio::test]
+    async fn list_items_ignores_json_named_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        let item = make_item("active", 12, false);
+        save_item(dir.path(), "active.json", &item).await.unwrap();
+
+        // Create a directory named with a .json extension
+        let json_dir = dir.path().join("archive.json");
+        tokio::fs::create_dir_all(&json_dir).await.unwrap();
+
+        let items = list_items(dir.path()).await.unwrap();
+        assert_eq!(items.len(), 1, "should skip .json-named directories");
         assert_eq!(items[0].1.title, "active");
     }
 
