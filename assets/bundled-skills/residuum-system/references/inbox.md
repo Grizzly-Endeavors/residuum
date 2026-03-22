@@ -24,7 +24,6 @@ Each item is a JSON file in `inbox/`:
 |------|-----------|-------------|
 | `inbox_list` | `unread_only` (bool, optional) | List inbox items. Defaults to showing all; set `unread_only: true` to filter. |
 | `inbox_read` | `id` (string) | Read a single inbox item by ID. **Marks it as read** as a side effect. |
-| `inbox_add` | `title` (string), `body` (string), `source` (string, optional) | Create a new inbox item. |
 | `inbox_archive` | `ids` (array of strings) | Move one or more items from `inbox/` to `archive/inbox/`. |
 
 ## Typical Workflow

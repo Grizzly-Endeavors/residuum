@@ -4,9 +4,9 @@ The inbox is a capture system for items the agent or background tasks want to sa
 
 ## How Items Arrive
 
-- The agent creates items directly with `inbox_add`
-- Background task results routed to the `inbox` channel via the pulse's `channels` field in HEARTBEAT.yml
-- Background task results routed to `inbox` via direct channel specification on `subagent_spawn` or `schedule_action`
+- The LLM notification router delivers results to inbox based on ALERTS.md policy
+- Webhook-triggered results can be routed to inbox by the notification router
+- Users can add items via the HTTP API/UI
 
 ## Unread Count in Context
 
@@ -38,7 +38,6 @@ Each item is a JSON file in `inbox/`:
 |------|-----------|-------|
 | `inbox_list` | `unread_only` (bool, optional, default false) | Lists all items |
 | `inbox_read` | `id` (string) | Reads item content, marks as read as a side effect. Cannot be unmarked. |
-| `inbox_add` | `title` (string), `body` (string), `source` (string, optional, default `"agent"`) | Creates a new item |
 | `inbox_archive` | `ids` (string[]) | Moves items from `inbox/` to `archive/inbox/`. This is a move, not a copy. |
 
 ## Intended Usage

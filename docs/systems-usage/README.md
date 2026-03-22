@@ -54,7 +54,7 @@ These are drawn from [design-philosophy.md](../design-philosophy.md) and inform 
 | [Memory](memory.md) | Automatic observation pipeline + searchable index | `memory_search`, `memory_get` | `memory/OBSERVER.md`, `memory/REFLECTOR.md` |
 | [Projects](projects.md) | Scoped workspaces for ongoing work | `project_create`, `project_activate`, `project_deactivate`, `project_archive`, `project_list` | per-project `PROJECT.md` |
 | [Heartbeats](heartbeats.md) | Ambient scheduled monitoring | *(automatic — no tools)* | `HEARTBEAT.yml` |
-| [Inbox](inbox.md) | Capture and triage items | `inbox_list`, `inbox_read`, `inbox_add`, `inbox_archive` | *(none)* |
+| [Inbox](inbox.md) | Capture and triage items | `inbox_list`, `inbox_read`, `inbox_archive` | *(none)* |
 | [Scheduled Actions](scheduled-actions.md) | One-off future tasks | `schedule_action`, `list_actions`, `cancel_action` | `scheduled_actions.json` |
 | [Skills](skills.md) | Loadable instruction modules | `skill_activate`, `skill_deactivate` | per-skill `SKILL.md` |
 | [Notifications](notifications.md) | Result routing from background tasks | *(automatic — no tools)* | `CHANNELS.yml`, `config.toml` channels |
