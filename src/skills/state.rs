@@ -65,16 +65,14 @@ impl SkillState {
             e
         })?;
 
-        let skill_name = entry.name.clone();
-        let idx = self.active.len();
         self.active.push(ActiveSkill {
-            name: skill_name,
+            name: entry.name.clone(),
             body,
         });
 
         tracing::info!(name = %name, "skill activated");
         self.active
-            .get(idx)
+            .last()
             .ok_or_else(|| anyhow::anyhow!("unexpected: active skill not set after activation"))
     }
 
