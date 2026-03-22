@@ -11,7 +11,7 @@ pub async fn handle_pulse_execution(
     execution: PulseExecution,
     rt: &mut GatewayRuntime,
     observe_deadline: &mut Option<tokio::time::Instant>,
-) -> bool {
+) {
     match execution {
         PulseExecution::MainWakeTurn { pulse_name, prompt } => {
             tracing::info!(pulse = %pulse_name, "scheduled pulse firing as main wake turn");
@@ -25,7 +25,6 @@ pub async fn handle_pulse_execution(
                 observe_deadline,
             )
             .await;
-            true
         }
         PulseExecution::SubAgent { spawn_event } => {
             let topic = topics::Background;
@@ -33,7 +32,6 @@ pub async fn handle_pulse_execution(
             if let Err(e) = rt.publisher.publish(topic, spawn_event).await {
                 tracing::warn!(pulse = %preset_name, error = %e, "failed to publish pulse spawn request");
             }
-            false
         }
     }
 }

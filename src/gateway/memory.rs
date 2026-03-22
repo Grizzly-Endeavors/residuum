@@ -93,7 +93,10 @@ pub(super) async fn execute_observation(mem: &MemorySubsystems<'_>, agent: &mut 
     match mem.observer.observe(&recent, mem.layout).await {
         Ok(result) => {
             tracing::info!(episode_id = %result.id, "observer extracted episode");
-            run_observation_result(mem, agent, &result).await;
+            let reflected = run_observation_result(mem, agent, &result).await;
+            if reflected {
+                tracing::info!(episode_id = %result.id, "reflection triggered");
+            }
         }
         Err(e) => {
             tracing::warn!(error = %e, "observer failed");

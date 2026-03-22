@@ -125,6 +125,31 @@ pub(super) async fn init_memory(
     })
 }
 
+/// Perform a full search index rebuild and save the resulting manifest.
+async fn do_full_rebuild(
+    search_index: &MemoryIndex,
+    layout: &WorkspaceLayout,
+    manifest_path: &Path,
+) {
+    match search_index.rebuild(&layout.memory_dir()) {
+        Ok(result) => {
+            let total = result.obs_count + result.chunk_count;
+            tracing::info!(
+                observations = result.obs_count,
+                chunks = result.chunk_count,
+                "search index rebuilt ({total} documents)"
+            );
+            let rebuilt = build_manifest_from_rebuild(result);
+            if let Err(save_err) = rebuilt.save(manifest_path).await {
+                tracing::warn!(error = %save_err, "failed to save index manifest after rebuild");
+            }
+        }
+        Err(rebuild_err) => {
+            tracing::warn!(error = %rebuild_err, "failed to rebuild search index");
+        }
+    }
+}
+
 /// Synchronize the search index (full rebuild or incremental sync).
 async fn sync_search_index(
     search_index: &MemoryIndex,
@@ -133,23 +158,7 @@ async fn sync_search_index(
     manifest_path: &Path,
 ) {
     if manifest.files.is_empty() {
-        match search_index.rebuild(&layout.memory_dir()) {
-            Ok(result) => {
-                let total = result.obs_count + result.chunk_count;
-                tracing::info!(
-                    observations = result.obs_count,
-                    chunks = result.chunk_count,
-                    "search index rebuilt ({total} documents)"
-                );
-                let rebuilt = build_manifest_from_rebuild(result);
-                if let Err(save_err) = rebuilt.save(manifest_path).await {
-                    tracing::warn!(error = %save_err, "failed to save index manifest after rebuild");
-                }
-            }
-            Err(rebuild_err) => {
-                tracing::warn!(error = %rebuild_err, "failed to rebuild search index");
-            }
-        }
+        do_full_rebuild(search_index, layout, manifest_path).await;
     } else {
         match search_index.incremental_sync(&layout.memory_dir(), manifest) {
             Ok((synced_manifest, stats)) => {
@@ -166,29 +175,18 @@ async fn sync_search_index(
             }
             Err(sync_err) => {
                 tracing::warn!(error = %sync_err, "incremental sync failed, falling back to full rebuild");
-                match search_index.rebuild(&layout.memory_dir()) {
-                    Ok(result) => {
-                        let total = result.obs_count + result.chunk_count;
-                        tracing::info!(
-                            observations = result.obs_count,
-                            chunks = result.chunk_count,
-                            "search index rebuilt after sync failure ({total} documents)"
-                        );
-                        let rebuilt = build_manifest_from_rebuild(result);
-                        if let Err(save_err) = rebuilt.save(manifest_path).await {
-                            tracing::warn!(error = %save_err, "failed to save index manifest after fallback rebuild");
-                        }
-                    }
-                    Err(rebuild_err) => {
-                        tracing::warn!(error = %rebuild_err, "fallback rebuild also failed");
-                    }
-                }
+                do_full_rebuild(search_index, layout, manifest_path).await;
             }
         }
     }
 }
 
 /// Build the vector store, probing for embedding dimensions.
+///
+/// `manifest` is used only to check whether the embedding model has changed.
+/// The function re-reads the manifest from `manifest_path` before saving, because
+/// `sync_search_index` may have written an updated manifest to disk since the
+/// caller loaded it.
 async fn build_vector_store(
     ep: &dyn EmbeddingProvider,
     layout: &WorkspaceLayout,
