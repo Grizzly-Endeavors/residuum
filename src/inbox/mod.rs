@@ -136,9 +136,6 @@ pub async fn list_items(inbox_dir: &Path) -> anyhow::Result<Vec<(String, InboxIt
 
     while let Some(entry) = dir.next_entry().await? {
         let path = entry.path();
-        if !path.is_file() {
-            continue;
-        }
         let ext = path.extension().and_then(|e| e.to_str());
         if ext != Some("json") {
             continue;
@@ -164,10 +161,13 @@ pub async fn list_items(inbox_dir: &Path) -> anyhow::Result<Vec<(String, InboxIt
 
 /// Count unread inbox items.
 pub async fn count_unread(inbox_dir: &Path) -> usize {
-    list_items(inbox_dir)
-        .await
-        .map(|items| items.iter().filter(|(_, i)| !i.read).count())
-        .unwrap_or(0)
+    match list_items(inbox_dir).await {
+        Ok(items) => items.iter().filter(|(_, i)| !i.read).count(),
+        Err(e) => {
+            tracing::warn!(error = %e, "failed to list inbox items for unread count");
+            0
+        }
+    }
 }
 
 /// Mark an inbox item as read and save it back atomically.
@@ -206,17 +206,13 @@ pub async fn archive_item(
     let json_name = ensure_json_ext(filename);
     let src = inbox_dir.join(&json_name);
 
-    if !src.exists() {
-        anyhow::bail!("inbox item '{json_name}' not found");
-    }
-
     tokio::fs::create_dir_all(archive_dir)
         .await
         .with_context(|| format!("failed to create archive dir {}", archive_dir.display()))?;
     let dst = archive_dir.join(&json_name);
     tokio::fs::rename(&src, &dst)
         .await
-        .with_context(|| format!("failed to archive {} to {}", src.display(), dst.display()))?;
+        .with_context(|| format!("inbox item '{json_name}' not found or could not be archived"))?;
     tracing::debug!(src = %src.display(), dst = %dst.display(), "inbox item archived");
 
     Ok(())
@@ -245,21 +241,7 @@ mod tests {
     use super::*;
     use chrono::NaiveDate;
 
-    fn make_item(title: &str, read: bool) -> InboxItem {
-        InboxItem {
-            title: title.to_string(),
-            body: format!("Body for {title}"),
-            source: "test".to_string(),
-            timestamp: NaiveDate::from_ymd_opt(2026, 2, 25)
-                .unwrap()
-                .and_hms_opt(12, 0, 0)
-                .unwrap(),
-            read,
-            attachments: Vec::new(),
-        }
-    }
-
-    fn make_item_at(title: &str, hour: u32) -> InboxItem {
+    fn make_item(title: &str, hour: u32, read: bool) -> InboxItem {
         InboxItem {
             title: title.to_string(),
             body: format!("Body for {title}"),
@@ -268,7 +250,7 @@ mod tests {
                 .unwrap()
                 .and_hms_opt(hour, 0, 0)
                 .unwrap(),
-            read: false,
+            read,
             attachments: Vec::new(),
         }
     }
@@ -371,7 +353,7 @@ mod tests {
     #[tokio::test]
     async fn save_and_load_roundtrip() {
         let dir = tempfile::tempdir().unwrap();
-        let item = make_item("test roundtrip", false);
+        let item = make_item("test roundtrip", 12, false);
 
         save_item(dir.path(), "test.json", &item).await.unwrap();
         let loaded = load_item(&dir.path().join("test.json")).await.unwrap();
@@ -386,9 +368,9 @@ mod tests {
     async fn list_items_sorted_by_timestamp() {
         let dir = tempfile::tempdir().unwrap();
 
-        let early = make_item_at("early", 8);
-        let late = make_item_at("late", 20);
-        let mid = make_item_at("mid", 14);
+        let early = make_item("early", 8, false);
+        let late = make_item("late", 20, false);
+        let mid = make_item("mid", 14, false);
 
         save_item(dir.path(), "a_early.json", &early).await.unwrap();
         save_item(dir.path(), "b_late.json", &late).await.unwrap();
@@ -404,7 +386,7 @@ mod tests {
     #[tokio::test]
     async fn list_items_ignores_non_json() {
         let dir = tempfile::tempdir().unwrap();
-        let item = make_item("valid", false);
+        let item = make_item("valid", 12, false);
         save_item(dir.path(), "valid.json", &item).await.unwrap();
 
         // Create non-JSON files
@@ -422,7 +404,7 @@ mod tests {
     #[tokio::test]
     async fn list_items_ignores_archive_subdir() {
         let dir = tempfile::tempdir().unwrap();
-        let item = make_item("active", false);
+        let item = make_item("active", 12, false);
         save_item(dir.path(), "active.json", &item).await.unwrap();
 
         // Create archive subdirectory with a json file
@@ -439,13 +421,13 @@ mod tests {
     async fn count_unread_accuracy() {
         let dir = tempfile::tempdir().unwrap();
 
-        save_item(dir.path(), "unread1.json", &make_item("a", false))
+        save_item(dir.path(), "unread1.json", &make_item("a", 12, false))
             .await
             .unwrap();
-        save_item(dir.path(), "unread2.json", &make_item("b", false))
+        save_item(dir.path(), "unread2.json", &make_item("b", 12, false))
             .await
             .unwrap();
-        save_item(dir.path(), "read1.json", &make_item("c", true))
+        save_item(dir.path(), "read1.json", &make_item("c", 12, true))
             .await
             .unwrap();
 
@@ -475,7 +457,7 @@ mod tests {
     #[tokio::test]
     async fn mark_read_updates_file() {
         let dir = tempfile::tempdir().unwrap();
-        save_item(dir.path(), "item.json", &make_item("test", false))
+        save_item(dir.path(), "item.json", &make_item("test", 12, false))
             .await
             .unwrap();
 
@@ -494,9 +476,13 @@ mod tests {
         let archive = dir.path().join("archive/inbox");
         tokio::fs::create_dir_all(&inbox).await.unwrap();
 
-        save_item(&inbox, "to_archive.json", &make_item("archive me", false))
-            .await
-            .unwrap();
+        save_item(
+            &inbox,
+            "to_archive.json",
+            &make_item("archive me", 12, false),
+        )
+        .await
+        .unwrap();
 
         archive_item(&inbox, &archive, "to_archive").await.unwrap();
 
@@ -526,7 +512,7 @@ mod tests {
     #[tokio::test]
     async fn attachments_roundtrip_empty() {
         let dir = tempfile::tempdir().unwrap();
-        let item = make_item("no attachments", false);
+        let item = make_item("no attachments", 12, false);
         save_item(dir.path(), "empty_attach.json", &item)
             .await
             .unwrap();
@@ -543,7 +529,7 @@ mod tests {
     #[tokio::test]
     async fn attachments_roundtrip_populated() {
         let dir = tempfile::tempdir().unwrap();
-        let mut item = make_item("with attachments", false);
+        let mut item = make_item("with attachments", 12, false);
         item.attachments = vec![
             PathBuf::from("inbox/photo.jpg"),
             PathBuf::from("inbox/doc.pdf"),
