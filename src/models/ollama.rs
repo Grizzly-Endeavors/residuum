@@ -72,10 +72,6 @@ impl OllamaClient {
             retry,
         }
     }
-
-    fn timeout_secs(&self) -> u64 {
-        self.http.timeout_secs()
-    }
 }
 
 #[async_trait]
@@ -110,7 +106,7 @@ impl ModelProvider for OllamaClient {
         let api_key = self.api_key.clone();
         let keep_alive = self.keep_alive.clone();
         let http = self.http.clone();
-        let timeout_secs = self.timeout_secs();
+        let timeout_secs = self.http.timeout_secs();
 
         let format = match &options.response_format {
             ResponseFormat::Text => None,

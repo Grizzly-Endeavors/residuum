@@ -110,9 +110,7 @@ pub(crate) fn build_provider_chain(
     http: SharedHttpClient,
     retry: RetryConfig,
 ) -> Result<Box<dyn ModelProvider>, FatalError> {
-    if specs.len() == 1
-        && let Some(spec) = specs.first()
-    {
+    if let [spec] = specs {
         return build_provider_from_provider_spec(spec, max_tokens, http, retry);
     }
 

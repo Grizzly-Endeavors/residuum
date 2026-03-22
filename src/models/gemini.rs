@@ -149,7 +149,7 @@ impl GeminiClient {
                             });
                         }
 
-                        for img in msg.images.as_ref().unwrap_or(&Vec::new()) {
+                        for img in msg.images.as_deref().unwrap_or(&[]) {
                             parts.push(GeminiPart::InlineData {
                                 inline_data: GeminiInlineData {
                                     mime_type: img.media_type.clone(),
@@ -314,7 +314,7 @@ impl ModelProvider for GeminiClient {
                 };
 
                 let request_json = serde_json::to_string(&request)
-                    .unwrap_or_else(|e| format!("(serialization failed: {e})"));
+                    .map_err(|e| ModelError::Parse(format!("failed to serialize request: {e}")))?;
 
                 debug!(
                     model = %model,
@@ -736,10 +736,8 @@ impl EmbeddingProvider for GeminiEmbeddingClient {
             });
         }
 
-        if texts.len() == 1 {
-            // Safe: we checked `texts.is_empty()` above
-            let text = texts.first().map(|t| (*t).to_string()).unwrap_or_default();
-            self.embed_single(text).await
+        if let [text] = texts {
+            self.embed_single((*text).to_string()).await
         } else {
             let owned_texts: Vec<String> = texts.iter().map(|t| (*t).to_string()).collect();
             self.embed_batch(owned_texts).await
