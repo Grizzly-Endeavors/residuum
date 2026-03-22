@@ -17,6 +17,7 @@ use futures_util::stream::SplitSink;
 use tokio::net::TcpStream;
 use tokio::sync::Mutex;
 use tokio_tungstenite::tungstenite::Message;
+use tokio_tungstenite::tungstenite::http as ws_http;
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 
 use protocol::TunnelFrame;
@@ -43,6 +44,20 @@ fn is_hop_by_hop(name: &str) -> bool {
 }
 
 type TunnelSink = SplitSink<WebSocketStream<MaybeTlsStream<TcpStream>>, Message>;
+
+fn build_ws_upgrade_request(uri: &str, host: &str) -> Result<ws_http::Request<()>, ws_http::Error> {
+    ws_http::Request::builder()
+        .uri(uri)
+        .header("Host", host)
+        .header("Connection", "Upgrade")
+        .header("Upgrade", "websocket")
+        .header("Sec-WebSocket-Version", "13")
+        .header(
+            "Sec-WebSocket-Key",
+            tokio_tungstenite::tungstenite::handshake::client::generate_key(),
+        )
+        .body(())
+}
 
 async fn send_frame(
     write: &Arc<Mutex<TunnelSink>>,

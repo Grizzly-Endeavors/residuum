@@ -38,18 +38,7 @@ pub(super) async fn handle_ws_open(
 
     // Build the local WS connect request with forwarded headers.
     let host = format!("localhost:{port}");
-    let mut request = match ws_http::Request::builder()
-        .uri(&url)
-        .header("Host", &host)
-        .header("Connection", "Upgrade")
-        .header("Upgrade", "websocket")
-        .header("Sec-WebSocket-Version", "13")
-        .header(
-            "Sec-WebSocket-Key",
-            tokio_tungstenite::tungstenite::handshake::client::generate_key(),
-        )
-        .body(())
-    {
+    let mut request = match super::build_ws_upgrade_request(&url, &host) {
         Ok(r) => r,
         Err(e) => {
             warn!(channel_id, error = %e, "failed to build local WS request");

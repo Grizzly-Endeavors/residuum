@@ -131,7 +131,7 @@ pub(crate) async fn start_tunnel(
             user_id = %user_id,
             keepalive_interval_secs,
             keepalive_timeout_secs = keepalive_timeout.as_secs(),
-            "tunnel connected for user {user_id}, keepalive every {keepalive_interval_secs}s"
+            "tunnel connected"
         );
 
         // Reset backoff on successful connection.
@@ -217,8 +217,11 @@ where
                 if *shutdown_rx.borrow() {
                     info!("tunnel shutting down");
                     status_tx.send(TunnelStatus::Disconnected).ok();
-                    if let Err(e) = send_close(write).await {
-                        warn!(error = %e, "failed to send WebSocket close frame during shutdown");
+                    {
+                        let mut guard = write.lock().await;
+                        if let Err(e) = guard.send(Message::Close(None)).await {
+                            warn!(error = %e, "failed to send WebSocket close frame during shutdown");
+                        }
                     }
                     local_ws_channels.clear();
                     return LoopExit::Shutdown;
@@ -243,18 +246,12 @@ fn build_ws_request(cfg: &CloudConfig) -> Result<ws_http::Request<()>, ws_http::
         .and_then(|s| s.split('/').next())
         .unwrap_or("localhost");
 
-    ws_http::Request::builder()
-        .uri(&cfg.relay_url)
-        .header("Host", host)
-        .header("Authorization", format!("Bearer {}", cfg.token))
-        .header("Connection", "Upgrade")
-        .header("Upgrade", "websocket")
-        .header("Sec-WebSocket-Version", "13")
-        .header(
-            "Sec-WebSocket-Key",
-            tokio_tungstenite::tungstenite::handshake::client::generate_key(),
-        )
-        .body(())
+    let mut request = super::build_ws_upgrade_request(&cfg.relay_url, host)?;
+    request.headers_mut().insert(
+        ws_http::header::AUTHORIZATION,
+        ws_http::HeaderValue::from_str(&format!("Bearer {}", cfg.token))?,
+    );
+    Ok(request)
 }
 
 /// Wait for the initial `Connected` frame from the relay.
@@ -384,15 +381,6 @@ async fn handle_frame(
             );
         }
     }
-}
-
-/// Send a WebSocket close frame.
-async fn send_close(
-    write: &Arc<Mutex<TunnelSink>>,
-) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let mut guard = write.lock().await;
-    guard.send(Message::Close(None)).await?;
-    Ok(())
 }
 
 #[cfg(test)]
