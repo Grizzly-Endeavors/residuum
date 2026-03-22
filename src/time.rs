@@ -45,14 +45,13 @@ pub fn format_display_datetime(dt: NaiveDateTime) -> String {
 #[must_use]
 pub fn format_relative_time(delta: TimeDelta) -> String {
     let total_secs = delta.num_seconds();
-    if total_secs < 0 {
-        warn!(
-            total_secs,
-            "format_relative_time called with negative delta"
-        );
-        return "just now".to_string();
-    }
     if total_secs < 60 {
+        if total_secs < 0 {
+            warn!(
+                total_secs,
+                "format_relative_time called with negative delta"
+            );
+        }
         return "just now".to_string();
     }
 
