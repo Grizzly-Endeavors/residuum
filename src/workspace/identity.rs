@@ -36,6 +36,7 @@ impl IdentityFiles {
         let agents_result = read_optional(&layout.agents_md()).await?;
         let user_result = read_optional(&layout.user_md()).await?;
         let memory_result = read_optional(&layout.memory_md()).await?;
+        let environment_result = read_optional(&layout.environment_md()).await?;
 
         if matches!(soul_result, ReadResult::Absent) {
             tracing::warn!(path = %layout.soul_md().display(), "SOUL.md is missing or empty; expected after bootstrap");
@@ -49,8 +50,6 @@ impl IdentityFiles {
         if matches!(memory_result, ReadResult::Absent) {
             tracing::warn!(path = %layout.memory_md().display(), "MEMORY.md is missing or empty; expected after bootstrap");
         }
-
-        let environment_result = read_optional(&layout.environment_md()).await?;
         if matches!(environment_result, ReadResult::Absent) {
             tracing::warn!(path = %layout.environment_md().display(), "ENVIRONMENT.md is missing or empty; expected after bootstrap");
         }
