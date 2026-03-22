@@ -2864,6 +2864,7 @@ dependencies = [
  "dirs 5.0.1",
  "dom_smoothie",
  "dotenvy",
+ "fd-lock",
  "futures-util",
  "http",
  "iana-time-zone",

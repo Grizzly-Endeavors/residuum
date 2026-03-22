@@ -37,14 +37,24 @@ pub async fn run_gateway(cfg: Config) -> Result<GatewayExit, FatalError> {
 
     let update_status = crate::update::SharedUpdateStatus::default();
     let (restart_tx, restart_rx) = tokio::sync::mpsc::channel::<()>(1);
+    let (gateway_shutdown_tx, gateway_shutdown_rx) = tokio::sync::mpsc::channel::<()>(1);
 
-    let spawned =
-        spawn_server_and_adapters(&core, &parts, &cfg, &update_status, &restart_tx).await?;
+    let spawned = spawn_server_and_adapters(
+        &core,
+        &parts,
+        &cfg,
+        &update_status,
+        &restart_tx,
+        &gateway_shutdown_tx,
+    )
+    .await?;
 
     let update = UpdateChannels {
         status: update_status,
         restart_tx,
         restart_rx,
+        gateway_shutdown_tx,
+        gateway_shutdown_rx,
     };
     let cloud_config = cfg.cloud.clone();
     let rt = build_runtime(parts, core, receivers, cfg, spawned, update, cloud_config).await?;
@@ -70,6 +80,7 @@ async fn spawn_server_and_adapters(
     cfg: &Config,
     update_status: &crate::update::SharedUpdateStatus,
     restart_tx: &tokio::sync::mpsc::Sender<()>,
+    gateway_shutdown_tx: &tokio::sync::mpsc::Sender<()>,
 ) -> Result<SpawnedHandles, FatalError> {
     let discord_senders = AdapterSenders {
         publisher: core.publisher.clone(),
@@ -102,9 +113,10 @@ async fn spawn_server_and_adapters(
     let update_api_state = web::update::UpdateApiState {
         update_status: Arc::clone(update_status),
         restart_tx: restart_tx.clone(),
+        gateway_shutdown_tx: gateway_shutdown_tx.clone(),
     };
     let app = build_gateway_app(state, cfg, config_api_state, update_api_state);
-    let server_handle = spawn_http_server(cfg, app, &core.shutdown_tx).await?;
+    let server_handle = spawn_http_server(cfg, app, &core.http_shutdown_tx).await?;
     let adapters = spawn_adapters(cfg, discord_senders, telegram_senders, parts.tz);
     let (tunnel_handle, tunnel_shutdown_tx) = spawn_tunnel(cfg, Arc::clone(&tunnel_status_tx));
     let sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
@@ -126,11 +138,13 @@ async fn spawn_server_and_adapters(
     })
 }
 
-/// Update-related channels bundled to reduce argument count.
+/// Update and lifecycle channels bundled to reduce argument count.
 struct UpdateChannels {
     status: crate::update::SharedUpdateStatus,
     restart_tx: tokio::sync::mpsc::Sender<()>,
     restart_rx: tokio::sync::mpsc::Receiver<()>,
+    gateway_shutdown_tx: tokio::sync::mpsc::Sender<()>,
+    gateway_shutdown_rx: tokio::sync::mpsc::Receiver<()>,
 }
 
 /// Assemble the `GatewayRuntime` from initialized parts and spawned handles.
@@ -235,7 +249,7 @@ async fn build_runtime(
         server_handle: spawned.server_handle,
         pulse_scheduler: PulseScheduler::new(),
         sigterm: spawned.sigterm,
-        shutdown_tx: core.shutdown_tx,
+        http_shutdown_tx: core.http_shutdown_tx,
         config_dir: core.config_dir.clone(),
         last_user_message_instant: None,
         cloud_config,
@@ -253,6 +267,8 @@ async fn build_runtime(
         update_status: update.status,
         restart_tx: update.restart_tx,
         restart_rx: update.restart_rx,
+        gateway_shutdown_tx: update.gateway_shutdown_tx,
+        gateway_shutdown_rx: update.gateway_shutdown_rx,
         cfg,
     })
 }
@@ -430,7 +446,7 @@ async fn graceful_shutdown(rt: &mut GatewayRuntime) {
     if let Some(tx) = rt.telegram_shutdown_tx.take() {
         tx.send(true).ok();
     }
-    rt.shutdown_tx.send(true).ok();
+    rt.http_shutdown_tx.send(true).ok();
     tracing::info!("graceful shutdown complete");
 }
 
@@ -533,6 +549,10 @@ async fn handle_bus_event(
 ///
 /// Processes inbound messages, pulse ticks, action ticks, and memory pipeline
 /// signals until shutdown or reload is requested.
+#[expect(
+    clippy::too_many_lines,
+    reason = "select! loop with many event sources"
+)]
 async fn run_event_loop(mut rt: GatewayRuntime) -> GatewayExit {
     let mut pulse_tick = tokio::time::interval(Duration::from_secs(60));
     let mut action_tick = tokio::time::interval(Duration::from_secs(30));
@@ -619,6 +639,12 @@ async fn run_event_loop(mut rt: GatewayRuntime) -> GatewayExit {
                 tracing::info!("restart signal received, shutting down for re-exec");
                 graceful_shutdown(&mut rt).await;
                 return GatewayExit::Restart;
+            }
+
+            _ = rt.gateway_shutdown_rx.recv() => {
+                tracing::info!("shutdown signal received via HTTP API");
+                graceful_shutdown(&mut rt).await;
+                break;
             }
 
             result = poll_handle(&mut rt.tunnel_handle) => {

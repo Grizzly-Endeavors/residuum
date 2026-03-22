@@ -93,7 +93,7 @@ async fn run() -> Result<(), FatalError> {
         }
         Some("stop") => {
             init_default_tracing();
-            run_stop_command(agent_name.as_deref())
+            run_stop_command(agent_name.as_deref()).await
         }
         Some("update") => {
             init_default_tracing();
@@ -128,14 +128,17 @@ async fn run() -> Result<(), FatalError> {
 ///
 /// Returns `FatalError` if initialization or the gateway loop fails.
 async fn run_serve_foreground(args: &[String], agent_name: Option<&str>) -> Result<(), FatalError> {
-    // Write PID file early so the daemon parent (and `residuum stop`) can find us,
-    // even during setup wizard before the gateway starts.
     let pid_path = residuum::agent_registry::paths::resolve_pid_path(agent_name)?;
-    residuum::daemon::write_pid_file(&pid_path, std::process::id())?;
+
+    // Acquire exclusive lock on the PID file. This both:
+    // 1. Prevents two instances from running simultaneously
+    // 2. Makes stale PID files detectable (lock released on process death)
+    let _pid_lock = residuum::daemon::acquire_pid_lock(&pid_path)?;
 
     let result = run_serve_foreground_inner(args, agent_name).await;
 
-    // Always clean up PID file on exit
+    // Clean up PID file on normal exit. On crash/SIGKILL the lock is
+    // released by the OS, and the next startup detects the stale file.
     if let Err(e) = residuum::daemon::remove_pid_file(&pid_path) {
         tracing::warn!(error = %e, "failed to remove pid file on exit");
     }
@@ -324,12 +327,19 @@ fn run_daemonize(args: &[String], agent_name: Option<&str>) -> Result<(), FatalE
     let pid_path = residuum::agent_registry::paths::resolve_pid_path(agent_name)?;
     let label = agent_name.map_or("gateway".to_string(), |n| format!("agent '{n}'"));
 
-    // Check for an already-running instance
-    if let Ok(existing_pid) = read_pid_file(&pid_path)
-        && is_process_running(existing_pid)
-    {
-        println!("residuum: {label} is already running (pid {existing_pid})");
+    // Check for an already-running instance via file lock (primary detection)
+    if residuum::daemon::is_pid_locked(&pid_path)? {
+        let pid_msg = residuum::daemon::read_pid_file(&pid_path)
+            .map_or_else(|_| String::new(), |pid| format!(" (pid {pid})"));
+        println!("residuum: {label} is already running{pid_msg}");
         return Ok(());
+    }
+
+    // Clean up stale PID file if lock was not held
+    if pid_path.exists()
+        && let Err(e) = residuum::daemon::remove_pid_file(&pid_path)
+    {
+        tracing::warn!(error = %e, "failed to clean stale pid file");
     }
 
     // Resolve gateway address from config or defaults
@@ -510,53 +520,131 @@ async fn run_update_command(args: &[String]) -> Result<(), FatalError> {
 
 /// Stop a running gateway daemon.
 ///
-/// Reads the PID file, verifies the process is running, sends SIGTERM,
-/// and polls for the process to exit.
+/// Uses a layered approach:
+/// 1. Check file lock on PID file — if unlocked, process is dead (clean up stale file)
+/// 2. Send HTTP shutdown request to the gateway API
+/// 3. Fall back to SIGTERM if HTTP fails
 ///
 /// # Errors
 ///
-/// Returns `FatalError` if the PID file cannot be read or the signal
-/// cannot be sent.
-fn run_stop_command(agent_name: Option<&str>) -> Result<(), FatalError> {
-    use residuum::daemon::{is_process_running, read_pid_file, remove_pid_file, send_sigterm};
+/// Returns `FatalError` if the process cannot be stopped.
+async fn run_stop_command(agent_name: Option<&str>) -> Result<(), FatalError> {
+    use residuum::daemon::{is_pid_locked, read_pid_file, remove_pid_file, send_sigterm};
 
     let pid_path = residuum::agent_registry::paths::resolve_pid_path(agent_name)?;
     let label = agent_name.map_or("gateway".to_string(), |n| format!("agent '{n}'"));
 
-    let Ok(pid) = read_pid_file(&pid_path) else {
+    // Layer 1: File lock check
+    if !pid_path.exists() {
         println!("residuum: no {label} running (no pid file)");
         return Ok(());
-    };
+    }
 
-    if !is_process_running(pid) {
-        println!("residuum: no {label} running (stale pid file for pid {pid})");
+    if !is_pid_locked(&pid_path)? {
+        let pid_msg = read_pid_file(&pid_path)
+            .map_or_else(|_| String::new(), |pid| format!(" for pid {pid}"));
+        println!("residuum: no {label} running (stale pid file{pid_msg})");
         remove_pid_file(&pid_path)?;
         return Ok(());
     }
 
+    let pid = read_pid_file(&pid_path)?;
+
+    // Layer 2: HTTP graceful shutdown
+    let config_dir = residuum::agent_registry::paths::resolve_config_dir(agent_name)?;
+    let gateway_addr = Config::load_at(&config_dir).map_or_else(
+        |_| residuum::config::GatewayConfig::default().addr(),
+        |cfg| cfg.gateway.addr(),
+    );
+
+    let http_ok = try_http_shutdown(&gateway_addr).await;
+
+    if http_ok && poll_for_exit(&pid_path, pid, &label).await? {
+        return Ok(());
+    }
+
+    if http_ok {
+        tracing::warn!("HTTP shutdown accepted but process did not exit, falling back to SIGTERM");
+    }
+
+    // Layer 3: SIGTERM fallback (Unix-only)
+    // TODO(windows): use TerminateProcess on Windows
     send_sigterm(pid)?;
 
-    // Poll for process exit (200ms intervals, 5s timeout)
-    let start = std::time::Instant::now();
+    if poll_for_exit(&pid_path, pid, &label).await? {
+        return Ok(());
+    }
+
+    println!("residuum: {label} (pid {pid}) did not stop within 5 seconds");
+    Err(FatalError::Gateway(format!(
+        "{label} pid {pid} did not exit after SIGTERM"
+    )))
+}
+
+/// Attempt to shut down the gateway via its HTTP API.
+///
+/// Returns `true` if the server accepted the shutdown request.
+async fn try_http_shutdown(gateway_addr: &str) -> bool {
+    let url = format!("http://{gateway_addr}/api/shutdown");
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(3))
+        .build();
+
+    let Ok(client) = client else {
+        tracing::debug!("failed to build HTTP client for shutdown request");
+        return false;
+    };
+
+    match client.post(&url).send().await {
+        Ok(resp) if resp.status().is_success() => {
+            tracing::debug!("HTTP shutdown request accepted");
+            true
+        }
+        Ok(resp) => {
+            tracing::debug!(status = %resp.status(), "HTTP shutdown request rejected");
+            false
+        }
+        Err(e) => {
+            tracing::debug!(error = %e, "HTTP shutdown request failed");
+            false
+        }
+    }
+}
+
+/// Poll for the process to exit after a shutdown signal.
+///
+/// Checks both the file lock and process status. Returns `true` if the
+/// process exited within 5 seconds.
+///
+/// # Errors
+///
+/// Returns `FatalError` if file operations fail.
+async fn poll_for_exit(
+    pid_path: &std::path::Path,
+    pid: u32,
+    label: &str,
+) -> Result<bool, FatalError> {
+    use residuum::daemon::{is_pid_locked, is_process_running, remove_pid_file};
+
     let timeout = std::time::Duration::from_secs(5);
     let poll_interval = std::time::Duration::from_millis(200);
+    let start = std::time::Instant::now();
 
     loop {
-        if !is_process_running(pid) {
-            // Process exited; clean up PID file if still present
-            remove_pid_file(&pid_path)?;
+        let lock_held = is_pid_locked(pid_path)?;
+        let process_alive = is_process_running(pid);
+
+        if !lock_held || !process_alive {
+            remove_pid_file(pid_path)?;
             println!("residuum: {label} stopped (pid {pid})");
-            return Ok(());
+            return Ok(true);
         }
 
         if start.elapsed() > timeout {
-            println!("residuum: {label} (pid {pid}) did not stop within 5 seconds");
-            return Err(FatalError::Gateway(format!(
-                "{label} pid {pid} did not exit after SIGTERM"
-            )));
+            return Ok(false);
         }
 
-        std::thread::sleep(poll_interval);
+        tokio::time::sleep(poll_interval).await;
     }
 }
 

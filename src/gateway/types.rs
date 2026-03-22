@@ -61,7 +61,7 @@ pub(crate) struct GatewayCore {
     pub reload_tx: tokio::sync::watch::Sender<ReloadSignal>,
     pub command_tx: mpsc::Sender<ServerCommand>,
     /// Dedicated shutdown signal for the HTTP server (not tied to reload).
-    pub shutdown_tx: tokio::sync::watch::Sender<bool>,
+    pub http_shutdown_tx: tokio::sync::watch::Sender<bool>,
     pub config_dir: std::path::PathBuf,
     pub bus_handle: BusHandle,
     pub publisher: Publisher,
@@ -78,14 +78,14 @@ impl GatewayCore {
     pub fn new(config_dir: std::path::PathBuf) -> (Self, CoreReceivers) {
         let (reload_tx, reload_rx) = tokio::sync::watch::channel(ReloadSignal::None);
         let (command_tx, command_rx) = mpsc::channel::<ServerCommand>(32);
-        let shutdown_tx = tokio::sync::watch::channel::<bool>(false).0;
+        let http_shutdown_tx = tokio::sync::watch::channel::<bool>(false).0;
         let bus_handle = crate::bus::spawn_broker();
         let publisher = bus_handle.publisher();
 
         let core = Self {
             reload_tx,
             command_tx,
-            shutdown_tx,
+            http_shutdown_tx,
             config_dir,
             bus_handle,
             publisher,
@@ -159,7 +159,7 @@ pub(crate) struct GatewayRuntime {
     /// SIGTERM signal listener for daemon stop support.
     pub sigterm: tokio::signal::unix::Signal,
     /// Dedicated shutdown signal for the HTTP server.
-    pub shutdown_tx: tokio::sync::watch::Sender<bool>,
+    pub http_shutdown_tx: tokio::sync::watch::Sender<bool>,
     /// Path to the config directory (for backup/rollback during reload).
     pub config_dir: std::path::PathBuf,
     /// When the last user message was received (for idle deadline recalculation on reload).
@@ -186,6 +186,10 @@ pub(crate) struct GatewayRuntime {
     pub restart_tx: mpsc::Sender<()>,
     /// Receives a signal to trigger a graceful restart (binary replaced).
     pub restart_rx: mpsc::Receiver<()>,
+    /// Sender half for triggering graceful shutdown from the HTTP API.
+    pub gateway_shutdown_tx: mpsc::Sender<()>,
+    /// Receives a signal to trigger a graceful shutdown from the HTTP API.
+    pub gateway_shutdown_rx: mpsc::Receiver<()>,
 }
 
 #[cfg(test)]

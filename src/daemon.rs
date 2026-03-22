@@ -1,11 +1,129 @@
 //! Daemon utilities for backgrounding the gateway process.
 //!
 //! Provides PID file management, process detection, signal sending,
-//! and file-only tracing initialization for daemonized operation.
+//! file locking, and file-only tracing initialization for daemonized operation.
 
 use std::path::{Path, PathBuf};
 
 use crate::error::FatalError;
+
+/// Holds an exclusive advisory lock on the PID file for the daemon's lifetime.
+///
+/// When this value is dropped (or the process exits for any reason including
+/// SIGKILL), the OS releases the lock. Other processes can detect a live
+/// daemon by attempting a non-blocking lock on the same file.
+///
+/// The inner guard has a `'static` lifetime because the backing `RwLock` is
+/// heap-allocated via `Box::leak` — a deliberate one-time leak for a
+/// process-lifetime singleton.
+pub struct PidFileLock {
+    _guard: fd_lock::RwLockWriteGuard<'static, std::fs::File>,
+}
+
+/// Acquire an exclusive lock on the PID file and write the current PID.
+///
+/// The returned [`PidFileLock`] must be held for the entire daemon lifetime.
+/// If another process already holds the lock, this returns an error.
+///
+/// # Errors
+///
+/// Returns `FatalError::Gateway` if the file cannot be opened, the lock
+/// is already held, or the PID cannot be written.
+pub fn acquire_pid_lock(path: &Path) -> Result<PidFileLock, FatalError> {
+    use std::io::{Seek, SeekFrom, Write};
+
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| {
+            FatalError::Gateway(format!(
+                "failed to create pid file directory {}: {e}",
+                parent.display()
+            ))
+        })?;
+    }
+
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(path)
+        .map_err(|e| {
+            FatalError::Gateway(format!("failed to open pid file {}: {e}", path.display()))
+        })?;
+
+    // Leak the RwLock to get a 'static lifetime for the guard.
+    // This is a one-time allocation for a process-lifetime singleton.
+    let rw_lock = Box::leak(Box::new(fd_lock::RwLock::new(file)));
+
+    let mut guard = rw_lock.try_write().map_err(|e| {
+        if e.kind() == std::io::ErrorKind::WouldBlock {
+            FatalError::Gateway(format!(
+                "another instance is already running (lock held on {})",
+                path.display()
+            ))
+        } else {
+            FatalError::Gateway(format!("failed to lock pid file {}: {e}", path.display()))
+        }
+    })?;
+
+    // Write PID to the locked file
+    guard
+        .seek(SeekFrom::Start(0))
+        .map_err(|e| FatalError::Gateway(format!("failed to seek pid file: {e}")))?;
+    guard
+        .set_len(0)
+        .map_err(|e| FatalError::Gateway(format!("failed to truncate pid file: {e}")))?;
+    write!(guard, "{}", std::process::id())
+        .map_err(|e| FatalError::Gateway(format!("failed to write pid to lock file: {e}")))?;
+
+    let pid = std::process::id();
+    tracing::debug!(path = %path.display(), pid, "acquired pid file lock");
+
+    Ok(PidFileLock { _guard: guard })
+}
+
+/// Check whether the PID file is currently locked by another process.
+///
+/// Returns `true` if the lock is held (process is alive), `false` if
+/// the lock can be acquired (process is dead or file doesn't exist).
+///
+/// # Errors
+///
+/// Returns `FatalError::Gateway` if the file cannot be opened for a reason
+/// other than it not existing.
+pub fn is_pid_locked(path: &Path) -> Result<bool, FatalError> {
+    let file = match std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(path)
+    {
+        Ok(f) => f,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(e) => {
+            return Err(FatalError::Gateway(format!(
+                "failed to open pid file {}: {e}",
+                path.display()
+            )));
+        }
+    };
+
+    let mut rw_lock = fd_lock::RwLock::new(file);
+    match rw_lock.try_write() {
+        Ok(_guard) => {
+            // Lock acquired — process is dead, this is a stale file.
+            // Guard drops immediately, releasing our test lock.
+            Ok(false)
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+            // Lock held — process is alive.
+            Ok(true)
+        }
+        Err(e) => Err(FatalError::Gateway(format!(
+            "failed to probe pid file lock {}: {e}",
+            path.display()
+        ))),
+    }
+}
 
 #[expect(
     clippy::panic,
@@ -274,6 +392,7 @@ pub fn init_daemon_tracing(debug_mode: Option<DebugMode>, agent_name: Option<&st
 }
 
 #[cfg(test)]
+#[expect(clippy::unwrap_used, reason = "test code uses unwrap for clarity")]
 mod tests {
     use super::*;
 
@@ -341,5 +460,67 @@ mod tests {
         assert_eq!(DebugMode::Default.filter_str(), "residuum=debug,warn");
         assert_eq!(DebugMode::All.filter_str(), "debug");
         assert_eq!(DebugMode::Trace.filter_str(), "residuum=trace,warn");
+    }
+
+    #[test]
+    fn pid_lock_acquire_writes_pid() {
+        let dir = tempfile::tempdir().unwrap();
+        let pid_path = dir.path().join("test.pid");
+        let _lock = acquire_pid_lock(&pid_path).unwrap();
+
+        let content = std::fs::read_to_string(&pid_path).unwrap();
+        assert_eq!(
+            content.trim().parse::<u32>().unwrap(),
+            std::process::id(),
+            "lock file should contain current PID"
+        );
+    }
+
+    #[test]
+    fn pid_lock_detected_as_held() {
+        let dir = tempfile::tempdir().unwrap();
+        let pid_path = dir.path().join("test.pid");
+        let _lock = acquire_pid_lock(&pid_path).unwrap();
+
+        // A second fd should see the lock as held
+        assert!(
+            is_pid_locked(&pid_path).unwrap(),
+            "lock should be detected as held"
+        );
+    }
+
+    #[test]
+    fn pid_lock_stale_file_detected() {
+        let dir = tempfile::tempdir().unwrap();
+        let pid_path = dir.path().join("test.pid");
+
+        // Write a PID file without acquiring a lock
+        write_pid_file(&pid_path, 99999).unwrap();
+
+        assert!(
+            !is_pid_locked(&pid_path).unwrap(),
+            "unlocked pid file should be detected as stale"
+        );
+    }
+
+    #[test]
+    fn pid_lock_missing_file_not_locked() {
+        let dir = tempfile::tempdir().unwrap();
+        let pid_path = dir.path().join("nonexistent.pid");
+
+        assert!(
+            !is_pid_locked(&pid_path).unwrap(),
+            "missing file should not be detected as locked"
+        );
+    }
+
+    #[test]
+    fn pid_lock_second_acquire_fails() {
+        let dir = tempfile::tempdir().unwrap();
+        let pid_path = dir.path().join("test.pid");
+        let _lock = acquire_pid_lock(&pid_path).unwrap();
+
+        let result = acquire_pid_lock(&pid_path);
+        assert!(result.is_err(), "second lock acquisition should fail");
     }
 }

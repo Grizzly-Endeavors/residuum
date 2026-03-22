@@ -88,6 +88,7 @@ pub fn build_gateway_app(
         .route("/api/update/check", post(web::update::api_update_check))
         .route("/api/update/apply", post(web::update::api_update_apply))
         .route("/api/update/restart", post(web::update::api_update_restart))
+        .route("/api/shutdown", post(web::update::api_shutdown))
         .with_state(update_api_state);
 
     let mut app = axum::Router::new()
@@ -106,9 +107,9 @@ pub fn build_gateway_app(
 pub(crate) fn spawn_server_with_listener(
     listener: tokio::net::TcpListener,
     app: axum::Router,
-    shutdown_tx: &tokio::sync::watch::Sender<bool>,
+    http_shutdown_tx: &tokio::sync::watch::Sender<bool>,
 ) -> tokio::task::JoinHandle<()> {
-    let mut shutdown_rx = shutdown_tx.subscribe();
+    let mut shutdown_rx = http_shutdown_tx.subscribe();
     tokio::spawn(async move {
         if let Err(e) = axum::serve(listener, app)
             .with_graceful_shutdown(async move {
@@ -128,7 +129,7 @@ pub(crate) fn spawn_server_with_listener(
 pub async fn spawn_http_server(
     cfg: &Config,
     app: axum::Router,
-    shutdown_tx: &tokio::sync::watch::Sender<bool>,
+    http_shutdown_tx: &tokio::sync::watch::Sender<bool>,
 ) -> Result<tokio::task::JoinHandle<()>, FatalError> {
     let addr = cfg.gateway.addr();
     let listener = tokio::net::TcpListener::bind(&addr)
@@ -141,7 +142,7 @@ pub async fn spawn_http_server(
             "web UI is exposed on a non-loopback address with no authentication"
         );
     }
-    Ok(spawn_server_with_listener(listener, app, shutdown_tx))
+    Ok(spawn_server_with_listener(listener, app, http_shutdown_tx))
 }
 
 /// Spawn Discord and Telegram adapters if configured.

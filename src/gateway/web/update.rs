@@ -8,11 +8,12 @@ use tokio::sync::mpsc;
 
 use crate::update::SharedUpdateStatus;
 
-/// Shared state for the update API routes.
+/// Shared state for the update and lifecycle API routes.
 #[derive(Clone)]
 pub(crate) struct UpdateApiState {
     pub update_status: SharedUpdateStatus,
     pub restart_tx: mpsc::Sender<()>,
+    pub gateway_shutdown_tx: mpsc::Sender<()>,
 }
 
 /// Response from `GET /api/update/status` and `POST /api/update/check`.
@@ -98,4 +99,22 @@ pub(crate) async fn api_update_restart(
     })?;
 
     Ok(Json(serde_json::json!({ "restarting": true })))
+}
+
+/// `POST /api/shutdown` — trigger graceful gateway shutdown.
+pub(crate) async fn api_shutdown(
+    State(state): State<UpdateApiState>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    state
+        .gateway_shutdown_tx
+        .send(())
+        .await
+        .map_err(|_closed| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "shutdown channel closed".to_string(),
+            )
+        })?;
+
+    Ok(Json(serde_json::json!({ "shutting_down": true })))
 }

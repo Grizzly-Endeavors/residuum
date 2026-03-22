@@ -361,7 +361,7 @@ async fn reload_gateway(rt: &mut GatewayRuntime, new_cfg: &Config) {
     let new_addr = new_cfg.gateway.addr();
     match tokio::net::TcpListener::bind(&new_addr).await {
         Ok(listener) => {
-            rt.shutdown_tx.send(true).ok();
+            rt.http_shutdown_tx.send(true).ok();
 
             let new_shutdown_tx = tokio::sync::watch::channel::<bool>(false).0;
 
@@ -385,6 +385,7 @@ async fn reload_gateway(rt: &mut GatewayRuntime, new_cfg: &Config) {
             let update_api_state = crate::gateway::web::update::UpdateApiState {
                 update_status: std::sync::Arc::clone(&rt.update_status),
                 restart_tx: rt.restart_tx.clone(),
+                gateway_shutdown_tx: rt.gateway_shutdown_tx.clone(),
             };
             let app = crate::gateway::event_loop::build_gateway_app(
                 state,
@@ -400,7 +401,7 @@ async fn reload_gateway(rt: &mut GatewayRuntime, new_cfg: &Config) {
             );
 
             rt.server_handle = new_handle;
-            rt.shutdown_tx = new_shutdown_tx;
+            rt.http_shutdown_tx = new_shutdown_tx;
             tracing::info!(addr = %new_addr, "gateway rebound to new address");
         }
         Err(e) => {
