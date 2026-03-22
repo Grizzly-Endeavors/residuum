@@ -239,11 +239,6 @@ pub fn load_channel_configs(path: &Path) -> anyhow::Result<Vec<ExternalChannelCo
     let contents = std::fs::read_to_string(path)
         .with_context(|| format!("failed to read channels.toml at {}", path.display()))?;
 
-    // Empty file → empty vec (no channels section)
-    if contents.trim().is_empty() {
-        return Ok(Vec::new());
-    }
-
     let file: ChannelsFile = toml::from_str(&contents)
         .with_context(|| format!("failed to parse channels.toml at {}", path.display()))?;
 
@@ -257,9 +252,11 @@ pub fn load_channel_configs(path: &Path) -> anyhow::Result<Vec<ExternalChannelCo
                     let topic = raw.topic.unwrap_or_default();
                     if url.is_empty() {
                         tracing::warn!(channel = %name, "ntfy channel is missing required 'url' field");
+                        return None;
                     }
                     if topic.is_empty() {
                         tracing::warn!(channel = %name, "ntfy channel is missing required 'topic' field");
+                        return None;
                     }
                     ExternalChannelKind::Ntfy {
                         url,
@@ -279,6 +276,7 @@ pub fn load_channel_configs(path: &Path) -> anyhow::Result<Vec<ExternalChannelCo
                     let url = raw.url.unwrap_or_default();
                     if url.is_empty() {
                         tracing::warn!(channel = %name, "webhook channel is missing required 'url' field");
+                        return None;
                     }
                     ExternalChannelKind::Webhook {
                         url,
@@ -345,25 +343,8 @@ pub async fn build_external_channels(
                     )),
                 );
             }
-            ExternalChannelKind::Macos {
-                default_category,
-                default_priority,
-                throttle_window_secs,
-                sound,
-                app_name,
-                web_url,
-            } => {
-                if let Some(ch) = build_macos_channel(
-                    &cfg.name,
-                    default_category.as_ref(),
-                    default_priority.as_ref(),
-                    throttle_window_secs.as_ref(),
-                    sound.as_ref(),
-                    app_name.as_ref(),
-                    web_url.as_ref(),
-                )
-                .await
-                {
+            ExternalChannelKind::Macos { .. } => {
+                if let Some(ch) = build_macos_channel(&cfg.name, &cfg.kind).await {
                     channels.insert(cfg.name.clone(), ch);
                 }
             }
@@ -380,15 +361,22 @@ pub async fn build_external_channels(
 #[cfg(target_os = "macos")]
 async fn build_macos_channel(
     name: &str,
-    default_category: Option<&String>,
-    default_priority: Option<&String>,
-    throttle_window_secs: Option<&u64>,
-    sound: Option<&bool>,
-    app_name: Option<&String>,
-    web_url: Option<&String>,
+    kind: &ExternalChannelKind,
 ) -> Option<Box<dyn NotificationChannel>> {
     use crate::notify::macos::MacosChannelConfig;
     use crate::notify::macos::categories::{parse_category, parse_priority};
+
+    let ExternalChannelKind::Macos {
+        default_category,
+        default_priority,
+        throttle_window_secs,
+        sound,
+        app_name,
+        web_url,
+    } = kind
+    else {
+        return None;
+    };
 
     let mut config = MacosChannelConfig::default();
 
@@ -421,7 +409,7 @@ async fn build_macos_channel(
     if let Some(n) = app_name {
         config.app_name = n.clone();
     }
-    config.web_url = web_url.cloned();
+    config.web_url = web_url.clone();
 
     match crate::notify::macos::MacosNativeChannel::new(name, config).await {
         Ok((channel, _handle)) => {
@@ -442,12 +430,7 @@ async fn build_macos_channel(
 )]
 async fn build_macos_channel(
     name: &str,
-    _default_category: Option<&String>,
-    _default_priority: Option<&String>,
-    _throttle_window_secs: Option<&u64>,
-    _sound: Option<&bool>,
-    _app_name: Option<&String>,
-    _web_url: Option<&String>,
+    _kind: &ExternalChannelKind,
 ) -> Option<Box<dyn NotificationChannel>> {
     tracing::warn!(
         channel = name,
