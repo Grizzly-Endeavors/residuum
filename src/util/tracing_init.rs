@@ -19,6 +19,10 @@ pub fn init_default_tracing() {
 /// Initialize tracing with both stderr and a daily rolling file appender.
 ///
 /// Log files are written to `~/.residuum/logs/cli.YYYY-MM-DD.log`.
+#[expect(
+    clippy::print_stderr,
+    reason = "pre-tracing startup warnings — tracing is not yet initialized"
+)]
 pub fn init_cli_tracing() {
     use tracing_subscriber::layer::SubscriberExt;
     use tracing_subscriber::util::SubscriberInitExt;
@@ -42,25 +46,18 @@ pub fn init_cli_tracing() {
         .max_log_files(30)
         .build(&log_dir)
         .or_else(|e| {
-            crate::daemon::write_crash_note(&format!(
-                "warning: failed to create log file appender: {e}"
-            ));
-            crate::daemon::write_crash_note(&format!(
+            eprintln!("warning: failed to create log file appender: {e}");
+            eprintln!(
                 "warning: logs will be written to {} instead — 'residuum logs' will not find them",
                 std::env::temp_dir().display()
-            ));
+            );
             tracing_appender::rolling::RollingFileAppender::builder()
                 .filename_prefix("cli")
                 .filename_suffix("log")
                 .rotation(tracing_appender::rolling::Rotation::DAILY)
                 .build(std::env::temp_dir())
                 .map_err(|e2| {
-                    crate::daemon::write_crash_note(&format!(
-                        "warning: fallback log appender also failed: {e2}"
-                    ));
-                    crate::daemon::write_crash_note(
-                        "warning: log file output disabled — 'residuum logs' will not find them",
-                    );
+                    eprintln!("warning: fallback log appender also failed: {e2}; log file output disabled — 'residuum logs' will not find them");
                 })
         })
         .ok();
@@ -122,8 +119,12 @@ impl DebugMode {
     clippy::panic,
     reason = "deliberate termination when no log appender can be created"
 )]
+#[expect(
+    clippy::print_stderr,
+    reason = "pre-tracing startup warnings — tracing is not yet initialized"
+)]
 fn fatal_no_log_appender(msg: &str) -> ! {
-    crate::daemon::write_crash_note(msg);
+    eprintln!("{msg}");
     panic!("{msg}")
 }
 
@@ -136,6 +137,10 @@ fn fatal_no_log_appender(msg: &str) -> ! {
 ///
 /// When `agent_name` is `Some`, logs go to the agent-specific log directory
 /// and the file prefix includes the agent name for identification.
+#[expect(
+    clippy::print_stderr,
+    reason = "pre-tracing startup warnings — tracing is not yet initialized"
+)]
 pub fn init_daemon_tracing(debug_mode: Option<DebugMode>, agent_name: Option<&str>) {
     use tracing_subscriber::layer::SubscriberExt;
     use tracing_subscriber::util::SubscriberInitExt;
@@ -145,9 +150,7 @@ pub fn init_daemon_tracing(debug_mode: Option<DebugMode>, agent_name: Option<&st
         .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(default_filter));
 
     let log_dir = crate::agent_registry::paths::resolve_log_dir(agent_name).unwrap_or_else(|_| {
-        crate::daemon::write_crash_note(
-            "warning: could not determine log directory; logs will be written to ./logs",
-        );
+        eprintln!("warning: could not determine log directory; logs will be written to ./logs");
         std::path::PathBuf::from("logs")
     });
 
@@ -163,11 +166,11 @@ pub fn init_daemon_tracing(debug_mode: Option<DebugMode>, agent_name: Option<&st
         .max_log_files(30)
         .build(&log_dir)
         .unwrap_or_else(|e| {
-            crate::daemon::write_crash_note(&format!(
+            eprintln!(
                 "warning: failed to create log file appender at {}: {e}; falling back to {}",
                 log_dir.display(),
                 std::env::temp_dir().display()
-            ));
+            );
             tracing_appender::rolling::RollingFileAppender::builder()
                 .filename_prefix(&log_prefix)
                 .filename_suffix("log")

@@ -15,7 +15,10 @@ pub(crate) async fn atomic_write(path: &Path, data: impl AsRef<[u8]>) -> anyhow:
         .parent()
         .ok_or_else(|| anyhow::anyhow!("path has no parent directory: {}", path.display()))?;
 
-    let filename = path.file_name().unwrap_or_default().to_string_lossy();
+    let filename = path
+        .file_name()
+        .ok_or_else(|| anyhow::anyhow!("path has no filename: {}", path.display()))?
+        .to_string_lossy();
     let tmp_path = dir.join(format!(".{filename}.tmp"));
 
     tokio::fs::write(&tmp_path, data.as_ref())
