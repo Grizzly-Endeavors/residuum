@@ -216,7 +216,7 @@ pub fn parse_project_md(content: &str) -> anyhow::Result<(ProjectFrontmatter, St
 ///
 /// # Errors
 /// Returns an error if YAML serialization fails.
-pub fn write_project_md_content(
+pub fn serialize_project_md(
     frontmatter: &ProjectFrontmatter,
     body: &str,
 ) -> anyhow::Result<String> {
@@ -299,7 +299,7 @@ Some overview body text here.
         };
         let body = "Some body content.";
 
-        let content = write_project_md_content(&fm, body).unwrap();
+        let content = serialize_project_md(&fm, body).unwrap();
         let (parsed_fm, parsed_body) = parse_project_md(&content).unwrap();
 
         assert_eq!(parsed_fm.name, "round-trip", "name should round-trip");

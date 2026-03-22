@@ -7,7 +7,7 @@ use chrono::NaiveDate;
 
 use crate::workspace::layout::WorkspaceLayout;
 
-use super::scanner::write_project_md_content;
+use super::scanner::serialize_project_md;
 use super::types::{ProjectFrontmatter, ProjectStatus};
 
 /// Create a new project with the standard directory structure.
@@ -59,7 +59,7 @@ pub async fn create_project(
         archived: None,
     };
 
-    let content = write_project_md_content(&frontmatter, "")?;
+    let content = serialize_project_md(&frontmatter, "")?;
     tokio::fs::write(project_dir.join("PROJECT.md"), &content)
         .await
         .with_context(|| format!("failed to write PROJECT.md at {}", project_dir.display()))?;
@@ -95,7 +95,7 @@ pub async fn archive_project(
     frontmatter.status = ProjectStatus::Archived;
     frontmatter.archived = Some(today);
 
-    let updated = write_project_md_content(&frontmatter, &body)?;
+    let updated = serialize_project_md(&frontmatter, &body)?;
     tokio::fs::write(&project_md, &updated)
         .await
         .with_context(|| format!("failed to update PROJECT.md at {}", project_md.display()))?;
