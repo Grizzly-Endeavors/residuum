@@ -1,3 +1,5 @@
+use std::path::Path;
+
 use chrono::{Duration, NaiveDateTime, NaiveTime};
 use serde::Deserialize;
 
@@ -50,7 +52,10 @@ pub fn parse_schedule_duration(s: &str) -> anyhow::Result<Duration> {
     if s.is_empty() {
         bail!("schedule duration cannot be empty");
     }
-    let (num_part, unit) = s.split_at(s.len() - 1);
+    let Some(last_byte_idx) = s.char_indices().next_back().map(|(i, _)| i) else {
+        bail!("schedule duration cannot be empty");
+    };
+    let (num_part, unit) = s.split_at(last_byte_idx);
     let value: i64 = num_part.parse().map_err(|_parse_err| {
         anyhow::anyhow!("invalid schedule duration '{s}': expected number followed by s/m/h/d",)
     })?;
@@ -108,10 +113,45 @@ pub fn is_within_active_hours(now: NaiveDateTime, start: NaiveTime, end: NaiveTi
     }
 }
 
+/// Read a file and parse its contents, returning `None` on missing file or errors.
+///
+/// Logs a warning on parse or read failures; silently returns `None` for missing files.
+pub(crate) fn read_and_parse<T, E>(path: &Path, parse: impl Fn(&str) -> Result<T, E>) -> Option<T>
+where
+    E: std::fmt::Display,
+{
+    match std::fs::read_to_string(path) {
+        Ok(contents) => match parse(&contents) {
+            Ok(v) => Some(v),
+            Err(e) => {
+                tracing::warn!(path = %path.display(), error = %e, "failed to parse file");
+                None
+            }
+        },
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+        Err(e) => {
+            tracing::warn!(path = %path.display(), error = %e, "failed to read file");
+            None
+        }
+    }
+}
+
+/// Load HEARTBEAT.yml from the given path.
+///
+/// On parse error, logs a warning and returns `None` so the caller keeps the last good config.
+/// Returns `None` if the file does not exist.
+#[must_use]
+pub(crate) fn load_heartbeat(path: &Path) -> Option<HeartbeatConfig> {
+    let cfg = read_and_parse(path, |s| serde_yml::from_str::<HeartbeatConfig>(s))?;
+    tracing::trace!(path = %path.display(), pulses = cfg.pulses.len(), "loaded HEARTBEAT.yml");
+    Some(cfg)
+}
+
 #[cfg(test)]
 #[expect(clippy::unwrap_used, reason = "test code uses unwrap for clarity")]
 mod tests {
     use super::*;
+    use tempfile::tempdir;
 
     #[test]
     fn parse_schedule_duration_minutes() {
@@ -361,5 +401,26 @@ pulses:
         let cfg: HeartbeatConfig = serde_yml::from_str(yaml).unwrap();
         let pulse = cfg.pulses.first().unwrap();
         assert!(pulse.enabled, "enabled should default to true when absent");
+    }
+
+    #[test]
+    fn load_heartbeat_missing_file_returns_none() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("HEARTBEAT.yml");
+        assert!(
+            load_heartbeat(&path).is_none(),
+            "missing file should return None"
+        );
+    }
+
+    #[test]
+    fn load_heartbeat_invalid_yaml_returns_none() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("HEARTBEAT.yml");
+        std::fs::write(&path, "not: valid: yaml: [[[").unwrap();
+        assert!(
+            load_heartbeat(&path).is_none(),
+            "invalid YAML should return None"
+        );
     }
 }

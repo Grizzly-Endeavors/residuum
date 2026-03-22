@@ -5,7 +5,8 @@ use chrono::{Datelike, Duration, NaiveDateTime, NaiveTime};
 use serde::{Deserialize, Serialize};
 
 use super::types::{
-    HeartbeatConfig, PulseDef, is_within_active_hours, parse_active_hours, parse_schedule_duration,
+    PulseDef, is_within_active_hours, load_heartbeat, parse_active_hours, parse_schedule_duration,
+    read_and_parse,
 };
 
 /// Tracks per-pulse last-run times and determines which pulses are due.
@@ -175,9 +176,13 @@ impl PulseScheduler {
             return;
         };
 
-        // If the last run was outside the current active window, or on a different
-        // calendar day (for non-overnight windows), reset the count.
-        if !is_within_active_hours(*last, window_start, window_end) || now.date() != last.date() {
+        let is_overnight = window_start > window_end;
+        let crossed_boundary = if is_overnight {
+            !is_within_active_hours(*last, window_start, window_end)
+        } else {
+            !is_within_active_hours(*last, window_start, window_end) || now.date() != last.date()
+        };
+        if crossed_boundary {
             self.run_counts.remove(pulse_name);
             tracing::debug!(pulse = %pulse_name, "run count reset for new active period");
         }
@@ -238,66 +243,13 @@ fn compute_effective_interval(
     }
 }
 
-/// Load HEARTBEAT.yml from the given path.
-///
-/// On parse error, logs a warning and returns `None` so the caller keeps the last good config.
-/// Returns `None` if the file does not exist.
-#[must_use]
-pub(crate) fn load_heartbeat(path: &Path) -> Option<HeartbeatConfig> {
-    match std::fs::read_to_string(path) {
-        Ok(contents) => match serde_yml::from_str::<HeartbeatConfig>(&contents) {
-            Ok(cfg) => {
-                tracing::trace!(path = %path.display(), pulses = cfg.pulses.len(), "loaded HEARTBEAT.yml");
-                Some(cfg)
-            }
-            Err(e) => {
-                tracing::warn!(
-                    path = %path.display(),
-                    error = %e,
-                    "failed to parse HEARTBEAT.yml, keeping last good config"
-                );
-                None
-            }
-        },
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
-        Err(e) => {
-            tracing::warn!(
-                path = %path.display(),
-                error = %e,
-                "failed to read HEARTBEAT.yml"
-            );
-            None
-        }
-    }
-}
-
 /// Load pulse state from disk; returns default on missing or corrupt file.
 fn load_state(path: &Path) -> PulseScheduler {
-    match std::fs::read_to_string(path) {
-        Ok(contents) => match serde_json::from_str::<PulseScheduler>(&contents) {
-            Ok(state) => {
-                tracing::debug!(path = %path.display(), pulses = state.last_run.len(), "loaded pulse state");
-                state
-            }
-            Err(err) => {
-                tracing::warn!(
-                    path = %path.display(),
-                    error = %err,
-                    "corrupt pulse_state.json, starting with empty state"
-                );
-                PulseScheduler::new()
-            }
-        },
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => PulseScheduler::new(),
-        Err(err) => {
-            tracing::warn!(
-                path = %path.display(),
-                error = %err,
-                "failed to read pulse_state.json, starting with empty state"
-            );
-            PulseScheduler::new()
-        }
-    }
+    let Some(state) = read_and_parse(path, |s| serde_json::from_str::<PulseScheduler>(s)) else {
+        return PulseScheduler::new();
+    };
+    tracing::debug!(path = %path.display(), pulses = state.last_run.len(), "loaded pulse state");
+    state
 }
 
 /// Compute the duration of an active-hours window.
@@ -468,27 +420,6 @@ pulses:
             .unwrap();
         let due = scheduler.due_pulses(day, &path);
         assert_eq!(due.len(), 1, "pulse should fire inside active hours");
-    }
-
-    #[test]
-    fn load_heartbeat_missing_file_returns_none() {
-        let dir = tempdir().unwrap();
-        let path = dir.path().join("HEARTBEAT.yml");
-        assert!(
-            load_heartbeat(&path).is_none(),
-            "missing file should return None"
-        );
-    }
-
-    #[test]
-    fn load_heartbeat_invalid_yaml_returns_none() {
-        let dir = tempdir().unwrap();
-        let path = dir.path().join("HEARTBEAT.yml");
-        std::fs::write(&path, "not: valid: yaml: [[[").unwrap();
-        assert!(
-            load_heartbeat(&path).is_none(),
-            "invalid YAML should return None"
-        );
     }
 
     // ── Persistence tests ─────────────────────────────────────────────
