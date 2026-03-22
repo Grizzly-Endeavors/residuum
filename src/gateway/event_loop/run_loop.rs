@@ -198,8 +198,9 @@ async fn build_runtime(
         Arc::clone(&parts.mcp_registry),
         parts.layout.subagents_dir(),
     );
-    bus_infra_handles
-        .push(crate::subagents::registry::spawn_registry(registry, &core.bus_handle).await);
+    if let Some(h) = crate::subagents::registry::spawn_registry(registry, &core.bus_handle).await {
+        bus_infra_handles.push(h);
+    }
 
     Ok(GatewayRuntime {
         layout: parts.layout,

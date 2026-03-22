@@ -14,7 +14,7 @@ use crate::background::BackgroundTaskSpawner;
 use crate::background::spawn_context::{
     SpawnContext, build_spawn_resources, load_preset_for_spawn,
 };
-use crate::background::types::{BackgroundTask, Execution, SubAgentConfig};
+use crate::background::types::{BackgroundTask, SubAgentConfig};
 use crate::bus::{BusHandle, PresetName, SpawnRequestEvent, Subscriber, topics};
 use crate::config::BackgroundModelTier;
 use crate::mcp::SharedMcpRegistry;
@@ -57,7 +57,10 @@ impl SubagentRegistry {
 ///
 /// Returns a `JoinHandle` for shutdown coordination. The task runs until the
 /// bus shuts down or the subscriber closes.
-pub async fn spawn_registry(registry: SubagentRegistry, bus_handle: &BusHandle) -> JoinHandle<()> {
+pub async fn spawn_registry(
+    registry: SubagentRegistry,
+    bus_handle: &BusHandle,
+) -> Option<JoinHandle<()>> {
     let subscriber: Subscriber<SpawnRequestEvent> = match bus_handle
         .subscribe(topics::Background)
         .await
@@ -65,13 +68,13 @@ pub async fn spawn_registry(registry: SubagentRegistry, bus_handle: &BusHandle) 
         Ok(s) => s,
         Err(e) => {
             tracing::error!(error = %e, "subagent registry failed to subscribe to Background topic");
-            return tokio::spawn(async {});
+            return None;
         }
     };
 
     tracing::info!("subagent registry subscribed to Background topic");
 
-    tokio::spawn(registry_loop(registry, subscriber))
+    Some(tokio::spawn(registry_loop(registry, subscriber)))
 }
 
 /// Main loop: reads spawn requests and executes them.
@@ -151,11 +154,11 @@ async fn handle_spawn_request(
         id: task_id,
         source_label: event.source_label,
         source: event.source,
-        execution: Execution::SubAgent(SubAgentConfig {
+        subagent_config: SubAgentConfig {
             prompt: event.prompt,
             context: event.context,
             model_tier: final_tier,
-        }),
+        },
         agent_preset: PresetName::from(effective_preset_name.as_str()),
     };
 

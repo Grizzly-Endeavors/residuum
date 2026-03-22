@@ -3,7 +3,14 @@
 //! Provides a shared command registry used by CLI, Discord, and any future interfaces.
 //! Each interface handles `CommandSideEffect` according to its own transport.
 
-/// What the main loop should do after a slash command.
+/// Internal representation of what a slash command produces.
+///
+/// Deliberately separate from `CommandSideEffect`: this enum includes
+/// `PrintLocal` (text-only responses with no action), while `CommandSideEffect`
+/// only represents actions that interface handlers must perform.
+/// `effect_to_result` bridges the two, splitting an effect into response text
+/// plus an optional side effect. Collapsing them would force every handler to
+/// match on a "no-op" variant.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CommandEffect {
     /// Print text locally, no server message.

@@ -9,7 +9,7 @@ use tokio::sync::{Mutex, Semaphore, mpsc};
 use tokio_util::sync::CancellationToken;
 
 use super::subagent::{SubAgentOutput, SubAgentResources, execute_subagent};
-use super::types::{ActiveTaskInfo, BackgroundResult, BackgroundTask, Execution, execution_info};
+use super::types::{ActiveTaskInfo, BackgroundResult, BackgroundTask, execution_info};
 use crate::bus::AgentResultStatus;
 use crate::models::Message;
 
@@ -59,7 +59,7 @@ impl BackgroundTaskSpawner {
         let child_token = token.clone();
         let spawn_task_id = task_id.clone();
 
-        let prompt_preview = execution_info(&task.execution);
+        let prompt_preview = execution_info(&task.subagent_config);
         let active_info = ActiveTaskInfo {
             source_label: task.source_label.clone(),
             source: task.source.clone(),
@@ -103,9 +103,8 @@ impl BackgroundTaskSpawner {
                     build_cancelled_result(&task, &spawn_task_id, cleanup_handles).await
                 }
                 outcome = async {
-                    let Execution::SubAgent(config) = &task.execution;
                     let res = resources.as_ref().ok_or_else(|| anyhow::anyhow!("sub-agent task requires SubAgentResources"))?;
-                    execute_subagent(&task.id, config, res).await
+                    execute_subagent(&task.id, &task.subagent_config, res).await
                 } => {
                     build_completed_result(&task, outcome, &background_dir).await
                 }
@@ -215,10 +214,8 @@ async fn build_completed_result(
             let error_msg = e.to_string();
             tracing::warn!(task_id = %task.id, source_label = %task.source_label, error = %e, "background task failed");
             (
-                AgentResultStatus::Failed {
-                    error: error_msg.clone(),
-                },
-                format!("[FAILED] {error_msg}"),
+                AgentResultStatus::Failed { error: error_msg },
+                String::new(),
                 None,
             )
         }
@@ -228,8 +225,17 @@ async fn build_completed_result(
         tracing::info!(task_id = %task.id, source_label = %task.source_label, "background task completed");
     }
 
-    let transcript_path =
-        write_transcript(background_dir, &task.id, &summary, messages.as_deref()).await;
+    let transcript_summary = match &status {
+        AgentResultStatus::Failed { error } => error.as_str(),
+        AgentResultStatus::Completed | AgentResultStatus::Cancelled => &summary,
+    };
+    let transcript_path = write_transcript(
+        background_dir,
+        &task.id,
+        transcript_summary,
+        messages.as_deref(),
+    )
+    .await;
 
     BackgroundResult {
         id: task.id.clone(),
@@ -293,7 +299,7 @@ async fn write_transcript(
 #[expect(clippy::unwrap_used, reason = "test code uses unwrap for clarity")]
 mod tests {
     use super::*;
-    use crate::background::types::{Execution, SubAgentConfig};
+    use crate::background::types::SubAgentConfig;
     use crate::bus::{EventTrigger, PresetName};
     use crate::config::BackgroundModelTier;
 
@@ -335,11 +341,11 @@ mod tests {
             id: "fail-transcript-1".to_string(),
             source_label: "agent:failing_agent".to_string(),
             source: EventTrigger::Agent,
-            execution: Execution::SubAgent(SubAgentConfig {
+            subagent_config: SubAgentConfig {
                 prompt: "do something".to_string(),
                 context: None,
                 model_tier: BackgroundModelTier::Medium,
-            }),
+            },
 
             agent_preset: PresetName::from("general-purpose"),
         };
@@ -352,27 +358,22 @@ mod tests {
             "should be failed"
         );
         assert!(
-            result.summary.contains("[FAILED]"),
-            "summary should contain [FAILED] prefix, got: {}",
-            result.summary
-        );
-        assert!(
-            !result.summary.is_empty(),
-            "summary should not be empty on failure"
+            result.summary.is_empty(),
+            "summary should be empty on failure (error is in status)"
         );
         assert!(
             result.transcript_path.is_some(),
             "failed task should still write transcript"
         );
 
-        // Failed tasks write plain summary (no messages), so content is the raw error string
+        // Failed tasks write the error from status (no messages), so content is the raw error
         let transcript_content =
             tokio::fs::read_to_string(result.transcript_path.as_ref().unwrap())
                 .await
                 .unwrap();
         assert!(
-            transcript_content.contains("[FAILED]"),
-            "transcript should contain the failure summary"
+            transcript_content.contains("SubAgentResources"),
+            "transcript should contain the error from status"
         );
     }
 }

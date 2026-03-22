@@ -12,7 +12,7 @@ The background module decouples background work (pulse evaluation, scheduled act
 
 The module owns:
 - **Task lifecycle management:** spawning, concurrency control (semaphore), cancellation tokens, transcript persistence.
-- **Execution:** SubAgent (LLM-powered turn loop with isolated resources).
+- **SubAgent execution:** LLM-powered turn loop with isolated resources.
 - **Resource isolation:** each background task gets its own `ProjectState`, `SkillState`, `ToolFilter`, and `PathPolicy` so they don't interfere with each other or the main agent.
 - **Context assembly for SubAgents:** minimal system prompt (USER.md + ENVIRONMENT.md + projects index + task prompt + optional presets), excluding SOUL.md and observation logs.
 - **Result routing:** formatting `BackgroundResult` for injection into the main agent's message stream or direct delivery to notification channels.
@@ -31,11 +31,10 @@ The module does **not** handle:
 - `id`: Unique identifier (e.g., `"agent-XXXXXXXX-timestamp"`)
 - `task_name`: Human-readable name for logging and display
 - `source`: Where the task came from (`TaskSource::Agent`, `::Pulse`, `::Action`)
-- `execution`: What to run (`Execution::SubAgent`)
+- `subagent_config`: `SubAgentConfig` (prompt, context, model tier)
 - `routing`: How to deliver the result (`ResultRouting::Direct` with explicit channel names)
 
-**Execution:**
-- `SubAgent(SubAgentConfig)`: Runs a simplified agent turn loop with minimal context. The SubAgent gets isolated clones of `ProjectState`, `SkillState`, `ToolFilter`, and `PathPolicy`, so it operates independently of the main agent and other SubAgents. Returns the LLM's final text response as the summary.
+**SubAgentConfig:** Runs a simplified agent turn loop with minimal context. The SubAgent gets isolated clones of `ProjectState`, `SkillState`, `ToolFilter`, and `PathPolicy`, so it operates independently of the main agent and other SubAgents. Returns the LLM's final text response as the summary.
 
 **BackgroundTaskSpawner:** Manages all background task lifecycles:
 - Bounded concurrency: a semaphore (default: 3) caps concurrent tasks.
@@ -241,7 +240,7 @@ This isolation ensures:
 | File | Purpose |
 |------|---------|
 | `mod.rs` | Module exports: re-exports public types and the `BackgroundTaskSpawner`. |
-| `types.rs` | Core types: `BackgroundTask`, `BackgroundResult`, `TaskStatus`, `Execution` (SubAgent config), `ResultRouting`, `ActiveTaskInfo`. Helper function `execution_info()` and `format_background_result()` for display. |
+| `types.rs` | Core types: `BackgroundTask`, `BackgroundResult`, `SubAgentConfig`, `ActiveTaskInfo`. Helper function `execution_info()` and `format_background_result()` for display. |
 | `spawner.rs` | `BackgroundTaskSpawner`: lifecycle management, semaphore concurrency control, cancellation, active task tracking, result channel sending, transcript writing. |
 | `subagent.rs` | SubAgent execution: `SubAgentResources` (isolated state bundle), `build_resources()` (construct resources from main agent state), `execute_subagent()` (run turn loop), project deactivation enforcement. |
 | `spawn_context.rs` | `SpawnContext` (gathered at gateway startup): config, provider specs, identity, options, workspace layout. `build_spawn_resources()` resolves model tier and constructs SubAgentResources for a specific task. |
@@ -252,7 +251,7 @@ This isolation ensures:
 
 ```mermaid
 graph TD
-    A["BackgroundTask spawned<br/>(id, task_name, source, execution, routing)"]
+    A["BackgroundTask spawned<br/>(id, source_label, source, subagent_config)"]
     A -->|BackgroundTaskSpawner::spawn| B["Register in active_tasks<br/>with CancellationToken"]
     B --> C["Acquire semaphore permit<br/>(wait if at capacity)"]
     C --> D["tokio::spawn async block"]
