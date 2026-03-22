@@ -239,12 +239,12 @@ impl McpRegistry {
         let servers: Vec<TrackedServer> = self.servers.drain(..).collect();
         let mut names = Vec::with_capacity(servers.len());
 
-        for server in servers {
-            names.push(server.name.clone());
-            if let Some(client) = server.client {
-                client.shutdown().await;
+        for TrackedServer { name, client, .. } in servers {
+            if let Some(c) = client {
+                c.shutdown().await;
             }
-            tracing::info!(server = %server.name, "mcp server disconnected");
+            tracing::info!(server = %name, "mcp server disconnected");
+            names.push(name);
         }
 
         names
@@ -299,7 +299,7 @@ impl McpRegistry {
         let diff = self.reconcile(desired);
         let mut report = McpReconcileReport {
             started: 0,
-            stopped: diff.to_stop.len(),
+            stopped: 0,
             failures: Vec::new(),
         };
 
@@ -315,6 +315,7 @@ impl McpRegistry {
 
         for name in &diff.to_stop {
             self.disconnect(name).await;
+            report.stopped += 1;
         }
 
         report
@@ -388,17 +389,15 @@ impl McpRegistry {
             let server_names: Vec<String> = state.servers.iter().map(|s| s.name.clone()).collect();
             self.project_refs.remove(&key);
 
-            let mut stopped = Vec::new();
             for name in &server_names {
                 self.disconnect(name).await;
-                stopped.push(name.clone());
             }
             tracing::debug!(
                 project = %project_name,
-                count = stopped.len(),
+                count = server_names.len(),
                 "project mcp servers stopped (last ref)"
             );
-            stopped
+            server_names
         } else {
             tracing::debug!(
                 project = %project_name,
@@ -420,10 +419,9 @@ impl McpRegistry {
             return Vec::new();
         };
 
-        let mut stopped = Vec::new();
-        for server in &state.servers {
-            self.disconnect(&server.name).await;
-            stopped.push(server.name.clone());
+        let stopped: Vec<String> = state.servers.iter().map(|s| s.name.clone()).collect();
+        for name in &stopped {
+            self.disconnect(name).await;
         }
         tracing::warn!(
             project = %project_name,
