@@ -93,8 +93,6 @@ pub struct ProjectIndexEntry {
     pub status: ProjectStatus,
     /// Directory name on disk (sanitized).
     pub dir_name: String,
-    /// Whether this project lives in the archive directory.
-    pub is_archived: bool,
 }
 
 /// Fully loaded project context for an active project.

@@ -30,12 +30,15 @@ pub async fn build_manifest(project_root: &Path) -> anyhow::Result<ProjectManife
 /// Format a manifest as a human-readable grouped listing with sizes.
 #[must_use]
 pub fn format_manifest(manifest: &ProjectManifest) -> String {
-    let mut sections = Vec::new();
-
-    format_section("notes/", &manifest.notes, &mut sections);
-    format_section("references/", &manifest.references, &mut sections);
-    format_section("workspace/", &manifest.workspace, &mut sections);
-    format_section("skills/", &manifest.skills, &mut sections);
+    let sections: Vec<String> = [
+        format_section("notes/", &manifest.notes),
+        format_section("references/", &manifest.references),
+        format_section("workspace/", &manifest.workspace),
+        format_section("skills/", &manifest.skills),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
 
     if sections.is_empty() {
         return "No files.".to_string();
@@ -44,9 +47,9 @@ pub fn format_manifest(manifest: &ProjectManifest) -> String {
     sections.join("\n\n")
 }
 
-fn format_section(heading: &str, entries: &[ManifestEntry], sections: &mut Vec<String>) {
+fn format_section(heading: &str, entries: &[ManifestEntry]) -> Option<String> {
     if entries.is_empty() {
-        return;
+        return None;
     }
 
     let mut lines = Vec::with_capacity(entries.len() + 1);
@@ -60,7 +63,7 @@ fn format_section(heading: &str, entries: &[ManifestEntry], sections: &mut Vec<S
         ));
     }
 
-    sections.push(lines.join("\n"));
+    Some(lines.join("\n"))
 }
 
 /// Format a byte count as a human-readable size string.

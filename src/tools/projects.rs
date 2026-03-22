@@ -7,6 +7,7 @@ use crate::mcp::SharedMcpRegistry;
 use crate::models::ToolDefinition;
 use crate::projects::activation::SharedProjectState;
 use crate::projects::lifecycle;
+use crate::projects::types::ProjectStatus;
 use crate::skills::SharedSkillState;
 
 use super::path_policy::SharedPathPolicy;
@@ -474,7 +475,7 @@ impl Tool for ProjectListTool {
 
         let filtered: Vec<_> = entries
             .iter()
-            .filter(|e| include_archived || !e.is_archived)
+            .filter(|e| include_archived || e.status != ProjectStatus::Archived)
             .collect();
 
         if filtered.is_empty() {

@@ -25,8 +25,8 @@ impl ProjectIndex {
     pub async fn scan(layout: &WorkspaceLayout) -> anyhow::Result<Self> {
         let mut entries = Vec::new();
 
-        scan_directory(&layout.projects_dir(), false, &mut entries).await?;
-        scan_directory(&layout.archive_dir(), true, &mut entries).await?;
+        scan_directory(&layout.projects_dir(), &mut entries).await?;
+        scan_directory(&layout.archive_dir(), &mut entries).await?;
 
         tracing::debug!(total = entries.len(), "project index scan complete");
 
@@ -78,11 +78,7 @@ impl ProjectIndex {
 }
 
 /// Scan a single directory (projects/ or archive/) for project subfolders.
-async fn scan_directory(
-    dir: &Path,
-    is_archive: bool,
-    entries: &mut Vec<ProjectIndexEntry>,
-) -> anyhow::Result<()> {
+async fn scan_directory(dir: &Path, entries: &mut Vec<ProjectIndexEntry>) -> anyhow::Result<()> {
     let mut read_dir = match tokio::fs::read_dir(dir).await {
         Ok(rd) => rd,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
@@ -159,7 +155,6 @@ async fn scan_directory(
                     description: fm.description.clone(),
                     status: fm.status,
                     dir_name,
-                    is_archived: is_archive,
                 });
             }
             Err(e) => {
@@ -201,9 +196,12 @@ pub fn parse_project_md(content: &str) -> anyhow::Result<(ProjectFrontmatter, St
         .find(CLOSE)
         .ok_or_else(|| anyhow::anyhow!("PROJECT.md missing closing frontmatter delimiter '---'"))?;
 
-    let yaml_str = after_open
-        .get(..close_pos)
-        .ok_or_else(|| anyhow::anyhow!("failed to extract YAML content"))?;
+    // close_pos comes from find() on after_open, so it is always a valid in-bounds byte offset
+    #[expect(
+        clippy::string_slice,
+        reason = "close_pos is a valid byte offset from find()"
+    )]
+    let yaml_str = &after_open[..close_pos];
 
     let frontmatter: ProjectFrontmatter =
         serde_yml::from_str(yaml_str).context("failed to parse PROJECT.md frontmatter")?;
@@ -348,8 +346,9 @@ Some overview body text here.
             "Test Project",
             "name should match"
         );
-        assert!(
-            !index.entries().first().unwrap().is_archived,
+        assert_eq!(
+            index.entries().first().unwrap().status,
+            ProjectStatus::Active,
             "should not be archived"
         );
     }
@@ -371,8 +370,9 @@ Some overview body text here.
 
         let index = ProjectIndex::scan(&layout).await.unwrap();
         assert_eq!(index.entries().len(), 1, "should find one archived project");
-        assert!(
-            index.entries().first().unwrap().is_archived,
+        assert_eq!(
+            index.entries().first().unwrap().status,
+            ProjectStatus::Archived,
             "should be archived"
         );
     }
@@ -416,7 +416,6 @@ Some overview body text here.
                 description: "A project".to_string(),
                 status: ProjectStatus::Active,
                 dir_name: "my-project".to_string(),
-                is_archived: false,
             }],
         };
 
@@ -453,14 +452,12 @@ Some overview body text here.
                     description: "First project".to_string(),
                     status: ProjectStatus::Active,
                     dir_name: "project-a".to_string(),
-                    is_archived: false,
                 },
                 ProjectIndexEntry {
                     name: "Project B".to_string(),
                     description: "Second project".to_string(),
                     status: ProjectStatus::Archived,
                     dir_name: "project-b".to_string(),
-                    is_archived: true,
                 },
             ],
         };

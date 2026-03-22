@@ -213,8 +213,9 @@ mod projects_integration {
                 archived_entry.is_some(),
                 "archived project should still be in index"
             );
-            assert!(
-                archived_entry.unwrap().is_archived,
+            assert_eq!(
+                archived_entry.unwrap().status,
+                residuum::projects::types::ProjectStatus::Archived,
                 "should be marked as archived"
             );
         }

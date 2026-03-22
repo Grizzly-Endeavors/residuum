@@ -202,12 +202,13 @@ async fn write_deactivation_log(
     log_text: &str,
     now: NaiveDateTime,
 ) -> anyhow::Result<()> {
-    let date_dir = now.format("%Y-%m").to_string();
-    let day_file = now.format("log-%d").to_string();
-    let date_header = now.format("%Y-%m-%d").to_string();
-    let time_str = now.format("%H:%M").to_string();
+    let day_file = now.format("log-%d");
+    let date_header = now.format("%Y-%m-%d");
+    let time_str = now.format("%H:%M");
 
-    let log_dir = project_root.join("notes/log").join(&date_dir);
+    let log_dir = project_root
+        .join("notes/log")
+        .join(now.format("%Y-%m").to_string());
     tokio::fs::create_dir_all(&log_dir)
         .await
         .with_context(|| format!("failed to create log directory {}", log_dir.display()))?;
@@ -260,8 +261,7 @@ async fn collect_dir_entries(
             }
         }
     }
-    entries.sort_unstable();
-    entries.reverse();
+    entries.sort_unstable_by(|a, b| b.cmp(a));
     entries
 }
 
