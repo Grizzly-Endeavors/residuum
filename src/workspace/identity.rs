@@ -1,6 +1,6 @@
 //! Identity file loading for agent context assembly.
 
-use crate::error::FatalError;
+use crate::util::FatalError;
 
 use super::layout::WorkspaceLayout;
 

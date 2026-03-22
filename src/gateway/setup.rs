@@ -10,7 +10,7 @@ use std::sync::Arc;
 use axum::routing::get;
 
 use crate::config::Config;
-use crate::error::FatalError;
+use crate::util::FatalError;
 
 use super::web::{self, ConfigApiState};
 

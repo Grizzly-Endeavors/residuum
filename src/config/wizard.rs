@@ -5,7 +5,7 @@ use std::path::Path;
 use std::str::FromStr;
 
 use super::provider::ProviderKind;
-use crate::error::FatalError;
+use crate::util::FatalError;
 
 /// Answers collected from the setup wizard (interactive or flags).
 #[derive(Debug)]

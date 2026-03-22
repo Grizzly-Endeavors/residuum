@@ -95,7 +95,7 @@ pub(crate) async fn write_idx_jsonl(path: &Path, chunks: &[IndexChunk]) -> anyho
         lines.join("\n") + "\n"
     };
 
-    crate::fs::atomic_write(path, &content).await
+    crate::util::fs::atomic_write(path, &content).await
 }
 
 /// Read and parse an idx.jsonl file, returning chunks.

@@ -12,10 +12,10 @@
 //! - `agent <create|list|delete|info>`: manage named agent instances
 
 use residuum::config::Config;
-use residuum::error::FatalError;
 use residuum::gateway::protocol::{ClientMessage, ServerMessage};
 use residuum::interfaces::cli::CliClient;
 use residuum::interfaces::cli::commands::CommandEffect;
+use residuum::util::FatalError;
 
 #[tokio::main]
 async fn main() {

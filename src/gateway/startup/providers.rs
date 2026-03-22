@@ -1,13 +1,13 @@
 //! Model providers and memory pipeline initialization.
 
 use crate::config::Config;
-use crate::error::FatalError;
 use crate::memory::observer::Observer;
 use crate::memory::reflector::Reflector;
 use crate::models::{
     CompletionOptions, EmbeddingProvider, SharedHttpClient, WebSearchNativeConfig,
     build_embedding_provider, build_provider_chain,
 };
+use crate::util::FatalError;
 
 use super::memory::build_memory_components;
 

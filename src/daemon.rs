@@ -5,7 +5,7 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::error::FatalError;
+use crate::util::FatalError;
 
 /// Holds an exclusive advisory lock on the PID file for the daemon's lifetime.
 ///

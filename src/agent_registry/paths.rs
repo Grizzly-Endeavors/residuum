@@ -6,7 +6,7 @@
 use std::path::PathBuf;
 
 use crate::config::Config;
-use crate::error::FatalError;
+use crate::util::FatalError;
 
 /// Base directory for all named agents: `~/.residuum/agent_registry/`.
 ///

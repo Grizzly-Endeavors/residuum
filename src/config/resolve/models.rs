@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use std::str::FromStr;
 
 use crate::config::types::RoleOverrides;
-use crate::error::FatalError;
+use crate::util::FatalError;
 
 use super::super::deserialize::{ModelAssignment, ModelsConfigFile, ProviderEntryFile};
 use super::super::provider::{ModelSpec, ProviderKind, ProviderSpec};

@@ -108,7 +108,7 @@ pub(crate) async fn cloud_callback(
         tokio::task::spawn_blocking(move || {
             let mut store = SecretStore::load(&dir)?;
             store.set("cloud_token", &tok, &dir)?;
-            Ok::<(), crate::error::FatalError>(())
+            Ok::<(), crate::util::FatalError>(())
         })
         .await
     };

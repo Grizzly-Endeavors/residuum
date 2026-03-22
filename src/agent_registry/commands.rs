@@ -9,7 +9,7 @@ use tracing::{debug, trace, warn};
 
 use crate::config::Config;
 use crate::daemon;
-use crate::error::FatalError;
+use crate::util::FatalError;
 
 use super::paths;
 use super::registry::{AgentEntry, AgentRegistry};

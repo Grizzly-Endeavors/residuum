@@ -17,7 +17,7 @@ use std::path::Path;
 use aes_gcm_siv::aead::Aead;
 use aes_gcm_siv::{Aes256GcmSiv, KeyInit, Nonce};
 
-use crate::error::FatalError;
+use crate::util::FatalError;
 
 /// File names within the config directory.
 const KEY_FILE: &str = "secrets.key";

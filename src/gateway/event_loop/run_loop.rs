@@ -8,10 +8,10 @@ use std::sync::Arc;
 use tokio::time::Duration;
 
 use crate::config::Config;
-use crate::error::FatalError;
 use crate::gateway::types::{GatewayCore, GatewayExit, GatewayRuntime, GatewayState, ReloadSignal};
 use crate::memory::types::Visibility;
 use crate::pulse::scheduler::PulseScheduler;
+use crate::util::FatalError;
 
 use super::commands::handle_server_command;
 use super::http::{AdapterSenders, build_gateway_app, spawn_adapters, spawn_http_server};
@@ -284,7 +284,7 @@ fn spawn_tunnel(
     if let Some(ref cloud_cfg) = cfg.cloud {
         let cloud = cloud_cfg.clone();
         let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
-        let handle = crate::spawn::spawn_monitored("tunnel", async move {
+        let handle = crate::util::spawn_monitored("tunnel", async move {
             crate::tunnel::start_tunnel(cloud, shutdown_rx, status_tx).await;
         });
         (Some(handle), Some(shutdown_tx))
@@ -453,7 +453,7 @@ async fn graceful_shutdown(rt: &mut GatewayRuntime) {
 /// Spawn a fire-and-forget update check task.
 fn spawn_update_check(status: &crate::update::SharedUpdateStatus) {
     let status = Arc::clone(status);
-    crate::spawn::spawn_monitored("update-check", async move {
+    crate::util::spawn_monitored("update-check", async move {
         crate::update::check_for_update(&status).await;
     });
 }
@@ -480,7 +480,7 @@ fn respawn_tunnel(rt: &mut GatewayRuntime) {
         status_tx
             .send(crate::tunnel::TunnelStatus::Disconnected)
             .ok();
-        rt.tunnel_handle = Some(crate::spawn::spawn_monitored("tunnel", async move {
+        rt.tunnel_handle = Some(crate::util::spawn_monitored("tunnel", async move {
             crate::tunnel::start_tunnel(cloud, shutdown_rx, status_tx).await;
         }));
         rt.tunnel_shutdown_tx = Some(shutdown_tx);

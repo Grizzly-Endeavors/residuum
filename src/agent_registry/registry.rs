@@ -8,7 +8,7 @@ use std::path::Path;
 use serde::{Deserialize, Serialize};
 use tracing::{trace, warn};
 
-use crate::error::FatalError;
+use crate::util::FatalError;
 
 /// Starting port for named agents. Default agent uses 7700.
 const AGENT_PORT_START: u16 = 7701;

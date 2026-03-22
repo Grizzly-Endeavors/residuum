@@ -4,7 +4,6 @@ use std::path::Path;
 use std::sync::Arc;
 
 use crate::config::Config;
-use crate::error::FatalError;
 use crate::memory::chunk_extractor::read_idx_jsonl;
 use crate::memory::observer::{Observer, ObserverConfig};
 use crate::memory::reflector::{Reflector, ReflectorConfig};
@@ -12,6 +11,7 @@ use crate::memory::search::{HybridSearcher, MemoryIndex, RebuildResult, parse_ob
 use crate::memory::types::IndexManifest;
 use crate::memory::vector_store::VectorStore;
 use crate::models::{EmbeddingProvider, SharedHttpClient, build_provider_chain};
+use crate::util::FatalError;
 use crate::workspace::layout::WorkspaceLayout;
 use anyhow::Context;
 

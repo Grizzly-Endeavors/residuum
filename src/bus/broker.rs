@@ -11,7 +11,7 @@ use tracing::{debug, warn};
 use super::handle::{BrokerCommand, ErasedEvent, Publisher, Subscriber};
 use super::topics::{Carries, Topic};
 use super::types::{BusError, TopicId};
-use crate::spawn::spawn_monitored;
+use crate::util::spawn_monitored;
 
 /// Command channel capacity for the broker.
 const BROKER_COMMAND_CAPACITY: usize = 256;

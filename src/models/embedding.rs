@@ -9,7 +9,7 @@ use super::ModelError;
 use super::SharedHttpClient;
 use super::retry::RetryConfig;
 use crate::config::{ProviderKind, ProviderSpec};
-use crate::error::FatalError;
+use crate::util::FatalError;
 
 /// Trait for model providers that generate vector embeddings.
 #[async_trait]

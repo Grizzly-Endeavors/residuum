@@ -41,7 +41,7 @@ pub async fn load_observation_log(path: &Path) -> anyhow::Result<ObservationLog>
 pub async fn save_observation_log(path: &Path, log: &ObservationLog) -> anyhow::Result<()> {
     let json = serde_json::to_string_pretty(log).context("failed to serialize observation log")?;
 
-    crate::fs::atomic_write(path, &json).await
+    crate::util::fs::atomic_write(path, &json).await
 }
 
 /// Append observations to the observation log on disk.
@@ -89,7 +89,7 @@ pub(crate) async fn save_episode_observations(
     let json =
         serde_json::to_string(observations).context("failed to serialize episode observations")?;
 
-    crate::fs::atomic_write(path, &json).await
+    crate::util::fs::atomic_write(path, &json).await
 }
 
 /// Recursively walk `dir` for `ep-NNN.jsonl` files and return the maximum `NNN` found.

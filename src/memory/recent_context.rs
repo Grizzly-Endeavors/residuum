@@ -32,7 +32,7 @@ pub struct RecentContext {
 pub async fn save_recent_context(path: &Path, ctx: &RecentContext) -> anyhow::Result<()> {
     let json = serde_json::to_string_pretty(ctx).context("failed to serialize recent context")?;
 
-    crate::fs::atomic_write(path, &json).await
+    crate::util::fs::atomic_write(path, &json).await
 }
 
 /// Load a recent context from disk.

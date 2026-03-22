@@ -1,6 +1,6 @@
 //! Workspace bootstrapping: creates required directories and default identity files.
 
-use crate::error::FatalError;
+use crate::util::FatalError;
 
 use super::layout::WorkspaceLayout;
 

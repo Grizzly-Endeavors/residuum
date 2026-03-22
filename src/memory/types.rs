@@ -219,7 +219,7 @@ impl IndexManifest {
         let json =
             serde_json::to_string_pretty(self).context("failed to serialize index manifest")?;
 
-        crate::fs::atomic_write(path, &json).await
+        crate::util::fs::atomic_write(path, &json).await
     }
 }
 

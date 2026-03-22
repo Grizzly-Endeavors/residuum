@@ -97,7 +97,7 @@ async fn save_recent_messages(path: &Path, messages: &[RecentMessage]) -> anyhow
     let json =
         serde_json::to_string_pretty(messages).context("failed to serialize recent messages")?;
 
-    crate::fs::atomic_write(path, &json).await
+    crate::util::fs::atomic_write(path, &json).await
 }
 
 /// Append messages to the recent messages file, wrapping each with metadata.

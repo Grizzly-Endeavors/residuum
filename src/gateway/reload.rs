@@ -484,7 +484,7 @@ async fn reload_discord_adapter(rt: &mut GatewayRuntime, new_cfg: &Config) {
             rt.tz,
             rx,
         );
-        rt.discord_handle = Some(crate::spawn::spawn_monitored("discord", async move {
+        rt.discord_handle = Some(crate::util::spawn_monitored("discord", async move {
             if let Err(e) = discord.start().await {
                 tracing::error!(error = %e, "discord interface failed after reload");
             }
@@ -519,7 +519,7 @@ async fn reload_tunnel(rt: &mut GatewayRuntime, new_cfg: &Config) {
         let cloud = cloud_cfg.clone();
         let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
         let status_tx = std::sync::Arc::clone(&rt.tunnel_status_tx);
-        rt.tunnel_handle = Some(crate::spawn::spawn_monitored("tunnel", async move {
+        rt.tunnel_handle = Some(crate::util::spawn_monitored("tunnel", async move {
             crate::tunnel::start_tunnel(cloud, shutdown_rx, status_tx).await;
         }));
         rt.tunnel_shutdown_tx = Some(shutdown_tx);
@@ -555,7 +555,7 @@ async fn reload_telegram_adapter(rt: &mut GatewayRuntime, new_cfg: &Config) {
             rt.tz,
             rx,
         );
-        rt.telegram_handle = Some(crate::spawn::spawn_monitored("telegram", async move {
+        rt.telegram_handle = Some(crate::util::spawn_monitored("telegram", async move {
             if let Err(e) = telegram.start().await {
                 tracing::error!(error = %e, "telegram interface failed after reload");
             }

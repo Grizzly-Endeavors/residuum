@@ -5,8 +5,8 @@ use std::sync::Arc;
 use tokio::sync::mpsc;
 
 use crate::config::Config;
-use crate::error::FatalError;
 use crate::gateway::types::{GatewayState, ReloadSignal, ServerCommand};
+use crate::util::FatalError;
 
 use crate::gateway::web;
 use crate::gateway::ws::ws_handler;
@@ -162,7 +162,7 @@ pub fn spawn_adapters(
             tz,
             rx,
         );
-        discord_handle = Some(crate::spawn::spawn_monitored("discord", async move {
+        discord_handle = Some(crate::util::spawn_monitored("discord", async move {
             if let Err(e) = iface.start().await {
                 tracing::error!(error = %e, "discord interface failed");
             }
@@ -181,7 +181,7 @@ pub fn spawn_adapters(
             tz,
             rx,
         );
-        telegram_handle = Some(crate::spawn::spawn_monitored("telegram", async move {
+        telegram_handle = Some(crate::util::spawn_monitored("telegram", async move {
             if let Err(e) = iface.start().await {
                 tracing::error!(error = %e, "telegram interface failed");
             }

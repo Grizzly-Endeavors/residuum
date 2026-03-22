@@ -67,7 +67,7 @@ impl ActionStore {
             )
         })?;
 
-        crate::fs::atomic_write(&self.path, &json).await?;
+        crate::util::fs::atomic_write(&self.path, &json).await?;
 
         debug!(path = %self.path.display(), count = self.actions.len(), "saved scheduled actions");
         Ok(())

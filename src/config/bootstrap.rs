@@ -2,7 +2,7 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::error::FatalError;
+use crate::util::FatalError;
 
 /// Minimal config.toml written on first run — user edits this.
 const MINIMAL_CONFIG: &str = "# Residuum configuration. See config.example.toml for all options.\n\

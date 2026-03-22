@@ -2,7 +2,7 @@
 
 use std::path::PathBuf;
 
-use crate::error::FatalError;
+use crate::util::FatalError;
 
 use super::Config;
 use super::{bootstrap, deserialize, resolve};

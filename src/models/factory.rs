@@ -1,7 +1,7 @@
 //! Provider factory functions for constructing `ModelProvider` instances from config.
 
 use crate::config::{ProviderKind, ProviderSpec};
-use crate::error::FatalError;
+use crate::util::FatalError;
 
 use super::anthropic::AnthropicClient;
 use super::failover::FailoverProvider;
