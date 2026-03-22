@@ -63,14 +63,15 @@ impl SkillState {
         let (_fm, body) = parse_skill_md(&file_content)
             .inspect_err(|e| tracing::error!(name = %name, path = %skill_md_path.display(), error = %e, "failed to parse SKILL.md at activation time"))?;
 
-        let idx = self.active.len();
         self.active.push(ActiveSkill {
             name: entry.name.clone(),
             body,
         });
 
         tracing::info!(name = %name, "skill activated");
-        Ok(&self.active[idx])
+        self.active
+            .last()
+            .ok_or_else(|| anyhow::anyhow!("skill vec empty after push"))
     }
 
     /// Deactivate a skill by name.
