@@ -18,7 +18,7 @@ use super::http::{AdapterSenders, build_gateway_app, spawn_adapters, spawn_http_
 use super::pulse::handle_pulse_tick;
 use super::turns::{handle_inbound_message, persist_and_maybe_observe};
 
-use crate::gateway::memory::{MemorySubsystems, execute_observation};
+use crate::gateway::memory::execute_observation;
 use crate::gateway::{actions, idle, reload, watcher, web};
 
 /// Start the WebSocket gateway server and run the main event loop.
@@ -59,7 +59,7 @@ pub async fn run_gateway(cfg: Config) -> Result<GatewayExit, FatalError> {
     let cloud_config = cfg.cloud.clone();
     let rt = build_runtime(parts, core, receivers, cfg, spawned, update, cloud_config).await?;
 
-    Ok(Box::pin(run_event_loop(rt)).await)
+    Ok(run_event_loop(rt).await)
 }
 
 /// Handles returned from spawning the HTTP server, adapters, tunnel, and watcher.
@@ -147,20 +147,22 @@ struct UpdateChannels {
     gateway_shutdown_rx: tokio::sync::mpsc::Receiver<()>,
 }
 
-/// Assemble the `GatewayRuntime` from initialized parts and spawned handles.
-#[expect(
-    clippy::too_many_lines,
-    reason = "needs refactor — extract bus infrastructure spawning"
-)]
-async fn build_runtime(
-    parts: crate::gateway::startup::GatewayComponents,
-    core: GatewayCore,
-    receivers: crate::gateway::types::CoreReceivers,
-    cfg: Config,
-    spawned: SpawnedHandles,
-    update: UpdateChannels,
-    cloud_config: Option<crate::config::CloudConfig>,
-) -> Result<GatewayRuntime, FatalError> {
+/// Handles for bus infrastructure spawned during gateway startup.
+struct BusInfrastructure {
+    agent_subscriber: crate::bus::Subscriber<crate::bus::MessageEvent>,
+    error_subscriber: crate::bus::Subscriber<crate::bus::ErrorEvent>,
+    notify_handles: Vec<tokio::task::JoinHandle<()>>,
+    bus_infra_handles: Vec<tokio::task::JoinHandle<()>>,
+}
+
+/// Subscribe to bus topics and spawn bus-level infrastructure tasks.
+///
+/// Subscribes the agent and error notification channels, spawns notify subscribers,
+/// the background result bridge, notification router, and subagent registry.
+async fn spawn_bus_infrastructure(
+    core: &GatewayCore,
+    parts: &mut crate::gateway::startup::GatewayComponents,
+) -> Result<BusInfrastructure, FatalError> {
     let agent_subscriber = core
         .bus_handle
         .subscribe(crate::bus::topics::UserMessage)
@@ -185,9 +187,13 @@ async fn build_runtime(
     )
     .await;
 
-    // Spawn bus infrastructure (not restarted on workspace reload)
+    let background_result_rx = parts
+        .background_result_rx
+        .take()
+        .ok_or_else(|| FatalError::Gateway("background_result_rx already consumed".to_string()))?;
+
     let mut bus_infra_handles = Vec::new();
-    let shared_result_rx = std::sync::Arc::new(tokio::sync::Mutex::new(parts.background_result_rx));
+    let shared_result_rx = Arc::new(tokio::sync::Mutex::new(background_result_rx));
     bus_infra_handles.push(crate::background::bridge::spawn_result_bridge(
         shared_result_rx,
         core.publisher.clone(),
@@ -216,6 +222,26 @@ async fn build_runtime(
         bus_infra_handles.push(h);
     }
 
+    Ok(BusInfrastructure {
+        agent_subscriber,
+        error_subscriber,
+        notify_handles,
+        bus_infra_handles,
+    })
+}
+
+/// Assemble the `GatewayRuntime` from initialized parts and spawned handles.
+async fn build_runtime(
+    mut parts: crate::gateway::startup::GatewayComponents,
+    core: GatewayCore,
+    receivers: crate::gateway::types::CoreReceivers,
+    cfg: Config,
+    spawned: SpawnedHandles,
+    update: UpdateChannels,
+    cloud_config: Option<crate::config::CloudConfig>,
+) -> Result<GatewayRuntime, FatalError> {
+    let infra = spawn_bus_infrastructure(&core, &mut parts).await?;
+
     Ok(GatewayRuntime {
         layout: parts.layout,
         tz: parts.tz,
@@ -233,15 +259,15 @@ async fn build_runtime(
         project_state: parts.project_state,
         skill_state: parts.skill_state,
         pulse_enabled: parts.pulse_enabled,
-        notify_handles,
-        bus_infra_handles,
+        notify_handles: infra.notify_handles,
+        bus_infra_handles: infra.bus_infra_handles,
         http_client: parts.http_client,
         spawn_context: parts.spawn_context,
         bus_handle: core.bus_handle,
         publisher: core.publisher,
-        agent_subscriber,
+        agent_subscriber: infra.agent_subscriber,
         endpoint_registry: parts.endpoint_registry,
-        error_subscriber,
+        error_subscriber: infra.error_subscriber,
         last_output_endpoint: None,
         output_topic_override_tx: parts.output_topic_override_tx,
         reload_rx: receivers.reload,
@@ -460,7 +486,7 @@ fn spawn_update_check(status: &crate::update::SharedUpdateStatus) {
 
 /// Run the memory observation pipeline.
 async fn run_observation(rt: &mut GatewayRuntime) {
-    let mem = MemorySubsystems {
+    let mem = crate::gateway::memory::MemorySubsystems {
         observer: &rt.observer,
         reflector: &rt.reflector,
         search_index: &rt.search_index,

@@ -460,40 +460,64 @@ async fn reload_agent_abilities(rt: &mut GatewayRuntime, new_cfg: &Config) {
     );
 }
 
+/// Shut down an adapter and optionally start a replacement using the provided build closure.
+///
+/// If `build` is `Some`, spawns a new adapter task and records the handle and shutdown sender.
+/// If `build` is `None`, the adapter is stopped and not restarted.
+async fn reload_adapter<F, Fut>(
+    shutdown_tx: &mut Option<tokio::sync::watch::Sender<bool>>,
+    handle: &mut Option<tokio::task::JoinHandle<()>>,
+    name: &'static str,
+    build: Option<F>,
+) where
+    F: FnOnce(tokio::sync::watch::Receiver<bool>) -> Fut,
+    Fut: std::future::Future<Output = ()> + Send + 'static,
+{
+    shutdown_adapter(shutdown_tx, handle, name).await;
+    match build {
+        Some(build_fn) => {
+            let (tx, rx) = tokio::sync::watch::channel(false);
+            *handle = Some(crate::util::spawn_monitored(name, build_fn(rx)));
+            *shutdown_tx = Some(tx);
+            tracing::info!("{name} adapter restarted with new token");
+        }
+        None => {
+            tracing::info!("{name} adapter removed from config");
+        }
+    }
+}
+
 /// Stop the existing Discord adapter (if running) and start a new one if configured.
 async fn reload_discord_adapter(rt: &mut GatewayRuntime, new_cfg: &Config) {
-    shutdown_adapter(
+    let senders = crate::gateway::event_loop::AdapterSenders {
+        publisher: rt.publisher.clone(),
+        bus_handle: rt.bus_handle.clone(),
+        reload: rt.reload_tx.clone(),
+        command: rt.command_tx.clone(),
+    };
+    reload_adapter(
         &mut rt.discord_shutdown_tx,
         &mut rt.discord_handle,
         "discord",
+        new_cfg.discord.as_ref().map(|cfg| {
+            let cfg = cfg.clone();
+            let workspace_dir = new_cfg.workspace_dir.clone();
+            let tz = rt.tz;
+            move |rx: tokio::sync::watch::Receiver<bool>| async move {
+                let iface = crate::interfaces::discord::DiscordInterface::new(
+                    cfg,
+                    senders,
+                    workspace_dir,
+                    tz,
+                    rx,
+                );
+                if let Err(e) = iface.start().await {
+                    tracing::error!(error = %e, "discord interface failed after reload");
+                }
+            }
+        }),
     )
     .await;
-
-    if let Some(ref discord_cfg) = new_cfg.discord {
-        let (tx, rx) = tokio::sync::watch::channel(false);
-        let senders = crate::gateway::event_loop::AdapterSenders {
-            publisher: rt.publisher.clone(),
-            bus_handle: rt.bus_handle.clone(),
-            reload: rt.reload_tx.clone(),
-            command: rt.command_tx.clone(),
-        };
-        let discord = crate::interfaces::discord::DiscordInterface::new(
-            discord_cfg.clone(),
-            senders,
-            new_cfg.workspace_dir.clone(),
-            rt.tz,
-            rx,
-        );
-        rt.discord_handle = Some(crate::util::spawn_monitored("discord", async move {
-            if let Err(e) = discord.start().await {
-                tracing::error!(error = %e, "discord interface failed after reload");
-            }
-        }));
-        rt.discord_shutdown_tx = Some(tx);
-        tracing::info!("discord adapter restarted with new token");
-    } else {
-        tracing::info!("discord adapter removed from config");
-    }
 }
 
 /// Stop the existing tunnel (if running) and start a new one if configured.
@@ -533,38 +557,35 @@ async fn reload_tunnel(rt: &mut GatewayRuntime, new_cfg: &Config) {
 
 /// Stop the existing Telegram adapter (if running) and start a new one if configured.
 async fn reload_telegram_adapter(rt: &mut GatewayRuntime, new_cfg: &Config) {
-    shutdown_adapter(
+    let senders = crate::gateway::event_loop::AdapterSenders {
+        publisher: rt.publisher.clone(),
+        bus_handle: rt.bus_handle.clone(),
+        reload: rt.reload_tx.clone(),
+        command: rt.command_tx.clone(),
+    };
+    reload_adapter(
         &mut rt.telegram_shutdown_tx,
         &mut rt.telegram_handle,
         "telegram",
+        new_cfg.telegram.as_ref().map(|cfg| {
+            let cfg = cfg.clone();
+            let workspace_dir = new_cfg.workspace_dir.clone();
+            let tz = rt.tz;
+            move |rx: tokio::sync::watch::Receiver<bool>| async move {
+                let iface = crate::interfaces::telegram::TelegramInterface::new(
+                    cfg,
+                    senders,
+                    workspace_dir,
+                    tz,
+                    rx,
+                );
+                if let Err(e) = iface.start().await {
+                    tracing::error!(error = %e, "telegram interface failed after reload");
+                }
+            }
+        }),
     )
     .await;
-
-    if let Some(ref telegram_cfg) = new_cfg.telegram {
-        let (tx, rx) = tokio::sync::watch::channel(false);
-        let senders = crate::gateway::event_loop::AdapterSenders {
-            publisher: rt.publisher.clone(),
-            bus_handle: rt.bus_handle.clone(),
-            reload: rt.reload_tx.clone(),
-            command: rt.command_tx.clone(),
-        };
-        let telegram = crate::interfaces::telegram::TelegramInterface::new(
-            telegram_cfg.clone(),
-            senders,
-            new_cfg.workspace_dir.clone(),
-            rt.tz,
-            rx,
-        );
-        rt.telegram_handle = Some(crate::util::spawn_monitored("telegram", async move {
-            if let Err(e) = telegram.start().await {
-                tracing::error!(error = %e, "telegram interface failed after reload");
-            }
-        }));
-        rt.telegram_shutdown_tx = Some(tx);
-        tracing::info!("telegram adapter restarted with new token");
-    } else {
-        tracing::info!("telegram adapter removed from config");
-    }
 }
 
 #[cfg(test)]

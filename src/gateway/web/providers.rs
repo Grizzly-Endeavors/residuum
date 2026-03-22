@@ -2,14 +2,18 @@
 
 use std::time::Duration;
 
+use axum::body::Body;
 use axum::extract::State;
-use axum::response::Json;
+use axum::http::{StatusCode, header};
+use axum::response::{Json, Response};
 use serde::{Deserialize, Serialize};
 
+use crate::config::Config;
 use crate::config::secrets::SecretStore;
 use crate::models::anthropic::is_oauth_key;
 
 use super::ConfigApiState;
+use super::config::ValidateResponse;
 
 /// Request body for `POST /api/providers/models`.
 #[derive(Deserialize)]
@@ -307,4 +311,84 @@ async fn fetch_ollama_models(
             })
         })
         .collect())
+}
+
+/// `GET /api/providers/raw` — return raw `providers.toml` contents as text.
+pub(super) async fn api_providers_raw_get(
+    State(state): State<ConfigApiState>,
+) -> Result<Response, (StatusCode, String)> {
+    let providers_path = state.config_dir.join("providers.toml");
+    let contents = tokio::fs::read_to_string(&providers_path)
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("failed to read providers.toml: {e}"),
+            )
+        })?;
+    Response::builder()
+        .header(header::CONTENT_TYPE, "text/plain; charset=utf-8")
+        .body(Body::from(contents))
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("response build error: {e}"),
+            )
+        })
+}
+
+/// `PUT /api/providers/raw` — validate and write `providers.toml`, trigger reload.
+pub(super) async fn api_providers_raw_put(
+    State(state): State<ConfigApiState>,
+    body: String,
+) -> Result<Json<ValidateResponse>, (StatusCode, Json<ValidateResponse>)> {
+    if let Err(e) = Config::validate_providers_toml(&body, &state.config_dir) {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(ValidateResponse {
+                valid: false,
+                error: Some(e),
+            }),
+        ));
+    }
+
+    let providers_path = state.config_dir.join("providers.toml");
+    tokio::fs::write(&providers_path, &body)
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ValidateResponse {
+                    valid: false,
+                    error: Some(format!("failed to write providers.toml: {e}")),
+                }),
+            )
+        })?;
+
+    // Trigger root reload — provider changes affect model resolution
+    if let Some(reload_tx) = &state.reload_tx {
+        reload_tx.send(super::super::ReloadSignal::Root).ok();
+    }
+
+    Ok(Json(ValidateResponse {
+        valid: true,
+        error: None,
+    }))
+}
+
+/// `POST /api/providers/validate` — validate providers TOML body without saving.
+pub(super) async fn api_providers_validate(
+    State(state): State<ConfigApiState>,
+    body: String,
+) -> Json<ValidateResponse> {
+    match Config::validate_providers_toml(&body, &state.config_dir) {
+        Ok(()) => Json(ValidateResponse {
+            valid: true,
+            error: None,
+        }),
+        Err(e) => Json(ValidateResponse {
+            valid: false,
+            error: Some(e),
+        }),
+    }
 }

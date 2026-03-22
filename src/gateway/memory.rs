@@ -2,9 +2,9 @@
 
 use std::sync::Arc;
 
-use super::helpers::publish_notice;
+use super::helpers::{publish_error, publish_notice};
 use crate::agent::Agent;
-use crate::bus::{ErrorEvent, NotifyName, Publisher, SYSTEM_CHANNEL, topics};
+use crate::bus::Publisher;
 use crate::memory::log_store::load_observation_log;
 use crate::memory::observer::{ObserveAction, ObserveResult, Observer};
 use crate::memory::recent_context::{RecentContext, save_recent_context};
@@ -104,6 +104,42 @@ pub(super) async fn execute_observation(mem: &MemorySubsystems<'_>, agent: &mut 
     }
 }
 
+/// Embed a batch of texts, then call a blocking insert closure with the resulting vectors.
+///
+/// Returns `true` on success, `false` if embedding or insertion fails.
+async fn embed_and_insert<F, T>(
+    ep: &dyn EmbeddingProvider,
+    texts: &[&str],
+    embed_label: &'static str,
+    insert_label: &'static str,
+    insert: F,
+) -> bool
+where
+    F: FnOnce(Vec<Vec<f32>>) -> anyhow::Result<T> + Send + 'static,
+    T: Send + 'static,
+{
+    match ep.embed(texts).await {
+        Ok(response) => {
+            let embeddings = response.embeddings;
+            match tokio::task::spawn_blocking(move || insert(embeddings)).await {
+                Ok(Ok(_)) => true,
+                Ok(Err(e)) => {
+                    tracing::warn!(error = %e, "failed to {insert_label}");
+                    false
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, "{insert_label} task panicked");
+                    false
+                }
+            }
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "failed to embed {embed_label}");
+            false
+        }
+    }
+}
+
 /// Embed observations and chunks from an observer result into the vector store.
 ///
 /// Silently returns `false` if no embedding provider or vector store is configured.
@@ -120,69 +156,45 @@ async fn embed_observation_result(
 
     let mut all_ok = true;
 
-    // Embed observations
     if !result.observations.is_empty() {
         let texts: Vec<&str> = result
             .observations
             .iter()
             .map(|o| o.content.as_str())
             .collect();
-        match ep.embed(&texts).await {
-            Ok(response) => {
-                let vs = Arc::clone(vs);
-                let episode_id = result.id.clone();
-                let date = result.date.clone();
-                let observations = result.observations.clone();
-                let embeddings = response.embeddings;
-                match tokio::task::spawn_blocking(move || {
-                    vs.insert_observations(&episode_id, &date, &observations, &embeddings)
-                })
-                .await
-                {
-                    Ok(Err(e)) => {
-                        tracing::warn!(error = %e, "failed to insert observation vectors");
-                        all_ok = false;
-                    }
-                    Err(e) => {
-                        tracing::warn!(error = %e, "observation vector insert task panicked");
-                        all_ok = false;
-                    }
-                    Ok(Ok(_)) => {}
-                }
-            }
-            Err(e) => {
-                tracing::warn!(error = %e, "failed to embed observations");
-                all_ok = false;
-            }
+        let vs2 = Arc::clone(vs);
+        let episode_id = result.id.clone();
+        let date = result.date.clone();
+        let observations = result.observations.clone();
+        if !embed_and_insert(
+            ep.as_ref(),
+            &texts,
+            "observations",
+            "insert observation vectors",
+            move |embeddings| {
+                vs2.insert_observations(&episode_id, &date, &observations, &embeddings)
+            },
+        )
+        .await
+        {
+            all_ok = false;
         }
     }
 
-    // Embed chunks
     if !result.chunks.is_empty() {
         let texts: Vec<&str> = result.chunks.iter().map(|c| c.content.as_str()).collect();
-        match ep.embed(&texts).await {
-            Ok(response) => {
-                let vs = Arc::clone(vs);
-                let chunks = result.chunks.clone();
-                let embeddings = response.embeddings;
-                match tokio::task::spawn_blocking(move || vs.insert_chunks(&chunks, &embeddings))
-                    .await
-                {
-                    Ok(Err(e)) => {
-                        tracing::warn!(error = %e, "failed to insert chunk vectors");
-                        all_ok = false;
-                    }
-                    Err(e) => {
-                        tracing::warn!(error = %e, "chunk vector insert task panicked");
-                        all_ok = false;
-                    }
-                    Ok(Ok(_)) => {}
-                }
-            }
-            Err(e) => {
-                tracing::warn!(error = %e, "failed to embed chunks");
-                all_ok = false;
-            }
+        let vs2 = Arc::clone(vs);
+        let chunks = result.chunks.clone();
+        if !embed_and_insert(
+            ep.as_ref(),
+            &texts,
+            "chunks",
+            "insert chunk vectors",
+            move |embeddings| vs2.insert_chunks(&chunks, &embeddings),
+        )
+        .await
+        {
+            all_ok = false;
         }
     }
 
@@ -252,22 +264,6 @@ async fn run_reflector_check(reflector: &Reflector, layout: &WorkspaceLayout) ->
         }
     } else {
         false
-    }
-}
-
-/// Publish an error to the system notification channel.
-async fn publish_error(publisher: &Publisher, message: String) {
-    if let Err(e) = publisher
-        .publish(
-            topics::Notification(NotifyName::from(SYSTEM_CHANNEL)),
-            ErrorEvent {
-                correlation_id: String::new(),
-                message,
-            },
-        )
-        .await
-    {
-        tracing::warn!(error = %e, "failed to publish error to bus");
     }
 }
 
