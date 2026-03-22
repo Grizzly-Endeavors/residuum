@@ -169,12 +169,14 @@ impl McpRegistry {
             .map(|s| s.name.clone())
             .collect();
 
-        for name in &to_stop {
-            self.servers.retain(|s| s.name != *name);
-        }
-
         result.to_stop = to_stop;
         result
+    }
+
+    fn mark_failed_if_tracked(&mut self, name: &str, reason: &str) {
+        if let Some(server) = self.servers.iter_mut().find(|s| s.name == name) {
+            server.status = McpStatus::Failed(reason.to_string());
+        }
     }
 
     /// Connect to an MCP server, list its tools, and mark it running.
@@ -188,18 +190,14 @@ impl McpRegistry {
         let client = match McpClient::connect(entry).await {
             Ok(c) => c,
             Err(e) => {
-                if let Some(server) = self.servers.iter_mut().find(|s| s.name == entry.name) {
-                    server.status = McpStatus::Failed(e.to_string());
-                }
+                self.mark_failed_if_tracked(&entry.name, &e.to_string());
                 return Err(e);
             }
         };
         let tools = match client.list_tools().await {
             Ok(t) => t,
             Err(e) => {
-                if let Some(server) = self.servers.iter_mut().find(|s| s.name == entry.name) {
-                    server.status = McpStatus::Failed(e.to_string());
-                }
+                self.mark_failed_if_tracked(&entry.name, &e.to_string());
                 return Err(e);
             }
         };
@@ -315,8 +313,9 @@ impl McpRegistry {
             }
         }
 
-        // Removed servers were already dropped by reconcile() (no graceful shutdown).
-        // ChildWithCleanup handles process cleanup on drop.
+        for name in &diff.to_stop {
+            self.disconnect(name).await;
+        }
 
         report
     }
@@ -381,9 +380,9 @@ impl McpRegistry {
 
         if state.active_count == 0 {
             tracing::warn!(project = %project_name, "deactivate_project called with active_count already zero — possible double-deactivation");
-        } else {
-            state.active_count -= 1;
+            return Vec::new();
         }
+        state.active_count -= 1;
 
         if state.active_count == 0 {
             let server_names: Vec<String> = state.servers.iter().map(|s| s.name.clone()).collect();
@@ -474,6 +473,7 @@ impl McpRegistry {
     }
 
     /// Mark a server as running (used in tests without a live client).
+    #[doc(hidden)]
     pub fn mark_running(&mut self, name: &str) {
         if let Some(server) = self.servers.iter_mut().find(|s| s.name == name) {
             server.status = McpStatus::Running;
@@ -481,11 +481,13 @@ impl McpRegistry {
     }
 
     /// Mark a server as stopped and remove it from tracking.
+    #[cfg(test)]
     pub fn mark_stopped(&mut self, name: &str) {
         self.servers.retain(|s| s.name != name);
     }
 
     /// Mark a server as failed with a reason.
+    #[cfg(test)]
     pub fn mark_failed(&mut self, name: &str, reason: &str) {
         if let Some(server) = self.servers.iter_mut().find(|s| s.name == name) {
             server.status = McpStatus::Failed(reason.to_string());
@@ -496,6 +498,7 @@ impl McpRegistry {
     ///
     /// Returns names of servers that were running or pending.
     /// Clients are dropped (child processes killed via `ChildWithCleanup::drop`).
+    #[cfg(test)]
     pub fn stop_all(&mut self) -> Vec<String> {
         let names: Vec<String> = self
             .servers
@@ -577,7 +580,11 @@ mod tests {
         let result = registry.reconcile(&[entry("fs", "mcp-fs")]);
         assert!(result.to_start.is_empty(), "fs already running");
         assert_eq!(result.to_stop, vec!["git"], "git should be stopped");
-        assert_eq!(registry.servers().len(), 1, "only fs should remain tracked");
+        assert_eq!(
+            registry.servers().len(),
+            2,
+            "reconcile does not remove servers; caller handles graceful shutdown"
+        );
     }
 
     #[test]

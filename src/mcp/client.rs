@@ -195,25 +195,28 @@ impl McpClient {
     }
 }
 
-static ENV_VAR_RE: LazyLock<Option<regex::Regex>> =
-    LazyLock::new(|| regex::Regex::new(r"\$\{([^}:]+?)(?::-(.*?))?\}").ok());
+#[expect(
+    clippy::expect_used,
+    reason = "hardcoded regex literal is always valid"
+)]
+static ENV_VAR_RE: LazyLock<regex::Regex> = LazyLock::new(|| {
+    regex::Regex::new(r"\$\{([^}:]+?)(?::-(.*?))?\}").expect("hardcoded regex is valid")
+});
 
 /// Expand `${VAR}` and `${VAR:-default}` patterns in a string using environment variables.
 ///
 /// Unresolved variables with no default are replaced with an empty string.
 #[must_use]
 pub fn expand_env_vars(input: &str) -> String {
-    let Some(re) = ENV_VAR_RE.as_ref() else {
-        return input.to_string();
-    };
-    re.replace_all(input, |caps: &regex::Captures<'_>| {
-        let var_name = caps.get(1).map_or("", |m| m.as_str());
-        match std::env::var(var_name) {
-            Ok(val) => val,
-            Err(_) => caps.get(2).map_or("", |m| m.as_str()).to_string(),
-        }
-    })
-    .into_owned()
+    ENV_VAR_RE
+        .replace_all(input, |caps: &regex::Captures<'_>| {
+            let var_name = caps.get(1).map_or("", |m| m.as_str());
+            match std::env::var(var_name) {
+                Ok(val) => val,
+                Err(_) => caps.get(2).map_or("", |m| m.as_str()).to_string(),
+            }
+        })
+        .into_owned()
 }
 
 /// Expand env vars in header values and convert to HTTP header types.
