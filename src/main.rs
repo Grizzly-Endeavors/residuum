@@ -199,13 +199,9 @@ async fn run_serve_foreground_inner(
 
     loop {
         Config::bootstrap_at_dir(&config_dir)?;
-        let mut cfg_result = Config::load_at(&config_dir);
-        // Set config_dir on success so the gateway knows where config lives
-        if let Ok(ref mut cfg) = cfg_result {
-            cfg.config_dir.clone_from(&config_dir);
-        }
-        match cfg_result {
-            Ok(cfg) => {
+        match Config::load_at(&config_dir) {
+            Ok(mut cfg) => {
+                cfg.config_dir.clone_from(&config_dir);
                 tracing::info!(
                     agent = agent_name.unwrap_or("(default)"),
                     model = cfg.main.first().map_or("(none)", |s| s.model.model.as_str()),
@@ -226,28 +222,15 @@ async fn run_serve_foreground_inner(
                 // Config broken on restart — try restoring from backup
                 tracing::warn!(error = %err, "config invalid, attempting rollback from backup");
                 if residuum::gateway::rollback_config(&config_dir) {
-                    // Backup restored — retry loading
-                    match Config::load_at(&config_dir) {
-                        Ok(mut cfg) => {
-                            cfg.config_dir.clone_from(&config_dir);
-                            tracing::info!("config restored from backup, starting gateway");
-                            // Box::pin reduces stack frame size — this future is large
-                            match Box::pin(residuum::gateway::run_gateway(cfg)).await? {
-                                residuum::gateway::GatewayExit::Restart => {
-                                    return re_exec_serve_foreground();
-                                }
-                                residuum::gateway::GatewayExit::Shutdown => {}
-                            }
-                            break;
-                        }
-                        Err(retry_err) => {
-                            return Err(FatalError::Config(format!(
-                                "config invalid after rollback: {retry_err}\n\n\
-                                 fix {}/config.toml and providers.toml manually, then restart",
-                                config_dir.display()
-                            )));
-                        }
+                    if let Err(retry_err) = Config::load_at(&config_dir) {
+                        return Err(FatalError::Config(format!(
+                            "config invalid after rollback: {retry_err}\n\n\
+                             fix {}/config.toml and providers.toml manually, then restart",
+                            config_dir.display()
+                        )));
                     }
+                    tracing::info!("config restored from backup, starting gateway");
+                    continue;
                 }
                 tracing::warn!("config rollback failed: no backup available");
                 return Err(FatalError::Config(format!(
@@ -256,16 +239,15 @@ async fn run_serve_foreground_inner(
                     config_dir.display()
                 )));
             }
-            Err(err) if agent_name.is_some() => {
-                // Named agents don't get setup wizard — config must be ready
-                return Err(FatalError::Config(format!(
-                    "config invalid for agent '{}': {err}\n\n\
-                     edit {}/config.toml manually or recreate the agent",
-                    agent_name.unwrap_or(""),
-                    config_dir.display()
-                )));
-            }
             Err(err) => {
+                if let Some(name) = agent_name {
+                    // Named agents don't get setup wizard — config must be ready
+                    return Err(FatalError::Config(format!(
+                        "config invalid for agent '{name}': {err}\n\n\
+                         edit {}/config.toml manually or recreate the agent",
+                        config_dir.display()
+                    )));
+                }
                 // First boot — setup wizard (default agent only)
                 tracing::warn!(error = %err, "config invalid, starting setup wizard");
                 // Box::pin reduces stack frame size — this future is large
@@ -617,6 +599,7 @@ async fn run_connect(url: &str, verbose: bool) -> Result<(), FatalError> {
 
     let mut msg_counter: u64 = 0;
     let mut indicator_tick = tokio::time::interval(std::time::Duration::from_millis(300));
+    indicator_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     // Track whether we need to unblock the readline gate after the current turn
     let mut turn_active = false;
 
@@ -994,6 +977,19 @@ fn parse_debug_flag(args: &[String]) -> Result<Option<residuum::daemon::DebugMod
     Ok(None)
 }
 
+fn end_turn(
+    client: &mut CliClient,
+    msg: &ServerMessage,
+    turn_active: &mut bool,
+    gate_tx: &std::sync::mpsc::Sender<()>,
+) {
+    client.display(msg);
+    *turn_active = false;
+    if gate_tx.send(()).is_err() {
+        tracing::debug!("prompt gate send failed: readline thread has exited");
+    }
+}
+
 /// Process a single WebSocket frame from the gateway.
 ///
 /// Returns `Break(())` to exit the event loop, `Continue(())` otherwise.
@@ -1028,18 +1024,10 @@ fn handle_ws_frame(
         Ok(ref server_msg @ ServerMessage::Response { ref reply_to, .. })
             if *turn_active && !reply_to.is_empty() =>
         {
-            client.display(server_msg);
-            *turn_active = false;
-            if gate_tx.send(()).is_err() {
-                tracing::debug!("prompt gate send failed: readline thread has exited");
-            }
+            end_turn(client, server_msg, turn_active, gate_tx);
         }
         Ok(ref server_msg @ ServerMessage::Error { .. }) if *turn_active => {
-            client.display(server_msg);
-            *turn_active = false;
-            if gate_tx.send(()).is_err() {
-                tracing::debug!("prompt gate send failed: readline thread has exited");
-            }
+            end_turn(client, server_msg, turn_active, gate_tx);
         }
         Ok(server_msg) => client.display(&server_msg),
         Err(e) => tracing::warn!(error = %e, "failed to parse server message"),
