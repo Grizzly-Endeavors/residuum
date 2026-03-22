@@ -27,6 +27,9 @@ pub fn write_crash_note(msg: &str) {
         || std::env::temp_dir().join("residuum-crash.log"),
         |h| h.join(".residuum").join("crash.log"),
     );
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).ok();
+    }
     std::fs::OpenOptions::new()
         .create(true)
         .append(true)
@@ -240,6 +243,7 @@ pub fn init_daemon_tracing(debug_mode: Option<DebugMode>, agent_name: Option<&st
                 .filename_prefix(&log_prefix)
                 .filename_suffix("log")
                 .rotation(tracing_appender::rolling::Rotation::DAILY)
+                .max_log_files(30)
                 .build(std::env::temp_dir())
                 .unwrap_or_else(|e2| {
                     fatal_no_log_appender(&format!(
@@ -260,7 +264,7 @@ pub fn init_daemon_tracing(debug_mode: Option<DebugMode>, agent_name: Option<&st
     tracing_subscriber::registry()
         .with(env_filter)
         .with(file_layer)
-        .with(Some(stderr_layer))
+        .with(debug_mode.map(|_| stderr_layer))
         .init();
     tracing::info!(
         dir = %log_dir.display(),
