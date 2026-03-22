@@ -24,10 +24,6 @@ const MIN_BACKOFF: Duration = Duration::from_secs(1);
 /// Maximum backoff duration between reconnection attempts.
 const MAX_BACKOFF: Duration = Duration::from_secs(60);
 
-/// Default keepalive timeout — 3x the relay's default 30s keepalive interval.
-/// Used as a fallback when the server does not provide `keepalive_interval_secs`.
-const DEFAULT_KEEPALIVE_TIMEOUT: Duration = Duration::from_secs(90);
-
 /// Calculate the next backoff duration by doubling the current value, capped at
 /// [`MAX_BACKOFF`], with random jitter (0.5x–1.5x) to avoid thundering herd.
 #[must_use]
@@ -36,27 +32,6 @@ fn next_backoff(current: Duration) -> Duration {
     let base = doubled.min(MAX_BACKOFF);
     let jitter = rand::thread_rng().gen_range(0.5_f64..1.5);
     base.mul_f64(jitter)
-}
-
-/// Extract the keepalive timeout from a `Connected` frame.
-fn keepalive_timeout_from_frame(connected: &TunnelFrame) -> Duration {
-    if let TunnelFrame::Connected {
-        ref user_id,
-        keepalive_interval_secs,
-    } = *connected
-    {
-        let timeout = Duration::from_secs(keepalive_interval_secs * 3);
-        info!(
-            user_id = %user_id,
-            keepalive_interval_secs,
-            keepalive_timeout_secs = timeout.as_secs(),
-            "tunnel connected for user {user_id}, keepalive every {keepalive_interval_secs}s"
-        );
-        timeout
-    } else {
-        warn!("received non-Connected frame where Connected was expected, using default keepalive");
-        DEFAULT_KEEPALIVE_TIMEOUT
-    }
 }
 
 /// Start the tunnel client, maintaining a persistent connection to the cloud
@@ -127,7 +102,7 @@ pub(crate) async fn start_tunnel(
         // indefinitely if the relay accepts the WS but never sends Connected).
         let connected_result =
             tokio::time::timeout(Duration::from_secs(15), wait_for_connected(&mut read)).await;
-        let connected = match connected_result {
+        let (user_id, keepalive_interval_secs) = match connected_result {
             Err(_) => {
                 warn!(url = %cfg.relay_url, "timed out waiting for Connected frame from relay");
                 tokio::time::sleep(backoff).await;
@@ -140,19 +115,24 @@ pub(crate) async fn start_tunnel(
                 backoff = next_backoff(backoff);
                 continue;
             }
-            Ok(Some(frame)) => frame,
+            Ok(Some(pair)) => pair,
         };
 
-        if let TunnelFrame::Connected { ref user_id, .. } = connected {
-            status_tx
-                .send(TunnelStatus::Connected {
-                    user_id: user_id.clone(),
-                })
-                .unwrap_or_else(|_| {
-                    debug!("status receiver dropped");
-                });
-        }
-        let keepalive_timeout = keepalive_timeout_from_frame(&connected);
+        status_tx
+            .send(TunnelStatus::Connected {
+                user_id: user_id.clone(),
+            })
+            .unwrap_or_else(|_| {
+                debug!("status receiver dropped");
+            });
+
+        let keepalive_timeout = Duration::from_secs(keepalive_interval_secs * 3);
+        info!(
+            user_id = %user_id,
+            keepalive_interval_secs,
+            keepalive_timeout_secs = keepalive_timeout.as_secs(),
+            "tunnel connected for user {user_id}, keepalive every {keepalive_interval_secs}s"
+        );
 
         // Reset backoff on successful connection.
         backoff = MIN_BACKOFF;
@@ -279,14 +259,17 @@ fn build_ws_request(cfg: &CloudConfig) -> Result<ws_http::Request<()>, ws_http::
 }
 
 /// Wait for the initial `Connected` frame from the relay.
-async fn wait_for_connected<S>(read: &mut S) -> Option<TunnelFrame>
+async fn wait_for_connected<S>(read: &mut S) -> Option<(String, u64)>
 where
     S: StreamExt<Item = Result<Message, tokio_tungstenite::tungstenite::Error>> + Unpin,
 {
     while let Some(msg) = read.next().await {
         match msg {
             Ok(Message::Text(text)) => match serde_json::from_str::<TunnelFrame>(&text) {
-                Ok(frame @ TunnelFrame::Connected { .. }) => return Some(frame),
+                Ok(TunnelFrame::Connected {
+                    user_id,
+                    keepalive_interval_secs,
+                }) => return Some((user_id, keepalive_interval_secs)),
                 Ok(other) => {
                     debug!(?other, "ignoring non-Connected frame during handshake");
                 }
@@ -447,15 +430,6 @@ mod tests {
         assert!(
             next <= max_with_jitter,
             "backoff at max should stay bounded by {max_with_jitter:?}, got {next:?}"
-        );
-    }
-
-    #[test]
-    fn default_keepalive_timeout_is_3x_relay_interval() {
-        // Relay sends keepalive pings every 30s; default timeout must be 3x that.
-        assert!(
-            DEFAULT_KEEPALIVE_TIMEOUT == Duration::from_secs(90),
-            "default keepalive timeout should be 90s (3 × 30s relay interval), got {DEFAULT_KEEPALIVE_TIMEOUT:?}"
         );
     }
 
