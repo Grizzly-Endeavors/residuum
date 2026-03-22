@@ -17,6 +17,7 @@ set -euo pipefail
 #   -m, --model MODEL     Model to use (default: sonnet)
 #   -j, --jobs N          Max parallel jobs (default: 4)
 #   -b, --branch NAME     Branch name (default: audit/apply-fixes)
+#   -t, --timeout SECS    Per-module timeout in seconds (default: 600)
 #   --dry-run             Show what would be done without doing it
 #   -h, --help            Show this help
 #
@@ -29,6 +30,7 @@ MODEL="sonnet"
 JOBS=4
 INPUT_DIR="audit-results"
 BRANCH="audit/apply-fixes"
+TIMEOUT=600
 DRY_RUN=false
 
 usage() {
@@ -42,6 +44,7 @@ while [[ $# -gt 0 ]]; do
         -m|--model)   MODEL="$2"; shift 2 ;;
         -j|--jobs)    JOBS="$2"; shift 2 ;;
         -b|--branch)  BRANCH="$2"; shift 2 ;;
+        -t|--timeout) TIMEOUT="$2"; shift 2 ;;
         --dry-run)    DRY_RUN=true; shift ;;
         -h|--help)    usage ;;
         *)            echo "Unknown option: $1"; usage ;;
@@ -75,7 +78,7 @@ if [[ ${#AUDIT_FILES[@]} -eq 0 ]]; then
 fi
 
 echo "Found ${#AUDIT_FILES[@]} audit results to apply"
-echo "Model: $MODEL | Jobs: $JOBS | Branch: $BRANCH"
+echo "Model: $MODEL | Jobs: $JOBS | Branch: $BRANCH | Timeout: ${TIMEOUT}s"
 echo "---"
 
 if [[ -n $(git status --porcelain) ]]; then
@@ -167,6 +170,7 @@ CARGO_BUILD_JOBS=$(( $(nproc) / JOBS ))
 export CARGO_BUILD_JOBS
 
 CLAUDE_TOOLS="Edit Read Glob Grep Bash(git:*) Bash(cargo:*)"
+CLAUDE_DISALLOWED_TOOLS="Agent"
 
 # =============================================================================
 # Phase 1: Apply fixes in parallel worktrees
@@ -223,11 +227,14 @@ Rules:
 - Do NOT touch files outside the module being audited
 - If an audit finding is vague or you're unsure how to fix it, skip it
 
-After making your changes, stage and commit them using `git add` and `git commit -m "message"`.
+After making ALL your changes, stage and commit them in a SINGLE commit using `git add` and `git commit -m "message"`.
 Write a good commit message: concise summary (<=72 chars) on the first line.
 Do NOT use `git commit -m "$(cat ...)"` or heredocs — just a plain `-m "message"` string.
+Do NOT make multiple commits — everything goes in one commit.
 
-If the pre-commit hooks fail, read the error output, fix the issues, and retry the commit.
+If the pre-commit hooks fail, ONLY fix issues caused by YOUR changes (in this module).
+If a hook fails due to a pre-existing issue outside this module, do NOT attempt to fix it — just stop.
+Do NOT spawn subagents or delegate work.
 
 INSTRUCTIONS
         echo "## Audit Findings"
@@ -249,9 +256,15 @@ INSTRUCTIONS
     pre_head=$(cd "$worktree_path" && git rev-parse HEAD)
 
     local claude_exit=0
-    (cd "$worktree_path" && claude -p --model "$MODEL" --no-session-persistence \
+    (cd "$worktree_path" && timeout "${TIMEOUT}s" claude -p --model "$MODEL" --no-session-persistence \
         --allowedTools "$CLAUDE_TOOLS" \
+        --disallowedTools "$CLAUDE_DISALLOWED_TOOLS" \
         < "$tmpfile" > /dev/null 2>&1) || claude_exit=$?
+
+    # 124 = timeout killed the process
+    if [[ $claude_exit -eq 124 ]]; then
+        echo "[timeout] $module_name — killed after ${TIMEOUT}s"
+    fi
 
     # Always check HEAD — Claude may have committed before exiting non-zero
     local post_head
@@ -275,7 +288,7 @@ INSTRUCTIONS
 }
 
 export -f apply_in_worktree
-export WORKTREE_BASE RESULTS_DIR MODEL INPUT_DIR CLAUDE_TOOLS
+export WORKTREE_BASE RESULTS_DIR MODEL INPUT_DIR CLAUDE_TOOLS CLAUDE_DISALLOWED_TOOLS TIMEOUT
 
 echo ""
 echo "Phase 1: Applying fixes in parallel (jobs=$JOBS)..."
@@ -437,6 +450,7 @@ COMMIT_INSTRUCTIONS
 
     if claude -p --model "$MODEL" --no-session-persistence \
         --allowedTools "$CLAUDE_TOOLS" \
+        --disallowedTools "$CLAUDE_DISALLOWED_TOOLS" \
         < "$resolve_prompt" > /dev/null 2>&1; then
 
         if [[ "$(git rev-parse HEAD)" != "$pre_head" ]]; then
