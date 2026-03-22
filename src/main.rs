@@ -182,19 +182,13 @@ async fn run_setup_mode() -> Result<(), FatalError> {
     Ok(())
 }
 
-async fn run_and_handle_exit(cfg: Config) -> Result<bool, FatalError> {
-    match Box::pin(residuum::gateway::run_gateway(cfg)).await? {
-        residuum::gateway::GatewayExit::Shutdown => Ok(false),
-        residuum::gateway::GatewayExit::Restart => Ok(true),
-    }
-}
-
 /// Inner implementation of foreground serve, wrapped by PID file lifecycle.
 async fn run_serve_foreground_inner(
     args: &[String],
     agent_name: Option<&str>,
 ) -> Result<(), FatalError> {
     if args.iter().any(|a| a == "--setup") {
+        // Box::pin reduces stack frame size — this future is large
         return Box::pin(run_setup_mode()).await;
     }
 
@@ -221,8 +215,10 @@ async fn run_serve_foreground_inner(
                 );
                 // Gateway handles reloads in-place and only returns on shutdown
                 // or fatal error. Backup is created inside run_gateway().
-                if run_and_handle_exit(cfg).await? {
-                    return re_exec_serve_foreground();
+                // Box::pin reduces stack frame size — this future is large
+                match Box::pin(residuum::gateway::run_gateway(cfg)).await? {
+                    residuum::gateway::GatewayExit::Restart => return re_exec_serve_foreground(),
+                    residuum::gateway::GatewayExit::Shutdown => {}
                 }
                 break;
             }
@@ -235,8 +231,12 @@ async fn run_serve_foreground_inner(
                         Ok(mut cfg) => {
                             cfg.config_dir.clone_from(&config_dir);
                             tracing::info!("config restored from backup, starting gateway");
-                            if run_and_handle_exit(cfg).await? {
-                                return re_exec_serve_foreground();
+                            // Box::pin reduces stack frame size — this future is large
+                            match Box::pin(residuum::gateway::run_gateway(cfg)).await? {
+                                residuum::gateway::GatewayExit::Restart => {
+                                    return re_exec_serve_foreground();
+                                }
+                                residuum::gateway::GatewayExit::Shutdown => {}
                             }
                             break;
                         }
@@ -261,13 +261,14 @@ async fn run_serve_foreground_inner(
                 return Err(FatalError::Config(format!(
                     "config invalid for agent '{}': {err}\n\n\
                      edit {}/config.toml manually or recreate the agent",
-                    agent_name.unwrap_or_default(),
+                    agent_name.unwrap_or(""),
                     config_dir.display()
                 )));
             }
             Err(err) => {
                 // First boot — setup wizard (default agent only)
                 tracing::warn!(error = %err, "config invalid, starting setup wizard");
+                // Box::pin reduces stack frame size — this future is large
                 match Box::pin(residuum::gateway::setup::run_setup_server()).await? {
                     residuum::gateway::setup::SetupExit::ConfigSaved => {
                         tracing::info!("setup complete, loading configuration");
@@ -772,10 +773,10 @@ async fn run_logs_command(watch: bool, agent_name: Option<&str>) -> Result<(), F
         }
     });
 
-    let latest = entries
-        .last()
-        .map(std::fs::DirEntry::path)
-        .ok_or_else(|| FatalError::Config("no log files found".to_string()))?;
+    let Some(latest_entry) = entries.last() else {
+        return Ok(());
+    };
+    let latest = latest_entry.path();
 
     println!("showing: {}", latest.display());
     println!();
@@ -1112,7 +1113,7 @@ where
         return Ok(std::ops::ControlFlow::Continue(()));
     }
 
-    *msg_counter = msg_counter.wrapping_add(1);
+    *msg_counter += 1;
     let client_msg = ClientMessage::SendMessage {
         id: format!("cli-{}", *msg_counter),
         content: line.to_string(),
