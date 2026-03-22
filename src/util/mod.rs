@@ -3,6 +3,7 @@
 mod error;
 pub(crate) mod fs;
 mod spawn;
+pub mod tracing_init;
 
 pub use error::FatalError;
 pub use spawn::spawn_monitored;
