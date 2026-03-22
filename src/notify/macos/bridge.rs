@@ -5,6 +5,8 @@
     reason = "objc2 FFI for macOS UserNotifications framework"
 )]
 
+use super::MacosChannelConfig;
+use super::categories::{MacosCategory, MacosInterruptionLevel, MacosNotificationAction};
 use block2::RcBlock;
 use objc2::rc::Retained;
 use objc2::runtime::Bool;
@@ -15,10 +17,6 @@ use objc2_user_notifications::{
     UNNotificationInterruptionLevel, UNNotificationRequest, UNNotificationSound,
     UNUserNotificationCenter,
 };
-use tokio::sync::mpsc;
-
-use super::MacosChannelConfig;
-use super::categories::{MacosCategory, MacosInterruptionLevel, MacosNotificationAction};
 
 /// Text content for a macOS notification.
 pub struct NotificationText {
@@ -41,27 +39,18 @@ fn require_app_bundle() -> anyhow::Result<()> {
     Ok(())
 }
 
-#[derive(Debug)]
-pub struct InboxAcknowledgment {
-    pub item_id: String,
-}
-
 /// Isolates all objc2 FFI so the rest of the notification system
 /// stays platform-agnostic and testable without a macOS runtime.
 pub struct MacosBridge {
     config: MacosChannelConfig,
-    ack_tx: Option<mpsc::Sender<InboxAcknowledgment>>,
 }
 
 impl MacosBridge {
     /// # Errors
     /// Returns an error if category registration fails.
-    pub fn new(
-        config: MacosChannelConfig,
-        ack_tx: Option<mpsc::Sender<InboxAcknowledgment>>,
-    ) -> anyhow::Result<Self> {
+    pub fn new(config: MacosChannelConfig) -> anyhow::Result<Self> {
         require_app_bundle()?;
-        let bridge = Self { config, ack_tx };
+        let bridge = Self { config };
         Self::register_categories();
         Ok(bridge)
     }
@@ -192,21 +181,6 @@ impl MacosBridge {
                     open_url(&url);
                 } else {
                     tracing::info!("open action received but no web_url configured, skipping");
-                }
-            }
-            "mark-read" => {
-                if let Some(ref tx) = self.ack_tx {
-                    let ack = InboxAcknowledgment {
-                        item_id: notification_id.to_string(),
-                    };
-                    if tx.try_send(ack).is_err() {
-                        tracing::warn!(notification_id, "failed to send mark-read acknowledgment");
-                    }
-                } else {
-                    tracing::warn!(
-                        notification_id,
-                        "mark-read action received but no ack sender configured"
-                    );
                 }
             }
             // "dismiss" is the default macOS action — no-op

@@ -24,6 +24,9 @@ pub trait NotificationChannel: Send + Sync {
 }
 
 /// Inbox channel: creates an `InboxItem` from the notification.
+///
+/// This is always a singleton — exactly one inbox channel exists per
+/// Residuum instance, and its channel name is always `"inbox"`.
 pub struct InboxChannel {
     inbox_dir: PathBuf,
     tz: chrono_tz::Tz,

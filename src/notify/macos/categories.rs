@@ -42,16 +42,24 @@ impl fmt::Display for MacosCategory {
     }
 }
 
+impl std::str::FromStr for MacosCategory {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "background-results" => Ok(Self::BackgroundResults),
+            "reminders" => Ok(Self::Reminders),
+            "inbox-items" => Ok(Self::InboxItems),
+            "alerts" => Ok(Self::Alerts),
+            _ => anyhow::bail!("unknown macOS notification category: {s}"),
+        }
+    }
+}
+
 /// # Errors
 /// Returns an error if the string does not match any known category.
 pub fn parse_category(s: &str) -> anyhow::Result<MacosCategory> {
-    match s {
-        "background-results" => Ok(MacosCategory::BackgroundResults),
-        "reminders" => Ok(MacosCategory::Reminders),
-        "inbox-items" => Ok(MacosCategory::InboxItems),
-        "alerts" => Ok(MacosCategory::Alerts),
-        _ => anyhow::bail!("unknown macOS notification category: {s}"),
-    }
+    s.parse()
 }
 
 /// Maps to macOS `UNNotificationInterruptionLevel`.
@@ -81,15 +89,23 @@ impl fmt::Display for MacosInterruptionLevel {
     }
 }
 
+impl std::str::FromStr for MacosInterruptionLevel {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "passive" => Ok(Self::Passive),
+            "active" => Ok(Self::Active),
+            "time_sensitive" => Ok(Self::TimeSensitive),
+            _ => anyhow::bail!("unknown macOS notification priority: {s}"),
+        }
+    }
+}
+
 /// # Errors
 /// Returns an error if the string does not match any known priority.
 pub fn parse_priority(s: &str) -> anyhow::Result<MacosInterruptionLevel> {
-    match s {
-        "passive" => Ok(MacosInterruptionLevel::Passive),
-        "active" => Ok(MacosInterruptionLevel::Active),
-        "time_sensitive" => Ok(MacosInterruptionLevel::TimeSensitive),
-        _ => anyhow::bail!("unknown macOS notification priority: {s}"),
-    }
+    s.parse()
 }
 
 /// Action buttons displayed on notification banners.
@@ -97,7 +113,6 @@ pub fn parse_priority(s: &str) -> anyhow::Result<MacosInterruptionLevel> {
 pub enum MacosNotificationAction {
     Open,
     Dismiss,
-    MarkRead,
 }
 
 impl MacosNotificationAction {
@@ -106,7 +121,6 @@ impl MacosNotificationAction {
         match self {
             Self::Open => "open",
             Self::Dismiss => "dismiss",
-            Self::MarkRead => "mark-read",
         }
     }
 
@@ -115,18 +129,12 @@ impl MacosNotificationAction {
         match self {
             Self::Open => "Open",
             Self::Dismiss => "Dismiss",
-            Self::MarkRead => "Mark Read",
         }
     }
 
     #[must_use]
-    pub fn for_category(category: MacosCategory) -> &'static [Self] {
-        match category {
-            MacosCategory::BackgroundResults | MacosCategory::Reminders | MacosCategory::Alerts => {
-                &[Self::Open, Self::Dismiss]
-            }
-            MacosCategory::InboxItems => &[Self::Open, Self::MarkRead],
-        }
+    pub fn for_category(_category: MacosCategory) -> &'static [Self] {
+        &[Self::Open, Self::Dismiss]
     }
 }
 
@@ -285,17 +293,12 @@ mod tests {
     fn action_identifiers() {
         assert_eq!(MacosNotificationAction::Open.action_id(), "open");
         assert_eq!(MacosNotificationAction::Dismiss.action_id(), "dismiss");
-        assert_eq!(MacosNotificationAction::MarkRead.action_id(), "mark-read");
     }
 
     #[test]
     fn action_button_titles() {
         assert_eq!(MacosNotificationAction::Open.button_title(), "Open");
         assert_eq!(MacosNotificationAction::Dismiss.button_title(), "Dismiss");
-        assert_eq!(
-            MacosNotificationAction::MarkRead.button_title(),
-            "Mark Read"
-        );
     }
 
     #[test]
@@ -311,7 +314,7 @@ mod tests {
         let actions = MacosNotificationAction::for_category(MacosCategory::InboxItems);
         assert_eq!(actions.len(), 2, "InboxItems should have 2 actions");
         assert_eq!(actions[0], MacosNotificationAction::Open);
-        assert_eq!(actions[1], MacosNotificationAction::MarkRead);
+        assert_eq!(actions[1], MacosNotificationAction::Dismiss);
     }
 
     #[test]
