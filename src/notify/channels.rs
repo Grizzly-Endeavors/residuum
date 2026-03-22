@@ -1,6 +1,6 @@
 //! Notification channel trait and built-in channel types.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use async_trait::async_trait;
 
@@ -37,12 +37,6 @@ impl InboxChannel {
             inbox_dir: inbox_dir.into(),
             tz,
         }
-    }
-
-    /// Inbox directory path.
-    #[must_use]
-    pub fn inbox_dir(&self) -> &Path {
-        &self.inbox_dir
     }
 }
 

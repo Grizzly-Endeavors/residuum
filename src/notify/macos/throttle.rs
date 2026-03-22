@@ -35,7 +35,6 @@ impl BatchAggregator {
         let mut window_deadline: Option<Instant> = None;
 
         loop {
-            let deadline = window_deadline.unwrap_or(Instant::now() + Duration::MAX);
             tokio::select! {
                 maybe_notif = rx.recv() => {
                     if let Some(notif) = maybe_notif {
@@ -52,7 +51,12 @@ impl BatchAggregator {
                         return;
                     }
                 }
-                () = sleep_until(deadline) => {
+                () = async {
+                    match window_deadline {
+                        Some(d) => sleep_until(d).await,
+                        None => std::future::pending().await,
+                    }
+                } => {
                     if !buffer.is_empty() {
                         flush(&bridge, &buffer, &config).await;
                         buffer.clear();
@@ -69,12 +73,9 @@ impl BatchAggregator {
 /// - 1-3 items: deliver each individually
 /// - 4+  items: deliver top 2 + 1 summary
 async fn flush(bridge: &MacosBridge, buffer: &[NotificationEvent], config: &MacosChannelConfig) {
+    debug_assert!(!buffer.is_empty());
     let count = buffer.len();
     tracing::info!(count, "flushing macOS notification batch");
-
-    if count == 0 {
-        return;
-    }
 
     if count <= 3 {
         for notif in buffer {
