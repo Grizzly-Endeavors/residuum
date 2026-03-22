@@ -6,4 +6,4 @@ mod spawn;
 pub mod tracing_init;
 
 pub use error::FatalError;
-pub use spawn::spawn_monitored;
+pub use spawn::{spawn_monitored, spawn_supervised};

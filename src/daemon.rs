@@ -1,7 +1,7 @@
 //! Daemon utilities for backgrounding the gateway process.
 //!
 //! Provides PID file management, process detection, signal sending,
-//! file locking, and file-only tracing initialization for daemonized operation.
+//! and file locking.
 
 use std::path::{Path, PathBuf};
 
@@ -123,15 +123,6 @@ pub fn is_pid_locked(path: &Path) -> Result<bool, FatalError> {
             path.display()
         ))),
     }
-}
-
-#[expect(
-    clippy::panic,
-    reason = "deliberate termination when no log appender can be created"
-)]
-fn fatal_no_log_appender(msg: &str) -> ! {
-    write_crash_note(msg);
-    panic!("{msg}")
 }
 
 /// Write a diagnostic message to the crash log.
@@ -280,117 +271,6 @@ pub fn send_sigterm(pid: u32) -> Result<(), FatalError> {
     Ok(())
 }
 
-/// Debug logging modes for the `--debug` flag.
-#[derive(Debug, Clone, Copy)]
-pub enum DebugMode {
-    /// `--debug` (no value): residuum crates at debug, deps at warn
-    Default,
-    /// `--debug=all`: everything at debug
-    All,
-    /// `--debug=trace`: residuum crates at trace, deps at warn
-    Trace,
-}
-
-impl DebugMode {
-    /// Parse a `--debug[=mode]` value into a `DebugMode`.
-    ///
-    /// Returns `None` for unrecognized modes (caller should report the error).
-    #[must_use]
-    pub fn from_flag_value(value: Option<&str>) -> Option<Self> {
-        match value {
-            None | Some("") => Some(Self::Default),
-            Some("all") => Some(Self::All),
-            Some("trace") => Some(Self::Trace),
-            Some(_) => None,
-        }
-    }
-
-    /// The `EnvFilter` directive string for this mode.
-    #[must_use]
-    pub fn filter_str(self) -> &'static str {
-        match self {
-            Self::Default => "residuum=debug,warn",
-            Self::All => "debug",
-            Self::Trace => "residuum=trace,warn",
-        }
-    }
-}
-
-/// Initialize tracing with file-only output for daemonized operation.
-///
-/// Logs are written to `<log_dir>/serve.YYYY-MM-DD.log` (or `serve-<name>`)
-/// with daily rotation and 30-day retention. When `debug_mode` is `Some`,
-/// the filter is overridden accordingly and stderr output is added so debug
-/// output appears in the terminal.
-///
-/// When `agent_name` is `Some`, logs go to the agent-specific log directory
-/// and the file prefix includes the agent name for identification.
-pub fn init_daemon_tracing(debug_mode: Option<DebugMode>, agent_name: Option<&str>) {
-    use tracing_subscriber::layer::SubscriberExt;
-    use tracing_subscriber::util::SubscriberInitExt;
-
-    let default_filter = debug_mode.map_or("info", DebugMode::filter_str);
-    let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(default_filter));
-
-    let log_dir = crate::agent_registry::paths::resolve_log_dir(agent_name).unwrap_or_else(|_| {
-        write_crash_note(
-            "warning: could not determine log directory; logs will be written to ./logs",
-        );
-        std::path::PathBuf::from("logs")
-    });
-
-    let log_prefix = match agent_name {
-        Some(name) => format!("serve-{name}"),
-        None => "serve".to_string(),
-    };
-
-    let file_appender = tracing_appender::rolling::RollingFileAppender::builder()
-        .filename_prefix(&log_prefix)
-        .filename_suffix("log")
-        .rotation(tracing_appender::rolling::Rotation::DAILY)
-        .max_log_files(30)
-        .build(&log_dir)
-        .unwrap_or_else(|e| {
-            write_crash_note(&format!(
-                "warning: failed to create log file appender at {}: {e}; falling back to {}",
-                log_dir.display(),
-                std::env::temp_dir().display()
-            ));
-            tracing_appender::rolling::RollingFileAppender::builder()
-                .filename_prefix(&log_prefix)
-                .filename_suffix("log")
-                .rotation(tracing_appender::rolling::Rotation::DAILY)
-                .max_log_files(30)
-                .build(std::env::temp_dir())
-                .unwrap_or_else(|e2| {
-                    fatal_no_log_appender(&format!(
-                        "fatal: could not create log appender in temp dir: {e2}"
-                    ))
-                })
-        });
-
-    let file_layer = tracing_subscriber::fmt::layer()
-        .with_target(false)
-        .with_ansi(false)
-        .with_writer(file_appender);
-
-    let stderr_layer = tracing_subscriber::fmt::layer()
-        .with_target(false)
-        .with_writer(std::io::stderr);
-
-    tracing_subscriber::registry()
-        .with(env_filter)
-        .with(file_layer)
-        .with(debug_mode.map(|_| stderr_layer))
-        .init();
-    tracing::info!(
-        dir = %log_dir.display(),
-        prefix = %log_prefix,
-        "logging initialized (daily rotation, 30-day retention)"
-    );
-}
-
 #[cfg(test)]
 #[expect(clippy::unwrap_used, reason = "test code uses unwrap for clarity")]
 mod tests {
@@ -416,50 +296,6 @@ mod tests {
         // u32::MAX cannot be converted to i32, so this should return false
         // via the try_from guard rather than panicking.
         assert!(!is_process_running(u32::MAX));
-    }
-
-    #[test]
-    fn debug_mode_from_flag_value_none_is_default() {
-        assert!(matches!(
-            DebugMode::from_flag_value(None),
-            Some(DebugMode::Default)
-        ));
-    }
-
-    #[test]
-    fn debug_mode_from_flag_value_empty_is_default() {
-        assert!(matches!(
-            DebugMode::from_flag_value(Some("")),
-            Some(DebugMode::Default)
-        ));
-    }
-
-    #[test]
-    fn debug_mode_from_flag_value_all() {
-        assert!(matches!(
-            DebugMode::from_flag_value(Some("all")),
-            Some(DebugMode::All)
-        ));
-    }
-
-    #[test]
-    fn debug_mode_from_flag_value_trace() {
-        assert!(matches!(
-            DebugMode::from_flag_value(Some("trace")),
-            Some(DebugMode::Trace)
-        ));
-    }
-
-    #[test]
-    fn debug_mode_from_flag_value_unknown_is_none() {
-        assert!(DebugMode::from_flag_value(Some("bogus")).is_none());
-    }
-
-    #[test]
-    fn debug_mode_filter_strings() {
-        assert_eq!(DebugMode::Default.filter_str(), "residuum=debug,warn");
-        assert_eq!(DebugMode::All.filter_str(), "debug");
-        assert_eq!(DebugMode::Trace.filter_str(), "residuum=trace,warn");
     }
 
     #[test]

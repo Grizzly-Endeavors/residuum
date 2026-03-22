@@ -3,6 +3,13 @@
 use residuum::config::Config;
 use residuum::util::FatalError;
 
+#[derive(clap::Args)]
+pub(super) struct StopArgs {
+    /// Target a named agent instance
+    #[arg(long)]
+    pub agent: Option<String>,
+}
+
 /// Stop a running gateway daemon.
 ///
 /// Uses a layered approach:
@@ -13,9 +20,10 @@ use residuum::util::FatalError;
 /// # Errors
 ///
 /// Returns `FatalError` if the process cannot be stopped.
-pub(super) async fn run_stop_command(agent_name: Option<&str>) -> Result<(), FatalError> {
+pub(super) async fn run_stop_command(args: &StopArgs) -> Result<(), FatalError> {
     use residuum::daemon::{is_pid_locked, read_pid_file, remove_pid_file, send_sigterm};
 
+    let agent_name = args.agent.as_deref();
     let pid_path = residuum::agent_registry::paths::resolve_pid_path(agent_name)?;
     let label = agent_name.map_or("gateway".to_string(), |n| format!("agent '{n}'"));
 

@@ -11,7 +11,6 @@ mod endpoint;
 mod events;
 mod handle;
 mod registry;
-pub(crate) mod supervision;
 pub mod topics;
 mod types;
 

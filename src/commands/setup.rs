@@ -3,8 +3,33 @@
 use residuum::config::Config;
 use residuum::util::FatalError;
 
+#[derive(clap::Args)]
+pub(super) struct SetupArgs {
+    /// Override the timezone
+    #[arg(long)]
+    pub timezone: Option<String>,
+    /// LLM provider name
+    #[arg(long)]
+    pub provider: Option<String>,
+    /// API key for the LLM provider
+    #[arg(long)]
+    pub api_key: Option<String>,
+    /// Model name to use
+    #[arg(long)]
+    pub model: Option<String>,
+    /// Web search backend (e.g., brave, tavily)
+    #[arg(long)]
+    pub web_search_backend: Option<String>,
+    /// API key for web search
+    #[arg(long)]
+    pub web_search_api_key: Option<String>,
+    /// Base URL for web search API
+    #[arg(long)]
+    pub web_search_base_url: Option<String>,
+}
+
 /// Run the `setup` subcommand — interactive or flag-driven config wizard.
-pub(super) fn run_setup_command(args: &[String]) -> Result<(), FatalError> {
+pub(super) fn run_setup_command(args: &SetupArgs) -> Result<(), FatalError> {
     use residuum::config::wizard;
 
     let config_dir = Config::config_dir()?;
@@ -17,31 +42,23 @@ pub(super) fn run_setup_command(args: &[String]) -> Result<(), FatalError> {
     }
 
     // Check if any flags are present → non-interactive mode
-    let tz_flag = super::extract_flag_value(args, "--timezone");
-    let provider_flag = super::extract_flag_value(args, "--provider");
-    let key_flag = super::extract_flag_value(args, "--api-key");
-    let model_flag = super::extract_flag_value(args, "--model");
-    let ws_backend_flag = super::extract_flag_value(args, "--web-search-backend");
-    let ws_key_flag = super::extract_flag_value(args, "--web-search-api-key");
-    let ws_url_flag = super::extract_flag_value(args, "--web-search-base-url");
-
-    let has_flags = tz_flag.is_some()
-        || provider_flag.is_some()
-        || key_flag.is_some()
-        || model_flag.is_some()
-        || ws_backend_flag.is_some()
-        || ws_key_flag.is_some()
-        || ws_url_flag.is_some();
+    let has_flags = args.timezone.is_some()
+        || args.provider.is_some()
+        || args.api_key.is_some()
+        || args.model.is_some()
+        || args.web_search_backend.is_some()
+        || args.web_search_api_key.is_some()
+        || args.web_search_base_url.is_some();
 
     let answers = if has_flags {
         wizard::from_flags(
-            tz_flag.as_deref(),
-            provider_flag.as_deref(),
-            key_flag.as_deref(),
-            model_flag.as_deref(),
-            ws_backend_flag.as_deref(),
-            ws_key_flag.as_deref(),
-            ws_url_flag.as_deref(),
+            args.timezone.as_deref(),
+            args.provider.as_deref(),
+            args.api_key.as_deref(),
+            args.model.as_deref(),
+            args.web_search_backend.as_deref(),
+            args.web_search_api_key.as_deref(),
+            args.web_search_base_url.as_deref(),
         )?
     } else {
         wizard::run_interactive()?

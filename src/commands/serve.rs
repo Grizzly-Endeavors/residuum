@@ -2,6 +2,23 @@
 
 use residuum::config::Config;
 use residuum::util::FatalError;
+use residuum::util::tracing_init::DebugMode;
+
+#[derive(clap::Args, Default)]
+pub(super) struct ServeArgs {
+    /// Run in foreground instead of daemonizing
+    #[arg(long)]
+    pub foreground: bool,
+    /// Start the setup wizard before booting the gateway
+    #[arg(long)]
+    pub setup: bool,
+    /// Target a named agent instance
+    #[arg(long)]
+    pub agent: Option<String>,
+    /// Enable debug logging (modes: default, all, trace)
+    #[arg(long, value_name = "MODE", num_args = 0..=1, default_missing_value = "default")]
+    pub debug: Option<DebugMode>,
+}
 
 /// Run the gateway in foreground mode (called as `residuum serve --foreground`).
 ///
@@ -11,10 +28,8 @@ use residuum::util::FatalError;
 /// # Errors
 ///
 /// Returns `FatalError` if initialization or the gateway loop fails.
-pub(super) async fn run_serve_foreground(
-    args: &[String],
-    agent_name: Option<&str>,
-) -> Result<(), FatalError> {
+pub(super) async fn run_serve_foreground(args: &ServeArgs) -> Result<(), FatalError> {
+    let agent_name = args.agent.as_deref();
     let pid_path = residuum::agent_registry::paths::resolve_pid_path(agent_name)?;
 
     // Acquire exclusive lock on the PID file. This both:
@@ -22,7 +37,7 @@ pub(super) async fn run_serve_foreground(
     // 2. Makes stale PID files detectable (lock released on process death)
     let _pid_lock = residuum::daemon::acquire_pid_lock(&pid_path)?;
 
-    let result = run_serve_foreground_inner(args, agent_name).await;
+    let result = run_serve_foreground_inner(args).await;
 
     // Clean up PID file on normal exit. On crash/SIGKILL the lock is
     // released by the OS, and the next startup detects the stale file.
@@ -73,11 +88,10 @@ async fn run_setup_mode() -> Result<(), FatalError> {
 }
 
 /// Inner implementation of foreground serve, wrapped by PID file lifecycle.
-async fn run_serve_foreground_inner(
-    args: &[String],
-    agent_name: Option<&str>,
-) -> Result<(), FatalError> {
-    if args.iter().any(|a| a == "--setup") {
+async fn run_serve_foreground_inner(args: &ServeArgs) -> Result<(), FatalError> {
+    let agent_name = args.agent.as_deref();
+
+    if args.setup {
         // Box::pin reduces stack frame size — this future is large
         return Box::pin(run_setup_mode()).await;
     }
@@ -205,12 +219,13 @@ fn re_exec_serve_foreground() -> Result<(), FatalError> {
 ///
 /// Returns `FatalError` if the child process cannot be spawned or
 /// startup times out.
-pub(super) fn run_daemonize(args: &[String], agent_name: Option<&str>) -> Result<(), FatalError> {
+pub(super) fn run_daemonize(args: &ServeArgs) -> Result<(), FatalError> {
     use residuum::config::GatewayConfig;
     use residuum::daemon::{is_process_running, read_pid_file};
 
     residuum::util::tracing_init::init_default_tracing();
 
+    let agent_name = args.agent.as_deref();
     let pid_path = residuum::agent_registry::paths::resolve_pid_path(agent_name)?;
     let label = agent_name.map_or("gateway".to_string(), |n| format!("agent '{n}'"));
 
@@ -238,8 +253,8 @@ pub(super) fn run_daemonize(args: &[String], agent_name: Option<&str>) -> Result
 
     // Detect whether the child will enter setup mode (no PID file until setup completes)
     // Named agents never enter setup mode.
-    let needs_setup = agent_name.is_none()
-        && (args.iter().any(|a| a == "--setup") || !config_dir.join("config.toml").exists());
+    let needs_setup =
+        agent_name.is_none() && (args.setup || !config_dir.join("config.toml").exists());
 
     // First-launch welcome (or --setup which mimics it)
     if needs_setup {
@@ -251,18 +266,21 @@ pub(super) fn run_daemonize(args: &[String], agent_name: Option<&str>) -> Result
         println!();
     }
 
-    // Build child args: forward any extra flags (like --setup) plus --foreground
+    // Build child args: forward original args plus --foreground.
+    // We use std::env::args() rather than reconstructing from the parsed
+    // struct to preserve flag formatting across the process boundary.
     let exe = std::env::current_exe()
         .map_err(|e| FatalError::Gateway(format!("failed to determine current executable: {e}")))?;
 
     let mut child_args = vec!["serve".to_string(), "--foreground".to_string()];
-    // Forward flags from the original invocation (skip argv[0] and "serve")
-    let skip = if args.get(1).is_some_and(|a| a == "serve") {
+    let raw_args: Vec<String> = std::env::args().collect();
+    // Skip argv[0] and "serve" (if present)
+    let skip = if raw_args.get(1).is_some_and(|a| a == "serve") {
         2
     } else {
         1
     };
-    for arg in args.iter().skip(skip) {
+    for arg in raw_args.iter().skip(skip) {
         if arg != "--foreground" {
             child_args.push(arg.clone());
         }

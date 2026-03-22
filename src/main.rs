@@ -1,15 +1,6 @@
 //! `Residuum`: personal AI agent gateway.
 //!
-//! Entrypoint with subcommands:
-//! - `serve` (default): starts the gateway as a background daemon
-//! - `serve --foreground`: runs the gateway in the foreground
-//! - `serve --debug[=mode]`: run with debug logging (modes: all, trace)
-//! - `serve --agent <name>`: start a named agent instance
-//! - `stop [--agent <name>]`: stops a running gateway daemon
-//! - `connect [--agent <name>] [url]`: connects a CLI client to a running gateway
-//! - `logs [--agent <name>] [--watch]`: display CLI log files
-//! - `setup`: interactive configuration wizard
-//! - `agent <create|list|delete|info>`: manage named agent instances
+//! Uses clap for CLI argument parsing. Run `residuum --help` for usage.
 
 mod commands;
 

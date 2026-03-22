@@ -5,6 +5,42 @@ use residuum::interfaces::cli::CliClient;
 use residuum::interfaces::cli::commands::CommandEffect;
 use residuum::util::FatalError;
 
+#[derive(clap::Args)]
+pub(super) struct ConnectArgs {
+    /// WebSocket URL to connect to
+    pub url: Option<String>,
+    /// Target a named agent instance
+    #[arg(long)]
+    pub agent: Option<String>,
+    /// Show verbose output including tool calls
+    #[arg(long, short)]
+    pub verbose: bool,
+}
+
+/// Resolve the WebSocket URL from the connect args.
+///
+/// If `--agent` is given, looks up the port from the agent registry.
+/// Otherwise uses the positional URL arg or the default.
+///
+/// # Errors
+///
+/// Returns `FatalError` if the agent is not found in the registry.
+pub(super) fn resolve_url(args: &ConnectArgs) -> Result<String, FatalError> {
+    if let Some(ref name) = args.agent {
+        let registry_dir = residuum::agent_registry::paths::registry_base_dir()?;
+        let registry = residuum::agent_registry::registry::AgentRegistry::load(&registry_dir)?;
+        let entry = registry
+            .get(name)
+            .ok_or_else(|| FatalError::Config(format!("agent '{name}' not found in registry")))?;
+        Ok(format!("ws://127.0.0.1:{}/ws", entry.port))
+    } else {
+        Ok(args
+            .url
+            .clone()
+            .unwrap_or_else(|| "ws://127.0.0.1:7700/ws".to_string()))
+    }
+}
+
 /// Run the CLI connect client.
 ///
 /// Connects to a running gateway over WebSocket and bridges stdin/stdout

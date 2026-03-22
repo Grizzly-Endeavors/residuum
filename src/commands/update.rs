@@ -3,6 +3,16 @@
 use residuum::config::Config;
 use residuum::util::FatalError;
 
+#[derive(clap::Args)]
+pub(super) struct UpdateArgs {
+    /// Only check for updates, don't install
+    #[arg(long)]
+    pub check: bool,
+    /// Automatically restart the gateway after updating
+    #[arg(long, short)]
+    pub yes: bool,
+}
+
 /// Check for and install updates from GitHub Releases.
 ///
 /// Fetches the latest release tag, compares it against the build-time
@@ -14,11 +24,8 @@ use residuum::util::FatalError;
 ///
 /// Returns `FatalError::Gateway` if the GitHub API request fails or
 /// the install script cannot be executed.
-pub(super) async fn run_update_command(args: &[String]) -> Result<(), FatalError> {
+pub(super) async fn run_update_command(args: &UpdateArgs) -> Result<(), FatalError> {
     use residuum::update::{self, CURRENT_VERSION};
-
-    let check_only = args.iter().any(|a| a == "--check");
-    let auto_yes = args.iter().any(|a| a == "-y" || a == "--yes");
 
     println!("residuum: checking for updates...");
 
@@ -32,7 +39,7 @@ pub(super) async fn run_update_command(args: &[String]) -> Result<(), FatalError
     println!("residuum: current version: {CURRENT_VERSION}");
     println!("residuum: latest version:  {latest}");
 
-    if check_only {
+    if args.check {
         return Ok(());
     }
 
@@ -46,7 +53,7 @@ pub(super) async fn run_update_command(args: &[String]) -> Result<(), FatalError
         && let Ok(pid) = residuum::daemon::read_pid_file(&pid_path)
         && residuum::daemon::is_process_running(pid)
     {
-        if auto_yes {
+        if args.yes {
             // Try to trigger seamless restart via the API
             let gateway_addr = Config::load().map_or_else(
                 |_| residuum::config::GatewayConfig::default().addr(),

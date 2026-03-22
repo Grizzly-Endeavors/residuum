@@ -2,15 +2,22 @@
 
 use residuum::util::FatalError;
 
+#[derive(clap::Args)]
+pub(super) struct LogsArgs {
+    /// Tail the log file, polling for new lines
+    #[arg(long, short)]
+    pub watch: bool,
+    /// Target a named agent instance
+    #[arg(long)]
+    pub agent: Option<String>,
+}
+
 /// Display CLI log files.
 ///
 /// Finds the most recent log file in `~/.residuum/logs/` and prints its
 /// contents. With `--watch`, polls for new lines every 500ms.
-pub(super) async fn run_logs_command(
-    watch: bool,
-    agent_name: Option<&str>,
-) -> Result<(), FatalError> {
-    let log_dir = residuum::agent_registry::paths::resolve_log_dir(agent_name)?;
+pub(super) async fn run_logs_command(args: &LogsArgs) -> Result<(), FatalError> {
+    let log_dir = residuum::agent_registry::paths::resolve_log_dir(args.agent.as_deref())?;
 
     if !log_dir.exists() {
         println!(
@@ -55,7 +62,7 @@ pub(super) async fn run_logs_command(
         .map_err(|e| FatalError::Config(format!("failed to read log file: {e}")))?;
     print!("{content}");
 
-    if watch {
+    if args.watch {
         use tokio::io::{AsyncBufReadExt, AsyncSeekExt};
 
         let file = tokio::fs::File::open(&latest)

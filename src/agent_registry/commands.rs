@@ -14,45 +14,39 @@ use crate::util::FatalError;
 use super::paths;
 use super::registry::{AgentEntry, AgentRegistry};
 
-/// Dispatch `residuum agent <subcommand>` from CLI args.
+/// Agent management subcommands.
+#[derive(clap::Subcommand)]
+pub enum AgentCommand {
+    /// Create a new named agent
+    Create {
+        /// Name for the new agent (alphanumeric + hyphens, 1-32 chars)
+        name: String,
+    },
+    /// List all agents and their status
+    List,
+    /// Remove a named agent
+    Delete {
+        /// Name of the agent to delete
+        name: String,
+    },
+    /// Show agent details
+    Info {
+        /// Name of the agent to inspect
+        name: String,
+    },
+}
+
+/// Dispatch `residuum agent <subcommand>`.
 ///
 /// # Errors
 ///
 /// Returns `FatalError` if the subcommand fails.
-pub fn run_agent_command(args: &[String]) -> Result<(), FatalError> {
-    let sub = args.first().map(String::as_str);
-    match sub {
-        Some("create") => {
-            let Some(name) = args.get(1) else {
-                println!("usage: residuum agent create <name>");
-                return Ok(());
-            };
-            run_agent_create(name)
-        }
-        Some("list") => run_agent_list(),
-        Some("delete") => {
-            let Some(name) = args.get(1) else {
-                println!("usage: residuum agent delete <name>");
-                return Ok(());
-            };
-            run_agent_delete(name)
-        }
-        Some("info") => {
-            let Some(name) = args.get(1) else {
-                println!("usage: residuum agent info <name>");
-                return Ok(());
-            };
-            run_agent_info(name)
-        }
-        _ => {
-            println!("usage: residuum agent <create|list|delete|info>");
-            println!();
-            println!("  create <name>   create a new named agent");
-            println!("  list            list all agents and their status");
-            println!("  delete <name>   remove a named agent");
-            println!("  info <name>     show agent details");
-            Ok(())
-        }
+pub fn run_agent_command(command: &AgentCommand) -> Result<(), FatalError> {
+    match command {
+        AgentCommand::Create { name } => run_agent_create(name),
+        AgentCommand::List => run_agent_list(),
+        AgentCommand::Delete { name } => run_agent_delete(name),
+        AgentCommand::Info { name } => run_agent_info(name),
     }
 }
 

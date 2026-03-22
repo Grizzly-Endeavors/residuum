@@ -21,7 +21,7 @@ pub(crate) fn spawn_result_bridge(
     publisher: Publisher,
     tz: chrono_tz::Tz,
 ) -> tokio::task::JoinHandle<()> {
-    crate::bus::supervision::spawn_supervised(
+    crate::util::spawn_supervised(
         "result-bridge",
         move || {
             let rx = Arc::clone(&result_rx);

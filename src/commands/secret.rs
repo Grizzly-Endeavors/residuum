@@ -3,26 +3,34 @@
 use residuum::config::Config;
 use residuum::util::FatalError;
 
+/// Secret management subcommands.
+#[derive(clap::Subcommand)]
+pub(super) enum SecretCommand {
+    /// Store a secret (prompts for value if omitted)
+    Set {
+        /// Name of the secret
+        name: String,
+        /// Value to store (prompted interactively if omitted)
+        value: Option<String>,
+    },
+    /// List stored secret names
+    List,
+    /// Remove a secret
+    Delete {
+        /// Name of the secret to remove
+        name: String,
+    },
+}
+
 /// Run the `secret` subcommand — manage encrypted secret storage.
-///
-/// Subcommands:
-/// - `residuum secret set <name> [value]` — store a secret (prompts for value if omitted)
-/// - `residuum secret list` — list stored secret names
-/// - `residuum secret delete <name>` — remove a secret
-pub(super) fn run_secret_command(args: &[String]) -> Result<(), FatalError> {
+pub(super) fn run_secret_command(command: &SecretCommand) -> Result<(), FatalError> {
     use residuum::config::SecretStore;
 
     let config_dir = Config::config_dir()?;
-    let sub = args.get(2).map(String::as_str);
 
-    match sub {
-        Some("set") => {
-            let Some(name) = args.get(3) else {
-                println!("usage: residuum secret set <name> [value]");
-                return Ok(());
-            };
-
-            let value = if let Some(v) = args.get(4) {
+    match command {
+        SecretCommand::Set { name, value } => {
+            let resolved_value = if let Some(v) = value {
                 v.clone()
             } else {
                 // Prompt for value with masked input
@@ -31,10 +39,10 @@ pub(super) fn run_secret_command(args: &[String]) -> Result<(), FatalError> {
             };
 
             let mut store = SecretStore::load(&config_dir)?;
-            store.set(name, &value, &config_dir)?;
+            store.set(name, &resolved_value, &config_dir)?;
             println!("secret '{name}' saved");
         }
-        Some("list") => {
+        SecretCommand::List => {
             let store = SecretStore::load(&config_dir)?;
             let names = store.names();
             if names.is_empty() {
@@ -45,22 +53,10 @@ pub(super) fn run_secret_command(args: &[String]) -> Result<(), FatalError> {
                 }
             }
         }
-        Some("delete") => {
-            let Some(name) = args.get(3) else {
-                println!("usage: residuum secret delete <name>");
-                return Ok(());
-            };
-
+        SecretCommand::Delete { name } => {
             let mut store = SecretStore::load(&config_dir)?;
             store.delete(name, &config_dir)?;
             println!("secret '{name}' deleted");
-        }
-        _ => {
-            println!("usage: residuum secret <set|list|delete>");
-            println!();
-            println!("  set <name> [value]  store a secret (prompts if value omitted)");
-            println!("  list                list stored secret names");
-            println!("  delete <name>       remove a secret");
         }
     }
 
