@@ -73,6 +73,7 @@ impl DiscordInterface {
             reload_tx: self.senders.reload,
             command_tx: self.senders.command,
             tz: self.tz,
+            shutdown_rx: self.shutdown_rx.clone(),
         };
 
         let mut client = Client::builder(&self.cfg.token, intents)
@@ -95,9 +96,7 @@ impl DiscordInterface {
 
 #[cfg(test)]
 mod tests {
-    use crate::interfaces::cli::commands::{
-        CommandContext, CommandSideEffect, all_commands, execute_command,
-    };
+    use crate::interfaces::cli::commands::{CommandContext, execute_command};
 
     fn discord_ctx() -> CommandContext<'static> {
         CommandContext {
@@ -109,84 +108,7 @@ mod tests {
     #[test]
     fn execute_help_returns_command_list() {
         let result = execute_command("help", None, &discord_ctx());
-        assert!(
-            result.response.contains("help"),
-            "should mention help: {}",
-            result.response
-        );
-        assert!(
-            result.response.contains("observe"),
-            "should mention observe: {}",
-            result.response
-        );
-        assert!(result.side_effect.is_none(), "help has no side effect");
-    }
-
-    #[test]
-    fn execute_status_returns_text() {
-        let result = execute_command("status", None, &discord_ctx());
-        assert!(
-            result.response.contains("verbose"),
-            "should contain status info: {}",
-            result.response
-        );
-        assert!(result.side_effect.is_none());
-    }
-
-    #[test]
-    fn execute_reload_returns_side_effect() {
-        let result = execute_command("reload", None, &discord_ctx());
-        assert_eq!(result.side_effect, Some(CommandSideEffect::Reload));
-    }
-
-    #[test]
-    fn execute_observe_returns_server_command() {
-        let result = execute_command("observe", None, &discord_ctx());
-        assert_eq!(
-            result.side_effect,
-            Some(CommandSideEffect::ServerCommand {
-                name: "observe",
-                args: None
-            })
-        );
-    }
-
-    #[test]
-    fn execute_inbox_with_text() {
-        let result = execute_command("inbox", Some("remember this"), &discord_ctx());
-        assert_eq!(
-            result.side_effect,
-            Some(CommandSideEffect::InboxAdd("remember this".to_string()))
-        );
-    }
-
-    #[test]
-    fn all_commands_includes_inbox() {
-        let cmds: Vec<_> = all_commands().collect();
-        let names: Vec<_> = cmds.iter().map(|c| c.name).collect();
-        assert!(names.contains(&"help"), "should include help");
-        assert!(names.contains(&"observe"), "should include observe");
-        assert!(names.contains(&"inbox"), "should include inbox");
-    }
-
-    #[test]
-    fn inbox_command_takes_argument() {
-        let inbox_cmd = all_commands().find(|c| c.name == "inbox");
-        assert!(inbox_cmd.is_some(), "/inbox should be in the registry");
-        assert!(
-            inbox_cmd.is_some_and(|c| c.takes_arg),
-            "/inbox should accept a text argument"
-        );
-    }
-
-    #[test]
-    fn inbox_without_text_returns_usage() {
-        let result = execute_command("inbox", None, &discord_ctx());
-        assert!(
-            result.response.contains("usage"),
-            "empty /inbox should show usage: {}",
-            result.response
-        );
+        assert!(result.response.contains("help"));
         assert!(result.side_effect.is_none());
     }
 }

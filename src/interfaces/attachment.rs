@@ -121,6 +121,88 @@ pub fn format_failed_attachment_line(info: &AttachmentInfo, reason: &str) -> Str
     )
 }
 
+/// Finalize a downloaded attachment: append metadata to content, optionally encode inline,
+/// and create a companion inbox item.
+///
+/// `platform` is the display name of the interface (e.g. `"Discord"`, `"Telegram"`); the inbox
+/// item title is `"{platform} attachment: {filename}"` and the source field is its lowercase form.
+///
+/// Returns an `ImageData` if the attachment is a supported image within the inline size limit.
+pub async fn finalize_attachment(
+    saved: &SavedAttachment,
+    info: &AttachmentInfo,
+    content: &mut String,
+    author: &str,
+    inbox_dir: &Path,
+    tz: chrono_tz::Tz,
+    platform: &str,
+) -> Option<ImageData> {
+    let line = format_attachment_line(saved, info);
+    content.push('\n');
+    content.push_str(&line);
+
+    let image =
+        if is_supported_image(info.content_type.as_deref()) && info.size <= MAX_IMAGE_INLINE_SIZE {
+            match encode_image_from_file(
+                &saved.local_path,
+                info.content_type.as_deref().unwrap_or("image/jpeg"),
+            )
+            .await
+            {
+                Ok(img) => Some(img),
+                Err(e) => {
+                    tracing::warn!(
+                        filename = %info.filename,
+                        error = %e,
+                        "failed to encode attachment image for inline delivery"
+                    );
+                    None
+                }
+            }
+        } else if is_supported_image(info.content_type.as_deref()) {
+            tracing::warn!(
+                filename = %info.filename,
+                size = info.size,
+                max = MAX_IMAGE_INLINE_SIZE,
+                "attachment image exceeds inline size limit, saved but not sent to model"
+            );
+            None
+        } else {
+            None
+        };
+
+    let Some(file_name_os) = saved.local_path.file_name() else {
+        tracing::warn!(
+            path = %saved.local_path.display(),
+            "attachment path has no filename, skipping companion item"
+        );
+        return image;
+    };
+    let saved_name = file_name_os.to_string_lossy().to_string();
+    let content_type_str = info.content_type.as_deref().unwrap_or("unknown");
+    let companion = crate::inbox::InboxItem {
+        title: format!("{platform} attachment: {}", info.filename),
+        body: format!(
+            "From: {author}\nSize: {} bytes\nContent-Type: {content_type_str}",
+            info.size,
+        ),
+        source: platform.to_lowercase(),
+        timestamp: crate::time::now_local(tz),
+        read: false,
+        attachments: vec![PathBuf::from("inbox").join(&saved_name)],
+    };
+    let filename = crate::inbox::generate_filename(&companion.title, companion.timestamp);
+    if let Err(e) = crate::inbox::save_item(inbox_dir, &filename, &companion).await {
+        tracing::warn!(
+            filename = %info.filename,
+            error = %e,
+            "failed to create companion inbox item for attachment"
+        );
+    }
+
+    image
+}
+
 #[cfg(test)]
 #[expect(clippy::unwrap_used, reason = "test code uses unwrap for clarity")]
 mod tests {

@@ -25,14 +25,6 @@ pub enum CommandEffect {
     Quit,
 }
 
-/// Metadata about a server command, for cross-channel registration.
-pub struct ServerCommandInfo {
-    /// The primary command name (e.g. "observe").
-    pub name: &'static str,
-    /// Human-readable help text.
-    pub help: &'static str,
-}
-
 /// Metadata about any command, for cross-channel registration.
 pub struct CommandInfo {
     /// The primary command name (e.g. "help", "observe").
@@ -85,7 +77,6 @@ struct CommandDef {
     names: &'static [&'static str],
     help: &'static str,
     takes_arg: bool,
-    is_server_cmd: bool,
     cli_only: bool,
     effect: fn(arg: Option<&str>, url: &str, verbose: bool) -> CommandEffect,
 }
@@ -95,7 +86,6 @@ static COMMANDS: &[CommandDef] = &[
         names: &["help", "h"],
         help: "show this help",
         takes_arg: false,
-        is_server_cmd: false,
         cli_only: false,
         effect: |_, _, _| CommandEffect::PrintLocal(help_text()),
     },
@@ -103,7 +93,6 @@ static COMMANDS: &[CommandDef] = &[
         names: &["status"],
         help: "show connection info",
         takes_arg: false,
-        is_server_cmd: false,
         cli_only: false,
         effect: |_, url, verbose| CommandEffect::PrintLocal(status_text(url, verbose)),
     },
@@ -111,7 +100,6 @@ static COMMANDS: &[CommandDef] = &[
         names: &["verbose", "v"],
         help: "toggle verbose mode (tool events)",
         takes_arg: false,
-        is_server_cmd: false,
         cli_only: true,
         effect: |_, _, _| CommandEffect::ToggleVerbose,
     },
@@ -119,7 +107,6 @@ static COMMANDS: &[CommandDef] = &[
         names: &["reload", "r"],
         help: "reload server configuration",
         takes_arg: false,
-        is_server_cmd: false,
         cli_only: false,
         effect: |_, _, _| CommandEffect::Reload,
     },
@@ -127,7 +114,6 @@ static COMMANDS: &[CommandDef] = &[
         names: &["observe", "obs"],
         help: "force a memory observation cycle",
         takes_arg: false,
-        is_server_cmd: true,
         cli_only: false,
         effect: |_, _, _| CommandEffect::ServerCommand {
             name: "observe",
@@ -138,7 +124,6 @@ static COMMANDS: &[CommandDef] = &[
         names: &["reflect", "ref"],
         help: "force a reflection cycle",
         takes_arg: false,
-        is_server_cmd: true,
         cli_only: false,
         effect: |_, _, _| CommandEffect::ServerCommand {
             name: "reflect",
@@ -149,7 +134,6 @@ static COMMANDS: &[CommandDef] = &[
         names: &["context", "ctx"],
         help: "show context token usage",
         takes_arg: false,
-        is_server_cmd: true,
         cli_only: false,
         effect: |_, _, _| CommandEffect::ServerCommand {
             name: "context",
@@ -160,7 +144,6 @@ static COMMANDS: &[CommandDef] = &[
         names: &["inbox"],
         help: "add a message to the agent's inbox",
         takes_arg: true,
-        is_server_cmd: false,
         cli_only: false,
         effect: |arg, _, _| match arg {
             Some(body) if !body.is_empty() => CommandEffect::InboxAdd(body.to_string()),
@@ -171,7 +154,6 @@ static COMMANDS: &[CommandDef] = &[
         names: &["quit", "exit", "q"],
         help: "disconnect and exit",
         takes_arg: false,
-        is_server_cmd: false,
         cli_only: true,
         effect: |_, _, _| CommandEffect::Quit,
     },
@@ -252,20 +234,6 @@ fn effect_to_result(effect: CommandEffect) -> CommandResult {
             side_effect: Some(CommandSideEffect::Quit),
         },
     }
-}
-
-/// Iterate over commands that produce `ServerCommand` effects.
-///
-/// Used by Discord (and potentially other interfaces) to auto-register
-/// server commands without duplicating the list.
-pub fn server_commands() -> impl Iterator<Item = ServerCommandInfo> {
-    COMMANDS
-        .iter()
-        .filter(|def| def.is_server_cmd)
-        .map(|def| ServerCommandInfo {
-            name: def.names.first().copied().unwrap_or(""),
-            help: def.help,
-        })
 }
 
 /// Iterate over all commands in the registry.
@@ -490,23 +458,6 @@ mod tests {
                 assert!(text.contains(name), "help text should mention /{name}");
             }
         }
-    }
-
-    #[test]
-    fn server_commands_returns_expected() {
-        let cmds: Vec<_> = server_commands().collect();
-        let names: Vec<_> = cmds.iter().map(|c| c.name).collect();
-        assert!(names.contains(&"observe"), "should include observe");
-        assert!(names.contains(&"reflect"), "should include reflect");
-        assert!(names.contains(&"context"), "should include context");
-        assert!(
-            !names.contains(&"help"),
-            "help is local, not a server command"
-        );
-        assert!(
-            !names.contains(&"quit"),
-            "quit is local, not a server command"
-        );
     }
 
     // ── execute_command tests ─────────────────────────────────────────

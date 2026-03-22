@@ -12,9 +12,6 @@ use crate::bus::{BusHandle, EndpointName, Publisher};
 use crate::gateway::event_loop::AdapterSenders;
 use crate::gateway::types::{ReloadSignal, ServerCommand};
 use crate::inbox;
-use crate::interfaces::attachment::{
-    MAX_IMAGE_INLINE_SIZE, encode_image_from_file, is_supported_image,
-};
 use crate::interfaces::cli::commands::{
     CommandContext, CommandSideEffect, all_commands, execute_command,
 };
@@ -416,7 +413,7 @@ async fn handle_attachment(
     tz: chrono_tz::Tz,
 ) {
     use crate::interfaces::attachment::{
-        AttachmentInfo, SavedAttachment, format_attachment_line, format_failed_attachment_line,
+        AttachmentInfo, SavedAttachment, finalize_attachment, format_failed_attachment_line,
     };
     use teloxide::net::Download;
 
@@ -453,62 +450,12 @@ async fn handle_attachment(
 
     match download_result {
         Ok(saved) => {
-            let line = format_attachment_line(&saved, &info);
-            content.push('\n');
-            content.push_str(&line);
-
-            // Encode supported images inline for the model
-            if is_supported_image(info.content_type.as_deref())
-                && info.size <= MAX_IMAGE_INLINE_SIZE
+            let author = build_sender_name(from);
+            if let Some(img) =
+                finalize_attachment(&saved, &info, content, &author, inbox_dir, tz, "Telegram")
+                    .await
             {
-                match encode_image_from_file(
-                    &saved.local_path,
-                    info.content_type.as_deref().unwrap_or("image/jpeg"),
-                )
-                .await
-                {
-                    Ok(img) => images.push(img),
-                    Err(e) => tracing::warn!(
-                        filename = %filename,
-                        error = %e,
-                        "failed to encode telegram image for inline delivery"
-                    ),
-                }
-            } else if is_supported_image(info.content_type.as_deref()) {
-                tracing::warn!(
-                    filename = %filename,
-                    size = info.size,
-                    max = MAX_IMAGE_INLINE_SIZE,
-                    "telegram image exceeds inline size limit, saved but not sent to model"
-                );
-            }
-
-            // Create companion inbox item
-            let Some(file_name_os) = saved.local_path.file_name() else {
-                tracing::warn!(path = %saved.local_path.display(), "attachment path has no filename, skipping companion item");
-                return;
-            };
-            let saved_name = file_name_os.to_string_lossy().to_string();
-            let content_type_str = info.content_type.as_deref().unwrap_or("unknown");
-            let companion = inbox::InboxItem {
-                title: format!("Telegram attachment: {filename}"),
-                body: format!(
-                    "From: {}\nSize: {} bytes\nContent-Type: {content_type_str}",
-                    build_sender_name(from),
-                    info.size,
-                ),
-                source: "telegram".to_string(),
-                timestamp: crate::time::now_local(tz),
-                read: false,
-                attachments: vec![std::path::PathBuf::from("inbox").join(&saved_name)],
-            };
-            let item_filename = inbox::generate_filename(&companion.title, companion.timestamp);
-            if let Err(e) = inbox::save_item(inbox_dir, &item_filename, &companion).await {
-                tracing::warn!(
-                    filename = %filename,
-                    error = %e,
-                    "failed to create companion inbox item for telegram attachment"
-                );
+                images.push(img);
             }
         }
         Err(reason) => {

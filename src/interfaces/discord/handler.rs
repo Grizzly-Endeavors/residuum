@@ -16,8 +16,7 @@ use crate::bus::{BusHandle, EndpointName, Publisher};
 use crate::gateway::types::{ReloadSignal, ServerCommand};
 use crate::inbox;
 use crate::interfaces::attachment::{
-    AttachmentInfo, MAX_IMAGE_INLINE_SIZE, download_attachment, encode_image_from_file,
-    format_attachment_line, format_failed_attachment_line, is_supported_image,
+    AttachmentInfo, download_attachment, finalize_attachment, format_failed_attachment_line,
 };
 use crate::interfaces::cli::commands::{
     CommandContext, CommandSideEffect, all_commands, execute_command,
@@ -40,6 +39,7 @@ pub(super) struct DiscordHandler {
     pub(super) reload_tx: tokio::sync::watch::Sender<ReloadSignal>,
     pub(super) command_tx: tokio::sync::mpsc::Sender<ServerCommand>,
     pub(super) tz: chrono_tz::Tz,
+    pub(super) shutdown_rx: tokio::sync::watch::Receiver<bool>,
 }
 
 #[async_trait]
@@ -79,8 +79,9 @@ impl EventHandler for DiscordHandler {
         // Spawn presence watcher background task
         let presence_path = self.presence_path.clone();
         let shard = ctx.shard.clone();
+        let shutdown_rx = self.shutdown_rx.clone();
         tokio::spawn(async move {
-            presence_watcher(presence_path, shard).await;
+            presence_watcher(presence_path, shard, shutdown_rx).await;
         });
     }
 
@@ -230,61 +231,18 @@ async fn process_discord_attachments(
 
         match download_attachment(&info, &attachment.url, inbox_dir).await {
             Ok(saved) => {
-                let line = format_attachment_line(&saved, &info);
-                content.push('\n');
-                content.push_str(&line);
-
-                // Encode supported images inline for the model
-                if is_supported_image(info.content_type.as_deref())
-                    && info.size <= MAX_IMAGE_INLINE_SIZE
+                if let Some(img) = finalize_attachment(
+                    &saved,
+                    &info,
+                    &mut content,
+                    author_name,
+                    inbox_dir,
+                    tz,
+                    "Discord",
+                )
+                .await
                 {
-                    match encode_image_from_file(
-                        &saved.local_path,
-                        info.content_type.as_deref().unwrap_or("image/jpeg"),
-                    )
-                    .await
-                    {
-                        Ok(img) => images.push(img),
-                        Err(e) => tracing::warn!(
-                            filename = %info.filename,
-                            error = %e,
-                            "failed to encode discord image for inline delivery"
-                        ),
-                    }
-                } else if is_supported_image(info.content_type.as_deref()) {
-                    tracing::warn!(
-                        filename = %info.filename,
-                        size = info.size,
-                        max = MAX_IMAGE_INLINE_SIZE,
-                        "discord image exceeds inline size limit, saved but not sent to model"
-                    );
-                }
-
-                // Create companion inbox item for the attachment
-                let Some(file_name_os) = saved.local_path.file_name() else {
-                    tracing::warn!(path = %saved.local_path.display(), "attachment path has no filename, skipping companion item");
-                    continue;
-                };
-                let saved_name = file_name_os.to_string_lossy().to_string();
-                let content_type_str = info.content_type.as_deref().unwrap_or("unknown");
-                let companion = inbox::InboxItem {
-                    title: format!("Discord attachment: {}", info.filename),
-                    body: format!(
-                        "From: {author_name}\nSize: {} bytes\nContent-Type: {content_type_str}",
-                        info.size,
-                    ),
-                    source: "discord".to_string(),
-                    timestamp: crate::time::now_local(tz),
-                    read: false,
-                    attachments: vec![PathBuf::from("inbox").join(&saved_name)],
-                };
-                let filename = inbox::generate_filename(&companion.title, companion.timestamp);
-                if let Err(e) = inbox::save_item(inbox_dir, &filename, &companion).await {
-                    tracing::warn!(
-                        filename = %info.filename,
-                        error = %e,
-                        "failed to create companion inbox item for discord attachment"
-                    );
+                    images.push(img);
                 }
             }
             Err(reason) => {
@@ -329,11 +287,18 @@ async fn register_slash_commands(ctx: &Context) -> Result<(), serenity::Error> {
 }
 
 /// Background task that polls PRESENCE.toml for changes and updates presence.
-async fn presence_watcher(presence_path: PathBuf, shard: serenity::gateway::ShardMessenger) {
+async fn presence_watcher(
+    presence_path: PathBuf,
+    shard: serenity::gateway::ShardMessenger,
+    mut shutdown_rx: tokio::sync::watch::Receiver<bool>,
+) {
     let mut last_mtime = file_mtime(&presence_path);
 
     loop {
-        tokio::time::sleep(tokio::time::Duration::from_secs(PRESENCE_POLL_SECS)).await;
+        tokio::select! {
+            () = tokio::time::sleep(tokio::time::Duration::from_secs(PRESENCE_POLL_SECS)) => {}
+            _ = shutdown_rx.changed() => return,
+        }
 
         let current_mtime = file_mtime(&presence_path);
         if current_mtime != last_mtime {
