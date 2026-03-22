@@ -14,7 +14,7 @@ use crate::util::FatalError;
 const AGENT_PORT_START: u16 = 7701;
 
 /// Warn when port scanning advances further than this many steps from the starting port.
-const MAX_EXPECTED_AGENTS: u16 = 20;
+const PORT_SCAN_WARN_THRESHOLD: u16 = 20;
 
 /// A single agent entry in the registry.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -121,7 +121,7 @@ impl AgentRegistry {
             port = port.saturating_add(1);
         }
         let port_offset = port.saturating_sub(AGENT_PORT_START);
-        if port_offset > MAX_EXPECTED_AGENTS {
+        if port_offset > PORT_SCAN_WARN_THRESHOLD {
             warn!(
                 agents = self.agents.len(),
                 port, port_offset, "port scan advanced far from starting port"

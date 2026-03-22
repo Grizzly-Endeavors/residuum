@@ -52,9 +52,12 @@ pub fn run_agent_command(command: &AgentCommand) -> Result<(), FatalError> {
 
 /// Validate an agent name: alphanumeric + hyphens, 1-32 chars, not "default".
 fn validate_name(name: &str) -> Result<(), FatalError> {
-    if name.is_empty() || name.len() > 32 {
+    if name.is_empty() {
+        return Err(FatalError::Config("agent name cannot be empty".to_string()));
+    }
+    if name.len() > 32 {
         return Err(FatalError::Config(
-            "agent name must be 1-32 characters".to_string(),
+            "agent name must be 32 characters or fewer".to_string(),
         ));
     }
     if name == "default" {
@@ -72,6 +75,49 @@ fn validate_name(name: &str) -> Result<(), FatalError> {
             "agent name must not start or end with a hyphen".to_string(),
         ));
     }
+    Ok(())
+}
+
+fn write_file(
+    path: &std::path::Path,
+    content: impl AsRef<[u8]>,
+    desc: &str,
+) -> Result<(), FatalError> {
+    std::fs::write(path, content)
+        .map_err(|e| FatalError::Config(format!("failed to write {desc}: {e}")))
+}
+
+fn bootstrap_agent_workspace(name: &str, agent_dir: &std::path::Path) -> Result<(), FatalError> {
+    let ws_config_dir = agent_dir.join("workspace").join("config");
+
+    trace!(agent = name, path = %ws_config_dir.display(), "creating workspace/config directory");
+    std::fs::create_dir_all(&ws_config_dir).map_err(|e| {
+        FatalError::Config(format!(
+            "failed to create workspace/config at {}: {e}",
+            ws_config_dir.display()
+        ))
+    })?;
+
+    // config.toml is always regenerated; workspace files are preserved if they already exist
+    // so that user edits to mcp.json and channels.toml survive re-creation.
+    if !ws_config_dir.join("mcp.json").exists() {
+        trace!(agent = name, "writing mcp.json");
+        write_file(
+            &ws_config_dir.join("mcp.json"),
+            "{ \"mcpServers\": {} }\n",
+            "mcp.json",
+        )?;
+    }
+
+    if !ws_config_dir.join("channels.toml").exists() {
+        trace!(agent = name, "writing channels.toml");
+        write_file(
+            &ws_config_dir.join("channels.toml"),
+            "# Notification channel configuration. See channels.example.toml for options.\n",
+            "channels.toml",
+        )?;
+    }
+
     Ok(())
 }
 
@@ -101,14 +147,8 @@ fn run_agent_create(name: &str) -> Result<(), FatalError> {
 
     debug!(agent = name, port, "creating new agent");
 
-    // Create agent directory
-    trace!(agent = name, path = %agent_dir.display(), "creating agent directory");
-    std::fs::create_dir_all(&agent_dir).map_err(|e| {
-        FatalError::Config(format!(
-            "failed to create agent directory {}: {e}",
-            agent_dir.display()
-        ))
-    })?;
+    // Create workspace/config/ (also creates agent_dir and workspace/ as parents)
+    bootstrap_agent_workspace(name, &agent_dir)?;
 
     // Write ready-to-run config.toml
     trace!(agent = name, "writing config.toml");
@@ -123,39 +163,15 @@ fn run_agent_create(name: &str) -> Result<(), FatalError> {
          [gateway]\n\
          port = {port}\n",
     );
-    std::fs::write(agent_dir.join("config.toml"), config_content)
-        .map_err(|e| FatalError::Config(format!("failed to write agent config.toml: {e}")))?;
+    write_file(
+        &agent_dir.join("config.toml"),
+        config_content,
+        "agent config.toml",
+    )?;
 
     // Write example files for reference
     trace!(agent = name, "bootstrapping example files");
     Config::bootstrap_at_dir(&agent_dir)?;
-
-    // Create workspace/config/ with starter files
-    trace!(agent = name, path = %workspace_dir.join("config").display(), "creating workspace/config directory");
-    let ws_config_dir = workspace_dir.join("config");
-    std::fs::create_dir_all(&ws_config_dir).map_err(|e| {
-        FatalError::Config(format!(
-            "failed to create workspace/config at {}: {e}",
-            ws_config_dir.display()
-        ))
-    })?;
-
-    // config.toml is always regenerated; workspace files are preserved if they already exist
-    // so that user edits to mcp.json and channels.toml survive re-creation.
-    if !ws_config_dir.join("mcp.json").exists() {
-        trace!(agent = name, "writing mcp.json");
-        std::fs::write(ws_config_dir.join("mcp.json"), "{ \"mcpServers\": {} }\n")
-            .map_err(|e| FatalError::Config(format!("failed to write mcp.json: {e}")))?;
-    }
-
-    if !ws_config_dir.join("channels.toml").exists() {
-        trace!(agent = name, "writing channels.toml");
-        std::fs::write(
-            ws_config_dir.join("channels.toml"),
-            "# Notification channel configuration. See channels.example.toml for options.\n",
-        )
-        .map_err(|e| FatalError::Config(format!("failed to write channels.toml: {e}")))?;
-    }
 
     // Register in registry
     trace!(agent = name, port, "saving agent to registry");
