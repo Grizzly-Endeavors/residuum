@@ -60,20 +60,17 @@ impl SkillState {
             .await
             .with_context(|| format!("failed to read SKILL.md for '{}'", entry.name))?;
 
-        let (_fm, body) = parse_skill_md(&file_content).map_err(|e| {
-            tracing::error!(name = %name, path = %skill_md_path.display(), error = %e, "failed to parse SKILL.md at activation time");
-            e
-        })?;
+        let (_fm, body) = parse_skill_md(&file_content)
+            .inspect_err(|e| tracing::error!(name = %name, path = %skill_md_path.display(), error = %e, "failed to parse SKILL.md at activation time"))?;
 
+        let idx = self.active.len();
         self.active.push(ActiveSkill {
             name: entry.name.clone(),
             body,
         });
 
         tracing::info!(name = %name, "skill activated");
-        self.active
-            .last()
-            .ok_or_else(|| anyhow::anyhow!("unexpected: active skill not set after activation"))
+        Ok(&self.active[idx])
     }
 
     /// Deactivate a skill by name.
