@@ -12,7 +12,7 @@ Audits every Rust module in `src/` in parallel, then runs a review pass to filte
 
 | Flag | Description | Default |
 |---|---|---|
-| `-p, --prompt PROMPT` | Audit instruction (inline text) | *required (or use -f)* |
+| `-p, --prompt PROMPT` | Named prompt from `scripts/prompts/` or inline text | *required (or use -f)* |
 | `-f, --file FILE` | Read prompt from a file (`-` for stdin) | — |
 | `-m, --model MODEL` | Claude model to use | `sonnet` |
 | `-j, --jobs N` | Max parallel jobs | `4` |
@@ -25,6 +25,9 @@ Audits every Rust module in `src/` in parallel, then runs a review pass to filte
 3. Runs a review pass that removes findings requiring cross-module/architectural changes, deletes empty files, and writes a `SUMMARY.md`
 
 ```bash
+# Named prompt (resolves to scripts/prompts/clean-audit.md)
+./scripts/audit-modules.sh -p clean-audit
+
 # Inline prompt
 ./scripts/audit-modules.sh -p "Review for error handling issues"
 
@@ -73,7 +76,7 @@ Takes audit results from `audit-modules.sh` and applies fixes in parallel using 
 
 ```bash
 # 1. Run the audit
-./scripts/audit-modules.sh -p "Review for error handling issues" -m opus
+./scripts/audit-modules.sh -p clean-audit -m opus
 
 # 2. Review audit-results/SUMMARY.md and per-module findings
 

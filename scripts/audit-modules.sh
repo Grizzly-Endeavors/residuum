@@ -7,7 +7,7 @@ set -euo pipefail
 #   ./scripts/audit-modules.sh [OPTIONS]
 #
 # Options:
-#   -p, --prompt PROMPT   The audit prompt/instruction (inline)
+#   -p, --prompt PROMPT   Named prompt from scripts/prompts/ or inline text
 #   -f, --file FILE       Read audit prompt from a file (use - for stdin)
 #   -m, --model MODEL     Model to use (default: sonnet)
 #   -j, --jobs N          Max parallel jobs (default: 4)
@@ -15,6 +15,7 @@ set -euo pipefail
 #   -h, --help            Show this help
 #
 # Examples:
+#   ./scripts/audit-modules.sh -p clean-audit
 #   ./scripts/audit-modules.sh -p "Review for error handling issues"
 #   ./scripts/audit-modules.sh -f audits/no-silent-failures.txt -m opus
 #   cat prompt.txt | ./scripts/audit-modules.sh -f -
@@ -32,7 +33,14 @@ usage() {
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        -p|--prompt)  PROMPT="$2"; shift 2 ;;
+        -p|--prompt)
+            SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+            if [[ -f "$SCRIPT_DIR/prompts/$2.md" ]]; then
+                PROMPT="$(cat "$SCRIPT_DIR/prompts/$2.md")"
+            else
+                PROMPT="$2"
+            fi
+            shift 2 ;;
         -f|--file)
             if [[ "$2" == "-" ]]; then
                 PROMPT="$(cat)"
