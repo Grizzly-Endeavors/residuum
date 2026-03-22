@@ -254,16 +254,14 @@ fn register_preset(
             return;
         }
 
-        let kept_path = existing
-            .preset_path
-            .as_deref()
-            .map_or_else(|| "built-in".to_string(), |p| p.display().to_string());
-        tracing::warn!(
-            name = %fm.name,
-            rejected = %path.display(),
-            kept = %kept_path,
-            "duplicate preset name, keeping first found"
-        );
+        if let Some(p) = &existing.preset_path {
+            tracing::warn!(
+                name = %fm.name,
+                rejected = %path.display(),
+                kept = %p.display(),
+                "duplicate preset name, keeping first found"
+            );
+        }
         return;
     }
 

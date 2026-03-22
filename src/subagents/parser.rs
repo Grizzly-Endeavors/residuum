@@ -100,8 +100,6 @@ model_tier: small
 denied_tools:
   - exec
   - write_file
-channels:
-  - inbox
 ---
 
 You are a research specialist. Focus on gathering information.
