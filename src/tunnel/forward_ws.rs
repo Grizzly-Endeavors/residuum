@@ -60,12 +60,7 @@ pub(super) async fn handle_ws_open(
 
     // Add forwarded headers (skip WebSocket handshake headers).
     for (name, value) in &headers {
-        let lower = name.to_lowercase();
-        if lower != "host"
-            && lower != "connection"
-            && lower != "upgrade"
-            && lower != "sec-websocket-version"
-            && lower != "sec-websocket-key"
+        if !super::is_hop_by_hop(name)
             && let Ok(v) = ws_http::HeaderValue::from_str(value)
             && let Ok(n) = ws_http::HeaderName::from_bytes(name.as_bytes())
         {

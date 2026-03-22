@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 /// A single frame exchanged over the tunnel WebSocket connection.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
-pub enum TunnelFrame {
+pub(crate) enum TunnelFrame {
     /// Sent by the relay after a successful tunnel registration.
     Connected {
         user_id: String,
