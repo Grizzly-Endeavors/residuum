@@ -99,10 +99,9 @@ impl Publisher {
 // ---------------------------------------------------------------------------
 
 /// A single-consumer handle for receiving typed events from a bus topic.
-pub struct Subscriber<E> {
+pub struct Subscriber<E: 'static> {
     id: u64,
     topic: TopicId,
-    event_type: TypeId,
     event_rx: mpsc::Receiver<ErasedEvent>,
     cmd_tx: mpsc::Sender<BrokerCommand>,
     _phantom: PhantomData<E>,
@@ -119,7 +118,6 @@ impl<E: Clone + Send + Sync + 'static> Subscriber<E> {
         Self {
             id,
             topic,
-            event_type: TypeId::of::<E>(),
             event_rx,
             cmd_tx,
             _phantom: PhantomData,
@@ -152,12 +150,12 @@ impl<E: Clone + Send + Sync + 'static> Subscriber<E> {
     }
 }
 
-impl<E> Drop for Subscriber<E> {
+impl<E: 'static> Drop for Subscriber<E> {
     fn drop(&mut self) {
         drop(self.cmd_tx.try_send(BrokerCommand::Unsubscribe {
             id: self.id,
             topic: self.topic.clone(),
-            event_type: self.event_type,
+            event_type: TypeId::of::<E>(),
         }));
     }
 }

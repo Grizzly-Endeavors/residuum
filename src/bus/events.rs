@@ -1,6 +1,7 @@
 //! Event types carried on the bus.
 
 use std::fmt;
+use std::fmt::Write as _;
 use std::path::PathBuf;
 
 use chrono::NaiveDateTime;
@@ -197,23 +198,25 @@ impl AgentResultEvent {
     /// Format this result for injection into the agent's conversation context.
     #[must_use]
     pub fn format_for_agent(&self) -> String {
-        let mut parts = vec![format!(
+        let mut out = format!(
             "[Background Task Result]\nTask: {} ({})\nSource: {}\nStatus: {}",
             self.source_label,
             self.task_id,
             self.source.as_str(),
             self.status,
-        )];
+        );
 
         if !self.summary.is_empty() {
-            parts.push(format!("Output:\n{}", self.summary));
+            out.push('\n');
+            out.push_str("Output:\n");
+            out.push_str(&self.summary);
         }
 
         if let Some(ref path) = self.transcript_path {
-            parts.push(format!("Transcript: {}", path.display()));
+            write!(out, "\nTranscript: {}", path.display()).unwrap_or_default();
         }
 
-        parts.join("\n")
+        out
     }
 }
 

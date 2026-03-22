@@ -90,9 +90,6 @@ pub enum BusError {
     /// The broker task has shut down.
     #[error("bus broker is shut down")]
     BrokerShutdown,
-    /// Failed to send a command to the broker.
-    #[error("failed to send to bus broker: {0}")]
-    SendFailed(String),
     /// Received an event that could not be downcast to the expected type.
     #[error("type mismatch: expected {expected} on topic {topic}")]
     TypeMismatch {
@@ -197,12 +194,6 @@ mod tests {
     fn bus_error_display() {
         let err = BusError::BrokerShutdown;
         assert_eq!(err.to_string(), "bus broker is shut down");
-
-        let err2 = BusError::SendFailed("channel closed".to_string());
-        assert_eq!(
-            err2.to_string(),
-            "failed to send to bus broker: channel closed"
-        );
     }
 
     #[test]
