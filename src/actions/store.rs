@@ -5,7 +5,6 @@
 use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, Utc};
-use rand::Rng;
 use tracing::{debug, warn};
 
 use anyhow::Context;
@@ -83,12 +82,6 @@ impl ActionStore {
             actions: Vec::new(),
             path,
         }
-    }
-
-    /// Generate a unique action ID in the form `action-{8 hex digits}`.
-    #[must_use]
-    pub fn generate_id() -> String {
-        format!("action-{:08x}", rand::thread_rng().r#gen::<u32>())
     }
 
     /// Add an action to the store (does not save; call [`save`] separately).
@@ -215,7 +208,7 @@ mod tests {
 
     #[test]
     fn generate_id_format() {
-        let id = ActionStore::generate_id();
+        let id = ScheduledAction::generate_id();
         assert!(id.starts_with("action-"), "id should start with 'action-'");
         assert_eq!(id.len(), 15, "id should be action- + 8 hex chars");
     }

@@ -24,3 +24,11 @@ pub struct ScheduledAction {
     /// When this action was created.
     pub created_at: DateTime<Utc>,
 }
+
+impl ScheduledAction {
+    /// Generate a unique action ID in the form `action-{8 hex digits}`.
+    #[must_use]
+    pub fn generate_id() -> String {
+        format!("action-{:08x}", rand::random::<u32>())
+    }
+}

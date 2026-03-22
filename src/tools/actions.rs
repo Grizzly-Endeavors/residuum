@@ -106,7 +106,7 @@ impl Tool for ScheduleActionTool {
             .and_then(Value::as_str)
             .map(String::from);
 
-        let id = ActionStore::generate_id();
+        let id = ScheduledAction::generate_id();
         let action = ScheduledAction {
             id: id.clone(),
             name: name.clone(),
