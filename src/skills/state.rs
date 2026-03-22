@@ -69,9 +69,10 @@ impl SkillState {
         });
 
         tracing::info!(name = %name, "skill activated");
-        self.active
-            .last()
-            .ok_or_else(|| anyhow::anyhow!("skill vec empty after push"))
+        match self.active.last() {
+            Some(skill) => Ok(skill),
+            None => anyhow::bail!("active vec empty after push"),
+        }
     }
 
     /// Deactivate a skill by name.

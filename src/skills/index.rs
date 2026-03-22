@@ -19,6 +19,13 @@ impl SkillIndex {
     /// and builds an index entry. Invalid or missing files are warned and
     /// skipped. Duplicate names keep the first found.
     ///
+    /// # Arguments
+    /// - `dirs`: Skill directories in priority order. `dirs[0]` is treated as
+    ///   the workspace skills directory (`SkillSource::Workspace`); remaining
+    ///   entries are `SkillSource::UserGlobal`. The order must be maintained by
+    ///   the caller — passing dirs in a different order will produce incorrect
+    ///   source tagging.
+    ///
     /// # Errors
     /// Returns an error if a directory cannot be read (except `NotFound`,
     /// which is silently skipped).
@@ -74,8 +81,8 @@ impl SkillIndex {
             let skill_md = entry.skill_dir.join("SKILL.md");
             parts.push(format!(
                 "  <skill>\n    <name>{}</name>\n    <description>{}</description>\n    <location>{}</location>\n  </skill>",
-                entry.name,
-                entry.description,
+                xml_escape(&entry.name),
+                xml_escape(&entry.description),
                 skill_md.display(),
             ));
         }
@@ -89,6 +96,12 @@ impl SkillIndex {
     pub fn entries(&self) -> &[SkillIndexEntry] {
         &self.entries
     }
+}
+
+fn xml_escape(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
 }
 
 /// Scan a single directory for skill subfolders.
