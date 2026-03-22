@@ -7,6 +7,18 @@ use std::path::{Path, PathBuf};
 
 use crate::util::FatalError;
 
+fn ensure_parent_dir(path: &Path) -> Result<(), FatalError> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| {
+            FatalError::Gateway(format!(
+                "failed to create pid file directory {}: {e}",
+                parent.display()
+            ))
+        })?;
+    }
+    Ok(())
+}
+
 /// Holds an exclusive advisory lock on the PID file for the daemon's lifetime.
 ///
 /// When this value is dropped (or the process exits for any reason including
@@ -32,14 +44,7 @@ pub struct PidFileLock {
 pub fn acquire_pid_lock(path: &Path) -> Result<PidFileLock, FatalError> {
     use std::io::{Seek, SeekFrom, Write};
 
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| {
-            FatalError::Gateway(format!(
-                "failed to create pid file directory {}: {e}",
-                parent.display()
-            ))
-        })?;
-    }
+    ensure_parent_dir(path)?;
 
     let file = std::fs::OpenOptions::new()
         .create(true)
@@ -169,14 +174,7 @@ pub fn pid_file_path() -> Result<PathBuf, FatalError> {
 ///
 /// Returns `FatalError::Gateway` if the file cannot be written.
 pub fn write_pid_file(path: &Path, pid: u32) -> Result<(), FatalError> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| {
-            FatalError::Gateway(format!(
-                "failed to create pid file directory {}: {e}",
-                parent.display()
-            ))
-        })?;
-    }
+    ensure_parent_dir(path)?;
     std::fs::write(path, pid.to_string()).map_err(|e| {
         FatalError::Gateway(format!("failed to write pid file {}: {e}", path.display()))
     })?;
