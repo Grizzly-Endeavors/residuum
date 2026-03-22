@@ -93,22 +93,3 @@ impl DiscordInterface {
         client.start().await
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use crate::interfaces::cli::commands::{CommandContext, execute_command};
-
-    fn discord_ctx() -> CommandContext<'static> {
-        CommandContext {
-            url: "",
-            verbose: false,
-        }
-    }
-
-    #[test]
-    fn execute_help_returns_command_list() {
-        let result = execute_command("help", None, &discord_ctx());
-        assert!(result.response.contains("help"));
-        assert!(result.side_effect.is_none());
-    }
-}

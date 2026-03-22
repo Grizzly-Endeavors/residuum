@@ -169,7 +169,7 @@ impl CliClient {
 fn truncate_preview(s: &str, max_chars: usize) -> &str {
     s.char_indices()
         .nth(max_chars)
-        .map_or(s, |(idx, _)| s.get(..idx).unwrap_or(s))
+        .map_or(s, |(idx, _)| s.split_at(idx).0)
 }
 
 #[cfg(test)]
