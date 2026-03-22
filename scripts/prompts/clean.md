@@ -29,7 +29,9 @@ For each finding, be specific — reference file paths and line numbers. Focus o
 
 ## Output format
 
-Organize findings by category (use the headings above). For each finding:
+If the module's error handling is clean, say so. "No findings" is a valid and good outcome. Don't manufacture findings.
+
+If there are findings, organize by category (use the headings above). For each finding:
 - State what the problem is
 - Reference the specific file and line(s)
 - Propose a concrete fix

@@ -25,8 +25,8 @@ Audits every Rust module in `src/` in parallel, then runs a review pass to filte
 3. Runs a review pass that removes findings requiring cross-module/architectural changes, deletes empty files, and writes a `SUMMARY.md`
 
 ```bash
-# Named prompt (resolves to scripts/prompts/clean-audit.md)
-./scripts/audit-modules.sh -p clean-audit
+# Named prompt (resolves to scripts/prompts/clean.md)
+./scripts/audit-modules.sh -p clean
 
 # Inline prompt
 ./scripts/audit-modules.sh -p "Review for error handling issues"
@@ -76,7 +76,7 @@ Takes audit results from `audit-modules.sh` and applies fixes in parallel using 
 
 ```bash
 # 1. Run the audit
-./scripts/audit-modules.sh -p clean-audit -m opus
+./scripts/audit-modules.sh -p clean -m opus
 
 # 2. Review audit-results/SUMMARY.md and per-module findings
 
