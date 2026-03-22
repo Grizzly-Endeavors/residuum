@@ -3,11 +3,11 @@ set -euo pipefail
 
 # Apply audit findings in parallel using git worktrees, one commit per module.
 #
-# Each module gets its own worktree where Claude applies fixes independently.
-# Commits are then cherry-picked onto the audit branch sequentially. If a
-# cherry-pick conflicts, Claude resolves the conflict automatically. In all
-# cases, Claude handles the commit directly so it can see and fix any
-# pre-commit hook failures (fmt, clippy, test).
+# Creates N worker worktrees (one per parallel job), each with its own cargo
+# target directory. Modules are distributed round-robin across workers and
+# processed sequentially within each worker, so each benefits from the
+# previous module's warm build cache. Commits are then cherry-picked onto
+# the audit branch sequentially, with Claude resolving any conflicts.
 #
 # Usage:
 #   ./scripts/apply-audits.sh [OPTIONS]
@@ -107,47 +107,46 @@ cleanup() {
     echo "Cleaning up worktrees..."
     local preserved=0
 
-    if [[ -n "$WORKTREE_BASE" && -d "$WORKTREE_BASE" ]]; then
-        for wt in "$WORKTREE_BASE"/*/; do
-            [[ -d "$wt" ]] || continue
-            local wt_name
-            wt_name=$(basename "$wt")
-            local branch="wt/apply-audit-${wt_name}"
+    for ((w=0; w<JOBS; w++)); do
+        local wt_path="$WORKTREE_BASE/worker-$w"
+        local branch="wt/apply-audit-worker-$w"
+        [[ -d "$wt_path" ]] || continue
 
-            # Preserve worktrees with un-picked commits
-            if [[ -f "$RESULTS_DIR/${wt_name}.result" ]] \
-                && grep -q '^commit:' "$RESULTS_DIR/${wt_name}.result" \
-                && [[ ! -f "$RESULTS_DIR/${wt_name}.picked" ]]; then
-                local sha
-                sha=$(sed 's/^commit://' "$RESULTS_DIR/${wt_name}.result")
-                echo "  [preserved] $wt_name — commit $sha on branch $branch"
-                preserved=$((preserved + 1))
-                continue
-            fi
+        # Check if any commit on this branch is un-picked
+        local has_unpicked=false
+        while IFS= read -r sha; do
+            [[ -n "$sha" ]] || continue
+            for f in "$RESULTS_DIR"/*.result; do
+                [[ -f "$f" ]] || continue
+                if grep -q "commit:$sha" "$f"; then
+                    local mod
+                    mod=$(basename "$f" .result)
+                    if [[ ! -f "$RESULTS_DIR/${mod}.picked" ]]; then
+                        has_unpicked=true
+                    fi
+                    break
+                fi
+            done
+            $has_unpicked && break
+        done < <(git log --format='%H' "main..$branch" 2>/dev/null)
 
-            git worktree remove --force "$wt" 2>/dev/null || true
-            git branch -D "$branch" 2>/dev/null || true
-        done
-        rmdir "$WORKTREE_BASE" 2>/dev/null || true
-    fi
-
-    # Clean up branches whose worktrees were already removed
-    while IFS= read -r b; do
-        [[ -n "$b" ]] || continue
-        local mod="${b#wt/apply-audit-}"
-        if [[ -f "$RESULTS_DIR/${mod}.result" ]] \
-            && grep -q '^commit:' "$RESULTS_DIR/${mod}.result" \
-            && [[ ! -f "$RESULTS_DIR/${mod}.picked" ]]; then
+        if $has_unpicked; then
+            echo "  [preserved] worker-$w — branch $branch has un-applied commits"
+            preserved=$((preserved + 1))
             continue
         fi
-        git branch -D "$b" 2>/dev/null || true
-    done < <(git branch --list 'wt/apply-audit-*' --format='%(refname:short)')
+
+        git worktree remove --force "$wt_path" 2>/dev/null || true
+        git branch -D "$branch" 2>/dev/null || true
+    done
+
+    rmdir "$WORKTREE_BASE" 2>/dev/null || true
 
     if [[ $preserved -gt 0 ]]; then
         echo ""
-        echo "WARNING: $preserved worktree(s) preserved with un-applied commits."
+        echo "WARNING: $preserved worker(s) preserved with un-applied commits."
         echo "To recover manually:"
-        echo "  git branch --list 'wt/apply-audit-*'"
+        echo "  git branch --list 'wt/apply-audit-worker-*'"
         echo "  git log --oneline main..<branch>"
         echo "  git cherry-pick <sha>"
         echo ""
@@ -160,12 +159,9 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# Share the root target dir across all worktrees to avoid duplicating build caches
-CARGO_TARGET_DIR="$(pwd)/target"
-export CARGO_TARGET_DIR
-
-# Cap per-job cargo parallelism so total threads ≈ core count (jobs × build_jobs ≤ nproc)
-CARGO_BUILD_JOBS=$(( $(nproc) / JOBS ))
+# Each worker gets nproc/2 build threads — enough to keep CPU busy without
+# overwhelming the system when multiple workers compile simultaneously.
+CARGO_BUILD_JOBS=$(( $(nproc) / 2 ))
 [[ $CARGO_BUILD_JOBS -lt 1 ]] && CARGO_BUILD_JOBS=1
 export CARGO_BUILD_JOBS
 
@@ -173,51 +169,72 @@ CLAUDE_TOOLS="Edit Read Glob Grep Bash(git:*) Bash(cargo:*)"
 CLAUDE_DISALLOWED_TOOLS="Agent"
 
 # =============================================================================
-# Phase 1: Apply fixes in parallel worktrees
+# Phase 1: Apply fixes in parallel workers
 # =============================================================================
 
-apply_in_worktree() {
-    local audit_file="$1"
-    local module_name
-    module_name=$(basename "$audit_file" .md)
-    local result_file="$RESULTS_DIR/${module_name}.result"
-    local worktree_path="$WORKTREE_BASE/$module_name"
-    local wt_branch="wt/apply-audit-${module_name}"
-
-    # Map module name to source path
-    local module_path
-    if [[ -f "src/${module_name}.rs" ]]; then
-        module_path="src/${module_name}.rs"
-    elif [[ -d "src/${module_name}" ]]; then
-        module_path="src/${module_name}"
-    else
-        echo "[skip] $module_name — no matching source"
-        echo "skip:no-source" > "$result_file"
-        return 0
+# Create worker worktrees, each with its own target directory
+echo ""
+echo "Creating $JOBS worker worktrees..."
+for ((w=0; w<JOBS; w++)); do
+    wt_path="$WORKTREE_BASE/worker-$w"
+    wt_branch="wt/apply-audit-worker-$w"
+    if ! git worktree add "$wt_path" -b "$wt_branch" main --quiet 2>/dev/null; then
+        echo "FATAL: could not create worktree worker-$w"
+        exit 1
     fi
+done
 
-    echo "[start] $module_name"
+# Distribute audit files round-robin across workers
+for ((i=0; i<${#AUDIT_FILES[@]}; i++)); do
+    echo "${AUDIT_FILES[$i]}" >> "$RESULTS_DIR/queue-$((i % JOBS))"
+done
 
-    # Create worktree
-    if ! git worktree add "$worktree_path" -b "$wt_branch" main --quiet 2>/dev/null; then
-        echo "[FAIL]  $module_name — could not create worktree"
-        echo "fail:worktree-create" > "$result_file"
-        return 0
-    fi
+# Worker function: processes a queue of modules sequentially in one worktree
+process_worker() {
+    local worker_id="$1"
+    local queue_file="$RESULTS_DIR/queue-$worker_id"
+    local worktree_path="$WORKTREE_BASE/worker-$worker_id"
 
-    # Build prompt
-    local tmpfile
-    tmpfile=$(mktemp)
+    [[ -f "$queue_file" ]] || return 0
 
-    local source_files
-    if [[ -d "$worktree_path/$module_path" ]]; then
-        source_files=$(find "$worktree_path/$module_path" -name '*.rs' -type f | sort)
-    else
-        source_files="$worktree_path/$module_path"
-    fi
+    # Each worker gets its own target directory — no lock contention
+    export CARGO_TARGET_DIR="$worktree_path/target"
 
-    {
-        cat <<'INSTRUCTIONS'
+    while IFS= read -r audit_file; do
+        local module_name
+        module_name=$(basename "$audit_file" .md)
+        local result_file="$RESULTS_DIR/${module_name}.result"
+
+        # Map module name to source path
+        local module_path
+        if [[ -f "src/${module_name}.rs" ]]; then
+            module_path="src/${module_name}.rs"
+        elif [[ -d "src/${module_name}" ]]; then
+            module_path="src/${module_name}"
+        else
+            echo "[skip] $module_name — no matching source"
+            echo "skip:no-source" > "$result_file"
+            continue
+        fi
+
+        echo "[start] $module_name (worker $worker_id)"
+
+        # Track which module is in-flight for recovery
+        echo "$worker_id" > "$RESULTS_DIR/${module_name}.started"
+
+        # Build prompt
+        local tmpfile
+        tmpfile=$(mktemp)
+
+        local source_files
+        if [[ -d "$worktree_path/$module_path" ]]; then
+            source_files=$(find "$worktree_path/$module_path" -name '*.rs' -type f | sort)
+        else
+            source_files="$worktree_path/$module_path"
+        fi
+
+        {
+            cat <<'INSTRUCTIONS'
 You are fixing issues in a Rust module based on audit findings.
 
 Rules:
@@ -237,84 +254,89 @@ If a hook fails due to a pre-existing issue outside this module, do NOT attempt 
 Do NOT spawn subagents or delegate work.
 
 INSTRUCTIONS
-        echo "## Audit Findings"
-        echo ""
-        cat "$audit_file"
-        echo ""
-        echo "## Source Files"
-        echo ""
-        for f in $source_files; do
-            local rel_path="${f#"$worktree_path"/}"
-            echo "--- $rel_path ---"
-            cat "$f"
+            echo "## Audit Findings"
             echo ""
-        done
-    } > "$tmpfile"
+            cat "$audit_file"
+            echo ""
+            echo "## Source Files"
+            echo ""
+            for f in $source_files; do
+                local rel_path="${f#"$worktree_path"/}"
+                echo "--- $rel_path ---"
+                cat "$f"
+                echo ""
+            done
+        } > "$tmpfile"
 
-    # Run Claude in the worktree directory
-    local pre_head
-    pre_head=$(cd "$worktree_path" && git rev-parse HEAD)
+        # Run Claude in the worktree directory
+        local pre_head
+        pre_head=$(cd "$worktree_path" && git rev-parse HEAD)
 
-    local claude_exit=0
-    (cd "$worktree_path" && timeout "${TIMEOUT}s" claude -p --model "$MODEL" --no-session-persistence \
-        --allowedTools "$CLAUDE_TOOLS" \
-        --disallowedTools "$CLAUDE_DISALLOWED_TOOLS" \
-        < "$tmpfile" > /dev/null 2>&1) || claude_exit=$?
+        local claude_exit=0
+        (cd "$worktree_path" && timeout "${TIMEOUT}s" claude -p --model "$MODEL" --no-session-persistence \
+            --allowedTools "$CLAUDE_TOOLS" \
+            --disallowedTools "$CLAUDE_DISALLOWED_TOOLS" \
+            < "$tmpfile" > /dev/null 2>&1) || claude_exit=$?
 
-    # 124 = timeout killed the process
-    if [[ $claude_exit -eq 124 ]]; then
-        echo "[timeout] $module_name — killed after ${TIMEOUT}s"
-    fi
+        # 124 = timeout killed the process
+        if [[ $claude_exit -eq 124 ]]; then
+            echo "[timeout] $module_name — killed after ${TIMEOUT}s"
+        fi
 
-    # Always check HEAD — Claude may have committed before exiting non-zero
-    local post_head
-    post_head=$(cd "$worktree_path" && git rev-parse HEAD)
+        # Always check HEAD — Claude may have committed before exiting non-zero
+        local post_head
+        post_head=$(cd "$worktree_path" && git rev-parse HEAD)
 
-    if [[ "$post_head" != "$pre_head" ]]; then
-        # Commit exists regardless of exit code — treat as success
-        echo "[done]  $module_name ($post_head)"
-        echo "commit:$post_head" > "$result_file"
-        mkdir -p "$INPUT_DIR/applied"
-        mv "$INPUT_DIR/${module_name}.md" "$INPUT_DIR/applied/"
-    elif [[ $claude_exit -eq 0 ]]; then
-        echo "[no-op] $module_name — no changes committed"
-        echo "skip:no-changes" > "$result_file"
-    else
-        echo "[FAIL]  $module_name — Claude exited with error"
-        echo "fail:claude" > "$result_file"
-    fi
+        if [[ "$post_head" != "$pre_head" ]]; then
+            # Commit exists regardless of exit code — treat as success
+            echo "[done]  $module_name ($post_head)"
+            echo "commit:$post_head" > "$result_file"
+            mkdir -p "$INPUT_DIR/applied"
+            mv "$INPUT_DIR/${module_name}.md" "$INPUT_DIR/applied/"
+        elif [[ $claude_exit -eq 0 ]]; then
+            echo "[no-op] $module_name — no changes committed"
+            echo "skip:no-changes" > "$result_file"
+        else
+            echo "[FAIL]  $module_name — Claude exited with error"
+            echo "fail:claude" > "$result_file"
+        fi
 
-    rm -f "$tmpfile"
+        rm -f "$RESULTS_DIR/${module_name}.started"
+        rm -f "$tmpfile"
+    done < "$queue_file"
 }
-
-export -f apply_in_worktree
-export WORKTREE_BASE RESULTS_DIR MODEL INPUT_DIR CLAUDE_TOOLS CLAUDE_DISALLOWED_TOOLS TIMEOUT
 
 echo ""
 echo "Phase 1: Applying fixes in parallel (jobs=$JOBS)..."
 echo ""
 
-printf '%s\n' "${AUDIT_FILES[@]}" | xargs -P "$JOBS" -I {} bash -c 'apply_in_worktree "$@"' _ {} || true
+# Launch workers as background processes
+for ((w=0; w<JOBS; w++)); do
+    process_worker "$w" &
+done
+wait || true
 
-# Recovery sweep: find worktree commits that weren't recorded (e.g. worker killed mid-run)
-while IFS= read -r branch; do
-    [[ -n "$branch" ]] || continue
-    module_name="${branch#wt/apply-audit-}"
+# Recovery sweep: find modules that were started but never got a result
+# (e.g. worker killed mid-run after Claude committed)
+for f in "$RESULTS_DIR"/*.started; do
+    [[ -f "$f" ]] || continue
+    module_name=$(basename "$f" .started)
     result_file="$RESULTS_DIR/${module_name}.result"
     [[ -f "$result_file" ]] && continue
 
-    # No result file — check if branch has a commit beyond main
+    worker_id=$(cat "$f")
+    branch="wt/apply-audit-worker-$worker_id"
     branch_head=$(git rev-parse "$branch" 2>/dev/null) || continue
-    main_head=$(git rev-parse main 2>/dev/null) || continue
 
-    if [[ "$branch_head" != "$main_head" ]]; then
+    # Check if this commit is already recorded for another module
+    if ! grep -rql "commit:$branch_head" "$RESULTS_DIR"/*.result 2>/dev/null; then
         echo "[recovered] $module_name ($branch_head)"
         echo "commit:$branch_head" > "$result_file"
     else
-        echo "[recovered] $module_name — no changes"
+        echo "[recovered] $module_name — no unrecorded commit found"
         echo "skip:no-changes" > "$result_file"
     fi
-done < <(git branch --list 'wt/apply-audit-*' --format='%(refname:short)')
+done
 
 # =============================================================================
 # Phase 2: Cherry-pick onto audit branch
