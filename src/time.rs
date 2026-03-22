@@ -39,6 +39,10 @@ pub fn format_display_datetime(dt: NaiveDateTime) -> String {
     )
 }
 
+fn plural(n: i64, one: &'static str, many: &'static str) -> &'static str {
+    if n == 1 { one } else { many }
+}
+
 /// Format a time delta as a human-readable relative string.
 ///
 /// Produces `"just now"`, `"5 mins ago"`, `"2 hours ago"`, or `"3 days ago"`.
@@ -57,19 +61,16 @@ pub fn format_relative_time(delta: TimeDelta) -> String {
 
     let mins = delta.num_minutes();
     if mins < 60 {
-        let label = if mins == 1 { "min" } else { "mins" };
-        return format!("{mins} {label} ago");
+        return format!("{mins} {} ago", plural(mins, "min", "mins"));
     }
 
     let hours = delta.num_hours();
     if hours < 24 {
-        let label = if hours == 1 { "hour" } else { "hours" };
-        return format!("{hours} {label} ago");
+        return format!("{hours} {} ago", plural(hours, "hour", "hours"));
     }
 
     let days = delta.num_days();
-    let label = if days == 1 { "day" } else { "days" };
-    format!("{days} {label} ago")
+    format!("{days} {} ago", plural(days, "day", "days"))
 }
 
 const MINUTE_FMT: &str = "%Y-%m-%dT%H:%M";
