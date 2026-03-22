@@ -8,6 +8,7 @@ For each finding, be specific — reference file paths and line numbers. Focus o
 - Monolithic files (300+ lines of logic) that mix unrelated concerns.
 - How to split them: by domain concept, by layer (types/logic/handlers), or by responsibility.
 - Sub-module opportunities for large sections of code with shared responsibilities.
+- Small imporvements are worth noting.
 
 ### Internal duplication
 - Repeated patterns, copy-pasted blocks, or near-duplicate functions within the module.
