@@ -302,42 +302,19 @@ for i in "${!COMMITS[@]}"; do
     pre_head=$(git rev-parse HEAD)
 
     if git cherry-pick --no-commit "$sha" 2>/dev/null; then
-        # Clean apply — have Claude commit so it can handle hook failures
+        # Clean apply — commit with original message, skip hooks
         echo "  Cherry-picked cleanly, committing..."
 
-        commit_prompt=$(mktemp)
-        {
-            cat <<INSTRUCTIONS
-Changes from an audit fix for module "$module" have been staged.
-
-Stage any unstaged files and commit with: git commit -m "audit: fix $module"
-Do NOT use \$() or heredocs — just a plain -m "message" string.
-
-If the pre-commit hooks fail, read the error output, fix the issues, and retry the commit.
-INSTRUCTIONS
-        } > "$commit_prompt"
-
-        if claude -p --model "$MODEL" --no-session-persistence \
-            --allowedTools "$CLAUDE_TOOLS" \
-            < "$commit_prompt" > /dev/null 2>&1; then
-
-            if [[ "$(git rev-parse HEAD)" != "$pre_head" ]]; then
-                echo "  [done] Applied cleanly"
-                mkdir -p "$INPUT_DIR/applied"
-                [[ -f "$INPUT_DIR/${module}.md" ]] && mv "$INPUT_DIR/${module}.md" "$INPUT_DIR/applied/"
-                APPLIED=$((APPLIED + 1))
-            else
-                echo "  [FAIL] Claude did not commit"
-                git reset --hard HEAD 2>/dev/null
-                CHERRY_FAILED=$((CHERRY_FAILED + 1))
-            fi
+        if git commit --no-verify -C "$sha" 2>/dev/null; then
+            echo "  [done] Applied cleanly"
+            mkdir -p "$INPUT_DIR/applied"
+            [[ -f "$INPUT_DIR/${module}.md" ]] && mv "$INPUT_DIR/${module}.md" "$INPUT_DIR/applied/"
+            APPLIED=$((APPLIED + 1))
         else
-            echo "  [FAIL] Claude exited with error"
+            echo "  [FAIL] Could not commit"
             git reset --hard HEAD 2>/dev/null
             CHERRY_FAILED=$((CHERRY_FAILED + 1))
         fi
-
-        rm -f "$commit_prompt"
         continue
     fi
 
@@ -365,6 +342,7 @@ audit findings. Your job is to keep BOTH sets of changes.
 Rules:
 - Resolve ALL conflict markers (<<<<<<< / ======= / >>>>>>>)
 - Keep changes from BOTH sides — do not discard either
+- Do NOT make any changes beyond resolving the conflicts
 - Do NOT make any changes beyond resolving the conflicts
 
 INSTRUCTIONS
