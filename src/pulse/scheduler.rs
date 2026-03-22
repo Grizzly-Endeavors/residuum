@@ -1,9 +1,7 @@
 use std::collections::HashMap;
-use std::collections::hash_map::DefaultHasher;
-use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 
-use chrono::{Duration, NaiveDateTime, NaiveTime};
+use chrono::{Datelike, Duration, NaiveDateTime, NaiveTime};
 use serde::{Deserialize, Serialize};
 
 use super::types::{
@@ -322,13 +320,23 @@ fn active_period_duration(start: NaiveTime, end: NaiveTime) -> Duration {
 fn apply_jitter(base: Duration, pulse_name: &str, now: NaiveDateTime) -> Duration {
     const JITTER_RANGE: f64 = 0.30; // ±15%
 
-    let mut hasher = DefaultHasher::new();
-    pulse_name.hash(&mut hasher);
-    now.date().hash(&mut hasher);
-    let hash = hasher.finish();
+    // FNV-1a: stable across Rust versions (unlike DefaultHasher)
+    let mut h: u64 = 14_695_981_039_346_656_037;
+    for &b in pulse_name.as_bytes() {
+        h ^= u64::from(b);
+        h = h.wrapping_mul(1_099_511_628_211);
+    }
+    for &b in &now.date().year().to_le_bytes() {
+        h ^= u64::from(b);
+        h = h.wrapping_mul(1_099_511_628_211);
+    }
+    for &b in &now.date().ordinal().to_le_bytes() {
+        h ^= u64::from(b);
+        h = h.wrapping_mul(1_099_511_628_211);
+    }
 
     // Maps hash uniformly to [-0.15, +0.15]
-    let fraction = (hash % 10_001) as f64 / 10_000.0 * JITTER_RANGE - JITTER_RANGE / 2.0;
+    let fraction = (h % 10_000) as f64 / 10_000.0 * JITTER_RANGE - JITTER_RANGE / 2.0;
     let base_secs = base.num_seconds() as f64;
     let jittered = base_secs * (1.0 + fraction);
 
