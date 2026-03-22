@@ -26,6 +26,19 @@ pub(crate) struct EventContext<'a> {
     pub correlation_id: &'a str,
 }
 
+impl EventContext<'_> {
+    async fn publish_tool_activity(&self, event: ToolActivityEvent, tool_name: &str) {
+        if let Some(ep) = self.tool_activity_endpoint
+            && let Err(e) = self
+                .publisher
+                .publish(topics::Endpoint(ep.clone()), event)
+                .await
+        {
+            tracing::debug!(error = %e, tool_name = %tool_name, "failed to publish tool activity event");
+        }
+    }
+}
+
 /// Maximum retries for empty responses (transient API glitches).
 const MAX_EMPTY_RESPONSE_RETRIES: u32 = 2;
 
@@ -189,22 +202,17 @@ async fn execute_tool(
     recent_messages: &mut RecentMessages,
     events: &EventContext<'_>,
 ) {
-    if let Some(ep) = events.tool_activity_endpoint
-        && let Err(e) = events
-            .publisher
-            .publish(
-                topics::Endpoint(ep.clone()),
-                ToolActivityEvent::Call(ToolCallEvent {
-                    correlation_id: events.correlation_id.to_owned(),
-                    tool_call_id: tool_call.id.clone(),
-                    name: tool_call.name.clone(),
-                    arguments: tool_call.arguments.clone(),
-                }),
-            )
-            .await
-    {
-        tracing::debug!(error = %e, tool_name = %tool_call.name, "failed to publish tool call event");
-    }
+    events
+        .publish_tool_activity(
+            ToolActivityEvent::Call(ToolCallEvent {
+                correlation_id: events.correlation_id.to_owned(),
+                tool_call_id: tool_call.id.clone(),
+                name: tool_call.name.clone(),
+                arguments: tool_call.arguments.clone(),
+            }),
+            &tool_call.name,
+        )
+        .await;
 
     // Try built-in tools first, fall back to MCP servers
     let (result, source) = match resources
@@ -239,23 +247,18 @@ async fn execute_tool(
         }
     };
 
-    if let Some(ep) = events.tool_activity_endpoint
-        && let Err(e) = events
-            .publisher
-            .publish(
-                topics::Endpoint(ep.clone()),
-                ToolActivityEvent::Result(ToolResultEvent {
-                    correlation_id: events.correlation_id.to_owned(),
-                    tool_call_id: tool_call.id.clone(),
-                    name: tool_call.name.clone(),
-                    output: output.clone(),
-                    is_error,
-                }),
-            )
-            .await
-    {
-        tracing::debug!(error = %e, tool_name = %tool_call.name, "failed to publish tool result event");
-    }
+    events
+        .publish_tool_activity(
+            ToolActivityEvent::Result(ToolResultEvent {
+                correlation_id: events.correlation_id.to_owned(),
+                tool_call_id: tool_call.id.clone(),
+                name: tool_call.name.clone(),
+                output: output.clone(),
+                is_error,
+            }),
+            &tool_call.name,
+        )
+        .await;
 
     if images.is_empty() {
         recent_messages.push(Message::tool(output, tool_call.id.clone()));
