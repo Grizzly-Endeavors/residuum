@@ -85,13 +85,10 @@ fn http_client() -> anyhow::Result<reqwest::Client> {
 ///
 /// Returns an error if the HTTP request or JSON parsing fails.
 pub async fn fetch_latest_version() -> anyhow::Result<String> {
-    let url = "https://api.github.com/repos/grizzly-endeavors/residuum/releases/latest";
-    tracing::debug!(url = %url, "fetching latest release");
-
     let client = http_client()?;
 
     let resp = client
-        .get(url)
+        .get("https://api.github.com/repos/grizzly-endeavors/residuum/releases/latest")
         .header("Accept", "application/vnd.github+json")
         .send()
         .await
