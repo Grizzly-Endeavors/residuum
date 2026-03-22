@@ -8,10 +8,23 @@ use chrono::Utc;
 use tokio::sync::{Mutex, Semaphore, mpsc};
 use tokio_util::sync::CancellationToken;
 
-use super::subagent::{SubAgentOutput, SubAgentResources, execute_subagent};
+use super::subagent::{
+    SubAgentOutput, SubAgentResources, execute_subagent, force_deactivate_project,
+};
 use super::types::{ActiveTaskInfo, BackgroundResult, BackgroundTask, execution_info};
 use crate::bus::AgentResultStatus;
+use crate::mcp::SharedMcpRegistry;
 use crate::models::Message;
+use crate::projects::activation::SharedProjectState;
+use crate::tools::SharedToolFilter;
+use crate::tools::path_policy::SharedPathPolicy;
+
+struct CleanupHandles {
+    project_state: SharedProjectState,
+    mcp_registry: SharedMcpRegistry,
+    path_policy: SharedPathPolicy,
+    tool_filter: SharedToolFilter,
+}
 
 /// Spawns and manages background tasks with bounded concurrency.
 pub struct BackgroundTaskSpawner {
@@ -87,13 +100,11 @@ impl BackgroundTaskSpawner {
             };
 
             // Extract Arc clones for cancellation cleanup (cheap; no data copied)
-            let cleanup_handles = resources.as_ref().map(|r| {
-                (
-                    Arc::clone(&r.project_state),
-                    Arc::clone(&r.mcp_registry),
-                    Arc::clone(&r.path_policy),
-                    Arc::clone(&r.tool_filter),
-                )
+            let cleanup_handles = resources.as_ref().map(|r| CleanupHandles {
+                project_state: Arc::clone(&r.project_state),
+                mcp_registry: Arc::clone(&r.mcp_registry),
+                path_policy: Arc::clone(&r.path_policy),
+                tool_filter: Arc::clone(&r.tool_filter),
             });
 
             let result = tokio::select! {
@@ -166,24 +177,24 @@ impl BackgroundTaskSpawner {
 async fn build_cancelled_result(
     task: &BackgroundTask,
     spawn_task_id: &str,
-    cleanup_handles: Option<(
-        crate::projects::activation::SharedProjectState,
-        crate::mcp::registry::SharedMcpRegistry,
-        crate::tools::path_policy::SharedPathPolicy,
-        crate::tools::SharedToolFilter,
-    )>,
+    cleanup_handles: Option<CleanupHandles>,
 ) -> BackgroundResult {
     tracing::info!(task_id = %spawn_task_id, "background task cancelled");
-    if let Some((project_state, mcp_registry, path_policy, tool_filter)) = cleanup_handles {
-        let active_name = project_state
+    if let Some(handles) = cleanup_handles {
+        let active_name = handles
+            .project_state
             .lock()
             .await
             .active_project_name()
             .map(str::to_string);
         if let Some(name) = active_name {
-            mcp_registry.write().await.deactivate_project(&name).await;
-            path_policy.write().await.set_active_project(None);
-            tool_filter.write().await.clear_enabled();
+            force_deactivate_project(
+                &name,
+                &handles.mcp_registry,
+                &handles.path_policy,
+                &handles.tool_filter,
+            )
+            .await;
         }
     }
 

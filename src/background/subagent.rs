@@ -2,28 +2,22 @@
 
 use std::sync::Arc;
 
-use tokio::sync::{Mutex, Notify};
-
-use crate::actions::store::ActionStore;
 use crate::agent::context::{
     ProjectsContext, PromptContext, SkillsContext, SubagentsContext, build_subagent_system_content,
 };
 use crate::agent::interrupt::dead_interrupt_rx;
 use crate::agent::recent_messages::RecentMessages;
 use crate::agent::turn::{EventContext, TurnResources, execute_turn};
-use crate::background::BackgroundTaskSpawner;
-use crate::bus::{EndpointRegistry, Publisher};
+use crate::bus::Publisher;
 use crate::mcp::SharedMcpRegistry;
-use crate::memory::search::HybridSearcher;
 use crate::models::{CompletionOptions, Message, ModelProvider};
 use crate::projects::activation::{ProjectState, SharedProjectState};
 use crate::skills::{SharedSkillState, SkillState};
 use crate::tools::path_policy::PathPolicy;
 use crate::tools::{FileTracker, SharedPathPolicy, SharedToolFilter, ToolFilter, ToolRegistry};
 use crate::workspace::identity::IdentityFiles;
-use crate::workspace::layout::WorkspaceLayout;
 
-use super::types::SubAgentConfig;
+use super::types::{PresetToolRestriction, SubAgentBuildConfig, SubAgentConfig};
 
 /// Output from a completed sub-agent execution.
 pub(crate) struct SubAgentOutput {
@@ -56,52 +50,13 @@ pub struct SubAgentResources {
     pub(crate) preset_instructions: Option<String>,
 }
 
-/// Preset-derived tool restriction for a sub-agent.
-pub enum PresetToolRestriction {
-    /// Tools permanently blocked (from `denied_tools` frontmatter).
-    Denied(std::collections::HashSet<String>),
-    /// Only listed tools are available (from `allowed_tools` frontmatter).
-    AllowedOnly(std::collections::HashSet<String>),
-}
-
-/// Configuration passed to [`build_resources`] that groups constructor arguments.
-pub struct SubAgentBuildConfig {
-    /// Gated tool names — passed to the isolated `ToolFilter` (currently empty).
-    pub gated_tools: std::collections::HashSet<&'static str>,
-    /// Optional preset-level tool restriction (denied or allowed-only).
-    pub preset_tool_restriction: Option<PresetToolRestriction>,
-    /// Workspace layout (used to set the path policy root).
-    pub workspace_layout: WorkspaceLayout,
-    /// Identity files for the system prompt.
-    pub identity: IdentityFiles,
-    /// LLM completion options for the sub-agent turn.
-    pub options: CompletionOptions,
-    /// Timezone used by project management tools.
-    pub tz: chrono_tz::Tz,
-    /// Preset-specific instructions to inject into the subagent system prompt.
-    pub preset_instructions: Option<String>,
-    // ── Sub-agent tool dependencies ────────────────────────────────────
-    /// Background task spawner for `stop_agent` / `list_agents` tools.
-    pub background_spawner: Arc<BackgroundTaskSpawner>,
-    /// Endpoint registry for `send_message` / `list_endpoints` tools.
-    pub endpoint_registry: EndpointRegistry,
-    /// Bus publisher for `send_message` tool.
-    pub publisher: Publisher,
-    /// Scheduled action store for action tools.
-    pub action_store: Arc<Mutex<ActionStore>>,
-    /// Notify handle for action tools.
-    pub action_notify: Arc<Notify>,
-    /// Hybrid searcher for `memory_search` tool.
-    pub hybrid_searcher: Arc<HybridSearcher>,
-}
-
 /// Build isolated sub-agent resources from the main agent's shared state.
 ///
 /// Clones the project and skill indices so the sub-agent starts with the same
 /// view of available projects/skills, but operates on its own independent
 /// copies of `ProjectState`, `SkillState`, `PathPolicy`, and `ToolFilter`.
 /// The `McpRegistry` is shared (ref-counted) so servers are not duplicated.
-pub async fn build_resources(
+pub async fn build_subagent_resources(
     provider: Box<dyn ModelProvider>,
     main_project_state: &SharedProjectState,
     main_skill_state: &SharedSkillState,
@@ -393,22 +348,32 @@ async fn ensure_project_deactivated(
         .active_project_name()
         .map(str::to_string);
     if let Some(still_name) = still_active {
-        let prompt_preview: String = prompt.chars().take(200).collect();
+        let prompt_preview: String = prompt.chars().take(120).collect();
         tracing::warn!(
             task_id = %task_id,
             project = %still_name,
             prompt_preview = %prompt_preview,
             "sub-agent completed without deactivating project after retry"
         );
-        resources
-            .mcp_registry
-            .write()
-            .await
-            .deactivate_project(&still_name)
-            .await;
-        resources.path_policy.write().await.set_active_project(None);
-        resources.tool_filter.write().await.clear_enabled();
+        force_deactivate_project(
+            &still_name,
+            &resources.mcp_registry,
+            &resources.path_policy,
+            &resources.tool_filter,
+        )
+        .await;
     }
+}
+
+pub(crate) async fn force_deactivate_project(
+    name: &str,
+    mcp_registry: &SharedMcpRegistry,
+    path_policy: &SharedPathPolicy,
+    tool_filter: &SharedToolFilter,
+) {
+    mcp_registry.write().await.deactivate_project(name).await;
+    path_policy.write().await.set_active_project(None);
+    tool_filter.write().await.clear_enabled();
 }
 
 #[cfg(test)]

@@ -1,11 +1,19 @@
 //! Background task types: task definitions, execution configs, and results.
 
+use std::collections::HashSet;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
+use tokio::sync::{Mutex, Notify};
 
-use crate::bus::{AgentResultStatus, EventTrigger, PresetName};
+use crate::actions::store::ActionStore;
+use crate::bus::{AgentResultStatus, EndpointRegistry, EventTrigger, PresetName, Publisher};
 use crate::config::BackgroundModelTier;
+use crate::memory::search::HybridSearcher;
+use crate::models::CompletionOptions;
+use crate::workspace::identity::IdentityFiles;
+use crate::workspace::layout::WorkspaceLayout;
 
 /// A background task to be executed by the spawner.
 #[derive(Debug, Clone)]
@@ -91,6 +99,45 @@ pub fn format_background_result(result: &BackgroundResult) -> String {
     }
 
     parts.join("\n")
+}
+
+/// Preset-derived tool restriction for a sub-agent.
+pub enum PresetToolRestriction {
+    /// Tools permanently blocked (from `denied_tools` frontmatter).
+    Denied(HashSet<String>),
+    /// Only listed tools are available (from `allowed_tools` frontmatter).
+    AllowedOnly(HashSet<String>),
+}
+
+/// Configuration passed to [`build_subagent_resources`] that groups constructor arguments.
+pub struct SubAgentBuildConfig {
+    /// Gated tool names — passed to the isolated `ToolFilter` (currently empty).
+    pub gated_tools: HashSet<&'static str>,
+    /// Optional preset-level tool restriction (denied or allowed-only).
+    pub preset_tool_restriction: Option<PresetToolRestriction>,
+    /// Workspace layout (used to set the path policy root).
+    pub workspace_layout: WorkspaceLayout,
+    /// Identity files for the system prompt.
+    pub identity: IdentityFiles,
+    /// LLM completion options for the sub-agent turn.
+    pub options: CompletionOptions,
+    /// Timezone used by project management tools.
+    pub tz: chrono_tz::Tz,
+    /// Preset-specific instructions to inject into the subagent system prompt.
+    pub preset_instructions: Option<String>,
+    // ── Sub-agent tool dependencies ────────────────────────────────────
+    /// Background task spawner for `stop_agent` / `list_agents` tools.
+    pub background_spawner: Arc<super::spawner::BackgroundTaskSpawner>,
+    /// Endpoint registry for `send_message` / `list_endpoints` tools.
+    pub endpoint_registry: EndpointRegistry,
+    /// Bus publisher for `send_message` tool.
+    pub publisher: Publisher,
+    /// Scheduled action store for action tools.
+    pub action_store: Arc<Mutex<ActionStore>>,
+    /// Notify handle for action tools.
+    pub action_notify: Arc<Notify>,
+    /// Hybrid searcher for `memory_search` tool.
+    pub hybrid_searcher: Arc<HybridSearcher>,
 }
 
 #[cfg(test)]

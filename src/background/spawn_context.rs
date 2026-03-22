@@ -5,6 +5,7 @@ use std::collections::HashSet;
 use std::path::Path;
 use std::sync::Arc;
 
+use anyhow::Context as _;
 use tokio::sync::{Mutex, Notify};
 
 use crate::actions::store::ActionStore;
@@ -18,15 +19,12 @@ use crate::models::retry::RetryConfig;
 use crate::models::{CompletionOptions, SharedHttpClient, build_provider_chain};
 use crate::projects::activation::SharedProjectState;
 use crate::skills::SharedSkillState;
+use crate::subagents::types::SubagentPresetFrontmatter;
 use crate::workspace::identity::IdentityFiles;
 use crate::workspace::layout::WorkspaceLayout;
-use anyhow::Context as _;
 
-use crate::subagents::types::SubagentPresetFrontmatter;
-
-use super::subagent::{
-    PresetToolRestriction, SubAgentBuildConfig, SubAgentResources, build_resources,
-};
+use super::subagent::{SubAgentResources, build_subagent_resources};
+use super::types::{PresetToolRestriction, SubAgentBuildConfig};
 
 /// Everything needed to spawn background tasks from the gateway event loop.
 pub(crate) struct SpawnContext {
@@ -128,7 +126,7 @@ pub(crate) async fn build_spawn_resources(
         hybrid_searcher: Arc::clone(&ctx.hybrid_searcher),
     };
 
-    Ok(build_resources(
+    Ok(build_subagent_resources(
         provider,
         project_state,
         skill_state,
