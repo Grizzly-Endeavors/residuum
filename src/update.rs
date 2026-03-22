@@ -124,7 +124,11 @@ pub fn is_up_to_date(current: &str, latest: &str) -> bool {
     }
     // current is "v2026.03.02-5-gabcdef1" and latest is "v2026.03.02" —
     // the current build is *ahead* of the latest release
-    if current.starts_with(latest) && current.as_bytes().get(latest.len()) == Some(&b'-') {
+    if current.starts_with(latest)
+        && current
+            .get(latest.len()..)
+            .is_some_and(|r| r.starts_with('-'))
+    {
         return true;
     }
     false
@@ -241,8 +245,7 @@ fn detect_platform() -> anyhow::Result<String> {
     };
 
     let arch = match std::env::consts::ARCH {
-        "x86_64" => "x86_64",
-        "aarch64" => "aarch64",
+        arch @ ("x86_64" | "aarch64") => arch,
         other => {
             bail!("unsupported architecture for self-update: {other}");
         }
