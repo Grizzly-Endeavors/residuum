@@ -2,9 +2,12 @@
 
 use std::io::Write;
 
-/// Animated working indicator displayed on stdout while the agent is processing.
+/// Animated working indicator displayed on stderr while the agent is processing.
 ///
 /// Shows `Working.   (N tools)` with cycling dots, overwriting the same line.
+///
+/// Stderr is the correct stream for interactive UI chrome — using stdout would
+/// mix spinner escape codes into piped output (e.g. `residuum connect | jq`).
 pub struct WorkingIndicator {
     active: bool,
     tool_count: u32,
@@ -50,22 +53,24 @@ impl WorkingIndicator {
     ///
     /// The animation resumes on the next tick or redraw. Use this when printing
     /// intermediate content while the agent is still working.
+    #[expect(clippy::print_stderr, reason = "intentional: indicator is UI chrome on stderr")]
     pub fn clear_line(&mut self) {
         if self.active {
-            print!("\r\x1b[2K");
-            if std::io::stdout().flush().is_err() {
-                tracing::trace!("failed to flush stdout");
+            eprint!("\r\x1b[2K");
+            if std::io::stderr().flush().is_err() {
+                tracing::trace!("failed to flush stderr");
             }
         }
     }
 
     /// Clear the indicator line and mark inactive.
+    #[expect(clippy::print_stderr, reason = "intentional: indicator is UI chrome on stderr")]
     pub fn finish(&mut self) {
         if self.active {
             self.active = false;
-            print!("\r\x1b[2K");
-            if std::io::stdout().flush().is_err() {
-                tracing::trace!("failed to flush stdout");
+            eprint!("\r\x1b[2K");
+            if std::io::stderr().flush().is_err() {
+                tracing::trace!("failed to flush stderr");
             }
         }
     }
@@ -76,6 +81,7 @@ impl WorkingIndicator {
         self.active
     }
 
+    #[expect(clippy::print_stderr, reason = "intentional: indicator is UI chrome on stderr")]
     fn redraw(&self) {
         let dots = match self.dot_phase {
             0 => "   ",
@@ -88,9 +94,9 @@ impl WorkingIndicator {
         } else {
             String::new()
         };
-        print!("\x1b[2K\rWorking{dots}{tool_suffix}");
-        if std::io::stdout().flush().is_err() {
-            tracing::trace!("failed to flush stdout");
+        eprint!("\x1b[2K\rWorking{dots}{tool_suffix}");
+        if std::io::stderr().flush().is_err() {
+            tracing::trace!("failed to flush stderr");
         }
     }
 }
