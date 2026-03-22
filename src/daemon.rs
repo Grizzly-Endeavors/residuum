@@ -253,16 +253,14 @@ pub fn init_daemon_tracing(debug_mode: Option<DebugMode>, agent_name: Option<&st
         .with_ansi(false)
         .with_writer(file_appender);
 
-    let stderr_layer = debug_mode.is_some().then(|| {
-        tracing_subscriber::fmt::layer()
-            .with_target(false)
-            .with_writer(std::io::stderr)
-    });
+    let stderr_layer = tracing_subscriber::fmt::layer()
+        .with_target(false)
+        .with_writer(std::io::stderr);
 
     tracing_subscriber::registry()
         .with(env_filter)
         .with(file_layer)
-        .with(stderr_layer)
+        .with(Some(stderr_layer))
         .init();
     tracing::info!(
         dir = %log_dir.display(),

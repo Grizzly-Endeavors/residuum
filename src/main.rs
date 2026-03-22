@@ -105,7 +105,7 @@ async fn run() -> Result<(), FatalError> {
             let debug_mode = parse_debug_flag(&args)?;
 
             if foreground {
-                // Foreground mode: file-only logging (+ stderr if --debug), run gateway directly
+                // Foreground mode: file + stderr logging, run gateway directly
                 residuum::daemon::init_daemon_tracing(debug_mode, agent_name.as_deref());
                 run_serve_foreground(&args, agent_name.as_deref()).await
             } else {
