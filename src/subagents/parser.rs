@@ -20,9 +20,7 @@ pub fn parse_preset_md(content: &str) -> anyhow::Result<(SubagentPresetFrontmatt
         anyhow::bail!("preset file missing frontmatter delimiter '---'");
     }
 
-    let after_open = trimmed
-        .get(3..)
-        .ok_or_else(|| anyhow::anyhow!("preset file is too short"))?;
+    let after_open = trimmed.get(3..).unwrap_or_default();
 
     let close_pos = after_open.find("\n---").ok_or_else(|| {
         anyhow::anyhow!("preset file missing closing frontmatter delimiter '---'")

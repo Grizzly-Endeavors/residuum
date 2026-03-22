@@ -392,12 +392,11 @@ impl VectorStore {
 /// Handles both standard `SQLite` constraint errors and vec0 virtual table
 /// errors which report UNIQUE violations via extended error codes.
 fn is_unique_violation(err: &rusqlite::Error) -> bool {
-    // vec0 virtual tables use ConstraintViolation with a "UNIQUE constraint" message
     if let rusqlite::Error::SqliteFailure(ffi_err, msg) = err {
-        return ffi_err.code == rusqlite::ffi::ErrorCode::ConstraintViolation
-            || msg
-                .as_deref()
-                .is_some_and(|m| m.contains("UNIQUE constraint"));
+        return msg
+            .as_deref()
+            .is_some_and(|m| m.contains("UNIQUE constraint"))
+            || ffi_err.extended_code == rusqlite::ffi::SQLITE_CONSTRAINT_UNIQUE;
     }
     false
 }

@@ -98,7 +98,7 @@ impl SecretStore {
     /// Serialize and encrypt the store to disk.
     fn save(&self, config_dir: &Path) -> Result<(), FatalError> {
         let key = load_or_create_key(config_dir)?;
-        let plaintext = serialize_secrets_toml(&self.secrets);
+        let plaintext = serialize_secrets_toml(&self.secrets)?;
         let ciphertext = encrypt(&plaintext, &key)?;
 
         let enc_path = config_dir.join(ENCRYPTED_FILE);
@@ -235,19 +235,13 @@ fn parse_secrets_toml(toml_str: &str) -> Result<HashMap<String, String>, FatalEr
 }
 
 /// Serialize secrets to TOML format.
-fn serialize_secrets_toml(secrets: &HashMap<String, String>) -> String {
-    let mut lines = Vec::with_capacity(secrets.len() + 1);
-    lines.push("[secrets]".to_string());
-
-    let mut keys: Vec<&String> = secrets.keys().collect();
-    keys.sort_unstable();
-
-    for key in keys {
-        let escaped = secrets[key].replace('\\', "\\\\").replace('"', "\\\"");
-        lines.push(format!("{key} = \"{escaped}\""));
+fn serialize_secrets_toml(secrets: &HashMap<String, String>) -> Result<String, FatalError> {
+    #[derive(serde::Serialize)]
+    struct SecretsFile<'a> {
+        secrets: &'a HashMap<String, String>,
     }
-
-    lines.join("\n")
+    toml::to_string(&SecretsFile { secrets })
+        .map_err(|e| FatalError::Config(format!("failed to serialize secrets: {e}")))
 }
 
 #[cfg(test)]

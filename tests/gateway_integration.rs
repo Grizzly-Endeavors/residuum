@@ -171,7 +171,7 @@ mod gateway_integration {
                         None,
                         "",
                         None,
-                        &PromptContext::none(),
+                        &PromptContext::default(),
                         &mut irx,
                         &[],
                     )

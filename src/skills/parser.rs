@@ -14,29 +14,20 @@ use super::types::SkillFrontmatter;
 pub(super) fn parse_skill_md(content: &str) -> anyhow::Result<(SkillFrontmatter, String)> {
     let trimmed = content.trim_start();
 
-    if !trimmed.starts_with("---") {
-        anyhow::bail!("SKILL.md missing frontmatter delimiter '---'");
-    }
-
     let after_open = trimmed
-        .get(3..)
-        .ok_or_else(|| anyhow::anyhow!("SKILL.md is too short"))?;
+        .strip_prefix("---")
+        .ok_or_else(|| anyhow::anyhow!("SKILL.md missing frontmatter delimiter '---'"))?;
 
-    let close_pos = after_open
-        .find("\n---")
+    let (yaml_str, after_close) = after_open
+        .split_once("\n---")
         .ok_or_else(|| anyhow::anyhow!("SKILL.md missing closing frontmatter delimiter '---'"))?;
-
-    let yaml_str = after_open
-        .get(..close_pos)
-        .ok_or_else(|| anyhow::anyhow!("failed to extract YAML content"))?;
 
     let frontmatter: SkillFrontmatter =
         serde_yml::from_str(yaml_str).context("failed to parse SKILL.md frontmatter")?;
 
     validate_skill_name(&frontmatter.name)?;
 
-    let body_start = "---".len() + close_pos + "\n---".len();
-    let body = trimmed.get(body_start..).unwrap_or("").trim().to_string();
+    let body = after_close.trim().to_string();
 
     Ok((frontmatter, body))
 }

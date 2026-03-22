@@ -70,7 +70,7 @@ impl MacosNativeChannel {
         let channel_name = name.into();
         let (tx, rx) = mpsc::channel(64);
 
-        let macos_bridge = bridge::MacosBridge::new(config.clone())?;
+        let macos_bridge = bridge::MacosBridge::new(config.clone(), None)?;
 
         permissions::check_and_request().await;
 

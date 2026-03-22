@@ -527,7 +527,7 @@ mod tests {
                 None,
                 "",
                 None,
-                &PromptContext::none(),
+                &PromptContext::default(),
                 &mut irx,
                 &[],
             )
@@ -579,7 +579,7 @@ mod tests {
                 None,
                 "",
                 None,
-                &PromptContext::none(),
+                &PromptContext::default(),
                 &mut irx,
                 &[],
             )
@@ -636,7 +636,7 @@ mod tests {
                 None,
                 "",
                 None,
-                &PromptContext::none(),
+                &PromptContext::default(),
                 &mut irx,
                 &[],
             )
@@ -694,7 +694,7 @@ mod tests {
                 None,
                 "",
                 None,
-                &PromptContext::none(),
+                &PromptContext::default(),
                 &mut irx,
                 &[],
             )
@@ -728,7 +728,7 @@ mod tests {
                 Some(&ep),
                 None,
                 None,
-                &PromptContext::none(),
+                &PromptContext::default(),
             )
             .await
             .unwrap();
@@ -811,7 +811,7 @@ mod tests {
                 &publisher,
                 Some(&ep),
                 None,
-                &PromptContext::none(),
+                &PromptContext::default(),
                 &mut irx,
             )
             .await
@@ -1122,7 +1122,7 @@ mod tests {
                 None,
                 "",
                 None,
-                &PromptContext::none(),
+                &PromptContext::default(),
                 &mut interrupt_rx,
                 &[],
             )
@@ -1197,7 +1197,7 @@ mod tests {
                 None,
                 "",
                 None,
-                &PromptContext::none(),
+                &PromptContext::default(),
                 &mut interrupt_rx,
                 &[],
             )
@@ -1260,7 +1260,7 @@ mod tests {
                 None,
                 "",
                 None,
-                &PromptContext::none(),
+                &PromptContext::default(),
                 &mut interrupt_rx,
                 &[],
             )
@@ -1307,7 +1307,7 @@ mod tests {
                 None,
                 "",
                 None,
-                &PromptContext::none(),
+                &PromptContext::default(),
                 &mut irx,
                 &[],
             )

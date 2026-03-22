@@ -67,12 +67,14 @@ pub(super) fn bootstrap_at(dir: &Path) -> Result<(), FatalError> {
         })?;
     }
 
-    if write_if_absent(&dir.join("config.toml"), MINIMAL_CONFIG)? {
-        tracing::info!(path = %dir.join("config.toml").display(), "wrote initial config.toml");
+    let config_path = dir.join("config.toml");
+    if write_if_absent(&config_path, MINIMAL_CONFIG)? {
+        tracing::info!(path = %config_path.display(), "wrote initial config.toml");
     }
 
-    if write_if_absent(&dir.join("providers.toml"), MINIMAL_PROVIDERS)? {
-        tracing::info!(path = %dir.join("providers.toml").display(), "wrote initial providers.toml");
+    let providers_path = dir.join("providers.toml");
+    if write_if_absent(&providers_path, MINIMAL_PROVIDERS)? {
+        tracing::info!(path = %providers_path.display(), "wrote initial providers.toml");
     }
 
     // Always regenerate example files
@@ -109,15 +111,17 @@ pub(super) fn bootstrap_at(dir: &Path) -> Result<(), FatalError> {
         })?;
     }
 
-    if write_if_absent(&ws_config_dir.join("mcp.json"), "{ \"mcpServers\": {} }\n")? {
-        tracing::info!(path = %ws_config_dir.join("mcp.json").display(), "wrote initial mcp.json");
+    let mcp_path = ws_config_dir.join("mcp.json");
+    if write_if_absent(&mcp_path, "{ \"mcpServers\": {} }\n")? {
+        tracing::info!(path = %mcp_path.display(), "wrote initial mcp.json");
     }
 
+    let channels_path = ws_config_dir.join("channels.toml");
     if write_if_absent(
-        &ws_config_dir.join("channels.toml"),
+        &channels_path,
         "# Notification channel configuration. See channels.example.toml for options.\n",
     )? {
-        tracing::info!(path = %ws_config_dir.join("channels.toml").display(), "wrote initial channels.toml");
+        tracing::info!(path = %channels_path.display(), "wrote initial channels.toml");
     }
 
     Ok(())

@@ -20,7 +20,7 @@ struct ObserverJsonResponse {
 struct ObservationItem {
     content: String,
     timestamp: String,
-    visibility: String,
+    visibility: Visibility,
     project_context: String,
 }
 
@@ -128,13 +128,10 @@ fn typed_items_to_extractions(items: &[ObservationItem], tz: Tz) -> Vec<Observer
         })
         .map(|item| {
             let timestamp = crate::memory::parse_minute_timestamp(&item.timestamp, tz);
-            let visibility =
-                serde_json::from_value::<Visibility>(serde_json::json!(item.visibility))
-                    .unwrap_or_default();
             ObserverExtraction {
                 content: item.content.clone(),
                 timestamp,
-                visibility,
+                visibility: item.visibility.clone(),
                 project_context: item.project_context.clone(),
             }
         })

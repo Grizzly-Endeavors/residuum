@@ -56,18 +56,14 @@ pub struct MacosBridge {
 impl MacosBridge {
     /// # Errors
     /// Returns an error if category registration fails.
-    pub fn new(config: MacosChannelConfig) -> anyhow::Result<Self> {
+    pub fn new(
+        config: MacosChannelConfig,
+        ack_tx: Option<mpsc::Sender<InboxAcknowledgment>>,
+    ) -> anyhow::Result<Self> {
         require_app_bundle()?;
-        let bridge = Self {
-            config,
-            ack_tx: None,
-        };
+        let bridge = Self { config, ack_tx };
         Self::register_categories();
         Ok(bridge)
-    }
-
-    pub fn set_ack_sender(&mut self, tx: mpsc::Sender<InboxAcknowledgment>) {
-        self.ack_tx = Some(tx);
     }
 
     /// Must run before any notification is posted — macOS silently drops

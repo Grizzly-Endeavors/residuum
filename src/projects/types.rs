@@ -49,6 +49,16 @@ pub enum McpTransport {
     Http,
 }
 
+impl McpTransport {
+    #[expect(
+        clippy::trivially_copy_pass_by_ref,
+        reason = "serde skip_serializing_if requires &T signature"
+    )]
+    fn is_default(&self) -> bool {
+        matches!(self, Self::Stdio)
+    }
+}
+
 /// MCP server entry in project frontmatter.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct McpServerEntry {
@@ -63,21 +73,13 @@ pub struct McpServerEntry {
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub env: HashMap<String, String>,
     /// Transport type (defaults to stdio).
-    #[serde(default, skip_serializing_if = "is_default_transport")]
+    #[serde(default, skip_serializing_if = "McpTransport::is_default")]
     pub transport: McpTransport,
     /// HTTP headers to send with requests (only used for http transport).
     /// Header values support `${VAR}` and `${VAR:-default}` env var interpolation
     /// which is expanded at connect time.
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub headers: HashMap<String, String>,
-}
-
-#[expect(
-    clippy::trivially_copy_pass_by_ref,
-    reason = "serde skip_serializing_if requires &T signature"
-)]
-fn is_default_transport(t: &McpTransport) -> bool {
-    matches!(*t, McpTransport::Stdio)
 }
 
 /// Lightweight index entry for a project (frontmatter only, no body).

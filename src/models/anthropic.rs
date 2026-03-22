@@ -217,7 +217,6 @@ impl AnthropicClient {
         // budget_tokens must be > 0 and < max_tokens
         let budget = budget.max(1).min(max_tokens - 1);
         Some(AnthropicThinking {
-            r#type: "enabled",
             budget_tokens: budget,
         })
     }
@@ -228,14 +227,12 @@ impl AnthropicClient {
         endpoint: &str,
         api_key: &str,
         request: &AnthropicRequest,
-        message_count: usize,
-        tool_count: usize,
     ) -> Result<ModelResponse, ModelError> {
         debug!(
             model = %request.model,
             max_tokens = request.max_tokens,
-            message_count = message_count,
-            tool_count = tool_count,
+            message_count = request.messages.len(),
+            tool_count = request.tools.as_ref().map_or(0, Vec::len),
             "sending anthropic completion request"
         );
 
@@ -260,7 +257,7 @@ impl AnthropicClient {
         }
 
         let request_json = serde_json::to_string(request)
-            .unwrap_or_else(|e| format!("(serialization failed: {e})"));
+            .map_err(|e| ModelError::Parse(format!("failed to serialize request: {e}")))?;
 
         let response = req_builder
             .body(request_json.clone())
@@ -356,11 +353,7 @@ impl AnthropicClient {
         }
 
         let content = text_parts.join("");
-        let thinking_text = if thinking_parts.is_empty() {
-            None
-        } else {
-            Some(thinking_parts.join(""))
-        };
+        let thinking_text = (!thinking_parts.is_empty()).then(|| thinking_parts.join(""));
 
         let usage = response.usage.map(|u| Usage {
             input_tokens: u.input_tokens,
@@ -417,8 +410,6 @@ impl ModelProvider for AnthropicClient {
         let endpoint = self.endpoint();
         let api_key = self.api_key.clone();
         let http = self.http.clone();
-        let message_count = messages.len();
-        let tool_count = tools.len();
 
         let output_config = match &options.response_format {
             ResponseFormat::Text => None,
@@ -457,20 +448,10 @@ impl ModelProvider for AnthropicClient {
                     output_config,
                     temperature,
                     thinking,
-                    cache_control: Some(AnthropicCacheControl {
-                        r#type: "ephemeral",
-                    }),
+                    cache_control: Some(AnthropicCacheControl),
                 };
 
-                Self::send_completion(
-                    &http,
-                    &endpoint,
-                    &api_key,
-                    &request,
-                    message_count,
-                    tool_count,
-                )
-                .await
+                Self::send_completion(&http, &endpoint, &api_key, &request).await
             }
         })
         .await
@@ -538,15 +519,31 @@ fn merge_consecutive_messages(messages: Vec<AnthropicMessage>) -> Vec<AnthropicM
 // Anthropic API serde types (private)
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Serialize, Clone)]
-struct AnthropicCacheControl {
-    r#type: &'static str,
+#[derive(Debug, Clone)]
+struct AnthropicCacheControl;
+
+impl serde::Serialize for AnthropicCacheControl {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeStruct;
+        let mut state = s.serialize_struct("AnthropicCacheControl", 1)?;
+        state.serialize_field("type", "ephemeral")?;
+        state.end()
+    }
 }
 
-#[derive(Debug, Serialize, Clone)]
+#[derive(Debug, Clone)]
 struct AnthropicThinking {
-    r#type: &'static str,
     budget_tokens: u32,
+}
+
+impl serde::Serialize for AnthropicThinking {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeStruct;
+        let mut state = s.serialize_struct("AnthropicThinking", 2)?;
+        state.serialize_field("type", "enabled")?;
+        state.serialize_field("budget_tokens", &self.budget_tokens)?;
+        state.end()
+    }
 }
 
 /// System prompt content — plain string or array of text blocks.

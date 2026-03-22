@@ -21,10 +21,6 @@ pub struct EpisodeMeta {
     pub date: chrono::NaiveDate,
     /// Project or topic context tag.
     pub context: String,
-    /// One-line summary of how the episode started.
-    pub start: String,
-    /// One-line summary of how the episode ended.
-    pub end: String,
 }
 
 /// Write an episode transcript file to the episodes directory.
@@ -54,8 +50,6 @@ pub(crate) async fn write_episode_transcript(
         "type": "meta",
         "id": episode.id,
         "date": episode.date.to_string(),
-        "start": episode.start,
-        "end": episode.end,
         "context": episode.context,
     });
 
@@ -218,8 +212,6 @@ pub(crate) async fn read_episode_lines(
         "Episode: {} | {} | {}",
         meta.id, meta.date, meta.context
     ));
-    parts.push(format!("  start: {}", meta.start));
-    parts.push(format!("  end: {}", meta.end));
     parts.push(String::new());
 
     // Message lines
@@ -255,14 +247,15 @@ pub(crate) async fn read_episode_lines(
 fn format_message_line(parts: &mut Vec<String>, line_num: usize, msg: &Message) {
     match msg.role {
         Role::Assistant if msg.tool_calls.is_some() => {
-            let calls = msg.tool_calls.as_deref().unwrap_or_default();
-            let tools: Vec<&str> = calls.iter().map(|c| c.name.as_str()).collect();
-            let calls_str = tools.join(", ");
-            if msg.content.is_empty() {
-                parts.push(format!("[line {line_num}] Assistant: [calls: {calls_str}]"));
-            } else {
-                parts.push(format!("[line {line_num}] Assistant: {}", msg.content));
-                parts.push(format!("  [calls: {calls_str}]"));
+            if let Some(calls) = msg.tool_calls.as_deref() {
+                let tools: Vec<&str> = calls.iter().map(|c| c.name.as_str()).collect();
+                let calls_str = tools.join(", ");
+                if msg.content.is_empty() {
+                    parts.push(format!("[line {line_num}] Assistant: [calls: {calls_str}]"));
+                } else {
+                    parts.push(format!("[line {line_num}] Assistant: {}", msg.content));
+                    parts.push(format!("  [calls: {calls_str}]"));
+                }
             }
         }
         Role::Tool => {
@@ -297,8 +290,6 @@ mod tests {
         Episode {
             id: "ep-001".to_string(),
             date: NaiveDate::from_ymd_opt(2026, 2, 19).unwrap(),
-            start: "user asked about files".to_string(),
-            end: "listed directory contents".to_string(),
             context: "general".to_string(),
             observations: vec!["user prefers concise output".to_string()],
             source_episodes: vec![],

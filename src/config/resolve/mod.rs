@@ -11,7 +11,9 @@ use crate::models::{ThinkingConfig, ThinkingLevel};
 
 use super::Config;
 use super::bootstrap::default_workspace_dir;
-use super::constants::{DEFAULT_IDLE_TIMEOUT_MINUTES, DEFAULT_MAX_TOKENS, DEFAULT_TIMEOUT_SECS};
+use super::constants::{
+    DEFAULT_CLOUD_RELAY_URL, DEFAULT_IDLE_TIMEOUT_MINUTES, DEFAULT_MAX_TOKENS, DEFAULT_TIMEOUT_SECS,
+};
 use super::deserialize::{
     AgentConfigFile, BackgroundConfigFile, BackgroundModelsFile, CloudConfigFile, ConfigFile,
     DiscordConfigFile, GatewayConfigFile, MemoryConfigFile, ProviderEntryFile, ProvidersFile,
@@ -235,9 +237,6 @@ fn resolve_discord_config(
         (None, None) => None,
     }
 }
-
-/// Default relay WebSocket URL.
-const DEFAULT_CLOUD_RELAY_URL: &str = "wss://agent-residuum.com/tunnel/register";
 
 /// Resolve cloud tunnel configuration from TOML section and environment.
 ///
@@ -597,42 +596,27 @@ fn resolve_web_search_config(
         && let Some(ref backend_name) = s.backend
     {
         let resolved = match backend_name.as_str() {
-            "brave" => s.brave.as_ref().and_then(|b| {
-                let api_key = b
-                    .api_key
-                    .as_deref()
-                    .and_then(|k| resolve_secret_value(k, secrets))
-                    .or_else(|| std::env::var("BRAVE_API_KEY").ok());
-                api_key.map(|key| StandaloneBackendConfig {
-                    name: "brave".to_string(),
-                    api_key: key,
-                    base_url: None,
-                })
-            }),
-            "tavily" => s.tavily.as_ref().and_then(|t| {
-                let api_key = t
-                    .api_key
-                    .as_deref()
-                    .and_then(|k| resolve_secret_value(k, secrets))
-                    .or_else(|| std::env::var("TAVILY_API_KEY").ok());
-                api_key.map(|key| StandaloneBackendConfig {
-                    name: "tavily".to_string(),
-                    api_key: key,
-                    base_url: None,
-                })
-            }),
-            "ollama" => s.ollama.as_ref().and_then(|o| {
-                let api_key = o
-                    .api_key
-                    .as_deref()
-                    .and_then(|k| resolve_secret_value(k, secrets))
-                    .or_else(|| std::env::var("OLLAMA_API_KEY").ok());
-                api_key.map(|key| StandaloneBackendConfig {
-                    name: "ollama".to_string(),
-                    api_key: key,
-                    base_url: o.base_url.clone(),
-                })
-            }),
+            "brave" => resolve_standalone_backend(
+                "brave",
+                s.brave.as_ref().and_then(|b| b.api_key.as_deref()),
+                "BRAVE_API_KEY",
+                None,
+                secrets,
+            ),
+            "tavily" => resolve_standalone_backend(
+                "tavily",
+                s.tavily.as_ref().and_then(|t| t.api_key.as_deref()),
+                "TAVILY_API_KEY",
+                None,
+                secrets,
+            ),
+            "ollama" => resolve_standalone_backend(
+                "ollama",
+                s.ollama.as_ref().and_then(|o| o.api_key.as_deref()),
+                "OLLAMA_API_KEY",
+                s.ollama.as_ref().and_then(|o| o.base_url.clone()),
+                secrets,
+            ),
             other => {
                 tracing::warn!(
                     backend = other,
@@ -653,6 +637,25 @@ fn resolve_web_search_config(
     }
 
     cfg
+}
+
+/// Resolve a standalone web search backend by looking up the API key from config,
+/// secrets, or an environment variable fallback.
+fn resolve_standalone_backend(
+    name: &str,
+    api_key: Option<&str>,
+    env_var: &str,
+    base_url: Option<String>,
+    secrets: &SecretStore,
+) -> Option<StandaloneBackendConfig> {
+    let key = api_key
+        .and_then(|k| resolve_secret_value(k, secrets))
+        .or_else(|| std::env::var(env_var).ok())?;
+    Some(StandaloneBackendConfig {
+        name: name.to_string(),
+        api_key: key,
+        base_url,
+    })
 }
 
 /// Parse a thinking config string into a `ThinkingConfig`.

@@ -33,26 +33,23 @@ pub fn build_pulse_execution(pulse: &PulseDef) -> PulseExecution {
     let source_label = format!("pulse:{}", pulse.name);
     let preset = pulse.agent.as_deref().unwrap_or("general-purpose");
 
-    match preset {
-        "main" => {
-            tracing::debug!(pulse = %pulse.name, "routing pulse to main wake turn");
-            PulseExecution::MainWakeTurn {
-                pulse_name: pulse.name.clone(),
-                prompt,
-            }
+    if preset == "main" {
+        tracing::debug!(pulse = %pulse.name, "routing pulse to main wake turn");
+        PulseExecution::MainWakeTurn {
+            pulse_name: pulse.name.clone(),
+            prompt,
         }
-        preset => {
-            tracing::debug!(pulse = %pulse.name, preset = %preset, "routing pulse to sub-agent");
-            let spawn_event = SpawnRequestEvent {
-                preset: crate::bus::PresetName::from(preset),
-                source_label,
-                prompt,
-                context: None,
-                source: EventTrigger::Pulse,
-                model_tier_override: Some(crate::config::BackgroundModelTier::Small),
-            };
-            PulseExecution::SubAgent { spawn_event }
-        }
+    } else {
+        tracing::debug!(pulse = %pulse.name, preset = %preset, "routing pulse to sub-agent");
+        let spawn_event = SpawnRequestEvent {
+            preset: crate::bus::PresetName::from(preset),
+            source_label,
+            prompt,
+            context: None,
+            source: EventTrigger::Pulse,
+            model_tier_override: Some(crate::config::BackgroundModelTier::Small),
+        };
+        PulseExecution::SubAgent { spawn_event }
     }
 }
 

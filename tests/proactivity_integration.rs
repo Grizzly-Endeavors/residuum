@@ -358,7 +358,7 @@ mod proactivity_integration {
                 Some(&ep),
                 None,
                 None,
-                &PromptContext::none(),
+                &PromptContext::default(),
             )
             .await
             .unwrap();

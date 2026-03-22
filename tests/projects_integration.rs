@@ -563,7 +563,7 @@ mod projects_integration {
 
     #[test]
     fn projects_context_none() {
-        let ctx = ProjectsContext::none();
+        let ctx = ProjectsContext::default();
         assert!(ctx.index.is_none(), "none() should have no index");
         assert!(
             ctx.active_context.is_none(),

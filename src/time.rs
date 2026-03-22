@@ -31,8 +31,12 @@ pub fn ordinal_suffix(day: u32) -> &'static str {
 #[must_use]
 pub fn format_display_datetime(dt: NaiveDateTime) -> String {
     let suffix = ordinal_suffix(dt.day());
-    dt.format(&format!("%A %b %-d{suffix} %Y | %H:%M"))
-        .to_string()
+    format!(
+        "{} {}{suffix} {}",
+        dt.format("%A %b"),
+        dt.day(),
+        dt.format("%Y | %H:%M")
+    )
 }
 
 /// Format a time delta as a human-readable relative string.
@@ -71,6 +75,10 @@ pub fn format_relative_time(delta: TimeDelta) -> String {
 
 const MINUTE_FMT: &str = "%Y-%m-%dT%H:%M";
 
+fn parse_minute(s: &str) -> Result<NaiveDateTime, String> {
+    NaiveDateTime::parse_from_str(s, MINUTE_FMT).map_err(|e| format!("invalid datetime {s:?}: {e}"))
+}
+
 /// Serde module for `NaiveDateTime` using minute-precision (`YYYY-MM-DDTHH:MM`).
 pub mod minute_format {
     use chrono::NaiveDateTime;
@@ -92,8 +100,7 @@ pub mod minute_format {
         D: Deserializer<'de>,
     {
         let s = String::deserialize(deserializer)?;
-        NaiveDateTime::parse_from_str(&s, super::MINUTE_FMT)
-            .map_err(|e| serde::de::Error::custom(format!("invalid datetime {s:?}: {e}")))
+        super::parse_minute(&s).map_err(serde::de::Error::custom)
     }
 }
 
@@ -109,7 +116,7 @@ pub mod minute_format_opt {
         S: Serializer,
     {
         match dt {
-            Some(dt) => serializer.serialize_str(&dt.format(super::MINUTE_FMT).to_string()),
+            Some(dt) => super::minute_format::serialize(dt, serializer),
             None => serializer.serialize_none(),
         }
     }
@@ -122,9 +129,9 @@ pub mod minute_format_opt {
     {
         let opt: Option<String> = Option::deserialize(deserializer)?;
         match opt {
-            Some(s) => NaiveDateTime::parse_from_str(&s, super::MINUTE_FMT)
+            Some(s) => super::parse_minute(&s)
                 .map(Some)
-                .map_err(|e| serde::de::Error::custom(format!("invalid datetime {s:?}: {e}"))),
+                .map_err(serde::de::Error::custom),
             None => Ok(None),
         }
     }

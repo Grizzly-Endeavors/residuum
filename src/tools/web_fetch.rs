@@ -170,11 +170,7 @@ fn truncate_content(content: &str) -> String {
     }
     let mut truncated = String::with_capacity(MAX_CONTENT_CHARS + 50);
     // Find a safe truncation point (don't split mid-char)
-    let boundary = content
-        .char_indices()
-        .take_while(|(i, _)| *i < MAX_CONTENT_CHARS)
-        .last()
-        .map_or(0, |(i, c)| i + c.len_utf8());
+    let boundary = content.floor_char_boundary(MAX_CONTENT_CHARS);
     if let Some(slice) = content.get(..boundary) {
         truncated.push_str(slice);
     }

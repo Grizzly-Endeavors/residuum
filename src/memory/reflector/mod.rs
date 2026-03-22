@@ -555,9 +555,5 @@ mod tests {
             ]
         }"#;
         reflector.swap_provider(Box::new(MockMemoryProvider::new(new_response)));
-
-        // Verify the provider was swapped without panic
-        let log = ObservationLog::new();
-        assert!(!reflector.should_reflect(&log));
     }
 }

@@ -104,8 +104,7 @@ fn apply_replace(
     new_lines.extend(lines.drain(..range_start));
     new_lines.extend(content_lines.iter().map(|s| (*s).to_string()));
     let skip_count = range_end - range_start + 1;
-    let remaining: Vec<String> = lines.into_iter().skip(skip_count).collect();
-    new_lines.extend(remaining);
+    new_lines.extend(lines.into_iter().skip(skip_count));
 
     (new_lines, format!("replaced line(s) {range_desc}"))
 }
@@ -243,8 +242,7 @@ fn apply_delete(
 
     let mut new_lines = Vec::with_capacity(lines.len() - delete_count);
     new_lines.extend(lines.drain(..range_start));
-    let remaining: Vec<String> = lines.into_iter().skip(delete_count).collect();
-    new_lines.extend(remaining);
+    new_lines.extend(lines.into_iter().skip(delete_count));
 
     Ok((new_lines, format!("deleted line(s) {range_desc}")))
 }
@@ -374,15 +372,10 @@ impl Tool for EditTool {
                 new_content.unwrap_or_default(),
                 insert_at_start,
             ),
-            "delete" => match apply_delete(lines, range_start, range_end, path) {
+            _ => match apply_delete(lines, range_start, range_end, path) {
                 Ok(result) => result,
                 Err(msg) => return Ok(ToolResult::error(msg)),
             },
-            _ => {
-                return Err(ToolError::InvalidArguments(format!(
-                    "unknown operation '{operation}'"
-                )));
-            }
         };
 
         // Reconstruct file content

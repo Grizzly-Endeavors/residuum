@@ -367,7 +367,12 @@ pub async fn ensure_workspace(
     // BOOTSTRAP.md is first-run only: write it once, then drop a sentinel so it
     // is never recreated after the agent deletes it.
     let sentinel = layout.root().join(".bootstrapped");
-    let fresh_bootstrap = !sentinel.exists();
+    let fresh_bootstrap = !tokio::fs::try_exists(&sentinel).await.map_err(|e| {
+        FatalError::Workspace(format!(
+            "failed to check bootstrap sentinel {}: {e}",
+            sentinel.display()
+        ))
+    })?;
     if fresh_bootstrap {
         write_if_missing(&layout.bootstrap_md(), DEFAULT_BOOTSTRAP).await?;
         // Create the sentinel after writing BOOTSTRAP.md so that if we crash
@@ -409,17 +414,17 @@ fn build_user_content(user_name: Option<&str>, timezone: Option<&str>) -> String
         return DEFAULT_USER.to_string();
     }
 
-    let mut parts = vec!["# User Preferences\n".to_string()];
+    let mut out = String::from("# User Preferences\n");
     if let Some(name) = name {
-        parts.push(format!("**Name**: {name}"));
+        out.push_str("\n**Name**: ");
+        out.push_str(name);
     }
     if let Some(tz) = tz {
-        parts.push(format!("**Timezone**: {tz}"));
+        out.push_str("\n**Timezone**: ");
+        out.push_str(tz);
     }
-    parts.push(
-        "\nUpdate this file as you learn about the user — preferences, communication style, context about their work and life.\n".to_string(),
-    );
-    parts.join("\n")
+    out.push_str("\n\nUpdate this file as you learn about the user — preferences, communication style, context about their work and life.\n");
+    out
 }
 
 /// Write bundled skill trees to the workspace skills directory.
@@ -505,7 +510,10 @@ async fn write_bundled_skills(layout: &WorkspaceLayout) -> Result<(), FatalError
 
 /// Write content to a file only if it does not already exist.
 async fn write_if_missing(path: &std::path::Path, content: &str) -> Result<(), FatalError> {
-    if path.exists() {
+    if tokio::fs::try_exists(path)
+        .await
+        .map_err(|e| FatalError::Workspace(format!("failed to check {}: {e}", path.display())))?
+    {
         tracing::trace!(path = %path.display(), "identity file already exists, skipping");
     } else {
         tokio::fs::write(path, content).await.map_err(|e| {

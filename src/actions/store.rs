@@ -67,7 +67,10 @@ impl ActionStore {
             )
         })?;
 
-        let tmp_path = dir.join(".scheduled_actions.json.tmp");
+        let tmp_path = dir.join(format!(
+            ".{}.tmp",
+            self.path.file_name().unwrap_or_default().to_string_lossy()
+        ));
 
         tokio::fs::write(&tmp_path, &json).await.with_context(|| {
             format!(
@@ -139,8 +142,7 @@ impl ActionStore {
         let (due, remaining) = self.actions.drain(..).partition(|a| a.run_at <= now);
         self.actions = remaining;
         if !due.is_empty() {
-            let ids: Vec<&str> = due.iter().map(|a| a.id.as_str()).collect();
-            debug!(count = due.len(), ids = ?ids, "draining due actions");
+            debug!(count = due.len(), ids = ?due.iter().map(|a| a.id.as_str()).collect::<Vec<_>>(), "draining due actions");
         }
         due
     }
@@ -245,7 +247,10 @@ mod tests {
         let store = ActionStore::load(&path).await.unwrap();
         store.save().await.unwrap();
 
-        let tmp = dir.path().join(".scheduled_actions.json.tmp");
+        let tmp = dir.path().join(format!(
+            ".{}.tmp",
+            path.file_name().unwrap().to_string_lossy()
+        ));
         assert!(!tmp.exists(), "tmp file should not remain after save");
     }
 

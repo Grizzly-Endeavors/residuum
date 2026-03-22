@@ -394,11 +394,9 @@ impl Tool for ProjectArchiveTool {
         let mut state = self.state.lock().await;
 
         // Look up dir_name from the index
-        let dir_name = state
-            .index()
-            .find_by_name(name)
-            .map(|e| e.dir_name.clone())
-            .ok_or_else(|| ToolError::Execution(format!("project '{name}' not found in index")))?;
+        let Some(dir_name) = state.index().find_by_name(name).map(|e| e.dir_name.clone()) else {
+            return Ok(ToolResult::error(format!("project '{name}' not found")));
+        };
 
         // If this is the active project, deactivate first
         if state

@@ -50,7 +50,7 @@ pub(crate) async fn load_recent_context_narrative(path: &Path) -> anyhow::Result
     let result = crate::memory::recent_context::load_recent_context(path)
         .await?
         .map(|ctx| ctx.narrative);
-    if let Some(ref narrative) = result {
+    if let Some(narrative) = &result {
         tracing::debug!(len = narrative.len(), "loaded recent context narrative");
     }
     Ok(result)
@@ -63,14 +63,8 @@ pub(crate) async fn build_project_context_strings(
     project_state: &SharedProjectState,
 ) -> (Option<String>, Option<String>) {
     let state = project_state.lock().await;
-    let index_text = {
-        let formatted = state.format_index_for_prompt();
-        if formatted.is_empty() {
-            None
-        } else {
-            Some(formatted)
-        }
-    };
+    let formatted = state.format_index_for_prompt();
+    let index_text = (!formatted.is_empty()).then_some(formatted);
     let active_text = state.format_active_context_for_prompt();
     (index_text, active_text)
 }
@@ -82,14 +76,8 @@ pub(crate) async fn build_skill_context_strings(
     skill_state: &SharedSkillState,
 ) -> (Option<String>, Option<String>) {
     let state = skill_state.lock().await;
-    let index_text = {
-        let formatted = state.format_index_for_prompt();
-        if formatted.is_empty() {
-            None
-        } else {
-            Some(formatted)
-        }
-    };
+    let formatted = state.format_index_for_prompt();
+    let index_text = (!formatted.is_empty()).then_some(formatted);
     let active_text = state.format_active_for_prompt();
     (index_text, active_text)
 }
@@ -102,11 +90,7 @@ pub(crate) async fn build_subagents_context_string(subagents_dir: &Path) -> Opti
     match SubagentPresetIndex::scan(subagents_dir).await {
         Ok(index) => {
             let formatted = index.format_for_prompt();
-            if formatted.is_empty() {
-                None
-            } else {
-                Some(formatted)
-            }
+            (!formatted.is_empty()).then_some(formatted)
         }
         Err(e) => {
             tracing::error!(error = %e, "failed to scan subagent presets");

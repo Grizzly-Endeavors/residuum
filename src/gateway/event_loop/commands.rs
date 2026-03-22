@@ -37,7 +37,7 @@ pub async fn handle_server_command(
             let msg = format!(
                 "[context]\n  identity:          ~{} tokens\n  observation log:   ~{} tokens\n  subagents index:   ~{} tokens\n  projects index:    ~{} tokens\n  active project:    ~{} tokens\n  skills index:      ~{} tokens\n  active skills:     ~{} tokens\n  system tools:      ~{} tokens\n  mcp tools:         ~{} tokens\n  message history:   ~{} tokens ({} messages)",
                 bd.identity_tokens,
-                bd.observation_log_tokens,
+                bd.memory_pipeline_tokens,
                 bd.subagents_index_tokens,
                 bd.projects_index_tokens,
                 bd.active_project_tokens,

@@ -7,6 +7,8 @@
 
 use std::path::PathBuf;
 
+const INBOX_TARGET: &str = "inbox";
+
 use tokio::task::JoinHandle;
 
 use crate::background::spawn_context::SpawnContext;
@@ -110,7 +112,7 @@ async fn fallback_router_loop(mut subscriber: Subscriber<AgentResultEvent>, publ
                 }
 
                 tracing::info!(source_label = %agent_result.source_label, "fallback router: routing to inbox");
-                publish_to_targets(&agent_result, &["inbox".to_string()], &publisher).await;
+                publish_to_targets(&agent_result, &[INBOX_TARGET.to_string()], &publisher).await;
             }
             Ok(None) => break,
             Err(e) => {
@@ -167,7 +169,7 @@ async fn llm_route(event: &AgentResultEvent, router: &NotificationRouter) -> Vec
 
     // Enumerate available notification endpoints
     let notify_endpoints = router.endpoint_registry.notify();
-    let mut available_targets: Vec<&str> = vec!["inbox"];
+    let mut available_targets: Vec<&str> = vec![INBOX_TARGET];
     available_targets.extend(notify_endpoints.iter().map(|e| e.id.as_ref()));
 
     tracing::debug!(
@@ -219,7 +221,7 @@ async fn llm_route(event: &AgentResultEvent, router: &NotificationRouter) -> Vec
                 source_label = %event.source_label,
                 "LLM routing failed, falling back to inbox"
             );
-            vec!["inbox".to_string()]
+            vec![INBOX_TARGET.to_string()]
         }
     }
 }
@@ -281,7 +283,7 @@ fn parse_routing_response(response: &str, valid_targets: &[&str]) -> Vec<String>
             .unwrap_or_default(),
         Err(e) => {
             tracing::warn!(error = %e, raw_response = %response, "failed to parse LLM routing response, falling back to inbox");
-            return vec!["inbox".to_string()];
+            return vec![INBOX_TARGET.to_string()];
         }
     };
 
@@ -292,7 +294,7 @@ fn parse_routing_response(response: &str, valid_targets: &[&str]) -> Vec<String>
         .collect();
 
     if validated.is_empty() {
-        vec!["inbox".to_string()]
+        vec![INBOX_TARGET.to_string()]
     } else {
         validated
     }
@@ -358,7 +360,7 @@ async fn publish_to_targets(event: &AgentResultEvent, targets: &[String], publis
     };
 
     for target in targets {
-        if target == "inbox" {
+        if target == INBOX_TARGET {
             if let Err(e) = publisher.publish(topics::Inbox, notification.clone()).await {
                 tracing::warn!(
                     topic = "inbox",

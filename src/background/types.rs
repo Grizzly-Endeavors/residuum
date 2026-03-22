@@ -16,17 +16,10 @@ pub(crate) struct BackgroundTask {
     pub source_label: String,
     /// Where this task originated.
     pub source: EventTrigger,
-    /// How to execute the task.
-    pub execution: Execution,
+    /// Configuration for the sub-agent that runs this task.
+    pub subagent_config: SubAgentConfig,
     /// The agent preset that will run this task.
     pub agent_preset: PresetName,
-}
-
-/// How to execute the task.
-#[derive(Debug, Clone)]
-pub enum Execution {
-    /// Run a sub-agent LLM turn.
-    SubAgent(SubAgentConfig),
 }
 
 /// Configuration for a sub-agent background task.
@@ -68,7 +61,7 @@ pub struct ActiveTaskInfo {
     pub source_label: String,
     /// Where this task originated.
     pub source: EventTrigger,
-    /// Execution variant label (always `"sub_agent"`).
+    /// Execution type label (always `"sub_agent"`).
     pub execution_type: &'static str,
     /// Truncated prompt or command preview (at most 120 chars).
     pub prompt_preview: String,
@@ -76,11 +69,9 @@ pub struct ActiveTaskInfo {
     pub started_at: DateTime<Utc>,
 }
 
-/// Extract display info from an `Execution` config.
-pub(crate) fn execution_info(execution: &Execution) -> (&'static str, String) {
-    let Execution::SubAgent(cfg) = execution;
-    let preview = cfg.prompt.chars().take(120).collect();
-    ("sub_agent", preview)
+/// Extract prompt preview from a sub-agent config (truncated to 120 chars).
+pub(crate) fn execution_info(config: &SubAgentConfig) -> String {
+    config.prompt.chars().take(120).collect()
 }
 
 /// Format a `BackgroundResult` for injection into the agent message stream.
@@ -208,8 +199,7 @@ mod tests {
             context: None,
             model_tier: BackgroundModelTier::Medium,
         };
-        let (exec_type, preview) = execution_info(&Execution::SubAgent(config));
-        assert_eq!(exec_type, "sub_agent");
+        let preview = execution_info(&config);
         assert_eq!(preview.len(), 120, "preview should be capped at 120 chars");
     }
 

@@ -271,7 +271,7 @@ pub(crate) async fn execute_subagent(
     let prompt_ctx = PromptContext {
         projects: projects_ctx,
         skills: skills_ctx,
-        subagents: SubagentsContext::none(),
+        subagents: SubagentsContext::default(),
     };
 
     let turn_resources = TurnResources {
@@ -302,7 +302,7 @@ pub(crate) async fn execute_subagent(
 
     ensure_project_deactivated(
         task_id,
-        config,
+        &config.prompt,
         resources,
         &memory_ctx,
         &prompt_ctx,
@@ -324,7 +324,7 @@ pub(crate) async fn execute_subagent(
 /// If the retry turn also fails, fall back to a manual ref-count decrement.
 async fn ensure_project_deactivated(
     task_id: &str,
-    config: &SubAgentConfig,
+    prompt: &str,
     resources: &SubAgentResources,
     memory_ctx: &crate::agent::context::MemoryContext<'_>,
     prompt_ctx: &PromptContext<'_>,
@@ -393,7 +393,7 @@ async fn ensure_project_deactivated(
         .active_project_name()
         .map(str::to_string);
     if let Some(still_name) = still_active {
-        let prompt_preview: String = config.prompt.chars().take(200).collect();
+        let prompt_preview: String = prompt.chars().take(200).collect();
         tracing::warn!(
             task_id = %task_id,
             project = %still_name,
@@ -501,8 +501,8 @@ mod tests {
         };
         let content = build_subagent_system_content(
             &identity,
-            &ProjectsContext::none(),
-            &SkillsContext::none(),
+            &ProjectsContext::default(),
+            &SkillsContext::default(),
             None,
         );
         assert!(
@@ -524,8 +524,12 @@ mod tests {
             index: Some("project index"),
             active_context: None,
         };
-        let content =
-            build_subagent_system_content(&identity, &projects_ctx, &SkillsContext::none(), None);
+        let content = build_subagent_system_content(
+            &identity,
+            &projects_ctx,
+            &SkillsContext::default(),
+            None,
+        );
 
         assert!(!content.contains("test soul"), "should not include SOUL.md");
         assert!(
@@ -548,7 +552,7 @@ mod tests {
             environment: Some("exec tool".to_string()),
             ..IdentityFiles::default()
         };
-        let projects_ctx = ProjectsContext::none();
+        let projects_ctx = ProjectsContext::default();
         let skills_ctx = SkillsContext {
             index: Some("<available_skills><skill>pdf</skill></available_skills>"),
             active_instructions: None,
@@ -568,7 +572,7 @@ mod tests {
     fn subagent_system_content_includes_active_skills_instructions() {
         // Sub-agents now include active skill instructions in the system prompt
         let identity = IdentityFiles::default();
-        let projects_ctx = ProjectsContext::none();
+        let projects_ctx = ProjectsContext::default();
         let skills_ctx = SkillsContext {
             index: None,
             active_instructions: Some("<active_skill name=\"pdf\">Do PDFs.</active_skill>"),

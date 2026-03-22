@@ -123,27 +123,49 @@ mod tests {
 
     #[test]
     fn round_trip_ws_frames() {
-        let frames = vec![
-            TunnelFrame::WsOpen {
+        {
+            let json = serde_json::to_string(&TunnelFrame::WsOpen {
                 channel_id: "ch-1".to_string(),
                 path: "/ws".to_string(),
                 headers: HashMap::new(),
-            },
-            TunnelFrame::WsOpenResult {
+            })
+            .unwrap();
+            assert!(
+                matches!(serde_json::from_str::<TunnelFrame>(&json).unwrap(), TunnelFrame::WsOpen { channel_id, path, .. } if channel_id == "ch-1" && path == "/ws"),
+                "WsOpen should round-trip with correct fields"
+            );
+        }
+        {
+            let json = serde_json::to_string(&TunnelFrame::WsOpenResult {
                 channel_id: "ch-1".to_string(),
                 success: true,
-            },
-            TunnelFrame::WsMessage {
+            })
+            .unwrap();
+            assert!(
+                matches!(serde_json::from_str::<TunnelFrame>(&json).unwrap(), TunnelFrame::WsOpenResult { channel_id, success } if channel_id == "ch-1" && success),
+                "WsOpenResult should round-trip with correct fields"
+            );
+        }
+        {
+            let json = serde_json::to_string(&TunnelFrame::WsMessage {
                 channel_id: "ch-1".to_string(),
                 data: "hello".to_string(),
-            },
-            TunnelFrame::WsClose {
+            })
+            .unwrap();
+            assert!(
+                matches!(serde_json::from_str::<TunnelFrame>(&json).unwrap(), TunnelFrame::WsMessage { channel_id, data } if channel_id == "ch-1" && data == "hello"),
+                "WsMessage should round-trip with correct fields"
+            );
+        }
+        {
+            let json = serde_json::to_string(&TunnelFrame::WsClose {
                 channel_id: "ch-1".to_string(),
-            },
-        ];
-        for frame in frames {
-            let json = serde_json::to_string(&frame).unwrap();
-            let _: TunnelFrame = serde_json::from_str(&json).unwrap();
+            })
+            .unwrap();
+            assert!(
+                matches!(serde_json::from_str::<TunnelFrame>(&json).unwrap(), TunnelFrame::WsClose { channel_id } if channel_id == "ch-1"),
+                "WsClose should round-trip with correct fields"
+            );
         }
     }
 

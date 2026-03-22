@@ -85,10 +85,7 @@ pub(super) async fn handle_ws_open(
     // Connection succeeded — notify the relay.
     send_ws_open_result(&tunnel_tx, &channel_id, true).await;
     debug!(channel_id, url, "local WebSocket channel established");
-
-    let (local_write, mut local_read) = ws_stream.split();
-    let local_write = Arc::new(Mutex::new(local_write));
-
+    let (mut local_write, mut local_read) = ws_stream.split();
     // Channel for messages flowing from tunnel → local WS.
     let (tx, mut rx) = mpsc::channel::<String>(LOCAL_WS_CHANNEL_CAPACITY);
 
@@ -134,18 +131,15 @@ pub(super) async fn handle_ws_open(
     // Task: read from mpsc rx, send to local WS.
     let ch_id_writer = channel_id;
     tokio::spawn(async move {
-        let mut error_exit = false;
-        while let Some(data) = rx.recv().await {
-            let mut guard = local_write.lock().await;
-            if let Err(e) = guard.send(Message::Text(data.into())).await {
+        loop {
+            let Some(data) = rx.recv().await else {
+                debug!(channel_id = ch_id_writer, "tunnel→local WS channel closed");
+                break;
+            };
+            if let Err(e) = local_write.send(Message::Text(data.into())).await {
                 warn!(channel_id = ch_id_writer, error = %e, "failed to forward tunnel message to local WS");
-                error_exit = true;
                 break;
             }
-        }
-        if !error_exit {
-            // Channel closed — the tunnel side dropped the sender.
-            debug!(channel_id = ch_id_writer, "tunnel→local WS channel closed");
         }
     });
 

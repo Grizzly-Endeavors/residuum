@@ -65,7 +65,7 @@ where
             }
 
             consecutive_failures = if elapsed >= HEALTHY_THRESHOLD {
-                1
+                0
             } else {
                 consecutive_failures + 1
             };
@@ -80,7 +80,7 @@ where
             }
 
             let backoff =
-                (base_backoff * 2_u32.saturating_pow(consecutive_failures - 1)).min(MAX_BACKOFF);
+                (base_backoff * 2_u32.saturating_pow(consecutive_failures)).min(MAX_BACKOFF);
 
             tracing::warn!(
                 task = name,

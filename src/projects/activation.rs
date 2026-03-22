@@ -235,56 +235,60 @@ async fn write_deactivation_log(
     Ok(())
 }
 
-/// Read the most recent project session logs, returning up to ~2000 tokens
-/// (~8000 chars) of content with the most recent entries first.
-///
-/// Scans `notes/log/` for the most recent month directory, then reads the
-/// most recent day files. Returns `None` if no logs exist or all reads fail.
-async fn read_recent_logs(project_root: &Path) -> Option<String> {
-    const MAX_CHARS: usize = 8000;
-
-    let log_dir = project_root.join("notes/log");
-
-    let Ok(mut months) = tokio::fs::read_dir(&log_dir).await else {
-        return None;
-    };
-
-    // Collect month directories and sort descending
-    let mut month_dirs: Vec<PathBuf> = Vec::new();
+/// Collect and sort (descending) entries from a `ReadDir` stream matching a filter.
+async fn collect_dir_entries(
+    mut read_dir: tokio::fs::ReadDir,
+    dir: &Path,
+    filter: impl Fn(&Path) -> bool,
+) -> Vec<PathBuf> {
+    let mut entries: Vec<PathBuf> = Vec::new();
     loop {
-        match months.next_entry().await {
-            Ok(Some(entry)) => match entry.file_type().await {
-                Ok(ft) if ft.is_dir() => month_dirs.push(entry.path()),
-                Ok(_) => {}
-                Err(e) => {
-                    tracing::warn!(
-                        path = %entry.path().display(),
-                        error = %e,
-                        "failed to get file type for log entry"
-                    );
+        match read_dir.next_entry().await {
+            Ok(Some(entry)) => {
+                let path = entry.path();
+                if filter(&path) {
+                    entries.push(path);
                 }
-            },
+            }
             Ok(None) => break,
             Err(e) => {
                 tracing::warn!(
-                    dir = %log_dir.display(),
+                    dir = %dir.display(),
                     error = %e,
-                    "failed to read log directory entry"
+                    "failed to read directory entry"
                 );
             }
         }
     }
-    month_dirs.sort_unstable();
-    month_dirs.reverse();
+    entries.sort_unstable();
+    entries.reverse();
+    entries
+}
+
+/// Read the most recent project session logs, returning up to ~2000 tokens
+/// (~8000 bytes) of content with the most recent entries first.
+///
+/// Scans `notes/log/` for the most recent month directory, then reads the
+/// most recent day files. Returns `None` if no logs exist or all reads fail.
+async fn read_recent_logs(project_root: &Path) -> Option<String> {
+    const MAX_BYTES: usize = 8000;
+
+    let log_dir = project_root.join("notes/log");
+
+    let Ok(months) = tokio::fs::read_dir(&log_dir).await else {
+        return None;
+    };
+
+    let month_dirs = collect_dir_entries(months, &log_dir, Path::is_dir).await;
 
     let mut collected = String::new();
 
     for month_path in &month_dirs {
-        if collected.len() >= MAX_CHARS {
+        if collected.len() >= MAX_BYTES {
             break;
         }
 
-        let Ok(mut day_rd) = tokio::fs::read_dir(month_path).await else {
+        let Ok(day_rd) = tokio::fs::read_dir(month_path).await else {
             tracing::warn!(
                 path = %month_path.display(),
                 "failed to open log month directory"
@@ -292,30 +296,13 @@ async fn read_recent_logs(project_root: &Path) -> Option<String> {
             continue;
         };
 
-        let mut day_files: Vec<PathBuf> = Vec::new();
-        loop {
-            match day_rd.next_entry().await {
-                Ok(Some(entry)) => {
-                    let path = entry.path();
-                    if path.extension().is_some_and(|ext| ext == "md") {
-                        day_files.push(path);
-                    }
-                }
-                Ok(None) => break,
-                Err(e) => {
-                    tracing::warn!(
-                        dir = %month_path.display(),
-                        error = %e,
-                        "failed to read log day directory entry"
-                    );
-                }
-            }
-        }
-        day_files.sort_unstable();
-        day_files.reverse();
+        let day_files = collect_dir_entries(day_rd, month_path, |p| {
+            p.extension().is_some_and(|ext| ext == "md")
+        })
+        .await;
 
         for day_file in &day_files {
-            if collected.len() >= MAX_CHARS {
+            if collected.len() >= MAX_BYTES {
                 break;
             }
 
@@ -324,14 +311,18 @@ async fn read_recent_logs(project_root: &Path) -> Option<String> {
                     if !collected.is_empty() {
                         collected.push('\n');
                     }
-                    let remaining = MAX_CHARS.saturating_sub(collected.len());
+                    let remaining = MAX_BYTES.saturating_sub(collected.len());
                     if content.len() <= remaining {
                         collected.push_str(&content);
                     } else {
                         tracing::debug!(path = %day_file.display(), content_len = content.len(), remaining, "truncating log file to fit context limit");
-                        // Truncate at a char boundary
-                        let truncated: String = content.chars().take(remaining).collect();
-                        collected.push_str(&truncated);
+                        let mut end = remaining.min(content.len());
+                        while end > 0 && !content.is_char_boundary(end) {
+                            end -= 1;
+                        }
+                        if let Some(truncated) = content.get(..end) {
+                            collected.push_str(truncated);
+                        }
                     }
                 }
                 Err(e) => {

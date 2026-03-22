@@ -19,10 +19,6 @@ pub(crate) struct Episode {
     pub(crate) id: String,
     /// Date of the episode.
     pub(crate) date: chrono::NaiveDate,
-    /// One-line summary of how the episode started.
-    pub(crate) start: String,
-    /// One-line summary of how the episode ended.
-    pub(crate) end: String,
     /// The project or topic context tag.
     pub(crate) context: String,
     /// Concise single-sentence observations extracted from the conversation.

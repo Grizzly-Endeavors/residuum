@@ -68,3 +68,6 @@ pub(super) const DEFAULT_AGENT_MODIFY_CHANNELS: bool = true;
 
 /// Default idle timeout in minutes (30 minutes).
 pub(super) const DEFAULT_IDLE_TIMEOUT_MINUTES: u64 = 30;
+
+/// Default relay WebSocket URL.
+pub(super) const DEFAULT_CLOUD_RELAY_URL: &str = "wss://agent-residuum.com/tunnel/register";

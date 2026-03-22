@@ -120,11 +120,6 @@ impl MacosNotificationAction {
     }
 
     #[must_use]
-    pub fn all() -> &'static [Self] {
-        &[Self::Open, Self::Dismiss, Self::MarkRead]
-    }
-
-    #[must_use]
     pub fn for_category(category: MacosCategory) -> &'static [Self] {
         match category {
             MacosCategory::BackgroundResults | MacosCategory::Reminders | MacosCategory::Alerts => {
@@ -285,15 +280,6 @@ mod tests {
     }
 
     // ── MacosNotificationAction tests ───────────────────────────────────
-
-    #[test]
-    fn action_variant_count() {
-        assert_eq!(
-            MacosNotificationAction::all().len(),
-            3,
-            "should have exactly 3 action variants"
-        );
-    }
 
     #[test]
     fn action_identifiers() {
