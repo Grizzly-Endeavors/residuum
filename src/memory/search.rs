@@ -431,8 +431,27 @@ impl MemoryIndex {
         };
 
         let episodes_dir = memory_dir.join("episodes");
+        let mut disk_files: Vec<(String, String)> = Vec::new();
         if episodes_dir.exists() {
-            self.rebuild_directory(&mut writer, &episodes_dir, memory_dir, &mut result)?;
+            collect_indexable_files(&episodes_dir, memory_dir, &mut disk_files)?;
+        }
+
+        for (rel_path, mtime) in &disk_files {
+            let abs_path = memory_dir.join(rel_path);
+            let doc_ids = self.index_file_into_writer(&mut writer, &abs_path, rel_path)?;
+            if rel_path.ends_with(".obs.json") {
+                result.obs_count += doc_ids.len();
+            } else if rel_path.ends_with(".idx.jsonl") {
+                result.chunk_count += doc_ids.len();
+            }
+            result.file_entries.push((
+                rel_path.clone(),
+                ManifestFileEntry {
+                    mtime: mtime.clone(),
+                    doc_ids,
+                    embedded: false,
+                },
+            ));
         }
 
         self.commit_and_reload(&mut writer)?;
@@ -539,84 +558,6 @@ impl MemoryIndex {
         self.reader
             .reload()
             .context("failed to reload search index reader")?;
-        Ok(())
-    }
-
-    /// Recursively walk a directory, indexing `.obs.json` and `.idx.jsonl` files.
-    fn rebuild_directory(
-        &self,
-        writer: &mut IndexWriter,
-        dir: &Path,
-        memory_dir: &Path,
-        result: &mut RebuildResult,
-    ) -> anyhow::Result<()> {
-        let entries = std::fs::read_dir(dir)
-            .with_context(|| format!("failed to read directory {}", dir.display()))?;
-
-        for entry in entries {
-            let entry = entry.context("failed to read directory entry")?;
-            let path = entry.path();
-
-            if path.is_dir() {
-                self.rebuild_directory(writer, &path, memory_dir, result)?;
-            } else if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
-                let rel_path = make_relative(&path, memory_dir);
-                let mtime = file_mtime_str(&path);
-
-                match ext {
-                    "json" if path.to_string_lossy().ends_with(".obs.json") => {
-                        match parse_obs_file(&path) {
-                            Ok((episode_id, date, observations)) => {
-                                let mut doc_ids = Vec::new();
-                                for (i, obs) in observations.iter().enumerate() {
-                                    let doc_id = format!("{episode_id}-o{i}");
-                                    self.add_obs_document(
-                                        writer,
-                                        &doc_id,
-                                        &episode_id,
-                                        &date,
-                                        &obs.project_context,
-                                        &obs.content,
-                                    )?;
-                                    doc_ids.push(doc_id);
-                                }
-                                result.obs_count += observations.len();
-                                result.file_entries.push((
-                                    rel_path,
-                                    ManifestFileEntry {
-                                        mtime,
-                                        doc_ids,
-                                        embedded: false,
-                                    },
-                                ));
-                            }
-                            Err(e) => {
-                                tracing::warn!(path = %path.display(), error = %e, "skipping unparseable obs file");
-                            }
-                        }
-                    }
-                    "jsonl" if path.to_string_lossy().ends_with(".idx.jsonl") => {
-                        let chunks = read_idx_jsonl(&path);
-                        let mut doc_ids = Vec::new();
-                        for chunk in &chunks {
-                            self.add_chunk_document(writer, chunk)?;
-                            doc_ids.push(chunk.chunk_id.clone());
-                        }
-                        result.chunk_count += chunks.len();
-                        result.file_entries.push((
-                            rel_path,
-                            ManifestFileEntry {
-                                mtime,
-                                doc_ids,
-                                embedded: false,
-                            },
-                        ));
-                    }
-                    _ => {}
-                }
-            }
-        }
-
         Ok(())
     }
 

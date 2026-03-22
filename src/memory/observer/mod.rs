@@ -13,8 +13,10 @@ use crate::config::{
     DEFAULT_OBSERVER_COOLDOWN_SECS, DEFAULT_OBSERVER_FORCE_THRESHOLD, DEFAULT_OBSERVER_THRESHOLD,
 };
 use crate::memory::chunk_extractor::{extract_chunks, write_idx_jsonl};
-use crate::memory::episode_store::{episode_idx_path, episode_obs_path, write_episode_transcript};
-use crate::memory::log_store::{append_observations, next_episode_id, save_episode_observations};
+use crate::memory::episode_store::{
+    episode_idx_path, episode_obs_path, next_episode_id, write_episode_transcript,
+};
+use crate::memory::log_store::{append_observations, save_episode_observations};
 use crate::memory::recent_messages::RecentMessage;
 use crate::memory::types::{Episode, IndexChunk, Observation};
 use crate::models::{CompletionOptions, Message, ModelProvider, ResponseFormat};

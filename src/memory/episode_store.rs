@@ -244,6 +244,57 @@ pub(crate) async fn read_episode_lines(
     Ok(parts.join("\n"))
 }
 
+/// Generate the next episode ID by scanning the episodes directory for existing JSONL files.
+///
+/// Walks `episodes_dir` recursively for files named `ep-NNN.jsonl`, takes the max `NNN`,
+/// and returns `ep-(max+1)` zero-padded to 3 digits. Returns `"ep-001"` if none exist.
+/// JSONL transcripts persist even after reflection, making this a stable counter.
+///
+/// # Errors
+/// Returns an error if the directory cannot be read.
+pub async fn next_episode_id(episodes_dir: &Path) -> anyhow::Result<String> {
+    let max_num = max_episode_num(episodes_dir)?;
+    let id = format!("ep-{:03}", max_num + 1);
+    tracing::debug!(episode_id = %id, "assigned next episode ID");
+    Ok(id)
+}
+
+/// Recursively walk `dir` for `ep-NNN.jsonl` files and return the maximum `NNN` found.
+///
+/// Returns `0` if the directory does not exist or contains no matching files.
+fn max_episode_num(dir: &Path) -> anyhow::Result<u32> {
+    if !dir.exists() {
+        return Ok(0);
+    }
+    let mut max = 0_u32;
+    walk_for_max(dir, &mut max)?;
+    Ok(max)
+}
+
+fn walk_for_max(dir: &Path, max: &mut u32) -> anyhow::Result<()> {
+    let entries = std::fs::read_dir(dir)
+        .with_context(|| format!("failed to read episodes directory {}", dir.display()))?;
+
+    for entry in entries {
+        let entry = entry.context("failed to read directory entry")?;
+        let path = entry.path();
+
+        if path.is_dir() {
+            walk_for_max(&path, max)?;
+        } else if path.extension().is_some_and(|ext| ext == "jsonl")
+            && let Some(n) = path
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .and_then(|s| s.strip_prefix("ep-"))
+                .and_then(|s| s.parse::<u32>().ok())
+        {
+            *max = (*max).max(n);
+        }
+    }
+
+    Ok(())
+}
+
 fn format_message_line(parts: &mut Vec<String>, line_num: usize, msg: &Message) {
     match msg.role {
         Role::Assistant if msg.tool_calls.is_some() => {
@@ -266,7 +317,8 @@ fn format_message_line(parts: &mut Vec<String>, line_num: usize, msg: &Message) 
             let label = match msg.role {
                 Role::System => "System",
                 Role::User => "User",
-                Role::Assistant | Role::Tool => "Assistant",
+                Role::Assistant => "Assistant",
+                Role::Tool => unreachable!(),
             };
             parts.push(format!("[line {line_num}] {label}: {}", msg.content));
         }
@@ -559,5 +611,43 @@ mod tests {
             !output.contains(&long_content),
             "full long content should not appear"
         );
+    }
+
+    #[tokio::test]
+    async fn next_episode_id_empty_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        let episodes_dir = dir.path().join("episodes");
+        tokio::fs::create_dir_all(&episodes_dir).await.unwrap();
+
+        let id = next_episode_id(&episodes_dir).await.unwrap();
+        assert_eq!(id, "ep-001", "empty dir should return ep-001");
+    }
+
+    #[tokio::test]
+    async fn next_episode_id_missing_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        let episodes_dir = dir.path().join("episodes");
+        // Dir does not exist — should still return ep-001
+        let id = next_episode_id(&episodes_dir).await.unwrap();
+        assert_eq!(id, "ep-001", "missing dir should return ep-001");
+    }
+
+    #[tokio::test]
+    async fn next_episode_id_scans_jsonl_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let episodes_dir = dir.path().join("episodes");
+        let month_dir = episodes_dir.join("2026-02/19");
+        tokio::fs::create_dir_all(&month_dir).await.unwrap();
+
+        // Write some dummy .jsonl files
+        tokio::fs::write(month_dir.join("ep-001.jsonl"), "")
+            .await
+            .unwrap();
+        tokio::fs::write(month_dir.join("ep-003.jsonl"), "")
+            .await
+            .unwrap();
+
+        let id = next_episode_id(&episodes_dir).await.unwrap();
+        assert_eq!(id, "ep-004", "should find max and increment");
     }
 }

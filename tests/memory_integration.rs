@@ -14,7 +14,8 @@ mod memory_integration {
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
-    use residuum::memory::log_store::{load_observation_log, next_episode_id};
+    use residuum::memory::episode_store::next_episode_id;
+    use residuum::memory::log_store::load_observation_log;
     use residuum::memory::observer::{ObserveAction, ObserveResult, Observer, ObserverConfig};
     use residuum::memory::recent_context::{
         RecentContext, load_recent_context, save_recent_context,
