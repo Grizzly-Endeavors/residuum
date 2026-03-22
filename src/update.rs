@@ -54,11 +54,11 @@ pub async fn check_for_update(status: &SharedUpdateStatus) {
     match fetch_latest_version().await {
         Ok(latest) => {
             let mut s = status.write().await;
-            s.update_available = !is_up_to_date(&s.current, &latest);
+            s.update_available = !is_up_to_date(CURRENT_VERSION, &latest);
             if s.update_available {
-                tracing::info!(current = %s.current, latest = %latest, "update available");
+                tracing::info!(current = CURRENT_VERSION, latest = %latest, "update available");
             } else {
-                tracing::debug!(current = %s.current, latest = %latest, "already up to date");
+                tracing::debug!(current = CURRENT_VERSION, latest = %latest, "already up to date");
             }
             s.latest = Some(latest);
             s.last_checked = Some(Utc::now());
@@ -72,6 +72,13 @@ pub async fn check_for_update(status: &SharedUpdateStatus) {
     }
 }
 
+fn http_client() -> anyhow::Result<reqwest::Client> {
+    reqwest::Client::builder()
+        .user_agent("residuum-updater")
+        .build()
+        .context("failed to build http client")
+}
+
 /// Fetch the latest release tag name from GitHub.
 ///
 /// # Errors
@@ -81,10 +88,7 @@ pub async fn fetch_latest_version() -> anyhow::Result<String> {
     let url = "https://api.github.com/repos/grizzly-endeavors/residuum/releases/latest";
     tracing::debug!(url = %url, "fetching latest release");
 
-    let client = reqwest::Client::builder()
-        .user_agent("residuum-updater")
-        .build()
-        .context("failed to build http client")?;
+    let client = http_client()?;
 
     let resp = client
         .get(url)
@@ -151,10 +155,7 @@ pub async fn download_and_install(version: &str) -> anyhow::Result<()> {
 
     tracing::info!(version = %version, %platform, "downloading update binary");
 
-    let client = reqwest::Client::builder()
-        .user_agent("residuum-updater")
-        .build()
-        .context("failed to build http client")?;
+    let client = http_client()?;
 
     let response = client
         .get(&url)
@@ -200,12 +201,14 @@ pub async fn download_and_install(version: &str) -> anyhow::Result<()> {
         }
     };
 
-    std::fs::write(&tmp_path, &bytes).with_context(|| {
-        format!(
-            "failed to write update binary to {} — check directory permissions",
-            tmp_path.display()
-        )
-    })?;
+    std::fs::write(&tmp_path, &bytes)
+        .inspect_err(|_| cleanup())
+        .with_context(|| {
+            format!(
+                "failed to write update binary to {} — check directory permissions",
+                tmp_path.display()
+            )
+        })?;
 
     #[cfg(unix)]
     {
