@@ -49,7 +49,11 @@ pub fn generate_filename(title: &str, now: NaiveDateTime) -> String {
     let truncated = slug.chars().take(60).collect::<String>();
     let truncated = truncated.trim_end_matches('_');
 
-    format!("{date}_{truncated}.json")
+    if truncated.is_empty() {
+        format!("{date}.json")
+    } else {
+        format!("{date}_{truncated}.json")
+    }
 }
 
 /// Add an inbox item in one call: generates a filename, builds the item, and saves.
@@ -397,7 +401,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn list_items_ignores_archive_subdir() {
+    async fn list_items_ignores_subdirs() {
         let dir = tempfile::tempdir().unwrap();
         let item = make_item("active", 12, false);
         save_item(dir.path(), "active.json", &item).await.unwrap();
@@ -512,12 +516,13 @@ mod tests {
             .await
             .unwrap();
 
-        let loaded = load_item(&dir.path().join("empty_attach.json"))
+        let json = tokio::fs::read_to_string(dir.path().join("empty_attach.json"))
             .await
             .unwrap();
+        let v: serde_json::Value = serde_json::from_str(&json).unwrap();
         assert!(
-            loaded.attachments.is_empty(),
-            "empty attachments should round-trip"
+            v.get("attachments").is_none(),
+            "empty attachments should be omitted from JSON"
         );
     }
 
