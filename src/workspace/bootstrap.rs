@@ -546,6 +546,10 @@ mod tests {
         assert!(layout.agents_md().exists(), "AGENTS.md should exist");
         assert!(layout.user_md().exists(), "USER.md should exist");
         assert!(layout.memory_md().exists(), "MEMORY.md should exist");
+        assert!(
+            layout.environment_md().exists(),
+            "ENVIRONMENT.md should exist"
+        );
         assert!(layout.bootstrap_md().exists(), "BOOTSTRAP.md should exist");
         assert!(layout.observer_md().exists(), "OBSERVER.md should exist");
         assert!(layout.reflector_md().exists(), "REFLECTOR.md should exist");
@@ -637,26 +641,6 @@ mod tests {
                 .join("workflows/always-on-assistant.md")
                 .exists(),
             "always-on-assistant.md"
-        );
-    }
-
-    #[tokio::test]
-    async fn bootstrap_creates_environment_md() {
-        let dir = tempfile::tempdir().unwrap();
-        let layout = WorkspaceLayout::new(dir.path().join("workspace"));
-
-        ensure_workspace(&layout, None, None).await.unwrap();
-
-        assert!(
-            layout.environment_md().exists(),
-            "ENVIRONMENT.md should exist"
-        );
-        let content = tokio::fs::read_to_string(layout.environment_md())
-            .await
-            .unwrap();
-        assert!(
-            content.contains("Environment"),
-            "ENVIRONMENT.md should contain default content"
         );
     }
 

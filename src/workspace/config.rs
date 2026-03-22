@@ -30,20 +30,17 @@ struct McpConfigFile {
 /// - `url` field alias for HTTP server address (falls back to `command`)
 #[derive(Deserialize)]
 struct McpServerRaw {
-    #[serde(default)]
     command: Option<String>,
     #[serde(default)]
     args: Vec<String>,
     #[serde(default)]
     env: HashMap<String, String>,
     /// Claude Code/Desktop standard: `"stdio"`, `"streamable-http"`, `"http"`, or `"sse"`.
-    #[serde(rename = "type", default)]
+    #[serde(rename = "type")]
     type_: Option<String>,
     /// Residuum extension: `"stdio"` (default) or `"http"`.
-    #[serde(default)]
     transport: Option<String>,
     /// HTTP server URL (alternative to putting the URL in `command`).
-    #[serde(default)]
     url: Option<String>,
     /// HTTP headers to send with requests (only used for http transport).
     #[serde(default)]
@@ -200,28 +197,17 @@ struct ChannelEntryRaw {
     /// Channel type: `"ntfy"`, `"webhook"`, or `"macos"`.
     #[serde(rename = "type")]
     type_: String,
-    #[serde(default)]
     url: Option<String>,
-    #[serde(default)]
     topic: Option<String>,
-    #[serde(default)]
     priority: Option<String>,
-    #[serde(default)]
     method: Option<String>,
-    #[serde(default)]
     headers: Option<HashMap<String, String>>,
     // macOS channel fields
-    #[serde(default)]
     default_category: Option<String>,
-    #[serde(default)]
     default_priority: Option<String>,
-    #[serde(default)]
     throttle_window_secs: Option<u64>,
-    #[serde(default)]
     sound: Option<bool>,
-    #[serde(default)]
     app_name: Option<String>,
-    #[serde(default)]
     web_url: Option<String>,
 }
 
@@ -248,16 +234,14 @@ pub fn load_channel_configs(path: &Path) -> anyhow::Result<Vec<ExternalChannelCo
         .filter_map(|(name, raw)| {
             let kind = match raw.type_.as_str() {
                 "ntfy" => {
-                    let url = raw.url.unwrap_or_default();
-                    let topic = raw.topic.unwrap_or_default();
-                    if url.is_empty() {
+                    let Some(url) = raw.url.filter(|u| !u.is_empty()) else {
                         tracing::warn!(channel = %name, "ntfy channel is missing required 'url' field");
                         return None;
-                    }
-                    if topic.is_empty() {
+                    };
+                    let Some(topic) = raw.topic.filter(|t| !t.is_empty()) else {
                         tracing::warn!(channel = %name, "ntfy channel is missing required 'topic' field");
                         return None;
-                    }
+                    };
                     ExternalChannelKind::Ntfy {
                         url,
                         topic,
@@ -273,11 +257,10 @@ pub fn load_channel_configs(path: &Path) -> anyhow::Result<Vec<ExternalChannelCo
                     web_url: raw.web_url,
                 },
                 "webhook" => {
-                    let url = raw.url.unwrap_or_default();
-                    if url.is_empty() {
+                    let Some(url) = raw.url.filter(|u| !u.is_empty()) else {
                         tracing::warn!(channel = %name, "webhook channel is missing required 'url' field");
                         return None;
-                    }
+                    };
                     ExternalChannelKind::Webhook {
                         url,
                         method: raw.method,
