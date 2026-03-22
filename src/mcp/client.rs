@@ -207,7 +207,7 @@ static ENV_VAR_RE: LazyLock<regex::Regex> = LazyLock::new(|| {
 ///
 /// Unresolved variables with no default are replaced with an empty string.
 #[must_use]
-pub fn expand_env_vars(input: &str) -> String {
+pub(crate) fn expand_env_vars(input: &str) -> String {
     ENV_VAR_RE
         .replace_all(input, |caps: &regex::Captures<'_>| {
             let var_name = caps.get(1).map_or("", |m| m.as_str());

@@ -250,6 +250,16 @@ impl McpRegistry {
         names
     }
 
+    async fn attempt_connect(&mut self, entry: &McpServerEntry, report: &mut McpReconcileReport) {
+        if let Err(e) = self.connect(entry).await {
+            let reason = e.to_string();
+            tracing::warn!(server = %entry.name, error = %reason, "mcp server failed to connect");
+            report.failures.push((entry.name.clone(), reason));
+        } else {
+            report.started += 1;
+        }
+    }
+
     /// Connect additional servers without reconciling existing state.
     ///
     /// Unlike `reconcile_and_connect`, this is purely additive — it never stops
@@ -277,13 +287,7 @@ impl McpRegistry {
                 tools: Vec::new(),
             });
 
-            if let Err(e) = self.connect(entry).await {
-                let reason = e.to_string();
-                tracing::warn!(server = %entry.name, error = %reason, "mcp server failed to connect");
-                report.failures.push((entry.name.clone(), reason));
-            } else {
-                report.started += 1;
-            }
+            self.attempt_connect(entry, &mut report).await;
         }
 
         report
@@ -297,20 +301,10 @@ impl McpRegistry {
         desired: &[McpServerEntry],
     ) -> McpReconcileReport {
         let diff = self.reconcile(desired);
-        let mut report = McpReconcileReport {
-            started: 0,
-            stopped: 0,
-            failures: Vec::new(),
-        };
+        let mut report = McpReconcileReport::default();
 
         for entry in &diff.to_start {
-            if let Err(e) = self.connect(entry).await {
-                let reason = e.to_string();
-                tracing::warn!(server = %entry.name, error = %reason, "mcp server failed to connect");
-                report.failures.push((entry.name.clone(), reason));
-            } else {
-                report.started += 1;
-            }
+            self.attempt_connect(entry, &mut report).await;
         }
 
         for name in &diff.to_stop {
@@ -471,6 +465,7 @@ impl McpRegistry {
     }
 
     /// Mark a server as running (used in tests without a live client).
+    // `pub` (not `#[cfg(test)]`) because integration tests in tests/ need this.
     #[doc(hidden)]
     pub fn mark_running(&mut self, name: &str) {
         if let Some(server) = self.servers.iter_mut().find(|s| s.name == name) {
