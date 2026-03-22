@@ -67,6 +67,10 @@ impl RecentMessages {
     /// messages that have text content and no tool calls. Returns them
     /// flattened in chronological order.
     #[must_use]
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "bounds guaranteed by loop invariants: i is decremented after the i > 0 check, so i < len; j < i < len at every inner access"
+    )]
     pub fn last_exchanges(&self, n: usize) -> Vec<Message> {
         if n == 0 {
             return Vec::new();
@@ -77,9 +81,7 @@ impl RecentMessages {
 
         while i > 0 && pairs.len() < n {
             i -= 1;
-            let Some(msg) = self.messages.get(i) else {
-                break;
-            };
+            let msg = &self.messages[i];
 
             // Look for an assistant message with text and no tool calls
             if msg.role != crate::models::Role::Assistant {
@@ -95,9 +97,7 @@ impl RecentMessages {
             let mut j = i;
             while j > 0 {
                 j -= 1;
-                let Some(prev) = self.messages.get(j) else {
-                    break;
-                };
+                let prev = &self.messages[j];
                 if prev.role == crate::models::Role::User && !prev.content.is_empty() {
                     pairs.push((prev.clone(), msg.clone()));
                     i = j; // continue scanning before this user message
