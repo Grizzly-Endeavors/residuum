@@ -102,10 +102,8 @@ impl AgentRegistry {
     }
 
     /// Add a new agent entry.
-    ///
-    /// Does not check for duplicates — caller should verify first.
-    pub fn add(&mut self, name: String, port: u16) {
-        self.agents.push(AgentEntry { name, port });
+    pub fn add(&mut self, entry: AgentEntry) {
+        self.agents.push(entry);
     }
 
     /// Remove an agent by name.
@@ -122,11 +120,11 @@ impl AgentRegistry {
         while self.agents.iter().any(|a| a.port == port) {
             port = port.saturating_add(1);
         }
-        let scan_steps = port.saturating_sub(AGENT_PORT_START);
-        if scan_steps > MAX_EXPECTED_AGENTS {
+        let port_offset = port.saturating_sub(AGENT_PORT_START);
+        if port_offset > MAX_EXPECTED_AGENTS {
             warn!(
                 agents = self.agents.len(),
-                port, scan_steps, "port scan advanced far from starting port"
+                port, port_offset, "port scan advanced far from starting port"
             );
         }
         port
@@ -153,8 +151,14 @@ mod tests {
     fn save_and_load_roundtrip() {
         let dir = tempfile::tempdir().unwrap();
         let mut reg = AgentRegistry::default();
-        reg.add("researcher".to_string(), 7701);
-        reg.add("coder".to_string(), 7702);
+        reg.add(AgentEntry {
+            name: "researcher".to_string(),
+            port: 7701,
+        });
+        reg.add(AgentEntry {
+            name: "coder".to_string(),
+            port: 7702,
+        });
         reg.save(dir.path()).unwrap();
 
         let loaded = AgentRegistry::load(dir.path()).unwrap();
@@ -168,7 +172,10 @@ mod tests {
     #[test]
     fn get_finds_agent() {
         let mut reg = AgentRegistry::default();
-        reg.add("researcher".to_string(), 7701);
+        reg.add(AgentEntry {
+            name: "researcher".to_string(),
+            port: 7701,
+        });
         assert!(reg.get("researcher").is_some());
         assert!(reg.get("nonexistent").is_none());
     }
@@ -176,7 +183,10 @@ mod tests {
     #[test]
     fn remove_removes_agent() {
         let mut reg = AgentRegistry::default();
-        reg.add("researcher".to_string(), 7701);
+        reg.add(AgentEntry {
+            name: "researcher".to_string(),
+            port: 7701,
+        });
         reg.remove("researcher");
         assert!(reg.list().is_empty());
         reg.remove("nonexistent");
@@ -192,23 +202,38 @@ mod tests {
     #[test]
     fn next_available_port_skips_used() {
         let mut reg = AgentRegistry::default();
-        reg.add("a".to_string(), 7701);
-        reg.add("b".to_string(), 7702);
+        reg.add(AgentEntry {
+            name: "a".to_string(),
+            port: 7701,
+        });
+        reg.add(AgentEntry {
+            name: "b".to_string(),
+            port: 7702,
+        });
         assert_eq!(reg.next_available_port(), 7703);
     }
 
     #[test]
     fn next_available_port_fills_gaps() {
         let mut reg = AgentRegistry::default();
-        reg.add("a".to_string(), 7701);
-        reg.add("b".to_string(), 7703);
+        reg.add(AgentEntry {
+            name: "a".to_string(),
+            port: 7701,
+        });
+        reg.add(AgentEntry {
+            name: "b".to_string(),
+            port: 7703,
+        });
         assert_eq!(reg.next_available_port(), 7702);
     }
 
     #[test]
     fn toml_format_is_correct() {
         let mut reg = AgentRegistry::default();
-        reg.add("researcher".to_string(), 7701);
+        reg.add(AgentEntry {
+            name: "researcher".to_string(),
+            port: 7701,
+        });
         let toml_str = toml::to_string_pretty(&reg).unwrap();
         assert!(
             toml_str.contains("[[agents]]"),

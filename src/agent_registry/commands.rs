@@ -12,7 +12,7 @@ use crate::daemon;
 use crate::error::FatalError;
 
 use super::paths;
-use super::registry::AgentRegistry;
+use super::registry::{AgentEntry, AgentRegistry};
 
 /// Dispatch `residuum agent <subcommand>` from CLI args.
 ///
@@ -118,6 +118,7 @@ fn run_agent_create(name: &str) -> Result<(), FatalError> {
 
     // Write ready-to-run config.toml
     trace!(agent = name, "writing config.toml");
+    let workspace = workspace_dir.display();
     let config_content = format!(
         "# Agent: {name}\n\
          # Created automatically. Edit as needed.\n\
@@ -127,7 +128,6 @@ fn run_agent_create(name: &str) -> Result<(), FatalError> {
          \n\
          [gateway]\n\
          port = {port}\n",
-        workspace = workspace_dir.display(),
     );
     std::fs::write(agent_dir.join("config.toml"), config_content)
         .map_err(|e| FatalError::Config(format!("failed to write agent config.toml: {e}")))?;
@@ -165,7 +165,10 @@ fn run_agent_create(name: &str) -> Result<(), FatalError> {
 
     // Register in registry
     trace!(agent = name, port, "saving agent to registry");
-    registry.add(name.to_string(), port);
+    registry.add(AgentEntry {
+        name: name.to_string(),
+        port,
+    });
     registry.save(&registry_dir)?;
 
     println!("agent '{name}' created (port {port})");
