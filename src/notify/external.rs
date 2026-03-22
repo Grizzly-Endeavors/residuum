@@ -101,7 +101,7 @@ impl WebhookChannel {
             channel_name,
             client,
             url,
-            method: method.unwrap_or_else(|| "POST".to_string()),
+            method: method.unwrap_or_else(|| "POST".to_string()).to_uppercase(),
             headers,
         }
     }
@@ -132,7 +132,7 @@ impl NotificationChannel for WebhookChannel {
             "source": notification.source.as_str(),
         });
 
-        let mut builder = match self.method.to_uppercase().as_str() {
+        let mut builder = match self.method.as_str() {
             "POST" => self.client.post(&self.url),
             "PUT" => self.client.put(&self.url),
             m => anyhow::bail!(

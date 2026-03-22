@@ -82,8 +82,11 @@ impl Config {
             None
         };
 
-        let providers_config = if providers_path.exists() {
-            Some(load_providers(&providers_path)?)
+        let (providers_config, loaded_providers_path) = if providers_path.exists() {
+            (
+                Some(load_providers(&providers_path)?),
+                providers_path.clone(),
+            )
         } else {
             // Fall back to global ~/.residuum/providers.toml for named agents
             // (their config dirs are under ~/.residuum/agent_registry/<name>/)
@@ -92,7 +95,7 @@ impl Config {
             let is_agent_subdir = config_dir.starts_with(global_dir.join("agent_registry"));
             if is_agent_subdir && global_path.exists() {
                 tracing::debug!(path = %global_path.display(), "using global providers.toml for agent subdir");
-                Some(load_providers(&global_path)?)
+                (Some(load_providers(&global_path)?), global_path)
             } else {
                 return Err(FatalError::Config(format!(
                     "providers.toml not found at {}; run 'residuum setup' to create it",
@@ -108,7 +111,7 @@ impl Config {
         )?;
         tracing::info!(
             config = %config_path.display(),
-            providers = %providers_path.display(),
+            providers = %loaded_providers_path.display(),
             main_model = %cfg.main.first().map(|p| p.model.to_string()).unwrap_or_default(),
             timezone = %cfg.timezone,
             "config loaded"
@@ -142,7 +145,7 @@ impl Config {
         };
 
         resolve::from_file_and_env(Some(&file), providers_file.as_ref(), config_dir)
-            .map_err(|e| format!("{e}"))?;
+            .map_err(|e| e.to_string())?;
         Ok(())
     }
 
@@ -174,7 +177,7 @@ impl Config {
         };
 
         resolve::from_file_and_env(config_file.as_ref(), Some(&providers_file), config_dir)
-            .map_err(|e| format!("{e}"))?;
+            .map_err(|e| e.to_string())?;
         Ok(())
     }
 

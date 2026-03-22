@@ -250,19 +250,14 @@ impl MemoryIndex {
 
         for (i, obs) in observations.iter().enumerate() {
             let doc_id = format!("{episode_id}-o{i}");
-            let mut doc = TantivyDocument::default();
-            doc.add_text(self.id_field, &doc_id);
-            doc.add_text(self.source_type_field, "observation");
-            doc.add_text(self.episode_id_field, episode_id);
-            doc.add_text(self.date_field, date);
-            doc.add_text(self.ctx_field, &obs.project_context);
-            doc.add_text(self.content_field, &obs.content);
-            doc.add_text(self.line_start_field, "");
-            doc.add_text(self.line_end_field, "");
-
-            writer
-                .add_document(doc)
-                .context("failed to add observation to search index")?;
+            self.add_obs_document(
+                &mut writer,
+                &doc_id,
+                episode_id,
+                date,
+                &obs.project_context,
+                &obs.content,
+            )?;
             doc_ids.push(doc_id);
         }
 
@@ -285,19 +280,7 @@ impl MemoryIndex {
         let mut doc_ids = Vec::with_capacity(chunks.len());
 
         for chunk in chunks {
-            let mut doc = TantivyDocument::default();
-            doc.add_text(self.id_field, &chunk.chunk_id);
-            doc.add_text(self.source_type_field, "chunk");
-            doc.add_text(self.episode_id_field, &chunk.episode_id);
-            doc.add_text(self.date_field, &chunk.date);
-            doc.add_text(self.ctx_field, &chunk.context);
-            doc.add_text(self.content_field, &chunk.content);
-            doc.add_text(self.line_start_field, chunk.line_start.to_string());
-            doc.add_text(self.line_end_field, chunk.line_end.to_string());
-
-            writer
-                .add_document(doc)
-                .context("failed to add chunk to search index")?;
+            self.add_chunk_document(&mut writer, chunk)?;
             doc_ids.push(chunk.chunk_id.clone());
         }
 
@@ -977,8 +960,8 @@ fn normalize_scores(scores: &[f32]) -> Vec<f32> {
         return vec![1.0];
     }
 
-    let min = scores.iter().copied().reduce(f32::min).unwrap_or(0.0);
-    let max = scores.iter().copied().reduce(f32::max).unwrap_or(0.0);
+    let min = scores.iter().copied().fold(f32::MAX, f32::min);
+    let max = scores.iter().copied().fold(f32::MIN, f32::max);
     let range = max - min;
 
     if range < f32::EPSILON {

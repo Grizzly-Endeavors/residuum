@@ -114,7 +114,7 @@ async fn handle_connection(socket: WebSocket, state: GatewayState) {
                     message: format!("malformed message: {e}"),
                 };
                 tracing::warn!(error = %e, "malformed WebSocket message from client");
-                drop(local_tx.send(err_msg));
+                local_tx.send(err_msg).ok();
                 continue;
             }
         };
@@ -130,6 +130,10 @@ async fn handle_connection(socket: WebSocket, state: GatewayState) {
 }
 
 /// Dispatch a single client message. Returns `false` to break the read loop.
+#[expect(
+    clippy::too_many_lines,
+    reason = "match arms over many message variants"
+)]
 async fn handle_client_message(
     msg: ClientMessage,
     state: &GatewayState,
@@ -145,10 +149,12 @@ async fn handle_client_message(
             if !images.is_empty()
                 && let Err(reason) = validate_images(&images)
             {
-                drop(local_tx.send(ServerMessage::Error {
-                    reply_to: Some(id),
-                    message: reason,
-                }));
+                local_tx
+                    .send(ServerMessage::Error {
+                        reply_to: Some(id),
+                        message: reason,
+                    })
+                    .ok();
                 return true;
             }
 
@@ -177,13 +183,15 @@ async fn handle_client_message(
             verbose.store(enabled, Ordering::Relaxed);
         }
         ClientMessage::Ping => {
-            drop(local_tx.send(ServerMessage::Pong));
+            local_tx.send(ServerMessage::Pong).ok();
         }
         ClientMessage::Reload => {
             tracing::info!("reload requested by client");
-            drop(local_tx.send(ServerMessage::Notice {
-                message: "reloading configuration...".to_string(),
-            }));
+            local_tx
+                .send(ServerMessage::Notice {
+                    message: "reloading configuration...".to_string(),
+                })
+                .ok();
             state
                 .reload_tx
                 .send(crate::gateway::types::ReloadSignal::Root)
@@ -216,15 +224,17 @@ async fn handle_client_message(
                     .collect();
                 match crate::inbox::quick_add(&dir, &title, &body, "cli", tz).await {
                     Ok(_filename) => {
-                        drop(tx.send(ServerMessage::Notice {
+                        tx.send(ServerMessage::Notice {
                             message: "[inbox] item added".to_string(),
-                        }));
+                        })
+                        .ok();
                     }
                     Err(e) => {
-                        drop(tx.send(ServerMessage::Error {
+                        tx.send(ServerMessage::Error {
                             reply_to: None,
                             message: format!("inbox add failed: {e}"),
-                        }));
+                        })
+                        .ok();
                     }
                 }
             });

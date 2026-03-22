@@ -12,25 +12,6 @@ use super::protocol::TunnelFrame;
 /// Maximum response body size (10 MB).
 const MAX_RESPONSE_SIZE: usize = 10 * 1024 * 1024;
 
-/// Hop-by-hop headers that must not be forwarded between proxy and backend.
-const HOP_BY_HOP_HEADERS: &[&str] = &[
-    "connection",
-    "transfer-encoding",
-    "keep-alive",
-    "te",
-    "trailer",
-    "upgrade",
-    "host",
-];
-
-/// Returns `true` if the given header name is a hop-by-hop header.
-#[must_use]
-fn is_hop_by_hop(name: &str) -> bool {
-    HOP_BY_HOP_HEADERS
-        .iter()
-        .any(|h| name.eq_ignore_ascii_case(h))
-}
-
 /// Forward an HTTP request to the local residuum instance and return the
 /// response as a [`TunnelFrame::HttpResponse`].
 ///
@@ -80,7 +61,7 @@ pub(super) async fn forward(
     let mut req = client.request(http_method, &url);
 
     for (name, value) in &headers {
-        if !is_hop_by_hop(name) {
+        if !super::is_hop_by_hop(name) {
             req = req.header(name, value);
         }
     }
@@ -104,7 +85,7 @@ pub(super) async fn forward(
     // Collect response headers, filtering hop-by-hop.
     let mut response_headers = HashMap::new();
     for (name, value) in response.headers() {
-        if !is_hop_by_hop(name.as_str()) {
+        if !super::is_hop_by_hop(name.as_str()) {
             match value.to_str() {
                 Ok(v) => {
                     response_headers.insert(name.to_string(), v.to_string());
@@ -204,18 +185,24 @@ mod tests {
 
     #[test]
     fn hop_by_hop_detection() {
-        assert!(is_hop_by_hop("Connection"), "Connection is hop-by-hop");
         assert!(
-            is_hop_by_hop("transfer-encoding"),
+            super::super::is_hop_by_hop("Connection"),
+            "Connection is hop-by-hop"
+        );
+        assert!(
+            super::super::is_hop_by_hop("transfer-encoding"),
             "transfer-encoding is hop-by-hop"
         );
-        assert!(is_hop_by_hop("Keep-Alive"), "Keep-Alive is hop-by-hop");
         assert!(
-            !is_hop_by_hop("content-type"),
+            super::super::is_hop_by_hop("Keep-Alive"),
+            "Keep-Alive is hop-by-hop"
+        );
+        assert!(
+            !super::super::is_hop_by_hop("content-type"),
             "content-type is not hop-by-hop"
         );
         assert!(
-            !is_hop_by_hop("authorization"),
+            !super::super::is_hop_by_hop("authorization"),
             "authorization is not hop-by-hop"
         );
     }

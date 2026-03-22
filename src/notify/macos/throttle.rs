@@ -13,56 +13,52 @@ use super::MacosChannelConfig;
 use super::bridge::MacosBridge;
 use crate::bus::NotificationEvent;
 
-pub struct BatchAggregator;
+#[must_use]
+pub fn spawn(
+    rx: mpsc::Receiver<NotificationEvent>,
+    bridge: MacosBridge,
+    config: MacosChannelConfig,
+) -> JoinHandle<()> {
+    tokio::spawn(run(rx, bridge, config))
+}
 
-impl BatchAggregator {
-    #[must_use]
-    pub fn spawn(
-        rx: mpsc::Receiver<NotificationEvent>,
-        bridge: MacosBridge,
-        config: MacosChannelConfig,
-    ) -> JoinHandle<()> {
-        tokio::spawn(Self::run(rx, bridge, config))
-    }
+async fn run(
+    mut rx: mpsc::Receiver<NotificationEvent>,
+    bridge: MacosBridge,
+    config: MacosChannelConfig,
+) {
+    let throttle_duration = Duration::from_secs(config.throttle_window_secs);
+    let mut buffer: Vec<NotificationEvent> = Vec::new();
+    let mut window_deadline: Option<Instant> = None;
 
-    async fn run(
-        mut rx: mpsc::Receiver<NotificationEvent>,
-        bridge: MacosBridge,
-        config: MacosChannelConfig,
-    ) {
-        let throttle_duration = Duration::from_secs(config.throttle_window_secs);
-        let mut buffer: Vec<NotificationEvent> = Vec::new();
-        let mut window_deadline: Option<Instant> = None;
-
-        loop {
-            tokio::select! {
-                maybe_notif = rx.recv() => {
-                    if let Some(notif) = maybe_notif {
-                        buffer.push(notif);
-                        if window_deadline.is_none() {
-                            window_deadline = Some(Instant::now() + throttle_duration);
-                        }
-                    } else {
-                        // Channel closed — flush remaining and exit
-                        if !buffer.is_empty() {
-                            flush(&bridge, &buffer, &config).await;
-                        }
-                        tracing::info!("macOS notification aggregator shutting down");
-                        return;
+    loop {
+        tokio::select! {
+            maybe_notif = rx.recv() => {
+                if let Some(notif) = maybe_notif {
+                    buffer.push(notif);
+                    if window_deadline.is_none() {
+                        window_deadline = Some(Instant::now() + throttle_duration);
                     }
-                }
-                () = async {
-                    match window_deadline {
-                        Some(d) => sleep_until(d).await,
-                        None => std::future::pending().await,
-                    }
-                } => {
+                } else {
+                    // Channel closed — flush remaining and exit
                     if !buffer.is_empty() {
                         flush(&bridge, &buffer, &config).await;
-                        buffer.clear();
                     }
-                    window_deadline = None;
+                    tracing::info!("macOS notification aggregator shutting down");
+                    return;
                 }
+            }
+            () = async {
+                match window_deadline {
+                    Some(d) => sleep_until(d).await,
+                    None => std::future::pending().await,
+                }
+            } => {
+                if !buffer.is_empty() {
+                    flush(&bridge, &buffer, &config).await;
+                    buffer.clear();
+                }
+                window_deadline = None;
             }
         }
     }
@@ -86,7 +82,7 @@ async fn flush(bridge: &MacosBridge, buffer: &[NotificationEvent], config: &Maco
             deliver_individual(bridge, notif, config).await;
         }
 
-        let remaining = count - 2;
+        let summarized = count - 2;
         let summary_title = format!("Residuum \u{2014} {count} results");
         let summary_body = build_summary_body(buffer);
 
@@ -99,7 +95,7 @@ async fn flush(bridge: &MacosBridge, buffer: &[NotificationEvent], config: &Maco
 
         tracing::debug!(
             individual = 2,
-            remaining,
+            summarized,
             "posted batch: 2 individual + summary"
         );
     }
@@ -138,14 +134,12 @@ async fn deliver_individual(
 }
 
 fn build_summary_body(buffer: &[NotificationEvent]) -> String {
-    let mut body = String::new();
-    for notif in buffer {
-        if !body.is_empty() {
-            body.push('\n');
-        }
-        body.push_str(&notif.title);
-    }
-    truncate_body(&body, 200)
+    let joined = buffer
+        .iter()
+        .map(|n| n.title.as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
+    truncate_body(&joined, 200)
 }
 
 fn truncate_body(s: &str, max_len: usize) -> String {

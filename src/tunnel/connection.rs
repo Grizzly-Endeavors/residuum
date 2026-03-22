@@ -49,13 +49,13 @@ pub(crate) async fn start_tunnel(
     mut shutdown_rx: watch::Receiver<bool>,
     status_tx: Arc<watch::Sender<TunnelStatus>>,
 ) {
-    let client = reqwest::Client::builder()
+    let Ok(client) = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(25))
         .build()
-        .unwrap_or_else(|e| {
-            warn!(error = %e, "failed to build reqwest client with timeout, falling back to default");
-            reqwest::Client::default()
-        });
+    else {
+        error!("failed to build reqwest client");
+        return;
+    };
     let mut backoff = MIN_BACKOFF;
     let mut attempt: u32 = 0;
 
@@ -231,7 +231,6 @@ where
     };
 
     let open_ws_channels = local_ws_channels.len();
-    local_ws_channels.clear();
     LoopExit::Reconnect(disconnect_reason, open_ws_channels)
 }
 
@@ -434,7 +433,7 @@ mod tests {
     }
 
     #[test]
-    fn backoff_increases_monotonically_on_average() {
+    fn backoff_floor_is_never_below_half_current() {
         // With jitter, individual values may vary, but the base should increase.
         // Run multiple samples to verify the trend.
         let mut current = MIN_BACKOFF;

@@ -141,35 +141,32 @@ pub async fn finalize_attachment(
     content.push('\n');
     content.push_str(&line);
 
-    let image =
-        if is_supported_image(info.content_type.as_deref()) && info.size <= MAX_IMAGE_INLINE_SIZE {
-            match encode_image_from_file(
-                &saved.local_path,
-                info.content_type.as_deref().unwrap_or("image/jpeg"),
-            )
-            .await
-            {
-                Ok(img) => Some(img),
-                Err(e) => {
-                    tracing::warn!(
-                        filename = %info.filename,
-                        error = %e,
-                        "failed to encode attachment image for inline delivery"
-                    );
-                    None
+    let image = match info.content_type.as_deref() {
+        Some(ct) if is_supported_image(Some(ct)) => {
+            if info.size <= MAX_IMAGE_INLINE_SIZE {
+                match encode_image_from_file(&saved.local_path, ct).await {
+                    Ok(img) => Some(img),
+                    Err(e) => {
+                        tracing::warn!(
+                            filename = %info.filename,
+                            error = %e,
+                            "failed to encode attachment image for inline delivery"
+                        );
+                        None
+                    }
                 }
+            } else {
+                tracing::warn!(
+                    filename = %info.filename,
+                    size = info.size,
+                    max = MAX_IMAGE_INLINE_SIZE,
+                    "attachment image exceeds inline size limit, saved but not sent to model"
+                );
+                None
             }
-        } else if is_supported_image(info.content_type.as_deref()) {
-            tracing::warn!(
-                filename = %info.filename,
-                size = info.size,
-                max = MAX_IMAGE_INLINE_SIZE,
-                "attachment image exceeds inline size limit, saved but not sent to model"
-            );
-            None
-        } else {
-            None
-        };
+        }
+        _ => None,
+    };
 
     let Some(file_name_os) = saved.local_path.file_name() else {
         tracing::warn!(

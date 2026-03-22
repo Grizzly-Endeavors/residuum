@@ -79,7 +79,7 @@ pub(in crate::agent) fn assemble_system_prompt(
     );
 
     let conversation = recent_messages.messages();
-    let mut messages = Vec::with_capacity(3 + conversation.len());
+    let mut messages = Vec::with_capacity(2 + conversation.len());
 
     messages.push(Message::system(system_content));
     messages.extend(conversation.iter().cloned());

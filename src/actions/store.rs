@@ -122,7 +122,7 @@ impl ActionStore {
         let (due, remaining) = self.actions.drain(..).partition(|a| a.run_at <= now);
         self.actions = remaining;
         if !due.is_empty() {
-            debug!(count = due.len(), ids = ?due.iter().map(|a| a.id.as_str()).collect::<Vec<_>>(), "draining due actions");
+            debug!(count = due.len(), "draining due actions");
         }
         due
     }

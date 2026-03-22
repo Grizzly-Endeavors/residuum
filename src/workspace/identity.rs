@@ -32,54 +32,69 @@ impl IdentityFiles {
     /// # Errors
     /// Returns `FatalError::Workspace` if a file exists but cannot be read.
     pub async fn load(layout: &WorkspaceLayout) -> Result<Self, FatalError> {
-        let soul = read_optional(&layout.soul_md()).await?;
-        let agents = read_optional(&layout.agents_md()).await?;
-        let user = read_optional(&layout.user_md()).await?;
-        let memory = read_optional(&layout.memory_md()).await?;
+        let soul_result = read_optional(&layout.soul_md()).await?;
+        let agents_result = read_optional(&layout.agents_md()).await?;
+        let user_result = read_optional(&layout.user_md()).await?;
+        let memory_result = read_optional(&layout.memory_md()).await?;
 
-        if soul.is_none() {
+        if matches!(soul_result, ReadResult::Absent) {
             tracing::warn!(path = %layout.soul_md().display(), "SOUL.md is missing or empty; expected after bootstrap");
         }
-        if agents.is_none() {
+        if matches!(agents_result, ReadResult::Absent) {
             tracing::warn!(path = %layout.agents_md().display(), "AGENTS.md is missing or empty; expected after bootstrap");
         }
-        if user.is_none() {
+        if matches!(user_result, ReadResult::Absent) {
             tracing::warn!(path = %layout.user_md().display(), "USER.md is missing or empty; expected after bootstrap");
         }
-        if memory.is_none() {
+        if matches!(memory_result, ReadResult::Absent) {
             tracing::warn!(path = %layout.memory_md().display(), "MEMORY.md is missing or empty; expected after bootstrap");
         }
 
-        let environment = read_optional(&layout.environment_md()).await?;
-        if environment.is_none() {
+        let environment_result = read_optional(&layout.environment_md()).await?;
+        if matches!(environment_result, ReadResult::Absent) {
             tracing::warn!(path = %layout.environment_md().display(), "ENVIRONMENT.md is missing or empty; expected after bootstrap");
         }
 
-        let bootstrap = read_optional(&layout.bootstrap_md()).await?;
+        let bootstrap = read_optional(&layout.bootstrap_md()).await?.into_option();
 
         Ok(Self {
-            soul,
-            agents,
-            user,
-            memory,
-            environment,
+            soul: soul_result.into_option(),
+            agents: agents_result.into_option(),
+            user: user_result.into_option(),
+            memory: memory_result.into_option(),
+            environment: environment_result.into_option(),
             bootstrap,
         })
     }
 }
 
+enum ReadResult {
+    Present(String),
+    Absent,
+    WhitespaceOnly,
+}
+
+impl ReadResult {
+    fn into_option(self) -> Option<String> {
+        match self {
+            Self::Present(s) => Some(s),
+            Self::Absent | Self::WhitespaceOnly => None,
+        }
+    }
+}
+
 /// Read a file if it exists, returning `None` if missing.
-async fn read_optional(path: &std::path::Path) -> Result<Option<String>, FatalError> {
+async fn read_optional(path: &std::path::Path) -> Result<ReadResult, FatalError> {
     match tokio::fs::read_to_string(path).await {
         Ok(content) => {
             if content.trim().is_empty() {
                 tracing::warn!(path = %path.display(), "identity file exists but is whitespace-only, treating as absent");
-                Ok(None)
+                Ok(ReadResult::WhitespaceOnly)
             } else {
-                Ok(Some(content))
+                Ok(ReadResult::Present(content))
             }
         }
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(ReadResult::Absent),
         Err(e) => Err(FatalError::Workspace(format!(
             "failed to read {}: {e}",
             path.display()

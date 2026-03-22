@@ -21,6 +21,27 @@ use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 
 use protocol::TunnelFrame;
 
+/// Hop-by-hop headers that must not be forwarded between proxy and backend.
+const HOP_BY_HOP_HEADERS: &[&str] = &[
+    "connection",
+    "transfer-encoding",
+    "keep-alive",
+    "te",
+    "trailer",
+    "upgrade",
+    "host",
+    "sec-websocket-version",
+    "sec-websocket-key",
+];
+
+/// Returns `true` if the given header name is a hop-by-hop header.
+#[must_use]
+fn is_hop_by_hop(name: &str) -> bool {
+    HOP_BY_HOP_HEADERS
+        .iter()
+        .any(|h| name.eq_ignore_ascii_case(h))
+}
+
 type TunnelSink = SplitSink<WebSocketStream<MaybeTlsStream<TcpStream>>, Message>;
 
 async fn send_frame(

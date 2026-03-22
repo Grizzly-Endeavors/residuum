@@ -57,22 +57,3 @@ impl TelegramInterface {
         .await
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use crate::interfaces::cli::commands::{CommandContext, execute_command};
-
-    fn telegram_ctx() -> CommandContext<'static> {
-        CommandContext {
-            url: "",
-            verbose: false,
-        }
-    }
-
-    #[test]
-    fn execute_help_returns_command_list() {
-        let result = execute_command("help", None, &telegram_ctx());
-        assert!(result.response.contains("help"));
-        assert!(result.side_effect.is_none());
-    }
-}

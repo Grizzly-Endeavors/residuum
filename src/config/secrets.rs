@@ -26,6 +26,12 @@ const ENCRYPTED_FILE: &str = "secrets.toml.enc";
 /// Nonce size for AES-256-GCM-SIV (96 bits / 12 bytes).
 const NONCE_SIZE: usize = 12;
 
+#[derive(serde::Serialize, serde::Deserialize)]
+struct SecretsFile {
+    #[serde(default)]
+    secrets: HashMap<String, String>,
+}
+
 /// In-memory representation of the decrypted secret store.
 pub struct SecretStore {
     secrets: HashMap<String, String>,
@@ -222,12 +228,6 @@ fn decrypt(data: &[u8], key: &[u8; 32]) -> Result<String, FatalError> {
 
 /// Parse the decrypted TOML into a flat key→value map.
 fn parse_secrets_toml(toml_str: &str) -> Result<HashMap<String, String>, FatalError> {
-    #[derive(serde::Deserialize)]
-    struct SecretsFile {
-        #[serde(default)]
-        secrets: HashMap<String, String>,
-    }
-
     let file: SecretsFile = toml::from_str(toml_str)
         .map_err(|e| FatalError::Config(format!("failed to parse decrypted secrets TOML: {e}")))?;
 
@@ -236,12 +236,10 @@ fn parse_secrets_toml(toml_str: &str) -> Result<HashMap<String, String>, FatalEr
 
 /// Serialize secrets to TOML format.
 fn serialize_secrets_toml(secrets: &HashMap<String, String>) -> Result<String, FatalError> {
-    #[derive(serde::Serialize)]
-    struct SecretsFile<'a> {
-        secrets: &'a HashMap<String, String>,
-    }
-    toml::to_string(&SecretsFile { secrets })
-        .map_err(|e| FatalError::Config(format!("failed to serialize secrets: {e}")))
+    toml::to_string(&SecretsFile {
+        secrets: secrets.clone(),
+    })
+    .map_err(|e| FatalError::Config(format!("failed to serialize secrets: {e}")))
 }
 
 #[cfg(test)]

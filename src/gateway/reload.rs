@@ -29,6 +29,7 @@ pub(super) enum IdleAction {
     clippy::struct_excessive_bools,
     reason = "diff struct deliberately uses bool flags for each subsystem"
 )]
+#[derive(PartialEq, Default)]
 pub(super) struct ConfigDiff {
     /// Provider chains changed (main, observer, reflector, pulse, embedding, retry, `max_tokens`, temperature, thinking).
     pub providers_changed: bool,
@@ -57,17 +58,7 @@ pub(super) struct ConfigDiff {
 impl ConfigDiff {
     /// Returns `true` if nothing changed between old and new config.
     fn is_empty(&self) -> bool {
-        !self.providers_changed
-            && !self.memory_changed
-            && !self.gateway_changed
-            && !self.discord_changed
-            && !self.telegram_changed
-            && !self.pulse_changed
-            && !self.background_changed
-            && !self.agent_changed
-            && !self.skills_changed
-            && !self.idle_changed
-            && !self.cloud_changed
+        *self == Self::default()
     }
 
     /// Build a human-readable summary of what changed.

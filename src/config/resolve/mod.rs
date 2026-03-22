@@ -570,20 +570,23 @@ fn resolve_web_search_config(
         let mut native = ProviderNativeSearchConfig::default();
 
         if let Some(s) = section {
-            // Apply Anthropic overrides
-            if let Some(ref a) = s.anthropic {
+            if main_kind == Some(ProviderKind::Anthropic)
+                && let Some(ref a) = s.anthropic
+            {
                 native.max_uses = a.max_uses;
                 native.allowed_domains.clone_from(&a.allowed_domains);
                 native.blocked_domains.clone_from(&a.blocked_domains);
             }
-            // Apply OpenAI overrides
-            if let Some(ref o) = s.openai {
+            if main_kind == Some(ProviderKind::OpenAi)
+                && let Some(ref o) = s.openai
+            {
                 native
                     .search_context_size
                     .clone_from(&o.search_context_size);
             }
-            // Apply Gemini overrides
-            if let Some(ref g) = s.gemini {
+            if main_kind == Some(ProviderKind::Gemini)
+                && let Some(ref g) = s.gemini
+            {
                 native.exclude_domains.clone_from(&g.exclude_domains);
             }
         }

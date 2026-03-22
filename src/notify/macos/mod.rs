@@ -51,7 +51,7 @@ impl Default for MacosChannelConfig {
     }
 }
 
-/// `deliver()` enqueues to the `BatchAggregator` and returns immediately —
+/// `deliver()` enqueues to the batch aggregator and returns immediately —
 /// actual macOS delivery happens asynchronously after the throttle window.
 pub struct MacosNativeChannel {
     channel_name: String,
@@ -70,11 +70,11 @@ impl MacosNativeChannel {
         let channel_name = name.into();
         let (tx, rx) = mpsc::channel(64);
 
-        let macos_bridge = bridge::MacosBridge::new(config.clone(), None)?;
+        let macos_bridge = bridge::MacosBridge::new(config.clone())?;
 
         permissions::check_and_request().await;
 
-        let aggregator_handle = throttle::BatchAggregator::spawn(rx, macos_bridge, config);
+        let aggregator_handle = throttle::spawn(rx, macos_bridge, config);
 
         Ok((
             Self {

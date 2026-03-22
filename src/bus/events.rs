@@ -1,7 +1,6 @@
 //! Event types carried on the bus.
 
 use std::fmt;
-use std::fmt::Write as _;
 use std::path::PathBuf;
 
 use chrono::NaiveDateTime;
@@ -213,7 +212,8 @@ impl AgentResultEvent {
         }
 
         if let Some(ref path) = self.transcript_path {
-            write!(out, "\nTranscript: {}", path.display()).unwrap_or_default();
+            out.push_str("\nTranscript: ");
+            out.push_str(&path.display().to_string());
         }
 
         out

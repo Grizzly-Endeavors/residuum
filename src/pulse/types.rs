@@ -56,9 +56,9 @@ pub fn parse_schedule_duration(s: &str) -> anyhow::Result<Duration> {
     })?;
     match unit {
         "s" => Ok(Duration::seconds(value)),
-        "m" => Ok(Duration::seconds(value * 60)),
-        "h" => Ok(Duration::seconds(value * 3600)),
-        "d" => Ok(Duration::seconds(value * 86_400)),
+        "m" => Ok(Duration::minutes(value)),
+        "h" => Ok(Duration::hours(value)),
+        "d" => Ok(Duration::days(value)),
         other => bail!("unknown duration unit '{other}' in '{s}': expected s, m, h, or d",),
     }
 }

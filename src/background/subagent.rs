@@ -132,7 +132,7 @@ pub async fn build_resources(
 
     // Clone skill index and dirs for an isolated SkillState (no active skills)
     let (cloned_skill_index, skill_dirs) = {
-        let guard: tokio::sync::MutexGuard<SkillState> = main_skill_state.lock().await;
+        let guard = main_skill_state.lock().await;
         (guard.index().clone(), guard.dirs().to_vec())
     };
     let skill_state = SkillState::new_shared(cloned_skill_index, skill_dirs);
@@ -161,7 +161,7 @@ pub async fn build_resources(
         if idx.is_empty() { None } else { Some(idx) }
     };
     let skills_index = {
-        let guard: tokio::sync::MutexGuard<SkillState> = skill_state.lock().await;
+        let guard = skill_state.lock().await;
         let idx = guard.format_index_for_prompt();
         if idx.is_empty() { None } else { Some(idx) }
     };
@@ -225,7 +225,7 @@ pub(crate) async fn execute_subagent(
 
     // Build skills context from the sub-agent's isolated skill state
     let active_instructions: Option<String> = {
-        let guard: tokio::sync::MutexGuard<SkillState> = resources.skill_state.lock().await;
+        let guard = resources.skill_state.lock().await;
         guard.format_active_for_prompt()
     };
     let skills_ctx = SkillsContext {

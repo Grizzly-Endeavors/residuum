@@ -33,6 +33,20 @@ impl SwitchEndpointTool {
             publisher,
         }
     }
+
+    fn available_interactive_str(&self) -> String {
+        let names: Vec<String> = self
+            .registry
+            .interactive()
+            .iter()
+            .map(|e| e.id.as_ref().to_string())
+            .collect();
+        if names.is_empty() {
+            "(none configured)".to_string()
+        } else {
+            names.join(", ")
+        }
+    }
 }
 
 #[async_trait]
@@ -70,17 +84,7 @@ impl Tool for SwitchEndpointTool {
         let endpoint_id = EndpointId::from(endpoint_name);
 
         let Some(entry) = self.registry.get(&endpoint_id) else {
-            let interactive_names: Vec<String> = self
-                .registry
-                .interactive()
-                .iter()
-                .map(|e| e.id.as_ref().to_string())
-                .collect();
-            let available_str = if interactive_names.is_empty() {
-                "(none configured)".to_string()
-            } else {
-                interactive_names.join(", ")
-            };
+            let available_str = self.available_interactive_str();
             return Ok(ToolResult::error(format!(
                 "unknown endpoint '{endpoint_name}'; available interactive endpoints: {available_str}",
             )));
@@ -90,17 +94,7 @@ impl Tool for SwitchEndpointTool {
             .capabilities
             .contains(EndpointCapabilities::INTERACTIVE)
         {
-            let interactive_names: Vec<String> = self
-                .registry
-                .interactive()
-                .iter()
-                .map(|e| e.id.as_ref().to_string())
-                .collect();
-            let available_str = if interactive_names.is_empty() {
-                "(none configured)".to_string()
-            } else {
-                interactive_names.join(", ")
-            };
+            let available_str = self.available_interactive_str();
             return Ok(ToolResult::error(format!(
                 "endpoint '{endpoint_name}' is not interactive; available: {available_str}",
             )));

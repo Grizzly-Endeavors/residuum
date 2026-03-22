@@ -35,8 +35,7 @@ pub(crate) async fn load_observations(path: &Path) -> anyhow::Result<Option<Stri
         }
         Ok(_) => Ok(None),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(e) => Err(anyhow::Error::new(e)
-            .context(format!("failed to read observations at {}", path.display()))),
+        Err(e) => Err(e).context(format!("failed to read observations at {}", path.display())),
     }
 }
 

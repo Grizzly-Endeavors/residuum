@@ -30,7 +30,6 @@ pub enum PulseExecution {
 #[must_use]
 pub fn build_pulse_execution(pulse: &PulseDef) -> PulseExecution {
     let prompt = build_pulse_prompt(pulse);
-    let source_label = format!("pulse:{}", pulse.name);
     let preset = pulse.agent.as_deref().unwrap_or("general-purpose");
 
     if preset == "main" {
@@ -41,6 +40,7 @@ pub fn build_pulse_execution(pulse: &PulseDef) -> PulseExecution {
         }
     } else {
         tracing::debug!(pulse = %pulse.name, preset = %preset, "routing pulse to sub-agent");
+        let source_label = format!("pulse:{}", pulse.name);
         let spawn_event = SpawnRequestEvent {
             preset: crate::bus::PresetName::from(preset),
             source_label,

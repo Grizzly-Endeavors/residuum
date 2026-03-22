@@ -1,5 +1,7 @@
 //! Ollama Cloud web search tool.
 
+use std::fmt::Write as _;
+
 use async_trait::async_trait;
 use serde_json::Value;
 use tracing::debug;
@@ -136,9 +138,7 @@ fn format_search_results(response: &Value) -> String {
         return "No search results found.".to_string();
     }
 
-    output.push_str("Found ");
-    output.push_str(&items.len().to_string());
-    output.push_str(" result(s):\n");
+    writeln!(output, "Found {} result(s):", items.len()).ok();
 
     for (i, item) in items.iter().enumerate() {
         let title = item
@@ -156,15 +156,15 @@ fn format_search_results(response: &Value) -> String {
             .and_then(Value::as_str)
             .unwrap_or("(no snippet)");
 
-        output.push('\n');
-        output.push_str(&(i + 1).to_string());
-        output.push_str(". ");
-        output.push_str(title);
-        output.push_str("\n   URL: ");
-        output.push_str(url);
-        output.push_str("\n   ");
-        output.push_str(snippet);
-        output.push('\n');
+        write!(
+            output,
+            "\n{}. {}\n   URL: {}\n   {}\n",
+            i + 1,
+            title,
+            url,
+            snippet
+        )
+        .ok();
     }
 
     output

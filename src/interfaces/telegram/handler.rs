@@ -214,7 +214,7 @@ async fn dispatch_message(
         };
 
         // Strip @botname suffix from commands (e.g. /help@mybot)
-        let cmd_name = cmd_name.split('@').next().unwrap_or(cmd_name);
+        let cmd_name = cmd_name.split_once('@').map_or(cmd_name, |(name, _)| name);
 
         handle_command(bot, chat_id, from, cmd_name, cmd_args, ctx).await;
         return;
