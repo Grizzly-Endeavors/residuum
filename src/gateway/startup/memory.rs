@@ -8,9 +8,7 @@ use crate::error::FatalError;
 use crate::memory::chunk_extractor::read_idx_jsonl;
 use crate::memory::observer::{Observer, ObserverConfig};
 use crate::memory::reflector::{Reflector, ReflectorConfig};
-use crate::memory::search::{
-    HybridSearcher, MemoryIndex, RebuildResult, create_shared_index, parse_obs_file,
-};
+use crate::memory::search::{HybridSearcher, MemoryIndex, RebuildResult, parse_obs_file};
 use crate::memory::types::IndexManifest;
 use crate::memory::vector_store::VectorStore;
 use crate::models::{EmbeddingProvider, SharedHttpClient, build_provider_chain};
@@ -90,8 +88,8 @@ pub(super) async fn init_memory(
         tracing::warn!(error = %migration_err, "failed to clear old search index for schema migration");
     }
 
-    let search_index = match create_shared_index(&layout.search_index_dir()) {
-        Ok(idx) => idx,
+    let search_index = match MemoryIndex::open_or_create(&layout.search_index_dir()) {
+        Ok(idx) => Arc::new(idx),
         Err(err) => {
             tracing::warn!(error = %err, "search index degraded: using empty in-memory index");
             Arc::new(MemoryIndex::empty()?)
