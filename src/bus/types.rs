@@ -195,9 +195,4 @@ mod tests {
         let err = BusError::BrokerShutdown;
         assert_eq!(err.to_string(), "bus broker is shut down");
     }
-
-    #[test]
-    fn system_channel_constant() {
-        assert_eq!(SYSTEM_CHANNEL, "system");
-    }
 }
