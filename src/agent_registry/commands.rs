@@ -146,6 +146,8 @@ fn run_agent_create(name: &str) -> Result<(), FatalError> {
         ))
     })?;
 
+    // config.toml is always regenerated; workspace files are preserved if they already exist
+    // so that user edits to mcp.json and channels.toml survive re-creation.
     if !ws_config_dir.join("mcp.json").exists() {
         trace!(agent = name, "writing mcp.json");
         std::fs::write(ws_config_dir.join("mcp.json"), "{ \"mcpServers\": {} }\n")

@@ -13,6 +13,9 @@ use crate::error::FatalError;
 /// Starting port for named agents. Default agent uses 7700.
 const AGENT_PORT_START: u16 = 7701;
 
+/// Warn when port scanning advances further than this many steps from the starting port.
+const MAX_EXPECTED_AGENTS: u16 = 20;
+
 /// A single agent entry in the registry.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentEntry {
@@ -24,7 +27,7 @@ pub struct AgentEntry {
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct AgentRegistry {
     #[serde(default)]
-    pub agents: Vec<AgentEntry>,
+    agents: Vec<AgentEntry>,
 }
 
 impl AgentRegistry {
@@ -66,14 +69,12 @@ impl AgentRegistry {
     ///
     /// Returns `FatalError::Config` if the file cannot be written.
     pub fn save(&self, base_dir: &Path) -> Result<(), FatalError> {
-        if !base_dir.exists() {
-            std::fs::create_dir_all(base_dir).map_err(|e| {
-                FatalError::Config(format!(
-                    "failed to create agent registry directory {}: {e}",
-                    base_dir.display()
-                ))
-            })?;
-        }
+        std::fs::create_dir_all(base_dir).map_err(|e| {
+            FatalError::Config(format!(
+                "failed to create agent registry directory {}: {e}",
+                base_dir.display()
+            ))
+        })?;
 
         let contents = toml::to_string_pretty(self)
             .map_err(|e| FatalError::Config(format!("failed to serialize agent registry: {e}")))?;
@@ -122,7 +123,7 @@ impl AgentRegistry {
             port = port.saturating_add(1);
         }
         let scan_steps = port.saturating_sub(AGENT_PORT_START);
-        if scan_steps > 20 {
+        if scan_steps > MAX_EXPECTED_AGENTS {
             warn!(
                 agents = self.agents.len(),
                 port, scan_steps, "port scan advanced far from starting port"
@@ -145,7 +146,7 @@ mod tests {
     fn load_empty_returns_default() {
         let dir = tempfile::tempdir().unwrap();
         let reg = AgentRegistry::load(dir.path()).unwrap();
-        assert!(reg.agents.is_empty());
+        assert!(reg.list().is_empty());
     }
 
     #[test]
@@ -157,11 +158,11 @@ mod tests {
         reg.save(dir.path()).unwrap();
 
         let loaded = AgentRegistry::load(dir.path()).unwrap();
-        assert_eq!(loaded.agents.len(), 2);
-        assert_eq!(loaded.agents[0].name, "researcher");
-        assert_eq!(loaded.agents[0].port, 7701);
-        assert_eq!(loaded.agents[1].name, "coder");
-        assert_eq!(loaded.agents[1].port, 7702);
+        assert_eq!(loaded.list().len(), 2);
+        assert_eq!(loaded.list()[0].name, "researcher");
+        assert_eq!(loaded.list()[0].port, 7701);
+        assert_eq!(loaded.list()[1].name, "coder");
+        assert_eq!(loaded.list()[1].port, 7702);
     }
 
     #[test]
@@ -177,9 +178,9 @@ mod tests {
         let mut reg = AgentRegistry::default();
         reg.add("researcher".to_string(), 7701);
         reg.remove("researcher");
-        assert!(reg.agents.is_empty());
+        assert!(reg.list().is_empty());
         reg.remove("nonexistent");
-        assert!(reg.agents.is_empty());
+        assert!(reg.list().is_empty());
     }
 
     #[test]
