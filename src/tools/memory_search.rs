@@ -95,7 +95,7 @@ impl Tool for MemorySearchTool {
         }
 
         let limit = match arguments.get("limit").and_then(Value::as_u64) {
-            Some(l) => usize::try_from(l.min(20)).unwrap_or(20).max(1),
+            Some(l) => (l.min(20) as usize).max(1),
             None => 5,
         };
 

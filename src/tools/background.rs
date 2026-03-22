@@ -393,24 +393,23 @@ mod tests {
 
     #[tokio::test]
     async fn default_preset_general_purpose_used_when_no_agent_name() {
-        // When no agent_name is provided, the general-purpose preset is used.
-        // We test this indirectly — the call should not fail with an unknown-preset error.
+        // When no agent_name is provided, the tool defaults to "general-purpose".
+        // With /tmp as subagents_dir, scanning may fail with "failed to load subagent presets: ..."
+        // That error is acceptable — what must NOT appear is "unknown preset", which would mean
+        // the preset name itself was rejected rather than just the scan environment failing.
         let tool = make_tool();
 
-        // No agent_name → should not fail with "unknown preset"
-        let result = tool
+        let res = tool
             .execute(serde_json::json!({
                 "task": "do something"
             }))
-            .await;
+            .await
+            .unwrap();
 
-        // May fail with provider error (no valid API key in test), but not with preset error
-        if let Ok(res) = result {
-            assert!(
-                !res.output.contains("unknown preset"),
-                "should not fail with unknown-preset error, got: {}",
-                res.output
-            );
-        }
+        assert!(
+            !res.output.contains("unknown preset"),
+            "should not fail with unknown-preset error, got: {}",
+            res.output
+        );
     }
 }

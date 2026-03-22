@@ -102,7 +102,7 @@ fn apply_replace(
     let mut new_lines =
         Vec::with_capacity(lines.len() - (range_end - range_start + 1) + content_lines.len());
     new_lines.extend(lines.drain(..range_start));
-    new_lines.extend(content_lines.iter().map(|s| (*s).to_string()));
+    new_lines.extend(content_lines.iter().copied().map(str::to_string));
     let skip_count = range_end - range_start + 1;
     new_lines.extend(lines.into_iter().skip(skip_count));
 
@@ -120,14 +120,14 @@ fn apply_insert(
 
     if at_start {
         let mut new_lines = Vec::with_capacity(lines.len() + content_lines.len());
-        new_lines.extend(content_lines.iter().map(|s| (*s).to_string()));
+        new_lines.extend(content_lines.iter().copied().map(str::to_string));
         new_lines.extend(lines);
         (new_lines, "inserted at file start".to_string())
     } else {
         let insert_idx = range_start + 1;
         let mut new_lines = Vec::with_capacity(lines.len() + content_lines.len());
         new_lines.extend(lines.drain(..insert_idx));
-        new_lines.extend(content_lines.iter().map(|s| (*s).to_string()));
+        new_lines.extend(content_lines.iter().copied().map(str::to_string));
         new_lines.extend(lines);
         (
             new_lines,
@@ -372,10 +372,13 @@ impl Tool for EditTool {
                 new_content.unwrap_or_default(),
                 insert_at_start,
             ),
-            _ => match apply_delete(lines, range_start, range_end, path) {
+            "delete" => match apply_delete(lines, range_start, range_end, path) {
                 Ok(result) => result,
                 Err(msg) => return Ok(ToolResult::error(msg)),
             },
+            _ => unreachable!(
+                "parse_edit_args validates operation is one of replace/insert_after/delete"
+            ),
         };
 
         // Reconstruct file content

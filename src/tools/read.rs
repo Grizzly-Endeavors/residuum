@@ -160,9 +160,11 @@ impl Tool for ReadTool {
 
         let mut truncated_count: usize = 0;
 
-        let selected: Vec<String> = lines
-            .get(start..end)
-            .unwrap_or_default()
+        #[expect(
+            clippy::indexing_slicing,
+            reason = "start and end are clamped to total_lines; the slice is always in-bounds"
+        )]
+        let selected: Vec<String> = lines[start..end]
             .iter()
             .enumerate()
             .map(|(i, line)| {
