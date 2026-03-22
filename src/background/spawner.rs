@@ -59,11 +59,11 @@ impl BackgroundTaskSpawner {
         let child_token = token.clone();
         let spawn_task_id = task_id.clone();
 
-        let (exec_type, prompt_preview) = execution_info(&task.execution);
+        let prompt_preview = execution_info(&task.execution);
         let active_info = ActiveTaskInfo {
             source_label: task.source_label.clone(),
             source: task.source.clone(),
-            execution_type: exec_type,
+            execution_type: "sub_agent",
             prompt_preview,
             started_at: Utc::now(),
         };
@@ -102,7 +102,11 @@ impl BackgroundTaskSpawner {
                 () = child_token.cancelled() => {
                     build_cancelled_result(&task, &spawn_task_id, cleanup_handles).await
                 }
-                outcome = execute_task(&task, resources.as_ref()) => {
+                outcome = async {
+                    let Execution::SubAgent(config) = &task.execution;
+                    let res = resources.as_ref().ok_or_else(|| anyhow::anyhow!("sub-agent task requires SubAgentResources"))?;
+                    execute_subagent(&task.id, config, res).await
+                } => {
                     build_completed_result(&task, outcome, &background_dir).await
                 }
             };
@@ -237,17 +241,6 @@ async fn build_completed_result(
         timestamp: Utc::now(),
         agent_preset: task.agent_preset.clone(),
     }
-}
-
-/// Execute a task based on its execution type.
-async fn execute_task(
-    task: &BackgroundTask,
-    resources: Option<&SubAgentResources>,
-) -> Result<SubAgentOutput, anyhow::Error> {
-    let Execution::SubAgent(config) = &task.execution;
-    let res =
-        resources.ok_or_else(|| anyhow::anyhow!("sub-agent task requires SubAgentResources"))?;
-    execute_subagent(&task.id, config, res).await
 }
 
 /// Write a transcript file for the task. Returns the path if successful.

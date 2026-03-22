@@ -76,11 +76,10 @@ pub struct ActiveTaskInfo {
     pub started_at: DateTime<Utc>,
 }
 
-/// Extract display info from an `Execution` config.
-pub(crate) fn execution_info(execution: &Execution) -> (&'static str, String) {
+/// Extract prompt preview from an `Execution` config.
+pub(crate) fn execution_info(execution: &Execution) -> String {
     let Execution::SubAgent(cfg) = execution;
-    let preview = cfg.prompt.chars().take(120).collect();
-    ("sub_agent", preview)
+    cfg.prompt.chars().take(120).collect()
 }
 
 /// Format a `BackgroundResult` for injection into the agent message stream.
@@ -208,8 +207,7 @@ mod tests {
             context: None,
             model_tier: BackgroundModelTier::Medium,
         };
-        let (exec_type, preview) = execution_info(&Execution::SubAgent(config));
-        assert_eq!(exec_type, "sub_agent");
+        let preview = execution_info(&Execution::SubAgent(config));
         assert_eq!(preview.len(), 120, "preview should be capped at 120 chars");
     }
 

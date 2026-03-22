@@ -302,7 +302,7 @@ pub(crate) async fn execute_subagent(
 
     ensure_project_deactivated(
         task_id,
-        config,
+        &config.prompt,
         resources,
         &memory_ctx,
         &prompt_ctx,
@@ -324,7 +324,7 @@ pub(crate) async fn execute_subagent(
 /// If the retry turn also fails, fall back to a manual ref-count decrement.
 async fn ensure_project_deactivated(
     task_id: &str,
-    config: &SubAgentConfig,
+    prompt: &str,
     resources: &SubAgentResources,
     memory_ctx: &crate::agent::context::MemoryContext<'_>,
     prompt_ctx: &PromptContext<'_>,
@@ -393,7 +393,7 @@ async fn ensure_project_deactivated(
         .active_project_name()
         .map(str::to_string);
     if let Some(still_name) = still_active {
-        let prompt_preview: String = config.prompt.chars().take(200).collect();
+        let prompt_preview: String = prompt.chars().take(200).collect();
         tracing::warn!(
             task_id = %task_id,
             project = %still_name,
