@@ -733,10 +733,10 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(result.response, "HEARTBEAT_OK", "response should match");
-        assert!(
-            !result.messages.is_empty(),
-            "should have ephemeral messages"
-        );
+        assert_eq!(result.messages.len(), 2);
+        assert_eq!(result.messages[0].role, crate::models::Role::User);
+        assert_eq!(result.messages[0].content, "check status");
+        assert_eq!(result.messages[1].content, "HEARTBEAT_OK");
         assert_eq!(
             agent.message_count(),
             0,
@@ -949,6 +949,8 @@ mod tests {
             "first retained should be exchange 2"
         );
         assert_eq!(msgs[1].content, "answer 2");
+        assert_eq!(msgs[2].content, "question 3");
+        assert_eq!(msgs[3].content, "answer 3");
         assert_eq!(msgs[4].content, "question 4");
         assert_eq!(
             msgs[5].content, "answer 4",

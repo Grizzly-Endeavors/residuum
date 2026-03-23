@@ -282,11 +282,10 @@ mod tests {
 
     #[test]
     fn nonexistent_pid_is_not_running() {
-        // Use a high PID within i32 range that almost certainly doesn't exist.
-        // /proc/sys/kernel/pid_max defaults to 4194304 on 64-bit Linux, and
-        // macOS uses similar ranges, so i32::MAX won't be a real process.
-        let fake_pid = i32::MAX as u32;
-        assert!(!is_process_running(fake_pid));
+        let mut child = std::process::Command::new("true").spawn().unwrap();
+        let pid = child.id();
+        child.wait().unwrap();
+        assert!(!is_process_running(pid));
     }
 
     #[test]
@@ -355,6 +354,55 @@ mod tests {
         let _lock = acquire_pid_lock(&pid_path).unwrap();
 
         let result = acquire_pid_lock(&pid_path);
-        assert!(result.is_err(), "second lock acquisition should fail");
+        let err_msg = result.err().unwrap().to_string();
+        assert!(
+            err_msg.contains("already running"),
+            "unexpected error: {err_msg}"
+        );
+    }
+
+    #[test]
+    fn read_pid_file_parses_pid_with_trailing_newline() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test.pid");
+        std::fs::write(&path, "1234\n").unwrap();
+        assert_eq!(read_pid_file(&path).unwrap(), 1234);
+    }
+
+    #[test]
+    fn read_pid_file_missing_file_returns_err() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("nonexistent.pid");
+        assert!(read_pid_file(&path).is_err());
+    }
+
+    #[test]
+    fn read_pid_file_invalid_content_returns_err() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test.pid");
+        std::fs::write(&path, "not-a-pid").unwrap();
+        assert!(read_pid_file(&path).is_err());
+    }
+
+    #[test]
+    fn remove_pid_file_succeeds_when_exists() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test.pid");
+        std::fs::write(&path, "1234").unwrap();
+        remove_pid_file(&path).unwrap();
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn remove_pid_file_succeeds_silently_when_missing() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("nonexistent.pid");
+        assert!(remove_pid_file(&path).is_ok());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn pid_1_is_detected_as_running() {
+        assert!(is_process_running(1));
     }
 }

@@ -97,3 +97,51 @@ pub(crate) async fn build_subagents_context_string(subagents_dir: &Path) -> Opti
         }
     }
 }
+
+#[cfg(test)]
+#[expect(clippy::unwrap_used, reason = "test code uses unwrap for clarity")]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn load_observations_not_found_returns_none() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("nonexistent.json");
+        let result = load_observations(&path).await.unwrap();
+        assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn load_observations_empty_file_returns_none() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("observations.json");
+        tokio::fs::write(&path, "   ").await.unwrap();
+        let result = load_observations(&path).await.unwrap();
+        assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn load_observations_corrupt_json_error_mentions_bak() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("observations.json");
+        tokio::fs::write(&path, "not valid json").await.unwrap();
+        let result = load_observations(&path).await;
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains(".json.bak"),
+            "error should mention .json.bak backup, got: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn load_observations_valid_file_returns_some() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("observations.json");
+        let json = r#"{"observations":[{"timestamp":"2024-02-19T00:00","project_context":"test","visibility":"user","content":"test observation"}]}"#;
+        tokio::fs::write(&path, json).await.unwrap();
+        let result = load_observations(&path).await.unwrap();
+        assert!(result.is_some());
+        assert!(result.unwrap().contains("test observation"));
+    }
+}

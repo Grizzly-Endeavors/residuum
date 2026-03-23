@@ -295,6 +295,8 @@ mod tests {
             4,
             "should find 2 text exchanges (4 messages), skipping tool call"
         );
+        assert_eq!(exchanges[0].content, "run a command");
+        assert_eq!(exchanges[1].content, "the result was: test");
         assert_eq!(exchanges[2].content, "thanks");
         assert_eq!(exchanges[3].content, "you're welcome");
     }
