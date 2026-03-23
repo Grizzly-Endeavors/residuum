@@ -1,34 +1,51 @@
-FROM debian:trixie-slim
+#----- Build Stage -----
+
+FROM debian:trixie-slim AS builder
 
 ENV DEBIAN_FRONTEND=noninteractive
-ENV TZ=Etc/UTC
 
-# 1.working directory
 WORKDIR /app
 
-# 2.install required tools
-RUN apt-get update && apt-get install -y curl socat && rm -rf /var/lib/apt/lists/*
+# install dependencies
+RUN apt-get update && apt-get install -y \
+    curl \
+    git \
+    build-essential \
+    nodejs \
+    npm \
+    && rm -rf /var/lib/apt/lists/*
 
-# 3.download binary
-RUN curl -L -o residuum https://github.com/Grizzly-Endeavors/residuum/releases/download/v2026.03.14/residuum-linux-x86_64
+# install rust
+RUN curl https://sh.rustup.rs -sSf | sh -s -- -y
+ENV PATH="/root/.cargo/bin:${PATH}"
 
-# 4.make executable
+COPY . .
+
+# build frontend
+WORKDIR /app/web
+RUN npm install && npm run build
+
+# build backend
+WORKDIR /app
+RUN cargo build --release
+
+#----- Runtime Stage -----
+FROM debian:trixie-slim
+
+WORKDIR /app
+
+ENV RESIDUUM_GATEWAY_BIND=0.0.0.0
+
+COPY --from=builder /app/target/release/residuum /app/residuum
+
 RUN chmod +x residuum
 
-# 5.create user
 RUN useradd -m residuum
 
-# 6.create config dirrectory and set permissions
-RUN mkdir -p /home/residuum/.residuum \ && chown -R residuum:residuum /home/residuum
-
-# 7.switch to the created user
 USER residuum
 
-# 8.volume for persistence
 VOLUME [ "/home/residuum/.residuum" ]
 
-# port for web interface and API
 EXPOSE 7700
 
-# 9.run app
-CMD ["./residuum", "serve", "--foreground"]
+CMD ["./residuum", "serve", "--foreground", "--debug"]
