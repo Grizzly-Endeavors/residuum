@@ -192,4 +192,28 @@ mod tests {
             "model_name should return primary provider's name"
         );
     }
+
+    #[tokio::test]
+    async fn empty_provider_list_returns_error() {
+        let provider = FailoverProvider::new(vec![]);
+        let result = provider
+            .complete(&[], &[], &CompletionOptions::default())
+            .await;
+        assert!(result.is_err(), "empty provider list should return error");
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("no providers"),
+            "error should mention no providers: {err}"
+        );
+    }
+
+    #[test]
+    fn empty_provider_model_name() {
+        let provider = FailoverProvider::new(vec![]);
+        assert_eq!(
+            provider.model_name(),
+            "failover(empty)",
+            "empty provider should return failover(empty)"
+        );
+    }
 }

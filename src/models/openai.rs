@@ -717,6 +717,43 @@ mod tests {
         );
     }
 
+    #[test]
+    fn message_conversion_user_with_images() {
+        use crate::models::ImageData;
+        let images = vec![ImageData {
+            media_type: "image/jpeg".to_string(),
+            data: "base64abc123".to_string(),
+        }];
+        let msg = Message::user_with_images("look at this", images);
+        let openai_msg: OpenAiMessage = (&msg).into();
+        assert_eq!(openai_msg.role, "user", "role should be user");
+        let content_json = serde_json::to_value(&openai_msg.content).unwrap();
+        assert!(
+            content_json.is_array(),
+            "content should be Parts array when images are present"
+        );
+        let parts = content_json.as_array().unwrap();
+        assert_eq!(parts.len(), 2, "should have text and image parts");
+        let first_part = parts.first().unwrap();
+        assert_eq!(first_part["type"], "text", "first part should be text type");
+        assert_eq!(
+            first_part["text"], "look at this",
+            "text part content should match"
+        );
+        let second_part = parts.last().unwrap();
+        assert_eq!(
+            second_part["type"], "image_url",
+            "second part should be image_url type"
+        );
+        assert_eq!(
+            second_part
+                .pointer("/image_url/url")
+                .and_then(serde_json::Value::as_str),
+            Some("data:image/jpeg;base64,base64abc123"),
+            "image URL should use data URI format"
+        );
+    }
+
     #[tokio::test]
     async fn complete_success() {
         let mock_server = MockServer::start().await;

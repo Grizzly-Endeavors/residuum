@@ -1374,4 +1374,101 @@ mod tests {
             "error should contain Gemini message"
         );
     }
+
+    #[tokio::test]
+    async fn embed_empty_input_returns_early() {
+        let client = make_embedding_client("http://127.0.0.1:1");
+        let result = client.embed(&[]).await;
+        assert!(
+            result.is_ok(),
+            "empty input should return Ok without API call"
+        );
+        let resp = result.unwrap();
+        assert!(resp.embeddings.is_empty(), "should have no embeddings");
+        assert_eq!(resp.dimensions, 0, "dimensions should be 0");
+    }
+
+    #[test]
+    fn strip_unsupported_removes_additional_properties_at_root() {
+        let input = serde_json::json!({
+            "type": "object",
+            "properties": {"name": {"type": "string"}},
+            "additionalProperties": false
+        });
+        let result = strip_unsupported_schema_fields(input);
+        assert!(
+            result.get("additionalProperties").is_none(),
+            "additionalProperties should be removed"
+        );
+        assert!(
+            result.get("properties").is_some(),
+            "properties should remain"
+        );
+        assert!(result.get("type").is_some(), "type should remain");
+    }
+
+    #[test]
+    fn strip_unsupported_removes_nested_additional_properties() {
+        let input = serde_json::json!({
+            "type": "object",
+            "properties": {
+                "inner": {
+                    "type": "object",
+                    "properties": {"x": {"type": "string"}},
+                    "additionalProperties": false
+                }
+            }
+        });
+        let result = strip_unsupported_schema_fields(input);
+        let inner = result.get("properties").unwrap().get("inner").unwrap();
+        assert!(
+            inner.get("additionalProperties").is_none(),
+            "nested additionalProperties should be removed"
+        );
+        assert!(inner.get("type").is_some(), "nested type should remain");
+    }
+
+    #[test]
+    fn strip_unsupported_handles_array_of_objects() {
+        let input = serde_json::json!([
+            {
+                "type": "object",
+                "additionalProperties": false
+            }
+        ]);
+        let result = strip_unsupported_schema_fields(input);
+        let first = result.as_array().unwrap().first().unwrap();
+        assert!(
+            first.get("additionalProperties").is_none(),
+            "additionalProperties in array items should be removed"
+        );
+        assert!(
+            first.get("type").is_some(),
+            "type in array items should remain"
+        );
+    }
+
+    #[test]
+    fn strip_unsupported_passes_non_object_through() {
+        let string_val = serde_json::json!("hello");
+        assert_eq!(
+            strip_unsupported_schema_fields(string_val.clone()),
+            string_val,
+            "string values should pass through unchanged"
+        );
+
+        let number_val = serde_json::json!(42);
+        assert_eq!(
+            strip_unsupported_schema_fields(number_val.clone()),
+            number_val,
+            "number values should pass through unchanged"
+        );
+
+        let bool_val = serde_json::json!(true);
+        assert_eq!(
+            strip_unsupported_schema_fields(bool_val.clone()),
+            bool_val,
+            "bool values should pass through unchanged"
+        );
+    }
 }

@@ -126,3 +126,119 @@ pub(crate) fn build_provider_chain(
 
     Ok(Box::new(FailoverProvider::new(providers)))
 }
+
+#[cfg(test)]
+#[expect(clippy::unwrap_used, reason = "test code uses unwrap for clarity")]
+mod tests {
+    use super::*;
+    use crate::config::{ModelSpec, ProviderKind, ProviderSpec};
+    use crate::models::http::HttpClientConfig;
+
+    fn make_spec(kind: ProviderKind, model: &str, api_key: Option<&str>) -> ProviderSpec {
+        ProviderSpec {
+            name: kind.to_string(),
+            model: ModelSpec {
+                kind,
+                model: model.to_string(),
+            },
+            provider_url: kind.default_url().to_string(),
+            api_key: api_key.map(String::from),
+            keep_alive: None,
+        }
+    }
+
+    #[test]
+    fn anthropic_builds_with_key() {
+        let http = SharedHttpClient::new(&HttpClientConfig::default()).unwrap();
+        let spec = make_spec(
+            ProviderKind::Anthropic,
+            "claude-sonnet-4-20250514",
+            Some("sk-ant-test"),
+        );
+        let provider =
+            build_provider_from_provider_spec(&spec, 1024, http, RetryConfig::no_retry()).unwrap();
+        assert_eq!(provider.model_name(), "claude-sonnet-4-20250514");
+    }
+
+    #[test]
+    fn anthropic_requires_api_key() {
+        let http = SharedHttpClient::new(&HttpClientConfig::default()).unwrap();
+        let spec = make_spec(ProviderKind::Anthropic, "claude-sonnet-4-20250514", None);
+        let result = build_provider_from_provider_spec(&spec, 1024, http, RetryConfig::no_retry());
+        assert!(result.is_err(), "anthropic without key should fail");
+        let err = result.err().map(|e| e.to_string()).unwrap_or_default();
+        assert!(
+            err.contains("anthropic"),
+            "error should mention anthropic: {err}"
+        );
+    }
+
+    #[test]
+    fn gemini_builds_with_key() {
+        let http = SharedHttpClient::new(&HttpClientConfig::default()).unwrap();
+        let spec = make_spec(ProviderKind::Gemini, "gemini-2.0-flash", Some("AIza-test"));
+        let provider =
+            build_provider_from_provider_spec(&spec, 1024, http, RetryConfig::no_retry()).unwrap();
+        assert_eq!(provider.model_name(), "gemini-2.0-flash");
+    }
+
+    #[test]
+    fn gemini_requires_api_key() {
+        let http = SharedHttpClient::new(&HttpClientConfig::default()).unwrap();
+        let spec = make_spec(ProviderKind::Gemini, "gemini-2.0-flash", None);
+        let result = build_provider_from_provider_spec(&spec, 1024, http, RetryConfig::no_retry());
+        assert!(result.is_err(), "gemini without key should fail");
+        let err = result.err().map(|e| e.to_string()).unwrap_or_default();
+        assert!(err.contains("gemini"), "error should mention gemini: {err}");
+    }
+
+    #[test]
+    fn ollama_builds() {
+        let http = SharedHttpClient::new(&HttpClientConfig::default()).unwrap();
+        let spec = make_spec(ProviderKind::Ollama, "llama3.2", None);
+        let provider =
+            build_provider_from_provider_spec(&spec, 1024, http, RetryConfig::no_retry()).unwrap();
+        assert_eq!(provider.model_name(), "llama3.2");
+    }
+
+    #[test]
+    fn openai_builds_with_key() {
+        let http = SharedHttpClient::new(&HttpClientConfig::default()).unwrap();
+        let spec = make_spec(ProviderKind::OpenAi, "gpt-4", Some("sk-test"));
+        let provider =
+            build_provider_from_provider_spec(&spec, 1024, http, RetryConfig::no_retry()).unwrap();
+        assert_eq!(provider.model_name(), "gpt-4");
+    }
+
+    #[test]
+    fn openai_builds_without_key() {
+        let http = SharedHttpClient::new(&HttpClientConfig::default()).unwrap();
+        let spec = make_spec(ProviderKind::OpenAi, "gpt-4", None);
+        let provider =
+            build_provider_from_provider_spec(&spec, 1024, http, RetryConfig::no_retry()).unwrap();
+        assert_eq!(provider.model_name(), "gpt-4");
+    }
+
+    #[test]
+    fn build_provider_chain_single_spec_direct() {
+        let http = SharedHttpClient::new(&HttpClientConfig::default()).unwrap();
+        let spec = make_spec(ProviderKind::Ollama, "llama3.2", None);
+        let provider = build_provider_chain(&[spec], 1024, http, RetryConfig::no_retry()).unwrap();
+        assert_eq!(provider.model_name(), "llama3.2");
+    }
+
+    #[test]
+    fn build_provider_chain_multiple_specs_creates_failover() {
+        let http = SharedHttpClient::new(&HttpClientConfig::default()).unwrap();
+        let specs = vec![
+            make_spec(ProviderKind::Ollama, "primary-model", None),
+            make_spec(ProviderKind::Ollama, "fallback-model", None),
+        ];
+        let provider = build_provider_chain(&specs, 1024, http, RetryConfig::no_retry()).unwrap();
+        assert_eq!(
+            provider.model_name(),
+            "primary-model",
+            "failover returns primary model's name"
+        );
+    }
+}

@@ -534,6 +534,72 @@ mod tests {
         );
     }
 
+    #[test]
+    fn message_conversion_tool_empty_content_is_none() {
+        let msg = Message::tool("", "call_1");
+        let ollama_msg: OllamaMessage = (&msg).into();
+        assert_eq!(ollama_msg.role, "tool", "role should be tool");
+        assert!(
+            ollama_msg.content.is_none(),
+            "empty content should become None"
+        );
+    }
+
+    #[test]
+    fn message_conversion_assistant_with_tool_calls() {
+        let msg = Message::assistant(
+            "thinking",
+            Some(vec![ToolCall {
+                id: "call_0".to_string(),
+                name: "bash".to_string(),
+                arguments: serde_json::json!({"command": "ls"}),
+            }]),
+        );
+        let ollama_msg: OllamaMessage = (&msg).into();
+        assert_eq!(ollama_msg.role, "assistant", "role should be assistant");
+        assert_eq!(
+            ollama_msg.content,
+            Some("thinking".to_string()),
+            "content should match"
+        );
+        let tool_calls = ollama_msg.tool_calls.unwrap();
+        assert_eq!(tool_calls.len(), 1, "should have one tool call");
+        assert_eq!(
+            tool_calls.first().unwrap().function.name,
+            "bash",
+            "tool call name should match"
+        );
+        let serialized = serde_json::to_value(tool_calls.first().unwrap()).unwrap();
+        assert_eq!(
+            serialized
+                .get("function")
+                .unwrap()
+                .get("arguments")
+                .unwrap(),
+            &serde_json::json!({"command": "ls"}),
+            "arguments should be native JSON"
+        );
+    }
+
+    #[test]
+    fn message_conversion_user_with_images() {
+        use crate::models::ImageData;
+        let images = vec![ImageData {
+            media_type: "image/png".to_string(),
+            data: "base64data".to_string(),
+        }];
+        let msg = Message::user_with_images("look at this", images);
+        let ollama_msg: OllamaMessage = (&msg).into();
+        assert_eq!(ollama_msg.role, "user", "role should be user");
+        let imgs = ollama_msg.images.unwrap();
+        assert_eq!(imgs.len(), 1, "should have one image");
+        assert_eq!(
+            imgs.first().unwrap(),
+            "base64data",
+            "image data should match"
+        );
+    }
+
     #[tokio::test]
     async fn complete_success() {
         let mock_server = MockServer::start().await;
@@ -937,6 +1003,40 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn thinking_response_extracted() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path("/api/chat"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "message": {
+                    "role": "assistant",
+                    "content": "Final answer",
+                    "thinking": "step by step reasoning"
+                }
+            })))
+            .mount(&mock_server)
+            .await;
+
+        let client = make_client(mock_server.uri(), "deepseek-r1");
+        let result = client
+            .complete(
+                &[Message::user("Hello")],
+                &[],
+                &CompletionOptions::default(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(result.content, "Final answer", "content should match");
+        assert_eq!(
+            result.thinking.as_deref(),
+            Some("step by step reasoning"),
+            "thinking should be extracted from response"
+        );
+    }
+
     // --- Embedding client tests ---
 
     use crate::models::embedding::EmbeddingProvider;
@@ -1068,6 +1168,32 @@ mod tests {
         assert!(
             err.to_string().contains("model not found"),
             "error should contain 'model not found'"
+        );
+    }
+
+    #[tokio::test]
+    async fn embed_empty_input_sends_request() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path("/api/embed"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "embeddings": []
+            })))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        let client = make_embedding_client(mock_server.uri(), "nomic-embed-text");
+        let result = client.embed(&[]).await;
+        assert!(
+            result.is_err(),
+            "empty embeddings response should return error"
+        );
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("no data"),
+            "error should mention no data: {err}"
         );
     }
 }

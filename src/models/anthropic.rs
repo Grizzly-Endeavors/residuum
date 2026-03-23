@@ -1206,7 +1206,8 @@ mod tests {
             .and(path("/v1/messages"))
             .and(wiremock::matchers::body_partial_json(json!({
                 "thinking": {
-                    "type": "enabled"
+                    "type": "enabled",
+                    "budget_tokens": 512
                 }
             })))
             .respond_with(ResponseTemplate::new(200).set_body_json(success_response_body()))
@@ -1557,6 +1558,216 @@ mod tests {
         assert!(
             result.is_ok(),
             "request with cache_control should succeed: {result:?}"
+        );
+    }
+
+    #[test]
+    fn build_thinking_config_values() {
+        let low = AnthropicClient::build_thinking_config(
+            &ThinkingConfig::Level(ThinkingLevel::Low),
+            1024,
+        )
+        .unwrap();
+        assert_eq!(low.budget_tokens, 256, "Low should be max_tokens / 4");
+
+        let medium = AnthropicClient::build_thinking_config(
+            &ThinkingConfig::Level(ThinkingLevel::Medium),
+            1024,
+        )
+        .unwrap();
+        assert_eq!(medium.budget_tokens, 512, "Medium should be max_tokens / 2");
+
+        let high = AnthropicClient::build_thinking_config(
+            &ThinkingConfig::Level(ThinkingLevel::High),
+            1024,
+        )
+        .unwrap();
+        assert_eq!(high.budget_tokens, 768, "High should be max_tokens * 3 / 4");
+
+        let toggle_on =
+            AnthropicClient::build_thinking_config(&ThinkingConfig::Toggle(true), 1024).unwrap();
+        assert_eq!(
+            toggle_on.budget_tokens, 512,
+            "Toggle(true) should be max_tokens / 2"
+        );
+
+        let toggle_off =
+            AnthropicClient::build_thinking_config(&ThinkingConfig::Toggle(false), 1024);
+        assert!(toggle_off.is_none(), "Toggle(false) should return None");
+
+        // max_tokens=2: budget = 2/4 = 0, clamped to max(1).min(1) = 1
+        let clamped_low =
+            AnthropicClient::build_thinking_config(&ThinkingConfig::Level(ThinkingLevel::Low), 2)
+                .unwrap();
+        assert_eq!(
+            clamped_low.budget_tokens, 1,
+            "budget should be clamped to at least 1"
+        );
+    }
+
+    #[tokio::test]
+    async fn thinking_toggle_false_absent_from_request() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/messages"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(success_response_body()))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let client = test_client(&server.uri());
+        let options = CompletionOptions {
+            thinking: Some(ThinkingConfig::Toggle(false)),
+            ..CompletionOptions::default()
+        };
+        let result = client.complete(&simple_user_message(), &[], &options).await;
+        assert!(
+            result.is_ok(),
+            "request with Toggle(false) should succeed: {result:?}"
+        );
+
+        let requests = server.received_requests().await.unwrap();
+        let body: serde_json::Value =
+            serde_json::from_slice(&requests.first().unwrap().body).unwrap();
+        assert!(
+            body.get("thinking").is_none(),
+            "thinking should be absent from request body when Toggle(false)"
+        );
+    }
+
+    #[test]
+    fn multiple_system_messages_concatenated() {
+        let messages = vec![
+            Message::system("First instruction."),
+            Message::system("Second instruction."),
+            Message::user("Hello"),
+        ];
+
+        let (system, api_msgs) = AnthropicClient::convert_messages(&messages);
+        assert_eq!(
+            system.as_deref(),
+            Some("First instruction.\nSecond instruction."),
+            "multiple system messages should be joined with newline"
+        );
+        assert_eq!(api_msgs.len(), 1, "only user message should be in api_msgs");
+    }
+
+    #[tokio::test]
+    async fn oauth_key_uses_bearer_auth_headers() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/messages"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(success_response_body()))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let http = SharedHttpClient::new(&HttpClientConfig::with_timeout(5)).unwrap();
+        let client = AnthropicClient::new(
+            http,
+            server.uri(),
+            "sk-ant-oat01-test-key",
+            "claude-sonnet-4-20250514",
+            1024,
+            RetryConfig::no_retry(),
+        );
+
+        let result = client
+            .complete(&simple_user_message(), &[], &CompletionOptions::default())
+            .await;
+        assert!(result.is_ok(), "OAuth request should succeed");
+
+        let requests = server.received_requests().await.unwrap();
+        let req = requests.first().unwrap();
+
+        let auth = req
+            .headers
+            .iter()
+            .find(|(name, _)| name.as_str().eq_ignore_ascii_case("authorization"))
+            .map_or("", |(_, v)| v.to_str().unwrap_or(""));
+        assert_eq!(
+            auth, "Bearer sk-ant-oat01-test-key",
+            "should use Bearer auth for OAuth key"
+        );
+
+        let beta = req
+            .headers
+            .iter()
+            .find(|(name, _)| name.as_str().eq_ignore_ascii_case("anthropic-beta"))
+            .map_or("", |(_, v)| v.to_str().unwrap_or(""));
+        assert_eq!(
+            beta, OAUTH_BETA,
+            "should include anthropic-beta header for OAuth key"
+        );
+
+        let has_x_api_key = req
+            .headers
+            .iter()
+            .any(|(name, _)| name.as_str().eq_ignore_ascii_case("x-api-key"));
+        assert!(!has_x_api_key, "x-api-key should be absent for OAuth key");
+    }
+
+    #[tokio::test]
+    async fn oauth_key_system_uses_blocks_with_identity_first() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/messages"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(success_response_body()))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let http = SharedHttpClient::new(&HttpClientConfig::with_timeout(5)).unwrap();
+        let client = AnthropicClient::new(
+            http,
+            server.uri(),
+            "sk-ant-oat01-test-key",
+            "claude-sonnet-4-20250514",
+            1024,
+            RetryConfig::no_retry(),
+        );
+
+        let messages = vec![Message::system("Be helpful."), Message::user("Hello")];
+        let result = client
+            .complete(&messages, &[], &CompletionOptions::default())
+            .await;
+        assert!(result.is_ok(), "OAuth client should succeed");
+
+        let requests = server.received_requests().await.unwrap();
+        let body: serde_json::Value =
+            serde_json::from_slice(&requests.first().unwrap().body).unwrap();
+        let system = body.get("system").unwrap();
+        assert!(
+            system.is_array(),
+            "system should be an array of blocks for OAuth key"
+        );
+        let blocks = system.as_array().unwrap();
+        assert_eq!(
+            blocks.len(),
+            2,
+            "should have identity block + user system block"
+        );
+        assert_eq!(
+            blocks
+                .first()
+                .unwrap()
+                .get("text")
+                .unwrap()
+                .as_str()
+                .unwrap(),
+            OAUTH_IDENTITY,
+            "first block should be OAuth identity"
+        );
+        assert_eq!(
+            blocks
+                .get(1)
+                .unwrap()
+                .get("text")
+                .unwrap()
+                .as_str()
+                .unwrap(),
+            "Be helpful.",
+            "second block should be the user system message"
         );
     }
 }
