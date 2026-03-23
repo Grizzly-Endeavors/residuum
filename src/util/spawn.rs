@@ -135,24 +135,46 @@ mod tests {
     use std::sync::Arc;
     use std::sync::atomic::{AtomicU32, Ordering};
 
+    use tokio::sync::Notify;
+
     use super::*;
+
+    #[tokio::test]
+    #[expect(clippy::unwrap_used, reason = "test code uses unwrap for clarity")]
+    async fn monitored_normal_completion() {
+        let handle = spawn_monitored("test-normal", async {});
+        handle.await.unwrap();
+    }
+
+    #[tokio::test]
+    #[expect(clippy::unwrap_used, reason = "test code uses unwrap for clarity")]
+    #[expect(
+        clippy::panic,
+        reason = "intentional panic to test that spawn_monitored catches it"
+    )]
+    async fn monitored_panic_is_swallowed() {
+        let handle = spawn_monitored("test-panic", async { panic!("intentional panic") });
+        handle.await.unwrap();
+    }
 
     #[tokio::test]
     async fn restarts_after_exit() {
         let count = Arc::new(AtomicU32::new(0));
         let count_clone = Arc::clone(&count);
+        let notify = Arc::new(Notify::new());
+        let notify_clone = Arc::clone(&notify);
 
         let handle = spawn_supervised(
             "test-restart",
             move || {
                 let c = Arc::clone(&count_clone);
+                let n = Arc::clone(&notify_clone);
                 async move {
-                    let n = c.fetch_add(1, Ordering::SeqCst);
-                    if n < 2 {
-                        // Exit immediately on first two runs to simulate failure.
+                    let prev = c.fetch_add(1, Ordering::SeqCst);
+                    if prev < 2 {
                         return;
                     }
-                    // Third run: stay alive long enough for the test to observe.
+                    n.notify_one();
                     tokio::time::sleep(Duration::from_secs(60)).await;
                 }
             },
@@ -160,13 +182,91 @@ mod tests {
             Duration::from_millis(1),
         );
 
-        // Wait for at least 3 starts.
-        tokio::time::sleep(Duration::from_millis(100)).await;
+        notify.notified().await;
         assert!(
             count.load(Ordering::SeqCst) >= 3,
             "should have restarted at least twice"
         );
 
+        handle.abort();
+    }
+
+    #[tokio::test]
+    async fn supervised_restarts_after_panic() {
+        let count = Arc::new(AtomicU32::new(0));
+        let count_clone = Arc::clone(&count);
+        let notify = Arc::new(Notify::new());
+        let notify_clone = Arc::clone(&notify);
+
+        let handle = spawn_supervised(
+            "test-panic-restart",
+            move || {
+                let c = Arc::clone(&count_clone);
+                let n = Arc::clone(&notify_clone);
+                async move {
+                    let prev = c.fetch_add(1, Ordering::SeqCst);
+                    assert!(prev != 0, "intentional panic on first run");
+                    n.notify_one();
+                    tokio::time::sleep(Duration::from_secs(60)).await;
+                }
+            },
+            5,
+            Duration::from_millis(1),
+        );
+
+        notify.notified().await;
+        assert!(
+            count.load(Ordering::SeqCst) >= 2,
+            "supervisor should have restarted after panic"
+        );
+        handle.abort();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn healthy_threshold_resets_failure_counter() {
+        let count = Arc::new(AtomicU32::new(0));
+        let count_clone = Arc::clone(&count);
+        let notify = Arc::new(Notify::new());
+        let notify_clone = Arc::clone(&notify);
+
+        // max_failures=1: without a healthy run the supervisor gives up after 2 starts.
+        // Run 1 stays alive past HEALTHY_THRESHOLD so the counter resets, allowing run 2.
+        let handle = spawn_supervised(
+            "test-threshold",
+            move || {
+                let c = Arc::clone(&count_clone);
+                let n = Arc::clone(&notify_clone);
+                async move {
+                    let run = c.fetch_add(1, Ordering::SeqCst);
+                    if run == 1 {
+                        tokio::time::sleep(HEALTHY_THRESHOLD + Duration::from_secs(1)).await;
+                    }
+                    if run == 2 {
+                        // Signal that the reset worked; stay alive so the supervisor doesn't
+                        // immediately count another failure before we assert.
+                        n.notify_one();
+                        tokio::time::sleep(Duration::from_secs(3600)).await;
+                    }
+                }
+            },
+            1,
+            Duration::from_millis(1),
+        );
+
+        // Each advance yields once to let woken tasks run. Sleep deadlines are set
+        // relative to the mock clock at the moment the task executes, so run 1's
+        // sleep (started after the first big advance) needs a second large advance.
+        tokio::time::advance(Duration::from_millis(10)).await; // run 0 done; 2ms backoff pending
+        tokio::time::advance(Duration::from_millis(10)).await; // 2ms backoff fires; run 1 starts
+        tokio::time::advance(HEALTHY_THRESHOLD + Duration::from_secs(2)).await; // run 1 sleep fires; 1ms backoff set
+        tokio::time::advance(Duration::from_millis(10)).await; // 1ms backoff fires; run 2 starts → notify
+
+        // notify_one() is stored; notified() returns immediately if already signalled.
+        notify.notified().await;
+        assert!(
+            count.load(Ordering::SeqCst) >= 3,
+            "healthy threshold reset should allow supervisor to start run 2"
+        );
         handle.abort();
     }
 

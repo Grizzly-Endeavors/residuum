@@ -61,5 +61,36 @@ mod tests {
         let path = Path::new("/nonexistent/dir/file.json");
         let result = atomic_write(path, b"data").await;
         assert!(result.is_err(), "should fail when parent dir is missing");
+        let err = result.unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("/nonexistent/dir"),
+            "error should include the failing path, got: {msg}"
+        );
+    }
+
+    #[tokio::test]
+    async fn path_without_filename_returns_error() {
+        let path = Path::new("/");
+        let result = atomic_write(path, b"data").await;
+        assert!(result.is_err(), "should fail for path with no filename");
+        let err = result.unwrap_err();
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("path has no"),
+            "error should describe the problem, got: {msg}"
+        );
+    }
+
+    #[tokio::test]
+    async fn overwrite_replaces_content() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("data.json");
+
+        atomic_write(&target, b"original").await.unwrap();
+        atomic_write(&target, b"updated").await.unwrap();
+
+        let content = tokio::fs::read_to_string(&target).await.unwrap();
+        assert_eq!(content, "updated");
     }
 }
