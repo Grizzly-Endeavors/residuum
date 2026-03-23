@@ -47,7 +47,7 @@ mod tests {
     use std::sync::atomic::{AtomicBool, Ordering};
 
     use async_trait::async_trait;
-    use tokio::sync::Mutex;
+    use tokio::sync::{Mutex, Notify};
 
     use crate::bus::EventTrigger;
     use crate::bus::{NotificationEvent, NotifyName, spawn_broker, topics};
@@ -62,16 +62,21 @@ mod tests {
     struct MockChannel {
         delivered: Arc<Mutex<Vec<NotificationEvent>>>,
         should_fail: Arc<AtomicBool>,
+        processed: Arc<Notify>,
     }
 
     impl MockChannel {
-        fn new(should_fail: Arc<AtomicBool>) -> (Self, Arc<Mutex<Vec<NotificationEvent>>>) {
+        fn new(
+            should_fail: Arc<AtomicBool>,
+        ) -> (Self, Arc<Mutex<Vec<NotificationEvent>>>, Arc<Notify>) {
             let delivered = Arc::new(Mutex::new(Vec::new()));
+            let processed = Arc::new(Notify::new());
             let channel = Self {
                 delivered: Arc::clone(&delivered),
                 should_fail,
+                processed: Arc::clone(&processed),
             };
-            (channel, delivered)
+            (channel, delivered, processed)
         }
     }
 
@@ -87,9 +92,11 @@ mod tests {
 
         async fn deliver(&self, notification: &NotificationEvent) -> anyhow::Result<()> {
             if self.should_fail.load(Ordering::SeqCst) {
+                self.processed.notify_one();
                 return Err(anyhow::anyhow!("mock delivery failure"));
             }
             self.delivered.lock().await.push(notification.clone());
+            self.processed.notify_one();
             Ok(())
         }
     }
@@ -121,7 +128,7 @@ mod tests {
             .unwrap();
 
         let should_fail = Arc::new(AtomicBool::new(false));
-        let (channel, delivered) = MockChannel::new(Arc::clone(&should_fail));
+        let (channel, delivered, processed) = MockChannel::new(Arc::clone(&should_fail));
 
         let loop_task = tokio::spawn(run_notify_subscriber(sub, Box::new(channel)));
 
@@ -129,8 +136,7 @@ mod tests {
             .await
             .unwrap();
 
-        // Give the loop time to process
-        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+        processed.notified().await;
 
         loop_task.abort();
 
@@ -152,7 +158,7 @@ mod tests {
             .unwrap();
 
         let should_fail = Arc::new(AtomicBool::new(true));
-        let (channel, delivered) = MockChannel::new(Arc::clone(&should_fail));
+        let (channel, delivered, processed) = MockChannel::new(Arc::clone(&should_fail));
 
         let loop_task = tokio::spawn(run_notify_subscriber(sub, Box::new(channel)));
 
@@ -164,7 +170,7 @@ mod tests {
         .await
         .unwrap();
 
-        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+        processed.notified().await;
 
         // Now allow delivery to succeed
         should_fail.store(false, Ordering::SeqCst);
@@ -174,7 +180,7 @@ mod tests {
             .await
             .unwrap();
 
-        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+        processed.notified().await;
 
         loop_task.abort();
 

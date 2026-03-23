@@ -499,4 +499,25 @@ mod tests {
             "error should not be duplicated in a separate Error: line"
         );
     }
+
+    #[test]
+    fn format_agent_result_message_cancelled() {
+        let mut event = sample_event();
+        event.status = AgentResultStatus::Cancelled;
+        event.summary = String::new();
+
+        let msg = format_agent_result_message(&event);
+        assert!(msg.contains("[Background Task Result]"));
+        assert!(msg.contains("cancelled"));
+    }
+
+    #[test]
+    fn format_agent_result_message_with_transcript() {
+        let mut event = sample_event();
+        event.transcript_path = Some(std::path::PathBuf::from("/var/log/residuum/t1.transcript"));
+
+        let msg = format_agent_result_message(&event);
+        assert!(msg.contains("Transcript:"));
+        assert!(msg.contains("t1.transcript"));
+    }
 }

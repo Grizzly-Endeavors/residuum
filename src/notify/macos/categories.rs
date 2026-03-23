@@ -304,33 +304,9 @@ mod tests {
     }
 
     #[test]
-    fn actions_for_background_results() {
+    fn action_set_has_open_and_dismiss_in_order() {
         let actions = MacosNotificationAction::for_category();
-        assert_eq!(actions.len(), 2, "BackgroundResults should have 2 actions");
-        assert_eq!(actions[0], MacosNotificationAction::Open);
-        assert_eq!(actions[1], MacosNotificationAction::Dismiss);
-    }
-
-    #[test]
-    fn actions_for_inbox_items() {
-        let actions = MacosNotificationAction::for_category();
-        assert_eq!(actions.len(), 2, "InboxItems should have 2 actions");
-        assert_eq!(actions[0], MacosNotificationAction::Open);
-        assert_eq!(actions[1], MacosNotificationAction::Dismiss);
-    }
-
-    #[test]
-    fn actions_for_reminders() {
-        let actions = MacosNotificationAction::for_category();
-        assert_eq!(actions.len(), 2, "Reminders should have 2 actions");
-        assert_eq!(actions[0], MacosNotificationAction::Open);
-        assert_eq!(actions[1], MacosNotificationAction::Dismiss);
-    }
-
-    #[test]
-    fn actions_for_alerts() {
-        let actions = MacosNotificationAction::for_category();
-        assert_eq!(actions.len(), 2, "Alerts should have 2 actions");
+        assert_eq!(actions.len(), 2);
         assert_eq!(actions[0], MacosNotificationAction::Open);
         assert_eq!(actions[1], MacosNotificationAction::Dismiss);
     }

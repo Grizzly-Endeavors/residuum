@@ -117,6 +117,14 @@ mod tests {
         assert!(cfg.sound);
         assert_eq!(cfg.app_name, "Residuum");
         assert!(cfg.web_url.is_none());
+        assert_eq!(
+            cfg.default_category,
+            categories::MacosCategory::BackgroundResults
+        );
+        assert_eq!(
+            cfg.default_priority,
+            categories::MacosInterruptionLevel::Active
+        );
     }
 
     #[test]

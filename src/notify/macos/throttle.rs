@@ -196,7 +196,22 @@ mod tests {
         assert!(result.ends_with('\u{2026}'), "should end with ellipsis");
     }
 
+    #[test]
+    fn truncate_body_unicode_within_char_limit() {
+        // 10 emoji (4 bytes each) = 40 bytes but only 10 chars
+        let s = "\u{1F980}".repeat(10);
+        let result = truncate_body(&s, 200);
+        assert_eq!(result, s, "should not truncate — char count is under limit");
+        assert!(!result.ends_with('\u{2026}'));
+    }
+
     // ── Summary body tests ──────────────────────────────────────────────
+
+    #[test]
+    fn build_summary_body_empty() {
+        let body = build_summary_body(&[]);
+        assert_eq!(body, "");
+    }
 
     #[test]
     fn build_summary_body_single_item() {
