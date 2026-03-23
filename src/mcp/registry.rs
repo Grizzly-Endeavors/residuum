@@ -185,8 +185,9 @@ impl McpRegistry {
     ///
     /// # Errors
     /// Returns the connection error (server is already marked failed internally).
+    #[tracing::instrument(skip_all, fields(mcp.server = %entry.name))]
     pub async fn connect(&mut self, entry: &McpServerEntry) -> Result<(), anyhow::Error> {
-        tracing::debug!(server = %entry.name, "attempting mcp server connection");
+        tracing::debug!("attempting mcp server connection");
         let client = match McpClient::connect(entry).await {
             Ok(c) => c,
             Err(e) => {
@@ -222,6 +223,7 @@ impl McpRegistry {
     }
 
     /// Disconnect a specific server by name.
+    #[tracing::instrument(skip_all, fields(mcp.server = %name))]
     pub async fn disconnect(&mut self, name: &str) {
         if let Some(idx) = self.servers.iter().position(|s| s.name == name) {
             let server = self.servers.remove(idx);
@@ -296,6 +298,7 @@ impl McpRegistry {
     /// Reconcile and connect/disconnect in one step.
     ///
     /// Runs the state diff, then connects new servers and disconnects removed ones.
+    #[tracing::instrument(skip_all)]
     pub async fn reconcile_and_connect(
         &mut self,
         desired: &[McpServerEntry],
@@ -323,6 +326,7 @@ impl McpRegistry {
     ///
     /// Multiple agents activating the same project share a single set of
     /// running servers. Servers are only stopped when the last agent deactivates.
+    #[tracing::instrument(skip_all, fields(project = %project_name))]
     pub async fn activate_project(
         &mut self,
         project_name: &str,
@@ -440,6 +444,7 @@ impl McpRegistry {
     /// # Errors
     /// Returns `ToolError::NotFound` if no running server has the tool.
     /// Returns `ToolError::Execution` if the RPC call fails.
+    #[tracing::instrument(skip_all, fields(mcp.tool = %name))]
     pub async fn call_tool(&self, name: &str, args: Value) -> Result<ToolResult, ToolError> {
         let server = self
             .servers

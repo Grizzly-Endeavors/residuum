@@ -57,6 +57,7 @@ impl SubagentRegistry {
 ///
 /// Returns a `JoinHandle` for shutdown coordination. The task runs until the
 /// bus shuts down or the subscriber closes.
+#[tracing::instrument(skip_all)]
 pub async fn spawn_registry(
     registry: SubagentRegistry,
     bus_handle: &BusHandle,

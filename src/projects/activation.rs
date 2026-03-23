@@ -47,6 +47,7 @@ impl ProjectState {
     /// # Errors
     /// Returns an error if the project is not found, cannot be read, or is
     /// archived.
+    #[tracing::instrument(skip_all, fields(project = %name))]
     pub async fn activate(&mut self, name: &str) -> anyhow::Result<&ActiveProject> {
         let entry = self
             .index
@@ -94,6 +95,7 @@ impl ProjectState {
     /// # Errors
     /// Returns an error if no project is active, the log is empty, or the
     /// log file cannot be written.
+    #[tracing::instrument(skip_all)]
     pub async fn deactivate(
         &mut self,
         log_entry: &str,

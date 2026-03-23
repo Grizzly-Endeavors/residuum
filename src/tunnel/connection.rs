@@ -44,6 +44,7 @@ fn next_backoff(current: Duration) -> Duration {
 ///
 /// This function runs until the shutdown signal is received. Transient
 /// connection errors are logged and retried automatically.
+#[tracing::instrument(skip_all)]
 pub(crate) async fn start_tunnel(
     cfg: CloudConfig,
     mut shutdown_rx: watch::Receiver<bool>,

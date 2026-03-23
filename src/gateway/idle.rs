@@ -13,6 +13,7 @@ use crate::gateway::memory::{MemorySubsystems, execute_observation};
 use crate::gateway::types::GatewayRuntime;
 
 /// Run the full idle transition sequence.
+#[tracing::instrument(skip_all, fields(operation = "idle_transition"))]
 pub(super) async fn execute_idle_transition(
     rt: &mut GatewayRuntime,
     observe_deadline: &mut Option<tokio::time::Instant>,

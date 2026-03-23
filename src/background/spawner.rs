@@ -57,6 +57,7 @@ impl BackgroundTaskSpawner {
     ///
     /// # Errors
     /// Returns an error if the task cannot be registered (e.g. duplicate ID).
+    #[tracing::instrument(skip_all, fields(task.id = %task.id))]
     pub(crate) async fn spawn(
         &self,
         task: BackgroundTask,
@@ -152,6 +153,7 @@ impl BackgroundTaskSpawner {
     }
 
     /// Cancel a running task. Returns `true` if the task was found and cancelled.
+    #[tracing::instrument(skip_all, fields(task.id = %task_id))]
     pub async fn cancel(&self, task_id: &str) -> bool {
         let guard = self.active_tasks.lock().await;
         if let Some((token, _info)) = guard.get(task_id) {

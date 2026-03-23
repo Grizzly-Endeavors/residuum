@@ -56,6 +56,7 @@ pub struct SubAgentResources {
 /// view of available projects/skills, but operates on its own independent
 /// copies of `ProjectState`, `SkillState`, `PathPolicy`, and `ToolFilter`.
 /// The `McpRegistry` is shared (ref-counted) so servers are not duplicated.
+#[tracing::instrument(skip_all)]
 pub async fn build_subagent_resources(
     provider: Box<dyn ModelProvider>,
     main_project_state: &SharedProjectState,

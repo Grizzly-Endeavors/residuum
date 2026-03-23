@@ -39,7 +39,7 @@ impl SkillState {
     /// # Errors
     /// Returns an error if the skill is not found, already active, or the
     /// file cannot be read.
-    #[tracing::instrument(skip(self))]
+    #[tracing::instrument(skip_all, fields(skill = %name))]
     pub async fn activate(&mut self, name: &str) -> anyhow::Result<&ActiveSkill> {
         if self
             .active

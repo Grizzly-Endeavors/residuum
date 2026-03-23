@@ -77,6 +77,7 @@ pub(super) struct MemorySubsystems<'a> {
 }
 
 /// Execute an observation cycle: LLM call, clear file, rotate messages, index, reflect, reload.
+#[tracing::instrument(skip_all, fields(operation = "observe"))]
 pub(super) async fn execute_observation(mem: &MemorySubsystems<'_>, agent: &mut Agent) {
     let recent = match load_recent_messages(&mem.layout.recent_messages_json()).await {
         Ok(msgs) => msgs,
@@ -299,6 +300,7 @@ async fn run_observation_result(
 ///
 /// Loads recent messages, runs the observer, clears recent messages, updates
 /// the search index, optionally triggers reflection, and publishes a notice.
+#[tracing::instrument(skip_all, fields(operation = "forced_observe"))]
 pub(super) async fn run_forced_observe(
     mem: &MemorySubsystems<'_>,
     agent: &mut Agent,
@@ -406,6 +408,7 @@ async fn mark_episode_embedded(layout: &WorkspaceLayout, result: &ObserveResult)
 /// Force a reflection cycle regardless of observation log size.
 ///
 /// Runs the reflector, reloads observations into the agent, and publishes a notice.
+#[tracing::instrument(skip_all, fields(operation = "forced_reflect"))]
 pub(super) async fn run_forced_reflect(
     reflector: &Reflector,
     layout: &WorkspaceLayout,

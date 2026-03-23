@@ -41,6 +41,7 @@ pub async fn run_setup_server() -> Result<SetupExit, FatalError> {
 /// # Errors
 ///
 /// Returns `FatalError::Gateway` if the server cannot bind.
+#[tracing::instrument(skip_all)]
 pub async fn run_setup_server_at(config_dir: PathBuf) -> Result<SetupExit, FatalError> {
     let (setup_done_tx, mut setup_done_rx) = tokio::sync::watch::channel(false);
     let setup_done_tx = Arc::new(setup_done_tx);

@@ -7,12 +7,13 @@ use crate::bus::{NotificationEvent, Subscriber};
 ///
 /// Delivery errors are logged but do not stop the loop.
 /// The function returns when the subscriber closes.
+#[tracing::instrument(skip_all, fields(channel = %channel.name()))]
 pub async fn run_notify_subscriber(
     mut subscriber: Subscriber<NotificationEvent>,
     channel: Box<dyn NotificationChannel>,
 ) {
     let channel_name = channel.name().to_string();
-    tracing::info!(channel = %channel_name, "notify subscriber started");
+    tracing::info!("notify subscriber started");
 
     loop {
         match subscriber.recv().await {

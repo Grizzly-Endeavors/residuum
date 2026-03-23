@@ -25,6 +25,7 @@ const MAX_RESPONSE_SIZE: usize = 10 * 1024 * 1024;
 ///
 /// This function does not return errors directly; failures are encoded as 502
 /// HTTP responses in the returned `TunnelFrame`.
+#[tracing::instrument(skip_all)]
 pub(super) async fn forward(
     client: &reqwest::Client,
     port: u16,
