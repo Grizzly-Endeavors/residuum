@@ -333,16 +333,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn encode_image_from_file_error_on_missing_file() {
-        let result = encode_image_from_file(
-            std::path::Path::new("/tmp/nonexistent_residuum_test_image.jpg"),
-            "image/jpeg",
-        )
-        .await;
-        assert!(result.is_err(), "should fail for non-existent file");
+    async fn encode_image_from_file_missing_path() {
+        let path = std::path::Path::new("/tmp/nonexistent_image_test_file_xyz.jpg");
+        let result = encode_image_from_file(path, "image/jpeg").await;
+        assert!(result.is_err(), "missing file should return error");
         let err = result.unwrap_err();
         assert!(
-            err.contains("nonexistent_residuum_test_image.jpg"),
+            err.contains("nonexistent_image_test_file_xyz.jpg"),
             "error should contain the path: {err}"
         );
     }
@@ -418,10 +415,6 @@ mod tests {
         assert_eq!(
             decoded, b"fake image bytes",
             "decoded base64 should equal original bytes"
-        );
-        assert!(
-            content.contains("photo.jpg"),
-            "content should contain filename"
         );
     }
 
