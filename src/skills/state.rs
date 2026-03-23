@@ -283,6 +283,54 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn rescan_preserves_still_valid_active() {
+        let dir = tempfile::tempdir().unwrap();
+        let skill_dir = dir.path().join("test-skill");
+        tokio::fs::create_dir(&skill_dir).await.unwrap();
+        tokio::fs::write(
+            skill_dir.join("SKILL.md"),
+            "---\nname: test-skill\ndescription: \"Test\"\n---\n\nBody.\n",
+        )
+        .await
+        .unwrap();
+
+        let index = SkillIndex::scan(&[dir.path().to_path_buf()], None)
+            .await
+            .unwrap();
+        let mut state = SkillState::new(index, vec![dir.path().to_path_buf()]);
+
+        state.activate("test-skill").await.unwrap();
+        state.rescan(None).await.unwrap();
+        assert_eq!(
+            state.active_skill_names(),
+            vec!["test-skill"],
+            "active skill should remain after rescan when dir is unchanged"
+        );
+    }
+
+    #[tokio::test]
+    async fn deactivate_case_insensitive() {
+        let dir = tempfile::tempdir().unwrap();
+        let skill_dir = dir.path().join("test-skill");
+        tokio::fs::create_dir(&skill_dir).await.unwrap();
+        tokio::fs::write(
+            skill_dir.join("SKILL.md"),
+            "---\nname: test-skill\ndescription: \"Test\"\n---\n\nBody.\n",
+        )
+        .await
+        .unwrap();
+
+        let index = SkillIndex::scan(&[dir.path().to_path_buf()], None)
+            .await
+            .unwrap();
+        let mut state = SkillState::new(index, vec![dir.path().to_path_buf()]);
+
+        state.activate("test-skill").await.unwrap();
+        state.deactivate("TEST-SKILL").unwrap();
+        assert!(state.active_skill_names().is_empty());
+    }
+
     #[test]
     fn format_active_none_when_empty() {
         let state = SkillState::new(SkillIndex::default(), vec![]);

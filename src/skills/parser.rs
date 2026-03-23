@@ -78,10 +78,7 @@ mod tests {
             fm.description, "Extracts text from PDFs",
             "description should match"
         );
-        assert!(
-            body.contains("Use this skill"),
-            "body should contain instructions"
-        );
+        assert_eq!(body, "Use this skill to process PDF files.");
     }
 
     #[test]
@@ -176,6 +173,12 @@ mod tests {
             validate_skill_name(&long_name).is_err(),
             "name over 64 chars should be rejected"
         );
+    }
+
+    #[test]
+    fn name_exactly_64_chars_accepted() {
+        let name = "a".repeat(64);
+        assert!(validate_skill_name(&name).is_ok());
     }
 
     #[test]

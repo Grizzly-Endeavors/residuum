@@ -323,6 +323,10 @@ mod tests {
 
         let proj_entry = index.find_by_name("proj-skill").unwrap();
         assert_eq!(proj_entry.source, SkillSource::Project);
+        assert_eq!(
+            index.find_by_name("ws-skill").unwrap().source,
+            SkillSource::Workspace
+        );
     }
 
     #[tokio::test]
@@ -412,10 +416,9 @@ mod tests {
             }],
         };
 
-        assert!(
-            index.find_by_name("MY-SKILL").is_some(),
-            "should find case-insensitive"
-        );
+        let entry = index.find_by_name("MY-SKILL").unwrap();
+        assert_eq!(entry.name, "my-skill");
+        assert_eq!(entry.source, SkillSource::Workspace);
         assert!(
             index.find_by_name("nonexistent").is_none(),
             "should not find missing"
@@ -459,6 +462,28 @@ mod tests {
             output.contains("<description>Extracts text from PDFs</description>"),
             "should contain description"
         );
-        assert!(output.contains("<location>"), "should contain location");
+        assert!(
+            output.contains("/tmp/skills/pdf-processing/SKILL.md"),
+            "should contain full location path"
+        );
+    }
+
+    #[test]
+    fn format_for_prompt_escapes_xml_special_chars() {
+        let index = SkillIndex {
+            entries: vec![SkillIndexEntry {
+                name: "my-skill".to_string(),
+                description: "Handles <tags> & \"quotes\"".to_string(),
+                skill_dir: PathBuf::from("/tmp/my-skill"),
+                source: SkillSource::Workspace,
+            }],
+        };
+        let output = index.format_for_prompt();
+        assert!(output.contains("&lt;tags&gt;"), "< and > should be escaped");
+        assert!(output.contains("&amp;"), "& should be escaped");
+        assert!(
+            !output.contains("<tags>"),
+            "raw < should not appear in output"
+        );
     }
 }
