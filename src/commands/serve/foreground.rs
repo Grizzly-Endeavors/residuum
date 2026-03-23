@@ -161,6 +161,15 @@ async fn run_serve_foreground_inner(args: &ServeArgs) -> Result<(), FatalError> 
 ///
 /// Returns `FatalError::Gateway` if the current executable path cannot be
 /// determined. On Unix, `exec()` does not return on success.
+fn resolve_exe_path(raw: &std::path::Path) -> std::path::PathBuf {
+    let s = raw.to_string_lossy();
+    if let Some(stripped) = s.strip_suffix(" (deleted)") {
+        std::path::PathBuf::from(stripped)
+    } else {
+        raw.to_path_buf()
+    }
+}
+
 fn re_exec_serve_foreground() -> Result<(), FatalError> {
     use std::os::unix::process::CommandExt;
 
@@ -175,14 +184,7 @@ fn re_exec_serve_foreground() -> Result<(), FatalError> {
     // " (deleted)" to /proc/self/exe, so current_exe() returns a path that
     // no longer exists. Strip the suffix to get the live path on disk, which
     // now points to the freshly-installed binary.
-    let exe = {
-        let s = raw_exe.to_string_lossy();
-        if let Some(stripped) = s.strip_suffix(" (deleted)") {
-            std::path::PathBuf::from(stripped)
-        } else {
-            raw_exe
-        }
-    };
+    let exe = resolve_exe_path(&raw_exe);
 
     tracing::info!(exe = %exe.display(), "re-execing with updated binary");
 
@@ -192,4 +194,31 @@ fn re_exec_serve_foreground() -> Result<(), FatalError> {
 
     // exec() only returns on error
     Err(FatalError::Gateway(format!("re-exec failed: {err}")))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn resolve_exe_path_strips_deleted_suffix() {
+        let raw = std::path::Path::new("/usr/bin/residuum (deleted)");
+        let result = resolve_exe_path(raw);
+        assert_eq!(
+            result,
+            std::path::PathBuf::from("/usr/bin/residuum"),
+            "should strip ' (deleted)' suffix from path"
+        );
+    }
+
+    #[test]
+    fn resolve_exe_path_normal_path_unchanged() {
+        let raw = std::path::Path::new("/usr/bin/residuum");
+        let result = resolve_exe_path(raw);
+        assert_eq!(
+            result,
+            std::path::PathBuf::from("/usr/bin/residuum"),
+            "should return path unchanged when no ' (deleted)' suffix"
+        );
+    }
 }

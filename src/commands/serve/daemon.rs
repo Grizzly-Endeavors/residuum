@@ -14,6 +14,21 @@ use super::ServeArgs;
 ///
 /// Returns `FatalError` if the child process cannot be spawned or
 /// startup times out.
+fn build_child_args(raw: &[String]) -> Vec<String> {
+    let mut child_args = vec!["serve".to_string(), "--foreground".to_string()];
+    let skip = if raw.get(1).is_some_and(|a| a == "serve") {
+        2
+    } else {
+        1
+    };
+    for arg in raw.iter().skip(skip) {
+        if arg != "--foreground" {
+            child_args.push(arg.clone());
+        }
+    }
+    child_args
+}
+
 pub(crate) fn run_serve_command(args: &ServeArgs) -> Result<(), FatalError> {
     use residuum::daemon::{is_process_running, read_pid_file};
 
@@ -63,19 +78,8 @@ pub(crate) fn run_serve_command(args: &ServeArgs) -> Result<(), FatalError> {
     let exe = std::env::current_exe()
         .map_err(|e| FatalError::Gateway(format!("failed to determine current executable: {e}")))?;
 
-    let mut child_args = vec!["serve".to_string(), "--foreground".to_string()];
     let raw_args: Vec<String> = std::env::args().collect();
-    // Skip argv[0] and "serve" (if present)
-    let skip = if raw_args.get(1).is_some_and(|a| a == "serve") {
-        2
-    } else {
-        1
-    };
-    for arg in raw_args.iter().skip(skip) {
-        if arg != "--foreground" {
-            child_args.push(arg.clone());
-        }
-    }
+    let child_args = build_child_args(&raw_args);
 
     let mut child = std::process::Command::new(&exe)
         .args(&child_args)
@@ -135,5 +139,60 @@ pub(crate) fn run_serve_command(args: &ServeArgs) -> Result<(), FatalError> {
         }
 
         std::thread::sleep(poll_interval);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn args(v: &[&str]) -> Vec<String> {
+        v.iter().map(|s| (*s).to_string()).collect()
+    }
+
+    #[test]
+    fn build_child_args_with_serve_subcommand() {
+        let result = build_child_args(&args(&["residuum", "serve", "--agent", "foo"]));
+        assert_eq!(
+            result,
+            args(&["serve", "--foreground", "--agent", "foo"]),
+            "should prepend serve --foreground and forward remaining args"
+        );
+    }
+
+    #[test]
+    fn build_child_args_without_serve_subcommand() {
+        let result = build_child_args(&args(&["residuum", "--agent", "foo"]));
+        assert_eq!(
+            result,
+            args(&["serve", "--foreground", "--agent", "foo"]),
+            "should handle missing serve subcommand by skipping only argv[0]"
+        );
+    }
+
+    #[test]
+    fn build_child_args_deduplicates_foreground_flag() {
+        let result = build_child_args(&args(&[
+            "residuum",
+            "serve",
+            "--foreground",
+            "--agent",
+            "foo",
+        ]));
+        assert_eq!(
+            result,
+            args(&["serve", "--foreground", "--agent", "foo"]),
+            "should not duplicate --foreground when already present"
+        );
+    }
+
+    #[test]
+    fn build_child_args_only_exe() {
+        let result = build_child_args(&args(&["residuum"]));
+        assert_eq!(
+            result,
+            args(&["serve", "--foreground"]),
+            "should produce minimal args when only exe is present"
+        );
     }
 }

@@ -281,3 +281,232 @@ where
         .map_err(|e| FatalError::Gateway(format!("failed to send message: {e}")))?;
     Ok(())
 }
+
+#[cfg(test)]
+#[expect(clippy::unwrap_used, reason = "test code uses unwrap for clarity")]
+mod tests {
+    use residuum::interfaces::cli::CliClient;
+    use tokio_tungstenite::tungstenite::Message as TungsteniteMessage;
+
+    use super::*;
+
+    fn make_client() -> CliClient {
+        CliClient::new("ws://127.0.0.1:7700/ws", false)
+    }
+
+    fn make_gate() -> (std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>) {
+        std::sync::mpsc::channel()
+    }
+
+    // --- resolve_url ---
+
+    #[test]
+    fn resolve_url_returns_positional_url() {
+        let args = ConnectArgs {
+            url: Some("ws://example.com/ws".into()),
+            agent: None,
+            verbose: false,
+        };
+        assert_eq!(
+            resolve_url(&args).unwrap(),
+            "ws://example.com/ws",
+            "positional URL should be returned as-is"
+        );
+    }
+
+    #[test]
+    fn resolve_url_uses_default_when_no_args() {
+        let args = ConnectArgs {
+            url: None,
+            agent: None,
+            verbose: false,
+        };
+        assert_eq!(
+            resolve_url(&args).unwrap(),
+            "ws://127.0.0.1:7700/ws",
+            "should fall back to default URL when neither --agent nor URL given"
+        );
+    }
+
+    // --- handle_ws_frame ---
+
+    #[test]
+    fn handle_ws_frame_close_returns_break() {
+        let mut client = make_client();
+        let mut turn_active = false;
+        let (gate_tx, _gate_rx) = make_gate();
+        let result = handle_ws_frame(
+            Ok(TungsteniteMessage::Close(None)),
+            &mut client,
+            &mut turn_active,
+            &gate_tx,
+        );
+        assert_eq!(
+            result,
+            std::ops::ControlFlow::Break(()),
+            "Close frame should return Break"
+        );
+    }
+
+    #[test]
+    fn handle_ws_frame_non_text_returns_continue() {
+        let mut client = make_client();
+        let mut turn_active = false;
+        let (gate_tx, gate_rx) = make_gate();
+        let result = handle_ws_frame(
+            Ok(TungsteniteMessage::binary(vec![])),
+            &mut client,
+            &mut turn_active,
+            &gate_tx,
+        );
+        assert_eq!(
+            result,
+            std::ops::ControlFlow::Continue(()),
+            "non-text frame should return Continue"
+        );
+        assert!(
+            gate_rx.try_recv().is_err(),
+            "gate should not be signaled for non-text frame"
+        );
+    }
+
+    #[test]
+    fn handle_ws_frame_error_returns_break() {
+        let mut client = make_client();
+        let mut turn_active = false;
+        let (gate_tx, _gate_rx) = make_gate();
+        let err = tokio_tungstenite::tungstenite::Error::Io(std::io::Error::other("test error"));
+        let result = handle_ws_frame(Err(err), &mut client, &mut turn_active, &gate_tx);
+        assert_eq!(
+            result,
+            std::ops::ControlFlow::Break(()),
+            "WebSocket error should return Break"
+        );
+    }
+
+    #[test]
+    fn handle_ws_frame_reloading_returns_continue() {
+        let mut client = make_client();
+        let mut turn_active = false;
+        let (gate_tx, gate_rx) = make_gate();
+        let json = r#"{"type":"reloading"}"#;
+        let result = handle_ws_frame(
+            Ok(TungsteniteMessage::text(json)),
+            &mut client,
+            &mut turn_active,
+            &gate_tx,
+        );
+        assert_eq!(
+            result,
+            std::ops::ControlFlow::Continue(()),
+            "Reloading message should return Continue"
+        );
+        assert!(
+            gate_rx.try_recv().is_err(),
+            "gate should not be signaled for Reloading"
+        );
+    }
+
+    #[test]
+    fn handle_ws_frame_response_active_ends_turn() {
+        let mut client = make_client();
+        let mut turn_active = true;
+        let (gate_tx, gate_rx) = make_gate();
+        let json = r#"{"type":"response","reply_to":"cli-1","content":"hello"}"#;
+        let result = handle_ws_frame(
+            Ok(TungsteniteMessage::text(json)),
+            &mut client,
+            &mut turn_active,
+            &gate_tx,
+        );
+        assert_eq!(
+            result,
+            std::ops::ControlFlow::Continue(()),
+            "Response should return Continue"
+        );
+        assert!(
+            !turn_active,
+            "turn_active should be false after Response ends turn"
+        );
+        assert!(
+            gate_rx.try_recv().is_ok(),
+            "gate should be signaled when turn ends"
+        );
+    }
+
+    #[test]
+    fn handle_ws_frame_response_empty_reply_to_does_not_end_turn() {
+        let mut client = make_client();
+        let mut turn_active = true;
+        let (gate_tx, gate_rx) = make_gate();
+        let json = r#"{"type":"response","reply_to":"","content":"hello"}"#;
+        let result = handle_ws_frame(
+            Ok(TungsteniteMessage::text(json)),
+            &mut client,
+            &mut turn_active,
+            &gate_tx,
+        );
+        assert_eq!(
+            result,
+            std::ops::ControlFlow::Continue(()),
+            "Response with empty reply_to should return Continue"
+        );
+        assert!(
+            turn_active,
+            "turn_active should remain true when reply_to is empty"
+        );
+        assert!(
+            gate_rx.try_recv().is_err(),
+            "gate should not be signaled when reply_to is empty"
+        );
+    }
+
+    #[test]
+    fn handle_ws_frame_error_message_active_ends_turn() {
+        let mut client = make_client();
+        let mut turn_active = true;
+        let (gate_tx, gate_rx) = make_gate();
+        let json = r#"{"type":"error","reply_to":null,"message":"something failed"}"#;
+        let result = handle_ws_frame(
+            Ok(TungsteniteMessage::text(json)),
+            &mut client,
+            &mut turn_active,
+            &gate_tx,
+        );
+        assert_eq!(
+            result,
+            std::ops::ControlFlow::Continue(()),
+            "Error message should return Continue"
+        );
+        assert!(
+            !turn_active,
+            "turn_active should be false after Error ends turn"
+        );
+        assert!(
+            gate_rx.try_recv().is_ok(),
+            "gate should be signaled when Error ends turn"
+        );
+    }
+
+    #[test]
+    fn handle_ws_frame_parse_error_returns_continue() {
+        let mut client = make_client();
+        let mut turn_active = false;
+        let (gate_tx, gate_rx) = make_gate();
+        let result = handle_ws_frame(
+            Ok(TungsteniteMessage::text("not valid json")),
+            &mut client,
+            &mut turn_active,
+            &gate_tx,
+        );
+        assert_eq!(
+            result,
+            std::ops::ControlFlow::Continue(()),
+            "invalid JSON should return Continue (warn and swallow)"
+        );
+        assert!(
+            gate_rx.try_recv().is_err(),
+            "gate should not be signaled on parse error"
+        );
+    }
+}

@@ -122,3 +122,26 @@ pub async fn run() -> Result<(), FatalError> {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn agent_label_none_returns_gateway() {
+        assert_eq!(
+            agent_label(None),
+            "gateway",
+            "None should produce 'gateway'"
+        );
+    }
+
+    #[test]
+    fn agent_label_some_returns_formatted_name() {
+        assert_eq!(
+            agent_label(Some("myagent")),
+            "agent 'myagent'",
+            "Some should produce \"agent '<name>'\""
+        );
+    }
+}
