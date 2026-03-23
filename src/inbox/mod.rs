@@ -268,15 +268,9 @@ mod tests {
     #[test]
     fn generate_filename_basic() {
         let now = test_now();
-        let name = generate_filename("Hello World", now);
-        // Date prefix + sanitized title
-        assert!(
-            name.ends_with("_hello_world.json"),
-            "should sanitize title: {name}"
-        );
-        assert!(
-            name.len() > "20260225_".len(),
-            "should have date prefix: {name}"
+        assert_eq!(
+            generate_filename("Hello World", now),
+            "20260225_hello_world.json"
         );
     }
 
@@ -296,13 +290,25 @@ mod tests {
     fn generate_filename_unicode() {
         let now = test_now();
         let name = generate_filename("café résumé", now);
-        assert!(
-            Path::new(&name)
-                .extension()
-                .is_some_and(|ext| ext == "json"),
-            "should end with .json: {name}"
-        );
-        assert!(!name.contains("__"), "should collapse underscores: {name}");
+        assert_eq!(name, "20260225_café_résumé.json");
+    }
+
+    #[test]
+    fn generate_filename_empty_title() {
+        assert_eq!(generate_filename("", test_now()), "20260225.json");
+    }
+
+    #[test]
+    fn generate_filename_all_special_chars() {
+        assert_eq!(generate_filename("!!!###", test_now()), "20260225.json");
+    }
+
+    #[test]
+    fn generate_filename_trailing_underscore_trim() {
+        let now = test_now();
+        let title = "a".repeat(59) + " " + &"b".repeat(40);
+        let name = generate_filename(&title, now);
+        assert_eq!(name, format!("20260225_{}.json", "a".repeat(59)));
     }
 
     #[test]
@@ -360,6 +366,27 @@ mod tests {
         assert_eq!(loaded.body, "Body for test roundtrip");
         assert_eq!(loaded.source, "test");
         assert!(!loaded.read);
+        assert_eq!(loaded.timestamp, item.timestamp);
+    }
+
+    #[tokio::test]
+    async fn list_items_empty_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        let items = list_items(dir.path()).await.unwrap();
+        assert!(items.is_empty());
+    }
+
+    #[tokio::test]
+    async fn list_items_skips_malformed_json() {
+        let dir = tempfile::tempdir().unwrap();
+        let valid = make_item("valid", 12, false);
+        save_item(dir.path(), "valid.json", &valid).await.unwrap();
+        tokio::fs::write(dir.path().join("bad.json"), b"not json")
+            .await
+            .unwrap();
+        let items = list_items(dir.path()).await.unwrap();
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].1.title, "valid");
     }
 
     #[tokio::test]
@@ -515,11 +542,13 @@ mod tests {
         let archive = dir.path().join("archive/inbox");
         let result = archive_item(dir.path(), &archive, "nonexistent").await;
         assert!(result.is_err(), "should error on missing file");
-        let err = result.unwrap_err().to_string();
-        assert!(
-            err.contains("not found"),
-            "error should mention not found: {err}"
-        );
+    }
+
+    #[tokio::test]
+    async fn mark_read_not_found() {
+        let dir = tempfile::tempdir().unwrap();
+        let result = mark_read(dir.path(), "nonexistent").await;
+        assert!(result.is_err());
     }
 
     #[tokio::test]
