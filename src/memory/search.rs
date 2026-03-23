@@ -1489,6 +1489,58 @@ mod tests {
     }
 
     #[test]
+    fn incremental_sync_updates_modified_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let memory_dir = dir.path().join("memory");
+        let day_dir = memory_dir.join("episodes/2026-02/19");
+        std::fs::create_dir_all(&day_dir).unwrap();
+
+        let obs_path = day_dir.join("ep-001.obs.json");
+
+        // Write initial content
+        let obs1 = vec![sample_observation("original content about workspace")];
+        std::fs::write(&obs_path, serde_json::to_string(&obs1).unwrap()).unwrap();
+
+        let index_dir = memory_dir.join(".index");
+        let index = MemoryIndex::open_or_create(&index_dir).unwrap();
+
+        // First sync
+        let (manifest, stats) = index
+            .incremental_sync(&memory_dir, &IndexManifest::new())
+            .unwrap();
+        assert_eq!(stats.added, 1);
+
+        // Verify original is searchable
+        let before = index
+            .search("original workspace", 5, &no_filters())
+            .unwrap();
+        assert!(!before.is_empty(), "should find original content");
+
+        // Write updated content to the file
+        let obs2 = vec![sample_observation("updated content about testing")];
+        std::fs::write(&obs_path, serde_json::to_string(&obs2).unwrap()).unwrap();
+
+        // Simulate stale mtime in manifest so incremental_sync detects the change
+        let mut stale_manifest = manifest.clone();
+        for entry in stale_manifest.files.values_mut() {
+            entry.mtime = "1970-01-01T00:00:00".to_string();
+        }
+
+        let (_manifest2, stats2) = index
+            .incremental_sync(&memory_dir, &stale_manifest)
+            .unwrap();
+        assert_eq!(stats2.updated, 1, "should detect modified file");
+
+        let after_old = index
+            .search("original workspace", 5, &no_filters())
+            .unwrap();
+        assert!(after_old.is_empty(), "old content should be replaced");
+
+        let after_new = index.search("updated testing", 5, &no_filters()).unwrap();
+        assert!(!after_new.is_empty(), "new content should be searchable");
+    }
+
+    #[test]
     fn line_range_present_for_chunks_absent_for_obs() {
         let (_dir, index) = create_test_index();
 
@@ -1755,7 +1807,7 @@ mod tests {
         // hybrid("b") = 0.3 * 0.0 = 0.0 (below 0.5 threshold)
         // Both below threshold because text_weight is only 0.3
         // This is expected: without vector scores, max hybrid = text_weight * 1.0 = 0.3
-        assert!(merged.len() <= 2, "min_score filter should reduce results");
+        assert!(merged.is_empty(), "min_score filter should reduce results");
     }
 
     #[test]

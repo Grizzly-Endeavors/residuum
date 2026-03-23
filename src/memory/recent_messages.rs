@@ -373,4 +373,35 @@ mod tests {
             "should use timestamp from user-visible message, not background"
         );
     }
+
+    #[tokio::test]
+    async fn last_user_timestamp_none_when_only_background() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("recent_messages.json");
+
+        append_recent_messages(
+            &path,
+            &[sample_message("background event")],
+            "pulse",
+            Visibility::Background,
+            chrono_tz::UTC,
+        )
+        .await
+        .unwrap();
+
+        let restore = load_messages_for_agent(&path).await.unwrap();
+        assert!(
+            restore.last_user_message_at.is_none(),
+            "should be None when all messages are Background"
+        );
+    }
+
+    #[tokio::test]
+    async fn load_recent_messages_corrupt_json_errors() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("recent_messages.json");
+        tokio::fs::write(&path, "not valid json").await.unwrap();
+        let result = load_recent_messages(&path).await;
+        assert!(result.is_err(), "corrupt JSON should return Err");
+    }
 }

@@ -650,4 +650,23 @@ mod tests {
         let id = next_episode_id(&episodes_dir).await.unwrap();
         assert_eq!(id, "ep-004", "should find max and increment");
     }
+
+    #[tokio::test]
+    async fn read_episode_jsonl_empty_file_errors() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("ep-001.jsonl");
+        tokio::fs::write(&path, "").await.unwrap();
+        let result = read_episode_jsonl(&path).await;
+        assert!(result.is_err(), "empty file should return Err");
+    }
+
+    #[tokio::test]
+    async fn read_episode_jsonl_malformed_message_errors() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("ep-001.jsonl");
+        let content = "{\"type\":\"meta\",\"id\":\"ep-001\",\"date\":\"2026-02-19\",\"context\":\"general\"}\nnot valid json\n";
+        tokio::fs::write(&path, content).await.unwrap();
+        let result = read_episode_jsonl(&path).await;
+        assert!(result.is_err(), "malformed message line should return Err");
+    }
 }

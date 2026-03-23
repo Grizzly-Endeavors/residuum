@@ -542,11 +542,26 @@ mod tests {
         assert!(reflector.should_reflect(&log));
     }
 
-    #[test]
-    fn swap_provider_changes_model() {
+    #[tokio::test]
+    async fn swap_provider_changes_model() {
+        let dir = tempfile::tempdir().unwrap();
+        let layout = WorkspaceLayout::new(dir.path());
+        tokio::fs::create_dir_all(layout.memory_dir())
+            .await
+            .unwrap();
+
+        let mut initial_log = ObservationLog::new();
+        initial_log.push(sample_observation("ep-001", "test"));
+        save_observation_log(&layout.observations_json(), &initial_log)
+            .await
+            .unwrap();
+
         let mut reflector = Reflector::new(
             Box::new(MockMemoryProvider::new(COMPRESSED_RESPONSE)),
-            ReflectorConfig::default(),
+            ReflectorConfig {
+                threshold_tokens: 10,
+                ..ReflectorConfig::default()
+            },
         );
 
         let new_response = r#"{
@@ -555,5 +570,17 @@ mod tests {
             ]
         }"#;
         reflector.swap_provider(Box::new(MockMemoryProvider::new(new_response)));
+
+        let result = reflector.reflect(&layout).await.unwrap();
+        assert_eq!(
+            result.len(),
+            1,
+            "should have 1 observation from new provider"
+        );
+        assert_eq!(
+            result.observations.first().map(|o| o.content.as_str()),
+            Some("from new provider"),
+            "content should come from new provider"
+        );
     }
 }

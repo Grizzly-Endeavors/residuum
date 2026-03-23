@@ -545,14 +545,16 @@ mod tests {
             Box::new(MockMemoryProvider::new(SAMPLE_RESPONSE)),
             ObserverConfig {
                 threshold_tokens: 10,
+                force_threshold_tokens: 100_000,
                 ..ObserverConfig::default()
             },
         );
         let messages = make_recent_messages(5);
 
-        assert!(
-            observer.check_thresholds(&messages) != ObserveAction::None,
-            "should observe above threshold"
+        assert_eq!(
+            observer.check_thresholds(&messages),
+            ObserveAction::StartCooldown,
+            "should start cooldown above soft threshold but below force threshold"
         );
     }
 
@@ -827,11 +829,23 @@ mod tests {
         assert_eq!(observer.timezone(), chrono_tz::US::Eastern);
     }
 
-    #[test]
-    fn swap_provider_changes_model() {
+    #[tokio::test]
+    async fn swap_provider_changes_model() {
+        let dir = tempfile::tempdir().unwrap();
+        let layout = WorkspaceLayout::new(dir.path());
+        tokio::fs::create_dir_all(layout.episodes_dir())
+            .await
+            .unwrap();
+        tokio::fs::create_dir_all(layout.memory_dir())
+            .await
+            .unwrap();
+
         let mut observer = Observer::new(
             Box::new(MockMemoryProvider::new(SAMPLE_RESPONSE)),
-            ObserverConfig::default(),
+            ObserverConfig {
+                threshold_tokens: 10,
+                ..ObserverConfig::default()
+            },
         );
 
         let new_response = r#"{
@@ -841,6 +855,36 @@ mod tests {
             "narrative": ""
         }"#;
         observer.swap_provider(Box::new(MockMemoryProvider::new(new_response)));
+
+        let messages = make_recent_messages(5);
+        let result = observer.observe(&messages, &layout).await.unwrap();
+        assert_eq!(
+            result.observations.len(),
+            1,
+            "should have 1 observation from new provider"
+        );
+        assert_eq!(
+            result.observations.first().map(|o| o.content.as_str()),
+            Some("new provider obs"),
+            "content should come from new provider"
+        );
+    }
+
+    #[tokio::test]
+    async fn observe_returns_err_for_empty_messages() {
+        let dir = tempfile::tempdir().unwrap();
+        let layout = WorkspaceLayout::new(dir.path());
+
+        let observer = Observer::new(
+            Box::new(MockMemoryProvider::new(SAMPLE_RESPONSE)),
+            ObserverConfig::default(),
+        );
+
+        let result = observer.observe(&[], &layout).await;
+        assert!(
+            result.is_err(),
+            "observe with empty messages should return Err"
+        );
     }
 
     #[test]

@@ -192,4 +192,13 @@ mod tests {
             "tmp file should not remain after successful save"
         );
     }
+
+    #[tokio::test]
+    async fn load_observation_log_corrupt_json_errors() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("observations.json");
+        tokio::fs::write(&path, "not valid json").await.unwrap();
+        let result = load_observation_log(&path).await;
+        assert!(result.is_err(), "corrupt JSON should return Err");
+    }
 }

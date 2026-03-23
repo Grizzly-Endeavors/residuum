@@ -362,7 +362,56 @@ mod tests {
 
         assert_eq!(loaded.len(), 2, "should round-trip 2 chunks");
         assert_eq!(loaded[0].chunk_id, "ep-001-c0");
-        assert_eq!(loaded[1].chunk_id, "ep-001-c1");
+        assert_eq!(loaded[0].episode_id, "ep-001");
+        assert_eq!(loaded[0].date, "2026-02-19");
+        assert_eq!(loaded[0].context, "residuum");
+        assert_eq!(loaded[0].line_start, 2);
+        assert_eq!(loaded[0].line_end, 3);
         assert_eq!(loaded[0].content, "user: hello\nassistant: hi");
+        assert_eq!(loaded[1].chunk_id, "ep-001-c1");
+        assert_eq!(loaded[1].content, "user: what\nassistant: that");
+    }
+
+    #[test]
+    fn read_idx_jsonl_missing_file_returns_empty() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("nonexistent.idx.jsonl");
+        let chunks = read_idx_jsonl(&path);
+        assert!(chunks.is_empty(), "missing file should return empty vec");
+    }
+
+    #[tokio::test]
+    async fn read_idx_jsonl_skips_malformed_lines() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("ep-001.idx.jsonl");
+
+        let valid = IndexChunk {
+            chunk_id: "ep-001-c0".to_string(),
+            episode_id: "ep-001".to_string(),
+            date: "2026-02-19".to_string(),
+            context: "residuum".to_string(),
+            line_start: 2,
+            line_end: 3,
+            content: "user: hello\nassistant: hi".to_string(),
+        };
+        let valid2 = IndexChunk {
+            chunk_id: "ep-001-c1".to_string(),
+            ..valid.clone()
+        };
+        let content = format!(
+            "{}\nnot valid json\n{}\n",
+            serde_json::to_string(&valid).unwrap(),
+            serde_json::to_string(&valid2).unwrap(),
+        );
+        tokio::fs::write(&path, &content).await.unwrap();
+
+        let chunks = read_idx_jsonl(&path);
+        assert_eq!(
+            chunks.len(),
+            2,
+            "should skip malformed line and return 2 valid chunks"
+        );
+        assert_eq!(chunks[0].chunk_id, "ep-001-c0");
+        assert_eq!(chunks[1].chunk_id, "ep-001-c1");
     }
 }

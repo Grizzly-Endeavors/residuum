@@ -114,4 +114,13 @@ mod tests {
             "should have overwritten"
         );
     }
+
+    #[tokio::test]
+    async fn load_recent_context_corrupt_json_errors() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("recent_context.json");
+        tokio::fs::write(&path, "not valid json").await.unwrap();
+        let result = load_recent_context(&path).await;
+        assert!(result.is_err(), "corrupt JSON should return Err");
+    }
 }
