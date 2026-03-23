@@ -86,7 +86,12 @@ impl OllamaClient {
     ) -> Result<ModelResponse, ModelError> {
         let timeout_secs = http.timeout_secs();
 
-        debug!("sending ollama completion request");
+        debug!(
+            model = %request.model,
+            message_count = request.messages.len(),
+            tool_count = request.tools.as_ref().map_or(0, Vec::len),
+            "sending ollama completion request"
+        );
 
         let mut req_builder = http.client().post(url).json(request);
         if let Some(key) = api_key {
