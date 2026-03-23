@@ -127,7 +127,7 @@ impl McpClient {
     /// Returns `ToolError::Execution` if the RPC call fails.
     #[tracing::instrument(skip_all, fields(mcp.tool = %name, mcp.server = %self.server_name))]
     pub async fn call_tool(&self, name: &str, args: Value) -> Result<ToolResult, ToolError> {
-        tracing::debug!("dispatching mcp tool call");
+        tracing::debug!(tool = %name, server = %self.server_name, "dispatching mcp tool call");
         let arguments = coerce_tool_args(args)?;
 
         let params = CallToolRequestParams {
