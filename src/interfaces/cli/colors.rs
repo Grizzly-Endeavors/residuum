@@ -198,4 +198,28 @@ mod tests {
             "color_enabled should reflect construction"
         );
     }
+
+    #[test]
+    #[expect(
+        unsafe_code,
+        reason = "std::env::set_var/remove_var require unsafe in edition 2024"
+    )]
+    fn theme_detect_reads_no_color_env() {
+        // SAFETY: test-only, single-threaded test environment
+        unsafe { std::env::set_var("NO_COLOR", "1") };
+        let theme = Theme::detect();
+        unsafe { std::env::remove_var("NO_COLOR") };
+        assert!(
+            !theme.color_enabled(),
+            "detect() should disable color when NO_COLOR is set"
+        );
+
+        // SAFETY: test-only, single-threaded test environment
+        unsafe { std::env::remove_var("NO_COLOR") };
+        let theme_without_no_color = Theme::detect();
+        assert!(
+            theme_without_no_color.color_enabled(),
+            "detect() should enable color when NO_COLOR is absent"
+        );
+    }
 }

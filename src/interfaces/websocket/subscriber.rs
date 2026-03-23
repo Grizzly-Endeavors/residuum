@@ -305,25 +305,22 @@ mod tests {
 
         pub_.publish(
             topics::Endpoint(ep),
-            ResponseEvent {
-                correlation_id: "c1".into(),
-                content: "after_turn_ended".into(),
-                timestamp: ts(),
+            TurnLifecycleEvent::Started {
+                correlation_id: "c2".into(),
             },
         )
         .await
         .unwrap();
 
         let msg = subs.recv().await.unwrap();
-        assert!(matches!(
-            msg,
-            ServerMessage::Response { content, .. }
-                if content == "after_turn_ended"
-        ));
+        assert!(
+            matches!(msg, ServerMessage::TurnStarted { reply_to } if reply_to == "c2"),
+            "TurnEnded should be skipped; next message should be TurnStarted"
+        );
     }
 
     #[tokio::test]
-    async fn error_maps_to_server_message() {
+    async fn error_event_maps_to_server_message() {
         let handle = crate::bus::spawn_broker();
         let pub_ = handle.publisher();
         let ep = EndpointName::from("ws");
@@ -342,8 +339,8 @@ mod tests {
         let msg = subs.recv().await.unwrap();
         assert!(matches!(
             msg,
-            ServerMessage::Error { message, .. }
-                if message == "something went wrong"
+            ServerMessage::Error { reply_to: Some(id), message }
+                if id == "c1" && message == "something went wrong"
         ));
     }
 }

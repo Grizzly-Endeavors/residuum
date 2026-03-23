@@ -83,6 +83,8 @@ pub async fn download_attachment(
 
     let response = reqwest::get(url)
         .await
+        .map_err(|e| format!("failed to download attachment '{}': {e}", info.filename,))?
+        .error_for_status()
         .map_err(|e| format!("failed to download attachment '{}': {e}", info.filename,))?;
 
     let bytes = response
@@ -331,14 +333,45 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn encode_image_from_file_missing_path() {
-        let path = std::path::Path::new("/tmp/nonexistent_image_test_file_xyz.jpg");
-        let result = encode_image_from_file(path, "image/jpeg").await;
-        assert!(result.is_err(), "missing file should return error");
+    async fn encode_image_from_file_error_on_missing_file() {
+        let result = encode_image_from_file(
+            std::path::Path::new("/tmp/nonexistent_residuum_test_image.jpg"),
+            "image/jpeg",
+        )
+        .await;
+        assert!(result.is_err(), "should fail for non-existent file");
         let err = result.unwrap_err();
         assert!(
-            err.contains("nonexistent_image_test_file_xyz.jpg"),
+            err.contains("nonexistent_residuum_test_image.jpg"),
             "error should contain the path: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn download_attachment_returns_error_on_http_500() {
+        use wiremock::matchers::method;
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let mock_server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(500))
+            .mount(&mock_server)
+            .await;
+
+        let dir = tempfile::tempdir().unwrap();
+        let url = format!("{}/file", mock_server.uri());
+        let info = AttachmentInfo {
+            filename: "broken.jpg".to_string(),
+            size: 100,
+            content_type: Some("image/jpeg".to_string()),
+        };
+
+        let result = download_attachment(&info, &url, dir.path()).await;
+        assert!(result.is_err(), "500 response should return error");
+        let err = result.unwrap_err();
+        assert!(
+            err.contains("broken.jpg"),
+            "error should contain filename: {err}"
         );
     }
 
@@ -385,6 +418,10 @@ mod tests {
         assert_eq!(
             decoded, b"fake image bytes",
             "decoded base64 should equal original bytes"
+        );
+        assert!(
+            content.contains("photo.jpg"),
+            "content should contain filename"
         );
     }
 
