@@ -195,4 +195,13 @@ mod tests {
         let err = BusError::BrokerShutdown;
         assert_eq!(err.to_string(), "bus broker is shut down");
     }
+
+    #[test]
+    fn bus_error_type_mismatch_display() {
+        let err = BusError::TypeMismatch {
+            expected: "Foo",
+            topic: "bar".into(),
+        };
+        assert_eq!(err.to_string(), "type mismatch: expected Foo on topic bar");
+    }
 }

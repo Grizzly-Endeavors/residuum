@@ -114,6 +114,11 @@ mod tests {
                 assert_eq!(spawn_event.source_label, "pulse:email_check");
                 assert!(spawn_event.prompt.contains("email_check"));
                 assert!(spawn_event.prompt.contains("HEARTBEAT_OK"));
+                assert!(matches!(spawn_event.source, EventTrigger::Pulse));
+                assert!(matches!(
+                    spawn_event.model_tier_override,
+                    Some(crate::config::BackgroundModelTier::Small)
+                ));
             }
             PulseExecution::MainWakeTurn { .. } => panic!("expected SubAgent"),
         }
@@ -141,6 +146,11 @@ mod tests {
             PulseExecution::SubAgent { spawn_event } => {
                 assert_eq!(spawn_event.preset.as_ref(), "memory-agent");
                 assert_eq!(spawn_event.source_label, "pulse:email_check");
+                assert!(matches!(spawn_event.source, EventTrigger::Pulse));
+                assert!(matches!(
+                    spawn_event.model_tier_override,
+                    Some(crate::config::BackgroundModelTier::Small)
+                ));
             }
             PulseExecution::MainWakeTurn { .. } => panic!("expected SubAgent"),
         }

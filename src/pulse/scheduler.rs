@@ -422,6 +422,66 @@ pulses:
         assert_eq!(due.len(), 1, "pulse should fire inside active hours");
     }
 
+    #[test]
+    fn due_pulses_missing_heartbeat_returns_empty() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("HEARTBEAT.yml");
+        let mut scheduler = PulseScheduler::new();
+        let now = chrono::NaiveDate::from_ymd_opt(2026, 2, 19)
+            .unwrap()
+            .and_hms_opt(12, 0, 0)
+            .unwrap();
+        let due = scheduler.due_pulses(now, &path);
+        assert!(due.is_empty(), "missing HEARTBEAT.yml should return empty");
+    }
+
+    #[test]
+    fn due_pulses_skips_invalid_schedule() {
+        let yaml = r#"
+pulses:
+  - name: bad_schedule
+    enabled: true
+    schedule: "10x"
+    tasks: []
+"#;
+        let dir = tempdir().unwrap();
+        let path = write_heartbeat(dir.path(), yaml);
+        let mut scheduler = PulseScheduler::new();
+        let now = chrono::NaiveDate::from_ymd_opt(2026, 2, 19)
+            .unwrap()
+            .and_hms_opt(12, 0, 0)
+            .unwrap();
+        let due = scheduler.due_pulses(now, &path);
+        assert!(
+            due.is_empty(),
+            "pulse with invalid schedule should be skipped"
+        );
+    }
+
+    #[test]
+    fn due_pulses_skips_invalid_active_hours() {
+        let yaml = r#"
+pulses:
+  - name: bad_hours
+    enabled: true
+    schedule: "1h"
+    active_hours: "not-valid"
+    tasks: []
+"#;
+        let dir = tempdir().unwrap();
+        let path = write_heartbeat(dir.path(), yaml);
+        let mut scheduler = PulseScheduler::new();
+        let now = chrono::NaiveDate::from_ymd_opt(2026, 2, 19)
+            .unwrap()
+            .and_hms_opt(12, 0, 0)
+            .unwrap();
+        let due = scheduler.due_pulses(now, &path);
+        assert!(
+            due.is_empty(),
+            "pulse with invalid active_hours should be skipped"
+        );
+    }
+
     // ── Persistence tests ─────────────────────────────────────────────
 
     #[test]
@@ -458,10 +518,19 @@ pulses:
     fn persistence_missing_file_starts_empty() {
         let dir = tempdir().unwrap();
         let state_path = dir.path().join("pulse_state.json");
+        let hb_path = write_heartbeat(dir.path(), SIMPLE_HEARTBEAT);
 
-        // No file exists yet — should start with empty state
-        let sched = PulseScheduler::with_state_path(&state_path);
-        assert!(sched.last_run.is_empty(), "missing file means empty state");
+        let mut sched = PulseScheduler::with_state_path(&state_path);
+        let now = chrono::NaiveDate::from_ymd_opt(2026, 2, 19)
+            .unwrap()
+            .and_hms_opt(12, 0, 0)
+            .unwrap();
+        let due = sched.due_pulses(now, &hb_path);
+        assert_eq!(
+            due.len(),
+            1,
+            "missing state file means empty state, pulse should fire"
+        );
     }
 
     #[test]
@@ -469,12 +538,18 @@ pulses:
         let dir = tempdir().unwrap();
         let state_path = dir.path().join("pulse_state.json");
         std::fs::write(&state_path, "not valid json {{{").unwrap();
+        let hb_path = write_heartbeat(dir.path(), SIMPLE_HEARTBEAT);
 
-        // Corrupt file — should recover with empty state
-        let sched = PulseScheduler::with_state_path(&state_path);
-        assert!(
-            sched.last_run.is_empty(),
-            "corrupt file should recover to empty state"
+        let mut sched = PulseScheduler::with_state_path(&state_path);
+        let now = chrono::NaiveDate::from_ymd_opt(2026, 2, 19)
+            .unwrap()
+            .and_hms_opt(12, 0, 0)
+            .unwrap();
+        let due = sched.due_pulses(now, &hb_path);
+        assert_eq!(
+            due.len(),
+            1,
+            "corrupt state file should recover to empty state, pulse should fire"
         );
     }
 
@@ -530,7 +605,6 @@ pulses:
             .unwrap();
         let due = scheduler.due_pulses(t1, &path);
         assert_eq!(due.len(), 1, "first firing should succeed");
-        assert_eq!(scheduler.run_counts.get("limited_pulse").copied(), Some(1));
 
         // Fire 2: well after spacing (~5h later)
         let t2 = chrono::NaiveDate::from_ymd_opt(2026, 2, 19)
@@ -539,7 +613,6 @@ pulses:
             .unwrap();
         let due = scheduler.due_pulses(t2, &path);
         assert_eq!(due.len(), 1, "second firing should succeed");
-        assert_eq!(scheduler.run_counts.get("limited_pulse").copied(), Some(2));
 
         // Fire 3: should be blocked (count exhausted)
         let t3 = chrono::NaiveDate::from_ymd_opt(2026, 2, 19)

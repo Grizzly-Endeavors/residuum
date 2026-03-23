@@ -321,6 +321,180 @@ mod tests {
 
         let img = encode_image_from_file(&path, "image/jpeg").await.unwrap();
         assert_eq!(img.media_type, "image/jpeg", "media type should match");
-        assert!(!img.data.is_empty(), "base64 data should be non-empty");
+        let decoded = base64::engine::general_purpose::STANDARD
+            .decode(&img.data)
+            .unwrap();
+        assert_eq!(
+            decoded, b"fake image bytes",
+            "decoded base64 should equal original bytes"
+        );
+    }
+
+    #[tokio::test]
+    async fn encode_image_from_file_missing_path() {
+        let path = std::path::Path::new("/tmp/nonexistent_image_test_file_xyz.jpg");
+        let result = encode_image_from_file(path, "image/jpeg").await;
+        assert!(result.is_err(), "missing file should return error");
+        let err = result.unwrap_err();
+        assert!(
+            err.contains("nonexistent_image_test_file_xyz.jpg"),
+            "error should contain the path: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn finalize_attachment_inline_image() {
+        let dir = tempfile::tempdir().unwrap();
+        let inbox_dir = dir.path().join("inbox");
+        tokio::fs::create_dir_all(&inbox_dir).await.unwrap();
+
+        let image_path = dir.path().join("photo.jpg");
+        tokio::fs::write(&image_path, b"fake image bytes")
+            .await
+            .unwrap();
+
+        let saved = SavedAttachment {
+            local_path: image_path,
+        };
+        let info = AttachmentInfo {
+            filename: "photo.jpg".to_string(),
+            size: 1024,
+            content_type: Some("image/jpeg".to_string()),
+        };
+        let mut content = String::new();
+
+        let result = finalize_attachment(
+            &saved,
+            &info,
+            &mut content,
+            "author",
+            &inbox_dir,
+            chrono_tz::UTC,
+            "Discord",
+        )
+        .await;
+
+        assert!(
+            result.is_some(),
+            "supported image within size limit should return ImageData"
+        );
+        let img = result.unwrap();
+        let decoded = base64::engine::general_purpose::STANDARD
+            .decode(&img.data)
+            .unwrap();
+        assert_eq!(
+            decoded, b"fake image bytes",
+            "decoded base64 should equal original bytes"
+        );
+    }
+
+    #[tokio::test]
+    async fn finalize_attachment_oversized_image_skips_inline() {
+        let dir = tempfile::tempdir().unwrap();
+        let inbox_dir = dir.path().join("inbox");
+        tokio::fs::create_dir_all(&inbox_dir).await.unwrap();
+
+        let image_path = dir.path().join("large.jpg");
+        tokio::fs::write(&image_path, b"bytes").await.unwrap();
+
+        let saved = SavedAttachment {
+            local_path: image_path,
+        };
+        let info = AttachmentInfo {
+            filename: "large.jpg".to_string(),
+            size: MAX_IMAGE_INLINE_SIZE + 1,
+            content_type: Some("image/jpeg".to_string()),
+        };
+        let mut content = String::new();
+
+        let result = finalize_attachment(
+            &saved,
+            &info,
+            &mut content,
+            "author",
+            &inbox_dir,
+            chrono_tz::UTC,
+            "Discord",
+        )
+        .await;
+
+        assert!(
+            result.is_none(),
+            "image exceeding inline size limit should not be encoded"
+        );
+    }
+
+    #[tokio::test]
+    async fn finalize_attachment_non_image_skips_encoding() {
+        let dir = tempfile::tempdir().unwrap();
+        let inbox_dir = dir.path().join("inbox");
+        tokio::fs::create_dir_all(&inbox_dir).await.unwrap();
+
+        let file_path = dir.path().join("doc.pdf");
+        tokio::fs::write(&file_path, b"pdf content").await.unwrap();
+
+        let saved = SavedAttachment {
+            local_path: file_path,
+        };
+        let info = AttachmentInfo {
+            filename: "doc.pdf".to_string(),
+            size: 1024,
+            content_type: Some("application/pdf".to_string()),
+        };
+        let mut content = String::new();
+
+        let result = finalize_attachment(
+            &saved,
+            &info,
+            &mut content,
+            "author",
+            &inbox_dir,
+            chrono_tz::UTC,
+            "Discord",
+        )
+        .await;
+
+        assert!(
+            result.is_none(),
+            "non-image content type should not be encoded"
+        );
+    }
+
+    #[tokio::test]
+    async fn finalize_attachment_no_path_filename_skips_inbox_item() {
+        let dir = tempfile::tempdir().unwrap();
+        let inbox_dir = dir.path().join("inbox");
+        tokio::fs::create_dir_all(&inbox_dir).await.unwrap();
+
+        let saved = SavedAttachment {
+            local_path: PathBuf::from("/"),
+        };
+        let info = AttachmentInfo {
+            filename: "doc.pdf".to_string(),
+            size: 100,
+            content_type: Some("application/pdf".to_string()),
+        };
+        let mut content = String::new();
+
+        let result = finalize_attachment(
+            &saved,
+            &info,
+            &mut content,
+            "author",
+            &inbox_dir,
+            chrono_tz::UTC,
+            "Discord",
+        )
+        .await;
+
+        assert!(
+            result.is_none(),
+            "non-image with no path filename should return None"
+        );
+        let entries: Vec<_> = std::fs::read_dir(&inbox_dir).unwrap().collect();
+        assert!(
+            entries.is_empty(),
+            "no inbox item should be created when path has no filename"
+        );
     }
 }

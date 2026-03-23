@@ -262,4 +262,88 @@ mod tests {
                 if message == "reloading"
         ));
     }
+
+    #[tokio::test]
+    async fn turn_started_maps_to_server_message() {
+        let handle = crate::bus::spawn_broker();
+        let pub_ = handle.publisher();
+        let ep = EndpointName::from("ws");
+        let mut subs = WsSubscribers::new(&handle, ep.clone()).await.unwrap();
+
+        pub_.publish(
+            topics::Endpoint(ep),
+            TurnLifecycleEvent::Started {
+                correlation_id: "c1".into(),
+            },
+        )
+        .await
+        .unwrap();
+
+        let msg = subs.recv().await.unwrap();
+        assert!(matches!(
+            msg,
+            ServerMessage::TurnStarted { reply_to }
+                if reply_to == "c1"
+        ));
+    }
+
+    #[tokio::test]
+    async fn turn_ended_is_skipped() {
+        let handle = crate::bus::spawn_broker();
+        let pub_ = handle.publisher();
+        let ep = EndpointName::from("ws");
+        let mut subs = WsSubscribers::new(&handle, ep.clone()).await.unwrap();
+
+        pub_.publish(
+            topics::Endpoint(ep.clone()),
+            TurnLifecycleEvent::Ended {
+                correlation_id: "c1".into(),
+            },
+        )
+        .await
+        .unwrap();
+
+        pub_.publish(
+            topics::Endpoint(ep),
+            ResponseEvent {
+                correlation_id: "c1".into(),
+                content: "after_turn_ended".into(),
+                timestamp: ts(),
+            },
+        )
+        .await
+        .unwrap();
+
+        let msg = subs.recv().await.unwrap();
+        assert!(matches!(
+            msg,
+            ServerMessage::Response { content, .. }
+                if content == "after_turn_ended"
+        ));
+    }
+
+    #[tokio::test]
+    async fn error_maps_to_server_message() {
+        let handle = crate::bus::spawn_broker();
+        let pub_ = handle.publisher();
+        let ep = EndpointName::from("ws");
+        let mut subs = WsSubscribers::new(&handle, ep).await.unwrap();
+
+        pub_.publish(
+            topics::Notification(NotifyName::from(crate::bus::SYSTEM_CHANNEL)),
+            ErrorEvent {
+                correlation_id: "c1".into(),
+                message: "something went wrong".into(),
+            },
+        )
+        .await
+        .unwrap();
+
+        let msg = subs.recv().await.unwrap();
+        assert!(matches!(
+            msg,
+            ServerMessage::Error { message, .. }
+                if message == "something went wrong"
+        ));
+    }
 }

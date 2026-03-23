@@ -286,8 +286,18 @@ pub enum TurnLifecycleEvent {
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
+#[expect(clippy::unwrap_used, reason = "test code uses unwrap for clarity")]
 mod tests {
+    use std::path::PathBuf;
+
     use super::*;
+
+    fn test_timestamp() -> chrono::NaiveDateTime {
+        chrono::NaiveDate::from_ymd_opt(2026, 3, 13)
+            .unwrap()
+            .and_hms_opt(12, 0, 0)
+            .unwrap()
+    }
 
     #[test]
     fn event_trigger_webhook_debug() {
@@ -307,5 +317,79 @@ mod tests {
         assert_eq!(EventTrigger::Webhook("github".into()).as_str(), "webhook");
         // Webhook name does not affect the label.
         assert_eq!(EventTrigger::Webhook("custom".into()).as_str(), "webhook");
+    }
+
+    #[test]
+    fn event_trigger_display() {
+        assert_eq!(
+            EventTrigger::Webhook("github".into()).to_string(),
+            "webhook:github"
+        );
+        assert_eq!(EventTrigger::Pulse.to_string(), "pulse");
+        assert_eq!(EventTrigger::Action.to_string(), "action");
+        assert_eq!(EventTrigger::Agent.to_string(), "agent");
+    }
+
+    #[test]
+    fn agent_result_status_display() {
+        assert_eq!(AgentResultStatus::Completed.to_string(), "completed");
+        assert_eq!(AgentResultStatus::Cancelled.to_string(), "cancelled");
+        assert_eq!(
+            AgentResultStatus::Failed {
+                error: "timeout".into()
+            }
+            .to_string(),
+            "failed: timeout"
+        );
+    }
+
+    fn make_result_event(summary: &str, transcript_path: Option<PathBuf>) -> AgentResultEvent {
+        AgentResultEvent {
+            task_id: "t1".into(),
+            source_label: "pulse:check".into(),
+            agent_preset: PresetName::from("default"),
+            source: EventTrigger::Pulse,
+            heartbeat_status: HeartbeatStatus::Ok,
+            status: AgentResultStatus::Completed,
+            summary: summary.into(),
+            transcript_path,
+            timestamp: test_timestamp(),
+        }
+    }
+
+    #[test]
+    fn format_for_agent_empty_summary_no_transcript() {
+        let ev = make_result_event("", None);
+        assert_eq!(
+            ev.format_for_agent(),
+            "[Background Task Result]\nTask: pulse:check (t1)\nSource: pulse\nStatus: completed"
+        );
+    }
+
+    #[test]
+    fn format_for_agent_with_summary_no_transcript() {
+        let ev = make_result_event("3 new emails", None);
+        assert_eq!(
+            ev.format_for_agent(),
+            "[Background Task Result]\nTask: pulse:check (t1)\nSource: pulse\nStatus: completed\nOutput:\n3 new emails"
+        );
+    }
+
+    #[test]
+    fn format_for_agent_empty_summary_with_transcript() {
+        let ev = make_result_event("", Some(PathBuf::from("/tmp/log.txt")));
+        assert_eq!(
+            ev.format_for_agent(),
+            "[Background Task Result]\nTask: pulse:check (t1)\nSource: pulse\nStatus: completed\nTranscript: /tmp/log.txt"
+        );
+    }
+
+    #[test]
+    fn format_for_agent_with_summary_and_transcript() {
+        let ev = make_result_event("done", Some(PathBuf::from("/tmp/log.txt")));
+        assert_eq!(
+            ev.format_for_agent(),
+            "[Background Task Result]\nTask: pulse:check (t1)\nSource: pulse\nStatus: completed\nOutput:\ndone\nTranscript: /tmp/log.txt"
+        );
     }
 }

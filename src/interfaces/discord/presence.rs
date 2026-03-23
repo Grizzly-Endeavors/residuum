@@ -198,4 +198,24 @@ activity_text = "with fire"
             );
         }
     }
+
+    #[test]
+    fn load_presence_invalid_toml_returns_default() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("PRESENCE.toml");
+        std::fs::write(&path, b"this is not valid = toml [[[").unwrap();
+        let pf = load_presence(&path);
+        assert!(
+            pf.status.is_none(),
+            "invalid TOML should return default status"
+        );
+        assert!(
+            pf.activity_type.is_none(),
+            "invalid TOML should return default activity_type"
+        );
+        assert!(
+            pf.activity_text.is_none(),
+            "invalid TOML should return default activity_text"
+        );
+    }
 }

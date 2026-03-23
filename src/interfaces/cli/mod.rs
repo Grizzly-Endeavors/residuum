@@ -274,4 +274,58 @@ mod tests {
             "should handle URLs without path"
         );
     }
+
+    #[test]
+    fn display_turn_started_sets_indicator_active_and_resets_header() {
+        let mut client = CliClient::new("ws://localhost:7700/ws", false);
+        client.turn_has_header = true;
+        client.display(&ServerMessage::TurnStarted {
+            reply_to: "c1".into(),
+        });
+        assert!(
+            client.indicator.is_active(),
+            "TurnStarted should activate indicator"
+        );
+        assert!(
+            !client.turn_has_header,
+            "TurnStarted should reset turn_has_header"
+        );
+    }
+
+    #[test]
+    fn display_response_clears_indicator() {
+        let mut client = CliClient::new("ws://localhost:7700/ws", false);
+        client.display(&ServerMessage::TurnStarted {
+            reply_to: "c1".into(),
+        });
+        assert!(client.indicator.is_active());
+        client.display(&ServerMessage::Response {
+            reply_to: "c1".into(),
+            content: "done".into(),
+        });
+        assert!(
+            !client.indicator.is_active(),
+            "Response should deactivate indicator"
+        );
+    }
+
+    #[test]
+    fn display_broadcast_response_sets_turn_has_header() {
+        let mut client = CliClient::new("ws://localhost:7700/ws", false);
+        assert!(!client.turn_has_header, "should start without header");
+        client.display(&ServerMessage::BroadcastResponse {
+            content: "chunk 1".into(),
+        });
+        assert!(
+            client.turn_has_header,
+            "first BroadcastResponse should set turn_has_header"
+        );
+        client.display(&ServerMessage::BroadcastResponse {
+            content: "chunk 2".into(),
+        });
+        assert!(
+            client.turn_has_header,
+            "subsequent BroadcastResponse should not clear turn_has_header"
+        );
+    }
 }

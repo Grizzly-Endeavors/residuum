@@ -69,15 +69,26 @@ mod tests {
             output.contains("bold"),
             "rendered output should contain bold word"
         );
+        assert!(
+            !output.contains("**"),
+            "markdown markers should be stripped by renderer"
+        );
     }
 
     #[test]
     fn render_colored_returns_non_empty() {
-        let renderer = MarkdownRenderer::new(true);
-        let output = renderer.render("# heading\n\nsome text");
+        let plain_renderer = MarkdownRenderer::new(false);
+        let colored_renderer = MarkdownRenderer::new(true);
+        let content = "# heading\n\nsome text";
+        let plain_output = plain_renderer.render(content);
+        let colored_output = colored_renderer.render(content);
         assert!(
-            !output.is_empty(),
+            !colored_output.is_empty(),
             "colored render should return non-empty string"
+        );
+        assert_ne!(
+            colored_output, plain_output,
+            "colored render should produce different output than plain render"
         );
     }
 

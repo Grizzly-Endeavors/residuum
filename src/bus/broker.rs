@@ -276,9 +276,6 @@ mod tests {
         // Drop subscriber, then publish — should not error.
         drop(sub);
 
-        // Give the broker a moment to process the unsubscribe.
-        tokio::task::yield_now().await;
-
         let result = pub_
             .publish(topics::UserMessage, test_message("4", "gone"))
             .await;
@@ -343,9 +340,8 @@ mod tests {
 
         // Close sub1's receiver by dropping it.
         drop(sub1);
-        tokio::task::yield_now().await;
 
-        // Publish — sub1 should be pruned, sub2 should receive.
+        // Publish — sub1 is pruned when the broker sees its channel is closed, sub2 should receive.
         pub_.publish(topics::UserMessage, test_message("7", "after prune"))
             .await
             .unwrap();
@@ -417,5 +413,83 @@ mod tests {
 
         let notice = sub.recv().await.unwrap().unwrap();
         assert_eq!(notice.message, "config reloaded");
+    }
+
+    #[tokio::test]
+    async fn backpressure_drops_and_recovers() {
+        let handle = spawn_broker();
+        let pub_ = handle.publisher();
+        let mut sub = handle.subscribe(topics::UserMessage).await.unwrap();
+        // sync_sub confirms the broker has processed each publish before we proceed.
+        let mut sync_sub = handle.subscribe(topics::UserMessage).await.unwrap();
+
+        // Fill sub's channel to capacity.
+        for i in 0..SUBSCRIBER_CAPACITY {
+            pub_.publish(topics::UserMessage, test_message(&i.to_string(), "fill"))
+                .await
+                .unwrap();
+        }
+        for _ in 0..SUBSCRIBER_CAPACITY {
+            sync_sub.recv().await.unwrap().unwrap();
+        }
+
+        // Sub's channel is full — overflow message should be dropped for sub.
+        pub_.publish(topics::UserMessage, test_message("overflow", "dropped"))
+            .await
+            .unwrap();
+        sync_sub.recv().await.unwrap().unwrap();
+
+        // Drain all fill messages from sub.
+        for _ in 0..SUBSCRIBER_CAPACITY {
+            sub.recv().await.unwrap().unwrap();
+        }
+
+        // Overflow must not appear in sub's channel.
+        let result = tokio::time::timeout(tokio::time::Duration::from_millis(50), sub.recv()).await;
+        assert!(
+            result.is_err(),
+            "full subscriber should not receive overflow event"
+        );
+
+        // After recovery, subsequent publishes are received.
+        pub_.publish(topics::UserMessage, test_message("after", "recovered"))
+            .await
+            .unwrap();
+        let msg = sub.recv().await.unwrap().unwrap();
+        assert_eq!(msg.id, "after");
+    }
+
+    #[tokio::test]
+    async fn subscriber_recv_returns_none_when_broker_exits() {
+        use std::any::TypeId;
+
+        let handle = spawn_broker();
+        let ep = EndpointName::from("ws");
+        let topic_id = topics::Endpoint(ep).topic_id();
+
+        // Manually register an event channel with the broker.
+        let (event_tx, event_rx) = mpsc::channel::<ErasedEvent>(16);
+        handle
+            .cmd_tx
+            .send(BrokerCommand::Subscribe {
+                id: 99,
+                topic: topic_id.clone(),
+                event_type: TypeId::of::<ResponseEvent>(),
+                sender: event_tx,
+            })
+            .await
+            .unwrap();
+
+        // Create subscriber with a disconnected cmd_tx so it does not keep the broker alive.
+        let (dead_cmd_tx, dead_cmd_rx) = mpsc::channel::<BrokerCommand>(1);
+        drop(dead_cmd_rx);
+        let mut sub = Subscriber::<ResponseEvent>::new(99, topic_id, event_rx, dead_cmd_tx);
+
+        // Drop the handle — no remaining cmd_tx senders; broker will exit.
+        drop(handle);
+
+        // Broker exits and drops subscriptions, closing event_tx; recv returns Ok(None).
+        let result = sub.recv().await;
+        assert!(matches!(result, Ok(None)));
     }
 }

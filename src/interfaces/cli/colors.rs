@@ -139,8 +139,8 @@ mod tests {
         };
         let styled = theme.format_prefix("Residuum:");
         assert!(
-            !styled.is_empty(),
-            "colored theme should return non-empty string"
+            styled.contains("\x1b["),
+            "colored theme should contain ANSI escape codes"
         );
     }
 

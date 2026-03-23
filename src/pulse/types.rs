@@ -59,6 +59,9 @@ pub fn parse_schedule_duration(s: &str) -> anyhow::Result<Duration> {
     let value: i64 = num_part.parse().map_err(|_parse_err| {
         anyhow::anyhow!("invalid schedule duration '{s}': expected number followed by s/m/h/d",)
     })?;
+    if value <= 0 {
+        bail!("schedule duration must be positive, got '{s}'");
+    }
     match unit {
         "s" => Ok(Duration::seconds(value)),
         "m" => Ok(Duration::minutes(value)),
@@ -265,6 +268,92 @@ mod tests {
         assert!(
             !is_within_active_hours(late, start, end),
             "22:00 should be outside 08:00-18:00"
+        );
+    }
+
+    #[test]
+    fn is_within_active_hours_boundary_start_inclusive() {
+        let t = chrono::NaiveDate::from_ymd_opt(2026, 2, 19)
+            .unwrap()
+            .and_hms_opt(8, 0, 0)
+            .unwrap();
+        let start = NaiveTime::from_hms_opt(8, 0, 0).unwrap();
+        let end = NaiveTime::from_hms_opt(18, 0, 0).unwrap();
+        assert!(
+            is_within_active_hours(t, start, end),
+            "start time should be inclusive"
+        );
+    }
+
+    #[test]
+    fn is_within_active_hours_boundary_end_exclusive() {
+        let t = chrono::NaiveDate::from_ymd_opt(2026, 2, 19)
+            .unwrap()
+            .and_hms_opt(18, 0, 0)
+            .unwrap();
+        let start = NaiveTime::from_hms_opt(8, 0, 0).unwrap();
+        let end = NaiveTime::from_hms_opt(18, 0, 0).unwrap();
+        assert!(
+            !is_within_active_hours(t, start, end),
+            "end time should be exclusive"
+        );
+    }
+
+    #[test]
+    fn is_within_active_hours_overnight_inside_before_midnight() {
+        let t = chrono::NaiveDate::from_ymd_opt(2026, 2, 19)
+            .unwrap()
+            .and_hms_opt(23, 0, 0)
+            .unwrap();
+        let start = NaiveTime::from_hms_opt(22, 0, 0).unwrap();
+        let end = NaiveTime::from_hms_opt(6, 0, 0).unwrap();
+        assert!(
+            is_within_active_hours(t, start, end),
+            "23:00 should be inside overnight window 22:00-06:00"
+        );
+    }
+
+    #[test]
+    fn is_within_active_hours_overnight_outside() {
+        let t = chrono::NaiveDate::from_ymd_opt(2026, 2, 19)
+            .unwrap()
+            .and_hms_opt(12, 0, 0)
+            .unwrap();
+        let start = NaiveTime::from_hms_opt(22, 0, 0).unwrap();
+        let end = NaiveTime::from_hms_opt(6, 0, 0).unwrap();
+        assert!(
+            !is_within_active_hours(t, start, end),
+            "12:00 should be outside overnight window 22:00-06:00"
+        );
+    }
+
+    #[test]
+    fn is_within_active_hours_overnight_inside_after_midnight() {
+        let t = chrono::NaiveDate::from_ymd_opt(2026, 2, 19)
+            .unwrap()
+            .and_hms_opt(1, 0, 0)
+            .unwrap();
+        let start = NaiveTime::from_hms_opt(22, 0, 0).unwrap();
+        let end = NaiveTime::from_hms_opt(6, 0, 0).unwrap();
+        assert!(
+            is_within_active_hours(t, start, end),
+            "01:00 should be inside overnight window 22:00-06:00"
+        );
+    }
+
+    #[test]
+    fn parse_schedule_duration_zero_fails() {
+        assert!(
+            parse_schedule_duration("0m").is_err(),
+            "zero duration should fail"
+        );
+    }
+
+    #[test]
+    fn parse_schedule_duration_negative_fails() {
+        assert!(
+            parse_schedule_duration("-1h").is_err(),
+            "negative duration should fail"
         );
     }
 

@@ -126,4 +126,19 @@ mod tests {
             TopicId::Notification(name)
         );
     }
+
+    #[test]
+    fn user_message_topic_id() {
+        assert_eq!(UserMessage.topic_id(), TopicId::UserMessage);
+    }
+
+    #[test]
+    fn background_topic_id() {
+        assert_eq!(Background.topic_id(), TopicId::Background);
+    }
+
+    #[test]
+    fn inbox_topic_id() {
+        assert_eq!(Inbox.topic_id(), TopicId::Inbox);
+    }
 }
