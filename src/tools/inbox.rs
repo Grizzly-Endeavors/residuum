@@ -404,4 +404,19 @@ mod tests {
         let result = tool.execute(serde_json::json!({})).await;
         assert!(result.is_err(), "missing id should error");
     }
+
+    #[tokio::test]
+    async fn inbox_read_nonexistent_item() {
+        let dir = tempfile::tempdir().unwrap();
+        let tool = InboxReadTool::new(dir.path().to_path_buf());
+        // id is provided but the file does not exist on disk — goes through mark_read,
+        // which propagates as ToolError::Execution
+        let result = tool
+            .execute(serde_json::json!({"id": "does-not-exist"}))
+            .await;
+        assert!(
+            result.is_err(),
+            "reading nonexistent item should return ToolError"
+        );
+    }
 }

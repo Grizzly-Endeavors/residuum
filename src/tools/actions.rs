@@ -303,25 +303,61 @@ mod tests {
     #[test]
     fn parse_run_at_rfc3339() {
         let dt = parse_run_at("2026-03-01T14:00:00Z", chrono_tz::UTC).unwrap();
-        assert_eq!(dt.hour(), 14);
+        assert_eq!(
+            dt,
+            chrono::DateTime::parse_from_rfc3339("2026-03-01T14:00:00Z")
+                .unwrap()
+                .with_timezone(&Utc)
+        );
     }
 
     #[test]
     fn parse_run_at_with_offset() {
         let dt = parse_run_at("2026-03-01T09:00:00-05:00", chrono_tz::UTC).unwrap();
-        assert_eq!(dt.hour(), 14, "9am EST = 2pm UTC");
+        assert_eq!(
+            dt,
+            chrono::DateTime::parse_from_rfc3339("2026-03-01T14:00:00Z")
+                .unwrap()
+                .with_timezone(&Utc),
+            "9am EST = 2pm UTC"
+        );
     }
 
     #[test]
     fn parse_run_at_naive_with_seconds() {
         let dt = parse_run_at("2026-03-01T09:00:00", chrono_tz::Tz::America__New_York).unwrap();
-        assert_eq!(dt.hour(), 14, "9am EST = 2pm UTC");
+        assert_eq!(
+            dt,
+            chrono::DateTime::parse_from_rfc3339("2026-03-01T14:00:00Z")
+                .unwrap()
+                .with_timezone(&Utc),
+            "9am EST = 2pm UTC"
+        );
     }
 
     #[test]
     fn parse_run_at_naive_without_seconds() {
         let dt = parse_run_at("2026-03-01T09:00", chrono_tz::Tz::America__New_York).unwrap();
-        assert_eq!(dt.hour(), 14, "9am EST = 2pm UTC");
+        assert_eq!(
+            dt,
+            chrono::DateTime::parse_from_rfc3339("2026-03-01T14:00:00Z")
+                .unwrap()
+                .with_timezone(&Utc),
+            "9am EST = 2pm UTC"
+        );
+    }
+
+    #[test]
+    fn parse_run_at_dst_gap() {
+        // America/New_York spring-forward on 2026-03-08: 2:00 AM → 3:00 AM
+        // 2:30 AM does not exist in that timezone
+        let result = parse_run_at("2026-03-08T02:30:00", chrono_tz::Tz::America__New_York);
+        assert!(result.is_err(), "datetime in DST gap should fail");
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("DST gap") || err.contains("does not exist"),
+            "error should mention DST: {err}"
+        );
     }
 
     #[test]
@@ -331,17 +367,98 @@ mod tests {
 
     #[test]
     fn list_actions_tool_has_correct_name() {
-        let store = Arc::new(Mutex::new(ActionStore::new_empty("/tmp/test-actions.json")));
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(Mutex::new(ActionStore::new_empty(
+            dir.path().join("test-actions.json"),
+        )));
         let tool = ListActionsTool::new(store, chrono_tz::UTC);
         assert_eq!(tool.name(), "list_actions");
     }
 
-    use chrono::Timelike;
+    #[tokio::test]
+    async fn schedule_action_past_run_at() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(Mutex::new(ActionStore::new_empty(
+            dir.path().join("test-past.json"),
+        )));
+        let notify = Arc::new(Notify::new());
+        let tool = ScheduleActionTool::new(store, notify, chrono_tz::UTC);
+        let result = tool
+            .execute(serde_json::json!({
+                "name": "past",
+                "prompt": "too late",
+                "run_at": "2020-01-01T00:00:00Z"
+            }))
+            .await;
+        assert!(result.is_err(), "past run_at should return ToolError");
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("future"), "error should mention future: {err}");
+    }
+
+    #[tokio::test]
+    async fn cancel_action_success() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(Mutex::new(ActionStore::new_empty(
+            dir.path().join("test-cancel.json"),
+        )));
+        let notify = Arc::new(Notify::new());
+
+        // Add an action directly
+        let action = ScheduledAction {
+            id: "action-cancel01".to_string(),
+            name: "to-cancel".to_string(),
+            prompt: "cancel me".to_string(),
+            run_at: Utc::now() + chrono::Duration::hours(1),
+            agent: None,
+            model_tier: None,
+            created_at: Utc::now(),
+        };
+        store.lock().await.add(action);
+
+        let tool = CancelActionTool::new(Arc::clone(&store), Arc::clone(&notify));
+        let result = tool
+            .execute(serde_json::json!({"id": "action-cancel01"}))
+            .await
+            .unwrap();
+        assert!(!result.is_error, "cancel should succeed: {}", result.output);
+        assert!(
+            result.output.contains("action-cancel01"),
+            "output should mention the cancelled action id"
+        );
+        assert!(
+            store.lock().await.list().is_empty(),
+            "action should be removed from store"
+        );
+    }
+
+    #[tokio::test]
+    async fn cancel_action_not_found() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(Mutex::new(ActionStore::new_empty(
+            dir.path().join("test-cancel-notfound.json"),
+        )));
+        let notify = Arc::new(Notify::new());
+        let tool = CancelActionTool::new(store, notify);
+        let result = tool
+            .execute(serde_json::json!({"id": "action-missing01"}))
+            .await
+            .unwrap();
+        assert!(
+            result.is_error,
+            "cancelling nonexistent action should be error result"
+        );
+        assert!(
+            result.output.contains("not found"),
+            "error should mention not found: {}",
+            result.output
+        );
+    }
 
     #[tokio::test]
     async fn schedule_action_displays_local_time() {
+        let dir = tempfile::tempdir().unwrap();
         let store = Arc::new(Mutex::new(ActionStore::new_empty(
-            "/tmp/test-sched-tz.json",
+            dir.path().join("test-sched-tz.json"),
         )));
         let notify = Arc::new(Notify::new());
         let tz = chrono_tz::Tz::America__New_York;
@@ -376,7 +493,10 @@ mod tests {
 
     #[tokio::test]
     async fn list_actions_displays_local_time() {
-        let store = Arc::new(Mutex::new(ActionStore::new_empty("/tmp/test-list-tz.json")));
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(Mutex::new(ActionStore::new_empty(
+            dir.path().join("test-list-tz.json"),
+        )));
         let tz = chrono_tz::Tz::America__New_York;
 
         // Add an action with a known UTC time

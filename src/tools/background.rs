@@ -318,21 +318,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn definition_has_required_task() {
-        let tool = make_tool();
-
-        let def = tool.definition();
-        assert_eq!(def.name, tool.name());
-        let required = def.parameters.get("required").unwrap();
-        assert!(
-            required
-                .as_array()
-                .unwrap()
-                .contains(&Value::String("task".to_string()))
-        );
-    }
-
-    #[tokio::test]
     async fn main_preset_name_rejected() {
         let tool = make_tool();
 

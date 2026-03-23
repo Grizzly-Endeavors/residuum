@@ -649,4 +649,71 @@ mod tests {
             result.output
         );
     }
+
+    #[tokio::test]
+    async fn archive_nonexistent_project() {
+        let (_dir, state) = setup().await;
+        let tool = ProjectArchiveTool::new(state, chrono_tz::UTC);
+        let result = tool
+            .execute(serde_json::json!({"name": "nonexistent"}))
+            .await
+            .unwrap();
+        assert!(
+            result.is_error,
+            "archiving nonexistent project should error"
+        );
+        assert!(
+            result.output.contains("not found"),
+            "error should mention not found: {}",
+            result.output
+        );
+    }
+
+    #[tokio::test]
+    async fn archive_and_list_with_include_archived() {
+        let (_dir, state) = setup().await;
+
+        // Create a project
+        let create_tool = ProjectCreateTool::new(Arc::clone(&state), chrono_tz::UTC);
+        let create_result = create_tool
+            .execute(serde_json::json!({
+                "name": "Archive Me",
+                "description": "Will be archived"
+            }))
+            .await
+            .unwrap();
+        assert!(!create_result.is_error, "create should succeed");
+
+        // Archive it
+        let archive_tool = ProjectArchiveTool::new(Arc::clone(&state), chrono_tz::UTC);
+        let archive_result = archive_tool
+            .execute(serde_json::json!({"name": "Archive Me"}))
+            .await
+            .unwrap();
+        assert!(
+            !archive_result.is_error,
+            "archive should succeed: {}",
+            archive_result.output
+        );
+
+        // List without include_archived — project should not appear
+        let list_tool = ProjectListTool::new(Arc::clone(&state));
+        let list_result = list_tool.execute(serde_json::json!({})).await.unwrap();
+        assert!(
+            !list_result.output.contains("Archive Me"),
+            "archived project should not appear in default list: {}",
+            list_result.output
+        );
+
+        // List with include_archived — project should appear
+        let list_archived = list_tool
+            .execute(serde_json::json!({"include_archived": true}))
+            .await
+            .unwrap();
+        assert!(
+            list_archived.output.contains("Archive Me"),
+            "archived project should appear with include_archived=true: {}",
+            list_archived.output
+        );
+    }
 }

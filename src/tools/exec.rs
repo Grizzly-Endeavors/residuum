@@ -150,6 +150,16 @@ mod tests {
             .unwrap();
 
         assert!(result.is_error, "false command should be error result");
+        assert!(
+            result.output.contains("code"),
+            "output should mention exit code: {}",
+            result.output
+        );
+        assert!(
+            result.output.chars().any(|c| c.is_ascii_digit()),
+            "output should contain a numeric exit code: {}",
+            result.output
+        );
     }
 
     #[tokio::test]
@@ -190,6 +200,29 @@ mod tests {
         assert!(
             result.output.contains("STDERR"),
             "should label stderr output"
+        );
+    }
+
+    #[tokio::test]
+    async fn exec_output_truncated() {
+        let tool = ExecTool;
+        // Generate more than 100KB of output
+        let result = tool
+            .execute(serde_json::json!({
+                "command": "dd if=/dev/zero bs=1024 count=200 2>/dev/null | tr '\\0' 'x'"
+            }))
+            .await
+            .unwrap();
+
+        assert!(!result.is_error, "command should succeed");
+        assert!(
+            result.output.contains("(output truncated)"),
+            "large output should be truncated: output len = {}",
+            result.output.len()
+        );
+        assert!(
+            result.output.len() < 200 * 1024,
+            "truncated output should be smaller than raw output"
         );
     }
 

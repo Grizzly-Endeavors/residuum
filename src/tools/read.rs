@@ -534,6 +534,22 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn read_empty_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let file_path = dir.path().join("empty.txt");
+        tokio::fs::write(&file_path, "").await.unwrap();
+
+        let tool = make_tool();
+        let result = tool
+            .execute(serde_json::json!({ "path": file_path.to_str().unwrap() }))
+            .await
+            .unwrap();
+
+        assert!(!result.is_error, "reading empty file should succeed");
+        assert!(result.images.is_empty(), "empty file should have no images");
+    }
+
     #[test]
     fn image_mime_type_detection() {
         assert_eq!(image_mime_type(Path::new("photo.jpg")), Some("image/jpeg"),);

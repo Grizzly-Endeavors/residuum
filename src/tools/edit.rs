@@ -741,6 +741,38 @@ mod tests {
             }))
             .await;
         assert!(long_hash.is_err(), "hash too long should error");
+
+        // Non-hex characters in hash (2-char but not valid hex)
+        let non_hex = tool
+            .execute(serde_json::json!({
+                "path": "/tmp/x", "operation": "replace",
+                "start_line": "1:zz", "content": "x"
+            }))
+            .await;
+        assert!(non_hex.is_err(), "non-hex 2-char hash should error");
+    }
+
+    #[tokio::test]
+    async fn end_line_before_start_line() {
+        let tool = make_tool_no_reads();
+        let result = tool
+            .execute(serde_json::json!({
+                "path": "/tmp/x",
+                "operation": "replace",
+                "start_line": "5:aa",
+                "end_line": "2:bb",
+                "content": "x"
+            }))
+            .await;
+        assert!(
+            result.is_err(),
+            "end_line before start_line should return ToolError"
+        );
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("before"),
+            "error should mention end before start: {err_msg}"
+        );
     }
 
     #[test]

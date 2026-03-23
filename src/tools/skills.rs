@@ -200,6 +200,13 @@ mod tests {
             "output should mention skill name"
         );
 
+        // After activation, the skill body ("Body.") should be accessible
+        let active_content = state.lock().await.format_active_for_prompt().unwrap();
+        assert!(
+            active_content.contains("Body."),
+            "active skill content should contain SKILL.md body: {active_content}"
+        );
+
         let deactivate = SkillDeactivateTool::new(Arc::clone(&state));
         let deactivate_result = deactivate
             .execute(serde_json::json!({"name": "test-skill"}))

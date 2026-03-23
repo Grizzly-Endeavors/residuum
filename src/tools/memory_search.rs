@@ -296,5 +296,29 @@ mod tests {
             .unwrap();
 
         assert!(!result.is_error, "date filtered search should succeed");
+        assert!(
+            result.output.contains("Found"),
+            "search within date range should return results: {}",
+            result.output
+        );
+
+        // A date range that doesn't include the indexed observation (2026-02-19) should return nothing
+        let result_outside = tool
+            .execute(serde_json::json!({
+                "query": "rust memory",
+                "date_from": "2025-01-01",
+                "date_to": "2025-12-31"
+            }))
+            .await
+            .unwrap();
+        assert!(
+            !result_outside.is_error,
+            "search outside date range should not error"
+        );
+        assert!(
+            result_outside.output.contains("no results"),
+            "search outside date range should return no results: {}",
+            result_outside.output
+        );
     }
 }

@@ -90,11 +90,4 @@ mod tests {
             "canonical path should match"
         );
     }
-
-    #[test]
-    fn new_shared_produces_usable_arc() {
-        let shared = FileTracker::new_shared();
-        // Just verify it compiles and can be cloned
-        let _clone = Arc::clone(&shared);
-    }
 }

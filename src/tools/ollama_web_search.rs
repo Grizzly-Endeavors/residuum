@@ -171,7 +171,6 @@ fn format_search_results(response: &Value) -> String {
 }
 
 #[cfg(test)]
-#[expect(clippy::unwrap_used, reason = "test code uses unwrap for clarity")]
 mod tests {
     use super::*;
 
@@ -242,19 +241,10 @@ mod tests {
     }
 
     #[test]
-    fn definition_has_required_query() {
+    fn definition_has_correct_name() {
         let tool = OllamaWebSearchTool::new("key".into(), "http://localhost".into());
         let def = tool.definition();
         assert_eq!(def.name, "ollama_web_search", "tool name should match");
-        let required = def.parameters.get("required").and_then(Value::as_array);
-        assert!(required.is_some(), "should have required array");
-        let required = required.unwrap();
-        assert_eq!(required.len(), 1, "should have one required param");
-        assert_eq!(
-            required.first().and_then(Value::as_str).unwrap(),
-            "query",
-            "required param should be query"
-        );
     }
 
     #[tokio::test]

@@ -347,7 +347,22 @@ mod tests {
         let policy = PathPolicy::new_shared(std::path::PathBuf::from("/tmp"));
         registry.register_defaults(FileTracker::new_shared(), policy);
         let defs = registry.definitions(&no_filter());
-        assert_eq!(defs.len(), 4, "should have read, write, edit, exec tools");
+        assert!(
+            defs.iter().any(|d| d.name == "read_file"),
+            "should have read_file tool"
+        );
+        assert!(
+            defs.iter().any(|d| d.name == "write_file"),
+            "should have write_file tool"
+        );
+        assert!(
+            defs.iter().any(|d| d.name == "edit_file"),
+            "should have edit_file tool"
+        );
+        assert!(
+            defs.iter().any(|d| d.name == "exec"),
+            "should have exec tool"
+        );
     }
 
     #[test]

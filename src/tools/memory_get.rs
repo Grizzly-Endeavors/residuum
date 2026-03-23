@@ -198,6 +198,17 @@ mod tests {
             result.output.contains("showing lines"),
             "should have footer"
         );
+        // from_line=2 skips line 2 (user "hello") and shows line 3 (assistant "world")
+        assert!(
+            result.output.contains("[line 3] Assistant: world"),
+            "should contain line 3 content: {}",
+            result.output
+        );
+        assert!(
+            !result.output.contains("[line 2]"),
+            "should not contain line 2 content: {}",
+            result.output
+        );
     }
 
     #[tokio::test]
