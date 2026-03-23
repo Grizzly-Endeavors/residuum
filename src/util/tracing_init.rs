@@ -64,7 +64,9 @@ pub fn init_cli_tracing() {
 
     let file_layer = file_appender.map(|appender| {
         tracing_subscriber::fmt::layer()
-            .with_target(false)
+            .json()
+            .with_target(true)
+            .with_span_list(true)
             .with_ansi(false)
             .with_writer(appender)
     });
@@ -185,7 +187,9 @@ pub fn init_daemon_tracing(debug_mode: Option<DebugMode>, agent_name: Option<&st
         });
 
     let file_layer = tracing_subscriber::fmt::layer()
-        .with_target(false)
+        .json()
+        .with_target(true)
+        .with_span_list(true)
         .with_ansi(false)
         .with_writer(file_appender);
 

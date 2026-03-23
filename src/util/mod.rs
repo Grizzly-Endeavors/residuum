@@ -1,7 +1,9 @@
-//! Shared utilities: fatal errors, filesystem helpers, monitored spawning, and tracing setup.
+//! Shared utilities: fatal errors, filesystem helpers, monitored spawning, tracing setup,
+//! and structured log formatting.
 
 mod error;
 pub(crate) mod fs;
+pub mod log_format;
 mod spawn;
 pub mod tracing_init;
 

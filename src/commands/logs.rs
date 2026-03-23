@@ -1,6 +1,12 @@
-//! Logs subcommand: display and tail CLI log files.
+//! Logs subcommand: display and tail structured log files.
+//!
+//! Reads NDJSON log files produced by `tracing-subscriber`'s JSON formatter,
+//! applies optional module/level filters, and renders human-readable output.
 
 use residuum::util::FatalError;
+use residuum::util::log_format::{
+    LogLevel, expand_module_filter, format_entry, matches_module, meets_level, parse_line,
+};
 
 #[derive(clap::Args)]
 pub(super) struct LogsArgs {
@@ -10,13 +16,86 @@ pub(super) struct LogsArgs {
     /// Target a named agent instance
     #[arg(long)]
     pub agent: Option<String>,
+    /// Filter by module (e.g., `agent`, `mcp`, `gateway`, `residuum::mcp::client`)
+    #[arg(long, short)]
+    pub module: Option<String>,
+    /// Filter by minimum log level (trace, debug, info, warn, error)
+    #[arg(long, short)]
+    pub level: Option<String>,
+    /// Output raw JSON instead of formatted text
+    #[arg(long)]
+    pub json: bool,
 }
 
-/// Display CLI log files.
+/// Resolved filter criteria, computed once from CLI args.
+struct LogFilter {
+    module_prefix: Option<String>,
+    min_level: Option<LogLevel>,
+    raw_json: bool,
+}
+
+impl LogFilter {
+    fn from_args(args: &LogsArgs) -> Result<Self, FatalError> {
+        let module_prefix = args.module.as_deref().map(expand_module_filter);
+        let min_level = args
+            .level
+            .as_deref()
+            .map(|l| {
+                LogLevel::parse(l).ok_or_else(|| {
+                    FatalError::Config(format!(
+                        "invalid log level '{l}' — expected trace, debug, info, warn, or error"
+                    ))
+                })
+            })
+            .transpose()?;
+        Ok(Self {
+            module_prefix,
+            min_level,
+            raw_json: args.json,
+        })
+    }
+
+    /// Format and print a log line, applying filters. Returns true if the line was printed.
+    fn process_line(&self, line: &str) -> bool {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            return false;
+        }
+
+        let Some(entry) = parse_line(trimmed) else {
+            // Non-JSON line (old format or partial write) — print raw as fallback
+            println!("{trimmed}");
+            return true;
+        };
+
+        if let Some(ref prefix) = self.module_prefix
+            && !matches_module(&entry.target, prefix)
+        {
+            return false;
+        }
+
+        if let Some(min) = self.min_level
+            && !meets_level(&entry.level, min)
+        {
+            return false;
+        }
+
+        if self.raw_json {
+            println!("{trimmed}");
+        } else {
+            println!("{}", format_entry(&entry));
+        }
+        true
+    }
+}
+
+/// Display and optionally tail structured log files.
 ///
-/// Finds the most recent log file in `~/.residuum/logs/` and prints its
-/// contents. With `--watch`, polls for new lines every 500ms.
+/// Finds the most recent log file in the log directory, parses JSON lines,
+/// applies filters, and renders human-readable output. With `--watch`, polls
+/// for new lines every 500ms.
 pub(super) async fn run_logs_command(args: &LogsArgs) -> Result<(), FatalError> {
+    let filter = LogFilter::from_args(args)?;
     let log_dir = residuum::agent_registry::paths::resolve_log_dir(args.agent.as_deref())?;
 
     if !log_dir.exists() {
@@ -40,13 +119,11 @@ pub(super) async fn run_logs_command(args: &LogsArgs) -> Result<(), FatalError> 
     }
 
     // Sort by modification time, most recent last
-    entries.sort_by_key(|e| {
-        match e.metadata().and_then(|m| m.modified()) {
-            Ok(t) => t,
-            Err(err) => {
-                tracing::warn!(path = %e.path().display(), error = %err, "failed to read log file metadata for sorting");
-                std::time::SystemTime::UNIX_EPOCH
-            }
+    entries.sort_by_key(|e| match e.metadata().and_then(|m| m.modified()) {
+        Ok(t) => t,
+        Err(err) => {
+            tracing::warn!(path = %e.path().display(), error = %err, "failed to read log file metadata for sorting");
+            std::time::SystemTime::UNIX_EPOCH
         }
     });
 
@@ -60,7 +137,9 @@ pub(super) async fn run_logs_command(args: &LogsArgs) -> Result<(), FatalError> 
 
     let content = std::fs::read_to_string(&latest)
         .map_err(|e| FatalError::Config(format!("failed to read log file: {e}")))?;
-    print!("{content}");
+    for line in content.lines() {
+        filter.process_line(line);
+    }
 
     if args.watch {
         use tokio::io::{AsyncBufReadExt, AsyncSeekExt};
@@ -84,11 +163,10 @@ pub(super) async fn run_logs_command(args: &LogsArgs) -> Result<(), FatalError> 
             line_buf.clear();
             match reader.read_line(&mut line_buf).await {
                 Ok(0) => {
-                    // No new data yet
                     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
                 }
                 Ok(_) => {
-                    print!("{line_buf}");
+                    filter.process_line(&line_buf);
                 }
                 Err(e) => {
                     println!("error reading log file: {e}");

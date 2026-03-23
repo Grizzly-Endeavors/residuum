@@ -811,6 +811,7 @@ impl HybridSearcher {
     ///
     /// # Errors
     /// Returns an error if BM25 search or embedding generation fails.
+    #[tracing::instrument(skip_all, fields(limit))]
     pub async fn search(
         &self,
         query: &str,

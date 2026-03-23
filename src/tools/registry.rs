@@ -63,22 +63,29 @@ impl ToolRegistry {
         arguments: Value,
         filter: &ToolFilter,
     ) -> Result<ToolResult, ToolError> {
-        let tool = self
-            .tools
-            .iter()
-            .find(|t| t.name() == name)
-            .ok_or_else(|| ToolError::NotFound(name.to_string()))?;
+        use tracing::Instrument;
+        let span = tracing::info_span!("tool_execute", tool.name = %name);
 
-        if !filter.is_available(name) {
-            return Ok(ToolResult::error(format!(
-                "tool '{name}' is not available — activate a project that includes it"
-            )));
+        async {
+            let tool = self
+                .tools
+                .iter()
+                .find(|t| t.name() == name)
+                .ok_or_else(|| ToolError::NotFound(name.to_string()))?;
+
+            if !filter.is_available(name) {
+                return Ok(ToolResult::error(format!(
+                    "tool '{name}' is not available — activate a project that includes it"
+                )));
+            }
+
+            tracing::debug!("tool invocation");
+            let result = tool.execute(arguments).await?;
+            tracing::debug!(is_error = result.is_error, "tool result");
+            Ok(result)
         }
-
-        tracing::debug!(tool = %name, "tool invocation");
-        let result = tool.execute(arguments).await?;
-        tracing::debug!(tool = %name, is_error = result.is_error, "tool result");
-        Ok(result)
+        .instrument(span)
+        .await
     }
 
     /// Register the default set of tools (read, write, edit, exec).

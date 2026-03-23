@@ -8,6 +8,7 @@ use super::turns::load_prompt_context_strings;
 use crate::gateway::memory::{MemorySubsystems, run_forced_observe, run_forced_reflect};
 
 /// Dispatch a named server command from any client channel.
+#[tracing::instrument(skip_all, fields(command = %cmd.name))]
 pub async fn handle_server_command(
     cmd: ServerCommand,
     rt: &mut GatewayRuntime,

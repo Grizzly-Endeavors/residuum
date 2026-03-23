@@ -41,6 +41,7 @@ impl McpClient {
     /// # Errors
     /// Returns an error if the connection cannot be established or the MCP
     /// handshake fails.
+    #[tracing::instrument(skip_all, fields(mcp.server = %entry.name))]
     pub async fn connect(entry: &McpServerEntry) -> Result<Self, anyhow::Error> {
         match entry.transport {
             McpTransport::Stdio => Self::connect_stdio(entry).await,
@@ -124,8 +125,9 @@ impl McpClient {
     ///
     /// # Errors
     /// Returns `ToolError::Execution` if the RPC call fails.
+    #[tracing::instrument(skip_all, fields(mcp.tool = %name, mcp.server = %self.server_name))]
     pub async fn call_tool(&self, name: &str, args: Value) -> Result<ToolResult, ToolError> {
-        tracing::debug!(tool = %name, server = %self.server_name, "dispatching mcp tool call");
+        tracing::debug!("dispatching mcp tool call");
         let arguments = coerce_tool_args(args)?;
 
         let params = CallToolRequestParams {

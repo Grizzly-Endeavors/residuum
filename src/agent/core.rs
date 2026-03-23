@@ -180,6 +180,7 @@ impl Agent {
     /// # Errors
     /// Returns an error if the model call fails or tool execution errors
     /// are unrecoverable.
+    #[tracing::instrument(skip_all, fields(operation = "wake_turn"))]
     pub async fn run_wake_turn(
         &mut self,
         publisher: &Publisher,
@@ -248,6 +249,7 @@ impl Agent {
         clippy::too_many_arguments,
         reason = "publisher and topic params added during bus migration"
     )]
+    #[tracing::instrument(skip_all, fields(correlation_id = %correlation_id, origin = ?origin))]
     pub async fn process_message(
         &mut self,
         user_input: &str,
@@ -260,7 +262,7 @@ impl Agent {
         interrupt_rx: &mut tokio::sync::mpsc::Receiver<interrupt::Interrupt>,
         images: &[crate::models::ImageData],
     ) -> anyhow::Result<Vec<String>> {
-        tracing::debug!(source = ?origin, "processing user message");
+        tracing::debug!("processing user message");
         let now = crate::time::now_local(self.tz);
         let unread = crate::inbox::count_unread(&self.inbox_dir).await;
         let status_line = StatusLine {
@@ -320,6 +322,7 @@ impl Agent {
     ///
     /// # Errors
     /// Returns an error if the model call fails.
+    #[tracing::instrument(skip_all, fields(operation = "system_turn"))]
     pub async fn run_system_turn(
         &self,
         prompt: &str,

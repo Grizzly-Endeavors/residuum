@@ -228,6 +228,7 @@ async fn run_agent_turn_with_interrupts(
     clippy::too_many_lines,
     reason = "needs refactor — extract turn result publishing"
 )]
+#[tracing::instrument(skip_all, fields(correlation_id = %message.id, origin = %message.origin.endpoint))]
 pub async fn handle_inbound_message(
     message: InboundMessage,
     rt: &mut GatewayRuntime,
