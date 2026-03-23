@@ -174,6 +174,14 @@ mod tests {
         };
         let json = serde_json::to_string(&msg).unwrap();
         assert!(json.contains("\"type\":\"error\""), "should have type tag");
+        assert!(
+            json.contains("\"reply_to\":\"id-1\""),
+            "should have reply_to field"
+        );
+        assert!(
+            json.contains("\"message\":\"something failed\""),
+            "should have message field"
+        );
     }
 
     #[test]
@@ -318,5 +326,31 @@ mod tests {
         let json = r#"{"type":"unknown_type"}"#;
         let result = serde_json::from_str::<ClientMessage>(json);
         assert!(result.is_err(), "unknown type should fail to deserialize");
+    }
+
+    #[test]
+    fn client_message_send_message_with_images_roundtrip() {
+        let msg = ClientMessage::SendMessage {
+            id: "img-1".to_string(),
+            content: "look at this".to_string(),
+            images: vec![ImageData {
+                media_type: "image/png".to_string(),
+                data: "aGVsbG8=".to_string(),
+            }],
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(
+            json.contains("\"images\""),
+            "images field should be serialized when non-empty"
+        );
+        let deserialized: ClientMessage = serde_json::from_str(&json).unwrap();
+        assert!(
+            matches!(
+                &deserialized,
+                ClientMessage::SendMessage { id, content, images }
+                    if id == "img-1" && content == "look at this" && images.len() == 1
+            ),
+            "should survive serialization round-trip with images"
+        );
     }
 }

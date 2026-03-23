@@ -68,7 +68,7 @@ fn parse_cloud_state(raw: &str) -> (bool, bool) {
     let has_token = cloud
         .get("token")
         .and_then(|v| v.as_str())
-        .is_some_and(|s| !s.trim_matches('"').is_empty());
+        .is_some_and(|s| !s.trim().is_empty());
     let enabled = cloud
         .get("enabled")
         .and_then(toml::Value::as_bool)
@@ -308,6 +308,28 @@ token = "secret:cloud_token"
         let toml = "[cloud]\nenabled = true\n";
         let (has_token, enabled) = parse_cloud_state(toml);
         assert!(!has_token);
+        assert!(enabled);
+    }
+
+    #[test]
+    fn parse_cloud_state_empty_token() {
+        let toml = "[cloud]\nenabled = true\ntoken = \"\"\n";
+        let (has_token, enabled) = parse_cloud_state(toml);
+        assert!(
+            !has_token,
+            "empty token string should be treated as no token"
+        );
+        assert!(enabled);
+    }
+
+    #[test]
+    fn parse_cloud_state_whitespace_token() {
+        let toml = "[cloud]\nenabled = true\ntoken = \"   \"\n";
+        let (has_token, enabled) = parse_cloud_state(toml);
+        assert!(
+            !has_token,
+            "whitespace-only token should be treated as no token"
+        );
         assert!(enabled);
     }
 

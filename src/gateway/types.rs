@@ -206,14 +206,18 @@ mod tests {
     #[tokio::test]
     async fn core_channels_survive_reload_signal() {
         let dir = tempfile::tempdir().unwrap();
-        let (core, _receivers) = GatewayCore::new(dir.path().to_path_buf());
+        let (core, mut receivers) = GatewayCore::new(dir.path().to_path_buf());
 
-        // Bus publish should work before reload
         let system_topic = || {
             crate::bus::topics::Notification(crate::bus::NotifyName::from(
                 crate::bus::SYSTEM_CHANNEL,
             ))
         };
+
+        // Subscribe before publishing so we can verify delivery
+        let mut subscriber: crate::bus::Subscriber<crate::bus::NoticeEvent> =
+            core.bus_handle.subscribe(system_topic()).await.unwrap();
+
         let result = core
             .publisher
             .publish(
@@ -225,8 +229,29 @@ mod tests {
             .await;
         assert!(result.is_ok(), "bus publish should succeed before reload");
 
+        // Verify notice was delivered
+        let received = subscriber.recv().await.unwrap();
+        assert!(
+            received.is_some(),
+            "notice should be delivered to subscriber"
+        );
+        assert_eq!(
+            received.unwrap().message,
+            "test",
+            "received message should match published content"
+        );
+
         // Fire a reload signal
         core.reload_tx.send(ReloadSignal::Root).unwrap();
+
+        // Verify the reload signal propagated
+        receivers.reload.changed().await.unwrap();
+        let signal = receivers.reload.borrow_and_update().clone();
+        assert_eq!(
+            signal,
+            ReloadSignal::Root,
+            "reload signal should propagate to receiver"
+        );
 
         // Channels still work after the reload signal
         let result_after = core
@@ -241,6 +266,12 @@ mod tests {
         assert!(
             result_after.is_ok(),
             "bus publish should still work after reload signal"
+        );
+
+        let received_after = subscriber.recv().await.unwrap();
+        assert!(
+            received_after.is_some(),
+            "notice should be delivered after reload signal"
         );
     }
 }

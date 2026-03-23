@@ -390,6 +390,13 @@ mod tests {
     }
 
     #[test]
+    fn path_traversal_for_write_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(validate_workspace_path_for_write(dir.path(), "../etc/shadow").is_err());
+        assert!(validate_workspace_path_for_write(dir.path(), "/etc/shadow").is_err());
+    }
+
+    #[test]
     fn valid_paths_accepted() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("test.md"), "hello").unwrap();
@@ -478,6 +485,54 @@ mod tests {
         assert_eq!(
             subdir_entries.0.first().map(|e| e.name.as_str()),
             Some("research.md")
+        );
+    }
+
+    #[tokio::test]
+    async fn workspace_file_write_new_file() {
+        use axum::Json;
+        use axum::extract::State;
+
+        let dir = tempfile::tempdir().unwrap();
+        let ws_dir = dir.path().join("workspace");
+        std::fs::create_dir_all(&ws_dir).unwrap();
+
+        let state = super::super::ConfigApiState {
+            config_dir: dir.path().to_path_buf(),
+            workspace_dir: ws_dir.clone(),
+            memory_dir: None,
+            reload_tx: None,
+            setup_done: None,
+            secret_lock: std::sync::Arc::new(tokio::sync::Mutex::new(())),
+        };
+
+        // Write a new file that does not exist yet
+        let write_result = api_workspace_file_write(
+            State(state.clone()),
+            Json(WriteFileRequest {
+                path: "new_file.md".to_string(),
+                content: "# New File".to_string(),
+            }),
+        )
+        .await
+        .unwrap();
+        assert!(write_result.0.saved);
+
+        let content = std::fs::read_to_string(ws_dir.join("new_file.md")).unwrap();
+        assert_eq!(content, "# New File");
+
+        // Path traversal via write for new file should be rejected
+        let traversal_result = api_workspace_file_write(
+            State(state.clone()),
+            Json(WriteFileRequest {
+                path: "../etc/shadow".to_string(),
+                content: "hacked".to_string(),
+            }),
+        )
+        .await;
+        assert!(
+            traversal_result.is_err(),
+            "path traversal should be rejected for new file write"
         );
     }
 }

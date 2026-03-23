@@ -698,6 +698,12 @@ mod tests {
         new.skills.dirs = vec![std::path::PathBuf::from("/new/skills")];
         new.agent.modify_mcp = false;
         new.background.max_concurrent = 10;
+        new.cloud = Some(CloudConfig {
+            relay_url: "wss://example.com".to_string(),
+            token: "tok".to_string(),
+            local_port: 7700,
+        });
+        new.idle.timeout = std::time::Duration::from_secs(300);
 
         let diff = diff_config(&old, &new);
         assert!(diff.providers_changed);
@@ -708,6 +714,8 @@ mod tests {
         assert!(diff.skills_changed);
         assert!(diff.agent_changed);
         assert!(diff.background_changed);
+        assert!(diff.cloud_changed);
+        assert!(diff.idle_changed);
         assert!(!diff.gateway_changed);
 
         let summary = diff.summary();
@@ -719,6 +727,8 @@ mod tests {
         assert!(summary.contains("skills"));
         assert!(summary.contains("agent"));
         assert!(summary.contains("background"));
+        assert!(summary.contains("cloud"));
+        assert!(summary.contains("idle"));
     }
 
     #[test]
@@ -796,16 +806,29 @@ mod tests {
     fn backup_config_creates_bak_file() {
         let dir = tempfile::tempdir().unwrap();
         let config = dir.path().join("config.toml");
+        let providers = dir.path().join("providers.toml");
         std::fs::write(&config, "timezone = \"UTC\"\n").unwrap();
+        std::fs::write(&providers, "# providers\n").unwrap();
 
         backup_config(dir.path());
 
-        let bak = dir.path().join("config.toml.bak");
-        assert!(bak.exists(), "backup should create config.toml.bak");
+        let config_bak = dir.path().join("config.toml.bak");
+        assert!(config_bak.exists(), "backup should create config.toml.bak");
         assert_eq!(
-            std::fs::read_to_string(&bak).unwrap(),
+            std::fs::read_to_string(&config_bak).unwrap(),
             "timezone = \"UTC\"\n",
-            "backup content should match original"
+            "config.toml backup content should match original"
+        );
+
+        let providers_bak = dir.path().join("providers.toml.bak");
+        assert!(
+            providers_bak.exists(),
+            "backup should create providers.toml.bak"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&providers_bak).unwrap(),
+            "# providers\n",
+            "providers.toml backup content should match original"
         );
     }
 
@@ -813,15 +836,23 @@ mod tests {
     fn rollback_config_restores_original() {
         let dir = tempfile::tempdir().unwrap();
         let config = dir.path().join("config.toml");
-        let bak = dir.path().join("config.toml.bak");
+        let providers = dir.path().join("providers.toml");
+        let config_bak = dir.path().join("config.toml.bak");
+        let providers_bak = dir.path().join("providers.toml.bak");
 
-        std::fs::write(&bak, "timezone = \"UTC\"\n").unwrap();
+        std::fs::write(&config_bak, "timezone = \"UTC\"\n").unwrap();
         std::fs::write(&config, "BROKEN").unwrap();
+        std::fs::write(&providers_bak, "# providers\n").unwrap();
+        std::fs::write(&providers, "BROKEN").unwrap();
 
         assert!(rollback_config(dir.path()), "rollback should succeed");
         assert_eq!(
             std::fs::read_to_string(&config).unwrap(),
             "timezone = \"UTC\"\n",
+        );
+        assert_eq!(
+            std::fs::read_to_string(&providers).unwrap(),
+            "# providers\n",
         );
     }
 

@@ -385,4 +385,41 @@ mod tests {
             assert!(validate_images(&images).is_ok(), "{mime} should be allowed");
         }
     }
+
+    #[test]
+    fn validate_images_accepts_exactly_max_count() {
+        let images: Vec<_> = (0..MAX_IMAGES)
+            .map(|_| make_image("image/png", 100))
+            .collect();
+        assert!(
+            validate_images(&images).is_ok(),
+            "exactly {MAX_IMAGES} images should be accepted"
+        );
+    }
+
+    #[test]
+    fn validate_images_accepts_max_bytes() {
+        // Compute base64 length such that estimated_bytes == MAX_IMAGE_BYTES exactly.
+        // estimated_bytes = data.len() * 3 / 4; we want this == MAX_IMAGE_BYTES (not greater).
+        let max_b64_len = MAX_IMAGE_BYTES * 4 / 3 + 1;
+        let images = vec![make_image("image/jpeg", max_b64_len)];
+        assert!(
+            validate_images(&images).is_ok(),
+            "image at exactly MAX_IMAGE_BYTES should be accepted"
+        );
+    }
+
+    #[test]
+    fn validate_images_rejects_empty_media_type() {
+        let images = vec![make_image("", 100)];
+        let result = validate_images(&images);
+        assert!(result.is_err(), "empty media_type should be rejected");
+        assert!(
+            result
+                .as_ref()
+                .err()
+                .is_some_and(|e| e.contains("unsupported")),
+            "error should mention 'unsupported'"
+        );
+    }
 }
