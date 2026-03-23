@@ -176,7 +176,9 @@ mod tests {
             name: "researcher".to_string(),
             port: 7701,
         });
-        assert!(reg.get("researcher").is_some());
+        let entry = reg.get("researcher").unwrap();
+        assert_eq!(entry.name, "researcher");
+        assert_eq!(entry.port, 7701);
         assert!(reg.get("nonexistent").is_none());
     }
 
@@ -241,5 +243,26 @@ mod tests {
         );
         assert!(toml_str.contains("name = \"researcher\""));
         assert!(toml_str.contains("port = 7701"));
+    }
+
+    #[test]
+    fn load_rejects_malformed_toml() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("registry.toml"), "[[agents]\nname = bad").unwrap();
+        assert!(AgentRegistry::load(dir.path()).is_err());
+    }
+
+    #[test]
+    fn add_duplicate_name_produces_two_entries() {
+        let mut reg = AgentRegistry::default();
+        reg.add(AgentEntry {
+            name: "a".to_string(),
+            port: 7701,
+        });
+        reg.add(AgentEntry {
+            name: "a".to_string(),
+            port: 7702,
+        });
+        assert_eq!(reg.list().len(), 2);
     }
 }

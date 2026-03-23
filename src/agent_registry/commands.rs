@@ -309,6 +309,8 @@ mod tests {
         assert!(validate_name("my-agent").is_ok());
         assert!(validate_name("agent1").is_ok());
         assert!(validate_name("a").is_ok());
+        assert!(validate_name(&"a".repeat(32)).is_ok());
+        assert!(validate_name("MyAgent").is_ok());
     }
 
     #[test]
