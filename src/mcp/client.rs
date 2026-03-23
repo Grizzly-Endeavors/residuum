@@ -126,15 +126,7 @@ impl McpClient {
     /// Returns `ToolError::Execution` if the RPC call fails.
     pub async fn call_tool(&self, name: &str, args: Value) -> Result<ToolResult, ToolError> {
         tracing::debug!(tool = %name, server = %self.server_name, "dispatching mcp tool call");
-        let arguments = match args {
-            Value::Object(map) => Some(map),
-            Value::Null => None,
-            Value::Bool(_) | Value::Number(_) | Value::String(_) | Value::Array(_) => {
-                return Err(ToolError::InvalidArguments(
-                    "mcp tool arguments must be an object".to_string(),
-                ));
-            }
-        };
+        let arguments = coerce_tool_args(args)?;
 
         let params = CallToolRequestParams {
             meta: None,
@@ -192,6 +184,16 @@ impl McpClient {
         } else {
             tracing::debug!(server = %self.server_name, "mcp server shutdown complete");
         }
+    }
+}
+
+fn coerce_tool_args(args: Value) -> Result<Option<serde_json::Map<String, Value>>, ToolError> {
+    match args {
+        Value::Object(map) => Ok(Some(map)),
+        Value::Null => Ok(None),
+        Value::Bool(_) | Value::Number(_) | Value::String(_) | Value::Array(_) => Err(
+            ToolError::InvalidArguments("mcp tool arguments must be an object".to_string()),
+        ),
     }
 }
 
@@ -363,5 +365,86 @@ mod tests {
         );
         unsafe { std::env::remove_var("TEST_MCP_A") };
         unsafe { std::env::remove_var("TEST_MCP_B") };
+    }
+
+    #[test]
+    fn expand_env_vars_empty_var_does_not_use_default() {
+        // SAFETY: test-only, single-threaded test runner for this module
+        unsafe { std::env::set_var("TEST_MCP_EMPTY", "") };
+        assert_eq!(
+            expand_env_vars("${TEST_MCP_EMPTY:-fallback}"),
+            "",
+            "empty var does not trigger default substitution (diverges from POSIX shell)"
+        );
+        unsafe { std::env::remove_var("TEST_MCP_EMPTY") };
+    }
+
+    #[test]
+    fn coerce_tool_args_rejects_bool() {
+        let result = coerce_tool_args(serde_json::json!(true));
+        assert!(
+            matches!(result, Err(ToolError::InvalidArguments(_))),
+            "bool args should return InvalidArguments"
+        );
+    }
+
+    #[test]
+    fn coerce_tool_args_rejects_number() {
+        let result = coerce_tool_args(serde_json::json!(42));
+        assert!(
+            matches!(result, Err(ToolError::InvalidArguments(_))),
+            "number args should return InvalidArguments"
+        );
+    }
+
+    #[test]
+    fn coerce_tool_args_rejects_string() {
+        let result = coerce_tool_args(serde_json::json!("hello"));
+        assert!(
+            matches!(result, Err(ToolError::InvalidArguments(_))),
+            "string args should return InvalidArguments"
+        );
+    }
+
+    #[test]
+    fn coerce_tool_args_rejects_array() {
+        let result = coerce_tool_args(serde_json::json!([1, 2, 3]));
+        assert!(
+            matches!(result, Err(ToolError::InvalidArguments(_))),
+            "array args should return InvalidArguments"
+        );
+    }
+
+    #[test]
+    fn extract_text_content_empty_returns_empty_string() {
+        assert_eq!(
+            extract_text_content(&[]),
+            "",
+            "empty content slice should return empty string"
+        );
+    }
+
+    #[test]
+    fn extract_text_content_non_text_block_returns_empty_string() {
+        let content = vec![Content::image("base64data", "image/png")];
+        assert_eq!(
+            extract_text_content(&content),
+            "",
+            "non-text content block should return empty string"
+        );
+    }
+
+    #[test]
+    fn extract_text_content_mixed_blocks_returns_only_text() {
+        let content = vec![
+            Content::text("hello"),
+            Content::image("base64data", "image/png"),
+            Content::text("world"),
+        ];
+        assert_eq!(
+            extract_text_content(&content),
+            "hello\nworld",
+            "mixed blocks should return only text joined by newlines"
+        );
     }
 }

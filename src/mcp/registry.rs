@@ -551,6 +551,11 @@ mod tests {
 
         let result = registry.reconcile(&desired);
         assert_eq!(result.to_start.len(), 2, "should start both servers");
+        let names: Vec<&str> = result.to_start.iter().map(|e| e.name.as_str()).collect();
+        assert!(
+            names.contains(&"fs") && names.contains(&"git"),
+            "to_start should contain fs and git"
+        );
         assert!(result.to_stop.is_empty(), "nothing to stop");
         assert_eq!(
             registry.servers().len(),
@@ -590,6 +595,20 @@ mod tests {
         assert!(
             result.to_start.is_empty(),
             "should not restart running server"
+        );
+        assert!(result.to_stop.is_empty(), "nothing to stop");
+    }
+
+    #[test]
+    fn reconcile_skips_already_pending() {
+        let mut registry = McpRegistry::new();
+        // First reconcile adds server as Pending; do NOT call mark_running
+        registry.reconcile(&[entry("fs", "mcp-fs")]);
+
+        let result = registry.reconcile(&[entry("fs", "mcp-fs")]);
+        assert!(
+            result.to_start.is_empty(),
+            "should not restart pending server"
         );
         assert!(result.to_stop.is_empty(), "nothing to stop");
     }
@@ -672,9 +691,10 @@ mod tests {
             .await;
         assert!(result.is_err(), "should error for unknown tool");
         let err = result.unwrap_err();
-        assert!(
-            matches!(err, ToolError::NotFound(_)),
-            "should be NotFound error"
+        assert_eq!(
+            err,
+            ToolError::NotFound("nonexistent".to_string()),
+            "should be NotFound carrying the tool name"
         );
     }
 
@@ -719,27 +739,19 @@ mod tests {
     #[tokio::test]
     async fn deactivate_project_decrements_count() {
         let mut registry = McpRegistry::new();
-        // Simulate two activations by inserting directly
-        registry.project_refs.insert(
-            "myproject".to_string(),
-            ProjectMcpState {
-                active_count: 2,
-                servers: vec![entry("svc", "mcp-svc")],
-            },
-        );
-        // Track the server as pending (no real client)
-        registry.reconcile(&[entry("svc", "mcp-svc")]);
+        // Build count=2 through the public API
+        registry
+            .activate_project("myproject", &[entry("svc", "mcp-svc")])
+            .await;
+        registry
+            .activate_project("myproject", &[entry("svc", "mcp-svc")])
+            .await;
 
         // First deactivation: count 2 → 1, no servers stopped
         let first_stopped = registry.deactivate_project("myproject").await;
         assert!(
             first_stopped.is_empty(),
             "count > 0, no servers should be stopped"
-        );
-        // Project entry should still exist (entry still has count = 1)
-        assert!(
-            registry.project_refs.contains_key("myproject"),
-            "project still tracked at count 1"
         );
 
         // Second deactivation: count 1 → 0, servers stopped
@@ -748,10 +760,6 @@ mod tests {
             second_stopped,
             vec!["svc"],
             "server should be stopped at count 0"
-        );
-        assert!(
-            !registry.project_refs.contains_key("myproject"),
-            "project entry should be removed"
         );
     }
 
@@ -768,15 +776,11 @@ mod tests {
     #[tokio::test]
     async fn force_deactivate_project_ignores_count() {
         let mut registry = McpRegistry::new();
-        // Simulate 3 active refs
-        registry.project_refs.insert(
-            "bigproject".to_string(),
-            ProjectMcpState {
-                active_count: 3,
-                servers: vec![entry("alpha", "mcp-alpha"), entry("beta", "mcp-beta")],
-            },
-        );
-        registry.reconcile(&[entry("alpha", "mcp-alpha"), entry("beta", "mcp-beta")]);
+        // Build count=3 through the public API
+        let servers = &[entry("alpha", "mcp-alpha"), entry("beta", "mcp-beta")];
+        registry.activate_project("bigproject", servers).await;
+        registry.activate_project("bigproject", servers).await;
+        registry.activate_project("bigproject", servers).await;
 
         let stopped = registry.force_deactivate_project("bigproject").await;
         assert_eq!(
@@ -784,9 +788,11 @@ mod tests {
             2,
             "both servers should be reported as stopped"
         );
+        // Verify the entry is gone: a subsequent force deactivate is a no-op
+        let noop = registry.force_deactivate_project("bigproject").await;
         assert!(
-            !registry.project_refs.contains_key("bigproject"),
-            "project entry should be removed"
+            noop.is_empty(),
+            "project entry should be removed after force deactivate"
         );
     }
 
@@ -872,5 +878,45 @@ mod tests {
             matches!(server.status, McpStatus::Failed(_)),
             "server should be marked failed"
         );
+    }
+
+    #[tokio::test]
+    async fn deactivate_project_when_count_already_zero_is_noop() {
+        let mut registry = McpRegistry::new();
+        registry.activate_project("proj", &[]).await;
+        registry.deactivate_project("proj").await;
+        // Project entry is now gone; second deactivate on a missing entry
+        let stopped = registry.deactivate_project("proj").await;
+        assert!(
+            stopped.is_empty(),
+            "second deactivate after count reached zero is a no-op"
+        );
+    }
+
+    #[tokio::test]
+    async fn activate_project_case_normalization() {
+        let mut registry = McpRegistry::new();
+        // Activate with mixed case
+        registry
+            .activate_project("MyProject", &[entry("svc", "mcp-svc")])
+            .await;
+        // Second activation with different case should reuse the existing entry
+        let report = registry
+            .activate_project("myproject", &[entry("svc", "mcp-svc")])
+            .await;
+        assert_eq!(
+            report.started, 0,
+            "second activation with normalized name reuses existing entry"
+        );
+        assert!(
+            report.failures.is_empty(),
+            "no new connections attempted on second activation"
+        );
+        // Deactivation with uppercase variant decrements count
+        let first = registry.deactivate_project("MYPROJECT").await;
+        assert!(first.is_empty(), "count 2→1, no servers stopped");
+        // Final deactivation clears the project
+        let second = registry.deactivate_project("myproject").await;
+        assert_eq!(second, vec!["svc"], "count 1→0, server stopped");
     }
 }

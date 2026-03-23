@@ -36,7 +36,7 @@ use tokio::sync::RwLock;
 use crate::models::{ImageData, ToolDefinition};
 
 /// Errors from tool execution.
-#[derive(Error, Debug)]
+#[derive(Error, Debug, PartialEq)]
 pub enum ToolError {
     /// The requested tool was not found in the registry.
     #[error("unknown tool: {0}")]
