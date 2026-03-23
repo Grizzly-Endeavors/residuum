@@ -396,9 +396,10 @@ mod tests {
             active.body.contains("Overview body text"),
             "body should be loaded"
         );
-        assert!(
-            state.active_project_name().is_some(),
-            "should have active project"
+        assert_eq!(
+            state.active_project_name(),
+            Some("Test Project"),
+            "active project name should match"
         );
     }
 
@@ -455,6 +456,10 @@ mod tests {
         let now = make_datetime(2026, 2, 23, 14, 32);
         let result = state.deactivate("", now).await;
         assert!(result.is_err(), "empty log should be rejected");
+        assert!(
+            state.active_project_name().is_some(),
+            "project should still be active after failed deactivate"
+        );
     }
 
     #[tokio::test]
@@ -600,5 +605,50 @@ mod tests {
             content.contains("**16:30** Second session."),
             "should have second entry"
         );
+    }
+
+    #[tokio::test]
+    async fn activate_archived_project_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        let layout = WorkspaceLayout::new(dir.path().join("workspace"));
+        crate::workspace::bootstrap::ensure_workspace(&layout, None, None)
+            .await
+            .unwrap();
+
+        let project_dir = layout.projects_dir().join("archived-proj");
+        tokio::fs::create_dir_all(&project_dir).await.unwrap();
+        tokio::fs::write(
+            project_dir.join("PROJECT.md"),
+            "---\nname: Archived Project\ndescription: \"Archived\"\nstatus: archived\ncreated: 2026-01-01\narchived: 2026-02-01\n---\n",
+        )
+        .await
+        .unwrap();
+
+        let index = ProjectIndex::scan(&layout).await.unwrap();
+        let mut state = ProjectState::new(index, layout);
+
+        let result = state.activate("Archived Project").await;
+        assert!(
+            result.is_err(),
+            "archived project should not be activatable"
+        );
+        let err_msg = format!("{}", result.unwrap_err());
+        assert!(
+            err_msg.contains("archived"),
+            "error should mention archived"
+        );
+    }
+
+    #[tokio::test]
+    async fn deactivate_whitespace_log_rejected() {
+        let (_dir, layout) = setup_workspace_with_project().await;
+        let index = ProjectIndex::scan(&layout).await.unwrap();
+        let mut state = ProjectState::new(index, layout);
+
+        state.activate("Test Project").await.unwrap();
+
+        let now = make_datetime(2026, 2, 23, 14, 32);
+        let result = state.deactivate("   ", now).await;
+        assert!(result.is_err(), "whitespace-only log should be rejected");
     }
 }

@@ -292,4 +292,47 @@ mod tests {
         assert_eq!(fm.status, ProjectStatus::Archived, "should be archived");
         assert_eq!(fm.archived, Some(archive_date), "should have archived date");
     }
+
+    #[tokio::test]
+    async fn create_empty_dir_name_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        let layout = WorkspaceLayout::new(dir.path().join("workspace"));
+        ensure_workspace(&layout, None, None).await.unwrap();
+
+        let today = NaiveDate::from_ymd_opt(2026, 2, 23).unwrap();
+        let result = create_project(&layout, "---", "desc", vec![], today).await;
+        assert!(
+            result.is_err(),
+            "name producing empty dir name should be rejected"
+        );
+    }
+
+    #[tokio::test]
+    async fn archive_nonexistent_project() {
+        let dir = tempfile::tempdir().unwrap();
+        let layout = WorkspaceLayout::new(dir.path().join("workspace"));
+        ensure_workspace(&layout, None, None).await.unwrap();
+
+        let today = NaiveDate::from_ymd_opt(2026, 2, 23).unwrap();
+        let result = archive_project(&layout, "does-not-exist", today).await;
+        assert!(
+            result.is_err(),
+            "archiving nonexistent project should error"
+        );
+    }
+
+    #[test]
+    fn sanitize_empty_string() {
+        assert_eq!(sanitize_dir_name(""), "");
+    }
+
+    #[test]
+    fn sanitize_unicode_accented() {
+        assert_eq!(sanitize_dir_name("café"), "café");
+    }
+
+    #[test]
+    fn sanitize_unicode_emoji() {
+        assert_eq!(sanitize_dir_name("🚀launch"), "launch");
+    }
 }

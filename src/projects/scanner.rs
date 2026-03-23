@@ -308,6 +308,20 @@ Some overview body text here.
             parsed_body.contains("Some body content"),
             "body should round-trip"
         );
+        assert_eq!(
+            parsed_fm.description, "Round-trip test",
+            "description should round-trip"
+        );
+        assert_eq!(
+            parsed_fm.status,
+            ProjectStatus::Active,
+            "status should round-trip"
+        );
+        assert_eq!(
+            parsed_fm.created,
+            chrono::NaiveDate::from_ymd_opt(2026, 2, 20).unwrap(),
+            "created should round-trip"
+        );
     }
 
     #[tokio::test]
@@ -339,8 +353,16 @@ Some overview body text here.
         .await
         .unwrap();
 
+        // Create a directory without PROJECT.md — should be skipped
+        let no_md_dir = layout.projects_dir().join("no-project-md");
+        tokio::fs::create_dir(&no_md_dir).await.unwrap();
+
         let index = ProjectIndex::scan(&layout).await.unwrap();
-        assert_eq!(index.entries().len(), 1, "should find one project");
+        assert_eq!(
+            index.entries().len(),
+            1,
+            "should find one project, skipping dir without PROJECT.md"
+        );
         assert_eq!(
             index.entries().first().unwrap().name,
             "Test Project",
@@ -429,6 +451,31 @@ Some overview body text here.
         );
         assert!(
             index.find_by_name("nonexistent").is_none(),
+            "should not find nonexistent"
+        );
+    }
+
+    #[test]
+    fn find_by_dir_name_case_insensitive() {
+        let index = ProjectIndex {
+            entries: vec![ProjectIndexEntry {
+                name: "My Project".to_string(),
+                description: "A project".to_string(),
+                status: ProjectStatus::Active,
+                dir_name: "my-project".to_string(),
+            }],
+        };
+
+        assert!(
+            index.find_by_dir_name("my-project").is_some(),
+            "should find exact match"
+        );
+        assert!(
+            index.find_by_dir_name("MY-PROJECT").is_some(),
+            "should find case-insensitive match"
+        );
+        assert!(
+            index.find_by_dir_name("nonexistent").is_none(),
             "should not find nonexistent"
         );
     }

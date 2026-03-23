@@ -202,6 +202,19 @@ mod tests {
         );
         assert_eq!(manifest.workspace.len(), 1, "should find file in workspace");
         assert_eq!(manifest.skills.len(), 1, "should find file in skills");
+        assert!(
+            manifest
+                .notes
+                .first()
+                .unwrap()
+                .relative_path
+                .contains("notes/test.md"),
+            "notes file path should be correct"
+        );
+        assert!(
+            manifest.notes.first().unwrap().size_bytes > 0,
+            "notes file size should be non-zero"
+        );
     }
 
     #[tokio::test]
@@ -231,6 +244,21 @@ mod tests {
     #[test]
     fn format_size_bytes() {
         assert_eq!(format_size(500), "500 B", "small files show bytes");
+    }
+
+    #[test]
+    fn format_size_zero() {
+        assert_eq!(format_size(0), "0 B", "zero bytes");
+    }
+
+    #[test]
+    fn format_size_kb_boundary() {
+        assert_eq!(format_size(1024), "1.0 KB", "1024 bytes is exactly 1 KB");
+    }
+
+    #[test]
+    fn format_size_mb_boundary() {
+        assert_eq!(format_size(1024 * 1024), "1.0 MB", "1 MB boundary");
     }
 
     #[test]
