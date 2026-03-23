@@ -384,9 +384,163 @@ mod tests {
             tokio::fs::read_to_string(result.transcript_path.as_ref().unwrap())
                 .await
                 .unwrap();
+        if let AgentResultStatus::Failed { error } = &result.status {
+            assert!(transcript_content.contains(error.as_str()));
+        }
+    }
+
+    #[tokio::test]
+    async fn cancel_returns_true_for_known_false_for_unknown() {
+        let (tx, _rx) = mpsc::channel(32);
+        let dir = tempfile::tempdir().unwrap();
+        // Zero concurrency: tasks block waiting for the semaphore, so they
+        // remain registered in active_tasks long enough to cancel.
+        let spawner = BackgroundTaskSpawner::new(tx, 0, dir.path().to_path_buf());
+
+        let task = BackgroundTask {
+            id: "cancel-check".to_string(),
+            source_label: "agent:cancel_test".to_string(),
+            source: EventTrigger::Agent,
+            subagent_config: SubAgentConfig {
+                prompt: "do work".to_string(),
+                context: None,
+                model_tier: BackgroundModelTier::Medium,
+            },
+            agent_preset: PresetName::from("general-purpose"),
+        };
+
+        let task_id = spawner.spawn(task, None).await.unwrap();
+
         assert!(
-            transcript_content.contains("SubAgentResources"),
-            "transcript should contain the error from status"
+            spawner.cancel(&task_id).await,
+            "should return true for known task"
+        );
+        assert!(
+            !spawner.cancel("nonexistent-id").await,
+            "should return false for unknown task"
+        );
+    }
+
+    #[tokio::test]
+    async fn list_active_tasks_returns_registered_task_info() {
+        let (tx, _rx) = mpsc::channel(32);
+        let dir = tempfile::tempdir().unwrap();
+        // Zero concurrency keeps the task registered.
+        let spawner = BackgroundTaskSpawner::new(tx, 0, dir.path().to_path_buf());
+
+        let task = BackgroundTask {
+            id: "list-test".to_string(),
+            source_label: "agent:list_test".to_string(),
+            source: EventTrigger::Agent,
+            subagent_config: SubAgentConfig {
+                prompt: "do work".to_string(),
+                context: None,
+                model_tier: BackgroundModelTier::Medium,
+            },
+            agent_preset: PresetName::from("general-purpose"),
+        };
+
+        spawner.spawn(task, None).await.unwrap();
+
+        let active = spawner.list_active_tasks().await;
+        assert_eq!(active.len(), 1);
+        let (id, info) = active.first().unwrap();
+        assert_eq!(id, "list-test");
+        assert_eq!(info.source_label, "agent:list_test");
+    }
+
+    #[tokio::test]
+    async fn cancelled_task_produces_cancelled_status() {
+        use crate::mcp::McpRegistry;
+        use crate::models::{
+            CompletionOptions, Message, ModelError, ModelResponse, ToolDefinition,
+        };
+        use crate::projects::activation::ProjectState;
+        use crate::projects::scanner::ProjectIndex;
+        use crate::skills::{SkillIndex, SkillState};
+        use crate::tools::path_policy::PathPolicy;
+        use crate::tools::{ToolFilter, ToolRegistry};
+        use crate::workspace::identity::IdentityFiles;
+        use crate::workspace::layout::WorkspaceLayout;
+        use async_trait::async_trait;
+        use std::collections::HashSet;
+        use std::path::PathBuf;
+
+        struct BlockingProvider;
+
+        #[async_trait]
+        impl crate::models::ModelProvider for BlockingProvider {
+            async fn complete(
+                &self,
+                _messages: &[Message],
+                _tools: &[ToolDefinition],
+                _options: &CompletionOptions,
+            ) -> Result<ModelResponse, ModelError> {
+                tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+                Err(ModelError::Api("cancelled".into()))
+            }
+
+            fn model_name(&self) -> &'static str {
+                "blocking"
+            }
+        }
+
+        let project_state = ProjectState::new_shared(
+            ProjectIndex::default(),
+            WorkspaceLayout::new(PathBuf::from("/tmp")),
+        );
+        let skill_state = SkillState::new_shared(SkillIndex::default(), vec![]);
+        let path_policy = PathPolicy::new_shared(PathBuf::from("/tmp"));
+        let tool_filter = ToolFilter::new_shared(HashSet::new());
+        let mcp_registry = McpRegistry::new_shared();
+        let resources = SubAgentResources {
+            provider: Box::new(BlockingProvider),
+            tools: ToolRegistry::new(),
+            tool_filter,
+            mcp_registry,
+            project_state,
+            skill_state,
+            path_policy,
+            identity: IdentityFiles::default(),
+            options: CompletionOptions::default(),
+            projects_ctx_index: None,
+            skills_index: None,
+            preset_instructions: None,
+        };
+
+        let (tx, mut rx) = mpsc::channel(32);
+        let dir = tempfile::tempdir().unwrap();
+        let spawner = BackgroundTaskSpawner::new(tx, 1, dir.path().to_path_buf());
+
+        let task = BackgroundTask {
+            id: "cancel-status-test".to_string(),
+            source_label: "agent:cancel_status".to_string(),
+            source: EventTrigger::Agent,
+            subagent_config: SubAgentConfig {
+                prompt: "block forever".to_string(),
+                context: None,
+                model_tier: BackgroundModelTier::Medium,
+            },
+            agent_preset: PresetName::from("general-purpose"),
+        };
+
+        let task_id = spawner.spawn(task, Some(resources)).await.unwrap();
+
+        // Yield to let the task acquire the semaphore and enter the select!
+        tokio::task::yield_now().await;
+        tokio::task::yield_now().await;
+
+        spawner.cancel(&task_id).await;
+
+        let result = tokio::time::timeout(std::time::Duration::from_millis(500), rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+
+        assert!(
+            matches!(result.status, AgentResultStatus::Cancelled),
+            "cancelled task should produce Cancelled status, got {:?}",
+            result.status
         );
     }
 }

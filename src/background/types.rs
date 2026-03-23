@@ -207,6 +207,10 @@ mod tests {
             formatted.contains("/tmp/bg-002.log"),
             "should contain transcript path"
         );
+        assert!(
+            !formatted.contains("Output:"),
+            "failed result with empty summary should omit Output section"
+        );
     }
 
     #[test]

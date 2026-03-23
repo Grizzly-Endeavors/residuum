@@ -190,8 +190,47 @@ mod tests {
 
         assert_eq!(event.task_id, "bg-test");
         assert_eq!(event.source_label, "agent:test-task");
+        assert!(matches!(event.status, AgentResultStatus::Completed));
+        assert_eq!(event.summary, "done");
+        assert_eq!(event.heartbeat_status, HeartbeatStatus::Substantive);
 
         drop(tx);
         handle.await.unwrap();
+    }
+
+    #[test]
+    fn convert_pulse_result_without_sentinel() {
+        let result = BackgroundResult {
+            id: "pulse-2".into(),
+            source_label: "pulse:health".into(),
+            source: EventTrigger::Pulse,
+            summary: "checked 3 items".into(),
+            transcript_path: None,
+            status: AgentResultStatus::Completed,
+            timestamp: Utc::now(),
+
+            agent_preset: PresetName::from("general-purpose"),
+        };
+
+        let event = convert_to_agent_result(&result, chrono_tz::UTC);
+        assert_eq!(event.heartbeat_status, HeartbeatStatus::Substantive);
+    }
+
+    #[test]
+    fn convert_non_pulse_result_with_heartbeat_sentinel() {
+        let result = BackgroundResult {
+            id: "action-1".into(),
+            source_label: "action:check".into(),
+            source: EventTrigger::Action,
+            summary: "HEARTBEAT_OK".into(),
+            transcript_path: None,
+            status: AgentResultStatus::Completed,
+            timestamp: Utc::now(),
+
+            agent_preset: PresetName::from("general-purpose"),
+        };
+
+        let event = convert_to_agent_result(&result, chrono_tz::UTC);
+        assert_eq!(event.heartbeat_status, HeartbeatStatus::Substantive);
     }
 }

@@ -567,11 +567,44 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(output.summary, "done");
-        // At minimum: the initial user message + the assistant response
         assert!(
             output.messages.len() >= 2,
             "transcript should contain at least user + assistant messages, got {}",
             output.messages.len()
+        );
+        let first = output.messages.first().unwrap();
+        assert_eq!(first.role, crate::models::Role::User);
+        assert!(
+            first.content.contains("do work"),
+            "user message should contain the prompt"
+        );
+        let last = output.messages.last().unwrap();
+        assert_eq!(last.role, crate::models::Role::Assistant);
+        assert_eq!(last.content, "done");
+    }
+
+    #[tokio::test]
+    async fn subagent_includes_context_in_user_message() {
+        let resources = make_resources("result");
+
+        let config = SubAgentConfig {
+            prompt: "check emails".to_string(),
+            context: Some("extra context".to_string()),
+            model_tier: crate::config::BackgroundModelTier::Medium,
+        };
+
+        let output = execute_subagent("bg-ctx", &config, &resources)
+            .await
+            .unwrap();
+        let first = output.messages.first().unwrap();
+        assert_eq!(first.role, crate::models::Role::User);
+        assert!(
+            first.content.contains("extra context"),
+            "user message should contain the context"
+        );
+        assert!(
+            first.content.contains("check emails"),
+            "user message should contain the prompt"
         );
     }
 
