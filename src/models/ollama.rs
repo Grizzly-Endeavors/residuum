@@ -73,10 +73,6 @@ impl OllamaClient {
         }
     }
 
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "internal helper with many model params"
-    )]
     async fn send_completion(
         http: &SharedHttpClient,
         url: &str,

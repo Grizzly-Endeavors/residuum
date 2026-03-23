@@ -26,6 +26,7 @@ For each finding, be specific — reference file paths and line numbers. Focus o
 ### Naming and conventions
 - Files, functions, or types with unclear or inconsistent names.
 - Deviations from Rust conventions or the project's style (see the project CLAUDE.md).
+- Includes expects that could be removed with minimal refactoring.
 
 ## Output format
 

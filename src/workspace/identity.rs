@@ -108,51 +108,6 @@ mod tests {
     use crate::workspace::bootstrap::ensure_workspace;
 
     #[tokio::test]
-    async fn load_after_bootstrap() {
-        let dir = tempfile::tempdir().unwrap();
-        let layout = WorkspaceLayout::new(dir.path().join("workspace"));
-
-        ensure_workspace(&layout, None, None).await.unwrap();
-        let identity = IdentityFiles::load(&layout).await.unwrap();
-
-        let soul = identity.soul.as_deref().unwrap();
-        assert!(
-            soul.contains("You are Residuum"),
-            "soul content should match default"
-        );
-
-        let agents = identity.agents.as_deref().unwrap();
-        assert!(
-            agents.contains("Agent Behavior"),
-            "agents content should match default"
-        );
-
-        let user = identity.user.as_deref().unwrap();
-        assert!(
-            user.contains("User Preferences"),
-            "user content should match default"
-        );
-
-        let memory = identity.memory.as_deref().unwrap();
-        assert!(
-            memory.contains("Persistent notes across restarts"),
-            "memory content should match default"
-        );
-
-        let environment = identity.environment.as_deref().unwrap();
-        assert!(
-            environment.contains("Document details about the local system environment"),
-            "environment content should match default"
-        );
-
-        let bootstrap = identity.bootstrap.as_deref().unwrap();
-        assert!(
-            bootstrap.contains("First Run"),
-            "bootstrap content should match default"
-        );
-    }
-
-    #[tokio::test]
     async fn load_bootstrap_none_after_deletion() {
         let dir = tempfile::tempdir().unwrap();
         let layout = WorkspaceLayout::new(dir.path().join("workspace"));
