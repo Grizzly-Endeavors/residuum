@@ -273,7 +273,7 @@ INSTRUCTIONS
         pre_head=$(cd "$worktree_path" && git rev-parse HEAD)
 
         local claude_exit=0
-        (cd "$worktree_path" && timeout "${TIMEOUT}s" claude -p --model "$MODEL" --no-session-persistence \
+        (cd "$worktree_path" && timeout "${TIMEOUT}s" claude -p --model "$MODEL" \
             --allowedTools "$CLAUDE_TOOLS" \
             --disallowedTools "$CLAUDE_DISALLOWED_TOOLS" \
             < "$tmpfile" > /dev/null 2>&1) || claude_exit=$?
@@ -470,7 +470,7 @@ COMMIT_INSTRUCTIONS
         fi
     } > "$resolve_prompt"
 
-    if claude -p --model "$MODEL" --no-session-persistence \
+    if claude -p --model "$MODEL" \
         --allowedTools "$CLAUDE_TOOLS" \
         --disallowedTools "$CLAUDE_DISALLOWED_TOOLS" \
         < "$resolve_prompt" > /dev/null 2>&1; then
