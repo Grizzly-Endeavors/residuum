@@ -1,0 +1,15 @@
+services:
+  residuum:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    ports:
+      - "7700:7700"
+    volumes:
+      - residuum-data:/home/residuum/.residuum
+    environment:
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+    restart: unless-stopped
+
+volumes:
+  residuum-data:
