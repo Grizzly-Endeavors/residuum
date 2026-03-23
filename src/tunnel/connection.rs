@@ -384,6 +384,7 @@ async fn handle_frame(
 }
 
 #[cfg(test)]
+#[expect(clippy::unwrap_used, reason = "test code uses unwrap for clarity")]
 mod tests {
     use super::*;
 
@@ -403,7 +404,12 @@ mod tests {
         let current = Duration::from_secs(45);
         let next = next_backoff(current);
         // Base is capped at MAX_BACKOFF (60s), jitter range → 30s..90s
+        let min_with_jitter = MAX_BACKOFF.mul_f64(0.5);
         let max_with_jitter = MAX_BACKOFF.mul_f64(1.5);
+        assert!(
+            next >= min_with_jitter,
+            "backoff should be at least {min_with_jitter:?}, got {next:?}"
+        );
         assert!(
             next <= max_with_jitter,
             "backoff should not exceed {max_with_jitter:?}, got {next:?}"
@@ -413,7 +419,12 @@ mod tests {
     #[test]
     fn backoff_at_max_stays_bounded() {
         let next = next_backoff(MAX_BACKOFF);
+        let min_with_jitter = MAX_BACKOFF.mul_f64(0.5);
         let max_with_jitter = MAX_BACKOFF.mul_f64(1.5);
+        assert!(
+            next >= min_with_jitter,
+            "backoff at max should be at least {min_with_jitter:?}, got {next:?}"
+        );
         assert!(
             next <= max_with_jitter,
             "backoff at max should stay bounded by {max_with_jitter:?}, got {next:?}"
@@ -436,5 +447,117 @@ mod tests {
             );
             current = next;
         }
+    }
+
+    #[test]
+    fn backoff_zero_input_returns_zero() {
+        let next = next_backoff(Duration::ZERO);
+        assert_eq!(next, Duration::ZERO, "zero input produces zero output");
+    }
+
+    #[test]
+    fn build_ws_request_wss_url() {
+        let cfg = crate::config::CloudConfig {
+            relay_url: "wss://relay.example.com/ws".to_string(),
+            token: "tok".to_string(),
+            local_port: 8080,
+        };
+        let req = build_ws_request(&cfg).unwrap();
+        assert_eq!(req.headers()["host"], "relay.example.com");
+    }
+
+    #[test]
+    fn build_ws_request_ws_url() {
+        let cfg = crate::config::CloudConfig {
+            relay_url: "ws://relay.example.com".to_string(),
+            token: "tok".to_string(),
+            local_port: 8080,
+        };
+        let req = build_ws_request(&cfg).unwrap();
+        assert_eq!(req.headers()["host"], "relay.example.com");
+    }
+
+    #[test]
+    fn build_ws_request_url_with_path() {
+        let cfg = crate::config::CloudConfig {
+            relay_url: "ws://relay.example.com/some/path".to_string(),
+            token: "tok".to_string(),
+            local_port: 8080,
+        };
+        let req = build_ws_request(&cfg).unwrap();
+        assert_eq!(req.headers()["host"], "relay.example.com");
+    }
+
+    #[test]
+    fn build_ws_request_malformed_url_falls_back_to_localhost() {
+        let cfg = crate::config::CloudConfig {
+            relay_url: "not-a-url".to_string(),
+            token: "tok".to_string(),
+            local_port: 8080,
+        };
+        let req = build_ws_request(&cfg).unwrap();
+        assert_eq!(req.headers()["host"], "localhost");
+    }
+
+    #[tokio::test]
+    async fn wait_for_connected_returns_some_on_connected_frame() {
+        use futures_util::stream;
+        let frame = TunnelFrame::Connected {
+            user_id: "user-1".to_string(),
+            keepalive_interval_secs: 30,
+        };
+        let json = serde_json::to_string(&frame).unwrap();
+        let messages: Vec<Result<Message, tokio_tungstenite::tungstenite::Error>> =
+            vec![Ok(Message::Text(json.into()))];
+        let mut stream = stream::iter(messages);
+        let result = wait_for_connected(&mut stream).await;
+        assert_eq!(result, Some(("user-1".to_string(), 30)));
+    }
+
+    #[tokio::test]
+    async fn wait_for_connected_returns_none_on_close_frame() {
+        use futures_util::stream;
+        let messages: Vec<Result<Message, tokio_tungstenite::tungstenite::Error>> =
+            vec![Ok(Message::Close(None))];
+        let mut stream = stream::iter(messages);
+        let result = wait_for_connected(&mut stream).await;
+        assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn wait_for_connected_skips_non_connected_frames() {
+        use futures_util::stream;
+        let ping_json = serde_json::to_string(&TunnelFrame::Ping).unwrap();
+        let connected_json = serde_json::to_string(&TunnelFrame::Connected {
+            user_id: "user-2".to_string(),
+            keepalive_interval_secs: 15,
+        })
+        .unwrap();
+        let messages: Vec<Result<Message, tokio_tungstenite::tungstenite::Error>> = vec![
+            Ok(Message::Text(ping_json.into())),
+            Ok(Message::Text(connected_json.into())),
+        ];
+        let mut stream = stream::iter(messages);
+        let result = wait_for_connected(&mut stream).await;
+        assert_eq!(result, Some(("user-2".to_string(), 15)));
+    }
+
+    #[tokio::test]
+    async fn wait_for_connected_returns_none_on_ws_error() {
+        use futures_util::stream;
+        let messages: Vec<Result<Message, tokio_tungstenite::tungstenite::Error>> =
+            vec![Err(tokio_tungstenite::tungstenite::Error::ConnectionClosed)];
+        let mut stream = stream::iter(messages);
+        let result = wait_for_connected(&mut stream).await;
+        assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn wait_for_connected_returns_none_when_stream_ends() {
+        use futures_util::stream;
+        let messages: Vec<Result<Message, tokio_tungstenite::tungstenite::Error>> = vec![];
+        let mut stream = stream::iter(messages);
+        let result = wait_for_connected(&mut stream).await;
+        assert!(result.is_none());
     }
 }

@@ -197,6 +197,24 @@ mod tests {
             super::super::is_hop_by_hop("Keep-Alive"),
             "Keep-Alive is hop-by-hop"
         );
+        assert!(super::super::is_hop_by_hop("host"), "host is hop-by-hop");
+        assert!(
+            super::super::is_hop_by_hop("upgrade"),
+            "upgrade is hop-by-hop"
+        );
+        assert!(super::super::is_hop_by_hop("te"), "te is hop-by-hop");
+        assert!(
+            super::super::is_hop_by_hop("trailer"),
+            "trailer is hop-by-hop"
+        );
+        assert!(
+            super::super::is_hop_by_hop("sec-websocket-version"),
+            "sec-websocket-version is hop-by-hop"
+        );
+        assert!(
+            super::super::is_hop_by_hop("sec-websocket-key"),
+            "sec-websocket-key is hop-by-hop"
+        );
         assert!(
             !super::super::is_hop_by_hop("content-type"),
             "content-type is not hop-by-hop"
@@ -221,11 +239,11 @@ mod tests {
             ..
         } = frame
         {
-            assert!(request_id == "req-1", "request_id should match");
-            assert!(status == 502, "status should be 502");
+            assert_eq!(request_id, "req-1", "request_id should match");
+            assert_eq!(status, 502, "status should be 502");
             let decoded = STANDARD.decode(body.unwrap()).unwrap();
             let text = String::from_utf8(decoded).unwrap();
-            assert!(text == "test error", "body should contain error message");
+            assert_eq!(text, "test error", "body should contain error message");
         }
     }
 }
