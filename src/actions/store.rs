@@ -162,30 +162,56 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("scheduled_actions.json");
 
+        let original = make_action("action-00000001", 60);
         let mut store = ActionStore::load(&path).await.unwrap();
-        store.add(make_action("action-00000001", 60));
+        store.add(original.clone());
         store.save().await.unwrap();
 
         let loaded = ActionStore::load(&path).await.unwrap();
         assert_eq!(loaded.list().len(), 1, "should load one action");
         assert_eq!(
-            loaded.list().first().map(|a| a.id.as_str()),
-            Some("action-00000001"),
-            "action id should match"
+            loaded.list().first().unwrap(),
+            &original,
+            "loaded action should equal original"
+        );
+    }
+
+    #[tokio::test]
+    async fn round_trip_optional_fields() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("scheduled_actions.json");
+
+        let now = Utc::now();
+        let original = ScheduledAction {
+            id: "action-00000002".to_string(),
+            name: "action with options".to_string(),
+            prompt: "do something".to_string(),
+            run_at: now + Duration::seconds(60),
+            agent: Some("main".to_string()),
+            model_tier: Some("small".to_string()),
+            created_at: now,
+        };
+
+        let mut store = ActionStore::new_empty(&path);
+        store.add(original.clone());
+        store.save().await.unwrap();
+
+        let loaded = ActionStore::load(&path).await.unwrap();
+        assert_eq!(loaded.list().len(), 1);
+        assert_eq!(
+            loaded.list().first().unwrap(),
+            &original,
+            "optional fields should survive round-trip"
         );
     }
 
     #[test]
     fn take_due_filters_correctly() {
         let now = Utc::now();
-        let mut store = ActionStore {
-            actions: vec![
-                make_action("past", -60),
-                make_action("future", 3600),
-                make_action("also-past", -1),
-            ],
-            path: PathBuf::from("/tmp/test.json"),
-        };
+        let mut store = ActionStore::new_empty(PathBuf::from("/tmp/test.json"));
+        store.add(make_action("past", -60));
+        store.add(make_action("future", 3600));
+        store.add(make_action("also-past", -1));
 
         let due = store.take_due(now);
         assert_eq!(due.len(), 2, "should take 2 due actions");
@@ -194,11 +220,31 @@ mod tests {
     }
 
     #[test]
+    fn take_due_empty_store() {
+        let mut store = ActionStore::new_empty(PathBuf::from("/tmp/test.json"));
+        let due = store.take_due(Utc::now());
+        assert!(due.is_empty(), "empty store should return no due actions");
+        assert!(store.list().is_empty(), "store should remain empty");
+    }
+
+    #[test]
+    fn take_due_exact_now_boundary() {
+        let mut store = ActionStore::new_empty(PathBuf::from("/tmp/test.json"));
+        store.add(make_action("exact", 0));
+        let now = Utc::now();
+        let due = store.take_due(now);
+        assert_eq!(due.len(), 1, "action at exactly now should be taken");
+        assert!(
+            store.list().is_empty(),
+            "store should be empty after taking"
+        );
+    }
+
+    #[test]
     fn remove_by_id() {
-        let mut store = ActionStore {
-            actions: vec![make_action("keep", 60), make_action("remove", 120)],
-            path: PathBuf::from("/tmp/test.json"),
-        };
+        let mut store = ActionStore::new_empty(PathBuf::from("/tmp/test.json"));
+        store.add(make_action("keep", 60));
+        store.add(make_action("remove", 120));
 
         assert!(store.remove("remove"), "should return true for existing");
         assert!(!store.remove("remove"), "should return false for missing");
@@ -220,11 +266,16 @@ mod tests {
         let store = ActionStore::load(&path).await.unwrap();
         store.save().await.unwrap();
 
-        let tmp = dir.path().join(format!(
-            ".{}.tmp",
-            path.file_name().unwrap().to_string_lossy()
-        ));
-        assert!(!tmp.exists(), "tmp file should not remain after save");
+        assert!(path.exists(), "saved file should exist");
+        let tmp_files: Vec<_> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|e| e.file_name().to_string_lossy().ends_with(".tmp"))
+            .collect();
+        assert!(
+            tmp_files.is_empty(),
+            "no .tmp files should remain after save"
+        );
     }
 
     #[tokio::test]
@@ -234,5 +285,10 @@ mod tests {
         tokio::fs::write(&path, "not json").await.unwrap();
         let result = ActionStore::load(&path).await;
         assert!(result.is_err(), "malformed JSON should return error");
+        let err = result.err().unwrap();
+        assert!(
+            err.to_string().contains(path.to_str().unwrap()),
+            "error should contain the file path"
+        );
     }
 }
