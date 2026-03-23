@@ -80,37 +80,19 @@ impl OllamaClient {
     async fn send_completion(
         http: &SharedHttpClient,
         url: &str,
-        model: &str,
-        message_count: usize,
-        tool_count: usize,
         api_key: Option<&str>,
-        messages: Vec<OllamaMessage>,
-        tools: Option<Vec<OllamaTool>>,
-        format: Option<serde_json::Value>,
-        model_options: Option<OllamaModelOptions>,
-        keep_alive: Option<String>,
-        think: Option<bool>,
+        request: &OllamaChatRequest<'_>,
     ) -> Result<ModelResponse, ModelError> {
         let timeout_secs = http.timeout_secs();
-        let request = OllamaChatRequest {
-            model,
-            messages,
-            tools,
-            stream: false,
-            format,
-            options: model_options,
-            keep_alive,
-            think,
-        };
 
         debug!(
-            model = %model,
-            message_count,
-            tool_count,
+            model = %request.model,
+            message_count = request.messages.len(),
+            tool_count = request.tools.as_ref().map_or(0, Vec::len),
             "sending ollama completion request"
         );
 
-        let mut req_builder = http.client().post(url).json(&request);
+        let mut req_builder = http.client().post(url).json(request);
         if let Some(key) = api_key {
             req_builder = req_builder.header("Authorization", format!("Bearer {key}"));
         }
@@ -157,7 +139,7 @@ impl OllamaClient {
         let mut resp = ModelResponse::new(content, tool_calls);
         resp.thinking = chat_response.message.thinking;
         info!(
-            model = %model,
+            model = %request.model,
             content_len = resp.content.len(),
             tool_calls = resp.tool_calls.len(),
             "ollama completion received"
@@ -188,8 +170,6 @@ impl ModelProvider for OllamaClient {
             })
             .collect();
         let has_tools = !ollama_tools.is_empty();
-        let message_count = messages.len();
-        let tool_count = tools.len();
         let model = self.model.clone();
         let api_key = self.api_key.clone();
         let keep_alive = self.keep_alive.clone();
@@ -220,21 +200,17 @@ impl ModelProvider for OllamaClient {
             let model_options = model_options.clone();
 
             async move {
-                Self::send_completion(
-                    &http,
-                    &url,
-                    &model,
-                    message_count,
-                    tool_count,
-                    api_key.as_deref(),
-                    ollama_messages,
-                    has_tools.then_some(ollama_tools),
+                let request = OllamaChatRequest {
+                    model: &model,
+                    messages: ollama_messages,
+                    tools: has_tools.then_some(ollama_tools),
+                    stream: false,
                     format,
-                    model_options,
+                    options: model_options,
                     keep_alive,
                     think,
-                )
-                .await
+                };
+                Self::send_completion(&http, &url, api_key.as_deref(), &request).await
             }
         })
         .await

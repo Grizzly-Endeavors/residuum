@@ -182,6 +182,9 @@ for ((w=0; w<JOBS; w++)); do
         echo "FATAL: could not create worktree worker-$w"
         exit 1
     fi
+    # build.rs expects web/dist/ to exist — create a stub so cargo commands work
+    mkdir -p "$wt_path/web/dist"
+    touch "$wt_path/web/dist/index.html"
 done
 
 # Distribute audit files round-robin across workers
