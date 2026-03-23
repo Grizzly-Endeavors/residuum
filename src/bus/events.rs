@@ -288,15 +288,26 @@ pub enum TurnLifecycleEvent {
 #[cfg(test)]
 #[expect(clippy::unwrap_used, reason = "test code uses unwrap for clarity")]
 mod tests {
-    use std::path::PathBuf;
+    use chrono::NaiveDate;
 
     use super::*;
+    use crate::bus::types::PresetName;
 
-    fn test_timestamp() -> chrono::NaiveDateTime {
-        chrono::NaiveDate::from_ymd_opt(2026, 3, 13)
-            .unwrap()
-            .and_hms_opt(12, 0, 0)
-            .unwrap()
+    fn make_agent_result(summary: &str, transcript: Option<&str>) -> AgentResultEvent {
+        AgentResultEvent {
+            task_id: "t1".into(),
+            source_label: "pulse:check".into(),
+            agent_preset: PresetName::from("default"),
+            source: EventTrigger::Pulse,
+            heartbeat_status: HeartbeatStatus::Ok,
+            status: AgentResultStatus::Completed,
+            summary: summary.into(),
+            transcript_path: transcript.map(std::path::PathBuf::from),
+            timestamp: NaiveDate::from_ymd_opt(2026, 3, 13)
+                .unwrap()
+                .and_hms_opt(12, 0, 0)
+                .unwrap(),
+        }
     }
 
     #[test]
@@ -343,53 +354,39 @@ mod tests {
         );
     }
 
-    fn make_result_event(summary: &str, transcript_path: Option<PathBuf>) -> AgentResultEvent {
-        AgentResultEvent {
-            task_id: "t1".into(),
-            source_label: "pulse:check".into(),
-            agent_preset: PresetName::from("default"),
-            source: EventTrigger::Pulse,
-            heartbeat_status: HeartbeatStatus::Ok,
-            status: AgentResultStatus::Completed,
-            summary: summary.into(),
-            transcript_path,
-            timestamp: test_timestamp(),
-        }
-    }
-
     #[test]
     fn format_for_agent_empty_summary_no_transcript() {
-        let ev = make_result_event("", None);
+        let event = make_agent_result("", None);
         assert_eq!(
-            ev.format_for_agent(),
+            event.format_for_agent(),
             "[Background Task Result]\nTask: pulse:check (t1)\nSource: pulse\nStatus: completed"
         );
     }
 
     #[test]
     fn format_for_agent_with_summary_no_transcript() {
-        let ev = make_result_event("3 new emails", None);
+        let event = make_agent_result("some output", None);
         assert_eq!(
-            ev.format_for_agent(),
-            "[Background Task Result]\nTask: pulse:check (t1)\nSource: pulse\nStatus: completed\nOutput:\n3 new emails"
+            event.format_for_agent(),
+            "[Background Task Result]\nTask: pulse:check (t1)\nSource: pulse\nStatus: completed\nOutput:\nsome output"
         );
     }
 
     #[test]
     fn format_for_agent_empty_summary_with_transcript() {
-        let ev = make_result_event("", Some(PathBuf::from("/tmp/log.txt")));
+        let event = make_agent_result("", Some("/tmp/transcript.txt"));
         assert_eq!(
-            ev.format_for_agent(),
-            "[Background Task Result]\nTask: pulse:check (t1)\nSource: pulse\nStatus: completed\nTranscript: /tmp/log.txt"
+            event.format_for_agent(),
+            "[Background Task Result]\nTask: pulse:check (t1)\nSource: pulse\nStatus: completed\nTranscript: /tmp/transcript.txt"
         );
     }
 
     #[test]
     fn format_for_agent_with_summary_and_transcript() {
-        let ev = make_result_event("done", Some(PathBuf::from("/tmp/log.txt")));
+        let event = make_agent_result("some output", Some("/tmp/transcript.txt"));
         assert_eq!(
-            ev.format_for_agent(),
-            "[Background Task Result]\nTask: pulse:check (t1)\nSource: pulse\nStatus: completed\nOutput:\ndone\nTranscript: /tmp/log.txt"
+            event.format_for_agent(),
+            "[Background Task Result]\nTask: pulse:check (t1)\nSource: pulse\nStatus: completed\nOutput:\nsome output\nTranscript: /tmp/transcript.txt"
         );
     }
 }

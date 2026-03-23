@@ -81,7 +81,7 @@ mod tests {
     }
 
     #[test]
-    fn contains_empty_is_always_true() {
+    fn capabilities_contains_empty() {
         assert!(EndpointCapabilities::INTERACTIVE.contains(EndpointCapabilities::empty()));
         assert!(EndpointCapabilities::empty().contains(EndpointCapabilities::empty()));
     }
