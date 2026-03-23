@@ -550,6 +550,11 @@ mod tests {
             layout.inbox_archive_dir().exists(),
             "inbox archive dir should exist"
         );
+
+        let soul = tokio::fs::read_to_string(layout.soul_md()).await.unwrap();
+        assert!(!soul.is_empty(), "SOUL.md should have default content");
+        let memory = tokio::fs::read_to_string(layout.memory_md()).await.unwrap();
+        assert!(!memory.is_empty(), "MEMORY.md should have default content");
     }
 
     #[tokio::test]
@@ -623,6 +628,14 @@ mod tests {
                 .join("workflows/always-on-assistant.md")
                 .exists(),
             "always-on-assistant.md"
+        );
+
+        let system_skill_content = tokio::fs::read_to_string(system_dir.join("SKILL.md"))
+            .await
+            .unwrap();
+        assert!(
+            !system_skill_content.is_empty(),
+            "system SKILL.md should have content"
         );
     }
 
@@ -737,6 +750,34 @@ mod tests {
         assert_eq!(
             content, DEFAULT_USER,
             "USER.md should use default content when no name is provided"
+        );
+    }
+
+    #[tokio::test]
+    async fn bootstrap_timezone_only_user_md() {
+        let dir = tempfile::tempdir().unwrap();
+        let layout = WorkspaceLayout::new(dir.path().join("workspace"));
+
+        ensure_workspace(&layout, None, Some("America/New_York"))
+            .await
+            .unwrap();
+
+        let content = tokio::fs::read_to_string(layout.user_md()).await.unwrap();
+        assert!(content.contains("**Timezone**: America/New_York"));
+        assert!(!content.contains("**Name**"));
+    }
+
+    #[tokio::test]
+    async fn bootstrap_empty_string_inputs_treated_as_none() {
+        let dir = tempfile::tempdir().unwrap();
+        let layout = WorkspaceLayout::new(dir.path().join("workspace"));
+
+        ensure_workspace(&layout, Some(""), Some("")).await.unwrap();
+
+        let content = tokio::fs::read_to_string(layout.user_md()).await.unwrap();
+        assert_eq!(
+            content, DEFAULT_USER,
+            "empty strings should produce default USER.md"
         );
     }
 }

@@ -179,4 +179,11 @@ mod tests {
         assert_eq!(channels["my-ntfy"].channel_kind(), "ntfy");
         assert_eq!(channels["my-webhook"].channel_kind(), "webhook");
     }
+
+    #[tokio::test]
+    async fn build_external_channels_empty_input() {
+        let client = reqwest::Client::new();
+        let channels = build_external_channels(&[], &client).await;
+        assert!(channels.is_empty());
+    }
 }

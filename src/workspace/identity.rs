@@ -115,17 +115,40 @@ mod tests {
         ensure_workspace(&layout, None, None).await.unwrap();
         let identity = IdentityFiles::load(&layout).await.unwrap();
 
-        assert!(identity.soul.is_some(), "soul should be loaded");
-        assert!(identity.agents.is_some(), "agents should be loaded");
-        assert!(identity.user.is_some(), "user should be loaded");
-        assert!(identity.memory.is_some(), "memory should be loaded");
+        let soul = identity.soul.as_deref().unwrap();
         assert!(
-            identity.environment.is_some(),
-            "environment should be loaded after bootstrap"
+            soul.contains("You are Residuum"),
+            "soul content should match default"
         );
+
+        let agents = identity.agents.as_deref().unwrap();
         assert!(
-            identity.bootstrap.is_some(),
-            "bootstrap should be loaded on first run"
+            agents.contains("Agent Behavior"),
+            "agents content should match default"
+        );
+
+        let user = identity.user.as_deref().unwrap();
+        assert!(
+            user.contains("User Preferences"),
+            "user content should match default"
+        );
+
+        let memory = identity.memory.as_deref().unwrap();
+        assert!(
+            memory.contains("Persistent notes across restarts"),
+            "memory content should match default"
+        );
+
+        let environment = identity.environment.as_deref().unwrap();
+        assert!(
+            environment.contains("Document details about the local system environment"),
+            "environment content should match default"
+        );
+
+        let bootstrap = identity.bootstrap.as_deref().unwrap();
+        assert!(
+            bootstrap.contains("First Run"),
+            "bootstrap content should match default"
         );
     }
 

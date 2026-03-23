@@ -339,6 +339,9 @@ mod tests {
 
         let servers = load_mcp_servers(&path).unwrap();
         assert_eq!(servers.len(), 2);
+        let names: Vec<&str> = servers.iter().map(|s| s.name.as_str()).collect();
+        assert!(names.contains(&"fs"), "should have fs server");
+        assert!(names.contains(&"git"), "should have git server");
     }
 
     #[test]
@@ -667,6 +670,15 @@ url = "https://hooks.slack.com/services/xxx"
 
         let configs = load_channel_configs(&path).unwrap();
         assert_eq!(configs.len(), 2);
+        let names: Vec<&str> = configs.iter().map(|c| c.name.as_str()).collect();
+        assert!(
+            names.contains(&"ntfy-alerts"),
+            "should have ntfy-alerts channel"
+        );
+        assert!(
+            names.contains(&"slack-hook"),
+            "should have slack-hook channel"
+        );
     }
 
     #[test]
@@ -696,6 +708,150 @@ url = "https://hooks.slack.com/services/xxx"
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
         assert!(err.contains("failed to parse channels.toml"), "got: {err}");
+    }
+
+    // ── Channel error path tests ────────────────────────────────────────
+
+    #[test]
+    fn load_channel_configs_ntfy_missing_url_excluded() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("channels.toml");
+        std::fs::write(
+            &path,
+            r#"
+[channels.bad-ntfy]
+type = "ntfy"
+topic = "alerts"
+
+[channels.good-ntfy]
+type = "ntfy"
+url = "https://ntfy.sh"
+topic = "alerts"
+"#,
+        )
+        .unwrap();
+
+        let configs = load_channel_configs(&path).unwrap();
+        assert_eq!(configs.len(), 1, "bad ntfy entry should be excluded");
+        assert_eq!(configs[0].name, "good-ntfy");
+    }
+
+    #[test]
+    fn load_channel_configs_ntfy_missing_topic_excluded() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("channels.toml");
+        std::fs::write(
+            &path,
+            r#"
+[channels.bad-ntfy]
+type = "ntfy"
+url = "https://ntfy.sh"
+
+[channels.good-ntfy]
+type = "ntfy"
+url = "https://ntfy.sh"
+topic = "alerts"
+"#,
+        )
+        .unwrap();
+
+        let configs = load_channel_configs(&path).unwrap();
+        assert_eq!(configs.len(), 1, "ntfy without topic should be excluded");
+        assert_eq!(configs[0].name, "good-ntfy");
+    }
+
+    #[test]
+    fn load_channel_configs_webhook_missing_url_excluded() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("channels.toml");
+        std::fs::write(
+            &path,
+            r#"
+[channels.bad-hook]
+type = "webhook"
+
+[channels.good-hook]
+type = "webhook"
+url = "https://hooks.example.com/notify"
+"#,
+        )
+        .unwrap();
+
+        let configs = load_channel_configs(&path).unwrap();
+        assert_eq!(configs.len(), 1, "webhook without url should be excluded");
+        assert_eq!(configs[0].name, "good-hook");
+    }
+
+    #[test]
+    fn load_channel_configs_unknown_type_excluded() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("channels.toml");
+        std::fs::write(
+            &path,
+            r#"
+[channels.bad-channel]
+type = "carrier-pigeon"
+
+[channels.good-ntfy]
+type = "ntfy"
+url = "https://ntfy.sh"
+topic = "alerts"
+"#,
+        )
+        .unwrap();
+
+        let configs = load_channel_configs(&path).unwrap();
+        assert_eq!(configs.len(), 1, "unknown channel type should be excluded");
+        assert_eq!(configs[0].name, "good-ntfy");
+    }
+
+    // ── MCP empty-string boundary tests ────────────────────────────────
+
+    #[test]
+    fn load_mcp_servers_http_empty_url_skipped() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("mcp.json");
+        std::fs::write(
+            &path,
+            r#"{
+                "mcpServers": {
+                    "empty-url": {
+                        "type": "http",
+                        "url": ""
+                    }
+                }
+            }"#,
+        )
+        .unwrap();
+
+        let servers = load_mcp_servers(&path).unwrap();
+        assert!(
+            servers.is_empty(),
+            "HTTP server with empty url should be skipped"
+        );
+    }
+
+    #[test]
+    fn load_mcp_servers_stdio_empty_command_skipped() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("mcp.json");
+        std::fs::write(
+            &path,
+            r#"{
+                "mcpServers": {
+                    "empty-cmd": {
+                        "command": ""
+                    }
+                }
+            }"#,
+        )
+        .unwrap();
+
+        let servers = load_mcp_servers(&path).unwrap();
+        assert!(
+            servers.is_empty(),
+            "stdio server with empty command should be skipped"
+        );
     }
 
     // ── macOS channel config tests ─────────────────────────────────────
