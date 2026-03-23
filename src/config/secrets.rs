@@ -307,6 +307,48 @@ mod tests {
     }
 
     #[test]
+    fn decrypt_short_ciphertext_returns_error() {
+        let key: [u8; 32] = [0_u8; 32];
+        let short_data = vec![0_u8; 5];
+        let result = decrypt(&short_data, &key);
+        assert!(result.is_err(), "short ciphertext should error");
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("too short"),
+            "error should mention too short: {err}"
+        );
+    }
+
+    #[test]
+    fn load_with_wrong_key_returns_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = SecretStore::load(dir.path()).unwrap();
+        store.set("my_key", "my_value", dir.path()).unwrap();
+
+        let wrong_key = [0xFF_u8; 32];
+        std::fs::write(dir.path().join(KEY_FILE), wrong_key).unwrap();
+
+        let result = SecretStore::load(dir.path());
+        assert!(result.is_err(), "loading with wrong key should error");
+    }
+
+    #[test]
+    fn set_overwrites_existing_key() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = SecretStore::load(dir.path()).unwrap();
+
+        store.set("my_key", "original", dir.path()).unwrap();
+        store.set("my_key", "updated", dir.path()).unwrap();
+
+        let reloaded = SecretStore::load(dir.path()).unwrap();
+        assert_eq!(
+            reloaded.get("my_key"),
+            Some("updated"),
+            "second set should overwrite first"
+        );
+    }
+
+    #[test]
     fn names_returns_keys_only() {
         let dir = tempfile::tempdir().unwrap();
         let mut store = SecretStore::load(dir.path()).unwrap();

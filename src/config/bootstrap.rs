@@ -270,4 +270,18 @@ mod tests {
             .join("channels.toml");
         assert!(channels_toml.exists(), "channels.toml should be created");
     }
+
+    #[test]
+    fn bootstrap_skips_existing_mcp_json() {
+        let dir = tempdir().unwrap();
+        bootstrap_at(dir.path()).unwrap();
+        let mcp_path = dir.path().join("workspace").join("config").join("mcp.json");
+        std::fs::write(&mcp_path, "{ \"mcpServers\": { \"custom\": {} } }").unwrap();
+        bootstrap_at(dir.path()).unwrap();
+        let body = std::fs::read_to_string(&mcp_path).unwrap();
+        assert_eq!(
+            body, "{ \"mcpServers\": { \"custom\": {} } }",
+            "existing mcp.json should not be overwritten"
+        );
+    }
 }

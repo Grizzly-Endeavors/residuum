@@ -613,6 +613,7 @@ default = "openai/gpt-4o"
 
     #[test]
     fn provider_api_key_env_expansion() {
+        let _guard = ENV_MUTEX.lock().unwrap();
         let secrets = empty_secrets();
         // SAFETY: test-only, single-threaded test environment
         unsafe { std::env::set_var("RESIDUUM_TEST_PROVIDER_KEY", "expanded-key") };
@@ -664,6 +665,7 @@ default = "openai/gpt-4o"
 
     #[test]
     fn provider_api_key_missing_secret_falls_back() {
+        let _guard = ENV_MUTEX.lock().unwrap();
         let secrets = empty_secrets();
         // SAFETY: test-only, single-threaded test environment
         unsafe { std::env::set_var("OPENAI_API_KEY", "fallback-env-key") };
@@ -797,6 +799,25 @@ observer = { model = "gemini/gemini-3.0-flash", temperature = 3.0 }
         let cfg_file = parse_config("timezone = \"UTC\"\n");
         let result = from_file_and_env(Some(&cfg_file), Some(&prov_file), &test_config_dir());
         assert!(result.is_err(), "temperature > 2.0 should error");
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("temperature"),
+            "error should mention temperature: {err}"
+        );
+    }
+
+    #[test]
+    fn model_assignment_invalid_temperature_negative() {
+        let prov_file = parse_providers(
+            r#"
+[models]
+main = "anthropic/claude-sonnet-4-6"
+observer = { model = "gemini/gemini-3.0-flash", temperature = -0.1 }
+"#,
+        );
+        let cfg_file = parse_config("timezone = \"UTC\"\n");
+        let result = from_file_and_env(Some(&cfg_file), Some(&prov_file), &test_config_dir());
+        assert!(result.is_err(), "temperature < 0.0 should error");
         let err = result.unwrap_err().to_string();
         assert!(
             err.contains("temperature"),

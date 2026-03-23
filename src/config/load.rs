@@ -368,6 +368,10 @@ main = "invalid-format"
         std::fs::write(&path, VALID_PROVIDERS).unwrap();
         let result = super::load_providers(&path);
         assert!(result.is_ok(), "valid providers should parse: {result:?}");
+        assert!(
+            result.unwrap().models.is_some(),
+            "parsed providers should have models section"
+        );
     }
 
     #[test]

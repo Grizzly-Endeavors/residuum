@@ -773,6 +773,8 @@ pub(super) mod test_helpers {
     pub(super) use super::super::deserialize::{ConfigFile, ProvidersFile};
     pub(super) use super::super::secrets::SecretStore;
 
+    pub(super) static ENV_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     pub(super) fn empty_secrets() -> SecretStore {
         let dir = std::env::temp_dir().join("residuum-test-empty-secrets");
         SecretStore::load(&dir).unwrap()
@@ -1363,6 +1365,7 @@ typo_field = 0.5
 
     #[test]
     fn expand_env_token_present() {
+        let _guard = ENV_MUTEX.lock().unwrap();
         // SAFETY: test-only, single-threaded test environment
         unsafe { std::env::set_var("RESIDUUM_TEST_SECRET_PRESENT", "found-it") };
         let result = expand_env_token("${RESIDUUM_TEST_SECRET_PRESENT}");
@@ -1384,6 +1387,7 @@ typo_field = 0.5
 
     #[test]
     fn resolve_secret_value_env() {
+        let _guard = ENV_MUTEX.lock().unwrap();
         let secrets = empty_secrets();
         // SAFETY: test-only, single-threaded test environment
         unsafe { std::env::set_var("RESIDUUM_TEST_RSV_ENV", "env-val") };
@@ -1425,6 +1429,7 @@ typo_field = 0.5
 
     #[test]
     fn gateway_config_defaults_and_env_override() {
+        let _guard = ENV_MUTEX.lock().unwrap();
         // Combined into one test to avoid env var races across parallel tests.
         // SAFETY: test-only environment
         unsafe {
@@ -1629,6 +1634,7 @@ main = "anthropic/claude-sonnet-4-6"
 
     #[test]
     fn cloud_local_port_defaults_to_gateway_port() {
+        let _guard = ENV_MUTEX.lock().unwrap();
         // Guard against env pollution from parallel tests
         unsafe {
             std::env::remove_var("RESIDUUM_GATEWAY_PORT");

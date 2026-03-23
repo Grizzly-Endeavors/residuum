@@ -434,6 +434,16 @@ mod tests {
     }
 
     #[test]
+    fn from_flags_default_model_anthropic() {
+        let answers =
+            from_flags(Some("UTC"), Some("anthropic"), None, None, None, None, None).unwrap();
+        assert_eq!(
+            answers.model, "claude-sonnet-4-6",
+            "anthropic should default to claude-sonnet-4-6"
+        );
+    }
+
+    #[test]
     fn from_flags_invalid_timezone() {
         let result = from_flags(
             Some("Not/A/Timezone"),

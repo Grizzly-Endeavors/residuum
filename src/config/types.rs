@@ -696,4 +696,80 @@ mod tests {
             vec![p_main.clone()]
         );
     }
+
+    #[test]
+    fn resolve_tier_only_small_and_only_medium() {
+        use super::super::provider::{ModelSpec, ProviderKind};
+
+        let p_small = ProviderSpec {
+            name: "dummy-small".to_string(),
+            model: ModelSpec {
+                kind: ProviderKind::OpenAi,
+                model: "small-model".to_string(),
+            },
+            provider_url: "http://dummy".to_string(),
+            api_key: None,
+            keep_alive: None,
+        };
+        let p_medium = ProviderSpec {
+            name: "dummy-medium".to_string(),
+            model: ModelSpec {
+                kind: ProviderKind::OpenAi,
+                model: "medium-model".to_string(),
+            },
+            provider_url: "http://dummy".to_string(),
+            api_key: None,
+            keep_alive: None,
+        };
+        let p_main = ProviderSpec {
+            name: "dummy-main".to_string(),
+            model: ModelSpec {
+                kind: ProviderKind::OpenAi,
+                model: "main-model".to_string(),
+            },
+            provider_url: "http://dummy".to_string(),
+            api_key: None,
+            keep_alive: None,
+        };
+
+        let main_slice = std::slice::from_ref(&p_main);
+
+        // Only small -> requesting Medium should fall back to main (not small)
+        let config_only_small = BackgroundModelsConfig {
+            small: Some(vec![p_small.clone()]),
+            medium: None,
+            large: None,
+        };
+        assert_eq!(
+            config_only_small.resolve_tier(&BackgroundModelTier::Small, main_slice),
+            vec![p_small.clone()]
+        );
+        assert_eq!(
+            config_only_small.resolve_tier(&BackgroundModelTier::Medium, main_slice),
+            vec![p_main.clone()]
+        );
+        assert_eq!(
+            config_only_small.resolve_tier(&BackgroundModelTier::Large, main_slice),
+            vec![p_main.clone()]
+        );
+
+        // Only medium -> Small falls back to medium, Large falls back to main
+        let config_only_medium = BackgroundModelsConfig {
+            small: None,
+            medium: Some(vec![p_medium.clone()]),
+            large: None,
+        };
+        assert_eq!(
+            config_only_medium.resolve_tier(&BackgroundModelTier::Small, main_slice),
+            vec![p_medium.clone()]
+        );
+        assert_eq!(
+            config_only_medium.resolve_tier(&BackgroundModelTier::Medium, main_slice),
+            vec![p_medium.clone()]
+        );
+        assert_eq!(
+            config_only_medium.resolve_tier(&BackgroundModelTier::Large, main_slice),
+            vec![p_main.clone()]
+        );
+    }
 }
