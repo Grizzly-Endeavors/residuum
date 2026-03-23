@@ -141,6 +141,24 @@ You are a research specialist. Focus on gathering information.
     }
 
     #[test]
+    fn parse_with_leading_whitespace() {
+        let content = "\n---\nname: simple\ndescription: \"A simple preset\"\n---\n";
+        assert!(
+            parse_preset_md(content).is_ok(),
+            "leading whitespace should be trimmed and parse successfully"
+        );
+    }
+
+    #[test]
+    fn parse_missing_required_name_field() {
+        let content = "---\ndescription: \"No name\"\n---\n";
+        assert!(
+            parse_preset_md(content).is_err(),
+            "missing name field should error"
+        );
+    }
+
+    #[test]
     fn parse_invalid_yaml() {
         let content = "---\n: invalid [[\n---\n";
         assert!(
@@ -199,6 +217,8 @@ You can only read files and search memory.
         assert!(validate_preset_name("a").is_ok());
         assert!(validate_preset_name("researcher").is_ok());
         assert!(validate_preset_name("my-cool-agent").is_ok());
+        assert!(validate_preset_name("agent2").is_ok());
+        assert!(validate_preset_name("42").is_ok());
     }
 
     #[test]
@@ -247,6 +267,10 @@ You can only read files and search memory.
         assert!(
             validate_preset_name(&long_name).is_err(),
             "name over 64 chars should be rejected"
+        );
+        assert!(
+            validate_preset_name(&"a".repeat(64)).is_ok(),
+            "name of exactly 64 chars should be accepted"
         );
     }
 

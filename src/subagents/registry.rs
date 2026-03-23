@@ -193,4 +193,14 @@ mod tests {
             "id should start with preset name"
         );
     }
+
+    #[test]
+    fn registry_task_ids_are_unique() {
+        let id1 = generate_registry_task_id("x");
+        let id2 = generate_registry_task_id("x");
+        assert_ne!(
+            id1, id2,
+            "two ids for the same preset name must be distinct"
+        );
+    }
 }

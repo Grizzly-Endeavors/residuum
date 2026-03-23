@@ -539,4 +539,50 @@ mod tests {
             "error should list available presets"
         );
     }
+
+    #[tokio::test]
+    async fn load_preset_file_deleted_after_scan() {
+        let dir = tempfile::tempdir().unwrap();
+        let preset_path = dir.path().join("vanishing.md");
+        tokio::fs::write(
+            &preset_path,
+            "---\nname: vanishing\ndescription: \"Will be deleted\"\n---\n\nBody.\n",
+        )
+        .await
+        .unwrap();
+
+        let index = SubagentPresetIndex::scan(dir.path()).await.unwrap();
+        tokio::fs::remove_file(&preset_path).await.unwrap();
+
+        let result = index.load_preset("vanishing").await;
+        assert!(result.is_err(), "should error when file is gone");
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("failed to read preset file"),
+            "error should mention read failure"
+        );
+    }
+
+    #[test]
+    fn available_names_returns_all_names() {
+        let index = SubagentPresetIndex {
+            entries: vec![
+                SubagentPresetEntry {
+                    name: "general-purpose".to_string(),
+                    description: "General-purpose subagent".to_string(),
+                    preset_path: None,
+                },
+                SubagentPresetEntry {
+                    name: "researcher".to_string(),
+                    description: "Research specialist".to_string(),
+                    preset_path: Some(PathBuf::from("/tmp/researcher.md")),
+                },
+            ],
+        };
+
+        let names = index.available_names();
+        assert_eq!(names.len(), 2);
+        assert!(names.contains(&"general-purpose"));
+        assert!(names.contains(&"researcher"));
+    }
 }
