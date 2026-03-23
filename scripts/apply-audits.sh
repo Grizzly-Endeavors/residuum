@@ -30,7 +30,7 @@ MODEL="sonnet"
 JOBS=4
 INPUT_DIR="audit-results"
 BRANCH="audit/apply-fixes"
-TIMEOUT=600
+TIMEOUT=6000
 DRY_RUN=false
 
 usage() {
@@ -241,7 +241,6 @@ Rules:
 - ONLY fix issues explicitly called out in the audit findings below
 - Do NOT refactor, rename, or "improve" code beyond what the audit asks for
 - Do NOT add comments explaining your fixes
-- Do NOT touch files outside the module being audited
 - If an audit finding is vague or you're unsure how to fix it, skip it
 
 After making ALL your changes, stage and commit them in a SINGLE commit using `git add` and `git commit -m "message"`.
@@ -249,9 +248,7 @@ Write a good commit message: concise summary (<=72 chars) on the first line.
 Do NOT use `git commit -m "$(cat ...)"` or heredocs — just a plain `-m "message"` string.
 Do NOT make multiple commits — everything goes in one commit.
 
-If the pre-commit hooks fail, ONLY fix issues caused by YOUR changes (in this module).
-If a hook fails due to a pre-existing issue outside this module, do NOT attempt to fix it — just stop.
-Do NOT spawn subagents or delegate work.
+If the pre-commit hooks fail, fix any issues that are surfaced, regardless of whether they are in this module or not.
 
 INSTRUCTIONS
             echo "## Audit Findings"
