@@ -217,4 +217,58 @@ mod tests {
         assert_eq!(format_relative_time(TimeDelta::days(1)), "1 day ago");
         assert_eq!(format_relative_time(TimeDelta::days(7)), "7 days ago");
     }
+
+    #[test]
+    fn format_relative_time_negative_returns_just_now() {
+        assert_eq!(format_relative_time(TimeDelta::seconds(-1)), "just now");
+        assert_eq!(format_relative_time(TimeDelta::seconds(-3600)), "just now");
+    }
+
+    #[test]
+    fn format_display_datetime_teen_day() {
+        let t = dt(2026, 3, 13, 0, 0);
+        assert_eq!(format_display_datetime(t), "Friday Mar 13th 2026 | 00:00");
+    }
+
+    #[test]
+    fn minute_format_round_trip() {
+        use serde::{Deserialize, Serialize};
+        #[derive(Serialize, Deserialize, PartialEq, Debug)]
+        struct Wrapper {
+            #[serde(with = "minute_format")]
+            ts: NaiveDateTime,
+        }
+        let original = Wrapper {
+            ts: dt(2026, 3, 22, 17, 0),
+        };
+        let json = serde_json::to_string(&original).unwrap();
+        assert_eq!(json, r#"{"ts":"2026-03-22T17:00"}"#);
+        let roundtripped: Wrapper = serde_json::from_str(&json).unwrap();
+        assert_eq!(roundtripped, original);
+    }
+
+    #[test]
+    fn minute_format_rejects_malformed() {
+        use serde::Deserialize;
+        #[derive(Deserialize)]
+        #[expect(dead_code, reason = "fields populated via serde deserialization only")]
+        struct Wrapper {
+            #[serde(with = "minute_format")]
+            ts: NaiveDateTime,
+        }
+        assert!(serde_json::from_str::<Wrapper>(r#"{"ts":"not-a-date"}"#).is_err());
+        assert!(serde_json::from_str::<Wrapper>(r#"{"ts":"2026-03-22"}"#).is_err());
+    }
+
+    #[test]
+    fn minute_format_opt_none() {
+        use serde::Deserialize;
+        #[derive(Deserialize)]
+        struct Wrapper {
+            #[serde(with = "minute_format_opt")]
+            ts: Option<NaiveDateTime>,
+        }
+        let w: Wrapper = serde_json::from_str(r#"{"ts":null}"#).unwrap();
+        assert!(w.ts.is_none());
+    }
 }
