@@ -125,6 +125,7 @@ async fn fallback_router_loop(mut subscriber: Subscriber<AgentResultEvent>, publ
 }
 
 /// Route a single `AgentResultEvent` through the two-layer system.
+#[tracing::instrument(skip_all, fields(source_label = %event.source_label, task_id = %event.task_id))]
 async fn route_agent_result(event: &AgentResultEvent, router: &NotificationRouter) {
     tracing::info!(
         source_label = %event.source_label,

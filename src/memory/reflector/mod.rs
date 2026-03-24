@@ -106,6 +106,7 @@ impl Reflector {
     ///
     /// # Errors
     /// Returns an error if the LLM call fails or file persistence fails.
+    #[tracing::instrument(skip_all, fields(operation = "reflect"))]
     pub async fn reflect(&self, layout: &WorkspaceLayout) -> anyhow::Result<ObservationLog> {
         let log = load_observation_log(&layout.observations_json()).await?;
 

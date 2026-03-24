@@ -48,6 +48,7 @@ impl RetryConfig {
 ///
 /// # Errors
 /// Returns the last error if all retries are exhausted or if a non-retryable error occurs.
+#[tracing::instrument(skip_all, fields(max_retries = config.max_retries))]
 pub async fn with_retry<F, Fut, T>(config: &RetryConfig, operation: F) -> Result<T, ModelError>
 where
     F: Fn() -> Fut,

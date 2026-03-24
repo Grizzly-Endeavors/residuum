@@ -17,7 +17,7 @@ use super::types::{ProjectFrontmatter, ProjectStatus};
 /// # Errors
 /// Returns an error if the name is invalid, a project with the same dir
 /// name already exists, or filesystem operations fail.
-#[tracing::instrument(skip_all)]
+#[tracing::instrument(skip_all, fields(project = %name))]
 pub async fn create_project(
     layout: &WorkspaceLayout,
     name: &str,
@@ -75,7 +75,7 @@ pub async fn create_project(
 /// # Errors
 /// Returns an error if the project doesn't exist, can't be read, or the
 /// move fails.
-#[tracing::instrument(skip_all)]
+#[tracing::instrument(skip_all, fields(project = %dir_name))]
 pub async fn archive_project(
     layout: &WorkspaceLayout,
     dir_name: &str,

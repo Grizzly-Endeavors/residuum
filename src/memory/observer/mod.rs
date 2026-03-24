@@ -179,6 +179,7 @@ impl Observer {
     ///
     /// # Errors
     /// Returns an error if the LLM call fails or file persistence fails.
+    #[tracing::instrument(skip_all, fields(operation = "observe", message_count = recent_messages.len()))]
     pub async fn observe(
         &self,
         recent_messages: &[RecentMessage],
