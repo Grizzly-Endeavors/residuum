@@ -24,6 +24,7 @@ impl FailoverProvider {
 
 #[async_trait]
 impl ModelProvider for FailoverProvider {
+    #[tracing::instrument(skip_all, fields(provider_count = self.providers.len()))]
     async fn complete(
         &self,
         messages: &[Message],

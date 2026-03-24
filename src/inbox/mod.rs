@@ -62,7 +62,7 @@ pub fn generate_filename(title: &str, now: NaiveDateTime) -> String {
 ///
 /// # Errors
 /// Returns an error if the item cannot be saved.
-#[tracing::instrument(skip_all)]
+#[tracing::instrument(skip_all, fields(source = %source))]
 pub async fn quick_add(
     inbox_dir: &Path,
     title: &str,
@@ -200,7 +200,7 @@ pub async fn mark_read(inbox_dir: &Path, filename: &str) -> anyhow::Result<Inbox
 ///
 /// # Errors
 /// Returns an error if the file is not found or the move fails.
-#[tracing::instrument(skip_all)]
+#[tracing::instrument(skip_all, fields(item = %filename))]
 pub async fn archive_item(
     inbox_dir: &Path,
     archive_dir: &Path,

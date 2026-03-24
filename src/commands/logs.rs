@@ -5,7 +5,8 @@
 
 use residuum::util::FatalError;
 use residuum::util::log_format::{
-    LogLevel, expand_module_filter, format_entry, matches_module, meets_level, parse_line,
+    LogLevel, expand_module_filter, format_entry, format_entry_colored, matches_module,
+    meets_level, parse_line,
 };
 
 #[derive(clap::Args)]
@@ -32,6 +33,7 @@ struct LogFilter {
     module_prefix: Option<String>,
     min_level: Option<LogLevel>,
     raw_json: bool,
+    color: bool,
 }
 
 impl LogFilter {
@@ -48,10 +50,14 @@ impl LogFilter {
                 })
             })
             .transpose()?;
+        let color = std::io::IsTerminal::is_terminal(&std::io::stdout())
+            && !args.json
+            && std::env::var_os("NO_COLOR").is_none();
         Ok(Self {
             module_prefix,
             min_level,
             raw_json: args.json,
+            color,
         })
     }
 
@@ -82,6 +88,8 @@ impl LogFilter {
 
         if self.raw_json {
             println!("{trimmed}");
+        } else if self.color {
+            println!("{}", format_entry_colored(&entry));
         } else {
             println!("{}", format_entry(&entry));
         }

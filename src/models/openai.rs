@@ -84,6 +84,11 @@ impl OpenAiClient {
     }
 
     /// Send a pre-built request to the OpenAI-compatible API and parse the response.
+    #[tracing::instrument(skip_all, fields(
+        model = %request.model,
+        message_count = request.messages.len(),
+        tool_count = request.tools.as_ref().map_or(0, Vec::len),
+    ))]
     async fn send_completion(
         http: &SharedHttpClient,
         url: &str,
@@ -94,12 +99,7 @@ impl OpenAiClient {
         let request_json = serde_json::to_string(request)
             .map_err(|e| ModelError::Parse(format!("failed to serialize request: {e}")))?;
 
-        debug!(
-            model = %request.model,
-            message_count = request.messages.len(),
-            tool_count = request.tools.as_ref().map_or(0, Vec::len),
-            "sending openai completion request"
-        );
+        debug!("sending openai completion request");
 
         let mut req_builder = http
             .client()
@@ -534,6 +534,7 @@ impl OpenAiEmbeddingClient {
 
 #[async_trait]
 impl EmbeddingProvider for OpenAiEmbeddingClient {
+    #[tracing::instrument(skip_all, fields(model = %self.model, count = texts.len()))]
     async fn embed(&self, texts: &[&str]) -> Result<EmbeddingResponse, ModelError> {
         let url = format!("{}/embeddings", self.base_url);
         let model = self.model.clone();

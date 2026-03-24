@@ -222,6 +222,7 @@ impl GeminiClient {
         (system_instruction, contents)
     }
 
+    #[tracing::instrument(skip(http, url, max_output_tokens, request), fields(model = %model))]
     async fn send_completion(
         http: &SharedHttpClient,
         url: &str,
@@ -235,13 +236,7 @@ impl GeminiClient {
         let request_json = serde_json::to_string(request)
             .map_err(|e| ModelError::Parse(format!("failed to serialize request: {e}")))?;
 
-        debug!(
-            model = %model,
-            max_output_tokens,
-            message_count,
-            tool_count,
-            "sending gemini generateContent request"
-        );
+        debug!(max_output_tokens, "sending gemini generateContent request");
 
         let response = http
             .client()
@@ -740,6 +735,7 @@ impl GeminiEmbeddingClient {
 
 #[async_trait]
 impl EmbeddingProvider for GeminiEmbeddingClient {
+    #[tracing::instrument(skip_all, fields(model = %self.model, count = texts.len()))]
     async fn embed(&self, texts: &[&str]) -> Result<EmbeddingResponse, ModelError> {
         if texts.is_empty() {
             return Ok(EmbeddingResponse {

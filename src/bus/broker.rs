@@ -95,6 +95,7 @@ pub fn spawn_broker() -> BusHandle {
 ///
 /// Routes events by `(TopicId, TypeId)` composite key to matching subscribers.
 /// Exits naturally when every `BusHandle` (and derived sender) is dropped.
+#[tracing::instrument(skip_all)]
 async fn run_broker(mut cmd_rx: mpsc::Receiver<BrokerCommand>) {
     debug!("bus broker running");
     let mut subscriptions: HashMap<RouteKey, Vec<(u64, mpsc::Sender<ErasedEvent>)>> =

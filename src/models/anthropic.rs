@@ -218,6 +218,11 @@ impl AnthropicClient {
     }
 
     /// Send a pre-built request to the Anthropic API and parse the response.
+    #[tracing::instrument(skip_all, fields(
+        model = %request.model,
+        message_count = request.messages.len(),
+        tool_count = request.tools.as_ref().map_or(0, Vec::len),
+    ))]
     async fn send_completion(
         http: &SharedHttpClient,
         endpoint: &str,
@@ -225,10 +230,7 @@ impl AnthropicClient {
         request: &AnthropicRequest,
     ) -> Result<ModelResponse, ModelError> {
         debug!(
-            model = %request.model,
             max_tokens = request.max_tokens,
-            message_count = request.messages.len(),
-            tool_count = request.tools.as_ref().map_or(0, Vec::len),
             "sending anthropic completion request"
         );
 

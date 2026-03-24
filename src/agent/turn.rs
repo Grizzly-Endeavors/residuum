@@ -63,6 +63,7 @@ pub(crate) struct TurnResources<'a> {
 /// Returns a vec containing the final text-only response. Intermediate texts
 /// emitted alongside tool calls are sent via `reply` in real-time but not
 /// included in the return value.
+#[tracing::instrument(skip_all, fields(operation = "execute_turn"))]
 pub(crate) async fn execute_turn(
     resources: &TurnResources<'_>,
     memory_ctx: &MemoryContext<'_>,

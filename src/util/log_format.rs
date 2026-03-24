@@ -90,16 +90,42 @@ pub fn parse_line(line: &str) -> Option<LogEntry> {
 /// ```text
 /// 2026-03-23T10:15:30  INFO  [agent::core] processing user message  correlation_id=abc123
 /// ```
+///
+/// When `color` is true, the level is ANSI-colored by severity.
 #[must_use]
 pub fn format_entry(entry: &LogEntry) -> String {
+    format_entry_impl(entry, false)
+}
+
+/// Format a parsed log entry with optional ANSI color on the level field.
+#[must_use]
+pub fn format_entry_colored(entry: &LogEntry) -> String {
+    format_entry_impl(entry, true)
+}
+
+fn format_entry_impl(entry: &LogEntry, color: bool) -> String {
+    use owo_colors::OwoColorize;
+
     let mut out = String::with_capacity(128);
 
     // Timestamp — trim sub-microsecond precision for readability
     let ts = truncate_timestamp(&entry.timestamp);
     _ = write!(out, "{ts}  ");
 
-    // Level — right-padded to 5 chars
-    _ = write!(out, "{:<5}  ", entry.level);
+    // Level — right-padded to 5 chars, optionally colored
+    if color {
+        let padded = format!("{:<5}", entry.level);
+        let colored = match entry.level.to_ascii_uppercase().as_str() {
+            "ERROR" => format!("{}", padded.red().bold()),
+            "WARN" => format!("{}", padded.yellow()),
+            "INFO" => format!("{}", padded.green()),
+            "DEBUG" | "TRACE" => format!("{}", padded.dimmed()),
+            _ => padded,
+        };
+        _ = write!(out, "{colored}  ");
+    } else {
+        _ = write!(out, "{:<5}  ", entry.level);
+    }
 
     // Target — strip residuum:: prefix for brevity
     let short_target = entry

@@ -29,7 +29,7 @@ use crate::gateway::{actions, idle, reload, watcher, web};
 /// # Errors
 ///
 /// Returns `FatalError` if initialization fails or the server cannot bind.
-#[tracing::instrument(skip_all)]
+#[tracing::instrument(skip_all, fields(bind = %cfg.gateway.addr()))]
 pub async fn run_gateway(cfg: Config) -> Result<GatewayExit, FatalError> {
     reload::backup_config(&cfg.config_dir);
 

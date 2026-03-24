@@ -73,6 +73,11 @@ impl OllamaClient {
         }
     }
 
+    #[tracing::instrument(skip_all, fields(
+        model = %request.model,
+        message_count = request.messages.len(),
+        tool_count = request.tools.as_ref().map_or(0, Vec::len),
+    ))]
     async fn send_completion(
         http: &SharedHttpClient,
         url: &str,
@@ -81,12 +86,7 @@ impl OllamaClient {
     ) -> Result<ModelResponse, ModelError> {
         let timeout_secs = http.timeout_secs();
 
-        debug!(
-            model = %request.model,
-            message_count = request.messages.len(),
-            tool_count = request.tools.as_ref().map_or(0, Vec::len),
-            "sending ollama completion request"
-        );
+        debug!("sending ollama completion request");
 
         let mut req_builder = http.client().post(url).json(request);
         if let Some(key) = api_key {
@@ -379,6 +379,7 @@ impl OllamaEmbeddingClient {
 
 #[async_trait]
 impl EmbeddingProvider for OllamaEmbeddingClient {
+    #[tracing::instrument(skip_all, fields(model = %self.model, count = texts.len()))]
     async fn embed(&self, texts: &[&str]) -> Result<EmbeddingResponse, ModelError> {
         let url = format!("{}/api/embed", self.base_url);
         let model = self.model.clone();
