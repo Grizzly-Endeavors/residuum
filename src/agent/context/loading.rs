@@ -14,6 +14,7 @@ use crate::subagents::SubagentPresetIndex;
 ///
 /// # Errors
 /// Returns an error if the file exists but cannot be read or parsed.
+#[tracing::instrument(skip_all, fields(path = %path.display()))]
 pub(crate) async fn load_observations(path: &Path) -> anyhow::Result<Option<String>> {
     match tokio::fs::read_to_string(path).await {
         Ok(content) if !content.trim().is_empty() => {
@@ -45,6 +46,7 @@ pub(crate) async fn load_observations(path: &Path) -> anyhow::Result<Option<Stri
 ///
 /// # Errors
 /// Returns an error if the file exists but cannot be parsed.
+#[tracing::instrument(skip_all, fields(path = %path.display()))]
 pub(crate) async fn load_recent_context_narrative(path: &Path) -> anyhow::Result<Option<String>> {
     let result = crate::memory::recent_context::load_recent_context(path)
         .await?
@@ -84,7 +86,8 @@ pub(crate) async fn build_skill_context_strings(
 /// Scan the subagents directory and format the index for the system prompt.
 ///
 /// Returns `None` if the formatted index is empty (the scan succeeded but produced no output),
-/// or if the scan itself fails (logged at `error` level).
+/// or if the scan itself fails (logged at `warn` level).
+#[tracing::instrument(skip_all, fields(dir = %subagents_dir.display()))]
 pub(crate) async fn build_subagents_context_string(subagents_dir: &Path) -> Option<String> {
     match SubagentPresetIndex::scan(subagents_dir).await {
         Ok(index) => {
@@ -92,7 +95,7 @@ pub(crate) async fn build_subagents_context_string(subagents_dir: &Path) -> Opti
             (!formatted.is_empty()).then_some(formatted)
         }
         Err(e) => {
-            tracing::error!(error = %e, "failed to scan subagent presets");
+            tracing::warn!(error = %e, "failed to scan subagent presets");
             None
         }
     }
