@@ -35,7 +35,7 @@ impl NtfyChannel {
         }
     }
 
-    /// The configured priority string sent as the `Priority` header.
+    #[cfg(test)]
     #[must_use]
     pub fn priority(&self) -> &str {
         &self.priority
@@ -113,7 +113,7 @@ impl WebhookChannel {
         }
     }
 
-    /// The HTTP method used for delivery (always uppercased).
+    #[cfg(test)]
     #[must_use]
     pub fn method(&self) -> &str {
         &self.method

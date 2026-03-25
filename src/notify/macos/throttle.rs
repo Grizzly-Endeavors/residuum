@@ -143,7 +143,7 @@ fn build_summary_body(buffer: &[NotificationEvent]) -> String {
 }
 
 fn truncate_body(s: &str, max_len: usize) -> String {
-    if s.len() <= max_len {
+    if s.chars().count() <= max_len {
         s.to_string()
     } else {
         let mut result: String = s.chars().take(max_len - 1).collect();

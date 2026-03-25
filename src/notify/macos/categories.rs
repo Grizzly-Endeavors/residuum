@@ -121,7 +121,7 @@ impl MacosNotificationAction {
     }
 
     #[must_use]
-    pub fn for_category() -> &'static [Self] {
+    pub fn default_actions() -> &'static [Self] {
         &[Self::Open, Self::Dismiss]
     }
 }
@@ -305,7 +305,7 @@ mod tests {
 
     #[test]
     fn action_set_has_open_and_dismiss_in_order() {
-        let actions = MacosNotificationAction::for_category();
+        let actions = MacosNotificationAction::default_actions();
         assert_eq!(actions.len(), 2);
         assert_eq!(actions[0], MacosNotificationAction::Open);
         assert_eq!(actions[1], MacosNotificationAction::Dismiss);
