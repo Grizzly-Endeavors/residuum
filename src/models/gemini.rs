@@ -224,16 +224,13 @@ impl GeminiClient {
 
     #[tracing::instrument(skip_all, fields(
         model = %model,
-        message_count,
-        tool_count,
+        message_count = request.contents.len(),
+        tool_count = request.tools.as_ref().map_or(0, Vec::len),
     ))]
     async fn send_completion(
         http: &SharedHttpClient,
         url: &str,
         model: &str,
-        max_output_tokens: u32,
-        message_count: usize,
-        tool_count: usize,
         request: &GeminiRequest,
     ) -> Result<ModelResponse, ModelError> {
         let timeout_secs = http.timeout_secs();
@@ -241,8 +238,10 @@ impl GeminiClient {
             .map_err(|e| ModelError::Parse(format!("failed to serialize request: {e}")))?;
 
         debug!(
-            max_output_tokens,
-            message_count, tool_count, "sending gemini generateContent request"
+            max_output_tokens = request.generation_config.max_output_tokens,
+            message_count = request.contents.len(),
+            tool_count = request.tools.as_ref().map_or(0, Vec::len),
+            "sending gemini generateContent request"
         );
 
         let response = http
@@ -316,8 +315,6 @@ impl ModelProvider for GeminiClient {
             }]
         });
         let max_output_tokens = options.max_tokens.unwrap_or(self.max_tokens);
-        let message_count = messages.len();
-        let tool_count = tools.len();
         let model = self.model.clone();
         let http = self.http.clone();
 
@@ -369,16 +366,7 @@ impl ModelProvider for GeminiClient {
                     generation_config,
                     thinking_config,
                 };
-                Self::send_completion(
-                    &http,
-                    &url,
-                    &model,
-                    max_output_tokens,
-                    message_count,
-                    tool_count,
-                    &request,
-                )
-                .await
+                Self::send_completion(&http, &url, &model, &request).await
             }
         })
         .await

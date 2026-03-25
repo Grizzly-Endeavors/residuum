@@ -440,9 +440,7 @@ impl ModelProvider for AnthropicClient {
                     output_config,
                     temperature,
                     thinking,
-                    cache_control: AnthropicCacheControl {
-                        r#type: "ephemeral",
-                    },
+                    cache_control: AnthropicCacheControl::DEFAULT,
                 };
 
                 Self::send_completion(&http, &endpoint, &api_key, &request).await
@@ -514,6 +512,12 @@ fn merge_consecutive_messages(messages: Vec<AnthropicMessage>) -> Vec<AnthropicM
 #[derive(Debug, Clone, Serialize)]
 struct AnthropicCacheControl {
     r#type: &'static str,
+}
+
+impl AnthropicCacheControl {
+    const DEFAULT: Self = Self {
+        r#type: "ephemeral",
+    };
 }
 
 #[derive(Debug, Clone, Serialize)]
