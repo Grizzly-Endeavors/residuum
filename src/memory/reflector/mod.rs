@@ -110,7 +110,7 @@ impl Reflector {
     pub async fn reflect(&self, layout: &WorkspaceLayout) -> anyhow::Result<ObservationLog> {
         let log = load_observation_log(&layout.observations_json()).await?;
 
-        if log.is_empty() {
+        if log.observations.is_empty() {
             return Ok(log);
         }
 
@@ -154,7 +154,7 @@ impl Reflector {
         // Parse the object-array response into a compressed log.
         let compressed = parse_reflection_response(&response.content, self.config.tz)?;
 
-        if compressed.is_empty() {
+        if compressed.observations.is_empty() {
             anyhow::bail!(
                 "reflector returned empty observations, refusing to replace observation log"
             );
@@ -173,8 +173,8 @@ impl Reflector {
         save_observation_log(&obs_path, &compressed).await?;
 
         tracing::info!(
-            original_observations = log.len(),
-            compressed_observations = compressed.len(),
+            original_observations = log.observations.len(),
+            compressed_observations = compressed.observations.len(),
             "reflection complete"
         );
 
@@ -220,7 +220,7 @@ mod tests {
         );
 
         let mut log = ObservationLog::new();
-        log.push(sample_observation("ep-001", "test"));
+        log.observations.push(sample_observation("ep-001", "test"));
 
         assert!(
             !reflector.should_reflect(&log),
@@ -240,7 +240,7 @@ mod tests {
         );
 
         let mut log = ObservationLog::new();
-        log.push(sample_observation("ep-001", "test"));
+        log.observations.push(sample_observation("ep-001", "test"));
 
         assert!(
             reflector.should_reflect(&log),
@@ -253,7 +253,7 @@ mod tests {
         let log = parse_reflection_response(COMPRESSED_RESPONSE, chrono_tz::UTC).unwrap();
 
         // COMPRESSED_RESPONSE has 2 observation objects → 2 Observations
-        assert_eq!(log.len(), 2, "should have two observations");
+        assert_eq!(log.observations.len(), 2, "should have two observations");
         assert_eq!(
             log.observations.first().map(|o| o.content.as_str()),
             Some("workspace uses flat layout"),
@@ -277,7 +277,11 @@ mod tests {
     fn parse_reflection_handles_code_fences() {
         let fenced = format!("```json\n{COMPRESSED_RESPONSE}\n```");
         let log = parse_reflection_response(&fenced, chrono_tz::UTC).unwrap();
-        assert_eq!(log.len(), 2, "should parse despite code fences");
+        assert_eq!(
+            log.observations.len(),
+            2,
+            "should parse despite code fences"
+        );
     }
 
     #[test]
@@ -288,7 +292,7 @@ mod tests {
         ]"#;
         let log = parse_reflection_response(response, chrono_tz::UTC).unwrap();
 
-        assert_eq!(log.len(), 2, "should have two observations");
+        assert_eq!(log.observations.len(), 2, "should have two observations");
         assert_eq!(
             log.observations.first().map(|o| o.project_context.as_str()),
             Some("residuum/memory"),
@@ -309,7 +313,7 @@ mod tests {
         ]"#;
         let log = parse_reflection_response(response, chrono_tz::UTC).unwrap();
 
-        assert_eq!(log.len(), 2, "should have two observations");
+        assert_eq!(log.observations.len(), 2, "should have two observations");
         assert_eq!(
             log.observations.first().map(|o| &o.visibility),
             Some(&Visibility::Background),
@@ -340,7 +344,7 @@ mod tests {
         let log = parse_reflection_response(response, chrono_tz::UTC).unwrap();
         // Should succeed with now_local() fallback — just verify observation was parsed
         assert_eq!(
-            log.len(),
+            log.observations.len(),
             1,
             "should parse observation despite missing timestamp"
         );
@@ -357,8 +361,12 @@ mod tests {
 
         // Write initial log with 2 observations
         let mut initial_log = ObservationLog::new();
-        initial_log.push(sample_observation("ep-001", "residuum/workspace"));
-        initial_log.push(sample_observation("ep-002", "residuum/workspace"));
+        initial_log
+            .observations
+            .push(sample_observation("ep-001", "residuum/workspace"));
+        initial_log
+            .observations
+            .push(sample_observation("ep-002", "residuum/workspace"));
         save_observation_log(&layout.observations_json(), &initial_log)
             .await
             .unwrap();
@@ -375,7 +383,7 @@ mod tests {
         // COMPRESSED_RESPONSE yields 2 observations
         let result = reflector.reflect(&layout).await.unwrap();
         assert_eq!(
-            result.len(),
+            result.observations.len(),
             2,
             "compressed log should have two observations"
         );
@@ -384,7 +392,11 @@ mod tests {
         let reloaded = load_observation_log(&layout.observations_json())
             .await
             .unwrap();
-        assert_eq!(reloaded.len(), 2, "file should contain compressed log");
+        assert_eq!(
+            reloaded.observations.len(),
+            2,
+            "file should contain compressed log"
+        );
     }
 
     #[tokio::test]
@@ -402,14 +414,20 @@ mod tests {
         );
 
         let result = reflector.reflect(&layout).await.unwrap();
-        assert!(result.is_empty(), "empty log should return empty");
+        assert!(
+            result.observations.is_empty(),
+            "empty log should return empty"
+        );
     }
 
     #[test]
     fn parse_reflection_empty_array_yields_empty_log() {
         let log = parse_reflection_response("[]", chrono_tz::UTC).unwrap();
         // Empty array → empty log (error check is in reflect())
-        assert!(log.is_empty(), "empty array should yield empty log");
+        assert!(
+            log.observations.is_empty(),
+            "empty array should yield empty log"
+        );
     }
 
     #[test]
@@ -428,7 +446,11 @@ mod tests {
             {"content": "obs from bare array", "timestamp": "2026-02-21T14:30", "project_context": "test", "visibility": "user"}
         ]"#;
         let log = parse_reflection_response(bare_array, chrono_tz::UTC).unwrap();
-        assert_eq!(log.len(), 1, "bare array fallback should parse");
+        assert_eq!(
+            log.observations.len(),
+            1,
+            "bare array fallback should parse"
+        );
         assert_eq!(
             log.observations.first().map(|o| o.content.as_str()),
             Some("obs from bare array"),
@@ -446,8 +468,12 @@ mod tests {
             .unwrap();
 
         let mut initial_log = ObservationLog::new();
-        initial_log.push(sample_observation("ep-001", "residuum/workspace"));
-        initial_log.push(sample_observation("ep-002", "residuum/workspace"));
+        initial_log
+            .observations
+            .push(sample_observation("ep-001", "residuum/workspace"));
+        initial_log
+            .observations
+            .push(sample_observation("ep-002", "residuum/workspace"));
         save_observation_log(&layout.observations_json(), &initial_log)
             .await
             .unwrap();
@@ -487,7 +513,9 @@ mod tests {
             .unwrap();
 
         let mut initial_log = ObservationLog::new();
-        initial_log.push(sample_observation("ep-001", "test"));
+        initial_log
+            .observations
+            .push(sample_observation("ep-001", "test"));
         save_observation_log(&layout.observations_json(), &initial_log)
             .await
             .unwrap();
@@ -510,7 +538,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(
-            preserved.len(),
+            preserved.observations.len(),
             1,
             "original observation log should be preserved"
         );
@@ -529,7 +557,7 @@ mod tests {
 
         // Small log should NOT trigger at threshold=1000
         let mut log = ObservationLog::new();
-        log.push(sample_observation("ep-001", "test"));
+        log.observations.push(sample_observation("ep-001", "test"));
         assert!(!reflector.should_reflect(&log));
 
         // Lower the threshold
@@ -552,7 +580,9 @@ mod tests {
             .unwrap();
 
         let mut initial_log = ObservationLog::new();
-        initial_log.push(sample_observation("ep-001", "test"));
+        initial_log
+            .observations
+            .push(sample_observation("ep-001", "test"));
         save_observation_log(&layout.observations_json(), &initial_log)
             .await
             .unwrap();
@@ -574,7 +604,7 @@ mod tests {
 
         let result = reflector.reflect(&layout).await.unwrap();
         assert_eq!(
-            result.len(),
+            result.observations.len(),
             1,
             "should have 1 observation from new provider"
         );

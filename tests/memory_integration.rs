@@ -217,7 +217,7 @@ mod memory_integration {
             .await
             .unwrap();
         assert_eq!(
-            log.len(),
+            log.observations.len(),
             3,
             "observation log should have three observations (one per string)"
         );
@@ -270,7 +270,7 @@ mod memory_integration {
             .unwrap();
         // 3 from ep-001 + 3 from ep-002 = 6 observations
         assert_eq!(
-            updated_log.len(),
+            updated_log.observations.len(),
             6,
             "observation log should have six observations after two episodes"
         );
@@ -349,7 +349,7 @@ mod memory_integration {
         let compressed = reflector.reflect(&layout).await.unwrap();
         // reflector_response has 2 observation strings → 2 observations
         assert_eq!(
-            compressed.len(),
+            compressed.observations.len(),
             2,
             "compressed log should have two observations"
         );

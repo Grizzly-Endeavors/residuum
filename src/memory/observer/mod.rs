@@ -6,6 +6,8 @@
 mod parse;
 mod prompt;
 
+use std::collections::HashMap;
+
 use anyhow::Context;
 use chrono_tz::Tz;
 
@@ -245,8 +247,6 @@ fn estimate_recent_tokens(recent_messages: &[RecentMessage]) -> usize {
 ///
 /// Falls back to `"general"` if the list is empty or all strings are empty.
 fn majority_context(contexts: &[String]) -> String {
-    use std::collections::HashMap;
-
     let mut counts: HashMap<&str, usize> = HashMap::new();
     for ctx in contexts {
         if !ctx.is_empty() {
@@ -652,7 +652,7 @@ mod tests {
             .unwrap();
         // SAMPLE_RESPONSE has 2 observation objects → 2 Observations in the log
         assert_eq!(
-            log.len(),
+            log.observations.len(),
             2,
             "observation log should have two observations (one per object)"
         );

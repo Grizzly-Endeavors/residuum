@@ -118,23 +118,6 @@ impl ObservationLog {
         }
         lines.join("\n")
     }
-
-    /// Add an observation to the log.
-    pub fn push(&mut self, observation: Observation) {
-        self.observations.push(observation);
-    }
-
-    /// Get the number of observations.
-    #[must_use]
-    pub fn len(&self) -> usize {
-        self.observations.len()
-    }
-
-    /// Check if the log is empty.
-    #[must_use]
-    pub fn is_empty(&self) -> bool {
-        self.observations.is_empty()
-    }
 }
 
 /// A single chunk from an episode's idx.jsonl file — one interaction pair or other segment.
@@ -169,7 +152,7 @@ pub struct ManifestFileEntry {
 }
 
 /// Manifest tracking which files have been indexed and their state.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct IndexManifest {
     /// Timestamp of the last full rebuild.
     pub last_rebuild: String,
@@ -187,12 +170,7 @@ impl IndexManifest {
     /// Create a new empty manifest.
     #[must_use]
     pub fn new() -> Self {
-        Self {
-            last_rebuild: String::new(),
-            embedding_model: None,
-            embedding_dim: None,
-            files: HashMap::new(),
-        }
+        Self::default()
     }
 
     /// Load the manifest from disk. Returns an empty manifest if the file is missing.
@@ -220,12 +198,6 @@ impl IndexManifest {
             serde_json::to_string_pretty(self).context("failed to serialize index manifest")?;
 
         crate::util::fs::atomic_write(path, &json).await
-    }
-}
-
-impl Default for IndexManifest {
-    fn default() -> Self {
-        Self::new()
     }
 }
 
@@ -310,13 +282,13 @@ mod tests {
     #[test]
     fn observation_log_serde_round_trip() {
         let mut log = ObservationLog::new();
-        log.push(sample_observation());
+        log.observations.push(sample_observation());
 
         let json = serde_json::to_string(&log).unwrap();
         let deserialized: ObservationLog = serde_json::from_str(&json).unwrap();
 
         assert_eq!(
-            deserialized.len(),
+            deserialized.observations.len(),
             1,
             "log should round-trip with one observation"
         );
@@ -348,7 +320,7 @@ mod tests {
     #[test]
     fn display_formatted_includes_key_line() {
         let mut log = ObservationLog::new();
-        log.push(sample_observation());
+        log.observations.push(sample_observation());
         let formatted = log.display_formatted();
         assert!(
             formatted.starts_with("Format: [timestamp]"),
@@ -372,16 +344,23 @@ mod tests {
     #[test]
     fn observation_log_empty() {
         let log = ObservationLog::new();
-        assert!(log.is_empty(), "new log should be empty");
-        assert_eq!(log.len(), 0, "new log should have length 0");
+        assert!(log.observations.is_empty(), "new log should be empty");
+        assert_eq!(log.observations.len(), 0, "new log should have length 0");
     }
 
     #[test]
     fn observation_log_push() {
         let mut log = ObservationLog::new();
-        log.push(sample_observation());
-        assert!(!log.is_empty(), "log should not be empty after push");
-        assert_eq!(log.len(), 1, "log should have one observation after push");
+        log.observations.push(sample_observation());
+        assert!(
+            !log.observations.is_empty(),
+            "log should not be empty after push"
+        );
+        assert_eq!(
+            log.observations.len(),
+            1,
+            "log should have one observation after push"
+        );
     }
 
     #[test]
