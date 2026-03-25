@@ -12,7 +12,6 @@ pub async fn run_notify_subscriber(
     mut subscriber: Subscriber<NotificationEvent>,
     channel: Box<dyn NotificationChannel>,
 ) {
-    let channel_name = channel.name().to_string();
     tracing::info!("notify subscriber started");
 
     loop {
@@ -20,7 +19,6 @@ pub async fn run_notify_subscriber(
             Ok(Some(notification)) => {
                 if let Err(e) = channel.deliver(&notification).await {
                     tracing::warn!(
-                        channel = %channel_name,
                         error = %e,
                         "notification delivery failed"
                     );
@@ -28,13 +26,13 @@ pub async fn run_notify_subscriber(
             }
             Ok(None) => break,
             Err(e) => {
-                tracing::error!(error = %e, channel = %channel_name, "subscriber error, shutting down");
+                tracing::error!(error = %e, "subscriber error, shutting down");
                 break;
             }
         }
     }
 
-    tracing::info!(channel = %channel_name, "notify subscriber stopped");
+    tracing::info!("notify subscriber stopped");
 }
 
 #[cfg(test)]

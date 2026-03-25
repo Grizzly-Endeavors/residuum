@@ -101,17 +101,17 @@ async fn fallback_router_loop(mut subscriber: Subscriber<AgentResultEvent>, publ
         match subscriber.recv().await {
             Ok(Some(agent_result)) => {
                 if agent_result.heartbeat_status == HeartbeatStatus::Ok {
-                    tracing::info!(source_label = %agent_result.source_label, "pulse check: HEARTBEAT_OK");
+                    tracing::trace!(source_label = %agent_result.source_label, "pulse check: HEARTBEAT_OK");
                     continue;
                 }
 
                 if matches!(agent_result.source, EventTrigger::Agent) {
-                    tracing::info!(source_label = %agent_result.source_label, "fallback router: routing agent-spawned result to main agent");
+                    tracing::debug!(source_label = %agent_result.source_label, "fallback router: routing agent-spawned result to main agent");
                     publish_to_agent_main(&agent_result, &publisher).await;
                     continue;
                 }
 
-                tracing::info!(source_label = %agent_result.source_label, "fallback router: routing to inbox");
+                tracing::debug!(source_label = %agent_result.source_label, "fallback router: routing to inbox");
                 publish_to_targets(&agent_result, &[INBOX_TARGET.to_string()], &publisher).await;
             }
             Ok(None) => break,
@@ -128,21 +128,19 @@ async fn fallback_router_loop(mut subscriber: Subscriber<AgentResultEvent>, publ
 #[tracing::instrument(skip_all, fields(source_label = %event.source_label, task_id = %event.task_id))]
 async fn route_agent_result(event: &AgentResultEvent, router: &NotificationRouter) {
     tracing::info!(
-        source_label = %event.source_label,
-        task_id = %event.task_id,
         source = %event.source,
         "notification router received result"
     );
 
     // Layer 1: Heartbeat-ok → silent discard
     if event.heartbeat_status == HeartbeatStatus::Ok {
-        tracing::info!(source_label = %event.source_label, "pulse check: HEARTBEAT_OK");
+        tracing::trace!("pulse check: HEARTBEAT_OK");
         return;
     }
 
     // Layer 1: Agent-spawned results → relay to main agent
     if matches!(event.source, EventTrigger::Agent) {
-        tracing::info!(source_label = %event.source_label, "routing agent-spawned result to main agent");
+        tracing::info!("routing agent-spawned result to main agent");
         publish_to_agent_main(event, &router.publisher).await;
         return;
     }
@@ -150,7 +148,6 @@ async fn route_agent_result(event: &AgentResultEvent, router: &NotificationRoute
     // Layer 2: LLM-based routing
     let targets = llm_route(event, router).await;
     tracing::info!(
-        source_label = %event.source_label,
         targets = ?targets,
         "LLM routing decision"
     );
@@ -163,7 +160,7 @@ async fn llm_route(event: &AgentResultEvent, router: &NotificationRouter) -> Vec
     let alerts_content = match tokio::fs::read_to_string(&router.alerts_path).await {
         Ok(content) => content,
         Err(e) => {
-            tracing::warn!(error = %e, "failed to read ALERTS.md, using empty policy");
+            tracing::warn!(error = %e, path = %router.alerts_path.display(), "failed to read ALERTS.md, using empty policy");
             String::new()
         }
     };
@@ -209,7 +206,7 @@ async fn llm_route(event: &AgentResultEvent, router: &NotificationRouter) -> Vec
 
     match router.provider.complete(&messages, &[], &options).await {
         Ok(response) => {
-            tracing::debug!(
+            tracing::trace!(
                 source_label = %event.source_label,
                 raw_response = %response.content,
                 "LLM routing response"

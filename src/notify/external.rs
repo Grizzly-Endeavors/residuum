@@ -52,6 +52,7 @@ impl NotificationChannel for NtfyChannel {
         "ntfy"
     }
 
+    #[tracing::instrument(skip_all, fields(channel = %self.channel_name, endpoint = %self.url))]
     async fn deliver(&self, notification: &NotificationEvent) -> anyhow::Result<()> {
         let endpoint = format!("{}/{}", self.url.trim_end_matches('/'), self.topic);
         let title = format!("[{}] {}", notification.source.as_str(), notification.title);
@@ -129,6 +130,7 @@ impl NotificationChannel for WebhookChannel {
         "webhook"
     }
 
+    #[tracing::instrument(skip_all, fields(channel = %self.channel_name, endpoint = %self.url))]
     async fn deliver(&self, notification: &NotificationEvent) -> anyhow::Result<()> {
         tracing::debug!(
             channel = %self.channel_name,

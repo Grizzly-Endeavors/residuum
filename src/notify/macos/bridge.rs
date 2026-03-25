@@ -118,6 +118,7 @@ impl MacosBridge {
 
     /// # Errors
     /// Returns an error if the `spawn_blocking` task panics.
+    #[tracing::instrument(skip_all, fields(identifier, category = category_id))]
     pub async fn post_notification(
         &self,
         identifier: &str,
@@ -137,7 +138,7 @@ impl MacosBridge {
         .await
         .map_err(|e| anyhow::anyhow!("notification post task failed: {e}"))?;
 
-        tracing::info!(
+        tracing::debug!(
             identifier,
             category = category_id,
             "macOS notification submitted"
@@ -180,7 +181,11 @@ impl MacosBridge {
                     let url = format!("{web_url}/notification/{notification_id}");
                     open_url(&url);
                 } else {
-                    tracing::info!("open action received but no web_url configured, skipping");
+                    tracing::debug!(
+                        action_id,
+                        notification_id,
+                        "open action received but no web_url configured, skipping"
+                    );
                 }
             }
             // "dismiss" is the default macOS action — no-op
@@ -239,7 +244,11 @@ fn post_notification_sync(
         let id_for_block = identifier.to_string();
         let block = RcBlock::new(move |error: *mut NSError| {
             if !error.is_null() {
-                tracing::warn!(identifier = %id_for_block, "macOS notification delivery error");
+                let description = std::panic::catch_unwind(|| unsafe {
+                    (*error).localizedDescription().to_string()
+                })
+                .unwrap_or_else(|_| "unknown".to_string());
+                tracing::warn!(identifier = %id_for_block, error = %description, "macOS notification delivery error");
             }
         });
 
