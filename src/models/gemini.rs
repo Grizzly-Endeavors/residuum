@@ -240,7 +240,10 @@ impl GeminiClient {
         let request_json = serde_json::to_string(request)
             .map_err(|e| ModelError::Parse(format!("failed to serialize request: {e}")))?;
 
-        debug!(max_output_tokens, "sending gemini generateContent request");
+        debug!(
+            max_output_tokens,
+            message_count, tool_count, "sending gemini generateContent request"
+        );
 
         let response = http
             .client()
