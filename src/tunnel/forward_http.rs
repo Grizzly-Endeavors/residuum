@@ -25,7 +25,7 @@ const MAX_RESPONSE_SIZE: usize = 10 * 1024 * 1024;
 ///
 /// This function does not return errors directly; failures are encoded as 502
 /// HTTP responses in the returned `TunnelFrame`.
-#[tracing::instrument(skip_all)]
+#[tracing::instrument(skip_all, fields(request_id = %request_id, method = %method, path = %path))]
 pub(super) async fn forward(
     client: &reqwest::Client,
     port: u16,
@@ -36,7 +36,7 @@ pub(super) async fn forward(
     body: Option<String>,
 ) -> TunnelFrame {
     let url = format!("http://localhost:{port}{path}");
-    debug!(request_id, method, url, "forwarding HTTP request to local");
+    debug!(url, "forwarding HTTP request to local");
 
     let http_method = match method.parse::<reqwest::Method>() {
         Ok(m) => m,
@@ -76,7 +76,7 @@ pub(super) async fn forward(
     let response = match req.send().await {
         Ok(resp) => resp,
         Err(e) => {
-            warn!(request_id, method, path, elapsed_ms = start.elapsed().as_millis(), error = %e, "failed to forward request to local");
+            warn!(elapsed_ms = start.elapsed().as_millis(), error = %e, "failed to forward request to local");
             return error_response(request_id, 502, &format!("upstream error: {e}"));
         }
     };
