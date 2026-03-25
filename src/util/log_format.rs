@@ -66,12 +66,6 @@ pub fn expand_module_filter(module: &str) -> String {
     }
 }
 
-/// Check whether a log entry's target matches the given module filter.
-#[must_use]
-pub fn matches_module(target: &str, module_filter: &str) -> bool {
-    target.starts_with(module_filter)
-}
-
 /// Check whether a log entry's level meets the minimum severity threshold.
 #[must_use]
 pub fn meets_level(entry_level: &str, min_level: LogLevel) -> bool {
@@ -245,10 +239,10 @@ mod tests {
     #[test]
     fn module_matching() {
         let target = "residuum::agent::core";
-        assert!(matches_module(target, "residuum::agent"));
-        assert!(!matches_module(target, "residuum::tools"));
-        assert!(matches_module(target, "residuum::agent::core"));
-        assert!(!matches_module(target, "residuum::agent::core::deep"));
+        assert!(target.starts_with("residuum::agent"));
+        assert!(!target.starts_with("residuum::tools"));
+        assert!(target.starts_with("residuum::agent::core"));
+        assert!(!target.starts_with("residuum::agent::core::deep"));
     }
 
     #[test]

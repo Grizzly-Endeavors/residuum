@@ -21,8 +21,7 @@ where
     tokio::spawn(
         async move {
             tracing::debug!("task started");
-            // SAFETY: The wrapped future is dropped on panic; no inconsistent
-            // state escapes. Callers receive only () from the JoinHandle.
+            // catch_unwind here so a panicking task doesn't silently vanish — the JoinHandle still resolves normally.
             match std::panic::AssertUnwindSafe(future).catch_unwind().await {
                 Ok(()) => {
                     tracing::debug!("task exited (returned normally)");
@@ -116,21 +115,12 @@ where
                 let backoff =
                     (base_backoff * 2_u32.saturating_pow(consecutive_failures)).min(MAX_BACKOFF);
 
-                if consecutive_failures == 1 {
-                    tracing::warn!(
-                        task = name,
-                        attempt = consecutive_failures,
-                        backoff_ms = backoff.as_millis(),
-                        "restarting supervised task after backoff"
-                    );
-                } else {
-                    tracing::debug!(
-                        task = name,
-                        attempt = consecutive_failures,
-                        backoff_ms = backoff.as_millis(),
-                        "restarting supervised task after backoff"
-                    );
-                }
+                tracing::warn!(
+                    task = name,
+                    attempt = consecutive_failures,
+                    backoff_ms = backoff.as_millis(),
+                    "restarting supervised task after backoff"
+                );
 
                 tokio::time::sleep(backoff).await;
             }

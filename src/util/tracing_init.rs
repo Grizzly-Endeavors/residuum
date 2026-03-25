@@ -205,7 +205,7 @@ pub fn init_daemon_tracing(debug_mode: Option<DebugMode>, agent_name: Option<&st
     tracing_subscriber::registry()
         .with(env_filter)
         .with(file_layer)
-        .with(debug_mode.map(|_| stderr_layer))
+        .with(debug_mode.is_some().then_some(stderr_layer))
         .with(span_buffer_layer)
         .init();
 

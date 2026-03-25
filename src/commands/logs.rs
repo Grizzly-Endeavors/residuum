@@ -5,8 +5,7 @@
 
 use residuum::util::FatalError;
 use residuum::util::log_format::{
-    LogLevel, expand_module_filter, format_entry, format_entry_colored, matches_module,
-    meets_level, parse_line,
+    LogLevel, expand_module_filter, format_entry, format_entry_colored, meets_level, parse_line,
 };
 
 #[derive(clap::Args)]
@@ -75,7 +74,7 @@ impl LogFilter {
         };
 
         if let Some(ref prefix) = self.module_prefix
-            && !matches_module(&entry.target, prefix)
+            && !entry.target.starts_with(prefix.as_str())
         {
             return false;
         }
