@@ -59,8 +59,8 @@ fn parse_anchor(value: &str) -> Result<LineAnchor, ToolError> {
 
 /// Validate that a line anchor is in bounds and its hash matches the current file content.
 ///
-/// Returns `Ok(None)` if valid, `Ok(Some(error_message))` for hash/bounds mismatches
-/// (soft errors the model can act on).
+/// Returns `None` if the anchor is valid, or `Some(error_message)` if the line is
+/// out of bounds or its hash doesn't match the current file content.
 fn validate_anchor(anchor: &LineAnchor, lines: &[String]) -> Option<String> {
     if anchor.line_num == 0 || anchor.line_num > lines.len() {
         return Some(format!(
@@ -92,7 +92,7 @@ fn apply_replace(
     range_end: usize,
     content: &str,
 ) -> (Vec<String>, String) {
-    let content_lines: Vec<&str> = content.lines().collect();
+    let line_count = content.lines().count();
     let range_desc = if range_start == range_end {
         format!("{}", range_start + 1)
     } else {
@@ -100,9 +100,9 @@ fn apply_replace(
     };
 
     let mut new_lines =
-        Vec::with_capacity(lines.len() - (range_end - range_start + 1) + content_lines.len());
+        Vec::with_capacity(lines.len() - (range_end - range_start + 1) + line_count);
     new_lines.extend(lines.drain(..range_start));
-    new_lines.extend(content_lines.iter().copied().map(str::to_string));
+    new_lines.extend(content.lines().map(str::to_string));
     let skip_count = range_end - range_start + 1;
     new_lines.extend(lines.into_iter().skip(skip_count));
 
@@ -116,18 +116,18 @@ fn apply_insert(
     content: &str,
     at_start: bool,
 ) -> (Vec<String>, String) {
-    let content_lines: Vec<&str> = content.lines().collect();
+    let line_count = content.lines().count();
 
     if at_start {
-        let mut new_lines = Vec::with_capacity(lines.len() + content_lines.len());
-        new_lines.extend(content_lines.iter().copied().map(str::to_string));
+        let mut new_lines = Vec::with_capacity(lines.len() + line_count);
+        new_lines.extend(content.lines().map(str::to_string));
         new_lines.extend(lines);
         (new_lines, "inserted at file start".to_string())
     } else {
         let insert_idx = range_start + 1;
-        let mut new_lines = Vec::with_capacity(lines.len() + content_lines.len());
+        let mut new_lines = Vec::with_capacity(lines.len() + line_count);
         new_lines.extend(lines.drain(..insert_idx));
-        new_lines.extend(content_lines.iter().copied().map(str::to_string));
+        new_lines.extend(content.lines().map(str::to_string));
         new_lines.extend(lines);
         (
             new_lines,
