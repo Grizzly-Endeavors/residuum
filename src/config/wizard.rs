@@ -157,7 +157,7 @@ pub fn from_flags(
         }
         if (backend == "brave" || backend == "tavily") && web_search_api_key.is_none() {
             tracing::warn!(
-                backend,
+                %backend,
                 "--web-search-api-key not provided; web search may not work without it"
             );
         }

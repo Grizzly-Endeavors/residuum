@@ -271,10 +271,10 @@ fn resolve_role_chain_from_assignment(
         return resolve_assignment_chain(spec, providers_map, secrets);
     }
     if let Some(spec) = default_spec {
-        tracing::debug!(role, "using models.default for role");
+        tracing::debug!(role = %role, "using models.default for role");
         return resolve_assignment_chain(spec.clone(), providers_map, secrets);
     }
-    tracing::debug!(role, "using main chain for role");
+    tracing::debug!(role = %role, "using main chain for role");
     Ok(main.to_vec())
 }
 
