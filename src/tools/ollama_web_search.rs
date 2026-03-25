@@ -27,7 +27,7 @@ impl OllamaWebSearchTool {
             .timeout(std::time::Duration::from_secs(30))
             .build()
             .unwrap_or_else(|e| {
-                tracing::error!(error = %e, "failed to build HTTP client for ollama web search, using default");
+                tracing::warn!(error = %e, "failed to build HTTP client for ollama web search, using default");
                 reqwest::Client::default()
             });
         Self {
@@ -104,7 +104,7 @@ impl Tool for OllamaWebSearchTool {
         let status = response.status();
         if !status.is_success() {
             let error_body = response.text().await.unwrap_or_default();
-            tracing::warn!(status = %status, "ollama web search API returned non-2xx response");
+            tracing::warn!(status = %status, query = %query, "ollama web search API returned non-2xx response");
             return Ok(ToolResult::error(format!(
                 "ollama web search API returned HTTP {status}: {error_body}"
             )));

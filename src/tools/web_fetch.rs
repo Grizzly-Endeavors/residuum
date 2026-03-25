@@ -26,7 +26,7 @@ impl WebFetchTool {
             .redirect(reqwest::redirect::Policy::limited(5))
             .build()
             .unwrap_or_else(|e| {
-                tracing::error!(error = %e, "failed to build HTTP client for web fetch, using default");
+                tracing::warn!(error = %e, "failed to build HTTP client for web fetch, using default");
                 reqwest::Client::default()
             });
         Self { http }
