@@ -98,10 +98,11 @@ pub async fn save_item(inbox_dir: &Path, filename: &str, item: &InboxItem) -> an
     let json = serde_json::to_string_pretty(item)
         .with_context(|| format!("failed to serialize inbox item for {}", target.display()))?;
 
-    crate::util::fs::atomic_write(&target, &json).await.map_err(|e| {
-        tracing::warn!(path = %target.display(), error = %e, "atomic write failed, orphaned tmp may remain");
-        e
-    })?;
+    crate::util::fs::atomic_write(&target, &json)
+        .await
+        .inspect_err(|e| {
+            tracing::warn!(path = %target.display(), error = %e, "atomic write failed, orphaned tmp may remain");
+        })?;
 
     Ok(())
 }
