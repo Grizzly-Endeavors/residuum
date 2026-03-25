@@ -235,18 +235,16 @@ impl McpRegistry {
     /// Returns names of servers that were disconnected.
     #[tracing::instrument(skip_all)]
     pub async fn disconnect_all(&mut self) -> Vec<String> {
-        let servers: Vec<TrackedServer> = self.servers.drain(..).collect();
-        let mut names = Vec::with_capacity(servers.len());
+        let mut names = Vec::with_capacity(self.servers.len());
 
-        for TrackedServer { name, client, .. } in servers {
+        for TrackedServer { name, client, .. } in self.servers.drain(..) {
             if let Some(c) = client {
                 c.shutdown().await;
             }
             names.push(name);
         }
 
-        let count = names.len();
-        tracing::info!(count, "mcp servers disconnected");
+        tracing::info!(count = names.len(), "mcp servers disconnected");
         names
     }
 
@@ -374,10 +372,6 @@ impl McpRegistry {
             return Vec::new();
         };
 
-        if state.active_count == 0 {
-            tracing::warn!(project = %project_name, "deactivate_project called with active_count already zero — possible double-deactivation");
-            return Vec::new();
-        }
         state.active_count -= 1;
 
         if state.active_count == 0 {
