@@ -83,13 +83,9 @@ impl Config {
         };
 
         let loaded_providers_path = find_providers_path(config_dir)?;
-        let providers_config = Some(load_providers(&loaded_providers_path)?);
+        let providers = load_providers(&loaded_providers_path)?;
 
-        let cfg = resolve::from_file_and_env(
-            file_config.as_ref(),
-            providers_config.as_ref(),
-            config_dir,
-        )?;
+        let cfg = resolve::from_file_and_env(file_config.as_ref(), Some(&providers), config_dir)?;
         tracing::info!(
             config = %config_path.display(),
             providers = %loaded_providers_path.display(),
