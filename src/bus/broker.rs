@@ -483,12 +483,6 @@ mod tests {
         let mut small_sub =
             Subscriber::<MessageEvent>::new(id, topic_id, event_rx, handle.cmd_tx.clone());
 
-        // Use a signal subscriber to fence the broker's FIFO command processing.
-        let mut signal: Subscriber<NoticeEvent> = handle
-            .subscribe(topics::Notification(NotifyName::from("bp-signal")))
-            .await
-            .unwrap();
-
         // Fill the capacity-1 channel with one event, then publish a second that must be dropped.
         pub_.publish(topics::UserMessage, test_message("bp1", "fill"))
             .await
@@ -496,17 +490,7 @@ mod tests {
         pub_.publish(topics::UserMessage, test_message("bp2", "dropped"))
             .await
             .unwrap();
-        // Publishing to the signal topic after the two user-message publishes guarantees
-        // the broker has already processed bp1 and bp2 by the time we receive the signal.
-        pub_.publish(
-            topics::Notification(NotifyName::from("bp-signal")),
-            NoticeEvent {
-                message: "fence".into(),
-            },
-        )
-        .await
-        .unwrap();
-        signal.recv().await.unwrap().unwrap();
+        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
 
         // bp1 got through; bp2 was dropped (channel was full).
         let first = small_sub.recv().await.unwrap().unwrap();
@@ -523,15 +507,7 @@ mod tests {
         pub_.publish(topics::UserMessage, test_message("bp3", "recovered"))
             .await
             .unwrap();
-        pub_.publish(
-            topics::Notification(NotifyName::from("bp-signal")),
-            NoticeEvent {
-                message: "fence2".into(),
-            },
-        )
-        .await
-        .unwrap();
-        signal.recv().await.unwrap().unwrap();
+        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
 
         let recovered = small_sub.recv().await.unwrap().unwrap();
         assert_eq!(recovered.id, "bp3");
@@ -569,36 +545,5 @@ mod tests {
         // Broker exits and drops subscriptions, closing event_tx; recv returns Ok(None).
         let result = sub.recv().await;
         assert!(matches!(result, Ok(None)));
-    }
-
-    #[tokio::test]
-    async fn recv_returns_none_when_broker_exits() {
-        let handle = spawn_broker();
-
-        // Register a subscription using a raw channel so we can drop all cmd_tx senders
-        // without going through Subscriber::drop (which also holds a cmd_tx clone).
-        let id = handle.next_id.fetch_add(1, Ordering::Relaxed);
-        let (event_tx, mut raw_rx) = mpsc::channel::<ErasedEvent>(64);
-        handle
-            .cmd_tx
-            .send(BrokerCommand::Subscribe {
-                id,
-                topic: topics::UserMessage.topic_id(),
-                event_type: TypeId::of::<MessageEvent>(),
-                sender: event_tx,
-            })
-            .await
-            .unwrap();
-
-        // Drop the handle — no other cmd_tx senders exist, so the broker will shut down
-        // after draining its command queue.
-        drop(handle);
-
-        // When the broker exits it drops its subscription state, closing raw_rx.
-        let timed_out = tokio::time::timeout(tokio::time::Duration::from_secs(1), raw_rx.recv())
-            .await
-            .is_err();
-        assert!(!timed_out, "broker did not shut down within 1 second");
-        // Reaching here means raw_rx.recv() returned Ok(None) — broker confirmed shut down.
     }
 }

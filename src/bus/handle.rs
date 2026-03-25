@@ -51,13 +51,15 @@ pub enum BrokerCommand {
 /// A cloneable handle for publishing events to the bus.
 #[derive(Clone)]
 pub struct Publisher {
-    cmd_tx: mpsc::Sender<BrokerCommand>,
+    cmd_tx: Option<mpsc::Sender<BrokerCommand>>,
 }
 
 impl Publisher {
     /// Create a new publisher from a command channel sender.
     pub(super) fn new(cmd_tx: mpsc::Sender<BrokerCommand>) -> Self {
-        Self { cmd_tx }
+        Self {
+            cmd_tx: Some(cmd_tx),
+        }
     }
 
     /// Create a publisher not backed by any broker.
@@ -67,9 +69,7 @@ impl Publisher {
     /// with no output endpoints).
     #[must_use]
     pub fn noop() -> Self {
-        let (tx, _rx) = mpsc::channel(1);
-        // Dropping _rx closes the channel; any send returns BrokerShutdown.
-        Self { cmd_tx: tx }
+        Self { cmd_tx: None }
     }
 
     /// Publish a typed event to a topic that carries it.
@@ -82,8 +82,11 @@ impl Publisher {
         T: Topic + Carries<E>,
         E: Clone + Send + Sync + 'static,
     {
+        let Some(cmd_tx) = &self.cmd_tx else {
+            return Err(BusError::BrokerShutdown);
+        };
         let erased: ErasedEvent = Arc::new(event);
-        self.cmd_tx
+        cmd_tx
             .send(BrokerCommand::Publish {
                 topic: topic.topic_id(),
                 event_type: TypeId::of::<E>(),

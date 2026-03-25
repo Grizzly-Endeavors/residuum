@@ -65,19 +65,13 @@ mod tests {
 
     #[test]
     fn all_flags_are_distinct() {
-        let flags = [
-            EndpointCapabilities::INTERACTIVE,
-            EndpointCapabilities::STREAMING,
-            EndpointCapabilities::NOTIFY_ONLY,
-            EndpointCapabilities::INPUT_ONLY,
-        ];
-        for (i, a) in flags.iter().enumerate() {
-            for (j, b) in flags.iter().enumerate() {
-                if i != j {
-                    assert_ne!(a, b);
-                }
-            }
-        }
+        use super::EndpointCapabilities as C;
+        assert_ne!(C::INTERACTIVE, C::STREAMING);
+        assert_ne!(C::INTERACTIVE, C::NOTIFY_ONLY);
+        assert_ne!(C::INTERACTIVE, C::INPUT_ONLY);
+        assert_ne!(C::STREAMING, C::NOTIFY_ONLY);
+        assert_ne!(C::STREAMING, C::INPUT_ONLY);
+        assert_ne!(C::NOTIFY_ONLY, C::INPUT_ONLY);
     }
 
     #[test]
