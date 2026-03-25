@@ -70,7 +70,7 @@ async fn run_setup_mode() -> Result<(), FatalError> {
         workspace = %cfg.workspace_dir.display(),
         "setup-mode: configuration loaded, starting gateway"
     );
-    let _ = residuum::gateway::run_gateway(cfg).await?;
+    let _ = Box::pin(residuum::gateway::run_gateway(cfg)).await?;
     Ok(())
 }
 

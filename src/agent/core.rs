@@ -171,6 +171,24 @@ impl Agent {
         self.recent_messages.push(Message::user(content));
     }
 
+    fn memory_ctx(&self) -> MemoryContext<'_> {
+        MemoryContext {
+            observations: self.observations.as_deref(),
+            recent_context: self.recent_context.as_deref(),
+        }
+    }
+
+    fn turn_resources<'a>(&'a self, provider: &'a dyn ModelProvider) -> TurnResources<'a> {
+        TurnResources {
+            provider,
+            tools: &self.tools,
+            tool_filter: &self.tool_filter,
+            mcp_registry: &self.mcp_registry,
+            identity: &self.identity,
+            options: &self.options,
+        }
+    }
+
     /// Run an autonomous wake turn triggered by background results.
     ///
     /// Unlike `process_message`, this does NOT update `last_user_message_at`.
@@ -209,7 +227,6 @@ impl Agent {
             observations: self.observations.as_deref(),
             recent_context: self.recent_context.as_deref(),
         };
-
         let resources = TurnResources {
             provider: &*self.provider,
             tools: &self.tools,
@@ -284,7 +301,6 @@ impl Agent {
             observations: self.observations.as_deref(),
             recent_context: self.recent_context.as_deref(),
         };
-
         let resources = TurnResources {
             provider: &*self.provider,
             tools: &self.tools,
@@ -337,22 +353,12 @@ impl Agent {
 
         let provider: &dyn ModelProvider = provider_override.unwrap_or(&*self.provider);
 
-        let memory_ctx = MemoryContext {
-            observations: self.observations.as_deref(),
-            recent_context: self.recent_context.as_deref(),
-        };
+        let memory_ctx = self.memory_ctx();
 
         // System turns don't participate in interrupts — use a dead-end channel
         let mut sys_interrupt_rx = interrupt::dead_interrupt_rx();
 
-        let resources = TurnResources {
-            provider,
-            tools: &self.tools,
-            tool_filter: &self.tool_filter,
-            mcp_registry: &self.mcp_registry,
-            identity: &self.identity,
-            options: &self.options,
-        };
+        let resources = self.turn_resources(provider);
 
         let events = EventContext {
             publisher,
@@ -387,10 +393,7 @@ impl Agent {
         &self,
         prompt_ctx: &PromptContext<'_>,
     ) -> super::context::ContextBreakdown {
-        let memory_ctx = MemoryContext {
-            observations: self.observations.as_deref(),
-            recent_context: self.recent_context.as_deref(),
-        };
+        let memory_ctx = self.memory_ctx();
 
         let filter = self.tool_filter.read().await;
         let builtin_defs = self.tools.definitions(&filter);
