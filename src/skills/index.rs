@@ -29,7 +29,7 @@ impl SkillIndex {
     /// # Errors
     /// Returns an error if a directory cannot be read (except `NotFound`,
     /// which is silently skipped).
-    #[tracing::instrument(skip(dirs, project_skills_dir), fields(dirs_count = dirs.len()))]
+    #[tracing::instrument(skip_all, fields(dirs_count = dirs.len()))]
     pub async fn scan(dirs: &[PathBuf], project_skills_dir: Option<&Path>) -> anyhow::Result<Self> {
         let mut entries = Vec::new();
         let mut seen_names: HashSet<String> = HashSet::new();
@@ -105,7 +105,7 @@ fn xml_escape(s: &str) -> String {
 }
 
 /// Scan a single directory for skill subfolders.
-#[tracing::instrument(skip(entries, seen_names))]
+#[tracing::instrument(skip_all, fields(dir = %dir.display(), source = %source))]
 async fn scan_skill_directory(
     dir: &Path,
     source: SkillSource,

@@ -39,19 +39,19 @@ impl SkillState {
     /// # Errors
     /// Returns an error if the skill is not found, already active, or the
     /// file cannot be read.
-    #[tracing::instrument(skip_all, fields(skill = %name))]
+    #[tracing::instrument(skip_all, fields(name = %name))]
     pub async fn activate(&mut self, name: &str) -> anyhow::Result<&ActiveSkill> {
         if self
             .active
             .iter()
             .any(|a| a.name.eq_ignore_ascii_case(name))
         {
-            tracing::debug!(name = %name, "skill already active");
+            tracing::debug!("skill already active");
             anyhow::bail!("skill '{name}' is already active");
         }
 
         let entry = self.index.find_by_name(name).ok_or_else(|| {
-            tracing::debug!(name = %name, "skill not found in index");
+            tracing::debug!("skill not found in index");
             anyhow::anyhow!("skill '{name}' not found")
         })?;
 
@@ -61,14 +61,14 @@ impl SkillState {
             .with_context(|| format!("failed to read SKILL.md for '{}'", entry.name))?;
 
         let (_fm, body) = parse_skill_md(&file_content)
-            .inspect_err(|e| tracing::error!(name = %name, path = %skill_md_path.display(), error = %e, "failed to parse SKILL.md at activation time"))?;
+            .inspect_err(|e| tracing::error!(path = %skill_md_path.display(), error = %e, "failed to parse SKILL.md at activation time"))?;
 
         self.active.push(ActiveSkill {
             name: entry.name.clone(),
             body,
         });
 
-        tracing::info!(name = %name, "skill activated");
+        tracing::info!("skill activated");
         match self.active.last() {
             Some(skill) => Ok(skill),
             None => anyhow::bail!("active vec empty after push"),
@@ -79,6 +79,7 @@ impl SkillState {
     ///
     /// # Errors
     /// Returns an error if the skill is not currently active.
+    #[tracing::instrument(skip_all, fields(name = %name))]
     pub fn deactivate(&mut self, name: &str) -> anyhow::Result<()> {
         let pos = self
             .active
@@ -97,7 +98,7 @@ impl SkillState {
     ///
     /// # Errors
     /// Returns an error if scanning fails.
-    #[tracing::instrument(skip(self, project_skills_dir))]
+    #[tracing::instrument(skip_all, fields(dirs = self.dirs.len()))]
     pub async fn rescan(&mut self, project_skills_dir: Option<&Path>) -> anyhow::Result<()> {
         let skills_before = self.index.entries().len();
         tracing::info!(
