@@ -51,6 +51,11 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 tracing-appender = "0.2"
 
+# OpenTelemetry (trace export)
+opentelemetry = "0.31"
+opentelemetry_sdk = "0.31"
+opentelemetry-otlp = { version = "0.31", features = ["trace", "http-proto"] }
+
 # CLI
 clap = { version = "4", features = ["derive"] }
 rustyline = "15"

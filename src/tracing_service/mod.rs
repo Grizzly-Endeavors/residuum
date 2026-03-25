@@ -4,6 +4,7 @@
 //! content sanitization, and error reporting. Called by both CLI (via HTTP to
 //! the daemon) and web API handlers.
 
+mod otel;
 mod sanitize;
 
 pub use sanitize::sanitize_spans;
@@ -11,6 +12,7 @@ pub use sanitize::sanitize_spans;
 use std::sync::Arc;
 
 use anyhow::Result;
+use opentelemetry_sdk::trace::SpanExporter;
 use serde::Serialize;
 use tokio::sync::RwLock;
 
@@ -24,6 +26,7 @@ use crate::util::telemetry::SpanBufferHandle;
 struct TracingState {
     config: TracingConfig,
     streaming: bool,
+    streaming_cancel: Option<tokio_util::sync::CancellationToken>,
 }
 
 /// Current status of the tracing subsystem (returned by status endpoints).
@@ -97,6 +100,7 @@ impl TracingService {
             state: Arc::new(RwLock::new(TracingState {
                 config,
                 streaming: false,
+                streaming_cancel: None,
             })),
             span_buffer,
         }
@@ -179,17 +183,24 @@ impl TracingService {
         state.config.otel_endpoints.clone()
     }
 
-    /// Test connectivity to an OTEL endpoint.
+    /// Test connectivity to an OTEL endpoint by sending an empty export.
     ///
     /// # Errors
-    /// Returns an error if the endpoint is unreachable.
-    #[expect(
-        clippy::unused_async,
-        reason = "will use await once OTEL export is wired"
-    )]
-    pub async fn test_otel_connectivity(&self, _url: &str) -> Result<()> {
-        // TODO: implement OTEL connectivity test once export pipeline is built
-        tracing::warn!("OTEL connectivity test not yet implemented");
+    /// Returns an error if the endpoint is unreachable or the exporter fails to build.
+    pub async fn test_otel_connectivity(&self, url: &str) -> Result<()> {
+        let endpoint = OtelEndpoint {
+            url: url.to_string(),
+            name: None,
+            headers: std::collections::HashMap::new(),
+        };
+        let exporter = otel::build_exporter(&endpoint)
+            .map_err(|e| anyhow::anyhow!("failed to build exporter for {url}: {e}"))?;
+        // Send an empty batch to test connectivity
+        exporter
+            .export(Vec::new())
+            .await
+            .map_err(|e| anyhow::anyhow!("connectivity test failed for {url}: {e}"))?;
+        tracing::info!(url, "OTEL connectivity test passed");
         Ok(())
     }
 
@@ -234,25 +245,16 @@ impl TracingService {
         if state.config.sanitize_content {
             sanitize_spans(&mut spans);
         }
-        let span_count = spans.len();
         drop(state);
 
-        // TODO: actual OTEL export — for now return success with span count
-        let endpoint_results = endpoints
-            .iter()
-            .map(|ep| {
-                tracing::info!(
-                    url = %ep.url,
-                    spans = span_count,
-                    "would export traces (OTEL export not yet wired)"
-                );
-                EndpointExportResult {
-                    url: ep.url.clone(),
-                    success: true,
-                    error: None,
-                }
-            })
-            .collect();
+        let otel_spans = otel::convert_spans(&spans);
+        let span_count = otel_spans.len();
+
+        let mut endpoint_results = Vec::with_capacity(endpoints.len());
+        for ep in &endpoints {
+            let result = export_to_endpoint(ep, otel_spans.clone()).await;
+            endpoint_results.push(result);
+        }
 
         Ok(ExportResult {
             spans_sent: span_count,
@@ -261,6 +263,9 @@ impl TracingService {
     }
 
     /// Start streaming traces to configured OTEL endpoints.
+    ///
+    /// Spawns a background task that periodically drains the span buffer and
+    /// exports to all configured endpoints.
     ///
     /// # Errors
     /// Returns an error if streaming is already active or no endpoints are configured.
@@ -274,11 +279,54 @@ impl TracingService {
                 "no OTEL endpoints configured; add one with 'residuum tracing otel add <url>'"
             );
         }
+
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let cancel_clone = cancel.clone();
+        let buffer = self.span_buffer.clone();
+        let service_state = Arc::clone(&self.state);
+
+        tokio::spawn(async move {
+            tracing::info!("trace streaming task started");
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(5));
+            loop {
+                tokio::select! {
+                    () = cancel_clone.cancelled() => {
+                        tracing::info!("trace streaming task cancelled");
+                        break;
+                    }
+                    _ = interval.tick() => {
+                        let drained = buffer.drain();
+                        if drained.is_empty() {
+                            continue;
+                        }
+
+                        let cfg_snapshot = service_state.read().await;
+                        let mut spans = drained;
+                        if cfg_snapshot.config.sanitize_content {
+                            sanitize_spans(&mut spans);
+                        }
+                        let endpoints = cfg_snapshot.config.otel_endpoints.clone();
+                        drop(cfg_snapshot);
+
+                        let otel_spans = otel::convert_spans(&spans);
+                        for ep in &endpoints {
+                            let result = export_to_endpoint(ep, otel_spans.clone()).await;
+                            if !result.success {
+                                tracing::warn!(
+                                    url = %result.url,
+                                    error = ?result.error,
+                                    "streaming export failed"
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        });
+
         state.streaming = true;
-        // TODO: spawn streaming task once OTEL export pipeline is built
-        tracing::warn!(
-            "trace streaming started (OTEL export not yet wired — spans are being captured but not sent)"
-        );
+        state.streaming_cancel = Some(cancel);
+        tracing::info!("trace streaming started");
         Ok(())
     }
 
@@ -290,6 +338,9 @@ impl TracingService {
         let mut state = self.state.write().await;
         if !state.streaming {
             anyhow::bail!("trace streaming is not active");
+        }
+        if let Some(cancel) = state.streaming_cancel.take() {
+            cancel.cancel();
         }
         state.streaming = false;
         tracing::info!("trace streaming stopped");
@@ -332,5 +383,41 @@ impl TracingService {
             context = error_context,
             "auto error reporting triggered (infrastructure not yet available)"
         );
+    }
+}
+
+/// Export OTEL spans to a single endpoint. Returns per-endpoint result.
+async fn export_to_endpoint(
+    endpoint: &OtelEndpoint,
+    spans: Vec<opentelemetry_sdk::trace::SpanData>,
+) -> EndpointExportResult {
+    let exporter = otel::build_exporter(endpoint);
+    match exporter {
+        Ok(exp) => match exp.export(spans).await {
+            Ok(()) => {
+                tracing::debug!(url = %endpoint.url, "trace export succeeded");
+                EndpointExportResult {
+                    url: endpoint.url.clone(),
+                    success: true,
+                    error: None,
+                }
+            }
+            Err(e) => {
+                tracing::warn!(url = %endpoint.url, error = %e, "trace export failed");
+                EndpointExportResult {
+                    url: endpoint.url.clone(),
+                    success: false,
+                    error: Some(format!("{e}")),
+                }
+            }
+        },
+        Err(e) => {
+            tracing::warn!(url = %endpoint.url, error = %e, "failed to build exporter");
+            EndpointExportResult {
+                url: endpoint.url.clone(),
+                success: false,
+                error: Some(format!("failed to build exporter: {e}")),
+            }
+        }
     }
 }
