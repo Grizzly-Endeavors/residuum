@@ -23,6 +23,7 @@ pub(super) struct UpdateArgs {
 ///
 /// Returns `FatalError::Gateway` if the GitHub API request fails or
 /// the install script cannot be executed.
+#[tracing::instrument(skip_all)]
 pub(super) async fn run_update_command(args: &UpdateArgs) -> Result<(), FatalError> {
     use residuum::update::{self, CURRENT_VERSION};
 

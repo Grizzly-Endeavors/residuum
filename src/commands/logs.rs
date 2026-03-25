@@ -102,6 +102,7 @@ impl LogFilter {
 /// Finds the most recent log file in the log directory, parses JSON lines,
 /// applies filters, and renders human-readable output. With `--watch`, polls
 /// for new lines every 500ms.
+#[tracing::instrument(skip_all, fields(agent = ?args.agent))]
 pub(super) async fn run_logs_command(args: &LogsArgs) -> Result<(), FatalError> {
     let filter = LogFilter::from_args(args)?;
     let log_dir = residuum::agent_registry::paths::resolve_log_dir(args.agent.as_deref())?;
