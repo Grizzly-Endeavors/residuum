@@ -326,6 +326,7 @@ const GETTING_STARTED_ALWAYS_ON: &str = include_str!(
 /// # Errors
 /// Returns `FatalError::Workspace` if directories cannot be created or
 /// default files cannot be written.
+#[tracing::instrument(skip_all, fields(workspace = %layout.root().display()))]
 pub async fn ensure_workspace(
     layout: &WorkspaceLayout,
     user_name: Option<&str>,
@@ -486,7 +487,7 @@ async fn write_bundled_skills(layout: &WorkspaceLayout) -> Result<(), FatalError
     )
     .await?;
 
-    tracing::debug!("wrote bundled skills");
+    tracing::debug!(workspace = %layout.root().display(), "wrote bundled skills");
 
     Ok(())
 }
