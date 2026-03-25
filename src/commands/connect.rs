@@ -5,6 +5,11 @@ use residuum::interfaces::cli::CliClient;
 use residuum::interfaces::cli::commands::CommandEffect;
 use residuum::util::FatalError;
 
+type WsTx = futures_util::stream::SplitSink<
+    tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>,
+    tokio_tungstenite::tungstenite::Message,
+>;
+
 #[derive(clap::Args)]
 pub(super) struct ConnectArgs {
     /// WebSocket URL to connect to
@@ -192,20 +197,14 @@ fn handle_ws_frame(
 /// # Errors
 ///
 /// Returns `FatalError::Gateway` on serialization or send failure.
-async fn handle_cli_input<S>(
+async fn handle_cli_input(
     line: &str,
     client: &mut CliClient,
-    ws_tx: &mut S,
+    ws_tx: &mut WsTx,
     gate_tx: &std::sync::mpsc::Sender<()>,
     msg_counter: &mut u64,
     turn_active: &mut bool,
-) -> Result<std::ops::ControlFlow<()>, FatalError>
-where
-    S: futures_util::Sink<
-            tokio_tungstenite::tungstenite::Message,
-            Error = tokio_tungstenite::tungstenite::Error,
-        > + Unpin,
-{
+) -> Result<std::ops::ControlFlow<()>, FatalError> {
     if let Some(effect) = client.handle_command(line) {
         match effect {
             CommandEffect::ToggleVerbose => {
@@ -264,13 +263,7 @@ where
 /// # Errors
 ///
 /// Returns `FatalError::Gateway` on serialization or send failure.
-async fn send_client_message<S>(ws_tx: &mut S, msg: &ClientMessage) -> Result<(), FatalError>
-where
-    S: futures_util::Sink<
-            tokio_tungstenite::tungstenite::Message,
-            Error = tokio_tungstenite::tungstenite::Error,
-        > + Unpin,
-{
+async fn send_client_message(ws_tx: &mut WsTx, msg: &ClientMessage) -> Result<(), FatalError> {
     use futures_util::SinkExt;
     use tokio_tungstenite::tungstenite::Message as TungsteniteMessage;
 

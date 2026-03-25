@@ -159,11 +159,8 @@ pub(super) async fn run_logs_command(args: &LogsArgs) -> Result<(), FatalError> 
         let mut reader = tokio::io::BufReader::new(file);
 
         // Seek to current end
-        let metadata = std::fs::metadata(&latest)
-            .map_err(|e| FatalError::Config(format!("failed to stat log file: {e}")))?;
-        let file_len = metadata.len();
         reader
-            .seek(std::io::SeekFrom::Start(file_len))
+            .seek(std::io::SeekFrom::End(0))
             .await
             .map_err(|e| FatalError::Config(format!("failed to seek log file: {e}")))?;
 
