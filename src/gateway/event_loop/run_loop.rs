@@ -534,7 +534,6 @@ async fn poll_handle(
 /// Action from processing a bus event in the event loop.
 enum BusEventAction {
     Continue,
-    Exit(GatewayExit),
     Shutdown,
 }
 
@@ -554,11 +553,7 @@ async fn handle_bus_event(
                 timestamp: chrono::Utc::now(),
                 images: msg_event.images,
             };
-            if let Some(exit) =
-                handle_inbound_message(message, rt, observe_deadline, idle_deadline).await
-            {
-                return BusEventAction::Exit(exit);
-            }
+            handle_inbound_message(message, rt, observe_deadline, idle_deadline).await;
             BusEventAction::Continue
         }
         Ok(None) => {
@@ -576,10 +571,6 @@ async fn handle_bus_event(
 ///
 /// Processes inbound messages, pulse ticks, action ticks, and memory pipeline
 /// signals until shutdown or reload is requested.
-#[expect(
-    clippy::too_many_lines,
-    reason = "select! loop with many event sources"
-)]
 async fn run_event_loop(mut rt: GatewayRuntime) -> GatewayExit {
     let mut pulse_tick = tokio::time::interval(Duration::from_secs(60));
     let mut action_tick = tokio::time::interval(Duration::from_secs(30));
@@ -617,7 +608,6 @@ async fn run_event_loop(mut rt: GatewayRuntime) -> GatewayExit {
             event = rt.agent_subscriber.recv() => {
                 match handle_bus_event(event, &mut rt, &mut observe_deadline, &mut idle_deadline).await {
                     BusEventAction::Continue => {}
-                    BusEventAction::Exit(exit) => return exit,
                     BusEventAction::Shutdown => { graceful_shutdown(&mut rt).await; break; }
                 }
             }

@@ -522,19 +522,7 @@ async fn reload_discord_adapter(rt: &mut GatewayRuntime, new_cfg: &Config) {
 
 /// Stop the existing tunnel (if running) and start a new one if configured.
 async fn reload_tunnel(rt: &mut GatewayRuntime, new_cfg: &Config) {
-    if let Some(tx) = rt.tunnel_shutdown_tx.take() {
-        tx.send(true).ok();
-    }
-    if let Some(handle) = rt.tunnel_handle.take() {
-        if tokio::time::timeout(Duration::from_secs(5), handle)
-            .await
-            .is_ok()
-        {
-            tracing::info!("tunnel stopped");
-        } else {
-            tracing::warn!("tunnel shutdown timed out after 5s");
-        }
-    }
+    shutdown_adapter(&mut rt.tunnel_shutdown_tx, &mut rt.tunnel_handle, "tunnel").await;
 
     // Ensure status reflects disconnected after old tunnel shutdown
     rt.tunnel_status_tx.send(TunnelStatus::Disconnected).ok();
