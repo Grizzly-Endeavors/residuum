@@ -5,7 +5,7 @@
 use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, Utc};
-use tracing::{debug, warn};
+use tracing::debug;
 
 use anyhow::Context;
 
@@ -24,6 +24,7 @@ impl ActionStore {
     ///
     /// # Errors
     /// Returns an error if the file exists but cannot be read or is not valid JSON.
+    #[tracing::instrument(skip_all)]
     pub async fn load(path: impl Into<PathBuf>) -> anyhow::Result<Self> {
         let path = path.into();
         match tokio::fs::read_to_string(&path).await {
@@ -48,6 +49,7 @@ impl ActionStore {
     ///
     /// # Errors
     /// Returns an error if serialization or writing fails.
+    #[tracing::instrument(skip_all, fields(path = %self.path.display(), count = self.actions.len()))]
     pub async fn save(&self) -> anyhow::Result<()> {
         let json = serde_json::to_string_pretty(&self.actions)
             .context("failed to serialize scheduled actions")?;
@@ -98,7 +100,7 @@ impl ActionStore {
         if found {
             debug!(id = %id, "scheduled action removed");
         } else {
-            warn!(id = %id, "attempted to remove action that does not exist in store");
+            debug!(id = %id, "attempted to remove action that does not exist in store");
         }
         found
     }
