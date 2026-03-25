@@ -265,7 +265,7 @@ pub fn send_sigterm(pid: u32) -> Result<(), FatalError> {
 
     kill(nix_pid, Signal::SIGTERM)
         .map_err(|e| FatalError::Gateway(format!("failed to send SIGTERM to pid {pid}: {e}")))?;
-    tracing::info!(pid, "sent SIGTERM");
+    tracing::debug!(pid, "sent SIGTERM");
     Ok(())
 }
 
