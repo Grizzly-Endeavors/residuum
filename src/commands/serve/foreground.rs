@@ -70,7 +70,7 @@ async fn run_setup_mode() -> Result<(), FatalError> {
         workspace = %cfg.workspace_dir.display(),
         "setup-mode: configuration loaded, starting gateway"
     );
-    let _ = residuum::gateway::run_gateway(cfg).await?;
+    let _ = Box::pin(residuum::gateway::run_gateway(cfg)).await?;
     Ok(())
 }
 
@@ -191,7 +191,7 @@ fn re_exec_serve_foreground() -> Result<(), FatalError> {
 
     tracing::info!(exe = %exe.display(), "re-execing with updated binary");
 
-    // Forward the original args so --debug is preserved across re-exec
+    // Forward the original args so --foreground and --agent are preserved across re-exec
     let original_args: Vec<String> = std::env::args().skip(1).collect();
     let err = std::process::Command::new(&exe).args(&original_args).exec();
 

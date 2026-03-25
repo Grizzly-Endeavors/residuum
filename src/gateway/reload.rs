@@ -53,6 +53,8 @@ pub(super) struct ConfigDiff {
     pub idle_changed: bool,
     /// Cloud tunnel config changed (added/removed/changed).
     pub cloud_changed: bool,
+    /// Tracing config changed (log level, endpoints, sanitization, error reporting).
+    pub tracing_changed: bool,
 }
 
 impl ConfigDiff {
@@ -97,6 +99,9 @@ impl ConfigDiff {
         if self.cloud_changed {
             parts.push("cloud");
         }
+        if self.tracing_changed {
+            parts.push("tracing");
+        }
         if parts.is_empty() {
             "no changes detected".to_string()
         } else {
@@ -128,6 +133,7 @@ pub(super) fn diff_config(old: &Config, new: &Config) -> ConfigDiff {
         skills_changed: old.skills != new.skills,
         idle_changed: old.idle != new.idle,
         cloud_changed: old.cloud != new.cloud,
+        tracing_changed: old.tracing != new.tracing,
     }
 }
 
@@ -264,6 +270,18 @@ pub(super) async fn handle_root_reload(rt: &mut GatewayRuntime) -> IdleAction {
     if diff.agent_changed {
         reload_agent_abilities(rt, &new_cfg).await;
     }
+    if diff.tracing_changed {
+        rt.tracing_service
+            .update_config(new_cfg.tracing.clone())
+            .await;
+        // Update the log filter if the level changed
+        if let Some(handle) = crate::util::tracing_init::global_filter_handle()
+            && let Err(e) = handle.set_filter(new_cfg.tracing.log_level)
+        {
+            tracing::warn!(error = %e, "failed to update log filter on tracing config reload");
+        }
+        tracing::info!(level = %new_cfg.tracing.log_level, "tracing config updated");
+    }
 
     // ── Store new config ────────────────────────────────────────────────
     rt.cfg = new_cfg;
@@ -387,11 +405,15 @@ async fn reload_gateway(rt: &mut GatewayRuntime, new_cfg: &Config) {
                 restart_tx: rt.restart_tx.clone(),
                 gateway_shutdown_tx: rt.gateway_shutdown_tx.clone(),
             };
+            let tracing_api_state = crate::gateway::web::tracing_api::TracingApiState {
+                service: std::sync::Arc::clone(&rt.tracing_service),
+            };
             let app = crate::gateway::event_loop::build_gateway_app(
                 state,
                 new_cfg,
                 config_api_state,
                 update_api_state,
+                tracing_api_state,
             );
 
             let new_handle = crate::gateway::event_loop::spawn_server_with_listener(
@@ -626,6 +648,7 @@ mod tests {
             temperature: None,
             thinking: None,
             web_search: crate::config::WebSearchConfig::default(),
+            tracing: crate::config::TracingConfig::default(),
             role_overrides: std::collections::HashMap::new(),
             config_dir: std::path::PathBuf::from("/tmp/config"),
         }

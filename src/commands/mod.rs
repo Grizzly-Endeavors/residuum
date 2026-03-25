@@ -1,11 +1,13 @@
 //! CLI subcommand dispatch using clap.
 
+mod bug_report;
 mod connect;
 mod logs;
 mod secret;
 mod serve;
 mod setup;
 mod stop;
+mod tracing_cmd;
 mod update;
 
 use clap::Parser;
@@ -48,6 +50,13 @@ enum Command {
     },
     /// Stop a running gateway daemon
     Stop(stop::StopArgs),
+    /// Manage tracing and observability
+    Tracing {
+        #[command(subcommand)]
+        command: tracing_cmd::TracingCommand,
+    },
+    /// Send a bug report with trace dump to the developer
+    BugReport(bug_report::BugReportArgs),
     /// Check for and install updates
     Update(update::UpdateArgs),
     /// Manage named agent instances
@@ -109,11 +118,34 @@ pub async fn run() -> Result<(), FatalError> {
             residuum::util::tracing_init::init_default_tracing();
             update::run_update_command(args).await
         }
+        Command::Tracing { ref command } => {
+            residuum::util::tracing_init::init_default_tracing();
+            let config_dir = residuum::config::Config::config_dir()?;
+            let gateway_addr = resolve_gateway_addr(&config_dir);
+            tracing_cmd::run_tracing_command(command, &gateway_addr).await
+        }
+        Command::BugReport(ref args) => {
+            residuum::util::tracing_init::init_default_tracing();
+            let config_dir = residuum::config::Config::config_dir()?;
+            let gateway_addr = resolve_gateway_addr(&config_dir);
+            bug_report::run_bug_report_command(args, &gateway_addr).await
+        }
         Command::Serve(ref args) => {
             if args.foreground {
+                // Load config to get the configured log level
+                let log_level = {
+                    let config_dir =
+                        residuum::agent_registry::paths::resolve_config_dir(args.agent.as_deref())
+                            .unwrap_or_else(|_| std::path::PathBuf::from("."));
+                    residuum::config::Config::load_at(&config_dir)
+                        .map_or(residuum::config::LogLevel::default(), |cfg| {
+                            cfg.tracing.log_level
+                        })
+                };
                 residuum::util::tracing_init::init_daemon_tracing(
-                    args.debug,
+                    args.foreground,
                     args.agent.as_deref(),
+                    log_level,
                 );
                 serve::run_serve_foreground(args).await
             } else {

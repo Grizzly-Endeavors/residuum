@@ -242,6 +242,7 @@ mod tests {
             temperature: None,
             thinking: None,
             web_search: WebSearchConfig::default(),
+            tracing: crate::config::TracingConfig::default(),
             role_overrides: HashMap::new(),
             config_dir: PathBuf::from("/tmp"),
         }

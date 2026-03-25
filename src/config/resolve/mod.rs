@@ -17,14 +17,16 @@ use super::constants::{
 use super::deserialize::{
     AgentConfigFile, BackgroundConfigFile, BackgroundModelsFile, CloudConfigFile, ConfigFile,
     DiscordConfigFile, GatewayConfigFile, MemoryConfigFile, ProviderEntryFile, ProvidersFile,
-    SearchConfigFile, SkillsConfigFile, TelegramConfigFile, WebSearchConfigFile, WebhookEntryFile,
+    SearchConfigFile, SkillsConfigFile, TelegramConfigFile, TracingConfigFile, WebSearchConfigFile,
+    WebhookEntryFile,
 };
 use super::provider::ProviderKind;
 use super::secrets::SecretStore;
 use super::types::{
     AgentAbilitiesConfig, BackgroundConfig, CloudConfig, DiscordConfig, GatewayConfig, IdleConfig,
-    MemoryConfig, ProviderNativeSearchConfig, SearchConfig, SkillsConfig, StandaloneBackendConfig,
-    TelegramConfig, WebSearchConfig, WebhookEntry, WebhookFormat, WebhookRouting,
+    LogLevel, MemoryConfig, OtelEndpoint, ProviderNativeSearchConfig, SearchConfig, SkillsConfig,
+    StandaloneBackendConfig, TelegramConfig, TracingConfig, WebSearchConfig, WebhookEntry,
+    WebhookFormat, WebhookRouting,
 };
 
 /// Build a `Config` from an optional config file and environment variables.
@@ -110,6 +112,8 @@ pub(crate) fn from_file_and_env(
         &secrets,
     );
 
+    let tracing = resolve_tracing_config(file.and_then(|f| f.tracing.as_ref()))?;
+
     Ok(Config {
         name,
         main: resolved_models.main,
@@ -136,6 +140,7 @@ pub(crate) fn from_file_and_env(
         temperature: file.and_then(|f| f.temperature),
         thinking,
         web_search,
+        tracing,
         role_overrides: resolved_models.role_overrides,
         config_dir: config_dir.to_path_buf(),
     })
@@ -445,6 +450,45 @@ fn resolve_memory_config(section: Option<&MemoryConfigFile>) -> MemoryConfig {
     }
     mem.search = resolve_search_config(section.and_then(|m| m.search.as_ref()));
     mem
+}
+
+/// Resolve tracing configuration from TOML section.
+///
+/// # Errors
+/// Returns `FatalError::Config` if the log level string is invalid.
+fn resolve_tracing_config(
+    section: Option<&TracingConfigFile>,
+) -> Result<TracingConfig, FatalError> {
+    let Some(section) = section else {
+        return Ok(TracingConfig::default());
+    };
+
+    let log_level = section
+        .log_level
+        .as_deref()
+        .map(str::parse::<LogLevel>)
+        .transpose()
+        .map_err(FatalError::Config)?
+        .unwrap_or_default();
+
+    let otel_endpoints = section
+        .otel_endpoints
+        .as_deref()
+        .unwrap_or_default()
+        .iter()
+        .map(|ep| OtelEndpoint {
+            url: ep.url.clone(),
+            name: ep.name.clone(),
+            headers: ep.headers.clone().unwrap_or_default(),
+        })
+        .collect();
+
+    Ok(TracingConfig {
+        log_level,
+        auto_error_reporting: section.auto_error_reporting.unwrap_or(false),
+        sanitize_content: section.sanitize_content.unwrap_or(true),
+        otel_endpoints,
+    })
 }
 
 /// Resolve idle configuration from TOML section, validating the idle channel

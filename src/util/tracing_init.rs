@@ -5,6 +5,44 @@
 //! - `init_cli_tracing`: stderr + file (connect client)
 //! - `init_daemon_tracing`: file + optional stderr (daemon/foreground serve)
 
+use std::sync::OnceLock;
+
+use crate::config::LogLevel;
+
+// ── Runtime filter reload ────────────────────────────────────────────
+
+/// Trait for runtime log level switching.
+///
+/// Type-erases the `tracing_subscriber::reload::Handle` so it can be stored
+/// globally without naming the full subscriber stack type.
+pub trait FilterReload: Send + Sync {
+    /// Replace the active `EnvFilter` with one for the given log level.
+    ///
+    /// # Errors
+    /// Returns an error if the filter cannot be applied.
+    fn set_filter(&self, level: LogLevel) -> Result<(), String>;
+}
+
+/// Process-global filter reload handle, set once during daemon tracing init.
+static FILTER_HANDLE: OnceLock<Box<dyn FilterReload>> = OnceLock::new();
+
+/// Access the global filter reload handle.
+///
+/// Returns `None` if daemon tracing was not initialized (e.g. in CLI or test modes).
+#[must_use]
+pub fn global_filter_handle() -> Option<&'static dyn FilterReload> {
+    FILTER_HANDLE.get().map(AsRef::as_ref)
+}
+
+/// Set the global filter reload handle. Called once during daemon tracing init.
+///
+/// Returns `Err` if the handle was already set.
+fn set_global_filter_handle(handle: Box<dyn FilterReload>) -> Result<(), Box<dyn FilterReload>> {
+    FILTER_HANDLE.set(handle)
+}
+
+// ── Initialization modes ─────────────────────────────────────────────
+
 /// Initialize tracing with stderr-only output (default for serve/logs/setup).
 pub fn init_default_tracing() {
     tracing_subscriber::fmt()
@@ -78,45 +116,6 @@ pub fn init_cli_tracing() {
         .init();
 }
 
-/// Debug logging modes for the `--debug` flag.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
-pub enum DebugMode {
-    /// `--debug` (no value): residuum crates at debug, deps at warn
-    #[value(name = "default")]
-    Default,
-    /// `--debug=all`: everything at debug
-    #[value(name = "all")]
-    All,
-    /// `--debug=trace`: residuum crates at trace, deps at warn
-    #[value(name = "trace")]
-    Trace,
-}
-
-impl DebugMode {
-    /// Parse a `--debug[=mode]` value into a `DebugMode`.
-    ///
-    /// Returns `None` for unrecognized modes (caller should report the error).
-    #[must_use]
-    pub fn from_flag_value(value: Option<&str>) -> Option<Self> {
-        match value {
-            None | Some("") => Some(Self::Default),
-            Some("all") => Some(Self::All),
-            Some("trace") => Some(Self::Trace),
-            Some(_) => None,
-        }
-    }
-
-    /// The `EnvFilter` directive string for this mode.
-    #[must_use]
-    pub fn filter_str(self) -> &'static str {
-        match self {
-            Self::Default => "residuum=debug,warn",
-            Self::All => "debug",
-            Self::Trace => "residuum=trace,warn",
-        }
-    }
-}
-
 #[expect(
     clippy::panic,
     reason = "deliberate termination when no log appender can be created"
@@ -130,26 +129,39 @@ fn fatal_no_log_appender(msg: &str) -> ! {
     panic!("{msg}")
 }
 
-/// Initialize tracing with file-only output for daemonized operation.
+/// Initialize tracing for daemonized operation.
 ///
 /// Logs are written to `<log_dir>/serve.YYYY-MM-DD.log` (or `serve-<name>`)
-/// with daily rotation and 30-day retention. When `debug_mode` is `Some`,
-/// the filter is overridden accordingly and stderr output is added so debug
-/// output appears in the terminal.
+/// with daily rotation and 30-day retention. The log level is determined by
+/// the `log_level` parameter from config.toml (overridden by `RUST_LOG` if set).
 ///
-/// When `agent_name` is `Some`, logs go to the agent-specific log directory
-/// and the file prefix includes the agent name for identification.
+/// When `foreground` is true, stderr output is added so logs appear in the
+/// terminal. The filter level applies equally to file and stderr output.
+///
+/// A reload handle is stored globally so the log level can be changed at
+/// runtime via config reload.
 #[expect(
     clippy::print_stderr,
     reason = "pre-tracing startup warnings — tracing is not yet initialized"
 )]
-pub fn init_daemon_tracing(debug_mode: Option<DebugMode>, agent_name: Option<&str>) {
+pub fn init_daemon_tracing(foreground: bool, agent_name: Option<&str>, log_level: LogLevel) {
     use tracing_subscriber::layer::SubscriberExt;
     use tracing_subscriber::util::SubscriberInitExt;
 
-    let default_filter = debug_mode.map_or("info", DebugMode::filter_str);
+    let default_filter = log_level.filter_str();
     let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(default_filter));
+
+    // Wrap in a reload layer so the filter can be changed at runtime
+    let (reload_filter, reload_handle) = tracing_subscriber::reload::Layer::new(env_filter);
+
+    // Store the reload handle globally for runtime filter changes
+    let handle = ReloadFilterHandle {
+        inner: reload_handle,
+    };
+    if set_global_filter_handle(Box::new(handle)).is_err() {
+        eprintln!("warning: filter reload handle was already initialized");
+    }
 
     let log_dir = crate::agent_registry::paths::resolve_log_dir(agent_name).unwrap_or_else(|_| {
         eprintln!("warning: could not determine log directory; logs will be written to ./logs");
@@ -203,9 +215,9 @@ pub fn init_daemon_tracing(debug_mode: Option<DebugMode>, agent_name: Option<&st
     );
 
     tracing_subscriber::registry()
-        .with(env_filter)
+        .with(reload_filter)
         .with(file_layer)
-        .with(debug_mode.map(|_| stderr_layer))
+        .with(foreground.then_some(stderr_layer))
         .with(span_buffer_layer)
         .init();
 
@@ -218,55 +230,61 @@ pub fn init_daemon_tracing(debug_mode: Option<DebugMode>, agent_name: Option<&st
     tracing::info!(
         dir = %log_dir.display(),
         prefix = %log_prefix,
+        level = %log_level,
+        foreground,
         "logging initialized (daily rotation, 30-day retention)"
     );
 }
 
+// ── Reload handle implementation ─────────────────────────────────────
+
+/// Concrete `FilterReload` implementation wrapping a `tracing_subscriber::reload::Handle`.
+///
+/// The generic types capture the subscriber stack at the point where the reload
+/// layer was inserted. We use the trait to erase these types so the handle can
+/// be stored in a `OnceLock`.
+struct ReloadFilterHandle<S: Send + Sync> {
+    inner: tracing_subscriber::reload::Handle<tracing_subscriber::EnvFilter, S>,
+}
+
+impl<S> FilterReload for ReloadFilterHandle<S>
+where
+    S: tracing::Subscriber + Send + Sync + 'static,
+{
+    fn set_filter(&self, level: LogLevel) -> Result<(), String> {
+        let new_filter = tracing_subscriber::EnvFilter::try_from_default_env()
+            .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(level.filter_str()));
+        self.inner
+            .modify(|filter| *filter = new_filter)
+            .map_err(|e| format!("failed to update log filter: {e}"))
+    }
+}
+
 #[cfg(test)]
+#[expect(clippy::unwrap_used, reason = "test code uses unwrap for clarity")]
 mod tests {
-    use super::*;
+    use crate::config::LogLevel;
 
     #[test]
-    fn debug_mode_from_flag_value_none_is_default() {
-        assert!(matches!(
-            DebugMode::from_flag_value(None),
-            Some(DebugMode::Default)
-        ));
+    fn log_level_filter_strings() {
+        assert_eq!(LogLevel::Info.filter_str(), "info");
+        assert_eq!(LogLevel::Debug.filter_str(), "residuum=debug,warn");
+        assert_eq!(LogLevel::Trace.filter_str(), "residuum=trace,warn");
     }
 
     #[test]
-    fn debug_mode_from_flag_value_empty_is_default() {
-        assert!(matches!(
-            DebugMode::from_flag_value(Some("")),
-            Some(DebugMode::Default)
-        ));
+    fn log_level_from_str() {
+        assert_eq!("info".parse::<LogLevel>().unwrap(), LogLevel::Info);
+        assert_eq!("debug".parse::<LogLevel>().unwrap(), LogLevel::Debug);
+        assert_eq!("trace".parse::<LogLevel>().unwrap(), LogLevel::Trace);
+        assert!("bogus".parse::<LogLevel>().is_err());
     }
 
     #[test]
-    fn debug_mode_from_flag_value_all() {
-        assert!(matches!(
-            DebugMode::from_flag_value(Some("all")),
-            Some(DebugMode::All)
-        ));
-    }
-
-    #[test]
-    fn debug_mode_from_flag_value_trace() {
-        assert!(matches!(
-            DebugMode::from_flag_value(Some("trace")),
-            Some(DebugMode::Trace)
-        ));
-    }
-
-    #[test]
-    fn debug_mode_from_flag_value_unknown_is_none() {
-        assert!(DebugMode::from_flag_value(Some("bogus")).is_none());
-    }
-
-    #[test]
-    fn debug_mode_filter_strings() {
-        assert_eq!(DebugMode::Default.filter_str(), "residuum=debug,warn");
-        assert_eq!(DebugMode::All.filter_str(), "debug");
-        assert_eq!(DebugMode::Trace.filter_str(), "residuum=trace,warn");
+    fn log_level_display_round_trips() {
+        for level in [LogLevel::Info, LogLevel::Debug, LogLevel::Trace] {
+            let s = level.to_string();
+            assert_eq!(s.parse::<LogLevel>().unwrap(), level);
+        }
     }
 }

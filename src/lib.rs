@@ -18,6 +18,7 @@ pub mod skills;
 pub mod subagents;
 pub mod time;
 pub mod tools;
+pub mod tracing_service;
 pub(crate) mod tunnel;
 pub mod update;
 pub mod util;
