@@ -811,7 +811,7 @@ impl HybridSearcher {
     ///
     /// # Errors
     /// Returns an error if BM25 search or embedding generation fails.
-    #[tracing::instrument(skip_all, fields(limit))]
+    #[tracing::instrument(skip_all, fields(limit, query))]
     pub async fn search(
         &self,
         query: &str,
@@ -825,7 +825,7 @@ impl HybridSearcher {
 
         // If no vector search available, return BM25 results directly
         let (Some(vs), Some(ep)) = (&self.vector, &self.embedding) else {
-            tracing::debug!("vector search unavailable, using BM25-only search");
+            tracing::trace!("vector search unavailable, using BM25-only search");
             // BM25-only: apply temporal decay if enabled, re-sort, then truncate
             let mut results = bm25_results;
             if self.cfg.temporal_decay {
