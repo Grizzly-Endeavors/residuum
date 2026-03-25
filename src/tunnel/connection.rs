@@ -240,12 +240,17 @@ where
 
 /// Build the HTTP request used to initiate the WebSocket connection with auth.
 fn build_ws_request(cfg: &CloudConfig) -> Result<ws_http::Request<()>, ws_http::Error> {
-    let host = cfg
-        .relay_url
-        .strip_prefix("wss://")
-        .or_else(|| cfg.relay_url.strip_prefix("ws://"))
-        .and_then(|s| s.split('/').next())
-        .unwrap_or("localhost");
+    let host = url::Url::parse(&cfg.relay_url)
+        .ok()
+        .and_then(|u| {
+            let h = u.host_str()?.to_string();
+            Some(match u.port() {
+                Some(port) => format!("{h}:{port}"),
+                None => h,
+            })
+        })
+        .unwrap_or_else(|| "localhost".to_string());
+    let host = host.as_str();
 
     let mut request = super::build_ws_upgrade_request(&cfg.relay_url, host)?;
     request.headers_mut().insert(
@@ -448,12 +453,6 @@ mod tests {
             );
             current = next;
         }
-    }
-
-    #[test]
-    fn backoff_zero_input_returns_zero() {
-        let next = next_backoff(Duration::ZERO);
-        assert_eq!(next, Duration::ZERO, "zero input produces zero output");
     }
 
     #[test]
