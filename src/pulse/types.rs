@@ -49,9 +49,6 @@ pub struct PulseTask {
 /// Returns an error if the string is empty, has no unit suffix,
 /// or contains a non-numeric value before the suffix.
 pub fn parse_schedule_duration(s: &str) -> anyhow::Result<Duration> {
-    if s.is_empty() {
-        bail!("schedule duration cannot be empty");
-    }
     let Some(last_byte_idx) = s.char_indices().next_back().map(|(i, _)| i) else {
         bail!("schedule duration cannot be empty");
     };
