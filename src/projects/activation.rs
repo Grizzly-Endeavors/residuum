@@ -205,7 +205,7 @@ async fn write_deactivation_log(
     log_text: &str,
     now: NaiveDateTime,
 ) -> anyhow::Result<()> {
-    let day_file = now.format("log-%d");
+    let day_stem = now.format("log-%d");
     let date_header = now.format("%Y-%m-%d");
     let time_str = now.format("%H:%M");
 
@@ -216,7 +216,7 @@ async fn write_deactivation_log(
         .await
         .with_context(|| format!("failed to create log directory {}", log_dir.display()))?;
 
-    let log_file = log_dir.join(format!("{day_file}.md"));
+    let log_file = log_dir.join(format!("{day_stem}.md"));
     let entry = format!("- **{time_str}** {log_text}\n");
 
     let content = match tokio::fs::read_to_string(&log_file).await {
@@ -239,35 +239,6 @@ async fn write_deactivation_log(
     Ok(())
 }
 
-/// Collect and sort (descending) entries from a `ReadDir` stream matching a filter.
-async fn collect_dir_entries(
-    mut read_dir: tokio::fs::ReadDir,
-    dir: &Path,
-    filter: impl Fn(&Path) -> bool,
-) -> Vec<PathBuf> {
-    let mut entries: Vec<PathBuf> = Vec::new();
-    loop {
-        match read_dir.next_entry().await {
-            Ok(Some(entry)) => {
-                let path = entry.path();
-                if filter(&path) {
-                    entries.push(path);
-                }
-            }
-            Ok(None) => break,
-            Err(e) => {
-                tracing::warn!(
-                    dir = %dir.display(),
-                    error = %e,
-                    "failed to read directory entry"
-                );
-            }
-        }
-    }
-    entries.sort_unstable_by(|a, b| b.cmp(a));
-    entries
-}
-
 /// Read the most recent project session logs, returning up to ~2000 tokens
 /// (~8000 bytes) of content with the most recent entries first.
 ///
@@ -278,11 +249,30 @@ async fn read_recent_logs(project_root: &Path) -> Option<String> {
 
     let log_dir = project_root.join("notes/log");
 
-    let Ok(months) = tokio::fs::read_dir(&log_dir).await else {
+    let Ok(mut months) = tokio::fs::read_dir(&log_dir).await else {
         return None;
     };
 
-    let month_dirs = collect_dir_entries(months, &log_dir, Path::is_dir).await;
+    let mut month_dirs: Vec<PathBuf> = Vec::new();
+    loop {
+        match months.next_entry().await {
+            Ok(Some(entry)) => {
+                let path = entry.path();
+                if path.is_dir() {
+                    month_dirs.push(path);
+                }
+            }
+            Ok(None) => break,
+            Err(e) => {
+                tracing::warn!(
+                    dir = %log_dir.display(),
+                    error = %e,
+                    "failed to read directory entry"
+                );
+            }
+        }
+    }
+    month_dirs.sort_unstable_by(|a, b| b.cmp(a));
 
     let mut collected = String::new();
 
@@ -291,7 +281,7 @@ async fn read_recent_logs(project_root: &Path) -> Option<String> {
             break;
         }
 
-        let day_rd = match tokio::fs::read_dir(month_path).await {
+        let mut day_rd = match tokio::fs::read_dir(month_path).await {
             Ok(rd) => rd,
             Err(e) => {
                 tracing::warn!(path = %month_path.display(), error = %e, "failed to open log month directory");
@@ -299,10 +289,26 @@ async fn read_recent_logs(project_root: &Path) -> Option<String> {
             }
         };
 
-        let day_files = collect_dir_entries(day_rd, month_path, |p| {
-            p.extension().is_some_and(|ext| ext == "md")
-        })
-        .await;
+        let mut day_files: Vec<PathBuf> = Vec::new();
+        loop {
+            match day_rd.next_entry().await {
+                Ok(Some(entry)) => {
+                    let path = entry.path();
+                    if path.extension().is_some_and(|ext| ext == "md") {
+                        day_files.push(path);
+                    }
+                }
+                Ok(None) => break,
+                Err(e) => {
+                    tracing::warn!(
+                        dir = %month_path.display(),
+                        error = %e,
+                        "failed to read directory entry"
+                    );
+                }
+            }
+        }
+        day_files.sort_unstable_by(|a, b| b.cmp(a));
 
         for day_file in &day_files {
             if collected.len() >= MAX_BYTES {
