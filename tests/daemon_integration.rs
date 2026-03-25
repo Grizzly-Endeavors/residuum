@@ -10,7 +10,6 @@ mod daemon_integration {
 
     use residuum::daemon::{
         acquire_pid_lock, is_pid_locked, is_process_running, read_pid_file, remove_pid_file,
-        write_pid_file,
     };
 
     #[test]
@@ -18,7 +17,7 @@ mod daemon_integration {
         let dir = tempdir().unwrap();
         let pid_path = dir.path().join("test.pid");
 
-        write_pid_file(&pid_path, 12345).unwrap();
+        std::fs::write(&pid_path, "12345").unwrap();
         let read_back = read_pid_file(&pid_path).unwrap();
         assert_eq!(read_back, 12345, "pid should round-trip through write/read");
     }
@@ -55,7 +54,7 @@ mod daemon_integration {
         let dir = tempdir().unwrap();
         let pid_path = dir.path().join("test.pid");
 
-        write_pid_file(&pid_path, 42).unwrap();
+        std::fs::write(&pid_path, "42").unwrap();
         assert!(pid_path.exists(), "pid file should exist after write");
 
         remove_pid_file(&pid_path).unwrap();
@@ -74,11 +73,12 @@ mod daemon_integration {
     }
 
     #[test]
-    fn write_pid_file_creates_parent_directories() {
+    fn pid_file_readable_through_nested_dirs() {
         let dir = tempdir().unwrap();
         let pid_path = dir.path().join("nested").join("dirs").join("test.pid");
 
-        write_pid_file(&pid_path, 99).unwrap();
+        std::fs::create_dir_all(pid_path.parent().unwrap()).unwrap();
+        std::fs::write(&pid_path, "99").unwrap();
         let read_back = read_pid_file(&pid_path).unwrap();
         assert_eq!(read_back, 99, "pid should be readable through nested dirs");
     }
@@ -117,7 +117,7 @@ mod daemon_integration {
         let pid_path = dir.path().join("test.pid");
 
         // Write a PID file without acquiring a lock
-        write_pid_file(&pid_path, 99999).unwrap();
+        std::fs::write(&pid_path, "99999").unwrap();
 
         assert!(
             !is_pid_locked(&pid_path).unwrap(),
