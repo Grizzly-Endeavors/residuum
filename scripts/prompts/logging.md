@@ -31,10 +31,19 @@ For each finding, be specific — reference file paths and line numbers. Focus o
 - Missing structured fields for key identifiers (IDs, paths, counts, durations).
 - Bare messages like `error!("failed")` or `warn!("retry")` with no qualifying information.
 
+### Tracing span hygiene
+- **Missing spans on public entry points.** Every `pub` or `pub(crate)` async function that represents a meaningful operation should have `#[tracing::instrument(skip_all, ...)]` with relevant structured fields. Spans create the tree structure that makes logs navigable — a log line without a parent span is an orphan.
+- **Spans that skip nothing.** `#[tracing::instrument]` without `skip_all` will serialize every argument into the span, which is expensive and noisy. Always use `skip_all` and explicitly declare useful fields: `#[tracing::instrument(skip_all, fields(model = %self.model, count = items.len()))]`.
+- **Redundant context in log lines.** If a span already carries a field (e.g., `tool.name`), child log lines inside that span should not repeat it. The span provides the context — the log line adds the event.
+- **Wrong span level.** Use `info_span!` for operations that are meaningful at the `info` level (tool execution, monitored tasks). Use `debug_span!` or `trace_span!` for internal implementation details. The span level controls when the span appears in output.
+- **Manual spans where `#[instrument]` would work.** Prefer the attribute macro over hand-built `info_span!` + `.instrument(span)` unless you need the span to cover a subset of the function body or wrap a closure/future that isn't the whole function.
+- **Span fields using string interpolation.** Span fields follow the same rules as log fields — use structured `fields(key = %value)` syntax, never `info_span!("op", format!(...))`.
+
 ### Inconsistent patterns
 - Mix of `tracing` and `log` macros in the same module.
-- Inconsistent field naming across related log entries (e.g., `path` in one place, `file_path` in another for the same concept).
+- Inconsistent field naming across related log entries or spans (e.g., `path` in one place, `file_path` in another for the same concept). This applies to both log macro fields and `#[instrument(fields(...))]` declarations.
 - Log messages that use different tenses, capitalization, or punctuation styles within the module.
+- Dotted field names (e.g., `tool.name`, `mcp.server`, `task.id`) should be used consistently for namespaced concepts — don't mix `tool_name` and `tool.name` for the same thing.
 
 ## Output format
 
