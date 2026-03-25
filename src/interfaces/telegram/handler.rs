@@ -291,10 +291,7 @@ async fn handle_command(
 ) {
     let result = {
         let _span = tracing::debug_span!("telegram_command", command = %cmd_name).entered();
-        let command_ctx = CommandContext {
-            url: "",
-            verbose: false,
-        };
+        let command_ctx = CommandContext::default();
         execute_command(cmd_name, cmd_args, &command_ctx)
     };
 
