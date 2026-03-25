@@ -75,9 +75,9 @@ pub struct ActiveTaskInfo {
     pub started_at: DateTime<Utc>,
 }
 
-/// Extract prompt preview from a sub-agent config (truncated to 120 chars).
-pub(crate) fn execution_info(config: &SubAgentConfig) -> String {
-    config.prompt.chars().take(120).collect()
+/// Extract prompt preview from a prompt string (truncated to 120 chars).
+pub(crate) fn truncate_prompt_preview(prompt: &str) -> String {
+    prompt.chars().take(120).collect()
 }
 
 /// Format a `BackgroundResult` for injection into the agent message stream.
@@ -241,14 +241,9 @@ mod tests {
     }
 
     #[test]
-    fn execution_info_subagent_truncates_at_120_chars() {
+    fn truncate_prompt_preview_truncates_at_120_chars() {
         let long_prompt = "x".repeat(200);
-        let config = SubAgentConfig {
-            prompt: long_prompt,
-            context: None,
-            model_tier: BackgroundModelTier::Medium,
-        };
-        let preview = execution_info(&config);
+        let preview = truncate_prompt_preview(&long_prompt);
         assert_eq!(preview.len(), 120, "preview should be capped at 120 chars");
     }
 
