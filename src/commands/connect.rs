@@ -49,6 +49,7 @@ pub(super) fn resolve_url(args: &ConnectArgs) -> Result<String, FatalError> {
 /// # Errors
 ///
 /// Returns `FatalError::Gateway` if the WebSocket connection fails.
+#[tracing::instrument(skip_all, fields(url))]
 pub(super) async fn run_connect_command(url: &str, verbose: bool) -> Result<(), FatalError> {
     use futures_util::StreamExt;
     use residuum::interfaces::cli::CliReader;

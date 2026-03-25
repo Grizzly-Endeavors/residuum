@@ -126,7 +126,7 @@ impl BackgroundTaskSpawner {
 
             // Send result to gateway channel
             if let Err(e) = result_tx.send(result).await {
-                tracing::warn!(
+                tracing::error!(
                     task_id = %e.0.id,
                     source_label = %e.0.source_label,
                     "failed to send background task result; result lost"
@@ -280,7 +280,7 @@ async fn write_transcript(
     let day_dir = month_dir.join(now.format("%d").to_string());
 
     if let Err(e) = tokio::fs::create_dir_all(&day_dir).await {
-        tracing::warn!(error = %e, "failed to create background transcript directory");
+        tracing::warn!(error = %e, path = %day_dir.display(), "failed to create background transcript directory");
         return None;
     }
 
@@ -294,7 +294,7 @@ async fn write_transcript(
                 "messages": msgs,
             });
             serde_json::to_string_pretty(&transcript).unwrap_or_else(|err| {
-                tracing::warn!(error = %err, "failed to serialize transcript, falling back to plain summary");
+                tracing::warn!(task_id = %task_id, error = %err, "failed to serialize transcript, falling back to plain summary");
                 summary.to_string()
             })
         }

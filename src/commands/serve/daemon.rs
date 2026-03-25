@@ -29,6 +29,7 @@ fn build_child_args(raw: &[String]) -> Vec<String> {
     child_args
 }
 
+#[tracing::instrument(skip_all, fields(agent = ?args.agent))]
 pub(crate) fn run_serve_command(args: &ServeArgs) -> Result<(), FatalError> {
     use residuum::daemon::{is_process_running, read_pid_file};
 
