@@ -13,6 +13,7 @@ use super::ServeArgs;
 /// # Errors
 ///
 /// Returns `FatalError` if initialization or the gateway loop fails.
+#[tracing::instrument(skip_all, fields(agent = ?args.agent))]
 pub(crate) async fn run_serve_foreground(args: &ServeArgs) -> Result<(), FatalError> {
     let agent_name = args.agent.as_deref();
     let pid_path = residuum::agent_registry::paths::resolve_pid_path(agent_name)?;
@@ -34,6 +35,7 @@ pub(crate) async fn run_serve_foreground(args: &ServeArgs) -> Result<(), FatalEr
 }
 
 /// Run the onboarding wizard in an isolated temp directory, then boot gateway.
+#[tracing::instrument(skip_all)]
 async fn run_setup_mode() -> Result<(), FatalError> {
     let tmp_dir = std::env::temp_dir().join("residuum-setup");
     if tmp_dir.exists() {
@@ -51,7 +53,7 @@ async fn run_setup_mode() -> Result<(), FatalError> {
     );
     match residuum::gateway::setup::run_setup_server_at(tmp_dir.clone()).await? {
         residuum::gateway::setup::SetupExit::ConfigSaved => {
-            tracing::info!("setup complete, loading config from temp directory");
+            tracing::debug!("setup complete, loading config from temp directory");
         }
         residuum::gateway::setup::SetupExit::Shutdown => return Ok(()),
     }
@@ -73,6 +75,7 @@ async fn run_setup_mode() -> Result<(), FatalError> {
 }
 
 /// Inner implementation of foreground serve, wrapped by PID file lifecycle.
+#[tracing::instrument(skip_all, fields(agent = ?args.agent))]
 async fn run_serve_foreground_inner(args: &ServeArgs) -> Result<(), FatalError> {
     let agent_name = args.agent.as_deref();
 
@@ -142,7 +145,7 @@ async fn run_serve_foreground_inner(args: &ServeArgs) -> Result<(), FatalError> 
                 // Box::pin reduces stack frame size — this future is large
                 match Box::pin(residuum::gateway::setup::run_setup_server()).await? {
                     residuum::gateway::setup::SetupExit::ConfigSaved => {
-                        tracing::info!("setup complete, loading configuration");
+                        tracing::debug!("setup complete, loading configuration");
                     }
                     residuum::gateway::setup::SetupExit::Shutdown => break,
                 }

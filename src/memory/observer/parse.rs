@@ -145,9 +145,12 @@ pub(super) fn parse_extraction_items(
 ) -> Vec<ObserverExtraction> {
     let mut extractions = Vec::new();
 
-    for item in items {
+    for (i, item) in items.iter().enumerate() {
         let Some(obs_content) = item.get("content").and_then(serde_json::Value::as_str) else {
-            tracing::warn!("observer response item missing 'content' field, skipping");
+            tracing::warn!(
+                item_index = i,
+                "observer response item missing 'content' field, skipping"
+            );
             continue;
         };
 
@@ -161,6 +164,8 @@ pub(super) fn parse_extraction_items(
             .map_or_else(
                 || {
                     tracing::warn!(
+                        item_index = i,
+                        content = obs_content,
                         "observer response item missing 'timestamp', using current time"
                     );
                     now_local(tz)

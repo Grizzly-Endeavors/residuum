@@ -59,6 +59,7 @@ impl Config {
     /// # Errors
     /// Returns `FatalError::Config` if the config file exists but cannot be
     /// read or parsed, or if required values are missing.
+    #[tracing::instrument(skip_all, fields(config_dir = %config_dir.display()))]
     pub fn load_at(config_dir: &std::path::Path) -> Result<Self, FatalError> {
         let config_path = config_dir.join("config.toml");
 

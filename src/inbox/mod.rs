@@ -81,7 +81,7 @@ pub async fn quick_add(
         attachments: Vec::new(),
     };
     save_item(inbox_dir, &filename, &item).await?;
-    tracing::debug!(filename = %filename, source = %source, title = %title, "inbox item created via quick_add");
+    tracing::debug!(filename = %filename, title = %title, "inbox item created via quick_add");
     Ok(filename)
 }
 
@@ -89,6 +89,7 @@ pub async fn quick_add(
 ///
 /// # Errors
 /// Returns an error if serialization or file operations fail.
+#[tracing::instrument(skip_all, fields(filename = %filename))]
 pub async fn save_item(inbox_dir: &Path, filename: &str, item: &InboxItem) -> anyhow::Result<()> {
     use anyhow::Context as _;
 
@@ -109,6 +110,7 @@ pub async fn save_item(inbox_dir: &Path, filename: &str, item: &InboxItem) -> an
 ///
 /// # Errors
 /// Returns an error if the file cannot be read or parsed.
+#[tracing::instrument(skip_all, fields(path = %path.display()))]
 pub async fn load_item(path: &Path) -> anyhow::Result<InboxItem> {
     use anyhow::Context as _;
 
@@ -126,6 +128,7 @@ pub async fn load_item(path: &Path) -> anyhow::Result<InboxItem> {
 ///
 /// # Errors
 /// Returns an error if the directory cannot be read.
+#[tracing::instrument(skip_all, fields(path = %inbox_dir.display()))]
 pub async fn list_items(inbox_dir: &Path) -> anyhow::Result<Vec<(String, InboxItem)>> {
     use anyhow::Context as _;
 
@@ -164,11 +167,12 @@ pub async fn list_items(inbox_dir: &Path) -> anyhow::Result<Vec<(String, InboxIt
 }
 
 /// Count unread inbox items.
+#[tracing::instrument(skip_all, fields(path = %inbox_dir.display()))]
 pub async fn count_unread(inbox_dir: &Path) -> usize {
     match list_items(inbox_dir).await {
         Ok(items) => items.iter().filter(|(_, i)| !i.read).count(),
         Err(e) => {
-            tracing::warn!(error = %e, "failed to list inbox items for unread count");
+            tracing::warn!(path = %inbox_dir.display(), error = %e, "failed to list inbox items for unread count");
             0
         }
     }
@@ -178,6 +182,7 @@ pub async fn count_unread(inbox_dir: &Path) -> usize {
 ///
 /// # Errors
 /// Returns an error if the file cannot be found, read, or written.
+#[tracing::instrument(skip_all, fields(filename = %filename))]
 pub async fn mark_read(inbox_dir: &Path, filename: &str) -> anyhow::Result<InboxItem> {
     use anyhow::Context as _;
 

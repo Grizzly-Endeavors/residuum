@@ -43,6 +43,7 @@ impl SecretStore {
     /// # Errors
     /// Returns `FatalError::Config` if the key or encrypted file cannot be
     /// read, or if decryption or TOML parsing fails.
+    #[tracing::instrument(skip_all, fields(config_dir = %config_dir.display()))]
     pub fn load(config_dir: &Path) -> Result<Self, FatalError> {
         let enc_path = config_dir.join(ENCRYPTED_FILE);
         if !enc_path.exists() {

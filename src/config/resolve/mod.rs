@@ -32,6 +32,7 @@ use super::types::{
 /// # Errors
 /// Returns `FatalError::Config` if the model spec cannot be parsed or
 /// the workspace directory cannot be determined.
+#[tracing::instrument(skip_all, fields(config_dir = %config_dir.display()))]
 pub(crate) fn from_file_and_env(
     file: Option<&ConfigFile>,
     providers_file: Option<&ProvidersFile>,
@@ -195,7 +196,7 @@ fn resolve_gateway_config(section: Option<&GatewayConfigFile>) -> GatewayConfig 
                 cfg.port = p;
             }
             Err(e) => {
-                tracing::warn!(val, error = %e, "RESIDUUM_GATEWAY_PORT is not a valid port");
+                tracing::warn!(%val, error = %e, "RESIDUUM_GATEWAY_PORT is not a valid port");
             }
         },
         Err(_) => {
@@ -529,9 +530,10 @@ fn resolve_search_config(section: Option<&SearchConfigFile>) -> SearchConfig {
         if let Some(v) = s.temporal_decay_half_life_days {
             if v <= 0.0 {
                 tracing::warn!(
+                    section = "memory.search",
                     value = v,
                     default = cfg.temporal_decay_half_life_days,
-                    "[memory.search] temporal_decay_half_life_days must be positive; using default"
+                    "temporal_decay_half_life_days must be positive; using default"
                 );
             } else {
                 cfg.temporal_decay_half_life_days = v;
@@ -542,10 +544,11 @@ fn resolve_search_config(section: Option<&SearchConfigFile>) -> SearchConfig {
     let sum = cfg.vector_weight + cfg.text_weight;
     if (sum - 1.0).abs() > 0.01 {
         tracing::warn!(
+            section = "memory.search",
             vector_weight = cfg.vector_weight,
             text_weight = cfg.text_weight,
             sum,
-            "[memory.search] vector_weight + text_weight should sum to ~1.0"
+            "vector_weight + text_weight should sum to ~1.0"
         );
     }
 
@@ -628,8 +631,9 @@ fn resolve_web_search_config(
             ),
             other => {
                 tracing::warn!(
+                    section = "web_search",
                     backend = other,
-                    "[web_search] unknown backend; expected brave, tavily, or ollama"
+                    "unknown backend; expected brave, tavily, or ollama"
                 );
                 None
             }
@@ -637,8 +641,9 @@ fn resolve_web_search_config(
 
         if resolved.is_none() && !backend_name.is_empty() {
             tracing::warn!(
+                section = "web_search",
                 backend = backend_name.as_str(),
-                "[web_search] backend configured but no API key found; set api_key in config or the corresponding env var"
+                "backend configured but no API key found; set api_key in config or the corresponding env var"
             );
         }
 
@@ -805,7 +810,7 @@ fn warn_deprecated_env_vars() {
     for var in &deprecated {
         if std::env::var(var).is_ok() {
             tracing::warn!(
-                var,
+                %var,
                 "env var is deprecated and has no effect; use [models] observer/reflector in config.toml instead"
             );
         }

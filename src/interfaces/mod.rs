@@ -38,6 +38,7 @@ impl BaseSubscribers {
     }
 }
 
+#[tracing::instrument(skip_all, fields(source = %source))]
 pub(crate) async fn inbox_add_from_command(
     inbox_dir: &Path,
     body: &str,
@@ -62,6 +63,7 @@ pub(crate) async fn inbox_add_from_command(
 ///
 /// Creates a oneshot channel, sends the command, and waits up to 10 seconds
 /// for a response. Falls back to `fallback` on timeout or channel close.
+#[tracing::instrument(skip_all, fields(command = %name, source = %source))]
 pub(crate) async fn dispatch_server_command(
     command_tx: &tokio::sync::mpsc::Sender<crate::gateway::types::ServerCommand>,
     name: &'static str,

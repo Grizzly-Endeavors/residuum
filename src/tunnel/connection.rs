@@ -44,7 +44,7 @@ fn next_backoff(current: Duration) -> Duration {
 ///
 /// This function runs until the shutdown signal is received. Transient
 /// connection errors are logged and retried automatically.
-#[tracing::instrument(skip_all)]
+#[tracing::instrument(skip_all, fields(relay_url = %cfg.relay_url))]
 pub(crate) async fn start_tunnel(
     cfg: CloudConfig,
     mut shutdown_rx: watch::Receiver<bool>,
@@ -74,7 +74,7 @@ pub(crate) async fn start_tunnel(
             .unwrap_or_else(|_| {
                 debug!("status receiver dropped");
             });
-        info!(url = %cfg.relay_url, "connecting to relay");
+        debug!(url = %cfg.relay_url, "connecting to relay");
 
         let request = match build_ws_request(&cfg) {
             Ok(r) => r,
@@ -89,7 +89,7 @@ pub(crate) async fn start_tunnel(
         let (ws_stream, _response) = match tokio_tungstenite::connect_async(request).await {
             Ok(pair) => pair,
             Err(e) => {
-                warn!(error = %e, "failed to connect to relay, retrying in {:?}", backoff);
+                warn!(error = %e, backoff_ms = backoff.as_millis(), "failed to connect to relay, will retry");
                 tokio::time::sleep(backoff).await;
                 backoff = next_backoff(backoff);
                 continue;

@@ -53,6 +53,7 @@ struct McpServerRaw {
 ///
 /// # Errors
 /// Returns an error if the file exists but cannot be read or parsed.
+#[tracing::instrument(skip_all, fields(path = %path.display()))]
 pub fn load_mcp_servers_map(path: &Path) -> anyhow::Result<HashMap<String, McpServerEntry>> {
     if !path.exists() {
         return Ok(HashMap::new());
@@ -153,6 +154,7 @@ pub fn load_mcp_servers(path: &Path) -> anyhow::Result<Vec<McpServerEntry>> {
 ///
 /// # Errors
 /// Returns an error if any reference cannot be found in either map.
+#[tracing::instrument(skip_all, fields(project = %project_name, count = references.len()))]
 pub fn resolve_mcp_references(
     references: &[String],
     project_mcp_json: &Path,
@@ -217,6 +219,7 @@ struct ChannelEntryRaw {
 ///
 /// # Errors
 /// Returns an error if the file exists but cannot be read or parsed.
+#[tracing::instrument(skip_all, fields(path = %path.display()))]
 pub fn load_channel_configs(path: &Path) -> anyhow::Result<Vec<ExternalChannelConfig>> {
     if !path.exists() {
         return Ok(Vec::new());

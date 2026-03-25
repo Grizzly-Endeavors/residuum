@@ -57,35 +57,29 @@ impl ToolRegistry {
     /// # Errors
     /// Returns `ToolError::NotFound` if no tool with the given name exists,
     /// or propagates execution errors from the tool.
+    #[tracing::instrument(skip_all, fields(tool.name = %name))]
     pub async fn execute(
         &self,
         name: &str,
         arguments: Value,
         filter: &ToolFilter,
     ) -> Result<ToolResult, ToolError> {
-        use tracing::Instrument;
-        let span = tracing::info_span!("tool_execute", tool.name = %name);
+        let tool = self
+            .tools
+            .iter()
+            .find(|t| t.name() == name)
+            .ok_or_else(|| ToolError::NotFound(name.to_string()))?;
 
-        async {
-            let tool = self
-                .tools
-                .iter()
-                .find(|t| t.name() == name)
-                .ok_or_else(|| ToolError::NotFound(name.to_string()))?;
-
-            if !filter.is_available(name) {
-                return Ok(ToolResult::error(format!(
-                    "tool '{name}' is not available — activate a project that includes it"
-                )));
-            }
-
-            tracing::debug!("tool invocation");
-            let result = tool.execute(arguments).await?;
-            tracing::debug!(is_error = result.is_error, "tool result");
-            Ok(result)
+        if !filter.is_available(name) {
+            return Ok(ToolResult::error(format!(
+                "tool '{name}' is not available — activate a project that includes it"
+            )));
         }
-        .instrument(span)
-        .await
+
+        tracing::debug!("tool invocation");
+        let result = tool.execute(arguments).await?;
+        tracing::debug!(is_error = result.is_error, "tool result");
+        Ok(result)
     }
 
     /// Register the default set of tools (read, write, edit, exec).

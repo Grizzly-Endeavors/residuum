@@ -624,7 +624,7 @@ async fn run_event_loop(mut rt: GatewayRuntime) -> GatewayExit {
 
             error_event = rt.error_subscriber.recv() => {
                 if let Ok(Some(event)) = error_event {
-                    tracing::debug!(message = %event.message, "bus delivery error");
+                    tracing::debug!(message = %event.message, "received system error event, injecting into agent");
                     rt.agent.inject_system_message(format!("[Bus] {}", event.message));
                 }
             }

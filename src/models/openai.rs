@@ -99,7 +99,7 @@ impl OpenAiClient {
         let request_json = serde_json::to_string(request)
             .map_err(|e| ModelError::Parse(format!("failed to serialize request: {e}")))?;
 
-        debug!("sending openai completion request");
+        debug!(model = %request.model, "sending openai completion request");
 
         let mut req_builder = http
             .client()
@@ -187,6 +187,7 @@ impl OpenAiClient {
 
 #[async_trait]
 impl ModelProvider for OpenAiClient {
+    #[tracing::instrument(skip_all, fields(model = %self.model, message_count = messages.len(), tool_count = tools.len()))]
     async fn complete(
         &self,
         messages: &[Message],
@@ -570,6 +571,7 @@ impl EmbeddingProvider for OpenAiEmbeddingClient {
                 if !response.status().is_success() {
                     let status = response.status();
                     let raw_body = read_error_body(response).await;
+                    tracing::warn!(status = %status, response_body = %raw_body, "openai embed API error");
                     let error_body = serde_json::from_str::<OpenAiErrorResponse>(&raw_body)
                         .map_or_else(|_| raw_body, |e| e.error.message);
                     return Err(ModelError::Api(format!("{status}: {error_body}")));

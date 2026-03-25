@@ -63,6 +63,7 @@ impl PulseScheduler {
     ///
     /// Due pulses have their `last_run` updated to `now` and persisted (if a state path is set).
     #[must_use]
+    #[tracing::instrument(skip_all, fields(heartbeat_path = %heartbeat_path.display()))]
     pub fn due_pulses(&mut self, now: NaiveDateTime, heartbeat_path: &Path) -> Vec<PulseDef> {
         let Some(heartbeat) = load_heartbeat(heartbeat_path) else {
             return Vec::new();
@@ -230,7 +231,7 @@ fn compute_effective_interval(
             };
             let jittered = apply_jitter(spacing, &pulse.name, now);
             let effective = jittered.max(duration);
-            tracing::debug!(
+            tracing::trace!(
                 pulse = %pulse.name,
                 schedule_secs = duration.num_seconds(),
                 spacing_secs = jittered.num_seconds(),

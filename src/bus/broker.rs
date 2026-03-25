@@ -51,6 +51,7 @@ impl BusHandle {
     /// # Errors
     ///
     /// Returns `BusError::BrokerShutdown` if the broker has stopped.
+    #[tracing::instrument(skip_all, fields(topic = %topic.topic_id()))]
     pub async fn subscribe<T, E>(&self, topic: T) -> Result<Subscriber<E>, BusError>
     where
         T: Topic + Carries<E>,

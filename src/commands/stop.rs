@@ -19,6 +19,7 @@ pub(super) struct StopArgs {
 /// # Errors
 ///
 /// Returns `FatalError` if the process cannot be stopped.
+#[tracing::instrument(skip_all, fields(agent = ?args.agent))]
 pub(super) async fn run_stop_command(args: &StopArgs) -> Result<(), FatalError> {
     use residuum::daemon::{is_pid_locked, read_pid_file, remove_pid_file, send_sigterm};
 
@@ -53,7 +54,11 @@ pub(super) async fn run_stop_command(args: &StopArgs) -> Result<(), FatalError> 
     }
 
     if http_ok {
-        tracing::warn!("HTTP shutdown accepted but process did not exit, falling back to SIGTERM");
+        tracing::warn!(
+            pid,
+            label,
+            "HTTP shutdown accepted but process did not exit, falling back to SIGTERM"
+        );
     }
 
     // Layer 3: SIGTERM fallback (Unix-only)

@@ -31,6 +31,7 @@ impl IdentityFiles {
     ///
     /// # Errors
     /// Returns `FatalError::Workspace` if a file exists but cannot be read.
+    #[tracing::instrument(skip_all, fields(workspace = %layout.root().display()))]
     pub async fn load(layout: &WorkspaceLayout) -> Result<Self, FatalError> {
         let soul_result = read_optional(&layout.soul_md()).await?;
         let agents_result = read_optional(&layout.agents_md()).await?;

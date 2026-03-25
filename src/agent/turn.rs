@@ -135,7 +135,7 @@ pub(crate) async fn execute_turn(
             return Ok(texts);
         }
 
-        tracing::info!(
+        tracing::debug!(
             iteration,
             tool_count = response.tool_calls.len(),
             "processing tool calls"
@@ -196,6 +196,7 @@ fn drain_interrupts(
 }
 
 /// Execute a single tool call, falling back to MCP servers.
+#[tracing::instrument(skip_all, fields(tool.name = %tool_call.name, tool.id = %tool_call.id))]
 async fn execute_tool(
     tool_call: &ToolCall,
     resources: &TurnResources<'_>,
@@ -272,10 +273,10 @@ async fn execute_tool(
     }
 }
 
-/// Log token usage from a model response at info level.
+/// Log token usage from a model response at debug level.
 fn log_usage(response: &ModelResponse) {
     if let Some(usage) = response.usage {
-        tracing::info!(
+        tracing::debug!(
             input_tokens = usage.input_tokens,
             output_tokens = usage.output_tokens,
             cache_creation_tokens = usage.cache_creation_tokens,

@@ -1,5 +1,6 @@
 //! macOS notification permission checking and requesting.
 
+#[tracing::instrument(skip_all)]
 pub async fn check_and_request() {
     let result = tokio::task::spawn_blocking(|| {
         check_permissions_sync();

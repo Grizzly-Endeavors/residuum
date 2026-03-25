@@ -26,7 +26,7 @@ const LOCAL_WS_CHANNEL_CAPACITY: usize = 64;
 ///
 /// This function does not return errors directly. Connection failures are
 /// communicated back through the tunnel as `WsOpenResult` frames.
-#[tracing::instrument(skip_all)]
+#[tracing::instrument(skip_all, fields(channel_id = %channel_id, path = %path))]
 pub(super) async fn handle_ws_open(
     port: u16,
     channel_id: String,

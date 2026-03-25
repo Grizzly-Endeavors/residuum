@@ -95,7 +95,10 @@ impl EventHandler for DiscordHandler {
             return;
         }
 
-        tracing::debug!(author = %msg.author.name, content_len = msg.content.len(), "discord DM received");
+        {
+            let _span = tracing::debug_span!("discord_message", author = %msg.author.name, msg_id = %msg.id).entered();
+            tracing::debug!(author = %msg.author.name, content_len = msg.content.len(), "discord DM received");
+        }
 
         // Track the DM channel for subscriber output
         {
@@ -140,6 +143,7 @@ impl EventHandler for DiscordHandler {
     }
 
     async fn interaction_create(&self, ctx: Context, interaction: Interaction) {
+        let _span = tracing::info_span!("discord_interaction").entered();
         let Interaction::Command(cmd) = interaction else {
             return;
         };
@@ -158,13 +162,14 @@ impl EventHandler for DiscordHandler {
         };
 
         let result = execute_command(cmd.data.name.as_str(), cmd_args.as_deref(), &command_ctx);
+        drop(_span);
 
         // Handle side effects
         let response_text = match result.side_effect {
             Some(CommandSideEffect::Reload) => {
                 tracing::info!("reload requested via discord slash command");
                 if self.reload_tx.send(ReloadSignal::Root).is_err() {
-                    tracing::warn!("reload_tx closed, reload dropped");
+                    tracing::warn!(command = %cmd.data.name, "reload_tx closed, reload dropped");
                 }
                 result.response
             }

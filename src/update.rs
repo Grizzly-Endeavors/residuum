@@ -44,8 +44,9 @@ impl Default for UpdateStatus {
 pub type SharedUpdateStatus = Arc<RwLock<UpdateStatus>>;
 
 /// Fetch the latest release, update shared state, log on failure.
+#[tracing::instrument(skip_all)]
 pub async fn check_for_update(status: &SharedUpdateStatus) {
-    tracing::debug!("checking for updates");
+    tracing::trace!("checking for updates");
     {
         let mut s = status.write().await;
         s.checking = true;
@@ -63,7 +64,7 @@ fn apply_fetch_result(s: &mut UpdateStatus, result: anyhow::Result<String>) {
             if s.update_available {
                 tracing::info!(current = %s.current, latest = %latest, "update available");
             } else {
-                tracing::debug!(current = %s.current, latest = %latest, "already up to date");
+                tracing::trace!(current = %s.current, latest = %latest, "already up to date");
             }
             s.latest = Some(latest);
             s.last_checked = Some(Utc::now());
@@ -88,6 +89,7 @@ fn http_client() -> anyhow::Result<reqwest::Client> {
 /// # Errors
 ///
 /// Returns an error if the HTTP request or JSON parsing fails.
+#[tracing::instrument(skip_all)]
 pub async fn fetch_latest_version() -> anyhow::Result<String> {
     let client = http_client()?;
 
@@ -169,6 +171,7 @@ fn parse_calver(v: &str) -> Option<(u32, u32, u32)> {
 ///
 /// Returns an error if the download, platform detection,
 /// or binary replacement fails.
+#[tracing::instrument(skip_all, fields(version = %version))]
 pub async fn download_and_install(version: &str) -> anyhow::Result<()> {
     let platform = detect_platform()?;
     let url = format!(
@@ -197,7 +200,7 @@ pub async fn download_and_install(version: &str) -> anyhow::Result<()> {
         .await
         .context("failed to read update binary")?;
 
-    tracing::debug!(bytes = bytes.len(), version = %version, "download complete");
+    tracing::debug!(bytes = bytes.len(), "download complete");
 
     let current_exe =
         std::env::current_exe().context("failed to determine current executable path")?;
@@ -251,7 +254,7 @@ pub async fn download_and_install(version: &str) -> anyhow::Result<()> {
             )
         })?;
 
-    tracing::info!(version = %version, path = %exe_path.display(), "update binary installed successfully");
+    tracing::info!(path = %exe_path.display(), "update binary installed successfully");
     Ok(())
 }
 

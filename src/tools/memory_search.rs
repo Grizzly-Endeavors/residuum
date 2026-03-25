@@ -166,7 +166,7 @@ impl Tool for MemorySearchTool {
                 )))
             }
             Err(e) => {
-                tracing::error!(error = %e, "memory search failed");
+                tracing::error!(error = %e, query = %query, "memory search failed");
                 Ok(ToolResult::error(format!("search failed: {e}")))
             }
         }

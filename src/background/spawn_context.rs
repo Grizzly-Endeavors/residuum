@@ -56,6 +56,7 @@ pub(crate) struct SpawnContext {
 ///
 /// # Errors
 /// Returns an error if provider construction fails (e.g. missing API key).
+#[tracing::instrument(skip_all, fields(tier = ?tier))]
 pub(crate) async fn build_spawn_resources(
     ctx: &SpawnContext,
     tier: &BackgroundModelTier,
@@ -143,6 +144,7 @@ pub(crate) async fn build_spawn_resources(
 ///
 /// # Errors
 /// Returns an error if the preset index cannot be scanned or the preset cannot be loaded.
+#[tracing::instrument(skip_all, fields(preset = %preset_name))]
 pub(crate) async fn load_preset_for_spawn(
     subagents_dir: &Path,
     preset_name: &str,
@@ -153,7 +155,7 @@ pub(crate) async fn load_preset_for_spawn(
 
     let tier: BackgroundModelTier = match fm.model_tier.as_deref() {
         Some(s) => s.parse().unwrap_or_else(|_| {
-            tracing::warn!(preset = %preset_name, model_tier = %s, "unknown model_tier, using fallback");
+            tracing::warn!(model_tier = %s, "unknown model_tier, using fallback");
             fallback_tier
         }),
         None => fallback_tier,

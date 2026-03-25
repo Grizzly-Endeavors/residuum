@@ -7,7 +7,7 @@ use crate::models::Message;
 use crate::pulse::executor::PulseExecution;
 
 /// Handle a single pulse execution entry (main-turn or sub-agent).
-#[tracing::instrument(skip_all, fields(operation = "pulse_execute"))]
+#[tracing::instrument(skip_all)]
 pub async fn handle_pulse_execution(
     execution: PulseExecution,
     rt: &mut GatewayRuntime,
@@ -38,7 +38,7 @@ pub async fn handle_pulse_execution(
 }
 
 /// Process all due pulses and optionally trigger a wake turn.
-#[tracing::instrument(skip_all, fields(operation = "pulse_tick"))]
+#[tracing::instrument(level = "debug", skip_all)]
 pub async fn handle_pulse_tick(
     rt: &mut GatewayRuntime,
     observe_deadline: &mut Option<tokio::time::Instant>,

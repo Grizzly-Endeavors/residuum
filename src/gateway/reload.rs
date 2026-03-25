@@ -189,9 +189,9 @@ async fn shutdown_adapter(
             .await
             .is_ok()
         {
-            tracing::info!("{name} adapter stopped");
+            tracing::info!(adapter = %name, "adapter stopped");
         } else {
-            tracing::warn!("{name} adapter shutdown timed out after 5s");
+            tracing::warn!(adapter = %name, "adapter shutdown timed out after 5s");
         }
     }
 }
@@ -479,10 +479,10 @@ async fn reload_adapter<F, Fut>(
             let (tx, rx) = tokio::sync::watch::channel(false);
             *handle = Some(crate::util::spawn_monitored(name, build_fn(rx)));
             *shutdown_tx = Some(tx);
-            tracing::info!("{name} adapter restarted with new token");
+            tracing::info!(adapter = %name, "adapter restarted with new token");
         }
         None => {
-            tracing::info!("{name} adapter removed from config");
+            tracing::info!(adapter = %name, "adapter removed from config");
         }
     }
 }

@@ -84,13 +84,13 @@ impl GeminiClient {
                     });
                 }
                 GeminiPart::FunctionResponse { .. } => {
-                    tracing::warn!(
+                    debug!(
                         part_index = idx,
                         "unexpected functionResponse part in Gemini model output"
                     );
                 }
                 GeminiPart::InlineData { .. } => {
-                    tracing::warn!(
+                    debug!(
                         part_index = idx,
                         "unexpected inlineData part in Gemini model output"
                     );
@@ -222,7 +222,11 @@ impl GeminiClient {
         (system_instruction, contents)
     }
 
-    #[tracing::instrument(skip(http, url, max_output_tokens, request), fields(model = %model))]
+    #[tracing::instrument(skip_all, fields(
+        model = %model,
+        message_count,
+        tool_count,
+    ))]
     async fn send_completion(
         http: &SharedHttpClient,
         url: &str,
@@ -236,7 +240,10 @@ impl GeminiClient {
         let request_json = serde_json::to_string(request)
             .map_err(|e| ModelError::Parse(format!("failed to serialize request: {e}")))?;
 
-        debug!(max_output_tokens, "sending gemini generateContent request");
+        debug!(
+            max_output_tokens,
+            message_count, tool_count, "sending gemini generateContent request"
+        );
 
         let response = http
             .client()
@@ -281,6 +288,7 @@ impl GeminiClient {
 
 #[async_trait]
 impl ModelProvider for GeminiClient {
+    #[tracing::instrument(skip_all, fields(model = %self.model, message_count = messages.len(), tool_count = tools.len()))]
     async fn complete(
         &self,
         messages: &[Message],

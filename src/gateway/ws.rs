@@ -83,9 +83,12 @@ async fn handle_connection(socket: WebSocket, state: GatewayState) {
                     continue;
                 }
 
-                let Ok(json) = serde_json::to_string(&msg) else {
-                    tracing::warn!("failed to serialize server message");
-                    continue;
+                let json = match serde_json::to_string(&msg) {
+                    Ok(j) => j,
+                    Err(e) => {
+                        tracing::warn!(error = %e, "failed to serialize server message");
+                        continue;
+                    }
                 };
                 if ws_tx.send(WsMessage::text(json)).await.is_err() {
                     break; // client disconnected

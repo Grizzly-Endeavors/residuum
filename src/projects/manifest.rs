@@ -10,6 +10,7 @@ use super::types::{ManifestEntry, ProjectManifest};
 ///
 /// # Errors
 /// Returns an error if a directory cannot be read.
+#[tracing::instrument(skip_all, fields(project_root = %project_root.display()))]
 pub async fn build_manifest(project_root: &Path) -> anyhow::Result<ProjectManifest> {
     let manifest = ProjectManifest {
         notes: list_files_recursive(&project_root.join("notes"), project_root).await?,

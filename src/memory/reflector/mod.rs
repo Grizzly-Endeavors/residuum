@@ -70,7 +70,7 @@ impl Reflector {
 
     /// Replace the reflector's configuration (e.g. after a config reload).
     pub fn update_config(&mut self, config: ReflectorConfig) {
-        tracing::info!(
+        tracing::debug!(
             old_threshold = self.config.threshold_tokens,
             new_threshold = config.threshold_tokens,
             old_tz = %self.config.tz,
@@ -82,7 +82,7 @@ impl Reflector {
 
     /// Replace the model provider (e.g. after a provider config change).
     pub fn swap_provider(&mut self, provider: Box<dyn ModelProvider>) {
-        tracing::info!("swapping reflector model provider");
+        tracing::debug!("swapping reflector model provider");
         self.provider = provider;
     }
 

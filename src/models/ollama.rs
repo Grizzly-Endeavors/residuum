@@ -2,7 +2,7 @@
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 use super::embedding::{EmbeddingProvider, EmbeddingResponse};
 use super::http::{SharedHttpClient, map_request_error, read_error_body, warn_if_insecure_remote};
@@ -151,6 +151,7 @@ impl OllamaClient {
 
 #[async_trait]
 impl ModelProvider for OllamaClient {
+    #[tracing::instrument(skip_all, fields(model = %self.model, message_count = messages.len(), tool_count = tools.len()))]
     async fn complete(
         &self,
         messages: &[Message],
@@ -423,7 +424,7 @@ impl EmbeddingProvider for OllamaEmbeddingClient {
                 if !response.status().is_success() {
                     let status = response.status();
                     let raw_body = read_error_body(response).await;
-                    tracing::warn!(
+                    warn!(
                         status = %status,
                         response_body = %raw_body,
                         "ollama embed API error"

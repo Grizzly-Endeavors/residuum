@@ -207,14 +207,10 @@ impl McpRegistry {
             server.status = McpStatus::Running;
             server.client = Some(client);
             server.tools = tools;
-            tracing::info!(
-                server = %entry.name,
-                tool_count = server.tools.len(),
-                "mcp server connected"
-            );
+            tracing::info!(tool_count = server.tools.len(), "mcp server connected");
         } else {
             tracing::warn!(
-                server = %entry.name,
+                mcp.server = %entry.name,
                 "mcp server connected but was removed from tracking before state could be updated — client discarded"
             );
         }
@@ -230,13 +226,14 @@ impl McpRegistry {
             if let Some(client) = server.client {
                 client.shutdown().await;
             }
-            tracing::info!(server = %name, "mcp server disconnected");
+            tracing::info!("mcp server disconnected");
         }
     }
 
     /// Disconnect all tracked servers.
     ///
     /// Returns names of servers that were disconnected.
+    #[tracing::instrument(skip_all)]
     pub async fn disconnect_all(&mut self) -> Vec<String> {
         let servers: Vec<TrackedServer> = self.servers.drain(..).collect();
         let mut names = Vec::with_capacity(servers.len());
@@ -245,10 +242,11 @@ impl McpRegistry {
             if let Some(c) = client {
                 c.shutdown().await;
             }
-            tracing::info!(server = %name, "mcp server disconnected");
             names.push(name);
         }
 
+        let count = names.len();
+        tracing::info!(count, "mcp servers disconnected");
         names
     }
 
@@ -267,6 +265,7 @@ impl McpRegistry {
     /// Unlike `reconcile_and_connect`, this is purely additive — it never stops
     /// or removes servers that are already tracked. Servers that are already
     /// Running or Pending are silently skipped.
+    #[tracing::instrument(skip_all, fields(server_count = entries.len()))]
     pub async fn connect_servers(&mut self, entries: &[McpServerEntry]) -> McpReconcileReport {
         let mut report = McpReconcileReport::default();
 
@@ -336,7 +335,6 @@ impl McpRegistry {
         if let Some(state) = self.project_refs.get_mut(&key) {
             state.active_count += 1;
             tracing::debug!(
-                project = %project_name,
                 count = state.active_count,
                 "project mcp ref count incremented (servers already running)"
             );
@@ -354,13 +352,11 @@ impl McpRegistry {
         );
         if !report.failures.is_empty() {
             tracing::warn!(
-                project = %project_name,
                 failures = report.failures.len(),
                 "project mcp activation had connection failures"
             );
         }
         tracing::debug!(
-            project = %project_name,
             started = report.started,
             "project mcp servers activated (first ref)"
         );
@@ -371,6 +367,7 @@ impl McpRegistry {
     ///
     /// When the count reaches zero, the project's servers are disconnected.
     /// Returns the names of servers that were stopped (empty if count > 0).
+    #[tracing::instrument(skip_all, fields(project = %project_name))]
     pub async fn deactivate_project(&mut self, project_name: &str) -> Vec<String> {
         let key = project_name.to_lowercase();
         let Some(state) = self.project_refs.get_mut(&key) else {
@@ -411,6 +408,7 @@ impl McpRegistry {
     /// Sets the count to zero and disconnects immediately. Used for crash
     /// recovery when a sub-agent exits without calling `deactivate_project`.
     /// Returns the names of servers that were stopped.
+    #[tracing::instrument(skip_all, fields(project = %project_name))]
     pub async fn force_deactivate_project(&mut self, project_name: &str) -> Vec<String> {
         let key = project_name.to_lowercase();
         let Some(state) = self.project_refs.remove(&key) else {
@@ -456,7 +454,7 @@ impl McpRegistry {
 
         let client = server.client.as_ref().ok_or_else(|| {
             tracing::error!(
-                server = %server.name,
+                mcp.server = %server.name,
                 "running server has no client handle — internal state corruption"
             );
             ToolError::Execution(format!(
@@ -465,7 +463,7 @@ impl McpRegistry {
             ))
         })?;
 
-        tracing::debug!(tool = %name, server = %server.name, "routing tool call to server");
+        tracing::debug!(mcp.server = %server.name, "routing tool call to server");
         client.call_tool(name, args).await
     }
 

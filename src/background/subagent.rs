@@ -169,6 +169,7 @@ pub async fn build_subagent_resources(
 ///
 /// # Errors
 /// Returns an error if file reading or the model call fails.
+#[tracing::instrument(skip_all, fields(task.id = %task_id))]
 pub(crate) async fn execute_subagent(
     task_id: &str,
     config: &SubAgentConfig,
@@ -279,7 +280,7 @@ pub(crate) async fn execute_subagent(
 /// more turn with a deactivation prompt so it can write a proper session log.
 /// If the retry turn also fails, fall back to a manual ref-count decrement.
 async fn ensure_project_deactivated(
-    task_id: &str,
+    _task_id: &str,
     prompt: &str,
     resources: &SubAgentResources,
     memory_ctx: &crate::agent::context::MemoryContext<'_>,
@@ -299,8 +300,7 @@ async fn ensure_project_deactivated(
     };
 
     // Retry: prompt the sub-agent to call project_deactivate with a session log
-    tracing::info!(
-        task_id = %task_id,
+    tracing::warn!(
         project = %name,
         "sub-agent left project active, prompting deactivation turn"
     );
@@ -338,7 +338,7 @@ async fn ensure_project_deactivated(
     )
     .await
     {
-        tracing::warn!(task_id = %task_id, error = %err, "deactivation turn failed");
+        tracing::warn!(error = %err, "deactivation turn failed");
     }
 
     // Safety net: if the retry didn't clean up, decrement the ref manually
@@ -351,7 +351,6 @@ async fn ensure_project_deactivated(
     if let Some(still_name) = still_active {
         let prompt_preview: String = prompt.chars().take(120).collect();
         tracing::warn!(
-            task_id = %task_id,
             project = %still_name,
             prompt_preview = %prompt_preview,
             "sub-agent completed without deactivating project after retry"

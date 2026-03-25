@@ -30,6 +30,7 @@ impl SubagentPresetIndex {
     /// # Errors
     /// Returns an error if the directory cannot be read (except `NotFound`,
     /// which is silently skipped).
+    #[tracing::instrument(skip_all, fields(dir = %dir.display()))]
     pub async fn scan(dir: &Path) -> anyhow::Result<Self> {
         let mut entries = Vec::new();
 
@@ -55,6 +56,7 @@ impl SubagentPresetIndex {
     /// # Errors
     /// Returns an error if the preset file cannot be read or parsed, or if
     /// the name is not found in the index.
+    #[tracing::instrument(skip_all, fields(preset.name = %name))]
     pub async fn load_preset(
         &self,
         name: &str,
@@ -237,7 +239,7 @@ fn register_preset(
 
     if let Some(existing) = entries.iter_mut().find(|e| e.name.to_lowercase() == lower) {
         if existing.preset_path.is_none() {
-            tracing::info!(
+            tracing::debug!(
                 name = %fm.name,
                 path = %path.display(),
                 "user preset overrides built-in"
