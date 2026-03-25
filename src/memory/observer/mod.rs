@@ -138,7 +138,7 @@ impl Observer {
 
     /// Replace the observer's configuration (e.g. after a config reload).
     pub fn update_config(&mut self, config: ObserverConfig) {
-        tracing::info!(
+        tracing::debug!(
             old_threshold = self.config.threshold_tokens,
             new_threshold = config.threshold_tokens,
             old_cooldown_secs = self.config.cooldown_secs,
@@ -152,7 +152,7 @@ impl Observer {
 
     /// Replace the model provider (e.g. after a provider config change).
     pub fn swap_provider(&mut self, provider: Box<dyn ModelProvider>) {
-        tracing::info!("swapping observer model provider");
+        tracing::debug!("swapping observer model provider");
         self.provider = provider;
     }
 
