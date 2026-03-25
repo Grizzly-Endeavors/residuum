@@ -65,65 +65,78 @@ where
     F: Fn() -> Fut + Send + 'static,
     Fut: Future<Output = ()> + Send + 'static,
 {
-    tokio::spawn(async move {
-        let mut consecutive_failures: u32 = 0;
+    let span = tracing::info_span!("supervised_task", task = name);
+    tokio::spawn(
+        async move {
+            let mut consecutive_failures: u32 = 0;
 
-        loop {
-            let start = tokio::time::Instant::now();
+            loop {
+                let start = tokio::time::Instant::now();
 
-            tracing::info!(task = name, "starting supervised task");
+                tracing::debug!(task = name, "starting supervised task");
 
-            // Run the task and catch panics.
-            let result = tokio::spawn(factory()).await;
+                // Run the task and catch panics.
+                let result = tokio::spawn(factory()).await;
 
-            let elapsed = start.elapsed();
+                let elapsed = start.elapsed();
 
-            match result {
-                Ok(()) => {
-                    tracing::warn!(
-                        task = name,
-                        elapsed_secs = elapsed.as_secs(),
-                        "supervised task exited cleanly"
-                    );
+                match result {
+                    Ok(()) => {
+                        tracing::warn!(
+                            task = name,
+                            elapsed_secs = elapsed.as_secs(),
+                            "supervised task exited cleanly"
+                        );
+                    }
+                    Err(e) => {
+                        tracing::error!(
+                            task = name,
+                            error = %e,
+                            elapsed_secs = elapsed.as_secs(),
+                            "supervised task panicked"
+                        );
+                    }
                 }
-                Err(e) => {
+
+                consecutive_failures = if elapsed >= HEALTHY_THRESHOLD {
+                    0
+                } else {
+                    consecutive_failures + 1
+                };
+
+                if consecutive_failures > max_failures {
                     tracing::error!(
                         task = name,
-                        error = %e,
-                        elapsed_secs = elapsed.as_secs(),
-                        "supervised task panicked"
+                        consecutive_failures,
+                        "supervised task exceeded max failures, giving up"
+                    );
+                    return;
+                }
+
+                let backoff =
+                    (base_backoff * 2_u32.saturating_pow(consecutive_failures)).min(MAX_BACKOFF);
+
+                if consecutive_failures == 1 {
+                    tracing::warn!(
+                        task = name,
+                        attempt = consecutive_failures,
+                        backoff_ms = backoff.as_millis(),
+                        "restarting supervised task after backoff"
+                    );
+                } else {
+                    tracing::debug!(
+                        task = name,
+                        attempt = consecutive_failures,
+                        backoff_ms = backoff.as_millis(),
+                        "restarting supervised task after backoff"
                     );
                 }
+
+                tokio::time::sleep(backoff).await;
             }
-
-            consecutive_failures = if elapsed >= HEALTHY_THRESHOLD {
-                0
-            } else {
-                consecutive_failures + 1
-            };
-
-            if consecutive_failures > max_failures {
-                tracing::error!(
-                    task = name,
-                    consecutive_failures,
-                    "supervised task exceeded max failures, giving up"
-                );
-                return;
-            }
-
-            let backoff =
-                (base_backoff * 2_u32.saturating_pow(consecutive_failures)).min(MAX_BACKOFF);
-
-            tracing::warn!(
-                task = name,
-                attempt = consecutive_failures,
-                backoff_ms = backoff.as_millis(),
-                "restarting supervised task after backoff"
-            );
-
-            tokio::time::sleep(backoff).await;
         }
-    })
+        .instrument(span),
+    )
 }
 
 #[cfg(test)]
