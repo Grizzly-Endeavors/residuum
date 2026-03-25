@@ -52,8 +52,8 @@ pub fn format_relative_time(delta: TimeDelta) -> String {
     if total_secs < 60 {
         if total_secs < 0 {
             warn!(
-                total_secs,
-                "format_relative_time called with negative delta"
+                delta_secs = total_secs,
+                "format_relative_time received negative delta; caller passed timestamps in wrong order"
             );
         }
         return "just now".to_string();
