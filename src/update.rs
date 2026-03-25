@@ -207,11 +207,10 @@ pub async fn download_and_install(version: &str) -> anyhow::Result<()> {
 
     // On Linux, the kernel appends " (deleted)" to /proc/self/exe when the
     // binary has been atomically replaced. Strip it to get the real path.
-    let exe_path = current_exe
-        .to_string_lossy()
-        .strip_suffix(" (deleted)")
-        .map(std::path::PathBuf::from)
-        .unwrap_or(current_exe);
+    let exe_path = match current_exe.to_string_lossy().strip_suffix(" (deleted)") {
+        Some(stripped) => std::path::PathBuf::from(stripped),
+        None => current_exe,
+    };
 
     let exe_dir = exe_path
         .parent()
