@@ -197,11 +197,24 @@ pub fn init_daemon_tracing(debug_mode: Option<DebugMode>, agent_name: Option<&st
         .with_target(false)
         .with_writer(std::io::stderr);
 
+    // Span buffer layer — always-on, zero-cost when nothing reads from it
+    let (span_buffer_layer, span_buffer_handle) = crate::util::telemetry::SpanBufferLayer::new(
+        &crate::util::telemetry::SpanBufferConfig::default(),
+    );
+
     tracing_subscriber::registry()
         .with(env_filter)
         .with(file_layer)
         .with(debug_mode.map(|_| stderr_layer))
+        .with(span_buffer_layer)
         .init();
+
+    // Store handle globally for bug reports / live export
+    if crate::util::telemetry::set_global_span_buffer(span_buffer_handle).is_err() {
+        // Already set — shouldn't happen, but not fatal
+        tracing::warn!("span buffer handle was already initialized");
+    }
+
     tracing::info!(
         dir = %log_dir.display(),
         prefix = %log_prefix,

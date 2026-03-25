@@ -5,6 +5,7 @@ mod error;
 pub(crate) mod fs;
 pub mod log_format;
 mod spawn;
+pub mod telemetry;
 pub mod tracing_init;
 
 pub use error::FatalError;

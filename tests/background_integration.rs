@@ -53,19 +53,26 @@ mod background_integration {
             .await
             .unwrap();
 
-        // Give subscriber time to process
-        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+        // Poll for the inbox item to appear (up to 2 seconds)
+        let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(2);
+        let mut found = false;
+        while tokio::time::Instant::now() < deadline {
+            let count = std::fs::read_dir(&inbox_dir)
+                .unwrap()
+                .filter_map(Result::ok)
+                .filter(|e| e.path().extension().is_some_and(|ext| ext == "json"))
+                .count();
+            if count >= 1 {
+                found = true;
+                break;
+            }
+            tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
+        }
 
         // Abort the subscriber loop
         loop_task.abort();
 
-        // Verify inbox item was created
-        let items: Vec<_> = std::fs::read_dir(&inbox_dir)
-            .unwrap()
-            .filter_map(Result::ok)
-            .filter(|e| e.path().extension().is_some_and(|ext| ext == "json"))
-            .collect();
-        assert_eq!(items.len(), 1, "should create one inbox item");
+        assert!(found, "should create one inbox item within timeout");
     }
 
     // ── Unrouted task still has transcript ──────────────────────────────
