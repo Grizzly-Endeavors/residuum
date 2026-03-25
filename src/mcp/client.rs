@@ -50,7 +50,7 @@ impl McpClient {
     }
 
     async fn connect_stdio(entry: &McpServerEntry) -> Result<Self, anyhow::Error> {
-        tracing::debug!(server = %entry.name, command = %entry.command, "connecting to mcp server (stdio)");
+        tracing::debug!(command = %entry.command, "connecting to mcp server (stdio)");
         let mut cmd = tokio::process::Command::new(&entry.command);
         cmd.args(&entry.args);
         for (key, val) in &entry.env {
@@ -71,7 +71,7 @@ impl McpClient {
     }
 
     async fn connect_http(entry: &McpServerEntry) -> Result<Self, anyhow::Error> {
-        tracing::debug!(server = %entry.name, url = %entry.command, "connecting to mcp server (http)");
+        tracing::debug!(url = %entry.command, "connecting to mcp server (http)");
         let mut config = StreamableHttpClientTransportConfig::with_uri(entry.command.as_str());
 
         if !entry.headers.is_empty() {
@@ -101,6 +101,7 @@ impl McpClient {
     ///
     /// # Errors
     /// Returns an error if the RPC call fails.
+    #[tracing::instrument(skip_all, fields(mcp.server = %self.server_name))]
     pub async fn list_tools(&self) -> Result<Vec<ToolDefinition>, anyhow::Error> {
         let tools = self.service.peer().list_all_tools().await.map_err(|e| {
             anyhow::anyhow!(
@@ -158,14 +159,9 @@ impl McpClient {
         let output = extract_text_content(&result.content);
 
         if is_error {
-            tracing::warn!(
-                tool = %name,
-                server = %self.server_name,
-                output = %output,
-                "mcp tool returned error response"
-            );
+            tracing::warn!(output = %output, "mcp tool returned error response");
         } else {
-            tracing::debug!(tool = %name, server = %self.server_name, "mcp tool call completed");
+            tracing::debug!("mcp tool call completed");
         }
 
         Ok(ToolResult {

@@ -39,6 +39,7 @@ pub struct WebhookState {
 /// Looks up the named webhook config, validates auth, extracts content per the
 /// webhook's format / content-fields settings, and publishes a `NotificationEvent`.
 /// Returns 404 for unknown names, 401 for bad auth, 202 on success.
+#[tracing::instrument(skip_all, fields(webhook = %name, content_length = body.len()))]
 pub async fn webhook_handler(
     State(state): State<WebhookState>,
     Path(name): Path<String>,

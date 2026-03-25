@@ -200,8 +200,15 @@ async fn dispatch_message(
     ctx: &TelegramContext<'_>,
 ) {
     let chat_id = msg.chat.id;
-
-    tracing::debug!(sender = %build_sender_name(from), chat_id = %chat_id, "telegram message received");
+    {
+        let _span = tracing::debug_span!("telegram_message",
+            sender = %build_sender_name(from),
+            chat_id = %msg.chat.id,
+            msg_id = %msg.id
+        )
+        .entered();
+        tracing::debug!(sender = %build_sender_name(from), chat_id = %chat_id, "telegram message received");
+    }
 
     // Check for /command prefix
     if let Some(text) = msg.text()
@@ -282,18 +289,20 @@ async fn handle_command(
     cmd_args: Option<&str>,
     ctx: &TelegramContext<'_>,
 ) {
-    let command_ctx = CommandContext {
-        url: "",
-        verbose: false,
+    let result = {
+        let _span = tracing::debug_span!("telegram_command", command = %cmd_name).entered();
+        let command_ctx = CommandContext {
+            url: "",
+            verbose: false,
+        };
+        execute_command(cmd_name, cmd_args, &command_ctx)
     };
-
-    let result = execute_command(cmd_name, cmd_args, &command_ctx);
 
     let response_text = match result.side_effect {
         Some(CommandSideEffect::Reload) => {
             tracing::info!("reload requested via telegram command");
             if ctx.reload_tx.send(ReloadSignal::Root).is_err() {
-                tracing::warn!("reload_tx closed, reload dropped");
+                tracing::warn!(command = %cmd_name, "reload_tx closed, reload dropped");
             }
             result.response
         }
