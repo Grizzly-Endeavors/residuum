@@ -114,12 +114,17 @@ Testing is a first-class operation — NEVER skip test implementation.
 - **trace**: verbose diagnostics (full payloads, timing)
 - Use structured fields: `info!(chunks = count, "starting chunked review")` not string interpolation
 
-### Debugging
-- `residuum serve --debug` — debug logging for residuum crates (default mode)
-- `residuum serve --debug=all` — debug logging for all crates including dependencies
-- `residuum serve --debug=trace` — trace-level logging for residuum crates
-- `residuum logs` — view saved log files; `residuum logs --watch` to tail live
-- `RUST_LOG` env var overrides `--debug` when set
+### Debugging & Tracing
+- Log level is configured in `config.toml` under `[tracing]`: `log_level = "info" | "debug" | "trace"` (default: `debug`)
+- `residuum logs` — view saved log files; `residuum logs --watch` to tail live; `residuum logs --level warn` to filter at read time
+- `residuum tracing status` — show current tracing config and streaming state
+- `residuum tracing otel add <url>` — add an OTEL endpoint for trace export
+- `residuum tracing dump` — one-shot export of buffered traces to configured OTEL endpoints
+- `residuum tracing stream start|stop` — live trace streaming to OTEL endpoints
+- `residuum tracing sanitize on|off` — toggle content redaction in trace exports (default: on)
+- `residuum tracing error-reporting on|off` — toggle auto error reporting (default: off)
+- `residuum bug-report -m "description"` — send trace dump to developer (currently no-op until collection endpoint deployed)
+- `RUST_LOG` env var overrides the configured log level when set
 
 ## Git Workflow
 

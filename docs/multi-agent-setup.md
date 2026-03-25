@@ -85,14 +85,14 @@ Removes the agent's directory and registry entry. Refuses if the agent is still 
 residuum serve --agent <name>
 ```
 
-Starts the named agent as a background daemon on its assigned port. Works the same as `residuum serve` for the default agent, including daemon mode and `--foreground`/`--debug` flags.
+Starts the named agent as a background daemon on its assigned port. Works the same as `residuum serve` for the default agent, including daemon mode and `--foreground` flag.
 
 ```bash
 # Background (default)
 residuum serve --agent researcher
 
-# Foreground with debug logging
-residuum serve --agent researcher --foreground --debug
+# Foreground mode
+residuum serve --agent researcher --foreground
 ```
 
 ### Stop an agent

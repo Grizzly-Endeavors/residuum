@@ -71,6 +71,7 @@ struct SpawnedHandles {
     tunnel_shutdown_tx: Option<tokio::sync::watch::Sender<bool>>,
     tunnel_status_tx: Arc<tokio::sync::watch::Sender<crate::tunnel::TunnelStatus>>,
     tunnel_status_rx: tokio::sync::watch::Receiver<crate::tunnel::TunnelStatus>,
+    tracing_service: Arc<crate::tracing_service::TracingService>,
     sigterm: tokio::signal::unix::Signal,
 }
 
@@ -116,7 +117,27 @@ async fn spawn_server_and_adapters(
         restart_tx: restart_tx.clone(),
         gateway_shutdown_tx: gateway_shutdown_tx.clone(),
     };
-    let app = build_gateway_app(state, cfg, config_api_state, update_api_state);
+    let tracing_service = Arc::new(crate::tracing_service::TracingService::new(
+        cfg.tracing.clone(),
+        crate::util::telemetry::global_span_buffer()
+            .cloned()
+            .unwrap_or_else(|| {
+                let (_, handle) = crate::util::telemetry::SpanBufferLayer::new(
+                    &crate::util::telemetry::SpanBufferConfig::default(),
+                );
+                handle
+            }),
+    ));
+    let tracing_api_state = web::tracing_api::TracingApiState {
+        service: Arc::clone(&tracing_service),
+    };
+    let app = build_gateway_app(
+        state,
+        cfg,
+        config_api_state,
+        update_api_state,
+        tracing_api_state,
+    );
     let server_handle = spawn_http_server(cfg, app, &core.http_shutdown_tx).await?;
     let adapters = spawn_adapters(cfg, discord_senders, telegram_senders, parts.tz);
     let (tunnel_handle, tunnel_shutdown_tx) = spawn_tunnel(cfg, Arc::clone(&tunnel_status_tx));
@@ -135,6 +156,7 @@ async fn spawn_server_and_adapters(
         tunnel_shutdown_tx,
         tunnel_status_tx,
         tunnel_status_rx,
+        tracing_service,
         sigterm,
     })
 }
@@ -291,6 +313,7 @@ async fn build_runtime(
         reload_tx: core.reload_tx,
         command_tx: core.command_tx,
         path_policy: parts.path_policy,
+        tracing_service: spawned.tracing_service,
         update_status: update.status,
         restart_tx: update.restart_tx,
         restart_rx: update.restart_rx,

@@ -19,6 +19,7 @@ use crate::models::{EmbeddingProvider, SharedHttpClient};
 use crate::projects::activation::SharedProjectState;
 use crate::pulse::scheduler::PulseScheduler;
 use crate::skills::SharedSkillState;
+use crate::tracing_service::TracingService;
 use crate::tunnel::TunnelStatus;
 use crate::update::SharedUpdateStatus;
 use crate::workspace::layout::WorkspaceLayout;
@@ -180,6 +181,8 @@ pub(crate) struct GatewayRuntime {
     pub command_tx: mpsc::Sender<ServerCommand>,
     /// Shared path policy for updating blocked paths on reload.
     pub path_policy: crate::tools::SharedPathPolicy,
+    /// Shared tracing service for observability API.
+    pub tracing_service: Arc<TracingService>,
     /// Shared update status for periodic version checking.
     pub update_status: SharedUpdateStatus,
     /// Sender half for triggering restart (cloned into API state on rebind).

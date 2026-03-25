@@ -51,6 +51,8 @@ pub(crate) struct ConfigFile {
     pub(super) cloud: Option<CloudConfigFile>,
     /// Web search configuration.
     pub(super) web_search: Option<WebSearchConfigFile>,
+    /// Tracing and observability configuration.
+    pub(super) tracing: Option<TracingConfigFile>,
 }
 
 /// Raw TOML providers file structure (`providers.toml`).
@@ -401,6 +403,32 @@ pub(super) struct OpenAiSearchConfigFile {
 pub(super) struct GeminiSearchConfigFile {
     /// Domains to exclude from Google Search grounding.
     pub(super) exclude_domains: Option<Vec<String>>,
+}
+
+/// Raw TOML `[tracing]` section.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct TracingConfigFile {
+    /// Log detail level for file output (`"info"`, `"debug"`, `"trace"`).
+    pub(super) log_level: Option<String>,
+    /// Whether to automatically report errors to the developer endpoint.
+    pub(super) auto_error_reporting: Option<bool>,
+    /// Whether to redact sensitive content in trace exports (default: true).
+    pub(super) sanitize_content: Option<bool>,
+    /// OTEL endpoints for trace export.
+    pub(super) otel_endpoints: Option<Vec<OtelEndpointFile>>,
+}
+
+/// Raw TOML `[[tracing.otel_endpoints]]` entry.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct OtelEndpointFile {
+    /// OTLP HTTP endpoint URL.
+    pub(super) url: String,
+    /// Human-readable name for this endpoint.
+    pub(super) name: Option<String>,
+    /// Additional HTTP headers (e.g. auth tokens).
+    pub(super) headers: Option<HashMap<String, String>>,
 }
 
 /// Raw TOML `[background.models]` section.

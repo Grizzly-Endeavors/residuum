@@ -34,6 +34,7 @@ pub fn build_gateway_app(
     cfg: &Config,
     config_api_state: web::ConfigApiState,
     update_api_state: web::update::UpdateApiState,
+    tracing_api_state: web::tracing_api::TracingApiState,
 ) -> axum::Router {
     use axum::routing::{get, post};
 
@@ -91,6 +92,8 @@ pub fn build_gateway_app(
         .route("/api/shutdown", post(web::update::api_shutdown))
         .with_state(update_api_state);
 
+    let tracing_router = tracing_api_router(tracing_api_state);
+
     let mut app = axum::Router::new()
         .route("/ws", get(ws_handler))
         .with_state(state);
@@ -99,8 +102,54 @@ pub fn build_gateway_app(
     }
     app.merge(cloud_router)
         .merge(update_router)
+        .merge(tracing_router)
         .merge(web::config_api_router(config_api_state))
         .fallback(web::static_handler)
+}
+
+/// Build the tracing API router with all observability endpoints.
+fn tracing_api_router(state: web::tracing_api::TracingApiState) -> axum::Router {
+    use axum::routing::{get, post};
+    axum::Router::new()
+        .route(
+            "/api/tracing/status",
+            get(web::tracing_api::api_tracing_status),
+        )
+        .route(
+            "/api/tracing/error-reporting",
+            post(web::tracing_api::api_tracing_error_reporting),
+        )
+        .route(
+            "/api/tracing/sanitize",
+            post(web::tracing_api::api_tracing_sanitize),
+        )
+        .route(
+            "/api/tracing/otel/endpoints",
+            get(web::tracing_api::api_tracing_otel_list)
+                .post(web::tracing_api::api_tracing_otel_add)
+                .delete(web::tracing_api::api_tracing_otel_remove),
+        )
+        .route(
+            "/api/tracing/otel/test",
+            post(web::tracing_api::api_tracing_otel_test),
+        )
+        .route(
+            "/api/tracing/dump",
+            post(web::tracing_api::api_tracing_dump),
+        )
+        .route(
+            "/api/tracing/stream/start",
+            post(web::tracing_api::api_tracing_stream_start),
+        )
+        .route(
+            "/api/tracing/stream/stop",
+            post(web::tracing_api::api_tracing_stream_stop),
+        )
+        .route(
+            "/api/tracing/bug-report",
+            post(web::tracing_api::api_tracing_bug_report),
+        )
+        .with_state(state)
 }
 
 /// Spawn an axum server on a pre-bound listener with graceful shutdown.

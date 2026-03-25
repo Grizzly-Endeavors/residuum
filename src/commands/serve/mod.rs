@@ -6,8 +6,6 @@ mod foreground;
 pub(super) use daemon::run_serve_command;
 pub(super) use foreground::run_serve_foreground;
 
-use residuum::util::tracing_init::DebugMode;
-
 #[derive(clap::Args, Default)]
 pub(super) struct ServeArgs {
     /// Run in foreground instead of daemonizing
@@ -19,7 +17,4 @@ pub(super) struct ServeArgs {
     /// Target a named agent instance
     #[arg(long)]
     pub agent: Option<String>,
-    /// Enable debug logging (modes: default, all, trace)
-    #[arg(long, value_name = "MODE", num_args = 0..=1, default_missing_value = "default")]
-    pub debug: Option<DebugMode>,
 }
