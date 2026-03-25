@@ -5,6 +5,7 @@ use crate::notify::external::{NtfyChannel, WebhookChannel};
 use crate::notify::types::{ExternalChannelConfig, ExternalChannelKind};
 
 /// Build external channel implementations from configs.
+#[tracing::instrument(skip_all, fields(count = configs.len()))]
 pub async fn build_external_channels(
     configs: &[ExternalChannelConfig],
     client: &reqwest::Client,
@@ -86,7 +87,7 @@ async fn build_macos_channel(
         match parse_category(cat) {
             Ok(c) => config.default_category = c,
             Err(e) => {
-                tracing::warn!(channel = name, error = %e, "invalid macOS channel config, skipping");
+                tracing::warn!(channel = %name, error = %e, "invalid macOS channel config, skipping");
                 return None;
             }
         }
@@ -96,7 +97,7 @@ async fn build_macos_channel(
         match parse_priority(pri) {
             Ok(p) => config.default_priority = p,
             Err(e) => {
-                tracing::warn!(channel = name, error = %e, "invalid macOS channel config, skipping");
+                tracing::warn!(channel = %name, error = %e, "invalid macOS channel config, skipping");
                 return None;
             }
         }
@@ -115,11 +116,11 @@ async fn build_macos_channel(
 
     match crate::notify::macos::MacosNativeChannel::new(name, config).await {
         Ok((channel, _handle)) => {
-            tracing::info!(channel = name, "macOS notification channel initialized");
+            tracing::debug!(channel = %name, "macOS notification channel initialized");
             Some(Box::new(channel))
         }
         Err(e) => {
-            tracing::warn!(channel = name, error = %e, "failed to initialize macOS channel, skipping");
+            tracing::warn!(channel = %name, error = %e, "failed to initialize macOS channel, skipping");
             None
         }
     }
@@ -135,7 +136,7 @@ async fn build_macos_channel(
     _kind: &ExternalChannelKind,
 ) -> Option<Box<dyn NotificationChannel>> {
     tracing::warn!(
-        channel = name,
+        channel = %name,
         "macOS notification channel configured but not available on this platform"
     );
     None
