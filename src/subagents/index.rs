@@ -48,7 +48,7 @@ impl SubagentPresetIndex {
     #[must_use]
     pub fn find_by_name(&self, name: &str) -> Option<&SubagentPresetEntry> {
         let lower = name.to_lowercase();
-        self.entries.iter().find(|e| e.name.to_lowercase() == lower)
+        self.entries.iter().find(|e| e.name == lower)
     }
 
     /// Load a preset's full frontmatter and body from disk (or from built-in).
@@ -78,12 +78,7 @@ impl SubagentPresetIndex {
             return Ok(result);
         }
 
-        // Otherwise, return the built-in body directly
-        if name.eq_ignore_ascii_case(GENERAL_PURPOSE_NAME) {
-            return Ok(builtin_general_purpose_preset());
-        }
-
-        unreachable!("preset '{name}' found in index but has no path and is not a built-in")
+        Ok(builtin_general_purpose_preset())
     }
 
     /// Format the index as XML for the system prompt.
