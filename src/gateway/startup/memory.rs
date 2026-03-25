@@ -133,11 +133,11 @@ async fn do_full_rebuild(
 ) {
     match search_index.rebuild(&layout.memory_dir()) {
         Ok(result) => {
-            let total = result.obs_count + result.chunk_count;
             tracing::info!(
                 observations = result.obs_count,
                 chunks = result.chunk_count,
-                "search index rebuilt ({total} documents)"
+                total = result.obs_count + result.chunk_count,
+                "search index rebuilt"
             );
             let rebuilt = build_manifest_from_rebuild(result);
             if let Err(save_err) = rebuilt.save(manifest_path).await {

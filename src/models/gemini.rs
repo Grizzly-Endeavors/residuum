@@ -84,13 +84,13 @@ impl GeminiClient {
                     });
                 }
                 GeminiPart::FunctionResponse { .. } => {
-                    tracing::warn!(
+                    debug!(
                         part_index = idx,
                         "unexpected functionResponse part in Gemini model output"
                     );
                 }
                 GeminiPart::InlineData { .. } => {
-                    tracing::warn!(
+                    debug!(
                         part_index = idx,
                         "unexpected inlineData part in Gemini model output"
                     );
@@ -222,14 +222,18 @@ impl GeminiClient {
         (system_instruction, contents)
     }
 
-    #[tracing::instrument(skip(http, url, max_output_tokens, request), fields(model = %model))]
+    #[tracing::instrument(skip_all, fields(
+        model = %model,
+        message_count,
+        tool_count,
+    ))]
     async fn send_completion(
         http: &SharedHttpClient,
         url: &str,
         model: &str,
         max_output_tokens: u32,
-        message_count: usize,
-        tool_count: usize,
+        _message_count: usize,
+        _tool_count: usize,
         request: &GeminiRequest,
     ) -> Result<ModelResponse, ModelError> {
         let timeout_secs = http.timeout_secs();
@@ -281,6 +285,7 @@ impl GeminiClient {
 
 #[async_trait]
 impl ModelProvider for GeminiClient {
+    #[tracing::instrument(skip_all, fields(model = %self.model, message_count = messages.len(), tool_count = tools.len()))]
     async fn complete(
         &self,
         messages: &[Message],

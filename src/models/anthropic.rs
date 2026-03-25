@@ -368,6 +368,7 @@ impl ModelProvider for AnthropicClient {
     /// Returns `ModelError::Timeout` if the request exceeds the configured timeout,
     /// `ModelError::Api` if the API returns an error status, `ModelError::Parse` if
     /// the response body is malformed, or `ModelError::Request` for network failures.
+    #[tracing::instrument(skip_all, fields(model = %self.model, message_count = messages.len(), tool_count = tools.len()))]
     async fn complete(
         &self,
         messages: &[Message],
