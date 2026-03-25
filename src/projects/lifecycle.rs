@@ -65,7 +65,7 @@ pub async fn create_project(
         .await
         .with_context(|| format!("failed to write PROJECT.md at {}", project_dir.display()))?;
 
-    tracing::info!(project = name, dir = %dir_name, "created project");
+    tracing::info!(project = %name, dir = %dir_name, "created project");
 
     Ok(project_dir)
 }
@@ -112,7 +112,7 @@ pub async fn archive_project(
         )
     })?;
 
-    tracing::info!(project = dir_name, dest = %dest.display(), "archived project");
+    tracing::info!(project = %dir_name, dest = %dest.display(), "archived project");
 
     Ok(())
 }

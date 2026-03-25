@@ -83,7 +83,7 @@ impl ProjectState {
             project_root,
         };
 
-        tracing::info!(project = name, dir = %active.dir_name, has_recent_log = active.recent_log.is_some(), "activated project");
+        tracing::info!(project = %name, dir = %active.dir_name, has_recent_log = active.recent_log.is_some(), "activated project");
 
         Ok(self.active.insert(active))
     }
@@ -125,6 +125,7 @@ impl ProjectState {
     ///
     /// # Errors
     /// Returns an error if scanning fails.
+    #[tracing::instrument(skip_all)]
     pub async fn rescan(&mut self) -> anyhow::Result<()> {
         self.index = ProjectIndex::scan(&self.layout).await?;
         tracing::debug!(
@@ -290,12 +291,12 @@ async fn read_recent_logs(project_root: &Path) -> Option<String> {
             break;
         }
 
-        let Ok(day_rd) = tokio::fs::read_dir(month_path).await else {
-            tracing::warn!(
-                path = %month_path.display(),
-                "failed to open log month directory"
-            );
-            continue;
+        let day_rd = match tokio::fs::read_dir(month_path).await {
+            Ok(rd) => rd,
+            Err(e) => {
+                tracing::warn!(path = %month_path.display(), error = %e, "failed to open log month directory");
+                continue;
+            }
         };
 
         let day_files = collect_dir_entries(day_rd, month_path, |p| {

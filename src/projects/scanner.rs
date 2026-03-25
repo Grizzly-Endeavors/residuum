@@ -22,6 +22,7 @@ impl ProjectIndex {
     ///
     /// # Errors
     /// Returns an error if the directories cannot be read.
+    #[tracing::instrument(skip_all, fields(projects_dir = %layout.projects_dir().display()))]
     pub async fn scan(layout: &WorkspaceLayout) -> anyhow::Result<Self> {
         let mut entries = Vec::new();
 
