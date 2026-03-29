@@ -13,6 +13,7 @@
 		2D93684116B6CCB8EB68AFF2 /* Cinzel-Regular.ttf in Resources */ = {isa = PBXBuildFile; fileRef = 0E4F7F87BF716402C9E98251 /* Cinzel-Regular.ttf */; };
 		2DA193F4339A3D0F77120B9D /* ResiduumApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 68AA44737EB020838B730AF7 /* ResiduumApp.swift */; };
 		409390F7DCDC48E01FD4DD6D /* AgentStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = A461CBC2F33DC2820EB500D1 /* AgentStore.swift */; };
+		4500D5A8EF5C5DEBA482C210 /* ThinkingIndicator.swift in Sources */ = {isa = PBXBuildFile; fileRef = BC5B1C2CE6C1D21D28E970F7 /* ThinkingIndicator.swift */; };
 		65E62172099E515000148BC5 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 5F065348BA40F53FA359FA1F /* Assets.xcassets */; };
 		6789DBE10AC8CE028D2EAA7B /* JetBrainsMono-Regular.ttf in Resources */ = {isa = PBXBuildFile; fileRef = 329C1A99BF1BA06BCEA22458 /* JetBrainsMono-Regular.ttf */; };
 		693759EE80D00453F52B9296 /* ResiduumConnection.swift in Sources */ = {isa = PBXBuildFile; fileRef = 266852ADCA8EA93040637586 /* ResiduumConnection.swift */; };
@@ -55,6 +56,7 @@
 		9B4114421F3434D89FAF5CC8 /* PopoverView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PopoverView.swift; sourceTree = "<group>"; };
 		A3E228589A7FD1FE0D2B4058 /* Message.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Message.swift; sourceTree = "<group>"; };
 		A461CBC2F33DC2820EB500D1 /* AgentStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentStore.swift; sourceTree = "<group>"; };
+		BC5B1C2CE6C1D21D28E970F7 /* ThinkingIndicator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ThinkingIndicator.swift; sourceTree = "<group>"; };
 		BD0F4BBDF133F472F1DE7B4F /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		C66C8A462F2AB43A087C8F61 /* AgentRegistry.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentRegistry.swift; sourceTree = "<group>"; };
 		DC6C2DFB4459F480A62B063D /* Cinzel-SemiBold.ttf */ = {isa = PBXFileReference; lastKnownFileType = file; path = "Cinzel-SemiBold.ttf"; sourceTree = "<group>"; };
@@ -157,6 +159,7 @@
 			children = (
 				9B4114421F3434D89FAF5CC8 /* PopoverView.swift */,
 				467DD2EB29A718F5B2B85C8B /* Style.swift */,
+				BC5B1C2CE6C1D21D28E970F7 /* ThinkingIndicator.swift */,
 			);
 			path = Views;
 			sourceTree = "<group>";
@@ -262,6 +265,7 @@
 				2DA193F4339A3D0F77120B9D /* ResiduumApp.swift in Sources */,
 				693759EE80D00453F52B9296 /* ResiduumConnection.swift in Sources */,
 				E008B26E08B018B220230576 /* Style.swift in Sources */,
+				4500D5A8EF5C5DEBA482C210 /* ThinkingIndicator.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
