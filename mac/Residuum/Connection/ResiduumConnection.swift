@@ -63,8 +63,10 @@ final class ResiduumConnection: NSObject {
 
     func send(_ message: ClientMessage) {
         guard state == .connected, let task else { return }
-        guard let data = try? JSONEncoder().encode(message) else { return }
-        task.send(.data(data)) { [weak self] error in
+        guard let data = try? JSONEncoder().encode(message),
+              let text = String(data: data, encoding: .utf8) else { return }
+        // Daemon only accepts Text frames (same as browser WebSocket clients).
+        task.send(.string(text)) { [weak self] error in
             if error != nil {
                 self?.scheduleReconnect()
             }
