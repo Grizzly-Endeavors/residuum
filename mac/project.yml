@@ -12,6 +12,9 @@ targets:
     platform: macOS
     sources:
       - path: Residuum
+    resources:
+      - path: Residuum/Resources/Fonts
+        buildPhase: resources
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.grizzly-endeavors.residuum-mac

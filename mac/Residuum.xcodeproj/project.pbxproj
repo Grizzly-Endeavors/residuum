@@ -7,17 +7,22 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		005D1DC702AA3AEEC40B2382 /* Literata-LightItalic.ttf in Resources */ = {isa = PBXBuildFile; fileRef = 4F7306FD441954B0745C6EBE /* Literata-LightItalic.ttf */; };
 		07227F57D2B3CA7D72F203B2 /* AgentRegistry.swift in Sources */ = {isa = PBXBuildFile; fileRef = C66C8A462F2AB43A087C8F61 /* AgentRegistry.swift */; };
 		1B65214D07582353023417DB /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2844EF72D43E9ECB9737C89C /* AppDelegate.swift */; };
+		2D93684116B6CCB8EB68AFF2 /* Cinzel-Regular.ttf in Resources */ = {isa = PBXBuildFile; fileRef = 0E4F7F87BF716402C9E98251 /* Cinzel-Regular.ttf */; };
 		2DA193F4339A3D0F77120B9D /* ResiduumApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 68AA44737EB020838B730AF7 /* ResiduumApp.swift */; };
 		409390F7DCDC48E01FD4DD6D /* AgentStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = A461CBC2F33DC2820EB500D1 /* AgentStore.swift */; };
 		65E62172099E515000148BC5 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 5F065348BA40F53FA359FA1F /* Assets.xcassets */; };
+		6789DBE10AC8CE028D2EAA7B /* JetBrainsMono-Regular.ttf in Resources */ = {isa = PBXBuildFile; fileRef = 329C1A99BF1BA06BCEA22458 /* JetBrainsMono-Regular.ttf */; };
 		693759EE80D00453F52B9296 /* ResiduumConnection.swift in Sources */ = {isa = PBXBuildFile; fileRef = 266852ADCA8EA93040637586 /* ResiduumConnection.swift */; };
 		848245E21B40BDDA2FCB4ACF /* Message.swift in Sources */ = {isa = PBXBuildFile; fileRef = A3E228589A7FD1FE0D2B4058 /* Message.swift */; };
+		986E7882595930DCE1F5E6CF /* Cinzel-SemiBold.ttf in Resources */ = {isa = PBXBuildFile; fileRef = DC6C2DFB4459F480A62B063D /* Cinzel-SemiBold.ttf */; };
 		A0EE4FF8D09228F0E2322FFA /* AgentTab.swift in Sources */ = {isa = PBXBuildFile; fileRef = 08CFDCA30B1C655D75C37AE3 /* AgentTab.swift */; };
 		A10687474CA25C6B681511C1 /* ProtocolTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = FC84971571E3759D397D192B /* ProtocolTests.swift */; };
 		A757D77CF17982F5DC47EA50 /* PopoverView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9B4114421F3434D89FAF5CC8 /* PopoverView.swift */; };
 		B40C97317E76F3122F7603F9 /* AgentRegistryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 421C7D244DC80E9349BF618B /* AgentRegistryTests.swift */; };
+		B59BA39356CD12BF84EA6341 /* Literata-Light.ttf in Resources */ = {isa = PBXBuildFile; fileRef = 8C04367D86857F1D3CC89F97 /* Literata-Light.ttf */; };
 		BB1EA9EB162846F1DD444645 /* Protocol.swift in Sources */ = {isa = PBXBuildFile; fileRef = 766FA7137D8651AABF3B0DD2 /* Protocol.swift */; };
 		E008B26E08B018B220230576 /* Style.swift in Sources */ = {isa = PBXBuildFile; fileRef = 467DD2EB29A718F5B2B85C8B /* Style.swift */; };
 /* End PBXBuildFile section */
@@ -34,20 +39,25 @@
 
 /* Begin PBXFileReference section */
 		08CFDCA30B1C655D75C37AE3 /* AgentTab.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentTab.swift; sourceTree = "<group>"; };
+		0E4F7F87BF716402C9E98251 /* Cinzel-Regular.ttf */ = {isa = PBXFileReference; lastKnownFileType = file; path = "Cinzel-Regular.ttf"; sourceTree = "<group>"; };
 		1BC5925CE34C9891AAD6FB97 /* ResiduumTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = ResiduumTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		266852ADCA8EA93040637586 /* ResiduumConnection.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ResiduumConnection.swift; sourceTree = "<group>"; };
 		2844EF72D43E9ECB9737C89C /* AppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppDelegate.swift; sourceTree = "<group>"; };
+		329C1A99BF1BA06BCEA22458 /* JetBrainsMono-Regular.ttf */ = {isa = PBXFileReference; lastKnownFileType = file; path = "JetBrainsMono-Regular.ttf"; sourceTree = "<group>"; };
 		421C7D244DC80E9349BF618B /* AgentRegistryTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentRegistryTests.swift; sourceTree = "<group>"; };
 		4501F92FA46CC987C16F5CEE /* Residuum.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Residuum.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		467DD2EB29A718F5B2B85C8B /* Style.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Style.swift; sourceTree = "<group>"; };
+		4F7306FD441954B0745C6EBE /* Literata-LightItalic.ttf */ = {isa = PBXFileReference; lastKnownFileType = file; path = "Literata-LightItalic.ttf"; sourceTree = "<group>"; };
 		5F065348BA40F53FA359FA1F /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		68AA44737EB020838B730AF7 /* ResiduumApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ResiduumApp.swift; sourceTree = "<group>"; };
 		766FA7137D8651AABF3B0DD2 /* Protocol.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Protocol.swift; sourceTree = "<group>"; };
+		8C04367D86857F1D3CC89F97 /* Literata-Light.ttf */ = {isa = PBXFileReference; lastKnownFileType = file; path = "Literata-Light.ttf"; sourceTree = "<group>"; };
 		9B4114421F3434D89FAF5CC8 /* PopoverView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PopoverView.swift; sourceTree = "<group>"; };
 		A3E228589A7FD1FE0D2B4058 /* Message.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Message.swift; sourceTree = "<group>"; };
 		A461CBC2F33DC2820EB500D1 /* AgentStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentStore.swift; sourceTree = "<group>"; };
 		BD0F4BBDF133F472F1DE7B4F /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		C66C8A462F2AB43A087C8F61 /* AgentRegistry.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentRegistry.swift; sourceTree = "<group>"; };
+		DC6C2DFB4459F480A62B063D /* Cinzel-SemiBold.ttf */ = {isa = PBXFileReference; lastKnownFileType = file; path = "Cinzel-SemiBold.ttf"; sourceTree = "<group>"; };
 		FC84971571E3759D397D192B /* ProtocolTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProtocolTests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
@@ -76,6 +86,7 @@
 			isa = PBXGroup;
 			children = (
 				5F065348BA40F53FA359FA1F /* Assets.xcassets */,
+				4B4C17B3AA730F3BBE184D8A /* Fonts */,
 			);
 			path = Resources;
 			sourceTree = "<group>";
@@ -96,6 +107,18 @@
 				FC84971571E3759D397D192B /* ProtocolTests.swift */,
 			);
 			path = ResiduumTests;
+			sourceTree = "<group>";
+		};
+		4B4C17B3AA730F3BBE184D8A /* Fonts */ = {
+			isa = PBXGroup;
+			children = (
+				0E4F7F87BF716402C9E98251 /* Cinzel-Regular.ttf */,
+				DC6C2DFB4459F480A62B063D /* Cinzel-SemiBold.ttf */,
+				329C1A99BF1BA06BCEA22458 /* JetBrainsMono-Regular.ttf */,
+				8C04367D86857F1D3CC89F97 /* Literata-Light.ttf */,
+				4F7306FD441954B0745C6EBE /* Literata-LightItalic.ttf */,
+			);
+			path = Fonts;
 			sourceTree = "<group>";
 		};
 		A63398BE87544AB30AA3A6DD /* Residuum */ = {
@@ -214,6 +237,11 @@
 			buildActionMask = 2147483647;
 			files = (
 				65E62172099E515000148BC5 /* Assets.xcassets in Resources */,
+				2D93684116B6CCB8EB68AFF2 /* Cinzel-Regular.ttf in Resources */,
+				986E7882595930DCE1F5E6CF /* Cinzel-SemiBold.ttf in Resources */,
+				6789DBE10AC8CE028D2EAA7B /* JetBrainsMono-Regular.ttf in Resources */,
+				B59BA39356CD12BF84EA6341 /* Literata-Light.ttf in Resources */,
+				005D1DC702AA3AEEC40B2382 /* Literata-LightItalic.ttf in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
