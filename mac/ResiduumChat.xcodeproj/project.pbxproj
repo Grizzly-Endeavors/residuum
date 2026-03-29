@@ -12,7 +12,9 @@
 		1334B67C6B8D2218072C61A4 /* ToolGroup.swift in Sources */ = {isa = PBXBuildFile; fileRef = 46D89E61521A713B0635C84F /* ToolGroup.swift */; };
 		21249DA17E1285E9E1DB3596 /* ProtocolTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7030721A5F45AB079D28631D /* ProtocolTests.swift */; };
 		27264CFFBECB209B1AA8B4F3 /* Literata-LightItalic.ttf in Resources */ = {isa = PBXBuildFile; fileRef = B802EBF7C25CBCA02E84086C /* Literata-LightItalic.ttf */; };
+		2CB361CF83C2EC78328DD51B /* SlashCommand.swift in Sources */ = {isa = PBXBuildFile; fileRef = 243D33EC119ACFAC32918B28 /* SlashCommand.swift */; };
 		2D9DCB2A45A4B2173BEE24FF /* ThinkingIndicator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 12C6CDF2B2255A7CC1485305 /* ThinkingIndicator.swift */; };
+		471EB58B22FB29BA279AC03D /* SlashCommandTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F0081499F5E80C12012D8D4A /* SlashCommandTests.swift */; };
 		4E1C2554DD42B0D7BDA29A22 /* ChatView.swift in Sources */ = {isa = PBXBuildFile; fileRef = EBB5ACF50BA8D0E2905FBC98 /* ChatView.swift */; };
 		6B98649B887255D58E893763 /* AgentRegistry.swift in Sources */ = {isa = PBXBuildFile; fileRef = 198E5D123A71076F69BCC764 /* AgentRegistry.swift */; };
 		7BBD6868742F7CAD1F97E46C /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9491041429FFA0B66EA43DCE /* SettingsView.swift */; };
@@ -48,6 +50,7 @@
 		12C6CDF2B2255A7CC1485305 /* ThinkingIndicator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ThinkingIndicator.swift; sourceTree = "<group>"; };
 		198E5D123A71076F69BCC764 /* AgentRegistry.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentRegistry.swift; sourceTree = "<group>"; };
 		1E5C714409FAF096C7A303CC /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		243D33EC119ACFAC32918B28 /* SlashCommand.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SlashCommand.swift; sourceTree = "<group>"; };
 		259162ABC7570E1D53C98020 /* PopoverView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PopoverView.swift; sourceTree = "<group>"; };
 		2C3210127BCE6365B097B63B /* Message.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Message.swift; sourceTree = "<group>"; };
 		45C32C874812C49E181B02DC /* AgentRegistryTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentRegistryTests.swift; sourceTree = "<group>"; };
@@ -73,6 +76,7 @@
 		E7D2CA7F696E516FA64EE0CE /* Style.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Style.swift; sourceTree = "<group>"; };
 		EBB5ACF50BA8D0E2905FBC98 /* ChatView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatView.swift; sourceTree = "<group>"; };
 		EE2637578305AA4D18BC97A5 /* Literata-Light.ttf */ = {isa = PBXFileReference; lastKnownFileType = file; path = "Literata-Light.ttf"; sourceTree = "<group>"; };
+		F0081499F5E80C12012D8D4A /* SlashCommandTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SlashCommandTests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXGroup section */
@@ -108,6 +112,7 @@
 				D5727D076071471D7A090771 /* AgentStore.swift */,
 				E58B01F3E0BE239F48838106 /* AgentTab.swift */,
 				2C3210127BCE6365B097B63B /* Message.swift */,
+				243D33EC119ACFAC32918B28 /* SlashCommand.swift */,
 			);
 			path = Agents;
 			sourceTree = "<group>";
@@ -117,6 +122,7 @@
 			children = (
 				45C32C874812C49E181B02DC /* AgentRegistryTests.swift */,
 				7030721A5F45AB079D28631D /* ProtocolTests.swift */,
+				F0081499F5E80C12012D8D4A /* SlashCommandTests.swift */,
 			);
 			path = ResiduumTests;
 			sourceTree = "<group>";
@@ -286,6 +292,7 @@
 				EEFA9B2038D70CAD9CB83F6B /* ResiduumApp.swift in Sources */,
 				CEA4765FD3A56C1441F4DDF7 /* ResiduumConnection.swift in Sources */,
 				7BBD6868742F7CAD1F97E46C /* SettingsView.swift in Sources */,
+				2CB361CF83C2EC78328DD51B /* SlashCommand.swift in Sources */,
 				9DAA0F1E73A7CDF445C07477 /* Style.swift in Sources */,
 				7BC6C4A223B7F3DE5C34A6CA /* TabBar.swift in Sources */,
 				2D9DCB2A45A4B2173BEE24FF /* ThinkingIndicator.swift in Sources */,
@@ -299,6 +306,7 @@
 			files = (
 				01BCD6AD87CA5AA4C4334FAC /* AgentRegistryTests.swift in Sources */,
 				21249DA17E1285E9E1DB3596 /* ProtocolTests.swift in Sources */,
+				471EB58B22FB29BA279AC03D /* SlashCommandTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -327,6 +335,7 @@
 				);
 				MARKETING_VERSION = 1.0.0;
 				PRODUCT_BUNDLE_IDENTIFIER = "com.grizzly-endeavors.residuum-chat";
+				PRODUCT_MODULE_NAME = Residuum;
 				PRODUCT_NAME = "Residuum Chat";
 				SDKROOT = macosx;
 				SWIFT_VERSION = 5.9;
@@ -410,6 +419,7 @@
 				);
 				MARKETING_VERSION = 1.0.0;
 				PRODUCT_BUNDLE_IDENTIFIER = "com.grizzly-endeavors.residuum-chat";
+				PRODUCT_MODULE_NAME = Residuum;
 				PRODUCT_NAME = "Residuum Chat";
 				SDKROOT = macosx;
 				SWIFT_VERSION = 5.9;
@@ -486,7 +496,7 @@
 				PRODUCT_BUNDLE_IDENTIFIER = "com.grizzly-endeavors.ResiduumChatTests";
 				SDKROOT = macosx;
 				SWIFT_VERSION = 5.9;
-				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/ResiduumChat.app/Contents/MacOS/ResiduumChat";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Residuum Chat.app/Contents/MacOS/Residuum Chat";
 			};
 			name = Release;
 		};
@@ -504,7 +514,7 @@
 				PRODUCT_BUNDLE_IDENTIFIER = "com.grizzly-endeavors.ResiduumChatTests";
 				SDKROOT = macosx;
 				SWIFT_VERSION = 5.9;
-				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/ResiduumChat.app/Contents/MacOS/ResiduumChat";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Residuum Chat.app/Contents/MacOS/Residuum Chat";
 			};
 			name = Debug;
 		};

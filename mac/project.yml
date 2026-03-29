@@ -19,6 +19,7 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.grizzly-endeavors.residuum-chat
         PRODUCT_NAME: "Residuum Chat"
+        PRODUCT_MODULE_NAME: Residuum
         MARKETING_VERSION: 1.0.0
         CURRENT_PROJECT_VERSION: 1
         ENABLE_APP_SANDBOX: NO
@@ -37,3 +38,15 @@ targets:
       base:
         SWIFT_VERSION: "5.9"
         GENERATE_INFOPLIST_FILE: YES
+        TEST_HOST: "$(BUILT_PRODUCTS_DIR)/Residuum Chat.app/Contents/MacOS/Residuum Chat"
+        BUNDLE_LOADER: "$(TEST_HOST)"
+
+schemes:
+  ResiduumChat:
+    build:
+      targets:
+        ResiduumChat: all
+        ResiduumChatTests: [test]
+    test:
+      targets:
+        - ResiduumChatTests
