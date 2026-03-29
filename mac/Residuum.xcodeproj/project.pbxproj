@@ -9,6 +9,7 @@
 /* Begin PBXBuildFile section */
 		005D1DC702AA3AEEC40B2382 /* Literata-LightItalic.ttf in Resources */ = {isa = PBXBuildFile; fileRef = 4F7306FD441954B0745C6EBE /* Literata-LightItalic.ttf */; };
 		07227F57D2B3CA7D72F203B2 /* AgentRegistry.swift in Sources */ = {isa = PBXBuildFile; fileRef = C66C8A462F2AB43A087C8F61 /* AgentRegistry.swift */; };
+		0FCDC7FEEFD6D8D63F6130D1 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = CDA327D7E1A559BBA86BB522 /* SettingsView.swift */; };
 		1B65214D07582353023417DB /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2844EF72D43E9ECB9737C89C /* AppDelegate.swift */; };
 		2D93684116B6CCB8EB68AFF2 /* Cinzel-Regular.ttf in Resources */ = {isa = PBXBuildFile; fileRef = 0E4F7F87BF716402C9E98251 /* Cinzel-Regular.ttf */; };
 		2DA193F4339A3D0F77120B9D /* ResiduumApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 68AA44737EB020838B730AF7 /* ResiduumApp.swift */; };
@@ -69,6 +70,7 @@
 		BC5B1C2CE6C1D21D28E970F7 /* ThinkingIndicator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ThinkingIndicator.swift; sourceTree = "<group>"; };
 		BD0F4BBDF133F472F1DE7B4F /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		C66C8A462F2AB43A087C8F61 /* AgentRegistry.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentRegistry.swift; sourceTree = "<group>"; };
+		CDA327D7E1A559BBA86BB522 /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
 		DC6C2DFB4459F480A62B063D /* Cinzel-SemiBold.ttf */ = {isa = PBXFileReference; lastKnownFileType = file; path = "Cinzel-SemiBold.ttf"; sourceTree = "<group>"; };
 		FC84971571E3759D397D192B /* ProtocolTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProtocolTests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
@@ -171,6 +173,7 @@
 				708A705ACCE5093E022F2BB5 /* InputBar.swift */,
 				1CA22524BBB4C91B5B0432E4 /* MessageRow.swift */,
 				9B4114421F3434D89FAF5CC8 /* PopoverView.swift */,
+				CDA327D7E1A559BBA86BB522 /* SettingsView.swift */,
 				467DD2EB29A718F5B2B85C8B /* Style.swift */,
 				63F6D2B5ABF8DFF00BCABB43 /* TabBar.swift */,
 				BC5B1C2CE6C1D21D28E970F7 /* ThinkingIndicator.swift */,
@@ -282,6 +285,7 @@
 				BB1EA9EB162846F1DD444645 /* Protocol.swift in Sources */,
 				2DA193F4339A3D0F77120B9D /* ResiduumApp.swift in Sources */,
 				693759EE80D00453F52B9296 /* ResiduumConnection.swift in Sources */,
+				0FCDC7FEEFD6D8D63F6130D1 /* SettingsView.swift in Sources */,
 				E008B26E08B018B220230576 /* Style.swift in Sources */,
 				D378A5110AF2967B356382B2 /* TabBar.swift in Sources */,
 				4500D5A8EF5C5DEBA482C210 /* ThinkingIndicator.swift in Sources */,
