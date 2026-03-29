@@ -34,9 +34,9 @@ final class SlashCommandTests: XCTestCase {
     // MARK: - Filtering
 
     func testEmptyQueryReturnsAll() {
-        let filtered = COMMAND_REGISTRY.filter {
-            "".isEmpty || $0.name.hasPrefix("/" + "")
-        }
+        // Empty query uses hasPrefix("/") — all commands start with /, so all 8 match.
+        let query = ""
+        let filtered = COMMAND_REGISTRY.filter { $0.name.hasPrefix("/" + query) }
         XCTAssertEqual(filtered.count, 8)
     }
 
