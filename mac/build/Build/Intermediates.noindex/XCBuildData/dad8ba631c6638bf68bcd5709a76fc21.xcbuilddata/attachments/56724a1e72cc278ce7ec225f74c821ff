@@ -1,0 +1,101 @@
+{
+  "" : {
+    "const-values" : "/Users/jflinn/projects/residuum/mac/build/Build/Intermediates.noindex/ResiduumChat.build/Release/ResiduumChat.build/Objects-normal/arm64/ResiduumChat-primary.swiftconstvalues",
+    "dependencies" : "/Users/jflinn/projects/residuum/mac/build/Build/Intermediates.noindex/ResiduumChat.build/Release/ResiduumChat.build/Objects-normal/arm64/ResiduumChat-primary.d",
+    "diagnostics" : "/Users/jflinn/projects/residuum/mac/build/Build/Intermediates.noindex/ResiduumChat.build/Release/ResiduumChat.build/Objects-normal/arm64/ResiduumChat-primary.dia",
+    "emit-module-dependencies" : "/Users/jflinn/projects/residuum/mac/build/Build/Intermediates.noindex/ResiduumChat.build/Release/ResiduumChat.build/Objects-normal/arm64/ResiduumChat-primary-emit-module.d",
+    "emit-module-diagnostics" : "/Users/jflinn/projects/residuum/mac/build/Build/Intermediates.noindex/ResiduumChat.build/Release/ResiduumChat.build/Objects-normal/arm64/ResiduumChat-primary-emit-module.dia",
+    "pch" : "/Users/jflinn/projects/residuum/mac/build/Build/Intermediates.noindex/ResiduumChat.build/Release/ResiduumChat.build/Objects-normal/arm64/ResiduumChat-primary-Bridging-header.pch",
+    "swift-dependencies" : "/Users/jflinn/projects/residuum/mac/build/Build/Intermediates.noindex/ResiduumChat.build/Release/ResiduumChat.build/Objects-normal/arm64/ResiduumChat-primary.swiftdeps"
+  },
+  "/Users/jflinn/projects/residuum/mac/Residuum/Agents/AgentRegistry.swift" : {
+    "index-unit-output-path" : "/ResiduumChat.build/Release/ResiduumChat.build/Objects-normal/arm64/AgentRegistry.o",
+    "llvm-bc" : "/Users/jflinn/projects/residuum/mac/build/Build/Intermediates.noindex/ResiduumChat.build/Release/ResiduumChat.build/Objects-normal/arm64/AgentRegistry.bc",
+    "object" : "/Users/jflinn/projects/residuum/mac/build/Build/Intermediates.noindex/ResiduumChat.build/Release/ResiduumChat.build/Objects-normal/arm64/AgentRegistry.o"
+  },
+  "/Users/jflinn/projects/residuum/mac/Residuum/Agents/AgentStore.swift" : {
+    "index-unit-output-path" : "/ResiduumChat.build/Release/ResiduumChat.build/Objects-normal/arm64/AgentStore.o",
+    "llvm-bc" : "/Users/jflinn/projects/residuum/mac/build/Build/Intermediates.noindex/ResiduumChat.build/Release/ResiduumChat.build/Objects-normal/arm64/AgentStore.bc",
+    "object" : "/Users/jflinn/projects/residuum/mac/build/Build/Intermediates.noindex/ResiduumChat.build/Release/ResiduumChat.build/Objects-normal/arm64/AgentStore.o"
+  },
+  "/Users/jflinn/projects/residuum/mac/Residuum/Agents/AgentTab.swift" : {
+    "index-unit-output-path" : "/ResiduumChat.build/Release/ResiduumChat.build/Objects-normal/arm64/AgentTab.o",
+    "llvm-bc" : "/Users/jflinn/projects/residuum/mac/build/Build/Intermediates.noindex/ResiduumChat.build/Release/ResiduumChat.build/Objects-normal/arm64/AgentTab.bc",
+    "object" : "/Users/jflinn/projects/residuum/mac/build/Build/Intermediates.noindex/ResiduumChat.build/Release/ResiduumChat.build/Objects-normal/arm64/AgentTab.o"
+  },
+  "/Users/jflinn/projects/residuum/mac/Residuum/Agents/Message.swift" : {
+    "index-unit-output-path" : "/ResiduumChat.build/Release/ResiduumChat.build/Objects-normal/arm64/Message.o",
+    "llvm-bc" : "/Users/jflinn/projects/residuum/mac/build/Build/Intermediates.noindex/ResiduumChat.build/Release/ResiduumChat.build/Objects-normal/arm64/Message.bc",
+    "object" : "/Users/jflinn/projects/residuum/mac/build/Build/Intermediates.noindex/ResiduumChat.build/Release/ResiduumChat.build/Objects-normal/arm64/Message.o"
+  },
+  "/Users/jflinn/projects/residuum/mac/Residuum/App/AppDelegate.swift" : {
+    "index-unit-output-path" : "/ResiduumChat.build/Release/ResiduumChat.build/Objects-normal/arm64/AppDelegate.o",
+    "llvm-bc" : "/Users/jflinn/projects/residuum/mac/build/Build/Intermediates.noindex/ResiduumChat.build/Release/ResiduumChat.build/Objects-normal/arm64/AppDelegate.bc",
+    "object" : "/Users/jflinn/projects/residuum/mac/build/Build/Intermediates.noindex/ResiduumChat.build/Release/ResiduumChat.build/Objects-normal/arm64/AppDelegate.o"
+  },
+  "/Users/jflinn/projects/residuum/mac/Residuum/App/ResiduumApp.swift" : {
+    "index-unit-output-path" : "/ResiduumChat.build/Release/ResiduumChat.build/Objects-normal/arm64/ResiduumApp.o",
+    "llvm-bc" : "/Users/jflinn/projects/residuum/mac/build/Build/Intermediates.noindex/ResiduumChat.build/Release/ResiduumChat.build/Objects-normal/arm64/ResiduumApp.bc",
+    "object" : "/Users/jflinn/projects/residuum/mac/build/Build/Intermediates.noindex/ResiduumChat.build/Release/ResiduumChat.build/Objects-normal/arm64/ResiduumApp.o"
+  },
+  "/Users/jflinn/projects/residuum/mac/Residuum/Connection/Protocol.swift" : {
+    "index-unit-output-path" : "/ResiduumChat.build/Release/ResiduumChat.build/Objects-normal/arm64/Protocol.o",
+    "llvm-bc" : "/Users/jflinn/projects/residuum/mac/build/Build/Intermediates.noindex/ResiduumChat.build/Release/ResiduumChat.build/Objects-normal/arm64/Protocol.bc",
+    "object" : "/Users/jflinn/projects/residuum/mac/build/Build/Intermediates.noindex/ResiduumChat.build/Release/ResiduumChat.build/Objects-normal/arm64/Protocol.o"
+  },
+  "/Users/jflinn/projects/residuum/mac/Residuum/Connection/ResiduumConnection.swift" : {
+    "index-unit-output-path" : "/ResiduumChat.build/Release/ResiduumChat.build/Objects-normal/arm64/ResiduumConnection.o",
+    "llvm-bc" : "/Users/jflinn/projects/residuum/mac/build/Build/Intermediates.noindex/ResiduumChat.build/Release/ResiduumChat.build/Objects-normal/arm64/ResiduumConnection.bc",
+    "object" : "/Users/jflinn/projects/residuum/mac/build/Build/Intermediates.noindex/ResiduumChat.build/Release/ResiduumChat.build/Objects-normal/arm64/ResiduumConnection.o"
+  },
+  "/Users/jflinn/projects/residuum/mac/Residuum/Views/ChatView.swift" : {
+    "index-unit-output-path" : "/ResiduumChat.build/Release/ResiduumChat.build/Objects-normal/arm64/ChatView.o",
+    "llvm-bc" : "/Users/jflinn/projects/residuum/mac/build/Build/Intermediates.noindex/ResiduumChat.build/Release/ResiduumChat.build/Objects-normal/arm64/ChatView.bc",
+    "object" : "/Users/jflinn/projects/residuum/mac/build/Build/Intermediates.noindex/ResiduumChat.build/Release/ResiduumChat.build/Objects-normal/arm64/ChatView.o"
+  },
+  "/Users/jflinn/projects/residuum/mac/Residuum/Views/InputBar.swift" : {
+    "index-unit-output-path" : "/ResiduumChat.build/Release/ResiduumChat.build/Objects-normal/arm64/InputBar.o",
+    "llvm-bc" : "/Users/jflinn/projects/residuum/mac/build/Build/Intermediates.noindex/ResiduumChat.build/Release/ResiduumChat.build/Objects-normal/arm64/InputBar.bc",
+    "object" : "/Users/jflinn/projects/residuum/mac/build/Build/Intermediates.noindex/ResiduumChat.build/Release/ResiduumChat.build/Objects-normal/arm64/InputBar.o"
+  },
+  "/Users/jflinn/projects/residuum/mac/Residuum/Views/MessageRow.swift" : {
+    "index-unit-output-path" : "/ResiduumChat.build/Release/ResiduumChat.build/Objects-normal/arm64/MessageRow.o",
+    "llvm-bc" : "/Users/jflinn/projects/residuum/mac/build/Build/Intermediates.noindex/ResiduumChat.build/Release/ResiduumChat.build/Objects-normal/arm64/MessageRow.bc",
+    "object" : "/Users/jflinn/projects/residuum/mac/build/Build/Intermediates.noindex/ResiduumChat.build/Release/ResiduumChat.build/Objects-normal/arm64/MessageRow.o"
+  },
+  "/Users/jflinn/projects/residuum/mac/Residuum/Views/PopoverView.swift" : {
+    "index-unit-output-path" : "/ResiduumChat.build/Release/ResiduumChat.build/Objects-normal/arm64/PopoverView.o",
+    "llvm-bc" : "/Users/jflinn/projects/residuum/mac/build/Build/Intermediates.noindex/ResiduumChat.build/Release/ResiduumChat.build/Objects-normal/arm64/PopoverView.bc",
+    "object" : "/Users/jflinn/projects/residuum/mac/build/Build/Intermediates.noindex/ResiduumChat.build/Release/ResiduumChat.build/Objects-normal/arm64/PopoverView.o"
+  },
+  "/Users/jflinn/projects/residuum/mac/Residuum/Views/SettingsView.swift" : {
+    "index-unit-output-path" : "/ResiduumChat.build/Release/ResiduumChat.build/Objects-normal/arm64/SettingsView.o",
+    "llvm-bc" : "/Users/jflinn/projects/residuum/mac/build/Build/Intermediates.noindex/ResiduumChat.build/Release/ResiduumChat.build/Objects-normal/arm64/SettingsView.bc",
+    "object" : "/Users/jflinn/projects/residuum/mac/build/Build/Intermediates.noindex/ResiduumChat.build/Release/ResiduumChat.build/Objects-normal/arm64/SettingsView.o"
+  },
+  "/Users/jflinn/projects/residuum/mac/Residuum/Views/Style.swift" : {
+    "index-unit-output-path" : "/ResiduumChat.build/Release/ResiduumChat.build/Objects-normal/arm64/Style.o",
+    "llvm-bc" : "/Users/jflinn/projects/residuum/mac/build/Build/Intermediates.noindex/ResiduumChat.build/Release/ResiduumChat.build/Objects-normal/arm64/Style.bc",
+    "object" : "/Users/jflinn/projects/residuum/mac/build/Build/Intermediates.noindex/ResiduumChat.build/Release/ResiduumChat.build/Objects-normal/arm64/Style.o"
+  },
+  "/Users/jflinn/projects/residuum/mac/Residuum/Views/TabBar.swift" : {
+    "index-unit-output-path" : "/ResiduumChat.build/Release/ResiduumChat.build/Objects-normal/arm64/TabBar.o",
+    "llvm-bc" : "/Users/jflinn/projects/residuum/mac/build/Build/Intermediates.noindex/ResiduumChat.build/Release/ResiduumChat.build/Objects-normal/arm64/TabBar.bc",
+    "object" : "/Users/jflinn/projects/residuum/mac/build/Build/Intermediates.noindex/ResiduumChat.build/Release/ResiduumChat.build/Objects-normal/arm64/TabBar.o"
+  },
+  "/Users/jflinn/projects/residuum/mac/Residuum/Views/ThinkingIndicator.swift" : {
+    "index-unit-output-path" : "/ResiduumChat.build/Release/ResiduumChat.build/Objects-normal/arm64/ThinkingIndicator.o",
+    "llvm-bc" : "/Users/jflinn/projects/residuum/mac/build/Build/Intermediates.noindex/ResiduumChat.build/Release/ResiduumChat.build/Objects-normal/arm64/ThinkingIndicator.bc",
+    "object" : "/Users/jflinn/projects/residuum/mac/build/Build/Intermediates.noindex/ResiduumChat.build/Release/ResiduumChat.build/Objects-normal/arm64/ThinkingIndicator.o"
+  },
+  "/Users/jflinn/projects/residuum/mac/Residuum/Views/ToolGroup.swift" : {
+    "index-unit-output-path" : "/ResiduumChat.build/Release/ResiduumChat.build/Objects-normal/arm64/ToolGroup.o",
+    "llvm-bc" : "/Users/jflinn/projects/residuum/mac/build/Build/Intermediates.noindex/ResiduumChat.build/Release/ResiduumChat.build/Objects-normal/arm64/ToolGroup.bc",
+    "object" : "/Users/jflinn/projects/residuum/mac/build/Build/Intermediates.noindex/ResiduumChat.build/Release/ResiduumChat.build/Objects-normal/arm64/ToolGroup.o"
+  },
+  "/Users/jflinn/projects/residuum/mac/build/Build/Intermediates.noindex/ResiduumChat.build/Release/ResiduumChat.build/DerivedSources/GeneratedAssetSymbols.swift" : {
+    "index-unit-output-path" : "/ResiduumChat.build/Release/ResiduumChat.build/Objects-normal/arm64/GeneratedAssetSymbols.o",
+    "llvm-bc" : "/Users/jflinn/projects/residuum/mac/build/Build/Intermediates.noindex/ResiduumChat.build/Release/ResiduumChat.build/Objects-normal/arm64/GeneratedAssetSymbols.bc",
+    "object" : "/Users/jflinn/projects/residuum/mac/build/Build/Intermediates.noindex/ResiduumChat.build/Release/ResiduumChat.build/Objects-normal/arm64/GeneratedAssetSymbols.o"
+  }
+}

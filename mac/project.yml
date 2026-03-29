@@ -1,4 +1,4 @@
-name: Residuum
+name: ResiduumChat
 options:
   bundleIdPrefix: com.grizzly-endeavors
   deploymentTarget:
@@ -7,7 +7,7 @@ options:
   createIntermediateGroups: true
 
 targets:
-  Residuum:
+  ResiduumChat:
     type: application
     platform: macOS
     sources:
@@ -17,7 +17,8 @@ targets:
         buildPhase: resources
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.grizzly-endeavors.residuum-mac
+        PRODUCT_BUNDLE_IDENTIFIER: com.grizzly-endeavors.residuum-chat
+        PRODUCT_NAME: "Residuum Chat"
         MARKETING_VERSION: 1.0.0
         CURRENT_PROJECT_VERSION: 1
         ENABLE_APP_SANDBOX: NO
@@ -25,13 +26,13 @@ targets:
         SWIFT_VERSION: "5.9"
     preBuildScripts: []
 
-  ResiduumTests:
+  ResiduumChatTests:
     type: bundle.unit-test
     platform: macOS
     sources:
       - path: ResiduumTests
     dependencies:
-      - target: Residuum
+      - target: ResiduumChat
     settings:
       base:
         SWIFT_VERSION: "5.9"

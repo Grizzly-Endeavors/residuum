@@ -1,0 +1,544 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 77;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		01BCD6AD87CA5AA4C4334FAC /* AgentRegistryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 45C32C874812C49E181B02DC /* AgentRegistryTests.swift */; };
+		01E1DAE0A41D52D6BF3F29CF /* Message.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2C3210127BCE6365B097B63B /* Message.swift */; };
+		1334B67C6B8D2218072C61A4 /* ToolGroup.swift in Sources */ = {isa = PBXBuildFile; fileRef = 46D89E61521A713B0635C84F /* ToolGroup.swift */; };
+		21249DA17E1285E9E1DB3596 /* ProtocolTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7030721A5F45AB079D28631D /* ProtocolTests.swift */; };
+		27264CFFBECB209B1AA8B4F3 /* Literata-LightItalic.ttf in Resources */ = {isa = PBXBuildFile; fileRef = B802EBF7C25CBCA02E84086C /* Literata-LightItalic.ttf */; };
+		2D9DCB2A45A4B2173BEE24FF /* ThinkingIndicator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 12C6CDF2B2255A7CC1485305 /* ThinkingIndicator.swift */; };
+		4E1C2554DD42B0D7BDA29A22 /* ChatView.swift in Sources */ = {isa = PBXBuildFile; fileRef = EBB5ACF50BA8D0E2905FBC98 /* ChatView.swift */; };
+		6B98649B887255D58E893763 /* AgentRegistry.swift in Sources */ = {isa = PBXBuildFile; fileRef = 198E5D123A71076F69BCC764 /* AgentRegistry.swift */; };
+		7BBD6868742F7CAD1F97E46C /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9491041429FFA0B66EA43DCE /* SettingsView.swift */; };
+		7BC6C4A223B7F3DE5C34A6CA /* TabBar.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9F7B942CB5709BCBE5D0B236 /* TabBar.swift */; };
+		7FFEE1F239C6FAAED9CA9712 /* JetBrainsMono-Regular.ttf in Resources */ = {isa = PBXBuildFile; fileRef = D46D38F892DA6B3F65708F10 /* JetBrainsMono-Regular.ttf */; };
+		843CA52883140135AA9AE5A4 /* PopoverView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 259162ABC7570E1D53C98020 /* PopoverView.swift */; };
+		8482D4FB00FB7BA1A26B67EF /* AgentStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = D5727D076071471D7A090771 /* AgentStore.swift */; };
+		997C87B27EDAD4D400486CE3 /* MessageRow.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8DE89DA040ED84063735BAF0 /* MessageRow.swift */; };
+		9DAA0F1E73A7CDF445C07477 /* Style.swift in Sources */ = {isa = PBXBuildFile; fileRef = E7D2CA7F696E516FA64EE0CE /* Style.swift */; };
+		A83257E5BE148B9DC3C888CE /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = C2EDD883BA514256701E56D7 /* AppDelegate.swift */; };
+		A8A582F0E6624B04E7F790E7 /* Protocol.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8161533C6A9C8011C32B31DF /* Protocol.swift */; };
+		ADA1ED05E4368169FCA4DE34 /* Cinzel-Regular.ttf in Resources */ = {isa = PBXBuildFile; fileRef = C0E72B706AEE443119435344 /* Cinzel-Regular.ttf */; };
+		BCD48F4B6471E839309C5B0D /* Cinzel-SemiBold.ttf in Resources */ = {isa = PBXBuildFile; fileRef = 7D14FDE086E6487ED1337C3A /* Cinzel-SemiBold.ttf */; };
+		BD6B18A7E1F04D4EDBC3D963 /* InputBar.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9C5670F08A1555FE5B88EDF6 /* InputBar.swift */; };
+		CEA4765FD3A56C1441F4DDF7 /* ResiduumConnection.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8E408B44F6D4DA0180A62A03 /* ResiduumConnection.swift */; };
+		DF1F18B39B8ED18A1DE4E120 /* AgentTab.swift in Sources */ = {isa = PBXBuildFile; fileRef = E58B01F3E0BE239F48838106 /* AgentTab.swift */; };
+		EEFA9B2038D70CAD9CB83F6B /* ResiduumApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = DA984788C92D69D27C580FA6 /* ResiduumApp.swift */; };
+		F6770E0606E5AC0B231669CB /* Literata-Light.ttf in Resources */ = {isa = PBXBuildFile; fileRef = EE2637578305AA4D18BC97A5 /* Literata-Light.ttf */; };
+		F855BFF8723AD1D2A13A2349 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 1E5C714409FAF096C7A303CC /* Assets.xcassets */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		97BDA3E6861971D5C48AF11A /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 30D3FF162F1602950F93087D /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = CA040690E53AC4DC6DC2BEC5;
+			remoteInfo = ResiduumChat;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXFileReference section */
+		12C6CDF2B2255A7CC1485305 /* ThinkingIndicator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ThinkingIndicator.swift; sourceTree = "<group>"; };
+		198E5D123A71076F69BCC764 /* AgentRegistry.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentRegistry.swift; sourceTree = "<group>"; };
+		1E5C714409FAF096C7A303CC /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		259162ABC7570E1D53C98020 /* PopoverView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PopoverView.swift; sourceTree = "<group>"; };
+		2C3210127BCE6365B097B63B /* Message.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Message.swift; sourceTree = "<group>"; };
+		45C32C874812C49E181B02DC /* AgentRegistryTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentRegistryTests.swift; sourceTree = "<group>"; };
+		46D89E61521A713B0635C84F /* ToolGroup.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ToolGroup.swift; sourceTree = "<group>"; };
+		6B87D3031B744732F705ADC9 /* ResiduumChat.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = ResiduumChat.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		7030721A5F45AB079D28631D /* ProtocolTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProtocolTests.swift; sourceTree = "<group>"; };
+		7D14FDE086E6487ED1337C3A /* Cinzel-SemiBold.ttf */ = {isa = PBXFileReference; lastKnownFileType = file; path = "Cinzel-SemiBold.ttf"; sourceTree = "<group>"; };
+		80F974EBE88183BA380E5997 /* ResiduumChatTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = ResiduumChatTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		8161533C6A9C8011C32B31DF /* Protocol.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Protocol.swift; sourceTree = "<group>"; };
+		8DE89DA040ED84063735BAF0 /* MessageRow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MessageRow.swift; sourceTree = "<group>"; };
+		8E408B44F6D4DA0180A62A03 /* ResiduumConnection.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ResiduumConnection.swift; sourceTree = "<group>"; };
+		9491041429FFA0B66EA43DCE /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
+		9C5670F08A1555FE5B88EDF6 /* InputBar.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InputBar.swift; sourceTree = "<group>"; };
+		9F7B942CB5709BCBE5D0B236 /* TabBar.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TabBar.swift; sourceTree = "<group>"; };
+		B2E2D6EF5267242357380495 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
+		B802EBF7C25CBCA02E84086C /* Literata-LightItalic.ttf */ = {isa = PBXFileReference; lastKnownFileType = file; path = "Literata-LightItalic.ttf"; sourceTree = "<group>"; };
+		C0E72B706AEE443119435344 /* Cinzel-Regular.ttf */ = {isa = PBXFileReference; lastKnownFileType = file; path = "Cinzel-Regular.ttf"; sourceTree = "<group>"; };
+		C2EDD883BA514256701E56D7 /* AppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppDelegate.swift; sourceTree = "<group>"; };
+		D46D38F892DA6B3F65708F10 /* JetBrainsMono-Regular.ttf */ = {isa = PBXFileReference; lastKnownFileType = file; path = "JetBrainsMono-Regular.ttf"; sourceTree = "<group>"; };
+		D5727D076071471D7A090771 /* AgentStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentStore.swift; sourceTree = "<group>"; };
+		DA984788C92D69D27C580FA6 /* ResiduumApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ResiduumApp.swift; sourceTree = "<group>"; };
+		E58B01F3E0BE239F48838106 /* AgentTab.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentTab.swift; sourceTree = "<group>"; };
+		E7D2CA7F696E516FA64EE0CE /* Style.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Style.swift; sourceTree = "<group>"; };
+		EBB5ACF50BA8D0E2905FBC98 /* ChatView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatView.swift; sourceTree = "<group>"; };
+		EE2637578305AA4D18BC97A5 /* Literata-Light.ttf */ = {isa = PBXFileReference; lastKnownFileType = file; path = "Literata-Light.ttf"; sourceTree = "<group>"; };
+/* End PBXFileReference section */
+
+/* Begin PBXGroup section */
+		0B671790170198D54481FF2C /* Residuum */ = {
+			isa = PBXGroup;
+			children = (
+				B2E2D6EF5267242357380495 /* Info.plist */,
+				24E5B66A433F32E480A1703E /* Agents */,
+				E533AB9DCF101D9E76785515 /* App */,
+				AED3EDC886C95ADD01490F27 /* Connection */,
+				3CE6E396E617F4CA27011C31 /* Resources */,
+				6BE3250E873577DAA3F099D0 /* Views */,
+			);
+			path = Residuum;
+			sourceTree = "<group>";
+		};
+		1818101FF699C24FEF654BBF /* Fonts */ = {
+			isa = PBXGroup;
+			children = (
+				C0E72B706AEE443119435344 /* Cinzel-Regular.ttf */,
+				7D14FDE086E6487ED1337C3A /* Cinzel-SemiBold.ttf */,
+				D46D38F892DA6B3F65708F10 /* JetBrainsMono-Regular.ttf */,
+				EE2637578305AA4D18BC97A5 /* Literata-Light.ttf */,
+				B802EBF7C25CBCA02E84086C /* Literata-LightItalic.ttf */,
+			);
+			path = Fonts;
+			sourceTree = "<group>";
+		};
+		24E5B66A433F32E480A1703E /* Agents */ = {
+			isa = PBXGroup;
+			children = (
+				198E5D123A71076F69BCC764 /* AgentRegistry.swift */,
+				D5727D076071471D7A090771 /* AgentStore.swift */,
+				E58B01F3E0BE239F48838106 /* AgentTab.swift */,
+				2C3210127BCE6365B097B63B /* Message.swift */,
+			);
+			path = Agents;
+			sourceTree = "<group>";
+		};
+		32C0E83767C46EF17A73C2E3 /* ResiduumTests */ = {
+			isa = PBXGroup;
+			children = (
+				45C32C874812C49E181B02DC /* AgentRegistryTests.swift */,
+				7030721A5F45AB079D28631D /* ProtocolTests.swift */,
+			);
+			path = ResiduumTests;
+			sourceTree = "<group>";
+		};
+		3CE6E396E617F4CA27011C31 /* Resources */ = {
+			isa = PBXGroup;
+			children = (
+				1E5C714409FAF096C7A303CC /* Assets.xcassets */,
+				1818101FF699C24FEF654BBF /* Fonts */,
+			);
+			path = Resources;
+			sourceTree = "<group>";
+		};
+		6BE3250E873577DAA3F099D0 /* Views */ = {
+			isa = PBXGroup;
+			children = (
+				EBB5ACF50BA8D0E2905FBC98 /* ChatView.swift */,
+				9C5670F08A1555FE5B88EDF6 /* InputBar.swift */,
+				8DE89DA040ED84063735BAF0 /* MessageRow.swift */,
+				259162ABC7570E1D53C98020 /* PopoverView.swift */,
+				9491041429FFA0B66EA43DCE /* SettingsView.swift */,
+				E7D2CA7F696E516FA64EE0CE /* Style.swift */,
+				9F7B942CB5709BCBE5D0B236 /* TabBar.swift */,
+				12C6CDF2B2255A7CC1485305 /* ThinkingIndicator.swift */,
+				46D89E61521A713B0635C84F /* ToolGroup.swift */,
+			);
+			path = Views;
+			sourceTree = "<group>";
+		};
+		95E609013CD761EF701F68F8 = {
+			isa = PBXGroup;
+			children = (
+				0B671790170198D54481FF2C /* Residuum */,
+				32C0E83767C46EF17A73C2E3 /* ResiduumTests */,
+				BD608CE6174ACE366C6A545C /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		AED3EDC886C95ADD01490F27 /* Connection */ = {
+			isa = PBXGroup;
+			children = (
+				8161533C6A9C8011C32B31DF /* Protocol.swift */,
+				8E408B44F6D4DA0180A62A03 /* ResiduumConnection.swift */,
+			);
+			path = Connection;
+			sourceTree = "<group>";
+		};
+		BD608CE6174ACE366C6A545C /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				6B87D3031B744732F705ADC9 /* ResiduumChat.app */,
+				80F974EBE88183BA380E5997 /* ResiduumChatTests.xctest */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+		E533AB9DCF101D9E76785515 /* App */ = {
+			isa = PBXGroup;
+			children = (
+				C2EDD883BA514256701E56D7 /* AppDelegate.swift */,
+				DA984788C92D69D27C580FA6 /* ResiduumApp.swift */,
+			);
+			path = App;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		94C773AA549054CB98DA6A78 /* ResiduumChatTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 33C694DEAB7EE7E2779D4C48 /* Build configuration list for PBXNativeTarget "ResiduumChatTests" */;
+			buildPhases = (
+				8BA2C687CD8314A6BAA3F02E /* Sources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				38FF15C5789E5DE611E513A3 /* PBXTargetDependency */,
+			);
+			name = ResiduumChatTests;
+			packageProductDependencies = (
+			);
+			productName = ResiduumChatTests;
+			productReference = 80F974EBE88183BA380E5997 /* ResiduumChatTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
+		CA040690E53AC4DC6DC2BEC5 /* ResiduumChat */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 62BE86552EA5E99D2770F288 /* Build configuration list for PBXNativeTarget "ResiduumChat" */;
+			buildPhases = (
+				310EB647E6501D6190FFC274 /* Sources */,
+				F05217A1DBF41BB37C5AF0EE /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = ResiduumChat;
+			packageProductDependencies = (
+			);
+			productName = ResiduumChat;
+			productReference = 6B87D3031B744732F705ADC9 /* ResiduumChat.app */;
+			productType = "com.apple.product-type.application";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		30D3FF162F1602950F93087D /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = YES;
+				LastUpgradeCheck = 2600;
+				TargetAttributes = {
+				};
+			};
+			buildConfigurationList = 66CDB2603350CC803B65AF47 /* Build configuration list for PBXProject "ResiduumChat" */;
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				Base,
+				en,
+			);
+			mainGroup = 95E609013CD761EF701F68F8;
+			minimizedProjectReferenceProxies = 1;
+			preferredProjectObjectVersion = 77;
+			productRefGroup = BD608CE6174ACE366C6A545C /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				CA040690E53AC4DC6DC2BEC5 /* ResiduumChat */,
+				94C773AA549054CB98DA6A78 /* ResiduumChatTests */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		F05217A1DBF41BB37C5AF0EE /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				F855BFF8723AD1D2A13A2349 /* Assets.xcassets in Resources */,
+				ADA1ED05E4368169FCA4DE34 /* Cinzel-Regular.ttf in Resources */,
+				BCD48F4B6471E839309C5B0D /* Cinzel-SemiBold.ttf in Resources */,
+				7FFEE1F239C6FAAED9CA9712 /* JetBrainsMono-Regular.ttf in Resources */,
+				F6770E0606E5AC0B231669CB /* Literata-Light.ttf in Resources */,
+				27264CFFBECB209B1AA8B4F3 /* Literata-LightItalic.ttf in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		310EB647E6501D6190FFC274 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				6B98649B887255D58E893763 /* AgentRegistry.swift in Sources */,
+				8482D4FB00FB7BA1A26B67EF /* AgentStore.swift in Sources */,
+				DF1F18B39B8ED18A1DE4E120 /* AgentTab.swift in Sources */,
+				A83257E5BE148B9DC3C888CE /* AppDelegate.swift in Sources */,
+				4E1C2554DD42B0D7BDA29A22 /* ChatView.swift in Sources */,
+				BD6B18A7E1F04D4EDBC3D963 /* InputBar.swift in Sources */,
+				01E1DAE0A41D52D6BF3F29CF /* Message.swift in Sources */,
+				997C87B27EDAD4D400486CE3 /* MessageRow.swift in Sources */,
+				843CA52883140135AA9AE5A4 /* PopoverView.swift in Sources */,
+				A8A582F0E6624B04E7F790E7 /* Protocol.swift in Sources */,
+				EEFA9B2038D70CAD9CB83F6B /* ResiduumApp.swift in Sources */,
+				CEA4765FD3A56C1441F4DDF7 /* ResiduumConnection.swift in Sources */,
+				7BBD6868742F7CAD1F97E46C /* SettingsView.swift in Sources */,
+				9DAA0F1E73A7CDF445C07477 /* Style.swift in Sources */,
+				7BC6C4A223B7F3DE5C34A6CA /* TabBar.swift in Sources */,
+				2D9DCB2A45A4B2173BEE24FF /* ThinkingIndicator.swift in Sources */,
+				1334B67C6B8D2218072C61A4 /* ToolGroup.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		8BA2C687CD8314A6BAA3F02E /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				01BCD6AD87CA5AA4C4334FAC /* AgentRegistryTests.swift in Sources */,
+				21249DA17E1285E9E1DB3596 /* ProtocolTests.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		38FF15C5789E5DE611E513A3 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = CA040690E53AC4DC6DC2BEC5 /* ResiduumChat */;
+			targetProxy = 97BDA3E6861971D5C48AF11A /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
+/* Begin XCBuildConfiguration section */
+		38B559739F0D033581A51D15 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				COMBINE_HIDPI_IMAGES = YES;
+				CURRENT_PROJECT_VERSION = 1;
+				ENABLE_APP_SANDBOX = NO;
+				INFOPLIST_FILE = Residuum/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				MARKETING_VERSION = 1.0.0;
+				PRODUCT_BUNDLE_IDENTIFIER = "com.grizzly-endeavors.residuum-chat";
+				PRODUCT_NAME = "Residuum Chat";
+				SDKROOT = macosx;
+				SWIFT_VERSION = 5.9;
+			};
+			name = Release;
+		};
+		3FB6B2E5314905DACA6A90CA /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"$(inherited)",
+					"DEBUG=1",
+				);
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				MTL_FAST_MATH = YES;
+				ONLY_ACTIVE_ARCH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = macosx;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_VERSION = 5.0;
+			};
+			name = Debug;
+		};
+		A82585CCB300C67E0B8C19D3 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				COMBINE_HIDPI_IMAGES = YES;
+				CURRENT_PROJECT_VERSION = 1;
+				ENABLE_APP_SANDBOX = NO;
+				INFOPLIST_FILE = Residuum/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				MARKETING_VERSION = 1.0.0;
+				PRODUCT_BUNDLE_IDENTIFIER = "com.grizzly-endeavors.residuum-chat";
+				PRODUCT_NAME = "Residuum Chat";
+				SDKROOT = macosx;
+				SWIFT_VERSION = 5.9;
+			};
+			name = Debug;
+		};
+		CE7CEFACFE1E0E3DCE10CD40 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				MTL_FAST_MATH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = macosx;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_OPTIMIZATION_LEVEL = "-O";
+				SWIFT_VERSION = 5.0;
+			};
+			name = Release;
+		};
+		D02B4FFE68CE99942257AC51 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				COMBINE_HIDPI_IMAGES = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+					"@loader_path/../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = "com.grizzly-endeavors.ResiduumChatTests";
+				SDKROOT = macosx;
+				SWIFT_VERSION = 5.9;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/ResiduumChat.app/Contents/MacOS/ResiduumChat";
+			};
+			name = Release;
+		};
+		EE6E14412A85AA92E2535F7C /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				COMBINE_HIDPI_IMAGES = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+					"@loader_path/../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = "com.grizzly-endeavors.ResiduumChatTests";
+				SDKROOT = macosx;
+				SWIFT_VERSION = 5.9;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/ResiduumChat.app/Contents/MacOS/ResiduumChat";
+			};
+			name = Debug;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		33C694DEAB7EE7E2779D4C48 /* Build configuration list for PBXNativeTarget "ResiduumChatTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				EE6E14412A85AA92E2535F7C /* Debug */,
+				D02B4FFE68CE99942257AC51 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		62BE86552EA5E99D2770F288 /* Build configuration list for PBXNativeTarget "ResiduumChat" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				A82585CCB300C67E0B8C19D3 /* Debug */,
+				38B559739F0D033581A51D15 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		66CDB2603350CC803B65AF47 /* Build configuration list for PBXProject "ResiduumChat" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				3FB6B2E5314905DACA6A90CA /* Debug */,
+				CE7CEFACFE1E0E3DCE10CD40 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+/* End XCConfigurationList section */
+	};
+	rootObject = 30D3FF162F1602950F93087D /* Project object */;
+}

@@ -3,11 +3,11 @@
 <plist version="1.0">
 <dict>
     <key>CFBundleName</key>
-    <string>Residuum</string>
+    <string>Residuum Chat</string>
     <key>CFBundleDisplayName</key>
-    <string>Residuum</string>
+    <string>Residuum Chat</string>
     <key>CFBundleIdentifier</key>
-    <string>com.grizzly-endeavors.residuum-mac</string>
+    <string>com.grizzly-endeavors.residuum-chat</string>
     <key>CFBundleVersion</key>
     <string>1</string>
     <key>CFBundleShortVersionString</key>
