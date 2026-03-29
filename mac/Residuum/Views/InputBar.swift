@@ -187,19 +187,22 @@ struct InputBar: View {
             )
 
         case "/observe":
-            store.selectedTab?.connection.send(.serverCommand(name: "observe", args: nil))
+            store.sendToSelectedTab(.serverCommand(name: "observe", args: nil))
 
         case "/reflect":
-            store.selectedTab?.connection.send(.serverCommand(name: "reflect", args: nil))
+            store.sendToSelectedTab(.serverCommand(name: "reflect", args: nil))
 
         case "/context":
-            store.selectedTab?.connection.send(.serverCommand(name: "context", args: nil))
+            store.sendToSelectedTab(.serverCommand(name: "context", args: nil))
 
         case "/reload":
-            store.selectedTab?.connection.send(.reload)
+            store.sendToSelectedTab(.reload)
 
         default:
-            break
+            // /inbox is handled via sendMessage (hasArgs path never reaches here).
+            // Any other unrecognised command name is a bug — a new command was added
+            // to COMMAND_REGISTRY without a corresponding case.
+            assertionFailure("Unhandled slash command: \(cmd.name)")
         }
     }
 
@@ -210,11 +213,17 @@ struct InputBar: View {
         guard !content.isEmpty else { return }
 
         // /inbox <body> — send as InboxAdd, not a regular message
-        if content.hasPrefix("/inbox ") {
-            let body = String(content.dropFirst("/inbox ".count))
-                .trimmingCharacters(in: .whitespacesAndNewlines)
+        if content.hasPrefix("/inbox") {
+            // Extract body whether user typed "/inbox msg" (via menu) or "/inbox" (manual)
+            let body: String
+            if content.hasPrefix("/inbox ") {
+                body = String(content.dropFirst("/inbox ".count))
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+            } else {
+                body = ""
+            }
             guard !body.isEmpty else { return }
-            store.selectedTab?.connection.send(.inboxAdd(body: body))
+            store.sendToSelectedTab(.inboxAdd(body: body))
             text = ""
             attachedImages = []
             return

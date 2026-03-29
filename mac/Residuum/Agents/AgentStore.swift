@@ -73,6 +73,12 @@ final class AgentStore {
         tabs[idx].messages.append(ChatMessage(role: .systemBlock, content: content))
     }
 
+    /// Send a ClientMessage to the currently selected tab's connection.
+    func sendToSelectedTab(_ message: ClientMessage) {
+        guard let idx = selectedTabIndex else { return }
+        tabs[idx].connection.send(message)
+    }
+
     /// Update the host and reconnect all agent connections.
     func reconnectAll(host newHost: String) {
         host = newHost
