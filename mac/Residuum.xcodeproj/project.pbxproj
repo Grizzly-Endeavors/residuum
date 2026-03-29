@@ -7,12 +7,17 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		07227F57D2B3CA7D72F203B2 /* AgentRegistry.swift in Sources */ = {isa = PBXBuildFile; fileRef = C66C8A462F2AB43A087C8F61 /* AgentRegistry.swift */; };
 		1B65214D07582353023417DB /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2844EF72D43E9ECB9737C89C /* AppDelegate.swift */; };
 		2DA193F4339A3D0F77120B9D /* ResiduumApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 68AA44737EB020838B730AF7 /* ResiduumApp.swift */; };
-		3A1B2C3D4E5F6A7B8C9D0E1F /* AgentRegistry.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3A1B2C3D4E5F6A7B8C9D0E2F /* AgentRegistry.swift */; };
-		3A1B2C3D4E5F6A7B8C9D0E3F /* AgentRegistryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3A1B2C3D4E5F6A7B8C9D0E4F /* AgentRegistryTests.swift */; };
+		409390F7DCDC48E01FD4DD6D /* AgentStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = A461CBC2F33DC2820EB500D1 /* AgentStore.swift */; };
 		65E62172099E515000148BC5 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 5F065348BA40F53FA359FA1F /* Assets.xcassets */; };
+		693759EE80D00453F52B9296 /* ResiduumConnection.swift in Sources */ = {isa = PBXBuildFile; fileRef = 266852ADCA8EA93040637586 /* ResiduumConnection.swift */; };
+		848245E21B40BDDA2FCB4ACF /* Message.swift in Sources */ = {isa = PBXBuildFile; fileRef = A3E228589A7FD1FE0D2B4058 /* Message.swift */; };
+		A0EE4FF8D09228F0E2322FFA /* AgentTab.swift in Sources */ = {isa = PBXBuildFile; fileRef = 08CFDCA30B1C655D75C37AE3 /* AgentTab.swift */; };
 		A10687474CA25C6B681511C1 /* ProtocolTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = FC84971571E3759D397D192B /* ProtocolTests.swift */; };
+		A757D77CF17982F5DC47EA50 /* PopoverView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9B4114421F3434D89FAF5CC8 /* PopoverView.swift */; };
+		B40C97317E76F3122F7603F9 /* AgentRegistryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 421C7D244DC80E9349BF618B /* AgentRegistryTests.swift */; };
 		BB1EA9EB162846F1DD444645 /* Protocol.swift in Sources */ = {isa = PBXBuildFile; fileRef = 766FA7137D8651AABF3B0DD2 /* Protocol.swift */; };
 /* End PBXBuildFile section */
 
@@ -27,19 +32,35 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
+		08CFDCA30B1C655D75C37AE3 /* AgentTab.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentTab.swift; sourceTree = "<group>"; };
 		1BC5925CE34C9891AAD6FB97 /* ResiduumTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = ResiduumTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		266852ADCA8EA93040637586 /* ResiduumConnection.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ResiduumConnection.swift; sourceTree = "<group>"; };
 		2844EF72D43E9ECB9737C89C /* AppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppDelegate.swift; sourceTree = "<group>"; };
+		421C7D244DC80E9349BF618B /* AgentRegistryTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentRegistryTests.swift; sourceTree = "<group>"; };
 		4501F92FA46CC987C16F5CEE /* Residuum.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Residuum.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		5F065348BA40F53FA359FA1F /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		68AA44737EB020838B730AF7 /* ResiduumApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ResiduumApp.swift; sourceTree = "<group>"; };
-		3A1B2C3D4E5F6A7B8C9D0E2F /* AgentRegistry.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentRegistry.swift; sourceTree = "<group>"; };
-		3A1B2C3D4E5F6A7B8C9D0E4F /* AgentRegistryTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentRegistryTests.swift; sourceTree = "<group>"; };
 		766FA7137D8651AABF3B0DD2 /* Protocol.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Protocol.swift; sourceTree = "<group>"; };
+		9B4114421F3434D89FAF5CC8 /* PopoverView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PopoverView.swift; sourceTree = "<group>"; };
+		A3E228589A7FD1FE0D2B4058 /* Message.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Message.swift; sourceTree = "<group>"; };
+		A461CBC2F33DC2820EB500D1 /* AgentStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentStore.swift; sourceTree = "<group>"; };
 		BD0F4BBDF133F472F1DE7B4F /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
+		C66C8A462F2AB43A087C8F61 /* AgentRegistry.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentRegistry.swift; sourceTree = "<group>"; };
 		FC84971571E3759D397D192B /* ProtocolTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProtocolTests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXGroup section */
+		01FCAD8DD478CB5F6D5E5493 /* Agents */ = {
+			isa = PBXGroup;
+			children = (
+				C66C8A462F2AB43A087C8F61 /* AgentRegistry.swift */,
+				A461CBC2F33DC2820EB500D1 /* AgentStore.swift */,
+				08CFDCA30B1C655D75C37AE3 /* AgentTab.swift */,
+				A3E228589A7FD1FE0D2B4058 /* Message.swift */,
+			);
+			path = Agents;
+			sourceTree = "<group>";
+		};
 		08C7A01E09A5E2D076E6C489 /* Products */ = {
 			isa = PBXGroup;
 			children = (
@@ -61,23 +82,16 @@
 			isa = PBXGroup;
 			children = (
 				766FA7137D8651AABF3B0DD2 /* Protocol.swift */,
+				266852ADCA8EA93040637586 /* ResiduumConnection.swift */,
 			);
 			path = Connection;
-			sourceTree = "<group>";
-		};
-		3A1B2C3D4E5F6A7B8C9D0E5F /* Agents */ = {
-			isa = PBXGroup;
-			children = (
-				3A1B2C3D4E5F6A7B8C9D0E2F /* AgentRegistry.swift */,
-			);
-			path = Agents;
 			sourceTree = "<group>";
 		};
 		47F699344B2B677E0A1F5FD2 /* ResiduumTests */ = {
 			isa = PBXGroup;
 			children = (
+				421C7D244DC80E9349BF618B /* AgentRegistryTests.swift */,
 				FC84971571E3759D397D192B /* ProtocolTests.swift */,
-				3A1B2C3D4E5F6A7B8C9D0E4F /* AgentRegistryTests.swift */,
 			);
 			path = ResiduumTests;
 			sourceTree = "<group>";
@@ -86,10 +100,11 @@
 			isa = PBXGroup;
 			children = (
 				BD0F4BBDF133F472F1DE7B4F /* Info.plist */,
+				01FCAD8DD478CB5F6D5E5493 /* Agents */,
 				CE9ECCA35117C108D3372363 /* App */,
-				3A1B2C3D4E5F6A7B8C9D0E5F /* Agents */,
 				352698012770111CA483031A /* Connection */,
 				1A82258B6B1CD1DB4C337F88 /* Resources */,
+				E014B5D04BDB3A822FB9624E /* Views */,
 			);
 			path = Residuum;
 			sourceTree = "<group>";
@@ -110,6 +125,14 @@
 				68AA44737EB020838B730AF7 /* ResiduumApp.swift */,
 			);
 			path = App;
+			sourceTree = "<group>";
+		};
+		E014B5D04BDB3A822FB9624E /* Views */ = {
+			isa = PBXGroup;
+			children = (
+				9B4114421F3434D89FAF5CC8 /* PopoverView.swift */,
+			);
+			path = Views;
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
@@ -198,10 +221,15 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				07227F57D2B3CA7D72F203B2 /* AgentRegistry.swift in Sources */,
+				409390F7DCDC48E01FD4DD6D /* AgentStore.swift in Sources */,
+				A0EE4FF8D09228F0E2322FFA /* AgentTab.swift in Sources */,
 				1B65214D07582353023417DB /* AppDelegate.swift in Sources */,
+				848245E21B40BDDA2FCB4ACF /* Message.swift in Sources */,
+				A757D77CF17982F5DC47EA50 /* PopoverView.swift in Sources */,
 				BB1EA9EB162846F1DD444645 /* Protocol.swift in Sources */,
-				3A1B2C3D4E5F6A7B8C9D0E1F /* AgentRegistry.swift in Sources */,
 				2DA193F4339A3D0F77120B9D /* ResiduumApp.swift in Sources */,
+				693759EE80D00453F52B9296 /* ResiduumConnection.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -209,8 +237,8 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				B40C97317E76F3122F7603F9 /* AgentRegistryTests.swift in Sources */,
 				A10687474CA25C6B681511C1 /* ProtocolTests.swift in Sources */,
-				3A1B2C3D4E5F6A7B8C9D0E3F /* AgentRegistryTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
