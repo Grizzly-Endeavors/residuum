@@ -52,6 +52,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     func openExpandedWindow() {
         popover.performClose(nil)
 
+        // Temporarily become a regular app so the window can take focus properly.
+        // Without this, LSUIElement apps freeze on window presentation in macOS 13+.
+        NSApp.setActivationPolicy(.regular)
+
         if let window = expandedWindow {
             window.makeKeyAndOrderFront(nil)
             NSApp.activate(ignoringOtherApps: true)
@@ -62,7 +66,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             .environment(store)
         let controller = NSHostingController(rootView: rootView)
         let window = NSWindow(contentViewController: controller)
-        window.title = "Residuum"
+        window.title = "Residuum Chat"
         window.setContentSize(NSSize(width: 800, height: 600))
         window.styleMask = [.titled, .closable, .resizable, .miniaturizable]
         window.center()
@@ -89,5 +93,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 extension AppDelegate: NSWindowDelegate {
     func windowWillClose(_ notification: Notification) {
         expandedWindow = nil
+        // Return to accessory mode so we disappear from the Dock again.
+        NSApp.setActivationPolicy(.accessory)
     }
 }
