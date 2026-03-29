@@ -121,4 +121,52 @@ final class ProtocolTests: XCTestCase {
             return XCTFail("expected unknown, got \(msg)")
         }
     }
+
+    func testEncodeReload() throws {
+        let msg = ClientMessage.reload
+        let data = try encoder.encode(msg)
+        let json = try JSONSerialization.jsonObject(with: data) as! [String: Any]
+        XCTAssertEqual(json["type"] as? String, "reload")
+    }
+
+    func testEncodeInboxAdd() throws {
+        let msg = ClientMessage.inboxAdd(body: "reminder: meeting at 3pm")
+        let data = try encoder.encode(msg)
+        let json = try JSONSerialization.jsonObject(with: data) as! [String: Any]
+        XCTAssertEqual(json["type"] as? String, "inbox_add")
+        XCTAssertEqual(json["body"] as? String, "reminder: meeting at 3pm")
+    }
+
+    func testDecodeReloading() throws {
+        let json = #"{"type":"reloading"}"#.data(using: .utf8)!
+        let msg = try decoder.decode(ServerMessage.self, from: json)
+        guard case .reloading = msg else {
+            return XCTFail("expected reloading, got \(msg)")
+        }
+    }
+
+    func testDecodeToolCallArguments() throws {
+        let json = #"{"type":"tool_call","id":"tc1","name":"search","arguments":{"q":"test","limit":10}}"#.data(using: .utf8)!
+        let msg = try decoder.decode(ServerMessage.self, from: json)
+        guard case .toolCall(_, _, let args) = msg else {
+            return XCTFail("expected toolCall, got \(msg)")
+        }
+        XCTAssertEqual(args["q"], .string("test"))
+        XCTAssertEqual(args["limit"], .number(10))
+    }
+
+    func testJSONValueBoolDecodedAsBoolNotNumber() throws {
+        let json = #"{"flag":true,"count":1}"#.data(using: .utf8)!
+        let dict = try decoder.decode([String: JSONValue].self, from: json)
+        // true must decode as .bool, not .number(1.0)
+        guard case .bool(let flag) = dict["flag"] else {
+            return XCTFail("true should decode as .bool, got \(String(describing: dict["flag"]))")
+        }
+        XCTAssertTrue(flag)
+        // integer 1 should decode as .number, not .bool
+        guard case .number(let count) = dict["count"] else {
+            return XCTFail("1 should decode as .number, got \(String(describing: dict["count"]))")
+        }
+        XCTAssertEqual(count, 1.0)
+    }
 }

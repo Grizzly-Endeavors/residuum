@@ -73,6 +73,7 @@ enum ServerMessage: Decodable {
     case error(replyTo: String?, message: String)
     case notice(message: String)
     case pong
+    case reloading
     case unknown
 
     private enum CodingKeys: String, CodingKey {
@@ -95,7 +96,7 @@ enum ServerMessage: Decodable {
             self = .toolCall(
                 id: try c.decode(String.self, forKey: .id),
                 name: try c.decode(String.self, forKey: .name),
-                arguments: (try? c.decode([String: JSONValue].self, forKey: .arguments)) ?? [:]
+                arguments: try c.decode([String: JSONValue].self, forKey: .arguments)
             )
         case "tool_result":
             self = .toolResult(
@@ -125,6 +126,8 @@ enum ServerMessage: Decodable {
             self = .notice(message: try c.decode(String.self, forKey: .message))
         case "pong":
             self = .pong
+        case "reloading":
+            self = .reloading
         default:
             self = .unknown
         }
@@ -135,7 +138,7 @@ enum ServerMessage: Decodable {
 
 /// A type-erased JSON value for decoding tool call arguments,
 /// which can be any valid JSON structure.
-enum JSONValue: Decodable, CustomStringConvertible {
+enum JSONValue: Decodable, CustomStringConvertible, Equatable {
     case string(String)
     case number(Double)
     case bool(Bool)
