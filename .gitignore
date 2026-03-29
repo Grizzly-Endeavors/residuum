@@ -11,3 +11,7 @@ web/dist/
 specs/
 audit-results/
 bindings/
+mac/Residuum.xcodeproj/project.xcworkspace/
+mac/Residuum.xcodeproj/xcuserdata/
+mac/*.xcworkspace/
+mac/DerivedData/
