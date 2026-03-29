@@ -21,16 +21,16 @@ struct AgentRegistry {
     /// Load the registry from the standard location.
     /// Returns an empty registry if the file doesn't exist.
     static func load() -> AgentRegistry {
-        guard let url = registryURL(),
-              let contents = try? String(contentsOf: url, encoding: .utf8) else {
+        let url = registryURL()
+        guard let contents = try? String(contentsOf: url, encoding: .utf8) else {
             return AgentRegistry(agents: [])
         }
-        return (try? parse(contents)) ?? AgentRegistry(agents: [])
+        return parse(contents)
     }
 
     /// Parse a TOML string into an `AgentRegistry`.
     /// Only handles the specific format used by Residuum's registry.
-    static func parse(_ toml: String) throws -> AgentRegistry {
+    static func parse(_ toml: String) -> AgentRegistry {
         var agents: [AgentEntry] = []
         var currentName: String?
         var currentPort: UInt16?
@@ -63,9 +63,8 @@ struct AgentRegistry {
     }
 
     /// URL of the registry file: `~/.residuum/agent_registry/registry.toml`.
-    static func registryURL() -> URL? {
-        guard let home = ProcessInfo.processInfo.environment["HOME"] else { return nil }
-        return URL(fileURLWithPath: home)
+    static func registryURL() -> URL {
+        FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(".residuum/agent_registry/registry.toml")
     }
 }
