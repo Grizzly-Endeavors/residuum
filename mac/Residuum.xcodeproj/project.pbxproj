@@ -19,6 +19,7 @@
 		A757D77CF17982F5DC47EA50 /* PopoverView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9B4114421F3434D89FAF5CC8 /* PopoverView.swift */; };
 		B40C97317E76F3122F7603F9 /* AgentRegistryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 421C7D244DC80E9349BF618B /* AgentRegistryTests.swift */; };
 		BB1EA9EB162846F1DD444645 /* Protocol.swift in Sources */ = {isa = PBXBuildFile; fileRef = 766FA7137D8651AABF3B0DD2 /* Protocol.swift */; };
+		E008B26E08B018B220230576 /* Style.swift in Sources */ = {isa = PBXBuildFile; fileRef = 467DD2EB29A718F5B2B85C8B /* Style.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -38,6 +39,7 @@
 		2844EF72D43E9ECB9737C89C /* AppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppDelegate.swift; sourceTree = "<group>"; };
 		421C7D244DC80E9349BF618B /* AgentRegistryTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentRegistryTests.swift; sourceTree = "<group>"; };
 		4501F92FA46CC987C16F5CEE /* Residuum.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Residuum.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		467DD2EB29A718F5B2B85C8B /* Style.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Style.swift; sourceTree = "<group>"; };
 		5F065348BA40F53FA359FA1F /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		68AA44737EB020838B730AF7 /* ResiduumApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ResiduumApp.swift; sourceTree = "<group>"; };
 		766FA7137D8651AABF3B0DD2 /* Protocol.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Protocol.swift; sourceTree = "<group>"; };
@@ -131,6 +133,7 @@
 			isa = PBXGroup;
 			children = (
 				9B4114421F3434D89FAF5CC8 /* PopoverView.swift */,
+				467DD2EB29A718F5B2B85C8B /* Style.swift */,
 			);
 			path = Views;
 			sourceTree = "<group>";
@@ -230,6 +233,7 @@
 				BB1EA9EB162846F1DD444645 /* Protocol.swift in Sources */,
 				2DA193F4339A3D0F77120B9D /* ResiduumApp.swift in Sources */,
 				693759EE80D00453F52B9296 /* ResiduumConnection.swift in Sources */,
+				E008B26E08B018B220230576 /* Style.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
