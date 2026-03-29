@@ -27,6 +27,7 @@
 		B40C97317E76F3122F7603F9 /* AgentRegistryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 421C7D244DC80E9349BF618B /* AgentRegistryTests.swift */; };
 		B59BA39356CD12BF84EA6341 /* Literata-Light.ttf in Resources */ = {isa = PBXBuildFile; fileRef = 8C04367D86857F1D3CC89F97 /* Literata-Light.ttf */; };
 		BB1EA9EB162846F1DD444645 /* Protocol.swift in Sources */ = {isa = PBXBuildFile; fileRef = 766FA7137D8651AABF3B0DD2 /* Protocol.swift */; };
+		D378A5110AF2967B356382B2 /* TabBar.swift in Sources */ = {isa = PBXBuildFile; fileRef = 63F6D2B5ABF8DFF00BCABB43 /* TabBar.swift */; };
 		DC15C3740F4BB3F295F9040E /* MessageRow.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1CA22524BBB4C91B5B0432E4 /* MessageRow.swift */; };
 		E008B26E08B018B220230576 /* Style.swift in Sources */ = {isa = PBXBuildFile; fileRef = 467DD2EB29A718F5B2B85C8B /* Style.swift */; };
 /* End PBXBuildFile section */
@@ -56,6 +57,7 @@
 		467DD2EB29A718F5B2B85C8B /* Style.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Style.swift; sourceTree = "<group>"; };
 		4F7306FD441954B0745C6EBE /* Literata-LightItalic.ttf */ = {isa = PBXFileReference; lastKnownFileType = file; path = "Literata-LightItalic.ttf"; sourceTree = "<group>"; };
 		5F065348BA40F53FA359FA1F /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		63F6D2B5ABF8DFF00BCABB43 /* TabBar.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TabBar.swift; sourceTree = "<group>"; };
 		68AA44737EB020838B730AF7 /* ResiduumApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ResiduumApp.swift; sourceTree = "<group>"; };
 		766FA7137D8651AABF3B0DD2 /* Protocol.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Protocol.swift; sourceTree = "<group>"; };
 		8C04367D86857F1D3CC89F97 /* Literata-Light.ttf */ = {isa = PBXFileReference; lastKnownFileType = file; path = "Literata-Light.ttf"; sourceTree = "<group>"; };
@@ -167,6 +169,7 @@
 				1CA22524BBB4C91B5B0432E4 /* MessageRow.swift */,
 				9B4114421F3434D89FAF5CC8 /* PopoverView.swift */,
 				467DD2EB29A718F5B2B85C8B /* Style.swift */,
+				63F6D2B5ABF8DFF00BCABB43 /* TabBar.swift */,
 				BC5B1C2CE6C1D21D28E970F7 /* ThinkingIndicator.swift */,
 				364ECB876E3BE86D4D58C87E /* ToolGroup.swift */,
 			);
@@ -276,6 +279,7 @@
 				2DA193F4339A3D0F77120B9D /* ResiduumApp.swift in Sources */,
 				693759EE80D00453F52B9296 /* ResiduumConnection.swift in Sources */,
 				E008B26E08B018B220230576 /* Style.swift in Sources */,
+				D378A5110AF2967B356382B2 /* TabBar.swift in Sources */,
 				4500D5A8EF5C5DEBA482C210 /* ThinkingIndicator.swift in Sources */,
 				9BF6EE6FBF4DB479459F4B2D /* ToolGroup.swift in Sources */,
 			);
