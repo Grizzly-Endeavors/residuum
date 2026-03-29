@@ -35,7 +35,7 @@ private struct CommandMenuItem: View {
             Text(command.name)
                 .font(Style.mono(size: 11))
                 .foregroundStyle(isSelected ? Style.blue : Style.textMuted)
-                .frame(width: 90, alignment: .leading)
+                .frame(width: 90, alignment: .leading) // wide enough for all current command names
             Text(command.description)
                 .font(Style.literata(size: 11))
                 .italic()

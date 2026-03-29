@@ -151,7 +151,9 @@ extension ResiduumConnection: URLSessionWebSocketDelegate {
         DispatchQueue.main.async {
             self.retryDelay = 1.0
             self.updateState(.connected)
-            self.send(.setVerbose(enabled: false))  // verbose defaults off (toggled by /verbose command)
+            // TODO: re-sync tab.verboseEnabled on reconnect once InputBar wiring is complete.
+            // For now, verbose always resets to off on reconnect.
+            self.send(.setVerbose(enabled: false))
             self.startPing()
         }
     }
