@@ -18,6 +18,7 @@
 		6789DBE10AC8CE028D2EAA7B /* JetBrainsMono-Regular.ttf in Resources */ = {isa = PBXBuildFile; fileRef = 329C1A99BF1BA06BCEA22458 /* JetBrainsMono-Regular.ttf */; };
 		693759EE80D00453F52B9296 /* ResiduumConnection.swift in Sources */ = {isa = PBXBuildFile; fileRef = 266852ADCA8EA93040637586 /* ResiduumConnection.swift */; };
 		848245E21B40BDDA2FCB4ACF /* Message.swift in Sources */ = {isa = PBXBuildFile; fileRef = A3E228589A7FD1FE0D2B4058 /* Message.swift */; };
+		8A9D918301C71B93B23958BB /* ChatView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 096294945862CA4FC9F0F89A /* ChatView.swift */; };
 		986E7882595930DCE1F5E6CF /* Cinzel-SemiBold.ttf in Resources */ = {isa = PBXBuildFile; fileRef = DC6C2DFB4459F480A62B063D /* Cinzel-SemiBold.ttf */; };
 		9BF6EE6FBF4DB479459F4B2D /* ToolGroup.swift in Sources */ = {isa = PBXBuildFile; fileRef = 364ECB876E3BE86D4D58C87E /* ToolGroup.swift */; };
 		A0EE4FF8D09228F0E2322FFA /* AgentTab.swift in Sources */ = {isa = PBXBuildFile; fileRef = 08CFDCA30B1C655D75C37AE3 /* AgentTab.swift */; };
@@ -42,6 +43,7 @@
 
 /* Begin PBXFileReference section */
 		08CFDCA30B1C655D75C37AE3 /* AgentTab.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentTab.swift; sourceTree = "<group>"; };
+		096294945862CA4FC9F0F89A /* ChatView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatView.swift; sourceTree = "<group>"; };
 		0E4F7F87BF716402C9E98251 /* Cinzel-Regular.ttf */ = {isa = PBXFileReference; lastKnownFileType = file; path = "Cinzel-Regular.ttf"; sourceTree = "<group>"; };
 		1BC5925CE34C9891AAD6FB97 /* ResiduumTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = ResiduumTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		1CA22524BBB4C91B5B0432E4 /* MessageRow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MessageRow.swift; sourceTree = "<group>"; };
@@ -161,6 +163,7 @@
 		E014B5D04BDB3A822FB9624E /* Views */ = {
 			isa = PBXGroup;
 			children = (
+				096294945862CA4FC9F0F89A /* ChatView.swift */,
 				1CA22524BBB4C91B5B0432E4 /* MessageRow.swift */,
 				9B4114421F3434D89FAF5CC8 /* PopoverView.swift */,
 				467DD2EB29A718F5B2B85C8B /* Style.swift */,
@@ -265,6 +268,7 @@
 				409390F7DCDC48E01FD4DD6D /* AgentStore.swift in Sources */,
 				A0EE4FF8D09228F0E2322FFA /* AgentTab.swift in Sources */,
 				1B65214D07582353023417DB /* AppDelegate.swift in Sources */,
+				8A9D918301C71B93B23958BB /* ChatView.swift in Sources */,
 				848245E21B40BDDA2FCB4ACF /* Message.swift in Sources */,
 				DC15C3740F4BB3F295F9040E /* MessageRow.swift in Sources */,
 				A757D77CF17982F5DC47EA50 /* PopoverView.swift in Sources */,
