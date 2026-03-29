@@ -76,6 +76,7 @@ struct SettingsView: View {
                 Spacer()
                 Button("Save") {
                     host = editingHost
+                    store.reconnectAll(host: editingHost)
                     dismiss()
                 }
                 .font(Style.mono(size: 11))

@@ -84,6 +84,7 @@ struct InputBar: View {
     }
 
     private func pickFiles() {
+        assert(Thread.isMainThread, "NSOpenPanel must be presented on the main thread")
         let panel = NSOpenPanel()
         panel.allowsMultipleSelection = true
         panel.canChooseDirectories = false

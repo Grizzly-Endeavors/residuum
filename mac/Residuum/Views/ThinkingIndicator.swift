@@ -3,6 +3,7 @@ import SwiftUI
 /// Animated three-dot indicator shown while the agent is processing.
 struct ThinkingIndicator: View {
     @State private var phase = 0
+    @State private var timer: Timer?
 
     var body: some View {
         HStack(spacing: 4) {
@@ -17,11 +18,15 @@ struct ThinkingIndicator: View {
                 .foregroundStyle(Style.textMuted)
         }
         .onAppear {
-            Timer.scheduledTimer(withTimeInterval: 0.4, repeats: true) { _ in
+            timer = Timer.scheduledTimer(withTimeInterval: 0.4, repeats: true) { _ in
                 withAnimation(.easeInOut(duration: 0.2)) {
                     phase = (phase + 1) % 3
                 }
             }
+        }
+        .onDisappear {
+            timer?.invalidate()
+            timer = nil
         }
     }
 }

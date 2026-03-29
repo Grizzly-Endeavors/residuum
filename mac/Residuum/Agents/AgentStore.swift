@@ -61,6 +61,18 @@ final class AgentStore {
         tabs[idx].connection.connect()
     }
 
+    /// Update the host and reconnect all agent connections.
+    func reconnectAll(host newHost: String) {
+        host = newHost
+        for idx in tabs.indices {
+            tabs[idx].connection.disconnect()
+            let newConn = ResiduumConnection(host: newHost, port: tabs[idx].port)
+            tabs[idx].connection = newConn
+            wireHandlers(tabIndex: idx)
+            tabs[idx].connection.connect()
+        }
+    }
+
     // MARK: - Setup
 
     private func loadAgents() {
