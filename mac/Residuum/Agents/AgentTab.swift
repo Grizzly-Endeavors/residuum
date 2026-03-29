@@ -16,6 +16,9 @@ struct AgentTab: Identifiable {
     var pendingToolCalls: [ToolCallData]
     /// Correlation ID of the in-flight turn, for matching response/error to turn.
     var pendingCorrelationId: String?
+    /// Whether tool calls and results are shown for this agent's feed.
+    /// Toggled by the /verbose command.
+    var verboseEnabled: Bool = false
 
     init(name: String, port: UInt16, connection: ResiduumConnection) {
         self.id = UUID()
