@@ -64,7 +64,11 @@ final class ResiduumConnection: NSObject {
     func send(_ message: ClientMessage) {
         guard state == .connected, let task else { return }
         guard let data = try? JSONEncoder().encode(message) else { return }
-        task.send(.data(data)) { _ in }
+        task.send(.data(data)) { [weak self] error in
+            if error != nil {
+                self?.scheduleReconnect()
+            }
+        }
     }
 
     // MARK: - Private
@@ -120,6 +124,8 @@ final class ResiduumConnection: NSObject {
     }
 
     private func updateState(_ newState: ConnectionState) {
+        // Must be called on the main queue — all callers ensure this via DispatchQueue.main.async.
+        assert(Thread.isMainThread)
         guard state != newState else { return }
         state = newState
         onStateChange?(newState)

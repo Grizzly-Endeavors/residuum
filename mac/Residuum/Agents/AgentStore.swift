@@ -91,12 +91,15 @@ final class AgentStore {
     }
 
     private func wireHandlers(tabIndex: Int) {
+        let tabId = tabs[tabIndex].id
         tabs[tabIndex].connection.onMessage = { [weak self] message in
-            self?.handle(message, tabIndex: tabIndex)
+            guard let self, let idx = self.tabs.firstIndex(where: { $0.id == tabId }) else { return }
+            self.handle(message, tabIndex: idx)
         }
         tabs[tabIndex].connection.onStateChange = { [weak self] _ in
             // Accessing tabs triggers @Observable to notify views of the state change.
-            _ = self?.tabs[tabIndex].connection.state
+            guard let self, let idx = self.tabs.firstIndex(where: { $0.id == tabId }) else { return }
+            _ = self.tabs[idx].connection.state
         }
     }
 
