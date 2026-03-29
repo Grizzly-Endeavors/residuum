@@ -22,7 +22,7 @@ pub(crate) const DEFAULT_GATEWAY_BIND: &str = "127.0.0.1";
 pub(crate) const DEFAULT_GATEWAY_PORT: u16 = 7700;
 
 /// Default max tokens for model responses.
-pub(crate) const DEFAULT_MAX_TOKENS: u32 = 8192;
+pub(crate) const DEFAULT_MAX_TOKENS: u32 = 8_192;
 
 /// Default observer token threshold before firing.
 pub(crate) const DEFAULT_OBSERVER_THRESHOLD: usize = 30_000;
