@@ -9,6 +9,8 @@
 /* Begin PBXBuildFile section */
 		1B65214D07582353023417DB /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2844EF72D43E9ECB9737C89C /* AppDelegate.swift */; };
 		2DA193F4339A3D0F77120B9D /* ResiduumApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 68AA44737EB020838B730AF7 /* ResiduumApp.swift */; };
+		3A1B2C3D4E5F6A7B8C9D0E1F /* AgentRegistry.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3A1B2C3D4E5F6A7B8C9D0E2F /* AgentRegistry.swift */; };
+		3A1B2C3D4E5F6A7B8C9D0E3F /* AgentRegistryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3A1B2C3D4E5F6A7B8C9D0E4F /* AgentRegistryTests.swift */; };
 		65E62172099E515000148BC5 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 5F065348BA40F53FA359FA1F /* Assets.xcassets */; };
 		A10687474CA25C6B681511C1 /* ProtocolTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = FC84971571E3759D397D192B /* ProtocolTests.swift */; };
 		BB1EA9EB162846F1DD444645 /* Protocol.swift in Sources */ = {isa = PBXBuildFile; fileRef = 766FA7137D8651AABF3B0DD2 /* Protocol.swift */; };
@@ -30,6 +32,8 @@
 		4501F92FA46CC987C16F5CEE /* Residuum.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Residuum.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		5F065348BA40F53FA359FA1F /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		68AA44737EB020838B730AF7 /* ResiduumApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ResiduumApp.swift; sourceTree = "<group>"; };
+		3A1B2C3D4E5F6A7B8C9D0E2F /* AgentRegistry.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentRegistry.swift; sourceTree = "<group>"; };
+		3A1B2C3D4E5F6A7B8C9D0E4F /* AgentRegistryTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentRegistryTests.swift; sourceTree = "<group>"; };
 		766FA7137D8651AABF3B0DD2 /* Protocol.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Protocol.swift; sourceTree = "<group>"; };
 		BD0F4BBDF133F472F1DE7B4F /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		FC84971571E3759D397D192B /* ProtocolTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProtocolTests.swift; sourceTree = "<group>"; };
@@ -61,10 +65,19 @@
 			path = Connection;
 			sourceTree = "<group>";
 		};
+		3A1B2C3D4E5F6A7B8C9D0E5F /* Agents */ = {
+			isa = PBXGroup;
+			children = (
+				3A1B2C3D4E5F6A7B8C9D0E2F /* AgentRegistry.swift */,
+			);
+			path = Agents;
+			sourceTree = "<group>";
+		};
 		47F699344B2B677E0A1F5FD2 /* ResiduumTests */ = {
 			isa = PBXGroup;
 			children = (
 				FC84971571E3759D397D192B /* ProtocolTests.swift */,
+				3A1B2C3D4E5F6A7B8C9D0E4F /* AgentRegistryTests.swift */,
 			);
 			path = ResiduumTests;
 			sourceTree = "<group>";
@@ -74,6 +87,7 @@
 			children = (
 				BD0F4BBDF133F472F1DE7B4F /* Info.plist */,
 				CE9ECCA35117C108D3372363 /* App */,
+				3A1B2C3D4E5F6A7B8C9D0E5F /* Agents */,
 				352698012770111CA483031A /* Connection */,
 				1A82258B6B1CD1DB4C337F88 /* Resources */,
 			);
@@ -186,6 +200,7 @@
 			files = (
 				1B65214D07582353023417DB /* AppDelegate.swift in Sources */,
 				BB1EA9EB162846F1DD444645 /* Protocol.swift in Sources */,
+				3A1B2C3D4E5F6A7B8C9D0E1F /* AgentRegistry.swift in Sources */,
 				2DA193F4339A3D0F77120B9D /* ResiduumApp.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -195,6 +210,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				A10687474CA25C6B681511C1 /* ProtocolTests.swift in Sources */,
+				3A1B2C3D4E5F6A7B8C9D0E3F /* AgentRegistryTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -371,6 +387,7 @@
 			buildSettings = {
 				BUNDLE_LOADER = "$(TEST_HOST)";
 				COMBINE_HIDPI_IMAGES = YES;
+				GENERATE_INFOPLIST_FILE = YES;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/../Frameworks",
@@ -388,6 +405,7 @@
 			buildSettings = {
 				BUNDLE_LOADER = "$(TEST_HOST)";
 				COMBINE_HIDPI_IMAGES = YES;
+				GENERATE_INFOPLIST_FILE = YES;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/../Frameworks",
