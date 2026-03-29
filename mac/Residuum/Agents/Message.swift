@@ -12,7 +12,8 @@ struct ChatMessage: Identifiable {
     enum Role {
         case user
         case assistant
-        case system   // notices and system events
+        case system       // centred italic — simple one-line notices
+        case systemBlock  // blue-bordered monospace block — structured output (/help, /status)
     }
 
     init(id: UUID = UUID(), role: Role, content: String, toolCalls: [ToolCallData] = []) {

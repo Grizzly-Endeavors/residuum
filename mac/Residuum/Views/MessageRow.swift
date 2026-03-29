@@ -6,9 +6,10 @@ struct MessageRow: View {
 
     var body: some View {
         switch message.role {
-        case .user:      UserBubble(content: message.content)
-        case .assistant: AssistantMessage(message: message)
-        case .system:    SystemNotice(content: message.content)
+        case .user:        UserBubble(content: message.content)
+        case .assistant:   AssistantMessage(message: message)
+        case .system:      SystemNotice(content: message.content)
+        case .systemBlock: SystemBlock(content: message.content)
         }
     }
 }
@@ -83,5 +84,25 @@ private struct SystemNotice: View {
             .foregroundStyle(Style.textMuted)
             .frame(maxWidth: .infinity)
             .multilineTextAlignment(.center)
+    }
+}
+
+// MARK: - System block (blue-bordered monospace — /help, /status output)
+
+private struct SystemBlock: View {
+    let content: String
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 10) {
+            Rectangle()
+                .fill(Style.blue.opacity(0.2))
+                .frame(width: 3)
+                .clipShape(RoundedRectangle(cornerRadius: 2))
+            Text(content)
+                .font(Style.mono(size: 11))
+                .foregroundStyle(Style.textMuted)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .textSelection(.enabled)
+        }
     }
 }
