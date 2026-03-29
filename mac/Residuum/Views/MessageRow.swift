@@ -100,7 +100,7 @@ private struct SystemBlock: View {
                 .clipShape(RoundedRectangle(cornerRadius: 2))
             Text(content)
                 .font(Style.mono(size: 11))
-                .foregroundStyle(Style.textMuted)
+                .foregroundStyle(Style.textPrimary)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .textSelection(.enabled)
         }
