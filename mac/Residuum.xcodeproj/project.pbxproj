@@ -19,6 +19,7 @@
 		693759EE80D00453F52B9296 /* ResiduumConnection.swift in Sources */ = {isa = PBXBuildFile; fileRef = 266852ADCA8EA93040637586 /* ResiduumConnection.swift */; };
 		848245E21B40BDDA2FCB4ACF /* Message.swift in Sources */ = {isa = PBXBuildFile; fileRef = A3E228589A7FD1FE0D2B4058 /* Message.swift */; };
 		986E7882595930DCE1F5E6CF /* Cinzel-SemiBold.ttf in Resources */ = {isa = PBXBuildFile; fileRef = DC6C2DFB4459F480A62B063D /* Cinzel-SemiBold.ttf */; };
+		9BF6EE6FBF4DB479459F4B2D /* ToolGroup.swift in Sources */ = {isa = PBXBuildFile; fileRef = 364ECB876E3BE86D4D58C87E /* ToolGroup.swift */; };
 		A0EE4FF8D09228F0E2322FFA /* AgentTab.swift in Sources */ = {isa = PBXBuildFile; fileRef = 08CFDCA30B1C655D75C37AE3 /* AgentTab.swift */; };
 		A10687474CA25C6B681511C1 /* ProtocolTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = FC84971571E3759D397D192B /* ProtocolTests.swift */; };
 		A757D77CF17982F5DC47EA50 /* PopoverView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9B4114421F3434D89FAF5CC8 /* PopoverView.swift */; };
@@ -45,6 +46,7 @@
 		266852ADCA8EA93040637586 /* ResiduumConnection.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ResiduumConnection.swift; sourceTree = "<group>"; };
 		2844EF72D43E9ECB9737C89C /* AppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppDelegate.swift; sourceTree = "<group>"; };
 		329C1A99BF1BA06BCEA22458 /* JetBrainsMono-Regular.ttf */ = {isa = PBXFileReference; lastKnownFileType = file; path = "JetBrainsMono-Regular.ttf"; sourceTree = "<group>"; };
+		364ECB876E3BE86D4D58C87E /* ToolGroup.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ToolGroup.swift; sourceTree = "<group>"; };
 		421C7D244DC80E9349BF618B /* AgentRegistryTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentRegistryTests.swift; sourceTree = "<group>"; };
 		4501F92FA46CC987C16F5CEE /* Residuum.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Residuum.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		467DD2EB29A718F5B2B85C8B /* Style.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Style.swift; sourceTree = "<group>"; };
@@ -160,6 +162,7 @@
 				9B4114421F3434D89FAF5CC8 /* PopoverView.swift */,
 				467DD2EB29A718F5B2B85C8B /* Style.swift */,
 				BC5B1C2CE6C1D21D28E970F7 /* ThinkingIndicator.swift */,
+				364ECB876E3BE86D4D58C87E /* ToolGroup.swift */,
 			);
 			path = Views;
 			sourceTree = "<group>";
@@ -266,6 +269,7 @@
 				693759EE80D00453F52B9296 /* ResiduumConnection.swift in Sources */,
 				E008B26E08B018B220230576 /* Style.swift in Sources */,
 				4500D5A8EF5C5DEBA482C210 /* ThinkingIndicator.swift in Sources */,
+				9BF6EE6FBF4DB479459F4B2D /* ToolGroup.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
