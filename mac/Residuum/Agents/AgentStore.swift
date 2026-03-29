@@ -61,6 +61,18 @@ final class AgentStore {
         tabs[idx].connection.connect()
     }
 
+    /// Appends a centred italic system notice to the selected tab's feed.
+    func appendSystemMessage(_ content: String) {
+        guard let idx = selectedTabIndex else { return }
+        tabs[idx].messages.append(ChatMessage(role: .system, content: content))
+    }
+
+    /// Appends a blue-bordered monospace block to the selected tab's feed.
+    func appendSystemBlock(_ content: String) {
+        guard let idx = selectedTabIndex else { return }
+        tabs[idx].messages.append(ChatMessage(role: .systemBlock, content: content))
+    }
+
     /// Update the host and reconnect all agent connections.
     func reconnectAll(host newHost: String) {
         host = newHost
