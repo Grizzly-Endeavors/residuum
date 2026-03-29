@@ -109,7 +109,7 @@ mac/
     bundleIdPrefix: com.grizzly-endeavors
     deploymentTarget:
       macOS: "14.0"
-    xcodeVersion: "16.0"
+    xcodeVersion: "26.0"
     createIntermediateGroups: true
 
   targets:
