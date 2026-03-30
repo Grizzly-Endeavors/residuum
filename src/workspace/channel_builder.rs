@@ -67,7 +67,7 @@ async fn build_macos_channel(
     kind: &ExternalChannelKind,
 ) -> Option<Box<dyn NotificationChannel>> {
     use crate::notify::macos::MacosChannelConfig;
-    use crate::notify::macos::categories::{parse_category, parse_priority};
+    use crate::notify::macos::categories::{MacosCategory, MacosInterruptionLevel};
 
     let ExternalChannelKind::Macos {
         default_category,
@@ -84,7 +84,7 @@ async fn build_macos_channel(
     let mut config = MacosChannelConfig::default();
 
     if let Some(cat) = default_category {
-        match parse_category(cat) {
+        match cat.parse::<MacosCategory>() {
             Ok(c) => config.default_category = c,
             Err(e) => {
                 tracing::warn!(channel = %name, error = %e, "invalid macOS channel config, skipping");
@@ -94,7 +94,7 @@ async fn build_macos_channel(
     }
 
     if let Some(pri) = default_priority {
-        match parse_priority(pri) {
+        match pri.parse::<MacosInterruptionLevel>() {
             Ok(p) => config.default_priority = p,
             Err(e) => {
                 tracing::warn!(channel = %name, error = %e, "invalid macOS channel config, skipping");
