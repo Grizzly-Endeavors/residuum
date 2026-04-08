@@ -4,7 +4,7 @@ import type { JsonValue } from "./serde_json/JsonValue";
 /**
  * Messages sent from the server to WebSocket clients.
  */
-export type ServerMessage = { "type": "turn_started", 
+export type ServerMessage = { "type": "file_attachment", reply_to: string, filename: string, mime_type: string, size: number, url: string, caption: string | null, } | { "type": "turn_started",
 /**
  * Correlation ID of the message being processed.
  */
