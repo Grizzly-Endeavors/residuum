@@ -41,6 +41,58 @@ impl SendMessageTool {
     }
 }
 
+async fn validate_file_attachment(
+    fp: &str,
+    endpoint_name: &str,
+) -> Result<crate::interfaces::attachment::FileAttachment, String> {
+    let path = std::path::Path::new(fp);
+    let att = crate::interfaces::attachment::FileAttachment::from_path(path).await?;
+
+    // Size limit: 50MB for Telegram, 25MB for others
+    let limit: u64 = if endpoint_name.contains("telegram") {
+        50 * 1024 * 1024
+    } else {
+        25 * 1024 * 1024
+    };
+    if att.size > limit {
+        let size_mb = att.size / (1024 * 1024);
+        let limit_mb = limit / (1024 * 1024);
+        return Err(format!(
+            "file '{}' is {}MB, exceeds {}MB limit for {endpoint_name}",
+            att.filename, size_mb, limit_mb,
+        ));
+    }
+
+    tracing::info!(
+        filename = %att.filename,
+        mime_type = %att.mime_type,
+        size = att.size,
+        endpoint = %endpoint_name,
+        "file attachment published"
+    );
+
+    Ok(att)
+}
+
+fn build_success_message(
+    endpoint_name: &str,
+    file_path_str: Option<&str>,
+    message: Option<&str>,
+) -> String {
+    if let Some(fp) = file_path_str {
+        let filename = std::path::Path::new(fp)
+            .file_name()
+            .map_or_else(|| fp.to_string(), |n| n.to_string_lossy().to_string());
+        if message.is_some() {
+            format!("Message and file '{filename}' published to endpoint '{endpoint_name}'")
+        } else {
+            format!("File '{filename}' published to endpoint '{endpoint_name}'")
+        }
+    } else {
+        format!("Message published to endpoint '{endpoint_name}'")
+    }
+}
+
 #[async_trait]
 impl Tool for SendMessageTool {
     fn name(&self) -> &'static str {
@@ -130,36 +182,10 @@ impl Tool for SendMessageTool {
                     "endpoint '{endpoint_name}' does not support file attachments"
                 )));
             }
-            let path = std::path::Path::new(fp);
-            let att = match crate::interfaces::attachment::FileAttachment::from_path(path).await {
-                Ok(a) => a,
+            match validate_file_attachment(fp, endpoint_name).await {
+                Ok(att) => Some(att),
                 Err(e) => return Ok(ToolResult::error(e)),
-            };
-
-            // Size limit: 50MB for Telegram, 25MB for others
-            let limit: u64 = if endpoint_name.contains("telegram") {
-                50 * 1024 * 1024
-            } else {
-                25 * 1024 * 1024
-            };
-            if att.size > limit {
-                let size_mb = att.size / (1024 * 1024);
-                let limit_mb = limit / (1024 * 1024);
-                return Ok(ToolResult::error(format!(
-                    "file '{}' is {}MB, exceeds {}MB limit for {endpoint_name}",
-                    att.filename, size_mb, limit_mb,
-                )));
             }
-
-            tracing::info!(
-                filename = %att.filename,
-                mime_type = %att.mime_type,
-                size = att.size,
-                endpoint = %endpoint_name,
-                "file attachment published"
-            );
-
-            Some(att)
         } else {
             None
         };
@@ -204,19 +230,7 @@ impl Tool for SendMessageTool {
         }
 
         // Build success message
-        let success_msg = if let Some(fp) = file_path_str {
-            let filename = std::path::Path::new(fp)
-                .file_name()
-                .map(|n| n.to_string_lossy().to_string())
-                .unwrap_or_else(|| fp.to_string());
-            if message.is_some() {
-                format!("Message and file '{filename}' published to endpoint '{endpoint_name}'")
-            } else {
-                format!("File '{filename}' published to endpoint '{endpoint_name}'")
-            }
-        } else {
-            format!("Message published to endpoint '{endpoint_name}'")
-        };
+        let success_msg = build_success_message(endpoint_name, file_path_str, message);
 
         Ok(ToolResult::success(success_msg))
     }

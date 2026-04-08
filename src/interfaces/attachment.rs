@@ -61,8 +61,7 @@ impl FileAttachment {
 
         let filename = path
             .file_name()
-            .map(|n| n.to_string_lossy().to_string())
-            .unwrap_or_else(|| "unnamed".to_string());
+            .map_or_else(|| "unnamed".to_string(), |n| n.to_string_lossy().to_string());
 
         let mime_type = detect_mime_type(path);
         let size = metadata.len();
