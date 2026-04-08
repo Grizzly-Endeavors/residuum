@@ -70,6 +70,7 @@ enum ServerMessage: Decodable {
     case response(replyTo: String, content: String)
     case systemEvent(source: String, content: String)
     case broadcastResponse(content: String)
+    case fileAttachment(replyTo: String, filename: String, mimeType: String, size: Int, url: String, caption: String?)
     case error(replyTo: String?, message: String)
     case notice(message: String)
     case pong
@@ -84,6 +85,9 @@ enum ServerMessage: Decodable {
         case output
         case isError = "is_error"
         case source, content, message
+        case filename
+        case mimeType = "mime_type"
+        case size, url, caption
     }
 
     init(from decoder: Decoder) throws {
@@ -117,6 +121,15 @@ enum ServerMessage: Decodable {
             )
         case "broadcast_response":
             self = .broadcastResponse(content: try c.decode(String.self, forKey: .content))
+        case "file_attachment":
+            self = .fileAttachment(
+                replyTo: try c.decode(String.self, forKey: .replyTo),
+                filename: try c.decode(String.self, forKey: .filename),
+                mimeType: try c.decode(String.self, forKey: .mimeType),
+                size: try c.decode(Int.self, forKey: .size),
+                url: try c.decode(String.self, forKey: .url),
+                caption: try? c.decode(String.self, forKey: .caption)
+            )
         case "error":
             self = .error(
                 replyTo: try? c.decode(String.self, forKey: .replyTo),
