@@ -39,7 +39,7 @@ async fn handle_connection(socket: WebSocket, state: GatewayState) {
     let (mut ws_tx, mut ws_rx) = socket.split();
 
     // Subscribe to typed bus topics for this connection
-    let mut subs = match WsSubscribers::new(&state.bus_handle, EndpointName::from("ws")).await {
+    let mut subs = match WsSubscribers::new(&state.bus_handle, EndpointName::from("ws"), state.file_registry.clone()).await {
         Ok(s) => s,
         Err(e) => {
             tracing::warn!(error = %e, "failed to subscribe to bus topics for ws connection");

@@ -151,6 +151,18 @@ impl CliClient {
                 self.indicator.finish();
                 println!("\n{}\n", self.theme.format_notice(message));
             }
+            ServerMessage::FileAttachment {
+                filename, url, caption, ..
+            } => {
+                self.indicator.finish();
+                let caption_text = caption.as_deref().unwrap_or("");
+                let line = if caption_text.is_empty() {
+                    format!("[file: {filename}] {url}")
+                } else {
+                    format!("[file: {filename}] {url} — {caption_text}")
+                };
+                println!("{}", self.theme.format_tool(&line));
+            }
             // Reloading is intercepted in run_connect before display() is called
             ServerMessage::Pong | ServerMessage::Reloading => {}
         }

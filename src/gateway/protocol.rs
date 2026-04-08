@@ -80,6 +80,22 @@ pub enum ServerMessage {
         /// The response content.
         content: String,
     },
+    /// A file attachment from the agent.
+    FileAttachment {
+        /// Correlation ID of the original message.
+        reply_to: String,
+        /// Original filename.
+        filename: String,
+        /// MIME type of the file.
+        mime_type: String,
+        /// File size in bytes.
+        size: u64,
+        /// URL to fetch the file (e.g. "/api/files/{id}").
+        url: String,
+        /// Optional caption text.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        caption: Option<String>,
+    },
     /// Intermediate text the agent emitted alongside tool calls.
     BroadcastResponse {
         /// The intermediate content.
@@ -352,5 +368,35 @@ mod tests {
             ),
             "should survive serialization round-trip with images"
         );
+    }
+
+    #[test]
+    fn server_message_serialize_file_attachment() {
+        let msg = ServerMessage::FileAttachment {
+            reply_to: "id-1".to_string(),
+            filename: "report.pdf".to_string(),
+            mime_type: "application/pdf".to_string(),
+            size: 1024,
+            url: "/api/files/abc-123".to_string(),
+            caption: Some("Here's the report".to_string()),
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(json.contains("\"type\":\"file_attachment\""), "should have type tag");
+        assert!(json.contains("\"filename\":\"report.pdf\""), "should have filename");
+        assert!(json.contains("\"url\":\"/api/files/abc-123\""), "should have url");
+    }
+
+    #[test]
+    fn server_message_serialize_file_attachment_no_caption() {
+        let msg = ServerMessage::FileAttachment {
+            reply_to: "id-2".to_string(),
+            filename: "voice.mp3".to_string(),
+            mime_type: "audio/mpeg".to_string(),
+            size: 2048,
+            url: "/api/files/def-456".to_string(),
+            caption: None,
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(!json.contains("\"caption\""), "caption should be skipped when None");
     }
 }
