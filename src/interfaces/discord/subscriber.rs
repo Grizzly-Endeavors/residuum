@@ -5,10 +5,7 @@ use std::sync::Arc;
 use serenity::model::id::ChannelId;
 use tokio::sync::Mutex;
 
-use crate::bus::{
-    EndpointName, IntermediateEvent, ResponseEvent, Subscriber, SystemMessageEvent,
-    TurnLifecycleEvent, topics,
-};
+use crate::bus::{ErrorEvent, NoticeEvent, TurnLifecycleEvent};
 use crate::interfaces::chunking::chunk_text;
 
 /// Maximum message length for Discord.
@@ -20,29 +17,7 @@ const DISCORD_MAX_CHARS: usize = 2000;
 const TYPING_INTERVAL_SECS: u64 = 8;
 
 /// Typed subscribers for a single Discord connection.
-pub(crate) struct DiscordSubscribers {
-    response: Subscriber<ResponseEvent>,
-    turn_lifecycle: Subscriber<TurnLifecycleEvent>,
-    intermediate: Subscriber<IntermediateEvent>,
-    system: Subscriber<SystemMessageEvent>,
-}
-
-impl DiscordSubscribers {
-    /// Create all typed subscribers for a Discord connection.
-    pub(crate) async fn new(
-        bus_handle: &crate::bus::BusHandle,
-        ep: EndpointName,
-    ) -> Result<Self, crate::bus::BusError> {
-        Ok(Self {
-            response: bus_handle.subscribe(topics::Response(ep.clone())).await?,
-            turn_lifecycle: bus_handle
-                .subscribe(topics::TurnLifecycle(ep.clone()))
-                .await?,
-            intermediate: bus_handle.subscribe(topics::Intermediate(ep)).await?,
-            system: bus_handle.subscribe(topics::SystemMessage).await?,
-        })
-    }
-}
+pub(crate) type DiscordSubscribers = crate::interfaces::BaseSubscribers;
 
 /// Receives events from the bus and delivers them to the Discord DM channel.
 pub(crate) async fn run_discord_subscriber(
@@ -51,6 +26,7 @@ pub(crate) async fn run_discord_subscriber(
     channel_id: Arc<Mutex<Option<ChannelId>>>,
 ) {
     let mut typing_cancel: Option<tokio::sync::watch::Sender<bool>> = None;
+    let mut clean_exit = true;
 
     loop {
         let Some(cid) = *channel_id.lock().await else {
@@ -81,48 +57,58 @@ pub(crate) async fn run_discord_subscriber(
                     Ok(Some(TurnLifecycleEvent::Ended { .. })) => {
                         typing_cancel.take();
                     }
-                    _ => break,
+                    Ok(None) => break,
+                    Err(_) => { clean_exit = false; break; }
                 }
             }
             event = subs.response.recv() => {
                 match event {
                     Ok(Some(resp)) => send_chunks(&http, cid, &resp.content).await,
-                    _ => break,
+                    Ok(None) => break,
+                    Err(_) => { clean_exit = false; break; }
                 }
             }
             event = subs.intermediate.recv() => {
                 match event {
                     Ok(Some(im)) => send_chunks(&http, cid, &im.content).await,
-                    _ => break,
+                    Ok(None) => break,
+                    Err(_) => { clean_exit = false; break; }
                 }
             }
-            event = subs.system.recv() => {
+            event = subs.notice.recv() => {
                 match event {
-                    Ok(Some(SystemMessageEvent::Notice { message })) => {
+                    Ok(Some(NoticeEvent { message })) => {
                         send_chunks(&http, cid, &message).await;
                     }
-                    Ok(Some(SystemMessageEvent::Error { message, .. })) => {
+                    Ok(None) => break,
+                    Err(_) => { clean_exit = false; break; }
+                }
+            }
+            event = subs.error.recv() => {
+                match event {
+                    Ok(Some(ErrorEvent { message, .. })) => {
                         let text = format!("**Error:** {message}");
                         send_chunks(&http, cid, &text).await;
                     }
-                    Ok(Some(SystemMessageEvent::Event(se))) => {
-                        let text = format!("**[{}]** {}", se.source, se.content);
-                        send_chunks(&http, cid, &text).await;
-                    }
-                    _ => break,
+                    Ok(None) => break,
+                    Err(_) => { clean_exit = false; break; }
                 }
             }
         }
     }
 
-    tracing::debug!("discord subscriber loop ended (broker shut down)");
+    if clean_exit {
+        tracing::debug!("discord subscriber loop ended");
+    } else {
+        tracing::warn!("discord subscriber loop ended unexpectedly");
+    }
 }
 
 async fn send_chunks(http: &serenity::http::Http, channel_id: ChannelId, content: &str) {
     let chunks = chunk_text(content, DISCORD_MAX_CHARS);
     for chunk in chunks {
         if let Err(e) = channel_id.say(http, &chunk).await {
-            tracing::warn!(error = %e, "failed to send discord message");
+            tracing::warn!(channel_id = %channel_id, error = %e, "failed to send discord message");
         }
     }
 }

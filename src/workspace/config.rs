@@ -5,11 +5,12 @@ use std::path::Path;
 
 use serde::Deserialize;
 
-use crate::error::ResiduumError;
-use crate::notify::channels::NotificationChannel;
-use crate::notify::external::{NtfyChannel, WebhookChannel};
+use anyhow::Context;
+
 use crate::notify::types::{ExternalChannelConfig, ExternalChannelKind};
 use crate::projects::types::{McpServerEntry, McpTransport};
+
+pub use super::channel_builder::build_external_channels;
 
 // ── MCP loader ───────────────────────────────────────────────────────────────
 
@@ -29,20 +30,17 @@ struct McpConfigFile {
 /// - `url` field alias for HTTP server address (falls back to `command`)
 #[derive(Deserialize)]
 struct McpServerRaw {
-    #[serde(default)]
     command: Option<String>,
     #[serde(default)]
     args: Vec<String>,
     #[serde(default)]
     env: HashMap<String, String>,
     /// Claude Code/Desktop standard: `"stdio"`, `"streamable-http"`, `"http"`, or `"sse"`.
-    #[serde(rename = "type", default)]
+    #[serde(rename = "type")]
     type_: Option<String>,
     /// Residuum extension: `"stdio"` (default) or `"http"`.
-    #[serde(default)]
     transport: Option<String>,
     /// HTTP server URL (alternative to putting the URL in `command`).
-    #[serde(default)]
     url: Option<String>,
     /// HTTP headers to send with requests (only used for http transport).
     #[serde(default)]
@@ -55,26 +53,19 @@ struct McpServerRaw {
 ///
 /// # Errors
 /// Returns an error if the file exists but cannot be read or parsed.
-pub fn load_mcp_servers_map(path: &Path) -> Result<HashMap<String, McpServerEntry>, ResiduumError> {
+#[tracing::instrument(skip_all, fields(path = %path.display()))]
+pub fn load_mcp_servers_map(path: &Path) -> anyhow::Result<HashMap<String, McpServerEntry>> {
     if !path.exists() {
         return Ok(HashMap::new());
     }
 
-    let contents = std::fs::read_to_string(path).map_err(|e| {
-        ResiduumError::Config(format!(
-            "failed to read mcp.json at {}: {e}",
-            path.display()
-        ))
-    })?;
+    let contents = std::fs::read_to_string(path)
+        .with_context(|| format!("failed to read mcp.json at {}", path.display()))?;
 
-    let file: McpConfigFile = serde_json::from_str(&contents).map_err(|e| {
-        ResiduumError::Config(format!(
-            "failed to parse mcp.json at {}: {e}",
-            path.display()
-        ))
-    })?;
+    let file: McpConfigFile = serde_json::from_str(&contents)
+        .with_context(|| format!("failed to parse mcp.json at {}", path.display()))?;
 
-    let servers = file
+    let servers: HashMap<String, McpServerEntry> = file
         .mcp_servers
         .into_iter()
         .filter_map(|(name, raw)| {
@@ -140,6 +131,7 @@ pub fn load_mcp_servers_map(path: &Path) -> Result<HashMap<String, McpServerEntr
         })
         .collect();
 
+    tracing::debug!(count = servers.len(), path = %path.display(), "loaded MCP servers");
     Ok(servers)
 }
 
@@ -149,7 +141,7 @@ pub fn load_mcp_servers_map(path: &Path) -> Result<HashMap<String, McpServerEntr
 ///
 /// # Errors
 /// Returns an error if the file exists but cannot be read or parsed.
-pub fn load_mcp_servers(path: &Path) -> Result<Vec<McpServerEntry>, ResiduumError> {
+pub fn load_mcp_servers(path: &Path) -> anyhow::Result<Vec<McpServerEntry>> {
     Ok(load_mcp_servers_map(path)?.into_values().collect())
 }
 
@@ -162,12 +154,13 @@ pub fn load_mcp_servers(path: &Path) -> Result<Vec<McpServerEntry>, ResiduumErro
 ///
 /// # Errors
 /// Returns an error if any reference cannot be found in either map.
+#[tracing::instrument(skip_all, fields(project = %project_name, count = references.len()))]
 pub fn resolve_mcp_references(
     references: &[String],
     project_mcp_json: &Path,
     global_mcp_json: &Path,
     project_name: &str,
-) -> Result<Vec<McpServerEntry>, ResiduumError> {
+) -> anyhow::Result<Vec<McpServerEntry>> {
     if references.is_empty() {
         return Ok(Vec::new());
     }
@@ -182,9 +175,9 @@ pub fn resolve_mcp_references(
         } else if let Some(entry) = global_map.get(name) {
             resolved.push(entry.clone());
         } else {
-            return Err(ResiduumError::Projects(format!(
+            anyhow::bail!(
                 "mcp server '{name}' referenced in project '{project_name}' not found in project-local or global mcp.json"
-            )));
+            );
         }
     }
 
@@ -206,28 +199,17 @@ struct ChannelEntryRaw {
     /// Channel type: `"ntfy"`, `"webhook"`, or `"macos"`.
     #[serde(rename = "type")]
     type_: String,
-    #[serde(default)]
     url: Option<String>,
-    #[serde(default)]
     topic: Option<String>,
-    #[serde(default)]
     priority: Option<String>,
-    #[serde(default)]
     method: Option<String>,
-    #[serde(default)]
     headers: Option<HashMap<String, String>>,
     // macOS channel fields
-    #[serde(default)]
     default_category: Option<String>,
-    #[serde(default)]
     default_priority: Option<String>,
-    #[serde(default)]
     throttle_window_secs: Option<u64>,
-    #[serde(default)]
     sound: Option<bool>,
-    #[serde(default)]
     app_name: Option<String>,
-    #[serde(default)]
     web_url: Option<String>,
 }
 
@@ -237,44 +219,32 @@ struct ChannelEntryRaw {
 ///
 /// # Errors
 /// Returns an error if the file exists but cannot be read or parsed.
-pub fn load_channel_configs(path: &Path) -> Result<Vec<ExternalChannelConfig>, ResiduumError> {
+#[tracing::instrument(skip_all, fields(path = %path.display()))]
+pub fn load_channel_configs(path: &Path) -> anyhow::Result<Vec<ExternalChannelConfig>> {
     if !path.exists() {
         return Ok(Vec::new());
     }
 
-    let contents = std::fs::read_to_string(path).map_err(|e| {
-        ResiduumError::Config(format!(
-            "failed to read channels.toml at {}: {e}",
-            path.display()
-        ))
-    })?;
+    let contents = std::fs::read_to_string(path)
+        .with_context(|| format!("failed to read channels.toml at {}", path.display()))?;
 
-    // Empty file → empty vec (no channels section)
-    if contents.trim().is_empty() {
-        return Ok(Vec::new());
-    }
-
-    let file: ChannelsFile = toml::from_str(&contents).map_err(|e| {
-        ResiduumError::Config(format!(
-            "failed to parse channels.toml at {}: {e}",
-            path.display()
-        ))
-    })?;
+    let file: ChannelsFile = toml::from_str(&contents)
+        .with_context(|| format!("failed to parse channels.toml at {}", path.display()))?;
 
     let configs = file
         .channels
         .into_iter()
-        .map(|(name, raw)| {
+        .filter_map(|(name, raw)| {
             let kind = match raw.type_.as_str() {
                 "ntfy" => {
-                    let url = raw.url.unwrap_or_default();
-                    let topic = raw.topic.unwrap_or_default();
-                    if url.is_empty() {
+                    let Some(url) = raw.url.filter(|u| !u.is_empty()) else {
                         tracing::warn!(channel = %name, "ntfy channel is missing required 'url' field");
-                    }
-                    if topic.is_empty() {
+                        return None;
+                    };
+                    let Some(topic) = raw.topic.filter(|t| !t.is_empty()) else {
                         tracing::warn!(channel = %name, "ntfy channel is missing required 'topic' field");
-                    }
+                        return None;
+                    };
                     ExternalChannelKind::Ntfy {
                         url,
                         topic,
@@ -290,10 +260,10 @@ pub fn load_channel_configs(path: &Path) -> Result<Vec<ExternalChannelConfig>, R
                     web_url: raw.web_url,
                 },
                 "webhook" => {
-                    let url = raw.url.unwrap_or_default();
-                    if url.is_empty() {
+                    let Some(url) = raw.url.filter(|u| !u.is_empty()) else {
                         tracing::warn!(channel = %name, "webhook channel is missing required 'url' field");
-                    }
+                        return None;
+                    };
                     ExternalChannelKind::Webhook {
                         url,
                         method: raw.method,
@@ -304,173 +274,16 @@ pub fn load_channel_configs(path: &Path) -> Result<Vec<ExternalChannelConfig>, R
                     tracing::warn!(
                         channel = %name,
                         type_ = %unknown,
-                        "unrecognized channel type, falling back to webhook"
+                        "unrecognized channel type, skipping"
                     );
-                    let url = raw.url.unwrap_or_default();
-                    if url.is_empty() {
-                        tracing::warn!(channel = %name, "channel is missing required 'url' field");
-                    }
-                    ExternalChannelKind::Webhook {
-                        url,
-                        method: raw.method,
-                        headers: raw.headers.unwrap_or_default().into_iter().collect(),
-                    }
+                    return None;
                 }
             };
-            ExternalChannelConfig { name, kind }
+            Some(ExternalChannelConfig { name, kind })
         })
         .collect();
 
     Ok(configs)
-}
-
-// ── Channel builder ──────────────────────────────────────────────────────────
-
-/// Build external channel implementations from configs.
-pub async fn build_external_channels(
-    configs: &[ExternalChannelConfig],
-    client: &reqwest::Client,
-) -> HashMap<String, Box<dyn NotificationChannel>> {
-    let mut channels: HashMap<String, Box<dyn NotificationChannel>> = HashMap::new();
-
-    for cfg in configs {
-        let channel: Option<Box<dyn NotificationChannel>> = match &cfg.kind {
-            ExternalChannelKind::Ntfy {
-                url,
-                topic,
-                priority,
-            } => Some(Box::new(NtfyChannel::new(
-                cfg.name.clone(),
-                client.clone(),
-                url.clone(),
-                topic.clone(),
-                priority.clone(),
-            ))),
-            ExternalChannelKind::Webhook {
-                url,
-                method,
-                headers,
-            } => Some(Box::new(WebhookChannel::new(
-                cfg.name.clone(),
-                client.clone(),
-                url.clone(),
-                method.clone(),
-                headers.clone(),
-            ))),
-            ExternalChannelKind::Macos {
-                default_category,
-                default_priority,
-                throttle_window_secs,
-                sound,
-                app_name,
-                web_url,
-            } => {
-                build_macos_channel(
-                    &cfg.name,
-                    default_category.as_ref(),
-                    default_priority.as_ref(),
-                    throttle_window_secs.as_ref(),
-                    sound.as_ref(),
-                    app_name.as_ref(),
-                    web_url.as_ref(),
-                )
-                .await
-            }
-        };
-        if let Some(ch) = channel {
-            channels.insert(cfg.name.clone(), ch);
-        }
-    }
-
-    channels
-}
-
-/// Build a macOS notification channel from raw config fields.
-///
-/// On non-macOS platforms, logs a warning and returns `None`.
-#[cfg(target_os = "macos")]
-async fn build_macos_channel(
-    name: &str,
-    default_category: Option<&String>,
-    default_priority: Option<&String>,
-    throttle_window_secs: Option<&u64>,
-    sound: Option<&bool>,
-    app_name: Option<&String>,
-    web_url: Option<&String>,
-) -> Option<Box<dyn NotificationChannel>> {
-    use crate::notify::macos::MacosChannelConfig;
-    use crate::notify::macos::categories::{parse_category, parse_priority};
-
-    let mut config = MacosChannelConfig::default();
-
-    if let Some(cat) = default_category {
-        match parse_category(cat) {
-            Ok(c) => config.default_category = c,
-            Err(e) => {
-                tracing::warn!(channel = name, error = %e, "invalid macOS channel config, skipping");
-                eprintln!("warning: invalid macOS channel '{name}' config: {e}");
-                return None;
-            }
-        }
-    }
-
-    if let Some(pri) = default_priority {
-        match parse_priority(pri) {
-            Ok(p) => config.default_priority = p,
-            Err(e) => {
-                tracing::warn!(channel = name, error = %e, "invalid macOS channel config, skipping");
-                eprintln!("warning: invalid macOS channel '{name}' config: {e}");
-                return None;
-            }
-        }
-    }
-
-    if let Some(secs) = throttle_window_secs {
-        config.throttle_window_secs = *secs;
-    }
-    if let Some(s) = sound {
-        config.sound = *s;
-    }
-    if let Some(n) = app_name {
-        config.app_name = n.clone();
-    }
-    config.web_url = web_url.cloned();
-
-    match crate::notify::macos::MacosNativeChannel::new(name, config).await {
-        Ok((channel, _handle)) => {
-            tracing::info!(channel = name, "macOS notification channel initialized");
-            Some(Box::new(channel))
-        }
-        Err(e) => {
-            tracing::warn!(channel = name, error = %e, "failed to initialize macOS channel, skipping");
-            eprintln!("warning: failed to initialize macOS channel '{name}': {e}");
-            None
-        }
-    }
-}
-
-#[cfg(not(target_os = "macos"))]
-#[expect(
-    clippy::unused_async,
-    reason = "signature must match the async macOS variant"
-)]
-async fn build_macos_channel(
-    name: &str,
-    _default_category: Option<&String>,
-    _default_priority: Option<&String>,
-    _throttle_window_secs: Option<&u64>,
-    _sound: Option<&bool>,
-    _app_name: Option<&String>,
-    _web_url: Option<&String>,
-) -> Option<Box<dyn NotificationChannel>> {
-    tracing::warn!(
-        channel = name,
-        "macOS notification channel configured but not available on this platform"
-    );
-    eprintln!(
-        "warning: macOS notification channel '{name}' configured but not available on this platform"
-    );
-    None
 }
 
 #[cfg(test)]
@@ -529,6 +342,9 @@ mod tests {
 
         let servers = load_mcp_servers(&path).unwrap();
         assert_eq!(servers.len(), 2);
+        let names: Vec<&str> = servers.iter().map(|s| s.name.as_str()).collect();
+        assert!(names.contains(&"fs"), "should have fs server");
+        assert!(names.contains(&"git"), "should have git server");
     }
 
     #[test]
@@ -857,6 +673,15 @@ url = "https://hooks.slack.com/services/xxx"
 
         let configs = load_channel_configs(&path).unwrap();
         assert_eq!(configs.len(), 2);
+        let names: Vec<&str> = configs.iter().map(|c| c.name.as_str()).collect();
+        assert!(
+            names.contains(&"ntfy-alerts"),
+            "should have ntfy-alerts channel"
+        );
+        assert!(
+            names.contains(&"slack-hook"),
+            "should have slack-hook channel"
+        );
     }
 
     #[test]
@@ -888,37 +713,148 @@ url = "https://hooks.slack.com/services/xxx"
         assert!(err.contains("failed to parse channels.toml"), "got: {err}");
     }
 
-    // ── Channel builder tests ────────────────────────────────────────────
+    // ── Channel error path tests ────────────────────────────────────────
 
-    #[tokio::test]
-    async fn build_external_channels_creates_instances() {
-        let configs = vec![
-            ExternalChannelConfig {
-                name: "my-ntfy".to_string(),
-                kind: ExternalChannelKind::Ntfy {
-                    url: "https://ntfy.sh".to_string(),
-                    topic: "test".to_string(),
-                    priority: None,
-                },
-            },
-            ExternalChannelConfig {
-                name: "my-webhook".to_string(),
-                kind: ExternalChannelKind::Webhook {
-                    url: "https://hooks.example.com".to_string(),
-                    method: None,
-                    headers: Vec::new(),
-                },
-            },
-        ];
+    #[test]
+    fn load_channel_configs_ntfy_missing_url_excluded() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("channels.toml");
+        std::fs::write(
+            &path,
+            r#"
+[channels.bad-ntfy]
+type = "ntfy"
+topic = "alerts"
 
-        let client = reqwest::Client::new();
-        let channels = build_external_channels(&configs, &client).await;
+[channels.good-ntfy]
+type = "ntfy"
+url = "https://ntfy.sh"
+topic = "alerts"
+"#,
+        )
+        .unwrap();
 
-        assert_eq!(channels.len(), 2);
-        assert!(channels.contains_key("my-ntfy"));
-        assert!(channels.contains_key("my-webhook"));
-        assert_eq!(channels["my-ntfy"].channel_kind(), "ntfy");
-        assert_eq!(channels["my-webhook"].channel_kind(), "webhook");
+        let configs = load_channel_configs(&path).unwrap();
+        assert_eq!(configs.len(), 1, "bad ntfy entry should be excluded");
+        assert_eq!(configs[0].name, "good-ntfy");
+    }
+
+    #[test]
+    fn load_channel_configs_ntfy_missing_topic_excluded() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("channels.toml");
+        std::fs::write(
+            &path,
+            r#"
+[channels.bad-ntfy]
+type = "ntfy"
+url = "https://ntfy.sh"
+
+[channels.good-ntfy]
+type = "ntfy"
+url = "https://ntfy.sh"
+topic = "alerts"
+"#,
+        )
+        .unwrap();
+
+        let configs = load_channel_configs(&path).unwrap();
+        assert_eq!(configs.len(), 1, "ntfy without topic should be excluded");
+        assert_eq!(configs[0].name, "good-ntfy");
+    }
+
+    #[test]
+    fn load_channel_configs_webhook_missing_url_excluded() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("channels.toml");
+        std::fs::write(
+            &path,
+            r#"
+[channels.bad-hook]
+type = "webhook"
+
+[channels.good-hook]
+type = "webhook"
+url = "https://hooks.example.com/notify"
+"#,
+        )
+        .unwrap();
+
+        let configs = load_channel_configs(&path).unwrap();
+        assert_eq!(configs.len(), 1, "webhook without url should be excluded");
+        assert_eq!(configs[0].name, "good-hook");
+    }
+
+    #[test]
+    fn load_channel_configs_unknown_type_excluded() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("channels.toml");
+        std::fs::write(
+            &path,
+            r#"
+[channels.bad-channel]
+type = "carrier-pigeon"
+
+[channels.good-ntfy]
+type = "ntfy"
+url = "https://ntfy.sh"
+topic = "alerts"
+"#,
+        )
+        .unwrap();
+
+        let configs = load_channel_configs(&path).unwrap();
+        assert_eq!(configs.len(), 1, "unknown channel type should be excluded");
+        assert_eq!(configs[0].name, "good-ntfy");
+    }
+
+    // ── MCP empty-string boundary tests ────────────────────────────────
+
+    #[test]
+    fn load_mcp_servers_http_empty_url_skipped() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("mcp.json");
+        std::fs::write(
+            &path,
+            r#"{
+                "mcpServers": {
+                    "empty-url": {
+                        "type": "http",
+                        "url": ""
+                    }
+                }
+            }"#,
+        )
+        .unwrap();
+
+        let servers = load_mcp_servers(&path).unwrap();
+        assert!(
+            servers.is_empty(),
+            "HTTP server with empty url should be skipped"
+        );
+    }
+
+    #[test]
+    fn load_mcp_servers_stdio_empty_command_skipped() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("mcp.json");
+        std::fs::write(
+            &path,
+            r#"{
+                "mcpServers": {
+                    "empty-cmd": {
+                        "command": ""
+                    }
+                }
+            }"#,
+        )
+        .unwrap();
+
+        let servers = load_mcp_servers(&path).unwrap();
+        assert!(
+            servers.is_empty(),
+            "stdio server with empty command should be skipped"
+        );
     }
 
     // ── macOS channel config tests ─────────────────────────────────────

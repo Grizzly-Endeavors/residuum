@@ -59,38 +59,20 @@ pub(crate) async fn api_cloud_status(
 
 /// Parse `[cloud]` section from raw TOML to extract token presence and enabled state.
 fn parse_cloud_state(raw: &str) -> (bool, bool) {
-    // Simple TOML parsing for the cloud section
-    let mut in_cloud = false;
-    let mut has_token = false;
-    let mut enabled = true; // default is enabled if section exists
-
-    for line in raw.lines() {
-        let trimmed = line.trim();
-        if trimmed.starts_with('[') {
-            in_cloud = trimmed == "[cloud]";
-            continue;
-        }
-        if !in_cloud {
-            continue;
-        }
-        if let Some(rest) = trimmed.strip_prefix("token")
-            && rest.trim_start().starts_with('=')
-        {
-            let val = rest.trim_start().trim_start_matches('=').trim();
-            has_token = !val.trim_matches('"').is_empty();
-        }
-        if let Some(rest) = trimmed.strip_prefix("enabled")
-            && rest.trim_start().starts_with('=')
-        {
-            let val = rest.trim_start().trim_start_matches('=').trim();
-            enabled = val != "false";
-        }
-    }
-
-    if !in_cloud && !raw.contains("[cloud]") {
+    let Ok(val) = toml::from_str::<toml::Value>(raw) else {
         return (false, false);
-    }
-
+    };
+    let Some(cloud) = val.get("cloud").and_then(|v| v.as_table()) else {
+        return (false, false);
+    };
+    let has_token = cloud
+        .get("token")
+        .and_then(|v| v.as_str())
+        .is_some_and(|s| !s.trim().is_empty());
+    let enabled = cloud
+        .get("enabled")
+        .and_then(toml::Value::as_bool)
+        .unwrap_or(true);
     (has_token, enabled)
 }
 
@@ -126,26 +108,29 @@ pub(crate) async fn cloud_callback(
         tokio::task::spawn_blocking(move || {
             let mut store = SecretStore::load(&dir)?;
             store.set("cloud_token", &tok, &dir)?;
-            Ok::<(), crate::error::ResiduumError>(())
+            Ok::<(), crate::util::FatalError>(())
         })
         .await
     };
 
-    if let Err(e) = store_result {
-        tracing::error!(error = %e, "failed to store cloud token");
-        return (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Html(format!("<h1>Error</h1><p>Failed to store token: {e}</p>")),
-        )
-            .into_response();
-    }
-    if let Ok(Err(e)) = store_result {
-        tracing::error!(error = %e, "failed to store cloud token");
-        return (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Html(format!("<h1>Error</h1><p>Failed to store token: {e}</p>")),
-        )
-            .into_response();
+    match store_result {
+        Err(e) => {
+            tracing::error!(error = %e, "failed to store cloud token");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Html(format!("<h1>Error</h1><p>Failed to store token: {e}</p>")),
+            )
+                .into_response();
+        }
+        Ok(Err(e)) => {
+            tracing::error!(error = %e, "cloud token store operation failed");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Html(format!("<h1>Error</h1><p>Failed to store token: {e}</p>")),
+            )
+                .into_response();
+        }
+        Ok(Ok(())) => {}
     }
 
     // Update config.toml to add/update [cloud] section
@@ -188,6 +173,7 @@ pub(crate) async fn api_cloud_disconnect(
         )
     })?;
 
+    tracing::info!("cloud tunnel disconnected");
     state.reload_tx.send(ReloadSignal::Root).ok();
 
     Ok(Json(serde_json::json!({ "ok": true })))
@@ -322,6 +308,28 @@ token = "secret:cloud_token"
         let toml = "[cloud]\nenabled = true\n";
         let (has_token, enabled) = parse_cloud_state(toml);
         assert!(!has_token);
+        assert!(enabled);
+    }
+
+    #[test]
+    fn parse_cloud_state_empty_token() {
+        let toml = "[cloud]\nenabled = true\ntoken = \"\"\n";
+        let (has_token, enabled) = parse_cloud_state(toml);
+        assert!(
+            !has_token,
+            "empty token string should be treated as no token"
+        );
+        assert!(enabled);
+    }
+
+    #[test]
+    fn parse_cloud_state_whitespace_token() {
+        let toml = "[cloud]\nenabled = true\ntoken = \"   \"\n";
+        let (has_token, enabled) = parse_cloud_state(toml);
+        assert!(
+            !has_token,
+            "whitespace-only token should be treated as no token"
+        );
         assert!(enabled);
     }
 

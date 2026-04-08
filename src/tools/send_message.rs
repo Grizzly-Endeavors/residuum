@@ -49,7 +49,7 @@ impl Tool for SendMessageTool {
 
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
-            name: "send_message".to_string(),
+            name: self.name().to_string(),
             description: "Send a one-off message to a notification or interactive endpoint. \
                 Use list_endpoints to see available targets."
                 .to_string(),
@@ -75,15 +75,8 @@ impl Tool for SendMessageTool {
     }
 
     async fn execute(&self, arguments: Value) -> Result<ToolResult, ToolError> {
-        let endpoint_name = arguments
-            .get("endpoint")
-            .and_then(Value::as_str)
-            .ok_or_else(|| ToolError::InvalidArguments("endpoint is required".to_string()))?;
-
-        let message = arguments
-            .get("message")
-            .and_then(Value::as_str)
-            .ok_or_else(|| ToolError::InvalidArguments("message is required".to_string()))?;
+        let endpoint_name = super::require_str(&arguments, "endpoint")?;
+        let message = super::require_str(&arguments, "message")?;
 
         let title = arguments.get("title").and_then(Value::as_str);
 
@@ -136,6 +129,7 @@ impl Tool for SendMessageTool {
                 .publish(topic, notification)
                 .await
                 .map_err(|e| {
+                    tracing::error!(error = %e, endpoint = %endpoint_name, "failed to publish notification");
                     ToolError::Execution(format!(
                         "failed to publish message to '{endpoint_name}': {e}"
                     ))
@@ -146,8 +140,9 @@ impl Tool for SendMessageTool {
                 content: message.to_string(),
                 timestamp: now,
             };
-            let topic = topics::Response(EndpointName::from(endpoint_name));
+            let topic = topics::Endpoint(EndpointName::from(endpoint_name));
             self.publisher.publish(topic, response).await.map_err(|e| {
+                tracing::error!(error = %e, endpoint = %endpoint_name, "failed to publish response");
                 ToolError::Execution(format!(
                     "failed to publish message to '{endpoint_name}': {e}"
                 ))
@@ -170,7 +165,7 @@ mod tests {
         let registry = EndpointRegistry::new();
         registry.register(EndpointEntry {
             id: EndpointId::from("ws"),
-            topic: TopicId::Response(EndpointName::from("ws")),
+            topic: TopicId::Endpoint(EndpointName::from("ws")),
             capabilities: EndpointCapabilities::INTERACTIVE,
             display_name: "WebSocket".to_string(),
         });
@@ -226,7 +221,7 @@ mod tests {
         assert!(!result.is_error, "should succeed: {}", result.output);
         assert!(result.output.contains("my-ntfy"));
 
-        let event = subscriber.recv().await.unwrap().unwrap();
+        let event: crate::bus::NotificationEvent = subscriber.recv().await.unwrap().unwrap();
         assert_eq!(event.title, "alert");
         assert_eq!(event.content, "test notification");
     }
@@ -237,7 +232,7 @@ mod tests {
         let bus_handle = crate::bus::spawn_broker();
         let publisher = bus_handle.publisher();
         let mut subscriber = bus_handle
-            .subscribe(topics::Response(EndpointName::from("ws")))
+            .subscribe(topics::Endpoint(EndpointName::from("ws")))
             .await
             .unwrap();
         let tool = SendMessageTool::new(registry, publisher);
@@ -252,7 +247,7 @@ mod tests {
 
         assert!(!result.is_error, "should succeed: {}", result.output);
 
-        let event = subscriber.recv().await.unwrap().unwrap();
+        let event: crate::bus::ResponseEvent = subscriber.recv().await.unwrap().unwrap();
         assert_eq!(event.content, "proactive message");
     }
 

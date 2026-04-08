@@ -4,8 +4,8 @@ use std::sync::Arc;
 
 use tokio::time::Duration;
 
+use super::helpers::publish_notice;
 use crate::background::spawn_context::SpawnContext;
-use crate::bus::{Publisher, SystemMessageEvent, topics};
 use crate::config::Config;
 use crate::gateway::startup;
 use crate::models::CompletionOptions;
@@ -29,6 +29,7 @@ pub(super) enum IdleAction {
     clippy::struct_excessive_bools,
     reason = "diff struct deliberately uses bool flags for each subsystem"
 )]
+#[derive(PartialEq, Default)]
 pub(super) struct ConfigDiff {
     /// Provider chains changed (main, observer, reflector, pulse, embedding, retry, `max_tokens`, temperature, thinking).
     pub providers_changed: bool,
@@ -52,22 +53,14 @@ pub(super) struct ConfigDiff {
     pub idle_changed: bool,
     /// Cloud tunnel config changed (added/removed/changed).
     pub cloud_changed: bool,
+    /// Tracing config changed (log level, endpoints, sanitization, error reporting).
+    pub tracing_changed: bool,
 }
 
 impl ConfigDiff {
     /// Returns `true` if nothing changed between old and new config.
     fn is_empty(&self) -> bool {
-        !self.providers_changed
-            && !self.memory_changed
-            && !self.gateway_changed
-            && !self.discord_changed
-            && !self.telegram_changed
-            && !self.pulse_changed
-            && !self.background_changed
-            && !self.agent_changed
-            && !self.skills_changed
-            && !self.idle_changed
-            && !self.cloud_changed
+        *self == Self::default()
     }
 
     /// Build a human-readable summary of what changed.
@@ -106,6 +99,9 @@ impl ConfigDiff {
         if self.cloud_changed {
             parts.push("cloud");
         }
+        if self.tracing_changed {
+            parts.push("tracing");
+        }
         if parts.is_empty() {
             "no changes detected".to_string()
         } else {
@@ -137,6 +133,7 @@ pub(super) fn diff_config(old: &Config, new: &Config) -> ConfigDiff {
         skills_changed: old.skills != new.skills,
         idle_changed: old.idle != new.idle,
         cloud_changed: old.cloud != new.cloud,
+        tracing_changed: old.tracing != new.tracing,
     }
 }
 
@@ -184,16 +181,24 @@ pub fn rollback_config(config_dir: &std::path::Path) -> bool {
     any_restored
 }
 
-/// Publish a notice to `SystemMessage`.
-async fn publish_notice(publisher: &Publisher, message: String) {
-    if let Err(e) = publisher
-        .publish(
-            topics::SystemMessage,
-            SystemMessageEvent::Notice { message },
-        )
-        .await
-    {
-        tracing::warn!(error = %e, "failed to publish notice to bus");
+/// Shut down an adapter task and wait up to 5 seconds for it to stop.
+async fn shutdown_adapter(
+    shutdown_tx: &mut Option<tokio::sync::watch::Sender<bool>>,
+    handle: &mut Option<tokio::task::JoinHandle<()>>,
+    name: &str,
+) {
+    if let Some(tx) = shutdown_tx.take() {
+        tx.send(true).ok();
+    }
+    if let Some(h) = handle.take() {
+        if tokio::time::timeout(Duration::from_secs(5), h)
+            .await
+            .is_ok()
+        {
+            tracing::info!(adapter = %name, "adapter stopped");
+        } else {
+            tracing::warn!(adapter = %name, "adapter shutdown timed out after 5s");
+        }
     }
 }
 
@@ -264,6 +269,18 @@ pub(super) async fn handle_root_reload(rt: &mut GatewayRuntime) -> IdleAction {
     }
     if diff.agent_changed {
         reload_agent_abilities(rt, &new_cfg).await;
+    }
+    if diff.tracing_changed {
+        rt.tracing_service
+            .update_config(new_cfg.tracing.clone())
+            .await;
+        // Update the log filter if the level changed
+        if let Some(handle) = crate::util::tracing_init::global_filter_handle()
+            && let Err(e) = handle.set_filter(new_cfg.tracing.log_level)
+        {
+            tracing::warn!(error = %e, "failed to update log filter on tracing config reload");
+        }
+        tracing::info!(level = %new_cfg.tracing.log_level, "tracing config updated");
     }
 
     // ── Store new config ────────────────────────────────────────────────
@@ -362,9 +379,9 @@ async fn reload_gateway(rt: &mut GatewayRuntime, new_cfg: &Config) {
     let new_addr = new_cfg.gateway.addr();
     match tokio::net::TcpListener::bind(&new_addr).await {
         Ok(listener) => {
-            rt.shutdown_tx.send(true).ok();
+            rt.http_shutdown_tx.send(true).ok();
 
-            let (new_shutdown_tx, mut new_shutdown_rx) = tokio::sync::watch::channel(false);
+            let new_shutdown_tx = tokio::sync::watch::channel::<bool>(false).0;
 
             let state = GatewayState {
                 reload_tx: rt.reload_tx.clone(),
@@ -386,27 +403,27 @@ async fn reload_gateway(rt: &mut GatewayRuntime, new_cfg: &Config) {
             let update_api_state = crate::gateway::web::update::UpdateApiState {
                 update_status: std::sync::Arc::clone(&rt.update_status),
                 restart_tx: rt.restart_tx.clone(),
+                gateway_shutdown_tx: rt.gateway_shutdown_tx.clone(),
+            };
+            let tracing_api_state = crate::gateway::web::tracing_api::TracingApiState {
+                service: std::sync::Arc::clone(&rt.tracing_service),
             };
             let app = crate::gateway::event_loop::build_gateway_app(
                 state,
                 new_cfg,
                 config_api_state,
                 update_api_state,
+                tracing_api_state,
             );
 
-            let new_handle = tokio::spawn(async move {
-                if let Err(e) = axum::serve(listener, app)
-                    .with_graceful_shutdown(async move {
-                        new_shutdown_rx.wait_for(|v| *v).await.ok();
-                    })
-                    .await
-                {
-                    tracing::error!(error = %e, "gateway server error after rebind");
-                }
-            });
+            let new_handle = crate::gateway::event_loop::spawn_server_with_listener(
+                listener,
+                app,
+                &new_shutdown_tx,
+            );
 
             rt.server_handle = new_handle;
-            rt.shutdown_tx = new_shutdown_tx;
+            rt.http_shutdown_tx = new_shutdown_tx;
             tracing::info!(addr = %new_addr, "gateway rebound to new address");
         }
         Err(e) => {
@@ -458,50 +475,71 @@ async fn reload_agent_abilities(rt: &mut GatewayRuntime, new_cfg: &Config) {
         .write()
         .await
         .set_blocked_paths(blocked.into_iter().collect());
-    tracing::info!("agent ability gates updated");
+    tracing::info!(
+        modify_mcp = new_cfg.agent.modify_mcp,
+        modify_channels = new_cfg.agent.modify_channels,
+        "agent ability gates updated"
+    );
+}
+
+/// Shut down an adapter and optionally start a replacement using the provided build closure.
+///
+/// If `build` is `Some`, spawns a new adapter task and records the handle and shutdown sender.
+/// If `build` is `None`, the adapter is stopped and not restarted.
+async fn reload_adapter<F, Fut>(
+    shutdown_tx: &mut Option<tokio::sync::watch::Sender<bool>>,
+    handle: &mut Option<tokio::task::JoinHandle<()>>,
+    name: &'static str,
+    build: Option<F>,
+) where
+    F: FnOnce(tokio::sync::watch::Receiver<bool>) -> Fut,
+    Fut: std::future::Future<Output = ()> + Send + 'static,
+{
+    shutdown_adapter(shutdown_tx, handle, name).await;
+    match build {
+        Some(build_fn) => {
+            let (tx, rx) = tokio::sync::watch::channel(false);
+            *handle = Some(crate::util::spawn_monitored(name, build_fn(rx)));
+            *shutdown_tx = Some(tx);
+            tracing::info!(adapter = %name, "adapter restarted with new token");
+        }
+        None => {
+            tracing::info!(adapter = %name, "adapter removed from config");
+        }
+    }
 }
 
 /// Stop the existing Discord adapter (if running) and start a new one if configured.
 async fn reload_discord_adapter(rt: &mut GatewayRuntime, new_cfg: &Config) {
-    if let Some(tx) = rt.discord_shutdown_tx.take() {
-        tx.send(true).ok();
-    }
-    if let Some(handle) = rt.discord_handle.take() {
-        if tokio::time::timeout(Duration::from_secs(5), handle)
-            .await
-            .is_ok()
-        {
-            tracing::info!("discord adapter stopped");
-        } else {
-            tracing::warn!("discord adapter shutdown timed out after 5s");
-        }
-    }
-
-    if let Some(ref discord_cfg) = new_cfg.discord {
-        let (tx, rx) = tokio::sync::watch::channel(false);
-        let senders = crate::gateway::event_loop::AdapterSenders {
-            publisher: rt.publisher.clone(),
-            bus_handle: rt.bus_handle.clone(),
-            reload: rt.reload_tx.clone(),
-            command: rt.command_tx.clone(),
-        };
-        let discord = crate::interfaces::discord::DiscordInterface::new(
-            discord_cfg.clone(),
-            senders,
-            new_cfg.workspace_dir.clone(),
-            rt.tz,
-            rx,
-        );
-        rt.discord_handle = Some(crate::spawn::spawn_monitored("discord", async move {
-            if let Err(e) = discord.start().await {
-                tracing::error!(error = %e, "discord interface failed after reload");
+    let senders = crate::gateway::event_loop::AdapterSenders {
+        publisher: rt.publisher.clone(),
+        bus_handle: rt.bus_handle.clone(),
+        reload: rt.reload_tx.clone(),
+        command: rt.command_tx.clone(),
+    };
+    reload_adapter(
+        &mut rt.discord_shutdown_tx,
+        &mut rt.discord_handle,
+        "discord",
+        new_cfg.discord.as_ref().map(|cfg| {
+            let cfg = cfg.clone();
+            let workspace_dir = new_cfg.workspace_dir.clone();
+            let tz = rt.tz;
+            move |rx: tokio::sync::watch::Receiver<bool>| async move {
+                let iface = crate::interfaces::discord::DiscordInterface::new(
+                    cfg,
+                    senders,
+                    workspace_dir,
+                    tz,
+                    rx,
+                );
+                if let Err(e) = iface.start().await {
+                    tracing::error!(error = %e, "discord interface failed after reload");
+                }
             }
-        }));
-        rt.discord_shutdown_tx = Some(tx);
-        tracing::info!("discord adapter restarted with new token");
-    } else {
-        tracing::info!("discord adapter removed from config");
-    }
+        }),
+    )
+    .await;
 }
 
 /// Stop the existing tunnel (if running) and start a new one if configured.
@@ -527,7 +565,7 @@ async fn reload_tunnel(rt: &mut GatewayRuntime, new_cfg: &Config) {
         let cloud = cloud_cfg.clone();
         let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
         let status_tx = std::sync::Arc::clone(&rt.tunnel_status_tx);
-        rt.tunnel_handle = Some(crate::spawn::spawn_monitored("tunnel", async move {
+        rt.tunnel_handle = Some(crate::util::spawn_monitored("tunnel", async move {
             crate::tunnel::start_tunnel(cloud, shutdown_rx, status_tx).await;
         }));
         rt.tunnel_shutdown_tx = Some(shutdown_tx);
@@ -541,45 +579,35 @@ async fn reload_tunnel(rt: &mut GatewayRuntime, new_cfg: &Config) {
 
 /// Stop the existing Telegram adapter (if running) and start a new one if configured.
 async fn reload_telegram_adapter(rt: &mut GatewayRuntime, new_cfg: &Config) {
-    if let Some(tx) = rt.telegram_shutdown_tx.take() {
-        tx.send(true).ok();
-    }
-    if let Some(handle) = rt.telegram_handle.take() {
-        if tokio::time::timeout(Duration::from_secs(5), handle)
-            .await
-            .is_ok()
-        {
-            tracing::info!("telegram adapter stopped");
-        } else {
-            tracing::warn!("telegram adapter shutdown timed out after 5s");
-        }
-    }
-
-    if let Some(ref telegram_cfg) = new_cfg.telegram {
-        let (tx, rx) = tokio::sync::watch::channel(false);
-        let senders = crate::gateway::event_loop::AdapterSenders {
-            publisher: rt.publisher.clone(),
-            bus_handle: rt.bus_handle.clone(),
-            reload: rt.reload_tx.clone(),
-            command: rt.command_tx.clone(),
-        };
-        let telegram = crate::interfaces::telegram::TelegramInterface::new(
-            telegram_cfg.clone(),
-            senders,
-            new_cfg.workspace_dir.clone(),
-            rt.tz,
-            rx,
-        );
-        rt.telegram_handle = Some(crate::spawn::spawn_monitored("telegram", async move {
-            if let Err(e) = telegram.start().await {
-                tracing::error!(error = %e, "telegram interface failed after reload");
+    let senders = crate::gateway::event_loop::AdapterSenders {
+        publisher: rt.publisher.clone(),
+        bus_handle: rt.bus_handle.clone(),
+        reload: rt.reload_tx.clone(),
+        command: rt.command_tx.clone(),
+    };
+    reload_adapter(
+        &mut rt.telegram_shutdown_tx,
+        &mut rt.telegram_handle,
+        "telegram",
+        new_cfg.telegram.as_ref().map(|cfg| {
+            let cfg = cfg.clone();
+            let workspace_dir = new_cfg.workspace_dir.clone();
+            let tz = rt.tz;
+            move |rx: tokio::sync::watch::Receiver<bool>| async move {
+                let iface = crate::interfaces::telegram::TelegramInterface::new(
+                    cfg,
+                    senders,
+                    workspace_dir,
+                    tz,
+                    rx,
+                );
+                if let Err(e) = iface.start().await {
+                    tracing::error!(error = %e, "telegram interface failed after reload");
+                }
             }
-        }));
-        rt.telegram_shutdown_tx = Some(tx);
-        tracing::info!("telegram adapter restarted with new token");
-    } else {
-        tracing::info!("telegram adapter removed from config");
-    }
+        }),
+    )
+    .await;
 }
 
 #[cfg(test)]
@@ -620,6 +648,7 @@ mod tests {
             temperature: None,
             thinking: None,
             web_search: crate::config::WebSearchConfig::default(),
+            tracing: crate::config::TracingConfig::default(),
             role_overrides: std::collections::HashMap::new(),
             config_dir: std::path::PathBuf::from("/tmp/config"),
         }
@@ -692,6 +721,12 @@ mod tests {
         new.skills.dirs = vec![std::path::PathBuf::from("/new/skills")];
         new.agent.modify_mcp = false;
         new.background.max_concurrent = 10;
+        new.cloud = Some(CloudConfig {
+            relay_url: "wss://example.com".to_string(),
+            token: "tok".to_string(),
+            local_port: 7700,
+        });
+        new.idle.timeout = std::time::Duration::from_secs(300);
 
         let diff = diff_config(&old, &new);
         assert!(diff.providers_changed);
@@ -702,6 +737,8 @@ mod tests {
         assert!(diff.skills_changed);
         assert!(diff.agent_changed);
         assert!(diff.background_changed);
+        assert!(diff.cloud_changed);
+        assert!(diff.idle_changed);
         assert!(!diff.gateway_changed);
 
         let summary = diff.summary();
@@ -713,6 +750,8 @@ mod tests {
         assert!(summary.contains("skills"));
         assert!(summary.contains("agent"));
         assert!(summary.contains("background"));
+        assert!(summary.contains("cloud"));
+        assert!(summary.contains("idle"));
     }
 
     #[test]
@@ -790,16 +829,29 @@ mod tests {
     fn backup_config_creates_bak_file() {
         let dir = tempfile::tempdir().unwrap();
         let config = dir.path().join("config.toml");
+        let providers = dir.path().join("providers.toml");
         std::fs::write(&config, "timezone = \"UTC\"\n").unwrap();
+        std::fs::write(&providers, "# providers\n").unwrap();
 
         backup_config(dir.path());
 
-        let bak = dir.path().join("config.toml.bak");
-        assert!(bak.exists(), "backup should create config.toml.bak");
+        let config_bak = dir.path().join("config.toml.bak");
+        assert!(config_bak.exists(), "backup should create config.toml.bak");
         assert_eq!(
-            std::fs::read_to_string(&bak).unwrap(),
+            std::fs::read_to_string(&config_bak).unwrap(),
             "timezone = \"UTC\"\n",
-            "backup content should match original"
+            "config.toml backup content should match original"
+        );
+
+        let providers_bak = dir.path().join("providers.toml.bak");
+        assert!(
+            providers_bak.exists(),
+            "backup should create providers.toml.bak"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&providers_bak).unwrap(),
+            "# providers\n",
+            "providers.toml backup content should match original"
         );
     }
 
@@ -807,15 +859,23 @@ mod tests {
     fn rollback_config_restores_original() {
         let dir = tempfile::tempdir().unwrap();
         let config = dir.path().join("config.toml");
-        let bak = dir.path().join("config.toml.bak");
+        let providers = dir.path().join("providers.toml");
+        let config_bak = dir.path().join("config.toml.bak");
+        let providers_bak = dir.path().join("providers.toml.bak");
 
-        std::fs::write(&bak, "timezone = \"UTC\"\n").unwrap();
+        std::fs::write(&config_bak, "timezone = \"UTC\"\n").unwrap();
         std::fs::write(&config, "BROKEN").unwrap();
+        std::fs::write(&providers_bak, "# providers\n").unwrap();
+        std::fs::write(&providers, "BROKEN").unwrap();
 
         assert!(rollback_config(dir.path()), "rollback should succeed");
         assert_eq!(
             std::fs::read_to_string(&config).unwrap(),
             "timezone = \"UTC\"\n",
+        );
+        assert_eq!(
+            std::fs::read_to_string(&providers).unwrap(),
+            "# providers\n",
         );
     }
 

@@ -553,9 +553,8 @@ function setupWebSocket(server: ViteDevServer) {
         case "server_command":
           ws.send(
             JSON.stringify({
-              type: "system_event",
-              source: "system",
-              content: `Command '${msg.name}' executed. (mock)`,
+              type: "notice",
+              message: `Command '${msg.name}' executed. (mock)`,
             }),
           );
           break;

@@ -5,11 +5,11 @@ use tokio::sync::mpsc;
 use crate::bus::{
     EndpointName, Publisher, ToolActivityEvent, ToolCallEvent, ToolResultEvent, topics,
 };
-use crate::error::ResiduumError;
 use crate::mcp::SharedMcpRegistry;
 use crate::models::{CompletionOptions, Message, ModelProvider, ModelResponse, ToolCall};
 use crate::tools::{SharedToolFilter, ToolError, ToolFilter, ToolRegistry};
 use crate::workspace::identity::IdentityFiles;
+use anyhow::Context;
 
 use super::context::{MemoryContext, PromptContext, StatusLine, assemble_system_prompt};
 use super::interrupt::Interrupt;
@@ -17,6 +17,27 @@ use super::recent_messages::RecentMessages;
 
 /// Maximum number of tool-call iterations before the agent stops.
 pub(crate) const MAX_TOOL_ITERATIONS: usize = 50;
+
+/// Context for publishing streaming events during a turn.
+pub(crate) struct EventContext<'a> {
+    pub publisher: &'a Publisher,
+    pub output_endpoint: Option<&'a EndpointName>,
+    pub tool_activity_endpoint: Option<&'a EndpointName>,
+    pub correlation_id: &'a str,
+}
+
+impl EventContext<'_> {
+    async fn publish_tool_activity(&self, event: ToolActivityEvent, tool_name: &str) {
+        if let Some(ep) = self.tool_activity_endpoint
+            && let Err(e) = self
+                .publisher
+                .publish(topics::Endpoint(ep.clone()), event)
+                .await
+        {
+            tracing::debug!(error = %e, tool_name = %tool_name, "failed to publish tool activity event");
+        }
+    }
+}
 
 /// Maximum retries for empty responses (transient API glitches).
 const MAX_EMPTY_RESPONSE_RETRIES: u32 = 2;
@@ -42,20 +63,16 @@ pub(crate) struct TurnResources<'a> {
 /// Returns a vec containing the final text-only response. Intermediate texts
 /// emitted alongside tool calls are sent via `reply` in real-time but not
 /// included in the return value.
-#[expect(
-    clippy::too_many_arguments,
-    reason = "publisher and topic params added during bus migration"
-)]
+#[tracing::instrument(skip_all, fields(operation = "execute_turn"))]
 pub(crate) async fn execute_turn(
     resources: &TurnResources<'_>,
     memory_ctx: &MemoryContext<'_>,
     prompt_ctx: &PromptContext<'_>,
     recent_messages: &mut RecentMessages,
-    publisher: &Publisher,
-    output_endpoint: Option<&EndpointName>,
+    events: &EventContext<'_>,
     status_line: Option<&StatusLine>,
     interrupt_rx: &mut mpsc::Receiver<Interrupt>,
-) -> Result<Vec<String>, ResiduumError> {
+) -> anyhow::Result<Vec<String>> {
     let mut texts: Vec<String> = Vec::new();
     let mut empty_retries: u32 = 0;
 
@@ -83,11 +100,11 @@ pub(crate) async fn execute_turn(
             status_line,
         );
 
-        let response = resources
+        let mut response = resources
             .provider
             .complete(&messages, &tool_definitions, resources.options)
             .await
-            .map_err(ResiduumError::Model)?;
+            .context("model completion failed")?;
 
         if let Some(ref thinking) = response.thinking {
             tracing::debug!(
@@ -95,7 +112,6 @@ pub(crate) async fn execute_turn(
                 "structured thinking received"
             );
         }
-        let mut response = response;
         response.content = crate::models::think_tags::strip_think_tags(&response.content);
 
         if response.tool_calls.is_empty() {
@@ -111,36 +127,34 @@ pub(crate) async fn execute_turn(
                     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
                     continue;
                 }
-                tracing::warn!("model returned empty response with no tool calls after retries");
-                return Err(ResiduumError::Other(anyhow::anyhow!(
-                    "model returned empty response with no tool calls"
-                )));
+                anyhow::bail!("model returned empty response with no tool calls");
             }
+            tracing::debug!(iterations = iteration, "turn complete");
             recent_messages.push(Message::assistant(response.content.clone(), None));
             texts.push(response.content);
             return Ok(texts);
         }
 
-        tracing::info!(
+        tracing::debug!(
             iteration,
             tool_count = response.tool_calls.len(),
             "processing tool calls"
         );
 
         if !response.content.is_empty()
-            && let Some(ep) = output_endpoint
+            && let Some(ep) = events.output_endpoint
+            && let Err(e) = events
+                .publisher
+                .publish(
+                    topics::Endpoint(ep.clone()),
+                    crate::bus::IntermediateEvent {
+                        correlation_id: events.correlation_id.to_owned(),
+                        content: response.content.clone(),
+                    },
+                )
+                .await
         {
-            drop(
-                publisher
-                    .publish(
-                        topics::Intermediate(ep.clone()),
-                        crate::bus::IntermediateEvent {
-                            correlation_id: String::new(),
-                            content: response.content.clone(),
-                        },
-                    )
-                    .await,
-            );
+            tracing::debug!(error = %e, "failed to publish intermediate text event");
         }
 
         recent_messages.push(Message::assistant(
@@ -149,24 +163,13 @@ pub(crate) async fn execute_turn(
         ));
 
         for tool_call in &response.tool_calls {
-            execute_tool(
-                tool_call,
-                resources.tools,
-                resources.mcp_registry,
-                &filter,
-                recent_messages,
-                publisher,
-                output_endpoint,
-            )
-            .await;
+            execute_tool(tool_call, resources, &filter, recent_messages, events).await;
         }
 
         log_usage(&response);
     }
 
-    Err(ResiduumError::Other(anyhow::anyhow!(
-        "agent exceeded maximum tool iterations ({MAX_TOOL_ITERATIONS})"
-    )))
+    anyhow::bail!("agent exceeded maximum tool iterations ({MAX_TOOL_ITERATIONS})")
 }
 
 /// Drain any interrupt messages that arrived while tools were executing.
@@ -193,44 +196,43 @@ fn drain_interrupts(
 }
 
 /// Execute a single tool call, falling back to MCP servers.
+#[tracing::instrument(skip_all, fields(tool.name = %tool_call.name, tool.id = %tool_call.id))]
 async fn execute_tool(
     tool_call: &ToolCall,
-    tools: &ToolRegistry,
-    mcp_registry: &SharedMcpRegistry,
+    resources: &TurnResources<'_>,
     filter: &ToolFilter,
     recent_messages: &mut RecentMessages,
-    publisher: &Publisher,
-    output_endpoint: Option<&EndpointName>,
+    events: &EventContext<'_>,
 ) {
-    if let Some(ep) = output_endpoint {
-        drop(
-            publisher
-                .publish(
-                    topics::ToolActivity(ep.clone()),
-                    ToolActivityEvent::Call(ToolCallEvent {
-                        correlation_id: String::new(),
-                        tool_call_id: tool_call.id.clone(),
-                        name: tool_call.name.clone(),
-                        arguments: tool_call.arguments.clone(),
-                    }),
-                )
-                .await,
-        );
-    }
+    events
+        .publish_tool_activity(
+            ToolActivityEvent::Call(ToolCallEvent {
+                correlation_id: events.correlation_id.to_owned(),
+                tool_call_id: tool_call.id.clone(),
+                name: tool_call.name.clone(),
+                arguments: tool_call.arguments.clone(),
+            }),
+            &tool_call.name,
+        )
+        .await;
 
     // Try built-in tools first, fall back to MCP servers
-    let result = match tools
+    let (result, source) = match resources
+        .tools
         .execute(&tool_call.name, tool_call.arguments.clone(), filter)
         .await
     {
         Err(ToolError::NotFound(_)) => {
-            mcp_registry
+            tracing::debug!(tool_name = %tool_call.name, "tool not found in built-in registry, falling back to MCP");
+            let r = resources
+                .mcp_registry
                 .read()
                 .await
                 .call_tool(&tool_call.name, tool_call.arguments.clone())
-                .await
+                .await;
+            (r, "mcp")
         }
-        other => other,
+        other => (other, "built-in"),
     };
 
     let (output, is_error, images) = match result {
@@ -240,28 +242,25 @@ async fn execute_tool(
                 error = %e,
                 tool_name = %tool_call.name,
                 tool_call_id = %tool_call.id,
+                source,
                 "tool execution failed"
             );
             (e.to_string(), true, vec![])
         }
     };
 
-    if let Some(ep) = output_endpoint {
-        drop(
-            publisher
-                .publish(
-                    topics::ToolActivity(ep.clone()),
-                    ToolActivityEvent::Result(ToolResultEvent {
-                        correlation_id: String::new(),
-                        tool_call_id: tool_call.id.clone(),
-                        name: tool_call.name.clone(),
-                        output: output.clone(),
-                        is_error,
-                    }),
-                )
-                .await,
-        );
-    }
+    events
+        .publish_tool_activity(
+            ToolActivityEvent::Result(ToolResultEvent {
+                correlation_id: events.correlation_id.to_owned(),
+                tool_call_id: tool_call.id.clone(),
+                name: tool_call.name.clone(),
+                output: output.clone(),
+                is_error,
+            }),
+            &tool_call.name,
+        )
+        .await;
 
     if images.is_empty() {
         recent_messages.push(Message::tool(output, tool_call.id.clone()));
@@ -274,15 +273,17 @@ async fn execute_tool(
     }
 }
 
-/// Log token usage from a model response at info level.
+/// Log token usage from a model response at debug level.
 fn log_usage(response: &ModelResponse) {
     if let Some(usage) = response.usage {
-        tracing::info!(
+        tracing::debug!(
             input_tokens = usage.input_tokens,
             output_tokens = usage.output_tokens,
             cache_creation_tokens = usage.cache_creation_tokens,
             cache_read_tokens = usage.cache_read_tokens,
             "token usage"
         );
+    } else {
+        tracing::debug!("token usage not available in response");
     }
 }

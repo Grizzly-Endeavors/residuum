@@ -8,7 +8,7 @@ use std::sync::Arc;
 use chrono::{DateTime, Utc};
 use tokio::sync::RwLock;
 
-use crate::error::ResiduumError;
+use anyhow::{Context, bail};
 
 /// Build-time version injected by the release workflow.
 pub const CURRENT_VERSION: &str = env!("RESIDUUM_VERSION");
@@ -43,26 +43,28 @@ impl Default for UpdateStatus {
 /// Thread-safe shared update status.
 pub type SharedUpdateStatus = Arc<RwLock<UpdateStatus>>;
 
-/// Create a new shared update status with defaults.
-#[must_use]
-pub fn new_shared_status() -> SharedUpdateStatus {
-    Arc::new(RwLock::new(UpdateStatus::default()))
-}
-
 /// Fetch the latest release, update shared state, log on failure.
+#[tracing::instrument(skip_all)]
 pub async fn check_for_update(status: &SharedUpdateStatus) {
+    tracing::trace!("checking for updates");
     {
         let mut s = status.write().await;
         s.checking = true;
     }
 
-    match fetch_latest_version().await {
+    let result = fetch_latest_version().await;
+    let mut s = status.write().await;
+    apply_fetch_result(&mut s, result);
+}
+
+fn apply_fetch_result(s: &mut UpdateStatus, result: anyhow::Result<String>) {
+    match result {
         Ok(latest) => {
-            let mut s = status.write().await;
-            let current = &s.current;
-            s.update_available = !is_up_to_date(current, &latest);
+            s.update_available = !is_up_to_date(&s.current, &latest);
             if s.update_available {
                 tracing::info!(current = %s.current, latest = %latest, "update available");
+            } else {
+                tracing::trace!(current = %s.current, latest = %latest, "already up to date");
             }
             s.latest = Some(latest);
             s.last_checked = Some(Utc::now());
@@ -70,54 +72,58 @@ pub async fn check_for_update(status: &SharedUpdateStatus) {
         }
         Err(e) => {
             tracing::warn!(error = %e, "failed to check for updates");
-            let mut s = status.write().await;
             s.checking = false;
         }
     }
+}
+
+fn http_client() -> anyhow::Result<reqwest::Client> {
+    reqwest::Client::builder()
+        .user_agent("residuum-updater")
+        .build()
+        .context("failed to build http client")
 }
 
 /// Fetch the latest release tag name from GitHub.
 ///
 /// # Errors
 ///
-/// Returns `ResiduumError::Gateway` if the HTTP request or JSON parsing fails.
-pub async fn fetch_latest_version() -> Result<String, ResiduumError> {
-    let client = reqwest::Client::builder()
-        .user_agent("residuum-updater")
-        .build()
-        .map_err(|e| ResiduumError::Gateway(format!("failed to build http client: {e}")))?;
+/// Returns an error if the HTTP request or JSON parsing fails.
+#[tracing::instrument(skip_all)]
+pub async fn fetch_latest_version() -> anyhow::Result<String> {
+    let client = http_client()?;
 
     let resp = client
         .get("https://api.github.com/repos/grizzly-endeavors/residuum/releases/latest")
         .header("Accept", "application/vnd.github+json")
         .send()
         .await
-        .map_err(|e| ResiduumError::Gateway(format!("failed to fetch latest release: {e}")))?;
+        .context("failed to fetch latest release")?;
 
     if !resp.status().is_success() {
-        return Err(ResiduumError::Gateway(format!(
-            "github api returned {} — are you online?",
-            resp.status()
-        )));
+        bail!("github api returned {} — are you online?", resp.status());
     }
 
     let body: serde_json::Value = resp
         .json()
         .await
-        .map_err(|e| ResiduumError::Gateway(format!("failed to parse release response: {e}")))?;
+        .context("failed to parse release response")?;
 
-    body.get("tag_name")
+    let tag = body
+        .get("tag_name")
         .and_then(|v| v.as_str())
         .map(String::from)
-        .ok_or_else(|| {
-            ResiduumError::Gateway("release response missing tag_name field".to_string())
-        })
+        .ok_or_else(|| anyhow::anyhow!("release response missing tag_name field"))?;
+
+    tracing::debug!(tag_name = %tag, "fetched latest release tag");
+    Ok(tag)
 }
 
 /// Compare the current build version against the latest release tag.
 ///
 /// Returns `true` if the current version starts with the latest tag,
-/// accounting for `git describe` suffixes like `-5-gabcdef1`.
+/// accounting for `git describe` suffixes like `-5-gabcdef1`, or if the
+/// current version is a newer `CalVer` release than the latest.
 #[must_use]
 pub fn is_up_to_date(current: &str, latest: &str) -> bool {
     // Exact match (tagged commit)
@@ -126,63 +132,161 @@ pub fn is_up_to_date(current: &str, latest: &str) -> bool {
     }
     // current is "v2026.03.02-5-gabcdef1" and latest is "v2026.03.02" —
     // the current build is *ahead* of the latest release
-    if current.starts_with(latest) && current.as_bytes().get(latest.len()) == Some(&b'-') {
+    if current.starts_with(latest)
+        && current
+            .get(latest.len()..)
+            .is_some_and(|r| r.starts_with('-'))
+    {
+        return true;
+    }
+    // current is a newer tagged release (e.g. rollback or delayed publish)
+    if let (Some(cur_ver), Some(lat_ver)) = (parse_calver(current), parse_calver(latest))
+        && cur_ver > lat_ver
+    {
         return true;
     }
     false
 }
 
-/// Download and run the install script to replace the current binary.
+fn parse_calver(v: &str) -> Option<(u32, u32, u32)> {
+    let v = v.strip_prefix('v')?;
+    let mut parts = v.splitn(3, '.');
+    let year: u32 = parts.next()?.parse().ok()?;
+    let month_str = parts.next()?;
+    let day_str = parts.next()?;
+    if month_str.len() != 2 || day_str.len() != 2 {
+        return None;
+    }
+    let month: u32 = month_str.parse().ok()?;
+    let day: u32 = day_str.parse().ok()?;
+    Some((year, month, day))
+}
+
+/// Download the latest release binary and replace the current executable.
 ///
-/// Returns the version tag that was installed (the latest release tag).
+/// Downloads directly from GitHub Releases, avoiding the install script
+/// (which requires an interactive terminal for `sudo` on macOS).
 ///
 /// # Errors
 ///
-/// Returns `ResiduumError::Gateway` if the download or script execution fails.
-pub async fn download_and_install() -> Result<String, ResiduumError> {
-    let latest = fetch_latest_version().await?;
+/// Returns an error if the download, platform detection,
+/// or binary replacement fails.
+#[tracing::instrument(skip_all, fields(version = %version))]
+pub async fn download_and_install(version: &str) -> anyhow::Result<()> {
+    let platform = detect_platform()?;
+    let url = format!(
+        "https://github.com/grizzly-endeavors/residuum/releases/download/{version}/residuum-{platform}"
+    );
 
-    let client = reqwest::Client::new();
-    let script = client
-        .get("https://agent-residuum.com/install")
+    tracing::info!(version = %version, %platform, "downloading update binary");
+
+    let client = http_client()?;
+
+    let response = client
+        .get(&url)
         .send()
         .await
-        .map_err(|e| ResiduumError::Gateway(format!("failed to download install script: {e}")))?
-        .text()
+        .context("failed to download update binary")?;
+
+    if !response.status().is_success() {
+        bail!(
+            "update binary download returned HTTP {} — asset may not exist for {platform}",
+            response.status()
+        );
+    }
+
+    let bytes = response
+        .bytes()
         .await
-        .map_err(|e| ResiduumError::Gateway(format!("failed to read install script body: {e}")))?;
+        .context("failed to read update binary")?;
 
-    let tmp_dir = std::env::temp_dir();
-    let script_path = tmp_dir.join("residuum-install.sh");
-    std::fs::write(&script_path, &script)
-        .map_err(|e| ResiduumError::Gateway(format!("failed to write install script: {e}")))?;
+    tracing::debug!(bytes = bytes.len(), "download complete");
 
-    tracing::info!("starting self-update download and install");
+    let current_exe =
+        std::env::current_exe().context("failed to determine current executable path")?;
 
-    let output = std::process::Command::new("sh")
-        .arg(&script_path)
-        .output()
-        .map_err(|e| ResiduumError::Gateway(format!("failed to execute install script: {e}")))?;
+    // On Linux, the kernel appends " (deleted)" to /proc/self/exe when the
+    // binary has been atomically replaced. Strip it to get the real path.
+    let exe_path = current_exe
+        .to_string_lossy()
+        .strip_suffix(" (deleted)")
+        .map(std::path::PathBuf::from)
+        .unwrap_or(current_exe);
 
-    if let Err(e) = std::fs::remove_file(&script_path) {
-        tracing::warn!(error = %e, path = %script_path.display(), "failed to remove temp install script");
+    let exe_dir = exe_path
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("current executable has no parent directory"))?;
+
+    // Write to a temp file in the same directory for atomic rename
+    let tmp_path = exe_dir.join(".residuum-update.tmp");
+
+    let cleanup = || {
+        if let Err(re) = std::fs::remove_file(&tmp_path) {
+            tracing::warn!(error = %re, path = %tmp_path.display(), "failed to remove temp file during cleanup");
+        }
+    };
+
+    std::fs::write(&tmp_path, &bytes)
+        .inspect_err(|_| cleanup())
+        .with_context(|| {
+            format!(
+                "failed to write update binary to {} — check directory permissions",
+                tmp_path.display()
+            )
+        })?;
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&tmp_path, std::fs::Permissions::from_mode(0o755))
+            .inspect_err(|_| cleanup())
+            .context("failed to set executable permissions")?;
     }
 
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(ResiduumError::Gateway(format!(
-            "install script exited with {}: {}",
-            output.status,
-            stderr.trim()
-        )));
+    // Atomic rename replaces the binary on disk while the running process
+    // keeps its handle to the old inode
+    std::fs::rename(&tmp_path, &exe_path)
+        .inspect_err(|_| cleanup())
+        .with_context(|| {
+            format!(
+                "failed to replace binary at {} — check directory permissions",
+                exe_path.display()
+            )
+        })?;
+
+    tracing::info!(path = %exe_path.display(), "update binary installed successfully");
+    Ok(())
+}
+
+/// Detect the current platform in the format used by release asset names.
+///
+/// # Errors
+///
+/// Returns an error for unsupported OS/architecture combinations.
+fn detect_platform() -> anyhow::Result<String> {
+    let os = match std::env::consts::OS {
+        "linux" => "linux",
+        "macos" => "darwin",
+        other => {
+            bail!("unsupported operating system for self-update: {other}");
+        }
+    };
+
+    let arch = match std::env::consts::ARCH {
+        arch @ ("x86_64" | "aarch64") => arch,
+        other => {
+            bail!("unsupported architecture for self-update: {other}");
+        }
+    };
+
+    if os == "darwin" && arch == "x86_64" {
+        bail!("macOS x86_64 (Intel) is not supported — Apple Silicon only");
     }
 
-    tracing::info!(version = %latest, "update downloaded and installed successfully");
-    Ok(latest)
+    Ok(format!("{os}-{arch}"))
 }
 
 #[cfg(test)]
-#[expect(clippy::unwrap_used, reason = "test code uses unwrap for clarity")]
 mod tests {
     use super::*;
 
@@ -227,6 +331,14 @@ mod tests {
     }
 
     #[test]
+    fn is_up_to_date_current_newer_than_latest() {
+        assert!(
+            is_up_to_date("v2026.03.03", "v2026.03.02"),
+            "version newer than latest release should be up to date"
+        );
+    }
+
+    #[test]
     fn default_status_uses_current_version() {
         let status = UpdateStatus::default();
         assert_eq!(status.current, CURRENT_VERSION);
@@ -237,13 +349,39 @@ mod tests {
     }
 
     #[test]
-    fn new_shared_status_is_default() {
-        let rt = tokio::runtime::Runtime::new().unwrap();
-        rt.block_on(async {
-            let shared = new_shared_status();
-            let s = shared.read().await;
-            assert_eq!(s.current, CURRENT_VERSION);
-            assert!(!s.update_available);
-        });
+    fn apply_fetch_result_clears_checking_on_error() {
+        let mut s = UpdateStatus {
+            checking: true,
+            ..Default::default()
+        };
+        apply_fetch_result(&mut s, Err(anyhow::anyhow!("network error")));
+        assert!(!s.checking, "checking flag should be cleared on error");
+    }
+
+    #[test]
+    fn apply_fetch_result_clears_checking_on_success() {
+        let mut s = UpdateStatus {
+            checking: true,
+            ..Default::default()
+        };
+        apply_fetch_result(&mut s, Ok("v2026.03.02".to_string()));
+        assert!(!s.checking, "checking flag should be cleared on success");
+    }
+
+    #[test]
+    fn detect_platform_succeeds_on_current_platform() {
+        let result = detect_platform();
+        assert!(
+            result.is_ok(),
+            "detect_platform failed on current platform: {result:?}"
+        );
+        #[expect(clippy::unwrap_used, reason = "test code uses unwrap for clarity")]
+        let platform = result.unwrap();
+        assert!(
+            platform == "linux-x86_64"
+                || platform == "linux-aarch64"
+                || platform == "darwin-aarch64",
+            "unexpected platform string: {platform}"
+        );
     }
 }

@@ -366,6 +366,90 @@ pub struct RoleOverrides {
     pub thinking: Option<crate::models::ThinkingConfig>,
 }
 
+/// Log detail level for daemon file output.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum LogLevel {
+    /// Standard operational logging.
+    Info,
+    /// Detailed debugging for residuum crates.
+    #[default]
+    Debug,
+    /// Maximum verbosity for residuum crates.
+    Trace,
+}
+
+impl LogLevel {
+    /// The `EnvFilter` directive string for this level.
+    #[must_use]
+    pub fn filter_str(self) -> &'static str {
+        match self {
+            Self::Info => "info",
+            Self::Debug => "residuum=debug,warn",
+            Self::Trace => "residuum=trace,warn",
+        }
+    }
+}
+
+impl fmt::Display for LogLevel {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Info => f.write_str("info"),
+            Self::Debug => f.write_str("debug"),
+            Self::Trace => f.write_str("trace"),
+        }
+    }
+}
+
+impl std::str::FromStr for LogLevel {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "info" => Ok(Self::Info),
+            "debug" => Ok(Self::Debug),
+            "trace" => Ok(Self::Trace),
+            other => Err(format!(
+                "invalid log level '{other}': must be info, debug, or trace"
+            )),
+        }
+    }
+}
+
+/// A configured OTEL endpoint for trace export.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OtelEndpoint {
+    /// OTLP HTTP endpoint URL.
+    pub url: String,
+    /// Human-readable name for this endpoint.
+    pub name: Option<String>,
+    /// Additional HTTP headers (e.g. auth tokens).
+    pub headers: HashMap<String, String>,
+}
+
+/// Validated tracing and observability configuration.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TracingConfig {
+    /// Log detail level for daemon file output.
+    pub log_level: LogLevel,
+    /// Whether to automatically report errors to the developer endpoint.
+    pub auto_error_reporting: bool,
+    /// Whether to redact sensitive content in trace exports.
+    pub sanitize_content: bool,
+    /// OTEL endpoints for trace export.
+    pub otel_endpoints: Vec<OtelEndpoint>,
+}
+
+impl Default for TracingConfig {
+    fn default() -> Self {
+        Self {
+            log_level: LogLevel::default(),
+            auto_error_reporting: false,
+            sanitize_content: true,
+            otel_endpoints: Vec::new(),
+        }
+    }
+}
+
 /// Validated web search configuration.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct WebSearchConfig {
@@ -457,6 +541,8 @@ pub struct Config {
     pub thinking: Option<crate::models::ThinkingConfig>,
     /// Web search configuration.
     pub web_search: WebSearchConfig,
+    /// Tracing and observability configuration.
+    pub tracing: TracingConfig,
     /// Per-role overrides for temperature and thinking.
     pub role_overrides: HashMap<String, RoleOverrides>,
     /// Directory this config was loaded from.
@@ -494,6 +580,7 @@ impl fmt::Debug for Config {
             .field("temperature", &self.temperature)
             .field("thinking", &self.thinking)
             .field("web_search", &self.web_search)
+            .field("tracing", &self.tracing)
             .field("role_overrides", &self.role_overrides)
             .field("config_dir", &self.config_dir)
             .finish()
@@ -693,6 +780,82 @@ mod tests {
         );
         assert_eq!(
             config_empty.resolve_tier(&BackgroundModelTier::Large, main_slice),
+            vec![p_main.clone()]
+        );
+    }
+
+    #[test]
+    fn resolve_tier_only_small_and_only_medium() {
+        use super::super::provider::{ModelSpec, ProviderKind};
+
+        let p_small = ProviderSpec {
+            name: "dummy-small".to_string(),
+            model: ModelSpec {
+                kind: ProviderKind::OpenAi,
+                model: "small-model".to_string(),
+            },
+            provider_url: "http://dummy".to_string(),
+            api_key: None,
+            keep_alive: None,
+        };
+        let p_medium = ProviderSpec {
+            name: "dummy-medium".to_string(),
+            model: ModelSpec {
+                kind: ProviderKind::OpenAi,
+                model: "medium-model".to_string(),
+            },
+            provider_url: "http://dummy".to_string(),
+            api_key: None,
+            keep_alive: None,
+        };
+        let p_main = ProviderSpec {
+            name: "dummy-main".to_string(),
+            model: ModelSpec {
+                kind: ProviderKind::OpenAi,
+                model: "main-model".to_string(),
+            },
+            provider_url: "http://dummy".to_string(),
+            api_key: None,
+            keep_alive: None,
+        };
+
+        let main_slice = std::slice::from_ref(&p_main);
+
+        // Only small -> requesting Medium should fall back to main (not small)
+        let config_only_small = BackgroundModelsConfig {
+            small: Some(vec![p_small.clone()]),
+            medium: None,
+            large: None,
+        };
+        assert_eq!(
+            config_only_small.resolve_tier(&BackgroundModelTier::Small, main_slice),
+            vec![p_small.clone()]
+        );
+        assert_eq!(
+            config_only_small.resolve_tier(&BackgroundModelTier::Medium, main_slice),
+            vec![p_main.clone()]
+        );
+        assert_eq!(
+            config_only_small.resolve_tier(&BackgroundModelTier::Large, main_slice),
+            vec![p_main.clone()]
+        );
+
+        // Only medium -> Small falls back to medium, Large falls back to main
+        let config_only_medium = BackgroundModelsConfig {
+            small: None,
+            medium: Some(vec![p_medium.clone()]),
+            large: None,
+        };
+        assert_eq!(
+            config_only_medium.resolve_tier(&BackgroundModelTier::Small, main_slice),
+            vec![p_medium.clone()]
+        );
+        assert_eq!(
+            config_only_medium.resolve_tier(&BackgroundModelTier::Medium, main_slice),
+            vec![p_medium.clone()]
+        );
+        assert_eq!(
+            config_only_medium.resolve_tier(&BackgroundModelTier::Large, main_slice),
             vec![p_main.clone()]
         );
     }

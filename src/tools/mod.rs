@@ -36,7 +36,7 @@ use tokio::sync::RwLock;
 use crate::models::{ImageData, ToolDefinition};
 
 /// Errors from tool execution.
-#[derive(Error, Debug)]
+#[derive(Error, Debug, PartialEq)]
 pub enum ToolError {
     /// The requested tool was not found in the registry.
     #[error("unknown tool: {0}")]
@@ -191,7 +191,11 @@ impl ToolFilter {
     }
 }
 
-// TODO(phase-6): add runtime JSON Schema validation for third-party tools
+pub(super) fn require_str<'a>(args: &'a Value, field: &'static str) -> Result<&'a str, ToolError> {
+    args.get(field)
+        .and_then(Value::as_str)
+        .ok_or_else(|| ToolError::InvalidArguments(format!("{field} is required")))
+}
 
 /// Trait for tool implementations that the agent can invoke.
 #[async_trait]

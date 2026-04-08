@@ -77,4 +77,4 @@ Only one project can be active at a time. Activating a new project requires deac
 - Directory names are sanitized from the project name: lowercased, special characters replaced with hyphens, consecutive hyphens collapsed, leading/trailing hyphens trimmed.
 - `project_deactivate` **will reject empty log entries**. Always describe what was accomplished.
 - The project index scans both `projects/` and `archive/` on startup. Invalid or missing frontmatter is warned and skipped.
-- Project skills are discovered during activation and merged into the skill index (project source takes lowest priority in dedup).
+- Project skills are discovered during activation and merged into the skill index (project source takes highest priority in dedup).

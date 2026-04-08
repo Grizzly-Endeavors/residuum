@@ -31,14 +31,16 @@ pub fn ordinal_suffix(day: u32) -> &'static str {
 #[must_use]
 pub fn format_display_datetime(dt: NaiveDateTime) -> String {
     let suffix = ordinal_suffix(dt.day());
-    let result = dt
-        .format(&format!("%A %b %-d{suffix} %Y | %H:%M"))
-        .to_string();
-    debug_assert!(
-        !result.is_empty(),
-        "format_display_datetime produced empty output"
-    );
-    result
+    format!(
+        "{} {}{suffix} {}",
+        dt.format("%A %b"),
+        dt.day(),
+        dt.format("%Y | %H:%M")
+    )
+}
+
+fn plural(n: i64, one: &'static str, many: &'static str) -> &'static str {
+    if n == 1 { one } else { many }
 }
 
 /// Format a time delta as a human-readable relative string.
@@ -47,32 +49,35 @@ pub fn format_display_datetime(dt: NaiveDateTime) -> String {
 #[must_use]
 pub fn format_relative_time(delta: TimeDelta) -> String {
     let total_secs = delta.num_seconds();
-    if total_secs < 0 {
-        warn!(
-            total_secs,
-            "format_relative_time called with negative delta"
-        );
-        return "just now".to_string();
-    }
     if total_secs < 60 {
+        if total_secs < 0 {
+            warn!(
+                delta_secs = total_secs,
+                "format_relative_time received negative delta; caller passed timestamps in wrong order"
+            );
+        }
         return "just now".to_string();
     }
 
     let mins = delta.num_minutes();
     if mins < 60 {
-        return format!("{mins} mins ago");
+        return format!("{mins} {} ago", plural(mins, "min", "mins"));
     }
 
     let hours = delta.num_hours();
     if hours < 24 {
-        return format!("{hours} hours ago");
+        return format!("{hours} {} ago", plural(hours, "hour", "hours"));
     }
 
     let days = delta.num_days();
-    format!("{days} days ago")
+    format!("{days} {} ago", plural(days, "day", "days"))
 }
 
 const MINUTE_FMT: &str = "%Y-%m-%dT%H:%M";
+
+fn parse_minute(s: &str) -> Result<NaiveDateTime, String> {
+    NaiveDateTime::parse_from_str(s, MINUTE_FMT).map_err(|e| format!("invalid datetime {s:?}: {e}"))
+}
 
 /// Serde module for `NaiveDateTime` using minute-precision (`YYYY-MM-DDTHH:MM`).
 pub mod minute_format {
@@ -95,7 +100,7 @@ pub mod minute_format {
         D: Deserializer<'de>,
     {
         let s = String::deserialize(deserializer)?;
-        NaiveDateTime::parse_from_str(&s, super::MINUTE_FMT).map_err(serde::de::Error::custom)
+        super::parse_minute(&s).map_err(serde::de::Error::custom)
     }
 }
 
@@ -111,7 +116,7 @@ pub mod minute_format_opt {
         S: Serializer,
     {
         match dt {
-            Some(dt) => serializer.serialize_str(&dt.format(super::MINUTE_FMT).to_string()),
+            Some(dt) => super::minute_format::serialize(dt, serializer),
             None => serializer.serialize_none(),
         }
     }
@@ -124,7 +129,7 @@ pub mod minute_format_opt {
     {
         let opt: Option<String> = Option::deserialize(deserializer)?;
         match opt {
-            Some(s) => NaiveDateTime::parse_from_str(&s, super::MINUTE_FMT)
+            Some(s) => super::parse_minute(&s)
                 .map(Some)
                 .map_err(serde::de::Error::custom),
             None => Ok(None),
@@ -196,20 +201,74 @@ mod tests {
 
     #[test]
     fn format_relative_time_minutes() {
-        assert_eq!(format_relative_time(TimeDelta::minutes(1)), "1 mins ago");
+        assert_eq!(format_relative_time(TimeDelta::minutes(1)), "1 min ago");
         assert_eq!(format_relative_time(TimeDelta::minutes(15)), "15 mins ago");
         assert_eq!(format_relative_time(TimeDelta::minutes(59)), "59 mins ago");
     }
 
     #[test]
     fn format_relative_time_hours() {
-        assert_eq!(format_relative_time(TimeDelta::hours(1)), "1 hours ago");
+        assert_eq!(format_relative_time(TimeDelta::hours(1)), "1 hour ago");
         assert_eq!(format_relative_time(TimeDelta::hours(23)), "23 hours ago");
     }
 
     #[test]
     fn format_relative_time_days() {
-        assert_eq!(format_relative_time(TimeDelta::days(1)), "1 days ago");
+        assert_eq!(format_relative_time(TimeDelta::days(1)), "1 day ago");
         assert_eq!(format_relative_time(TimeDelta::days(7)), "7 days ago");
+    }
+
+    #[test]
+    fn format_relative_time_negative_returns_just_now() {
+        assert_eq!(format_relative_time(TimeDelta::seconds(-1)), "just now");
+        assert_eq!(format_relative_time(TimeDelta::seconds(-3600)), "just now");
+    }
+
+    #[test]
+    fn format_display_datetime_teen_day() {
+        let t = dt(2026, 3, 13, 0, 0);
+        assert_eq!(format_display_datetime(t), "Friday Mar 13th 2026 | 00:00");
+    }
+
+    #[test]
+    fn minute_format_round_trip() {
+        use serde::{Deserialize, Serialize};
+        #[derive(Serialize, Deserialize, PartialEq, Debug)]
+        struct Wrapper {
+            #[serde(with = "minute_format")]
+            ts: NaiveDateTime,
+        }
+        let original = Wrapper {
+            ts: dt(2026, 3, 22, 17, 0),
+        };
+        let json = serde_json::to_string(&original).unwrap();
+        assert_eq!(json, r#"{"ts":"2026-03-22T17:00"}"#);
+        let roundtripped: Wrapper = serde_json::from_str(&json).unwrap();
+        assert_eq!(roundtripped, original);
+    }
+
+    #[test]
+    fn minute_format_rejects_malformed() {
+        use serde::Deserialize;
+        #[derive(Deserialize)]
+        #[expect(dead_code, reason = "fields populated via serde deserialization only")]
+        struct Wrapper {
+            #[serde(with = "minute_format")]
+            ts: NaiveDateTime,
+        }
+        assert!(serde_json::from_str::<Wrapper>(r#"{"ts":"not-a-date"}"#).is_err());
+        assert!(serde_json::from_str::<Wrapper>(r#"{"ts":"2026-03-22"}"#).is_err());
+    }
+
+    #[test]
+    fn minute_format_opt_none() {
+        use serde::Deserialize;
+        #[derive(Deserialize)]
+        struct Wrapper {
+            #[serde(with = "minute_format_opt")]
+            ts: Option<NaiveDateTime>,
+        }
+        let w: Wrapper = serde_json::from_str(r#"{"ts":null}"#).unwrap();
+        assert!(w.ts.is_none());
     }
 }

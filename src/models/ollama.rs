@@ -2,9 +2,10 @@
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
+use tracing::{debug, info, warn};
 
 use super::embedding::{EmbeddingProvider, EmbeddingResponse};
-use super::http::{SharedHttpClient, map_request_error, warn_if_insecure_remote};
+use super::http::{SharedHttpClient, map_request_error, read_error_body, warn_if_insecure_remote};
 use super::retry::{RetryConfig, with_retry};
 use super::{
     CompletionOptions, Message, ModelError, ModelProvider, ModelResponse, ResponseFormat,
@@ -72,13 +73,85 @@ impl OllamaClient {
         }
     }
 
-    fn timeout_secs(&self) -> u64 {
-        self.http.timeout_secs()
+    #[tracing::instrument(skip_all, fields(
+        model = %request.model,
+        message_count = request.messages.len(),
+        tool_count = request.tools.as_ref().map_or(0, Vec::len),
+    ))]
+    async fn send_completion(
+        http: &SharedHttpClient,
+        url: &str,
+        api_key: Option<&str>,
+        request: &OllamaChatRequest<'_>,
+    ) -> Result<ModelResponse, ModelError> {
+        let timeout_secs = http.timeout_secs();
+
+        debug!(
+            model = %request.model,
+            message_count = request.messages.len(),
+            tool_count = request.tools.as_ref().map_or(0, Vec::len),
+            "sending ollama completion request"
+        );
+
+        let mut req_builder = http.client().post(url).json(request);
+        if let Some(key) = api_key {
+            req_builder = req_builder.header("Authorization", format!("Bearer {key}"));
+        }
+
+        let response = req_builder
+            .send()
+            .await
+            .map_err(|e| map_request_error(e, timeout_secs))?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let raw_body = read_error_body(response).await;
+            tracing::warn!(
+                status = %status,
+                response_body = %raw_body,
+                "ollama API error"
+            );
+            let error_msg = serde_json::from_str::<OllamaErrorResponse>(&raw_body)
+                .map_or_else(|_| format!("{status}: {raw_body}"), |e| e.error);
+            return Err(ModelError::Api(error_msg));
+        }
+
+        let body = response
+            .text()
+            .await
+            .map_err(|e| map_request_error(e, timeout_secs))?;
+        let chat_response: OllamaChatResponse = serde_json::from_str(&body)
+            .map_err(|e| ModelError::Parse(format!("failed to parse ollama response: {e}")))?;
+
+        let content = chat_response.message.content.unwrap_or_default();
+        let tool_calls = chat_response
+            .message
+            .tool_calls
+            .unwrap_or_default()
+            .into_iter()
+            .enumerate()
+            .map(|(i, tc)| ToolCall {
+                id: format!("call_{i}"),
+                name: tc.function.name,
+                arguments: tc.function.arguments,
+            })
+            .collect();
+
+        let mut resp = ModelResponse::new(content, tool_calls);
+        resp.thinking = chat_response.message.thinking;
+        info!(
+            model = %request.model,
+            content_len = resp.content.len(),
+            tool_calls = resp.tool_calls.len(),
+            "ollama completion received"
+        );
+        Ok(resp)
     }
 }
 
 #[async_trait]
 impl ModelProvider for OllamaClient {
+    #[tracing::instrument(skip_all, fields(model = %self.model, message_count = messages.len(), tool_count = tools.len()))]
     async fn complete(
         &self,
         messages: &[Message],
@@ -103,7 +176,6 @@ impl ModelProvider for OllamaClient {
         let api_key = self.api_key.clone();
         let keep_alive = self.keep_alive.clone();
         let http = self.http.clone();
-        let timeout_secs = self.timeout_secs();
 
         let format = match &options.response_format {
             ResponseFormat::Text => None,
@@ -140,53 +212,7 @@ impl ModelProvider for OllamaClient {
                     keep_alive,
                     think,
                 };
-
-                let mut req_builder = http.client().post(&url).json(&request);
-
-                if let Some(ref key) = api_key {
-                    req_builder = req_builder.header("Authorization", format!("Bearer {key}"));
-                }
-
-                let response = req_builder
-                    .send()
-                    .await
-                    .map_err(|e| map_request_error(e, timeout_secs))?;
-
-                if !response.status().is_success() {
-                    let status = response.status();
-                    let error_body = response
-                        .json::<OllamaErrorResponse>()
-                        .await
-                        .map_or_else(|_| format!("{status}: unknown error"), |e| e.error);
-                    return Err(ModelError::Api(error_body));
-                }
-
-                let body = response
-                    .text()
-                    .await
-                    .map_err(|e| map_request_error(e, timeout_secs))?;
-                let chat_response: OllamaChatResponse =
-                    serde_json::from_str(&body).map_err(|e| {
-                        ModelError::Parse(format!("failed to parse ollama response: {e}"))
-                    })?;
-
-                let content = chat_response.message.content.unwrap_or_default();
-                let tool_calls = chat_response
-                    .message
-                    .tool_calls
-                    .unwrap_or_default()
-                    .into_iter()
-                    .enumerate()
-                    .map(|(i, tc)| ToolCall {
-                        id: format!("call_{i}"),
-                        name: tc.function.name,
-                        arguments: tc.function.arguments,
-                    })
-                    .collect();
-
-                let mut resp = ModelResponse::new(content, tool_calls);
-                resp.thinking = chat_response.message.thinking;
-                Ok(resp)
+                Self::send_completion(&http, &url, api_key.as_deref(), &request).await
             }
         })
         .await
@@ -249,10 +275,11 @@ impl From<&Message> for OllamaMessage {
                     })
                     .collect()
             }),
-            images: msg
-                .images
-                .as_ref()
-                .map(|imgs| imgs.iter().map(|img| img.data.clone()).collect()),
+            images: if msg.images.is_empty() {
+                None
+            } else {
+                Some(msg.images.iter().map(|img| img.data.clone()).collect())
+            },
         }
     }
 }
@@ -358,6 +385,7 @@ impl OllamaEmbeddingClient {
 
 #[async_trait]
 impl EmbeddingProvider for OllamaEmbeddingClient {
+    #[tracing::instrument(skip_all, fields(model = %self.model, count = texts.len()))]
     async fn embed(&self, texts: &[&str]) -> Result<EmbeddingResponse, ModelError> {
         let url = format!("{}/api/embed", self.base_url);
         let model = self.model.clone();
@@ -380,6 +408,8 @@ impl EmbeddingProvider for OllamaEmbeddingClient {
                     keep_alive,
                 };
 
+                debug!(model = %model, count = texts.len(), "sending ollama embed request");
+
                 let mut req_builder = http.client().post(&url).json(&request);
 
                 if let Some(ref key) = api_key {
@@ -393,11 +423,15 @@ impl EmbeddingProvider for OllamaEmbeddingClient {
 
                 if !response.status().is_success() {
                     let status = response.status();
-                    let error_body = response
-                        .json::<OllamaErrorResponse>()
-                        .await
-                        .map_or_else(|_| format!("{status}: unknown error"), |e| e.error);
-                    return Err(ModelError::Api(error_body));
+                    let raw_body = read_error_body(response).await;
+                    warn!(
+                        status = %status,
+                        response_body = %raw_body,
+                        "ollama embed API error"
+                    );
+                    let error_msg = serde_json::from_str::<OllamaErrorResponse>(&raw_body)
+                        .map_or_else(|_| format!("{status}: {raw_body}"), |e| e.error);
+                    return Err(ModelError::Api(error_msg));
                 }
 
                 let body = response
@@ -418,6 +452,7 @@ impl EmbeddingProvider for OllamaEmbeddingClient {
                             ModelError::Parse("embeddings response contained no data".to_string())
                         })?;
 
+                info!(model = %model, count = embed_response.embeddings.len(), dimensions, "ollama embeddings received");
                 Ok(EmbeddingResponse {
                     embeddings: embed_response.embeddings,
                     dimensions,
@@ -475,6 +510,72 @@ mod tests {
             ollama_msg.content,
             Some("Hello".to_string()),
             "content should match"
+        );
+    }
+
+    #[test]
+    fn message_conversion_tool_empty_content_is_none() {
+        let msg = Message::tool("", "call_1");
+        let ollama_msg: OllamaMessage = (&msg).into();
+        assert_eq!(ollama_msg.role, "tool", "role should be tool");
+        assert!(
+            ollama_msg.content.is_none(),
+            "empty content should become None"
+        );
+    }
+
+    #[test]
+    fn message_conversion_assistant_with_tool_calls() {
+        let msg = Message::assistant(
+            "thinking",
+            Some(vec![ToolCall {
+                id: "call_0".to_string(),
+                name: "bash".to_string(),
+                arguments: serde_json::json!({"command": "ls"}),
+            }]),
+        );
+        let ollama_msg: OllamaMessage = (&msg).into();
+        assert_eq!(ollama_msg.role, "assistant", "role should be assistant");
+        assert_eq!(
+            ollama_msg.content,
+            Some("thinking".to_string()),
+            "content should match"
+        );
+        let tool_calls = ollama_msg.tool_calls.unwrap();
+        assert_eq!(tool_calls.len(), 1, "should have one tool call");
+        assert_eq!(
+            tool_calls.first().unwrap().function.name,
+            "bash",
+            "tool call name should match"
+        );
+        let serialized = serde_json::to_value(tool_calls.first().unwrap()).unwrap();
+        assert_eq!(
+            serialized
+                .get("function")
+                .unwrap()
+                .get("arguments")
+                .unwrap(),
+            &serde_json::json!({"command": "ls"}),
+            "arguments should be native JSON"
+        );
+    }
+
+    #[test]
+    fn message_conversion_user_with_images() {
+        use crate::models::ImageData;
+        let images = vec![ImageData {
+            media_type: "image/png".to_string(),
+            data: "base64data".to_string(),
+        }];
+        let msg = Message::user_with_images("look at this", images);
+        let ollama_msg: OllamaMessage = (&msg).into();
+        assert_eq!(ollama_msg.role, "user", "role should be user");
+        let imgs = ollama_msg.images.unwrap();
+        assert_eq!(imgs.len(), 1, "should have one image");
+        assert_eq!(
+            imgs.first().unwrap(),
+            "base64data",
+            "image data should match"
         );
     }
 
@@ -881,6 +982,40 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn thinking_response_extracted() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path("/api/chat"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "message": {
+                    "role": "assistant",
+                    "content": "Final answer",
+                    "thinking": "step by step reasoning"
+                }
+            })))
+            .mount(&mock_server)
+            .await;
+
+        let client = make_client(mock_server.uri(), "deepseek-r1");
+        let result = client
+            .complete(
+                &[Message::user("Hello")],
+                &[],
+                &CompletionOptions::default(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(result.content, "Final answer", "content should match");
+        assert_eq!(
+            result.thinking.as_deref(),
+            Some("step by step reasoning"),
+            "thinking should be extracted from response"
+        );
+    }
+
     // --- Embedding client tests ---
 
     use crate::models::embedding::EmbeddingProvider;
@@ -1012,6 +1147,32 @@ mod tests {
         assert!(
             err.to_string().contains("model not found"),
             "error should contain 'model not found'"
+        );
+    }
+
+    #[tokio::test]
+    async fn embed_empty_input_sends_request() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path("/api/embed"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "embeddings": []
+            })))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        let client = make_embedding_client(mock_server.uri(), "nomic-embed-text");
+        let result = client.embed(&[]).await;
+        assert!(
+            result.is_err(),
+            "empty embeddings response should return error"
+        );
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("no data"),
+            "error should mention no data: {err}"
         );
     }
 }

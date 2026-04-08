@@ -3,7 +3,6 @@
 use chrono_tz::Tz;
 use serde::Deserialize;
 
-use crate::error::ResiduumError;
 use crate::memory::types::{Observation, ObservationLog, Visibility};
 use crate::time::now_local;
 
@@ -19,7 +18,7 @@ struct ReflectorItem {
     content: String,
     timestamp: String,
     project_context: String,
-    visibility: String,
+    visibility: Visibility,
 }
 
 /// Parse the model's reflection response into an `ObservationLog`.
@@ -29,10 +28,7 @@ struct ReflectorItem {
 ///
 /// # Errors
 /// Returns an error if the response cannot be parsed.
-pub(super) fn parse_reflection_response(
-    content: &str,
-    tz: Tz,
-) -> Result<ObservationLog, ResiduumError> {
+pub(super) fn parse_reflection_response(content: &str, tz: Tz) -> anyhow::Result<ObservationLog> {
     let trimmed = content.trim();
     let json_str = crate::memory::strip_code_fences(trimmed);
 
@@ -44,16 +40,11 @@ pub(super) fn parse_reflection_response(
                 continue;
             }
             let timestamp = crate::memory::parse_minute_timestamp(&item.timestamp, tz);
-            let visibility = if item.visibility == "background" {
-                Visibility::Background
-            } else {
-                Visibility::User
-            };
             log.push(Observation {
                 timestamp,
                 project_context: item.project_context.clone(),
                 source_episodes: vec![],
-                visibility,
+                visibility: item.visibility.clone(),
                 content: item.content.clone(),
             });
         }
@@ -61,16 +52,18 @@ pub(super) fn parse_reflection_response(
     }
 
     // Fallback: Value-based parsing for legacy bare arrays
+    tracing::debug!("reflector structured output failed, falling back to value-based parsing");
     let value: serde_json::Value = serde_json::from_str(json_str).map_err(|e| {
-        ResiduumError::Memory(format!(
-            "failed to parse reflector response as JSON: {e}\nresponse: {trimmed}"
-        ))
+        anyhow::anyhow!(
+            "malformed reflector LLM response (not valid JSON): {e}\nraw response: {trimmed}"
+        )
     })?;
 
     let items = value.as_array().ok_or_else(|| {
-        ResiduumError::Memory(format!(
-            "reflector response is not a JSON array or object\nresponse: {trimmed}"
-        ))
+        anyhow::anyhow!(
+            "malformed reflector LLM response: expected a JSON array or \
+             {{\"observations\": [...]}}, got neither\nraw response: {trimmed}"
+        )
     })?;
 
     let mut log = ObservationLog::new();

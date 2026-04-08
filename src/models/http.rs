@@ -108,6 +108,17 @@ pub fn map_request_error(e: reqwest::Error, timeout_secs: u64) -> ModelError {
     }
 }
 
+/// Read the body of an error response, falling back to a placeholder if reading fails.
+pub async fn read_error_body(response: reqwest::Response) -> String {
+    match response.text().await {
+        Ok(b) => b,
+        Err(e) => {
+            tracing::warn!(error = %e, "failed to read error response body");
+            format!("failed to read response body: {e}")
+        }
+    }
+}
+
 #[cfg(test)]
 #[expect(clippy::unwrap_used, reason = "test code uses unwrap for clarity")]
 mod tests {

@@ -134,6 +134,22 @@ activity_text = "with fire"
     }
 
     #[test]
+    fn parse_invalid_toml_returns_defaults() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("PRESENCE.toml");
+        std::fs::write(&path, b"status = [this is not valid toml!!!").unwrap();
+        let pf = load_presence(&path);
+        assert!(
+            pf.status.is_none(),
+            "invalid TOML should return default (status = None)"
+        );
+        assert!(
+            pf.activity_type.is_none(),
+            "invalid TOML should return default (activity_type = None)"
+        );
+    }
+
+    #[test]
     fn unknown_status_defaults_to_online() {
         let pf = PresenceFile {
             status: Some("bananas".to_string()),
@@ -197,5 +213,25 @@ activity_text = "with fire"
                 "activity text should be preserved for type '{input}'"
             );
         }
+    }
+
+    #[test]
+    fn load_presence_invalid_toml_returns_default() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("PRESENCE.toml");
+        std::fs::write(&path, b"this is not valid = toml [[[").unwrap();
+        let pf = load_presence(&path);
+        assert!(
+            pf.status.is_none(),
+            "invalid TOML should return default status"
+        );
+        assert!(
+            pf.activity_type.is_none(),
+            "invalid TOML should return default activity_type"
+        );
+        assert!(
+            pf.activity_text.is_none(),
+            "invalid TOML should return default activity_text"
+        );
     }
 }

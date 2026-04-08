@@ -5,6 +5,9 @@ use std::io::Write;
 /// Animated working indicator displayed on stderr while the agent is processing.
 ///
 /// Shows `Working.   (N tools)` with cycling dots, overwriting the same line.
+///
+/// Stderr is the correct stream for interactive UI chrome — using stdout would
+/// mix spinner escape codes into piped output (e.g. `residuum connect | jq`).
 pub struct WorkingIndicator {
     active: bool,
     tool_count: u32,
@@ -50,6 +53,10 @@ impl WorkingIndicator {
     ///
     /// The animation resumes on the next tick or redraw. Use this when printing
     /// intermediate content while the agent is still working.
+    #[expect(
+        clippy::print_stderr,
+        reason = "intentional: indicator is UI chrome on stderr"
+    )]
     pub fn clear_line(&mut self) {
         if self.active {
             eprint!("\r\x1b[2K");
@@ -60,6 +67,10 @@ impl WorkingIndicator {
     }
 
     /// Clear the indicator line and mark inactive.
+    #[expect(
+        clippy::print_stderr,
+        reason = "intentional: indicator is UI chrome on stderr"
+    )]
     pub fn finish(&mut self) {
         if self.active {
             self.active = false;
@@ -76,6 +87,10 @@ impl WorkingIndicator {
         self.active
     }
 
+    #[expect(
+        clippy::print_stderr,
+        reason = "intentional: indicator is UI chrome on stderr"
+    )]
     fn redraw(&self) {
         let dots = match self.dot_phase {
             0 => "   ",

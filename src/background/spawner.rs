@@ -8,17 +8,29 @@ use chrono::Utc;
 use tokio::sync::{Mutex, Semaphore, mpsc};
 use tokio_util::sync::CancellationToken;
 
-use super::subagent::{SubAgentOutput, SubAgentResources, execute_subagent};
-use super::types::{ActiveTaskInfo, BackgroundResult, BackgroundTask, Execution, execution_info};
+use super::subagent::{
+    SubAgentOutput, SubAgentResources, execute_subagent, force_deactivate_project,
+};
+use super::types::{ActiveTaskInfo, BackgroundResult, BackgroundTask, execution_info};
 use crate::bus::AgentResultStatus;
+use crate::mcp::SharedMcpRegistry;
 use crate::models::Message;
+use crate::projects::activation::SharedProjectState;
+use crate::tools::SharedToolFilter;
+use crate::tools::path_policy::SharedPathPolicy;
+
+struct CleanupHandles {
+    project_state: SharedProjectState,
+    mcp_registry: SharedMcpRegistry,
+    path_policy: SharedPathPolicy,
+    tool_filter: SharedToolFilter,
+}
 
 /// Spawns and manages background tasks with bounded concurrency.
 pub struct BackgroundTaskSpawner {
     result_tx: mpsc::Sender<BackgroundResult>,
     semaphore: Arc<Semaphore>,
     active_tasks: Arc<Mutex<HashMap<String, (CancellationToken, ActiveTaskInfo)>>>,
-    workspace_root: PathBuf,
     background_dir: PathBuf,
 }
 
@@ -28,14 +40,12 @@ impl BackgroundTaskSpawner {
     pub fn new(
         result_tx: mpsc::Sender<BackgroundResult>,
         max_concurrent: usize,
-        workspace_root: PathBuf,
         background_dir: PathBuf,
     ) -> Self {
         Self {
             result_tx,
             semaphore: Arc::new(Semaphore::new(max_concurrent)),
             active_tasks: Arc::new(Mutex::new(HashMap::new())),
-            workspace_root,
             background_dir,
         }
     }
@@ -47,6 +57,7 @@ impl BackgroundTaskSpawner {
     ///
     /// # Errors
     /// Returns an error if the task cannot be registered (e.g. duplicate ID).
+    #[tracing::instrument(skip_all, fields(task.id = %task.id))]
     pub(crate) async fn spawn(
         &self,
         task: BackgroundTask,
@@ -58,16 +69,14 @@ impl BackgroundTaskSpawner {
         let semaphore = Arc::clone(&self.semaphore);
         let active_tasks = Arc::clone(&self.active_tasks);
         let result_tx = self.result_tx.clone();
-        let workspace_root = self.workspace_root.clone();
         let background_dir = self.background_dir.clone();
         let child_token = token.clone();
         let spawn_task_id = task_id.clone();
 
-        let (exec_type, prompt_preview) = execution_info(&task.execution);
+        let prompt_preview = execution_info(&task.subagent_config);
         let active_info = ActiveTaskInfo {
             source_label: task.source_label.clone(),
             source: task.source.clone(),
-            execution_type: exec_type,
             prompt_preview,
             started_at: Utc::now(),
         };
@@ -77,6 +86,8 @@ impl BackgroundTaskSpawner {
             .lock()
             .await
             .insert(task_id.clone(), (token, active_info));
+
+        tracing::info!(task_id = %task_id, source_label = %task.source_label, "spawning background task");
 
         tokio::spawn(async move {
             // Acquire semaphore permit (waits if at capacity)
@@ -90,13 +101,11 @@ impl BackgroundTaskSpawner {
             };
 
             // Extract Arc clones for cancellation cleanup (cheap; no data copied)
-            let cleanup_handles = resources.as_ref().map(|r| {
-                (
-                    Arc::clone(&r.project_state),
-                    Arc::clone(&r.mcp_registry),
-                    Arc::clone(&r.path_policy),
-                    Arc::clone(&r.tool_filter),
-                )
+            let cleanup_handles = resources.as_ref().map(|r| CleanupHandles {
+                project_state: Arc::clone(&r.project_state),
+                mcp_registry: Arc::clone(&r.mcp_registry),
+                path_policy: Arc::clone(&r.path_policy),
+                tool_filter: Arc::clone(&r.tool_filter),
             });
 
             let result = tokio::select! {
@@ -104,7 +113,10 @@ impl BackgroundTaskSpawner {
                 () = child_token.cancelled() => {
                     build_cancelled_result(&task, &spawn_task_id, cleanup_handles).await
                 }
-                outcome = execute_task(&task, resources.as_ref(), &workspace_root) => {
+                outcome = async {
+                    let res = resources.as_ref().ok_or_else(|| anyhow::anyhow!("sub-agent task requires SubAgentResources"))?;
+                    execute_subagent(&task.id, &task.subagent_config, res).await
+                } => {
                     build_completed_result(&task, outcome, &background_dir).await
                 }
             };
@@ -114,7 +126,11 @@ impl BackgroundTaskSpawner {
 
             // Send result to gateway channel
             if let Err(e) = result_tx.send(result).await {
-                tracing::warn!(error = %e, "failed to send background task result");
+                tracing::error!(
+                    task_id = %e.0.id,
+                    source_label = %e.0.source_label,
+                    "failed to send background task result; result lost"
+                );
             }
         });
 
@@ -137,6 +153,7 @@ impl BackgroundTaskSpawner {
     }
 
     /// Cancel a running task. Returns `true` if the task was found and cancelled.
+    #[tracing::instrument(skip_all, fields(task.id = %task_id))]
     pub async fn cancel(&self, task_id: &str) -> bool {
         let guard = self.active_tasks.lock().await;
         if let Some((token, _info)) = guard.get(task_id) {
@@ -156,40 +173,30 @@ impl BackgroundTaskSpawner {
             .map(|(id, (_token, info))| (id.clone(), info.clone()))
             .collect()
     }
-
-    /// List IDs of currently active tasks.
-    pub async fn active_task_ids(&self) -> Vec<String> {
-        let guard = self.active_tasks.lock().await;
-        guard.keys().cloned().collect()
-    }
 }
 
 /// Build a `BackgroundResult` for a cancelled task, cleaning up any active project.
 async fn build_cancelled_result(
     task: &BackgroundTask,
     spawn_task_id: &str,
-    cleanup_handles: Option<(
-        crate::projects::activation::SharedProjectState,
-        crate::mcp::registry::SharedMcpRegistry,
-        crate::tools::path_policy::SharedPathPolicy,
-        crate::tools::SharedToolFilter,
-    )>,
+    cleanup_handles: Option<CleanupHandles>,
 ) -> BackgroundResult {
-    if let Some((project_state, mcp_registry, path_policy, tool_filter)) = cleanup_handles {
-        let active_name = project_state
+    tracing::info!(task_id = %spawn_task_id, "background task cancelled");
+    if let Some(handles) = cleanup_handles {
+        let active_name = handles
+            .project_state
             .lock()
             .await
             .active_project_name()
             .map(str::to_string);
         if let Some(name) = active_name {
-            tracing::info!(
-                task_id = %spawn_task_id,
-                project = %name,
-                "[cancelled] SubAgent {spawn_task_id} was stopped. Work may be incomplete."
-            );
-            mcp_registry.write().await.deactivate_project(&name).await;
-            path_policy.write().await.set_active_project(None);
-            tool_filter.write().await.clear_enabled();
+            force_deactivate_project(
+                &name,
+                &handles.mcp_registry,
+                &handles.path_policy,
+                &handles.tool_filter,
+            )
+            .await;
         }
     }
 
@@ -219,17 +226,31 @@ async fn build_completed_result(
             let error_msg = e.to_string();
             tracing::warn!(task_id = %task.id, source_label = %task.source_label, error = %e, "background task failed");
             (
-                AgentResultStatus::Failed {
-                    error: error_msg.clone(),
-                },
-                format!("[FAILED] {error_msg}"),
+                AgentResultStatus::Failed { error: error_msg },
+                String::new(),
                 None,
             )
         }
     };
 
-    let transcript_path =
-        write_transcript(background_dir, &task.id, &summary, messages.as_deref()).await;
+    if matches!(status, AgentResultStatus::Completed) {
+        tracing::info!(task_id = %task.id, source_label = %task.source_label, "background task completed");
+    }
+
+    let transcript_summary = match &status {
+        AgentResultStatus::Failed { error } => error.as_str(),
+        AgentResultStatus::Completed => &summary,
+        AgentResultStatus::Cancelled => {
+            unreachable!("Cancelled is only produced by build_cancelled_result")
+        }
+    };
+    let transcript_path = write_transcript(
+        background_dir,
+        &task.id,
+        transcript_summary,
+        messages.as_deref(),
+    )
+    .await;
 
     BackgroundResult {
         id: task.id.clone(),
@@ -241,18 +262,6 @@ async fn build_completed_result(
         timestamp: Utc::now(),
         agent_preset: task.agent_preset.clone(),
     }
-}
-
-/// Execute a task based on its execution type.
-async fn execute_task(
-    task: &BackgroundTask,
-    resources: Option<&SubAgentResources>,
-    _workspace_root: &std::path::Path,
-) -> Result<SubAgentOutput, anyhow::Error> {
-    let Execution::SubAgent(config) = &task.execution;
-    let res =
-        resources.ok_or_else(|| anyhow::anyhow!("sub-agent task requires SubAgentResources"))?;
-    execute_subagent(&task.id, config, res).await
 }
 
 /// Write a transcript file for the task. Returns the path if successful.
@@ -271,7 +280,7 @@ async fn write_transcript(
     let day_dir = month_dir.join(now.format("%d").to_string());
 
     if let Err(e) = tokio::fs::create_dir_all(&day_dir).await {
-        tracing::warn!(error = %e, "failed to create background transcript directory");
+        tracing::warn!(error = %e, path = %day_dir.display(), "failed to create background transcript directory");
         return None;
     }
 
@@ -285,7 +294,7 @@ async fn write_transcript(
                 "messages": msgs,
             });
             serde_json::to_string_pretty(&transcript).unwrap_or_else(|err| {
-                tracing::warn!(error = %err, "failed to serialize transcript, falling back to plain summary");
+                tracing::warn!(task_id = %task_id, error = %err, "failed to serialize transcript, falling back to plain summary");
                 summary.to_string()
             })
         }
@@ -305,7 +314,7 @@ async fn write_transcript(
 #[expect(clippy::unwrap_used, reason = "test code uses unwrap for clarity")]
 mod tests {
     use super::*;
-    use crate::background::types::{Execution, SubAgentConfig};
+    use crate::background::types::SubAgentConfig;
     use crate::bus::{EventTrigger, PresetName};
     use crate::config::BackgroundModelTier;
 
@@ -313,8 +322,7 @@ mod tests {
     async fn send_result_delivers_to_channel() {
         let (tx, mut rx) = mpsc::channel(32);
         let dir = tempfile::tempdir().unwrap();
-        let spawner =
-            BackgroundTaskSpawner::new(tx, 3, PathBuf::from("/tmp"), dir.path().to_path_buf());
+        let spawner = BackgroundTaskSpawner::new(tx, 3, dir.path().to_path_buf());
 
         let result = BackgroundResult {
             id: "direct-1".to_string(),
@@ -341,19 +349,18 @@ mod tests {
     async fn failed_task_transcript_contains_error() {
         let (tx, mut rx) = mpsc::channel(32);
         let dir = tempfile::tempdir().unwrap();
-        let spawner =
-            BackgroundTaskSpawner::new(tx, 3, PathBuf::from("/tmp"), dir.path().to_path_buf());
+        let spawner = BackgroundTaskSpawner::new(tx, 3, dir.path().to_path_buf());
 
         // SubAgent without resources → guaranteed failure
         let task = BackgroundTask {
             id: "fail-transcript-1".to_string(),
             source_label: "agent:failing_agent".to_string(),
             source: EventTrigger::Agent,
-            execution: Execution::SubAgent(SubAgentConfig {
+            subagent_config: SubAgentConfig {
                 prompt: "do something".to_string(),
                 context: None,
                 model_tier: BackgroundModelTier::Medium,
-            }),
+            },
 
             agent_preset: PresetName::from("general-purpose"),
         };
@@ -366,27 +373,176 @@ mod tests {
             "should be failed"
         );
         assert!(
-            result.summary.contains("[FAILED]"),
-            "summary should contain [FAILED] prefix, got: {}",
-            result.summary
-        );
-        assert!(
-            !result.summary.is_empty(),
-            "summary should not be empty on failure"
+            result.summary.is_empty(),
+            "summary should be empty on failure (error is in status)"
         );
         assert!(
             result.transcript_path.is_some(),
             "failed task should still write transcript"
         );
 
-        // Failed tasks write plain summary (no messages), so content is the raw error string
+        // Failed tasks write the error from status (no messages), so content is the raw error
         let transcript_content =
             tokio::fs::read_to_string(result.transcript_path.as_ref().unwrap())
                 .await
                 .unwrap();
+        if let AgentResultStatus::Failed { error } = &result.status {
+            assert!(transcript_content.contains(error.as_str()));
+        }
+    }
+
+    #[tokio::test]
+    async fn cancel_returns_true_for_known_false_for_unknown() {
+        let (tx, _rx) = mpsc::channel(32);
+        let dir = tempfile::tempdir().unwrap();
+        // Zero concurrency: tasks block waiting for the semaphore, so they
+        // remain registered in active_tasks long enough to cancel.
+        let spawner = BackgroundTaskSpawner::new(tx, 0, dir.path().to_path_buf());
+
+        let task = BackgroundTask {
+            id: "cancel-check".to_string(),
+            source_label: "agent:cancel_test".to_string(),
+            source: EventTrigger::Agent,
+            subagent_config: SubAgentConfig {
+                prompt: "do work".to_string(),
+                context: None,
+                model_tier: BackgroundModelTier::Medium,
+            },
+            agent_preset: PresetName::from("general-purpose"),
+        };
+
+        let task_id = spawner.spawn(task, None).await.unwrap();
+
         assert!(
-            transcript_content.contains("[FAILED]"),
-            "transcript should contain the failure summary"
+            spawner.cancel(&task_id).await,
+            "should return true for known task"
+        );
+        assert!(
+            !spawner.cancel("nonexistent-id").await,
+            "should return false for unknown task"
+        );
+    }
+
+    #[tokio::test]
+    async fn list_active_tasks_returns_registered_task_info() {
+        let (tx, _rx) = mpsc::channel(32);
+        let dir = tempfile::tempdir().unwrap();
+        // Zero concurrency keeps the task registered.
+        let spawner = BackgroundTaskSpawner::new(tx, 0, dir.path().to_path_buf());
+
+        let task = BackgroundTask {
+            id: "list-test".to_string(),
+            source_label: "agent:list_test".to_string(),
+            source: EventTrigger::Agent,
+            subagent_config: SubAgentConfig {
+                prompt: "do work".to_string(),
+                context: None,
+                model_tier: BackgroundModelTier::Medium,
+            },
+            agent_preset: PresetName::from("general-purpose"),
+        };
+
+        spawner.spawn(task, None).await.unwrap();
+
+        let active = spawner.list_active_tasks().await;
+        assert_eq!(active.len(), 1);
+        let (id, info) = active.first().unwrap();
+        assert_eq!(id, "list-test");
+        assert_eq!(info.source_label, "agent:list_test");
+    }
+
+    #[tokio::test]
+    async fn cancelled_task_produces_cancelled_status() {
+        use crate::mcp::McpRegistry;
+        use crate::models::{
+            CompletionOptions, Message, ModelError, ModelResponse, ToolDefinition,
+        };
+        use crate::projects::activation::ProjectState;
+        use crate::projects::scanner::ProjectIndex;
+        use crate::skills::{SkillIndex, SkillState};
+        use crate::tools::path_policy::PathPolicy;
+        use crate::tools::{ToolFilter, ToolRegistry};
+        use crate::workspace::identity::IdentityFiles;
+        use crate::workspace::layout::WorkspaceLayout;
+        use async_trait::async_trait;
+        use std::collections::HashSet;
+        use std::path::PathBuf;
+
+        struct BlockingProvider;
+
+        #[async_trait]
+        impl crate::models::ModelProvider for BlockingProvider {
+            async fn complete(
+                &self,
+                _messages: &[Message],
+                _tools: &[ToolDefinition],
+                _options: &CompletionOptions,
+            ) -> Result<ModelResponse, ModelError> {
+                tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+                Err(ModelError::Api("cancelled".into()))
+            }
+
+            fn model_name(&self) -> &'static str {
+                "blocking"
+            }
+        }
+
+        let project_state = ProjectState::new_shared(
+            ProjectIndex::default(),
+            WorkspaceLayout::new(PathBuf::from("/tmp")),
+        );
+        let skill_state = SkillState::new_shared(SkillIndex::default(), vec![]);
+        let path_policy = PathPolicy::new_shared(PathBuf::from("/tmp"));
+        let tool_filter = ToolFilter::new_shared(HashSet::new());
+        let mcp_registry = McpRegistry::new_shared();
+        let resources = SubAgentResources {
+            provider: Box::new(BlockingProvider),
+            tools: ToolRegistry::new(),
+            tool_filter,
+            mcp_registry,
+            project_state,
+            skill_state,
+            path_policy,
+            identity: IdentityFiles::default(),
+            options: CompletionOptions::default(),
+            projects_ctx_index: None,
+            skills_index: None,
+            preset_instructions: None,
+        };
+
+        let (tx, mut rx) = mpsc::channel(32);
+        let dir = tempfile::tempdir().unwrap();
+        let spawner = BackgroundTaskSpawner::new(tx, 1, dir.path().to_path_buf());
+
+        let task = BackgroundTask {
+            id: "cancel-status-test".to_string(),
+            source_label: "agent:cancel_status".to_string(),
+            source: EventTrigger::Agent,
+            subagent_config: SubAgentConfig {
+                prompt: "block forever".to_string(),
+                context: None,
+                model_tier: BackgroundModelTier::Medium,
+            },
+            agent_preset: PresetName::from("general-purpose"),
+        };
+
+        let task_id = spawner.spawn(task, Some(resources)).await.unwrap();
+
+        // Yield to let the task acquire the semaphore and enter the select!
+        tokio::task::yield_now().await;
+        tokio::task::yield_now().await;
+
+        spawner.cancel(&task_id).await;
+
+        let result = tokio::time::timeout(std::time::Duration::from_millis(500), rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+
+        assert!(
+            matches!(result.status, AgentResultStatus::Cancelled),
+            "cancelled task should produce Cancelled status, got {:?}",
+            result.status
         );
     }
 }

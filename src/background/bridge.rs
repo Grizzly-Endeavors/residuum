@@ -21,7 +21,7 @@ pub(crate) fn spawn_result_bridge(
     publisher: Publisher,
     tz: chrono_tz::Tz,
 ) -> tokio::task::JoinHandle<()> {
-    crate::bus::supervision::spawn_supervised(
+    crate::util::spawn_supervised(
         "result-bridge",
         move || {
             let rx = Arc::clone(&result_rx);
@@ -37,10 +37,11 @@ pub(crate) fn spawn_result_bridge(
 
 /// Inner bridge loop: lock the shared receiver and forward results to the bus.
 async fn run_bridge(result_rx: SharedResultReceiver, publisher: Publisher, tz: chrono_tz::Tz) {
+    tracing::debug!("result bridge started");
     let mut rx = result_rx.lock().await;
     while let Some(result) = rx.recv().await {
         let event = convert_to_agent_result(&result, tz);
-        if let Err(e) = publisher.publish(topics::BackgroundResult, event).await {
+        if let Err(e) = publisher.publish(topics::Background, event).await {
             tracing::warn!(
                 task_id = %result.id,
                 error = %e,
@@ -53,6 +54,11 @@ async fn run_bridge(result_rx: SharedResultReceiver, publisher: Publisher, tz: c
 
 /// Convert a `BackgroundResult` to an `AgentResultEvent` for the bus.
 fn convert_to_agent_result(result: &BackgroundResult, tz: chrono_tz::Tz) -> AgentResultEvent {
+    // "HEARTBEAT_OK" is the agreed sentinel string that pulse agents include in
+    // their summary to signal "nothing needs surfacing". Its presence suppresses
+    // notification routing. This is intentional protocol, not content-sniffing.
+    // Agents MUST be able to exit silently when they have nothing to report.
+    // This value cannot be set earlier in the pipeline by producers; it must be determined here.
     let heartbeat_status = if matches!(result.source, EventTrigger::Pulse)
         && result.summary.contains("HEARTBEAT_OK")
     {
@@ -156,10 +162,7 @@ mod tests {
         let (tx, rx) = mpsc::channel(8);
         let bus_handle = crate::bus::spawn_broker();
         let publisher = bus_handle.publisher();
-        let mut subscriber = bus_handle
-            .subscribe(topics::BackgroundResult)
-            .await
-            .unwrap();
+        let mut subscriber = bus_handle.subscribe(topics::Background).await.unwrap();
 
         let shared_rx = Arc::new(tokio::sync::Mutex::new(rx));
         let handle = spawn_result_bridge(shared_rx, publisher, chrono_tz::UTC);
@@ -178,16 +181,56 @@ mod tests {
 
         tx.send(result).await.unwrap();
 
-        let event = tokio::time::timeout(std::time::Duration::from_millis(200), subscriber.recv())
-            .await
-            .unwrap()
-            .unwrap()
-            .unwrap();
+        let event: AgentResultEvent =
+            tokio::time::timeout(std::time::Duration::from_millis(200), subscriber.recv())
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap();
 
         assert_eq!(event.task_id, "bg-test");
         assert_eq!(event.source_label, "agent:test-task");
+        assert!(matches!(event.status, AgentResultStatus::Completed));
+        assert_eq!(event.summary, "done");
+        assert_eq!(event.heartbeat_status, HeartbeatStatus::Substantive);
 
         drop(tx);
         handle.await.unwrap();
+    }
+
+    #[test]
+    fn convert_pulse_result_without_sentinel() {
+        let result = BackgroundResult {
+            id: "pulse-2".into(),
+            source_label: "pulse:health".into(),
+            source: EventTrigger::Pulse,
+            summary: "checked 3 items".into(),
+            transcript_path: None,
+            status: AgentResultStatus::Completed,
+            timestamp: Utc::now(),
+
+            agent_preset: PresetName::from("general-purpose"),
+        };
+
+        let event = convert_to_agent_result(&result, chrono_tz::UTC);
+        assert_eq!(event.heartbeat_status, HeartbeatStatus::Substantive);
+    }
+
+    #[test]
+    fn convert_non_pulse_result_with_heartbeat_sentinel() {
+        let result = BackgroundResult {
+            id: "action-1".into(),
+            source_label: "action:check".into(),
+            source: EventTrigger::Action,
+            summary: "HEARTBEAT_OK".into(),
+            transcript_path: None,
+            status: AgentResultStatus::Completed,
+            timestamp: Utc::now(),
+
+            agent_preset: PresetName::from("general-purpose"),
+        };
+
+        let event = convert_to_agent_result(&result, chrono_tz::UTC);
+        assert_eq!(event.heartbeat_status, HeartbeatStatus::Substantive);
     }
 }

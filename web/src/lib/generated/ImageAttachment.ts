@@ -3,13 +3,12 @@
 /**
  * Base64-encoded image data for multimodal messages.
  */
-export type ImageAttachment = {
-  /**
-   * MIME type (e.g. `"image/jpeg"`, `"image/png"`).
-   */
-  media_type: string;
-  /**
-   * Base64-encoded image bytes.
-   */
-  data: string;
-};
+export type ImageAttachment = { 
+/**
+ * MIME type (e.g. `"image/jpeg"`, `"image/png"`).
+ */
+media_type: string, 
+/**
+ * Base64-encoded image bytes.
+ */
+data: string, };

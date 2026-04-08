@@ -1,7 +1,9 @@
+use std::path::Path;
+
 use chrono::{Duration, NaiveDateTime, NaiveTime};
 use serde::Deserialize;
 
-use crate::error::ResiduumError;
+use anyhow::bail;
 
 /// Top-level HEARTBEAT.yml structure.
 #[derive(Debug, Clone, Deserialize)]
@@ -44,28 +46,28 @@ pub struct PulseTask {
 ///
 /// # Errors
 ///
-/// Returns `ResiduumError::Scheduling` if the string is empty, has no unit suffix,
+/// Returns an error if the string is empty, has no unit suffix,
 /// or contains a non-numeric value before the suffix.
-pub fn parse_schedule_duration(s: &str) -> Result<Duration, ResiduumError> {
+pub fn parse_schedule_duration(s: &str) -> anyhow::Result<Duration> {
     if s.is_empty() {
-        return Err(ResiduumError::Scheduling(
-            "schedule duration cannot be empty".to_string(),
-        ));
+        bail!("schedule duration cannot be empty");
     }
-    let (num_part, unit) = s.split_at(s.len() - 1);
+    let Some(last_byte_idx) = s.char_indices().next_back().map(|(i, _)| i) else {
+        bail!("schedule duration cannot be empty");
+    };
+    let (num_part, unit) = s.split_at(last_byte_idx);
     let value: i64 = num_part.parse().map_err(|_parse_err| {
-        ResiduumError::Scheduling(format!(
-            "invalid schedule duration '{s}': expected number followed by s/m/h/d",
-        ))
+        anyhow::anyhow!("invalid schedule duration '{s}': expected number followed by s/m/h/d",)
     })?;
+    if value <= 0 {
+        bail!("schedule duration must be positive, got '{s}'");
+    }
     match unit {
         "s" => Ok(Duration::seconds(value)),
-        "m" => Ok(Duration::seconds(value * 60)),
-        "h" => Ok(Duration::seconds(value * 3600)),
-        "d" => Ok(Duration::seconds(value * 86_400)),
-        other => Err(ResiduumError::Scheduling(format!(
-            "unknown duration unit '{other}' in '{s}': expected s, m, h, or d",
-        ))),
+        "m" => Ok(Duration::minutes(value)),
+        "h" => Ok(Duration::hours(value)),
+        "d" => Ok(Duration::days(value)),
+        other => bail!("unknown duration unit '{other}' in '{s}': expected s, m, h, or d",),
     }
 }
 
@@ -75,40 +77,29 @@ pub fn parse_schedule_duration(s: &str) -> Result<Duration, ResiduumError> {
 ///
 /// # Errors
 ///
-/// Returns `ResiduumError::Scheduling` if the string is malformed or contains
+/// Returns an error if the string is malformed or contains
 /// out-of-range hour/minute values.
-pub fn parse_active_hours(s: &str) -> Result<(NaiveTime, NaiveTime), ResiduumError> {
-    let (start_str, end_str) = s.split_once('-').ok_or_else(|| {
-        ResiduumError::Scheduling(format!(
-            "invalid active_hours '{s}': expected 'HH:MM-HH:MM'",
-        ))
-    })?;
+pub fn parse_active_hours(s: &str) -> anyhow::Result<(NaiveTime, NaiveTime)> {
+    let (start_str, end_str) = s
+        .split_once('-')
+        .ok_or_else(|| anyhow::anyhow!("invalid active_hours '{s}': expected 'HH:MM-HH:MM'",))?;
     let start = parse_naive_time(start_str, s)?;
     let end = parse_naive_time(end_str, s)?;
     Ok((start, end))
 }
 
-fn parse_naive_time(t: &str, context: &str) -> Result<NaiveTime, ResiduumError> {
+fn parse_naive_time(t: &str, context: &str) -> anyhow::Result<NaiveTime> {
     let (hour_str, min_str) = t.split_once(':').ok_or_else(|| {
-        ResiduumError::Scheduling(format!(
-            "invalid time '{t}' in active_hours '{context}': expected HH:MM",
-        ))
+        anyhow::anyhow!("invalid time '{t}' in active_hours '{context}': expected HH:MM",)
     })?;
     let hour: u32 = hour_str.parse().map_err(|_parse_err| {
-        ResiduumError::Scheduling(format!(
-            "invalid hour '{hour_str}' in active_hours '{context}'",
-        ))
+        anyhow::anyhow!("invalid hour '{hour_str}' in active_hours '{context}'",)
     })?;
     let min: u32 = min_str.parse().map_err(|_parse_err| {
-        ResiduumError::Scheduling(format!(
-            "invalid minute '{min_str}' in active_hours '{context}'",
-        ))
+        anyhow::anyhow!("invalid minute '{min_str}' in active_hours '{context}'",)
     })?;
-    NaiveTime::from_hms_opt(hour, min, 0).ok_or_else(|| {
-        ResiduumError::Scheduling(format!(
-            "out-of-range time '{t}' in active_hours '{context}'",
-        ))
-    })
+    NaiveTime::from_hms_opt(hour, min, 0)
+        .ok_or_else(|| anyhow::anyhow!("out-of-range time '{t}' in active_hours '{context}'",))
 }
 
 /// Check whether `now` falls within the active hours window (inclusive of start, exclusive of end).
@@ -125,10 +116,45 @@ pub fn is_within_active_hours(now: NaiveDateTime, start: NaiveTime, end: NaiveTi
     }
 }
 
+/// Read a file and parse its contents, returning `None` on missing file or errors.
+///
+/// Logs a warning on parse or read failures; silently returns `None` for missing files.
+pub(crate) fn read_and_parse<T, E>(path: &Path, parse: impl Fn(&str) -> Result<T, E>) -> Option<T>
+where
+    E: std::fmt::Display,
+{
+    match std::fs::read_to_string(path) {
+        Ok(contents) => match parse(&contents) {
+            Ok(v) => Some(v),
+            Err(e) => {
+                tracing::warn!(path = %path.display(), error = %e, "failed to parse file");
+                None
+            }
+        },
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+        Err(e) => {
+            tracing::warn!(path = %path.display(), error = %e, "failed to read file");
+            None
+        }
+    }
+}
+
+/// Load HEARTBEAT.yml from the given path.
+///
+/// On parse error, logs a warning and returns `None` so the caller keeps the last good config.
+/// Returns `None` if the file does not exist.
+#[must_use]
+pub(crate) fn load_heartbeat(path: &Path) -> Option<HeartbeatConfig> {
+    let cfg = read_and_parse(path, |s| serde_yml::from_str::<HeartbeatConfig>(s))?;
+    tracing::trace!(path = %path.display(), pulses = cfg.pulses.len(), "loaded HEARTBEAT.yml");
+    Some(cfg)
+}
+
 #[cfg(test)]
 #[expect(clippy::unwrap_used, reason = "test code uses unwrap for clarity")]
 mod tests {
     use super::*;
+    use tempfile::tempdir;
 
     #[test]
     fn parse_schedule_duration_minutes() {
@@ -242,6 +268,92 @@ mod tests {
         assert!(
             !is_within_active_hours(late, start, end),
             "22:00 should be outside 08:00-18:00"
+        );
+    }
+
+    #[test]
+    fn is_within_active_hours_boundary_start_inclusive() {
+        let t = chrono::NaiveDate::from_ymd_opt(2026, 2, 19)
+            .unwrap()
+            .and_hms_opt(8, 0, 0)
+            .unwrap();
+        let start = NaiveTime::from_hms_opt(8, 0, 0).unwrap();
+        let end = NaiveTime::from_hms_opt(18, 0, 0).unwrap();
+        assert!(
+            is_within_active_hours(t, start, end),
+            "start time should be inclusive"
+        );
+    }
+
+    #[test]
+    fn is_within_active_hours_boundary_end_exclusive() {
+        let t = chrono::NaiveDate::from_ymd_opt(2026, 2, 19)
+            .unwrap()
+            .and_hms_opt(18, 0, 0)
+            .unwrap();
+        let start = NaiveTime::from_hms_opt(8, 0, 0).unwrap();
+        let end = NaiveTime::from_hms_opt(18, 0, 0).unwrap();
+        assert!(
+            !is_within_active_hours(t, start, end),
+            "end time should be exclusive"
+        );
+    }
+
+    #[test]
+    fn is_within_active_hours_overnight_inside_before_midnight() {
+        let t = chrono::NaiveDate::from_ymd_opt(2026, 2, 19)
+            .unwrap()
+            .and_hms_opt(23, 0, 0)
+            .unwrap();
+        let start = NaiveTime::from_hms_opt(22, 0, 0).unwrap();
+        let end = NaiveTime::from_hms_opt(6, 0, 0).unwrap();
+        assert!(
+            is_within_active_hours(t, start, end),
+            "23:00 should be inside overnight window 22:00-06:00"
+        );
+    }
+
+    #[test]
+    fn is_within_active_hours_overnight_outside() {
+        let t = chrono::NaiveDate::from_ymd_opt(2026, 2, 19)
+            .unwrap()
+            .and_hms_opt(12, 0, 0)
+            .unwrap();
+        let start = NaiveTime::from_hms_opt(22, 0, 0).unwrap();
+        let end = NaiveTime::from_hms_opt(6, 0, 0).unwrap();
+        assert!(
+            !is_within_active_hours(t, start, end),
+            "12:00 should be outside overnight window 22:00-06:00"
+        );
+    }
+
+    #[test]
+    fn is_within_active_hours_overnight_inside_after_midnight() {
+        let t = chrono::NaiveDate::from_ymd_opt(2026, 2, 19)
+            .unwrap()
+            .and_hms_opt(1, 0, 0)
+            .unwrap();
+        let start = NaiveTime::from_hms_opt(22, 0, 0).unwrap();
+        let end = NaiveTime::from_hms_opt(6, 0, 0).unwrap();
+        assert!(
+            is_within_active_hours(t, start, end),
+            "01:00 should be inside overnight window 22:00-06:00"
+        );
+    }
+
+    #[test]
+    fn parse_schedule_duration_zero_fails() {
+        assert!(
+            parse_schedule_duration("0m").is_err(),
+            "zero duration should fail"
+        );
+    }
+
+    #[test]
+    fn parse_schedule_duration_negative_fails() {
+        assert!(
+            parse_schedule_duration("-1h").is_err(),
+            "negative duration should fail"
         );
     }
 
@@ -378,5 +490,26 @@ pulses:
         let cfg: HeartbeatConfig = serde_yml::from_str(yaml).unwrap();
         let pulse = cfg.pulses.first().unwrap();
         assert!(pulse.enabled, "enabled should default to true when absent");
+    }
+
+    #[test]
+    fn load_heartbeat_missing_file_returns_none() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("HEARTBEAT.yml");
+        assert!(
+            load_heartbeat(&path).is_none(),
+            "missing file should return None"
+        );
+    }
+
+    #[test]
+    fn load_heartbeat_invalid_yaml_returns_none() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("HEARTBEAT.yml");
+        std::fs::write(&path, "not: valid: yaml: [[[").unwrap();
+        assert!(
+            load_heartbeat(&path).is_none(),
+            "invalid YAML should return None"
+        );
     }
 }

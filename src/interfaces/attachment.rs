@@ -44,8 +44,6 @@ pub async fn encode_image_from_file(path: &Path, media_type: &str) -> Result<Ima
 pub struct AttachmentInfo {
     /// Original filename.
     pub filename: String,
-    /// Download URL.
-    pub url: String,
     /// File size in bytes.
     pub size: u32,
     /// MIME content type, if known.
@@ -69,6 +67,7 @@ pub struct SavedAttachment {
 /// Returns an error if the download or file write fails.
 pub async fn download_attachment(
     info: &AttachmentInfo,
+    url: &str,
     inbox_dir: &Path,
 ) -> Result<SavedAttachment, String> {
     if info.size > MAX_ATTACHMENT_SIZE {
@@ -82,8 +81,10 @@ pub async fn download_attachment(
     let saved_name = format!("{timestamp}_{}", info.filename);
     let local_path = inbox_dir.join(&saved_name);
 
-    let response = reqwest::get(&info.url)
+    let response = reqwest::get(url)
         .await
+        .map_err(|e| format!("failed to download attachment '{}': {e}", info.filename,))?
+        .error_for_status()
         .map_err(|e| format!("failed to download attachment '{}': {e}", info.filename,))?;
 
     let bytes = response
@@ -122,6 +123,85 @@ pub fn format_failed_attachment_line(info: &AttachmentInfo, reason: &str) -> Str
     )
 }
 
+/// Finalize a downloaded attachment: append metadata to content, optionally encode inline,
+/// and create a companion inbox item.
+///
+/// `platform` is the display name of the interface (e.g. `"Discord"`, `"Telegram"`); the inbox
+/// item title is `"{platform} attachment: {filename}"` and the source field is its lowercase form.
+///
+/// Returns an `ImageData` if the attachment is a supported image within the inline size limit.
+pub async fn finalize_attachment(
+    saved: &SavedAttachment,
+    info: &AttachmentInfo,
+    content: &mut String,
+    author: &str,
+    inbox_dir: &Path,
+    tz: chrono_tz::Tz,
+    platform: &str,
+) -> Option<ImageData> {
+    let line = format_attachment_line(saved, info);
+    content.push('\n');
+    content.push_str(&line);
+
+    let image = match info.content_type.as_deref() {
+        Some(ct) if is_supported_image(Some(ct)) => {
+            if info.size <= MAX_IMAGE_INLINE_SIZE {
+                match encode_image_from_file(&saved.local_path, ct).await {
+                    Ok(img) => Some(img),
+                    Err(e) => {
+                        tracing::warn!(
+                            filename = %info.filename,
+                            error = %e,
+                            "failed to encode attachment image for inline delivery"
+                        );
+                        None
+                    }
+                }
+            } else {
+                tracing::warn!(
+                    filename = %info.filename,
+                    size = info.size,
+                    max = MAX_IMAGE_INLINE_SIZE,
+                    "attachment image exceeds inline size limit, saved but not sent to model"
+                );
+                None
+            }
+        }
+        _ => None,
+    };
+
+    let Some(file_name_os) = saved.local_path.file_name() else {
+        tracing::warn!(
+            path = %saved.local_path.display(),
+            "attachment path has no filename, skipping companion item"
+        );
+        return image;
+    };
+    let saved_name = file_name_os.to_string_lossy().to_string();
+    let content_type_str = info.content_type.as_deref().unwrap_or("unknown");
+    let companion = crate::inbox::InboxItem {
+        title: format!("{platform} attachment: {}", info.filename),
+        body: format!(
+            "From: {author}\nSize: {} bytes\nContent-Type: {content_type_str}",
+            info.size,
+        ),
+        source: platform.to_lowercase(),
+        timestamp: crate::time::now_local(tz),
+        read: false,
+        attachments: vec![PathBuf::from("inbox").join(&saved_name)],
+    };
+    let filename = crate::inbox::generate_filename(&companion.title, companion.timestamp);
+    if let Err(e) = crate::inbox::save_item(inbox_dir, &filename, &companion).await {
+        tracing::warn!(
+            filename = %info.filename,
+            error = %e,
+            "failed to create companion inbox item for attachment"
+        );
+    }
+
+    image
+}
+
 #[cfg(test)]
 #[expect(clippy::unwrap_used, reason = "test code uses unwrap for clarity")]
 mod tests {
@@ -134,7 +214,6 @@ mod tests {
         };
         let info = AttachmentInfo {
             filename: "photo.jpg".to_string(),
-            url: String::new(),
             size: 1024,
             content_type: Some("image/jpeg".to_string()),
         };
@@ -154,7 +233,6 @@ mod tests {
     fn format_failed_line_output() {
         let info = AttachmentInfo {
             filename: "doc.pdf".to_string(),
-            url: String::new(),
             size: 2048,
             content_type: None,
         };
@@ -178,14 +256,14 @@ mod tests {
             .await;
 
         let dir = tempfile::tempdir().unwrap();
+        let url = format!("{}/file", mock_server.uri());
         let info = AttachmentInfo {
             filename: "test.txt".to_string(),
-            url: format!("{}/file", mock_server.uri()),
             size: 11,
             content_type: Some("text/plain".to_string()),
         };
 
-        let saved = download_attachment(&info, dir.path()).await.unwrap();
+        let saved = download_attachment(&info, &url, dir.path()).await.unwrap();
         assert!(saved.local_path.exists(), "file should exist on disk");
 
         let content = tokio::fs::read_to_string(&saved.local_path).await.unwrap();
@@ -196,12 +274,11 @@ mod tests {
     async fn skip_oversized_attachment() {
         let info = AttachmentInfo {
             filename: "huge.bin".to_string(),
-            url: String::new(),
             size: MAX_ATTACHMENT_SIZE + 1,
             content_type: None,
         };
         let dir = tempfile::tempdir().unwrap();
-        let result = download_attachment(&info, dir.path()).await;
+        let result = download_attachment(&info, "", dir.path()).await;
         assert!(result.is_err(), "should reject oversized attachment");
         let err = result.unwrap_err();
         assert!(
@@ -246,6 +323,215 @@ mod tests {
 
         let img = encode_image_from_file(&path, "image/jpeg").await.unwrap();
         assert_eq!(img.media_type, "image/jpeg", "media type should match");
-        assert!(!img.data.is_empty(), "base64 data should be non-empty");
+        let decoded = base64::engine::general_purpose::STANDARD
+            .decode(&img.data)
+            .unwrap();
+        assert_eq!(
+            decoded, b"fake image bytes",
+            "decoded base64 should equal original bytes"
+        );
+    }
+
+    #[tokio::test]
+    async fn encode_image_from_file_error_on_missing_file() {
+        let result = encode_image_from_file(
+            std::path::Path::new("/tmp/nonexistent_residuum_test_image.jpg"),
+            "image/jpeg",
+        )
+        .await;
+        assert!(result.is_err(), "should fail for non-existent file");
+        let err = result.unwrap_err();
+        assert!(
+            err.contains("nonexistent_residuum_test_image.jpg"),
+            "error should contain the path: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn download_attachment_returns_error_on_http_500() {
+        use wiremock::matchers::method;
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let mock_server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(500))
+            .mount(&mock_server)
+            .await;
+
+        let dir = tempfile::tempdir().unwrap();
+        let url = format!("{}/file", mock_server.uri());
+        let info = AttachmentInfo {
+            filename: "broken.jpg".to_string(),
+            size: 100,
+            content_type: Some("image/jpeg".to_string()),
+        };
+
+        let result = download_attachment(&info, &url, dir.path()).await;
+        assert!(result.is_err(), "500 response should return error");
+        let err = result.unwrap_err();
+        assert!(
+            err.contains("broken.jpg"),
+            "error should contain filename: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn finalize_attachment_inline_image() {
+        let dir = tempfile::tempdir().unwrap();
+        let inbox_dir = dir.path().join("inbox");
+        tokio::fs::create_dir_all(&inbox_dir).await.unwrap();
+
+        let image_path = dir.path().join("photo.jpg");
+        tokio::fs::write(&image_path, b"fake image bytes")
+            .await
+            .unwrap();
+
+        let saved = SavedAttachment {
+            local_path: image_path,
+        };
+        let info = AttachmentInfo {
+            filename: "photo.jpg".to_string(),
+            size: 1024,
+            content_type: Some("image/jpeg".to_string()),
+        };
+        let mut content = String::new();
+
+        let result = finalize_attachment(
+            &saved,
+            &info,
+            &mut content,
+            "author",
+            &inbox_dir,
+            chrono_tz::UTC,
+            "Discord",
+        )
+        .await;
+
+        assert!(
+            result.is_some(),
+            "supported image within size limit should return ImageData"
+        );
+        let img = result.unwrap();
+        let decoded = base64::engine::general_purpose::STANDARD
+            .decode(&img.data)
+            .unwrap();
+        assert_eq!(
+            decoded, b"fake image bytes",
+            "decoded base64 should equal original bytes"
+        );
+        assert!(
+            content.contains("photo.jpg"),
+            "content should contain filename"
+        );
+    }
+
+    #[tokio::test]
+    async fn finalize_attachment_oversized_image_skips_inline() {
+        let dir = tempfile::tempdir().unwrap();
+        let inbox_dir = dir.path().join("inbox");
+        tokio::fs::create_dir_all(&inbox_dir).await.unwrap();
+
+        let image_path = dir.path().join("large.jpg");
+        tokio::fs::write(&image_path, b"bytes").await.unwrap();
+
+        let saved = SavedAttachment {
+            local_path: image_path,
+        };
+        let info = AttachmentInfo {
+            filename: "large.jpg".to_string(),
+            size: MAX_IMAGE_INLINE_SIZE + 1,
+            content_type: Some("image/jpeg".to_string()),
+        };
+        let mut content = String::new();
+
+        let result = finalize_attachment(
+            &saved,
+            &info,
+            &mut content,
+            "author",
+            &inbox_dir,
+            chrono_tz::UTC,
+            "Discord",
+        )
+        .await;
+
+        assert!(
+            result.is_none(),
+            "image exceeding inline size limit should not be encoded"
+        );
+    }
+
+    #[tokio::test]
+    async fn finalize_attachment_non_image_skips_encoding() {
+        let dir = tempfile::tempdir().unwrap();
+        let inbox_dir = dir.path().join("inbox");
+        tokio::fs::create_dir_all(&inbox_dir).await.unwrap();
+
+        let file_path = dir.path().join("doc.pdf");
+        tokio::fs::write(&file_path, b"pdf content").await.unwrap();
+
+        let saved = SavedAttachment {
+            local_path: file_path,
+        };
+        let info = AttachmentInfo {
+            filename: "doc.pdf".to_string(),
+            size: 1024,
+            content_type: Some("application/pdf".to_string()),
+        };
+        let mut content = String::new();
+
+        let result = finalize_attachment(
+            &saved,
+            &info,
+            &mut content,
+            "author",
+            &inbox_dir,
+            chrono_tz::UTC,
+            "Discord",
+        )
+        .await;
+
+        assert!(
+            result.is_none(),
+            "non-image content type should not be encoded"
+        );
+    }
+
+    #[tokio::test]
+    async fn finalize_attachment_no_path_filename_skips_inbox_item() {
+        let dir = tempfile::tempdir().unwrap();
+        let inbox_dir = dir.path().join("inbox");
+        tokio::fs::create_dir_all(&inbox_dir).await.unwrap();
+
+        let saved = SavedAttachment {
+            local_path: PathBuf::from("/"),
+        };
+        let info = AttachmentInfo {
+            filename: "doc.pdf".to_string(),
+            size: 100,
+            content_type: Some("application/pdf".to_string()),
+        };
+        let mut content = String::new();
+
+        let result = finalize_attachment(
+            &saved,
+            &info,
+            &mut content,
+            "author",
+            &inbox_dir,
+            chrono_tz::UTC,
+            "Discord",
+        )
+        .await;
+
+        assert!(
+            result.is_none(),
+            "non-image with no path filename should return None"
+        );
+        let entries: Vec<_> = std::fs::read_dir(&inbox_dir).unwrap().collect();
+        assert!(
+            entries.is_empty(),
+            "no inbox item should be created when path has no filename"
+        );
     }
 }

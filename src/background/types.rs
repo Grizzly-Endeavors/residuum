@@ -1,11 +1,19 @@
 //! Background task types: task definitions, execution configs, and results.
 
+use std::collections::HashSet;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
+use tokio::sync::{Mutex, Notify};
 
-use crate::bus::{AgentResultStatus, EventTrigger, PresetName};
+use crate::actions::store::ActionStore;
+use crate::bus::{AgentResultStatus, EndpointRegistry, EventTrigger, PresetName, Publisher};
 use crate::config::BackgroundModelTier;
+use crate::memory::search::HybridSearcher;
+use crate::models::CompletionOptions;
+use crate::workspace::identity::IdentityFiles;
+use crate::workspace::layout::WorkspaceLayout;
 
 /// A background task to be executed by the spawner.
 #[derive(Debug, Clone)]
@@ -16,17 +24,10 @@ pub(crate) struct BackgroundTask {
     pub source_label: String,
     /// Where this task originated.
     pub source: EventTrigger,
-    /// How to execute the task.
-    pub execution: Execution,
+    /// Configuration for the sub-agent that runs this task.
+    pub subagent_config: SubAgentConfig,
     /// The agent preset that will run this task.
     pub agent_preset: PresetName,
-}
-
-/// How to execute the task.
-#[derive(Debug, Clone)]
-pub enum Execution {
-    /// Run a sub-agent LLM turn.
-    SubAgent(SubAgentConfig),
 }
 
 /// Configuration for a sub-agent background task.
@@ -68,19 +69,15 @@ pub struct ActiveTaskInfo {
     pub source_label: String,
     /// Where this task originated.
     pub source: EventTrigger,
-    /// Execution variant label (always `"sub_agent"`).
-    pub execution_type: &'static str,
     /// Truncated prompt or command preview (at most 120 chars).
     pub prompt_preview: String,
     /// When the task was spawned (UTC).
     pub started_at: DateTime<Utc>,
 }
 
-/// Extract display info from an `Execution` config.
-pub(crate) fn execution_info(execution: &Execution) -> (&'static str, String) {
-    let Execution::SubAgent(cfg) = execution;
-    let preview = cfg.prompt.chars().take(120).collect();
-    ("sub_agent", preview)
+/// Extract prompt preview from a sub-agent config (truncated to 120 chars).
+pub(crate) fn execution_info(config: &SubAgentConfig) -> String {
+    config.prompt.chars().take(120).collect()
 }
 
 /// Format a `BackgroundResult` for injection into the agent message stream.
@@ -102,6 +99,45 @@ pub fn format_background_result(result: &BackgroundResult) -> String {
     }
 
     parts.join("\n")
+}
+
+/// Preset-derived tool restriction for a sub-agent.
+pub enum PresetToolRestriction {
+    /// Tools permanently blocked (from `denied_tools` frontmatter).
+    Denied(HashSet<String>),
+    /// Only listed tools are available (from `allowed_tools` frontmatter).
+    AllowedOnly(HashSet<String>),
+}
+
+/// Configuration passed to [`build_subagent_resources`] that groups constructor arguments.
+pub struct SubAgentBuildConfig {
+    /// Gated tool names — passed to the isolated `ToolFilter` (currently empty).
+    pub gated_tools: HashSet<&'static str>,
+    /// Optional preset-level tool restriction (denied or allowed-only).
+    pub preset_tool_restriction: Option<PresetToolRestriction>,
+    /// Workspace layout (used to set the path policy root).
+    pub workspace_layout: WorkspaceLayout,
+    /// Identity files for the system prompt.
+    pub identity: IdentityFiles,
+    /// LLM completion options for the sub-agent turn.
+    pub options: CompletionOptions,
+    /// Timezone used by project management tools.
+    pub tz: chrono_tz::Tz,
+    /// Preset-specific instructions to inject into the subagent system prompt.
+    pub preset_instructions: Option<String>,
+    // ── Sub-agent tool dependencies ────────────────────────────────────
+    /// Background task spawner for `stop_agent` / `list_agents` tools.
+    pub background_spawner: Arc<super::spawner::BackgroundTaskSpawner>,
+    /// Endpoint registry for `send_message` / `list_endpoints` tools.
+    pub endpoint_registry: EndpointRegistry,
+    /// Bus publisher for `send_message` tool.
+    pub publisher: Publisher,
+    /// Scheduled action store for action tools.
+    pub action_store: Arc<Mutex<ActionStore>>,
+    /// Notify handle for action tools.
+    pub action_notify: Arc<Notify>,
+    /// Hybrid searcher for `memory_search` tool.
+    pub hybrid_searcher: Arc<HybridSearcher>,
 }
 
 #[cfg(test)]
@@ -171,6 +207,10 @@ mod tests {
             formatted.contains("/tmp/bg-002.log"),
             "should contain transcript path"
         );
+        assert!(
+            !formatted.contains("Output:"),
+            "failed result with empty summary should omit Output section"
+        );
     }
 
     #[test]
@@ -208,8 +248,7 @@ mod tests {
             context: None,
             model_tier: BackgroundModelTier::Medium,
         };
-        let (exec_type, preview) = execution_info(&Execution::SubAgent(config));
-        assert_eq!(exec_type, "sub_agent");
+        let preview = execution_info(&config);
         assert_eq!(preview.len(), 120, "preview should be capped at 120 chars");
     }
 

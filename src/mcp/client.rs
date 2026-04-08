@@ -5,6 +5,7 @@
 
 use std::borrow::Cow;
 use std::collections::HashMap;
+use std::sync::LazyLock;
 use std::time::Duration;
 
 use http::{HeaderName, HeaderValue};
@@ -40,6 +41,7 @@ impl McpClient {
     /// # Errors
     /// Returns an error if the connection cannot be established or the MCP
     /// handshake fails.
+    #[tracing::instrument(skip_all, fields(mcp.server = %entry.name))]
     pub async fn connect(entry: &McpServerEntry) -> Result<Self, anyhow::Error> {
         match entry.transport {
             McpTransport::Stdio => Self::connect_stdio(entry).await,
@@ -48,6 +50,7 @@ impl McpClient {
     }
 
     async fn connect_stdio(entry: &McpServerEntry) -> Result<Self, anyhow::Error> {
+        tracing::debug!(command = %entry.command, "connecting to mcp server (stdio)");
         let mut cmd = tokio::process::Command::new(&entry.command);
         cmd.args(&entry.args);
         for (key, val) in &entry.env {
@@ -68,6 +71,7 @@ impl McpClient {
     }
 
     async fn connect_http(entry: &McpServerEntry) -> Result<Self, anyhow::Error> {
+        tracing::debug!(url = %entry.command, "connecting to mcp server (http)");
         let mut config = StreamableHttpClientTransportConfig::with_uri(entry.command.as_str());
 
         if !entry.headers.is_empty() {
@@ -97,6 +101,7 @@ impl McpClient {
     ///
     /// # Errors
     /// Returns an error if the RPC call fails.
+    #[tracing::instrument(skip_all, fields(mcp.server = %self.server_name))]
     pub async fn list_tools(&self) -> Result<Vec<ToolDefinition>, anyhow::Error> {
         let tools = self.service.peer().list_all_tools().await.map_err(|e| {
             anyhow::anyhow!(
@@ -121,16 +126,10 @@ impl McpClient {
     ///
     /// # Errors
     /// Returns `ToolError::Execution` if the RPC call fails.
+    #[tracing::instrument(skip_all, fields(mcp.tool = %name, mcp.server = %self.server_name))]
     pub async fn call_tool(&self, name: &str, args: Value) -> Result<ToolResult, ToolError> {
-        let arguments = match args {
-            Value::Object(map) => Some(map),
-            Value::Null => None,
-            Value::Bool(_) | Value::Number(_) | Value::String(_) | Value::Array(_) => {
-                return Err(ToolError::InvalidArguments(
-                    "mcp tool arguments must be an object".to_string(),
-                ));
-            }
-        };
+        tracing::debug!(tool = %name, server = %self.server_name, "dispatching mcp tool call");
+        let arguments = coerce_tool_args(args)?;
 
         let params = CallToolRequestParams {
             meta: None,
@@ -160,11 +159,9 @@ impl McpClient {
         let output = extract_text_content(&result.content);
 
         if is_error {
-            tracing::debug!(
-                tool = %name,
-                server = %self.server_name,
-                "mcp tool returned error response"
-            );
+            tracing::warn!(output = %output, "mcp tool returned error response");
+        } else {
+            tracing::debug!("mcp tool call completed");
         }
 
         Ok(ToolResult {
@@ -182,27 +179,44 @@ impl McpClient {
                 error = %e,
                 "mcp server shutdown returned error"
             );
+        } else {
+            tracing::debug!(server = %self.server_name, "mcp server shutdown complete");
         }
     }
 }
+
+fn coerce_tool_args(args: Value) -> Result<Option<serde_json::Map<String, Value>>, ToolError> {
+    match args {
+        Value::Object(map) => Ok(Some(map)),
+        Value::Null => Ok(None),
+        Value::Bool(_) | Value::Number(_) | Value::String(_) | Value::Array(_) => Err(
+            ToolError::InvalidArguments("mcp tool arguments must be an object".to_string()),
+        ),
+    }
+}
+
+#[expect(
+    clippy::expect_used,
+    reason = "hardcoded regex literal is always valid"
+)]
+static ENV_VAR_RE: LazyLock<regex::Regex> = LazyLock::new(|| {
+    regex::Regex::new(r"\$\{([^}:]+?)(?::-(.*?))?\}").expect("hardcoded regex is valid")
+});
 
 /// Expand `${VAR}` and `${VAR:-default}` patterns in a string using environment variables.
 ///
 /// Unresolved variables with no default are replaced with an empty string.
 #[must_use]
-pub fn expand_env_vars(input: &str) -> String {
-    let re = regex::Regex::new(r"\$\{([^}:]+?)(?::-(.*?))?\}");
-    let Ok(re) = re else {
-        return input.to_string();
-    };
-    re.replace_all(input, |caps: &regex::Captures<'_>| {
-        let var_name = caps.get(1).map_or("", |m| m.as_str());
-        match std::env::var(var_name) {
-            Ok(val) => val,
-            Err(_) => caps.get(2).map_or("", |m| m.as_str()).to_string(),
-        }
-    })
-    .into_owned()
+pub(crate) fn expand_env_vars(input: &str) -> String {
+    ENV_VAR_RE
+        .replace_all(input, |caps: &regex::Captures<'_>| {
+            let var_name = caps.get(1).map_or("", |m| m.as_str());
+            match std::env::var(var_name) {
+                Ok(val) => val,
+                Err(_) => caps.get(2).map_or("", |m| m.as_str()).to_string(),
+            }
+        })
+        .into_owned()
 }
 
 /// Expand env vars in header values and convert to HTTP header types.
@@ -349,5 +363,86 @@ mod tests {
         );
         unsafe { std::env::remove_var("TEST_MCP_A") };
         unsafe { std::env::remove_var("TEST_MCP_B") };
+    }
+
+    #[test]
+    fn expand_env_vars_empty_var_does_not_use_default() {
+        // SAFETY: test-only, single-threaded test runner for this module
+        unsafe { std::env::set_var("TEST_MCP_EMPTY", "") };
+        assert_eq!(
+            expand_env_vars("${TEST_MCP_EMPTY:-fallback}"),
+            "",
+            "empty var does not trigger default substitution (diverges from POSIX shell)"
+        );
+        unsafe { std::env::remove_var("TEST_MCP_EMPTY") };
+    }
+
+    #[test]
+    fn coerce_tool_args_rejects_bool() {
+        let result = coerce_tool_args(serde_json::json!(true));
+        assert!(
+            matches!(result, Err(ToolError::InvalidArguments(_))),
+            "bool args should return InvalidArguments"
+        );
+    }
+
+    #[test]
+    fn coerce_tool_args_rejects_number() {
+        let result = coerce_tool_args(serde_json::json!(42));
+        assert!(
+            matches!(result, Err(ToolError::InvalidArguments(_))),
+            "number args should return InvalidArguments"
+        );
+    }
+
+    #[test]
+    fn coerce_tool_args_rejects_string() {
+        let result = coerce_tool_args(serde_json::json!("hello"));
+        assert!(
+            matches!(result, Err(ToolError::InvalidArguments(_))),
+            "string args should return InvalidArguments"
+        );
+    }
+
+    #[test]
+    fn coerce_tool_args_rejects_array() {
+        let result = coerce_tool_args(serde_json::json!([1, 2, 3]));
+        assert!(
+            matches!(result, Err(ToolError::InvalidArguments(_))),
+            "array args should return InvalidArguments"
+        );
+    }
+
+    #[test]
+    fn extract_text_content_empty_returns_empty_string() {
+        assert_eq!(
+            extract_text_content(&[]),
+            "",
+            "empty content slice should return empty string"
+        );
+    }
+
+    #[test]
+    fn extract_text_content_non_text_block_returns_empty_string() {
+        let content = vec![Content::image("base64data", "image/png")];
+        assert_eq!(
+            extract_text_content(&content),
+            "",
+            "non-text content block should return empty string"
+        );
+    }
+
+    #[test]
+    fn extract_text_content_mixed_blocks_returns_only_text() {
+        let content = vec![
+            Content::text("hello"),
+            Content::image("base64data", "image/png"),
+            Content::text("world"),
+        ];
+        assert_eq!(
+            extract_text_content(&content),
+            "hello\nworld",
+            "mixed blocks should return only text joined by newlines"
+        );
     }
 }

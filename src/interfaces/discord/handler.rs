@@ -2,7 +2,6 @@
 
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::Duration;
 
 use serenity::async_trait;
 use serenity::builder::{
@@ -13,17 +12,15 @@ use serenity::model::channel::Message;
 use serenity::model::gateway::Ready;
 use serenity::prelude::*;
 
+use super::presence::{load_presence, to_activity, to_online_status};
 use crate::bus::{BusHandle, EndpointName, Publisher};
 use crate::gateway::types::{ReloadSignal, ServerCommand};
-use crate::inbox;
 use crate::interfaces::attachment::{
-    AttachmentInfo, MAX_IMAGE_INLINE_SIZE, download_attachment, encode_image_from_file,
-    format_attachment_line, format_failed_attachment_line, is_supported_image,
+    AttachmentInfo, download_attachment, finalize_attachment, format_failed_attachment_line,
 };
 use crate::interfaces::cli::commands::{
     CommandContext, CommandSideEffect, all_commands, execute_command,
 };
-use crate::interfaces::presence::{load_presence, to_activity, to_online_status};
 use crate::interfaces::types::MessageOrigin;
 use crate::models::ImageData;
 
@@ -41,6 +38,7 @@ pub(super) struct DiscordHandler {
     pub(super) reload_tx: tokio::sync::watch::Sender<ReloadSignal>,
     pub(super) command_tx: tokio::sync::mpsc::Sender<ServerCommand>,
     pub(super) tz: chrono_tz::Tz,
+    pub(super) shutdown_rx: tokio::sync::watch::Receiver<bool>,
 }
 
 #[async_trait]
@@ -56,7 +54,7 @@ impl EventHandler for DiscordHandler {
         tracing::info!("discord presence applied from PRESENCE.toml");
 
         // Register global slash commands
-        if let Err(e) = register_slash_commands(&ctx).await {
+        if let Err(e) = register_commands(&ctx).await {
             tracing::warn!(error = %e, "failed to register discord slash commands");
         }
 
@@ -80,8 +78,9 @@ impl EventHandler for DiscordHandler {
         // Spawn presence watcher background task
         let presence_path = self.presence_path.clone();
         let shard = ctx.shard.clone();
+        let shutdown_rx = self.shutdown_rx.clone();
         tokio::spawn(async move {
-            presence_watcher(presence_path, shard).await;
+            presence_watcher(presence_path, shard, shutdown_rx).await;
         });
     }
 
@@ -94,6 +93,11 @@ impl EventHandler for DiscordHandler {
         // DM-only: ignore guild messages
         if msg.guild_id.is_some() {
             return;
+        }
+
+        {
+            let _span = tracing::debug_span!("discord_message", author = %msg.author.name, msg_id = %msg.id).entered();
+            tracing::debug!(author = %msg.author.name, content_len = msg.content.len(), "discord DM received");
         }
 
         // Track the DM channel for subscriber output
@@ -139,6 +143,7 @@ impl EventHandler for DiscordHandler {
     }
 
     async fn interaction_create(&self, ctx: Context, interaction: Interaction) {
+        let _span = tracing::info_span!("discord_interaction").entered();
         let Interaction::Command(cmd) = interaction else {
             return;
         };
@@ -154,48 +159,40 @@ impl EventHandler for DiscordHandler {
         let command_ctx = CommandContext {
             url: "",
             verbose: false,
-            interface_name: "discord",
         };
 
         let result = execute_command(cmd.data.name.as_str(), cmd_args.as_deref(), &command_ctx);
+        drop(_span);
 
         // Handle side effects
         let response_text = match result.side_effect {
             Some(CommandSideEffect::Reload) => {
                 tracing::info!("reload requested via discord slash command");
                 if self.reload_tx.send(ReloadSignal::Root).is_err() {
-                    tracing::warn!("reload_tx closed, reload dropped");
+                    tracing::warn!(command = %cmd.data.name, "reload_tx closed, reload dropped");
                 }
                 result.response
             }
             Some(CommandSideEffect::ServerCommand { name, args }) => {
-                tracing::info!(command = %name, "server command via discord slash command");
-                let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
-                if let Err(e) = self.command_tx.try_send(ServerCommand {
-                    name: name.to_string(),
+                crate::interfaces::dispatch_server_command(
+                    &self.command_tx,
+                    name,
                     args,
-                    reply_tx: Some(reply_tx),
-                }) {
-                    tracing::warn!(command = %name, error = %e, "failed to dispatch server command");
-                }
-                match tokio::time::timeout(Duration::from_secs(10), reply_rx).await {
-                    Ok(Ok(msg)) => msg,
-                    _ => result.response,
-                }
+                    result.response,
+                    "discord slash command",
+                )
+                .await
             }
             Some(CommandSideEffect::InboxAdd(body)) => {
-                let title: String = body
-                    .lines()
-                    .next()
-                    .unwrap_or("Inbox message")
-                    .chars()
-                    .take(60)
-                    .collect();
                 let source = format!("discord:{}", cmd.user.name);
-                match inbox::quick_add(&self.inbox_dir, &title, &body, &source, self.tz).await {
-                    Ok(_) => result.response,
-                    Err(e) => format!("failed to add inbox item: {e}"),
-                }
+                crate::interfaces::inbox_add_from_command(
+                    &self.inbox_dir,
+                    &body,
+                    &source,
+                    self.tz,
+                    result.response,
+                )
+                .await
             }
             Some(CommandSideEffect::Quit | CommandSideEffect::ToggleVerbose) => {
                 // Not applicable to Discord
@@ -229,67 +226,24 @@ async fn process_discord_attachments(
     for attachment in attachments {
         let info = AttachmentInfo {
             filename: attachment.filename.clone(),
-            url: attachment.url.clone(),
             size: attachment.size,
             content_type: attachment.content_type.clone(),
         };
 
-        match download_attachment(&info, inbox_dir).await {
+        match download_attachment(&info, &attachment.url, inbox_dir).await {
             Ok(saved) => {
-                let line = format_attachment_line(&saved, &info);
-                content.push('\n');
-                content.push_str(&line);
-
-                // Encode supported images inline for the model
-                if is_supported_image(info.content_type.as_deref())
-                    && info.size <= MAX_IMAGE_INLINE_SIZE
+                if let Some(img) = finalize_attachment(
+                    &saved,
+                    &info,
+                    &mut content,
+                    author_name,
+                    inbox_dir,
+                    tz,
+                    "Discord",
+                )
+                .await
                 {
-                    match encode_image_from_file(
-                        &saved.local_path,
-                        info.content_type.as_deref().unwrap_or("image/jpeg"),
-                    )
-                    .await
-                    {
-                        Ok(img) => images.push(img),
-                        Err(e) => tracing::warn!(
-                            filename = %info.filename,
-                            error = %e,
-                            "failed to encode discord image for inline delivery"
-                        ),
-                    }
-                } else if is_supported_image(info.content_type.as_deref()) {
-                    tracing::warn!(
-                        filename = %info.filename,
-                        size = info.size,
-                        "discord image exceeds inline size limit, saved but not sent to model"
-                    );
-                }
-
-                // Create companion inbox item for the attachment
-                let Some(file_name_os) = saved.local_path.file_name() else {
-                    tracing::warn!(path = %saved.local_path.display(), "attachment path has no filename, skipping companion item");
-                    continue;
-                };
-                let saved_name = file_name_os.to_string_lossy().to_string();
-                let content_type_str = info.content_type.as_deref().unwrap_or("unknown");
-                let companion = inbox::InboxItem {
-                    title: format!("Discord attachment: {}", info.filename),
-                    body: format!(
-                        "From: {author_name}\nSize: {} bytes\nContent-Type: {content_type_str}",
-                        info.size,
-                    ),
-                    source: "discord".to_string(),
-                    timestamp: crate::time::now_local(tz),
-                    read: false,
-                    attachments: vec![PathBuf::from("inbox").join(&saved_name)],
-                };
-                let filename = inbox::generate_filename(&companion.title, tz);
-                if let Err(e) = inbox::save_item(inbox_dir, &filename, &companion).await {
-                    tracing::warn!(
-                        filename = %info.filename,
-                        error = %e,
-                        "failed to create companion inbox item for discord attachment"
-                    );
+                    images.push(img);
                 }
             }
             Err(reason) => {
@@ -312,14 +266,8 @@ async fn process_discord_attachments(
 ///
 /// Commands that take arguments (like `/inbox`) get a `text` string option.
 /// Client-only commands (quit, verbose) are skipped — they don't apply to Discord.
-async fn register_slash_commands(ctx: &Context) -> Result<(), serenity::Error> {
-    let skip = ["quit", "exit", "q", "verbose", "v"];
-
-    for info in all_commands() {
-        if skip.contains(&info.name) {
-            continue;
-        }
-
+async fn register_commands(ctx: &Context) -> Result<(), serenity::Error> {
+    for info in all_commands().filter(|c| !c.cli_only) {
         let mut cmd = CreateCommand::new(info.name).description(info.help);
         if info.takes_arg {
             cmd = cmd.add_option(
@@ -340,11 +288,18 @@ async fn register_slash_commands(ctx: &Context) -> Result<(), serenity::Error> {
 }
 
 /// Background task that polls PRESENCE.toml for changes and updates presence.
-async fn presence_watcher(presence_path: PathBuf, shard: serenity::gateway::ShardMessenger) {
+async fn presence_watcher(
+    presence_path: PathBuf,
+    shard: serenity::gateway::ShardMessenger,
+    mut shutdown_rx: tokio::sync::watch::Receiver<bool>,
+) {
     let mut last_mtime = file_mtime(&presence_path);
 
     loop {
-        tokio::time::sleep(tokio::time::Duration::from_secs(PRESENCE_POLL_SECS)).await;
+        tokio::select! {
+            () = tokio::time::sleep(tokio::time::Duration::from_secs(PRESENCE_POLL_SECS)) => {}
+            _ = shutdown_rx.changed() => return,
+        }
 
         let current_mtime = file_mtime(&presence_path);
         if current_mtime != last_mtime {
@@ -355,7 +310,7 @@ async fn presence_watcher(presence_path: PathBuf, shard: serenity::gateway::Shar
             let status = to_online_status(&pf);
 
             shard.set_presence(Some(activity), status);
-            tracing::info!("discord presence updated from PRESENCE.toml");
+            tracing::info!(status = ?status, activity_type = ?pf.activity_type, "discord presence updated from PRESENCE.toml");
         }
     }
 }

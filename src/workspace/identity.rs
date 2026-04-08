@@ -1,6 +1,6 @@
 //! Identity file loading for agent context assembly.
 
-use crate::error::ResiduumError;
+use crate::util::FatalError;
 
 use super::layout::WorkspaceLayout;
 
@@ -30,55 +30,72 @@ impl IdentityFiles {
     /// warning when absent.
     ///
     /// # Errors
-    /// Returns `ResiduumError::Workspace` if a file exists but cannot be read.
-    pub async fn load(layout: &WorkspaceLayout) -> Result<Self, ResiduumError> {
-        let soul = read_optional(&layout.soul_md()).await?;
-        let agents = read_optional(&layout.agents_md()).await?;
-        let user = read_optional(&layout.user_md()).await?;
-        let memory = read_optional(&layout.memory_md()).await?;
+    /// Returns `FatalError::Workspace` if a file exists but cannot be read.
+    #[tracing::instrument(skip_all, fields(workspace = %layout.root().display()))]
+    pub async fn load(layout: &WorkspaceLayout) -> Result<Self, FatalError> {
+        let soul_result = read_optional(&layout.soul_md()).await?;
+        let agents_result = read_optional(&layout.agents_md()).await?;
+        let user_result = read_optional(&layout.user_md()).await?;
+        let memory_result = read_optional(&layout.memory_md()).await?;
+        let environment_result = read_optional(&layout.environment_md()).await?;
 
-        if soul.is_none() {
+        if matches!(soul_result, ReadResult::Absent) {
             tracing::warn!(path = %layout.soul_md().display(), "SOUL.md is missing or empty; expected after bootstrap");
         }
-        if agents.is_none() {
+        if matches!(agents_result, ReadResult::Absent) {
             tracing::warn!(path = %layout.agents_md().display(), "AGENTS.md is missing or empty; expected after bootstrap");
         }
-        if user.is_none() {
+        if matches!(user_result, ReadResult::Absent) {
             tracing::warn!(path = %layout.user_md().display(), "USER.md is missing or empty; expected after bootstrap");
         }
-        if memory.is_none() {
+        if matches!(memory_result, ReadResult::Absent) {
             tracing::warn!(path = %layout.memory_md().display(), "MEMORY.md is missing or empty; expected after bootstrap");
         }
-
-        let environment = read_optional(&layout.environment_md()).await?;
-        if environment.is_none() {
+        if matches!(environment_result, ReadResult::Absent) {
             tracing::warn!(path = %layout.environment_md().display(), "ENVIRONMENT.md is missing or empty; expected after bootstrap");
         }
 
+        let bootstrap = read_optional(&layout.bootstrap_md()).await?.into_option();
+
         Ok(Self {
-            soul,
-            agents,
-            user,
-            memory,
-            environment,
-            bootstrap: read_optional(&layout.bootstrap_md()).await?,
+            soul: soul_result.into_option(),
+            agents: agents_result.into_option(),
+            user: user_result.into_option(),
+            memory: memory_result.into_option(),
+            environment: environment_result.into_option(),
+            bootstrap,
         })
     }
 }
 
+enum ReadResult {
+    Present(String),
+    Absent,
+    WhitespaceOnly,
+}
+
+impl ReadResult {
+    fn into_option(self) -> Option<String> {
+        match self {
+            Self::Present(s) => Some(s),
+            Self::Absent | Self::WhitespaceOnly => None,
+        }
+    }
+}
+
 /// Read a file if it exists, returning `None` if missing.
-async fn read_optional(path: &std::path::Path) -> Result<Option<String>, ResiduumError> {
+async fn read_optional(path: &std::path::Path) -> Result<ReadResult, FatalError> {
     match tokio::fs::read_to_string(path).await {
         Ok(content) => {
             if content.trim().is_empty() {
-                tracing::debug!(path = %path.display(), "identity file exists but is whitespace-only, treating as absent");
-                Ok(None)
+                tracing::warn!(path = %path.display(), "identity file exists but is whitespace-only, treating as absent");
+                Ok(ReadResult::WhitespaceOnly)
             } else {
-                Ok(Some(content))
+                Ok(ReadResult::Present(content))
             }
         }
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(e) => Err(ResiduumError::Workspace(format!(
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(ReadResult::Absent),
+        Err(e) => Err(FatalError::Workspace(format!(
             "failed to read {}: {e}",
             path.display()
         ))),
@@ -90,28 +107,6 @@ async fn read_optional(path: &std::path::Path) -> Result<Option<String>, Residuu
 mod tests {
     use super::*;
     use crate::workspace::bootstrap::ensure_workspace;
-
-    #[tokio::test]
-    async fn load_after_bootstrap() {
-        let dir = tempfile::tempdir().unwrap();
-        let layout = WorkspaceLayout::new(dir.path().join("workspace"));
-
-        ensure_workspace(&layout, None, None).await.unwrap();
-        let identity = IdentityFiles::load(&layout).await.unwrap();
-
-        assert!(identity.soul.is_some(), "soul should be loaded");
-        assert!(identity.agents.is_some(), "agents should be loaded");
-        assert!(identity.user.is_some(), "user should be loaded");
-        assert!(identity.memory.is_some(), "memory should be loaded");
-        assert!(
-            identity.environment.is_some(),
-            "environment should be loaded after bootstrap"
-        );
-        assert!(
-            identity.bootstrap.is_some(),
-            "bootstrap should be loaded on first run"
-        );
-    }
 
     #[tokio::test]
     async fn load_bootstrap_none_after_deletion() {

@@ -147,7 +147,7 @@ Output is capped at 100 KB; larger output is truncated with `\n... (output trunc
 |-------------------|-----------------|----------|--------------------------------------------------------------|
 | `query`           | string          | yes      | Search query (supports AND, OR, phrase queries with quotes)  |
 | `limit`           | integer         | no       | Maximum results to return (default: 5, max: 20)              |
-| `source`          | string          | no       | Filter by source: `"observations"`, `"episodes"`, or `"both"` |
+| `source`          | string          | no       | Filter by source: `"observations"` or `"episodes"`. Omit to search both. |
 | `date_from`       | string          | no       | Filter on or after date (YYYY-MM-DD, inclusive)              |
 | `date_to`         | string          | no       | Filter on or before date (YYYY-MM-DD, inclusive)             |
 | `project_context` | string          | no       | Filter by project context (exact match)                      |

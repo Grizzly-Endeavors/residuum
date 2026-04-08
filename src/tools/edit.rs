@@ -102,10 +102,9 @@ fn apply_replace(
     let mut new_lines =
         Vec::with_capacity(lines.len() - (range_end - range_start + 1) + content_lines.len());
     new_lines.extend(lines.drain(..range_start));
-    new_lines.extend(content_lines.iter().map(|s| (*s).to_string()));
+    new_lines.extend(content_lines.iter().copied().map(str::to_string));
     let skip_count = range_end - range_start + 1;
-    let remaining: Vec<String> = lines.into_iter().skip(skip_count).collect();
-    new_lines.extend(remaining);
+    new_lines.extend(lines.into_iter().skip(skip_count));
 
     (new_lines, format!("replaced line(s) {range_desc}"))
 }
@@ -121,14 +120,14 @@ fn apply_insert(
 
     if at_start {
         let mut new_lines = Vec::with_capacity(lines.len() + content_lines.len());
-        new_lines.extend(content_lines.iter().map(|s| (*s).to_string()));
+        new_lines.extend(content_lines.iter().copied().map(str::to_string));
         new_lines.extend(lines);
         (new_lines, "inserted at file start".to_string())
     } else {
         let insert_idx = range_start + 1;
         let mut new_lines = Vec::with_capacity(lines.len() + content_lines.len());
         new_lines.extend(lines.drain(..insert_idx));
-        new_lines.extend(content_lines.iter().map(|s| (*s).to_string()));
+        new_lines.extend(content_lines.iter().copied().map(str::to_string));
         new_lines.extend(lines);
         (
             new_lines,
@@ -243,8 +242,7 @@ fn apply_delete(
 
     let mut new_lines = Vec::with_capacity(lines.len() - delete_count);
     new_lines.extend(lines.drain(..range_start));
-    let remaining: Vec<String> = lines.into_iter().skip(delete_count).collect();
-    new_lines.extend(remaining);
+    new_lines.extend(lines.into_iter().skip(delete_count));
 
     Ok((new_lines, format!("deleted line(s) {range_desc}")))
 }
@@ -257,7 +255,7 @@ impl Tool for EditTool {
 
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
-            name: "edit_file".to_string(),
+            name: self.name().to_string(),
             description: "Edit a file using line:hash anchors from read_file output. \
                           Validates content hashes before applying changes to detect stale edits. \
                           Operations: 'replace' (replace exact range; end_line required — use the \
@@ -378,11 +376,9 @@ impl Tool for EditTool {
                 Ok(result) => result,
                 Err(msg) => return Ok(ToolResult::error(msg)),
             },
-            _ => {
-                return Err(ToolError::InvalidArguments(format!(
-                    "unknown operation '{operation}'"
-                )));
-            }
+            _ => unreachable!(
+                "parse_edit_args validates operation is one of replace/insert_after/delete"
+            ),
         };
 
         // Reconstruct file content
@@ -745,6 +741,38 @@ mod tests {
             }))
             .await;
         assert!(long_hash.is_err(), "hash too long should error");
+
+        // Non-hex characters in hash (2-char but not valid hex)
+        let non_hex = tool
+            .execute(serde_json::json!({
+                "path": "/tmp/x", "operation": "replace",
+                "start_line": "1:zz", "content": "x"
+            }))
+            .await;
+        assert!(non_hex.is_err(), "non-hex 2-char hash should error");
+    }
+
+    #[tokio::test]
+    async fn end_line_before_start_line() {
+        let tool = make_tool_no_reads();
+        let result = tool
+            .execute(serde_json::json!({
+                "path": "/tmp/x",
+                "operation": "replace",
+                "start_line": "5:aa",
+                "end_line": "2:bb",
+                "content": "x"
+            }))
+            .await;
+        assert!(
+            result.is_err(),
+            "end_line before start_line should return ToolError"
+        );
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("before"),
+            "error should mention end before start: {err_msg}"
+        );
     }
 
     #[test]

@@ -7,7 +7,7 @@ use std::path::Path;
 use chrono::NaiveDateTime;
 use serde::{Deserialize, Serialize};
 
-use crate::error::ResiduumError;
+use anyhow::Context;
 
 /// A compressed episode extracted from a conversation segment.
 ///
@@ -19,10 +19,6 @@ pub(crate) struct Episode {
     pub(crate) id: String,
     /// Date of the episode.
     pub(crate) date: chrono::NaiveDate,
-    /// One-line summary of how the episode started.
-    pub(crate) start: String,
-    /// One-line summary of how the episode ended.
-    pub(crate) end: String,
     /// The project or topic context tag.
     pub(crate) context: String,
     /// Concise single-sentence observations extracted from the conversation.
@@ -203,17 +199,13 @@ impl IndexManifest {
     ///
     /// # Errors
     /// Returns an error if the file exists but cannot be read or parsed.
-    pub async fn load(path: &Path) -> Result<Self, ResiduumError> {
+    pub async fn load(path: &Path) -> anyhow::Result<Self> {
         match tokio::fs::read_to_string(path).await {
-            Ok(contents) => serde_json::from_str(&contents).map_err(|e| {
-                ResiduumError::Memory(format!(
-                    "failed to parse index manifest at {}: {e}",
-                    path.display()
-                ))
-            }),
+            Ok(contents) => serde_json::from_str(&contents)
+                .with_context(|| format!("failed to parse index manifest at {}", path.display())),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Self::new()),
-            Err(e) => Err(ResiduumError::Memory(format!(
-                "failed to read index manifest at {}: {e}",
+            Err(e) => Err(anyhow::Error::new(e).context(format!(
+                "failed to read index manifest at {}",
                 path.display()
             ))),
         }
@@ -223,36 +215,11 @@ impl IndexManifest {
     ///
     /// # Errors
     /// Returns an error if the file cannot be written.
-    pub async fn save(&self, path: &Path) -> Result<(), ResiduumError> {
-        let json = serde_json::to_string_pretty(self).map_err(|e| {
-            ResiduumError::Memory(format!("failed to serialize index manifest: {e}"))
-        })?;
+    pub async fn save(&self, path: &Path) -> anyhow::Result<()> {
+        let json =
+            serde_json::to_string_pretty(self).context("failed to serialize index manifest")?;
 
-        let dir = path.parent().ok_or_else(|| {
-            ResiduumError::Memory(format!(
-                "index manifest path has no parent directory: {}",
-                path.display()
-            ))
-        })?;
-
-        let tmp_path = dir.join(".index_manifest.json.tmp");
-
-        tokio::fs::write(&tmp_path, &json).await.map_err(|e| {
-            ResiduumError::Memory(format!(
-                "failed to write temporary index manifest at {}: {e}",
-                tmp_path.display()
-            ))
-        })?;
-
-        tokio::fs::rename(&tmp_path, path).await.map_err(|e| {
-            ResiduumError::Memory(format!(
-                "failed to rename index manifest from {} to {}: {e}",
-                tmp_path.display(),
-                path.display()
-            ))
-        })?;
-
-        Ok(())
+        crate::util::fs::atomic_write(path, &json).await
     }
 }
 

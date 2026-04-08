@@ -1,6 +1,6 @@
 //! Notification channel trait and built-in channel types.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use async_trait::async_trait;
 
@@ -24,6 +24,9 @@ pub trait NotificationChannel: Send + Sync {
 }
 
 /// Inbox channel: creates an `InboxItem` from the notification.
+///
+/// This is always a singleton — exactly one inbox channel exists per
+/// Residuum instance, and its channel name is always `"inbox"`.
 pub struct InboxChannel {
     inbox_dir: PathBuf,
     tz: chrono_tz::Tz,
@@ -37,12 +40,6 @@ impl InboxChannel {
             inbox_dir: inbox_dir.into(),
             tz,
         }
-    }
-
-    /// Inbox directory path.
-    #[must_use]
-    pub fn inbox_dir(&self) -> &Path {
-        &self.inbox_dir
     }
 }
 
@@ -74,7 +71,7 @@ impl NotificationChannel for InboxChannel {
             attachments: Vec::new(),
         };
 
-        let filename = inbox::generate_filename(&notification.title, self.tz);
+        let filename = inbox::generate_filename(&notification.title, now);
         inbox::save_item(&self.inbox_dir, &filename, &item).await?;
 
         Ok(())

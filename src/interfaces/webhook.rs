@@ -39,6 +39,7 @@ pub struct WebhookState {
 /// Looks up the named webhook config, validates auth, extracts content per the
 /// webhook's format / content-fields settings, and publishes a `NotificationEvent`.
 /// Returns 404 for unknown names, 401 for bad auth, 202 on success.
+#[tracing::instrument(skip_all, fields(webhook = %name, content_length = body.len()))]
 pub async fn webhook_handler(
     State(state): State<WebhookState>,
     Path(name): Path<String>,
@@ -49,6 +50,8 @@ pub async fn webhook_handler(
         return StatusCode::NOT_FOUND;
     };
 
+    tracing::debug!(webhook = %name, content_length = body.len(), "webhook request received");
+
     // Validate bearer token if secret is configured
     if let Some(ref expected) = endpoint.secret {
         let auth = headers
@@ -58,6 +61,7 @@ pub async fn webhook_handler(
 
         let provided = auth.strip_prefix("Bearer ").unwrap_or("");
         if provided != expected.as_str() {
+            tracing::warn!(webhook = %name, "webhook authentication failed");
             return StatusCode::UNAUTHORIZED;
         }
     }
@@ -96,21 +100,25 @@ pub async fn webhook_handler(
         }
         WebhookRouting::Agent(preset) => {
             let spawn_event = crate::bus::SpawnRequestEvent {
+                preset: crate::bus::PresetName::from(preset.as_str()),
                 source_label: format!("webhook:{name}"),
                 prompt: notification.content,
                 context: None,
                 source: crate::bus::EventTrigger::Webhook(name.clone()),
                 model_tier_override: None,
             };
-            let topic =
-                crate::bus::topics::SpawnRequest(crate::bus::PresetName::from(preset.as_str()));
-            if let Err(e) = state.publisher.publish(topic, spawn_event).await {
+            if let Err(e) = state
+                .publisher
+                .publish(crate::bus::topics::Background, spawn_event)
+                .await
+            {
                 tracing::warn!(webhook = %name, error = %e, "bus publish failed, dropping webhook message");
                 return StatusCode::SERVICE_UNAVAILABLE;
             }
         }
     }
 
+    tracing::debug!(webhook = %name, "webhook message published");
     StatusCode::ACCEPTED
 }
 
@@ -470,9 +478,7 @@ mod tests {
         let bus_handle = crate::bus::spawn_broker();
         let publisher = bus_handle.publisher();
         let mut preset_sub = bus_handle
-            .subscribe(crate::bus::topics::SpawnRequest(
-                crate::bus::PresetName::from("code_reviewer"),
-            ))
+            .subscribe(crate::bus::topics::Background)
             .await
             .unwrap();
 
@@ -493,11 +499,12 @@ mod tests {
         let resp = app.oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::ACCEPTED);
 
-        let event = tokio::time::timeout(std::time::Duration::from_millis(100), preset_sub.recv())
-            .await
-            .unwrap()
-            .unwrap()
-            .unwrap();
+        let event: crate::bus::SpawnRequestEvent =
+            tokio::time::timeout(std::time::Duration::from_millis(100), preset_sub.recv())
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap();
         assert_eq!(event.prompt, "review this");
         assert_eq!(event.source_label, "webhook:agent-hook");
     }

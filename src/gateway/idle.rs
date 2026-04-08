@@ -13,6 +13,7 @@ use crate::gateway::memory::{MemorySubsystems, execute_observation};
 use crate::gateway::types::GatewayRuntime;
 
 /// Run the full idle transition sequence.
+#[tracing::instrument(skip_all)]
 pub(super) async fn execute_idle_transition(
     rt: &mut GatewayRuntime,
     observe_deadline: &mut Option<tokio::time::Instant>,
@@ -316,42 +317,45 @@ mod tests {
     #[test]
     fn format_idle_summary_with_project_and_skills() {
         let result = format_idle_summary(30, Some("aerohive-setup"), 2);
-        assert!(result.contains("[Idle]"));
-        assert!(result.contains("30m"));
-        assert!(result.contains("aerohive-setup"));
-        assert!(result.contains("2 skills"));
-        assert!(result.contains("Session log written."));
+        assert_eq!(
+            result,
+            "[Idle] Transitioned to idle after 30m of inactivity. Deactivated project \"aerohive-setup\" and 2 skills. Session log written."
+        );
     }
 
     #[test]
     fn format_idle_summary_no_project() {
         let result = format_idle_summary(15, None, 3);
-        assert!(result.contains("[Idle]"));
-        assert!(result.contains("15m"));
-        assert!(result.contains("3 skills"));
-        assert!(!result.contains("Session log written."));
+        assert_eq!(
+            result,
+            "[Idle] Transitioned to idle after 15m of inactivity. Deactivated 3 skills."
+        );
     }
 
     #[test]
     fn format_idle_summary_nothing_active() {
         let result = format_idle_summary(30, None, 0);
-        assert!(result.contains("[Idle]"));
-        assert!(result.contains("30m"));
-        assert!(!result.contains("Deactivated"));
+        assert_eq!(
+            result,
+            "[Idle] Transitioned to idle after 30m of inactivity."
+        );
     }
 
     #[test]
     fn format_idle_summary_project_no_skills() {
         let result = format_idle_summary(30, Some("my-project"), 0);
-        assert!(result.contains("my-project"));
-        assert!(!result.contains("skill"));
-        assert!(result.contains("Session log written."));
+        assert_eq!(
+            result,
+            "[Idle] Transitioned to idle after 30m of inactivity. Deactivated project \"my-project\". Session log written."
+        );
     }
 
     #[test]
     fn format_idle_summary_single_skill_no_plural() {
         let result = format_idle_summary(30, Some("proj"), 1);
-        assert!(result.contains("1 skill."));
-        assert!(!result.contains("skills"));
+        assert_eq!(
+            result,
+            "[Idle] Transitioned to idle after 30m of inactivity. Deactivated project \"proj\" and 1 skill. Session log written."
+        );
     }
 }

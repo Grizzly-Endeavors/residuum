@@ -58,10 +58,32 @@ if $HAS_RUST; then
 
     STEP=$((STEP + 1))
     echo -e "\n${YELLOW}[$STEP/$TOTAL_STEPS] Running tests...${NC}"
-    if ! OUTPUT=$(cargo test --quiet 2>&1); then
-        echo "$OUTPUT"
-        echo -e "${RED}ERROR: Tests failed.${NC}"
-        exit 1
+    # Extract module names from staged .rs files (src/<module>/... or src/<module>.rs)
+    CHANGED_MODULES=$(echo "$STAGED_RS_FILES" | sed -n 's|^src/\([^/]*\).*\.rs$|\1|p' | sort -u)
+    if [ -n "$CHANGED_MODULES" ]; then
+        TEST_FILTERS=""
+        for mod in $CHANGED_MODULES; do
+            # Strip .rs suffix for single-file modules
+            mod="${mod%.rs}"
+            TEST_FILTERS="$TEST_FILTERS ${mod}::"
+        done
+        FAIL=false
+        for filter in $TEST_FILTERS; do
+            if ! OUTPUT=$(cargo test --quiet "$filter" 2>&1); then
+                echo "$OUTPUT"
+                FAIL=true
+            fi
+        done
+        if $FAIL; then
+            echo -e "${RED}ERROR: Tests failed.${NC}"
+            exit 1
+        fi
+    else
+        if ! OUTPUT=$(cargo test --quiet 2>&1); then
+            echo "$OUTPUT"
+            echo -e "${RED}ERROR: Tests failed.${NC}"
+            exit 1
+        fi
     fi
     echo -e "${GREEN}✓ Tests OK${NC}"
 else

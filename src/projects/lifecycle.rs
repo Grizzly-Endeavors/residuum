@@ -2,12 +2,12 @@
 
 use std::path::PathBuf;
 
+use anyhow::Context;
 use chrono::NaiveDate;
 
-use crate::error::ResiduumError;
 use crate::workspace::layout::WorkspaceLayout;
 
-use super::scanner::write_project_md_content;
+use super::scanner::serialize_project_md;
 use super::types::{ProjectFrontmatter, ProjectStatus};
 
 /// Create a new project with the standard directory structure.
@@ -15,40 +15,37 @@ use super::types::{ProjectFrontmatter, ProjectStatus};
 /// Returns the path to the newly created project directory.
 ///
 /// # Errors
-/// Returns `ResiduumError::Projects` if the name is invalid, a project with
-/// the same dir name already exists, or filesystem operations fail.
+/// Returns an error if the name is invalid, a project with the same dir
+/// name already exists, or filesystem operations fail.
+#[tracing::instrument(skip_all, fields(project = %name))]
 pub async fn create_project(
     layout: &WorkspaceLayout,
     name: &str,
     description: &str,
     tools: Vec<String>,
     today: NaiveDate,
-) -> Result<PathBuf, ResiduumError> {
+) -> anyhow::Result<PathBuf> {
     let dir_name = sanitize_dir_name(name);
 
     if dir_name.is_empty() {
-        return Err(ResiduumError::Projects(format!(
-            "project name '{name}' produces an empty directory name"
-        )));
+        anyhow::bail!("project name '{name}' produces an empty directory name");
     }
 
     let project_dir = layout.projects_dir().join(&dir_name);
 
     if project_dir.exists() {
-        return Err(ResiduumError::Projects(format!(
-            "project directory '{dir_name}' already exists"
-        )));
+        anyhow::bail!("project directory '{dir_name}' already exists");
     }
 
     // Create directory structure
     for subdir in &["notes/log", "references", "workspace", "skills"] {
         tokio::fs::create_dir_all(project_dir.join(subdir))
             .await
-            .map_err(|e| {
-                ResiduumError::Projects(format!(
-                    "failed to create directory {}: {e}",
+            .with_context(|| {
+                format!(
+                    "failed to create directory {}",
                     project_dir.join(subdir).display()
-                ))
+                )
             })?;
     }
 
@@ -63,17 +60,12 @@ pub async fn create_project(
         archived: None,
     };
 
-    let content = write_project_md_content(&frontmatter, "")?;
+    let content = serialize_project_md(&frontmatter, "")?;
     tokio::fs::write(project_dir.join("PROJECT.md"), &content)
         .await
-        .map_err(|e| {
-            ResiduumError::Projects(format!(
-                "failed to write PROJECT.md at {}: {e}",
-                project_dir.display()
-            ))
-        })?;
+        .with_context(|| format!("failed to write PROJECT.md at {}", project_dir.display()))?;
 
-    tracing::info!(project = name, dir = %dir_name, "created project");
+    tracing::info!(project = %name, dir = %dir_name, "created project");
 
     Ok(project_dir)
 }
@@ -81,53 +73,46 @@ pub async fn create_project(
 /// Archive a project: update its frontmatter and move from projects/ to archive/.
 ///
 /// # Errors
-/// Returns `ResiduumError::Projects` if the project doesn't exist, can't be
-/// read, or the move fails.
+/// Returns an error if the project doesn't exist, can't be read, or the
+/// move fails.
+#[tracing::instrument(skip_all, fields(project = %dir_name))]
 pub async fn archive_project(
     layout: &WorkspaceLayout,
     dir_name: &str,
     today: NaiveDate,
-) -> Result<(), ResiduumError> {
+) -> anyhow::Result<()> {
     let source = layout.projects_dir().join(dir_name);
 
     if !source.exists() {
-        return Err(ResiduumError::Projects(format!(
-            "project directory '{dir_name}' not found in projects/"
-        )));
+        anyhow::bail!("project directory '{dir_name}' not found in projects/");
     }
 
     // Read and update PROJECT.md
     let project_md = source.join("PROJECT.md");
-    let content = tokio::fs::read_to_string(&project_md).await.map_err(|e| {
-        ResiduumError::Projects(format!(
-            "failed to read PROJECT.md at {}: {e}",
-            project_md.display()
-        ))
-    })?;
+    let content = tokio::fs::read_to_string(&project_md)
+        .await
+        .with_context(|| format!("failed to read PROJECT.md at {}", project_md.display()))?;
 
     let (mut frontmatter, body) = super::scanner::parse_project_md(&content)?;
     frontmatter.status = ProjectStatus::Archived;
     frontmatter.archived = Some(today);
 
-    let updated = write_project_md_content(&frontmatter, &body)?;
-    tokio::fs::write(&project_md, &updated).await.map_err(|e| {
-        ResiduumError::Projects(format!(
-            "failed to update PROJECT.md at {}: {e}",
-            project_md.display()
-        ))
-    })?;
+    let updated = serialize_project_md(&frontmatter, &body)?;
+    tokio::fs::write(&project_md, &updated)
+        .await
+        .with_context(|| format!("failed to update PROJECT.md at {}", project_md.display()))?;
 
     // Move to archive
     let dest = layout.archive_dir().join(dir_name);
-    tokio::fs::rename(&source, &dest).await.map_err(|e| {
-        ResiduumError::Projects(format!(
-            "failed to move project from {} to {}: {e}",
+    tokio::fs::rename(&source, &dest).await.with_context(|| {
+        format!(
+            "failed to move project from {} to {}",
             source.display(),
             dest.display()
-        ))
+        )
     })?;
 
-    tracing::info!(project = dir_name, "archived project");
+    tracing::info!(project = %dir_name, dest = %dest.display(), "archived project");
 
     Ok(())
 }
@@ -308,5 +293,48 @@ mod tests {
         let (fm, _body) = parse_project_md(&content).unwrap();
         assert_eq!(fm.status, ProjectStatus::Archived, "should be archived");
         assert_eq!(fm.archived, Some(archive_date), "should have archived date");
+    }
+
+    #[tokio::test]
+    async fn create_empty_dir_name_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        let layout = WorkspaceLayout::new(dir.path().join("workspace"));
+        ensure_workspace(&layout, None, None).await.unwrap();
+
+        let today = NaiveDate::from_ymd_opt(2026, 2, 23).unwrap();
+        let result = create_project(&layout, "---", "desc", vec![], today).await;
+        assert!(
+            result.is_err(),
+            "name producing empty dir name should be rejected"
+        );
+    }
+
+    #[tokio::test]
+    async fn archive_nonexistent_project() {
+        let dir = tempfile::tempdir().unwrap();
+        let layout = WorkspaceLayout::new(dir.path().join("workspace"));
+        ensure_workspace(&layout, None, None).await.unwrap();
+
+        let today = NaiveDate::from_ymd_opt(2026, 2, 23).unwrap();
+        let result = archive_project(&layout, "does-not-exist", today).await;
+        assert!(
+            result.is_err(),
+            "archiving nonexistent project should error"
+        );
+    }
+
+    #[test]
+    fn sanitize_empty_string() {
+        assert_eq!(sanitize_dir_name(""), "");
+    }
+
+    #[test]
+    fn sanitize_unicode_accented() {
+        assert_eq!(sanitize_dir_name("café"), "café");
+    }
+
+    #[test]
+    fn sanitize_unicode_emoji() {
+        assert_eq!(sanitize_dir_name("🚀launch"), "launch");
     }
 }

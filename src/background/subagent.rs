@@ -2,28 +2,22 @@
 
 use std::sync::Arc;
 
-use tokio::sync::{Mutex, Notify};
-
-use crate::actions::store::ActionStore;
 use crate::agent::context::{
     ProjectsContext, PromptContext, SkillsContext, SubagentsContext, build_subagent_system_content,
 };
 use crate::agent::interrupt::dead_interrupt_rx;
 use crate::agent::recent_messages::RecentMessages;
-use crate::agent::turn::{TurnResources, execute_turn};
-use crate::background::BackgroundTaskSpawner;
-use crate::bus::{self, EndpointRegistry, Publisher};
+use crate::agent::turn::{EventContext, TurnResources, execute_turn};
+use crate::bus::Publisher;
 use crate::mcp::SharedMcpRegistry;
-use crate::memory::search::HybridSearcher;
 use crate::models::{CompletionOptions, Message, ModelProvider};
 use crate::projects::activation::{ProjectState, SharedProjectState};
 use crate::skills::{SharedSkillState, SkillState};
 use crate::tools::path_policy::PathPolicy;
 use crate::tools::{FileTracker, SharedPathPolicy, SharedToolFilter, ToolFilter, ToolRegistry};
 use crate::workspace::identity::IdentityFiles;
-use crate::workspace::layout::WorkspaceLayout;
 
-use super::types::SubAgentConfig;
+use super::types::{PresetToolRestriction, SubAgentBuildConfig, SubAgentConfig};
 
 /// Output from a completed sub-agent execution.
 pub(crate) struct SubAgentOutput {
@@ -56,52 +50,14 @@ pub struct SubAgentResources {
     pub(crate) preset_instructions: Option<String>,
 }
 
-/// Preset-derived tool restriction for a sub-agent.
-pub enum PresetToolRestriction {
-    /// Tools permanently blocked (from `denied_tools` frontmatter).
-    Denied(std::collections::HashSet<String>),
-    /// Only listed tools are available (from `allowed_tools` frontmatter).
-    AllowedOnly(std::collections::HashSet<String>),
-}
-
-/// Configuration passed to [`build_resources`] that groups constructor arguments.
-pub struct SubAgentBuildConfig {
-    /// Gated tool names — passed to the isolated `ToolFilter` (currently empty).
-    pub gated_tools: std::collections::HashSet<&'static str>,
-    /// Optional preset-level tool restriction (denied or allowed-only).
-    pub preset_tool_restriction: Option<PresetToolRestriction>,
-    /// Workspace layout (used to set the path policy root).
-    pub workspace_layout: WorkspaceLayout,
-    /// Identity files for the system prompt.
-    pub identity: IdentityFiles,
-    /// LLM completion options for the sub-agent turn.
-    pub options: CompletionOptions,
-    /// Timezone used by project management tools.
-    pub tz: chrono_tz::Tz,
-    /// Preset-specific instructions to inject into the subagent system prompt.
-    pub preset_instructions: Option<String>,
-    // ── Sub-agent tool dependencies ────────────────────────────────────
-    /// Background task spawner for `stop_agent` / `list_agents` tools.
-    pub background_spawner: Arc<BackgroundTaskSpawner>,
-    /// Endpoint registry for `send_message` / `list_endpoints` tools.
-    pub endpoint_registry: EndpointRegistry,
-    /// Bus publisher for `send_message` tool.
-    pub publisher: Publisher,
-    /// Scheduled action store for action tools.
-    pub action_store: Arc<Mutex<ActionStore>>,
-    /// Notify handle for action tools.
-    pub action_notify: Arc<Notify>,
-    /// Hybrid searcher for `memory_search` tool.
-    pub hybrid_searcher: Arc<HybridSearcher>,
-}
-
 /// Build isolated sub-agent resources from the main agent's shared state.
 ///
 /// Clones the project and skill indices so the sub-agent starts with the same
 /// view of available projects/skills, but operates on its own independent
 /// copies of `ProjectState`, `SkillState`, `PathPolicy`, and `ToolFilter`.
 /// The `McpRegistry` is shared (ref-counted) so servers are not duplicated.
-pub async fn build_resources(
+#[tracing::instrument(skip_all)]
+pub async fn build_subagent_resources(
     provider: Box<dyn ModelProvider>,
     main_project_state: &SharedProjectState,
     main_skill_state: &SharedSkillState,
@@ -132,7 +88,7 @@ pub async fn build_resources(
 
     // Clone skill index and dirs for an isolated SkillState (no active skills)
     let (cloned_skill_index, skill_dirs) = {
-        let guard: tokio::sync::MutexGuard<SkillState> = main_skill_state.lock().await;
+        let guard = main_skill_state.lock().await;
         (guard.index().clone(), guard.dirs().to_vec())
     };
     let skill_state = SkillState::new_shared(cloned_skill_index, skill_dirs);
@@ -161,7 +117,7 @@ pub async fn build_resources(
         if idx.is_empty() { None } else { Some(idx) }
     };
     let skills_index = {
-        let guard: tokio::sync::MutexGuard<SkillState> = skill_state.lock().await;
+        let guard = skill_state.lock().await;
         let idx = guard.format_index_for_prompt();
         if idx.is_empty() { None } else { Some(idx) }
     };
@@ -213,6 +169,7 @@ pub async fn build_resources(
 ///
 /// # Errors
 /// Returns an error if file reading or the model call fails.
+#[tracing::instrument(skip_all, fields(task.id = %task_id))]
 pub(crate) async fn execute_subagent(
     task_id: &str,
     config: &SubAgentConfig,
@@ -225,7 +182,7 @@ pub(crate) async fn execute_subagent(
 
     // Build skills context from the sub-agent's isolated skill state
     let active_instructions: Option<String> = {
-        let guard: tokio::sync::MutexGuard<SkillState> = resources.skill_state.lock().await;
+        let guard = resources.skill_state.lock().await;
         guard.format_active_for_prompt()
     };
     let skills_ctx = SkillsContext {
@@ -257,8 +214,10 @@ pub(crate) async fn execute_subagent(
     let mut recent_messages = RecentMessages::new();
     recent_messages.push(Message::user(combined_prompt));
 
-    let bus_handle = bus::spawn_broker();
-    let publisher = bus_handle.publisher();
+    // No broker needed: sub-agents pass `None` for both endpoints, so
+    // streaming events are never published.  A noop publisher satisfies
+    // the type without spawning a background task.
+    let publisher = Publisher::noop();
     let mut interrupt_rx = dead_interrupt_rx();
 
     let memory_ctx = crate::agent::context::MemoryContext {
@@ -269,7 +228,7 @@ pub(crate) async fn execute_subagent(
     let prompt_ctx = PromptContext {
         projects: projects_ctx,
         skills: skills_ctx,
-        subagents: SubagentsContext::none(),
+        subagents: SubagentsContext::default(),
     };
 
     let turn_resources = TurnResources {
@@ -281,13 +240,18 @@ pub(crate) async fn execute_subagent(
         options: &resources.options,
     };
 
+    let events = EventContext {
+        publisher: &publisher,
+        output_endpoint: None,
+        tool_activity_endpoint: None,
+        correlation_id: "",
+    };
     let mut texts: Vec<String> = execute_turn(
         &turn_resources,
         &memory_ctx,
         &prompt_ctx,
         &mut recent_messages,
-        &publisher,
-        None,
+        &events,
         None,
         &mut interrupt_rx,
     )
@@ -295,7 +259,7 @@ pub(crate) async fn execute_subagent(
 
     ensure_project_deactivated(
         task_id,
-        config,
+        &config.prompt,
         resources,
         &memory_ctx,
         &prompt_ctx,
@@ -316,13 +280,13 @@ pub(crate) async fn execute_subagent(
 /// more turn with a deactivation prompt so it can write a proper session log.
 /// If the retry turn also fails, fall back to a manual ref-count decrement.
 async fn ensure_project_deactivated(
-    task_id: &str,
-    config: &SubAgentConfig,
+    _task_id: &str,
+    prompt: &str,
     resources: &SubAgentResources,
     memory_ctx: &crate::agent::context::MemoryContext<'_>,
     prompt_ctx: &PromptContext<'_>,
     recent_messages: &mut RecentMessages,
-    publisher: &bus::Publisher,
+    publisher: &Publisher,
 ) {
     let active_name = resources
         .project_state
@@ -336,8 +300,7 @@ async fn ensure_project_deactivated(
     };
 
     // Retry: prompt the sub-agent to call project_deactivate with a session log
-    tracing::info!(
-        task_id = %task_id,
+    tracing::warn!(
         project = %name,
         "sub-agent left project active, prompting deactivation turn"
     );
@@ -357,20 +320,25 @@ async fn ensure_project_deactivated(
         options: &resources.options,
     };
 
+    let deactivation_events = EventContext {
+        publisher,
+        output_endpoint: None,
+        tool_activity_endpoint: None,
+        correlation_id: "",
+    };
     let mut deactivation_interrupt_rx = dead_interrupt_rx();
     if let Err(err) = execute_turn(
         &turn_resources,
         memory_ctx,
         prompt_ctx,
         recent_messages,
-        publisher,
-        None,
+        &deactivation_events,
         None,
         &mut deactivation_interrupt_rx,
     )
     .await
     {
-        tracing::warn!(task_id = %task_id, error = %err, "deactivation turn failed");
+        tracing::warn!(error = %err, "deactivation turn failed");
     }
 
     // Safety net: if the retry didn't clean up, decrement the ref manually
@@ -381,21 +349,31 @@ async fn ensure_project_deactivated(
         .active_project_name()
         .map(str::to_string);
     if let Some(still_name) = still_active {
-        let prompt_preview: String = config.prompt.chars().take(200).collect();
+        let prompt_preview: String = prompt.chars().take(120).collect();
         tracing::warn!(
-            task_id = %task_id,
             project = %still_name,
-            "[auto] SubAgent {task_id} completed without deactivating after retry. Task: {prompt_preview}"
+            prompt_preview = %prompt_preview,
+            "sub-agent completed without deactivating project after retry"
         );
-        resources
-            .mcp_registry
-            .write()
-            .await
-            .deactivate_project(&still_name)
-            .await;
-        resources.path_policy.write().await.set_active_project(None);
-        resources.tool_filter.write().await.clear_enabled();
+        force_deactivate_project(
+            &still_name,
+            &resources.mcp_registry,
+            &resources.path_policy,
+            &resources.tool_filter,
+        )
+        .await;
     }
+}
+
+pub(crate) async fn force_deactivate_project(
+    name: &str,
+    mcp_registry: &SharedMcpRegistry,
+    path_policy: &SharedPathPolicy,
+    tool_filter: &SharedToolFilter,
+) {
+    mcp_registry.write().await.deactivate_project(name).await;
+    path_policy.write().await.set_active_project(None);
+    tool_filter.write().await.clear_enabled();
 }
 
 #[cfg(test)]
@@ -488,8 +466,8 @@ mod tests {
         };
         let content = build_subagent_system_content(
             &identity,
-            &ProjectsContext::none(),
-            &SkillsContext::none(),
+            &ProjectsContext::default(),
+            &SkillsContext::default(),
             None,
         );
         assert!(
@@ -511,8 +489,12 @@ mod tests {
             index: Some("project index"),
             active_context: None,
         };
-        let content =
-            build_subagent_system_content(&identity, &projects_ctx, &SkillsContext::none(), None);
+        let content = build_subagent_system_content(
+            &identity,
+            &projects_ctx,
+            &SkillsContext::default(),
+            None,
+        );
 
         assert!(!content.contains("test soul"), "should not include SOUL.md");
         assert!(
@@ -535,7 +517,7 @@ mod tests {
             environment: Some("exec tool".to_string()),
             ..IdentityFiles::default()
         };
-        let projects_ctx = ProjectsContext::none();
+        let projects_ctx = ProjectsContext::default();
         let skills_ctx = SkillsContext {
             index: Some("<available_skills><skill>pdf</skill></available_skills>"),
             active_instructions: None,
@@ -555,7 +537,7 @@ mod tests {
     fn subagent_system_content_includes_active_skills_instructions() {
         // Sub-agents now include active skill instructions in the system prompt
         let identity = IdentityFiles::default();
-        let projects_ctx = ProjectsContext::none();
+        let projects_ctx = ProjectsContext::default();
         let skills_ctx = SkillsContext {
             index: None,
             active_instructions: Some("<active_skill name=\"pdf\">Do PDFs.</active_skill>"),
@@ -585,11 +567,44 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(output.summary, "done");
-        // At minimum: the initial user message + the assistant response
         assert!(
             output.messages.len() >= 2,
             "transcript should contain at least user + assistant messages, got {}",
             output.messages.len()
+        );
+        let first = output.messages.first().unwrap();
+        assert_eq!(first.role, crate::models::Role::User);
+        assert!(
+            first.content.contains("do work"),
+            "user message should contain the prompt"
+        );
+        let last = output.messages.last().unwrap();
+        assert_eq!(last.role, crate::models::Role::Assistant);
+        assert_eq!(last.content, "done");
+    }
+
+    #[tokio::test]
+    async fn subagent_includes_context_in_user_message() {
+        let resources = make_resources("result");
+
+        let config = SubAgentConfig {
+            prompt: "check emails".to_string(),
+            context: Some("extra context".to_string()),
+            model_tier: crate::config::BackgroundModelTier::Medium,
+        };
+
+        let output = execute_subagent("bg-ctx", &config, &resources)
+            .await
+            .unwrap();
+        let first = output.messages.first().unwrap();
+        assert_eq!(first.role, crate::models::Role::User);
+        assert!(
+            first.content.contains("extra context"),
+            "user message should contain the context"
+        );
+        assert!(
+            first.content.contains("check emails"),
+            "user message should contain the prompt"
         );
     }
 

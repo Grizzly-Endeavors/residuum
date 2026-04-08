@@ -7,6 +7,7 @@ use crate::mcp::SharedMcpRegistry;
 use crate::models::ToolDefinition;
 use crate::projects::activation::SharedProjectState;
 use crate::projects::lifecycle;
+use crate::projects::types::ProjectStatus;
 use crate::skills::SharedSkillState;
 
 use super::path_policy::SharedPathPolicy;
@@ -51,7 +52,7 @@ impl Tool for ProjectActivateTool {
 
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
-            name: "project_activate".to_string(),
+            name: self.name().to_string(),
             description: "Activate a project context. Loads the project's overview, manifest, and configuration into the agent's context.".to_string(),
             parameters: serde_json::json!({
                 "type": "object",
@@ -67,10 +68,7 @@ impl Tool for ProjectActivateTool {
     }
 
     async fn execute(&self, arguments: Value) -> Result<ToolResult, ToolError> {
-        let name = arguments
-            .get("name")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| ToolError::InvalidArguments("name is required".to_string()))?;
+        let name = super::require_str(&arguments, "name")?;
 
         let mut state = self.state.lock().await;
         let global_mcp = state.layout().mcp_json();
@@ -144,6 +142,7 @@ impl Tool for ProjectActivateTool {
                 {
                     tracing::warn!(error = %e, "failed to rescan skills after project activation");
                 }
+                tracing::info!(project = %project_name, tools = ?tools_list, "project activated");
                 let output = if warnings.is_empty() {
                     manifest_summary
                 } else {
@@ -198,7 +197,7 @@ impl Tool for ProjectDeactivateTool {
 
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
-            name: "project_deactivate".to_string(),
+            name: self.name().to_string(),
             description: "Deactivate the current project context. Requires a non-empty session summary log entry.".to_string(),
             parameters: serde_json::json!({
                 "type": "object",
@@ -214,10 +213,7 @@ impl Tool for ProjectDeactivateTool {
     }
 
     async fn execute(&self, arguments: Value) -> Result<ToolResult, ToolError> {
-        let log = arguments
-            .get("log")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| ToolError::InvalidArguments("log is required".to_string()))?;
+        let log = super::require_str(&arguments, "log")?;
 
         let now = crate::time::now_local(self.tz);
         let mut state = self.state.lock().await;
@@ -278,7 +274,7 @@ impl Tool for ProjectCreateTool {
 
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
-            name: "project_create".to_string(),
+            name: self.name().to_string(),
             description:
                 "Create a new project with the standard directory structure and PROJECT.md."
                     .to_string(),
@@ -305,15 +301,8 @@ impl Tool for ProjectCreateTool {
     }
 
     async fn execute(&self, arguments: Value) -> Result<ToolResult, ToolError> {
-        let name = arguments
-            .get("name")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| ToolError::InvalidArguments("name is required".to_string()))?;
-
-        let description = arguments
-            .get("description")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| ToolError::InvalidArguments("description is required".to_string()))?;
+        let name = super::require_str(&arguments, "name")?;
+        let description = super::require_str(&arguments, "description")?;
 
         let tools: Vec<String> = arguments
             .get("tools")
@@ -369,7 +358,7 @@ impl Tool for ProjectArchiveTool {
 
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
-            name: "project_archive".to_string(),
+            name: self.name().to_string(),
             description: "Archive a completed project. Updates frontmatter to archived status and moves it to the archive directory.".to_string(),
             parameters: serde_json::json!({
                 "type": "object",
@@ -385,19 +374,14 @@ impl Tool for ProjectArchiveTool {
     }
 
     async fn execute(&self, arguments: Value) -> Result<ToolResult, ToolError> {
-        let name = arguments
-            .get("name")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| ToolError::InvalidArguments("name is required".to_string()))?;
+        let name = super::require_str(&arguments, "name")?;
 
         let mut state = self.state.lock().await;
 
         // Look up dir_name from the index
-        let dir_name = state
-            .index()
-            .find_by_name(name)
-            .map(|e| e.dir_name.clone())
-            .ok_or_else(|| ToolError::Execution(format!("project '{name}' not found in index")))?;
+        let Some(dir_name) = state.index().find_by_name(name).map(|e| e.dir_name.clone()) else {
+            return Ok(ToolResult::error(format!("project '{name}' not found")));
+        };
 
         // If this is the active project, deactivate first
         if state
@@ -450,7 +434,7 @@ impl Tool for ProjectListTool {
 
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
-            name: "project_list".to_string(),
+            name: self.name().to_string(),
             description: "List all projects and their status.".to_string(),
             parameters: serde_json::json!({
                 "type": "object",
@@ -475,7 +459,7 @@ impl Tool for ProjectListTool {
 
         let filtered: Vec<_> = entries
             .iter()
-            .filter(|e| include_archived || !e.is_archived)
+            .filter(|e| include_archived || e.status != ProjectStatus::Archived)
             .collect();
 
         if filtered.is_empty() {
@@ -663,6 +647,73 @@ mod tests {
             result.is_error,
             "should error for empty log: {}",
             result.output
+        );
+    }
+
+    #[tokio::test]
+    async fn archive_nonexistent_project() {
+        let (_dir, state) = setup().await;
+        let tool = ProjectArchiveTool::new(state, chrono_tz::UTC);
+        let result = tool
+            .execute(serde_json::json!({"name": "nonexistent"}))
+            .await
+            .unwrap();
+        assert!(
+            result.is_error,
+            "archiving nonexistent project should error"
+        );
+        assert!(
+            result.output.contains("not found"),
+            "error should mention not found: {}",
+            result.output
+        );
+    }
+
+    #[tokio::test]
+    async fn archive_and_list_with_include_archived() {
+        let (_dir, state) = setup().await;
+
+        // Create a project
+        let create_tool = ProjectCreateTool::new(Arc::clone(&state), chrono_tz::UTC);
+        let create_result = create_tool
+            .execute(serde_json::json!({
+                "name": "Archive Me",
+                "description": "Will be archived"
+            }))
+            .await
+            .unwrap();
+        assert!(!create_result.is_error, "create should succeed");
+
+        // Archive it
+        let archive_tool = ProjectArchiveTool::new(Arc::clone(&state), chrono_tz::UTC);
+        let archive_result = archive_tool
+            .execute(serde_json::json!({"name": "Archive Me"}))
+            .await
+            .unwrap();
+        assert!(
+            !archive_result.is_error,
+            "archive should succeed: {}",
+            archive_result.output
+        );
+
+        // List without include_archived — project should not appear
+        let list_tool = ProjectListTool::new(Arc::clone(&state));
+        let list_result = list_tool.execute(serde_json::json!({})).await.unwrap();
+        assert!(
+            !list_result.output.contains("Archive Me"),
+            "archived project should not appear in default list: {}",
+            list_result.output
+        );
+
+        // List with include_archived — project should appear
+        let list_archived = list_tool
+            .execute(serde_json::json!({"include_archived": true}))
+            .await
+            .unwrap();
+        assert!(
+            list_archived.output.contains("Archive Me"),
+            "archived project should appear with include_archived=true: {}",
+            list_archived.output
         );
     }
 }

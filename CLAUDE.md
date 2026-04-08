@@ -1,6 +1,7 @@
 # CLAUDE.md | Residuum - Personal Agent Framework
 
-**Important docs:**
+## Key References
+
 - [Design Philosophy](./docs/design-philosophy.md)
 - [Residuum Design](./docs/residuum-design.md)
 - [Projects Context](./docs/projects-context-design.md)
@@ -12,9 +13,9 @@
 
 **Web interface:** The Residuum web UI lives in `residuum/web/` (Svelte 5 SPA). See `web/CLAUDE.md` for details. **Do not confuse with `relay/web/`**, which is only a marketing landing page.
 
-## Commit Requirements, Linting, and Formatting
+## Build & Quality Gates
 
-### Git Hooks
+### Pre-Commit Hooks
 
 Pre-commit hooks enforce quality gates:
 - **pre-commit**: auto-formats with `cargo fmt` (auto-stages changes), runs `cargo clippy`, runs `cargo test`
@@ -40,15 +41,46 @@ Test modules have `#[expect(clippy::unwrap_used, reason = "test code uses unwrap
 
 DO NOT, under any circumstance, change this config without explicit approval from the user.
 
-## Style Guidelines
+### Testing
+
+Testing is a first-class operation — NEVER skip test implementation.
+- Always run `cargo test --quiet` — never plain `cargo test`. The `--quiet` flag suppresses per-test noise and only shows failures and the summary.
+- Unit tests: `#[cfg(test)] mod tests` at file bottom
+- Integration tests: `tests/` directory
+
+## Code Style
 
 ### Naming
 - **Domain-specific names**: Prefer descriptive names that match the domain (`send_chat_completion` over generic `run`)
 - **Common abbreviations OK**: `cfg`, `dir`, `msg`, `ctx`, `cmd` are fine; avoid obscure ones
+- **Semantics matter**: Structs, enums, and functions should have names that make it abundantly clear what they do. Avoid vague names and catch-alls. If the logic doesn't match the semantics a refactor is needed.
 
 ### Error Messages
 - Always include context: `"failed to parse config at {path}"` not just `"parse error"`
 - Lowercase, no trailing period (Unix style, chains well with `anyhow` context)
+
+### Comments
+- Explain **why**, never **what** — the code shows what, comments explain non-obvious reasoning
+- Doc comments: one-line `///` summary for public items; expand only for complex behavior
+
+### Module Organization
+- `mod.rs` files should primarily contain declarations and re-exports, but module-level coordination logic is fine when it belongs there.
+- Group related types in one file (e.g., `Message`, `Role`, `ToolCall` together in `llm/types.rs`)
+
+### Visibility
+- Private-first: start with no visibility modifier, add `pub(crate)` or `pub` only when needed
+- Treat `pub` as a commitment — once public, it's API
+
+### Function Signatures
+- **Strings**: `&str` for read-only, `impl Into<String>` when storing, owned `String` when caller must give up ownership
+- **Async**: async-first; only use sync for trivial or CPU-bound operations
+- **Generics**: default to concrete types, generify at public API boundaries when flexibility is needed
+
+### Construction
+- Prefer `new()` with required args + `Default` trait for optional configuration
+- Avoid builder pattern unless struct has many optional fields
+
+## Error Handling & Observability
 
 ### No Silent Failures
 
@@ -65,7 +97,7 @@ DO NOT, under any circumstance, change this config without explicit approval fro
 - Every error path must produce a log entry with enough context to diagnose without reproducing
 - Include structured fields: `error!(error = %e, path = %path, "failed to read config")` — not just the message
 - Chain error context with `anyhow`: `.context("failed to load user settings")` so logs show the full causal chain
-- Use appropriate log levels (error/warn/info/debug/trace per the logging guidelines above)
+- Use appropriate log levels (error/warn/info/debug/trace per the logging guidelines below)
 - Transient failures (retries, timeouts) should log at `warn` with attempt count and backoff details
 
 #### Avoid log spam
@@ -73,28 +105,6 @@ DO NOT, under any circumstance, change this config without explicit approval fro
 - Do not log routine successful operations ("connection still alive", "heartbeat ok") — absence of errors is the signal that things work
 - Periodic health-check style output belongs at `trace` level at most, never `info` or above
 - If a log line would fire on every loop iteration or timer tick under normal conditions, it's too noisy
-
-### Comments
-- Explain **why**, never **what** — the code shows what, comments explain non-obvious reasoning
-- Doc comments: one-line `///` summary for public items; expand only for complex behavior
-
-### Module Organization
-- `mod.rs` files should be reserved for declarations and re-exports, not logic.
-- Group related types in one file (e.g., `Message`, `Role`, `ToolCall` together in `llm/types.rs`)
-- Tests: unit tests in `#[cfg(test)] mod tests` at file bottom; integration tests in `tests/`
-
-### Visibility
-- Private-first: start with no visibility modifier, add `pub(crate)` or `pub` only when needed
-- Treat `pub` as a commitment — once public, it's API
-
-### Function Signatures
-- **Strings**: `&str` for read-only, `impl Into<String>` when storing, owned `String` when caller must give up ownership
-- **Async**: async-first; only use sync for trivial or CPU-bound operations
-- **Generics**: default to concrete types, generify at public API boundaries when flexibility is needed
-
-### Construction
-- Prefer `new()` with required args + `Default` trait for optional configuration
-- Avoid builder pattern unless struct has many optional fields
 
 ### Logging (tracing)
 - **error**: failures that stop an operation
@@ -104,25 +114,17 @@ DO NOT, under any circumstance, change this config without explicit approval fro
 - **trace**: verbose diagnostics (full payloads, timing)
 - Use structured fields: `info!(chunks = count, "starting chunked review")` not string interpolation
 
-### Debugging
-- `residuum serve --debug` — debug logging for residuum crates (default mode)
-- `residuum serve --debug=all` — debug logging for all crates including dependencies
-- `residuum serve --debug=trace` — trace-level logging for residuum crates
-- `residuum logs` — view saved log files; `residuum logs --watch` to tail live
-- `RUST_LOG` env var overrides `--debug` when set
-
-## Agent Usage
-
-When spawning sub-agents for parallel or delegated work, always include these instructions in the agent prompt:
-
-> **Do NOT run tests, linting, or formatting checks.** Do NOT attempt to commit changes. Focus only on implementing the requested changes. Verification (tests, clippy, fmt) will be run after all agents complete.
-
-This prevents agents from:
-- Wasting cycles on verification that will be done centrally
-- Creating conflicting commits from parallel work
-- Blocking on test failures that may depend on other agents' changes
-
-The orchestrating agent is responsible for running `cargo fmt`, `cargo clippy`, and `cargo test` after all sub-agent work is complete, then creating a single commit.
+### Debugging & Tracing
+- Log level is configured in `config.toml` under `[tracing]`: `log_level = "info" | "debug" | "trace"` (default: `debug`)
+- `residuum logs` — view saved log files; `residuum logs --watch` to tail live; `residuum logs --level warn` to filter at read time
+- `residuum tracing status` — show current tracing config and streaming state
+- `residuum tracing otel add <url>` — add an OTEL endpoint for trace export
+- `residuum tracing dump` — one-shot export of buffered traces to configured OTEL endpoints
+- `residuum tracing stream start|stop` — live trace streaming to OTEL endpoints
+- `residuum tracing sanitize on|off` — toggle content redaction in trace exports (default: on)
+- `residuum tracing error-reporting on|off` — toggle auto error reporting (default: off)
+- `residuum bug-report -m "description"` — send trace dump to developer (currently no-op until collection endpoint deployed)
+- `RUST_LOG` env var overrides the configured log level when set
 
 ## Git Workflow
 
@@ -131,8 +133,11 @@ Single-branch model: all work lands on `main`.
 ### Day-to-Day Work
 
 1. **Create a feature branch from `main`** with a descriptive name (e.g., `feat/add-telegram-retry`, `fix/memory-search-ranking`)
-2. **Commit frequently** — pre-commit hooks enforce fmt, clippy, and tests
-3. **Push the branch** and merge into `main`
+2. **Commit frequently** — pre-commit hooks enforce fmt, clippy, and tests. Commit especially often during large multi-phase tasks.
+3. **Wrapup** Check for anything unfinished, ensure documents and guides are updated, create migration guides for breaking changes.
+4. **Push the branch** and merge into `main`
+
+All changes must be committed before giving the user a completion summary. **Never** use `git -C` — the shell is already in the project root; use plain `git` commands.
 
 ### Branch Naming
 
@@ -148,13 +153,15 @@ Use prefixed branch names:
 
 Releases use **CalVer** (`YYYY.0M.0D`), not SemVer. Tags like `v2026.03.02`, with `-N` suffix for same-day follow-ups (`v2026.03.02-2`). Cargo.toml version is independent and not tied to release tags. The release workflow runs full CI checks before building artifacts.
 
-## Misc Notes
-- Testing is a first class operation, NEVER skip test implementation.
-- Commits should be made frequently, especially for large multi-phase tasks.
-- All changes must be committed before giving the user a completion summary.
-- **Never** use `git -C` — the shell is already in the project root; use plain `git` commands.
-- Always run `cargo test --quiet` — never plain `cargo test`. The `--quiet` flag suppresses per-test noise and only shows failures and the summary.
+## Agent Usage
 
-## Active Technologies
-- Rust (edition 2024), targeting stable toolchain + `objc2` 0.6, `objc2-foundation` 0.3, `objc2-user-notifications` 0.3, `block2` 0.6 (all macOS-only via `cfg(target_os = "macos")`) (001-macos-notifications)
-- N/A — notifications are fire-and-forget; throttle state is in-memory only (001-macos-notifications)
+When spawning sub-agents for parallel or delegated work, always include these instructions in the agent prompt:
+
+> **Do NOT run tests, linting, or formatting checks.** Do NOT attempt to commit changes. Focus only on implementing the requested changes. Verification (tests, clippy, fmt) will be run after all agents complete.
+
+This prevents agents from:
+- Wasting cycles on verification that will be done centrally
+- Creating conflicting commits from parallel work
+- Blocking on test failures that may depend on other agents' changes
+
+The orchestrating agent is responsible for running `cargo fmt`, `cargo clippy`, and `cargo test` after all sub-agent work is complete, then creating a single commit.

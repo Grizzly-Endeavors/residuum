@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tracing::{debug, info};
 
-use super::http::{SharedHttpClient, map_request_error, warn_if_insecure_remote};
+use super::http::{SharedHttpClient, map_request_error, read_error_body, warn_if_insecure_remote};
 use super::retry::{RetryConfig, with_retry};
 use super::{
     CompletionOptions, ImageData, Message, ModelError, ModelProvider, ModelResponse,
@@ -76,11 +76,6 @@ impl AnthropicClient {
         format!("{}/v1/messages", self.base_url)
     }
 
-    /// Whether this client uses an OAuth token (requiring Claude Code identity).
-    fn is_oauth(&self) -> bool {
-        self.api_key.starts_with("sk-ant-oat01-")
-    }
-
     /// Convert our generic messages into Anthropic-specific format.
     ///
     /// System messages are extracted and returned separately as a concatenated
@@ -96,17 +91,17 @@ impl AnthropicClient {
                     system_parts.push(&msg.content);
                 }
                 Role::User => {
-                    let content = if has_images(msg.images.as_ref()) {
+                    let content = if msg.images.is_empty() {
+                        AnthropicContent::Text(msg.content.clone())
+                    } else {
                         let mut blocks = Vec::new();
                         if !msg.content.is_empty() {
                             blocks.push(AnthropicContentBlock::Text {
                                 text: msg.content.clone(),
                             });
                         }
-                        append_image_blocks(&mut blocks, msg.images.as_ref());
+                        append_image_blocks(&mut blocks, &msg.images);
                         AnthropicContent::Blocks(blocks)
-                    } else {
-                        AnthropicContent::Text(msg.content.clone())
                     };
                     api_messages.push(AnthropicMessage {
                         role: String::from("user"),
@@ -152,7 +147,7 @@ impl AnthropicClient {
                         tool_use_id,
                         content: msg.content.clone(),
                     }];
-                    append_image_blocks(&mut blocks, msg.images.as_ref());
+                    append_image_blocks(&mut blocks, &msg.images);
                     api_messages.push(AnthropicMessage {
                         role: String::from("user"),
                         content: AnthropicContent::Blocks(blocks),
@@ -217,26 +212,25 @@ impl AnthropicClient {
         // budget_tokens must be > 0 and < max_tokens
         let budget = budget.max(1).min(max_tokens - 1);
         Some(AnthropicThinking {
-            r#type: "enabled".to_string(),
+            r#type: "enabled",
             budget_tokens: budget,
         })
     }
 
     /// Send a pre-built request to the Anthropic API and parse the response.
+    #[tracing::instrument(skip_all, fields(
+        model = %request.model,
+        message_count = request.messages.len(),
+        tool_count = request.tools.as_ref().map_or(0, Vec::len),
+    ))]
     async fn send_completion(
         http: &SharedHttpClient,
         endpoint: &str,
         api_key: &str,
-        model: &str,
         request: &AnthropicRequest,
-        message_count: usize,
-        tool_count: usize,
     ) -> Result<ModelResponse, ModelError> {
         debug!(
-            model = %model,
             max_tokens = request.max_tokens,
-            message_count = message_count,
-            tool_count = tool_count,
             "sending anthropic completion request"
         );
 
@@ -249,8 +243,7 @@ impl AnthropicClient {
 
         // OAuth tokens (sk-ant-oat01-*) use Bearer auth + Claude Code identity
         // headers; standard API keys use x-api-key.
-        // NOTE: this logic is duplicated in gateway::web::fetch_anthropic_models
-        if api_key.starts_with("sk-ant-oat01-") {
+        if is_oauth_key(api_key) {
             req_builder = req_builder
                 .header("Authorization", format!("Bearer {api_key}"))
                 .header("anthropic-beta", OAUTH_BETA)
@@ -261,7 +254,7 @@ impl AnthropicClient {
         }
 
         let request_json = serde_json::to_string(request)
-            .unwrap_or_else(|e| format!("(serialization failed: {e})"));
+            .map_err(|e| ModelError::Parse(format!("failed to serialize request: {e}")))?;
 
         let response = req_builder
             .body(request_json.clone())
@@ -271,13 +264,7 @@ impl AnthropicClient {
 
         let status = response.status();
         if !status.is_success() {
-            let body = match response.text().await {
-                Ok(b) => b,
-                Err(e) => {
-                    tracing::warn!(error = %e, "failed to read error response body");
-                    format!("failed to read response body: {e}")
-                }
-            };
+            let body = read_error_body(response).await;
 
             tracing::warn!(
                 status = %status,
@@ -314,7 +301,7 @@ impl AnthropicClient {
         let result = Self::parse_response(api_response);
 
         info!(
-            model = %model,
+            model = %request.model,
             content_len = result.content.len(),
             tool_calls = result.tool_calls.len(),
             "anthropic completion received"
@@ -344,21 +331,20 @@ impl AnthropicClient {
                         arguments: input,
                     });
                 }
-                AnthropicContentBlock::Image { .. }
-                | AnthropicContentBlock::ToolResult { .. }
-                | AnthropicContentBlock::ServerToolUse { .. }
-                | AnthropicContentBlock::WebSearchToolResult { .. } => {
-                    // request-only or server-side informational blocks — skip in response parsing
+                AnthropicContentBlock::Image { .. } | AnthropicContentBlock::ToolResult { .. } => {
+                    // request-only blocks — skip in response parsing
+                }
+                AnthropicContentBlock::ServerToolUse { id, name, .. } => {
+                    debug!(id = %id, name = %name, "server tool use block in response");
+                }
+                AnthropicContentBlock::WebSearchToolResult { tool_use_id, .. } => {
+                    debug!(tool_use_id = %tool_use_id, "web search tool result in response");
                 }
             }
         }
 
         let content = text_parts.join("");
-        let thinking_text = if thinking_parts.is_empty() {
-            None
-        } else {
-            Some(thinking_parts.join(""))
-        };
+        let thinking_text = (!thinking_parts.is_empty()).then(|| thinking_parts.join(""));
 
         let usage = response.usage.map(|u| Usage {
             input_tokens: u.input_tokens,
@@ -382,6 +368,7 @@ impl ModelProvider for AnthropicClient {
     /// Returns `ModelError::Timeout` if the request exceeds the configured timeout,
     /// `ModelError::Api` if the API returns an error status, `ModelError::Parse` if
     /// the response body is malformed, or `ModelError::Request` for network failures.
+    #[tracing::instrument(skip_all, fields(model = %self.model, message_count = messages.len(), tool_count = tools.len()))]
     async fn complete(
         &self,
         messages: &[Message],
@@ -396,14 +383,14 @@ impl ModelProvider for AnthropicClient {
 
         // OAuth tokens require the Claude Code identity as an isolated first block
         // in the system prompt to access newer models (sonnet 4.6, opus 4.6).
-        let system: Option<AnthropicSystem> = if self.is_oauth() {
+        let system: Option<AnthropicSystem> = if is_oauth_key(&self.api_key) {
             let mut blocks = vec![AnthropicSystemBlock {
-                r#type: "text".to_string(),
+                r#type: "text",
                 text: OAUTH_IDENTITY.to_string(),
             }];
             if let Some(s) = system {
                 blocks.push(AnthropicSystemBlock {
-                    r#type: "text".to_string(),
+                    r#type: "text",
                     text: s,
                 });
             }
@@ -415,8 +402,6 @@ impl ModelProvider for AnthropicClient {
         let endpoint = self.endpoint();
         let api_key = self.api_key.clone();
         let http = self.http.clone();
-        let message_count = messages.len();
-        let tool_count = tools.len();
 
         let output_config = match &options.response_format {
             ResponseFormat::Text => None,
@@ -455,21 +440,12 @@ impl ModelProvider for AnthropicClient {
                     output_config,
                     temperature,
                     thinking,
-                    cache_control: Some(AnthropicCacheControl {
-                        r#type: "ephemeral".to_string(),
-                    }),
+                    cache_control: AnthropicCacheControl {
+                        r#type: "ephemeral",
+                    },
                 };
 
-                Self::send_completion(
-                    &http,
-                    &endpoint,
-                    &api_key,
-                    &model,
-                    &request,
-                    message_count,
-                    tool_count,
-                )
-                .await
+                Self::send_completion(&http, &endpoint, &api_key, &request).await
             }
         })
         .await
@@ -480,27 +456,24 @@ impl ModelProvider for AnthropicClient {
     }
 }
 
+pub(crate) fn is_oauth_key(key: &str) -> bool {
+    key.starts_with("sk-ant-oat01-")
+}
+
 // ---------------------------------------------------------------------------
 // Image helpers
 // ---------------------------------------------------------------------------
 
-/// Returns `true` if the option contains a non-empty image vec.
-fn has_images(images: Option<&Vec<ImageData>>) -> bool {
-    images.is_some_and(|v| !v.is_empty())
-}
-
 /// Append `Image` content blocks for each `ImageData` entry.
-fn append_image_blocks(blocks: &mut Vec<AnthropicContentBlock>, images: Option<&Vec<ImageData>>) {
-    if let Some(imgs) = images {
-        for img in imgs {
-            blocks.push(AnthropicContentBlock::Image {
-                source: AnthropicImageSource {
-                    r#type: String::from("base64"),
-                    media_type: img.media_type.clone(),
-                    data: img.data.clone(),
-                },
-            });
-        }
+fn append_image_blocks(blocks: &mut Vec<AnthropicContentBlock>, images: &[ImageData]) {
+    for img in images {
+        blocks.push(AnthropicContentBlock::Image {
+            source: AnthropicImageSource {
+                r#type: String::from("base64"),
+                media_type: img.media_type.clone(),
+                data: img.data.clone(),
+            },
+        });
     }
 }
 
@@ -538,14 +511,14 @@ fn merge_consecutive_messages(messages: Vec<AnthropicMessage>) -> Vec<AnthropicM
 // Anthropic API serde types (private)
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Serialize, Clone)]
+#[derive(Debug, Clone, Serialize)]
 struct AnthropicCacheControl {
-    r#type: String,
+    r#type: &'static str,
 }
 
-#[derive(Debug, Serialize, Clone)]
+#[derive(Debug, Clone, Serialize)]
 struct AnthropicThinking {
-    r#type: String,
+    r#type: &'static str,
     budget_tokens: u32,
 }
 
@@ -562,7 +535,7 @@ enum AnthropicSystem {
 
 #[derive(Debug, Serialize, Clone)]
 struct AnthropicSystemBlock {
-    r#type: String,
+    r#type: &'static str,
     text: String,
 }
 
@@ -581,8 +554,7 @@ struct AnthropicRequest {
     temperature: Option<f32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     thinking: Option<AnthropicThinking>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    cache_control: Option<AnthropicCacheControl>,
+    cache_control: AnthropicCacheControl,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -1237,7 +1209,8 @@ mod tests {
             .and(path("/v1/messages"))
             .and(wiremock::matchers::body_partial_json(json!({
                 "thinking": {
-                    "type": "enabled"
+                    "type": "enabled",
+                    "budget_tokens": 512
                 }
             })))
             .respond_with(ResponseTemplate::new(200).set_body_json(success_response_body()))
@@ -1588,6 +1561,216 @@ mod tests {
         assert!(
             result.is_ok(),
             "request with cache_control should succeed: {result:?}"
+        );
+    }
+
+    #[test]
+    fn build_thinking_config_values() {
+        let low = AnthropicClient::build_thinking_config(
+            &ThinkingConfig::Level(ThinkingLevel::Low),
+            1024,
+        )
+        .unwrap();
+        assert_eq!(low.budget_tokens, 256, "Low should be max_tokens / 4");
+
+        let medium = AnthropicClient::build_thinking_config(
+            &ThinkingConfig::Level(ThinkingLevel::Medium),
+            1024,
+        )
+        .unwrap();
+        assert_eq!(medium.budget_tokens, 512, "Medium should be max_tokens / 2");
+
+        let high = AnthropicClient::build_thinking_config(
+            &ThinkingConfig::Level(ThinkingLevel::High),
+            1024,
+        )
+        .unwrap();
+        assert_eq!(high.budget_tokens, 768, "High should be max_tokens * 3 / 4");
+
+        let toggle_on =
+            AnthropicClient::build_thinking_config(&ThinkingConfig::Toggle(true), 1024).unwrap();
+        assert_eq!(
+            toggle_on.budget_tokens, 512,
+            "Toggle(true) should be max_tokens / 2"
+        );
+
+        let toggle_off =
+            AnthropicClient::build_thinking_config(&ThinkingConfig::Toggle(false), 1024);
+        assert!(toggle_off.is_none(), "Toggle(false) should return None");
+
+        // max_tokens=2: budget = 2/4 = 0, clamped to max(1).min(1) = 1
+        let clamped_low =
+            AnthropicClient::build_thinking_config(&ThinkingConfig::Level(ThinkingLevel::Low), 2)
+                .unwrap();
+        assert_eq!(
+            clamped_low.budget_tokens, 1,
+            "budget should be clamped to at least 1"
+        );
+    }
+
+    #[tokio::test]
+    async fn thinking_toggle_false_absent_from_request() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/messages"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(success_response_body()))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let client = test_client(&server.uri());
+        let options = CompletionOptions {
+            thinking: Some(ThinkingConfig::Toggle(false)),
+            ..CompletionOptions::default()
+        };
+        let result = client.complete(&simple_user_message(), &[], &options).await;
+        assert!(
+            result.is_ok(),
+            "request with Toggle(false) should succeed: {result:?}"
+        );
+
+        let requests = server.received_requests().await.unwrap();
+        let body: serde_json::Value =
+            serde_json::from_slice(&requests.first().unwrap().body).unwrap();
+        assert!(
+            body.get("thinking").is_none(),
+            "thinking should be absent from request body when Toggle(false)"
+        );
+    }
+
+    #[test]
+    fn multiple_system_messages_concatenated() {
+        let messages = vec![
+            Message::system("First instruction."),
+            Message::system("Second instruction."),
+            Message::user("Hello"),
+        ];
+
+        let (system, api_msgs) = AnthropicClient::convert_messages(&messages);
+        assert_eq!(
+            system.as_deref(),
+            Some("First instruction.\nSecond instruction."),
+            "multiple system messages should be joined with newline"
+        );
+        assert_eq!(api_msgs.len(), 1, "only user message should be in api_msgs");
+    }
+
+    #[tokio::test]
+    async fn oauth_key_uses_bearer_auth_headers() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/messages"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(success_response_body()))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let http = SharedHttpClient::new(&HttpClientConfig::with_timeout(5)).unwrap();
+        let client = AnthropicClient::new(
+            http,
+            server.uri(),
+            "sk-ant-oat01-test-key",
+            "claude-sonnet-4-20250514",
+            1024,
+            RetryConfig::no_retry(),
+        );
+
+        let result = client
+            .complete(&simple_user_message(), &[], &CompletionOptions::default())
+            .await;
+        assert!(result.is_ok(), "OAuth request should succeed");
+
+        let requests = server.received_requests().await.unwrap();
+        let req = requests.first().unwrap();
+
+        let auth = req
+            .headers
+            .iter()
+            .find(|(name, _)| name.as_str().eq_ignore_ascii_case("authorization"))
+            .map_or("", |(_, v)| v.to_str().unwrap_or(""));
+        assert_eq!(
+            auth, "Bearer sk-ant-oat01-test-key",
+            "should use Bearer auth for OAuth key"
+        );
+
+        let beta = req
+            .headers
+            .iter()
+            .find(|(name, _)| name.as_str().eq_ignore_ascii_case("anthropic-beta"))
+            .map_or("", |(_, v)| v.to_str().unwrap_or(""));
+        assert_eq!(
+            beta, OAUTH_BETA,
+            "should include anthropic-beta header for OAuth key"
+        );
+
+        let has_x_api_key = req
+            .headers
+            .iter()
+            .any(|(name, _)| name.as_str().eq_ignore_ascii_case("x-api-key"));
+        assert!(!has_x_api_key, "x-api-key should be absent for OAuth key");
+    }
+
+    #[tokio::test]
+    async fn oauth_key_system_uses_blocks_with_identity_first() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/messages"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(success_response_body()))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let http = SharedHttpClient::new(&HttpClientConfig::with_timeout(5)).unwrap();
+        let client = AnthropicClient::new(
+            http,
+            server.uri(),
+            "sk-ant-oat01-test-key",
+            "claude-sonnet-4-20250514",
+            1024,
+            RetryConfig::no_retry(),
+        );
+
+        let messages = vec![Message::system("Be helpful."), Message::user("Hello")];
+        let result = client
+            .complete(&messages, &[], &CompletionOptions::default())
+            .await;
+        assert!(result.is_ok(), "OAuth client should succeed");
+
+        let requests = server.received_requests().await.unwrap();
+        let body: serde_json::Value =
+            serde_json::from_slice(&requests.first().unwrap().body).unwrap();
+        let system = body.get("system").unwrap();
+        assert!(
+            system.is_array(),
+            "system should be an array of blocks for OAuth key"
+        );
+        let blocks = system.as_array().unwrap();
+        assert_eq!(
+            blocks.len(),
+            2,
+            "should have identity block + user system block"
+        );
+        assert_eq!(
+            blocks
+                .first()
+                .unwrap()
+                .get("text")
+                .unwrap()
+                .as_str()
+                .unwrap(),
+            OAUTH_IDENTITY,
+            "first block should be OAuth identity"
+        );
+        assert_eq!(
+            blocks
+                .get(1)
+                .unwrap()
+                .get("text")
+                .unwrap()
+                .as_str()
+                .unwrap(),
+            "Be helpful.",
+            "second block should be the user system message"
         );
     }
 }

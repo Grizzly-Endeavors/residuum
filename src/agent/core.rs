@@ -1,7 +1,6 @@
 //! Agent struct, configuration, and turn dispatch.
 
 use crate::bus::{EndpointName, Publisher};
-use crate::error::ResiduumError;
 use crate::interfaces::types::MessageOrigin;
 use crate::mcp::SharedMcpRegistry;
 use crate::models::{CompletionOptions, Message, ModelProvider};
@@ -11,7 +10,7 @@ use crate::workspace::identity::IdentityFiles;
 use super::context::{MemoryContext, PromptContext, StatusLine};
 use super::interrupt;
 use super::recent_messages::RecentMessages;
-use super::turn::{TurnResources, execute_turn};
+use super::turn::{EventContext, TurnResources, execute_turn};
 
 /// Result of a background system turn (pulse or scheduled action).
 pub struct SystemTurnResult {
@@ -99,7 +98,7 @@ impl Agent {
     pub async fn reload_observations(
         &mut self,
         layout: &crate::workspace::layout::WorkspaceLayout,
-    ) -> Result<(), ResiduumError> {
+    ) -> anyhow::Result<()> {
         self.observations =
             super::context::loading::load_observations(&layout.observations_json()).await?;
         Ok(())
@@ -112,7 +111,7 @@ impl Agent {
     pub async fn reload_recent_context(
         &mut self,
         layout: &crate::workspace::layout::WorkspaceLayout,
-    ) -> Result<(), ResiduumError> {
+    ) -> anyhow::Result<()> {
         self.recent_context =
             super::context::loading::load_recent_context_narrative(&layout.recent_context_json())
                 .await?;
@@ -133,14 +132,6 @@ impl Agent {
     /// shows the correct "last message" duration.
     pub fn set_last_user_message_at(&mut self, at: Option<chrono::NaiveDateTime>) {
         self.last_user_message_at = at;
-    }
-
-    /// Clear all messages from the recent history.
-    ///
-    /// Called after the observer fires so observed messages don't linger
-    /// in both the recent messages and the observation log.
-    pub fn clear_recent_messages(&mut self) {
-        self.recent_messages.clear();
     }
 
     /// Clear all in-memory messages (used after idle transition + observer).
@@ -187,17 +178,20 @@ impl Agent {
     /// assistant prefill) so the agent reviews injected background results.
     ///
     /// # Errors
-    /// Returns `ResiduumError` if the model call fails or tool execution errors
+    /// Returns an error if the model call fails or tool execution errors
     /// are unrecoverable.
+    #[tracing::instrument(skip_all, fields(operation = "wake_turn"))]
     pub async fn run_wake_turn(
         &mut self,
         publisher: &Publisher,
         output_endpoint: Option<&EndpointName>,
+        tool_activity_endpoint: Option<&EndpointName>,
         prompt_ctx: &PromptContext<'_>,
         interrupt_rx: &mut tokio::sync::mpsc::Receiver<interrupt::Interrupt>,
-    ) -> Result<Vec<String>, ResiduumError> {
+    ) -> anyhow::Result<Vec<String>> {
+        tracing::debug!("processing wake turn");
         let now = crate::time::now_local(self.tz);
-        let unread = crate::inbox::count_unread(&self.inbox_dir);
+        let unread = crate::inbox::count_unread(&self.inbox_dir).await;
         let status_line = StatusLine {
             now,
             last_message_at: self.last_user_message_at,
@@ -224,13 +218,18 @@ impl Agent {
             identity: &self.identity,
             options: &self.options,
         };
+        let events = EventContext {
+            publisher,
+            output_endpoint,
+            tool_activity_endpoint,
+            correlation_id: "",
+        };
         execute_turn(
             &resources,
             &memory_ctx,
             prompt_ctx,
             &mut self.recent_messages,
-            publisher,
-            output_endpoint,
+            &events,
             Some(&status_line),
             interrupt_rx,
         )
@@ -244,24 +243,28 @@ impl Agent {
     /// included in the return value.
     ///
     /// # Errors
-    /// Returns `ResiduumError` if the model call fails or tool execution errors
+    /// Returns an error if the model call fails or tool execution errors
     /// are unrecoverable.
     #[expect(
         clippy::too_many_arguments,
         reason = "publisher and topic params added during bus migration"
     )]
+    #[tracing::instrument(skip_all, fields(correlation_id = %correlation_id, origin = ?origin))]
     pub async fn process_message(
         &mut self,
         user_input: &str,
         publisher: &Publisher,
         output_endpoint: Option<&EndpointName>,
+        tool_activity_endpoint: Option<&EndpointName>,
+        correlation_id: &str,
         origin: Option<&MessageOrigin>,
         prompt_ctx: &PromptContext<'_>,
         interrupt_rx: &mut tokio::sync::mpsc::Receiver<interrupt::Interrupt>,
         images: &[crate::models::ImageData],
-    ) -> Result<Vec<String>, ResiduumError> {
+    ) -> anyhow::Result<Vec<String>> {
+        tracing::debug!("processing user message");
         let now = crate::time::now_local(self.tz);
-        let unread = crate::inbox::count_unread(&self.inbox_dir);
+        let unread = crate::inbox::count_unread(&self.inbox_dir).await;
         let status_line = StatusLine {
             now,
             last_message_at: self.last_user_message_at,
@@ -290,13 +293,18 @@ impl Agent {
             identity: &self.identity,
             options: &self.options,
         };
+        let events = EventContext {
+            publisher,
+            output_endpoint,
+            tool_activity_endpoint,
+            correlation_id,
+        };
         execute_turn(
             &resources,
             &memory_ctx,
             prompt_ctx,
             &mut self.recent_messages,
-            publisher,
-            output_endpoint,
+            &events,
             Some(&status_line),
             interrupt_rx,
         )
@@ -313,15 +321,17 @@ impl Agent {
     /// agent's default provider for this turn only.
     ///
     /// # Errors
-    /// Returns `ResiduumError` if the model call fails.
+    /// Returns an error if the model call fails.
+    #[tracing::instrument(skip_all, fields(operation = "system_turn"))]
     pub async fn run_system_turn(
         &self,
         prompt: &str,
         publisher: &Publisher,
         output_endpoint: Option<&EndpointName>,
+        tool_activity_endpoint: Option<&EndpointName>,
         provider_override: Option<&dyn ModelProvider>,
         prompt_ctx: &PromptContext<'_>,
-    ) -> Result<SystemTurnResult, ResiduumError> {
+    ) -> anyhow::Result<SystemTurnResult> {
         let mut thread_messages = RecentMessages::new();
         thread_messages.push(Message::user(prompt));
 
@@ -344,23 +354,27 @@ impl Agent {
             options: &self.options,
         };
 
+        let events = EventContext {
+            publisher,
+            output_endpoint,
+            tool_activity_endpoint,
+            correlation_id: "",
+        };
         // System turns don't inject time context (no user-facing timestamps)
         let mut texts = execute_turn(
             &resources,
             &memory_ctx,
             prompt_ctx,
             &mut thread_messages,
-            publisher,
-            output_endpoint,
+            &events,
             None,
             &mut sys_interrupt_rx,
         )
         .await?;
 
-        let response = texts.pop().unwrap_or_else(|| {
-            tracing::warn!("system turn returned no text responses");
-            String::new()
-        });
+        let response = texts
+            .pop()
+            .ok_or_else(|| anyhow::anyhow!("system turn returned no text responses"))?;
 
         Ok(SystemTurnResult {
             response,
@@ -514,7 +528,9 @@ mod tests {
                 &publisher,
                 Some(&ep),
                 None,
-                &PromptContext::none(),
+                "",
+                None,
+                &PromptContext::default(),
                 &mut irx,
                 &[],
             )
@@ -564,7 +580,9 @@ mod tests {
                 &publisher,
                 Some(&ep),
                 None,
-                &PromptContext::none(),
+                "",
+                None,
+                &PromptContext::default(),
                 &mut irx,
                 &[],
             )
@@ -619,7 +637,9 @@ mod tests {
                 &publisher,
                 Some(&ep),
                 None,
-                &PromptContext::none(),
+                "",
+                None,
+                &PromptContext::default(),
                 &mut irx,
                 &[],
             )
@@ -675,7 +695,9 @@ mod tests {
                 &publisher,
                 Some(&ep),
                 None,
-                &PromptContext::none(),
+                "",
+                None,
+                &PromptContext::default(),
                 &mut irx,
                 &[],
             )
@@ -708,15 +730,16 @@ mod tests {
                 &publisher,
                 Some(&ep),
                 None,
-                &PromptContext::none(),
+                None,
+                &PromptContext::default(),
             )
             .await
             .unwrap();
         assert_eq!(result.response, "HEARTBEAT_OK", "response should match");
-        assert!(
-            !result.messages.is_empty(),
-            "should have ephemeral messages"
-        );
+        assert_eq!(result.messages.len(), 2);
+        assert_eq!(result.messages[0].role, crate::models::Role::User);
+        assert_eq!(result.messages[0].content, "check status");
+        assert_eq!(result.messages[1].content, "HEARTBEAT_OK");
         assert_eq!(
             agent.message_count(),
             0,
@@ -787,7 +810,13 @@ mod tests {
         let (publisher, ep) = test_bus();
         let mut irx = interrupt::dead_interrupt_rx();
         let result = agent
-            .run_wake_turn(&publisher, Some(&ep), &PromptContext::none(), &mut irx)
+            .run_wake_turn(
+                &publisher,
+                Some(&ep),
+                None,
+                &PromptContext::default(),
+                &mut irx,
+            )
             .await
             .unwrap();
         assert_eq!(result, vec!["I'll handle it"]);
@@ -923,6 +952,8 @@ mod tests {
             "first retained should be exchange 2"
         );
         assert_eq!(msgs[1].content, "answer 2");
+        assert_eq!(msgs[2].content, "question 3");
+        assert_eq!(msgs[3].content, "answer 3");
         assert_eq!(msgs[4].content, "question 4");
         assert_eq!(
             msgs[5].content, "answer 4",
@@ -932,14 +963,23 @@ mod tests {
 
     #[test]
     fn clear_messages_empties_buffer() {
-        // Build a minimal agent
-        use crate::models::Message;
-        let mut msgs = crate::agent::recent_messages::RecentMessages::new();
-        msgs.push(Message::user("hello"));
-        msgs.push(Message::assistant("hi", None));
-        assert!(!msgs.is_empty());
-        msgs.clear();
-        assert_eq!(msgs.len(), 0);
+        let mut agent = Agent::new(
+            Box::new(MockProvider::new(vec![])),
+            ToolRegistry::new(),
+            no_filter(),
+            empty_mcp(),
+            IdentityFiles::default(),
+            AgentConfig {
+                options: CompletionOptions::default(),
+                tz: chrono_tz::UTC,
+                inbox_dir: std::path::PathBuf::from("/tmp/residuum-test-inbox"),
+            },
+        );
+        agent.inject_user_message("hello");
+        agent.inject_user_message("world");
+        assert_eq!(agent.message_count(), 2);
+        agent.clear_messages();
+        assert_eq!(agent.message_count(), 0);
     }
 
     type InjectEntry = (usize, Vec<interrupt::Interrupt>);
@@ -1085,7 +1125,9 @@ mod tests {
                 &publisher,
                 Some(&ep),
                 None,
-                &PromptContext::none(),
+                "",
+                None,
+                &PromptContext::default(),
                 &mut interrupt_rx,
                 &[],
             )
@@ -1158,7 +1200,9 @@ mod tests {
                 &publisher,
                 Some(&ep),
                 None,
-                &PromptContext::none(),
+                "",
+                None,
+                &PromptContext::default(),
                 &mut interrupt_rx,
                 &[],
             )
@@ -1219,7 +1263,9 @@ mod tests {
                 &publisher,
                 Some(&ep),
                 None,
-                &PromptContext::none(),
+                "",
+                None,
+                &PromptContext::default(),
                 &mut interrupt_rx,
                 &[],
             )
@@ -1264,7 +1310,9 @@ mod tests {
                 &publisher,
                 Some(&ep),
                 None,
-                &PromptContext::none(),
+                "",
+                None,
+                &PromptContext::default(),
                 &mut irx,
                 &[],
             )

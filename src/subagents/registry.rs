@@ -1,27 +1,25 @@
 //! Subagent registry: a bus participant that spawns sub-agents on demand.
 //!
-//! Subscribes to every `TopicId::SpawnRequest(name)` topic and handles
-//! `SpawnRequestEvent` events by loading the preset, building resources,
-//! and calling `BackgroundTaskSpawner::spawn()`.
+//! Subscribes to the `Background` topic for `SpawnRequestEvent` events and
+//! handles them by loading the preset, building resources, and calling
+//! `BackgroundTaskSpawner::spawn()`.
 
 use std::path::PathBuf;
 use std::sync::Arc;
 
 use rand::Rng;
-use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
 use crate::background::BackgroundTaskSpawner;
 use crate::background::spawn_context::{
     SpawnContext, build_spawn_resources, load_preset_for_spawn,
 };
-use crate::background::types::{BackgroundTask, Execution, SubAgentConfig};
+use crate::background::types::{BackgroundTask, SubAgentConfig};
 use crate::bus::{BusHandle, PresetName, SpawnRequestEvent, Subscriber, topics};
 use crate::config::BackgroundModelTier;
 use crate::mcp::SharedMcpRegistry;
 use crate::projects::activation::SharedProjectState;
 use crate::skills::SharedSkillState;
-use crate::subagents::SubagentPresetIndex;
 
 /// Holds references needed to spawn sub-agents on behalf of bus callers.
 pub struct SubagentRegistry {
@@ -31,12 +29,6 @@ pub struct SubagentRegistry {
     skill_state: SharedSkillState,
     mcp_registry: SharedMcpRegistry,
     subagents_dir: PathBuf,
-}
-
-/// A spawn request tagged with the preset name it was published to.
-struct TaggedRequest {
-    preset_name: String,
-    event: SpawnRequestEvent,
 }
 
 impl SubagentRegistry {
@@ -61,72 +53,53 @@ impl SubagentRegistry {
     }
 }
 
-/// Spawn the registry task that subscribes to all preset topics.
+/// Spawn the registry task that subscribes to the `Background` topic.
 ///
 /// Returns a `JoinHandle` for shutdown coordination. The task runs until the
-/// bus shuts down or the shared channel closes.
-pub async fn spawn_registry(registry: SubagentRegistry, bus_handle: &BusHandle) -> JoinHandle<()> {
-    let (fwd_tx, fwd_rx) = mpsc::channel::<TaggedRequest>(64);
-
-    // Scan known presets and subscribe to each topic
-    let index = match SubagentPresetIndex::scan(&registry.subagents_dir).await {
-        Ok(idx) => idx,
+/// bus shuts down or the subscriber closes.
+#[tracing::instrument(skip_all)]
+pub async fn spawn_registry(
+    registry: SubagentRegistry,
+    bus_handle: &BusHandle,
+) -> Option<JoinHandle<()>> {
+    let subscriber: Subscriber<SpawnRequestEvent> = match bus_handle
+        .subscribe(topics::Background)
+        .await
+    {
+        Ok(s) => s,
         Err(e) => {
-            tracing::warn!(error = %e, "subagent registry failed to scan presets, running with built-ins only");
-            SubagentPresetIndex::default()
+            tracing::error!(error = %e, "subagent registry failed to subscribe to Background topic");
+            return None;
         }
     };
 
-    for entry in index.entries() {
-        let topic = topics::SpawnRequest(PresetName::from(entry.name.as_str()));
-        match bus_handle.subscribe(topic).await {
-            Ok(subscriber) => {
-                let tx = fwd_tx.clone();
-                let preset_name = entry.name.clone();
-                tokio::spawn(forward_subscription(subscriber, tx, preset_name));
+    tracing::info!("subagent registry subscribed to Background topic");
+
+    Some(tokio::spawn(registry_loop(registry, subscriber)))
+}
+
+/// Main loop: reads spawn requests and executes them.
+async fn registry_loop(registry: SubagentRegistry, mut subscriber: Subscriber<SpawnRequestEvent>) {
+    tracing::info!("subagent registry started");
+    loop {
+        match subscriber.recv().await {
+            Ok(Some(event)) => {
+                let source_label = event.source_label.clone();
+                let preset_name = event.preset.as_ref().to_string();
+                if let Err(e) = handle_spawn_request(&registry, event).await {
+                    tracing::warn!(
+                        preset = %preset_name,
+                        source = %source_label,
+                        error = %e,
+                        "subagent registry failed to handle spawn request"
+                    );
+                }
             }
+            Ok(None) => break,
             Err(e) => {
-                tracing::warn!(
-                    preset = %entry.name,
-                    error = %e,
-                    "failed to subscribe to preset topic"
-                );
+                tracing::error!(error = %e, "subagent registry subscriber error, shutting down");
+                break;
             }
-        }
-    }
-
-    // Drop the original sender — forwarding tasks hold their own clones
-    drop(fwd_tx);
-
-    tokio::spawn(registry_loop(registry, fwd_rx))
-}
-
-/// Forward `SpawnRequest` events from a single preset subscription to the shared channel.
-async fn forward_subscription(
-    mut subscriber: Subscriber<SpawnRequestEvent>,
-    tx: mpsc::Sender<TaggedRequest>,
-    preset_name: String,
-) {
-    while let Ok(Some(spawn_event)) = subscriber.recv().await {
-        let tagged = TaggedRequest {
-            preset_name: preset_name.clone(),
-            event: spawn_event,
-        };
-        if tx.send(tagged).await.is_err() {
-            break;
-        }
-    }
-}
-
-/// Main loop: reads tagged spawn requests and executes them.
-async fn registry_loop(registry: SubagentRegistry, mut rx: mpsc::Receiver<TaggedRequest>) {
-    while let Some(tagged) = rx.recv().await {
-        if let Err(e) = handle_spawn_request(&registry, &tagged.preset_name, tagged.event).await {
-            tracing::warn!(
-                preset = %tagged.preset_name,
-                error = %e,
-                "subagent registry failed to handle spawn request"
-            );
         }
     }
     tracing::info!("subagent registry shutting down");
@@ -135,20 +108,37 @@ async fn registry_loop(registry: SubagentRegistry, mut rx: mpsc::Receiver<Tagged
 /// Handle a single spawn request: load preset, build resources, spawn task.
 async fn handle_spawn_request(
     registry: &SubagentRegistry,
-    preset_name: &str,
     event: SpawnRequestEvent,
 ) -> Result<(), anyhow::Error> {
-    let (preset_tier, preset) = load_preset_for_spawn(
+    let preset_name = event.preset.as_ref().to_string();
+
+    let preset_result = load_preset_for_spawn(
         &registry.subagents_dir,
-        preset_name,
+        &preset_name,
         BackgroundModelTier::Medium,
     )
-    .await?;
+    .await;
+
+    let (preset_tier, preset_fm, preset_body, effective_preset_name) = match preset_result {
+        Ok((tier, fm, body)) => (tier, fm, body, preset_name.clone()),
+        Err(e) => {
+            tracing::warn!(
+                preset = %preset_name,
+                error = %e,
+                "failed to load preset, falling back to general-purpose"
+            );
+            let (tier, fm, body) = load_preset_for_spawn(
+                &registry.subagents_dir,
+                "general-purpose",
+                BackgroundModelTier::Medium,
+            )
+            .await?;
+            (tier, fm, body, "general-purpose".to_string())
+        }
+    };
 
     // Use override tier if provided, otherwise use preset-resolved tier
     let final_tier = event.model_tier_override.unwrap_or(preset_tier);
-
-    let preset_arg = preset.as_ref().map(|(fm, body)| (fm, body.clone()));
 
     let resources = build_spawn_resources(
         &registry.spawn_context,
@@ -156,24 +146,32 @@ async fn handle_spawn_request(
         &registry.project_state,
         &registry.skill_state,
         Arc::clone(&registry.mcp_registry),
-        preset_arg,
+        Some((&preset_fm, preset_body)),
     )
     .await?;
 
-    let task_id = generate_registry_task_id(preset_name);
+    let task_id = generate_registry_task_id(&effective_preset_name);
     let task = BackgroundTask {
         id: task_id,
         source_label: event.source_label,
         source: event.source,
-        execution: Execution::SubAgent(SubAgentConfig {
+        subagent_config: SubAgentConfig {
             prompt: event.prompt,
             context: event.context,
             model_tier: final_tier,
-        }),
-        agent_preset: PresetName::from(preset_name),
+        },
+        agent_preset: PresetName::from(effective_preset_name.as_str()),
     };
 
+    let log_task_id = task.id.clone();
+    let log_source_label = task.source_label.clone();
     registry.spawner.spawn(task, Some(resources)).await?;
+    tracing::info!(
+        preset = %effective_preset_name,
+        task_id = %log_task_id,
+        source = %log_source_label,
+        "spawned subagent"
+    );
     Ok(())
 }
 
@@ -181,7 +179,7 @@ async fn handle_spawn_request(
 fn generate_registry_task_id(preset_name: &str) -> String {
     let timestamp_ms = chrono::Utc::now().timestamp_millis();
     let rand_part: u32 = rand::thread_rng().r#gen();
-    format!("{preset_name}-{rand_part:08x}-{timestamp_ms}")
+    format!("{preset_name}-{timestamp_ms}-{rand_part:08x}")
 }
 
 #[cfg(test)]
@@ -194,6 +192,16 @@ mod tests {
         assert!(
             id.starts_with("researcher-"),
             "id should start with preset name"
+        );
+    }
+
+    #[test]
+    fn registry_task_ids_are_unique() {
+        let id1 = generate_registry_task_id("x");
+        let id2 = generate_registry_task_id("x");
+        assert_ne!(
+            id1, id2,
+            "two ids for the same preset name must be distinct"
         );
     }
 }

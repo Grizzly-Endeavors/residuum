@@ -38,7 +38,7 @@ impl Tool for ScheduleActionTool {
 
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
-            name: "schedule_action".to_string(),
+            name: self.name().to_string(),
             description: "Schedule a one-off action to fire at a specific time. The action runs once and is removed after firing.".to_string(),
             parameters: serde_json::json!({
                 "type": "object",
@@ -71,22 +71,9 @@ impl Tool for ScheduleActionTool {
     }
 
     async fn execute(&self, arguments: Value) -> Result<ToolResult, ToolError> {
-        let name = arguments
-            .get("name")
-            .and_then(Value::as_str)
-            .ok_or_else(|| ToolError::InvalidArguments("name is required".to_string()))?
-            .to_string();
-
-        let prompt = arguments
-            .get("prompt")
-            .and_then(Value::as_str)
-            .ok_or_else(|| ToolError::InvalidArguments("prompt is required".to_string()))?
-            .to_string();
-
-        let run_at_str = arguments
-            .get("run_at")
-            .and_then(Value::as_str)
-            .ok_or_else(|| ToolError::InvalidArguments("run_at is required".to_string()))?;
+        let name = super::require_str(&arguments, "name")?.to_string();
+        let prompt = super::require_str(&arguments, "prompt")?.to_string();
+        let run_at_str = super::require_str(&arguments, "run_at")?;
 
         let run_at = parse_run_at(run_at_str, self.tz)?;
 
@@ -106,7 +93,7 @@ impl Tool for ScheduleActionTool {
             .and_then(Value::as_str)
             .map(String::from);
 
-        let id = ActionStore::generate_id();
+        let id = ScheduledAction::generate_id();
         let action = ScheduledAction {
             id: id.clone(),
             name: name.clone(),
@@ -120,10 +107,7 @@ impl Tool for ScheduleActionTool {
         {
             let mut store = self.store.lock().await;
             store.add(action);
-            store.save().await.map_err(|e| {
-                tracing::error!(error = %e, "failed to persist action store");
-                ToolError::Execution(format!("failed to save action store: {e}"))
-            })?;
+            save_action_store(&mut store).await?;
         }
 
         self.notify.notify_one();
@@ -159,7 +143,7 @@ impl Tool for ListActionsTool {
 
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
-            name: "list_actions".to_string(),
+            name: self.name().to_string(),
             description:
                 "List all pending scheduled actions with their IDs, names, and fire times."
                     .to_string(),
@@ -227,7 +211,7 @@ impl Tool for CancelActionTool {
 
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
-            name: "cancel_action".to_string(),
+            name: self.name().to_string(),
             description: "Cancel a pending scheduled action by ID.".to_string(),
             parameters: serde_json::json!({
                 "type": "object",
@@ -243,26 +227,26 @@ impl Tool for CancelActionTool {
     }
 
     async fn execute(&self, arguments: Value) -> Result<ToolResult, ToolError> {
-        let id = arguments
-            .get("id")
-            .and_then(Value::as_str)
-            .ok_or_else(|| ToolError::InvalidArguments("id is required".to_string()))?
-            .to_string();
+        let id = super::require_str(&arguments, "id")?.to_string();
 
         {
             let mut store = self.store.lock().await;
             if !store.remove(&id) {
                 return Ok(ToolResult::error(format!("action '{id}' not found")));
             }
-            store.save().await.map_err(|e| {
-                tracing::error!(error = %e, "failed to persist action store");
-                ToolError::Execution(format!("failed to save action store: {e}"))
-            })?;
+            save_action_store(&mut store).await?;
         }
 
         self.notify.notify_one();
         Ok(ToolResult::success(format!("Cancelled action '{id}'")))
     }
+}
+
+async fn save_action_store(store: &mut ActionStore) -> Result<(), ToolError> {
+    store.save().await.map_err(|e| {
+        tracing::error!(error = %e, "failed to persist action store");
+        ToolError::Execution(format!("failed to save action store: {e}"))
+    })
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -319,25 +303,61 @@ mod tests {
     #[test]
     fn parse_run_at_rfc3339() {
         let dt = parse_run_at("2026-03-01T14:00:00Z", chrono_tz::UTC).unwrap();
-        assert_eq!(dt.hour(), 14);
+        assert_eq!(
+            dt,
+            chrono::DateTime::parse_from_rfc3339("2026-03-01T14:00:00Z")
+                .unwrap()
+                .with_timezone(&Utc)
+        );
     }
 
     #[test]
     fn parse_run_at_with_offset() {
         let dt = parse_run_at("2026-03-01T09:00:00-05:00", chrono_tz::UTC).unwrap();
-        assert_eq!(dt.hour(), 14, "9am EST = 2pm UTC");
+        assert_eq!(
+            dt,
+            chrono::DateTime::parse_from_rfc3339("2026-03-01T14:00:00Z")
+                .unwrap()
+                .with_timezone(&Utc),
+            "9am EST = 2pm UTC"
+        );
     }
 
     #[test]
     fn parse_run_at_naive_with_seconds() {
         let dt = parse_run_at("2026-03-01T09:00:00", chrono_tz::Tz::America__New_York).unwrap();
-        assert_eq!(dt.hour(), 14, "9am EST = 2pm UTC");
+        assert_eq!(
+            dt,
+            chrono::DateTime::parse_from_rfc3339("2026-03-01T14:00:00Z")
+                .unwrap()
+                .with_timezone(&Utc),
+            "9am EST = 2pm UTC"
+        );
     }
 
     #[test]
     fn parse_run_at_naive_without_seconds() {
         let dt = parse_run_at("2026-03-01T09:00", chrono_tz::Tz::America__New_York).unwrap();
-        assert_eq!(dt.hour(), 14, "9am EST = 2pm UTC");
+        assert_eq!(
+            dt,
+            chrono::DateTime::parse_from_rfc3339("2026-03-01T14:00:00Z")
+                .unwrap()
+                .with_timezone(&Utc),
+            "9am EST = 2pm UTC"
+        );
+    }
+
+    #[test]
+    fn parse_run_at_dst_gap() {
+        // America/New_York spring-forward on 2026-03-08: 2:00 AM → 3:00 AM
+        // 2:30 AM does not exist in that timezone
+        let result = parse_run_at("2026-03-08T02:30:00", chrono_tz::Tz::America__New_York);
+        assert!(result.is_err(), "datetime in DST gap should fail");
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("DST gap") || err.contains("does not exist"),
+            "error should mention DST: {err}"
+        );
     }
 
     #[test]
@@ -347,17 +367,98 @@ mod tests {
 
     #[test]
     fn list_actions_tool_has_correct_name() {
-        let store = Arc::new(Mutex::new(ActionStore::new_empty("/tmp/test-actions.json")));
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(Mutex::new(ActionStore::new_empty(
+            dir.path().join("test-actions.json"),
+        )));
         let tool = ListActionsTool::new(store, chrono_tz::UTC);
         assert_eq!(tool.name(), "list_actions");
     }
 
-    use chrono::Timelike;
+    #[tokio::test]
+    async fn schedule_action_past_run_at() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(Mutex::new(ActionStore::new_empty(
+            dir.path().join("test-past.json"),
+        )));
+        let notify = Arc::new(Notify::new());
+        let tool = ScheduleActionTool::new(store, notify, chrono_tz::UTC);
+        let result = tool
+            .execute(serde_json::json!({
+                "name": "past",
+                "prompt": "too late",
+                "run_at": "2020-01-01T00:00:00Z"
+            }))
+            .await;
+        assert!(result.is_err(), "past run_at should return ToolError");
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("future"), "error should mention future: {err}");
+    }
+
+    #[tokio::test]
+    async fn cancel_action_success() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(Mutex::new(ActionStore::new_empty(
+            dir.path().join("test-cancel.json"),
+        )));
+        let notify = Arc::new(Notify::new());
+
+        // Add an action directly
+        let action = ScheduledAction {
+            id: "action-cancel01".to_string(),
+            name: "to-cancel".to_string(),
+            prompt: "cancel me".to_string(),
+            run_at: Utc::now() + chrono::Duration::hours(1),
+            agent: None,
+            model_tier: None,
+            created_at: Utc::now(),
+        };
+        store.lock().await.add(action);
+
+        let tool = CancelActionTool::new(Arc::clone(&store), Arc::clone(&notify));
+        let result = tool
+            .execute(serde_json::json!({"id": "action-cancel01"}))
+            .await
+            .unwrap();
+        assert!(!result.is_error, "cancel should succeed: {}", result.output);
+        assert!(
+            result.output.contains("action-cancel01"),
+            "output should mention the cancelled action id"
+        );
+        assert!(
+            store.lock().await.list().is_empty(),
+            "action should be removed from store"
+        );
+    }
+
+    #[tokio::test]
+    async fn cancel_action_not_found() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(Mutex::new(ActionStore::new_empty(
+            dir.path().join("test-cancel-notfound.json"),
+        )));
+        let notify = Arc::new(Notify::new());
+        let tool = CancelActionTool::new(store, notify);
+        let result = tool
+            .execute(serde_json::json!({"id": "action-missing01"}))
+            .await
+            .unwrap();
+        assert!(
+            result.is_error,
+            "cancelling nonexistent action should be error result"
+        );
+        assert!(
+            result.output.contains("not found"),
+            "error should mention not found: {}",
+            result.output
+        );
+    }
 
     #[tokio::test]
     async fn schedule_action_displays_local_time() {
+        let dir = tempfile::tempdir().unwrap();
         let store = Arc::new(Mutex::new(ActionStore::new_empty(
-            "/tmp/test-sched-tz.json",
+            dir.path().join("test-sched-tz.json"),
         )));
         let notify = Arc::new(Notify::new());
         let tz = chrono_tz::Tz::America__New_York;
@@ -392,7 +493,10 @@ mod tests {
 
     #[tokio::test]
     async fn list_actions_displays_local_time() {
-        let store = Arc::new(Mutex::new(ActionStore::new_empty("/tmp/test-list-tz.json")));
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(Mutex::new(ActionStore::new_empty(
+            dir.path().join("test-list-tz.json"),
+        )));
         let tz = chrono_tz::Tz::America__New_York;
 
         // Add an action with a known UTC time

@@ -73,12 +73,16 @@ mod tests {
         ];
         for (i, a) in flags.iter().enumerate() {
             for (j, b) in flags.iter().enumerate() {
-                if i == j {
-                    assert_eq!(a, b);
-                } else {
+                if i != j {
                     assert_ne!(a, b);
                 }
             }
         }
+    }
+
+    #[test]
+    fn capabilities_contains_empty() {
+        assert!(EndpointCapabilities::INTERACTIVE.contains(EndpointCapabilities::empty()));
+        assert!(EndpointCapabilities::empty().contains(EndpointCapabilities::empty()));
     }
 }

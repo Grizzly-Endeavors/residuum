@@ -26,6 +26,7 @@ pub struct MemoryContext<'a> {
 }
 
 /// Projects-related context injected into the system prompt.
+#[derive(Default)]
 pub struct ProjectsContext<'a> {
     /// Formatted project index (always present after bootstrap).
     pub index: Option<&'a str>,
@@ -33,18 +34,8 @@ pub struct ProjectsContext<'a> {
     pub active_context: Option<&'a str>,
 }
 
-impl ProjectsContext<'_> {
-    /// Empty projects context (no index, no active project).
-    #[must_use]
-    pub fn none() -> ProjectsContext<'static> {
-        ProjectsContext {
-            index: None,
-            active_context: None,
-        }
-    }
-}
-
 /// Skills-related context injected into the system prompt.
+#[derive(Default)]
 pub struct SkillsContext<'a> {
     /// Formatted skills index XML (available skills listing).
     pub index: Option<&'a str>,
@@ -52,51 +43,22 @@ pub struct SkillsContext<'a> {
     pub active_instructions: Option<&'a str>,
 }
 
-impl SkillsContext<'_> {
-    /// Empty skills context (no index, no active skills).
-    #[must_use]
-    pub fn none() -> SkillsContext<'static> {
-        SkillsContext {
-            index: None,
-            active_instructions: None,
-        }
-    }
-}
-
 /// Subagent-preset-related context injected into the system prompt.
+#[derive(Default)]
 pub struct SubagentsContext<'a> {
     /// Formatted subagent presets index XML (available presets listing).
     pub index: Option<&'a str>,
-}
-
-impl SubagentsContext<'_> {
-    /// Empty subagents context (no index).
-    #[must_use]
-    pub fn none() -> SubagentsContext<'static> {
-        SubagentsContext { index: None }
-    }
 }
 
 /// Bundle of external context injected into the system prompt.
 ///
 /// Groups projects, skills, and subagents context into a single struct to
 /// reduce argument count on functions that thread all three through.
+#[derive(Default)]
 pub struct PromptContext<'a> {
     pub projects: ProjectsContext<'a>,
     pub skills: SkillsContext<'a>,
     pub subagents: SubagentsContext<'a>,
-}
-
-impl PromptContext<'_> {
-    /// Empty prompt context (no projects, skills, or subagents).
-    #[must_use]
-    pub fn none() -> PromptContext<'static> {
-        PromptContext {
-            projects: ProjectsContext::none(),
-            skills: SkillsContext::none(),
-            subagents: SubagentsContext::none(),
-        }
-    }
 }
 
 /// A per-section breakdown of the agent's approximate token usage.
@@ -104,7 +66,7 @@ pub struct ContextBreakdown {
     /// Estimated tokens from stable identity files (soul, agents, env, user, memory).
     pub identity_tokens: usize,
     /// Estimated tokens from the memory pipeline (observation log + recent context).
-    pub observation_log_tokens: usize,
+    pub memory_pipeline_tokens: usize,
     /// Estimated tokens from the subagents preset index.
     pub subagents_index_tokens: usize,
     /// Estimated tokens from the projects index.

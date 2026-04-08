@@ -5,36 +5,41 @@ mod models;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use crate::error::ResiduumError;
 use crate::models::retry::RetryConfig;
 use crate::models::{ThinkingConfig, ThinkingLevel};
+use crate::util::FatalError;
 
 use super::Config;
 use super::bootstrap::default_workspace_dir;
-use super::constants::{DEFAULT_IDLE_TIMEOUT_MINUTES, DEFAULT_MAX_TOKENS, DEFAULT_TIMEOUT_SECS};
+use super::constants::{
+    DEFAULT_CLOUD_RELAY_URL, DEFAULT_IDLE_TIMEOUT_MINUTES, DEFAULT_MAX_TOKENS, DEFAULT_TIMEOUT_SECS,
+};
 use super::deserialize::{
     AgentConfigFile, BackgroundConfigFile, BackgroundModelsFile, CloudConfigFile, ConfigFile,
     DiscordConfigFile, GatewayConfigFile, MemoryConfigFile, ProviderEntryFile, ProvidersFile,
-    SearchConfigFile, SkillsConfigFile, TelegramConfigFile, WebSearchConfigFile, WebhookEntryFile,
+    SearchConfigFile, SkillsConfigFile, TelegramConfigFile, TracingConfigFile, WebSearchConfigFile,
+    WebhookEntryFile,
 };
 use super::provider::ProviderKind;
 use super::secrets::SecretStore;
 use super::types::{
     AgentAbilitiesConfig, BackgroundConfig, CloudConfig, DiscordConfig, GatewayConfig, IdleConfig,
-    MemoryConfig, ProviderNativeSearchConfig, SearchConfig, SkillsConfig, StandaloneBackendConfig,
-    TelegramConfig, WebSearchConfig, WebhookEntry, WebhookFormat, WebhookRouting,
+    LogLevel, MemoryConfig, OtelEndpoint, ProviderNativeSearchConfig, SearchConfig, SkillsConfig,
+    StandaloneBackendConfig, TelegramConfig, TracingConfig, WebSearchConfig, WebhookEntry,
+    WebhookFormat, WebhookRouting,
 };
 
 /// Build a `Config` from an optional config file and environment variables.
 ///
 /// # Errors
-/// Returns `ResiduumError::Config` if the model spec cannot be parsed or
+/// Returns `FatalError::Config` if the model spec cannot be parsed or
 /// the workspace directory cannot be determined.
+#[tracing::instrument(skip_all, fields(config_dir = %config_dir.display()))]
 pub(crate) fn from_file_and_env(
     file: Option<&ConfigFile>,
     providers_file: Option<&ProvidersFile>,
     config_dir: &Path,
-) -> Result<Config, ResiduumError> {
+) -> Result<Config, FatalError> {
     warn_deprecated_env_vars();
 
     let secrets = SecretStore::load(config_dir)?;
@@ -107,6 +112,8 @@ pub(crate) fn from_file_and_env(
         &secrets,
     );
 
+    let tracing = resolve_tracing_config(file.and_then(|f| f.tracing.as_ref()))?;
+
     Ok(Config {
         name,
         main: resolved_models.main,
@@ -133,29 +140,30 @@ pub(crate) fn from_file_and_env(
         temperature: file.and_then(|f| f.temperature),
         thinking,
         web_search,
+        tracing,
         role_overrides: resolved_models.role_overrides,
-        config_dir: PathBuf::new(),
+        config_dir: config_dir.to_path_buf(),
     })
 }
 
 /// Resolve the timezone from env var or config file.
 ///
 /// # Errors
-/// Returns `ResiduumError::Config` if no timezone is set or the value is not a
+/// Returns `FatalError::Config` if no timezone is set or the value is not a
 /// valid IANA timezone name.
-fn resolve_timezone(file: Option<&ConfigFile>) -> Result<chrono_tz::Tz, ResiduumError> {
+fn resolve_timezone(file: Option<&ConfigFile>) -> Result<chrono_tz::Tz, FatalError> {
     let tz_name = std::env::var("RESIDUUM_TIMEZONE")
         .ok()
         .or_else(|| file.and_then(|f| f.timezone.clone()))
         .ok_or_else(|| {
-            ResiduumError::Config(
+            FatalError::Config(
                 "timezone is required: set RESIDUUM_TIMEZONE env var or 'timezone' in config.toml \
                  (IANA name, e.g. \"America/New_York\")"
                     .to_string(),
             )
         })?;
     tz_name.parse().map_err(|_err| {
-        ResiduumError::Config(format!(
+        FatalError::Config(format!(
             "invalid timezone '{tz_name}': expected IANA name like 'America/New_York' or 'UTC'"
         ))
     })
@@ -175,6 +183,7 @@ fn resolve_gateway_config(section: Option<&GatewayConfigFile>) -> GatewayConfig 
 
     // Env > file > default for bind
     if let Ok(val) = std::env::var("RESIDUUM_GATEWAY_BIND") {
+        tracing::debug!(env = "RESIDUUM_GATEWAY_BIND", value = %val, "gateway bind overridden by env var");
         cfg.bind = val;
     } else if let Some(val) = section.and_then(|s| s.bind.clone()) {
         cfg.bind = val;
@@ -183,9 +192,16 @@ fn resolve_gateway_config(section: Option<&GatewayConfigFile>) -> GatewayConfig 
     // Env > file > default for port
     match std::env::var("RESIDUUM_GATEWAY_PORT") {
         Ok(val) => match val.parse::<u16>() {
-            Ok(p) => cfg.port = p,
+            Ok(p) => {
+                tracing::debug!(
+                    env = "RESIDUUM_GATEWAY_PORT",
+                    value = p,
+                    "gateway port overridden by env var"
+                );
+                cfg.port = p;
+            }
             Err(e) => {
-                tracing::warn!(val, error = %e, "RESIDUUM_GATEWAY_PORT is not a valid port");
+                tracing::warn!(%val, error = %e, "RESIDUUM_GATEWAY_PORT is not a valid port");
             }
         },
         Err(_) => {
@@ -198,6 +214,18 @@ fn resolve_gateway_config(section: Option<&GatewayConfigFile>) -> GatewayConfig 
     cfg
 }
 
+/// Resolve a bot token from an env var, falling back to the raw TOML value with secret expansion.
+fn resolve_bot_token(
+    env_var: &str,
+    raw_token: Option<&str>,
+    secrets: &SecretStore,
+) -> Option<String> {
+    std::env::var(env_var)
+        .ok()
+        .or_else(|| raw_token.and_then(|t| resolve_secret_value(t, secrets)))
+        .filter(|t| !t.is_empty())
+}
+
 /// Resolve Discord configuration from TOML section and environment.
 ///
 /// Token resolution: `RESIDUUM_DISCORD_TOKEN` env > `token` field in TOML (with
@@ -206,29 +234,24 @@ fn resolve_discord_config(
     section: Option<&DiscordConfigFile>,
     secrets: &SecretStore,
 ) -> Option<DiscordConfig> {
-    let token = std::env::var("RESIDUUM_DISCORD_TOKEN")
-        .ok()
-        .or_else(|| {
-            section
-                .and_then(|s| s.token.as_ref())
-                .and_then(|t| resolve_secret_value(t, secrets))
-        })
-        .filter(|t| !t.is_empty());
+    let token = resolve_bot_token(
+        "RESIDUUM_DISCORD_TOKEN",
+        section.and_then(|s| s.token.as_deref()),
+        secrets,
+    );
 
     match (section, token) {
         (_, Some(tok)) => Some(DiscordConfig { token: tok }),
         (Some(_), None) => {
             tracing::warn!(
-                "[discord] section present but no token found; set RESIDUUM_DISCORD_TOKEN or token in config"
+                section = "discord",
+                "section present but no token found; set RESIDUUM_DISCORD_TOKEN or token in config"
             );
             None
         }
         (None, None) => None,
     }
 }
-
-/// Default relay WebSocket URL.
-const DEFAULT_CLOUD_RELAY_URL: &str = "wss://agent-residuum.com/tunnel/register";
 
 /// Resolve cloud tunnel configuration from TOML section and environment.
 ///
@@ -270,7 +293,8 @@ fn resolve_cloud_config(
         })
     } else {
         tracing::warn!(
-            "[cloud] section present but no token found; set RESIDUUM_CLOUD_TOKEN or token in config"
+            section = "cloud",
+            "section present but no token found; set RESIDUUM_CLOUD_TOKEN or token in config"
         );
         None
     }
@@ -284,20 +308,18 @@ fn resolve_telegram_config(
     section: Option<&TelegramConfigFile>,
     secrets: &SecretStore,
 ) -> Option<TelegramConfig> {
-    let token = std::env::var("RESIDUUM_TELEGRAM_TOKEN")
-        .ok()
-        .or_else(|| {
-            section
-                .and_then(|s| s.token.as_ref())
-                .and_then(|t| resolve_secret_value(t, secrets))
-        })
-        .filter(|t| !t.is_empty());
+    let token = resolve_bot_token(
+        "RESIDUUM_TELEGRAM_TOKEN",
+        section.and_then(|s| s.token.as_deref()),
+        secrets,
+    );
 
     match (section, token) {
         (_, Some(tok)) => Some(TelegramConfig { token: tok }),
         (Some(_), None) => {
             tracing::warn!(
-                "[telegram] section present but no token found; set RESIDUUM_TELEGRAM_TOKEN or token in config"
+                section = "telegram",
+                "section present but no token found; set RESIDUUM_TELEGRAM_TOKEN or token in config"
             );
             None
         }
@@ -335,12 +357,12 @@ pub(super) fn resolve_secret_value(raw: &str, secrets: &SecretStore) -> Option<S
 /// Resolve named webhook configurations from TOML `[webhooks.<name>]` sections.
 ///
 /// # Errors
-/// Returns `ResiduumError::Config` if a routing or format string is invalid,
+/// Returns `FatalError::Config` if a routing or format string is invalid,
 /// or if `content_fields` entries are empty.
 fn resolve_webhooks_config(
     section: Option<&HashMap<String, WebhookEntryFile>>,
     secrets: &SecretStore,
-) -> Result<HashMap<String, WebhookEntry>, ResiduumError> {
+) -> Result<HashMap<String, WebhookEntry>, FatalError> {
     let Some(entries) = section else {
         return Ok(HashMap::new());
     };
@@ -356,21 +378,21 @@ fn resolve_webhooks_config(
         let routing: WebhookRouting = match entry.routing.as_deref() {
             Some(s) => s
                 .parse()
-                .map_err(|e: String| ResiduumError::Config(format!("webhooks.{name}: {e}")))?,
+                .map_err(|e: String| FatalError::Config(format!("webhooks.{name}: {e}")))?,
             None => WebhookRouting::default(),
         };
 
         let format: WebhookFormat = match entry.format.as_deref() {
             Some(s) => s
                 .parse()
-                .map_err(|e: String| ResiduumError::Config(format!("webhooks.{name}: {e}")))?,
+                .map_err(|e: String| FatalError::Config(format!("webhooks.{name}: {e}")))?,
             None => WebhookFormat::default(),
         };
 
         if let Some(ref fields) = entry.content_fields {
             for (i, field) in fields.iter().enumerate() {
                 if field.trim().is_empty() {
-                    return Err(ResiduumError::Config(format!(
+                    return Err(FatalError::Config(format!(
                         "webhooks.{name}: content_fields[{i}] is empty"
                     )));
                 }
@@ -430,17 +452,56 @@ fn resolve_memory_config(section: Option<&MemoryConfigFile>) -> MemoryConfig {
     mem
 }
 
+/// Resolve tracing configuration from TOML section.
+///
+/// # Errors
+/// Returns `FatalError::Config` if the log level string is invalid.
+fn resolve_tracing_config(
+    section: Option<&TracingConfigFile>,
+) -> Result<TracingConfig, FatalError> {
+    let Some(section) = section else {
+        return Ok(TracingConfig::default());
+    };
+
+    let log_level = section
+        .log_level
+        .as_deref()
+        .map(str::parse::<LogLevel>)
+        .transpose()
+        .map_err(FatalError::Config)?
+        .unwrap_or_default();
+
+    let otel_endpoints = section
+        .otel_endpoints
+        .as_deref()
+        .unwrap_or_default()
+        .iter()
+        .map(|ep| OtelEndpoint {
+            url: ep.url.clone(),
+            name: ep.name.clone(),
+            headers: ep.headers.clone().unwrap_or_default(),
+        })
+        .collect();
+
+    Ok(TracingConfig {
+        log_level,
+        auto_error_reporting: section.auto_error_reporting.unwrap_or(false),
+        sanitize_content: section.sanitize_content.unwrap_or(true),
+        otel_endpoints,
+    })
+}
+
 /// Resolve idle configuration from TOML section, validating the idle channel
 /// against configured interfaces.
 ///
 /// # Errors
-/// Returns `ResiduumError::Config` if the idle channel references an unknown
+/// Returns `FatalError::Config` if the idle channel references an unknown
 /// or unconfigured interface.
 fn resolve_idle_config(
     file: Option<&ConfigFile>,
     telegram: Option<&TelegramConfig>,
     discord: Option<&DiscordConfig>,
-) -> Result<IdleConfig, ResiduumError> {
+) -> Result<IdleConfig, FatalError> {
     let section = file.and_then(|f| f.idle.as_ref());
     let timeout_minutes = section
         .and_then(|s| s.timeout_minutes)
@@ -453,13 +514,13 @@ fn resolve_idle_config(
             "discord" => discord.is_some(),
             "websocket" => true,
             other => {
-                return Err(ResiduumError::Config(format!(
+                return Err(FatalError::Config(format!(
                     "idle_channel \"{other}\" is not a recognized interface"
                 )));
             }
         };
         if !valid {
-            return Err(ResiduumError::Config(format!(
+            return Err(FatalError::Config(format!(
                 "idle_channel \"{channel}\" configured but [{channel}] section is missing"
             )));
         }
@@ -513,9 +574,10 @@ fn resolve_search_config(section: Option<&SearchConfigFile>) -> SearchConfig {
         if let Some(v) = s.temporal_decay_half_life_days {
             if v <= 0.0 {
                 tracing::warn!(
+                    section = "memory.search",
                     value = v,
                     default = cfg.temporal_decay_half_life_days,
-                    "[memory.search] temporal_decay_half_life_days must be positive; using default"
+                    "temporal_decay_half_life_days must be positive; using default"
                 );
             } else {
                 cfg.temporal_decay_half_life_days = v;
@@ -526,10 +588,11 @@ fn resolve_search_config(section: Option<&SearchConfigFile>) -> SearchConfig {
     let sum = cfg.vector_weight + cfg.text_weight;
     if (sum - 1.0).abs() > 0.01 {
         tracing::warn!(
+            section = "memory.search",
             vector_weight = cfg.vector_weight,
             text_weight = cfg.text_weight,
             sum,
-            "[memory.search] vector_weight + text_weight should sum to ~1.0"
+            "vector_weight + text_weight should sum to ~1.0"
         );
     }
 
@@ -560,20 +623,23 @@ fn resolve_web_search_config(
         let mut native = ProviderNativeSearchConfig::default();
 
         if let Some(s) = section {
-            // Apply Anthropic overrides
-            if let Some(ref a) = s.anthropic {
+            if main_kind == Some(ProviderKind::Anthropic)
+                && let Some(ref a) = s.anthropic
+            {
                 native.max_uses = a.max_uses;
                 native.allowed_domains.clone_from(&a.allowed_domains);
                 native.blocked_domains.clone_from(&a.blocked_domains);
             }
-            // Apply OpenAI overrides
-            if let Some(ref o) = s.openai {
+            if main_kind == Some(ProviderKind::OpenAi)
+                && let Some(ref o) = s.openai
+            {
                 native
                     .search_context_size
                     .clone_from(&o.search_context_size);
             }
-            // Apply Gemini overrides
-            if let Some(ref g) = s.gemini {
+            if main_kind == Some(ProviderKind::Gemini)
+                && let Some(ref g) = s.gemini
+            {
                 native.exclude_domains.clone_from(&g.exclude_domains);
             }
         }
@@ -586,46 +652,32 @@ fn resolve_web_search_config(
         && let Some(ref backend_name) = s.backend
     {
         let resolved = match backend_name.as_str() {
-            "brave" => s.brave.as_ref().and_then(|b| {
-                let api_key = b
-                    .api_key
-                    .as_deref()
-                    .and_then(|k| resolve_secret_value(k, secrets))
-                    .or_else(|| std::env::var("BRAVE_API_KEY").ok());
-                api_key.map(|key| StandaloneBackendConfig {
-                    name: "brave".to_string(),
-                    api_key: key,
-                    base_url: None,
-                })
-            }),
-            "tavily" => s.tavily.as_ref().and_then(|t| {
-                let api_key = t
-                    .api_key
-                    .as_deref()
-                    .and_then(|k| resolve_secret_value(k, secrets))
-                    .or_else(|| std::env::var("TAVILY_API_KEY").ok());
-                api_key.map(|key| StandaloneBackendConfig {
-                    name: "tavily".to_string(),
-                    api_key: key,
-                    base_url: None,
-                })
-            }),
-            "ollama" => s.ollama.as_ref().and_then(|o| {
-                let api_key = o
-                    .api_key
-                    .as_deref()
-                    .and_then(|k| resolve_secret_value(k, secrets))
-                    .or_else(|| std::env::var("OLLAMA_API_KEY").ok());
-                api_key.map(|key| StandaloneBackendConfig {
-                    name: "ollama".to_string(),
-                    api_key: key,
-                    base_url: o.base_url.clone(),
-                })
-            }),
+            "brave" => resolve_standalone_backend(
+                "brave",
+                s.brave.as_ref().and_then(|b| b.api_key.as_deref()),
+                "BRAVE_API_KEY",
+                None,
+                secrets,
+            ),
+            "tavily" => resolve_standalone_backend(
+                "tavily",
+                s.tavily.as_ref().and_then(|t| t.api_key.as_deref()),
+                "TAVILY_API_KEY",
+                None,
+                secrets,
+            ),
+            "ollama" => resolve_standalone_backend(
+                "ollama",
+                s.ollama.as_ref().and_then(|o| o.api_key.as_deref()),
+                "OLLAMA_API_KEY",
+                s.ollama.as_ref().and_then(|o| o.base_url.clone()),
+                secrets,
+            ),
             other => {
                 tracing::warn!(
+                    section = "web_search",
                     backend = other,
-                    "[web_search] unknown backend; expected brave, tavily, or ollama"
+                    "unknown backend; expected brave, tavily, or ollama"
                 );
                 None
             }
@@ -633,8 +685,9 @@ fn resolve_web_search_config(
 
         if resolved.is_none() && !backend_name.is_empty() {
             tracing::warn!(
+                section = "web_search",
                 backend = backend_name.as_str(),
-                "[web_search] backend configured but no API key found; set api_key in config or the corresponding env var"
+                "backend configured but no API key found; set api_key in config or the corresponding env var"
             );
         }
 
@@ -644,15 +697,34 @@ fn resolve_web_search_config(
     cfg
 }
 
+/// Resolve a standalone web search backend by looking up the API key from config,
+/// secrets, or an environment variable fallback.
+fn resolve_standalone_backend(
+    name: &str,
+    api_key: Option<&str>,
+    env_var: &str,
+    base_url: Option<String>,
+    secrets: &SecretStore,
+) -> Option<StandaloneBackendConfig> {
+    let key = api_key
+        .and_then(|k| resolve_secret_value(k, secrets))
+        .or_else(|| std::env::var(env_var).ok())?;
+    Some(StandaloneBackendConfig {
+        name: name.to_string(),
+        api_key: key,
+        base_url,
+    })
+}
+
 /// Parse a thinking config string into a `ThinkingConfig`.
-fn parse_thinking_config(value: &str) -> Result<ThinkingConfig, ResiduumError> {
+fn parse_thinking_config(value: &str) -> Result<ThinkingConfig, FatalError> {
     match value.to_lowercase().as_str() {
         "off" | "false" => Ok(ThinkingConfig::Toggle(false)),
         "on" | "true" => Ok(ThinkingConfig::Toggle(true)),
         "low" => Ok(ThinkingConfig::Level(ThinkingLevel::Low)),
         "medium" => Ok(ThinkingConfig::Level(ThinkingLevel::Medium)),
         "high" => Ok(ThinkingConfig::Level(ThinkingLevel::High)),
-        other => Err(ResiduumError::Config(format!(
+        other => Err(FatalError::Config(format!(
             "invalid thinking value '{other}': expected one of: off, on, low, medium, high"
         ))),
     }
@@ -679,14 +751,14 @@ fn resolve_agent_config(section: Option<&AgentConfigFile>) -> AgentAbilitiesConf
 /// `[background.models]` section.
 ///
 /// # Errors
-/// Returns `ResiduumError::Config` if a model tier string cannot be resolved.
+/// Returns `FatalError::Config` if a model tier string cannot be resolved.
 fn resolve_background_config(
     section: Option<&BackgroundConfigFile>,
     models_section: Option<&BackgroundModelsFile>,
     providers_map: Option<&HashMap<String, ProviderEntryFile>>,
     secrets: &SecretStore,
     role_overrides: &mut HashMap<String, super::types::RoleOverrides>,
-) -> Result<BackgroundConfig, ResiduumError> {
+) -> Result<BackgroundConfig, FatalError> {
     let mut cfg = BackgroundConfig::default();
 
     if let Some(section) = section {
@@ -732,16 +804,42 @@ fn resolve_bg_tier(
     providers_map: Option<&HashMap<String, ProviderEntryFile>>,
     secrets: &SecretStore,
     role_overrides: &mut HashMap<String, super::types::RoleOverrides>,
-) -> Result<Option<Vec<super::provider::ProviderSpec>>, ResiduumError> {
+) -> Result<Option<Vec<super::provider::ProviderSpec>>, FatalError> {
     let Some(spec) = assignment else {
         return Ok(None);
     };
-    models::extract_role_overrides_pub(role_key, &spec, role_overrides)?;
+    models::extract_role_overrides(role_key, &spec, role_overrides)?;
     Ok(Some(models::resolve_assignment_chain(
         spec,
         providers_map,
         secrets,
     )?))
+}
+
+#[cfg(test)]
+#[expect(clippy::unwrap_used, reason = "test code uses unwrap for clarity")]
+pub(super) mod test_helpers {
+    pub(super) use super::super::deserialize::{ConfigFile, ProvidersFile};
+    pub(super) use super::super::secrets::SecretStore;
+
+    pub(super) static ENV_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    pub(super) fn empty_secrets() -> SecretStore {
+        let dir = std::env::temp_dir().join("residuum-test-empty-secrets");
+        SecretStore::load(&dir).unwrap()
+    }
+
+    pub(super) fn test_config_dir() -> std::path::PathBuf {
+        std::env::temp_dir().join("residuum-test-config")
+    }
+
+    pub(super) fn parse_config(toml: &str) -> ConfigFile {
+        toml::from_str(toml).unwrap()
+    }
+
+    pub(super) fn parse_providers(toml: &str) -> ProvidersFile {
+        toml::from_str(toml).unwrap()
+    }
 }
 
 /// Warn on deprecated environment variables that no longer have effect.
@@ -756,7 +854,7 @@ fn warn_deprecated_env_vars() {
     for var in &deprecated {
         if std::env::var(var).is_ok() {
             tracing::warn!(
-                var,
+                %var,
                 "env var is deprecated and has no effect; use [models] observer/reflector in config.toml instead"
             );
         }
@@ -775,29 +873,8 @@ mod tests {
         DEFAULT_OBSERVER_COOLDOWN_SECS, DEFAULT_OBSERVER_FORCE_THRESHOLD,
         DEFAULT_OBSERVER_THRESHOLD, DEFAULT_REFLECTOR_THRESHOLD,
     };
-    use super::super::deserialize::{ConfigFile, ProvidersFile};
+    use super::test_helpers::*;
     use super::*;
-
-    /// Create an empty `SecretStore` for tests that don't need real secrets.
-    fn empty_secrets() -> SecretStore {
-        let dir = std::env::temp_dir().join("residuum-test-empty-secrets");
-        SecretStore::load(&dir).unwrap()
-    }
-
-    /// Create a temp dir for `from_file_and_env` calls.
-    fn test_config_dir() -> std::path::PathBuf {
-        std::env::temp_dir().join("residuum-test-config")
-    }
-
-    /// Parse a TOML string into a `ConfigFile` (config-only: timezone, memory, etc.).
-    fn parse_config(toml: &str) -> ConfigFile {
-        toml::from_str(toml).unwrap()
-    }
-
-    /// Parse a TOML string into a `ProvidersFile` (providers and models sections).
-    fn parse_providers(toml: &str) -> ProvidersFile {
-        toml::from_str(toml).unwrap()
-    }
 
     // ── Section-specific resolution ───────────────────────────────────────────
 
@@ -1337,6 +1414,7 @@ typo_field = 0.5
 
     #[test]
     fn expand_env_token_present() {
+        let _guard = ENV_MUTEX.lock().unwrap();
         // SAFETY: test-only, single-threaded test environment
         unsafe { std::env::set_var("RESIDUUM_TEST_SECRET_PRESENT", "found-it") };
         let result = expand_env_token("${RESIDUUM_TEST_SECRET_PRESENT}");
@@ -1358,6 +1436,7 @@ typo_field = 0.5
 
     #[test]
     fn resolve_secret_value_env() {
+        let _guard = ENV_MUTEX.lock().unwrap();
         let secrets = empty_secrets();
         // SAFETY: test-only, single-threaded test environment
         unsafe { std::env::set_var("RESIDUUM_TEST_RSV_ENV", "env-val") };
@@ -1399,6 +1478,7 @@ typo_field = 0.5
 
     #[test]
     fn gateway_config_defaults_and_env_override() {
+        let _guard = ENV_MUTEX.lock().unwrap();
         // Combined into one test to avoid env var races across parallel tests.
         // SAFETY: test-only environment
         unsafe {
@@ -1603,6 +1683,7 @@ main = "anthropic/claude-sonnet-4-6"
 
     #[test]
     fn cloud_local_port_defaults_to_gateway_port() {
+        let _guard = ENV_MUTEX.lock().unwrap();
         // Guard against env pollution from parallel tests
         unsafe {
             std::env::remove_var("RESIDUUM_GATEWAY_PORT");

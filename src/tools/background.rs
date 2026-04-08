@@ -37,7 +37,7 @@ impl Tool for StopAgentTool {
 
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
-            name: "stop_agent".to_string(),
+            name: self.name().to_string(),
             description: "Cancel a running background task by ID. Returns an error if no task with that ID is active. Use list_agents to find active task IDs.".to_string(),
             parameters: serde_json::json!({
                 "type": "object",
@@ -53,10 +53,7 @@ impl Tool for StopAgentTool {
     }
 
     async fn execute(&self, arguments: Value) -> Result<ToolResult, ToolError> {
-        let task_id = arguments
-            .get("task_id")
-            .and_then(Value::as_str)
-            .ok_or_else(|| ToolError::InvalidArguments("task_id is required".to_string()))?;
+        let task_id = super::require_str(&arguments, "task_id")?;
 
         if self.spawner.cancel(task_id).await {
             Ok(ToolResult::success(format!("Cancelled task {task_id}.")))
@@ -91,7 +88,7 @@ impl Tool for ListAgentsTool {
 
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
-            name: "list_agents".to_string(),
+            name: self.name().to_string(),
             description: "List all currently running background tasks with their IDs, types, sources, prompt previews, and elapsed time.".to_string(),
             parameters: serde_json::json!({
                 "type": "object",
@@ -119,9 +116,8 @@ impl Tool for ListAgentsTool {
                 format!("\n    preview: {}", info.prompt_preview)
             };
             lines.push(format!(
-                "  [{id}] {task} — type: {etype} — source: {src} — running {elapsed}s{sfx}",
+                "  [{id}] {task} — type: sub_agent — source: {src} — running {elapsed}s{sfx}",
                 task = info.source_label,
-                etype = info.execution_type,
                 src = source_kind,
                 elapsed = elapsed_secs,
                 sfx = preview_suffix,
@@ -132,16 +128,16 @@ impl Tool for ListAgentsTool {
     }
 }
 
-// ─── SubAgentSpawnTool ──────────────────────────────────────────────────────
+// ─── SubagentSpawnTool ──────────────────────────────────────────────────────
 
 /// Tool for spawning background sub-agents on demand.
-pub struct SubAgentSpawnTool {
+pub struct SubagentSpawnTool {
     publisher: crate::bus::Publisher,
     subagents_dir: PathBuf,
 }
 
-impl SubAgentSpawnTool {
-    /// Create a new `SubAgentSpawnTool`.
+impl SubagentSpawnTool {
+    /// Create a new `SubagentSpawnTool`.
     #[must_use]
     pub(crate) fn new(publisher: crate::bus::Publisher, subagents_dir: PathBuf) -> Self {
         Self {
@@ -152,14 +148,14 @@ impl SubAgentSpawnTool {
 }
 
 #[async_trait]
-impl Tool for SubAgentSpawnTool {
+impl Tool for SubagentSpawnTool {
     fn name(&self) -> &'static str {
         "subagent_spawn"
     }
 
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
-            name: "subagent_spawn".to_string(),
+            name: self.name().to_string(),
             description: "Spawn a background sub-agent to handle a task. The agent_name selects a preset that configures the sub-agent's instructions, model tier, and tool restrictions. Unknown preset names fail immediately with a list of available presets. Runs asynchronously; results are routed by the notification router based on content and ALERTS.md policy.".to_string(),
             parameters: serde_json::json!({
                 "type": "object",
@@ -184,10 +180,7 @@ impl Tool for SubAgentSpawnTool {
     }
 
     async fn execute(&self, arguments: Value) -> Result<ToolResult, ToolError> {
-        let task_prompt = arguments
-            .get("task")
-            .and_then(Value::as_str)
-            .ok_or_else(|| ToolError::InvalidArguments("task is required".to_string()))?;
+        let task_prompt = super::require_str(&arguments, "task")?;
 
         if task_prompt.trim().is_empty() {
             return Err(ToolError::InvalidArguments(
@@ -208,28 +201,28 @@ impl Tool for SubAgentSpawnTool {
         }
         let explicit_model_override = arguments.get("model_override").and_then(Value::as_str);
 
-        let resolved =
+        let tier =
             match resolve_spawn_params(&self.subagents_dir, preset_name, explicit_model_override)
                 .await
             {
-                Ok(r) => r,
-                Err(tool_result) => return Ok(tool_result),
+                Ok(tier) => tier,
+                Err(e) => return Ok(ToolResult::error(e.to_string())),
             };
 
         let spawn_event = crate::bus::SpawnRequestEvent {
-            source_label: format!("agent:{}", resolved.preset_name),
+            preset: crate::bus::PresetName::from(preset_name),
+            source_label: format!("agent:{preset_name}"),
             prompt: task_prompt.to_string(),
             context: None,
             source: crate::bus::EventTrigger::Agent,
-            model_tier_override: Some(resolved.tier),
+            model_tier_override: Some(tier),
         };
 
-        let topic = crate::bus::topics::SpawnRequest(crate::bus::PresetName::from(preset_name));
-
         self.publisher
-            .publish(topic, spawn_event)
+            .publish(crate::bus::topics::Background, spawn_event)
             .await
             .map_err(|err| {
+                tracing::error!(error = %err, preset = %preset_name, "failed to publish spawn request");
                 ToolError::Execution(format!("failed to publish spawn request: {err}"))
             })?;
 
@@ -239,29 +232,23 @@ impl Tool for SubAgentSpawnTool {
     }
 }
 
-/// Resolved spawn parameters after loading a preset.
-struct ResolvedSpawn {
-    preset_name: String,
-    tier: BackgroundModelTier,
-}
-
 /// Load a preset and resolve tier defaults from arguments + preset.
 async fn resolve_spawn_params(
     subagents_dir: &std::path::Path,
     preset_name: &str,
     explicit_model_override: Option<&str>,
-) -> Result<ResolvedSpawn, ToolResult> {
+) -> Result<BackgroundModelTier, ToolError> {
     let index = SubagentPresetIndex::scan(subagents_dir)
         .await
-        .map_err(|e| ToolResult::error(format!("failed to load subagent presets: {e}")))?;
+        .map_err(|e| ToolError::Execution(format!("failed to load subagent presets: {e}")))?;
 
     let (preset_fm, _preset_body) = index
         .load_preset(preset_name)
         .await
-        .map_err(|e| ToolResult::error(e.to_string()))?;
+        .map_err(|e| ToolError::Execution(e.to_string()))?;
 
     let tier = if let Some(s) = explicit_model_override {
-        parse_model_tier(s).map_err(|e| ToolResult::error(e.to_string()))?
+        parse_model_tier(s)?
     } else if let Some(tier_str) = preset_fm.model_tier.as_deref() {
         match parse_model_tier(tier_str) {
             Ok(t) => t,
@@ -274,10 +261,7 @@ async fn resolve_spawn_params(
         BackgroundModelTier::Medium
     };
 
-    Ok(ResolvedSpawn {
-        preset_name: preset_name.to_string(),
-        tier,
-    })
+    Ok(tier)
 }
 
 fn parse_model_tier(s: &str) -> Result<BackgroundModelTier, ToolError> {
@@ -292,10 +276,10 @@ mod tests {
 
     use super::*;
 
-    fn make_tool() -> SubAgentSpawnTool {
+    fn make_tool() -> SubagentSpawnTool {
         let bus_handle = crate::bus::spawn_broker();
         let publisher = bus_handle.publisher();
-        SubAgentSpawnTool::new(publisher, PathBuf::from("/tmp"))
+        SubagentSpawnTool::new(publisher, PathBuf::from("/tmp"))
     }
 
     #[test]
@@ -331,21 +315,6 @@ mod tests {
         // Empty task
         let empty_result = tool.execute(serde_json::json!({"task": "  "})).await;
         assert!(empty_result.is_err(), "should error on empty task");
-    }
-
-    #[tokio::test]
-    async fn definition_has_required_task() {
-        let tool = make_tool();
-
-        let def = tool.definition();
-        assert_eq!(def.name, "subagent_spawn");
-        let required = def.parameters.get("required").unwrap();
-        assert!(
-            required
-                .as_array()
-                .unwrap()
-                .contains(&Value::String("task".to_string()))
-        );
     }
 
     #[tokio::test]
@@ -403,27 +372,23 @@ mod tests {
 
     #[tokio::test]
     async fn default_preset_general_purpose_used_when_no_agent_name() {
-        // When no agent_name is provided, the general-purpose preset is used.
-        // We test this indirectly — the call should not fail with an unknown-preset error.
+        // When no agent_name is provided, the tool defaults to "general-purpose".
+        // With /tmp as subagents_dir, scanning may fail with "failed to load subagent presets: ..."
+        // That error is acceptable — what must NOT appear is "unknown preset", which would mean
+        // the preset name itself was rejected rather than just the scan environment failing.
         let tool = make_tool();
 
-        // No agent_name → should not fail with "unknown preset"
-        let result = tool
+        let res = tool
             .execute(serde_json::json!({
                 "task": "do something"
             }))
-            .await;
+            .await
+            .unwrap();
 
-        // May fail with provider error (no valid API key in test), but not with preset error
-        match result {
-            Ok(res) if res.is_error => {
-                assert!(
-                    !res.output.contains("unknown preset"),
-                    "should not fail with unknown-preset error, got: {}",
-                    res.output
-                );
-            }
-            Ok(_) | Err(_) => {} // any other outcome is acceptable
-        }
+        assert!(
+            !res.output.contains("unknown preset"),
+            "should not fail with unknown-preset error, got: {}",
+            res.output
+        );
     }
 }

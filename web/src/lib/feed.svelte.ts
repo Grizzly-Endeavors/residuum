@@ -54,14 +54,6 @@ export class FeedStore {
         }
         break;
 
-      case "system_event":
-        this.feed.push({
-          id: nextFeedId(),
-          kind: "system",
-          content: `[${msg.source}] ${msg.content}`,
-        });
-        break;
-
       case "error":
         this.isProcessing = false;
         this.feed.push({
@@ -113,10 +105,14 @@ export class FeedStore {
           }
           if (msg.tool_calls?.length) {
             const calls: ToolCallState[] = msg.tool_calls.map((tc) => {
+              const args =
+                typeof tc.arguments === "string"
+                  ? (JSON.parse(tc.arguments) as Record<string, unknown>)
+                  : ((tc.arguments as Record<string, unknown>) ?? {});
               const call: ToolCallState = {
                 id: tc.id,
                 name: tc.name,
-                arguments: tc.arguments || "",
+                arguments: args,
                 status: "done",
               };
               toolCallItems.set(tc.id, call);
@@ -165,13 +161,15 @@ export class FeedStore {
   // ── Private ──────────────────────────────────────────────────────────
 
   private handleToolCall(msg: Extract<ServerMessage, { type: "tool_call" }>): void {
-    const argsText =
-      typeof msg.arguments === "string" ? msg.arguments : JSON.stringify(msg.arguments, null, 2);
+    const args =
+      typeof msg.arguments === "string"
+        ? (JSON.parse(msg.arguments) as Record<string, unknown>)
+        : ((msg.arguments as Record<string, unknown>) ?? {});
 
     const call: ToolCallState = {
       id: msg.id,
       name: msg.name,
-      arguments: argsText,
+      arguments: args,
       status: "running",
     };
 

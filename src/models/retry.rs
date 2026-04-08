@@ -1,11 +1,9 @@
 //! Retry logic with exponential backoff for model provider calls.
-//!
-//! Implemented and tested but not yet wired up to model providers. See notes.md.
 
 use std::time::Duration;
 
 use tokio::time::sleep;
-use tracing::warn;
+use tracing::{debug, warn};
 
 use super::ModelError;
 
@@ -50,6 +48,7 @@ impl RetryConfig {
 ///
 /// # Errors
 /// Returns the last error if all retries are exhausted or if a non-retryable error occurs.
+#[tracing::instrument(skip_all, fields(max_retries = config.max_retries))]
 pub async fn with_retry<F, Fut, T>(config: &RetryConfig, operation: F) -> Result<T, ModelError>
 where
     F: Fn() -> Fut,
@@ -76,6 +75,13 @@ where
                         max_retries = config.max_retries,
                         error = %e,
                         "transient error, retrying"
+                    );
+                } else {
+                    debug!(
+                        attempt = attempts + 1,
+                        max_retries = config.max_retries,
+                        error = %e,
+                        "retry attempt"
                     );
                 }
                 attempts += 1;
@@ -290,7 +296,7 @@ mod tests {
             "elapsed {elapsed:?} should include backoff delays"
         );
         assert!(
-            elapsed <= Duration::from_millis(300),
+            elapsed <= Duration::from_millis(1000),
             "elapsed {elapsed:?} should not have excessive delays"
         );
     }

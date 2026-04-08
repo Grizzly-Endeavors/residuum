@@ -2,8 +2,6 @@
 
 use std::path::Path;
 
-use crate::error::ResiduumError;
-
 use super::types::{ManifestEntry, ProjectManifest};
 
 /// Build a manifest by listing files under the standard project subdirectories.
@@ -11,25 +9,37 @@ use super::types::{ManifestEntry, ProjectManifest};
 /// Non-existent subdirectories are treated as empty.
 ///
 /// # Errors
-/// Returns `ResiduumError::Projects` if a directory cannot be read.
-pub async fn build_manifest(project_root: &Path) -> Result<ProjectManifest, ResiduumError> {
-    Ok(ProjectManifest {
+/// Returns an error if a directory cannot be read.
+#[tracing::instrument(skip_all, fields(project_root = %project_root.display()))]
+pub async fn build_manifest(project_root: &Path) -> anyhow::Result<ProjectManifest> {
+    let manifest = ProjectManifest {
         notes: list_files_recursive(&project_root.join("notes"), project_root).await?,
         references: list_files_recursive(&project_root.join("references"), project_root).await?,
         workspace: list_files_recursive(&project_root.join("workspace"), project_root).await?,
         skills: list_files_recursive(&project_root.join("skills"), project_root).await?,
-    })
+    };
+    tracing::debug!(
+        notes = manifest.notes.len(),
+        references = manifest.references.len(),
+        workspace = manifest.workspace.len(),
+        skills = manifest.skills.len(),
+        "built project manifest"
+    );
+    Ok(manifest)
 }
 
 /// Format a manifest as a human-readable grouped listing with sizes.
 #[must_use]
 pub fn format_manifest(manifest: &ProjectManifest) -> String {
-    let mut sections = Vec::new();
-
-    format_section("notes/", &manifest.notes, &mut sections);
-    format_section("references/", &manifest.references, &mut sections);
-    format_section("workspace/", &manifest.workspace, &mut sections);
-    format_section("skills/", &manifest.skills, &mut sections);
+    let sections: Vec<String> = [
+        format_section("notes/", &manifest.notes),
+        format_section("references/", &manifest.references),
+        format_section("workspace/", &manifest.workspace),
+        format_section("skills/", &manifest.skills),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
 
     if sections.is_empty() {
         return "No files.".to_string();
@@ -38,9 +48,9 @@ pub fn format_manifest(manifest: &ProjectManifest) -> String {
     sections.join("\n\n")
 }
 
-fn format_section(heading: &str, entries: &[ManifestEntry], sections: &mut Vec<String>) {
+fn format_section(heading: &str, entries: &[ManifestEntry]) -> Option<String> {
     if entries.is_empty() {
-        return;
+        return None;
     }
 
     let mut lines = Vec::with_capacity(entries.len() + 1);
@@ -54,7 +64,7 @@ fn format_section(heading: &str, entries: &[ManifestEntry], sections: &mut Vec<S
         ));
     }
 
-    sections.push(lines.join("\n"));
+    Some(lines.join("\n"))
 }
 
 /// Format a byte count as a human-readable size string.
@@ -78,7 +88,7 @@ fn format_size(bytes: u64) -> String {
 async fn list_files_recursive(
     dir: &Path,
     project_root: &Path,
-) -> Result<Vec<ManifestEntry>, ResiduumError> {
+) -> anyhow::Result<Vec<ManifestEntry>> {
     let mut entries = Vec::new();
     collect_files(dir, project_root, &mut entries).await?;
     entries.sort_by(|a, b| a.relative_path.cmp(&b.relative_path));
@@ -90,15 +100,13 @@ async fn collect_files(
     dir: &Path,
     project_root: &Path,
     entries: &mut Vec<ManifestEntry>,
-) -> Result<(), ResiduumError> {
+) -> anyhow::Result<()> {
     let mut read_dir = match tokio::fs::read_dir(dir).await {
         Ok(rd) => rd,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
         Err(e) => {
-            return Err(ResiduumError::Projects(format!(
-                "failed to read directory {}: {e}",
-                dir.display()
-            )));
+            return Err(anyhow::Error::new(e)
+                .context(format!("failed to read directory {}", dir.display())));
         }
     };
 
@@ -131,10 +139,16 @@ async fn collect_files(
         if metadata.is_dir() {
             Box::pin(collect_files(&entry.path(), project_root, entries)).await?;
         } else {
-            let rel = entry
-                .path()
+            let path = entry.path();
+            let rel = path
                 .strip_prefix(project_root)
-                .unwrap_or(&entry.path())
+                .map_err(|e| {
+                    anyhow::anyhow!(
+                        "entry {} is not under project root {}: {e}",
+                        path.display(),
+                        project_root.display()
+                    )
+                })?
                 .to_string_lossy()
                 .to_string();
 
@@ -189,6 +203,19 @@ mod tests {
         );
         assert_eq!(manifest.workspace.len(), 1, "should find file in workspace");
         assert_eq!(manifest.skills.len(), 1, "should find file in skills");
+        assert!(
+            manifest
+                .notes
+                .first()
+                .unwrap()
+                .relative_path
+                .contains("notes/test.md"),
+            "notes file path should be correct"
+        );
+        assert!(
+            manifest.notes.first().unwrap().size_bytes > 0,
+            "notes file size should be non-zero"
+        );
     }
 
     #[tokio::test]
@@ -218,6 +245,21 @@ mod tests {
     #[test]
     fn format_size_bytes() {
         assert_eq!(format_size(500), "500 B", "small files show bytes");
+    }
+
+    #[test]
+    fn format_size_zero() {
+        assert_eq!(format_size(0), "0 B", "zero bytes");
+    }
+
+    #[test]
+    fn format_size_kb_boundary() {
+        assert_eq!(format_size(1024), "1.0 KB", "1024 bytes is exactly 1 KB");
+    }
+
+    #[test]
+    fn format_size_mb_boundary() {
+        assert_eq!(format_size(1024 * 1024), "1.0 MB", "1 MB boundary");
     }
 
     #[test]

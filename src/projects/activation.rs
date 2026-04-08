@@ -3,9 +3,9 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use anyhow::Context;
 use chrono::NaiveDateTime;
 
-use crate::error::ResiduumError;
 use crate::workspace::layout::WorkspaceLayout;
 
 use super::manifest::{build_manifest, format_manifest};
@@ -45,19 +45,20 @@ impl ProjectState {
     /// the manifest, and stores it as the active project.
     ///
     /// # Errors
-    /// Returns `ResiduumError::Projects` if the project is not found, cannot
-    /// be read, or is archived.
-    pub async fn activate(&mut self, name: &str) -> Result<&ActiveProject, ResiduumError> {
+    /// Returns an error if the project is not found, cannot be read, or is
+    /// archived.
+    #[tracing::instrument(skip_all, fields(project = %name))]
+    pub async fn activate(&mut self, name: &str) -> anyhow::Result<&ActiveProject> {
         let entry = self
             .index
             .find_by_name(name)
-            .ok_or_else(|| ResiduumError::Projects(format!("project '{name}' not found")))?;
+            .ok_or_else(|| anyhow::anyhow!("project '{name}' not found"))?;
 
         if entry.status == ProjectStatus::Archived {
-            return Err(ResiduumError::Projects(format!(
+            anyhow::bail!(
                 "project '{}' is archived and cannot be activated",
                 entry.name
-            )));
+            );
         }
 
         let dir_name = entry.dir_name.clone();
@@ -65,12 +66,7 @@ impl ProjectState {
 
         let content = tokio::fs::read_to_string(project_root.join("PROJECT.md"))
             .await
-            .map_err(|e| {
-                ResiduumError::Projects(format!(
-                    "failed to read PROJECT.md for '{}': {e}",
-                    entry.name
-                ))
-            })?;
+            .with_context(|| format!("failed to read PROJECT.md for '{}'", entry.name))?;
 
         let (frontmatter, body) = parse_project_md(&content)?;
         let manifest = build_manifest(&project_root).await?;
@@ -87,12 +83,9 @@ impl ProjectState {
             project_root,
         };
 
-        self.active = Some(active);
+        tracing::info!(project = %name, dir = %active.dir_name, has_recent_log = active.recent_log.is_some(), "activated project");
 
-        // Safe: we just set it to Some
-        self.active.as_ref().ok_or_else(|| {
-            ResiduumError::Projects("unexpected: active project not set after activation".into())
-        })
+        Ok(self.active.insert(active))
     }
 
     /// Deactivate the current project, writing a log entry.
@@ -100,29 +93,30 @@ impl ProjectState {
     /// Rejects empty log entries. Writes the log to `notes/log/YYYY-MM/log-DD.md`.
     ///
     /// # Errors
-    /// Returns `ResiduumError::Projects` if no project is active, the log is empty,
-    /// or the log file cannot be written.
+    /// Returns an error if no project is active, the log is empty, or the
+    /// log file cannot be written.
+    #[tracing::instrument(skip_all)]
     pub async fn deactivate(
         &mut self,
         log_entry: &str,
         now: NaiveDateTime,
-    ) -> Result<String, ResiduumError> {
+    ) -> anyhow::Result<String> {
         let trimmed = log_entry.trim();
         if trimmed.is_empty() {
-            return Err(ResiduumError::Projects(
-                "deactivation requires a non-empty log entry".to_string(),
-            ));
+            anyhow::bail!("deactivation requires a non-empty log entry");
         }
 
         let active = self
             .active
             .as_ref()
-            .ok_or_else(|| ResiduumError::Projects("no project is currently active".to_string()))?;
+            .ok_or_else(|| anyhow::anyhow!("no project is currently active"))?;
 
         let name = active.name.clone();
         write_deactivation_log(&active.project_root, trimmed, now).await?;
 
         self.active = None;
+
+        tracing::info!(project = %name, "deactivated project");
 
         Ok(name)
     }
@@ -130,9 +124,14 @@ impl ProjectState {
     /// Rescan the project directories to rebuild the index.
     ///
     /// # Errors
-    /// Returns `ResiduumError::Projects` if scanning fails.
-    pub async fn rescan(&mut self) -> Result<(), ResiduumError> {
+    /// Returns an error if scanning fails.
+    #[tracing::instrument(skip_all)]
+    pub async fn rescan(&mut self) -> anyhow::Result<()> {
         self.index = ProjectIndex::scan(&self.layout).await?;
+        tracing::debug!(
+            total = self.index.entries().len(),
+            "rescanned project index"
+        );
         Ok(())
     }
 
@@ -161,7 +160,7 @@ impl ProjectState {
             parts.push(format!("**Recent Session Log:**\n{log}"));
         }
 
-        parts.push(format!("\n**Files:**\n{manifest_text}"));
+        parts.push(format!("**Files:**\n{manifest_text}"));
 
         Some(parts.join("\n\n"))
     }
@@ -205,19 +204,17 @@ async fn write_deactivation_log(
     project_root: &Path,
     log_text: &str,
     now: NaiveDateTime,
-) -> Result<(), ResiduumError> {
-    let date_dir = now.format("%Y-%m").to_string();
-    let day_file = now.format("log-%d").to_string();
-    let date_header = now.format("%Y-%m-%d").to_string();
-    let time_str = now.format("%H:%M").to_string();
+) -> anyhow::Result<()> {
+    let day_file = now.format("log-%d");
+    let date_header = now.format("%Y-%m-%d");
+    let time_str = now.format("%H:%M");
 
-    let log_dir = project_root.join("notes/log").join(&date_dir);
-    tokio::fs::create_dir_all(&log_dir).await.map_err(|e| {
-        ResiduumError::Projects(format!(
-            "failed to create log directory {}: {e}",
-            log_dir.display()
-        ))
-    })?;
+    let log_dir = project_root
+        .join("notes/log")
+        .join(now.format("%Y-%m").to_string());
+    tokio::fs::create_dir_all(&log_dir)
+        .await
+        .with_context(|| format!("failed to create log directory {}", log_dir.display()))?;
 
     let log_file = log_dir.join(format!("{day_file}.md"));
     let entry = format!("- **{time_str}** {log_text}\n");
@@ -233,97 +230,82 @@ async fn write_deactivation_log(
         }
     };
 
-    tokio::fs::write(&log_file, &content).await.map_err(|e| {
-        ResiduumError::Projects(format!(
-            "failed to write log file {}: {e}",
-            log_file.display()
-        ))
-    })?;
+    tokio::fs::write(&log_file, &content)
+        .await
+        .with_context(|| format!("failed to write log file {}", log_file.display()))?;
+
+    tracing::debug!(path = %log_file.display(), "wrote deactivation log entry");
 
     Ok(())
 }
 
-/// Read the most recent project session logs, returning up to ~2000 tokens
-/// (~8000 chars) of content with the most recent entries first.
-///
-/// Scans `notes/log/` for the most recent month directory, then reads the
-/// most recent day files. Returns `None` if no logs exist or all reads fail.
-async fn read_recent_logs(project_root: &Path) -> Option<String> {
-    const MAX_CHARS: usize = 8000;
-
-    let log_dir = project_root.join("notes/log");
-
-    let Ok(mut months) = tokio::fs::read_dir(&log_dir).await else {
-        return None;
-    };
-
-    // Collect month directories and sort descending
-    let mut month_dirs: Vec<PathBuf> = Vec::new();
+/// Collect and sort (descending) entries from a `ReadDir` stream matching a filter.
+async fn collect_dir_entries(
+    mut read_dir: tokio::fs::ReadDir,
+    dir: &Path,
+    filter: impl Fn(&Path) -> bool,
+) -> Vec<PathBuf> {
+    let mut entries: Vec<PathBuf> = Vec::new();
     loop {
-        match months.next_entry().await {
-            Ok(Some(entry)) => match entry.file_type().await {
-                Ok(ft) if ft.is_dir() => month_dirs.push(entry.path()),
-                Ok(_) => {}
-                Err(e) => {
-                    tracing::warn!(
-                        path = %entry.path().display(),
-                        error = %e,
-                        "failed to get file type for log entry"
-                    );
+        match read_dir.next_entry().await {
+            Ok(Some(entry)) => {
+                let path = entry.path();
+                if filter(&path) {
+                    entries.push(path);
                 }
-            },
+            }
             Ok(None) => break,
             Err(e) => {
                 tracing::warn!(
-                    dir = %log_dir.display(),
+                    dir = %dir.display(),
                     error = %e,
-                    "failed to read log directory entry"
+                    "failed to read directory entry"
                 );
             }
         }
     }
-    month_dirs.sort_unstable();
-    month_dirs.reverse();
+    entries.sort_unstable_by(|a, b| b.cmp(a));
+    entries
+}
+
+/// Read the most recent project session logs, returning up to ~2000 tokens
+/// (~8000 bytes) of content with the most recent entries first.
+///
+/// Scans `notes/log/` for the most recent month directory, then reads the
+/// most recent day files. Returns `None` if no logs exist or all reads fail.
+async fn read_recent_logs(project_root: &Path) -> Option<String> {
+    const MAX_BYTES: usize = 8000;
+
+    let log_dir = project_root.join("notes/log");
+
+    let Ok(months) = tokio::fs::read_dir(&log_dir).await else {
+        return None;
+    };
+
+    let month_dirs = collect_dir_entries(months, &log_dir, Path::is_dir).await;
 
     let mut collected = String::new();
 
     for month_path in &month_dirs {
-        if collected.len() >= MAX_CHARS {
+        if collected.len() >= MAX_BYTES {
             break;
         }
 
-        let Ok(mut day_rd) = tokio::fs::read_dir(month_path).await else {
-            tracing::warn!(
-                path = %month_path.display(),
-                "failed to open log month directory"
-            );
-            continue;
+        let day_rd = match tokio::fs::read_dir(month_path).await {
+            Ok(rd) => rd,
+            Err(e) => {
+                tracing::warn!(path = %month_path.display(), error = %e, "failed to open log month directory");
+                continue;
+            }
         };
 
-        let mut day_files: Vec<PathBuf> = Vec::new();
-        loop {
-            match day_rd.next_entry().await {
-                Ok(Some(entry)) => {
-                    let path = entry.path();
-                    if path.extension().is_some_and(|ext| ext == "md") {
-                        day_files.push(path);
-                    }
-                }
-                Ok(None) => break,
-                Err(e) => {
-                    tracing::warn!(
-                        dir = %month_path.display(),
-                        error = %e,
-                        "failed to read log day directory entry"
-                    );
-                }
-            }
-        }
-        day_files.sort_unstable();
-        day_files.reverse();
+        let day_files = collect_dir_entries(day_rd, month_path, |p| {
+            p.extension().is_some_and(|ext| ext == "md")
+        })
+        .await;
 
         for day_file in &day_files {
-            if collected.len() >= MAX_CHARS {
+            if collected.len() >= MAX_BYTES {
                 break;
             }
 
@@ -332,13 +314,18 @@ async fn read_recent_logs(project_root: &Path) -> Option<String> {
                     if !collected.is_empty() {
                         collected.push('\n');
                     }
-                    let remaining = MAX_CHARS.saturating_sub(collected.len());
+                    let remaining = MAX_BYTES.saturating_sub(collected.len());
                     if content.len() <= remaining {
                         collected.push_str(&content);
                     } else {
-                        // Truncate at a char boundary
-                        let truncated: String = content.chars().take(remaining).collect();
-                        collected.push_str(&truncated);
+                        tracing::debug!(path = %day_file.display(), content_len = content.len(), remaining, "truncating log file to fit context limit");
+                        let mut end = remaining.min(content.len());
+                        while end > 0 && !content.is_char_boundary(end) {
+                            end -= 1;
+                        }
+                        if let Some(truncated) = content.get(..end) {
+                            collected.push_str(truncated);
+                        }
                     }
                 }
                 Err(e) => {
@@ -412,9 +399,10 @@ mod tests {
             active.body.contains("Overview body text"),
             "body should be loaded"
         );
-        assert!(
-            state.active_project_name().is_some(),
-            "should have active project"
+        assert_eq!(
+            state.active_project_name(),
+            Some("Test Project"),
+            "active project name should match"
         );
     }
 
@@ -471,6 +459,10 @@ mod tests {
         let now = make_datetime(2026, 2, 23, 14, 32);
         let result = state.deactivate("", now).await;
         assert!(result.is_err(), "empty log should be rejected");
+        assert!(
+            state.active_project_name().is_some(),
+            "project should still be active after failed deactivate"
+        );
     }
 
     #[tokio::test]
@@ -616,5 +608,50 @@ mod tests {
             content.contains("**16:30** Second session."),
             "should have second entry"
         );
+    }
+
+    #[tokio::test]
+    async fn activate_archived_project_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        let layout = WorkspaceLayout::new(dir.path().join("workspace"));
+        crate::workspace::bootstrap::ensure_workspace(&layout, None, None)
+            .await
+            .unwrap();
+
+        let project_dir = layout.projects_dir().join("archived-proj");
+        tokio::fs::create_dir_all(&project_dir).await.unwrap();
+        tokio::fs::write(
+            project_dir.join("PROJECT.md"),
+            "---\nname: Archived Project\ndescription: \"Archived\"\nstatus: archived\ncreated: 2026-01-01\narchived: 2026-02-01\n---\n",
+        )
+        .await
+        .unwrap();
+
+        let index = ProjectIndex::scan(&layout).await.unwrap();
+        let mut state = ProjectState::new(index, layout);
+
+        let result = state.activate("Archived Project").await;
+        assert!(
+            result.is_err(),
+            "archived project should not be activatable"
+        );
+        let err_msg = format!("{}", result.unwrap_err());
+        assert!(
+            err_msg.contains("archived"),
+            "error should mention archived"
+        );
+    }
+
+    #[tokio::test]
+    async fn deactivate_whitespace_log_rejected() {
+        let (_dir, layout) = setup_workspace_with_project().await;
+        let index = ProjectIndex::scan(&layout).await.unwrap();
+        let mut state = ProjectState::new(index, layout);
+
+        state.activate("Test Project").await.unwrap();
+
+        let now = make_datetime(2026, 2, 23, 14, 32);
+        let result = state.deactivate("   ", now).await;
+        assert!(result.is_err(), "whitespace-only log should be rejected");
     }
 }

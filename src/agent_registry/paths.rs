@@ -6,14 +6,14 @@
 use std::path::PathBuf;
 
 use crate::config::Config;
-use crate::error::ResiduumError;
+use crate::util::FatalError;
 
 /// Base directory for all named agents: `~/.residuum/agent_registry/`.
 ///
 /// # Errors
 ///
-/// Returns `ResiduumError::Config` if the home directory cannot be determined.
-pub fn registry_base_dir() -> Result<PathBuf, ResiduumError> {
+/// Returns `FatalError::Config` if the home directory cannot be determined.
+pub fn registry_base_dir() -> Result<PathBuf, FatalError> {
     Ok(Config::config_dir()?.join("agent_registry"))
 }
 
@@ -21,8 +21,8 @@ pub fn registry_base_dir() -> Result<PathBuf, ResiduumError> {
 ///
 /// # Errors
 ///
-/// Returns `ResiduumError::Config` if the home directory cannot be determined.
-pub fn agent_config_dir(name: &str) -> Result<PathBuf, ResiduumError> {
+/// Returns `FatalError::Config` if the home directory cannot be determined.
+pub fn agent_config_dir(name: &str) -> Result<PathBuf, FatalError> {
     Ok(registry_base_dir()?.join(name))
 }
 
@@ -33,8 +33,8 @@ pub fn agent_config_dir(name: &str) -> Result<PathBuf, ResiduumError> {
 ///
 /// # Errors
 ///
-/// Returns `ResiduumError::Config` if the home directory cannot be determined.
-pub fn resolve_config_dir(agent_name: Option<&str>) -> Result<PathBuf, ResiduumError> {
+/// Returns `FatalError::Config` if the home directory cannot be determined.
+pub fn resolve_config_dir(agent_name: Option<&str>) -> Result<PathBuf, FatalError> {
     match agent_name {
         None => Config::config_dir(),
         Some(name) => agent_config_dir(name),
@@ -47,8 +47,8 @@ pub fn resolve_config_dir(agent_name: Option<&str>) -> Result<PathBuf, ResiduumE
 ///
 /// # Errors
 ///
-/// Returns `ResiduumError::Config` if the home directory cannot be determined.
-pub fn resolve_pid_path(agent_name: Option<&str>) -> Result<PathBuf, ResiduumError> {
+/// Returns `FatalError::Config` if the home directory cannot be determined.
+pub fn resolve_pid_path(agent_name: Option<&str>) -> Result<PathBuf, FatalError> {
     Ok(resolve_config_dir(agent_name)?.join("residuum.pid"))
 }
 
@@ -58,8 +58,8 @@ pub fn resolve_pid_path(agent_name: Option<&str>) -> Result<PathBuf, ResiduumErr
 ///
 /// # Errors
 ///
-/// Returns `ResiduumError::Config` if the home directory cannot be determined.
-pub fn resolve_log_dir(agent_name: Option<&str>) -> Result<PathBuf, ResiduumError> {
+/// Returns `FatalError::Config` if the home directory cannot be determined.
+pub fn resolve_log_dir(agent_name: Option<&str>) -> Result<PathBuf, FatalError> {
     Ok(resolve_config_dir(agent_name)?.join("logs"))
 }
 

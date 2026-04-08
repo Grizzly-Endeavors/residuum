@@ -14,8 +14,8 @@ use tracing::{debug, error, info, warn};
 use super::TunnelStatus;
 use super::forward_http;
 use super::forward_ws;
-use super::forward_ws::TunnelSink;
 use super::protocol::TunnelFrame;
+use super::{TunnelSink, send_frame};
 use crate::config::CloudConfig;
 
 /// Minimum backoff duration between reconnection attempts.
@@ -24,20 +24,12 @@ const MIN_BACKOFF: Duration = Duration::from_secs(1);
 /// Maximum backoff duration between reconnection attempts.
 const MAX_BACKOFF: Duration = Duration::from_secs(60);
 
-/// Default keepalive timeout — 3x the relay's default 30s keepalive interval.
-/// Used as a fallback when the server does not provide `keepalive_interval_secs`.
-const DEFAULT_KEEPALIVE_TIMEOUT: Duration = Duration::from_secs(90);
-
 /// Calculate the next backoff duration by doubling the current value, capped at
 /// [`MAX_BACKOFF`], with random jitter (0.5x–1.5x) to avoid thundering herd.
 #[must_use]
 fn next_backoff(current: Duration) -> Duration {
     let doubled = current.saturating_mul(2);
-    let base = if doubled > MAX_BACKOFF {
-        MAX_BACKOFF
-    } else {
-        doubled
-    };
+    let base = doubled.min(MAX_BACKOFF);
     let jitter = rand::thread_rng().gen_range(0.5_f64..1.5);
     base.mul_f64(jitter)
 }
@@ -52,21 +44,24 @@ fn next_backoff(current: Duration) -> Duration {
 ///
 /// This function runs until the shutdown signal is received. Transient
 /// connection errors are logged and retried automatically.
+#[tracing::instrument(skip_all, fields(relay_url = %cfg.relay_url))]
 pub(crate) async fn start_tunnel(
     cfg: CloudConfig,
     mut shutdown_rx: watch::Receiver<bool>,
     status_tx: Arc<watch::Sender<TunnelStatus>>,
 ) {
-    let client = reqwest::Client::builder()
+    let Ok(client) = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(25))
         .build()
-        .unwrap_or_else(|e| {
-            warn!(error = %e, "failed to build reqwest client with timeout, falling back to default");
-            reqwest::Client::default()
-        });
+    else {
+        error!("failed to build reqwest client");
+        return;
+    };
     let mut backoff = MIN_BACKOFF;
+    let mut attempt: u32 = 0;
 
     loop {
+        attempt += 1;
         // Check for shutdown before attempting connection.
         if *shutdown_rx.borrow() {
             info!("tunnel shutting down before reconnect");
@@ -74,8 +69,12 @@ pub(crate) async fn start_tunnel(
             return;
         }
 
-        status_tx.send(TunnelStatus::Connecting).ok();
-        info!(url = %cfg.relay_url, "connecting to relay at {}", cfg.relay_url);
+        status_tx
+            .send(TunnelStatus::Connecting)
+            .unwrap_or_else(|_| {
+                debug!("status receiver dropped");
+            });
+        debug!(url = %cfg.relay_url, "connecting to relay");
 
         let request = match build_ws_request(&cfg) {
             Ok(r) => r,
@@ -90,7 +89,7 @@ pub(crate) async fn start_tunnel(
         let (ws_stream, _response) = match tokio_tungstenite::connect_async(request).await {
             Ok(pair) => pair,
             Err(e) => {
-                warn!(error = %e, "failed to connect to relay, retrying in {:?}", backoff);
+                warn!(error = %e, backoff_ms = backoff.as_millis(), "failed to connect to relay, will retry");
                 tokio::time::sleep(backoff).await;
                 backoff = next_backoff(backoff);
                 continue;
@@ -104,43 +103,37 @@ pub(crate) async fn start_tunnel(
         // indefinitely if the relay accepts the WS but never sends Connected).
         let connected_result =
             tokio::time::timeout(Duration::from_secs(15), wait_for_connected(&mut read)).await;
-        let connected = match connected_result {
+        let (user_id, keepalive_interval_secs) = match connected_result {
             Err(_) => {
-                warn!("timed out waiting for Connected frame from relay");
+                warn!(url = %cfg.relay_url, "timed out waiting for Connected frame from relay");
                 tokio::time::sleep(backoff).await;
                 backoff = next_backoff(backoff);
                 continue;
             }
             Ok(None) => {
-                warn!("relay closed connection before sending Connected frame");
+                warn!(url = %cfg.relay_url, "relay closed connection before sending Connected frame");
                 tokio::time::sleep(backoff).await;
                 backoff = next_backoff(backoff);
                 continue;
             }
-            Ok(Some(frame)) => frame,
+            Ok(Some(pair)) => pair,
         };
 
-        let keepalive_timeout = if let TunnelFrame::Connected {
-            ref user_id,
+        status_tx
+            .send(TunnelStatus::Connected {
+                user_id: user_id.clone(),
+            })
+            .unwrap_or_else(|_| {
+                debug!("status receiver dropped");
+            });
+
+        let keepalive_timeout = Duration::from_secs(keepalive_interval_secs * 3);
+        info!(
+            user_id = %user_id,
             keepalive_interval_secs,
-        } = connected
-        {
-            status_tx
-                .send(TunnelStatus::Connected {
-                    user_id: user_id.clone(),
-                })
-                .ok();
-            let timeout = Duration::from_secs(keepalive_interval_secs * 3);
-            info!(
-                user_id = %user_id,
-                keepalive_interval_secs,
-                keepalive_timeout_secs = timeout.as_secs(),
-                "tunnel connected for user {user_id}, keepalive every {keepalive_interval_secs}s"
-            );
-            timeout
-        } else {
-            DEFAULT_KEEPALIVE_TIMEOUT
-        };
+            keepalive_timeout_secs = keepalive_timeout.as_secs(),
+            "tunnel connected"
+        );
 
         // Reset backoff on successful connection.
         backoff = MIN_BACKOFF;
@@ -158,8 +151,8 @@ pub(crate) async fn start_tunnel(
 
         match action {
             LoopExit::Shutdown => return,
-            LoopExit::Reconnect(reason) => {
-                warn!(reason = %reason, "disconnected from relay, reconnecting");
+            LoopExit::Reconnect(reason, open_ws_channels) => {
+                warn!(reason = %reason, attempt, open_ws_channels, "disconnected from relay, reconnecting");
             }
         }
     }
@@ -169,8 +162,8 @@ pub(crate) async fn start_tunnel(
 enum LoopExit {
     /// Graceful shutdown was requested.
     Shutdown,
-    /// Connection was lost; includes the reason string for logging.
-    Reconnect(String),
+    /// Connection was lost; includes the reason string and open channel count.
+    Reconnect(String, usize),
 }
 
 /// Process tunnel frames until disconnection or shutdown.
@@ -218,14 +211,18 @@ where
                 }
             }
             Some((channel_id, sender)) = ws_open_rx.recv() => {
-                local_ws_channels.insert(channel_id, sender);
+                local_ws_channels.insert(channel_id.clone(), sender);
+                debug!(channel_id, total = local_ws_channels.len(), "registered local WS channel");
             }
             _ = shutdown_rx.changed() => {
                 if *shutdown_rx.borrow() {
                     info!("tunnel shutting down");
                     status_tx.send(TunnelStatus::Disconnected).ok();
-                    if let Err(e) = send_close(write).await {
-                        warn!(error = %e, "failed to send WebSocket close frame during shutdown");
+                    {
+                        let mut guard = write.lock().await;
+                        if let Err(e) = guard.send(Message::Close(None)).await {
+                            warn!(error = %e, "failed to send WebSocket close frame during shutdown");
+                        }
                     }
                     local_ws_channels.clear();
                     return LoopExit::Shutdown;
@@ -237,8 +234,8 @@ where
         }
     };
 
-    local_ws_channels.clear();
-    LoopExit::Reconnect(disconnect_reason)
+    let open_ws_channels = local_ws_channels.len();
+    LoopExit::Reconnect(disconnect_reason, open_ws_channels)
 }
 
 /// Build the HTTP request used to initiate the WebSocket connection with auth.
@@ -250,29 +247,26 @@ fn build_ws_request(cfg: &CloudConfig) -> Result<ws_http::Request<()>, ws_http::
         .and_then(|s| s.split('/').next())
         .unwrap_or("localhost");
 
-    ws_http::Request::builder()
-        .uri(&cfg.relay_url)
-        .header("Host", host)
-        .header("Authorization", format!("Bearer {}", cfg.token))
-        .header("Connection", "Upgrade")
-        .header("Upgrade", "websocket")
-        .header("Sec-WebSocket-Version", "13")
-        .header(
-            "Sec-WebSocket-Key",
-            tokio_tungstenite::tungstenite::handshake::client::generate_key(),
-        )
-        .body(())
+    let mut request = super::build_ws_upgrade_request(&cfg.relay_url, host)?;
+    request.headers_mut().insert(
+        ws_http::header::AUTHORIZATION,
+        ws_http::HeaderValue::from_str(&format!("Bearer {}", cfg.token))?,
+    );
+    Ok(request)
 }
 
 /// Wait for the initial `Connected` frame from the relay.
-async fn wait_for_connected<S>(read: &mut S) -> Option<TunnelFrame>
+async fn wait_for_connected<S>(read: &mut S) -> Option<(String, u64)>
 where
     S: StreamExt<Item = Result<Message, tokio_tungstenite::tungstenite::Error>> + Unpin,
 {
     while let Some(msg) = read.next().await {
         match msg {
             Ok(Message::Text(text)) => match serde_json::from_str::<TunnelFrame>(&text) {
-                Ok(frame @ TunnelFrame::Connected { .. }) => return Some(frame),
+                Ok(TunnelFrame::Connected {
+                    user_id,
+                    keepalive_interval_secs,
+                }) => return Some((user_id, keepalive_interval_secs)),
                 Ok(other) => {
                     debug!(?other, "ignoring non-Connected frame during handshake");
                 }
@@ -390,27 +384,8 @@ async fn handle_frame(
     }
 }
 
-/// Serialize and send a `TunnelFrame` over the WebSocket.
-async fn send_frame(
-    write: &Arc<Mutex<TunnelSink>>,
-    frame: &TunnelFrame,
-) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let json = serde_json::to_string(frame)?;
-    let mut guard = write.lock().await;
-    guard.send(Message::Text(json.into())).await?;
-    Ok(())
-}
-
-/// Send a WebSocket close frame.
-async fn send_close(
-    write: &Arc<Mutex<TunnelSink>>,
-) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let mut guard = write.lock().await;
-    guard.send(Message::Close(None)).await?;
-    Ok(())
-}
-
 #[cfg(test)]
+#[expect(clippy::unwrap_used, reason = "test code uses unwrap for clarity")]
 mod tests {
     use super::*;
 
@@ -430,7 +405,12 @@ mod tests {
         let current = Duration::from_secs(45);
         let next = next_backoff(current);
         // Base is capped at MAX_BACKOFF (60s), jitter range → 30s..90s
+        let min_with_jitter = MAX_BACKOFF.mul_f64(0.5);
         let max_with_jitter = MAX_BACKOFF.mul_f64(1.5);
+        assert!(
+            next >= min_with_jitter,
+            "backoff should be at least {min_with_jitter:?}, got {next:?}"
+        );
         assert!(
             next <= max_with_jitter,
             "backoff should not exceed {max_with_jitter:?}, got {next:?}"
@@ -440,7 +420,12 @@ mod tests {
     #[test]
     fn backoff_at_max_stays_bounded() {
         let next = next_backoff(MAX_BACKOFF);
+        let min_with_jitter = MAX_BACKOFF.mul_f64(0.5);
         let max_with_jitter = MAX_BACKOFF.mul_f64(1.5);
+        assert!(
+            next >= min_with_jitter,
+            "backoff at max should be at least {min_with_jitter:?}, got {next:?}"
+        );
         assert!(
             next <= max_with_jitter,
             "backoff at max should stay bounded by {max_with_jitter:?}, got {next:?}"
@@ -448,16 +433,7 @@ mod tests {
     }
 
     #[test]
-    fn default_keepalive_timeout_is_3x_relay_interval() {
-        // Relay sends keepalive pings every 30s; default timeout must be 3x that.
-        assert!(
-            DEFAULT_KEEPALIVE_TIMEOUT == Duration::from_secs(90),
-            "default keepalive timeout should be 90s (3 × 30s relay interval), got {DEFAULT_KEEPALIVE_TIMEOUT:?}"
-        );
-    }
-
-    #[test]
-    fn backoff_increases_monotonically_on_average() {
+    fn backoff_floor_is_never_below_half_current() {
         // With jitter, individual values may vary, but the base should increase.
         // Run multiple samples to verify the trend.
         let mut current = MIN_BACKOFF;
@@ -472,5 +448,117 @@ mod tests {
             );
             current = next;
         }
+    }
+
+    #[test]
+    fn backoff_zero_input_returns_zero() {
+        let next = next_backoff(Duration::ZERO);
+        assert_eq!(next, Duration::ZERO, "zero input produces zero output");
+    }
+
+    #[test]
+    fn build_ws_request_wss_url() {
+        let cfg = crate::config::CloudConfig {
+            relay_url: "wss://relay.example.com/ws".to_string(),
+            token: "tok".to_string(),
+            local_port: 8080,
+        };
+        let req = build_ws_request(&cfg).unwrap();
+        assert_eq!(req.headers()["host"], "relay.example.com");
+    }
+
+    #[test]
+    fn build_ws_request_ws_url() {
+        let cfg = crate::config::CloudConfig {
+            relay_url: "ws://relay.example.com".to_string(),
+            token: "tok".to_string(),
+            local_port: 8080,
+        };
+        let req = build_ws_request(&cfg).unwrap();
+        assert_eq!(req.headers()["host"], "relay.example.com");
+    }
+
+    #[test]
+    fn build_ws_request_url_with_path() {
+        let cfg = crate::config::CloudConfig {
+            relay_url: "ws://relay.example.com/some/path".to_string(),
+            token: "tok".to_string(),
+            local_port: 8080,
+        };
+        let req = build_ws_request(&cfg).unwrap();
+        assert_eq!(req.headers()["host"], "relay.example.com");
+    }
+
+    #[test]
+    fn build_ws_request_malformed_url_falls_back_to_localhost() {
+        let cfg = crate::config::CloudConfig {
+            relay_url: "not-a-url".to_string(),
+            token: "tok".to_string(),
+            local_port: 8080,
+        };
+        let req = build_ws_request(&cfg).unwrap();
+        assert_eq!(req.headers()["host"], "localhost");
+    }
+
+    #[tokio::test]
+    async fn wait_for_connected_returns_some_on_connected_frame() {
+        use futures_util::stream;
+        let frame = TunnelFrame::Connected {
+            user_id: "user-1".to_string(),
+            keepalive_interval_secs: 30,
+        };
+        let json = serde_json::to_string(&frame).unwrap();
+        let messages: Vec<Result<Message, tokio_tungstenite::tungstenite::Error>> =
+            vec![Ok(Message::Text(json.into()))];
+        let mut stream = stream::iter(messages);
+        let result = wait_for_connected(&mut stream).await;
+        assert_eq!(result, Some(("user-1".to_string(), 30)));
+    }
+
+    #[tokio::test]
+    async fn wait_for_connected_returns_none_on_close_frame() {
+        use futures_util::stream;
+        let messages: Vec<Result<Message, tokio_tungstenite::tungstenite::Error>> =
+            vec![Ok(Message::Close(None))];
+        let mut stream = stream::iter(messages);
+        let result = wait_for_connected(&mut stream).await;
+        assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn wait_for_connected_skips_non_connected_frames() {
+        use futures_util::stream;
+        let ping_json = serde_json::to_string(&TunnelFrame::Ping).unwrap();
+        let connected_json = serde_json::to_string(&TunnelFrame::Connected {
+            user_id: "user-2".to_string(),
+            keepalive_interval_secs: 15,
+        })
+        .unwrap();
+        let messages: Vec<Result<Message, tokio_tungstenite::tungstenite::Error>> = vec![
+            Ok(Message::Text(ping_json.into())),
+            Ok(Message::Text(connected_json.into())),
+        ];
+        let mut stream = stream::iter(messages);
+        let result = wait_for_connected(&mut stream).await;
+        assert_eq!(result, Some(("user-2".to_string(), 15)));
+    }
+
+    #[tokio::test]
+    async fn wait_for_connected_returns_none_on_ws_error() {
+        use futures_util::stream;
+        let messages: Vec<Result<Message, tokio_tungstenite::tungstenite::Error>> =
+            vec![Err(tokio_tungstenite::tungstenite::Error::ConnectionClosed)];
+        let mut stream = stream::iter(messages);
+        let result = wait_for_connected(&mut stream).await;
+        assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn wait_for_connected_returns_none_when_stream_ends() {
+        use futures_util::stream;
+        let messages: Vec<Result<Message, tokio_tungstenite::tungstenite::Error>> = vec![];
+        let mut stream = stream::iter(messages);
+        let result = wait_for_connected(&mut stream).await;
+        assert!(result.is_none());
     }
 }

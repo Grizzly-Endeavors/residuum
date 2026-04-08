@@ -112,7 +112,7 @@ src/migrate/
 ### Phase 1: Scaffolding
 
 1. Add dependencies to `Cargo.toml`: `json5`, `tar`, `flate2`, `zip` (for `.skill` archives)
-2. Add `Migration(String)` variant to `ResiduumError` in `src/error.rs`
+2. Add `Migration(String)` variant to `FatalError` in `src/error.rs`
 3. Create `src/migrate/mod.rs` with module declarations
 4. Add `pub mod migrate;` to `src/lib.rs`
 5. Add `Some("migrate")` match arm to `src/main.rs` (following `run_setup_command` pattern)

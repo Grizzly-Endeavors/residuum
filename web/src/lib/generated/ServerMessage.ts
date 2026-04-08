@@ -4,94 +4,60 @@ import type { JsonValue } from "./serde_json/JsonValue";
 /**
  * Messages sent from the server to WebSocket clients.
  */
-export type ServerMessage =
-  | {
-      type: "turn_started";
-      /**
-       * Correlation ID of the message being processed.
-       */
-      reply_to: string;
-    }
-  | {
-      type: "tool_call";
-      /**
-       * Unique tool call ID for correlating with results.
-       */
-      id: string;
-      /**
-       * Name of the tool.
-       */
-      name: string;
-      /**
-       * Tool arguments as JSON.
-       */
-      arguments: JsonValue;
-    }
-  | {
-      type: "tool_result";
-      /**
-       * Correlation ID matching the original tool call.
-       */
-      tool_call_id: string;
-      /**
-       * Name of the tool.
-       */
-      name: string;
-      /**
-       * Tool output text.
-       */
-      output: string;
-      /**
-       * Whether the tool returned an error.
-       */
-      is_error: boolean;
-    }
-  | {
-      type: "response";
-      /**
-       * Correlation ID of the original message.
-       */
-      reply_to: string;
-      /**
-       * The response content.
-       */
-      content: string;
-    }
-  | {
-      type: "system_event";
-      /**
-       * Source of the event (e.g. `"action: my_task"` or `"pulse: my_check"`).
-       */
-      source: string;
-      /**
-       * The event content.
-       */
-      content: string;
-    }
-  | {
-      type: "broadcast_response";
-      /**
-       * The intermediate content.
-       */
-      content: string;
-    }
-  | {
-      type: "error";
-      /**
-       * Correlation ID of the original message, if applicable.
-       */
-      reply_to: string | null;
-      /**
-       * Error description.
-       */
-      message: string;
-    }
-  | { type: "pong" }
-  | { type: "reloading" }
-  | {
-      type: "notice";
-      /**
-       * Human-readable result message.
-       */
-      message: string;
-    };
+export type ServerMessage = { "type": "turn_started", 
+/**
+ * Correlation ID of the message being processed.
+ */
+reply_to: string, } | { "type": "tool_call", 
+/**
+ * Unique tool call ID for correlating with results.
+ */
+id: string, 
+/**
+ * Name of the tool.
+ */
+name: string, 
+/**
+ * Tool arguments as JSON.
+ */
+arguments: JsonValue, } | { "type": "tool_result", 
+/**
+ * Correlation ID matching the original tool call.
+ */
+tool_call_id: string, 
+/**
+ * Name of the tool.
+ */
+name: string, 
+/**
+ * Tool output text.
+ */
+output: string, 
+/**
+ * Whether the tool returned an error.
+ */
+is_error: boolean, } | { "type": "response", 
+/**
+ * Correlation ID of the original message.
+ */
+reply_to: string, 
+/**
+ * The response content.
+ */
+content: string, } | { "type": "broadcast_response", 
+/**
+ * The intermediate content.
+ */
+content: string, } | { "type": "error", 
+/**
+ * Correlation ID of the original message, if applicable.
+ */
+reply_to: string | null, 
+/**
+ * Error description.
+ */
+message: string, } | { "type": "pong" } | { "type": "reloading" } | { "type": "notice", 
+/**
+ * Human-readable result message.
+ */
+message: string, };

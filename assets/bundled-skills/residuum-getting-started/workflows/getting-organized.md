@@ -37,11 +37,7 @@ Explain the project structure to the user in terms of what you do with each part
 
 Explain: "The inbox is a place to capture things quickly without losing them. You can tell me to add something to the inbox, and I will save it. You can also review and archive items later."
 
-Demonstrate by adding an inbox item with `inbox_add`:
-- Use a title relevant to their project (e.g., "Look into X for the homelab project")
-- Include a body with more detail
-
-Then show them the inbox with `inbox_list`. Explain that items show as `[unread]` until they are reviewed, and can be archived with `inbox_archive` when done.
+Show them the inbox with `inbox_list`. Explain that items show as `[unread]` until they are reviewed, and can be archived with `inbox_archive` when done. Items arrive from background tasks and heartbeats via the notification router — the agent doesn't add items directly.
 
 Mention that background tasks and heartbeats can also deliver results to the inbox, so it becomes a central place for things that need attention.
 

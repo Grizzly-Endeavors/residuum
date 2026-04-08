@@ -1,8 +1,8 @@
 //! WebSocket bus subscriber — translates typed bus events to `ServerMessage` frames.
 
 use crate::bus::{
-    EndpointName, IntermediateEvent, ResponseEvent, Subscriber, SystemMessageEvent,
-    ToolActivityEvent, TurnLifecycleEvent, topics,
+    EndpointName, ErrorEvent, IntermediateEvent, NoticeEvent, NotifyName, ResponseEvent,
+    Subscriber, ToolActivityEvent, TurnLifecycleEvent, topics,
 };
 use crate::gateway::protocol::ServerMessage;
 
@@ -12,7 +12,8 @@ pub struct WsSubscribers {
     pub tool_activity: Subscriber<ToolActivityEvent>,
     pub turn_lifecycle: Subscriber<TurnLifecycleEvent>,
     pub intermediate: Subscriber<IntermediateEvent>,
-    pub system: Subscriber<SystemMessageEvent>,
+    pub notice: Subscriber<NoticeEvent>,
+    pub error: Subscriber<ErrorEvent>,
 }
 
 impl WsSubscribers {
@@ -25,16 +26,14 @@ impl WsSubscribers {
         bus_handle: &crate::bus::BusHandle,
         ep: EndpointName,
     ) -> Result<Self, crate::bus::BusError> {
+        let system_topic = || topics::Notification(NotifyName::from(crate::bus::SYSTEM_CHANNEL));
         Ok(Self {
-            response: bus_handle.subscribe(topics::Response(ep.clone())).await?,
-            tool_activity: bus_handle
-                .subscribe(topics::ToolActivity(ep.clone()))
-                .await?,
-            turn_lifecycle: bus_handle
-                .subscribe(topics::TurnLifecycle(ep.clone()))
-                .await?,
-            intermediate: bus_handle.subscribe(topics::Intermediate(ep)).await?,
-            system: bus_handle.subscribe(topics::SystemMessage).await?,
+            response: bus_handle.subscribe(topics::Endpoint(ep.clone())).await?,
+            tool_activity: bus_handle.subscribe(topics::Endpoint(ep.clone())).await?,
+            turn_lifecycle: bus_handle.subscribe(topics::Endpoint(ep.clone())).await?,
+            intermediate: bus_handle.subscribe(topics::Endpoint(ep)).await?,
+            notice: bus_handle.subscribe(system_topic()).await?,
+            error: bus_handle.subscribe(system_topic()).await?,
         })
     }
 
@@ -89,21 +88,20 @@ impl WsSubscribers {
                         _ => return None,
                     }
                 }
-                event = self.system.recv() => {
+                event = self.notice.recv() => {
                     match event {
-                        Ok(Some(SystemMessageEvent::Notice { message })) => {
+                        Ok(Some(NoticeEvent { message })) => {
                             Some(ServerMessage::Notice { message })
                         }
-                        Ok(Some(SystemMessageEvent::Error { correlation_id, message })) => {
+                        _ => return None,
+                    }
+                }
+                event = self.error.recv() => {
+                    match event {
+                        Ok(Some(ErrorEvent { correlation_id, message })) => {
                             Some(ServerMessage::Error {
                                 reply_to: Some(correlation_id),
                                 message,
-                            })
-                        }
-                        Ok(Some(SystemMessageEvent::Event(se))) => {
-                            Some(ServerMessage::SystemEvent {
-                                source: se.source,
-                                content: se.content,
                             })
                         }
                         _ => return None,
@@ -125,7 +123,7 @@ mod tests {
 
     use super::*;
     use crate::bus::{
-        IntermediateEvent, ResponseEvent, SystemEventData, ToolCallEvent, ToolResultEvent,
+        IntermediateEvent, NotifyName, ResponseEvent, ToolCallEvent, ToolResultEvent,
     };
 
     fn ts() -> chrono::NaiveDateTime {
@@ -143,7 +141,7 @@ mod tests {
         let mut subs = WsSubscribers::new(&handle, ep.clone()).await.unwrap();
 
         pub_.publish(
-            topics::Response(ep),
+            topics::Endpoint(ep),
             ResponseEvent {
                 correlation_id: "c1".into(),
                 content: "hello".into(),
@@ -169,7 +167,7 @@ mod tests {
         let mut subs = WsSubscribers::new(&handle, ep.clone()).await.unwrap();
 
         pub_.publish(
-            topics::ToolActivity(ep),
+            topics::Endpoint(ep),
             ToolActivityEvent::Call(ToolCallEvent {
                 correlation_id: "c1".into(),
                 tool_call_id: "tc1".into(),
@@ -196,7 +194,7 @@ mod tests {
         let mut subs = WsSubscribers::new(&handle, ep.clone()).await.unwrap();
 
         pub_.publish(
-            topics::ToolActivity(ep),
+            topics::Endpoint(ep),
             ToolActivityEvent::Result(ToolResultEvent {
                 correlation_id: "c1".into(),
                 tool_call_id: "tc1".into(),
@@ -224,7 +222,7 @@ mod tests {
         let mut subs = WsSubscribers::new(&handle, ep.clone()).await.unwrap();
 
         pub_.publish(
-            topics::Intermediate(ep),
+            topics::Endpoint(ep),
             IntermediateEvent {
                 correlation_id: "c1".into(),
                 content: "thinking...".into(),
@@ -242,33 +240,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn system_event_maps_to_server_message() {
-        let handle = crate::bus::spawn_broker();
-        let pub_ = handle.publisher();
-        let ep = EndpointName::from("ws");
-        let mut subs = WsSubscribers::new(&handle, ep).await.unwrap();
-
-        pub_.publish(
-            topics::SystemMessage,
-            SystemMessageEvent::Event(SystemEventData {
-                correlation_id: "c1".into(),
-                source: "pulse".into(),
-                content: "check done".into(),
-                timestamp: ts(),
-            }),
-        )
-        .await
-        .unwrap();
-
-        let msg = subs.recv().await.unwrap();
-        assert!(matches!(
-            msg,
-            ServerMessage::SystemEvent { source, content }
-                if source == "pulse" && content == "check done"
-        ));
-    }
-
-    #[tokio::test]
     async fn notice_maps_to_server_message() {
         let handle = crate::bus::spawn_broker();
         let pub_ = handle.publisher();
@@ -276,8 +247,8 @@ mod tests {
         let mut subs = WsSubscribers::new(&handle, ep).await.unwrap();
 
         pub_.publish(
-            topics::SystemMessage,
-            SystemMessageEvent::Notice {
+            topics::Notification(NotifyName::from(crate::bus::SYSTEM_CHANNEL)),
+            NoticeEvent {
                 message: "reloading".into(),
             },
         )
@@ -289,6 +260,87 @@ mod tests {
             msg,
             ServerMessage::Notice { message }
                 if message == "reloading"
+        ));
+    }
+
+    #[tokio::test]
+    async fn turn_started_maps_to_server_message() {
+        let handle = crate::bus::spawn_broker();
+        let pub_ = handle.publisher();
+        let ep = EndpointName::from("ws");
+        let mut subs = WsSubscribers::new(&handle, ep.clone()).await.unwrap();
+
+        pub_.publish(
+            topics::Endpoint(ep),
+            TurnLifecycleEvent::Started {
+                correlation_id: "c1".into(),
+            },
+        )
+        .await
+        .unwrap();
+
+        let msg = subs.recv().await.unwrap();
+        assert!(matches!(
+            msg,
+            ServerMessage::TurnStarted { reply_to }
+                if reply_to == "c1"
+        ));
+    }
+
+    #[tokio::test]
+    async fn turn_ended_is_skipped() {
+        let handle = crate::bus::spawn_broker();
+        let pub_ = handle.publisher();
+        let ep = EndpointName::from("ws");
+        let mut subs = WsSubscribers::new(&handle, ep.clone()).await.unwrap();
+
+        pub_.publish(
+            topics::Endpoint(ep.clone()),
+            TurnLifecycleEvent::Ended {
+                correlation_id: "c1".into(),
+            },
+        )
+        .await
+        .unwrap();
+
+        pub_.publish(
+            topics::Endpoint(ep),
+            TurnLifecycleEvent::Started {
+                correlation_id: "c2".into(),
+            },
+        )
+        .await
+        .unwrap();
+
+        let msg = subs.recv().await.unwrap();
+        assert!(
+            matches!(msg, ServerMessage::TurnStarted { reply_to } if reply_to == "c2"),
+            "TurnEnded should be skipped; next message should be TurnStarted"
+        );
+    }
+
+    #[tokio::test]
+    async fn error_event_maps_to_server_message() {
+        let handle = crate::bus::spawn_broker();
+        let pub_ = handle.publisher();
+        let ep = EndpointName::from("ws");
+        let mut subs = WsSubscribers::new(&handle, ep).await.unwrap();
+
+        pub_.publish(
+            topics::Notification(NotifyName::from(crate::bus::SYSTEM_CHANNEL)),
+            ErrorEvent {
+                correlation_id: "c1".into(),
+                message: "something went wrong".into(),
+            },
+        )
+        .await
+        .unwrap();
+
+        let msg = subs.recv().await.unwrap();
+        assert!(matches!(
+            msg,
+            ServerMessage::Error { reply_to: Some(id), message }
+                if id == "c1" && message == "something went wrong"
         ));
     }
 }

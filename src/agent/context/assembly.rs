@@ -30,14 +30,14 @@ pub(in crate::agent) fn compute_context_breakdown(
     .map(estimate_tokens)
     .sum();
 
-    let observation_log_tokens = memory_ctx.observations.map_or(0, estimate_tokens)
+    let memory_pipeline_tokens = memory_ctx.observations.map_or(0, estimate_tokens)
         + memory_ctx.recent_context.map_or(0, estimate_tokens);
 
     let msgs = recent_messages.messages();
 
     ContextBreakdown {
         identity_tokens,
-        observation_log_tokens,
+        memory_pipeline_tokens,
         subagents_index_tokens: prompt_ctx.subagents.index.map_or(0, estimate_tokens),
         projects_index_tokens: prompt_ctx.projects.index.map_or(0, estimate_tokens),
         active_project_tokens: prompt_ctx
@@ -134,7 +134,7 @@ mod tests {
             &identity,
             &recent,
             &no_memory(),
-            &PromptContext::none(),
+            &PromptContext::default(),
             None,
         );
         assert_eq!(messages.len(), 1, "should have system message only");
@@ -159,7 +159,7 @@ mod tests {
             &identity,
             &recent,
             &no_memory(),
-            &PromptContext::none(),
+            &PromptContext::default(),
             None,
         );
         assert_eq!(messages.len(), 2, "should have system + user message");
@@ -198,7 +198,7 @@ mod tests {
             &identity,
             &recent,
             &no_memory(),
-            &PromptContext::none(),
+            &PromptContext::default(),
             Some(&ctx),
         );
 
@@ -232,7 +232,7 @@ mod tests {
             &identity,
             &recent,
             &no_memory(),
-            &PromptContext::none(),
+            &PromptContext::default(),
             None,
         );
         assert_eq!(messages.len(), 2, "should have system + user, no time tag");
@@ -255,7 +255,7 @@ mod tests {
             &identity,
             &recent,
             &no_memory(),
-            &PromptContext::none(),
+            &PromptContext::default(),
             Some(&ctx),
         );
 
@@ -288,7 +288,7 @@ mod tests {
             &identity,
             &recent,
             &no_memory(),
-            &PromptContext::none(),
+            &PromptContext::default(),
             Some(&ctx),
         );
 
@@ -297,7 +297,7 @@ mod tests {
             .find(|m| m.content.contains("[Current Time:"));
         assert!(time_msg.is_some(), "should have time context message");
 
-        let tag = &time_msg.as_ref().map(|m| m.content.as_str());
+        let tag = time_msg.map(|m| m.content.as_str());
         assert!(
             tag.is_some_and(|t| t.contains("[Message Source: discord]")),
             "should contain message source tag, got: {tag:?}"
@@ -325,7 +325,7 @@ mod tests {
             &identity,
             &recent,
             &no_memory(),
-            &PromptContext::none(),
+            &PromptContext::default(),
             Some(&ctx),
         );
 
@@ -368,7 +368,7 @@ mod tests {
             &identity,
             &recent,
             &no_memory(),
-            &PromptContext::none(),
+            &PromptContext::default(),
             Some(&ctx),
         );
 
@@ -399,7 +399,7 @@ mod tests {
             &identity,
             &recent,
             &no_memory(),
-            &PromptContext::none(),
+            &PromptContext::default(),
             Some(&ctx),
         );
 
@@ -422,12 +422,12 @@ mod tests {
         let recent = RecentMessages::new();
 
         let bd =
-            compute_context_breakdown(&identity, &memory, &PromptContext::none(), &recent, 0, 0);
+            compute_context_breakdown(&identity, &memory, &PromptContext::default(), &recent, 0, 0);
         assert_eq!(bd.history_count, 0, "no messages should give count 0");
         assert_eq!(bd.history_tokens, 0, "no messages should give 0 tokens");
         assert_eq!(bd.identity_tokens, 0, "empty identity should give 0 tokens");
         assert_eq!(
-            bd.observation_log_tokens, 0,
+            bd.memory_pipeline_tokens, 0,
             "no memory should give 0 tokens"
         );
     }
@@ -442,7 +442,7 @@ mod tests {
         let recent = RecentMessages::new();
 
         let bd =
-            compute_context_breakdown(&identity, &memory, &PromptContext::none(), &recent, 0, 0);
+            compute_context_breakdown(&identity, &memory, &PromptContext::default(), &recent, 0, 0);
         assert!(
             bd.identity_tokens > 0,
             "non-empty identity should give positive identity token count"
@@ -458,7 +458,7 @@ mod tests {
         recent.push(Message::assistant("hi there", None));
 
         let bd =
-            compute_context_breakdown(&identity, &memory, &PromptContext::none(), &recent, 0, 0);
+            compute_context_breakdown(&identity, &memory, &PromptContext::default(), &recent, 0, 0);
         assert_eq!(
             bd.history_count, 2,
             "history count should match message count"
@@ -480,10 +480,10 @@ mod tests {
         let recent = RecentMessages::new();
 
         let bd =
-            compute_context_breakdown(&identity, &memory, &PromptContext::none(), &recent, 0, 0);
+            compute_context_breakdown(&identity, &memory, &PromptContext::default(), &recent, 0, 0);
         assert!(
-            bd.observation_log_tokens > 0,
-            "observation content should produce nonzero observation_log_tokens"
+            bd.memory_pipeline_tokens > 0,
+            "observation content should produce nonzero memory_pipeline_tokens"
         );
     }
 
@@ -493,8 +493,14 @@ mod tests {
         let memory = no_memory();
         let recent = RecentMessages::new();
 
-        let bd =
-            compute_context_breakdown(&identity, &memory, &PromptContext::none(), &recent, 42, 7);
+        let bd = compute_context_breakdown(
+            &identity,
+            &memory,
+            &PromptContext::default(),
+            &recent,
+            42,
+            7,
+        );
         assert_eq!(
             bd.system_tool_tokens, 42,
             "system_tool_tokens should pass through unchanged"
@@ -565,7 +571,7 @@ mod tests {
             &identity,
             &recent,
             &no_memory(),
-            &PromptContext::none(),
+            &PromptContext::default(),
             Some(&ctx),
         );
 

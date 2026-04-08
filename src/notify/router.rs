@@ -18,6 +18,8 @@ use crate::config::BackgroundModelTier;
 use crate::models::factory::build_provider_chain;
 use crate::models::{CompletionOptions, Message, ModelProvider, ResponseFormat};
 
+const INBOX_TARGET: &str = "inbox";
+
 /// Spawn the LLM notification router as a bus subscriber.
 ///
 /// Subscribes to `TopicId::BackgroundResult` and routes each `AgentResultEvent`
@@ -32,7 +34,7 @@ pub(crate) async fn spawn_notification_router(
     publisher: Publisher,
     alerts_path: PathBuf,
 ) -> Option<JoinHandle<()>> {
-    let subscriber = match bus_handle.subscribe(topics::BackgroundResult).await {
+    let subscriber = match bus_handle.subscribe(topics::Background).await {
         Ok(s) => s,
         Err(e) => {
             tracing::warn!(error = %e, "failed to subscribe to background:result topic");
@@ -80,50 +82,65 @@ struct NotificationRouter {
 
 /// Main loop: receive agent results and route them.
 async fn router_loop(mut subscriber: Subscriber<AgentResultEvent>, router: NotificationRouter) {
-    while let Ok(Some(agent_result)) = subscriber.recv().await {
-        route_agent_result(&agent_result, &router).await;
+    loop {
+        match subscriber.recv().await {
+            Ok(Some(agent_result)) => route_agent_result(&agent_result, &router).await,
+            Ok(None) => break,
+            Err(e) => {
+                tracing::error!(error = %e, "notification router subscriber error, shutting down");
+                break;
+            }
+        }
     }
     tracing::info!("notification router shutting down");
 }
 
 /// Fallback loop when LLM provider is unavailable: routes everything to inbox.
 async fn fallback_router_loop(mut subscriber: Subscriber<AgentResultEvent>, publisher: Publisher) {
-    while let Ok(Some(agent_result)) = subscriber.recv().await {
-        if agent_result.heartbeat_status == HeartbeatStatus::Ok {
-            tracing::info!(source_label = %agent_result.source_label, "pulse check: HEARTBEAT_OK");
-            continue;
-        }
+    loop {
+        match subscriber.recv().await {
+            Ok(Some(agent_result)) => {
+                if agent_result.heartbeat_status == HeartbeatStatus::Ok {
+                    tracing::trace!(source_label = %agent_result.source_label, "pulse check: HEARTBEAT_OK");
+                    continue;
+                }
 
-        if matches!(agent_result.source, EventTrigger::Agent) {
-            tracing::info!(source_label = %agent_result.source_label, "fallback router: routing agent-spawned result to main agent");
-            publish_to_agent_main(&agent_result, &publisher).await;
-            continue;
-        }
+                if matches!(agent_result.source, EventTrigger::Agent) {
+                    tracing::debug!(source_label = %agent_result.source_label, "fallback router: routing agent-spawned result to main agent");
+                    publish_to_agent_main(&agent_result, &publisher).await;
+                    continue;
+                }
 
-        tracing::info!(source_label = %agent_result.source_label, "fallback router: routing to inbox");
-        publish_to_inbox(&agent_result, &publisher).await;
+                tracing::debug!(source_label = %agent_result.source_label, "fallback router: routing to inbox");
+                publish_to_targets(&agent_result, &[INBOX_TARGET.to_string()], &publisher).await;
+            }
+            Ok(None) => break,
+            Err(e) => {
+                tracing::error!(error = %e, "fallback router subscriber error, shutting down");
+                break;
+            }
+        }
     }
     tracing::info!("fallback notification router shutting down");
 }
 
 /// Route a single `AgentResultEvent` through the two-layer system.
+#[tracing::instrument(skip_all, fields(source_label = %event.source_label, task_id = %event.task_id))]
 async fn route_agent_result(event: &AgentResultEvent, router: &NotificationRouter) {
     tracing::info!(
-        source_label = %event.source_label,
-        task_id = %event.task_id,
-        source = %event.source.display_label(),
+        source = %event.source,
         "notification router received result"
     );
 
     // Layer 1: Heartbeat-ok → silent discard
     if event.heartbeat_status == HeartbeatStatus::Ok {
-        tracing::info!(source_label = %event.source_label, "pulse check: HEARTBEAT_OK");
+        tracing::trace!("pulse check: HEARTBEAT_OK");
         return;
     }
 
     // Layer 1: Agent-spawned results → relay to main agent
     if matches!(event.source, EventTrigger::Agent) {
-        tracing::info!(source_label = %event.source_label, "routing agent-spawned result to main agent");
+        tracing::info!("routing agent-spawned result to main agent");
         publish_to_agent_main(event, &router.publisher).await;
         return;
     }
@@ -131,7 +148,6 @@ async fn route_agent_result(event: &AgentResultEvent, router: &NotificationRoute
     // Layer 2: LLM-based routing
     let targets = llm_route(event, router).await;
     tracing::info!(
-        source_label = %event.source_label,
         targets = ?targets,
         "LLM routing decision"
     );
@@ -144,16 +160,15 @@ async fn llm_route(event: &AgentResultEvent, router: &NotificationRouter) -> Vec
     let alerts_content = match tokio::fs::read_to_string(&router.alerts_path).await {
         Ok(content) => content,
         Err(e) => {
-            tracing::debug!(error = %e, "failed to read ALERTS.md, using empty policy");
+            tracing::warn!(error = %e, path = %router.alerts_path.display(), "failed to read ALERTS.md, using empty policy");
             String::new()
         }
     };
 
     // Enumerate available notification endpoints
     let notify_endpoints = router.endpoint_registry.notify();
-    let endpoint_names: Vec<&str> = notify_endpoints.iter().map(|e| e.id.as_ref()).collect();
-    let mut available_targets: Vec<&str> = vec!["inbox"];
-    available_targets.extend(endpoint_names.iter());
+    let mut available_targets: Vec<&str> = vec![INBOX_TARGET];
+    available_targets.extend(notify_endpoints.iter().map(|e| e.id.as_ref()));
 
     tracing::debug!(
         source_label = %event.source_label,
@@ -191,7 +206,7 @@ async fn llm_route(event: &AgentResultEvent, router: &NotificationRouter) -> Vec
 
     match router.provider.complete(&messages, &[], &options).await {
         Ok(response) => {
-            tracing::debug!(
+            tracing::trace!(
                 source_label = %event.source_label,
                 raw_response = %response.content,
                 "LLM routing response"
@@ -204,7 +219,7 @@ async fn llm_route(event: &AgentResultEvent, router: &NotificationRouter) -> Vec
                 source_label = %event.source_label,
                 "LLM routing failed, falling back to inbox"
             );
-            vec!["inbox".to_string()]
+            vec![INBOX_TARGET.to_string()]
         }
     }
 }
@@ -215,7 +230,7 @@ fn build_routing_prompt(
     available_targets: &[&str],
     alerts_content: &str,
 ) -> String {
-    let source_display = event.source.display_label();
+    let source_display = event.source.to_string();
     let status = match &event.status {
         crate::bus::AgentResultStatus::Completed => "completed",
         crate::bus::AgentResultStatus::Cancelled => "cancelled",
@@ -265,8 +280,8 @@ fn parse_routing_response(response: &str, valid_targets: &[&str]) -> Vec<String>
             })
             .unwrap_or_default(),
         Err(e) => {
-            tracing::warn!(error = %e, "failed to parse LLM routing response, falling back to inbox");
-            return vec!["inbox".to_string()];
+            tracing::warn!(error = %e, raw_response = %response, "failed to parse LLM routing response, falling back to inbox");
+            return vec![INBOX_TARGET.to_string()];
         }
     };
 
@@ -277,7 +292,7 @@ fn parse_routing_response(response: &str, valid_targets: &[&str]) -> Vec<String>
         .collect();
 
     if validated.is_empty() {
-        vec!["inbox".to_string()]
+        vec![INBOX_TARGET.to_string()]
     } else {
         validated
     }
@@ -333,11 +348,6 @@ fn format_agent_result_message(event: &AgentResultEvent) -> String {
     parts.join("\n")
 }
 
-/// Publish a notification to the inbox.
-async fn publish_to_inbox(event: &AgentResultEvent, publisher: &Publisher) {
-    publish_to_targets(event, &["inbox".to_string()], publisher).await;
-}
-
 /// Publish notifications to the specified targets.
 async fn publish_to_targets(event: &AgentResultEvent, targets: &[String], publisher: &Publisher) {
     let notification = NotificationEvent {
@@ -348,7 +358,7 @@ async fn publish_to_targets(event: &AgentResultEvent, targets: &[String], publis
     };
 
     for target in targets {
-        if target == "inbox" {
+        if target == INBOX_TARGET {
             if let Err(e) = publisher.publish(topics::Inbox, notification.clone()).await {
                 tracing::warn!(
                     topic = "inbox",
@@ -486,5 +496,26 @@ mod tests {
             !msg.contains("Error: connection refused"),
             "error should not be duplicated in a separate Error: line"
         );
+    }
+
+    #[test]
+    fn format_agent_result_message_cancelled() {
+        let mut event = sample_event();
+        event.status = AgentResultStatus::Cancelled;
+        event.summary = String::new();
+
+        let msg = format_agent_result_message(&event);
+        assert!(msg.contains("[Background Task Result]"));
+        assert!(msg.contains("cancelled"));
+    }
+
+    #[test]
+    fn format_agent_result_message_with_transcript() {
+        let mut event = sample_event();
+        event.transcript_path = Some(std::path::PathBuf::from("/var/log/residuum/t1.transcript"));
+
+        let msg = format_agent_result_message(&event);
+        assert!(msg.contains("Transcript:"));
+        assert!(msg.contains("t1.transcript"));
     }
 }

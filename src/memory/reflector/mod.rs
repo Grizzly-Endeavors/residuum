@@ -6,10 +6,10 @@
 mod parse;
 mod prompt;
 
+use anyhow::Context;
 use chrono_tz::Tz;
 
 use crate::config::DEFAULT_REFLECTOR_THRESHOLD;
-use crate::error::ResiduumError;
 use crate::memory::log_store::{load_observation_log, save_observation_log};
 use crate::memory::tokens::estimate_tokens;
 use crate::memory::types::ObservationLog;
@@ -70,9 +70,11 @@ impl Reflector {
 
     /// Replace the reflector's configuration (e.g. after a config reload).
     pub fn update_config(&mut self, config: ReflectorConfig) {
-        tracing::info!(
+        tracing::debug!(
             old_threshold = self.config.threshold_tokens,
             new_threshold = config.threshold_tokens,
+            old_tz = %self.config.tz,
+            new_tz = %config.tz,
             "updating reflector config"
         );
         self.config = config;
@@ -80,17 +82,17 @@ impl Reflector {
 
     /// Replace the model provider (e.g. after a provider config change).
     pub fn swap_provider(&mut self, provider: Box<dyn ModelProvider>) {
-        tracing::info!("swapping reflector model provider");
+        tracing::debug!("swapping reflector model provider");
         self.provider = provider;
     }
 
     /// Check whether the observation log exceeds the reflection threshold.
     #[must_use]
     pub fn should_reflect(&self, log: &ObservationLog) -> bool {
-        let serialized = match serde_json::to_string(log) {
+        let serialized = match serde_json::to_string_pretty(&log.observations) {
             Ok(s) => s,
             Err(e) => {
-                tracing::warn!(error = %e, "failed to serialize observation log for threshold check");
+                tracing::warn!(error = %e, "failed to serialize observations for threshold check");
                 return false;
             }
         };
@@ -104,7 +106,8 @@ impl Reflector {
     ///
     /// # Errors
     /// Returns an error if the LLM call fails or file persistence fails.
-    pub async fn reflect(&self, layout: &WorkspaceLayout) -> Result<ObservationLog, ResiduumError> {
+    #[tracing::instrument(skip_all, fields(operation = "reflect"))]
+    pub async fn reflect(&self, layout: &WorkspaceLayout) -> anyhow::Result<ObservationLog> {
         let log = load_observation_log(&layout.observations_json()).await?;
 
         if log.is_empty() {
@@ -127,7 +130,7 @@ impl Reflector {
         // Serialize the flat observations for the LLM prompt — keep full objects
         // so the model has project_context and timestamp info for intelligent merging.
         let serialized = serde_json::to_string_pretty(&log.observations)
-            .map_err(|e| ResiduumError::Memory(format!("failed to serialize observations: {e}")))?;
+            .context("failed to serialize observations")?;
 
         let messages = build_reflection_prompt(&serialized, &content_guidance);
 
@@ -146,15 +149,15 @@ impl Reflector {
             .provider
             .complete(&messages, &[], &options)
             .await
-            .map_err(ResiduumError::Model)?;
+            .context("reflector LLM call failed")?;
 
         // Parse the object-array response into a compressed log.
         let compressed = parse_reflection_response(&response.content, self.config.tz)?;
 
         if compressed.is_empty() {
-            return Err(ResiduumError::Memory(
-                "reflector returned empty observations, refusing to replace observation log".into(),
-            ));
+            anyhow::bail!(
+                "reflector returned empty observations, refusing to replace observation log"
+            );
         }
 
         // Backup observation log before replacement
@@ -162,6 +165,8 @@ impl Reflector {
         let backup_path = obs_path.with_extension("json.bak");
         if let Err(e) = tokio::fs::copy(&obs_path, &backup_path).await {
             tracing::warn!(error = %e, "failed to create observation log backup before reflection");
+        } else {
+            tracing::debug!(path = %backup_path.display(), "created observation log backup");
         }
 
         // Replace the observation log
@@ -538,11 +543,26 @@ mod tests {
         assert!(reflector.should_reflect(&log));
     }
 
-    #[test]
-    fn swap_provider_changes_model() {
+    #[tokio::test]
+    async fn swap_provider_changes_model() {
+        let dir = tempfile::tempdir().unwrap();
+        let layout = WorkspaceLayout::new(dir.path());
+        tokio::fs::create_dir_all(layout.memory_dir())
+            .await
+            .unwrap();
+
+        let mut initial_log = ObservationLog::new();
+        initial_log.push(sample_observation("ep-001", "test"));
+        save_observation_log(&layout.observations_json(), &initial_log)
+            .await
+            .unwrap();
+
         let mut reflector = Reflector::new(
             Box::new(MockMemoryProvider::new(COMPRESSED_RESPONSE)),
-            ReflectorConfig::default(),
+            ReflectorConfig {
+                threshold_tokens: 10,
+                ..ReflectorConfig::default()
+            },
         );
 
         let new_response = r#"{
@@ -552,8 +572,16 @@ mod tests {
         }"#;
         reflector.swap_provider(Box::new(MockMemoryProvider::new(new_response)));
 
-        // Verify the provider was swapped without panic
-        let log = ObservationLog::new();
-        assert!(!reflector.should_reflect(&log));
+        let result = reflector.reflect(&layout).await.unwrap();
+        assert_eq!(
+            result.len(),
+            1,
+            "should have 1 observation from new provider"
+        );
+        assert_eq!(
+            result.observations.first().map(|o| o.content.as_str()),
+            Some("from new provider"),
+            "content should come from new provider"
+        );
     }
 }

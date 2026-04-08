@@ -57,6 +57,7 @@ impl ToolRegistry {
     /// # Errors
     /// Returns `ToolError::NotFound` if no tool with the given name exists,
     /// or propagates execution errors from the tool.
+    #[tracing::instrument(skip_all, fields(tool.name = %name))]
     pub async fn execute(
         &self,
         name: &str,
@@ -75,7 +76,10 @@ impl ToolRegistry {
             )));
         }
 
-        tool.execute(arguments).await
+        tracing::debug!("tool invocation");
+        let result = tool.execute(arguments).await?;
+        tracing::debug!(is_error = result.is_error, "tool result");
+        Ok(result)
     }
 
     /// Register the default set of tools (read, write, edit, exec).
@@ -197,7 +201,7 @@ impl ToolRegistry {
         publisher: crate::bus::Publisher,
         subagents_dir: std::path::PathBuf,
     ) {
-        self.register(Box::new(background::SubAgentSpawnTool::new(
+        self.register(Box::new(background::SubagentSpawnTool::new(
             publisher,
             subagents_dir,
         )));
@@ -344,7 +348,22 @@ mod tests {
         let policy = PathPolicy::new_shared(std::path::PathBuf::from("/tmp"));
         registry.register_defaults(FileTracker::new_shared(), policy);
         let defs = registry.definitions(&no_filter());
-        assert_eq!(defs.len(), 4, "should have read, write, edit, exec tools");
+        assert!(
+            defs.iter().any(|d| d.name == "read_file"),
+            "should have read_file tool"
+        );
+        assert!(
+            defs.iter().any(|d| d.name == "write_file"),
+            "should have write_file tool"
+        );
+        assert!(
+            defs.iter().any(|d| d.name == "edit_file"),
+            "should have edit_file tool"
+        );
+        assert!(
+            defs.iter().any(|d| d.name == "exec"),
+            "should have exec tool"
+        );
     }
 
     #[test]

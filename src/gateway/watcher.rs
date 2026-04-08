@@ -35,6 +35,11 @@ impl WatchedFile {
             true
         }
     }
+
+    /// Update the stored mtime without returning whether the file changed.
+    fn sync_mtime(&mut self) {
+        self.check();
+    }
 }
 
 /// Spawn a polling watcher for workspace config files.
@@ -71,8 +76,8 @@ pub(super) fn spawn_workspace_watcher(
                 sleep(Duration::from_millis(500)).await;
 
                 // Re-check to get the settled state
-                mcp_file.check();
-                channels_file.check();
+                mcp_file.sync_mtime();
+                channels_file.sync_mtime();
 
                 tracing::info!("sending workspace reload signal");
                 if reload_tx.send(ReloadSignal::Workspace).is_err() {

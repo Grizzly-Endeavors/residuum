@@ -2,8 +2,9 @@
 
 use std::sync::Arc;
 
+use super::helpers::{publish_error, publish_notice};
 use crate::agent::Agent;
-use crate::bus::{Publisher, SystemMessageEvent, topics};
+use crate::bus::Publisher;
 use crate::memory::log_store::load_observation_log;
 use crate::memory::observer::{ObserveAction, ObserveResult, Observer};
 use crate::memory::recent_context::{RecentContext, save_recent_context};
@@ -76,6 +77,7 @@ pub(super) struct MemorySubsystems<'a> {
 }
 
 /// Execute an observation cycle: LLM call, clear file, rotate messages, index, reflect, reload.
+#[tracing::instrument(skip_all)]
 pub(super) async fn execute_observation(mem: &MemorySubsystems<'_>, agent: &mut Agent) {
     let recent = match load_recent_messages(&mem.layout.recent_messages_json()).await {
         Ok(msgs) => msgs,
@@ -92,28 +94,49 @@ pub(super) async fn execute_observation(mem: &MemorySubsystems<'_>, agent: &mut 
     match mem.observer.observe(&recent, mem.layout).await {
         Ok(result) => {
             tracing::info!(episode_id = %result.id, "observer extracted episode");
-
-            // Save narrative context if present
-            if let Some(narrative) = &result.narrative {
-                let ctx = RecentContext {
-                    narrative: narrative.clone(),
-                    created_at: crate::time::now_local(mem.observer.timezone()),
-                    episode_id: result.id.clone(),
-                };
-                if let Err(e) = save_recent_context(&mem.layout.recent_context_json(), &ctx).await {
-                    tracing::warn!(error = %e, "failed to save recent context");
-                }
+            let reflected = run_observation_result(mem, agent, &result).await;
+            if reflected {
+                tracing::info!(episode_id = %result.id, "reflection triggered");
             }
-
-            if let Err(e) = clear_recent_messages(&mem.layout.recent_messages_json()).await {
-                tracing::warn!(error = %e, "failed to clear recent messages");
-            }
-            agent.rotate_messages_after_observation();
-
-            finalize_observation(mem, agent, &result).await;
         }
         Err(e) => {
             tracing::warn!(error = %e, "observer failed");
+        }
+    }
+}
+
+/// Embed a batch of texts, then call a blocking insert closure with the resulting vectors.
+///
+/// Returns `true` on success, `false` if embedding or insertion fails.
+async fn embed_and_insert<F, T>(
+    ep: &dyn EmbeddingProvider,
+    texts: &[&str],
+    embed_label: &'static str,
+    insert_label: &'static str,
+    insert: F,
+) -> bool
+where
+    F: FnOnce(Vec<Vec<f32>>) -> anyhow::Result<T> + Send + 'static,
+    T: Send + 'static,
+{
+    match ep.embed(texts).await {
+        Ok(response) => {
+            let embeddings = response.embeddings;
+            match tokio::task::spawn_blocking(move || insert(embeddings)).await {
+                Ok(Ok(_)) => true,
+                Ok(Err(e)) => {
+                    tracing::warn!(error = %e, "failed to {insert_label}");
+                    false
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, "{insert_label} task panicked");
+                    false
+                }
+            }
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "failed to embed {embed_label}");
+            false
         }
     }
 }
@@ -134,69 +157,45 @@ async fn embed_observation_result(
 
     let mut all_ok = true;
 
-    // Embed observations
     if !result.observations.is_empty() {
         let texts: Vec<&str> = result
             .observations
             .iter()
             .map(|o| o.content.as_str())
             .collect();
-        match ep.embed(&texts).await {
-            Ok(response) => {
-                let vs = Arc::clone(vs);
-                let episode_id = result.id.clone();
-                let date = result.date.clone();
-                let observations = result.observations.clone();
-                let embeddings = response.embeddings;
-                match tokio::task::spawn_blocking(move || {
-                    vs.insert_observations(&episode_id, &date, &observations, &embeddings)
-                })
-                .await
-                {
-                    Ok(Err(e)) => {
-                        tracing::warn!(error = %e, "failed to insert observation vectors");
-                        all_ok = false;
-                    }
-                    Err(e) => {
-                        tracing::warn!(error = %e, "observation vector insert task panicked");
-                        all_ok = false;
-                    }
-                    Ok(Ok(_)) => {}
-                }
-            }
-            Err(e) => {
-                tracing::warn!(error = %e, "failed to embed observations");
-                all_ok = false;
-            }
+        let vs2 = Arc::clone(vs);
+        let episode_id = result.id.clone();
+        let date = result.date.clone();
+        let observations = result.observations.clone();
+        if !embed_and_insert(
+            ep.as_ref(),
+            &texts,
+            "observations",
+            "insert observation vectors",
+            move |embeddings| {
+                vs2.insert_observations(&episode_id, &date, &observations, &embeddings)
+            },
+        )
+        .await
+        {
+            all_ok = false;
         }
     }
 
-    // Embed chunks
     if !result.chunks.is_empty() {
         let texts: Vec<&str> = result.chunks.iter().map(|c| c.content.as_str()).collect();
-        match ep.embed(&texts).await {
-            Ok(response) => {
-                let vs = Arc::clone(vs);
-                let chunks = result.chunks.clone();
-                let embeddings = response.embeddings;
-                match tokio::task::spawn_blocking(move || vs.insert_chunks(&chunks, &embeddings))
-                    .await
-                {
-                    Ok(Err(e)) => {
-                        tracing::warn!(error = %e, "failed to insert chunk vectors");
-                        all_ok = false;
-                    }
-                    Err(e) => {
-                        tracing::warn!(error = %e, "chunk vector insert task panicked");
-                        all_ok = false;
-                    }
-                    Ok(Ok(_)) => {}
-                }
-            }
-            Err(e) => {
-                tracing::warn!(error = %e, "failed to embed chunks");
-                all_ok = false;
-            }
+        let vs2 = Arc::clone(vs);
+        let chunks = result.chunks.clone();
+        if !embed_and_insert(
+            ep.as_ref(),
+            &texts,
+            "chunks",
+            "insert chunk vectors",
+            move |embeddings| vs2.insert_chunks(&chunks, &embeddings),
+        )
+        .await
+        {
+            all_ok = false;
         }
     }
 
@@ -269,39 +268,39 @@ async fn run_reflector_check(reflector: &Reflector, layout: &WorkspaceLayout) ->
     }
 }
 
-/// Publish a notice to `SystemMessage`.
-async fn publish_notice(publisher: &Publisher, message: String) {
-    if let Err(e) = publisher
-        .publish(
-            topics::SystemMessage,
-            SystemMessageEvent::Notice { message },
-        )
-        .await
-    {
-        tracing::warn!(error = %e, "failed to publish notice to bus");
+/// Apply post-observe steps shared by silent and forced observation paths.
+///
+/// Saves the narrative context if present, clears recent messages, rotates
+/// agent messages, and finalizes. Returns `true` if reflection was triggered.
+async fn run_observation_result(
+    mem: &MemorySubsystems<'_>,
+    agent: &mut Agent,
+    result: &ObserveResult,
+) -> bool {
+    if let Some(narrative) = &result.narrative {
+        let ctx = RecentContext {
+            narrative: narrative.clone(),
+            created_at: crate::time::now_local(mem.observer.timezone()),
+            episode_id: result.id.clone(),
+        };
+        if let Err(e) = save_recent_context(&mem.layout.recent_context_json(), &ctx).await {
+            tracing::warn!(error = %e, "failed to save recent context");
+        }
     }
-}
 
-/// Publish an error to `SystemMessage`.
-async fn publish_error(publisher: &Publisher, message: String) {
-    if let Err(e) = publisher
-        .publish(
-            topics::SystemMessage,
-            SystemMessageEvent::Error {
-                correlation_id: String::new(),
-                message,
-            },
-        )
-        .await
-    {
-        tracing::warn!(error = %e, "failed to publish error to bus");
+    if let Err(e) = clear_recent_messages(&mem.layout.recent_messages_json()).await {
+        tracing::warn!(error = %e, "failed to clear recent messages");
     }
+    agent.rotate_messages_after_observation();
+
+    finalize_observation(mem, agent, result).await
 }
 
 /// Force an observation cycle regardless of token threshold.
 ///
 /// Loads recent messages, runs the observer, clears recent messages, updates
 /// the search index, optionally triggers reflection, and publishes a notice.
+#[tracing::instrument(skip_all)]
 pub(super) async fn run_forced_observe(
     mem: &MemorySubsystems<'_>,
     agent: &mut Agent,
@@ -334,24 +333,7 @@ pub(super) async fn run_forced_observe(
         }
     };
 
-    // Save narrative context if present
-    if let Some(narrative) = &result.narrative {
-        let ctx = RecentContext {
-            narrative: narrative.clone(),
-            created_at: crate::time::now_local(mem.observer.timezone()),
-            episode_id: result.id.clone(),
-        };
-        if let Err(e) = save_recent_context(&mem.layout.recent_context_json(), &ctx).await {
-            tracing::warn!(error = %e, "failed to save recent context after forced observe");
-        }
-    }
-
-    if let Err(e) = clear_recent_messages(&mem.layout.recent_messages_json()).await {
-        tracing::warn!(error = %e, "failed to clear recent messages after forced observe");
-    }
-    agent.rotate_messages_after_observation();
-
-    let reflected = finalize_observation(mem, agent, &result).await;
+    let reflected = run_observation_result(mem, agent, &result).await;
 
     let suffix = if reflected {
         "; reflection triggered"
@@ -360,7 +342,8 @@ pub(super) async fn run_forced_observe(
     };
     let notice = format!(
         "[memory] observed: {} ({} observations){suffix}",
-        result.id, result.observation_count
+        result.id,
+        result.observations.len()
     );
     publish_notice(publisher, notice).await;
 }
@@ -425,6 +408,7 @@ async fn mark_episode_embedded(layout: &WorkspaceLayout, result: &ObserveResult)
 /// Force a reflection cycle regardless of observation log size.
 ///
 /// Runs the reflector, reloads observations into the agent, and publishes a notice.
+#[tracing::instrument(skip_all)]
 pub(super) async fn run_forced_reflect(
     reflector: &Reflector,
     layout: &WorkspaceLayout,

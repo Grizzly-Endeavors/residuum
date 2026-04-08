@@ -3,7 +3,7 @@
 use rustyline::DefaultEditor;
 use rustyline::error::ReadlineError;
 
-use crate::error::ResiduumError;
+use anyhow::Context;
 
 /// Reads user input interactively using rustyline.
 ///
@@ -17,10 +17,9 @@ impl CliReader {
     /// Create a new `CliReader`.
     ///
     /// # Errors
-    /// Returns `ResiduumError::Interface` if the readline editor cannot be initialized.
-    pub fn new() -> Result<Self, ResiduumError> {
-        let editor = DefaultEditor::new()
-            .map_err(|e| ResiduumError::Interface(format!("failed to initialize readline: {e}")))?;
+    /// Returns an error if the readline editor cannot be initialized.
+    pub fn new() -> anyhow::Result<Self> {
+        let editor = DefaultEditor::new().context("failed to initialize readline")?;
         Ok(Self { editor })
     }
 
@@ -31,7 +30,7 @@ impl CliReader {
     /// a slash command is handled). This prevents the prompt from appearing
     /// while the agent is still responding.
     ///
-    /// Exits when EOF, `:q`, or `:quit` is entered, or when `tx` is closed.
+    /// Exits when EOF, `:q`, `:quit`, or a `/quit` command is processed, or when `tx` is closed.
     /// Ctrl+C cancels the current line and prompts again.
     #[expect(
         clippy::needless_pass_by_value,
@@ -50,7 +49,7 @@ impl CliReader {
                     if trimmed.is_empty() {
                         continue;
                     }
-                    if matches!(trimmed.as_str(), ":q" | ":quit" | "/quit" | "/exit" | "/q") {
+                    if matches!(trimmed.as_str(), ":q" | ":quit") {
                         return;
                     }
                     if tx.blocking_send(trimmed).is_err() {
@@ -66,7 +65,7 @@ impl CliReader {
                     // Ctrl+C: cancel current input, prompt again
                 }
                 Err(e) => {
-                    eprintln!("readline error: {e}");
+                    tracing::error!(error = %e, "readline error, exiting input loop");
                     return;
                 }
             }

@@ -92,8 +92,8 @@ pub struct Message {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_call_id: Option<String>,
     /// Inline images attached to the message.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub images: Option<Vec<ImageData>>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub images: Vec<ImageData>,
 }
 
 impl Message {
@@ -105,7 +105,7 @@ impl Message {
             content: content.into(),
             tool_calls: None,
             tool_call_id: None,
-            images: None,
+            images: Vec::new(),
         }
     }
 
@@ -117,11 +117,7 @@ impl Message {
             content: content.into(),
             tool_calls: None,
             tool_call_id: None,
-            images: if images.is_empty() {
-                None
-            } else {
-                Some(images)
-            },
+            images,
         }
     }
 
@@ -133,7 +129,7 @@ impl Message {
             content: content.into(),
             tool_calls: None,
             tool_call_id: None,
-            images: None,
+            images: Vec::new(),
         }
     }
 
@@ -145,7 +141,7 @@ impl Message {
             content: content.into(),
             tool_calls,
             tool_call_id: None,
-            images: None,
+            images: Vec::new(),
         }
     }
 
@@ -157,7 +153,7 @@ impl Message {
             content: content.into(),
             tool_calls: None,
             tool_call_id: Some(tool_call_id.into()),
-            images: None,
+            images: Vec::new(),
         }
     }
 
@@ -173,11 +169,7 @@ impl Message {
             content: content.into(),
             tool_calls: None,
             tool_call_id: Some(tool_call_id.into()),
-            images: if images.is_empty() {
-                None
-            } else {
-                Some(images)
-            },
+            images,
         }
     }
 }
@@ -522,20 +514,15 @@ mod tests {
         }];
         let msg = Message::user_with_images("describe this", images);
         assert_eq!(msg.role, Role::User, "role should be User");
-        assert!(msg.images.is_some(), "images should be present");
-        assert_eq!(
-            msg.images.as_ref().unwrap().len(),
-            1,
-            "should have one image"
-        );
+        assert_eq!(msg.images.len(), 1, "should have one image");
     }
 
     #[test]
-    fn message_user_with_empty_images_is_none() {
+    fn message_user_with_empty_images_is_empty() {
         let msg = Message::user_with_images("no images", vec![]);
         assert!(
-            msg.images.is_none(),
-            "empty images vec should be stored as None"
+            msg.images.is_empty(),
+            "empty images vec should remain empty"
         );
     }
 
@@ -547,7 +534,7 @@ mod tests {
         }];
         let msg = Message::tool_with_images("image content", "call_1", images);
         assert_eq!(msg.role, Role::Tool, "role should be Tool");
-        assert!(msg.images.is_some(), "images should be present");
+        assert_eq!(msg.images.len(), 1, "should have one image");
         assert_eq!(
             msg.tool_call_id,
             Some("call_1".to_string()),
@@ -562,8 +549,8 @@ mod tests {
         let msg: Message = serde_json::from_str(json).unwrap();
         assert_eq!(msg.content, "hello");
         assert!(
-            msg.images.is_none(),
-            "missing images should deserialize as None"
+            msg.images.is_empty(),
+            "missing images should deserialize as empty vec"
         );
     }
 
@@ -581,11 +568,8 @@ mod tests {
         );
 
         let restored: Message = serde_json::from_str(&json).unwrap();
-        assert!(restored.images.is_some(), "images should roundtrip");
-        assert_eq!(
-            restored.images.unwrap().first().unwrap().media_type,
-            "image/jpeg"
-        );
+        assert_eq!(restored.images.len(), 1, "images should roundtrip");
+        assert_eq!(restored.images.first().unwrap().media_type, "image/jpeg");
     }
 
     #[test]

@@ -38,13 +38,13 @@ impl EventTrigger {
             Self::Webhook(_) => "webhook",
         }
     }
+}
 
-    /// Human-readable label that includes the webhook name when applicable.
-    #[must_use]
-    pub fn display_label(&self) -> String {
+impl fmt::Display for EventTrigger {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Webhook(name) => format!("webhook:{name}"),
-            Self::Pulse | Self::Action | Self::Agent => self.as_str().to_string(),
+            Self::Webhook(name) => write!(f, "webhook:{name}"),
+            other @ (Self::Pulse | Self::Action | Self::Agent) => f.write_str(other.as_str()),
         }
     }
 }
@@ -170,19 +170,6 @@ pub struct IntermediateEvent {
     pub content: String,
 }
 
-/// System event surfaced to endpoints.
-#[derive(Debug, Clone)]
-pub struct SystemEventData {
-    /// Links back to the originating message.
-    pub correlation_id: String,
-    /// Source label (e.g. pulse name, action name).
-    pub source: String,
-    /// Event content.
-    pub content: String,
-    /// Local timestamp.
-    pub timestamp: NaiveDateTime,
-}
-
 /// Result from a completed background or subagent task.
 #[derive(Debug, Clone)]
 pub struct AgentResultEvent {
@@ -210,29 +197,34 @@ impl AgentResultEvent {
     /// Format this result for injection into the agent's conversation context.
     #[must_use]
     pub fn format_for_agent(&self) -> String {
-        let mut parts = vec![format!(
+        let mut out = format!(
             "[Background Task Result]\nTask: {} ({})\nSource: {}\nStatus: {}",
             self.source_label,
             self.task_id,
             self.source.as_str(),
             self.status,
-        )];
+        );
 
         if !self.summary.is_empty() {
-            parts.push(format!("Output:\n{}", self.summary));
+            out.push('\n');
+            out.push_str("Output:\n");
+            out.push_str(&self.summary);
         }
 
         if let Some(ref path) = self.transcript_path {
-            parts.push(format!("Transcript: {}", path.display()));
+            out.push_str("\nTranscript: ");
+            out.push_str(&path.display().to_string());
         }
 
-        parts.join("\n")
+        out
     }
 }
 
 /// Request to spawn a sub-agent from any source.
 #[derive(Debug, Clone)]
 pub struct SpawnRequestEvent {
+    /// Subagent preset to use for this spawn.
+    pub preset: PresetName,
     /// Human-readable source label (e.g. `"pulse:email_check"`, `"agent:researcher"`).
     pub source_label: String,
     /// The prompt/instructions for the sub-agent.
@@ -243,6 +235,22 @@ pub struct SpawnRequestEvent {
     pub source: EventTrigger,
     /// Override the preset's model tier.
     pub model_tier_override: Option<BackgroundModelTier>,
+}
+
+/// Operational notice broadcast to connected endpoints.
+#[derive(Debug, Clone)]
+pub struct NoticeEvent {
+    /// Human-readable notice message.
+    pub message: String,
+}
+
+/// An error tied to a specific agent turn, broadcast to connected endpoints.
+#[derive(Debug, Clone)]
+pub struct ErrorEvent {
+    /// Links back to the originating message.
+    pub correlation_id: String,
+    /// Error description.
+    pub message: String,
 }
 
 // ---------------------------------------------------------------------------
@@ -273,86 +281,32 @@ pub enum TurnLifecycleEvent {
     },
 }
 
-/// System-wide messages (notices, errors, events).
-#[derive(Debug, Clone)]
-pub enum SystemMessageEvent {
-    /// Operational notice (reload status, memory progress, command responses).
-    Notice {
-        /// Human-readable notice message.
-        message: String,
-    },
-    /// An error tied to a specific agent turn.
-    Error {
-        /// Links back to the originating message.
-        correlation_id: String,
-        /// Error description.
-        message: String,
-    },
-    /// System event surfaced to endpoints (pulse, action, etc.).
-    Event(SystemEventData),
-}
-
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
 #[expect(clippy::unwrap_used, reason = "test code uses unwrap for clarity")]
-#[expect(clippy::panic, reason = "test assertions")]
-#[expect(clippy::indexing_slicing, reason = "test assertions")]
 mod tests {
     use chrono::NaiveDate;
 
     use super::*;
+    use crate::bus::types::PresetName;
 
-    fn sample_timestamp() -> NaiveDateTime {
-        NaiveDate::from_ymd_opt(2026, 3, 13)
-            .unwrap()
-            .and_hms_opt(12, 0, 0)
-            .unwrap()
-    }
-
-    #[test]
-    fn agent_result_clone_preserves_all_fields() {
-        let ar = AgentResultEvent {
-            task_id: "t2".into(),
-            source_label: "agent:review".into(),
-            agent_preset: PresetName::from("reviewer"),
-            source: EventTrigger::Agent,
+    fn make_agent_result(summary: &str, transcript: Option<&str>) -> AgentResultEvent {
+        AgentResultEvent {
+            task_id: "t1".into(),
+            source_label: "pulse:check".into(),
+            agent_preset: PresetName::from("default"),
+            source: EventTrigger::Pulse,
             heartbeat_status: HeartbeatStatus::Ok,
             status: AgentResultStatus::Completed,
-            summary: "all good".into(),
-            transcript_path: Some(PathBuf::from("/var/log/transcript.json")),
-            timestamp: sample_timestamp(),
-        };
-        let cloned = ar.clone();
-        assert_eq!(cloned.task_id, "t2");
-        assert_eq!(cloned.source_label, "agent:review");
-        assert_eq!(cloned.summary, "all good");
-        assert_eq!(
-            cloned.transcript_path,
-            Some(PathBuf::from("/var/log/transcript.json"))
-        );
-    }
-
-    #[test]
-    fn heartbeat_status_equality() {
-        assert_eq!(HeartbeatStatus::Ok, HeartbeatStatus::Ok);
-        assert_eq!(HeartbeatStatus::Substantive, HeartbeatStatus::Substantive);
-        assert_ne!(HeartbeatStatus::Ok, HeartbeatStatus::Substantive);
-    }
-
-    #[test]
-    fn agent_result_status_failed_clone() {
-        let status = AgentResultStatus::Failed {
-            error: "timeout".into(),
-        };
-        let cloned = status.clone();
-        match cloned {
-            AgentResultStatus::Failed { error } => assert_eq!(error, "timeout"),
-            AgentResultStatus::Completed | AgentResultStatus::Cancelled => {
-                panic!("expected Failed variant")
-            }
+            summary: summary.into(),
+            transcript_path: transcript.map(std::path::PathBuf::from),
+            timestamp: NaiveDate::from_ymd_opt(2026, 3, 13)
+                .unwrap()
+                .and_hms_opt(12, 0, 0)
+                .unwrap(),
         }
     }
 
@@ -377,24 +331,62 @@ mod tests {
     }
 
     #[test]
-    fn streaming_event_clone() {
-        let tc = ToolCallEvent {
-            correlation_id: "c1".into(),
-            tool_call_id: "t1".into(),
-            name: "read".into(),
-            arguments: serde_json::json!({"path": "/tmp"}),
-        };
-        let cloned = tc.clone();
-        assert_eq!(cloned.name, "read");
-        assert_eq!(cloned.arguments["path"], "/tmp");
+    fn event_trigger_display() {
+        assert_eq!(
+            EventTrigger::Webhook("github".into()).to_string(),
+            "webhook:github"
+        );
+        assert_eq!(EventTrigger::Pulse.to_string(), "pulse");
+        assert_eq!(EventTrigger::Action.to_string(), "action");
+        assert_eq!(EventTrigger::Agent.to_string(), "agent");
+    }
 
-        let se = SystemEventData {
-            correlation_id: "c1".into(),
-            source: "pulse".into(),
-            content: "check".into(),
-            timestamp: sample_timestamp(),
-        };
-        let cloned_se = se.clone();
-        assert_eq!(cloned_se.source, "pulse");
+    #[test]
+    fn agent_result_status_display() {
+        assert_eq!(AgentResultStatus::Completed.to_string(), "completed");
+        assert_eq!(AgentResultStatus::Cancelled.to_string(), "cancelled");
+        assert_eq!(
+            AgentResultStatus::Failed {
+                error: "timeout".into()
+            }
+            .to_string(),
+            "failed: timeout"
+        );
+    }
+
+    #[test]
+    fn format_for_agent_empty_summary_no_transcript() {
+        let event = make_agent_result("", None);
+        assert_eq!(
+            event.format_for_agent(),
+            "[Background Task Result]\nTask: pulse:check (t1)\nSource: pulse\nStatus: completed"
+        );
+    }
+
+    #[test]
+    fn format_for_agent_with_summary_no_transcript() {
+        let event = make_agent_result("some output", None);
+        assert_eq!(
+            event.format_for_agent(),
+            "[Background Task Result]\nTask: pulse:check (t1)\nSource: pulse\nStatus: completed\nOutput:\nsome output"
+        );
+    }
+
+    #[test]
+    fn format_for_agent_empty_summary_with_transcript() {
+        let event = make_agent_result("", Some("/tmp/transcript.txt"));
+        assert_eq!(
+            event.format_for_agent(),
+            "[Background Task Result]\nTask: pulse:check (t1)\nSource: pulse\nStatus: completed\nTranscript: /tmp/transcript.txt"
+        );
+    }
+
+    #[test]
+    fn format_for_agent_with_summary_and_transcript() {
+        let event = make_agent_result("some output", Some("/tmp/transcript.txt"));
+        assert_eq!(
+            event.format_for_agent(),
+            "[Background Task Result]\nTask: pulse:check (t1)\nSource: pulse\nStatus: completed\nOutput:\nsome output\nTranscript: /tmp/transcript.txt"
+        );
     }
 }

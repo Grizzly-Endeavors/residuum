@@ -1,7 +1,8 @@
 //! Subagent preset parsing: frontmatter extraction and name validation.
 
+use anyhow::Context;
+
 use super::types::SubagentPresetFrontmatter;
-use crate::error::ResiduumError;
 
 /// Parse a subagent preset `.md` file into frontmatter and body.
 ///
@@ -10,48 +11,39 @@ use crate::error::ResiduumError;
 /// are not both set.
 ///
 /// # Errors
-/// Returns `ResiduumError::Subagents` if the frontmatter is missing, invalid
-/// YAML, the name fails validation, or both tool restriction fields are set.
-pub fn parse_preset_md(
-    content: &str,
-) -> Result<(SubagentPresetFrontmatter, String), ResiduumError> {
+/// Returns an error if the frontmatter is missing, invalid YAML, the name
+/// fails validation, or both tool restriction fields are set.
+pub fn parse_preset_md(content: &str) -> anyhow::Result<(SubagentPresetFrontmatter, String)> {
     let trimmed = content.trim_start();
 
     if !trimmed.starts_with("---") {
-        return Err(ResiduumError::Subagents(
-            "preset file missing frontmatter delimiter '---'".to_string(),
-        ));
+        anyhow::bail!("preset file missing frontmatter delimiter '---'");
     }
 
-    let after_open = trimmed
-        .get(3..)
-        .ok_or_else(|| ResiduumError::Subagents("preset file is too short".to_string()))?;
+    let after_open = trimmed.get(3..).unwrap_or_default();
 
     let close_pos = after_open.find("\n---").ok_or_else(|| {
-        ResiduumError::Subagents(
-            "preset file missing closing frontmatter delimiter '---'".to_string(),
-        )
+        anyhow::anyhow!("preset file missing closing frontmatter delimiter '---'")
     })?;
 
     let yaml_str = after_open
         .get(..close_pos)
-        .ok_or_else(|| ResiduumError::Subagents("failed to extract YAML content".to_string()))?;
+        .ok_or_else(|| anyhow::anyhow!("failed to extract YAML content"))?;
 
-    let frontmatter: SubagentPresetFrontmatter = serde_yml::from_str(yaml_str).map_err(|e| {
-        ResiduumError::Subagents(format!("failed to parse preset frontmatter: {e}"))
-    })?;
+    let frontmatter: SubagentPresetFrontmatter =
+        serde_yml::from_str(yaml_str).context("failed to parse preset frontmatter")?;
 
     validate_preset_name(&frontmatter.name)?;
 
     // Reject if both denied_tools and allowed_tools are set
     if frontmatter.denied_tools.is_some() && frontmatter.allowed_tools.is_some() {
-        return Err(ResiduumError::Subagents(format!(
+        anyhow::bail!(
             "preset '{}' has both denied_tools and allowed_tools — only one is allowed",
             frontmatter.name
-        )));
+        );
     }
 
-    let body_start = 3 + close_pos + 4; // "---" prefix + yaml + "\n---"
+    let body_start = "---".len() + close_pos + "\n---".len();
     let body = trimmed.get(body_start..).unwrap_or("").trim().to_string();
 
     Ok((frontmatter, body))
@@ -63,33 +55,29 @@ pub fn parse_preset_md(
 /// Uses the same rules as skill names.
 ///
 /// # Errors
-/// Returns `ResiduumError::Subagents` if the name is invalid.
-pub fn validate_preset_name(name: &str) -> Result<(), ResiduumError> {
+/// Returns an error if the name is invalid.
+pub fn validate_preset_name(name: &str) -> anyhow::Result<()> {
     if name.is_empty() || name.len() > 64 {
-        return Err(ResiduumError::Subagents(format!(
+        anyhow::bail!(
             "preset name must be 1-64 characters, got {len}",
             len = name.len()
-        )));
+        );
     }
 
     if name.starts_with('-') || name.ends_with('-') {
-        return Err(ResiduumError::Subagents(format!(
-            "preset name '{name}' must not start or end with a hyphen"
-        )));
+        anyhow::bail!("preset name '{name}' must not start or end with a hyphen");
     }
 
     if name.contains("--") {
-        return Err(ResiduumError::Subagents(format!(
-            "preset name '{name}' must not contain consecutive hyphens"
-        )));
+        anyhow::bail!("preset name '{name}' must not contain consecutive hyphens");
     }
 
     for ch in name.chars() {
         if !ch.is_ascii_lowercase() && !ch.is_ascii_digit() && ch != '-' {
-            return Err(ResiduumError::Subagents(format!(
+            anyhow::bail!(
                 "preset name '{name}' contains invalid character '{ch}' \
                  (only lowercase alphanumeric and hyphens allowed)"
-            )));
+            );
         }
     }
 
@@ -112,8 +100,6 @@ model_tier: small
 denied_tools:
   - exec
   - write_file
-channels:
-  - inbox
 ---
 
 You are a research specialist. Focus on gathering information.
@@ -151,6 +137,24 @@ You are a research specialist. Focus on gathering information.
         assert!(
             parse_preset_md(content).is_err(),
             "missing delimiter should error"
+        );
+    }
+
+    #[test]
+    fn parse_with_leading_whitespace() {
+        let content = "\n---\nname: simple\ndescription: \"A simple preset\"\n---\n";
+        assert!(
+            parse_preset_md(content).is_ok(),
+            "leading whitespace should be trimmed and parse successfully"
+        );
+    }
+
+    #[test]
+    fn parse_missing_required_name_field() {
+        let content = "---\ndescription: \"No name\"\n---\n";
+        assert!(
+            parse_preset_md(content).is_err(),
+            "missing name field should error"
         );
     }
 
@@ -213,6 +217,8 @@ You can only read files and search memory.
         assert!(validate_preset_name("a").is_ok());
         assert!(validate_preset_name("researcher").is_ok());
         assert!(validate_preset_name("my-cool-agent").is_ok());
+        assert!(validate_preset_name("agent2").is_ok());
+        assert!(validate_preset_name("42").is_ok());
     }
 
     #[test]
@@ -261,6 +267,10 @@ You can only read files and search memory.
         assert!(
             validate_preset_name(&long_name).is_err(),
             "name over 64 chars should be rejected"
+        );
+        assert!(
+            validate_preset_name(&"a".repeat(64)).is_ok(),
+            "name of exactly 64 chars should be accepted"
         );
     }
 

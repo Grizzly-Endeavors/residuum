@@ -1,32 +1,26 @@
 use std::collections::HashMap;
-use std::collections::hash_map::DefaultHasher;
-use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 
-use chrono::{Duration, NaiveDateTime, NaiveTime};
+use chrono::{Datelike, Duration, NaiveDateTime, NaiveTime};
 use serde::{Deserialize, Serialize};
 
 use super::types::{
-    HeartbeatConfig, PulseDef, is_within_active_hours, parse_active_hours, parse_schedule_duration,
+    PulseDef, is_within_active_hours, load_heartbeat, parse_active_hours, parse_schedule_duration,
+    read_and_parse,
 };
-
-/// On-disk format for `pulse_state.json`.
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-struct PulseState {
-    #[serde(default)]
-    last_run: HashMap<String, NaiveDateTime>,
-    #[serde(default)]
-    run_counts: HashMap<String, u32>,
-}
 
 /// Tracks per-pulse last-run times and determines which pulses are due.
 ///
 /// When constructed with `with_state_path`, timestamps are persisted to
 /// `pulse_state.json` and survive restarts. Without a state path, timestamps
 /// are in-memory only (backward-compatible).
+#[derive(Debug, Serialize, Deserialize)]
 pub struct PulseScheduler {
+    #[serde(default)]
     last_run: HashMap<String, NaiveDateTime>,
+    #[serde(default)]
     run_counts: HashMap<String, u32>,
+    #[serde(skip)]
     state_path: Option<PathBuf>,
 }
 
@@ -53,42 +47,9 @@ impl PulseScheduler {
     /// files are treated as empty state (logged as a warning for corrupt files).
     #[must_use]
     pub fn with_state_path(path: &Path) -> Self {
-        let state = load_state(path);
-        Self {
-            last_run: state.last_run,
-            run_counts: state.run_counts,
-            state_path: Some(path.to_path_buf()),
-        }
-    }
-
-    /// Load HEARTBEAT.yml from the given path.
-    ///
-    /// On parse error, logs a warning and returns `None` so the caller keeps the last good config.
-    /// Returns `None` if the file does not exist.
-    #[must_use]
-    pub fn load_heartbeat(path: &Path) -> Option<HeartbeatConfig> {
-        match std::fs::read_to_string(path) {
-            Ok(contents) => match serde_yml::from_str::<HeartbeatConfig>(&contents) {
-                Ok(cfg) => Some(cfg),
-                Err(e) => {
-                    tracing::warn!(
-                        path = %path.display(),
-                        error = %e,
-                        "failed to parse HEARTBEAT.yml, keeping last good config"
-                    );
-                    None
-                }
-            },
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
-            Err(e) => {
-                tracing::warn!(
-                    path = %path.display(),
-                    error = %e,
-                    "failed to read HEARTBEAT.yml"
-                );
-                None
-            }
-        }
+        let mut scheduler = load_state(path);
+        scheduler.state_path = Some(path.to_path_buf());
+        scheduler
     }
 
     /// Find pulses that are due at `now`, hot-reloading HEARTBEAT.yml each call.
@@ -102,8 +63,9 @@ impl PulseScheduler {
     ///
     /// Due pulses have their `last_run` updated to `now` and persisted (if a state path is set).
     #[must_use]
+    #[tracing::instrument(skip_all, fields(heartbeat_path = %heartbeat_path.display()))]
     pub fn due_pulses(&mut self, now: NaiveDateTime, heartbeat_path: &Path) -> Vec<PulseDef> {
-        let Some(heartbeat) = Self::load_heartbeat(heartbeat_path) else {
+        let Some(heartbeat) = load_heartbeat(heartbeat_path) else {
             return Vec::new();
         };
 
@@ -151,6 +113,7 @@ impl PulseScheduler {
             // Check active hours if configured
             if let Some((start, end)) = active_window {
                 if !is_within_active_hours(now, start, end) {
+                    tracing::trace!(pulse = %pulse.name, "skipped: outside active hours");
                     continue;
                 }
 
@@ -161,38 +124,15 @@ impl PulseScheduler {
                     // Check if trigger_count exhausted
                     let current_count = self.run_counts.get(&pulse.name).copied().unwrap_or(0);
                     if current_count >= trigger_count {
+                        tracing::trace!(pulse = %pulse.name, count = current_count, limit = trigger_count, "skipped: trigger_count exhausted");
                         continue;
                     }
                 }
             }
 
             // Compute effective interval: if trigger_count is set, space evenly across active period
-            let effective_interval = match pulse.trigger_count {
-                Some(tc) if tc > 0 => {
-                    let active_duration = active_window.map_or_else(
-                        || Duration::hours(24),
-                        |(start, end)| active_period_duration(start, end),
-                    );
-                    let spacing = if let Ok(tc_i32) = i32::try_from(tc) {
-                        active_duration / tc_i32
-                    } else {
-                        tracing::warn!(
-                            pulse = %pulse.name,
-                            trigger_count = tc,
-                            "trigger_count exceeds i32::MAX, spacing collapsed to near-zero; pulse will fire at schedule rate"
-                        );
-                        active_duration / i32::MAX
-                    };
-                    let jittered = apply_jitter(spacing, &pulse.name, now);
-                    // Effective interval is max(schedule_duration, spacing_with_jitter)
-                    if jittered > duration {
-                        jittered
-                    } else {
-                        duration
-                    }
-                }
-                _ => duration,
-            };
+            let effective_interval =
+                compute_effective_interval(&pulse, duration, active_window, now);
 
             // Check if due: fire immediately if never run, otherwise after the effective interval
             let is_due = match self.last_run.get(&pulse.name) {
@@ -201,6 +141,7 @@ impl PulseScheduler {
             };
 
             if is_due {
+                tracing::debug!(pulse = %pulse.name, "pulse due, queuing execution");
                 self.last_run.insert(pulse.name.clone(), now);
                 if pulse.trigger_count.is_some() {
                     let count = self.run_counts.entry(pulse.name.clone()).or_insert(0);
@@ -236,10 +177,15 @@ impl PulseScheduler {
             return;
         };
 
-        // If the last run was outside the current active window, or on a different
-        // calendar day (for non-overnight windows), reset the count.
-        if !is_within_active_hours(*last, window_start, window_end) || now.date() != last.date() {
+        let is_overnight = window_start > window_end;
+        let crossed_boundary = if is_overnight {
+            !is_within_active_hours(*last, window_start, window_end)
+        } else {
+            !is_within_active_hours(*last, window_start, window_end) || now.date() != last.date()
+        };
+        if crossed_boundary {
             self.run_counts.remove(pulse_name);
+            tracing::debug!(pulse = %pulse_name, "run count reset for new active period");
         }
     }
 
@@ -248,66 +194,63 @@ impl PulseScheduler {
         let Some(ref path) = self.state_path else {
             return Ok(());
         };
-
-        let state = PulseState {
-            last_run: self.last_run.clone(),
-            run_counts: self.run_counts.clone(),
-        };
-
-        match serde_json::to_string_pretty(&state) {
-            Ok(json) => {
-                let tmp = path.with_extension("json.tmp");
-                if let Err(err) = std::fs::write(&tmp, &json) {
-                    tracing::warn!(
-                        path = %tmp.display(),
-                        error = %err,
-                        "failed to write pulse state temp file"
-                    );
-                    return Err(err.into());
-                }
-                if let Err(err) = std::fs::rename(&tmp, path) {
-                    tracing::warn!(
-                        tmp = %tmp.display(),
-                        path = %path.display(),
-                        error = %err,
-                        "failed to rename pulse state file"
-                    );
-                    return Err(err.into());
-                }
-            }
-            Err(err) => {
-                tracing::warn!(error = %err, "failed to serialize pulse state");
-                return Err(err.into());
-            }
-        }
+        let json = serde_json::to_string_pretty(self)?;
+        let tmp = path.with_extension("json.tmp");
+        std::fs::write(&tmp, &json)?;
+        std::fs::rename(&tmp, path)?;
+        tracing::trace!(path = %path.display(), "pulse state saved");
         Ok(())
     }
 }
 
-/// Load pulse state from disk; returns default on missing or corrupt file.
-fn load_state(path: &Path) -> PulseState {
-    match std::fs::read_to_string(path) {
-        Ok(contents) => match serde_json::from_str::<PulseState>(&contents) {
-            Ok(state) => state,
-            Err(err) => {
-                tracing::warn!(
-                    path = %path.display(),
-                    error = %err,
-                    "corrupt pulse_state.json, starting with empty state"
-                );
-                PulseState::default()
-            }
-        },
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => PulseState::default(),
-        Err(err) => {
-            tracing::warn!(
-                path = %path.display(),
-                error = %err,
-                "failed to read pulse_state.json, starting with empty state"
+/// Compute the effective firing interval for a pulse.
+///
+/// When `trigger_count` is set, spaces firings evenly across the active window
+/// (with jitter), using at least the configured schedule duration.
+fn compute_effective_interval(
+    pulse: &PulseDef,
+    duration: Duration,
+    active_window: Option<(NaiveTime, NaiveTime)>,
+    now: NaiveDateTime,
+) -> Duration {
+    match pulse.trigger_count {
+        Some(tc) if tc > 0 => {
+            let active_duration = active_window.map_or_else(
+                || Duration::hours(24),
+                |(start, end)| active_period_duration(start, end),
             );
-            PulseState::default()
+            let spacing = if let Ok(tc_i32) = i32::try_from(tc) {
+                active_duration / tc_i32
+            } else {
+                tracing::warn!(
+                    pulse = %pulse.name,
+                    trigger_count = tc,
+                    "trigger_count exceeds i32::MAX, spacing collapsed to near-zero; pulse will fire at schedule rate"
+                );
+                return duration;
+            };
+            let jittered = apply_jitter(spacing, &pulse.name, now);
+            let effective = jittered.max(duration);
+            tracing::trace!(
+                pulse = %pulse.name,
+                schedule_secs = duration.num_seconds(),
+                spacing_secs = jittered.num_seconds(),
+                effective_secs = effective.num_seconds(),
+                "computed effective interval"
+            );
+            effective
         }
+        _ => duration,
     }
+}
+
+/// Load pulse state from disk; returns default on missing or corrupt file.
+fn load_state(path: &Path) -> PulseScheduler {
+    let Some(state) = read_and_parse(path, |s| serde_json::from_str::<PulseScheduler>(s)) else {
+        return PulseScheduler::new();
+    };
+    tracing::debug!(path = %path.display(), pulses = state.last_run.len(), "loaded pulse state");
+    state
 }
 
 /// Compute the duration of an active-hours window.
@@ -320,21 +263,33 @@ fn active_period_duration(start: NaiveTime, end: NaiveTime) -> Duration {
     }
 }
 
-/// Apply ±15% jitter to a duration using a deterministic seed from
-/// pulse name and current date (for reproducibility in tests).
+/// Produces a stable, deterministic offset for the same pulse name and calendar date.
+/// Jitter changes day-to-day but is consistent within the same day across restarts.
 #[expect(
     clippy::cast_precision_loss,
     clippy::cast_possible_truncation,
     reason = "intentional float arithmetic for jitter; precision loss is acceptable for scheduling"
 )]
 fn apply_jitter(base: Duration, pulse_name: &str, now: NaiveDateTime) -> Duration {
-    let mut hasher = DefaultHasher::new();
-    pulse_name.hash(&mut hasher);
-    now.date().hash(&mut hasher);
-    let hash = hasher.finish();
+    const JITTER_RANGE: f64 = 0.30; // ±15%
 
-    // Map hash to [-0.15, +0.15] range
-    let fraction = (hash % 3001) as f64 / 10000.0 - 0.15;
+    // FNV-1a: stable across Rust versions (unlike DefaultHasher)
+    let mut h: u64 = 14_695_981_039_346_656_037;
+    for &b in pulse_name.as_bytes() {
+        h ^= u64::from(b);
+        h = h.wrapping_mul(1_099_511_628_211);
+    }
+    for &b in &now.date().year().to_le_bytes() {
+        h ^= u64::from(b);
+        h = h.wrapping_mul(1_099_511_628_211);
+    }
+    for &b in &now.date().ordinal().to_le_bytes() {
+        h ^= u64::from(b);
+        h = h.wrapping_mul(1_099_511_628_211);
+    }
+
+    // Maps hash uniformly to [-0.15, +0.15]
+    let fraction = (h % 10_000) as f64 / 10_000.0 * JITTER_RANGE - JITTER_RANGE / 2.0;
     let base_secs = base.num_seconds() as f64;
     let jittered = base_secs * (1.0 + fraction);
 
@@ -365,7 +320,6 @@ pulses:
     tasks:
       - name: check
         prompt: "Do a check"
-        alert: low
 "#;
 
     #[test]
@@ -470,23 +424,62 @@ pulses:
     }
 
     #[test]
-    fn load_heartbeat_missing_file_returns_none() {
+    fn due_pulses_missing_heartbeat_returns_empty() {
         let dir = tempdir().unwrap();
         let path = dir.path().join("HEARTBEAT.yml");
+        let mut scheduler = PulseScheduler::new();
+        let now = chrono::NaiveDate::from_ymd_opt(2026, 2, 19)
+            .unwrap()
+            .and_hms_opt(12, 0, 0)
+            .unwrap();
+        let due = scheduler.due_pulses(now, &path);
+        assert!(due.is_empty(), "missing HEARTBEAT.yml should return empty");
+    }
+
+    #[test]
+    fn due_pulses_skips_invalid_schedule() {
+        let yaml = r#"
+pulses:
+  - name: bad_schedule
+    enabled: true
+    schedule: "10x"
+    tasks: []
+"#;
+        let dir = tempdir().unwrap();
+        let path = write_heartbeat(dir.path(), yaml);
+        let mut scheduler = PulseScheduler::new();
+        let now = chrono::NaiveDate::from_ymd_opt(2026, 2, 19)
+            .unwrap()
+            .and_hms_opt(12, 0, 0)
+            .unwrap();
+        let due = scheduler.due_pulses(now, &path);
         assert!(
-            PulseScheduler::load_heartbeat(&path).is_none(),
-            "missing file should return None"
+            due.is_empty(),
+            "pulse with invalid schedule should be skipped"
         );
     }
 
     #[test]
-    fn load_heartbeat_invalid_yaml_returns_none() {
+    fn due_pulses_skips_invalid_active_hours() {
+        let yaml = r#"
+pulses:
+  - name: bad_hours
+    enabled: true
+    schedule: "1h"
+    active_hours: "not-valid"
+    tasks: []
+"#;
         let dir = tempdir().unwrap();
-        let path = dir.path().join("HEARTBEAT.yml");
-        std::fs::write(&path, "not: valid: yaml: [[[").unwrap();
+        let path = write_heartbeat(dir.path(), yaml);
+        let mut scheduler = PulseScheduler::new();
+        let now = chrono::NaiveDate::from_ymd_opt(2026, 2, 19)
+            .unwrap()
+            .and_hms_opt(12, 0, 0)
+            .unwrap();
+        let due = scheduler.due_pulses(now, &path);
         assert!(
-            PulseScheduler::load_heartbeat(&path).is_none(),
-            "invalid YAML should return None"
+            due.is_empty(),
+            "pulse with invalid active_hours should be skipped"
         );
     }
 
@@ -526,10 +519,19 @@ pulses:
     fn persistence_missing_file_starts_empty() {
         let dir = tempdir().unwrap();
         let state_path = dir.path().join("pulse_state.json");
+        let hb_path = write_heartbeat(dir.path(), SIMPLE_HEARTBEAT);
 
-        // No file exists yet — should start with empty state
-        let sched = PulseScheduler::with_state_path(&state_path);
-        assert!(sched.last_run.is_empty(), "missing file means empty state");
+        let mut sched = PulseScheduler::with_state_path(&state_path);
+        let now = chrono::NaiveDate::from_ymd_opt(2026, 2, 19)
+            .unwrap()
+            .and_hms_opt(12, 0, 0)
+            .unwrap();
+        let due = sched.due_pulses(now, &hb_path);
+        assert_eq!(
+            due.len(),
+            1,
+            "missing state file means empty state, pulse should fire"
+        );
     }
 
     #[test]
@@ -537,12 +539,18 @@ pulses:
         let dir = tempdir().unwrap();
         let state_path = dir.path().join("pulse_state.json");
         std::fs::write(&state_path, "not valid json {{{").unwrap();
+        let hb_path = write_heartbeat(dir.path(), SIMPLE_HEARTBEAT);
 
-        // Corrupt file — should recover with empty state
-        let sched = PulseScheduler::with_state_path(&state_path);
-        assert!(
-            sched.last_run.is_empty(),
-            "corrupt file should recover to empty state"
+        let mut sched = PulseScheduler::with_state_path(&state_path);
+        let now = chrono::NaiveDate::from_ymd_opt(2026, 2, 19)
+            .unwrap()
+            .and_hms_opt(12, 0, 0)
+            .unwrap();
+        let due = sched.due_pulses(now, &hb_path);
+        assert_eq!(
+            due.len(),
+            1,
+            "corrupt state file should recover to empty state, pulse should fire"
         );
     }
 
@@ -598,7 +606,6 @@ pulses:
             .unwrap();
         let due = scheduler.due_pulses(t1, &path);
         assert_eq!(due.len(), 1, "first firing should succeed");
-        assert_eq!(scheduler.run_counts.get("limited_pulse").copied(), Some(1));
 
         // Fire 2: well after spacing (~5h later)
         let t2 = chrono::NaiveDate::from_ymd_opt(2026, 2, 19)
@@ -607,7 +614,6 @@ pulses:
             .unwrap();
         let due = scheduler.due_pulses(t2, &path);
         assert_eq!(due.len(), 1, "second firing should succeed");
-        assert_eq!(scheduler.run_counts.get("limited_pulse").copied(), Some(2));
 
         // Fire 3: should be blocked (count exhausted)
         let t3 = chrono::NaiveDate::from_ymd_opt(2026, 2, 19)

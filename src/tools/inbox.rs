@@ -34,7 +34,7 @@ impl Tool for InboxListTool {
 
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
-            name: "inbox_list".to_string(),
+            name: self.name().to_string(),
             description: "List inbox items. Shows unread/read status, title, source, and timestamp for each item.".to_string(),
             parameters: serde_json::json!({
                 "type": "object",
@@ -54,9 +54,10 @@ impl Tool for InboxListTool {
             .and_then(Value::as_bool)
             .unwrap_or(false);
 
-        let items = inbox::list_items(&self.inbox_dir)
-            .await
-            .map_err(|e| ToolError::Execution(format!("failed to list inbox items: {e}")))?;
+        let items = inbox::list_items(&self.inbox_dir).await.map_err(|e| {
+            tracing::error!(error = %e, "failed to list inbox items");
+            ToolError::Execution(format!("failed to list inbox items: {e}"))
+        })?;
 
         let filtered: Vec<&(String, InboxItem)> = if unread_only {
             items.iter().filter(|(_, item)| !item.read).collect()
@@ -107,7 +108,7 @@ impl Tool for InboxReadTool {
 
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
-            name: "inbox_read".to_string(),
+            name: self.name().to_string(),
             description: "Read a single inbox item by filename stem. Marks the item as read and returns its full content.".to_string(),
             parameters: serde_json::json!({
                 "type": "object",
@@ -123,14 +124,12 @@ impl Tool for InboxReadTool {
     }
 
     async fn execute(&self, arguments: Value) -> Result<ToolResult, ToolError> {
-        let id = arguments
-            .get("id")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| ToolError::InvalidArguments("id is required".to_string()))?;
+        let id = super::require_str(&arguments, "id")?;
 
-        let item = inbox::mark_read(&self.inbox_dir, id)
-            .await
-            .map_err(|e| ToolError::Execution(format!("failed to read inbox item '{id}': {e}")))?;
+        let item = inbox::mark_read(&self.inbox_dir, id).await.map_err(|e| {
+            tracing::error!(error = %e, id = %id, "failed to read inbox item");
+            ToolError::Execution(format!("failed to read inbox item '{id}': {e}"))
+        })?;
 
         let ts = item.timestamp.format("%Y-%m-%dT%H:%M");
         let mut output = format!(
@@ -180,7 +179,7 @@ impl Tool for InboxArchiveTool {
 
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
-            name: "inbox_archive".to_string(),
+            name: self.name().to_string(),
             description: "Archive one or more inbox items by filename stem. Moves them to the archive directory.".to_string(),
             parameters: serde_json::json!({
                 "type": "object",
@@ -217,7 +216,10 @@ impl Tool for InboxArchiveTool {
 
             match inbox::archive_item(&self.inbox_dir, &self.archive_dir, id).await {
                 Ok(()) => archived.push(id.to_string()),
-                Err(e) => errors.push(format!("{id}: {e}")),
+                Err(e) => {
+                    tracing::warn!(error = %e, id = %id, "failed to archive inbox item");
+                    errors.push(format!("{id}: {e}"));
+                }
             }
         }
 
@@ -401,5 +403,20 @@ mod tests {
         let tool = InboxReadTool::new(dir.path().to_path_buf());
         let result = tool.execute(serde_json::json!({})).await;
         assert!(result.is_err(), "missing id should error");
+    }
+
+    #[tokio::test]
+    async fn inbox_read_nonexistent_item() {
+        let dir = tempfile::tempdir().unwrap();
+        let tool = InboxReadTool::new(dir.path().to_path_buf());
+        // id is provided but the file does not exist on disk — goes through mark_read,
+        // which propagates as ToolError::Execution
+        let result = tool
+            .execute(serde_json::json!({"id": "does-not-exist"}))
+            .await;
+        assert!(
+            result.is_err(),
+            "reading nonexistent item should return ToolError"
+        );
     }
 }

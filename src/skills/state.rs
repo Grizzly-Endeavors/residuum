@@ -1,8 +1,9 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use anyhow::Context;
+
 use super::{index::SkillIndex, parser::parse_skill_md, types::ActiveSkill};
-use crate::error::ResiduumError;
 
 /// Shared skill state, following the `SharedProjectState` pattern.
 pub type SharedSkillState = Arc<tokio::sync::Mutex<SkillState>>;
@@ -36,62 +37,58 @@ impl SkillState {
     /// Reads the full `SKILL.md`, parses the body, and adds it to the active list.
     ///
     /// # Errors
-    /// Returns `ResiduumError::Skills` if the skill is not found, already active,
-    /// or the file cannot be read.
-    pub async fn activate(&mut self, name: &str) -> Result<&ActiveSkill, ResiduumError> {
+    /// Returns an error if the skill is not found, already active, or the
+    /// file cannot be read.
+    #[tracing::instrument(skip_all, fields(name = %name))]
+    pub async fn activate(&mut self, name: &str) -> anyhow::Result<&ActiveSkill> {
         if self
             .active
             .iter()
             .any(|a| a.name.eq_ignore_ascii_case(name))
         {
-            return Err(ResiduumError::Skills(format!(
-                "skill '{name}' is already active"
-            )));
+            tracing::debug!("skill already active");
+            anyhow::bail!("skill '{name}' is already active");
         }
 
-        let entry = self
-            .index
-            .find_by_name(name)
-            .ok_or_else(|| ResiduumError::Skills(format!("skill '{name}' not found")))?;
+        let entry = self.index.find_by_name(name).ok_or_else(|| {
+            tracing::debug!("skill not found in index");
+            anyhow::anyhow!("skill '{name}' not found")
+        })?;
 
         let skill_md_path = entry.skill_dir.join("SKILL.md");
         let file_content = tokio::fs::read_to_string(&skill_md_path)
             .await
-            .map_err(|e| {
-                ResiduumError::Skills(format!("failed to read SKILL.md for '{}': {e}", entry.name))
-            })?;
+            .with_context(|| format!("failed to read SKILL.md for '{}'", entry.name))?;
 
-        let (_fm, body) = parse_skill_md(&file_content).map_err(|e| {
-            tracing::error!(path = %skill_md_path.display(), error = %e, "failed to parse SKILL.md at activation time");
-            e
-        })?;
+        let (_fm, body) = parse_skill_md(&file_content)
+            .inspect_err(|e| tracing::error!(path = %skill_md_path.display(), error = %e, "failed to parse SKILL.md at activation time"))?;
 
-        let skill_name = entry.name.clone();
         self.active.push(ActiveSkill {
-            name: skill_name,
+            name: entry.name.clone(),
             body,
         });
 
-        // Safe: we just pushed
-        self.active.last().ok_or_else(|| {
-            ResiduumError::Skills("unexpected: active skill not set after activation".into())
-        })
+        tracing::info!("skill activated");
+        match self.active.last() {
+            Some(skill) => Ok(skill),
+            None => anyhow::bail!("active vec empty after push"),
+        }
     }
 
     /// Deactivate a skill by name.
     ///
     /// # Errors
-    /// Returns `ResiduumError::Skills` if the skill is not currently active.
-    pub fn deactivate(&mut self, name: &str) -> Result<(), ResiduumError> {
+    /// Returns an error if the skill is not currently active.
+    #[tracing::instrument(skip_all, fields(name = %name))]
+    pub fn deactivate(&mut self, name: &str) -> anyhow::Result<()> {
         let pos = self
             .active
             .iter()
             .position(|a| a.name.eq_ignore_ascii_case(name))
-            .ok_or_else(|| {
-                ResiduumError::Skills(format!("skill '{name}' is not currently active"))
-            })?;
+            .ok_or_else(|| anyhow::anyhow!("skill '{name}' is not currently active"))?;
 
         self.active.remove(pos);
+        tracing::info!(name = %name, "skill deactivated");
         Ok(())
     }
 
@@ -100,18 +97,29 @@ impl SkillState {
     /// Removes any active skills whose names no longer appear in the new index.
     ///
     /// # Errors
-    /// Returns `ResiduumError::Skills` if scanning fails.
-    pub async fn rescan(&mut self, project_skills_dir: Option<&Path>) -> Result<(), ResiduumError> {
+    /// Returns an error if scanning fails.
+    #[tracing::instrument(skip_all, fields(dirs = self.dirs.len()))]
+    pub async fn rescan(&mut self, project_skills_dir: Option<&Path>) -> anyhow::Result<()> {
+        let skills_before = self.index.entries().len();
+        tracing::info!(
+            skills_before = skills_before,
+            "rescanning skill directories"
+        );
         self.index = SkillIndex::scan(&self.dirs, project_skills_dir).await?;
+        tracing::info!(
+            skills_before = skills_before,
+            skills_after = self.index.entries().len(),
+            "skill rescan complete"
+        );
 
         // Remove active skills that no longer exist in the index
-        for skill in &self.active {
-            if self.index.find_by_name(&skill.name).is_none() {
-                tracing::warn!(name = %skill.name, "deactivating skill: no longer found after rescan");
+        self.active.retain(|a| {
+            let found = self.index.find_by_name(&a.name).is_some();
+            if !found {
+                tracing::warn!(name = %a.name, "deactivating skill: no longer found after rescan");
             }
-        }
-        self.active
-            .retain(|a| self.index.find_by_name(&a.name).is_some());
+            found
+        });
 
         Ok(())
     }
@@ -274,6 +282,54 @@ mod tests {
             state.active_skill_names().is_empty(),
             "stale active skill should be removed after rescan"
         );
+    }
+
+    #[tokio::test]
+    async fn rescan_preserves_still_valid_active() {
+        let dir = tempfile::tempdir().unwrap();
+        let skill_dir = dir.path().join("test-skill");
+        tokio::fs::create_dir(&skill_dir).await.unwrap();
+        tokio::fs::write(
+            skill_dir.join("SKILL.md"),
+            "---\nname: test-skill\ndescription: \"Test\"\n---\n\nBody.\n",
+        )
+        .await
+        .unwrap();
+
+        let index = SkillIndex::scan(&[dir.path().to_path_buf()], None)
+            .await
+            .unwrap();
+        let mut state = SkillState::new(index, vec![dir.path().to_path_buf()]);
+
+        state.activate("test-skill").await.unwrap();
+        state.rescan(None).await.unwrap();
+        assert_eq!(
+            state.active_skill_names(),
+            vec!["test-skill"],
+            "active skill should remain after rescan when dir is unchanged"
+        );
+    }
+
+    #[tokio::test]
+    async fn deactivate_case_insensitive() {
+        let dir = tempfile::tempdir().unwrap();
+        let skill_dir = dir.path().join("test-skill");
+        tokio::fs::create_dir(&skill_dir).await.unwrap();
+        tokio::fs::write(
+            skill_dir.join("SKILL.md"),
+            "---\nname: test-skill\ndescription: \"Test\"\n---\n\nBody.\n",
+        )
+        .await
+        .unwrap();
+
+        let index = SkillIndex::scan(&[dir.path().to_path_buf()], None)
+            .await
+            .unwrap();
+        let mut state = SkillState::new(index, vec![dir.path().to_path_buf()]);
+
+        state.activate("test-skill").await.unwrap();
+        state.deactivate("TEST-SKILL").unwrap();
+        assert!(state.active_skill_names().is_empty());
     }
 
     #[test]

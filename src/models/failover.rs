@@ -24,6 +24,7 @@ impl FailoverProvider {
 
 #[async_trait]
 impl ModelProvider for FailoverProvider {
+    #[tracing::instrument(skip_all, fields(provider_count = self.providers.len(), primary = self.providers.first().map_or("empty", |p| p.model_name())))]
     async fn complete(
         &self,
         messages: &[Message],
@@ -190,6 +191,30 @@ mod tests {
             provider.model_name(),
             "primary",
             "model_name should return primary provider's name"
+        );
+    }
+
+    #[tokio::test]
+    async fn empty_provider_list_returns_error() {
+        let provider = FailoverProvider::new(vec![]);
+        let result = provider
+            .complete(&[], &[], &CompletionOptions::default())
+            .await;
+        assert!(result.is_err(), "empty provider list should return error");
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("no providers"),
+            "error should mention no providers: {err}"
+        );
+    }
+
+    #[test]
+    fn empty_provider_model_name() {
+        let provider = FailoverProvider::new(vec![]);
+        assert_eq!(
+            provider.model_name(),
+            "failover(empty)",
+            "empty provider should return failover(empty)"
         );
     }
 }

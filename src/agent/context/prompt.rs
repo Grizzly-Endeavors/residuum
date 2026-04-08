@@ -5,24 +5,29 @@ use crate::workspace::identity::IdentityFiles;
 
 use super::types::{MemoryContext, ProjectsContext, SkillsContext, StatusLine, SubagentsContext};
 
+fn section(tag: &str, content: &str) -> String {
+    format!("<{tag}>\n{content}\n</{tag}>")
+}
+
 /// Build the `[Current Time: ...][Last Message: ...][Message Source: ...][Unread Inbox: N]` tag string.
 pub(super) fn build_status_line(ctx: &StatusLine) -> String {
+    use std::fmt::Write as _;
+
     let current = format_display_datetime(ctx.now);
-    let mut tag = match ctx.last_message_at {
-        Some(prev) => {
-            let delta = ctx.now - prev;
-            let relative = format_relative_time(delta);
-            format!("[Current Time: {current}][Last Message: {relative}]")
-        }
-        None => format!("[Current Time: {current}]"),
-    };
+    let mut tag = format!("[Current Time: {current}]");
+
+    if let Some(prev) = ctx.last_message_at {
+        let delta = ctx.now - prev;
+        let relative = format_relative_time(delta);
+        _ = write!(tag, "[Last Message: {relative}]");
+    }
 
     if let Some(source) = &ctx.message_source {
-        tag = format!("{tag}[Message Source: {source}]");
+        _ = write!(tag, "[Message Source: {source}]");
     }
 
     if ctx.unread_inbox_count > 0 {
-        tag = format!("{tag}[Unread Inbox: {}]", ctx.unread_inbox_count);
+        _ = write!(tag, "[Unread Inbox: {}]", ctx.unread_inbox_count);
     }
 
     tag
@@ -56,43 +61,39 @@ pub(crate) fn build_subagent_system_content(
     if let Some(instructions) = preset_instructions
         && !instructions.is_empty()
     {
-        parts.push(format!(
-            "<AGENT_INSTRUCTIONS>\n{instructions}\n</AGENT_INSTRUCTIONS>"
-        ));
+        parts.push(section("AGENT_INSTRUCTIONS", instructions));
     }
 
     if let Some(environment_md) = &identity.environment {
-        parts.push(format!(
-            "<ENVIRONMENT.md>\n{environment_md}\n</ENVIRONMENT.md>"
-        ));
+        parts.push(section("ENVIRONMENT.md", environment_md));
     }
 
     if let Some(user) = &identity.user {
-        parts.push(format!("<USER.md>\n{user}\n</USER.md>"));
+        parts.push(section("USER.md", user));
     }
 
     if let Some(idx) = projects_ctx.index
         && !idx.is_empty()
     {
-        parts.push(format!("<PROJECTS_INDEX>\n{idx}\n</PROJECTS_INDEX>"));
+        parts.push(section("PROJECTS_INDEX", idx));
     }
 
     if let Some(idx) = skills_ctx.index
         && !idx.is_empty()
     {
-        parts.push(format!("<SKILLS_INDEX>\n{idx}\n</SKILLS_INDEX>"));
+        parts.push(section("SKILLS_INDEX", idx));
     }
 
     if let Some(active) = projects_ctx.active_context
         && !active.is_empty()
     {
-        parts.push(format!("<ACTIVE_PROJECT>\n{active}\n</ACTIVE_PROJECT>"));
+        parts.push(section("ACTIVE_PROJECT", active));
     }
 
     if let Some(active) = skills_ctx.active_instructions
         && !active.is_empty()
     {
-        parts.push(format!("<ACTIVE_SKILLS>\n{active}\n</ACTIVE_SKILLS>"));
+        parts.push(section("ACTIVE_SKILLS", active));
     }
 
     parts.join("\n\n")
@@ -128,71 +129,69 @@ pub(super) fn build_system_content(
     let mut parts = Vec::new();
 
     if let Some(soul) = &identity.soul {
-        parts.push(format!("<SOUL.md>\n{soul}\n</SOUL.md>"));
+        parts.push(section("SOUL.md", soul));
     }
 
     if let Some(agents) = &identity.agents {
-        parts.push(format!("<AGENTS.md>\n{agents}\n</AGENTS.md>"));
+        parts.push(section("AGENTS.md", agents));
     }
 
     if let Some(bootstrap) = &identity.bootstrap {
-        parts.push(format!("<BOOTSTRAP.md>\n{bootstrap}\n</BOOTSTRAP.md>"));
+        parts.push(section("BOOTSTRAP.md", bootstrap));
     }
 
     if let Some(environment_md) = &identity.environment {
-        parts.push(format!(
-            "<ENVIRONMENT.md>\n{environment_md}\n</ENVIRONMENT.md>"
-        ));
+        parts.push(section("ENVIRONMENT.md", environment_md));
     }
 
     if let Some(user) = &identity.user {
-        parts.push(format!("<USER.md>\n{user}\n</USER.md>"));
+        parts.push(section("USER.md", user));
     }
 
     if let Some(memory) = &identity.memory {
-        parts.push(format!("<MEMORY.md>\n{memory}\n</MEMORY.md>"));
+        parts.push(section("MEMORY.md", memory));
     }
 
     if let Some(obs) = memory_ctx.observations
         && !obs.is_empty()
     {
-        parts.push(format!("<OBSERVATION_LOG>\n{obs}\n</OBSERVATION_LOG>"));
+        parts.push(section("OBSERVATION_LOG", obs));
     }
 
     if let Some(ctx) = memory_ctx.recent_context
         && !ctx.is_empty()
     {
-        parts.push(format!("<RECENT_CONTEXT>\n{ctx}\n</RECENT_CONTEXT>"));
+        parts.push(section("RECENT_CONTEXT", ctx));
     }
 
     if let Some(idx) = subagents_ctx.index
         && !idx.is_empty()
     {
-        parts.push(format!("<SUBAGENTS_INDEX>\n{idx}\n</SUBAGENTS_INDEX>"));
+        parts.push(section("SUBAGENTS_INDEX", idx));
     }
 
     if let Some(idx) = projects_ctx.index
         && !idx.is_empty()
     {
-        parts.push(format!("<PROJECTS_INDEX>\n{idx}\n</PROJECTS_INDEX>"));
+        parts.push(section("PROJECTS_INDEX", idx));
     }
 
     if let Some(idx) = skills_ctx.index
         && !idx.is_empty()
     {
-        parts.push(format!("<SKILLS_INDEX>\n{idx}\n</SKILLS_INDEX>"));
+        parts.push(section("SKILLS_INDEX", idx));
     }
 
     if let Some(active) = projects_ctx.active_context
         && !active.is_empty()
     {
-        parts.push(format!("<ACTIVE_PROJECT>\n{active}\n</ACTIVE_PROJECT>"));
+        parts.push(section("ACTIVE_PROJECT", active));
     }
 
     if let Some(active) = skills_ctx.active_instructions
         && !active.is_empty()
     {
-        parts.push(format!("<ACTIVE_SKILLS>\n{active}\n</ACTIVE_SKILLS>"));
+        parts.push(section("ACTIVE_SKILLS", active));
     }
 
     parts.join("\n\n")
@@ -231,9 +230,9 @@ mod tests {
         let content = build_system_content(
             &identity,
             &no_memory(),
-            &ProjectsContext::none(),
-            &SkillsContext::none(),
-            &SubagentsContext::none(),
+            &ProjectsContext::default(),
+            &SkillsContext::default(),
+            &SubagentsContext::default(),
         );
         assert!(
             content.contains("test agent"),
@@ -264,9 +263,9 @@ mod tests {
         let content = build_system_content(
             &identity,
             &mem,
-            &ProjectsContext::none(),
-            &SkillsContext::none(),
-            &SubagentsContext::none(),
+            &ProjectsContext::default(),
+            &SkillsContext::default(),
+            &SubagentsContext::default(),
         );
 
         assert!(
@@ -294,9 +293,9 @@ mod tests {
         let content = build_system_content(
             &identity,
             &mem,
-            &ProjectsContext::none(),
-            &SkillsContext::none(),
-            &SubagentsContext::none(),
+            &ProjectsContext::default(),
+            &SkillsContext::default(),
+            &SubagentsContext::default(),
         );
         assert!(
             !content.contains("OBSERVATION_LOG"),
@@ -311,9 +310,9 @@ mod tests {
         let content = build_system_content(
             &identity,
             &no_memory(),
-            &ProjectsContext::none(),
-            &SkillsContext::none(),
-            &SubagentsContext::none(),
+            &ProjectsContext::default(),
+            &SkillsContext::default(),
+            &SubagentsContext::default(),
         );
         assert!(
             !content.contains("OBSERVATION_LOG"),
@@ -335,9 +334,9 @@ mod tests {
         let content = build_system_content(
             &identity,
             &mem,
-            &ProjectsContext::none(),
-            &SkillsContext::none(),
-            &SubagentsContext::none(),
+            &ProjectsContext::default(),
+            &SkillsContext::default(),
+            &SubagentsContext::default(),
         );
 
         assert!(
@@ -376,9 +375,9 @@ mod tests {
         let content = build_system_content(
             &identity,
             &mem,
-            &ProjectsContext::none(),
-            &SkillsContext::none(),
-            &SubagentsContext::none(),
+            &ProjectsContext::default(),
+            &SkillsContext::default(),
+            &SubagentsContext::default(),
         );
 
         assert!(
@@ -401,9 +400,9 @@ mod tests {
         let content = build_system_content(
             &identity,
             &mem,
-            &ProjectsContext::none(),
-            &SkillsContext::none(),
-            &SubagentsContext::none(),
+            &ProjectsContext::default(),
+            &SkillsContext::default(),
+            &SubagentsContext::default(),
         );
         assert!(
             !content.contains("RECENT_CONTEXT"),
@@ -421,9 +420,9 @@ mod tests {
         let content = build_system_content(
             &identity,
             &mem,
-            &ProjectsContext::none(),
-            &SkillsContext::none(),
-            &SubagentsContext::none(),
+            &ProjectsContext::default(),
+            &SkillsContext::default(),
+            &SubagentsContext::default(),
         );
 
         let obs_close = content.find("</OBSERVATION_LOG>");
@@ -451,9 +450,9 @@ mod tests {
         let content = build_system_content(
             &identity,
             &no_memory(),
-            &ProjectsContext::none(),
-            &SkillsContext::none(),
-            &SubagentsContext::none(),
+            &ProjectsContext::default(),
+            &SkillsContext::default(),
+            &SubagentsContext::default(),
         );
 
         assert!(
@@ -483,9 +482,9 @@ mod tests {
         let content = build_system_content(
             &identity,
             &no_memory(),
-            &ProjectsContext::none(),
-            &SkillsContext::none(),
-            &SubagentsContext::none(),
+            &ProjectsContext::default(),
+            &SkillsContext::default(),
+            &SubagentsContext::default(),
         );
 
         assert!(
@@ -508,9 +507,9 @@ mod tests {
         let content = build_system_content(
             &identity,
             &no_memory(),
-            &ProjectsContext::none(),
+            &ProjectsContext::default(),
             &skills,
-            &SubagentsContext::none(),
+            &SubagentsContext::default(),
         );
         assert!(
             content.contains("<SKILLS_INDEX>"),
@@ -538,9 +537,9 @@ mod tests {
         let content = build_system_content(
             &identity,
             &no_memory(),
-            &ProjectsContext::none(),
+            &ProjectsContext::default(),
             &skills,
-            &SubagentsContext::none(),
+            &SubagentsContext::default(),
         );
         assert!(
             content.contains("<ACTIVE_SKILLS>"),
@@ -615,9 +614,9 @@ mod tests {
         let content = build_system_content(
             &identity,
             &no_memory(),
-            &ProjectsContext::none(),
+            &ProjectsContext::default(),
             &skills,
-            &SubagentsContext::none(),
+            &SubagentsContext::default(),
         );
         assert!(
             !content.contains("SKILLS_INDEX"),
@@ -631,9 +630,9 @@ mod tests {
         let content = build_system_content(
             &identity,
             &no_memory(),
-            &ProjectsContext::none(),
-            &SkillsContext::none(),
-            &SubagentsContext::none(),
+            &ProjectsContext::default(),
+            &SkillsContext::default(),
+            &SubagentsContext::default(),
         );
         assert!(
             !content.contains("SKILLS_INDEX"),
@@ -702,8 +701,12 @@ mod tests {
             index: Some("<available_skills/>"),
             active_instructions: Some("<active_skill>instructions</active_skill>"),
         };
-        let content =
-            build_subagent_system_content(&identity, &ProjectsContext::none(), &skills_ctx, None);
+        let content = build_subagent_system_content(
+            &identity,
+            &ProjectsContext::default(),
+            &skills_ctx,
+            None,
+        );
         assert!(
             content.contains("<ACTIVE_SKILLS>"),
             "active skills section should appear in subagent system prompt"
@@ -721,8 +724,12 @@ mod tests {
             index: Some(""),
             active_instructions: None,
         };
-        let content =
-            build_subagent_system_content(&identity, &ProjectsContext::none(), &skills_ctx, None);
+        let content = build_subagent_system_content(
+            &identity,
+            &ProjectsContext::default(),
+            &skills_ctx,
+            None,
+        );
         assert!(
             !content.contains("SKILLS_INDEX"),
             "empty skills index should be skipped"
@@ -736,8 +743,12 @@ mod tests {
             index: Some("| proj | status |"),
             active_context: Some("**Current Project:** test-proj"),
         };
-        let content =
-            build_subagent_system_content(&identity, &projects_ctx, &SkillsContext::none(), None);
+        let content = build_subagent_system_content(
+            &identity,
+            &projects_ctx,
+            &SkillsContext::default(),
+            None,
+        );
         assert!(
             content.contains("<ACTIVE_PROJECT>"),
             "active project section should appear in subagent system prompt"
@@ -791,8 +802,8 @@ mod tests {
         };
         let content = build_subagent_system_content(
             &identity,
-            &ProjectsContext::none(),
-            &SkillsContext::none(),
+            &ProjectsContext::default(),
+            &SkillsContext::default(),
             Some("Do this specific task"),
         );
 

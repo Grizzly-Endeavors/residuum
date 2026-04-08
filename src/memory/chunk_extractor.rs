@@ -6,7 +6,8 @@
 
 use std::path::Path;
 
-use crate::error::ResiduumError;
+use anyhow::Context;
+
 use crate::memory::recent_messages::RecentMessage;
 use crate::memory::types::IndexChunk;
 use crate::models::Role;
@@ -59,6 +60,12 @@ pub(crate) fn extract_chunks(
                         line_end: line_num,
                         content: format!("user: {user_content}\nassistant: {text}"),
                     });
+                } else {
+                    tracing::debug!(
+                        episode_id,
+                        line = line_num,
+                        "orphaned assistant message with no pending user"
+                    );
                 }
                 // If no pending user, this assistant message is orphaned — skip
             }
@@ -77,17 +84,10 @@ pub(crate) fn extract_chunks(
 ///
 /// # Errors
 /// Returns an error if the file cannot be written.
-pub(crate) async fn write_idx_jsonl(
-    path: &Path,
-    chunks: &[IndexChunk],
-) -> Result<(), ResiduumError> {
+pub(crate) async fn write_idx_jsonl(path: &Path, chunks: &[IndexChunk]) -> anyhow::Result<()> {
     let mut lines = Vec::with_capacity(chunks.len());
     for chunk in chunks {
-        lines.push(
-            serde_json::to_string(chunk).map_err(|e| {
-                ResiduumError::Memory(format!("failed to serialize index chunk: {e}"))
-            })?,
-        );
+        lines.push(serde_json::to_string(chunk).context("failed to serialize index chunk")?);
     }
     let content = if lines.is_empty() {
         String::new()
@@ -95,30 +95,7 @@ pub(crate) async fn write_idx_jsonl(
         lines.join("\n") + "\n"
     };
 
-    let dir = path.parent().ok_or_else(|| {
-        ResiduumError::Memory(format!(
-            "idx.jsonl path has no parent directory: {}",
-            path.display()
-        ))
-    })?;
-
-    let tmp_path = dir.join(".idx.jsonl.tmp");
-    tokio::fs::write(&tmp_path, &content).await.map_err(|e| {
-        ResiduumError::Memory(format!(
-            "failed to write idx.jsonl at {}: {e}",
-            tmp_path.display()
-        ))
-    })?;
-
-    tokio::fs::rename(&tmp_path, path).await.map_err(|e| {
-        ResiduumError::Memory(format!(
-            "failed to rename idx.jsonl from {} to {}: {e}",
-            tmp_path.display(),
-            path.display()
-        ))
-    })?;
-
-    Ok(())
+    crate::util::fs::atomic_write(path, &content).await
 }
 
 /// Read and parse an idx.jsonl file, returning chunks.
@@ -385,7 +362,56 @@ mod tests {
 
         assert_eq!(loaded.len(), 2, "should round-trip 2 chunks");
         assert_eq!(loaded[0].chunk_id, "ep-001-c0");
-        assert_eq!(loaded[1].chunk_id, "ep-001-c1");
+        assert_eq!(loaded[0].episode_id, "ep-001");
+        assert_eq!(loaded[0].date, "2026-02-19");
+        assert_eq!(loaded[0].context, "residuum");
+        assert_eq!(loaded[0].line_start, 2);
+        assert_eq!(loaded[0].line_end, 3);
         assert_eq!(loaded[0].content, "user: hello\nassistant: hi");
+        assert_eq!(loaded[1].chunk_id, "ep-001-c1");
+        assert_eq!(loaded[1].content, "user: what\nassistant: that");
+    }
+
+    #[test]
+    fn read_idx_jsonl_missing_file_returns_empty() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("nonexistent.idx.jsonl");
+        let chunks = read_idx_jsonl(&path);
+        assert!(chunks.is_empty(), "missing file should return empty vec");
+    }
+
+    #[tokio::test]
+    async fn read_idx_jsonl_skips_malformed_lines() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("ep-001.idx.jsonl");
+
+        let valid = IndexChunk {
+            chunk_id: "ep-001-c0".to_string(),
+            episode_id: "ep-001".to_string(),
+            date: "2026-02-19".to_string(),
+            context: "residuum".to_string(),
+            line_start: 2,
+            line_end: 3,
+            content: "user: hello\nassistant: hi".to_string(),
+        };
+        let valid2 = IndexChunk {
+            chunk_id: "ep-001-c1".to_string(),
+            ..valid.clone()
+        };
+        let content = format!(
+            "{}\nnot valid json\n{}\n",
+            serde_json::to_string(&valid).unwrap(),
+            serde_json::to_string(&valid2).unwrap(),
+        );
+        tokio::fs::write(&path, &content).await.unwrap();
+
+        let chunks = read_idx_jsonl(&path);
+        assert_eq!(
+            chunks.len(),
+            2,
+            "should skip malformed line and return 2 valid chunks"
+        );
+        assert_eq!(chunks[0].chunk_id, "ep-001-c0");
+        assert_eq!(chunks[1].chunk_id, "ep-001-c1");
     }
 }

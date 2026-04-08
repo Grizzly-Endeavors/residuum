@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use std::str::FromStr;
 
 use crate::config::types::RoleOverrides;
-use crate::error::ResiduumError;
+use crate::util::FatalError;
 
 use super::super::deserialize::{ModelAssignment, ModelsConfigFile, ProviderEntryFile};
 use super::super::provider::{ModelSpec, ProviderKind, ProviderSpec};
@@ -27,17 +27,17 @@ pub(super) struct ResolvedModels {
 /// `[models]` config section and environment overrides.
 ///
 /// # Errors
-/// Returns `ResiduumError::Config` if any model string is invalid or an unsupported
+/// Returns `FatalError::Config` if any model string is invalid or an unsupported
 /// provider is used for embeddings.
 pub(super) fn resolve_all_model_specs(
     models: Option<&ModelsConfigFile>,
     providers_map: Option<&HashMap<String, ProviderEntryFile>>,
     secrets: &SecretStore,
-) -> Result<ResolvedModels, ResiduumError> {
+) -> Result<ResolvedModels, FatalError> {
     let mut role_overrides = HashMap::new();
 
     // Resolve main: RESIDUUM_MODEL env > models.main > default
-    let main = if let Ok(env_model) = std::env::var("RESIDUUM_MODEL") {
+    let mut main = if let Ok(env_model) = std::env::var("RESIDUUM_MODEL") {
         vec![resolve_model_string(&env_model, providers_map, secrets)?]
     } else if let Some(main_spec) = models.and_then(|m| m.main.clone()) {
         extract_role_overrides("main", &main_spec, &mut role_overrides)?;
@@ -51,15 +51,11 @@ pub(super) fn resolve_all_model_specs(
     };
 
     // RESIDUUM_PROVIDER_URL overrides first provider in main chain only
-    let main = if let Ok(url) = std::env::var("RESIDUUM_PROVIDER_URL") {
-        let mut chain = main;
-        if let Some(first) = chain.first_mut() {
-            first.provider_url = url;
-        }
-        chain
-    } else {
-        main
-    };
+    if let Ok(url) = std::env::var("RESIDUUM_PROVIDER_URL")
+        && let Some(first) = main.first_mut()
+    {
+        first.provider_url = url;
+    }
 
     // Resolve each role: models.<role> > models.default > main
     let default_assignment = models.and_then(|m| m.default.clone());
@@ -100,7 +96,7 @@ pub(super) fn resolve_all_model_specs(
     if let Some(ref spec) = embedding
         && spec.model.kind == ProviderKind::Anthropic
     {
-        return Err(ResiduumError::Config(
+        return Err(FatalError::Config(
             "anthropic does not offer an embeddings API; \
              use openai, ollama, or gemini for models.embedding"
                 .to_string(),
@@ -127,30 +123,28 @@ pub(super) fn resolve_all_model_specs(
 ///   then `RESIDUUM_API_KEY`.
 ///
 /// # Errors
-/// Returns `ResiduumError::Config` if the model string format is invalid,
+/// Returns `FatalError::Config` if the model string format is invalid,
 /// the provider is unknown, or an explicit provider entry references an
 /// unknown type.
 fn resolve_model_string(
     model_str: &str,
     providers_map: Option<&HashMap<String, ProviderEntryFile>>,
     secrets: &SecretStore,
-) -> Result<ProviderSpec, ResiduumError> {
+) -> Result<ProviderSpec, FatalError> {
     let (provider_part, model_name) = model_str.split_once('/').ok_or_else(|| {
-        ResiduumError::Config(format!(
+        FatalError::Config(format!(
             "expected 'provider/model' format, got '{model_str}'"
         ))
     })?;
 
     if model_name.is_empty() {
-        return Err(ResiduumError::Config(
-            "model name cannot be empty".to_string(),
-        ));
+        return Err(FatalError::Config("model name cannot be empty".to_string()));
     }
 
     // Check if provider_part matches a named [providers] entry
     if let Some(entry) = providers_map.and_then(|p| p.get(provider_part)) {
         let kind = ProviderKind::from_str(&entry.kind).map_err(|e| {
-            ResiduumError::Config(format!(
+            FatalError::Config(format!(
                 "provider '{provider_part}' has invalid type '{}': {e}",
                 entry.kind
             ))
@@ -182,7 +176,7 @@ fn resolve_model_string(
 
     // Treat provider_part as an implicit ProviderKind
     let kind = ProviderKind::from_str(provider_part).map_err(|_parse_err| {
-        ResiduumError::Config(format!(
+        FatalError::Config(format!(
             "'{provider_part}' is not a known provider name or type \
              (expected one of: anthropic, gemini, ollama, openai, \
              or a key from [providers])"
@@ -208,12 +202,12 @@ fn resolve_model_string(
 /// Resolve a `ModelAssignment` into a `Vec<ProviderSpec>` (failover chain).
 ///
 /// # Errors
-/// Returns `ResiduumError::Config` if any model string in the assignment cannot be resolved.
+/// Returns `FatalError::Config` if any model string in the assignment cannot be resolved.
 pub(super) fn resolve_assignment_chain(
     assignment: ModelAssignment,
     providers_map: Option<&HashMap<String, ProviderEntryFile>>,
     secrets: &SecretStore,
-) -> Result<Vec<ProviderSpec>, ResiduumError> {
+) -> Result<Vec<ProviderSpec>, FatalError> {
     assignment
         .into_model_strings()
         .iter()
@@ -223,29 +217,14 @@ pub(super) fn resolve_assignment_chain(
 
 /// Extract per-role overrides from a `ModelAssignment` and insert into the map.
 ///
-/// Public within the resolve module for use by background tier resolution.
-///
 /// # Errors
-/// Returns `ResiduumError::Config` if the thinking string is invalid or temperature
+/// Returns `FatalError::Config` if the thinking string is invalid or temperature
 /// is out of range.
-pub(super) fn extract_role_overrides_pub(
+pub(super) fn extract_role_overrides(
     role: &str,
     assignment: &ModelAssignment,
     overrides: &mut HashMap<String, RoleOverrides>,
-) -> Result<(), ResiduumError> {
-    extract_role_overrides(role, assignment, overrides)
-}
-
-/// Extract per-role overrides from a `ModelAssignment` and insert into the map.
-///
-/// # Errors
-/// Returns `ResiduumError::Config` if the thinking string is invalid or temperature
-/// is out of range.
-fn extract_role_overrides(
-    role: &str,
-    assignment: &ModelAssignment,
-    overrides: &mut HashMap<String, RoleOverrides>,
-) -> Result<(), ResiduumError> {
+) -> Result<(), FatalError> {
     let (temp, thinking_str) = assignment.overrides();
     if temp.is_none() && thinking_str.is_none() {
         return Ok(());
@@ -254,7 +233,7 @@ fn extract_role_overrides(
     if let Some(t) = temp
         && !(0.0..=2.0).contains(&t)
     {
-        return Err(ResiduumError::Config(format!(
+        return Err(FatalError::Config(format!(
             "invalid temperature for role '{role}': {t} (expected 0.0–2.0)"
         )));
     }
@@ -277,7 +256,7 @@ fn extract_role_overrides(
 /// Also extracts per-role overrides into the map.
 ///
 /// # Errors
-/// Returns `ResiduumError::Config` if any model string cannot be resolved.
+/// Returns `FatalError::Config` if any model string cannot be resolved.
 fn resolve_role_chain_from_assignment(
     role_spec: Option<ModelAssignment>,
     default_spec: Option<&ModelAssignment>,
@@ -286,14 +265,16 @@ fn resolve_role_chain_from_assignment(
     secrets: &SecretStore,
     role: &str,
     overrides: &mut HashMap<String, RoleOverrides>,
-) -> Result<Vec<ProviderSpec>, ResiduumError> {
+) -> Result<Vec<ProviderSpec>, FatalError> {
     if let Some(spec) = role_spec {
         extract_role_overrides(role, &spec, overrides)?;
         return resolve_assignment_chain(spec, providers_map, secrets);
     }
     if let Some(spec) = default_spec {
+        tracing::debug!(role = %role, "using models.default for role");
         return resolve_assignment_chain(spec.clone(), providers_map, secrets);
     }
+    tracing::debug!(role = %role, "using main chain for role");
     Ok(main.to_vec())
 }
 
@@ -319,30 +300,9 @@ fn provider_api_key_env(kind: ProviderKind) -> Option<String> {
 )]
 mod tests {
     use super::super::super::constants::DEFAULT_ANTHROPIC_URL;
-    use super::super::super::deserialize::{ConfigFile, ProvidersFile};
     use super::super::from_file_and_env;
+    use super::super::test_helpers::*;
     use super::*;
-
-    /// Create an empty `SecretStore` for tests that don't need real secrets.
-    fn empty_secrets() -> SecretStore {
-        let dir = std::env::temp_dir().join("residuum-test-empty-secrets");
-        SecretStore::load(&dir).unwrap()
-    }
-
-    /// Create a temp dir for `from_file_and_env` calls.
-    fn test_config_dir() -> std::path::PathBuf {
-        std::env::temp_dir().join("residuum-test-config")
-    }
-
-    /// Parse a TOML string into a `ConfigFile` (config-only: timezone, memory, etc.).
-    fn parse_config(toml: &str) -> ConfigFile {
-        toml::from_str(toml).unwrap()
-    }
-
-    /// Parse a TOML string into a `ProvidersFile` (providers and models sections).
-    fn parse_providers(toml: &str) -> ProvidersFile {
-        toml::from_str(toml).unwrap()
-    }
 
     // ── Provider / model resolution ───────────────────────────────────────────
 
@@ -653,6 +613,7 @@ default = "openai/gpt-4o"
 
     #[test]
     fn provider_api_key_env_expansion() {
+        let _guard = ENV_MUTEX.lock().unwrap();
         let secrets = empty_secrets();
         // SAFETY: test-only, single-threaded test environment
         unsafe { std::env::set_var("RESIDUUM_TEST_PROVIDER_KEY", "expanded-key") };
@@ -704,6 +665,7 @@ default = "openai/gpt-4o"
 
     #[test]
     fn provider_api_key_missing_secret_falls_back() {
+        let _guard = ENV_MUTEX.lock().unwrap();
         let secrets = empty_secrets();
         // SAFETY: test-only, single-threaded test environment
         unsafe { std::env::set_var("OPENAI_API_KEY", "fallback-env-key") };
@@ -837,6 +799,25 @@ observer = { model = "gemini/gemini-3.0-flash", temperature = 3.0 }
         let cfg_file = parse_config("timezone = \"UTC\"\n");
         let result = from_file_and_env(Some(&cfg_file), Some(&prov_file), &test_config_dir());
         assert!(result.is_err(), "temperature > 2.0 should error");
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("temperature"),
+            "error should mention temperature: {err}"
+        );
+    }
+
+    #[test]
+    fn model_assignment_invalid_temperature_negative() {
+        let prov_file = parse_providers(
+            r#"
+[models]
+main = "anthropic/claude-sonnet-4-6"
+observer = { model = "gemini/gemini-3.0-flash", temperature = -0.1 }
+"#,
+        );
+        let cfg_file = parse_config("timezone = \"UTC\"\n");
+        let result = from_file_and_env(Some(&cfg_file), Some(&prov_file), &test_config_dir());
+        assert!(result.is_err(), "temperature < 0.0 should error");
         let err = result.unwrap_err().to_string();
         assert!(
             err.contains("temperature"),

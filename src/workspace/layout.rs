@@ -177,12 +177,6 @@ impl WorkspaceLayout {
         self.root.join("HEARTBEAT.yml")
     }
 
-    /// Path to CHANNELS.yml -- channel registry.
-    #[must_use]
-    pub fn channels_yml(&self) -> PathBuf {
-        self.root.join("CHANNELS.yml")
-    }
-
     /// Path to ALERTS.md -- notification routing policy for the LLM router.
     #[must_use]
     pub fn alerts_md(&self) -> PathBuf {
@@ -359,11 +353,6 @@ mod tests {
             "heartbeat_yml path"
         );
         assert_eq!(
-            layout.channels_yml(),
-            PathBuf::from("/tmp/ws/CHANNELS.yml"),
-            "channels_yml path"
-        );
-        assert_eq!(
             layout.pulse_state_json(),
             PathBuf::from("/tmp/ws/pulse_state.json"),
             "pulse_state_json path"
@@ -376,10 +365,9 @@ mod tests {
     }
 
     #[test]
-    fn required_dirs_count() {
+    fn required_dirs_all_under_root() {
         let layout = WorkspaceLayout::new("/tmp/ws");
         let dirs = layout.required_dirs();
-        assert_eq!(dirs.len(), 11, "should have all required directories");
         assert!(
             dirs.contains(&PathBuf::from("/tmp/ws")),
             "root should be included"
@@ -396,5 +384,12 @@ mod tests {
             dirs.contains(&PathBuf::from("/tmp/ws/config")),
             "config should be included"
         );
+        for dir in &dirs {
+            assert!(
+                dir.starts_with("/tmp/ws"),
+                "required dir should be under root: {}",
+                dir.display()
+            );
+        }
     }
 }

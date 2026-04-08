@@ -19,14 +19,14 @@ pub(crate) struct WebFetchTool {
 impl WebFetchTool {
     /// Create a new web fetch tool with a dedicated HTTP client.
     #[must_use]
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         let http = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(30))
             .user_agent("Mozilla/5.0 (compatible; Residuum/1.0; +https://github.com/residuum)")
             .redirect(reqwest::redirect::Policy::limited(5))
             .build()
             .unwrap_or_else(|e| {
-                tracing::error!(error = %e, "failed to build HTTP client for web fetch, using default");
+                tracing::warn!(error = %e, "failed to build HTTP client for web fetch, using default");
                 reqwest::Client::default()
             });
         Self { http }
@@ -41,7 +41,7 @@ impl Tool for WebFetchTool {
 
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
-            name: "web_fetch".to_string(),
+            name: self.name().to_string(),
             description: "Fetch a web page and extract its main content as readable text. \
                           Returns the page title and cleaned content, optimized for reading. \
                           Use this to read articles, documentation, or any web page."
@@ -170,11 +170,7 @@ fn truncate_content(content: &str) -> String {
     }
     let mut truncated = String::with_capacity(MAX_CONTENT_CHARS + 50);
     // Find a safe truncation point (don't split mid-char)
-    let boundary = content
-        .char_indices()
-        .take_while(|(i, _)| *i < MAX_CONTENT_CHARS)
-        .last()
-        .map_or(0, |(i, c)| i + c.len_utf8());
+    let boundary = content.floor_char_boundary(MAX_CONTENT_CHARS);
     if let Some(slice) = content.get(..boundary) {
         truncated.push_str(slice);
     }

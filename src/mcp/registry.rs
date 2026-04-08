@@ -169,12 +169,14 @@ impl McpRegistry {
             .map(|s| s.name.clone())
             .collect();
 
-        for name in &to_stop {
-            self.servers.retain(|s| s.name != *name);
-        }
-
         result.to_stop = to_stop;
         result
+    }
+
+    fn mark_failed_if_tracked(&mut self, name: &str, reason: &str) {
+        if let Some(server) = self.servers.iter_mut().find(|s| s.name == name) {
+            server.status = McpStatus::Failed(reason.to_string());
+        }
     }
 
     /// Connect to an MCP server, list its tools, and mark it running.
@@ -183,22 +185,32 @@ impl McpRegistry {
     ///
     /// # Errors
     /// Returns the connection error (server is already marked failed internally).
+    #[tracing::instrument(skip_all, fields(mcp.server = %entry.name))]
     pub async fn connect(&mut self, entry: &McpServerEntry) -> Result<(), anyhow::Error> {
-        let client = McpClient::connect(entry).await?;
-        let tools = client.list_tools().await?;
+        tracing::debug!("attempting mcp server connection");
+        let client = match McpClient::connect(entry).await {
+            Ok(c) => c,
+            Err(e) => {
+                self.mark_failed_if_tracked(&entry.name, &e.to_string());
+                return Err(e);
+            }
+        };
+        let tools = match client.list_tools().await {
+            Ok(t) => t,
+            Err(e) => {
+                self.mark_failed_if_tracked(&entry.name, &e.to_string());
+                return Err(e);
+            }
+        };
 
         if let Some(server) = self.servers.iter_mut().find(|s| s.name == entry.name) {
             server.status = McpStatus::Running;
             server.client = Some(client);
             server.tools = tools;
-            tracing::info!(
-                server = %entry.name,
-                tool_count = server.tools.len(),
-                "mcp server connected"
-            );
+            tracing::info!(tool_count = server.tools.len(), "mcp server connected");
         } else {
             tracing::warn!(
-                server = %entry.name,
+                mcp.server = %entry.name,
                 "mcp server connected but was removed from tracking before state could be updated — client discarded"
             );
         }
@@ -207,32 +219,45 @@ impl McpRegistry {
     }
 
     /// Disconnect a specific server by name.
+    #[tracing::instrument(skip_all, fields(mcp.server = %name))]
     pub async fn disconnect(&mut self, name: &str) {
         if let Some(idx) = self.servers.iter().position(|s| s.name == name) {
             let server = self.servers.remove(idx);
             if let Some(client) = server.client {
                 client.shutdown().await;
             }
-            tracing::info!(server = %name, "mcp server disconnected");
+            tracing::info!("mcp server disconnected");
         }
     }
 
     /// Disconnect all tracked servers.
     ///
     /// Returns names of servers that were disconnected.
+    #[tracing::instrument(skip_all)]
     pub async fn disconnect_all(&mut self) -> Vec<String> {
         let servers: Vec<TrackedServer> = self.servers.drain(..).collect();
         let mut names = Vec::with_capacity(servers.len());
 
-        for server in servers {
-            names.push(server.name.clone());
-            if let Some(client) = server.client {
-                client.shutdown().await;
+        for TrackedServer { name, client, .. } in servers {
+            if let Some(c) = client {
+                c.shutdown().await;
             }
-            tracing::info!(server = %server.name, "mcp server disconnected");
+            names.push(name);
         }
 
+        let count = names.len();
+        tracing::info!(count, "mcp servers disconnected");
         names
+    }
+
+    async fn attempt_connect(&mut self, entry: &McpServerEntry, report: &mut McpReconcileReport) {
+        if let Err(e) = self.connect(entry).await {
+            let reason = e.to_string();
+            tracing::warn!(server = %entry.name, error = %reason, "mcp server failed to connect");
+            report.failures.push((entry.name.clone(), reason));
+        } else {
+            report.started += 1;
+        }
     }
 
     /// Connect additional servers without reconciling existing state.
@@ -240,6 +265,7 @@ impl McpRegistry {
     /// Unlike `reconcile_and_connect`, this is purely additive — it never stops
     /// or removes servers that are already tracked. Servers that are already
     /// Running or Pending are silently skipped.
+    #[tracing::instrument(skip_all, fields(server_count = entries.len()))]
     pub async fn connect_servers(&mut self, entries: &[McpServerEntry]) -> McpReconcileReport {
         let mut report = McpReconcileReport::default();
 
@@ -262,15 +288,7 @@ impl McpRegistry {
                 tools: Vec::new(),
             });
 
-            if let Err(e) = self.connect(entry).await {
-                let reason = e.to_string();
-                if let Some(server) = self.servers.iter_mut().find(|s| s.name == entry.name) {
-                    server.status = McpStatus::Failed(reason.clone());
-                }
-                report.failures.push((entry.name.clone(), reason));
-            } else {
-                report.started += 1;
-            }
+            self.attempt_connect(entry, &mut report).await;
         }
 
         report
@@ -279,38 +297,21 @@ impl McpRegistry {
     /// Reconcile and connect/disconnect in one step.
     ///
     /// Runs the state diff, then connects new servers and disconnects removed ones.
+    #[tracing::instrument(skip_all)]
     pub async fn reconcile_and_connect(
         &mut self,
         desired: &[McpServerEntry],
     ) -> McpReconcileReport {
         let diff = self.reconcile(desired);
-        let mut report = McpReconcileReport {
-            started: 0,
-            stopped: diff.to_stop.len(),
-            failures: Vec::new(),
-        };
+        let mut report = McpReconcileReport::default();
 
         for entry in &diff.to_start {
-            if let Err(e) = self.connect(entry).await {
-                let reason = e.to_string();
-                // Mark server as failed
-                if let Some(server) = self.servers.iter_mut().find(|s| s.name == entry.name) {
-                    server.status = McpStatus::Failed(reason.clone());
-                }
-                report.failures.push((entry.name.clone(), reason));
-            } else {
-                report.started += 1;
-            }
+            self.attempt_connect(entry, &mut report).await;
         }
 
-        // Disconnect servers that should be stopped (already removed from tracking
-        // by reconcile, but we need to shut down their clients).
-        // Note: reconcile already removed them from self.servers, so we handle
-        // disconnection through the to_stop list. The clients were dropped when
-        // the TrackedServer was removed. This is fine because ChildWithCleanup
-        // handles process cleanup on drop.
         for name in &diff.to_stop {
-            tracing::info!(server = %name, "mcp server stopped");
+            self.disconnect(name).await;
+            report.stopped += 1;
         }
 
         report
@@ -324,6 +325,7 @@ impl McpRegistry {
     ///
     /// Multiple agents activating the same project share a single set of
     /// running servers. Servers are only stopped when the last agent deactivates.
+    #[tracing::instrument(skip_all, fields(project = %project_name))]
     pub async fn activate_project(
         &mut self,
         project_name: &str,
@@ -333,7 +335,6 @@ impl McpRegistry {
         if let Some(state) = self.project_refs.get_mut(&key) {
             state.active_count += 1;
             tracing::debug!(
-                project = %project_name,
                 count = state.active_count,
                 "project mcp ref count incremented (servers already running)"
             );
@@ -351,13 +352,11 @@ impl McpRegistry {
         );
         if !report.failures.is_empty() {
             tracing::warn!(
-                project = %project_name,
                 failures = report.failures.len(),
                 "project mcp activation had connection failures"
             );
         }
         tracing::debug!(
-            project = %project_name,
             started = report.started,
             "project mcp servers activated (first ref)"
         );
@@ -368,31 +367,32 @@ impl McpRegistry {
     ///
     /// When the count reaches zero, the project's servers are disconnected.
     /// Returns the names of servers that were stopped (empty if count > 0).
+    #[tracing::instrument(skip_all, fields(project = %project_name))]
     pub async fn deactivate_project(&mut self, project_name: &str) -> Vec<String> {
         let key = project_name.to_lowercase();
         let Some(state) = self.project_refs.get_mut(&key) else {
             return Vec::new();
         };
 
-        if state.active_count > 0 {
-            state.active_count -= 1;
+        if state.active_count == 0 {
+            tracing::warn!(project = %project_name, "deactivate_project called with active_count already zero — possible double-deactivation");
+            return Vec::new();
         }
+        state.active_count -= 1;
 
         if state.active_count == 0 {
             let server_names: Vec<String> = state.servers.iter().map(|s| s.name.clone()).collect();
             self.project_refs.remove(&key);
 
-            let mut stopped = Vec::new();
             for name in &server_names {
                 self.disconnect(name).await;
-                stopped.push(name.clone());
             }
             tracing::debug!(
                 project = %project_name,
-                count = stopped.len(),
+                count = server_names.len(),
                 "project mcp servers stopped (last ref)"
             );
-            stopped
+            server_names
         } else {
             tracing::debug!(
                 project = %project_name,
@@ -408,21 +408,21 @@ impl McpRegistry {
     /// Sets the count to zero and disconnects immediately. Used for crash
     /// recovery when a sub-agent exits without calling `deactivate_project`.
     /// Returns the names of servers that were stopped.
+    #[tracing::instrument(skip_all, fields(project = %project_name))]
     pub async fn force_deactivate_project(&mut self, project_name: &str) -> Vec<String> {
         let key = project_name.to_lowercase();
         let Some(state) = self.project_refs.remove(&key) else {
             return Vec::new();
         };
 
-        let mut stopped = Vec::new();
-        for server in &state.servers {
-            self.disconnect(&server.name).await;
-            stopped.push(server.name.clone());
+        let stopped: Vec<String> = state.servers.iter().map(|s| s.name.clone()).collect();
+        for name in &stopped {
+            self.disconnect(name).await;
         }
-        tracing::debug!(
+        tracing::warn!(
             project = %project_name,
             count = stopped.len(),
-            "project mcp servers force-stopped"
+            "project mcp servers force-stopped (ref count bypassed — crash recovery)"
         );
         stopped
     }
@@ -442,6 +442,7 @@ impl McpRegistry {
     /// # Errors
     /// Returns `ToolError::NotFound` if no running server has the tool.
     /// Returns `ToolError::Execution` if the RPC call fails.
+    #[tracing::instrument(skip_all, fields(mcp.tool = %name))]
     pub async fn call_tool(&self, name: &str, args: Value) -> Result<ToolResult, ToolError> {
         let server = self
             .servers
@@ -453,7 +454,7 @@ impl McpRegistry {
 
         let client = server.client.as_ref().ok_or_else(|| {
             tracing::error!(
-                server = %server.name,
+                mcp.server = %server.name,
                 "running server has no client handle — internal state corruption"
             );
             ToolError::Execution(format!(
@@ -462,10 +463,13 @@ impl McpRegistry {
             ))
         })?;
 
+        tracing::debug!(mcp.server = %server.name, "routing tool call to server");
         client.call_tool(name, args).await
     }
 
     /// Mark a server as running (used in tests without a live client).
+    // `pub` (not `#[cfg(test)]`) because integration tests in tests/ need this.
+    #[doc(hidden)]
     pub fn mark_running(&mut self, name: &str) {
         if let Some(server) = self.servers.iter_mut().find(|s| s.name == name) {
             server.status = McpStatus::Running;
@@ -473,11 +477,13 @@ impl McpRegistry {
     }
 
     /// Mark a server as stopped and remove it from tracking.
+    #[cfg(test)]
     pub fn mark_stopped(&mut self, name: &str) {
         self.servers.retain(|s| s.name != name);
     }
 
     /// Mark a server as failed with a reason.
+    #[cfg(test)]
     pub fn mark_failed(&mut self, name: &str, reason: &str) {
         if let Some(server) = self.servers.iter_mut().find(|s| s.name == name) {
             server.status = McpStatus::Failed(reason.to_string());
@@ -488,6 +494,7 @@ impl McpRegistry {
     ///
     /// Returns names of servers that were running or pending.
     /// Clients are dropped (child processes killed via `ChildWithCleanup::drop`).
+    #[cfg(test)]
     pub fn stop_all(&mut self) -> Vec<String> {
         let names: Vec<String> = self
             .servers
@@ -547,6 +554,11 @@ mod tests {
 
         let result = registry.reconcile(&desired);
         assert_eq!(result.to_start.len(), 2, "should start both servers");
+        let names: Vec<&str> = result.to_start.iter().map(|e| e.name.as_str()).collect();
+        assert!(
+            names.contains(&"fs") && names.contains(&"git"),
+            "to_start should contain fs and git"
+        );
         assert!(result.to_stop.is_empty(), "nothing to stop");
         assert_eq!(
             registry.servers().len(),
@@ -569,7 +581,11 @@ mod tests {
         let result = registry.reconcile(&[entry("fs", "mcp-fs")]);
         assert!(result.to_start.is_empty(), "fs already running");
         assert_eq!(result.to_stop, vec!["git"], "git should be stopped");
-        assert_eq!(registry.servers().len(), 1, "only fs should remain tracked");
+        assert_eq!(
+            registry.servers().len(),
+            2,
+            "reconcile does not remove servers; caller handles graceful shutdown"
+        );
     }
 
     #[test]
@@ -582,6 +598,20 @@ mod tests {
         assert!(
             result.to_start.is_empty(),
             "should not restart running server"
+        );
+        assert!(result.to_stop.is_empty(), "nothing to stop");
+    }
+
+    #[test]
+    fn reconcile_skips_already_pending() {
+        let mut registry = McpRegistry::new();
+        // First reconcile adds server as Pending; do NOT call mark_running
+        registry.reconcile(&[entry("fs", "mcp-fs")]);
+
+        let result = registry.reconcile(&[entry("fs", "mcp-fs")]);
+        assert!(
+            result.to_start.is_empty(),
+            "should not restart pending server"
         );
         assert!(result.to_stop.is_empty(), "nothing to stop");
     }
@@ -664,9 +694,10 @@ mod tests {
             .await;
         assert!(result.is_err(), "should error for unknown tool");
         let err = result.unwrap_err();
-        assert!(
-            matches!(err, ToolError::NotFound(_)),
-            "should be NotFound error"
+        assert_eq!(
+            err,
+            ToolError::NotFound("nonexistent".to_string()),
+            "should be NotFound carrying the tool name"
         );
     }
 
@@ -711,27 +742,19 @@ mod tests {
     #[tokio::test]
     async fn deactivate_project_decrements_count() {
         let mut registry = McpRegistry::new();
-        // Simulate two activations by inserting directly
-        registry.project_refs.insert(
-            "myproject".to_string(),
-            ProjectMcpState {
-                active_count: 2,
-                servers: vec![entry("svc", "mcp-svc")],
-            },
-        );
-        // Track the server as pending (no real client)
-        registry.reconcile(&[entry("svc", "mcp-svc")]);
+        // Build count=2 through the public API
+        registry
+            .activate_project("myproject", &[entry("svc", "mcp-svc")])
+            .await;
+        registry
+            .activate_project("myproject", &[entry("svc", "mcp-svc")])
+            .await;
 
         // First deactivation: count 2 → 1, no servers stopped
         let first_stopped = registry.deactivate_project("myproject").await;
         assert!(
             first_stopped.is_empty(),
             "count > 0, no servers should be stopped"
-        );
-        // Project entry should still exist (entry still has count = 1)
-        assert!(
-            registry.project_refs.contains_key("myproject"),
-            "project still tracked at count 1"
         );
 
         // Second deactivation: count 1 → 0, servers stopped
@@ -740,10 +763,6 @@ mod tests {
             second_stopped,
             vec!["svc"],
             "server should be stopped at count 0"
-        );
-        assert!(
-            !registry.project_refs.contains_key("myproject"),
-            "project entry should be removed"
         );
     }
 
@@ -760,15 +779,11 @@ mod tests {
     #[tokio::test]
     async fn force_deactivate_project_ignores_count() {
         let mut registry = McpRegistry::new();
-        // Simulate 3 active refs
-        registry.project_refs.insert(
-            "bigproject".to_string(),
-            ProjectMcpState {
-                active_count: 3,
-                servers: vec![entry("alpha", "mcp-alpha"), entry("beta", "mcp-beta")],
-            },
-        );
-        registry.reconcile(&[entry("alpha", "mcp-alpha"), entry("beta", "mcp-beta")]);
+        // Build count=3 through the public API
+        let servers = &[entry("alpha", "mcp-alpha"), entry("beta", "mcp-beta")];
+        registry.activate_project("bigproject", servers).await;
+        registry.activate_project("bigproject", servers).await;
+        registry.activate_project("bigproject", servers).await;
 
         let stopped = registry.force_deactivate_project("bigproject").await;
         assert_eq!(
@@ -776,9 +791,11 @@ mod tests {
             2,
             "both servers should be reported as stopped"
         );
+        // Verify the entry is gone: a subsequent force deactivate is a no-op
+        let noop = registry.force_deactivate_project("bigproject").await;
         assert!(
-            !registry.project_refs.contains_key("bigproject"),
-            "project entry should be removed"
+            noop.is_empty(),
+            "project entry should be removed after force deactivate"
         );
     }
 
@@ -864,5 +881,45 @@ mod tests {
             matches!(server.status, McpStatus::Failed(_)),
             "server should be marked failed"
         );
+    }
+
+    #[tokio::test]
+    async fn deactivate_project_when_count_already_zero_is_noop() {
+        let mut registry = McpRegistry::new();
+        registry.activate_project("proj", &[]).await;
+        registry.deactivate_project("proj").await;
+        // Project entry is now gone; second deactivate on a missing entry
+        let stopped = registry.deactivate_project("proj").await;
+        assert!(
+            stopped.is_empty(),
+            "second deactivate after count reached zero is a no-op"
+        );
+    }
+
+    #[tokio::test]
+    async fn activate_project_case_normalization() {
+        let mut registry = McpRegistry::new();
+        // Activate with mixed case
+        registry
+            .activate_project("MyProject", &[entry("svc", "mcp-svc")])
+            .await;
+        // Second activation with different case should reuse the existing entry
+        let report = registry
+            .activate_project("myproject", &[entry("svc", "mcp-svc")])
+            .await;
+        assert_eq!(
+            report.started, 0,
+            "second activation with normalized name reuses existing entry"
+        );
+        assert!(
+            report.failures.is_empty(),
+            "no new connections attempted on second activation"
+        );
+        // Deactivation with uppercase variant decrements count
+        let first = registry.deactivate_project("MYPROJECT").await;
+        assert!(first.is_empty(), "count 2→1, no servers stopped");
+        // Final deactivation clears the project
+        let second = registry.deactivate_project("myproject").await;
+        assert_eq!(second, vec!["svc"], "count 1→0, server stopped");
     }
 }

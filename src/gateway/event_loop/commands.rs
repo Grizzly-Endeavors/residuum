@@ -1,6 +1,6 @@
 //! Server command handler in the event loop.
 
-use crate::bus::{SystemMessageEvent, topics};
+use crate::bus::{NoticeEvent, NotifyName, SYSTEM_CHANNEL, topics};
 use crate::gateway::types::GatewayRuntime;
 use crate::gateway::types::ServerCommand;
 
@@ -8,6 +8,7 @@ use super::turns::load_prompt_context_strings;
 use crate::gateway::memory::{MemorySubsystems, run_forced_observe, run_forced_reflect};
 
 /// Dispatch a named server command from any client channel.
+#[tracing::instrument(skip_all, fields(command = %cmd.name))]
 pub async fn handle_server_command(
     cmd: ServerCommand,
     rt: &mut GatewayRuntime,
@@ -37,7 +38,7 @@ pub async fn handle_server_command(
             let msg = format!(
                 "[context]\n  identity:          ~{} tokens\n  observation log:   ~{} tokens\n  subagents index:   ~{} tokens\n  projects index:    ~{} tokens\n  active project:    ~{} tokens\n  skills index:      ~{} tokens\n  active skills:     ~{} tokens\n  system tools:      ~{} tokens\n  mcp tools:         ~{} tokens\n  message history:   ~{} tokens ({} messages)",
                 bd.identity_tokens,
-                bd.observation_log_tokens,
+                bd.memory_pipeline_tokens,
                 bd.subagents_index_tokens,
                 bd.projects_index_tokens,
                 bd.active_project_tokens,
@@ -54,8 +55,8 @@ pub async fn handle_server_command(
             if let Err(e) = rt
                 .publisher
                 .publish(
-                    topics::SystemMessage,
-                    SystemMessageEvent::Notice { message: msg },
+                    topics::Notification(NotifyName::from(SYSTEM_CHANNEL)),
+                    NoticeEvent { message: msg },
                 )
                 .await
             {
@@ -63,11 +64,12 @@ pub async fn handle_server_command(
             }
         }
         unknown => {
+            tracing::debug!(command = %unknown, "received unknown server command");
             if let Err(e) = rt
                 .publisher
                 .publish(
-                    topics::SystemMessage,
-                    SystemMessageEvent::Notice {
+                    topics::Notification(NotifyName::from(SYSTEM_CHANNEL)),
+                    NoticeEvent {
                         message: format!("unknown server command: {unknown}"),
                     },
                 )

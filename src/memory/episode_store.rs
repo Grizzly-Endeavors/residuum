@@ -7,7 +7,8 @@ use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 
-use crate::error::ResiduumError;
+use anyhow::Context;
+
 use crate::memory::types::Episode;
 use crate::models::{Message, Role};
 
@@ -20,10 +21,6 @@ pub struct EpisodeMeta {
     pub date: chrono::NaiveDate,
     /// Project or topic context tag.
     pub context: String,
-    /// One-line summary of how the episode started.
-    pub start: String,
-    /// One-line summary of how the episode ended.
-    pub end: String,
 }
 
 /// Write an episode transcript file to the episodes directory.
@@ -38,13 +35,13 @@ pub(crate) async fn write_episode_transcript(
     episodes_dir: &Path,
     episode: &Episode,
     messages: &[Message],
-) -> Result<(), ResiduumError> {
+) -> anyhow::Result<()> {
     let day_dir = episodes_dir.join(episode.date.format("%Y-%m/%d").to_string());
-    tokio::fs::create_dir_all(&day_dir).await.map_err(|e| {
-        ResiduumError::Memory(format!(
-            "failed to create episode directory at {}: {e}",
+    tokio::fs::create_dir_all(&day_dir).await.with_context(|| {
+        format!(
+            "failed to create episode directory at {}",
             day_dir.display()
-        ))
+        )
     })?;
 
     let path = episode_jsonl_path(episodes_dir, episode);
@@ -53,32 +50,21 @@ pub(crate) async fn write_episode_transcript(
         "type": "meta",
         "id": episode.id,
         "date": episode.date.to_string(),
-        "start": episode.start,
-        "end": episode.end,
         "context": episode.context,
     });
 
     let mut lines = Vec::with_capacity(messages.len() + 1);
-    lines
-        .push(serde_json::to_string(&meta).map_err(|e| {
-            ResiduumError::Memory(format!("failed to serialize episode meta: {e}"))
-        })?);
+    lines.push(serde_json::to_string(&meta).context("failed to serialize episode meta")?);
 
     for msg in messages {
-        lines.push(
-            serde_json::to_string(msg)
-                .map_err(|e| ResiduumError::Memory(format!("failed to serialize message: {e}")))?,
-        );
+        lines.push(serde_json::to_string(msg).context("failed to serialize message")?);
     }
 
     let file_content = lines.join("\n") + "\n";
 
-    tokio::fs::write(&path, &file_content).await.map_err(|e| {
-        ResiduumError::Memory(format!(
-            "failed to write episode transcript at {}: {e}",
-            path.display()
-        ))
-    })
+    tokio::fs::write(&path, &file_content)
+        .await
+        .with_context(|| format!("failed to write episode transcript at {}", path.display()))
 }
 
 /// Get the path where an episode JSONL transcript would be written.
@@ -112,38 +98,27 @@ pub(crate) fn episode_idx_path(episodes_dir: &Path, episode: &Episode) -> PathBu
 ///
 /// # Errors
 /// Returns an error if the file cannot be read or any line fails to parse.
-pub async fn read_episode_jsonl(path: &Path) -> Result<(EpisodeMeta, Vec<Message>), ResiduumError> {
-    let file_content = tokio::fs::read_to_string(path).await.map_err(|e| {
-        ResiduumError::Memory(format!(
-            "failed to read episode file at {}: {e}",
-            path.display()
-        ))
-    })?;
+pub async fn read_episode_jsonl(path: &Path) -> anyhow::Result<(EpisodeMeta, Vec<Message>)> {
+    let file_content = tokio::fs::read_to_string(path)
+        .await
+        .with_context(|| format!("failed to read episode file at {}", path.display()))?;
 
     let mut lines = file_content.lines();
 
-    let meta_line = lines.next().ok_or_else(|| {
-        ResiduumError::Memory(format!("episode file is empty at {}", path.display()))
-    })?;
+    let meta_line = lines
+        .next()
+        .ok_or_else(|| anyhow::anyhow!("episode file is empty at {}", path.display()))?;
 
-    let meta: EpisodeMeta = serde_json::from_str(meta_line).map_err(|e| {
-        ResiduumError::Memory(format!(
-            "failed to parse episode meta at {}: {e}",
-            path.display()
-        ))
-    })?;
+    let meta: EpisodeMeta = serde_json::from_str(meta_line)
+        .with_context(|| format!("failed to parse episode meta at {}", path.display()))?;
 
     let mut messages = Vec::new();
     for line in lines {
         if line.trim().is_empty() {
             continue;
         }
-        let msg: Message = serde_json::from_str(line).map_err(|e| {
-            ResiduumError::Memory(format!(
-                "failed to parse message line in {}: {e}",
-                path.display()
-            ))
-        })?;
+        let msg: Message = serde_json::from_str(line)
+            .with_context(|| format!("failed to parse message line in {}", path.display()))?;
         messages.push(msg);
     }
 
@@ -169,44 +144,30 @@ const MAX_TOOL_RESULT_CHARS: usize = 500;
 pub(crate) fn find_episode_path(
     episodes_dir: &Path,
     episode_id: &str,
-) -> Result<Option<PathBuf>, ResiduumError> {
+) -> anyhow::Result<Option<PathBuf>> {
     if !episodes_dir.exists() {
         return Ok(None);
     }
     let target = format!("{episode_id}.jsonl");
-    let mut result = None;
-    walk_for_file(episodes_dir, &target, &mut result)?;
-    Ok(result)
+    walk_for_file(episodes_dir, &target)
 }
 
-fn walk_for_file(
-    dir: &Path,
-    target: &str,
-    result: &mut Option<PathBuf>,
-) -> Result<(), ResiduumError> {
-    let entries = std::fs::read_dir(dir).map_err(|e| {
-        ResiduumError::Memory(format!(
-            "failed to read episodes directory {}: {e}",
-            dir.display()
-        ))
-    })?;
+fn walk_for_file(dir: &Path, target: &str) -> anyhow::Result<Option<PathBuf>> {
+    let entries = std::fs::read_dir(dir)
+        .with_context(|| format!("failed to read episodes directory {}", dir.display()))?;
 
     for entry in entries {
-        if result.is_some() {
-            return Ok(());
-        }
-        let entry = entry
-            .map_err(|e| ResiduumError::Memory(format!("failed to read directory entry: {e}")))?;
-        let path = entry.path();
-
+        let path = entry.context("failed to read directory entry")?.path();
         if path.is_dir() {
-            walk_for_file(&path, target, result)?;
+            if let Some(found) = walk_for_file(&path, target)? {
+                return Ok(Some(found));
+            }
         } else if path.file_name().is_some_and(|n| n == target) {
-            *result = Some(path);
+            return Ok(Some(path));
         }
     }
 
-    Ok(())
+    Ok(None)
 }
 
 /// Read a bounded range of lines from an episode JSONL file, formatted for LLM consumption.
@@ -221,34 +182,20 @@ pub(crate) async fn read_episode_lines(
     path: &Path,
     from_line: Option<usize>,
     request_limit: Option<usize>,
-) -> Result<String, ResiduumError> {
-    let file_content = tokio::fs::read_to_string(path).await.map_err(|e| {
-        ResiduumError::Memory(format!(
-            "failed to read episode file at {}: {e}",
-            path.display()
-        ))
-    })?;
+) -> anyhow::Result<String> {
+    let file_content = tokio::fs::read_to_string(path)
+        .await
+        .with_context(|| format!("failed to read episode file at {}", path.display()))?;
 
     let all_lines: Vec<&str> = file_content.lines().collect();
     let total = all_lines.len();
 
-    if total == 0 {
-        return Err(ResiduumError::Memory(format!(
-            "episode file is empty at {}",
-            path.display()
-        )));
-    }
-
     // Parse meta from line 1
-    let meta_line = all_lines.first().ok_or_else(|| {
-        ResiduumError::Memory(format!("episode file is empty at {}", path.display()))
-    })?;
-    let meta: EpisodeMeta = serde_json::from_str(meta_line).map_err(|e| {
-        ResiduumError::Memory(format!(
-            "failed to parse episode meta at {}: {e}",
-            path.display()
-        ))
-    })?;
+    let meta_line = all_lines
+        .first()
+        .ok_or_else(|| anyhow::anyhow!("episode file is empty at {}", path.display()))?;
+    let meta: EpisodeMeta = serde_json::from_str(meta_line)
+        .with_context(|| format!("failed to parse episode meta at {}", path.display()))?;
 
     let limit = request_limit.map_or(DEFAULT_LINES, |l| l.clamp(1, MAX_LINES));
 
@@ -265,8 +212,6 @@ pub(crate) async fn read_episode_lines(
         "Episode: {} | {} | {}",
         meta.id, meta.date, meta.context
     ));
-    parts.push(format!("  start: {}", meta.start));
-    parts.push(format!("  end: {}", meta.end));
     parts.push(String::new());
 
     // Message lines
@@ -299,12 +244,62 @@ pub(crate) async fn read_episode_lines(
     Ok(parts.join("\n"))
 }
 
+/// Generate the next episode ID by scanning the episodes directory for existing JSONL files.
+///
+/// Walks `episodes_dir` recursively for files named `ep-NNN.jsonl`, takes the max `NNN`,
+/// and returns `ep-(max+1)` zero-padded to 3 digits. Returns `"ep-001"` if none exist.
+/// JSONL transcripts persist even after reflection, making this a stable counter.
+///
+/// # Errors
+/// Returns an error if the directory cannot be read.
+pub async fn next_episode_id(episodes_dir: &Path) -> anyhow::Result<String> {
+    let max_num = max_episode_num(episodes_dir)?;
+    let id = format!("ep-{:03}", max_num + 1);
+    tracing::debug!(episode_id = %id, "assigned next episode ID");
+    Ok(id)
+}
+
+/// Recursively walk `dir` for `ep-NNN.jsonl` files and return the maximum `NNN` found.
+///
+/// Returns `0` if the directory does not exist or contains no matching files.
+fn max_episode_num(dir: &Path) -> anyhow::Result<u32> {
+    if !dir.exists() {
+        return Ok(0);
+    }
+    let mut max = 0_u32;
+    walk_for_max(dir, &mut max)?;
+    Ok(max)
+}
+
+fn walk_for_max(dir: &Path, max: &mut u32) -> anyhow::Result<()> {
+    let entries = std::fs::read_dir(dir)
+        .with_context(|| format!("failed to read episodes directory {}", dir.display()))?;
+
+    for entry in entries {
+        let entry = entry.context("failed to read directory entry")?;
+        let path = entry.path();
+
+        if path.is_dir() {
+            walk_for_max(&path, max)?;
+        } else if path.extension().is_some_and(|ext| ext == "jsonl")
+            && let Some(n) = path
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .and_then(|s| s.strip_prefix("ep-"))
+                .and_then(|s| s.parse::<u32>().ok())
+        {
+            *max = (*max).max(n);
+        }
+    }
+
+    Ok(())
+}
+
 fn format_message_line(parts: &mut Vec<String>, line_num: usize, msg: &Message) {
     match msg.role {
         Role::Assistant if msg.tool_calls.is_some() => {
-            let tools: Vec<&str> = msg.tool_calls.as_ref().map_or(Vec::new(), |calls| {
-                calls.iter().map(|c| c.name.as_str()).collect()
-            });
+            let calls = msg.tool_calls.as_deref().unwrap_or(&[]);
+            let tools: Vec<&str> = calls.iter().map(|c| c.name.as_str()).collect();
             let calls_str = tools.join(", ");
             if msg.content.is_empty() {
                 parts.push(format!("[line {line_num}] Assistant: [calls: {calls_str}]"));
@@ -314,38 +309,20 @@ fn format_message_line(parts: &mut Vec<String>, line_num: usize, msg: &Message) 
             }
         }
         Role::Tool => {
-            let display_content = truncate_at_char_boundary(&msg.content, MAX_TOOL_RESULT_CHARS);
+            let display_content =
+                crate::memory::truncate_at_char_boundary(&msg.content, MAX_TOOL_RESULT_CHARS);
             parts.push(format!("[line {line_num}] Tool: {display_content}"));
         }
         Role::System | Role::User | Role::Assistant => {
-            let label = role_label(msg.role);
+            let label = match msg.role {
+                Role::System => "System",
+                Role::User => "User",
+                Role::Assistant => "Assistant",
+                Role::Tool => unreachable!(),
+            };
             parts.push(format!("[line {line_num}] {label}: {}", msg.content));
         }
     }
-}
-
-/// Capitalize the first letter of a role name for display labels.
-fn role_label(role: Role) -> &'static str {
-    match role {
-        Role::System => "System",
-        Role::User => "User",
-        Role::Assistant => "Assistant",
-        Role::Tool => "Tool",
-    }
-}
-
-/// Truncate a string at a char boundary, appending "...(truncated)" if truncated.
-fn truncate_at_char_boundary(s: &str, max: usize) -> String {
-    if s.len() <= max {
-        return s.to_string();
-    }
-    // Find the last char boundary at or before `max`
-    let mut end = max;
-    while !s.is_char_boundary(end) && end > 0 {
-        end -= 1;
-    }
-    let prefix = s.get(..end).unwrap_or_default();
-    format!("{prefix}...(truncated)")
 }
 
 #[cfg(test)]
@@ -358,8 +335,6 @@ mod tests {
         Episode {
             id: "ep-001".to_string(),
             date: NaiveDate::from_ymd_opt(2026, 2, 19).unwrap(),
-            start: "user asked about files".to_string(),
-            end: "listed directory contents".to_string(),
             context: "general".to_string(),
             observations: vec!["user prefers concise output".to_string()],
             source_episodes: vec![],
@@ -636,5 +611,62 @@ mod tests {
             !output.contains(&long_content),
             "full long content should not appear"
         );
+    }
+
+    #[tokio::test]
+    async fn next_episode_id_empty_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        let episodes_dir = dir.path().join("episodes");
+        tokio::fs::create_dir_all(&episodes_dir).await.unwrap();
+
+        let id = next_episode_id(&episodes_dir).await.unwrap();
+        assert_eq!(id, "ep-001", "empty dir should return ep-001");
+    }
+
+    #[tokio::test]
+    async fn next_episode_id_missing_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        let episodes_dir = dir.path().join("episodes");
+        // Dir does not exist — should still return ep-001
+        let id = next_episode_id(&episodes_dir).await.unwrap();
+        assert_eq!(id, "ep-001", "missing dir should return ep-001");
+    }
+
+    #[tokio::test]
+    async fn next_episode_id_scans_jsonl_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let episodes_dir = dir.path().join("episodes");
+        let month_dir = episodes_dir.join("2026-02/19");
+        tokio::fs::create_dir_all(&month_dir).await.unwrap();
+
+        // Write some dummy .jsonl files
+        tokio::fs::write(month_dir.join("ep-001.jsonl"), "")
+            .await
+            .unwrap();
+        tokio::fs::write(month_dir.join("ep-003.jsonl"), "")
+            .await
+            .unwrap();
+
+        let id = next_episode_id(&episodes_dir).await.unwrap();
+        assert_eq!(id, "ep-004", "should find max and increment");
+    }
+
+    #[tokio::test]
+    async fn read_episode_jsonl_empty_file_errors() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("ep-001.jsonl");
+        tokio::fs::write(&path, "").await.unwrap();
+        let result = read_episode_jsonl(&path).await;
+        assert!(result.is_err(), "empty file should return Err");
+    }
+
+    #[tokio::test]
+    async fn read_episode_jsonl_malformed_message_errors() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("ep-001.jsonl");
+        let content = "{\"type\":\"meta\",\"id\":\"ep-001\",\"date\":\"2026-02-19\",\"context\":\"general\"}\nnot valid json\n";
+        tokio::fs::write(&path, content).await.unwrap();
+        let result = read_episode_jsonl(&path).await;
+        assert!(result.is_err(), "malformed message line should return Err");
     }
 }

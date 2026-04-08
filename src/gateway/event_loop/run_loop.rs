@@ -8,17 +8,17 @@ use std::sync::Arc;
 use tokio::time::Duration;
 
 use crate::config::Config;
-use crate::error::ResiduumError;
 use crate::gateway::types::{GatewayCore, GatewayExit, GatewayRuntime, GatewayState, ReloadSignal};
 use crate::memory::types::Visibility;
 use crate::pulse::scheduler::PulseScheduler;
+use crate::util::FatalError;
 
 use super::commands::handle_server_command;
 use super::http::{AdapterSenders, build_gateway_app, spawn_adapters, spawn_http_server};
 use super::pulse::handle_pulse_tick;
 use super::turns::{handle_inbound_message, persist_and_maybe_observe};
 
-use crate::gateway::memory::{MemorySubsystems, execute_observation};
+use crate::gateway::memory::execute_observation;
 use crate::gateway::{actions, idle, reload, watcher, web};
 
 /// Start the WebSocket gateway server and run the main event loop.
@@ -28,28 +28,39 @@ use crate::gateway::{actions, idle, reload, watcher, web};
 ///
 /// # Errors
 ///
-/// Returns `ResiduumError` if initialization fails or the server cannot bind.
-pub async fn run_gateway(cfg: Config) -> Result<GatewayExit, ResiduumError> {
+/// Returns `FatalError` if initialization fails or the server cannot bind.
+#[tracing::instrument(skip_all, fields(bind = %cfg.gateway.addr()))]
+pub async fn run_gateway(cfg: Config) -> Result<GatewayExit, FatalError> {
     reload::backup_config(&cfg.config_dir);
 
     let (core, receivers) = GatewayCore::new(cfg.config_dir.clone());
     let parts = crate::gateway::startup::initialize(&cfg, &core.publisher).await?;
 
-    let update_status = crate::update::new_shared_status();
+    let update_status = crate::update::SharedUpdateStatus::default();
     let (restart_tx, restart_rx) = tokio::sync::mpsc::channel::<()>(1);
+    let (gateway_shutdown_tx, gateway_shutdown_rx) = tokio::sync::mpsc::channel::<()>(1);
 
-    let spawned =
-        spawn_server_and_adapters(&core, &parts, &cfg, &update_status, &restart_tx).await?;
+    let spawned = spawn_server_and_adapters(
+        &core,
+        &parts,
+        &cfg,
+        &update_status,
+        &restart_tx,
+        &gateway_shutdown_tx,
+    )
+    .await?;
 
     let update = UpdateChannels {
         status: update_status,
         restart_tx,
         restart_rx,
+        gateway_shutdown_tx,
+        gateway_shutdown_rx,
     };
     let cloud_config = cfg.cloud.clone();
     let rt = build_runtime(parts, core, receivers, cfg, spawned, update, cloud_config).await?;
 
-    Ok(Box::pin(run_event_loop(rt)).await)
+    Ok(run_event_loop(rt).await)
 }
 
 /// Handles returned from spawning the HTTP server, adapters, tunnel, and watcher.
@@ -60,6 +71,7 @@ struct SpawnedHandles {
     tunnel_shutdown_tx: Option<tokio::sync::watch::Sender<bool>>,
     tunnel_status_tx: Arc<tokio::sync::watch::Sender<crate::tunnel::TunnelStatus>>,
     tunnel_status_rx: tokio::sync::watch::Receiver<crate::tunnel::TunnelStatus>,
+    tracing_service: Arc<crate::tracing_service::TracingService>,
     sigterm: tokio::signal::unix::Signal,
 }
 
@@ -70,7 +82,8 @@ async fn spawn_server_and_adapters(
     cfg: &Config,
     update_status: &crate::update::SharedUpdateStatus,
     restart_tx: &tokio::sync::mpsc::Sender<()>,
-) -> Result<SpawnedHandles, ResiduumError> {
+    gateway_shutdown_tx: &tokio::sync::mpsc::Sender<()>,
+) -> Result<SpawnedHandles, FatalError> {
     let discord_senders = AdapterSenders {
         publisher: core.publisher.clone(),
         bus_handle: core.bus_handle.clone(),
@@ -102,13 +115,34 @@ async fn spawn_server_and_adapters(
     let update_api_state = web::update::UpdateApiState {
         update_status: Arc::clone(update_status),
         restart_tx: restart_tx.clone(),
+        gateway_shutdown_tx: gateway_shutdown_tx.clone(),
     };
-    let app = build_gateway_app(state, cfg, config_api_state, update_api_state);
-    let server_handle = spawn_http_server(cfg, app, &core.shutdown_tx).await?;
+    let tracing_service = Arc::new(crate::tracing_service::TracingService::new(
+        cfg.tracing.clone(),
+        crate::util::telemetry::global_span_buffer()
+            .cloned()
+            .unwrap_or_else(|| {
+                let (_, handle) = crate::util::telemetry::SpanBufferLayer::new(
+                    &crate::util::telemetry::SpanBufferConfig::default(),
+                );
+                handle
+            }),
+    ));
+    let tracing_api_state = web::tracing_api::TracingApiState {
+        service: Arc::clone(&tracing_service),
+    };
+    let app = build_gateway_app(
+        state,
+        cfg,
+        config_api_state,
+        update_api_state,
+        tracing_api_state,
+    );
+    let server_handle = spawn_http_server(cfg, app, &core.http_shutdown_tx).await?;
     let adapters = spawn_adapters(cfg, discord_senders, telegram_senders, parts.tz);
     let (tunnel_handle, tunnel_shutdown_tx) = spawn_tunnel(cfg, Arc::clone(&tunnel_status_tx));
     let sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
-        .map_err(|e| ResiduumError::Gateway(format!("failed to register SIGTERM handler: {e}")))?;
+        .map_err(|e| FatalError::Gateway(format!("failed to register SIGTERM handler: {e}")))?;
     let _watcher_handle = watcher::spawn_workspace_watcher(
         parts.layout.mcp_json(),
         parts.layout.channels_toml(),
@@ -122,42 +156,49 @@ async fn spawn_server_and_adapters(
         tunnel_shutdown_tx,
         tunnel_status_tx,
         tunnel_status_rx,
+        tracing_service,
         sigterm,
     })
 }
 
-/// Update-related channels bundled to reduce argument count.
+/// Update and lifecycle channels bundled to reduce argument count.
 struct UpdateChannels {
     status: crate::update::SharedUpdateStatus,
     restart_tx: tokio::sync::mpsc::Sender<()>,
     restart_rx: tokio::sync::mpsc::Receiver<()>,
+    gateway_shutdown_tx: tokio::sync::mpsc::Sender<()>,
+    gateway_shutdown_rx: tokio::sync::mpsc::Receiver<()>,
 }
 
-/// Assemble the `GatewayRuntime` from initialized parts and spawned handles.
-#[expect(
-    clippy::too_many_lines,
-    reason = "needs refactor — extract bus infrastructure spawning"
-)]
-async fn build_runtime(
-    parts: crate::gateway::startup::GatewayComponents,
-    core: GatewayCore,
-    receivers: crate::gateway::types::CoreReceivers,
-    cfg: Config,
-    spawned: SpawnedHandles,
-    update: UpdateChannels,
-    cloud_config: Option<crate::config::CloudConfig>,
-) -> Result<GatewayRuntime, ResiduumError> {
+/// Handles for bus infrastructure spawned during gateway startup.
+struct BusInfrastructure {
+    agent_subscriber: crate::bus::Subscriber<crate::bus::MessageEvent>,
+    error_subscriber: crate::bus::Subscriber<crate::bus::ErrorEvent>,
+    notify_handles: Vec<tokio::task::JoinHandle<()>>,
+    bus_infra_handles: Vec<tokio::task::JoinHandle<()>>,
+}
+
+/// Subscribe to bus topics and spawn bus-level infrastructure tasks.
+///
+/// Subscribes the agent and error notification channels, spawns notify subscribers,
+/// the background result bridge, notification router, and subagent registry.
+async fn spawn_bus_infrastructure(
+    core: &GatewayCore,
+    parts: &mut crate::gateway::startup::GatewayComponents,
+) -> Result<BusInfrastructure, FatalError> {
     let agent_subscriber = core
         .bus_handle
         .subscribe(crate::bus::topics::UserMessage)
         .await
-        .map_err(|e| ResiduumError::Gateway(format!("failed to subscribe to user:message: {e}")))?;
+        .map_err(|e| FatalError::Gateway(format!("failed to subscribe to user:message: {e}")))?;
     let error_subscriber = core
         .bus_handle
-        .subscribe(crate::bus::topics::SystemMessage)
+        .subscribe(crate::bus::topics::Notification(
+            crate::bus::NotifyName::from(crate::bus::SYSTEM_CHANNEL),
+        ))
         .await
         .map_err(|e| {
-            ResiduumError::Gateway(format!("failed to subscribe to system:message: {e}"))
+            FatalError::Gateway(format!("failed to subscribe to system notifications: {e}"))
         })?;
 
     let notify_handles = crate::gateway::startup::spawn_notify_subscribers(
@@ -169,9 +210,13 @@ async fn build_runtime(
     )
     .await;
 
-    // Spawn bus infrastructure (not restarted on workspace reload)
+    let background_result_rx = parts
+        .background_result_rx
+        .take()
+        .ok_or_else(|| FatalError::Gateway("background_result_rx already consumed".to_string()))?;
+
     let mut bus_infra_handles = Vec::new();
-    let shared_result_rx = std::sync::Arc::new(tokio::sync::Mutex::new(parts.background_result_rx));
+    let shared_result_rx = Arc::new(tokio::sync::Mutex::new(background_result_rx));
     bus_infra_handles.push(crate::background::bridge::spawn_result_bridge(
         shared_result_rx,
         core.publisher.clone(),
@@ -196,8 +241,29 @@ async fn build_runtime(
         Arc::clone(&parts.mcp_registry),
         parts.layout.subagents_dir(),
     );
-    bus_infra_handles
-        .push(crate::subagents::registry::spawn_registry(registry, &core.bus_handle).await);
+    if let Some(h) = crate::subagents::registry::spawn_registry(registry, &core.bus_handle).await {
+        bus_infra_handles.push(h);
+    }
+
+    Ok(BusInfrastructure {
+        agent_subscriber,
+        error_subscriber,
+        notify_handles,
+        bus_infra_handles,
+    })
+}
+
+/// Assemble the `GatewayRuntime` from initialized parts and spawned handles.
+async fn build_runtime(
+    mut parts: crate::gateway::startup::GatewayComponents,
+    core: GatewayCore,
+    receivers: crate::gateway::types::CoreReceivers,
+    cfg: Config,
+    spawned: SpawnedHandles,
+    update: UpdateChannels,
+    cloud_config: Option<crate::config::CloudConfig>,
+) -> Result<GatewayRuntime, FatalError> {
+    let infra = spawn_bus_infrastructure(&core, &mut parts).await?;
 
     Ok(GatewayRuntime {
         layout: parts.layout,
@@ -216,15 +282,15 @@ async fn build_runtime(
         project_state: parts.project_state,
         skill_state: parts.skill_state,
         pulse_enabled: parts.pulse_enabled,
-        notify_handles,
-        bus_infra_handles,
+        notify_handles: infra.notify_handles,
+        bus_infra_handles: infra.bus_infra_handles,
         http_client: parts.http_client,
         spawn_context: parts.spawn_context,
         bus_handle: core.bus_handle,
         publisher: core.publisher,
-        agent_subscriber,
+        agent_subscriber: infra.agent_subscriber,
         endpoint_registry: parts.endpoint_registry,
-        error_subscriber,
+        error_subscriber: infra.error_subscriber,
         last_output_endpoint: None,
         output_topic_override_tx: parts.output_topic_override_tx,
         reload_rx: receivers.reload,
@@ -232,7 +298,7 @@ async fn build_runtime(
         server_handle: spawned.server_handle,
         pulse_scheduler: PulseScheduler::new(),
         sigterm: spawned.sigterm,
-        shutdown_tx: core.shutdown_tx,
+        http_shutdown_tx: core.http_shutdown_tx,
         config_dir: core.config_dir.clone(),
         last_user_message_instant: None,
         cloud_config,
@@ -247,9 +313,12 @@ async fn build_runtime(
         reload_tx: core.reload_tx,
         command_tx: core.command_tx,
         path_policy: parts.path_policy,
+        tracing_service: spawned.tracing_service,
         update_status: update.status,
         restart_tx: update.restart_tx,
         restart_rx: update.restart_rx,
+        gateway_shutdown_tx: update.gateway_shutdown_tx,
+        gateway_shutdown_rx: update.gateway_shutdown_rx,
         cfg,
     })
 }
@@ -265,7 +334,7 @@ fn spawn_tunnel(
     if let Some(ref cloud_cfg) = cfg.cloud {
         let cloud = cloud_cfg.clone();
         let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
-        let handle = crate::spawn::spawn_monitored("tunnel", async move {
+        let handle = crate::util::spawn_monitored("tunnel", async move {
             crate::tunnel::start_tunnel(cloud, shutdown_rx, status_tx).await;
         });
         (Some(handle), Some(shutdown_tx))
@@ -323,8 +392,10 @@ async fn handle_workspace_reload(rt: &mut GatewayRuntime) {
     if let Err(e) = rt
         .publisher
         .publish(
-            crate::bus::topics::SystemMessage,
-            crate::bus::SystemMessageEvent::Notice {
+            crate::bus::topics::Notification(crate::bus::NotifyName::from(
+                crate::bus::SYSTEM_CHANNEL,
+            )),
+            crate::bus::NoticeEvent {
                 message: "workspace configuration reloaded".to_string(),
             },
         )
@@ -374,9 +445,9 @@ async fn wait_for_deadline(deadline: Option<tokio::time::Instant>) {
 async fn check_and_run_due_actions(
     rt: &mut GatewayRuntime,
     observe_deadline: &mut Option<tokio::time::Instant>,
-) -> Option<GatewayExit> {
+) {
     let main_turns = actions::spawn_due_actions(&rt.action_store, &rt.publisher).await;
-    handle_action_main_turns(main_turns, rt, observe_deadline).await
+    handle_action_main_turns(main_turns, rt, observe_deadline).await;
 }
 
 /// Inject main-turn prompts from scheduled actions and run a wake turn.
@@ -384,23 +455,31 @@ async fn handle_action_main_turns(
     main_turns: Vec<actions::ActionMainTurn>,
     rt: &mut GatewayRuntime,
     observe_deadline: &mut Option<tokio::time::Instant>,
-) -> Option<GatewayExit> {
+) {
     if main_turns.is_empty() {
-        return None;
+        return;
     }
 
+    tracing::info!(
+        count = main_turns.len(),
+        "running scheduled action main turns"
+    );
     for turn in &main_turns {
+        tracing::debug!(action = %turn.action_name, "injecting action main turn");
         let formatted = format!("[Scheduled action: {}]\n{}", turn.action_name, turn.prompt);
         rt.agent.inject_system_message(formatted.clone());
         let msgs = [crate::models::Message::system(&formatted)];
         persist_and_maybe_observe(rt, &msgs, Visibility::Background, observe_deadline).await;
     }
-
-    None
 }
 
 /// Gracefully shut down all adapters, MCP servers, and the HTTP server.
 async fn graceful_shutdown(rt: &mut GatewayRuntime) {
+    tracing::info!(
+        notify_handles = rt.notify_handles.len(),
+        bus_infra_handles = rt.bus_infra_handles.len(),
+        "beginning graceful shutdown"
+    );
     for h in rt.notify_handles.drain(..) {
         h.abort();
     }
@@ -417,20 +496,21 @@ async fn graceful_shutdown(rt: &mut GatewayRuntime) {
     if let Some(tx) = rt.telegram_shutdown_tx.take() {
         tx.send(true).ok();
     }
-    rt.shutdown_tx.send(true).ok();
+    rt.http_shutdown_tx.send(true).ok();
+    tracing::info!("graceful shutdown complete");
 }
 
 /// Spawn a fire-and-forget update check task.
 fn spawn_update_check(status: &crate::update::SharedUpdateStatus) {
     let status = Arc::clone(status);
-    crate::spawn::spawn_monitored("update-check", async move {
+    crate::util::spawn_monitored("update-check", async move {
         crate::update::check_for_update(&status).await;
     });
 }
 
 /// Run the memory observation pipeline.
 async fn run_observation(rt: &mut GatewayRuntime) {
-    let mem = MemorySubsystems {
+    let mem = crate::gateway::memory::MemorySubsystems {
         observer: &rt.observer,
         reflector: &rt.reflector,
         search_index: &rt.search_index,
@@ -439,14 +519,6 @@ async fn run_observation(rt: &mut GatewayRuntime) {
         embedding_provider: rt.embedding_provider.as_ref(),
     };
     execute_observation(&mem, &mut rt.agent).await;
-}
-
-/// Format the reason a task handle completed.
-fn handle_exit_reason(result: &Result<(), tokio::task::JoinError>) -> String {
-    match result {
-        Ok(()) => "exited unexpectedly".to_string(),
-        Err(e) => format!("failed: {e}"),
-    }
 }
 
 /// Respawn the cloud tunnel after an unexpected exit.
@@ -458,7 +530,7 @@ fn respawn_tunnel(rt: &mut GatewayRuntime) {
         status_tx
             .send(crate::tunnel::TunnelStatus::Disconnected)
             .ok();
-        rt.tunnel_handle = Some(crate::spawn::spawn_monitored("tunnel", async move {
+        rt.tunnel_handle = Some(crate::util::spawn_monitored("tunnel", async move {
             crate::tunnel::start_tunnel(cloud, shutdown_rx, status_tx).await;
         }));
         rt.tunnel_shutdown_tx = Some(shutdown_tx);
@@ -527,6 +599,10 @@ async fn handle_bus_event(
 ///
 /// Processes inbound messages, pulse ticks, action ticks, and memory pipeline
 /// signals until shutdown or reload is requested.
+#[expect(
+    clippy::too_many_lines,
+    reason = "select! loop with many event sources"
+)]
 async fn run_event_loop(mut rt: GatewayRuntime) -> GatewayExit {
     let mut pulse_tick = tokio::time::interval(Duration::from_secs(60));
     let mut action_tick = tokio::time::interval(Duration::from_secs(30));
@@ -570,28 +646,22 @@ async fn run_event_loop(mut rt: GatewayRuntime) -> GatewayExit {
             }
 
             error_event = rt.error_subscriber.recv() => {
-                if let Ok(Some(crate::bus::SystemMessageEvent::Error { message, .. })) = error_event {
-                    tracing::debug!(message = %message, "bus delivery error");
-                    rt.agent.inject_system_message(format!("[Bus] {message}"));
+                if let Ok(Some(event)) = error_event {
+                    tracing::debug!(message = %event.message, "received system error event, injecting into agent");
+                    rt.agent.inject_system_message(format!("[Bus] {}", event.message));
                 }
             }
 
             _ = pulse_tick.tick(), if rt.pulse_enabled => {
-                if let Some(exit) = handle_pulse_tick(&mut rt, &mut observe_deadline).await {
-                    return exit;
-                }
+                handle_pulse_tick(&mut rt, &mut observe_deadline).await;
             }
 
             _ = action_tick.tick() => {
-                if let Some(exit) = check_and_run_due_actions(&mut rt, &mut observe_deadline).await {
-                    return exit;
-                }
+                check_and_run_due_actions(&mut rt, &mut observe_deadline).await;
             }
 
             () = rt.action_notify.notified() => {
-                if let Some(exit) = check_and_run_due_actions(&mut rt, &mut observe_deadline).await {
-                    return exit;
-                }
+                check_and_run_due_actions(&mut rt, &mut observe_deadline).await;
             }
 
             () = wait_for_deadline(observe_deadline) => {
@@ -611,6 +681,7 @@ async fn run_event_loop(mut rt: GatewayRuntime) -> GatewayExit {
             }
 
             _ = update_check_tick.tick() => {
+                tracing::debug!("scheduled update check triggered");
                 spawn_update_check(&rt.update_status);
             }
 
@@ -620,17 +691,32 @@ async fn run_event_loop(mut rt: GatewayRuntime) -> GatewayExit {
                 return GatewayExit::Restart;
             }
 
+            _ = rt.gateway_shutdown_rx.recv() => {
+                tracing::info!("shutdown signal received via HTTP API");
+                graceful_shutdown(&mut rt).await;
+                break;
+            }
+
             result = poll_handle(&mut rt.tunnel_handle) => {
-                tracing::error!(reason = handle_exit_reason(&result), "tunnel task ended, attempting respawn");
+                match &result {
+                    Ok(()) => tracing::error!("tunnel task exited unexpectedly, attempting respawn"),
+                    Err(e) => tracing::error!(error = %e, "tunnel task failed, attempting respawn"),
+                }
                 respawn_tunnel(&mut rt);
             }
 
             result = poll_handle(&mut rt.discord_handle) => {
-                tracing::error!(reason = handle_exit_reason(&result), "discord adapter task ended");
+                match &result {
+                    Ok(()) => tracing::error!("discord adapter task exited unexpectedly"),
+                    Err(e) => tracing::error!(error = %e, "discord adapter task failed"),
+                }
             }
 
             result = poll_handle(&mut rt.telegram_handle) => {
-                tracing::error!(reason = handle_exit_reason(&result), "telegram adapter task ended");
+                match &result {
+                    Ok(()) => tracing::error!("telegram adapter task exited unexpectedly"),
+                    Err(e) => tracing::error!(error = %e, "telegram adapter task failed"),
+                }
             }
         }
     }

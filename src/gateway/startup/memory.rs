@@ -4,17 +4,16 @@ use std::path::Path;
 use std::sync::Arc;
 
 use crate::config::Config;
-use crate::error::ResiduumError;
 use crate::memory::chunk_extractor::read_idx_jsonl;
 use crate::memory::observer::{Observer, ObserverConfig};
 use crate::memory::reflector::{Reflector, ReflectorConfig};
-use crate::memory::search::{
-    HybridSearcher, MemoryIndex, RebuildResult, create_shared_index, parse_obs_file,
-};
+use crate::memory::search::{HybridSearcher, MemoryIndex, RebuildResult, parse_obs_file};
 use crate::memory::types::IndexManifest;
 use crate::memory::vector_store::VectorStore;
 use crate::models::{EmbeddingProvider, SharedHttpClient, build_provider_chain};
+use crate::util::FatalError;
 use crate::workspace::layout::WorkspaceLayout;
+use anyhow::Context;
 
 /// Search index and vector store built during initialization.
 pub(super) struct MemoryComponents {
@@ -26,12 +25,12 @@ pub(super) struct MemoryComponents {
 /// Build observer and reflector from fully-resolved provider specs on `Config`.
 ///
 /// # Errors
-/// Returns `ResiduumError::Config` if either provider cannot be built.
+/// Returns `FatalError::Config` if either provider cannot be built.
 pub(super) fn build_memory_components(
     cfg: &Config,
     tz: chrono_tz::Tz,
     http: SharedHttpClient,
-) -> Result<(Observer, Reflector), ResiduumError> {
+) -> Result<(Observer, Reflector), FatalError> {
     let observer_provider = build_provider_chain(
         &cfg.observer,
         cfg.max_tokens,
@@ -65,12 +64,12 @@ pub(super) fn build_memory_components(
 /// Build the search index, vector store, and hybrid searcher.
 ///
 /// # Errors
-/// Returns `ResiduumError` if the search index cannot be created.
+/// Returns `FatalError` if the search index cannot be created.
 pub(super) async fn init_memory(
     cfg: &Config,
     layout: &WorkspaceLayout,
     embedding_provider: Option<&Arc<dyn EmbeddingProvider>>,
-) -> Result<MemoryComponents, ResiduumError> {
+) -> Result<MemoryComponents, FatalError> {
     // Search index — schema migration + incremental sync
     let manifest_path = layout.index_manifest_json();
     let manifest = match IndexManifest::load(&manifest_path).await {
@@ -89,8 +88,8 @@ pub(super) async fn init_memory(
         tracing::warn!(error = %migration_err, "failed to clear old search index for schema migration");
     }
 
-    let search_index = match create_shared_index(&layout.search_index_dir()) {
-        Ok(idx) => idx,
+    let search_index = match MemoryIndex::open_or_create(&layout.search_index_dir()) {
+        Ok(idx) => Arc::new(idx),
         Err(err) => {
             tracing::warn!(error = %err, "search index degraded: using empty in-memory index");
             Arc::new(MemoryIndex::empty()?)
@@ -126,6 +125,31 @@ pub(super) async fn init_memory(
     })
 }
 
+/// Perform a full search index rebuild and save the resulting manifest.
+async fn do_full_rebuild(
+    search_index: &MemoryIndex,
+    layout: &WorkspaceLayout,
+    manifest_path: &Path,
+) {
+    match search_index.rebuild(&layout.memory_dir()) {
+        Ok(result) => {
+            tracing::info!(
+                observations = result.obs_count,
+                chunks = result.chunk_count,
+                total = result.obs_count + result.chunk_count,
+                "search index rebuilt"
+            );
+            let rebuilt = build_manifest_from_rebuild(result);
+            if let Err(save_err) = rebuilt.save(manifest_path).await {
+                tracing::warn!(error = %save_err, "failed to save index manifest after rebuild");
+            }
+        }
+        Err(rebuild_err) => {
+            tracing::warn!(error = %rebuild_err, "failed to rebuild search index");
+        }
+    }
+}
+
 /// Synchronize the search index (full rebuild or incremental sync).
 async fn sync_search_index(
     search_index: &MemoryIndex,
@@ -134,23 +158,7 @@ async fn sync_search_index(
     manifest_path: &Path,
 ) {
     if manifest.files.is_empty() {
-        match search_index.rebuild(&layout.memory_dir()) {
-            Ok(result) => {
-                let total = result.obs_count + result.chunk_count;
-                tracing::info!(
-                    observations = result.obs_count,
-                    chunks = result.chunk_count,
-                    "search index rebuilt ({total} documents)"
-                );
-                let rebuilt = build_manifest_from_rebuild(result);
-                if let Err(save_err) = rebuilt.save(manifest_path).await {
-                    tracing::warn!(error = %save_err, "failed to save index manifest after rebuild");
-                }
-            }
-            Err(rebuild_err) => {
-                tracing::warn!(error = %rebuild_err, "failed to rebuild search index");
-            }
-        }
+        do_full_rebuild(search_index, layout, manifest_path).await;
     } else {
         match search_index.incremental_sync(&layout.memory_dir(), manifest) {
             Ok((synced_manifest, stats)) => {
@@ -167,29 +175,18 @@ async fn sync_search_index(
             }
             Err(sync_err) => {
                 tracing::warn!(error = %sync_err, "incremental sync failed, falling back to full rebuild");
-                match search_index.rebuild(&layout.memory_dir()) {
-                    Ok(result) => {
-                        let total = result.obs_count + result.chunk_count;
-                        tracing::info!(
-                            observations = result.obs_count,
-                            chunks = result.chunk_count,
-                            "search index rebuilt after sync failure ({total} documents)"
-                        );
-                        let rebuilt = build_manifest_from_rebuild(result);
-                        if let Err(save_err) = rebuilt.save(manifest_path).await {
-                            tracing::warn!(error = %save_err, "failed to save index manifest after fallback rebuild");
-                        }
-                    }
-                    Err(rebuild_err) => {
-                        tracing::warn!(error = %rebuild_err, "fallback rebuild also failed");
-                    }
-                }
+                do_full_rebuild(search_index, layout, manifest_path).await;
             }
         }
     }
 }
 
 /// Build the vector store, probing for embedding dimensions.
+///
+/// `manifest` is used only to check whether the embedding model has changed.
+/// The function re-reads the manifest from `manifest_path` before saving, because
+/// `sync_search_index` may have written an updated manifest to disk since the
+/// caller loaded it.
 async fn build_vector_store(
     ep: &dyn EmbeddingProvider,
     layout: &WorkspaceLayout,
@@ -334,7 +331,7 @@ async fn backfill_obs_file(
     vs: &VectorStore,
     ep: &dyn EmbeddingProvider,
     path: &Path,
-) -> Result<(), ResiduumError> {
+) -> anyhow::Result<()> {
     let (episode_id, date, observations) = parse_obs_file(path)?;
     if observations.is_empty() {
         return Ok(());
@@ -348,9 +345,10 @@ async fn backfill_obs_file(
     }
 
     let texts: Vec<&str> = observations.iter().map(|o| o.content.as_str()).collect();
-    let response = ep.embed(&texts).await.map_err(|e| {
-        ResiduumError::Memory(format!("embedding failed for {}: {e}", path.display()))
-    })?;
+    let response = ep
+        .embed(&texts)
+        .await
+        .with_context(|| format!("embedding failed for {}", path.display()))?;
 
     let embeddings = response.embeddings;
     vs.insert_observations(&episode_id, &date, &observations, &embeddings)?;
@@ -364,7 +362,7 @@ async fn backfill_idx_file(
     vs: &VectorStore,
     ep: &dyn EmbeddingProvider,
     path: &Path,
-) -> Result<(), ResiduumError> {
+) -> anyhow::Result<()> {
     let chunks = read_idx_jsonl(path);
     if chunks.is_empty() {
         return Ok(());
@@ -382,9 +380,10 @@ async fn backfill_idx_file(
     }
 
     let texts: Vec<&str> = chunks.iter().map(|c| c.content.as_str()).collect();
-    let response = ep.embed(&texts).await.map_err(|e| {
-        ResiduumError::Memory(format!("embedding failed for {}: {e}", path.display()))
-    })?;
+    let response = ep
+        .embed(&texts)
+        .await
+        .with_context(|| format!("embedding failed for {}", path.display()))?;
 
     let embeddings = response.embeddings;
     vs.insert_chunks(&chunks, &embeddings)?;

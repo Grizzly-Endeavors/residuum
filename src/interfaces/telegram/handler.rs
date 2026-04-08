@@ -6,15 +6,11 @@ use std::time::Duration;
 use teloxide::Bot;
 use teloxide::payloads::GetUpdatesSetters;
 use teloxide::requests::Requester;
-use teloxide::types::{BotCommand, ChatId, UpdateKind};
+use teloxide::types::{Audio, BotCommand, ChatId, Document, PhotoSize, UpdateKind, Video, Voice};
 
 use crate::bus::{BusHandle, EndpointName, Publisher};
 use crate::gateway::event_loop::AdapterSenders;
 use crate::gateway::types::{ReloadSignal, ServerCommand};
-use crate::inbox;
-use crate::interfaces::attachment::{
-    MAX_IMAGE_INLINE_SIZE, encode_image_from_file, is_supported_image,
-};
 use crate::interfaces::cli::commands::{
     CommandContext, CommandSideEffect, all_commands, execute_command,
 };
@@ -186,10 +182,8 @@ async fn spawn_telegram_subscribers(bus_handle: &BusHandle, bot: &Bot, chat_id: 
 /// # Errors
 /// Returns an error if the Telegram `setMyCommands` API call fails.
 async fn register_commands(bot: &Bot) -> anyhow::Result<()> {
-    let skip = ["quit", "exit", "q", "verbose", "v"];
-
     let commands: Vec<BotCommand> = all_commands()
-        .filter(|info| !skip.contains(&info.name))
+        .filter(|info| !info.cli_only)
         .map(|info| BotCommand::new(info.name, info.help))
         .collect();
 
@@ -206,6 +200,15 @@ async fn dispatch_message(
     ctx: &TelegramContext<'_>,
 ) {
     let chat_id = msg.chat.id;
+    {
+        let _span = tracing::debug_span!("telegram_message",
+            sender = %build_sender_name(from),
+            chat_id = %msg.chat.id,
+            msg_id = %msg.id
+        )
+        .entered();
+        tracing::debug!(sender = %build_sender_name(from), chat_id = %chat_id, "telegram message received");
+    }
 
     // Check for /command prefix
     if let Some(text) = msg.text()
@@ -217,7 +220,7 @@ async fn dispatch_message(
         };
 
         // Strip @botname suffix from commands (e.g. /help@mybot)
-        let cmd_name = cmd_name.split('@').next().unwrap_or(cmd_name);
+        let cmd_name = cmd_name.split_once('@').map_or(cmd_name, |(name, _)| name);
 
         handle_command(bot, chat_id, from, cmd_name, cmd_args, ctx).await;
         return;
@@ -240,6 +243,7 @@ async fn dispatch_message(
 
     // Skip empty messages (no text, no attachments processed)
     if content.is_empty() {
+        tracing::debug!(sender = %build_sender_name(from), chat_id = %chat_id, "telegram message had no content, dropping");
         return;
     }
 
@@ -247,7 +251,7 @@ async fn dispatch_message(
 
     let origin = MessageOrigin {
         endpoint: "telegram".to_string(),
-        sender_name,
+        sender_name: sender_name.clone(),
         sender_id: from.id.to_string(),
     };
 
@@ -264,7 +268,7 @@ async fn dispatch_message(
         .publish(crate::bus::topics::UserMessage, msg_event)
         .await
     {
-        tracing::warn!(error = %e, "failed to publish telegram message to bus");
+        tracing::warn!(sender = %sender_name, chat_id = %chat_id, error = %e, "failed to publish telegram message to bus");
     }
 }
 
@@ -285,50 +289,43 @@ async fn handle_command(
     cmd_args: Option<&str>,
     ctx: &TelegramContext<'_>,
 ) {
-    let command_ctx = CommandContext {
-        url: "",
-        verbose: false,
-        interface_name: "telegram",
+    let result = {
+        let _span = tracing::debug_span!("telegram_command", command = %cmd_name).entered();
+        let command_ctx = CommandContext {
+            url: "",
+            verbose: false,
+        };
+        execute_command(cmd_name, cmd_args, &command_ctx)
     };
-
-    let result = execute_command(cmd_name, cmd_args, &command_ctx);
 
     let response_text = match result.side_effect {
         Some(CommandSideEffect::Reload) => {
             tracing::info!("reload requested via telegram command");
             if ctx.reload_tx.send(ReloadSignal::Root).is_err() {
-                tracing::warn!("reload_tx closed, reload dropped");
+                tracing::warn!(command = %cmd_name, "reload_tx closed, reload dropped");
             }
             result.response
         }
         Some(CommandSideEffect::ServerCommand { name, args }) => {
-            tracing::info!(command = %name, "server command via telegram command");
-            let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
-            if let Err(e) = ctx.command_tx.try_send(ServerCommand {
-                name: name.to_string(),
+            crate::interfaces::dispatch_server_command(
+                ctx.command_tx,
+                name,
                 args,
-                reply_tx: Some(reply_tx),
-            }) {
-                tracing::warn!(command = %name, error = %e, "failed to dispatch server command");
-            }
-            match tokio::time::timeout(Duration::from_secs(10), reply_rx).await {
-                Ok(Ok(msg)) => msg,
-                _ => result.response,
-            }
+                result.response,
+                "telegram command",
+            )
+            .await
         }
         Some(CommandSideEffect::InboxAdd(body)) => {
-            let title: String = body
-                .lines()
-                .next()
-                .unwrap_or("Inbox message")
-                .chars()
-                .take(60)
-                .collect();
             let source = format!("telegram:{}", build_sender_name(from));
-            match inbox::quick_add(ctx.inbox_dir, &title, &body, &source, ctx.tz).await {
-                Ok(_) => result.response,
-                Err(e) => format!("failed to add inbox item: {e}"),
-            }
+            crate::interfaces::inbox_add_from_command(
+                ctx.inbox_dir,
+                &body,
+                &source,
+                ctx.tz,
+                result.response,
+            )
+            .await
         }
         Some(CommandSideEffect::Quit | CommandSideEffect::ToggleVerbose) | None => result.response,
     };
@@ -342,6 +339,51 @@ async fn handle_command(
     }
 }
 
+fn doc_as_meta(doc: &Document) -> AttachmentMeta<'_> {
+    AttachmentMeta {
+        file_id: &doc.file.id.0,
+        filename: doc.file_name.as_deref().unwrap_or("document"),
+        size: doc.file.size,
+        content_type: doc.mime_type.as_ref().map(ToString::to_string),
+    }
+}
+
+fn photo_as_meta(photo: &PhotoSize) -> AttachmentMeta<'_> {
+    AttachmentMeta {
+        file_id: &photo.file.id.0,
+        filename: "photo.jpg",
+        size: photo.file.size,
+        content_type: Some("image/jpeg".to_string()),
+    }
+}
+
+fn audio_as_meta(audio: &Audio) -> AttachmentMeta<'_> {
+    AttachmentMeta {
+        file_id: &audio.file.id.0,
+        filename: audio.file_name.as_deref().unwrap_or("audio"),
+        size: audio.file.size,
+        content_type: audio.mime_type.as_ref().map(ToString::to_string),
+    }
+}
+
+fn voice_as_meta(voice: &Voice) -> AttachmentMeta<'_> {
+    AttachmentMeta {
+        file_id: &voice.file.id.0,
+        filename: "voice.ogg",
+        size: voice.file.size,
+        content_type: voice.mime_type.as_ref().map(ToString::to_string),
+    }
+}
+
+fn video_as_meta(video: &Video) -> AttachmentMeta<'_> {
+    AttachmentMeta {
+        file_id: &video.file.id.0,
+        filename: video.file_name.as_deref().unwrap_or("video.mp4"),
+        size: video.file.size,
+        content_type: video.mime_type.as_ref().map(ToString::to_string),
+    }
+}
+
 /// Extract and process all attachment types from a Telegram message.
 async fn process_attachments(
     bot: &Bot,
@@ -352,61 +394,62 @@ async fn process_attachments(
     from: &teloxide::types::User,
     tz: chrono_tz::Tz,
 ) {
-    // Handle document attachments
     if let Some(doc) = msg.document() {
-        let meta = AttachmentMeta {
-            file_id: &doc.file.id.0,
-            filename: doc.file_name.as_deref().unwrap_or("document"),
-            size: doc.file.size,
-            content_type: doc.mime_type.as_ref().map(ToString::to_string),
-        };
-        handle_attachment(bot, content, images, &meta, inbox_dir, from, tz).await;
+        handle_attachment(bot, content, images, &doc_as_meta(doc), inbox_dir, from, tz).await;
     }
 
-    // Handle photo attachments (use largest size)
     if let Some(photos) = msg.photo()
         && let Some(photo) = photos.last()
     {
-        let meta = AttachmentMeta {
-            file_id: &photo.file.id.0,
-            filename: "photo.jpg",
-            size: photo.file.size,
-            content_type: Some("image/jpeg".to_string()),
-        };
-        handle_attachment(bot, content, images, &meta, inbox_dir, from, tz).await;
+        handle_attachment(
+            bot,
+            content,
+            images,
+            &photo_as_meta(photo),
+            inbox_dir,
+            from,
+            tz,
+        )
+        .await;
     }
 
-    // Handle audio attachments
     if let Some(audio) = msg.audio() {
-        let meta = AttachmentMeta {
-            file_id: &audio.file.id.0,
-            filename: audio.file_name.as_deref().unwrap_or("audio"),
-            size: audio.file.size,
-            content_type: audio.mime_type.as_ref().map(ToString::to_string),
-        };
-        handle_attachment(bot, content, images, &meta, inbox_dir, from, tz).await;
+        handle_attachment(
+            bot,
+            content,
+            images,
+            &audio_as_meta(audio),
+            inbox_dir,
+            from,
+            tz,
+        )
+        .await;
     }
 
-    // Handle voice attachments
     if let Some(voice) = msg.voice() {
-        let meta = AttachmentMeta {
-            file_id: &voice.file.id.0,
-            filename: "voice.ogg",
-            size: voice.file.size,
-            content_type: voice.mime_type.as_ref().map(ToString::to_string),
-        };
-        handle_attachment(bot, content, images, &meta, inbox_dir, from, tz).await;
+        handle_attachment(
+            bot,
+            content,
+            images,
+            &voice_as_meta(voice),
+            inbox_dir,
+            from,
+            tz,
+        )
+        .await;
     }
 
-    // Handle video attachments
     if let Some(video) = msg.video() {
-        let meta = AttachmentMeta {
-            file_id: &video.file.id.0,
-            filename: video.file_name.as_deref().unwrap_or("video.mp4"),
-            size: video.file.size,
-            content_type: video.mime_type.as_ref().map(ToString::to_string),
-        };
-        handle_attachment(bot, content, images, &meta, inbox_dir, from, tz).await;
+        handle_attachment(
+            bot,
+            content,
+            images,
+            &video_as_meta(video),
+            inbox_dir,
+            from,
+            tz,
+        )
+        .await;
     }
 }
 
@@ -421,7 +464,7 @@ async fn handle_attachment(
     tz: chrono_tz::Tz,
 ) {
     use crate::interfaces::attachment::{
-        AttachmentInfo, SavedAttachment, format_attachment_line, format_failed_attachment_line,
+        AttachmentInfo, SavedAttachment, finalize_attachment, format_failed_attachment_line,
     };
     use teloxide::net::Download;
 
@@ -429,7 +472,6 @@ async fn handle_attachment(
 
     let info = AttachmentInfo {
         filename: filename.to_string(),
-        url: String::new(), // Telegram doesn't use URL-based download
         size: meta.size,
         content_type: meta.content_type.clone(),
     };
@@ -459,61 +501,12 @@ async fn handle_attachment(
 
     match download_result {
         Ok(saved) => {
-            let line = format_attachment_line(&saved, &info);
-            content.push('\n');
-            content.push_str(&line);
-
-            // Encode supported images inline for the model
-            if is_supported_image(info.content_type.as_deref())
-                && info.size <= MAX_IMAGE_INLINE_SIZE
+            let author = build_sender_name(from);
+            if let Some(img) =
+                finalize_attachment(&saved, &info, content, &author, inbox_dir, tz, "Telegram")
+                    .await
             {
-                match encode_image_from_file(
-                    &saved.local_path,
-                    info.content_type.as_deref().unwrap_or("image/jpeg"),
-                )
-                .await
-                {
-                    Ok(img) => images.push(img),
-                    Err(e) => tracing::warn!(
-                        filename = %filename,
-                        error = %e,
-                        "failed to encode telegram image for inline delivery"
-                    ),
-                }
-            } else if is_supported_image(info.content_type.as_deref()) {
-                tracing::warn!(
-                    filename = %filename,
-                    size = info.size,
-                    "telegram image exceeds inline size limit, saved but not sent to model"
-                );
-            }
-
-            // Create companion inbox item
-            let Some(file_name_os) = saved.local_path.file_name() else {
-                tracing::warn!(path = %saved.local_path.display(), "attachment path has no filename, skipping companion item");
-                return;
-            };
-            let saved_name = file_name_os.to_string_lossy().to_string();
-            let content_type_str = info.content_type.as_deref().unwrap_or("unknown");
-            let companion = inbox::InboxItem {
-                title: format!("Telegram attachment: {filename}"),
-                body: format!(
-                    "From: {}\nSize: {} bytes\nContent-Type: {content_type_str}",
-                    build_sender_name(from),
-                    info.size,
-                ),
-                source: "telegram".to_string(),
-                timestamp: crate::time::now_local(tz),
-                read: false,
-                attachments: vec![std::path::PathBuf::from("inbox").join(&saved_name)],
-            };
-            let item_filename = inbox::generate_filename(&companion.title, tz);
-            if let Err(e) = inbox::save_item(inbox_dir, &item_filename, &companion).await {
-                tracing::warn!(
-                    filename = %filename,
-                    error = %e,
-                    "failed to create companion inbox item for telegram attachment"
-                );
+                images.push(img);
             }
         }
         Err(reason) => {

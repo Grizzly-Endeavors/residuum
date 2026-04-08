@@ -71,16 +71,16 @@ impl CliClient {
         self.theme.format_user_prompt()
     }
 
-    /// Print the startup banner to stderr.
+    /// Print the startup banner.
     pub fn print_banner(&self) {
         let banner = format!(
             "residuum {} \u{2014} connected to {}",
             env!("RESIDUUM_VERSION"),
             self.url
         );
-        eprintln!("{}", self.theme.format_banner(&banner));
+        println!("{}", self.theme.format_banner(&banner));
         let http_url = ws_url_to_http(&self.url);
-        eprintln!("  web UI: {http_url}");
+        println!("  web UI: {http_url}");
     }
 
     /// Display a server message with appropriate formatting.
@@ -96,7 +96,7 @@ impl CliClient {
                 self.indicator.on_tool_call();
                 if self.verbose {
                     let line = format!("[tool: {name}] {arguments}");
-                    eprintln!("{}", self.theme.format_tool(&line));
+                    println!("{}", self.theme.format_tool(&line));
                 }
             }
             ServerMessage::ToolResult {
@@ -108,7 +108,7 @@ impl CliClient {
                 if self.verbose {
                     if *is_error {
                         let line = format!("[tool: {name} ERROR] {output}");
-                        eprintln!("{}", self.theme.format_error(&line));
+                        println!("{}", self.theme.format_error(&line));
                     } else {
                         let preview = truncate_preview(output, 200);
                         let line = if preview.len() < output.len() {
@@ -116,7 +116,7 @@ impl CliClient {
                         } else {
                             format!("[tool: {name}] {preview}")
                         };
-                        eprintln!("{}", self.theme.format_tool(&line));
+                        println!("{}", self.theme.format_tool(&line));
                     }
                 }
             }
@@ -142,15 +142,10 @@ impl CliClient {
                 let rendered = self.renderer.render(content);
                 println!("{header}{rendered}");
             }
-            ServerMessage::SystemEvent { source, content } => {
-                self.indicator.finish();
-                let line = format!("[{source}] {content}");
-                println!("\n{}\n", self.theme.format_system_event(&line));
-            }
             ServerMessage::Error { message, .. } => {
                 self.indicator.finish();
                 let line = format!("error: {message}");
-                eprintln!("{}", self.theme.format_error(&line));
+                println!("{}", self.theme.format_error(&line));
             }
             ServerMessage::Notice { message } => {
                 self.indicator.finish();
@@ -174,7 +169,7 @@ impl CliClient {
 fn truncate_preview(s: &str, max_chars: usize) -> &str {
     s.char_indices()
         .nth(max_chars)
-        .map_or(s, |(idx, _)| s.get(..idx).unwrap_or(s))
+        .map_or(s, |(idx, _)| s.split_at(idx).0)
 }
 
 #[cfg(test)]
@@ -277,6 +272,60 @@ mod tests {
             ws_url_to_http("ws://localhost:7700"),
             "http://localhost:7700",
             "should handle URLs without path"
+        );
+    }
+
+    #[test]
+    fn display_turn_started_sets_indicator_active_and_resets_header() {
+        let mut client = CliClient::new("ws://localhost:7700/ws", false);
+        client.turn_has_header = true;
+        client.display(&ServerMessage::TurnStarted {
+            reply_to: "c1".into(),
+        });
+        assert!(
+            client.indicator.is_active(),
+            "TurnStarted should activate indicator"
+        );
+        assert!(
+            !client.turn_has_header,
+            "TurnStarted should reset turn_has_header"
+        );
+    }
+
+    #[test]
+    fn display_response_clears_indicator() {
+        let mut client = CliClient::new("ws://localhost:7700/ws", false);
+        client.display(&ServerMessage::TurnStarted {
+            reply_to: "c1".into(),
+        });
+        assert!(client.indicator.is_active());
+        client.display(&ServerMessage::Response {
+            reply_to: "c1".into(),
+            content: "done".into(),
+        });
+        assert!(
+            !client.indicator.is_active(),
+            "Response should deactivate indicator"
+        );
+    }
+
+    #[test]
+    fn display_broadcast_response_sets_turn_has_header() {
+        let mut client = CliClient::new("ws://localhost:7700/ws", false);
+        assert!(!client.turn_has_header, "should start without header");
+        client.display(&ServerMessage::BroadcastResponse {
+            content: "chunk 1".into(),
+        });
+        assert!(
+            client.turn_has_header,
+            "first BroadcastResponse should set turn_has_header"
+        );
+        client.display(&ServerMessage::BroadcastResponse {
+            content: "chunk 2".into(),
+        });
+        assert!(
+            client.turn_has_header,
+            "subsequent BroadcastResponse should not clear turn_has_header"
         );
     }
 }

@@ -2,6 +2,7 @@
   import { onMount } from "svelte";
   import type {
     SettingsSection,
+    SettingsMode,
     McpServerEntry,
     SettingsProviderEntry,
     SettingsModelAssignments,
@@ -31,17 +32,16 @@
   import Providers from "./components/settings/Providers.svelte";
   import Memory from "./components/settings/Memory.svelte";
   import Integrations from "./components/settings/Integrations.svelte";
-  import Cloud from "./components/settings/Cloud.svelte";
   import MCP from "./components/settings/MCP.svelte";
-  import WebSearch from "./components/settings/WebSearch.svelte";
-  import Update from "./components/settings/Update.svelte";
 
   let { onClose }: { onClose: () => void } = $props();
 
   // ── State ──────────────────────────────────────────────────────────
 
   let activeSection = $state<SettingsSection>("runtime");
-  let advancedMode = $state(false);
+  let settingsMode = $state<SettingsMode>(
+    (localStorage.getItem("residuum-settings-mode") as SettingsMode) || "simple",
+  );
   let loading = $state(true);
   let saving = $state(false);
   let statusMsg = $state("");
@@ -82,11 +82,10 @@
     { id: "providers", label: "Providers" },
     { id: "memory", label: "Memory" },
     { id: "integrations", label: "Integrations" },
-    { id: "cloud", label: "Cloud" },
     { id: "mcp", label: "MCP" },
-    { id: "web_search", label: "Web Search" },
-    { id: "update", label: "Update" },
   ];
+
+  let simple = $derived(settingsMode === "simple");
 
   function activeLabel(): string {
     return sections.find((s) => s.id === activeSection)?.label ?? "Runtime";
@@ -127,22 +126,25 @@
     mcpServers = parseMcpJson(rawMcp);
   }
 
-  // ── Mode toggle ────────────────────────────────────────────────────
+  // ── Mode switching ────────────────────────────────────────────────
 
-  function toggleMode() {
+  function setMode(mode: SettingsMode) {
+    if (mode === settingsMode) return;
     statusMsg = "";
     statusKind = "";
-    if (advancedMode) {
-      // Switching to form mode — reload from saved raw state
-      parseAllToForm();
-      advancedMode = false;
-    } else {
-      // Switching to advanced — load raw text into editors
+
+    if (mode === "raw") {
+      // Entering raw — load text editors
       editConfig = rawConfig;
       editProviders = rawProviders;
       editMcp = rawMcp;
-      advancedMode = true;
+    } else if (settingsMode === "raw") {
+      // Leaving raw — reload form from saved raw state
+      parseAllToForm();
     }
+
+    settingsMode = mode;
+    localStorage.setItem("residuum-settings-mode", mode);
   }
 
   // ── Reload ─────────────────────────────────────────────────────────
@@ -161,7 +163,7 @@
       rawProviders = provRaw;
       rawMcp = mcpRaw;
 
-      if (advancedMode) {
+      if (settingsMode === "raw") {
         editConfig = rawConfig;
         editProviders = rawProviders;
         editMcp = rawMcp;
@@ -195,7 +197,7 @@
   // ── Auto-save ──────────────────────────────────────────────────────
 
   function currentSnapshot(): string {
-    if (advancedMode) {
+    if (settingsMode === "raw") {
       return `adv:${editConfig}|${editProviders}|${editMcp}`;
     }
     return `form:${JSON.stringify(configFields)}|${JSON.stringify(providerEntries)}|${JSON.stringify(modelAssignments)}|${JSON.stringify(mcpServers)}`;
@@ -217,15 +219,15 @@
     JSON.stringify(providerEntries);
     JSON.stringify(modelAssignments);
     JSON.stringify(mcpServers);
-    if (!advancedMode) scheduleAutoSave();
+    if (settingsMode !== "raw") scheduleAutoSave();
   });
 
-  // Advanced mode: watch editor buffers for changes
+  // Raw mode: watch editor buffers for changes
   $effect(() => {
     editConfig;
     editProviders;
     editMcp;
-    if (advancedMode) scheduleAutoSave();
+    if (settingsMode === "raw") scheduleAutoSave();
   });
 
   async function autoSave(): Promise<void> {
@@ -242,7 +244,7 @@
       let provToml: string;
       let mcpJson: string;
 
-      if (advancedMode) {
+      if (settingsMode === "raw") {
         cfgToml = editConfig;
         provToml = editProviders;
         mcpJson = editMcp;
@@ -357,20 +359,35 @@
       <button class="icon-btn" title="Reload from disk" onclick={handleReload} disabled={saving}
         >&#8635;</button
       >
-      <button
-        class="btn btn-sm"
-        class:btn-primary={advancedMode}
-        class:btn-secondary={!advancedMode}
-        onclick={toggleMode}
-      >
-        {advancedMode ? "Form Mode" : "Advanced"}
-      </button>
+      <div class="settings-mode-selector">
+        <button
+          class="settings-mode-btn"
+          class:active={settingsMode === "simple"}
+          onclick={() => setMode("simple")}
+        >
+          Simple
+        </button>
+        <button
+          class="settings-mode-btn"
+          class:active={settingsMode === "advanced"}
+          onclick={() => setMode("advanced")}
+        >
+          Advanced
+        </button>
+        <button
+          class="settings-mode-btn"
+          class:active={settingsMode === "raw"}
+          onclick={() => setMode("raw")}
+        >
+          Raw
+        </button>
+      </div>
       <button class="icon-btn" title="Close settings" onclick={onClose}>&#10005;</button>
     </div>
   </div>
 
   <div class="settings-body">
-    {#if !advancedMode}
+    {#if settingsMode !== "raw"}
       <div class="settings-sidebar" class:collapsed={!mobileNavOpen}>
         <button
           class="settings-nav-toggle"
@@ -401,8 +418,8 @@
     <div class="settings-content">
       {#if loading}
         <p style="color:var(--text-dim); padding:20px;">Loading settings...</p>
-      {:else if advancedMode}
-        <!-- Advanced tabbed editor -->
+      {:else if settingsMode === "raw"}
+        <!-- Raw tabbed editor -->
         <div class="advanced-tabs">
           <button
             class="advanced-tab"
@@ -434,21 +451,15 @@
           <textarea class="toml-editor" bind:value={editMcp}></textarea>
         {/if}
       {:else if activeSection === "runtime"}
-        <Runtime bind:fields={configFields} />
+        <Runtime bind:fields={configFields} {simple} />
       {:else if activeSection === "providers"}
         <Providers bind:providers={providerEntries} bind:models={modelAssignments} />
       {:else if activeSection === "memory"}
-        <Memory bind:fields={configFields} />
+        <Memory bind:fields={configFields} {simple} />
       {:else if activeSection === "integrations"}
-        <Integrations bind:fields={configFields} />
-      {:else if activeSection === "cloud"}
-        <Cloud bind:fields={configFields} />
+        <Integrations bind:fields={configFields} {simple} />
       {:else if activeSection === "mcp"}
         <MCP bind:servers={mcpServers} />
-      {:else if activeSection === "web_search"}
-        <WebSearch bind:fields={configFields} />
-      {:else if activeSection === "update"}
-        <Update />
       {/if}
     </div>
   </div>

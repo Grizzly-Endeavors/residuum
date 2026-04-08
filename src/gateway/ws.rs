@@ -26,8 +26,9 @@ pub(super) async fn ws_handler(
 
 /// Handle a single WebSocket connection.
 ///
-/// Each connection subscribes to typed topics (`Response`, `ToolActivity`,
-/// `TurnLifecycle`, `Intermediate`, `SystemMessage`) on the bus. A local channel
+/// Each connection subscribes to typed topics (`Endpoint` for responses, tool
+/// activity, turn lifecycle, and intermediates; `Notification` for system
+/// notices and errors) on the bus. A local channel
 /// carries per-connection messages (pong, errors, inbox confirmations) that
 /// bypass the bus. A forwarding task merges all sources and writes
 /// `ServerMessage` frames to the WebSocket.
@@ -82,9 +83,12 @@ async fn handle_connection(socket: WebSocket, state: GatewayState) {
                     continue;
                 }
 
-                let Ok(json) = serde_json::to_string(&msg) else {
-                    tracing::warn!("failed to serialize server message");
-                    continue;
+                let json = match serde_json::to_string(&msg) {
+                    Ok(j) => j,
+                    Err(e) => {
+                        tracing::warn!(error = %e, "failed to serialize server message");
+                        continue;
+                    }
                 };
                 if ws_tx.send(WsMessage::text(json)).await.is_err() {
                     break; // client disconnected
@@ -113,7 +117,7 @@ async fn handle_connection(socket: WebSocket, state: GatewayState) {
                     message: format!("malformed message: {e}"),
                 };
                 tracing::warn!(error = %e, "malformed WebSocket message from client");
-                drop(local_tx.send(err_msg));
+                local_tx.send(err_msg).ok();
                 continue;
             }
         };
@@ -129,6 +133,10 @@ async fn handle_connection(socket: WebSocket, state: GatewayState) {
 }
 
 /// Dispatch a single client message. Returns `false` to break the read loop.
+#[expect(
+    clippy::too_many_lines,
+    reason = "match arms over many message variants"
+)]
 async fn handle_client_message(
     msg: ClientMessage,
     state: &GatewayState,
@@ -144,10 +152,12 @@ async fn handle_client_message(
             if !images.is_empty()
                 && let Err(reason) = validate_images(&images)
             {
-                drop(local_tx.send(ServerMessage::Error {
-                    reply_to: Some(id),
-                    message: reason,
-                }));
+                local_tx
+                    .send(ServerMessage::Error {
+                        reply_to: Some(id),
+                        message: reason,
+                    })
+                    .ok();
                 return true;
             }
 
@@ -176,13 +186,15 @@ async fn handle_client_message(
             verbose.store(enabled, Ordering::Relaxed);
         }
         ClientMessage::Ping => {
-            drop(local_tx.send(ServerMessage::Pong));
+            local_tx.send(ServerMessage::Pong).ok();
         }
         ClientMessage::Reload => {
             tracing::info!("reload requested by client");
-            drop(local_tx.send(ServerMessage::Notice {
-                message: "reloading configuration...".to_string(),
-            }));
+            local_tx
+                .send(ServerMessage::Notice {
+                    message: "reloading configuration...".to_string(),
+                })
+                .ok();
             state
                 .reload_tx
                 .send(crate::gateway::types::ReloadSignal::Root)
@@ -215,15 +227,17 @@ async fn handle_client_message(
                     .collect();
                 match crate::inbox::quick_add(&dir, &title, &body, "cli", tz).await {
                     Ok(_filename) => {
-                        drop(tx.send(ServerMessage::Notice {
+                        tx.send(ServerMessage::Notice {
                             message: "[inbox] item added".to_string(),
-                        }));
+                        })
+                        .ok();
                     }
                     Err(e) => {
-                        drop(tx.send(ServerMessage::Error {
+                        tx.send(ServerMessage::Error {
                             reply_to: None,
                             message: format!("inbox add failed: {e}"),
-                        }));
+                        })
+                        .ok();
                     }
                 }
             });
@@ -373,5 +387,42 @@ mod tests {
             let images = vec![make_image(mime, 100)];
             assert!(validate_images(&images).is_ok(), "{mime} should be allowed");
         }
+    }
+
+    #[test]
+    fn validate_images_accepts_exactly_max_count() {
+        let images: Vec<_> = (0..MAX_IMAGES)
+            .map(|_| make_image("image/png", 100))
+            .collect();
+        assert!(
+            validate_images(&images).is_ok(),
+            "exactly {MAX_IMAGES} images should be accepted"
+        );
+    }
+
+    #[test]
+    fn validate_images_accepts_max_bytes() {
+        // Compute base64 length such that estimated_bytes == MAX_IMAGE_BYTES exactly.
+        // estimated_bytes = data.len() * 3 / 4; we want this == MAX_IMAGE_BYTES (not greater).
+        let max_b64_len = MAX_IMAGE_BYTES * 4 / 3 + 1;
+        let images = vec![make_image("image/jpeg", max_b64_len)];
+        assert!(
+            validate_images(&images).is_ok(),
+            "image at exactly MAX_IMAGE_BYTES should be accepted"
+        );
+    }
+
+    #[test]
+    fn validate_images_rejects_empty_media_type() {
+        let images = vec![make_image("", 100)];
+        let result = validate_images(&images);
+        assert!(result.is_err(), "empty media_type should be rejected");
+        assert!(
+            result
+                .as_ref()
+                .err()
+                .is_some_and(|e| e.contains("unsupported")),
+            "error should mention 'unsupported'"
+        );
     }
 }

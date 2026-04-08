@@ -6,17 +6,18 @@
 mod parse;
 mod prompt;
 
+use anyhow::Context;
 use chrono_tz::Tz;
 
 use crate::config::{
     DEFAULT_OBSERVER_COOLDOWN_SECS, DEFAULT_OBSERVER_FORCE_THRESHOLD, DEFAULT_OBSERVER_THRESHOLD,
 };
-use crate::error::ResiduumError;
 use crate::memory::chunk_extractor::{extract_chunks, write_idx_jsonl};
-use crate::memory::episode_store::{episode_idx_path, episode_obs_path, write_episode_transcript};
-use crate::memory::log_store::{append_observations, next_episode_id, save_episode_observations};
+use crate::memory::episode_store::{
+    episode_idx_path, episode_obs_path, next_episode_id, write_episode_transcript,
+};
+use crate::memory::log_store::{append_observations, save_episode_observations};
 use crate::memory::recent_messages::RecentMessage;
-use crate::memory::tokens::estimate_message_tokens;
 use crate::memory::types::{Episode, IndexChunk, Observation};
 use crate::models::{CompletionOptions, Message, ModelProvider, ResponseFormat};
 use crate::time::now_local;
@@ -30,8 +31,6 @@ pub struct ObserveResult {
     pub id: String,
     /// Path to the transcript file on disk.
     pub transcript_path: std::path::PathBuf,
-    /// Number of observation strings extracted from the conversation.
-    pub observation_count: usize,
     /// Narrative summary of the conversation at the time of observation.
     pub narrative: Option<String>,
     /// The extracted observations, for downstream indexing without re-reading disk.
@@ -139,9 +138,13 @@ impl Observer {
 
     /// Replace the observer's configuration (e.g. after a config reload).
     pub fn update_config(&mut self, config: ObserverConfig) {
-        tracing::info!(
+        tracing::debug!(
             old_threshold = self.config.threshold_tokens,
             new_threshold = config.threshold_tokens,
+            old_cooldown_secs = self.config.cooldown_secs,
+            new_cooldown_secs = config.cooldown_secs,
+            old_force_threshold = self.config.force_threshold_tokens,
+            new_force_threshold = config.force_threshold_tokens,
             "updating observer config"
         );
         self.config = config;
@@ -149,15 +152,8 @@ impl Observer {
 
     /// Replace the model provider (e.g. after a provider config change).
     pub fn swap_provider(&mut self, provider: Box<dyn ModelProvider>) {
-        tracing::info!("swapping observer model provider");
+        tracing::debug!("swapping observer model provider");
         self.provider = provider;
-    }
-
-    /// Check whether the observer should fire based on recent message token count.
-    #[must_use]
-    pub fn should_observe(&self, recent_messages: &[RecentMessage]) -> bool {
-        let tokens = estimate_recent_tokens(recent_messages);
-        tokens >= self.config.threshold_tokens
     }
 
     /// Check token thresholds and return the appropriate action.
@@ -183,15 +179,14 @@ impl Observer {
     ///
     /// # Errors
     /// Returns an error if the LLM call fails or file persistence fails.
+    #[tracing::instrument(skip_all, fields(operation = "observe", message_count = recent_messages.len()))]
     pub async fn observe(
         &self,
         recent_messages: &[RecentMessage],
         layout: &WorkspaceLayout,
-    ) -> Result<ObserveResult, ResiduumError> {
+    ) -> anyhow::Result<ObserveResult> {
         if recent_messages.is_empty() {
-            return Err(ResiduumError::Memory(
-                "no recent messages to extract from".to_string(),
-            ));
+            anyhow::bail!("no recent messages to extract from");
         }
 
         // Generate the next episode ID by scanning the episodes directory
@@ -229,7 +224,7 @@ impl Observer {
             .provider
             .complete(&extraction_messages, &[], &options)
             .await
-            .map_err(ResiduumError::Model)?;
+            .context("observer LLM call failed")?;
 
         // Parse the response into extraction results and optional narrative.
         let parsed = parse_observer_response(&response, self.config.tz)?;
@@ -240,11 +235,10 @@ impl Observer {
 
 /// Estimate the total token count of recent messages.
 fn estimate_recent_tokens(recent_messages: &[RecentMessage]) -> usize {
-    let messages: Vec<Message> = recent_messages
+    recent_messages
         .iter()
-        .map(|rm| rm.message.clone())
-        .collect();
-    estimate_message_tokens(&messages)
+        .map(|rm| crate::memory::tokens::estimate_single_message(&rm.message))
+        .sum()
 }
 
 /// Pick the most common context from a list of context strings.
@@ -273,7 +267,7 @@ async fn build_episode_and_persist(
     recent_messages: &[RecentMessage],
     layout: &WorkspaceLayout,
     tz: Tz,
-) -> Result<ObserveResult, ResiduumError> {
+) -> anyhow::Result<ObserveResult> {
     // Extract inner messages for the episode transcript.
     let messages: Vec<Message> = recent_messages
         .iter()
@@ -288,12 +282,9 @@ async fn build_episode_and_persist(
         .collect();
     let episode_context = majority_context(&extraction_contexts);
 
-    // Build the episode internally — start/end are cosmetic and no longer LLM-extracted.
     let episode = Episode {
         id: episode_id.clone(),
         date: now_local(tz).date(),
-        start: String::new(),
-        end: String::new(),
         context: episode_context.clone(),
         observations: parsed
             .extractions
@@ -307,9 +298,9 @@ async fn build_episode_and_persist(
     let transcript_path =
         crate::memory::episode_store::episode_jsonl_path(&layout.episodes_dir(), &episode);
     write_episode_transcript(&layout.episodes_dir(), &episode, &messages).await?;
+    tracing::debug!(episode_id = %episode.id, "episode transcript written");
 
     // Convert episode observations → flat Observations with per-extraction context
-    let observation_count = episode.observations.len();
     let observations: Vec<Observation> = parsed
         .extractions
         .iter()
@@ -324,7 +315,9 @@ async fn build_episode_and_persist(
 
     let obs_path = episode_obs_path(&layout.episodes_dir(), &episode);
     save_episode_observations(&obs_path, &observations).await?;
+    tracing::debug!(episode_id = %episode.id, count = observations.len(), "per-episode observations archived");
     append_observations(&layout.observations_json(), observations.clone()).await?;
+    tracing::debug!(episode_id = %episode.id, "global observations updated");
 
     // Extract interaction-pair chunks from recent messages and persist as idx.jsonl.
     // line_offset=2 because line 1 is the meta object in the JSONL transcript.
@@ -332,10 +325,11 @@ async fn build_episode_and_persist(
     let chunks = extract_chunks(recent_messages, &episode.id, &date_str, 2);
     let idx_path = episode_idx_path(&layout.episodes_dir(), &episode);
     write_idx_jsonl(&idx_path, &chunks).await?;
+    tracing::debug!(episode_id = %episode.id, chunks = chunks.len(), "interaction-pair chunks written");
 
     tracing::info!(
         episode_id = %episode.id,
-        observations = observation_count,
+        observations = observations.len(),
         chunks = chunks.len(),
         has_narrative = parsed.narrative.is_some(),
         "episode extracted"
@@ -344,7 +338,6 @@ async fn build_episode_and_persist(
     Ok(ObserveResult {
         id: episode.id,
         transcript_path,
-        observation_count,
         narrative: parsed.narrative,
         observations,
         chunks,
@@ -542,7 +535,7 @@ mod tests {
         let messages = make_recent_messages(2);
 
         assert!(
-            !observer.should_observe(&messages),
+            observer.check_thresholds(&messages) == ObserveAction::None,
             "should not observe below threshold"
         );
     }
@@ -553,14 +546,16 @@ mod tests {
             Box::new(MockMemoryProvider::new(SAMPLE_RESPONSE)),
             ObserverConfig {
                 threshold_tokens: 10,
+                force_threshold_tokens: 100_000,
                 ..ObserverConfig::default()
             },
         );
         let messages = make_recent_messages(5);
 
-        assert!(
-            observer.should_observe(&messages),
-            "should observe above threshold"
+        assert_eq!(
+            observer.check_thresholds(&messages),
+            ObserveAction::StartCooldown,
+            "should start cooldown above soft threshold but below force threshold"
         );
     }
 
@@ -643,7 +638,8 @@ mod tests {
 
         assert_eq!(result.id, "ep-001", "first episode should be ep-001");
         assert_eq!(
-            result.observation_count, 2,
+            result.observations.len(),
+            2,
             "SAMPLE_RESPONSE has 2 observations"
         );
         assert!(
@@ -665,8 +661,6 @@ mod tests {
         let episode = crate::memory::types::Episode {
             id: result.id.clone(),
             date: chrono::Utc::now().naive_utc().date(),
-            start: String::new(),
-            end: String::new(),
             context: String::new(),
             observations: vec![],
             source_episodes: vec![],
@@ -836,11 +830,23 @@ mod tests {
         assert_eq!(observer.timezone(), chrono_tz::US::Eastern);
     }
 
-    #[test]
-    fn swap_provider_changes_model() {
+    #[tokio::test]
+    async fn swap_provider_changes_model() {
+        let dir = tempfile::tempdir().unwrap();
+        let layout = WorkspaceLayout::new(dir.path());
+        tokio::fs::create_dir_all(layout.episodes_dir())
+            .await
+            .unwrap();
+        tokio::fs::create_dir_all(layout.memory_dir())
+            .await
+            .unwrap();
+
         let mut observer = Observer::new(
             Box::new(MockMemoryProvider::new(SAMPLE_RESPONSE)),
-            ObserverConfig::default(),
+            ObserverConfig {
+                threshold_tokens: 10,
+                ..ObserverConfig::default()
+            },
         );
 
         let new_response = r#"{
@@ -851,12 +857,34 @@ mod tests {
         }"#;
         observer.swap_provider(Box::new(MockMemoryProvider::new(new_response)));
 
-        // Verify the provider was swapped by checking the model name
-        // (MockMemoryProvider always returns "mock-model")
-        // The key verification is that the method doesn't panic and accepts the new provider
+        let messages = make_recent_messages(5);
+        let result = observer.observe(&messages, &layout).await.unwrap();
         assert_eq!(
-            observer.threshold_tokens(),
-            ObserverConfig::default().threshold_tokens
+            result.observations.len(),
+            1,
+            "should have 1 observation from new provider"
+        );
+        assert_eq!(
+            result.observations.first().map(|o| o.content.as_str()),
+            Some("new provider obs"),
+            "content should come from new provider"
+        );
+    }
+
+    #[tokio::test]
+    async fn observe_returns_err_for_empty_messages() {
+        let dir = tempfile::tempdir().unwrap();
+        let layout = WorkspaceLayout::new(dir.path());
+
+        let observer = Observer::new(
+            Box::new(MockMemoryProvider::new(SAMPLE_RESPONSE)),
+            ObserverConfig::default(),
+        );
+
+        let result = observer.observe(&[], &layout).await;
+        assert!(
+            result.is_err(),
+            "observe with empty messages should return Err"
         );
     }
 

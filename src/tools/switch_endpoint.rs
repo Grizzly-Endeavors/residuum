@@ -5,8 +5,8 @@ use serde_json::Value;
 use tokio::sync::watch;
 
 use crate::bus::{
-    EndpointCapabilities, EndpointId, EndpointName, EndpointRegistry, Publisher,
-    SystemMessageEvent, topics,
+    EndpointCapabilities, EndpointId, EndpointName, EndpointRegistry, NoticeEvent, NotifyName,
+    Publisher, SYSTEM_CHANNEL, topics,
 };
 use crate::models::ToolDefinition;
 
@@ -33,6 +33,20 @@ impl SwitchEndpointTool {
             publisher,
         }
     }
+
+    fn available_interactive_str(&self) -> String {
+        let names: Vec<String> = self
+            .registry
+            .interactive()
+            .iter()
+            .map(|e| e.id.as_ref().to_string())
+            .collect();
+        if names.is_empty() {
+            "(none configured)".to_string()
+        } else {
+            names.join(", ")
+        }
+    }
 }
 
 #[async_trait]
@@ -43,7 +57,7 @@ impl Tool for SwitchEndpointTool {
 
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
-            name: "switch_endpoint".to_string(),
+            name: self.name().to_string(),
             description: "Switch the active endpoint for subsequent responses. \
                 Takes effect on the next turn. Use list_endpoints to see available \
                 interactive endpoints."
@@ -62,26 +76,14 @@ impl Tool for SwitchEndpointTool {
     }
 
     async fn execute(&self, arguments: Value) -> Result<ToolResult, ToolError> {
-        let endpoint_name = arguments
-            .get("endpoint")
-            .and_then(Value::as_str)
-            .ok_or_else(|| ToolError::InvalidArguments("endpoint is required".to_string()))?;
+        let endpoint_name = super::require_str(&arguments, "endpoint")?;
 
         let endpoint_id = EndpointId::from(endpoint_name);
+
         let Some(entry) = self.registry.get(&endpoint_id) else {
-            let available: Vec<String> = self
-                .registry
-                .interactive()
-                .iter()
-                .map(|e| e.id.as_ref().to_string())
-                .collect();
+            let available_str = self.available_interactive_str();
             return Ok(ToolResult::error(format!(
-                "unknown endpoint '{endpoint_name}'; available interactive endpoints: {}",
-                if available.is_empty() {
-                    "(none configured)".to_string()
-                } else {
-                    available.join(", ")
-                }
+                "unknown endpoint '{endpoint_name}'; available interactive endpoints: {available_str}",
             )));
         };
 
@@ -89,19 +91,9 @@ impl Tool for SwitchEndpointTool {
             .capabilities
             .contains(EndpointCapabilities::INTERACTIVE)
         {
-            let available: Vec<String> = self
-                .registry
-                .interactive()
-                .iter()
-                .map(|e| e.id.as_ref().to_string())
-                .collect();
+            let available_str = self.available_interactive_str();
             return Ok(ToolResult::error(format!(
-                "endpoint '{endpoint_name}' is not interactive; available: {}",
-                if available.is_empty() {
-                    "(none configured)".to_string()
-                } else {
-                    available.join(", ")
-                }
+                "endpoint '{endpoint_name}' is not interactive; available: {available_str}",
             )));
         }
 
@@ -109,16 +101,18 @@ impl Tool for SwitchEndpointTool {
         self.override_tx.send_replace(Some(ep.clone()));
 
         // Notify via system message so the user knows the agent switched.
-        drop(
-            self.publisher
-                .publish(
-                    topics::SystemMessage,
-                    SystemMessageEvent::Notice {
-                        message: "Agent switched output to this endpoint.".to_string(),
-                    },
-                )
-                .await,
-        );
+        if let Err(e) = self
+            .publisher
+            .publish(
+                topics::Notification(NotifyName::from(SYSTEM_CHANNEL)),
+                NoticeEvent {
+                    message: "Agent switched output to this endpoint.".to_string(),
+                },
+            )
+            .await
+        {
+            tracing::warn!(error = %e, "failed to publish endpoint switch notice");
+        }
 
         Ok(ToolResult::success(format!(
             "Switched output to '{}'. Subsequent responses will be sent there.",
@@ -137,13 +131,13 @@ mod tests {
         let registry = EndpointRegistry::new();
         registry.register(EndpointEntry {
             id: EndpointId::from("ws"),
-            topic: TopicId::Response(EndpointName::from("ws")),
+            topic: TopicId::Endpoint(EndpointName::from("ws")),
             capabilities: EndpointCapabilities::INTERACTIVE,
             display_name: "WebSocket".to_string(),
         });
         registry.register(EndpointEntry {
             id: EndpointId::from("discord"),
-            topic: TopicId::Response(EndpointName::from("discord")),
+            topic: TopicId::Endpoint(EndpointName::from("discord")),
             capabilities: EndpointCapabilities::INTERACTIVE,
             display_name: "Discord".to_string(),
         });

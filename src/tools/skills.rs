@@ -31,7 +31,7 @@ impl Tool for SkillActivateTool {
 
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
-            name: "skill_activate".to_string(),
+            name: self.name().to_string(),
             description: "Load a skill's full instructions into the system prompt. \
                 Use when a task matches an available skill's description."
                 .to_string(),
@@ -49,10 +49,7 @@ impl Tool for SkillActivateTool {
     }
 
     async fn execute(&self, arguments: Value) -> Result<ToolResult, ToolError> {
-        let name = arguments
-            .get("name")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| ToolError::InvalidArguments("name is required".to_string()))?;
+        let name = super::require_str(&arguments, "name")?;
 
         let mut state = self.state.lock().await;
         match state.activate(name).await {
@@ -88,7 +85,7 @@ impl Tool for SkillDeactivateTool {
 
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
-            name: "skill_deactivate".to_string(),
+            name: self.name().to_string(),
             description:
                 "Remove a skill's instructions from the system prompt when no longer needed."
                     .to_string(),
@@ -106,10 +103,7 @@ impl Tool for SkillDeactivateTool {
     }
 
     async fn execute(&self, arguments: Value) -> Result<ToolResult, ToolError> {
-        let name = arguments
-            .get("name")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| ToolError::InvalidArguments("name is required".to_string()))?;
+        let name = super::require_str(&arguments, "name")?;
 
         let mut state = self.state.lock().await;
         match state.deactivate(name) {
@@ -204,6 +198,13 @@ mod tests {
         assert!(
             result.output.contains("test-skill"),
             "output should mention skill name"
+        );
+
+        // After activation, the skill body ("Body.") should be accessible
+        let active_content = state.lock().await.format_active_for_prompt().unwrap();
+        assert!(
+            active_content.contains("Body."),
+            "active skill content should contain SKILL.md body: {active_content}"
         );
 
         let deactivate = SkillDeactivateTool::new(Arc::clone(&state));

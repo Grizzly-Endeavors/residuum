@@ -32,14 +32,20 @@ impl FileTracker {
 
     /// Record that a file has been read. Canonicalizes the path where possible.
     pub fn record_read(&mut self, path: &str) {
-        let canonical = std::fs::canonicalize(path).unwrap_or_else(|_| PathBuf::from(path));
+        let canonical = std::fs::canonicalize(path).unwrap_or_else(|_| {
+            tracing::trace!(path = %path, "canonicalize failed, using raw path");
+            PathBuf::from(path)
+        });
         self.read_paths.insert(canonical);
     }
 
     /// Check whether a file has been previously read.
     #[must_use]
     pub fn has_been_read(&self, path: &str) -> bool {
-        let canonical = std::fs::canonicalize(path).unwrap_or_else(|_| PathBuf::from(path));
+        let canonical = std::fs::canonicalize(path).unwrap_or_else(|_| {
+            tracing::trace!(path = %path, "canonicalize failed, using raw path");
+            PathBuf::from(path)
+        });
         self.read_paths.contains(&canonical)
     }
 }
@@ -83,12 +89,5 @@ mod tests {
             tracker.has_been_read(file_path.to_str().unwrap()),
             "canonical path should match"
         );
-    }
-
-    #[test]
-    fn new_shared_produces_usable_arc() {
-        let shared = FileTracker::new_shared();
-        // Just verify it compiles and can be cloned
-        let _clone = Arc::clone(&shared);
     }
 }

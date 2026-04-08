@@ -49,6 +49,16 @@ pub enum McpTransport {
     Http,
 }
 
+impl McpTransport {
+    #[expect(
+        clippy::trivially_copy_pass_by_ref,
+        reason = "serde skip_serializing_if requires &T signature"
+    )]
+    fn is_default(&self) -> bool {
+        matches!(self, Self::Stdio)
+    }
+}
+
 /// MCP server entry in project frontmatter.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct McpServerEntry {
@@ -63,21 +73,13 @@ pub struct McpServerEntry {
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub env: HashMap<String, String>,
     /// Transport type (defaults to stdio).
-    #[serde(default, skip_serializing_if = "is_default_transport")]
+    #[serde(default, skip_serializing_if = "McpTransport::is_default")]
     pub transport: McpTransport,
     /// HTTP headers to send with requests (only used for http transport).
     /// Header values support `${VAR}` and `${VAR:-default}` env var interpolation
     /// which is expanded at connect time.
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub headers: HashMap<String, String>,
-}
-
-#[expect(
-    clippy::trivially_copy_pass_by_ref,
-    reason = "serde skip_serializing_if requires &T signature"
-)]
-fn is_default_transport(t: &McpTransport) -> bool {
-    matches!(*t, McpTransport::Stdio)
 }
 
 /// Lightweight index entry for a project (frontmatter only, no body).
@@ -91,8 +93,6 @@ pub struct ProjectIndexEntry {
     pub status: ProjectStatus,
     /// Directory name on disk (sanitized).
     pub dir_name: String,
-    /// Whether this project lives in the archive directory.
-    pub is_archived: bool,
 }
 
 /// Fully loaded project context for an active project.
@@ -304,5 +304,55 @@ mcp_servers:
             "archived",
             "Archived display"
         );
+    }
+
+    #[test]
+    fn mcp_server_entry_serde_round_trip_stdio() {
+        let mut env = HashMap::new();
+        env.insert("KEY".to_string(), "value".to_string());
+
+        let entry = McpServerEntry {
+            name: "my-server".to_string(),
+            command: "my-command".to_string(),
+            args: vec!["--arg1".to_string(), "--arg2".to_string()],
+            env,
+            transport: McpTransport::Stdio,
+            headers: HashMap::new(),
+        };
+
+        let yaml = serde_yml::to_string(&entry).unwrap();
+        let parsed: McpServerEntry = serde_yml::from_str(&yaml).unwrap();
+
+        assert_eq!(parsed.name, "my-server");
+        assert_eq!(parsed.command, "my-command");
+        assert_eq!(parsed.args.len(), 2);
+        assert_eq!(&parsed.env["KEY"], "value");
+        assert_eq!(parsed.transport, McpTransport::Stdio);
+        assert!(parsed.headers.is_empty());
+    }
+
+    #[test]
+    fn mcp_server_entry_serde_round_trip_http() {
+        let mut headers = HashMap::new();
+        headers.insert("Authorization".to_string(), "Bearer ${TOKEN}".to_string());
+
+        let entry = McpServerEntry {
+            name: "http-server".to_string(),
+            command: "https://example.com/mcp".to_string(),
+            args: vec![],
+            env: HashMap::new(),
+            transport: McpTransport::Http,
+            headers,
+        };
+
+        let yaml = serde_yml::to_string(&entry).unwrap();
+        let parsed: McpServerEntry = serde_yml::from_str(&yaml).unwrap();
+
+        assert_eq!(parsed.name, "http-server");
+        assert_eq!(parsed.command, "https://example.com/mcp");
+        assert!(parsed.args.is_empty());
+        assert!(parsed.env.is_empty());
+        assert_eq!(parsed.transport, McpTransport::Http);
+        assert_eq!(&parsed.headers["Authorization"], "Bearer ${TOKEN}");
     }
 }

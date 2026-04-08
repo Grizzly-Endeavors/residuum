@@ -5,8 +5,8 @@ use std::sync::Arc;
 use tokio::sync::mpsc;
 
 use crate::config::Config;
-use crate::error::ResiduumError;
 use crate::gateway::types::{GatewayState, ReloadSignal, ServerCommand};
+use crate::util::FatalError;
 
 use crate::gateway::web;
 use crate::gateway::ws::ws_handler;
@@ -34,6 +34,7 @@ pub fn build_gateway_app(
     cfg: &Config,
     config_api_state: web::ConfigApiState,
     update_api_state: web::update::UpdateApiState,
+    tracing_api_state: web::tracing_api::TracingApiState,
 ) -> axum::Router {
     use axum::routing::{get, post};
 
@@ -88,7 +89,10 @@ pub fn build_gateway_app(
         .route("/api/update/check", post(web::update::api_update_check))
         .route("/api/update/apply", post(web::update::api_update_apply))
         .route("/api/update/restart", post(web::update::api_update_restart))
+        .route("/api/shutdown", post(web::update::api_shutdown))
         .with_state(update_api_state);
+
+    let tracing_router = tracing_api_router(tracing_api_state);
 
     let mut app = axum::Router::new()
         .route("/ws", get(ws_handler))
@@ -98,33 +102,64 @@ pub fn build_gateway_app(
     }
     app.merge(cloud_router)
         .merge(update_router)
+        .merge(tracing_router)
         .merge(web::config_api_router(config_api_state))
         .fallback(web::static_handler)
 }
 
-/// Bind the HTTP server and spawn it as a background task.
-///
-/// # Errors
-/// Returns `ResiduumError` if the listener cannot bind to the configured address.
-pub async fn spawn_http_server(
-    cfg: &Config,
-    app: axum::Router,
-    shutdown_tx: &tokio::sync::watch::Sender<bool>,
-) -> Result<tokio::task::JoinHandle<()>, ResiduumError> {
-    let addr = cfg.gateway.addr();
-    let listener = tokio::net::TcpListener::bind(&addr)
-        .await
-        .map_err(|e| ResiduumError::Gateway(format!("failed to bind to {addr}: {e}")))?;
-    tracing::info!(addr = %addr, "gateway listening");
-    if cfg.gateway.bind != "127.0.0.1" && cfg.gateway.bind != "localhost" {
-        tracing::warn!(
-            bind = %cfg.gateway.bind,
-            "web UI is exposed on a non-loopback address with no authentication"
-        );
-    }
+/// Build the tracing API router with all observability endpoints.
+fn tracing_api_router(state: web::tracing_api::TracingApiState) -> axum::Router {
+    use axum::routing::{get, post};
+    axum::Router::new()
+        .route(
+            "/api/tracing/status",
+            get(web::tracing_api::api_tracing_status),
+        )
+        .route(
+            "/api/tracing/error-reporting",
+            post(web::tracing_api::api_tracing_error_reporting),
+        )
+        .route(
+            "/api/tracing/sanitize",
+            post(web::tracing_api::api_tracing_sanitize),
+        )
+        .route(
+            "/api/tracing/otel/endpoints",
+            get(web::tracing_api::api_tracing_otel_list)
+                .post(web::tracing_api::api_tracing_otel_add)
+                .delete(web::tracing_api::api_tracing_otel_remove),
+        )
+        .route(
+            "/api/tracing/otel/test",
+            post(web::tracing_api::api_tracing_otel_test),
+        )
+        .route(
+            "/api/tracing/dump",
+            post(web::tracing_api::api_tracing_dump),
+        )
+        .route(
+            "/api/tracing/stream/start",
+            post(web::tracing_api::api_tracing_stream_start),
+        )
+        .route(
+            "/api/tracing/stream/stop",
+            post(web::tracing_api::api_tracing_stream_stop),
+        )
+        .route(
+            "/api/tracing/bug-report",
+            post(web::tracing_api::api_tracing_bug_report),
+        )
+        .with_state(state)
+}
 
-    let mut shutdown_rx = shutdown_tx.subscribe();
-    let handle = tokio::spawn(async move {
+/// Spawn an axum server on a pre-bound listener with graceful shutdown.
+pub(crate) fn spawn_server_with_listener(
+    listener: tokio::net::TcpListener,
+    app: axum::Router,
+    http_shutdown_tx: &tokio::sync::watch::Sender<bool>,
+) -> tokio::task::JoinHandle<()> {
+    let mut shutdown_rx = http_shutdown_tx.subscribe();
+    tokio::spawn(async move {
         if let Err(e) = axum::serve(listener, app)
             .with_graceful_shutdown(async move {
                 shutdown_rx.wait_for(|v| *v).await.ok();
@@ -133,8 +168,30 @@ pub async fn spawn_http_server(
         {
             tracing::error!(error = %e, "gateway server error");
         }
-    });
-    Ok(handle)
+    })
+}
+
+/// Bind the HTTP server and spawn it as a background task.
+///
+/// # Errors
+/// Returns `FatalError` if the listener cannot bind to the configured address.
+pub async fn spawn_http_server(
+    cfg: &Config,
+    app: axum::Router,
+    http_shutdown_tx: &tokio::sync::watch::Sender<bool>,
+) -> Result<tokio::task::JoinHandle<()>, FatalError> {
+    let addr = cfg.gateway.addr();
+    let listener = tokio::net::TcpListener::bind(&addr)
+        .await
+        .map_err(|e| FatalError::Gateway(format!("failed to bind to {addr}: {e}")))?;
+    tracing::info!(addr = %addr, "gateway listening");
+    if cfg.gateway.bind != "127.0.0.1" && cfg.gateway.bind != "localhost" {
+        tracing::warn!(
+            bind = %cfg.gateway.bind,
+            "web UI is exposed on a non-loopback address with no authentication"
+        );
+    }
+    Ok(spawn_server_with_listener(listener, app, http_shutdown_tx))
 }
 
 /// Spawn Discord and Telegram adapters if configured.
@@ -154,7 +211,7 @@ pub fn spawn_adapters(
             tz,
             rx,
         );
-        discord_handle = Some(crate::spawn::spawn_monitored("discord", async move {
+        discord_handle = Some(crate::util::spawn_monitored("discord", async move {
             if let Err(e) = iface.start().await {
                 tracing::error!(error = %e, "discord interface failed");
             }
@@ -173,7 +230,7 @@ pub fn spawn_adapters(
             tz,
             rx,
         );
-        telegram_handle = Some(crate::spawn::spawn_monitored("telegram", async move {
+        telegram_handle = Some(crate::util::spawn_monitored("telegram", async move {
             if let Err(e) = iface.start().await {
                 tracing::error!(error = %e, "telegram interface failed");
             }

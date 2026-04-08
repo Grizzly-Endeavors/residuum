@@ -19,6 +19,7 @@ use crate::models::{EmbeddingProvider, SharedHttpClient};
 use crate::projects::activation::SharedProjectState;
 use crate::pulse::scheduler::PulseScheduler;
 use crate::skills::SharedSkillState;
+use crate::tracing_service::TracingService;
 use crate::tunnel::TunnelStatus;
 use crate::update::SharedUpdateStatus;
 use crate::workspace::layout::WorkspaceLayout;
@@ -61,7 +62,7 @@ pub(crate) struct GatewayCore {
     pub reload_tx: tokio::sync::watch::Sender<ReloadSignal>,
     pub command_tx: mpsc::Sender<ServerCommand>,
     /// Dedicated shutdown signal for the HTTP server (not tied to reload).
-    pub shutdown_tx: tokio::sync::watch::Sender<bool>,
+    pub http_shutdown_tx: tokio::sync::watch::Sender<bool>,
     pub config_dir: std::path::PathBuf,
     pub bus_handle: BusHandle,
     pub publisher: Publisher,
@@ -78,14 +79,14 @@ impl GatewayCore {
     pub fn new(config_dir: std::path::PathBuf) -> (Self, CoreReceivers) {
         let (reload_tx, reload_rx) = tokio::sync::watch::channel(ReloadSignal::None);
         let (command_tx, command_rx) = mpsc::channel::<ServerCommand>(32);
-        let (shutdown_tx, _shutdown_rx) = tokio::sync::watch::channel(false);
+        let http_shutdown_tx = tokio::sync::watch::channel::<bool>(false).0;
         let bus_handle = crate::bus::spawn_broker();
         let publisher = bus_handle.publisher();
 
         let core = Self {
             reload_tx,
             command_tx,
-            shutdown_tx,
+            http_shutdown_tx,
             config_dir,
             bus_handle,
             publisher,
@@ -145,8 +146,8 @@ pub(crate) struct GatewayRuntime {
     pub agent_subscriber: Subscriber<MessageEvent>,
     /// Endpoint registry for looking up configured endpoints.
     pub endpoint_registry: EndpointRegistry,
-    /// Typed subscriber for system messages (notices, errors, events).
-    pub error_subscriber: Subscriber<crate::bus::SystemMessageEvent>,
+    /// Typed subscriber for error events from the system notification channel.
+    pub error_subscriber: Subscriber<crate::bus::ErrorEvent>,
     /// Endpoint that last sent a message (for background turn response routing).
     pub last_output_endpoint: Option<EndpointName>,
     /// Sender for clearing the output endpoint override on user message.
@@ -159,7 +160,7 @@ pub(crate) struct GatewayRuntime {
     /// SIGTERM signal listener for daemon stop support.
     pub sigterm: tokio::signal::unix::Signal,
     /// Dedicated shutdown signal for the HTTP server.
-    pub shutdown_tx: tokio::sync::watch::Sender<bool>,
+    pub http_shutdown_tx: tokio::sync::watch::Sender<bool>,
     /// Path to the config directory (for backup/rollback during reload).
     pub config_dir: std::path::PathBuf,
     /// When the last user message was received (for idle deadline recalculation on reload).
@@ -180,12 +181,18 @@ pub(crate) struct GatewayRuntime {
     pub command_tx: mpsc::Sender<ServerCommand>,
     /// Shared path policy for updating blocked paths on reload.
     pub path_policy: crate::tools::SharedPathPolicy,
+    /// Shared tracing service for observability API.
+    pub tracing_service: Arc<TracingService>,
     /// Shared update status for periodic version checking.
     pub update_status: SharedUpdateStatus,
     /// Sender half for triggering restart (cloned into API state on rebind).
     pub restart_tx: mpsc::Sender<()>,
     /// Receives a signal to trigger a graceful restart (binary replaced).
     pub restart_rx: mpsc::Receiver<()>,
+    /// Sender half for triggering graceful shutdown from the HTTP API.
+    pub gateway_shutdown_tx: mpsc::Sender<()>,
+    /// Receives a signal to trigger a graceful shutdown from the HTTP API.
+    pub gateway_shutdown_rx: mpsc::Receiver<()>,
 }
 
 #[cfg(test)]
@@ -202,29 +209,59 @@ mod tests {
     #[tokio::test]
     async fn core_channels_survive_reload_signal() {
         let dir = tempfile::tempdir().unwrap();
-        let (core, _receivers) = GatewayCore::new(dir.path().to_path_buf());
+        let (core, mut receivers) = GatewayCore::new(dir.path().to_path_buf());
 
-        // Bus publish should work before reload
+        let system_topic = || {
+            crate::bus::topics::Notification(crate::bus::NotifyName::from(
+                crate::bus::SYSTEM_CHANNEL,
+            ))
+        };
+
+        // Subscribe before publishing so we can verify delivery
+        let mut subscriber: crate::bus::Subscriber<crate::bus::NoticeEvent> =
+            core.bus_handle.subscribe(system_topic()).await.unwrap();
+
         let result = core
             .publisher
             .publish(
-                crate::bus::topics::SystemMessage,
-                crate::bus::SystemMessageEvent::Notice {
+                system_topic(),
+                crate::bus::NoticeEvent {
                     message: "test".to_string(),
                 },
             )
             .await;
         assert!(result.is_ok(), "bus publish should succeed before reload");
 
+        // Verify notice was delivered
+        let received = subscriber.recv().await.unwrap();
+        assert!(
+            received.is_some(),
+            "notice should be delivered to subscriber"
+        );
+        assert_eq!(
+            received.unwrap().message,
+            "test",
+            "received message should match published content"
+        );
+
         // Fire a reload signal
         core.reload_tx.send(ReloadSignal::Root).unwrap();
+
+        // Verify the reload signal propagated
+        receivers.reload.changed().await.unwrap();
+        let signal = receivers.reload.borrow_and_update().clone();
+        assert_eq!(
+            signal,
+            ReloadSignal::Root,
+            "reload signal should propagate to receiver"
+        );
 
         // Channels still work after the reload signal
         let result_after = core
             .publisher
             .publish(
-                crate::bus::topics::SystemMessage,
-                crate::bus::SystemMessageEvent::Notice {
+                system_topic(),
+                crate::bus::NoticeEvent {
                     message: "after reload".to_string(),
                 },
             )
@@ -232,6 +269,12 @@ mod tests {
         assert!(
             result_after.is_ok(),
             "bus publish should still work after reload signal"
+        );
+
+        let received_after = subscriber.recv().await.unwrap();
+        assert!(
+            received_after.is_some(),
+            "notice should be delivered after reload signal"
         );
     }
 }

@@ -121,15 +121,9 @@ export interface ValidateResponse {
 
 // ── Settings types ───────────────────────────────────────────────────
 
-export type SettingsSection =
-  | "runtime"
-  | "providers"
-  | "memory"
-  | "integrations"
-  | "cloud"
-  | "mcp"
-  | "web_search"
-  | "update";
+export type SettingsSection = "runtime" | "providers" | "memory" | "integrations" | "mcp";
+
+export type SettingsMode = "simple" | "advanced" | "raw";
 
 export interface UpdateStatusResponse {
   current: string;
@@ -208,7 +202,7 @@ export type ConnectionStatus = "connecting" | "connected" | "disconnected";
 export interface ToolCallState {
   id: string;
   name: string;
-  arguments: string;
+  arguments: Record<string, unknown>;
   status: "running" | "done" | "error";
   result?: string;
 }

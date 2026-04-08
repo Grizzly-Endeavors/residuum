@@ -5,6 +5,7 @@ use std::collections::HashSet;
 use std::path::Path;
 use std::sync::Arc;
 
+use anyhow::Context as _;
 use tokio::sync::{Mutex, Notify};
 
 use crate::actions::store::ActionStore;
@@ -18,14 +19,12 @@ use crate::models::retry::RetryConfig;
 use crate::models::{CompletionOptions, SharedHttpClient, build_provider_chain};
 use crate::projects::activation::SharedProjectState;
 use crate::skills::SharedSkillState;
+use crate::subagents::types::SubagentPresetFrontmatter;
 use crate::workspace::identity::IdentityFiles;
 use crate::workspace::layout::WorkspaceLayout;
 
-use crate::subagents::types::SubagentPresetFrontmatter;
-
-use super::subagent::{
-    PresetToolRestriction, SubAgentBuildConfig, SubAgentResources, build_resources,
-};
+use super::subagent::{SubAgentResources, build_subagent_resources};
+use super::types::{PresetToolRestriction, SubAgentBuildConfig};
 
 /// Everything needed to spawn background tasks from the gateway event loop.
 pub(crate) struct SpawnContext {
@@ -57,6 +56,7 @@ pub(crate) struct SpawnContext {
 ///
 /// # Errors
 /// Returns an error if provider construction fails (e.g. missing API key).
+#[tracing::instrument(skip_all, fields(tier = ?tier))]
 pub(crate) async fn build_spawn_resources(
     ctx: &SpawnContext,
     tier: &BackgroundModelTier,
@@ -75,7 +75,8 @@ pub(crate) async fn build_spawn_resources(
         ctx.max_tokens,
         ctx.http_client.clone(),
         ctx.retry_config.clone(),
-    )?;
+    )
+    .with_context(|| format!("failed to build provider chain for tier {tier:?}"))?;
 
     let (preset_tool_restriction, preset_instructions) = match preset {
         Some((fm, body)) => {
@@ -126,7 +127,7 @@ pub(crate) async fn build_spawn_resources(
         hybrid_searcher: Arc::clone(&ctx.hybrid_searcher),
     };
 
-    Ok(build_resources(
+    Ok(build_subagent_resources(
         provider,
         project_state,
         skill_state,
@@ -138,32 +139,27 @@ pub(crate) async fn build_spawn_resources(
 
 /// Load a sub-agent preset and resolve its model tier.
 ///
-/// Returns the resolved tier and the preset frontmatter+body (if loaded successfully).
+/// Returns the resolved tier and the preset frontmatter+body.
 /// Used by pulse, scheduled actions, and on-demand spawning.
 ///
 /// # Errors
 /// Returns an error if the preset index cannot be scanned or the preset cannot be loaded.
+#[tracing::instrument(skip_all, fields(preset = %preset_name))]
 pub(crate) async fn load_preset_for_spawn(
     subagents_dir: &Path,
     preset_name: &str,
     fallback_tier: BackgroundModelTier,
-) -> Result<
-    (
-        BackgroundModelTier,
-        Option<(SubagentPresetFrontmatter, String)>,
-    ),
-    anyhow::Error,
-> {
+) -> Result<(BackgroundModelTier, SubagentPresetFrontmatter, String), anyhow::Error> {
     let index = crate::subagents::SubagentPresetIndex::scan(subagents_dir).await?;
     let (fm, body) = index.load_preset(preset_name).await?;
 
     let tier: BackgroundModelTier = match fm.model_tier.as_deref() {
         Some(s) => s.parse().unwrap_or_else(|_| {
-            tracing::warn!(preset = %preset_name, model_tier = %s, "unknown model_tier, using fallback");
+            tracing::warn!(model_tier = %s, "unknown model_tier, using fallback");
             fallback_tier
         }),
         None => fallback_tier,
     };
 
-    Ok((tier, Some((fm, body))))
+    Ok((tier, fm, body))
 }

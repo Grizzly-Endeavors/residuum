@@ -41,7 +41,7 @@ impl Tool for MemorySearchTool {
              context, and episode IDs."
         };
         ToolDefinition {
-            name: "memory_search".to_string(),
+            name: self.name().to_string(),
             description: desc.to_string(),
             parameters: serde_json::json!({
                 "type": "object",
@@ -56,8 +56,8 @@ impl Tool for MemorySearchTool {
                     },
                     "source": {
                         "type": "string",
-                        "description": "Filter by source type: 'observations', 'episodes', or 'both'",
-                        "enum": ["observations", "episodes", "both"]
+                        "description": "Filter by source type: 'observations' or 'episodes'. Omit to search both.",
+                        "enum": ["observations", "episodes"]
                     },
                     "date_from": {
                         "type": "string",
@@ -95,7 +95,7 @@ impl Tool for MemorySearchTool {
         }
 
         let limit = match arguments.get("limit").and_then(Value::as_u64) {
-            Some(l) => usize::try_from(l.min(20)).unwrap_or_default().max(1),
+            Some(l) => (l.min(20) as usize).max(1),
             None => 5,
         };
 
@@ -165,7 +165,10 @@ impl Tool for MemorySearchTool {
                     formatted.join("\n\n")
                 )))
             }
-            Err(e) => Ok(ToolResult::error(format!("search failed: {e}"))),
+            Err(e) => {
+                tracing::error!(error = %e, query = %query, "memory search failed");
+                Ok(ToolResult::error(format!("search failed: {e}")))
+            }
         }
     }
 }
@@ -293,5 +296,29 @@ mod tests {
             .unwrap();
 
         assert!(!result.is_error, "date filtered search should succeed");
+        assert!(
+            result.output.contains("Found"),
+            "search within date range should return results: {}",
+            result.output
+        );
+
+        // A date range that doesn't include the indexed observation (2026-02-19) should return nothing
+        let result_outside = tool
+            .execute(serde_json::json!({
+                "query": "rust memory",
+                "date_from": "2025-01-01",
+                "date_to": "2025-12-31"
+            }))
+            .await
+            .unwrap();
+        assert!(
+            !result_outside.is_error,
+            "search outside date range should not error"
+        );
+        assert!(
+            result_outside.output.contains("no results"),
+            "search outside date range should return no results: {}",
+            result_outside.output
+        );
     }
 }

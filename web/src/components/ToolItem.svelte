@@ -1,5 +1,6 @@
 <script lang="ts">
   import type { ToolCallState } from "../lib/types";
+  import ToolArgs from "./ToolArgs.svelte";
 
   let { call }: { call: ToolCallState } = $props();
   let open = $state(false);
@@ -17,12 +18,12 @@
   >
     <span class="tool-chevron">&#9654;</span>
     <span class="tool-name">{call.name}</span>
+    <ToolArgs name={call.name} args={call.arguments} />
     <span class="tool-status" class:ok={call.status === "done"} class:err={call.status === "error"}>
       {call.status === "running" ? "running..." : call.status}
     </span>
   </div>
-  <div class="tool-body">
-    {call.arguments}{#if call.result}
-      {call.result}{/if}
-  </div>
+  {#if call.result}
+    <div class="tool-body">{call.result}</div>
+  {/if}
 </div>

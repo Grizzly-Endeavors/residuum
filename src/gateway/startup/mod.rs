@@ -16,7 +16,6 @@ use crate::background::BackgroundTaskSpawner;
 use crate::background::types::BackgroundResult;
 use crate::bus::EndpointRegistry;
 use crate::config::Config;
-use crate::error::ResiduumError;
 use crate::mcp::SharedMcpRegistry;
 use crate::memory::observer::Observer;
 use crate::memory::reflector::Reflector;
@@ -26,6 +25,7 @@ use crate::notify::channels::InboxChannel;
 use crate::projects::activation::{ProjectState, SharedProjectState};
 use crate::projects::scanner::ProjectIndex;
 use crate::skills::{SharedSkillState, SkillIndex, SkillState};
+use crate::util::FatalError;
 use crate::workspace::bootstrap::ensure_workspace;
 use crate::workspace::identity::IdentityFiles;
 use crate::workspace::layout::WorkspaceLayout;
@@ -55,7 +55,7 @@ pub(crate) struct GatewayComponents {
     pub channel_configs: Vec<crate::notify::types::ExternalChannelConfig>,
     pub http_client: SharedHttpClient,
     pub background_spawner: Arc<BackgroundTaskSpawner>,
-    pub background_result_rx: mpsc::Receiver<BackgroundResult>,
+    pub background_result_rx: Option<mpsc::Receiver<BackgroundResult>>,
     pub spawn_context: Arc<SpawnContext>,
     pub path_policy: crate::tools::SharedPathPolicy,
     pub output_topic_override_tx: tokio::sync::watch::Sender<Option<crate::bus::EndpointName>>,
@@ -64,16 +64,16 @@ pub(crate) struct GatewayComponents {
 /// Bootstrap the workspace directory and return the layout and timezone.
 ///
 /// # Errors
-/// Returns `ResiduumError` if workspace bootstrapping fails.
+/// Returns `FatalError` if workspace bootstrapping fails.
 pub(super) async fn init_workspace(
     cfg: &Config,
-) -> Result<(WorkspaceLayout, chrono_tz::Tz), ResiduumError> {
+) -> Result<(WorkspaceLayout, chrono_tz::Tz), FatalError> {
     let layout = WorkspaceLayout::new(&cfg.workspace_dir);
     let tz = cfg.timezone;
     ensure_workspace(&layout, cfg.name.as_deref(), Some(cfg.timezone.name())).await?;
 
     std::env::set_current_dir(&cfg.workspace_dir).map_err(|e| {
-        ResiduumError::Config(format!(
+        FatalError::Config(format!(
             "failed to change to workspace directory {}: {e}",
             cfg.workspace_dir.display()
         ))
@@ -86,16 +86,16 @@ pub(super) async fn init_workspace(
 /// Load identity files and build the shared HTTP client.
 ///
 /// # Errors
-/// Returns `ResiduumError` if identity loading or HTTP client construction fails.
+/// Returns `FatalError` if identity loading or HTTP client construction fails.
 pub(super) async fn init_identity_and_http(
     layout: &WorkspaceLayout,
     cfg: &Config,
-) -> Result<(IdentityFiles, SharedHttpClient), ResiduumError> {
+) -> Result<(IdentityFiles, SharedHttpClient), FatalError> {
     let identity = IdentityFiles::load(layout).await?;
     let http = SharedHttpClient::new(&crate::models::HttpClientConfig::with_timeout(
         cfg.timeout_secs,
     ))
-    .map_err(|e| ResiduumError::Config(format!("failed to build HTTP client: {e}")))?;
+    .map_err(|e| FatalError::Config(format!("failed to build HTTP client: {e}")))?;
     Ok((identity, http))
 }
 
@@ -157,7 +157,6 @@ fn init_background_spawner(
     let background_spawner = Arc::new(BackgroundTaskSpawner::new(
         bg_result_tx,
         cfg.background.max_concurrent,
-        layout.root().to_path_buf(),
         layout.background_dir(),
     ));
     (bg_result_rx, background_spawner)
@@ -319,11 +318,11 @@ pub(crate) async fn spawn_notify_subscribers(
 /// and remaining subsystems.
 ///
 /// # Errors
-/// Returns `ResiduumError` if any subsystem fails to initialize.
+/// Returns `FatalError` if any subsystem fails to initialize.
 pub(crate) async fn initialize(
     cfg: &Config,
     publisher: &crate::bus::Publisher,
-) -> Result<GatewayComponents, ResiduumError> {
+) -> Result<GatewayComponents, FatalError> {
     let (layout, tz) = init_workspace(cfg).await?;
     let (identity, http) = init_identity_and_http(&layout, cfg).await?;
     let providers = providers::init_providers(cfg, tz, http.clone())?;
@@ -376,9 +375,9 @@ pub(crate) async fn initialize(
         tools::init_tool_registry(cfg, &layout, &mem, tz, &tool_deps);
 
     let agent = tools::create_agent(
-        cfg,
         CreateAgentArgs {
             provider: providers.provider,
+            options: providers.options,
             tools,
             tool_filter,
             identity,
@@ -409,7 +408,7 @@ pub(crate) async fn initialize(
         channel_configs,
         http_client: http.clone(),
         background_spawner,
-        background_result_rx: bg_result_rx,
+        background_result_rx: Some(bg_result_rx),
         spawn_context,
         path_policy: path_policy_for_runtime,
         output_topic_override_tx,

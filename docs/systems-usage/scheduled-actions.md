@@ -8,7 +8,7 @@ Scheduled actions are one-off future tasks. They fire once at a specified time a
 2. Action persisted to `scheduled_actions.json` (atomic write: temp file + rename)
 3. Gateway checks for due actions on a **30-second tick**
 4. When `run_at` has passed: action removed from persistence, background task spawned
-5. Results routed to specified channels
+5. Results routed through the notification router based on content and ALERTS.md policy
 
 If the gateway was offline when an action was due, it fires on next startup.
 
@@ -23,7 +23,6 @@ If the gateway was offline when an action was due, it fires on next startup.
 | `run_at` | string | yes | Local time without offset (e.g. `2026-03-01T09:00:00`). Interpreted in configured workspace timezone. Displayed times are also local. Must be in the future. |
 | `agent_name` | string | no | `"main"` = full wake turn with conversation context. `"<preset>"` = sub-agent with named preset. Omitted = default sub-agent. |
 | `model_tier` | string enum | no | `"small"`, `"medium"`, `"large"`. Only applies to sub-agent actions. |
-| `channels` | string[] | no | Result delivery channels. Defaults to `["agent_feed"]`. **Mutually exclusive with `agent_name: "main"`** (main-turn results go directly into the conversation). |
 
 ### `list_actions`
 
@@ -37,11 +36,9 @@ No parameters. Returns all pending actions.
 
 ## Routing
 
-Scheduled actions use **direct channel routing** specified in the `channels` field of `schedule_action`. Heartbeat pulses also use direct routing, with channels declared on each pulse in HEARTBEAT.yml via the `channels:` field.
+Scheduled action results flow through the pub/sub bus to the LLM notification router, which decides where each result goes based on content analysis and the `ALERTS.md` policy file. Main-turn actions (`agent_name: "main"`) inject directly into the main agent conversation.
 
-This means:
-- Heartbeats: agent controls routing by editing the `channels` field on each pulse in HEARTBEAT.yml
-- Scheduled actions: routing is set at creation time via the `channels` parameter
+See [notifications.md](notifications.md) for the full routing model.
 
 ## Persistence
 

@@ -11,8 +11,9 @@ use tantivy::query::{BooleanQuery, QueryParser};
 use tantivy::schema::{Field, OwnedValue, STORED, STRING, Schema, TEXT};
 use tantivy::{Index, IndexReader, IndexWriter, ReloadPolicy, TantivyDocument, Term};
 
+use anyhow::Context;
+
 use crate::config::SearchConfig;
-use crate::error::ResiduumError;
 use crate::memory::chunk_extractor::read_idx_jsonl;
 use crate::memory::types::{IndexChunk, IndexManifest, ManifestFileEntry, Observation};
 use crate::memory::vector_store::{VectorSearchFilters, VectorStore};
@@ -98,49 +99,79 @@ pub struct MemoryIndex {
     line_end_field: Field,
 }
 
+struct SearchSchema {
+    schema: Schema,
+    id_field: Field,
+    source_type_field: Field,
+    episode_id_field: Field,
+    date_field: Field,
+    ctx_field: Field,
+    content_field: Field,
+    line_start_field: Field,
+    line_end_field: Field,
+}
+
+/// Build the tantivy schema and return it with all field handles.
+fn build_schema() -> SearchSchema {
+    let mut builder = Schema::builder();
+    let id_field = builder.add_text_field("id", STRING | STORED);
+    let source_type_field = builder.add_text_field("source_type", STRING | STORED);
+    let episode_id_field = builder.add_text_field("episode_id", STRING | STORED);
+    let date_field = builder.add_text_field("date", STRING | STORED);
+    let ctx_field = builder.add_text_field("context", STRING | STORED);
+    let content_field = builder.add_text_field("content", TEXT | STORED);
+    let line_start_field = builder.add_text_field("line_start", STRING | STORED);
+    let line_end_field = builder.add_text_field("line_end", STRING | STORED);
+    let schema = builder.build();
+    SearchSchema {
+        schema,
+        id_field,
+        source_type_field,
+        episode_id_field,
+        date_field,
+        ctx_field,
+        content_field,
+        line_start_field,
+        line_end_field,
+    }
+}
+
 impl MemoryIndex {
     /// Open or create a tantivy index at the given directory.
     ///
     /// # Errors
     /// Returns an error if the directory is inaccessible or the index is corrupt.
-    pub fn open_or_create(index_dir: &Path) -> Result<Self, ResiduumError> {
-        std::fs::create_dir_all(index_dir).map_err(|e| {
-            ResiduumError::Memory(format!(
-                "failed to create search index directory at {}: {e}",
+    pub fn open_or_create(index_dir: &Path) -> anyhow::Result<Self> {
+        std::fs::create_dir_all(index_dir).with_context(|| {
+            format!(
+                "failed to create search index directory at {}",
                 index_dir.display()
-            ))
+            )
         })?;
 
-        let mut builder = Schema::builder();
-        let id_field = builder.add_text_field("id", STRING | STORED);
-        let source_type_field = builder.add_text_field("source_type", STRING | STORED);
-        let episode_id_field = builder.add_text_field("episode_id", STRING | STORED);
-        let date_field = builder.add_text_field("date", STRING | STORED);
-        let ctx_field = builder.add_text_field("context", STRING | STORED);
-        let content_field = builder.add_text_field("content", TEXT | STORED);
-        let line_start_field = builder.add_text_field("line_start", STRING | STORED);
-        let line_end_field = builder.add_text_field("line_end", STRING | STORED);
-        let schema = builder.build();
+        let SearchSchema {
+            schema,
+            id_field,
+            source_type_field,
+            episode_id_field,
+            date_field,
+            ctx_field,
+            content_field,
+            line_start_field,
+            line_end_field,
+        } = build_schema();
 
-        let mmap_dir = MmapDirectory::open(index_dir).map_err(|e| {
-            ResiduumError::Memory(format!(
-                "failed to open mmap directory at {}: {e}",
-                index_dir.display()
-            ))
-        })?;
+        let mmap_dir = MmapDirectory::open(index_dir)
+            .with_context(|| format!("failed to open mmap directory at {}", index_dir.display()))?;
 
-        let index = Index::open_or_create(mmap_dir, schema).map_err(|e| {
-            ResiduumError::Memory(format!(
-                "failed to open search index at {}: {e}",
-                index_dir.display()
-            ))
-        })?;
+        let index = Index::open_or_create(mmap_dir, schema)
+            .with_context(|| format!("failed to open search index at {}", index_dir.display()))?;
 
         let reader: IndexReader = index
             .reader_builder()
             .reload_policy(ReloadPolicy::OnCommitWithDelay)
             .try_into()
-            .map_err(|e| ResiduumError::Memory(format!("failed to create index reader: {e}")))?;
+            .context("failed to create index reader")?;
 
         Ok(Self {
             index,
@@ -163,17 +194,18 @@ impl MemoryIndex {
     ///
     /// # Errors
     /// Returns an error if the in-memory index cannot be created.
-    pub fn empty() -> Result<Self, ResiduumError> {
-        let mut builder = Schema::builder();
-        let id_field = builder.add_text_field("id", STRING | STORED);
-        let source_type_field = builder.add_text_field("source_type", STRING | STORED);
-        let episode_id_field = builder.add_text_field("episode_id", STRING | STORED);
-        let date_field = builder.add_text_field("date", STRING | STORED);
-        let ctx_field = builder.add_text_field("context", STRING | STORED);
-        let content_field = builder.add_text_field("content", TEXT | STORED);
-        let line_start_field = builder.add_text_field("line_start", STRING | STORED);
-        let line_end_field = builder.add_text_field("line_end", STRING | STORED);
-        let schema = builder.build();
+    pub fn empty() -> anyhow::Result<Self> {
+        let SearchSchema {
+            schema,
+            id_field,
+            source_type_field,
+            episode_id_field,
+            date_field,
+            ctx_field,
+            content_field,
+            line_start_field,
+            line_end_field,
+        } = build_schema();
 
         let index = Index::create_in_ram(schema);
 
@@ -181,9 +213,7 @@ impl MemoryIndex {
             .reader_builder()
             .reload_policy(ReloadPolicy::OnCommitWithDelay)
             .try_into()
-            .map_err(|e| {
-                ResiduumError::Memory(format!("failed to create in-ram index reader: {e}"))
-            })?;
+            .context("failed to create in-ram index reader")?;
 
         Ok(Self {
             index,
@@ -210,7 +240,7 @@ impl MemoryIndex {
         episode_id: &str,
         date: &str,
         observations: &[Observation],
-    ) -> Result<Vec<String>, ResiduumError> {
+    ) -> anyhow::Result<Vec<String>> {
         if observations.is_empty() {
             return Ok(Vec::new());
         }
@@ -220,19 +250,14 @@ impl MemoryIndex {
 
         for (i, obs) in observations.iter().enumerate() {
             let doc_id = format!("{episode_id}-o{i}");
-            let mut doc = TantivyDocument::default();
-            doc.add_text(self.id_field, &doc_id);
-            doc.add_text(self.source_type_field, "observation");
-            doc.add_text(self.episode_id_field, episode_id);
-            doc.add_text(self.date_field, date);
-            doc.add_text(self.ctx_field, &obs.project_context);
-            doc.add_text(self.content_field, &obs.content);
-            doc.add_text(self.line_start_field, "");
-            doc.add_text(self.line_end_field, "");
-
-            writer.add_document(doc).map_err(|e| {
-                ResiduumError::Memory(format!("failed to add observation to search index: {e}"))
-            })?;
+            self.add_obs_document(
+                &mut writer,
+                &doc_id,
+                episode_id,
+                date,
+                &obs.project_context,
+                &obs.content,
+            )?;
             doc_ids.push(doc_id);
         }
 
@@ -246,7 +271,7 @@ impl MemoryIndex {
     ///
     /// # Errors
     /// Returns an error if the index writer fails.
-    pub fn index_chunks(&self, chunks: &[IndexChunk]) -> Result<Vec<String>, ResiduumError> {
+    pub fn index_chunks(&self, chunks: &[IndexChunk]) -> anyhow::Result<Vec<String>> {
         if chunks.is_empty() {
             return Ok(Vec::new());
         }
@@ -255,19 +280,7 @@ impl MemoryIndex {
         let mut doc_ids = Vec::with_capacity(chunks.len());
 
         for chunk in chunks {
-            let mut doc = TantivyDocument::default();
-            doc.add_text(self.id_field, &chunk.chunk_id);
-            doc.add_text(self.source_type_field, "chunk");
-            doc.add_text(self.episode_id_field, &chunk.episode_id);
-            doc.add_text(self.date_field, &chunk.date);
-            doc.add_text(self.ctx_field, &chunk.context);
-            doc.add_text(self.content_field, &chunk.content);
-            doc.add_text(self.line_start_field, chunk.line_start.to_string());
-            doc.add_text(self.line_end_field, chunk.line_end.to_string());
-
-            writer.add_document(doc).map_err(|e| {
-                ResiduumError::Memory(format!("failed to add chunk to search index: {e}"))
-            })?;
+            self.add_chunk_document(&mut writer, chunk)?;
             doc_ids.push(chunk.chunk_id.clone());
         }
 
@@ -279,7 +292,7 @@ impl MemoryIndex {
     ///
     /// # Errors
     /// Returns an error if the index writer fails.
-    pub fn delete_documents(&self, ids: &[String]) -> Result<(), ResiduumError> {
+    pub fn delete_documents(&self, ids: &[String]) -> anyhow::Result<()> {
         if ids.is_empty() {
             return Ok(());
         }
@@ -301,7 +314,7 @@ impl MemoryIndex {
         query_str: &str,
         limit: usize,
         filters: &SearchFilters,
-    ) -> Result<Vec<SearchResult>, ResiduumError> {
+    ) -> anyhow::Result<Vec<SearchResult>> {
         if query_str.trim().is_empty() {
             return Ok(Vec::new());
         }
@@ -338,7 +351,7 @@ impl MemoryIndex {
 
         let top_docs = searcher
             .search(&*query, &TopDocs::with_limit(fetch_limit))
-            .map_err(|e| ResiduumError::Memory(format!("search failed: {e}")))?;
+            .context("search failed")?;
 
         let mut results = Vec::with_capacity(limit);
         for (score, doc_address) in &top_docs {
@@ -348,7 +361,7 @@ impl MemoryIndex {
 
             let doc: TantivyDocument = searcher
                 .doc(*doc_address)
-                .map_err(|e| ResiduumError::Memory(format!("failed to fetch document: {e}")))?;
+                .context("failed to fetch document")?;
 
             let date = get_text(&doc, self.date_field);
             let ctx = get_text(&doc, self.ctx_field);
@@ -404,12 +417,12 @@ impl MemoryIndex {
     ///
     /// # Errors
     /// Returns an error if files cannot be read or the index cannot be written.
-    pub fn rebuild(&self, memory_dir: &Path) -> Result<RebuildResult, ResiduumError> {
+    pub fn rebuild(&self, memory_dir: &Path) -> anyhow::Result<RebuildResult> {
         let mut writer = self.writer()?;
 
         writer
             .delete_all_documents()
-            .map_err(|e| ResiduumError::Memory(format!("failed to clear search index: {e}")))?;
+            .context("failed to clear search index")?;
 
         let mut result = RebuildResult {
             obs_count: 0,
@@ -418,11 +431,35 @@ impl MemoryIndex {
         };
 
         let episodes_dir = memory_dir.join("episodes");
+        let mut disk_files: Vec<(String, String)> = Vec::new();
         if episodes_dir.exists() {
-            self.rebuild_directory(&mut writer, &episodes_dir, memory_dir, &mut result)?;
+            collect_indexable_files(&episodes_dir, memory_dir, &mut disk_files)?;
+        }
+
+        for (rel_path, mtime) in &disk_files {
+            let abs_path = memory_dir.join(rel_path);
+            let doc_ids = self.index_file_into_writer(&mut writer, &abs_path, rel_path)?;
+            if rel_path.ends_with(".obs.json") {
+                result.obs_count += doc_ids.len();
+            } else if rel_path.ends_with(".idx.jsonl") {
+                result.chunk_count += doc_ids.len();
+            }
+            result.file_entries.push((
+                rel_path.clone(),
+                ManifestFileEntry {
+                    mtime: mtime.clone(),
+                    doc_ids,
+                    embedded: false,
+                },
+            ));
         }
 
         self.commit_and_reload(&mut writer)?;
+        tracing::info!(
+            obs_count = result.obs_count,
+            chunk_count = result.chunk_count,
+            "memory index rebuild complete"
+        );
         Ok(result)
     }
 
@@ -434,7 +471,7 @@ impl MemoryIndex {
         &self,
         memory_dir: &Path,
         manifest: &IndexManifest,
-    ) -> Result<(IndexManifest, SyncStats), ResiduumError> {
+    ) -> anyhow::Result<(IndexManifest, SyncStats)> {
         let mut stats = SyncStats {
             added: 0,
             updated: 0,
@@ -498,106 +535,29 @@ impl MemoryIndex {
         }
 
         self.commit_and_reload(&mut writer)?;
+        tracing::info!(
+            added = stats.added,
+            updated = stats.updated,
+            removed = stats.removed,
+            unchanged = stats.unchanged,
+            "incremental sync complete"
+        );
         Ok((new_manifest, stats))
     }
 
     /// Create an index writer with a reasonable memory budget.
-    fn writer(&self) -> Result<IndexWriter, ResiduumError> {
+    fn writer(&self) -> anyhow::Result<IndexWriter> {
         self.index
             .writer(WRITER_MEMORY_BUDGET_BYTES)
-            .map_err(|e| ResiduumError::Memory(format!("failed to create index writer: {e}")))
+            .context("failed to create index writer")
     }
 
     /// Commit the writer and reload the reader.
-    fn commit_and_reload(&self, writer: &mut IndexWriter) -> Result<(), ResiduumError> {
-        writer
-            .commit()
-            .map_err(|e| ResiduumError::Memory(format!("failed to commit search index: {e}")))?;
-        self.reader.reload().map_err(|e| {
-            ResiduumError::Memory(format!("failed to reload search index reader: {e}"))
-        })?;
-        Ok(())
-    }
-
-    /// Recursively walk a directory, indexing `.obs.json` and `.idx.jsonl` files.
-    fn rebuild_directory(
-        &self,
-        writer: &mut IndexWriter,
-        dir: &Path,
-        memory_dir: &Path,
-        result: &mut RebuildResult,
-    ) -> Result<(), ResiduumError> {
-        let entries = std::fs::read_dir(dir).map_err(|e| {
-            ResiduumError::Memory(format!("failed to read directory {}: {e}", dir.display()))
-        })?;
-
-        for entry in entries {
-            let entry = entry.map_err(|e| {
-                ResiduumError::Memory(format!("failed to read directory entry: {e}"))
-            })?;
-            let path = entry.path();
-
-            if path.is_dir() {
-                self.rebuild_directory(writer, &path, memory_dir, result)?;
-            } else if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
-                let rel_path = make_relative(&path, memory_dir);
-                let mtime = file_mtime_str(&path);
-
-                match ext {
-                    "json" if path.to_string_lossy().ends_with(".obs.json") => {
-                        match parse_obs_file(&path) {
-                            Ok((episode_id, date, observations)) => {
-                                let mut doc_ids = Vec::new();
-                                for (i, obs) in observations.iter().enumerate() {
-                                    let doc_id = format!("{episode_id}-o{i}");
-                                    add_obs_document(
-                                        writer,
-                                        self,
-                                        &doc_id,
-                                        &episode_id,
-                                        &date,
-                                        &obs.project_context,
-                                        &obs.content,
-                                    )?;
-                                    doc_ids.push(doc_id);
-                                }
-                                result.obs_count += observations.len();
-                                result.file_entries.push((
-                                    rel_path,
-                                    ManifestFileEntry {
-                                        mtime,
-                                        doc_ids,
-                                        embedded: false,
-                                    },
-                                ));
-                            }
-                            Err(e) => {
-                                tracing::warn!(path = %path.display(), error = %e, "skipping unparseable obs file");
-                            }
-                        }
-                    }
-                    "jsonl" if path.to_string_lossy().ends_with(".idx.jsonl") => {
-                        let chunks = read_idx_jsonl(&path);
-                        let mut doc_ids = Vec::new();
-                        for chunk in &chunks {
-                            add_chunk_document(writer, self, chunk)?;
-                            doc_ids.push(chunk.chunk_id.clone());
-                        }
-                        result.chunk_count += chunks.len();
-                        result.file_entries.push((
-                            rel_path,
-                            ManifestFileEntry {
-                                mtime,
-                                doc_ids,
-                                embedded: false,
-                            },
-                        ));
-                    }
-                    _ => {}
-                }
-            }
-        }
-
+    fn commit_and_reload(&self, writer: &mut IndexWriter) -> anyhow::Result<()> {
+        writer.commit().context("failed to commit search index")?;
+        self.reader
+            .reload()
+            .context("failed to reload search index reader")?;
         Ok(())
     }
 
@@ -607,16 +567,15 @@ impl MemoryIndex {
         writer: &mut IndexWriter,
         abs_path: &Path,
         rel_path: &str,
-    ) -> Result<Vec<String>, ResiduumError> {
+    ) -> anyhow::Result<Vec<String>> {
         let mut doc_ids = Vec::new();
 
         if rel_path.ends_with(".obs.json") {
             let (episode_id, date, observations) = parse_obs_file(abs_path)?;
             for (i, obs) in observations.iter().enumerate() {
                 let doc_id = format!("{episode_id}-o{i}");
-                add_obs_document(
+                self.add_obs_document(
                     writer,
-                    self,
                     &doc_id,
                     &episode_id,
                     &date,
@@ -628,61 +587,59 @@ impl MemoryIndex {
         } else if rel_path.ends_with(".idx.jsonl") {
             let chunks = read_idx_jsonl(abs_path);
             for chunk in &chunks {
-                add_chunk_document(writer, self, chunk)?;
+                self.add_chunk_document(writer, chunk)?;
                 doc_ids.push(chunk.chunk_id.clone());
             }
         }
 
         Ok(doc_ids)
     }
-}
 
-/// Add an observation document to the writer.
-fn add_obs_document(
-    writer: &mut IndexWriter,
-    idx: &MemoryIndex,
-    doc_id: &str,
-    episode_id: &str,
-    date: &str,
-    ctx: &str,
-    content: &str,
-) -> Result<(), ResiduumError> {
-    let mut doc = TantivyDocument::default();
-    doc.add_text(idx.id_field, doc_id);
-    doc.add_text(idx.source_type_field, "observation");
-    doc.add_text(idx.episode_id_field, episode_id);
-    doc.add_text(idx.date_field, date);
-    doc.add_text(idx.ctx_field, ctx);
-    doc.add_text(idx.content_field, content);
-    doc.add_text(idx.line_start_field, "");
-    doc.add_text(idx.line_end_field, "");
+    fn add_obs_document(
+        &self,
+        writer: &mut IndexWriter,
+        doc_id: &str,
+        episode_id: &str,
+        date: &str,
+        ctx: &str,
+        content: &str,
+    ) -> anyhow::Result<()> {
+        let mut doc = TantivyDocument::default();
+        doc.add_text(self.id_field, doc_id);
+        doc.add_text(self.source_type_field, "observation");
+        doc.add_text(self.episode_id_field, episode_id);
+        doc.add_text(self.date_field, date);
+        doc.add_text(self.ctx_field, ctx);
+        doc.add_text(self.content_field, content);
+        doc.add_text(self.line_start_field, "");
+        doc.add_text(self.line_end_field, "");
 
-    writer.add_document(doc).map_err(|e| {
-        ResiduumError::Memory(format!("failed to add observation to search index: {e}"))
-    })?;
-    Ok(())
-}
+        writer
+            .add_document(doc)
+            .context("failed to add observation to search index")?;
+        Ok(())
+    }
 
-/// Add a chunk document to the writer.
-fn add_chunk_document(
-    writer: &mut IndexWriter,
-    idx: &MemoryIndex,
-    chunk: &IndexChunk,
-) -> Result<(), ResiduumError> {
-    let mut doc = TantivyDocument::default();
-    doc.add_text(idx.id_field, &chunk.chunk_id);
-    doc.add_text(idx.source_type_field, "chunk");
-    doc.add_text(idx.episode_id_field, &chunk.episode_id);
-    doc.add_text(idx.date_field, &chunk.date);
-    doc.add_text(idx.ctx_field, &chunk.context);
-    doc.add_text(idx.content_field, &chunk.content);
-    doc.add_text(idx.line_start_field, chunk.line_start.to_string());
-    doc.add_text(idx.line_end_field, chunk.line_end.to_string());
+    fn add_chunk_document(
+        &self,
+        writer: &mut IndexWriter,
+        chunk: &IndexChunk,
+    ) -> anyhow::Result<()> {
+        let mut doc = TantivyDocument::default();
+        doc.add_text(self.id_field, &chunk.chunk_id);
+        doc.add_text(self.source_type_field, "chunk");
+        doc.add_text(self.episode_id_field, &chunk.episode_id);
+        doc.add_text(self.date_field, &chunk.date);
+        doc.add_text(self.ctx_field, &chunk.context);
+        doc.add_text(self.content_field, &chunk.content);
+        doc.add_text(self.line_start_field, chunk.line_start.to_string());
+        doc.add_text(self.line_end_field, chunk.line_end.to_string());
 
-    writer
-        .add_document(doc)
-        .map_err(|e| ResiduumError::Memory(format!("failed to add chunk to search index: {e}")))?;
-    Ok(())
+        writer
+            .add_document(doc)
+            .context("failed to add chunk to search index")?;
+        Ok(())
+    }
 }
 
 /// Extract a text field value from a tantivy document.
@@ -696,10 +653,7 @@ fn get_text(doc: &TantivyDocument, field: Field) -> String {
 /// Extract a snippet (first 200 chars of content) from a document.
 fn get_snippet(doc: &TantivyDocument, content_field: Field) -> String {
     match doc.get_first(content_field) {
-        Some(OwnedValue::Str(s)) => {
-            let end = s.len().min(200);
-            s.get(..end).unwrap_or_default().to_string()
-        }
+        Some(OwnedValue::Str(s)) => crate::memory::truncate_at_char_boundary(s, 200),
         Some(_) | None => String::new(),
     }
 }
@@ -722,18 +676,12 @@ fn parse_line_num(doc: &TantivyDocument, field: Field) -> Option<usize> {
 ///
 /// The `episode_id` and date are derived from the filename: `ep-NNN.obs.json`
 /// lives under `episodes/YYYY-MM/DD/`.
-pub(crate) fn parse_obs_file(
-    path: &Path,
-) -> Result<(String, String, Vec<Observation>), ResiduumError> {
+pub(crate) fn parse_obs_file(path: &Path) -> anyhow::Result<(String, String, Vec<Observation>)> {
     let content = std::fs::read_to_string(path)
-        .map_err(|e| ResiduumError::Memory(format!("failed to read {}: {e}", path.display())))?;
+        .with_context(|| format!("failed to read {}", path.display()))?;
 
-    let observations: Vec<Observation> = serde_json::from_str(&content).map_err(|e| {
-        ResiduumError::Memory(format!(
-            "failed to parse obs file at {}: {e}",
-            path.display()
-        ))
-    })?;
+    let observations: Vec<Observation> = serde_json::from_str(&content)
+        .with_context(|| format!("failed to parse obs file at {}", path.display()))?;
 
     // Extract episode_id from filename: ep-NNN.obs.json → ep-NNN
     let episode_id = path
@@ -800,14 +748,12 @@ fn collect_indexable_files(
     dir: &Path,
     base: &Path,
     out: &mut Vec<(String, String)>,
-) -> Result<(), ResiduumError> {
-    let entries = std::fs::read_dir(dir).map_err(|e| {
-        ResiduumError::Memory(format!("failed to read directory {}: {e}", dir.display()))
-    })?;
+) -> anyhow::Result<()> {
+    let entries = std::fs::read_dir(dir)
+        .with_context(|| format!("failed to read directory {}", dir.display()))?;
 
     for entry in entries {
-        let entry = entry
-            .map_err(|e| ResiduumError::Memory(format!("failed to read directory entry: {e}")))?;
+        let entry = entry.context("failed to read directory entry")?;
         let path = entry.path();
 
         if path.is_dir() {
@@ -823,15 +769,6 @@ fn collect_indexable_files(
     }
 
     Ok(())
-}
-
-/// Create a shared `MemoryIndex` wrapped in an `Arc` for tool sharing.
-///
-/// # Errors
-/// Returns an error if the index cannot be opened.
-pub fn create_shared_index(index_dir: &Path) -> Result<Arc<MemoryIndex>, ResiduumError> {
-    let index = MemoryIndex::open_or_create(index_dir)?;
-    Ok(Arc::new(index))
 }
 
 // ── Hybrid searcher ─────────────────────────────────────────────────────────
@@ -874,12 +811,13 @@ impl HybridSearcher {
     ///
     /// # Errors
     /// Returns an error if BM25 search or embedding generation fails.
+    #[tracing::instrument(skip_all, fields(limit, query))]
     pub async fn search(
         &self,
         query: &str,
         limit: usize,
         filters: &SearchFilters,
-    ) -> Result<Vec<SearchResult>, ResiduumError> {
+    ) -> anyhow::Result<Vec<SearchResult>> {
         let candidates = limit * self.cfg.candidate_multiplier;
 
         // BM25 search
@@ -887,6 +825,7 @@ impl HybridSearcher {
 
         // If no vector search available, return BM25 results directly
         let (Some(vs), Some(ep)) = (&self.vector, &self.embedding) else {
+            tracing::trace!("vector search unavailable, using BM25-only search");
             // BM25-only: apply temporal decay if enabled, re-sort, then truncate
             let mut results = bm25_results;
             if self.cfg.temporal_decay {
@@ -906,14 +845,12 @@ impl HybridSearcher {
         let embed_response = ep
             .embed(&[query])
             .await
-            .map_err(|e| ResiduumError::Memory(format!("failed to embed search query: {e}")))?;
+            .context("failed to embed search query")?;
         let query_vec = embed_response
             .embeddings
             .into_iter()
             .next()
-            .ok_or_else(|| {
-                ResiduumError::Memory("embedding provider returned no embeddings".to_string())
-            })?;
+            .ok_or_else(|| anyhow::anyhow!("embedding provider returned no embeddings"))?;
 
         // Vector search (sync, so use spawn_blocking)
         let vs_clone = Arc::clone(vs);
@@ -927,10 +864,10 @@ impl HybridSearcher {
             vs_clone.search(&query_vec, vec_limit, &vec_filters)
         })
         .await
-        .map_err(|e| ResiduumError::Memory(format!("vector search task failed: {e}")))??;
+        .context("vector search task failed")??;
 
         // Merge results
-        let mut merged = merge_hybrid_results(&bm25_results, &vec_results, &self.cfg, limit);
+        let mut merged = merge_hybrid_results(&bm25_results, &vec_results, &self.cfg, candidates);
 
         // Apply temporal decay after merge if enabled
         if self.cfg.temporal_decay {
@@ -943,6 +880,7 @@ impl HybridSearcher {
             });
         }
 
+        merged.truncate(limit);
         Ok(merged)
     }
 
@@ -964,8 +902,8 @@ fn normalize_scores(scores: &[f32]) -> Vec<f32> {
         return vec![1.0];
     }
 
-    let min = scores.iter().copied().reduce(f32::min).unwrap_or_default();
-    let max = scores.iter().copied().reduce(f32::max).unwrap_or_default();
+    let min = scores.iter().copied().fold(f32::MAX, f32::min);
+    let max = scores.iter().copied().fold(f32::MIN, f32::max);
     let range = max - min;
 
     if range < f32::EPSILON {
@@ -1044,7 +982,7 @@ fn merge_hybrid_results(
     )]
     let min_score = cfg.min_score as f32;
 
-    let mut scored: Vec<(f32, SearchResult)> = Vec::new();
+    let mut scored: Vec<SearchResult> = Vec::new();
     for id in &all_ids {
         let bm25_score = bm25_map.get(id).map_or(0.0, |(s, _)| *s);
         let vec_score = vec_map.get(id).map_or(0.0, |(s, _)| *s);
@@ -1061,11 +999,7 @@ fn merge_hybrid_results(
                 ..(*bm25_r).clone()
             }
         } else if let Some((_, vec_r)) = vec_map.get(id) {
-            let snippet = if vec_r.content.len() > 200 {
-                vec_r.content.get(..200).unwrap_or_default().to_string()
-            } else {
-                vec_r.content.clone()
-            };
+            let snippet = crate::memory::truncate_at_char_boundary(&vec_r.content, 200);
             SearchResult {
                 id: vec_r.id.clone(),
                 source_type: vec_r.source_type.clone(),
@@ -1081,14 +1015,18 @@ fn merge_hybrid_results(
             continue;
         };
 
-        scored.push((hybrid, result));
+        scored.push(result);
     }
 
     // Sort descending by hybrid score
-    scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+    scored.sort_by(|a, b| {
+        b.score
+            .partial_cmp(&a.score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
     scored.truncate(limit);
 
-    scored.into_iter().map(|(_, r)| r).collect()
+    scored
 }
 
 /// Apply exponential temporal decay to search result scores.
@@ -1552,6 +1490,58 @@ mod tests {
     }
 
     #[test]
+    fn incremental_sync_updates_modified_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let memory_dir = dir.path().join("memory");
+        let day_dir = memory_dir.join("episodes/2026-02/19");
+        std::fs::create_dir_all(&day_dir).unwrap();
+
+        let obs_path = day_dir.join("ep-001.obs.json");
+
+        // Write initial content
+        let obs1 = vec![sample_observation("original content about workspace")];
+        std::fs::write(&obs_path, serde_json::to_string(&obs1).unwrap()).unwrap();
+
+        let index_dir = memory_dir.join(".index");
+        let index = MemoryIndex::open_or_create(&index_dir).unwrap();
+
+        // First sync
+        let (manifest, stats) = index
+            .incremental_sync(&memory_dir, &IndexManifest::new())
+            .unwrap();
+        assert_eq!(stats.added, 1);
+
+        // Verify original is searchable
+        let before = index
+            .search("original workspace", 5, &no_filters())
+            .unwrap();
+        assert!(!before.is_empty(), "should find original content");
+
+        // Write updated content to the file
+        let obs2 = vec![sample_observation("updated content about testing")];
+        std::fs::write(&obs_path, serde_json::to_string(&obs2).unwrap()).unwrap();
+
+        // Simulate stale mtime in manifest so incremental_sync detects the change
+        let mut stale_manifest = manifest.clone();
+        for entry in stale_manifest.files.values_mut() {
+            entry.mtime = "1970-01-01T00:00:00".to_string();
+        }
+
+        let (_manifest2, stats2) = index
+            .incremental_sync(&memory_dir, &stale_manifest)
+            .unwrap();
+        assert_eq!(stats2.updated, 1, "should detect modified file");
+
+        let after_old = index
+            .search("original workspace", 5, &no_filters())
+            .unwrap();
+        assert!(after_old.is_empty(), "old content should be replaced");
+
+        let after_new = index.search("updated testing", 5, &no_filters()).unwrap();
+        assert!(!after_new.is_empty(), "new content should be searchable");
+    }
+
+    #[test]
     fn line_range_present_for_chunks_absent_for_obs() {
         let (_dir, index) = create_test_index();
 
@@ -1818,7 +1808,7 @@ mod tests {
         // hybrid("b") = 0.3 * 0.0 = 0.0 (below 0.5 threshold)
         // Both below threshold because text_weight is only 0.3
         // This is expected: without vector scores, max hybrid = text_weight * 1.0 = 0.3
-        assert!(merged.len() <= 2, "min_score filter should reduce results");
+        assert!(merged.is_empty(), "min_score filter should reduce results");
     }
 
     #[test]

@@ -24,13 +24,13 @@ The fallback chain walks up tiers. If no background model is configured at any t
 
 ## Subagent Presets
 
-Presets are markdown files in `subagents/` with kebab-case filenames matching the preset name (e.g., `memory-agent.md`). YAML frontmatter can define: `name`, `description`, `model_tier`, `channels`, `denied_tools`, `allowed_tools`. One built-in preset exists: `general-purpose`.
+Presets are markdown files in `subagents/` with kebab-case filenames matching the preset name (e.g., `memory-agent.md`). YAML frontmatter can define: `name`, `description`, `model_tier`, `denied_tools`, `allowed_tools`. One built-in preset exists: `general-purpose`.
 
 ## Tools
 
 | Tool | Key Parameters | Description |
 |------|---------------|-------------|
-| `subagent_spawn` | `task`, `agent_name`, `wait`, `channels`, `model_override` | Spawn a sub-agent task. |
+| `subagent_spawn` | `task`, `agent_name`, `model_override` | Spawn a sub-agent task. Results route through the notification router. |
 | `list_agents` | *(none)* | List active background tasks with elapsed time and prompt preview. |
 | `stop_agent` | `task_id` | Cancel an active task by ID. |
 
@@ -39,16 +39,10 @@ Presets are markdown files in `subagents/` with kebab-case filenames matching th
 - **`task`**: The prompt/instructions for the sub-agent. Required.
 - **`agent_name`**: Preset name from `subagents/`. Default: `"general-purpose"`. `"main"` is rejected.
 - **`model_override`**: `"small"`, `"medium"`, or `"large"`. Overrides the preset's tier.
-- **`wait`**: If `true`, blocks until the sub-agent completes and returns the result directly (synchronous mode). Default `false`.
-- **`channels`**: Notification channel names for result delivery in async mode. Defaults to `["agent_feed"]` (or the preset's `channels` if defined).
 
 ## Result Routing
 
-| Source | Routing Mode |
-|--------|-------------|
-| Heartbeat pulses | Direct — `channels` from pulse definition in HEARTBEAT.yml |
-| Scheduled actions | Direct — `channels` from `schedule_action` |
-| Agent-spawned tasks | Direct — `channels` from `subagent_spawn` |
+All background task results flow through the pub/sub bus to the LLM notification router, which routes based on content analysis and `ALERTS.md` policy. Agent-spawned task results are also relayed back to the main agent as an interrupt.
 
 ## Concurrency
 

@@ -4,7 +4,6 @@ use chrono::NaiveDateTime;
 use chrono_tz::Tz;
 use serde::Deserialize;
 
-use crate::error::ResiduumError;
 use crate::memory::types::Visibility;
 use crate::models::ModelResponse;
 use crate::time::now_local;
@@ -21,7 +20,7 @@ struct ObserverJsonResponse {
 struct ObservationItem {
     content: String,
     timestamp: String,
-    visibility: String,
+    visibility: Visibility,
     project_context: String,
 }
 
@@ -49,7 +48,7 @@ pub(super) struct ObserverParseResult {
 pub(super) fn parse_observer_response(
     response: &ModelResponse,
     tz: Tz,
-) -> Result<ObserverParseResult, ResiduumError> {
+) -> anyhow::Result<ObserverParseResult> {
     let content = response.content.trim();
     let json_str = crate::memory::strip_code_fences(content);
 
@@ -58,9 +57,7 @@ pub(super) fn parse_observer_response(
         let extractions = typed_items_to_extractions(&typed.observations, tz);
 
         if extractions.is_empty() {
-            return Err(ResiduumError::Memory(
-                "observer returned empty observations array".to_string(),
-            ));
+            anyhow::bail!("observer returned empty observations array");
         }
 
         let narrative = if typed.narrative.is_empty() {
@@ -76,10 +73,9 @@ pub(super) fn parse_observer_response(
     }
 
     // Fallback: Value-based parsing for legacy bare arrays and malformed objects
+    tracing::debug!("observer structured output failed, falling back to value-based parsing");
     let value: serde_json::Value = serde_json::from_str(json_str).map_err(|e| {
-        ResiduumError::Memory(format!(
-            "failed to parse observer response as JSON: {e}\nresponse: {content}"
-        ))
+        anyhow::anyhow!("failed to parse observer response as JSON: {e}\nresponse: {content}")
     })?;
 
     let (items, narrative) = if let Some(arr) = value.as_array() {
@@ -89,9 +85,9 @@ pub(super) fn parse_observer_response(
             .get("observations")
             .and_then(serde_json::Value::as_array)
             .ok_or_else(|| {
-                ResiduumError::Memory(format!(
+                anyhow::anyhow!(
                     "observer response object missing 'observations' array\nresponse: {content}"
-                ))
+                )
             })?
             .clone();
 
@@ -103,17 +99,13 @@ pub(super) fn parse_observer_response(
 
         (obs_array, narr)
     } else {
-        return Err(ResiduumError::Memory(format!(
-            "observer response is not a JSON array or object\nresponse: {content}"
-        )));
+        anyhow::bail!("observer response is not a JSON array or object\nresponse: {content}");
     };
 
     let extractions = parse_extraction_items(&items, tz);
 
     if extractions.is_empty() {
-        return Err(ResiduumError::Memory(
-            "observer returned empty observations array".to_string(),
-        ));
+        anyhow::bail!("observer returned empty observations array");
     }
 
     Ok(ObserverParseResult {
@@ -126,18 +118,20 @@ pub(super) fn parse_observer_response(
 fn typed_items_to_extractions(items: &[ObservationItem], tz: Tz) -> Vec<ObserverExtraction> {
     items
         .iter()
-        .filter(|item| !item.content.is_empty())
+        .filter(|item| {
+            if item.content.is_empty() {
+                tracing::debug!("observer typed item has empty content, skipping");
+                false
+            } else {
+                true
+            }
+        })
         .map(|item| {
             let timestamp = crate::memory::parse_minute_timestamp(&item.timestamp, tz);
-            let visibility = if item.visibility == "background" {
-                Visibility::Background
-            } else {
-                Visibility::User
-            };
             ObserverExtraction {
                 content: item.content.clone(),
                 timestamp,
-                visibility,
+                visibility: item.visibility.clone(),
                 project_context: item.project_context.clone(),
             }
         })
@@ -151,9 +145,12 @@ pub(super) fn parse_extraction_items(
 ) -> Vec<ObserverExtraction> {
     let mut extractions = Vec::new();
 
-    for item in items {
+    for (i, item) in items.iter().enumerate() {
         let Some(obs_content) = item.get("content").and_then(serde_json::Value::as_str) else {
-            tracing::warn!("observer response item missing 'content' field, skipping");
+            tracing::warn!(
+                item_index = i,
+                "observer response item missing 'content' field, skipping"
+            );
             continue;
         };
 
@@ -167,6 +164,8 @@ pub(super) fn parse_extraction_items(
             .map_or_else(
                 || {
                     tracing::warn!(
+                        item_index = i,
+                        content = obs_content,
                         "observer response item missing 'timestamp', using current time"
                     );
                     now_local(tz)
@@ -176,14 +175,8 @@ pub(super) fn parse_extraction_items(
 
         let visibility = item
             .get("visibility")
-            .and_then(serde_json::Value::as_str)
-            .map_or(Visibility::User, |v| {
-                if v == "background" {
-                    Visibility::Background
-                } else {
-                    Visibility::User
-                }
-            });
+            .and_then(|v| serde_json::from_value::<Visibility>(v.clone()).ok())
+            .unwrap_or_default();
 
         let project_context = item
             .get("project_context")

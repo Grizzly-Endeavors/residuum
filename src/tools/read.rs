@@ -69,7 +69,7 @@ impl Tool for ReadTool {
 
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
-            name: "read_file".to_string(),
+            name: self.name().to_string(),
             description: "Read the contents of a file. Each output line is tagged with a \
                           content hash (e.g. `1:f1\\thello`) for use with edit_file. \
                           By default returns the first 2000 lines; use offset/limit for larger files. \
@@ -141,6 +141,10 @@ impl Tool for ReadTool {
         let start = (offset as usize).min(total_lines);
 
         // Apply default limit only when no explicit limit/offset given
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "limit from JSON u64 capped by line count"
+        )]
         let effective_limit = explicit_limit.map_or_else(
             || {
                 if offset == 0 {
@@ -149,23 +153,18 @@ impl Tool for ReadTool {
                     total_lines
                 }
             },
-            |l| {
-                #[expect(
-                    clippy::cast_possible_truncation,
-                    reason = "limit from JSON u64 capped by line count"
-                )]
-                let l_usize = l as usize;
-                l_usize
-            },
+            |l| l as usize,
         );
         let end = (start + effective_limit).min(total_lines);
         let line_limit_applied = end < total_lines && explicit_limit.is_none() && offset == 0;
 
         let mut truncated_count: usize = 0;
 
-        let selected: Vec<String> = lines
-            .get(start..end)
-            .unwrap_or_default()
+        #[expect(
+            clippy::indexing_slicing,
+            reason = "start and end are clamped to total_lines; the slice is always in-bounds"
+        )]
+        let selected: Vec<String> = lines[start..end]
             .iter()
             .enumerate()
             .map(|(i, line)| {
@@ -533,6 +532,22 @@ mod tests {
                 .has_been_read(file_path.to_str().unwrap()),
             "tracker should record image file read"
         );
+    }
+
+    #[tokio::test]
+    async fn read_empty_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let file_path = dir.path().join("empty.txt");
+        tokio::fs::write(&file_path, "").await.unwrap();
+
+        let tool = make_tool();
+        let result = tool
+            .execute(serde_json::json!({ "path": file_path.to_str().unwrap() }))
+            .await
+            .unwrap();
+
+        assert!(!result.is_error, "reading empty file should succeed");
+        assert!(result.images.is_empty(), "empty file should have no images");
     }
 
     #[test]

@@ -154,7 +154,7 @@ mod gateway_integration {
                 drop(
                     loop_publisher
                         .publish(
-                            topics::TurnLifecycle(loop_ep.clone()),
+                            topics::Endpoint(loop_ep.clone()),
                             residuum::bus::TurnLifecycleEvent::Started {
                                 correlation_id: reply_id.clone(),
                             },
@@ -169,7 +169,9 @@ mod gateway_integration {
                         &loop_publisher,
                         Some(&loop_ep),
                         None,
-                        &PromptContext::none(),
+                        "",
+                        None,
+                        &PromptContext::default(),
                         &mut irx,
                         &[],
                     )
@@ -180,7 +182,7 @@ mod gateway_integration {
                             drop(
                                 loop_publisher
                                     .publish(
-                                        topics::Response(loop_ep.clone()),
+                                        topics::Endpoint(loop_ep.clone()),
                                         residuum::bus::ResponseEvent {
                                             correlation_id: reply_id.clone(),
                                             content: text.clone(),

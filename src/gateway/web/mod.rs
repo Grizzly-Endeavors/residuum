@@ -18,6 +18,7 @@ pub mod cloud;
 pub mod config;
 pub mod providers;
 pub mod secrets;
+pub mod tracing_api;
 pub mod update;
 pub mod workspace;
 
@@ -72,11 +73,11 @@ pub(super) fn config_api_router(state: ConfigApiState) -> axum::Router {
             "/api/providers/models",
             post(providers::api_provider_models),
         )
-        .route("/api/providers/raw", get(config::api_providers_raw_get))
-        .route("/api/providers/raw", put(config::api_providers_raw_put))
+        .route("/api/providers/raw", get(providers::api_providers_raw_get))
+        .route("/api/providers/raw", put(providers::api_providers_raw_put))
         .route(
             "/api/providers/validate",
-            post(config::api_providers_validate),
+            post(providers::api_providers_validate),
         )
         .route("/api/mcp/raw", get(config::api_mcp_raw_get))
         .route("/api/mcp/raw", put(config::api_mcp_raw_put))

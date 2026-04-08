@@ -6,10 +6,10 @@ use crate::agent::Agent;
 use crate::agent::context::{ProjectsContext, PromptContext, SkillsContext, SubagentsContext};
 use crate::agent::interrupt::Interrupt;
 use crate::bus::{
-    EndpointName, MessageEvent, Publisher, ResponseEvent, Subscriber, SystemMessageEvent,
-    TurnLifecycleEvent, topics,
+    EndpointCapabilities, EndpointId, EndpointName, ErrorEvent, MessageEvent, NotifyName,
+    Publisher, ResponseEvent, SYSTEM_CHANNEL, Subscriber, TurnLifecycleEvent, topics,
 };
-use crate::error::ResiduumError;
+
 use crate::gateway::types::{GatewayExit, GatewayRuntime, ReloadSignal};
 use crate::interfaces::types::{InboundMessage, MessageOrigin};
 use crate::memory::types::Visibility;
@@ -162,18 +162,22 @@ async fn run_agent_turn_with_interrupts(
     content: &str,
     publisher: &Publisher,
     output_endpoint: Option<&EndpointName>,
+    tool_activity_endpoint: Option<&EndpointName>,
+    correlation_id: &str,
     origin: Option<&MessageOrigin>,
     prompt_ctx: &PromptContext<'_>,
     images: &[ImageData],
     agent_subscriber: &mut Subscriber<MessageEvent>,
     reload_rx: &mut tokio::sync::watch::Receiver<ReloadSignal>,
-) -> (Result<Vec<String>, ResiduumError>, Vec<Interrupt>) {
+) -> (anyhow::Result<Vec<String>>, Vec<Interrupt>) {
     let (interrupt_tx, mut interrupt_rx) = mpsc::channel::<Interrupt>(32);
     let turn_result = {
         let mut turn = std::pin::pin!(agent.process_message(
             content,
             publisher,
             output_endpoint,
+            tool_activity_endpoint,
+            correlation_id,
             origin,
             prompt_ctx,
             &mut interrupt_rx,
@@ -224,6 +228,7 @@ async fn run_agent_turn_with_interrupts(
     clippy::too_many_lines,
     reason = "needs refactor — extract turn result publishing"
 )]
+#[tracing::instrument(skip_all, fields(correlation_id = %message.id, origin = %message.origin.endpoint))]
 pub async fn handle_inbound_message(
     message: InboundMessage,
     rt: &mut GatewayRuntime,
@@ -246,17 +251,26 @@ pub async fn handle_inbound_message(
         Some(ep)
     };
 
-    if let Some(ref ep) = output_endpoint {
-        drop(
-            rt.publisher
-                .publish(
-                    topics::TurnLifecycle(ep.clone()),
-                    TurnLifecycleEvent::Started {
-                        correlation_id: reply_id.clone(),
-                    },
-                )
-                .await,
-        );
+    // Only publish tool-activity events to endpoints with STREAMING capability.
+    let tool_activity_endpoint = output_endpoint.as_ref().filter(|ep| {
+        let endpoint_id = EndpointId::from(ep.as_ref());
+        rt.endpoint_registry
+            .get(&endpoint_id)
+            .is_some_and(|entry| entry.capabilities.contains(EndpointCapabilities::STREAMING))
+    });
+
+    if let Some(ref ep) = output_endpoint
+        && let Err(e) = rt
+            .publisher
+            .publish(
+                topics::Endpoint(ep.clone()),
+                TurnLifecycleEvent::Started {
+                    correlation_id: reply_id.clone(),
+                },
+            )
+            .await
+    {
+        tracing::warn!(error = %e, "failed to publish turn started event");
     }
 
     let before = rt.agent.message_count();
@@ -270,6 +284,8 @@ pub async fn handle_inbound_message(
         &message.content,
         &rt.publisher,
         output_endpoint.as_ref(),
+        tool_activity_endpoint,
+        &reply_id,
         Some(&origin),
         &prompt_ctx,
         &message.images,
@@ -282,55 +298,62 @@ pub async fn handle_inbound_message(
         Ok(texts) => {
             if let Some(ref ep) = output_endpoint {
                 for text in &texts {
-                    drop(
-                        rt.publisher
-                            .publish(
-                                topics::Response(ep.clone()),
-                                ResponseEvent {
-                                    correlation_id: reply_id.clone(),
-                                    content: text.clone(),
-                                    timestamp: crate::time::now_local(rt.tz),
-                                },
-                            )
-                            .await,
-                    );
-                }
-                drop(
-                    rt.publisher
+                    if let Err(e) = rt
+                        .publisher
                         .publish(
-                            topics::TurnLifecycle(ep.clone()),
-                            TurnLifecycleEvent::Ended {
+                            topics::Endpoint(ep.clone()),
+                            ResponseEvent {
                                 correlation_id: reply_id.clone(),
+                                content: text.clone(),
+                                timestamp: crate::time::now_local(rt.tz),
                             },
                         )
-                        .await,
-                );
+                        .await
+                    {
+                        tracing::warn!(error = %e, "failed to publish response event");
+                    }
+                }
+                if let Err(e) = rt
+                    .publisher
+                    .publish(
+                        topics::Endpoint(ep.clone()),
+                        TurnLifecycleEvent::Ended {
+                            correlation_id: reply_id.clone(),
+                        },
+                    )
+                    .await
+                {
+                    tracing::warn!(error = %e, "failed to publish turn ended event");
+                }
             }
         }
         Err(e) => {
-            tracing::warn!(error = %e, "agent processing error");
-            drop(
-                rt.publisher
+            tracing::error!(error = %e, "agent processing error");
+            if let Err(pub_err) = rt
+                .publisher
+                .publish(
+                    topics::Notification(NotifyName::from(SYSTEM_CHANNEL)),
+                    ErrorEvent {
+                        correlation_id: reply_id.clone(),
+                        message: e.to_string(),
+                    },
+                )
+                .await
+            {
+                tracing::warn!(error = %pub_err, "failed to publish agent error event");
+            }
+            if let Some(ref ep) = output_endpoint
+                && let Err(end_err) = rt
+                    .publisher
                     .publish(
-                        topics::SystemMessage,
-                        SystemMessageEvent::Error {
+                        topics::Endpoint(ep.clone()),
+                        TurnLifecycleEvent::Ended {
                             correlation_id: reply_id.clone(),
-                            message: e.to_string(),
                         },
                     )
-                    .await,
-            );
-            if let Some(ref ep) = output_endpoint {
-                drop(
-                    rt.publisher
-                        .publish(
-                            topics::TurnLifecycle(ep.clone()),
-                            TurnLifecycleEvent::Ended {
-                                correlation_id: reply_id.clone(),
-                            },
-                        )
-                        .await,
-                );
+                    .await
+            {
+                tracing::warn!(error = %end_err, "failed to publish turn ended event");
             }
         }
     }

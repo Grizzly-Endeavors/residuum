@@ -6,11 +6,15 @@
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
+use tracing::{trace, warn};
 
-use crate::error::ResiduumError;
+use crate::util::FatalError;
 
 /// Starting port for named agents. Default agent uses 7700.
 const AGENT_PORT_START: u16 = 7701;
+
+/// Warn when port scanning advances further than this many steps from the starting port.
+const PORT_SCAN_WARN_THRESHOLD: u16 = 20;
 
 /// A single agent entry in the registry.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -23,7 +27,7 @@ pub struct AgentEntry {
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct AgentRegistry {
     #[serde(default)]
-    pub agents: Vec<AgentEntry>,
+    agents: Vec<AgentEntry>,
 }
 
 impl AgentRegistry {
@@ -33,26 +37,28 @@ impl AgentRegistry {
     ///
     /// # Errors
     ///
-    /// Returns `ResiduumError::Config` if the file exists but cannot be read or parsed.
-    pub fn load(base_dir: &Path) -> Result<Self, ResiduumError> {
+    /// Returns `FatalError::Config` if the file exists but cannot be read or parsed.
+    pub fn load(base_dir: &Path) -> Result<Self, FatalError> {
         let path = base_dir.join("registry.toml");
         if !path.exists() {
             return Ok(Self::default());
         }
 
         let contents = std::fs::read_to_string(&path).map_err(|e| {
-            ResiduumError::Config(format!(
+            FatalError::Config(format!(
                 "failed to read agent registry at {}: {e}",
                 path.display()
             ))
         })?;
 
-        toml::from_str(&contents).map_err(|e| {
-            ResiduumError::Config(format!(
+        let registry: Self = toml::from_str(&contents).map_err(|e| {
+            FatalError::Config(format!(
                 "failed to parse agent registry at {}: {e}",
                 path.display()
             ))
-        })
+        })?;
+        trace!(path = %path.display(), agents = registry.agents.len(), "loaded agent registry");
+        Ok(registry)
     }
 
     /// Save the registry to `base_dir/registry.toml`.
@@ -61,24 +67,22 @@ impl AgentRegistry {
     ///
     /// # Errors
     ///
-    /// Returns `ResiduumError::Config` if the file cannot be written.
-    pub fn save(&self, base_dir: &Path) -> Result<(), ResiduumError> {
-        if !base_dir.exists() {
-            std::fs::create_dir_all(base_dir).map_err(|e| {
-                ResiduumError::Config(format!(
-                    "failed to create agent registry directory {}: {e}",
-                    base_dir.display()
-                ))
-            })?;
-        }
-
-        let contents = toml::to_string_pretty(self).map_err(|e| {
-            ResiduumError::Config(format!("failed to serialize agent registry: {e}"))
+    /// Returns `FatalError::Config` if the file cannot be written.
+    pub fn save(&self, base_dir: &Path) -> Result<(), FatalError> {
+        std::fs::create_dir_all(base_dir).map_err(|e| {
+            FatalError::Config(format!(
+                "failed to create agent registry directory {}: {e}",
+                base_dir.display()
+            ))
         })?;
 
+        let contents = toml::to_string_pretty(self)
+            .map_err(|e| FatalError::Config(format!("failed to serialize agent registry: {e}")))?;
+
         let path = base_dir.join("registry.toml");
+        trace!(path = %path.display(), agents = self.agents.len(), "saving agent registry");
         std::fs::write(&path, contents).map_err(|e| {
-            ResiduumError::Config(format!(
+            FatalError::Config(format!(
                 "failed to write agent registry at {}: {e}",
                 path.display()
             ))
@@ -98,17 +102,13 @@ impl AgentRegistry {
     }
 
     /// Add a new agent entry.
-    ///
-    /// Does not check for duplicates — caller should verify first.
-    pub fn add(&mut self, name: String, port: u16) {
-        self.agents.push(AgentEntry { name, port });
+    pub fn add(&mut self, entry: AgentEntry) {
+        self.agents.push(entry);
     }
 
-    /// Remove an agent by name. Returns `true` if found and removed.
-    pub fn remove(&mut self, name: &str) -> bool {
-        let len_before = self.agents.len();
+    /// Remove an agent by name.
+    pub fn remove(&mut self, name: &str) {
         self.agents.retain(|a| a.name != name);
-        self.agents.len() < len_before
     }
 
     /// Find the next available port starting from 7701.
@@ -117,9 +117,15 @@ impl AgentRegistry {
     #[must_use]
     pub fn next_available_port(&self) -> u16 {
         let mut port = AGENT_PORT_START;
-        let used: std::collections::HashSet<u16> = self.agents.iter().map(|a| a.port).collect();
-        while used.contains(&port) {
+        while self.agents.iter().any(|a| a.port == port) {
             port = port.saturating_add(1);
+        }
+        let port_offset = port.saturating_sub(AGENT_PORT_START);
+        if port_offset > PORT_SCAN_WARN_THRESHOLD {
+            warn!(
+                agents = self.agents.len(),
+                port, port_offset, "port scan advanced far from starting port"
+            );
         }
         port
     }
@@ -138,40 +144,55 @@ mod tests {
     fn load_empty_returns_default() {
         let dir = tempfile::tempdir().unwrap();
         let reg = AgentRegistry::load(dir.path()).unwrap();
-        assert!(reg.agents.is_empty());
+        assert!(reg.list().is_empty());
     }
 
     #[test]
     fn save_and_load_roundtrip() {
         let dir = tempfile::tempdir().unwrap();
         let mut reg = AgentRegistry::default();
-        reg.add("researcher".to_string(), 7701);
-        reg.add("coder".to_string(), 7702);
+        reg.add(AgentEntry {
+            name: "researcher".to_string(),
+            port: 7701,
+        });
+        reg.add(AgentEntry {
+            name: "coder".to_string(),
+            port: 7702,
+        });
         reg.save(dir.path()).unwrap();
 
         let loaded = AgentRegistry::load(dir.path()).unwrap();
-        assert_eq!(loaded.agents.len(), 2);
-        assert_eq!(loaded.agents[0].name, "researcher");
-        assert_eq!(loaded.agents[0].port, 7701);
-        assert_eq!(loaded.agents[1].name, "coder");
-        assert_eq!(loaded.agents[1].port, 7702);
+        assert_eq!(loaded.list().len(), 2);
+        assert_eq!(loaded.list()[0].name, "researcher");
+        assert_eq!(loaded.list()[0].port, 7701);
+        assert_eq!(loaded.list()[1].name, "coder");
+        assert_eq!(loaded.list()[1].port, 7702);
     }
 
     #[test]
     fn get_finds_agent() {
         let mut reg = AgentRegistry::default();
-        reg.add("researcher".to_string(), 7701);
-        assert!(reg.get("researcher").is_some());
+        reg.add(AgentEntry {
+            name: "researcher".to_string(),
+            port: 7701,
+        });
+        let entry = reg.get("researcher").unwrap();
+        assert_eq!(entry.name, "researcher");
+        assert_eq!(entry.port, 7701);
         assert!(reg.get("nonexistent").is_none());
     }
 
     #[test]
     fn remove_removes_agent() {
         let mut reg = AgentRegistry::default();
-        reg.add("researcher".to_string(), 7701);
-        assert!(reg.remove("researcher"));
-        assert!(reg.agents.is_empty());
-        assert!(!reg.remove("nonexistent"));
+        reg.add(AgentEntry {
+            name: "researcher".to_string(),
+            port: 7701,
+        });
+        reg.remove("researcher");
+        assert!(reg.list().is_empty());
+        reg.remove("nonexistent");
+        assert!(reg.list().is_empty());
     }
 
     #[test]
@@ -183,23 +204,38 @@ mod tests {
     #[test]
     fn next_available_port_skips_used() {
         let mut reg = AgentRegistry::default();
-        reg.add("a".to_string(), 7701);
-        reg.add("b".to_string(), 7702);
+        reg.add(AgentEntry {
+            name: "a".to_string(),
+            port: 7701,
+        });
+        reg.add(AgentEntry {
+            name: "b".to_string(),
+            port: 7702,
+        });
         assert_eq!(reg.next_available_port(), 7703);
     }
 
     #[test]
     fn next_available_port_fills_gaps() {
         let mut reg = AgentRegistry::default();
-        reg.add("a".to_string(), 7701);
-        reg.add("b".to_string(), 7703);
+        reg.add(AgentEntry {
+            name: "a".to_string(),
+            port: 7701,
+        });
+        reg.add(AgentEntry {
+            name: "b".to_string(),
+            port: 7703,
+        });
         assert_eq!(reg.next_available_port(), 7702);
     }
 
     #[test]
     fn toml_format_is_correct() {
         let mut reg = AgentRegistry::default();
-        reg.add("researcher".to_string(), 7701);
+        reg.add(AgentEntry {
+            name: "researcher".to_string(),
+            port: 7701,
+        });
         let toml_str = toml::to_string_pretty(&reg).unwrap();
         assert!(
             toml_str.contains("[[agents]]"),
@@ -207,5 +243,26 @@ mod tests {
         );
         assert!(toml_str.contains("name = \"researcher\""));
         assert!(toml_str.contains("port = 7701"));
+    }
+
+    #[test]
+    fn load_rejects_malformed_toml() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("registry.toml"), "[[agents]\nname = bad").unwrap();
+        assert!(AgentRegistry::load(dir.path()).is_err());
+    }
+
+    #[test]
+    fn add_duplicate_name_produces_two_entries() {
+        let mut reg = AgentRegistry::default();
+        reg.add(AgentEntry {
+            name: "a".to_string(),
+            port: 7701,
+        });
+        reg.add(AgentEntry {
+            name: "a".to_string(),
+            port: 7702,
+        });
+        assert_eq!(reg.list().len(), 2);
     }
 }

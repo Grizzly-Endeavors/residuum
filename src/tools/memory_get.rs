@@ -30,7 +30,7 @@ impl Tool for MemoryGetTool {
 
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
-            name: "memory_get".to_string(),
+            name: self.name().to_string(),
             description: "Retrieve a raw episode transcript by ID. Use after memory_search to \
                           drill into the full conversation transcript of a specific episode. \
                           Returns formatted message lines with role labels and line numbers."
@@ -92,6 +92,7 @@ impl Tool for MemoryGetTool {
                 )));
             }
             Err(e) => {
+                tracing::error!(error = %e, episode_id = %episode_id, "failed to search for episode");
                 return Ok(ToolResult::error(format!(
                     "failed to search for episode: {e}"
                 )));
@@ -100,9 +101,12 @@ impl Tool for MemoryGetTool {
 
         match read_episode_lines(&path, from_line, lines).await {
             Ok(output) => Ok(ToolResult::success(output)),
-            Err(e) => Ok(ToolResult::error(format!(
-                "failed to read episode transcript: {e}"
-            ))),
+            Err(e) => {
+                tracing::error!(error = %e, episode_id = %episode_id, "failed to read episode transcript");
+                Ok(ToolResult::error(format!(
+                    "failed to read episode transcript: {e}"
+                )))
+            }
         }
     }
 }
@@ -120,8 +124,6 @@ mod tests {
         Episode {
             id: "ep-001".to_string(),
             date: NaiveDate::from_ymd_opt(2026, 2, 19).unwrap(),
-            start: "user asked about files".to_string(),
-            end: "listed directory contents".to_string(),
             context: "general".to_string(),
             observations: vec!["user prefers concise output".to_string()],
             source_episodes: vec![],
@@ -195,6 +197,17 @@ mod tests {
         assert!(
             result.output.contains("showing lines"),
             "should have footer"
+        );
+        // from_line=2 skips line 2 (user "hello") and shows line 3 (assistant "world")
+        assert!(
+            result.output.contains("[line 3] Assistant: world"),
+            "should contain line 3 content: {}",
+            result.output
+        );
+        assert!(
+            !result.output.contains("[line 2]"),
+            "should not contain line 2 content: {}",
+            result.output
         );
     }
 

@@ -22,7 +22,7 @@ pub(crate) fn chunk_text(text: &str, max_chars: usize) -> Vec<String> {
     let mut fence_header = String::new();
 
     while pos < text.len() {
-        let remaining = text.get(pos..).unwrap_or("");
+        let remaining = text.split_at(pos).1;
 
         // Build prefix for this chunk (reopen fence if needed)
         let prefix = if in_fence {
@@ -56,7 +56,7 @@ pub(crate) fn chunk_text(text: &str, max_chars: usize) -> Vec<String> {
 
         let split_at = find_split_point(remaining, budget);
 
-        let slice = remaining.get(..split_at).unwrap_or("");
+        let slice = remaining.split_at(split_at).0;
 
         update_fence_state(slice, &mut in_fence, &mut fence_header);
 
@@ -118,7 +118,7 @@ fn find_split_point(text: &str, max: usize) -> usize {
         return first;
     }
 
-    let search_region = text.get(..end).unwrap_or("");
+    let search_region = text.split_at(end).0;
 
     // Prefer splitting at a newline
     if let Some(pos) = search_region.rfind('\n')
@@ -178,6 +178,11 @@ mod tests {
                 chunk.len()
             );
         }
+        let combined = result.join("\n");
+        assert_eq!(
+            combined, text,
+            "chunks joined with newline should equal original"
+        );
     }
 
     #[test]
@@ -185,6 +190,8 @@ mod tests {
         let text = "word1 word2 word3 word4 word5";
         let result = chunk_text(text, 12);
         assert!(result.len() >= 2, "should split into multiple chunks");
+        let combined: String = result.join("");
+        assert_eq!(combined, text, "chunks joined should equal original");
     }
 
     #[test]
@@ -217,6 +224,14 @@ mod tests {
             assert!(
                 opens.abs_diff(closes) <= 1,
                 "chunk {i} has unbalanced fences: opens={opens} closes={closes}\n---\n{chunk}\n---"
+            );
+        }
+
+        let all_chunks = result.concat();
+        for line in text.lines() {
+            assert!(
+                all_chunks.contains(line),
+                "original line '{line}' should survive in chunked output"
             );
         }
     }

@@ -100,7 +100,7 @@ mod inbox_integration {
         let dir = tempdir().unwrap();
         let inbox_dir = dir.path();
 
-        assert_eq!(count_unread(inbox_dir), 0, "empty dir = 0");
+        assert_eq!(count_unread(inbox_dir).await, 0, "empty dir = 0");
 
         save_item(inbox_dir, "a.json", &make_item("a", false))
             .await
@@ -112,13 +112,17 @@ mod inbox_integration {
             .await
             .unwrap();
 
-        assert_eq!(count_unread(inbox_dir), 2, "2 unread, 1 read");
+        assert_eq!(count_unread(inbox_dir).await, 2, "2 unread, 1 read");
 
         mark_read(inbox_dir, "a").await.unwrap();
-        assert_eq!(count_unread(inbox_dir), 1, "1 unread after marking a");
+        assert_eq!(count_unread(inbox_dir).await, 1, "1 unread after marking a");
 
         mark_read(inbox_dir, "b").await.unwrap();
-        assert_eq!(count_unread(inbox_dir), 0, "0 unread after marking all");
+        assert_eq!(
+            count_unread(inbox_dir).await,
+            0,
+            "0 unread after marking all"
+        );
     }
 
     // ── list_items ignores archive and non-JSON ──────────────────────────────
@@ -191,15 +195,23 @@ mod inbox_integration {
 
     #[test]
     fn generate_filename_same_title_same_day() {
-        let a = generate_filename("daily report", chrono_tz::UTC);
-        let b = generate_filename("daily report", chrono_tz::UTC);
+        let now = NaiveDate::from_ymd_opt(2026, 2, 25)
+            .unwrap()
+            .and_hms_opt(12, 0, 0)
+            .unwrap();
+        let a = generate_filename("daily report", now);
+        let b = generate_filename("daily report", now);
         assert_eq!(a, b, "same title same day should produce same filename");
         assert!(a.ends_with("_daily_report.json"));
     }
 
     #[test]
     fn generate_filename_sanitization() {
-        let name = generate_filename("Hello/World\\Test!!!", chrono_tz::UTC);
+        let now = NaiveDate::from_ymd_opt(2026, 2, 25)
+            .unwrap()
+            .and_hms_opt(12, 0, 0)
+            .unwrap();
+        let name = generate_filename("Hello/World\\Test!!!", now);
         assert!(!name.contains('/'));
         assert!(!name.contains('\\'));
         assert!(!name.contains('!'));

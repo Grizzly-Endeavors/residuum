@@ -5,9 +5,10 @@
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
+use tracing::{debug, info};
 
 use super::embedding::{EmbeddingProvider, EmbeddingResponse};
-use super::http::{SharedHttpClient, map_request_error, warn_if_insecure_remote};
+use super::http::{SharedHttpClient, map_request_error, read_error_body, warn_if_insecure_remote};
 use super::retry::{RetryConfig, with_retry};
 use super::{
     CompletionOptions, Message, ModelError, ModelProvider, ModelResponse, ResponseFormat,
@@ -83,6 +84,11 @@ impl OpenAiClient {
     }
 
     /// Send a pre-built request to the OpenAI-compatible API and parse the response.
+    #[tracing::instrument(skip_all, fields(
+        model = %request.model,
+        message_count = request.messages.len(),
+        tool_count = request.tools.as_ref().map_or(0, Vec::len),
+    ))]
     async fn send_completion(
         http: &SharedHttpClient,
         url: &str,
@@ -90,7 +96,16 @@ impl OpenAiClient {
         request: &ChatCompletionRequest<'_>,
     ) -> Result<ModelResponse, ModelError> {
         let timeout_secs = http.timeout_secs();
-        let mut req_builder = http.client().post(url).json(request);
+        let request_json = serde_json::to_string(request)
+            .map_err(|e| ModelError::Parse(format!("failed to serialize request: {e}")))?;
+
+        debug!(model = %request.model, "sending openai completion request");
+
+        let mut req_builder = http
+            .client()
+            .post(url)
+            .body(request_json.clone())
+            .header("content-type", "application/json");
 
         if let Some(key) = api_key {
             req_builder = req_builder.header("Authorization", format!("Bearer {key}"));
@@ -103,13 +118,13 @@ impl OpenAiClient {
 
         if !response.status().is_success() {
             let status = response.status();
-            let raw_body = match response.text().await {
-                Ok(body) => body,
-                Err(e) => {
-                    tracing::warn!(error = %e, "failed to read error response body");
-                    format!("failed to read response body: {e}")
-                }
-            };
+            let raw_body = read_error_body(response).await;
+            tracing::warn!(
+                status = %status,
+                response_body = %raw_body,
+                request_body = %request_json,
+                "openai API error — full request/response for diagnosis"
+            );
             let error_body = serde_json::from_str::<OpenAiErrorResponse>(&raw_body)
                 .map_or_else(|_| raw_body, |e| e.error.message);
             return Err(ModelError::Api(format!("{status}: {error_body}")));
@@ -160,12 +175,19 @@ impl OpenAiClient {
 
         let mut resp = ModelResponse::new(content, tool_calls);
         resp.usage = usage;
+        info!(
+            model = %request.model,
+            content_len = resp.content.len(),
+            tool_calls = resp.tool_calls.len(),
+            "openai completion received"
+        );
         Ok(resp)
     }
 }
 
 #[async_trait]
 impl ModelProvider for OpenAiClient {
+    #[tracing::instrument(skip_all, fields(model = %self.model, message_count = messages.len(), tool_count = tools.len()))]
     async fn complete(
         &self,
         messages: &[Message],
@@ -313,23 +335,19 @@ struct OpenAiMessage {
 
 impl From<&Message> for OpenAiMessage {
     fn from(msg: &Message) -> Self {
-        let has_images = msg.images.as_ref().is_some_and(|imgs| !imgs.is_empty());
-
-        let content = if has_images {
+        let content = if !msg.images.is_empty() {
             let mut parts: Vec<OpenAiContentPart> = Vec::new();
             if !msg.content.is_empty() {
                 parts.push(OpenAiContentPart::Text {
                     text: msg.content.clone(),
                 });
             }
-            if let Some(images) = &msg.images {
-                for img in images {
-                    parts.push(OpenAiContentPart::ImageUrl {
-                        image_url: OpenAiImageUrl {
-                            url: format!("data:{};base64,{}", img.media_type, img.data),
-                        },
-                    });
-                }
+            for img in &msg.images {
+                parts.push(OpenAiContentPart::ImageUrl {
+                    image_url: OpenAiImageUrl {
+                        url: format!("data:{};base64,{}", img.media_type, img.data),
+                    },
+                });
             }
             Some(OpenAiContent::Parts(parts))
         } else if msg.content.is_empty() {
@@ -517,6 +535,7 @@ impl OpenAiEmbeddingClient {
 
 #[async_trait]
 impl EmbeddingProvider for OpenAiEmbeddingClient {
+    #[tracing::instrument(skip_all, fields(model = %self.model, count = texts.len()))]
     async fn embed(&self, texts: &[&str]) -> Result<EmbeddingResponse, ModelError> {
         let url = format!("{}/embeddings", self.base_url);
         let model = self.model.clone();
@@ -536,6 +555,8 @@ impl EmbeddingProvider for OpenAiEmbeddingClient {
                     input: texts,
                 };
 
+                debug!(model = %model, count = texts.len(), "sending openai embed request");
+
                 let mut req_builder = http.client().post(&url).json(&request);
 
                 if let Some(ref key) = api_key {
@@ -549,13 +570,8 @@ impl EmbeddingProvider for OpenAiEmbeddingClient {
 
                 if !response.status().is_success() {
                     let status = response.status();
-                    let raw_body = match response.text().await {
-                        Ok(body) => body,
-                        Err(e) => {
-                            tracing::warn!(error = %e, "failed to read error response body");
-                            format!("failed to read response body: {e}")
-                        }
-                    };
+                    let raw_body = read_error_body(response).await;
+                    tracing::warn!(status = %status, response_body = %raw_body, "openai embed API error");
                     let error_body = serde_json::from_str::<OpenAiErrorResponse>(&raw_body)
                         .map_or_else(|_| raw_body, |e| e.error.message);
                     return Err(ModelError::Api(format!("{status}: {error_body}")));
@@ -580,7 +596,9 @@ impl EmbeddingProvider for OpenAiEmbeddingClient {
 
                 let dimensions = api_response.data.first().map_or(0, |d| d.embedding.len());
 
-                let embeddings = api_response.data.into_iter().map(|d| d.embedding).collect();
+                let embeddings: Vec<Vec<f32>> =
+                    api_response.data.into_iter().map(|d| d.embedding).collect();
+                info!(model = %model, count = embeddings.len(), dimensions, "openai embeddings received");
 
                 Ok(EmbeddingResponse {
                     embeddings,
@@ -699,6 +717,43 @@ mod tests {
             openai_msg.tool_call_id,
             Some("call_123".to_string()),
             "tool_call_id should be preserved"
+        );
+    }
+
+    #[test]
+    fn message_conversion_user_with_images() {
+        use crate::models::ImageData;
+        let images = vec![ImageData {
+            media_type: "image/jpeg".to_string(),
+            data: "base64abc123".to_string(),
+        }];
+        let msg = Message::user_with_images("look at this", images);
+        let openai_msg: OpenAiMessage = (&msg).into();
+        assert_eq!(openai_msg.role, "user", "role should be user");
+        let content_json = serde_json::to_value(&openai_msg.content).unwrap();
+        assert!(
+            content_json.is_array(),
+            "content should be Parts array when images are present"
+        );
+        let parts = content_json.as_array().unwrap();
+        assert_eq!(parts.len(), 2, "should have text and image parts");
+        let first_part = parts.first().unwrap();
+        assert_eq!(first_part["type"], "text", "first part should be text type");
+        assert_eq!(
+            first_part["text"], "look at this",
+            "text part content should match"
+        );
+        let second_part = parts.last().unwrap();
+        assert_eq!(
+            second_part["type"], "image_url",
+            "second part should be image_url type"
+        );
+        assert_eq!(
+            second_part
+                .pointer("/image_url/url")
+                .and_then(serde_json::Value::as_str),
+            Some("data:image/jpeg;base64,base64abc123"),
+            "image URL should use data URI format"
         );
     }
 

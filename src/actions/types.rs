@@ -4,7 +4,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 /// A one-off scheduled action that fires at a specific time.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ScheduledAction {
     /// Unique identifier (format: `action-{8hex}`).
     pub id: String,
@@ -23,4 +23,12 @@ pub struct ScheduledAction {
     pub model_tier: Option<String>,
     /// When this action was created.
     pub created_at: DateTime<Utc>,
+}
+
+impl ScheduledAction {
+    /// Generate a unique action ID in the form `action-{8 hex digits}`.
+    #[must_use]
+    pub fn generate_id() -> String {
+        format!("action-{:08x}", rand::random::<u32>())
+    }
 }

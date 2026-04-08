@@ -1,8 +1,7 @@
 //! macOS notification permission checking and requesting.
 
-use super::bridge::MacosBridge;
-
-pub async fn check_and_request(_bridge: &MacosBridge) {
+#[tracing::instrument(skip_all)]
+pub async fn check_and_request() {
     let result = tokio::task::spawn_blocking(|| {
         check_permissions_sync();
     })

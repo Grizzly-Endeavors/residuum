@@ -1,6 +1,6 @@
 //! Workspace bootstrapping: creates required directories and default identity files.
 
-use crate::error::ResiduumError;
+use crate::util::FatalError;
 
 use super::layout::WorkspaceLayout;
 
@@ -8,7 +8,7 @@ use super::layout::WorkspaceLayout;
 const DEFAULT_SOUL: &str = "\
 # Soul
 
-You are Residuum, a personal AI agent. You live in a workspace you own and operate \
+You are a personal AI agent built on Residuum. You live in a workspace you own and operate \
 autonomously between conversations.
 
 ## Core Truths
@@ -32,7 +32,7 @@ actions), only surface what matters. Route noise to the inbox, not to the user.
 
 ## Identity
 
-- **Name**: Residuum
+- **Name**: Ralph
 - **Archetype**: Personal agent — part assistant, part collaborator, part automation layer
 - **Tone**: Calm, confident, and wise. Ready to get shit done. Skip the bullet points, just talk.
 ";
@@ -62,12 +62,12 @@ schedules during active hours as sub-agents (or main wake turns).
 - **Inbox**: Captures items for later. Background task results can route here. \
 Unread count appears in your status line.
 - **Scheduled Actions**: One-off future tasks. Fire once at a specified time, \
-then auto-remove. Results route to channels specified at creation time. \
+then auto-remove. Results route through the notification router. \
 All times are in your local timezone — never convert to or from UTC.
 - **Skills**: Loadable knowledge packs. Activate with `skill_activate`, \
 deactivate with `skill_deactivate`. Create new ones in skills/.
-- **Notifications**: Pulse results route to channels declared on each pulse in HEARTBEAT.yml. \
-Scheduled actions and sub-agents specify their channels directly.
+- **Notifications**: Background task results route through the pub/sub bus \
+to the LLM notification router, which decides delivery based on ALERTS.md policy.
 - **Background Tasks**: Spawn sub-agents for work that shouldn't \
 block the conversation.
 
@@ -78,7 +78,7 @@ Files you own and should actively maintain:
 - `USER.md` — user preferences, communication style, interests
 - `ENVIRONMENT.md` — document local environment details you discover
 - `HEARTBEAT.yml` — evolve monitoring based on user needs
-- `CHANNELS.yml` — channel registry
+- `ALERTS.md` — notification routing policy
 - `PRESENCE.toml` — Discord status configuration
 - `memory/OBSERVER.md` — controls what the observer extracts (update when the user asks you to pay attention to specific things)
 - `memory/REFLECTOR.md` — controls how the reflector compresses observations (update when the user asks to change compression behavior)
@@ -200,14 +200,14 @@ const DEFAULT_HEARTBEAT: &str = "\
 # HEARTBEAT.yml — Pulse monitoring configuration
 #
 # Define ambient checks the agent performs on a schedule.
-# Results route to channels declared on each pulse (defaults to inbox).
+# Results route through the notification router based on ALERTS.md policy.
 #
 # Fields:
 #   schedule: duration string — \"30m\", \"2h\", \"24h\"
 #   active_hours: optional — \"HH:MM-HH:MM\" in configured timezone
 #                 supports overnight windows (e.g. \"22:00-06:00\")
 #   agent: ~ (sub-agent, small) | \"main\" (wake turn) | \"preset-name\"
-#   channels: where to route results (default: [inbox])
+#   trigger_count: optional — max firings per active period
 
 pulses: []
 
@@ -218,7 +218,6 @@ pulses: []
 #  - name: inbox_check
 #    enabled: true
 #    schedule: \"3h\"
-#    channels: [inbox]
 #    tasks:
 #      - name: check_inbox
 #        prompt: \"Check your inbox for unread items. If any need action, handle them or note what is needed. Report HEARTBEAT_OK if nothing new.\"
@@ -276,21 +275,6 @@ Route background task results based on content and urgency.
 - Webhook-triggered results → inbox (unless content indicates urgency)
 ";
 
-/// Default content for CHANNELS.yml when creating a new workspace.
-const DEFAULT_CHANNELS: &str = "\
-# CHANNELS.yml — Channel registry
-# Lists channels available for notification routing.
-#
-# Built-in channels (always available):
-#   inbox       — store silently, surface as unread count
-#
-# External channels (ntfy, webhook, etc.) are defined in config.toml
-# under [notifications.channels].
-
-channels:
-  - inbox
-";
-
 // ── Bundled skill content (embedded at compile time from assets/) ────────────
 
 // residuum-system skill
@@ -340,17 +324,18 @@ const GETTING_STARTED_ALWAYS_ON: &str = include_str!(
 /// This is idempotent: existing files and directories are not modified.
 ///
 /// # Errors
-/// Returns `ResiduumError::Workspace` if directories cannot be created or
+/// Returns `FatalError::Workspace` if directories cannot be created or
 /// default files cannot be written.
+#[tracing::instrument(skip_all, fields(workspace = %layout.root().display()))]
 pub async fn ensure_workspace(
     layout: &WorkspaceLayout,
     user_name: Option<&str>,
     timezone: Option<&str>,
-) -> Result<(), ResiduumError> {
+) -> Result<(), FatalError> {
     // Create all required directories
     for dir in layout.required_dirs() {
         tokio::fs::create_dir_all(&dir).await.map_err(|e| {
-            ResiduumError::Workspace(format!("failed to create directory {}: {e}", dir.display()))
+            FatalError::Workspace(format!("failed to create directory {}: {e}", dir.display()))
         })?;
     }
 
@@ -367,22 +352,28 @@ pub async fn ensure_workspace(
     // BOOTSTRAP.md is first-run only: write it once, then drop a sentinel so it
     // is never recreated after the agent deletes it.
     let sentinel = layout.root().join(".bootstrapped");
-    if !sentinel.exists() {
+    let fresh_bootstrap = !tokio::fs::try_exists(&sentinel).await.map_err(|e| {
+        FatalError::Workspace(format!(
+            "failed to check bootstrap sentinel {}: {e}",
+            sentinel.display()
+        ))
+    })?;
+    if fresh_bootstrap {
         write_if_missing(&layout.bootstrap_md(), DEFAULT_BOOTSTRAP).await?;
         // Create the sentinel after writing BOOTSTRAP.md so that if we crash
         // between writing and sentinel creation, the next startup will retry.
         tokio::fs::write(&sentinel, "").await.map_err(|e| {
-            ResiduumError::Workspace(format!(
+            FatalError::Workspace(format!(
                 "failed to write bootstrap sentinel {}: {e}",
                 sentinel.display()
             ))
         })?;
+        tracing::debug!(sentinel = %sentinel.display(), "bootstrap sentinel written");
     }
 
     write_if_missing(&layout.observer_md(), DEFAULT_OBSERVER_PROMPT).await?;
     write_if_missing(&layout.reflector_md(), DEFAULT_REFLECTOR_PROMPT).await?;
     write_if_missing(&layout.heartbeat_yml(), DEFAULT_HEARTBEAT).await?;
-    write_if_missing(&layout.channels_yml(), DEFAULT_CHANNELS).await?;
     write_if_missing(&layout.alerts_md(), DEFAULT_ALERTS).await?;
     write_if_missing(&layout.presence_toml(), DEFAULT_PRESENCE).await?;
 
@@ -391,6 +382,7 @@ pub async fn ensure_workspace(
 
     tracing::info!(
         workspace = %layout.root().display(),
+        fresh_bootstrap,
         "workspace ready"
     );
 
@@ -399,40 +391,36 @@ pub async fn ensure_workspace(
 
 /// Build USER.md content from optional name and timezone.
 fn build_user_content(user_name: Option<&str>, timezone: Option<&str>) -> String {
-    let has_name = user_name.is_some_and(|n| !n.is_empty());
-    let has_tz = timezone.is_some_and(|t| !t.is_empty());
+    let name = user_name.filter(|n| !n.is_empty());
+    let tz = timezone.filter(|t| !t.is_empty());
 
-    if !has_name && !has_tz {
+    if name.is_none() && tz.is_none() {
         return DEFAULT_USER.to_string();
     }
 
-    let mut parts = vec!["# User Preferences\n".to_string()];
-    if let Some(name) = user_name
-        && !name.is_empty()
-    {
-        parts.push(format!("**Name**: {name}"));
+    let mut out = String::from("# User Preferences\n");
+    if let Some(name) = name {
+        out.push_str("\n**Name**: ");
+        out.push_str(name);
     }
-    if let Some(tz) = timezone
-        && !tz.is_empty()
-    {
-        parts.push(format!("**Timezone**: {tz}"));
+    if let Some(tz) = tz {
+        out.push_str("\n**Timezone**: ");
+        out.push_str(tz);
     }
-    parts.push(
-        "\nUpdate this file as you learn about the user — preferences, communication style, context about their work and life.\n".to_string(),
-    );
-    parts.join("\n")
+    out.push_str("\n\nUpdate this file as you learn about the user — preferences, communication style, context about their work and life.\n");
+    out
 }
 
 /// Write bundled skill trees to the workspace skills directory.
 ///
 /// Each file is written with `write_if_missing`, so user edits are preserved
 /// and files are only recreated if deleted.
-async fn write_bundled_skills(layout: &WorkspaceLayout) -> Result<(), ResiduumError> {
+async fn write_bundled_skills(layout: &WorkspaceLayout) -> Result<(), FatalError> {
     // residuum-system skill
     let system_dir = layout.residuum_system_skill_dir();
     let system_refs = system_dir.join("references");
     tokio::fs::create_dir_all(&system_refs).await.map_err(|e| {
-        ResiduumError::Workspace(format!(
+        FatalError::Workspace(format!(
             "failed to create skill directory {}: {e}",
             system_refs.display()
         ))
@@ -466,7 +454,7 @@ async fn write_bundled_skills(layout: &WorkspaceLayout) -> Result<(), ResiduumEr
     tokio::fs::create_dir_all(&started_workflows)
         .await
         .map_err(|e| {
-            ResiduumError::Workspace(format!(
+            FatalError::Workspace(format!(
                 "failed to create skill directory {}: {e}",
                 started_workflows.display()
             ))
@@ -499,14 +487,21 @@ async fn write_bundled_skills(layout: &WorkspaceLayout) -> Result<(), ResiduumEr
     )
     .await?;
 
+    tracing::debug!(workspace = %layout.root().display(), "wrote bundled skills");
+
     Ok(())
 }
 
 /// Write content to a file only if it does not already exist.
-async fn write_if_missing(path: &std::path::Path, content: &str) -> Result<(), ResiduumError> {
-    if !path.exists() {
+async fn write_if_missing(path: &std::path::Path, content: &str) -> Result<(), FatalError> {
+    if tokio::fs::try_exists(path)
+        .await
+        .map_err(|e| FatalError::Workspace(format!("failed to check {}: {e}", path.display())))?
+    {
+        tracing::trace!(path = %path.display(), "identity file already exists, skipping");
+    } else {
         tokio::fs::write(path, content).await.map_err(|e| {
-            ResiduumError::Workspace(format!("failed to write default {}: {e}", path.display()))
+            FatalError::Workspace(format!("failed to write default {}: {e}", path.display()))
         })?;
         tracing::debug!(path = %path.display(), "created default identity file");
     }
@@ -535,6 +530,10 @@ mod tests {
         assert!(layout.agents_md().exists(), "AGENTS.md should exist");
         assert!(layout.user_md().exists(), "USER.md should exist");
         assert!(layout.memory_md().exists(), "MEMORY.md should exist");
+        assert!(
+            layout.environment_md().exists(),
+            "ENVIRONMENT.md should exist"
+        );
         assert!(layout.bootstrap_md().exists(), "BOOTSTRAP.md should exist");
         assert!(layout.observer_md().exists(), "OBSERVER.md should exist");
         assert!(layout.reflector_md().exists(), "REFLECTOR.md should exist");
@@ -542,7 +541,6 @@ mod tests {
             layout.heartbeat_yml().exists(),
             "HEARTBEAT.yml should exist"
         );
-        assert!(layout.channels_yml().exists(), "CHANNELS.yml should exist");
         assert!(layout.alerts_md().exists(), "ALERTS.md should exist");
         assert!(
             layout.presence_toml().exists(),
@@ -553,6 +551,11 @@ mod tests {
             layout.inbox_archive_dir().exists(),
             "inbox archive dir should exist"
         );
+
+        let soul = tokio::fs::read_to_string(layout.soul_md()).await.unwrap();
+        assert!(!soul.is_empty(), "SOUL.md should have default content");
+        let memory = tokio::fs::read_to_string(layout.memory_md()).await.unwrap();
+        assert!(!memory.is_empty(), "MEMORY.md should have default content");
     }
 
     #[tokio::test]
@@ -627,25 +630,13 @@ mod tests {
                 .exists(),
             "always-on-assistant.md"
         );
-    }
 
-    #[tokio::test]
-    async fn bootstrap_creates_environment_md() {
-        let dir = tempfile::tempdir().unwrap();
-        let layout = WorkspaceLayout::new(dir.path().join("workspace"));
-
-        ensure_workspace(&layout, None, None).await.unwrap();
-
-        assert!(
-            layout.environment_md().exists(),
-            "ENVIRONMENT.md should exist"
-        );
-        let content = tokio::fs::read_to_string(layout.environment_md())
+        let system_skill_content = tokio::fs::read_to_string(system_dir.join("SKILL.md"))
             .await
             .unwrap();
         assert!(
-            content.contains("Environment"),
-            "ENVIRONMENT.md should contain default content"
+            !system_skill_content.is_empty(),
+            "system SKILL.md should have content"
         );
     }
 
@@ -760,6 +751,34 @@ mod tests {
         assert_eq!(
             content, DEFAULT_USER,
             "USER.md should use default content when no name is provided"
+        );
+    }
+
+    #[tokio::test]
+    async fn bootstrap_timezone_only_user_md() {
+        let dir = tempfile::tempdir().unwrap();
+        let layout = WorkspaceLayout::new(dir.path().join("workspace"));
+
+        ensure_workspace(&layout, None, Some("America/New_York"))
+            .await
+            .unwrap();
+
+        let content = tokio::fs::read_to_string(layout.user_md()).await.unwrap();
+        assert!(content.contains("**Timezone**: America/New_York"));
+        assert!(!content.contains("**Name**"));
+    }
+
+    #[tokio::test]
+    async fn bootstrap_empty_string_inputs_treated_as_none() {
+        let dir = tempfile::tempdir().unwrap();
+        let layout = WorkspaceLayout::new(dir.path().join("workspace"));
+
+        ensure_workspace(&layout, Some(""), Some("")).await.unwrap();
+
+        let content = tokio::fs::read_to_string(layout.user_md()).await.unwrap();
+        assert_eq!(
+            content, DEFAULT_USER,
+            "empty strings should produce default USER.md"
         );
     }
 }

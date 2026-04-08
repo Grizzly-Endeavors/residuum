@@ -1,0 +1,57 @@
+Analyze this module for logging hygiene issues.
+
+For each finding, be specific — reference file paths and line numbers. Focus on actionable findings, not praise.
+
+## What to look for
+
+### Incorrect log levels
+- `error!` used for recoverable situations (should be `warn!`).
+- `warn!` or `info!` used for failures that stop an operation (should be `error!`).
+- Internal state transitions or implementation details at `info!` (should be `debug!`).
+- Verbose diagnostics, full payloads, or timing data at `debug!` (should be `trace!`).
+- The expected levels:
+  - **error**: failures that stop an operation
+  - **warn**: recoverable issues, degraded behavior
+  - **info**: major operations (LLM calls, chunked processing)
+  - **debug**: internal details, state transitions
+  - **trace**: verbose diagnostics (full payloads, timing)
+
+### String interpolation instead of structured fields
+- `info!("processing {count} chunks")` should be `info!(chunks = count, "starting chunked review")`.
+- `format!()` or `format_args!()` used inside log macros when structured fields would work.
+- Structured fields make logs queryable — string interpolation buries data in the message.
+
+### Log spam patterns
+- Logging on every loop iteration or timer tick at `info!` or above. These belong at `trace!` at most.
+- Routine successful operations logged at `info!` or above ("connection still alive", "heartbeat ok"). Absence of errors is the signal that things work.
+- Periodic health-check output above `trace!` level.
+
+### Missing context
+- Log entries that would be useless for debugging in production. Ask: "If I saw only this log line in a dashboard, could I identify what failed and where?"
+- Missing structured fields for key identifiers (IDs, paths, counts, durations).
+- Bare messages like `error!("failed")` or `warn!("retry")` with no qualifying information.
+
+### Tracing span hygiene
+- **Missing spans on public entry points.** Every `pub` or `pub(crate)` async function that represents a meaningful operation should have `#[tracing::instrument(skip_all, ...)]` with relevant structured fields. Spans create the tree structure that makes logs navigable — a log line without a parent span is an orphan.
+- **Spans that skip nothing.** `#[tracing::instrument]` without `skip_all` will serialize every argument into the span, which is expensive and noisy. Always use `skip_all` and explicitly declare useful fields: `#[tracing::instrument(skip_all, fields(model = %self.model, count = items.len()))]`.
+- **Redundant context in log lines.** If a span already carries a field (e.g., `tool.name`), child log lines inside that span should not repeat it. The span provides the context — the log line adds the event.
+- **Wrong span level.** Use `info_span!` for operations that are meaningful at the `info` level (tool execution, monitored tasks). Use `debug_span!` or `trace_span!` for internal implementation details. The span level controls when the span appears in output.
+- **Manual spans where `#[instrument]` would work.** Prefer the attribute macro over hand-built `info_span!` + `.instrument(span)` unless you need the span to cover a subset of the function body or wrap a closure/future that isn't the whole function.
+- **Span fields using string interpolation.** Span fields follow the same rules as log fields — use structured `fields(key = %value)` syntax, never `info_span!("op", format!(...))`.
+
+### Inconsistent patterns
+- Mix of `tracing` and `log` macros in the same module.
+- Inconsistent field naming across related log entries or spans (e.g., `path` in one place, `file_path` in another for the same concept). This applies to both log macro fields and `#[instrument(fields(...))]` declarations.
+- Log messages that use different tenses, capitalization, or punctuation styles within the module.
+- Dotted field names (e.g., `tool.name`, `mcp.server`, `task.id`) should be used consistently for namespaced concepts — don't mix `tool_name` and `tool.name` for the same thing.
+
+## Output format
+
+If the module's logging is clean, say so. "No findings" is a valid and good outcome. Don't manufacture findings.
+
+If there are findings, organize by category (use the headings above). For each finding:
+- State what the problem is
+- Reference the specific file and line(s)
+- Propose a concrete fix
+
+Skip any category that has no findings.

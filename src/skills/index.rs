@@ -1,10 +1,10 @@
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use super::{
     parser::parse_skill_md,
     types::{SkillIndexEntry, SkillSource},
 };
-use crate::error::ResiduumError;
 
 /// In-memory index of discovered skills.
 #[derive(Debug, Clone, Default)]
@@ -19,15 +19,20 @@ impl SkillIndex {
     /// and builds an index entry. Invalid or missing files are warned and
     /// skipped. Duplicate names keep the first found.
     ///
+    /// # Arguments
+    /// - `dirs`: Skill directories in priority order. `dirs[0]` is treated as
+    ///   the workspace skills directory (`SkillSource::Workspace`); remaining
+    ///   entries are `SkillSource::UserGlobal`. The order must be maintained by
+    ///   the caller — passing dirs in a different order will produce incorrect
+    ///   source tagging.
+    ///
     /// # Errors
-    /// Returns `ResiduumError::Skills` if a directory cannot be read (except
-    /// `NotFound`, which is silently skipped).
-    pub async fn scan(
-        dirs: &[PathBuf],
-        project_skills_dir: Option<&Path>,
-    ) -> Result<Self, ResiduumError> {
+    /// Returns an error if a directory cannot be read (except `NotFound`,
+    /// which is silently skipped).
+    #[tracing::instrument(skip_all, fields(dirs_count = dirs.len()))]
+    pub async fn scan(dirs: &[PathBuf], project_skills_dir: Option<&Path>) -> anyhow::Result<Self> {
         let mut entries = Vec::new();
-        let mut seen_names: Vec<String> = Vec::new();
+        let mut seen_names: HashSet<String> = HashSet::new();
 
         // Project skills have highest priority — scan first
         if let Some(project_dir) = project_skills_dir {
@@ -41,15 +46,17 @@ impl SkillIndex {
         }
 
         // Then workspace and user-global (workspace is dirs[0], user-global are the rest)
-        for dir in dirs {
-            let source = if dirs.first().is_some_and(|first| first == dir) {
+        for (i, dir) in dirs.iter().enumerate() {
+            let source = if i == 0 {
                 SkillSource::Workspace
             } else {
                 SkillSource::UserGlobal
             };
+            tracing::debug!(dir = %dir.display(), source = %source, "scanning skill dir");
             scan_skill_directory(dir, source, &mut entries, &mut seen_names).await?;
         }
 
+        tracing::info!(total = entries.len(), "skill index built");
         Ok(Self { entries })
     }
 
@@ -74,8 +81,8 @@ impl SkillIndex {
             let skill_md = entry.skill_dir.join("SKILL.md");
             parts.push(format!(
                 "  <skill>\n    <name>{}</name>\n    <description>{}</description>\n    <location>{}</location>\n  </skill>",
-                entry.name,
-                entry.description,
+                xml_escape(&entry.name),
+                xml_escape(&entry.description),
                 skill_md.display(),
             ));
         }
@@ -91,21 +98,27 @@ impl SkillIndex {
     }
 }
 
+fn xml_escape(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+}
+
 /// Scan a single directory for skill subfolders.
+#[tracing::instrument(skip_all, fields(dir = %dir.display(), source = %source))]
 async fn scan_skill_directory(
     dir: &Path,
     source: SkillSource,
     entries: &mut Vec<SkillIndexEntry>,
-    seen_names: &mut Vec<String>,
-) -> Result<(), ResiduumError> {
+    seen_names: &mut HashSet<String>,
+) -> anyhow::Result<()> {
+    let entries_before = entries.len();
     let mut read_dir = match tokio::fs::read_dir(dir).await {
         Ok(rd) => rd,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
         Err(e) => {
-            return Err(ResiduumError::Skills(format!(
-                "failed to read skills directory {}: {e}",
-                dir.display()
-            )));
+            return Err(anyhow::Error::new(e)
+                .context(format!("failed to read skills directory {}", dir.display())));
         }
     };
 
@@ -166,11 +179,12 @@ async fn scan_skill_directory(
                     tracing::warn!(
                         name = %fm.name,
                         path = %skill_md.display(),
+                        source = %source,
                         "duplicate skill name, keeping first found"
                     );
                     continue;
                 }
-                seen_names.push(lower);
+                seen_names.insert(lower);
 
                 entries.push(SkillIndexEntry {
                     name: fm.name,
@@ -183,12 +197,14 @@ async fn scan_skill_directory(
                 tracing::warn!(
                     path = %skill_md.display(),
                     error = %e,
+                    source = %source,
                     "skipping skill with invalid frontmatter"
                 );
             }
         }
     }
 
+    tracing::debug!(dir = %dir.display(), source = %source, count = entries.len() - entries_before, "skill directory scanned");
     Ok(())
 }
 
@@ -307,6 +323,10 @@ mod tests {
 
         let proj_entry = index.find_by_name("proj-skill").unwrap();
         assert_eq!(proj_entry.source, SkillSource::Project);
+        assert_eq!(
+            index.find_by_name("ws-skill").unwrap().source,
+            SkillSource::Workspace
+        );
     }
 
     #[tokio::test]
@@ -396,10 +416,9 @@ mod tests {
             }],
         };
 
-        assert!(
-            index.find_by_name("MY-SKILL").is_some(),
-            "should find case-insensitive"
-        );
+        let entry = index.find_by_name("MY-SKILL").unwrap();
+        assert_eq!(entry.name, "my-skill");
+        assert_eq!(entry.source, SkillSource::Workspace);
         assert!(
             index.find_by_name("nonexistent").is_none(),
             "should not find missing"
@@ -443,6 +462,28 @@ mod tests {
             output.contains("<description>Extracts text from PDFs</description>"),
             "should contain description"
         );
-        assert!(output.contains("<location>"), "should contain location");
+        assert!(
+            output.contains("/tmp/skills/pdf-processing/SKILL.md"),
+            "should contain full location path"
+        );
+    }
+
+    #[test]
+    fn format_for_prompt_escapes_xml_special_chars() {
+        let index = SkillIndex {
+            entries: vec![SkillIndexEntry {
+                name: "my-skill".to_string(),
+                description: "Handles <tags> & \"quotes\"".to_string(),
+                skill_dir: PathBuf::from("/tmp/my-skill"),
+                source: SkillSource::Workspace,
+            }],
+        };
+        let output = index.format_for_prompt();
+        assert!(output.contains("&lt;tags&gt;"), "< and > should be escaped");
+        assert!(output.contains("&amp;"), "& should be escaped");
+        assert!(
+            !output.contains("<tags>"),
+            "raw < should not appear in output"
+        );
     }
 }

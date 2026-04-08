@@ -2,9 +2,10 @@
 
 use std::path::Path;
 
+use anyhow::Context;
+
 use super::parser::parse_preset_md;
 use super::types::{SubagentPresetEntry, SubagentPresetFrontmatter};
-use crate::error::ResiduumError;
 
 /// Built-in general-purpose preset name.
 const GENERAL_PURPOSE_NAME: &str = "general-purpose";
@@ -18,8 +19,6 @@ project, deactivate it with a session log before finishing.";
 #[derive(Debug, Clone, Default)]
 pub struct SubagentPresetIndex {
     entries: Vec<SubagentPresetEntry>,
-    /// Bodies for built-in presets (keyed by name).
-    builtin_bodies: Vec<(String, SubagentPresetFrontmatter, String)>,
 }
 
 impl SubagentPresetIndex {
@@ -29,26 +28,20 @@ impl SubagentPresetIndex {
     /// Invalid or unparseable files are warned and skipped.
     ///
     /// # Errors
-    /// Returns `ResiduumError::Subagents` if the directory cannot be read
-    /// (except `NotFound`, which is silently skipped).
-    pub async fn scan(dir: &Path) -> Result<Self, ResiduumError> {
+    /// Returns an error if the directory cannot be read (except `NotFound`,
+    /// which is silently skipped).
+    #[tracing::instrument(skip_all, fields(dir = %dir.display()))]
+    pub async fn scan(dir: &Path) -> anyhow::Result<Self> {
         let mut entries = Vec::new();
-        let mut seen_names: Vec<String> = Vec::new();
-        let mut builtin_bodies = Vec::new();
 
         // Seed with built-in presets
-        let (builtin_entry, builtin_fm, builtin_body) = builtin_general_purpose();
-        entries.push(builtin_entry);
-        seen_names.push(GENERAL_PURPOSE_NAME.to_string());
-        builtin_bodies.push((GENERAL_PURPOSE_NAME.to_string(), builtin_fm, builtin_body));
+        entries.push(builtin_general_purpose_entry());
 
         // Scan user-defined presets from disk
-        scan_preset_directory(dir, &mut entries, &mut seen_names).await?;
+        tracing::debug!(dir = %dir.display(), "scanning subagent presets");
+        scan_preset_directory(dir, &mut entries).await?;
 
-        Ok(Self {
-            entries,
-            builtin_bodies,
-        })
+        Ok(Self { entries })
     }
 
     /// Look up a preset by name (case-insensitive).
@@ -61,44 +54,36 @@ impl SubagentPresetIndex {
     /// Load a preset's full frontmatter and body from disk (or from built-in).
     ///
     /// # Errors
-    /// Returns `ResiduumError::Subagents` if the preset file cannot be read or parsed,
-    /// or if the name is not found in the index.
+    /// Returns an error if the preset file cannot be read or parsed, or if
+    /// the name is not found in the index.
+    #[tracing::instrument(skip_all, fields(preset.name = %name))]
     pub async fn load_preset(
         &self,
         name: &str,
-    ) -> Result<(SubagentPresetFrontmatter, String), ResiduumError> {
-        let lower = name.to_lowercase();
-
+    ) -> anyhow::Result<(SubagentPresetFrontmatter, String)> {
         let entry = self.find_by_name(name).ok_or_else(|| {
-            let available: Vec<&str> = self.entries.iter().map(|e| e.name.as_str()).collect();
-            ResiduumError::Subagents(format!(
+            anyhow::anyhow!(
                 "unknown preset '{name}'. Available: {}",
-                available.join(", ")
-            ))
+                self.available_names().join(", ")
+            )
         })?;
 
         // If it has a path, load from disk
         if let Some(path) = &entry.preset_path {
-            let content = tokio::fs::read_to_string(path).await.map_err(|e| {
-                ResiduumError::Subagents(format!(
-                    "failed to read preset file {}: {e}",
-                    path.display()
-                ))
-            })?;
-            return parse_preset_md(&content);
+            let content = tokio::fs::read_to_string(path)
+                .await
+                .with_context(|| format!("failed to read preset file {}", path.display()))?;
+            let result = parse_preset_md(&content)?;
+            tracing::debug!(name = %name, path = %path.display(), "loaded preset from disk");
+            return Ok(result);
         }
 
-        // Otherwise, check built-in presets
-        for (builtin_name, fm, body) in &self.builtin_bodies {
-            if builtin_name.to_lowercase() == lower {
-                return Ok((fm.clone(), body.clone()));
-            }
+        // Otherwise, return the built-in body directly
+        if name.eq_ignore_ascii_case(GENERAL_PURPOSE_NAME) {
+            return Ok(builtin_general_purpose_preset());
         }
 
-        tracing::error!(name = %name, "preset found in index but has no path and is not a built-in — this is a bug in scan()");
-        Err(ResiduumError::Subagents(format!(
-            "preset '{name}' found in index but has no path and is not a built-in"
-        )))
+        unreachable!("preset '{name}' found in index but has no path and is not a built-in")
     }
 
     /// Format the index as XML for the system prompt.
@@ -135,13 +120,15 @@ impl SubagentPresetIndex {
     }
 }
 
-/// Construct the built-in general-purpose preset.
-fn builtin_general_purpose() -> (SubagentPresetEntry, SubagentPresetFrontmatter, String) {
-    let entry = SubagentPresetEntry {
+fn builtin_general_purpose_entry() -> SubagentPresetEntry {
+    SubagentPresetEntry {
         name: GENERAL_PURPOSE_NAME.to_string(),
         description: GENERAL_PURPOSE_DESCRIPTION.to_string(),
         preset_path: None,
-    };
+    }
+}
+
+fn builtin_general_purpose_preset() -> (SubagentPresetFrontmatter, String) {
     let fm = SubagentPresetFrontmatter {
         name: GENERAL_PURPOSE_NAME.to_string(),
         description: GENERAL_PURPOSE_DESCRIPTION.to_string(),
@@ -149,15 +136,14 @@ fn builtin_general_purpose() -> (SubagentPresetEntry, SubagentPresetFrontmatter,
         denied_tools: None,
         allowed_tools: None,
     };
-    (entry, fm, GENERAL_PURPOSE_BODY.to_string())
+    (fm, GENERAL_PURPOSE_BODY.to_string())
 }
 
 /// Scan a single directory for `*.md` preset files.
 async fn scan_preset_directory(
     dir: &Path,
     entries: &mut Vec<SubagentPresetEntry>,
-    seen_names: &mut Vec<String>,
-) -> Result<(), ResiduumError> {
+) -> anyhow::Result<()> {
     let mut read_dir = match tokio::fs::read_dir(dir).await {
         Ok(rd) => rd,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
@@ -165,8 +151,8 @@ async fn scan_preset_directory(
             return Ok(());
         }
         Err(e) => {
-            return Err(ResiduumError::Subagents(format!(
-                "failed to read subagents directory {}: {e}",
+            return Err(anyhow::Error::new(e).context(format!(
+                "failed to read subagents directory {}",
                 dir.display()
             )));
         }
@@ -224,7 +210,7 @@ async fn scan_preset_directory(
         };
 
         match parse_preset_md(&file_content) {
-            Ok((fm, _body)) => register_preset(fm, path, entries, seen_names),
+            Ok((fm, _body)) => register_preset(fm, path, entries),
             Err(e) => {
                 tracing::warn!(
                     path = %path.display(),
@@ -235,6 +221,12 @@ async fn scan_preset_directory(
         }
     }
 
+    tracing::debug!(
+        dir = %dir.display(),
+        loaded = entries.len(),
+        "finished scanning subagents directory"
+    );
+
     Ok(())
 }
 
@@ -242,36 +234,35 @@ fn register_preset(
     fm: SubagentPresetFrontmatter,
     path: std::path::PathBuf,
     entries: &mut Vec<SubagentPresetEntry>,
-    seen_names: &mut Vec<String>,
 ) {
     let lower = fm.name.to_lowercase();
 
-    if let Some(pos) = seen_names.iter().position(|n| *n == lower) {
-        if entries.get(pos).is_some_and(|e| e.preset_path.is_none()) {
-            tracing::info!(
+    if let Some(existing) = entries.iter_mut().find(|e| e.name.to_lowercase() == lower) {
+        if existing.preset_path.is_none() {
+            tracing::debug!(
                 name = %fm.name,
                 path = %path.display(),
                 "user preset overrides built-in"
             );
-            if let Some(slot) = entries.get_mut(pos) {
-                *slot = SubagentPresetEntry {
-                    name: fm.name,
-                    description: fm.description,
-                    preset_path: Some(path),
-                };
-            }
+            *existing = SubagentPresetEntry {
+                name: fm.name,
+                description: fm.description,
+                preset_path: Some(path),
+            };
             return;
         }
 
-        tracing::warn!(
-            name = %fm.name,
-            path = %path.display(),
-            "duplicate preset name, keeping first found"
-        );
+        if let Some(p) = &existing.preset_path {
+            tracing::warn!(
+                name = %fm.name,
+                rejected = %path.display(),
+                kept = %p.display(),
+                "duplicate preset name, keeping first found"
+            );
+        }
         return;
     }
 
-    seen_names.push(lower);
     entries.push(SubagentPresetEntry {
         name: fm.name,
         description: fm.description,
@@ -439,7 +430,6 @@ mod tests {
                 description: "Research agent".to_string(),
                 preset_path: Some(PathBuf::from("/tmp/researcher.md")),
             }],
-            builtin_bodies: Vec::new(),
         };
 
         assert!(
@@ -456,7 +446,6 @@ mod tests {
     fn format_for_prompt_empty() {
         let index = SubagentPresetIndex {
             entries: Vec::new(),
-            builtin_bodies: Vec::new(),
         };
         assert!(
             index.format_for_prompt().is_empty(),
@@ -479,7 +468,6 @@ mod tests {
                     preset_path: Some(PathBuf::from("/tmp/researcher.md")),
                 },
             ],
-            builtin_bodies: Vec::new(),
         };
 
         let output = index.format_for_prompt();
@@ -552,5 +540,51 @@ mod tests {
             err_msg.contains("general-purpose"),
             "error should list available presets"
         );
+    }
+
+    #[tokio::test]
+    async fn load_preset_file_deleted_after_scan() {
+        let dir = tempfile::tempdir().unwrap();
+        let preset_path = dir.path().join("vanishing.md");
+        tokio::fs::write(
+            &preset_path,
+            "---\nname: vanishing\ndescription: \"Will be deleted\"\n---\n\nBody.\n",
+        )
+        .await
+        .unwrap();
+
+        let index = SubagentPresetIndex::scan(dir.path()).await.unwrap();
+        tokio::fs::remove_file(&preset_path).await.unwrap();
+
+        let result = index.load_preset("vanishing").await;
+        assert!(result.is_err(), "should error when file is gone");
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("failed to read preset file"),
+            "error should mention read failure"
+        );
+    }
+
+    #[test]
+    fn available_names_returns_all_names() {
+        let index = SubagentPresetIndex {
+            entries: vec![
+                SubagentPresetEntry {
+                    name: "general-purpose".to_string(),
+                    description: "General-purpose subagent".to_string(),
+                    preset_path: None,
+                },
+                SubagentPresetEntry {
+                    name: "researcher".to_string(),
+                    description: "Research specialist".to_string(),
+                    preset_path: Some(PathBuf::from("/tmp/researcher.md")),
+                },
+            ],
+        };
+
+        let names = index.available_names();
+        assert_eq!(names.len(), 2);
+        assert!(names.contains(&"general-purpose"));
+        assert!(names.contains(&"researcher"));
     }
 }

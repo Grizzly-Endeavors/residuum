@@ -7,7 +7,7 @@ pub mod subagent;
 pub mod types;
 
 pub use spawner::BackgroundTaskSpawner;
-pub use subagent::{SubAgentBuildConfig, SubAgentResources, build_resources};
+pub use subagent::{SubAgentResources, build_subagent_resources};
 pub use types::{
-    ActiveTaskInfo, BackgroundResult, Execution, SubAgentConfig, format_background_result,
+    ActiveTaskInfo, BackgroundResult, SubAgentBuildConfig, SubAgentConfig, format_background_result,
 };

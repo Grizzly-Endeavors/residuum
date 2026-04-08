@@ -30,7 +30,7 @@ impl Tool for WriteTool {
 
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
-            name: "write_file".to_string(),
+            name: self.name().to_string(),
             description:
                 "Write content to a file. Creates parent directories if they don't exist. \
                  Overwrites the file if it already exists. Existing files must be read \

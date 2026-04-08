@@ -7,10 +7,10 @@
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
-use tracing::debug;
+use tracing::{debug, info};
 
 use super::embedding::{EmbeddingProvider, EmbeddingResponse};
-use super::http::{SharedHttpClient, map_request_error, warn_if_insecure_remote};
+use super::http::{SharedHttpClient, map_request_error, read_error_body, warn_if_insecure_remote};
 use super::retry::{RetryConfig, with_retry};
 use super::{
     CompletionOptions, Message, ModelError, ModelProvider, ModelResponse, ResponseFormat, Role,
@@ -57,12 +57,6 @@ impl GeminiClient {
         }
     }
 
-    /// Deserialize a Gemini API response body from text.
-    fn parse_response_body(text: &str) -> Result<GeminiResponse, ModelError> {
-        serde_json::from_str(text)
-            .map_err(|e| ModelError::Parse(format!("failed to parse gemini response: {e}")))
-    }
-
     /// Parse a successful Gemini response into our generic `ModelResponse`.
     fn parse_response(gemini_response: GeminiResponse) -> Result<ModelResponse, ModelError> {
         let candidate = gemini_response
@@ -90,13 +84,13 @@ impl GeminiClient {
                     });
                 }
                 GeminiPart::FunctionResponse { .. } => {
-                    tracing::warn!(
+                    debug!(
                         part_index = idx,
                         "unexpected functionResponse part in Gemini model output"
                     );
                 }
                 GeminiPart::InlineData { .. } => {
-                    tracing::warn!(
+                    debug!(
                         part_index = idx,
                         "unexpected inlineData part in Gemini model output"
                     );
@@ -144,9 +138,14 @@ impl GeminiClient {
                     system_parts.push(&msg.content);
                 }
                 Role::User => {
-                    let has_images = msg.images.as_ref().is_some_and(|imgs| !imgs.is_empty());
-
-                    if has_images {
+                    if msg.images.is_empty() {
+                        contents.push(GeminiContent {
+                            role: "user".to_string(),
+                            parts: vec![GeminiPart::Text {
+                                text: msg.content.clone(),
+                            }],
+                        });
+                    } else {
                         let mut parts: Vec<GeminiPart> = Vec::new();
 
                         if !msg.content.is_empty() {
@@ -155,7 +154,7 @@ impl GeminiClient {
                             });
                         }
 
-                        for img in msg.images.as_ref().unwrap_or(&Vec::new()) {
+                        for img in &msg.images {
                             parts.push(GeminiPart::InlineData {
                                 inline_data: GeminiInlineData {
                                     mime_type: img.media_type.clone(),
@@ -167,13 +166,6 @@ impl GeminiClient {
                         contents.push(GeminiContent {
                             role: "user".to_string(),
                             parts,
-                        });
-                    } else {
-                        contents.push(GeminiContent {
-                            role: "user".to_string(),
-                            parts: vec![GeminiPart::Text {
-                                text: msg.content.clone(),
-                            }],
                         });
                     }
                 }
@@ -229,10 +221,74 @@ impl GeminiClient {
 
         (system_instruction, contents)
     }
+
+    #[tracing::instrument(skip_all, fields(
+        model = %model,
+        message_count,
+        tool_count,
+    ))]
+    async fn send_completion(
+        http: &SharedHttpClient,
+        url: &str,
+        model: &str,
+        max_output_tokens: u32,
+        message_count: usize,
+        tool_count: usize,
+        request: &GeminiRequest,
+    ) -> Result<ModelResponse, ModelError> {
+        let timeout_secs = http.timeout_secs();
+        let request_json = serde_json::to_string(request)
+            .map_err(|e| ModelError::Parse(format!("failed to serialize request: {e}")))?;
+
+        debug!(
+            max_output_tokens,
+            message_count, tool_count, "sending gemini generateContent request"
+        );
+
+        let response = http
+            .client()
+            .post(url)
+            .body(request_json.clone())
+            .header("content-type", "application/json")
+            .send()
+            .await
+            .map_err(|e| map_request_error(e, timeout_secs))?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let raw_body = read_error_body(response).await;
+            tracing::warn!(
+                status = %status,
+                response_body = %raw_body,
+                request_body = %request_json,
+                "gemini API error — full request/response for diagnosis"
+            );
+            let error_body = serde_json::from_str::<GeminiErrorResponse>(&raw_body)
+                .map_or_else(|_| raw_body, |e| e.error.message);
+            return Err(ModelError::Api(format!("{status}: {error_body}")));
+        }
+
+        let text = response
+            .text()
+            .await
+            .map_err(|e| map_request_error(e, timeout_secs))?;
+        let result =
+            Self::parse_response(serde_json::from_str(&text).map_err(|e| {
+                ModelError::Parse(format!("failed to parse gemini response: {e}"))
+            })?)?;
+        info!(
+            model = %model,
+            content_len = result.content.len(),
+            tool_calls = result.tool_calls.len(),
+            "gemini completion received"
+        );
+        Ok(result)
+    }
 }
 
 #[async_trait]
 impl ModelProvider for GeminiClient {
+    #[tracing::instrument(skip_all, fields(model = %self.model, message_count = messages.len(), tool_count = tools.len()))]
     async fn complete(
         &self,
         messages: &[Message],
@@ -260,9 +316,10 @@ impl ModelProvider for GeminiClient {
             }]
         });
         let max_output_tokens = options.max_tokens.unwrap_or(self.max_tokens);
+        let message_count = messages.len();
+        let tool_count = tools.len();
         let model = self.model.clone();
         let http = self.http.clone();
-        let timeout_secs = self.http.timeout_secs();
 
         let (response_mime_type, response_schema) = match &options.response_format {
             ResponseFormat::Text => (None, None),
@@ -289,7 +346,7 @@ impl ModelProvider for GeminiClient {
                 thinking_budget: 32768,
             }),
             ThinkingConfig::Toggle(true) => Some(GeminiThinkingConfig {
-                thinking_budget: -1,
+                thinking_budget: GEMINI_THINKING_BUDGET_DYNAMIC,
             }),
             ThinkingConfig::Toggle(false) => None,
         });
@@ -312,36 +369,16 @@ impl ModelProvider for GeminiClient {
                     generation_config,
                     thinking_config,
                 };
-
-                debug!(model = %model, "sending Gemini generateContent request");
-
-                let response = http
-                    .client()
-                    .post(&url)
-                    .json(&request)
-                    .send()
-                    .await
-                    .map_err(|e| map_request_error(e, timeout_secs))?;
-
-                if !response.status().is_success() {
-                    let status = response.status();
-                    let raw_body = match response.text().await {
-                        Ok(body) => body,
-                        Err(e) => {
-                            tracing::warn!(error = %e, "failed to read error response body");
-                            format!("failed to read response body: {e}")
-                        }
-                    };
-                    let error_body = serde_json::from_str::<GeminiErrorResponse>(&raw_body)
-                        .map_or_else(|_| raw_body, |e| e.error.message);
-                    return Err(ModelError::Api(format!("{status}: {error_body}")));
-                }
-
-                let text = response
-                    .text()
-                    .await
-                    .map_err(|e| map_request_error(e, timeout_secs))?;
-                Self::parse_response(Self::parse_response_body(&text)?)
+                Self::send_completion(
+                    &http,
+                    &url,
+                    &model,
+                    max_output_tokens,
+                    message_count,
+                    tool_count,
+                    &request,
+                )
+                .await
             }
         })
         .await
@@ -355,6 +392,9 @@ impl ModelProvider for GeminiClient {
 // ---------------------------------------------------------------------------
 // Gemini API request types
 // ---------------------------------------------------------------------------
+
+/// Gemini's sentinel value for "dynamic" thinking budget (let the model decide).
+const GEMINI_THINKING_BUDGET_DYNAMIC: i32 = -1;
 
 #[derive(Serialize, Clone)]
 struct GeminiThinkingConfig {
@@ -589,15 +629,12 @@ impl GeminiEmbeddingClient {
         }
     }
 
-    async fn embed_single(
-        &self,
-        text: String,
-        base_url: String,
-        api_key: String,
-        model: String,
-        http: SharedHttpClient,
-        timeout_secs: u64,
-    ) -> Result<EmbeddingResponse, ModelError> {
+    async fn embed_single(&self, text: String) -> Result<EmbeddingResponse, ModelError> {
+        let base_url = self.base_url.clone();
+        let api_key = self.api_key.clone();
+        let model = self.model.clone();
+        let http = self.http.clone();
+        let timeout_secs = self.http.timeout_secs();
         with_retry(&self.retry, || {
             let url = format!("{base_url}/models/{model}:embedContent?key={api_key}");
             let request_body = GeminiEmbedContentRequest {
@@ -607,8 +644,11 @@ impl GeminiEmbeddingClient {
                 },
             };
             let http = http.clone();
+            let model = model.clone();
 
             async move {
+                debug!(model = %model, "sending gemini embed request");
+
                 let response = http
                     .client()
                     .post(&url)
@@ -630,6 +670,7 @@ impl GeminiEmbeddingClient {
                         ModelError::Parse(format!("failed to parse gemini embed response: {e}"))
                     })?;
                 let dimensions = parsed.embedding.values.len();
+                info!(model = %model, dimensions, "gemini embedding received");
                 Ok(EmbeddingResponse {
                     embeddings: vec![parsed.embedding.values],
                     dimensions,
@@ -639,15 +680,12 @@ impl GeminiEmbeddingClient {
         .await
     }
 
-    async fn embed_batch(
-        &self,
-        owned_texts: Vec<String>,
-        base_url: String,
-        api_key: String,
-        model: String,
-        http: SharedHttpClient,
-        timeout_secs: u64,
-    ) -> Result<EmbeddingResponse, ModelError> {
+    async fn embed_batch(&self, owned_texts: Vec<String>) -> Result<EmbeddingResponse, ModelError> {
+        let base_url = self.base_url.clone();
+        let api_key = self.api_key.clone();
+        let model = self.model.clone();
+        let http = self.http.clone();
+        let timeout_secs = self.http.timeout_secs();
         with_retry(&self.retry, || {
             let url = format!("{base_url}/models/{model}:batchEmbedContents?key={api_key}");
             let requests: Vec<GeminiEmbedContentRequest> = owned_texts
@@ -661,8 +699,12 @@ impl GeminiEmbeddingClient {
                 .collect();
             let request_body = GeminiBatchEmbedRequest { requests };
             let http = http.clone();
+            let model = model.clone();
+            let batch_count = owned_texts.len();
 
             async move {
+                debug!(model = %model, count = batch_count, "sending gemini batch embed request");
+
                 let response = http
                     .client()
                     .post(&url)
@@ -686,7 +728,9 @@ impl GeminiEmbeddingClient {
                         ))
                     })?;
                 let dimensions = parsed.embeddings.first().map_or(0, |e| e.values.len());
-                let embeddings = parsed.embeddings.into_iter().map(|e| e.values).collect();
+                let embeddings: Vec<Vec<f32>> =
+                    parsed.embeddings.into_iter().map(|e| e.values).collect();
+                info!(model = %model, count = embeddings.len(), dimensions, "gemini batch embeddings received");
                 Ok(EmbeddingResponse {
                     embeddings,
                     dimensions,
@@ -699,6 +743,7 @@ impl GeminiEmbeddingClient {
 
 #[async_trait]
 impl EmbeddingProvider for GeminiEmbeddingClient {
+    #[tracing::instrument(skip_all, fields(model = %self.model, count = texts.len()))]
     async fn embed(&self, texts: &[&str]) -> Result<EmbeddingResponse, ModelError> {
         if texts.is_empty() {
             return Ok(EmbeddingResponse {
@@ -707,21 +752,11 @@ impl EmbeddingProvider for GeminiEmbeddingClient {
             });
         }
 
-        let base_url = self.base_url.clone();
-        let api_key = self.api_key.clone();
-        let model = self.model.clone();
-        let http = self.http.clone();
-        let timeout_secs = self.http.timeout_secs();
-
-        if texts.len() == 1 {
-            // Safe: we checked `texts.is_empty()` above
-            let text = texts.first().map(|t| (*t).to_string()).unwrap_or_default();
-            self.embed_single(text, base_url, api_key, model, http, timeout_secs)
-                .await
+        if let [text] = texts {
+            self.embed_single((*text).to_string()).await
         } else {
             let owned_texts: Vec<String> = texts.iter().map(|t| (*t).to_string()).collect();
-            self.embed_batch(owned_texts, base_url, api_key, model, http, timeout_secs)
-                .await
+            self.embed_batch(owned_texts).await
         }
     }
 
@@ -733,13 +768,7 @@ impl EmbeddingProvider for GeminiEmbeddingClient {
 /// Parse a Gemini error response into a `ModelError::Api`.
 async fn parse_gemini_embed_error(response: reqwest::Response) -> ModelError {
     let status = response.status();
-    let raw_body = match response.text().await {
-        Ok(b) => b,
-        Err(e) => {
-            tracing::warn!(error = %e, "failed to read error response body");
-            format!("failed to read response body: {e}")
-        }
-    };
+    let raw_body = read_error_body(response).await;
     let error_body = serde_json::from_str::<GeminiErrorResponse>(&raw_body)
         .map_or_else(|_| raw_body, |e| e.error.message);
     ModelError::Api(format!("{status}: {error_body}"))
@@ -1347,6 +1376,103 @@ mod tests {
         assert!(
             err.to_string().contains("API key not valid"),
             "error should contain Gemini message"
+        );
+    }
+
+    #[tokio::test]
+    async fn embed_empty_input_returns_early() {
+        let client = make_embedding_client("http://127.0.0.1:1");
+        let result = client.embed(&[]).await;
+        assert!(
+            result.is_ok(),
+            "empty input should return Ok without API call"
+        );
+        let resp = result.unwrap();
+        assert!(resp.embeddings.is_empty(), "should have no embeddings");
+        assert_eq!(resp.dimensions, 0, "dimensions should be 0");
+    }
+
+    #[test]
+    fn strip_unsupported_removes_additional_properties_at_root() {
+        let input = serde_json::json!({
+            "type": "object",
+            "properties": {"name": {"type": "string"}},
+            "additionalProperties": false
+        });
+        let result = strip_unsupported_schema_fields(input);
+        assert!(
+            result.get("additionalProperties").is_none(),
+            "additionalProperties should be removed"
+        );
+        assert!(
+            result.get("properties").is_some(),
+            "properties should remain"
+        );
+        assert!(result.get("type").is_some(), "type should remain");
+    }
+
+    #[test]
+    fn strip_unsupported_removes_nested_additional_properties() {
+        let input = serde_json::json!({
+            "type": "object",
+            "properties": {
+                "inner": {
+                    "type": "object",
+                    "properties": {"x": {"type": "string"}},
+                    "additionalProperties": false
+                }
+            }
+        });
+        let result = strip_unsupported_schema_fields(input);
+        let inner = result.get("properties").unwrap().get("inner").unwrap();
+        assert!(
+            inner.get("additionalProperties").is_none(),
+            "nested additionalProperties should be removed"
+        );
+        assert!(inner.get("type").is_some(), "nested type should remain");
+    }
+
+    #[test]
+    fn strip_unsupported_handles_array_of_objects() {
+        let input = serde_json::json!([
+            {
+                "type": "object",
+                "additionalProperties": false
+            }
+        ]);
+        let result = strip_unsupported_schema_fields(input);
+        let first = result.as_array().unwrap().first().unwrap();
+        assert!(
+            first.get("additionalProperties").is_none(),
+            "additionalProperties in array items should be removed"
+        );
+        assert!(
+            first.get("type").is_some(),
+            "type in array items should remain"
+        );
+    }
+
+    #[test]
+    fn strip_unsupported_passes_non_object_through() {
+        let string_val = serde_json::json!("hello");
+        assert_eq!(
+            strip_unsupported_schema_fields(string_val.clone()),
+            string_val,
+            "string values should pass through unchanged"
+        );
+
+        let number_val = serde_json::json!(42);
+        assert_eq!(
+            strip_unsupported_schema_fields(number_val.clone()),
+            number_val,
+            "number values should pass through unchanged"
+        );
+
+        let bool_val = serde_json::json!(true);
+        assert_eq!(
+            strip_unsupported_schema_fields(bool_val.clone()),
+            bool_val,
+            "bool values should pass through unchanged"
         );
     }
 }

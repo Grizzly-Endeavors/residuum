@@ -14,7 +14,8 @@ mod memory_integration {
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
-    use residuum::memory::log_store::{load_observation_log, next_episode_id};
+    use residuum::memory::episode_store::next_episode_id;
+    use residuum::memory::log_store::load_observation_log;
     use residuum::memory::observer::{ObserveAction, ObserveResult, Observer, ObserverConfig};
     use residuum::memory::recent_context::{
         RecentContext, load_recent_context, save_recent_context,
@@ -158,14 +159,13 @@ mod memory_integration {
 
         let recent = load_recent_messages(&recent_path).await.unwrap();
         assert!(
-            observer.should_observe(&recent),
+            observer.check_thresholds(&recent) != ObserveAction::None,
             "should trigger observation"
         );
 
         let ObserveResult {
             id: episode_id,
             transcript_path,
-            observation_count,
             observations,
             chunks,
             date,
@@ -176,7 +176,7 @@ mod memory_integration {
 
         assert_eq!(episode_id, "ep-001", "first episode should be ep-001");
         // observer_response has 3 observation strings
-        assert_eq!(observation_count, 3, "should have 3 observations");
+        assert_eq!(observations.len(), 3, "should have 3 observations");
         assert_eq!(
             observations.len(),
             3,
@@ -476,7 +476,7 @@ mod memory_integration {
         }];
 
         assert!(
-            !observer.should_observe(&messages),
+            observer.check_thresholds(&messages) == ObserveAction::None,
             "should not fire below threshold"
         );
     }
@@ -604,7 +604,8 @@ mod memory_integration {
         let result = observer.observe(&recent, &layout).await.unwrap();
 
         assert_eq!(
-            result.observation_count, 3,
+            result.observations.len(),
+            3,
             "legacy format should still extract 3 observations"
         );
         assert!(

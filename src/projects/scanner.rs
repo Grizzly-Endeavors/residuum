@@ -2,7 +2,8 @@
 
 use std::path::Path;
 
-use crate::error::ResiduumError;
+use anyhow::Context;
+
 use crate::workspace::layout::WorkspaceLayout;
 
 use super::types::{ProjectFrontmatter, ProjectIndexEntry};
@@ -20,12 +21,15 @@ impl ProjectIndex {
     /// missing frontmatter is logged as a warning and skipped.
     ///
     /// # Errors
-    /// Returns `ResiduumError::Projects` if the directories cannot be read.
-    pub async fn scan(layout: &WorkspaceLayout) -> Result<Self, ResiduumError> {
+    /// Returns an error if the directories cannot be read.
+    #[tracing::instrument(skip_all, fields(projects_dir = %layout.projects_dir().display()))]
+    pub async fn scan(layout: &WorkspaceLayout) -> anyhow::Result<Self> {
         let mut entries = Vec::new();
 
-        scan_directory(&layout.projects_dir(), false, &mut entries).await?;
-        scan_directory(&layout.archive_dir(), true, &mut entries).await?;
+        scan_directory(&layout.projects_dir(), &mut entries).await?;
+        scan_directory(&layout.archive_dir(), &mut entries).await?;
+
+        tracing::debug!(total = entries.len(), "project index scan complete");
 
         Ok(Self { entries })
     }
@@ -75,19 +79,13 @@ impl ProjectIndex {
 }
 
 /// Scan a single directory (projects/ or archive/) for project subfolders.
-async fn scan_directory(
-    dir: &Path,
-    is_archive: bool,
-    entries: &mut Vec<ProjectIndexEntry>,
-) -> Result<(), ResiduumError> {
+async fn scan_directory(dir: &Path, entries: &mut Vec<ProjectIndexEntry>) -> anyhow::Result<()> {
     let mut read_dir = match tokio::fs::read_dir(dir).await {
         Ok(rd) => rd,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
         Err(e) => {
-            return Err(ResiduumError::Projects(format!(
-                "failed to read directory {}: {e}",
-                dir.display()
-            )));
+            return Err(anyhow::Error::new(e)
+                .context(format!("failed to read directory {}", dir.display())));
         }
     };
 
@@ -158,12 +156,12 @@ async fn scan_directory(
                     description: fm.description.clone(),
                     status: fm.status,
                     dir_name,
-                    is_archived: is_archive,
                 });
             }
             Err(e) => {
                 tracing::warn!(
                     path = %project_md.display(),
+                    scan_root = %dir.display(),
                     error = %e,
                     "skipping project with invalid frontmatter"
                 );
@@ -179,37 +177,37 @@ async fn scan_directory(
 /// Expects YAML frontmatter delimited by `---` at the start of the file.
 ///
 /// # Errors
-/// Returns `ResiduumError::Projects` if the frontmatter is missing or invalid YAML.
-pub fn parse_project_md(content: &str) -> Result<(ProjectFrontmatter, String), ResiduumError> {
+/// Returns an error if the frontmatter is missing or invalid YAML.
+pub fn parse_project_md(content: &str) -> anyhow::Result<(ProjectFrontmatter, String)> {
+    const OPEN: &str = "---";
+    const CLOSE: &str = "\n---";
+
     let trimmed = content.trim_start();
 
     if !trimmed.starts_with("---") {
-        return Err(ResiduumError::Projects(
-            "PROJECT.md missing frontmatter delimiter '---'".to_string(),
-        ));
+        anyhow::bail!("PROJECT.md missing frontmatter delimiter '---'");
     }
 
     // Skip the opening "---" and find the closing "---"
     let after_open = trimmed
-        .get(3..)
-        .ok_or_else(|| ResiduumError::Projects("PROJECT.md is too short".to_string()))?;
+        .get(OPEN.len()..)
+        .ok_or_else(|| anyhow::anyhow!("PROJECT.md is too short"))?;
 
-    let close_pos = after_open.find("\n---").ok_or_else(|| {
-        ResiduumError::Projects(
-            "PROJECT.md missing closing frontmatter delimiter '---'".to_string(),
-        )
-    })?;
+    let close_pos = after_open
+        .find(CLOSE)
+        .ok_or_else(|| anyhow::anyhow!("PROJECT.md missing closing frontmatter delimiter '---'"))?;
 
-    let yaml_str = after_open
-        .get(..close_pos)
-        .ok_or_else(|| ResiduumError::Projects("failed to extract YAML content".to_string()))?;
+    // close_pos comes from find() on after_open, so it is always a valid in-bounds byte offset
+    #[expect(
+        clippy::string_slice,
+        reason = "close_pos is a valid byte offset from find()"
+    )]
+    let yaml_str = &after_open[..close_pos];
 
-    let frontmatter: ProjectFrontmatter = serde_yml::from_str(yaml_str).map_err(|e| {
-        ResiduumError::Projects(format!("failed to parse PROJECT.md frontmatter: {e}"))
-    })?;
+    let frontmatter: ProjectFrontmatter =
+        serde_yml::from_str(yaml_str).context("failed to parse PROJECT.md frontmatter")?;
 
-    // Body is everything after the closing "---" and its newline
-    let body_start = 3 + close_pos + 4; // "---" prefix + yaml + "\n---"
+    let body_start = OPEN.len() + close_pos + CLOSE.len();
     let body = trimmed.get(body_start..).unwrap_or("").trim().to_string();
 
     Ok((frontmatter, body))
@@ -218,13 +216,12 @@ pub fn parse_project_md(content: &str) -> Result<(ProjectFrontmatter, String), R
 /// Reconstruct a `PROJECT.md` file from frontmatter and body.
 ///
 /// # Errors
-/// Returns `ResiduumError::Projects` if YAML serialization fails.
-pub fn write_project_md_content(
+/// Returns an error if YAML serialization fails.
+pub fn serialize_project_md(
     frontmatter: &ProjectFrontmatter,
     body: &str,
-) -> Result<String, ResiduumError> {
-    let yaml = serde_yml::to_string(frontmatter)
-        .map_err(|e| ResiduumError::Projects(format!("failed to serialize frontmatter: {e}")))?;
+) -> anyhow::Result<String> {
+    let yaml = serde_yml::to_string(frontmatter).context("failed to serialize frontmatter")?;
 
     let mut output = format!("---\n{yaml}---\n");
 
@@ -303,7 +300,7 @@ Some overview body text here.
         };
         let body = "Some body content.";
 
-        let content = write_project_md_content(&fm, body).unwrap();
+        let content = serialize_project_md(&fm, body).unwrap();
         let (parsed_fm, parsed_body) = parse_project_md(&content).unwrap();
 
         assert_eq!(parsed_fm.name, "round-trip", "name should round-trip");
@@ -311,6 +308,20 @@ Some overview body text here.
         assert!(
             parsed_body.contains("Some body content"),
             "body should round-trip"
+        );
+        assert_eq!(
+            parsed_fm.description, "Round-trip test",
+            "description should round-trip"
+        );
+        assert_eq!(
+            parsed_fm.status,
+            ProjectStatus::Active,
+            "status should round-trip"
+        );
+        assert_eq!(
+            parsed_fm.created,
+            chrono::NaiveDate::from_ymd_opt(2026, 2, 20).unwrap(),
+            "created should round-trip"
         );
     }
 
@@ -343,15 +354,24 @@ Some overview body text here.
         .await
         .unwrap();
 
+        // Create a directory without PROJECT.md — should be skipped
+        let no_md_dir = layout.projects_dir().join("no-project-md");
+        tokio::fs::create_dir(&no_md_dir).await.unwrap();
+
         let index = ProjectIndex::scan(&layout).await.unwrap();
-        assert_eq!(index.entries().len(), 1, "should find one project");
+        assert_eq!(
+            index.entries().len(),
+            1,
+            "should find one project, skipping dir without PROJECT.md"
+        );
         assert_eq!(
             index.entries().first().unwrap().name,
             "Test Project",
             "name should match"
         );
-        assert!(
-            !index.entries().first().unwrap().is_archived,
+        assert_eq!(
+            index.entries().first().unwrap().status,
+            ProjectStatus::Active,
             "should not be archived"
         );
     }
@@ -373,8 +393,9 @@ Some overview body text here.
 
         let index = ProjectIndex::scan(&layout).await.unwrap();
         assert_eq!(index.entries().len(), 1, "should find one archived project");
-        assert!(
-            index.entries().first().unwrap().is_archived,
+        assert_eq!(
+            index.entries().first().unwrap().status,
+            ProjectStatus::Archived,
             "should be archived"
         );
     }
@@ -418,7 +439,6 @@ Some overview body text here.
                 description: "A project".to_string(),
                 status: ProjectStatus::Active,
                 dir_name: "my-project".to_string(),
-                is_archived: false,
             }],
         };
 
@@ -432,6 +452,31 @@ Some overview body text here.
         );
         assert!(
             index.find_by_name("nonexistent").is_none(),
+            "should not find nonexistent"
+        );
+    }
+
+    #[test]
+    fn find_by_dir_name_case_insensitive() {
+        let index = ProjectIndex {
+            entries: vec![ProjectIndexEntry {
+                name: "My Project".to_string(),
+                description: "A project".to_string(),
+                status: ProjectStatus::Active,
+                dir_name: "my-project".to_string(),
+            }],
+        };
+
+        assert!(
+            index.find_by_dir_name("my-project").is_some(),
+            "should find exact match"
+        );
+        assert!(
+            index.find_by_dir_name("MY-PROJECT").is_some(),
+            "should find case-insensitive match"
+        );
+        assert!(
+            index.find_by_dir_name("nonexistent").is_none(),
             "should not find nonexistent"
         );
     }
@@ -455,14 +500,12 @@ Some overview body text here.
                     description: "First project".to_string(),
                     status: ProjectStatus::Active,
                     dir_name: "project-a".to_string(),
-                    is_archived: false,
                 },
                 ProjectIndexEntry {
                     name: "Project B".to_string(),
                     description: "Second project".to_string(),
                     status: ProjectStatus::Archived,
                     dir_name: "project-b".to_string(),
-                    is_archived: true,
                 },
             ],
         };

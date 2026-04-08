@@ -1,0 +1,92 @@
+# Scripts
+
+Claude-powered codebase audit and remediation tools. Both scripts use the Claude CLI (`claude -p`) under the hood.
+
+## audit-modules.sh
+
+Audits every Rust module in `src/` in parallel, then runs a review pass to filter out non-actionable findings.
+
+```bash
+./scripts/audit-modules.sh [OPTIONS]
+```
+
+| Flag | Description | Default |
+|---|---|---|
+| `-p, --prompt PROMPT` | Named prompt from `scripts/prompts/` or inline text | *required (or use -f)* |
+| `-f, --file FILE` | Read prompt from a file (`-` for stdin) | — |
+| `-m, --model MODEL` | Claude model to use | `sonnet` |
+| `-j, --jobs N` | Max parallel jobs | `4` |
+| `-o, --output DIR` | Output directory | `audit-results/` |
+
+**How it works:**
+
+1. Discovers all modules under `src/` (directories + standalone `.rs` files, excluding `lib.rs` and `error.rs`)
+2. Feeds each module's source files to Claude with your prompt, writing per-module markdown to the output directory
+3. Runs a review pass that removes findings requiring cross-module/architectural changes, deletes empty files, and writes a `SUMMARY.md`
+
+```bash
+# Named prompt (resolves to scripts/prompts/clean.md)
+./scripts/audit-modules.sh -p clean
+
+# Inline prompt
+./scripts/audit-modules.sh -p "Review for error handling issues"
+
+# Prompt from file, using opus
+./scripts/audit-modules.sh -f audits/no-silent-failures.txt -m opus
+
+# Prompt from stdin
+cat prompt.txt | ./scripts/audit-modules.sh -f -
+```
+
+## apply-audits.sh
+
+Takes audit results from `audit-modules.sh` and applies fixes in parallel using git worktrees, one commit per module on a dedicated branch.
+
+```bash
+./scripts/apply-audits.sh [OPTIONS]
+```
+
+| Flag | Description | Default |
+|---|---|---|
+| `-i, --input DIR` | Audit results directory | `audit-results/` |
+| `-m, --model MODEL` | Claude model to use | `sonnet` |
+| `-j, --jobs N` | Max parallel jobs | `4` |
+| `-b, --branch NAME` | Branch name | `audit/apply-fixes` |
+| `--dry-run` | Show what would be done without doing it | — |
+
+**How it works:**
+
+1. **Phase 1 — Parallel fixes:** Creates a git worktree per module, runs Claude in each to apply fixes and commit concurrently. Claude handles pre-commit hook failures (fmt, clippy, test) directly — it sees the output, fixes the issues, and retries.
+2. **Phase 2 — Sequential cherry-pick:** Cherry-picks each worktree commit onto the audit branch. Claude handles the commit so it can fix any hook failures from the combined state.
+3. **Conflict resolution:** If a cherry-pick conflicts (rare, since the audit review pass filters cross-module findings), Claude resolves the conflict markers (keeping both sides), commits, and handles any hook failures.
+4. Successfully applied audits are moved to `applied/`; failures are logged and skipped.
+
+```bash
+# Apply with defaults
+./scripts/apply-audits.sh
+
+# Specify model, parallelism, and branch
+./scripts/apply-audits.sh -m opus -j 6 -b audit/error-handling
+
+# Preview without making changes
+./scripts/apply-audits.sh --dry-run
+```
+
+## Typical Workflow
+
+```bash
+# 1. Run the audit
+./scripts/audit-modules.sh -p clean -m opus
+
+# 2. Review audit-results/SUMMARY.md and per-module findings
+
+# 3. Apply the fixes
+./scripts/apply-audits.sh -m opus -b audit/error-handling
+
+# 4. Review the branch
+git log --oneline main..audit/error-handling
+git diff main...audit/error-handling
+
+# 5. Merge
+git checkout main && git merge --no-ff audit/error-handling
+```

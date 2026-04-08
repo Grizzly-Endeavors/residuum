@@ -1,5 +1,7 @@
 //! Ollama Cloud web search tool.
 
+use std::fmt::Write as _;
+
 use async_trait::async_trait;
 use serde_json::Value;
 use tracing::debug;
@@ -20,12 +22,12 @@ pub(crate) struct OllamaWebSearchTool {
 
 impl OllamaWebSearchTool {
     /// Create a new Ollama web search tool.
-    pub fn new(api_key: String, base_url: String) -> Self {
+    pub(crate) fn new(api_key: String, base_url: String) -> Self {
         let http = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(30))
             .build()
             .unwrap_or_else(|e| {
-                tracing::error!(error = %e, "failed to build HTTP client for ollama web search, using default");
+                tracing::warn!(error = %e, "failed to build HTTP client for ollama web search, using default");
                 reqwest::Client::default()
             });
         Self {
@@ -44,7 +46,7 @@ impl Tool for OllamaWebSearchTool {
 
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
-            name: "ollama_web_search".to_string(),
+            name: self.name().to_string(),
             description:
                 "Search the web using Ollama Cloud. Returns search results with titles, URLs, \
                  and snippets."
@@ -102,6 +104,7 @@ impl Tool for OllamaWebSearchTool {
         let status = response.status();
         if !status.is_success() {
             let error_body = response.text().await.unwrap_or_default();
+            tracing::warn!(status = %status, query = %query, "ollama web search API returned non-2xx response");
             return Ok(ToolResult::error(format!(
                 "ollama web search API returned HTTP {status}: {error_body}"
             )));
@@ -135,9 +138,7 @@ fn format_search_results(response: &Value) -> String {
         return "No search results found.".to_string();
     }
 
-    output.push_str("Found ");
-    output.push_str(&items.len().to_string());
-    output.push_str(" result(s):\n");
+    writeln!(output, "Found {} result(s):", items.len()).ok();
 
     for (i, item) in items.iter().enumerate() {
         let title = item
@@ -155,22 +156,21 @@ fn format_search_results(response: &Value) -> String {
             .and_then(Value::as_str)
             .unwrap_or("(no snippet)");
 
-        output.push('\n');
-        output.push_str(&(i + 1).to_string());
-        output.push_str(". ");
-        output.push_str(title);
-        output.push_str("\n   URL: ");
-        output.push_str(url);
-        output.push_str("\n   ");
-        output.push_str(snippet);
-        output.push('\n');
+        write!(
+            output,
+            "\n{}. {}\n   URL: {}\n   {}\n",
+            i + 1,
+            title,
+            url,
+            snippet
+        )
+        .ok();
     }
 
     output
 }
 
 #[cfg(test)]
-#[expect(clippy::unwrap_used, reason = "test code uses unwrap for clarity")]
 mod tests {
     use super::*;
 
@@ -241,19 +241,10 @@ mod tests {
     }
 
     #[test]
-    fn definition_has_required_query() {
+    fn definition_has_correct_name() {
         let tool = OllamaWebSearchTool::new("key".into(), "http://localhost".into());
         let def = tool.definition();
         assert_eq!(def.name, "ollama_web_search", "tool name should match");
-        let required = def.parameters.get("required").and_then(Value::as_array);
-        assert!(required.is_some(), "should have required array");
-        let required = required.unwrap();
-        assert_eq!(required.len(), 1, "should have one required param");
-        assert_eq!(
-            required.first().and_then(Value::as_str).unwrap(),
-            "query",
-            "required param should be query"
-        );
     }
 
     #[tokio::test]

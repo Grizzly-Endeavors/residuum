@@ -56,7 +56,7 @@ impl EndpointRegistry {
         // WebSocket — always present
         registry.register(EndpointEntry {
             id: EndpointId::from("ws"),
-            topic: TopicId::Response(EndpointName::from("ws")),
+            topic: TopicId::Endpoint(EndpointName::from("ws")),
             capabilities: EndpointCapabilities::INTERACTIVE.union(EndpointCapabilities::STREAMING),
             display_name: "WebSocket".to_string(),
         });
@@ -65,9 +65,8 @@ impl EndpointRegistry {
         if config.discord.is_some() {
             registry.register(EndpointEntry {
                 id: EndpointId::from("discord"),
-                topic: TopicId::Response(EndpointName::from("discord")),
-                capabilities: EndpointCapabilities::INTERACTIVE
-                    .union(EndpointCapabilities::STREAMING),
+                topic: TopicId::Endpoint(EndpointName::from("discord")),
+                capabilities: EndpointCapabilities::INTERACTIVE,
                 display_name: "Discord".to_string(),
             });
         }
@@ -76,9 +75,8 @@ impl EndpointRegistry {
         if config.telegram.is_some() {
             registry.register(EndpointEntry {
                 id: EndpointId::from("telegram"),
-                topic: TopicId::Response(EndpointName::from("telegram")),
-                capabilities: EndpointCapabilities::INTERACTIVE
-                    .union(EndpointCapabilities::STREAMING),
+                topic: TopicId::Endpoint(EndpointName::from("telegram")),
+                capabilities: EndpointCapabilities::INTERACTIVE,
                 display_name: "Telegram".to_string(),
             });
         }
@@ -101,7 +99,7 @@ impl EndpointRegistry {
         // Named webhooks
         for name in config.webhooks.keys() {
             registry.register(EndpointEntry {
-                id: EndpointId::from(format!("webhook:{name}").as_str()),
+                id: EndpointId::from(format!("webhook:{name}")),
                 topic: TopicId::Inbox,
                 capabilities: EndpointCapabilities::INPUT_ONLY,
                 display_name: format!("Webhook ({name})"),
@@ -119,52 +117,49 @@ impl EndpointRegistry {
         registry
     }
 
+    fn read_map(&self) -> std::sync::RwLockReadGuard<'_, HashMap<EndpointId, EndpointEntry>> {
+        self.inner
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    fn write_map(&self) -> std::sync::RwLockWriteGuard<'_, HashMap<EndpointId, EndpointEntry>> {
+        self.inner
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
     /// Add or overwrite an endpoint entry.
     pub fn register(&self, entry: EndpointEntry) {
-        let mut map = self
-            .inner
-            .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        map.insert(entry.id.clone(), entry);
+        self.write_map().insert(entry.id.clone(), entry);
     }
 
     /// Remove an endpoint, returning the entry if it existed.
+    #[must_use]
     pub fn unregister(&self, id: &EndpointId) -> Option<EndpointEntry> {
-        let mut map = self
-            .inner
-            .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        map.remove(id)
+        self.write_map().remove(id)
     }
 
     /// Look up an endpoint by its ID.
     #[must_use]
     pub fn get(&self, id: &EndpointId) -> Option<EndpointEntry> {
-        let map = self
-            .inner
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        map.get(id).cloned()
+        self.read_map().get(id).cloned()
     }
 
     /// Look up an endpoint by its topic.
     #[must_use]
     pub fn get_by_topic(&self, topic: &TopicId) -> Option<EndpointEntry> {
-        let map = self
-            .inner
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        map.values().find(|e| e.topic == *topic).cloned()
+        self.read_map()
+            .values()
+            .find(|e| e.topic == *topic)
+            .cloned()
     }
 
     /// Return all endpoints whose capabilities contain all flags in `caps`.
     #[must_use]
     pub fn filter_by(&self, caps: EndpointCapabilities) -> Vec<EndpointEntry> {
-        let map = self
-            .inner
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        map.values()
+        self.read_map()
+            .values()
             .filter(|e| e.capabilities.contains(caps))
             .cloned()
             .collect()
@@ -185,31 +180,19 @@ impl EndpointRegistry {
     /// Return all registered endpoints.
     #[must_use]
     pub fn all(&self) -> Vec<EndpointEntry> {
-        let map = self
-            .inner
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        map.values().cloned().collect()
+        self.read_map().values().cloned().collect()
     }
 
     /// Number of registered endpoints.
     #[must_use]
     pub fn len(&self) -> usize {
-        let map = self
-            .inner
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        map.len()
+        self.read_map().len()
     }
 
     /// Whether the registry has no endpoints.
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        let map = self
-            .inner
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        map.is_empty()
+        self.read_map().is_empty()
     }
 }
 
@@ -259,6 +242,7 @@ mod tests {
             temperature: None,
             thinking: None,
             web_search: WebSearchConfig::default(),
+            tracing: crate::config::TracingConfig::default(),
             role_overrides: HashMap::new(),
             config_dir: PathBuf::from("/tmp"),
         }
@@ -267,7 +251,7 @@ mod tests {
     fn make_entry(id: &str, caps: EndpointCapabilities) -> EndpointEntry {
         EndpointEntry {
             id: EndpointId::from(id),
-            topic: TopicId::Response(EndpointName::from(id)),
+            topic: TopicId::Endpoint(EndpointName::from(id)),
             capabilities: caps,
             display_name: id.to_string(),
         }
@@ -298,13 +282,13 @@ mod tests {
         let reg = EndpointRegistry::new();
         reg.register(EndpointEntry {
             id: EndpointId::from("ws"),
-            topic: TopicId::Response(EndpointName::from("ws")),
+            topic: TopicId::Endpoint(EndpointName::from("ws")),
             capabilities: EndpointCapabilities::INTERACTIVE,
             display_name: "first".to_string(),
         });
         reg.register(EndpointEntry {
             id: EndpointId::from("ws"),
-            topic: TopicId::Response(EndpointName::from("ws")),
+            topic: TopicId::Endpoint(EndpointName::from("ws")),
             capabilities: EndpointCapabilities::STREAMING,
             display_name: "second".to_string(),
         });
@@ -337,14 +321,14 @@ mod tests {
         let reg = EndpointRegistry::new();
         let entry = EndpointEntry {
             id: EndpointId::from("telegram"),
-            topic: TopicId::Response(EndpointName::from("telegram")),
+            topic: TopicId::Endpoint(EndpointName::from("telegram")),
             capabilities: EndpointCapabilities::INTERACTIVE,
             display_name: "Telegram".to_string(),
         };
         reg.register(entry);
 
         let got = reg
-            .get_by_topic(&TopicId::Response(EndpointName::from("telegram")))
+            .get_by_topic(&TopicId::Endpoint(EndpointName::from("telegram")))
             .unwrap();
         assert_eq!(got.id, EndpointId::from("telegram"));
     }
@@ -354,7 +338,7 @@ mod tests {
         let reg = EndpointRegistry::new();
         reg.register(make_entry("ws", EndpointCapabilities::INTERACTIVE));
         assert!(
-            reg.get_by_topic(&TopicId::Response(EndpointName::from("missing")))
+            reg.get_by_topic(&TopicId::Endpoint(EndpointName::from("missing")))
                 .is_none()
         );
     }
@@ -514,7 +498,7 @@ mod tests {
     fn from_config_empty_webhooks() {
         let config = minimal_config();
         let reg = EndpointRegistry::from_config(&config, &[]);
-        assert!(reg.get(&EndpointId::from("webhook:test")).is_none());
+        assert_eq!(reg.len(), 2); // ws + inbox only
     }
 
     #[test]

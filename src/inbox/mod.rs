@@ -31,8 +31,7 @@ pub struct InboxItem {
 ///
 /// Sanitizes: lowercase, non-alphanumeric → `_`, collapse consecutive `_`, truncate to 60 chars.
 #[must_use]
-pub fn generate_filename(title: &str, tz: chrono_tz::Tz) -> String {
-    let now = crate::time::now_local(tz);
+pub fn generate_filename(title: &str, now: NaiveDateTime) -> String {
     let date = now.format("%Y%m%d").to_string();
 
     let sanitized: String = title
@@ -41,27 +40,20 @@ pub fn generate_filename(title: &str, tz: chrono_tz::Tz) -> String {
         .map(|c| if c.is_alphanumeric() { c } else { '_' })
         .collect();
 
-    // Collapse consecutive underscores
-    let mut collapsed = String::with_capacity(sanitized.len());
-    let mut prev_underscore = false;
-    for ch in sanitized.chars() {
-        if ch == '_' {
-            if !prev_underscore {
-                collapsed.push('_');
-            }
-            prev_underscore = true;
-        } else {
-            collapsed.push(ch);
-            prev_underscore = false;
-        }
-    }
+    let slug = sanitized
+        .split('_')
+        .filter(|s| !s.is_empty())
+        .collect::<Vec<_>>()
+        .join("_");
 
-    // Trim leading/trailing underscores and truncate
-    let trimmed = collapsed.trim_matches('_');
-    let truncated: String = trimmed.chars().take(60).collect();
+    let truncated = slug.chars().take(60).collect::<String>();
     let truncated = truncated.trim_end_matches('_');
 
-    format!("{date}_{truncated}.json")
+    if truncated.is_empty() {
+        format!("{date}.json")
+    } else {
+        format!("{date}_{truncated}.json")
+    }
 }
 
 /// Add an inbox item in one call: generates a filename, builds the item, and saves.
@@ -70,6 +62,7 @@ pub fn generate_filename(title: &str, tz: chrono_tz::Tz) -> String {
 ///
 /// # Errors
 /// Returns an error if the item cannot be saved.
+#[tracing::instrument(skip_all, fields(source = %source))]
 pub async fn quick_add(
     inbox_dir: &Path,
     title: &str,
@@ -78,7 +71,7 @@ pub async fn quick_add(
     tz: chrono_tz::Tz,
 ) -> anyhow::Result<String> {
     let now = crate::time::now_local(tz);
-    let filename = generate_filename(title, tz);
+    let filename = generate_filename(title, now);
     let item = InboxItem {
         title: title.to_string(),
         body: body.to_string(),
@@ -88,6 +81,7 @@ pub async fn quick_add(
         attachments: Vec::new(),
     };
     save_item(inbox_dir, &filename, &item).await?;
+    tracing::debug!(filename = %filename, title = %title, "inbox item created via quick_add");
     Ok(filename)
 }
 
@@ -95,23 +89,19 @@ pub async fn quick_add(
 ///
 /// # Errors
 /// Returns an error if serialization or file operations fail.
+#[tracing::instrument(skip_all, fields(filename = %filename))]
 pub async fn save_item(inbox_dir: &Path, filename: &str, item: &InboxItem) -> anyhow::Result<()> {
     use anyhow::Context as _;
 
     let target = inbox_dir.join(filename);
-    let tmp = inbox_dir.join(format!(".{filename}.tmp"));
 
     let json = serde_json::to_string_pretty(item)
         .with_context(|| format!("failed to serialize inbox item for {}", target.display()))?;
-    tokio::fs::write(&tmp, json)
-        .await
-        .with_context(|| format!("failed to write inbox item to {}", tmp.display()))?;
-    if let Err(e) = tokio::fs::rename(&tmp, &target).await {
-        tracing::warn!(tmp = %tmp.display(), target = %target.display(), error = %e, "failed to rename tmp file, orphaned tmp may remain");
-        return Err(e).with_context(|| {
-            format!("failed to rename {} to {}", tmp.display(), target.display())
-        });
-    }
+
+    crate::util::fs::atomic_write(&target, &json).await.map_err(|e| {
+        tracing::warn!(path = %target.display(), error = %e, "atomic write failed, orphaned tmp may remain");
+        e
+    })?;
 
     Ok(())
 }
@@ -120,6 +110,7 @@ pub async fn save_item(inbox_dir: &Path, filename: &str, item: &InboxItem) -> an
 ///
 /// # Errors
 /// Returns an error if the file cannot be read or parsed.
+#[tracing::instrument(skip_all, fields(path = %path.display()))]
 pub async fn load_item(path: &Path) -> anyhow::Result<InboxItem> {
     use anyhow::Context as _;
 
@@ -137,15 +128,21 @@ pub async fn load_item(path: &Path) -> anyhow::Result<InboxItem> {
 ///
 /// # Errors
 /// Returns an error if the directory cannot be read.
+#[tracing::instrument(skip_all, fields(path = %inbox_dir.display()))]
 pub async fn list_items(inbox_dir: &Path) -> anyhow::Result<Vec<(String, InboxItem)>> {
+    use anyhow::Context as _;
+
     let mut entries = Vec::new();
-    let mut dir = tokio::fs::read_dir(inbox_dir).await?;
+    let mut dir = tokio::fs::read_dir(inbox_dir)
+        .await
+        .with_context(|| format!("failed to read inbox directory {}", inbox_dir.display()))?;
 
     while let Some(entry) = dir.next_entry().await? {
-        let path = entry.path();
-        if !path.is_file() {
+        let ftype = entry.file_type().await?;
+        if !ftype.is_file() {
             continue;
         }
+        let path = entry.path();
         let ext = path.extension().and_then(|e| e.to_str());
         if ext != Some("json") {
             continue;
@@ -170,54 +167,22 @@ pub async fn list_items(inbox_dir: &Path) -> anyhow::Result<Vec<(String, InboxIt
 }
 
 /// Count unread inbox items.
-///
-/// Deserializes each `.json` file in the inbox directory — acceptable for low throughput.
-#[must_use]
-pub fn count_unread(inbox_dir: &Path) -> usize {
-    let dir = match std::fs::read_dir(inbox_dir) {
-        Ok(d) => d,
+#[tracing::instrument(skip_all, fields(path = %inbox_dir.display()))]
+pub async fn count_unread(inbox_dir: &Path) -> usize {
+    match list_items(inbox_dir).await {
+        Ok(items) => items.iter().filter(|(_, i)| !i.read).count(),
         Err(e) => {
-            tracing::warn!(path = %inbox_dir.display(), error = %e, "failed to read inbox directory for unread count");
-            return 0;
-        }
-    };
-
-    let mut count = 0;
-    for entry_result in dir {
-        let entry = match entry_result {
-            Ok(e) => e,
-            Err(e) => {
-                tracing::warn!(error = %e, "failed to read inbox directory entry");
-                continue;
-            }
-        };
-        let path = entry.path();
-        if !path.is_file() || path.extension().and_then(|x| x.to_str()) != Some("json") {
-            continue;
-        }
-        match std::fs::read_to_string(&path) {
-            Err(e) => {
-                tracing::warn!(path = %path.display(), error = %e, "failed to read inbox item for unread count");
-            }
-            Ok(content) => match serde_json::from_str::<InboxItem>(&content) {
-                Err(e) => {
-                    tracing::warn!(path = %path.display(), error = %e, "failed to parse inbox item for unread count");
-                }
-                Ok(item) => {
-                    if !item.read {
-                        count += 1;
-                    }
-                }
-            },
+            tracing::warn!(path = %inbox_dir.display(), error = %e, "failed to list inbox items for unread count");
+            0
         }
     }
-    count
 }
 
 /// Mark an inbox item as read and save it back atomically.
 ///
 /// # Errors
 /// Returns an error if the file cannot be found, read, or written.
+#[tracing::instrument(skip_all, fields(filename = %filename))]
 pub async fn mark_read(inbox_dir: &Path, filename: &str) -> anyhow::Result<InboxItem> {
     use anyhow::Context as _;
 
@@ -231,6 +196,7 @@ pub async fn mark_read(inbox_dir: &Path, filename: &str) -> anyhow::Result<Inbox
     save_item(inbox_dir, &json_name, &item)
         .await
         .with_context(|| format!("failed to save inbox item {json_name} after mark_read"))?;
+    tracing::debug!(filename = %json_name, "inbox item marked read");
 
     Ok(item)
 }
@@ -239,21 +205,25 @@ pub async fn mark_read(inbox_dir: &Path, filename: &str) -> anyhow::Result<Inbox
 ///
 /// # Errors
 /// Returns an error if the file is not found or the move fails.
+#[tracing::instrument(skip_all, fields(item = %filename))]
 pub async fn archive_item(
     inbox_dir: &Path,
     archive_dir: &Path,
     filename: &str,
 ) -> anyhow::Result<()> {
+    use anyhow::Context as _;
+
     let json_name = ensure_json_ext(filename);
     let src = inbox_dir.join(&json_name);
 
-    if !src.exists() {
-        anyhow::bail!("inbox item '{json_name}' not found");
-    }
-
-    tokio::fs::create_dir_all(archive_dir).await?;
+    tokio::fs::create_dir_all(archive_dir)
+        .await
+        .with_context(|| format!("failed to create archive dir {}", archive_dir.display()))?;
     let dst = archive_dir.join(&json_name);
-    tokio::fs::rename(&src, &dst).await?;
+    tokio::fs::rename(&src, &dst)
+        .await
+        .with_context(|| format!("inbox item '{json_name}' not found or could not be archived"))?;
+    tracing::debug!(src = %src.display(), dst = %dst.display(), "inbox item archived");
 
     Ok(())
 }
@@ -281,21 +251,14 @@ mod tests {
     use super::*;
     use chrono::NaiveDate;
 
-    fn make_item(title: &str, read: bool) -> InboxItem {
-        InboxItem {
-            title: title.to_string(),
-            body: format!("Body for {title}"),
-            source: "test".to_string(),
-            timestamp: NaiveDate::from_ymd_opt(2026, 2, 25)
-                .unwrap()
-                .and_hms_opt(12, 0, 0)
-                .unwrap(),
-            read,
-            attachments: Vec::new(),
-        }
+    fn test_now() -> NaiveDateTime {
+        NaiveDate::from_ymd_opt(2026, 2, 25)
+            .unwrap()
+            .and_hms_opt(12, 0, 0)
+            .unwrap()
     }
 
-    fn make_item_at(title: &str, hour: u32) -> InboxItem {
+    fn make_item(title: &str, hour: u32, read: bool) -> InboxItem {
         InboxItem {
             title: title.to_string(),
             body: format!("Body for {title}"),
@@ -304,28 +267,24 @@ mod tests {
                 .unwrap()
                 .and_hms_opt(hour, 0, 0)
                 .unwrap(),
-            read: false,
+            read,
             attachments: Vec::new(),
         }
     }
 
     #[test]
     fn generate_filename_basic() {
-        let name = generate_filename("Hello World", chrono_tz::UTC);
-        // Date prefix + sanitized title
-        assert!(
-            name.ends_with("_hello_world.json"),
-            "should sanitize title: {name}"
-        );
-        assert!(
-            name.len() > "20260225_".len(),
-            "should have date prefix: {name}"
+        let now = test_now();
+        assert_eq!(
+            generate_filename("Hello World", now),
+            "20260225_hello_world.json"
         );
     }
 
     #[test]
     fn generate_filename_special_chars() {
-        let name = generate_filename("foo/bar\\baz..qux!!", chrono_tz::UTC);
+        let now = test_now();
+        let name = generate_filename("foo/bar\\baz..qux!!", now);
         assert!(!name.contains('/'), "should not contain slashes: {name}");
         assert!(
             !name.contains('\\'),
@@ -336,20 +295,34 @@ mod tests {
 
     #[test]
     fn generate_filename_unicode() {
-        let name = generate_filename("café résumé", chrono_tz::UTC);
-        assert!(
-            Path::new(&name)
-                .extension()
-                .is_some_and(|ext| ext == "json"),
-            "should end with .json: {name}"
-        );
-        assert!(!name.contains("__"), "should collapse underscores: {name}");
+        let now = test_now();
+        let name = generate_filename("café résumé", now);
+        assert_eq!(name, "20260225_café_résumé.json");
+    }
+
+    #[test]
+    fn generate_filename_empty_title() {
+        assert_eq!(generate_filename("", test_now()), "20260225.json");
+    }
+
+    #[test]
+    fn generate_filename_all_special_chars() {
+        assert_eq!(generate_filename("!!!###", test_now()), "20260225.json");
+    }
+
+    #[test]
+    fn generate_filename_trailing_underscore_trim() {
+        let now = test_now();
+        let title = "a".repeat(59) + " " + &"b".repeat(40);
+        let name = generate_filename(&title, now);
+        assert_eq!(name, format!("20260225_{}.json", "a".repeat(59)));
     }
 
     #[test]
     fn generate_filename_truncation() {
+        let now = test_now();
         let long_title = "a".repeat(100);
-        let name = generate_filename(&long_title, chrono_tz::UTC);
+        let name = generate_filename(&long_title, now);
         // Date prefix (8) + _ (1) + truncated (60) + .json (5) = 74
         let stem = name.trim_end_matches(".json");
         let title_part = &stem["20260225_".len()..];
@@ -391,7 +364,7 @@ mod tests {
     #[tokio::test]
     async fn save_and_load_roundtrip() {
         let dir = tempfile::tempdir().unwrap();
-        let item = make_item("test roundtrip", false);
+        let item = make_item("test roundtrip", 12, false);
 
         save_item(dir.path(), "test.json", &item).await.unwrap();
         let loaded = load_item(&dir.path().join("test.json")).await.unwrap();
@@ -400,15 +373,36 @@ mod tests {
         assert_eq!(loaded.body, "Body for test roundtrip");
         assert_eq!(loaded.source, "test");
         assert!(!loaded.read);
+        assert_eq!(loaded.timestamp, item.timestamp);
+    }
+
+    #[tokio::test]
+    async fn list_items_empty_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        let items = list_items(dir.path()).await.unwrap();
+        assert!(items.is_empty());
+    }
+
+    #[tokio::test]
+    async fn list_items_skips_malformed_json() {
+        let dir = tempfile::tempdir().unwrap();
+        let valid = make_item("valid", 12, false);
+        save_item(dir.path(), "valid.json", &valid).await.unwrap();
+        tokio::fs::write(dir.path().join("bad.json"), b"not json")
+            .await
+            .unwrap();
+        let items = list_items(dir.path()).await.unwrap();
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].1.title, "valid");
     }
 
     #[tokio::test]
     async fn list_items_sorted_by_timestamp() {
         let dir = tempfile::tempdir().unwrap();
 
-        let early = make_item_at("early", 8);
-        let late = make_item_at("late", 20);
-        let mid = make_item_at("mid", 14);
+        let early = make_item("early", 8, false);
+        let late = make_item("late", 20, false);
+        let mid = make_item("mid", 14, false);
 
         save_item(dir.path(), "a_early.json", &early).await.unwrap();
         save_item(dir.path(), "b_late.json", &late).await.unwrap();
@@ -424,7 +418,7 @@ mod tests {
     #[tokio::test]
     async fn list_items_ignores_non_json() {
         let dir = tempfile::tempdir().unwrap();
-        let item = make_item("valid", false);
+        let item = make_item("valid", 12, false);
         save_item(dir.path(), "valid.json", &item).await.unwrap();
 
         // Create non-JSON files
@@ -440,9 +434,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn list_items_ignores_archive_subdir() {
+    async fn list_items_ignores_subdirs() {
         let dir = tempfile::tempdir().unwrap();
-        let item = make_item("active", false);
+        let item = make_item("active", 12, false);
         save_item(dir.path(), "active.json", &item).await.unwrap();
 
         // Create archive subdirectory with a json file
@@ -456,21 +450,36 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn list_items_ignores_json_named_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        let item = make_item("active", 12, false);
+        save_item(dir.path(), "active.json", &item).await.unwrap();
+
+        // Create a directory named with a .json extension
+        let json_dir = dir.path().join("archive.json");
+        tokio::fs::create_dir_all(&json_dir).await.unwrap();
+
+        let items = list_items(dir.path()).await.unwrap();
+        assert_eq!(items.len(), 1, "should skip .json-named directories");
+        assert_eq!(items[0].1.title, "active");
+    }
+
+    #[tokio::test]
     async fn count_unread_accuracy() {
         let dir = tempfile::tempdir().unwrap();
 
-        save_item(dir.path(), "unread1.json", &make_item("a", false))
+        save_item(dir.path(), "unread1.json", &make_item("a", 12, false))
             .await
             .unwrap();
-        save_item(dir.path(), "unread2.json", &make_item("b", false))
+        save_item(dir.path(), "unread2.json", &make_item("b", 12, false))
             .await
             .unwrap();
-        save_item(dir.path(), "read1.json", &make_item("c", true))
+        save_item(dir.path(), "read1.json", &make_item("c", 12, true))
             .await
             .unwrap();
 
         assert_eq!(
-            count_unread(dir.path()),
+            count_unread(dir.path()).await,
             2,
             "should count only unread items"
         );
@@ -479,19 +488,23 @@ mod tests {
     #[tokio::test]
     async fn count_unread_empty_dir() {
         let dir = tempfile::tempdir().unwrap();
-        assert_eq!(count_unread(dir.path()), 0);
+        assert_eq!(count_unread(dir.path()).await, 0);
     }
 
     #[tokio::test]
     async fn count_unread_missing_dir() {
         let missing = Path::new("/tmp/nonexistent_inbox_dir_test");
-        assert_eq!(count_unread(missing), 0, "missing dir should return 0");
+        assert_eq!(
+            count_unread(missing).await,
+            0,
+            "missing dir should return 0"
+        );
     }
 
     #[tokio::test]
     async fn mark_read_updates_file() {
         let dir = tempfile::tempdir().unwrap();
-        save_item(dir.path(), "item.json", &make_item("test", false))
+        save_item(dir.path(), "item.json", &make_item("test", 12, false))
             .await
             .unwrap();
 
@@ -510,9 +523,13 @@ mod tests {
         let archive = dir.path().join("archive/inbox");
         tokio::fs::create_dir_all(&inbox).await.unwrap();
 
-        save_item(&inbox, "to_archive.json", &make_item("archive me", false))
-            .await
-            .unwrap();
+        save_item(
+            &inbox,
+            "to_archive.json",
+            &make_item("archive me", 12, false),
+        )
+        .await
+        .unwrap();
 
         archive_item(&inbox, &archive, "to_archive").await.unwrap();
 
@@ -532,34 +549,37 @@ mod tests {
         let archive = dir.path().join("archive/inbox");
         let result = archive_item(dir.path(), &archive, "nonexistent").await;
         assert!(result.is_err(), "should error on missing file");
-        let err = result.unwrap_err().to_string();
-        assert!(
-            err.contains("not found"),
-            "error should mention not found: {err}"
-        );
+    }
+
+    #[tokio::test]
+    async fn mark_read_not_found() {
+        let dir = tempfile::tempdir().unwrap();
+        let result = mark_read(dir.path(), "nonexistent").await;
+        assert!(result.is_err());
     }
 
     #[tokio::test]
     async fn attachments_roundtrip_empty() {
         let dir = tempfile::tempdir().unwrap();
-        let item = make_item("no attachments", false);
+        let item = make_item("no attachments", 12, false);
         save_item(dir.path(), "empty_attach.json", &item)
             .await
             .unwrap();
 
-        let loaded = load_item(&dir.path().join("empty_attach.json"))
+        let json = tokio::fs::read_to_string(dir.path().join("empty_attach.json"))
             .await
             .unwrap();
+        let v: serde_json::Value = serde_json::from_str(&json).unwrap();
         assert!(
-            loaded.attachments.is_empty(),
-            "empty attachments should round-trip"
+            v.get("attachments").is_none(),
+            "empty attachments should be omitted from JSON"
         );
     }
 
     #[tokio::test]
     async fn attachments_roundtrip_populated() {
         let dir = tempfile::tempdir().unwrap();
-        let mut item = make_item("with attachments", false);
+        let mut item = make_item("with attachments", 12, false);
         item.attachments = vec![
             PathBuf::from("inbox/photo.jpg"),
             PathBuf::from("inbox/doc.pdf"),

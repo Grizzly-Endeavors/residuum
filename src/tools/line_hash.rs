@@ -34,15 +34,47 @@ mod tests {
         assert_eq!(hash1, hash2, "same input should produce same hash");
     }
 
+    /// Compute the expected FNV-1a lower-byte hash directly, mirroring the production algorithm.
+    fn expected_hash(s: &str) -> String {
+        let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+        for &b in s.as_bytes() {
+            hash ^= u64::from(b);
+            hash = hash.wrapping_mul(0x0100_0000_01b3);
+        }
+        format!("{:02x}", (hash & 0xFF) as u8)
+    }
+
     #[test]
     fn different_inputs_differ() {
         let h1 = line_hash("fn main() {");
         let h2 = line_hash("fn foo() {");
         let h3 = line_hash("let x = 42;");
-        // At least some should differ (2-char hex = 256 values, collisions possible but unlikely for these)
-        assert!(
-            h1 != h2 || h1 != h3 || h2 != h3,
-            "at least some different inputs should produce different hashes"
+        assert_eq!(
+            h1,
+            expected_hash("fn main() {"),
+            "hash must match reference for 'fn main() {{'"
+        );
+        assert_eq!(
+            h2,
+            expected_hash("fn foo() {"),
+            "hash must match reference for 'fn foo() {{'"
+        );
+        assert_eq!(
+            h3,
+            expected_hash("let x = 42;"),
+            "hash must match reference for 'let x = 42;'"
+        );
+        assert_ne!(
+            h1, h2,
+            "\"fn main() {{\" and \"fn foo() {{\" should have different hashes"
+        );
+        assert_ne!(
+            h1, h3,
+            "\"fn main() {{\" and \"let x = 42;\" should have different hashes"
+        );
+        assert_ne!(
+            h2, h3,
+            "\"fn foo() {{\" and \"let x = 42;\" should have different hashes"
         );
     }
 

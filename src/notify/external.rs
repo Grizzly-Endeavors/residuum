@@ -34,6 +34,12 @@ impl NtfyChannel {
             priority: priority.unwrap_or_else(|| "default".to_string()),
         }
     }
+
+    /// The configured priority string sent as the `Priority` header.
+    #[must_use]
+    pub fn priority(&self) -> &str {
+        &self.priority
+    }
 }
 
 #[async_trait]
@@ -46,9 +52,17 @@ impl NotificationChannel for NtfyChannel {
         "ntfy"
     }
 
+    #[tracing::instrument(skip_all, fields(channel = %self.channel_name, endpoint = %self.url))]
     async fn deliver(&self, notification: &NotificationEvent) -> anyhow::Result<()> {
         let endpoint = format!("{}/{}", self.url.trim_end_matches('/'), self.topic);
         let title = format!("[{}] {}", notification.source.as_str(), notification.title);
+
+        tracing::debug!(
+            channel = %self.channel_name,
+            endpoint = %endpoint,
+            title = %notification.title,
+            "delivering ntfy notification"
+        );
 
         let resp = self
             .client
@@ -94,9 +108,15 @@ impl WebhookChannel {
             channel_name,
             client,
             url,
-            method: method.unwrap_or_else(|| "POST".to_string()),
+            method: method.unwrap_or_else(|| "POST".to_string()).to_uppercase(),
             headers,
         }
+    }
+
+    /// The HTTP method used for delivery (always uppercased).
+    #[must_use]
+    pub fn method(&self) -> &str {
+        &self.method
     }
 }
 
@@ -110,7 +130,15 @@ impl NotificationChannel for WebhookChannel {
         "webhook"
     }
 
+    #[tracing::instrument(skip_all, fields(channel = %self.channel_name, endpoint = %self.url))]
     async fn deliver(&self, notification: &NotificationEvent) -> anyhow::Result<()> {
+        tracing::debug!(
+            channel = %self.channel_name,
+            endpoint = %self.url,
+            title = %notification.title,
+            "delivering webhook notification"
+        );
+
         let payload = serde_json::json!({
             "title": notification.title,
             "content": notification.content,
@@ -118,9 +146,14 @@ impl NotificationChannel for WebhookChannel {
             "source": notification.source.as_str(),
         });
 
-        let mut builder = match self.method.to_uppercase().as_str() {
+        let mut builder = match self.method.as_str() {
+            "POST" => self.client.post(&self.url),
             "PUT" => self.client.put(&self.url),
-            _ => self.client.post(&self.url),
+            m => anyhow::bail!(
+                "unsupported webhook method '{}' for channel '{}'",
+                m,
+                self.channel_name
+            ),
         };
 
         for (key, val) in &self.headers {
@@ -142,8 +175,22 @@ impl NotificationChannel for WebhookChannel {
 }
 
 #[cfg(test)]
+#[expect(clippy::unwrap_used, reason = "test code uses unwrap for clarity")]
 mod tests {
     use super::*;
+    use crate::bus::EventTrigger;
+
+    fn make_notification() -> NotificationEvent {
+        NotificationEvent {
+            title: "test".to_string(),
+            content: "test content".to_string(),
+            source: EventTrigger::Pulse,
+            timestamp: chrono::NaiveDate::from_ymd_opt(2026, 3, 14)
+                .unwrap()
+                .and_hms_opt(12, 0, 0)
+                .unwrap(),
+        }
+    }
 
     #[test]
     fn ntfy_channel_name() {
@@ -166,7 +213,7 @@ mod tests {
             "test".to_string(),
             None,
         );
-        assert_eq!(channel.priority, "default");
+        assert_eq!(channel.priority(), "default");
     }
 
     #[test]
@@ -178,7 +225,7 @@ mod tests {
             "test".to_string(),
             Some("high".to_string()),
         );
-        assert_eq!(channel.priority, "high");
+        assert_eq!(channel.priority(), "high");
     }
 
     #[test]
@@ -202,7 +249,7 @@ mod tests {
             None,
             Vec::new(),
         );
-        assert_eq!(channel.method, "POST");
+        assert_eq!(channel.method(), "POST");
     }
 
     #[test]
@@ -214,6 +261,37 @@ mod tests {
             Some("PUT".to_string()),
             Vec::new(),
         );
-        assert_eq!(channel.method, "PUT");
+        assert_eq!(channel.method(), "PUT");
+    }
+
+    #[test]
+    fn webhook_method_normalization() {
+        let channel = WebhookChannel::new(
+            "wh".to_string(),
+            Client::new(),
+            "https://hooks.example.com".to_string(),
+            Some("put".to_string()),
+            Vec::new(),
+        );
+        assert_eq!(channel.method(), "PUT");
+    }
+
+    #[tokio::test]
+    async fn webhook_unsupported_method_returns_error() {
+        let channel = WebhookChannel::new(
+            "wh".to_string(),
+            Client::new(),
+            "https://hooks.example.com".to_string(),
+            Some("DELETE".to_string()),
+            Vec::new(),
+        );
+        let result = channel.deliver(&make_notification()).await;
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("unsupported webhook method")
+        );
     }
 }
