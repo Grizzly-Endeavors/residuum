@@ -118,7 +118,7 @@ pub async fn serve_file(
         return StatusCode::NOT_FOUND.into_response();
     };
 
-    let safe_filename = filename.replace('"', "").replace('\\', "");
+    let safe_filename: String = filename.chars().filter(|c| *c != '"' && *c != '\\').collect();
     let disposition = format!("inline; filename=\"{safe_filename}\"");
     let mut response = bytes.into_response();
     let headers = response.headers_mut();
