@@ -306,6 +306,7 @@ pub async fn handle_inbound_message(
                                 correlation_id: reply_id.clone(),
                                 content: text.clone(),
                                 timestamp: crate::time::now_local(rt.tz),
+                                attachment: None,
                             },
                         )
                         .await

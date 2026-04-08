@@ -187,6 +187,7 @@ mod gateway_integration {
                                             correlation_id: reply_id.clone(),
                                             content: text.clone(),
                                             timestamp: chrono::NaiveDateTime::default(),
+                                            attachment: None,
                                         },
                                     )
                                     .await,

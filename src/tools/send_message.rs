@@ -139,6 +139,7 @@ impl Tool for SendMessageTool {
                 correlation_id: String::new(),
                 content: message.to_string(),
                 timestamp: now,
+                attachment: None,
             };
             let topic = topics::Endpoint(EndpointName::from(endpoint_name));
             self.publisher.publish(topic, response).await.map_err(|e| {

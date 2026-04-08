@@ -146,6 +146,7 @@ mod tests {
                 correlation_id: "c1".into(),
                 content: "hello".into(),
                 timestamp: ts(),
+                attachment: None,
             },
         )
         .await

@@ -262,6 +262,7 @@ mod tests {
             correlation_id: "c1".into(),
             content: "void".into(),
             timestamp: test_timestamp(),
+            attachment: None,
         };
 
         // Publishing to a topic with no subscribers should not error.
@@ -319,6 +320,7 @@ mod tests {
             correlation_id: "6".into(),
             content: "for response".into(),
             timestamp: test_timestamp(),
+            attachment: None,
         };
         pub_.publish(topics::Endpoint(ep), resp_event)
             .await
@@ -375,6 +377,7 @@ mod tests {
                 correlation_id: "c1".into(),
                 content: "hello".into(),
                 timestamp: test_timestamp(),
+                attachment: None,
             },
         )
         .await
