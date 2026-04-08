@@ -113,8 +113,9 @@ mod gateway_integration {
         let publisher = bus.publisher();
         let ep = EndpointName::from("ws");
 
+        let file_registry = residuum::gateway::file_server::FileRegistry::new();
         let mut subs =
-            residuum::interfaces::websocket::subscriber::WsSubscribers::new(&bus, ep.clone())
+            residuum::interfaces::websocket::subscriber::WsSubscribers::new(&bus, ep.clone(), file_registry)
                 .await
                 .unwrap();
         let sub_broadcast = broadcast_tx.clone();
