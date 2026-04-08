@@ -122,12 +122,21 @@ enum ServerMessage: Decodable {
         case "broadcast_response":
             self = .broadcastResponse(content: try c.decode(String.self, forKey: .content))
         case "file_attachment":
+            // size may arrive as u64 from Rust — decode as Int first, fall back to UInt64 → Int
+            let sizeValue: Int
+            if let s = try? c.decode(Int.self, forKey: .size) {
+                sizeValue = s
+            } else if let s = try? c.decode(UInt64.self, forKey: .size) {
+                sizeValue = Int(clamping: s)
+            } else {
+                sizeValue = 0
+            }
             self = .fileAttachment(
-                replyTo: try c.decode(String.self, forKey: .replyTo),
-                filename: try c.decode(String.self, forKey: .filename),
-                mimeType: try c.decode(String.self, forKey: .mimeType),
-                size: try c.decode(Int.self, forKey: .size),
-                url: try c.decode(String.self, forKey: .url),
+                replyTo: (try? c.decode(String.self, forKey: .replyTo)) ?? "",
+                filename: (try? c.decode(String.self, forKey: .filename)) ?? "unknown",
+                mimeType: (try? c.decode(String.self, forKey: .mimeType)) ?? "application/octet-stream",
+                size: sizeValue,
+                url: (try? c.decode(String.self, forKey: .url)) ?? "",
                 caption: try? c.decode(String.self, forKey: .caption)
             )
         case "error":
