@@ -391,6 +391,7 @@ async fn reload_gateway(rt: &mut GatewayRuntime, new_cfg: &Config) {
                 tunnel_status_rx: rt.tunnel_status_rx.clone(),
                 publisher: rt.publisher.clone(),
                 bus_handle: rt.bus_handle.clone(),
+                file_registry: rt.file_registry.clone(),
             };
             let config_api_state = crate::gateway::web::ConfigApiState {
                 config_dir: rt.config_dir.clone(),

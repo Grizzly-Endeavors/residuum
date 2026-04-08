@@ -2,6 +2,7 @@
 
 mod actions;
 pub(crate) mod event_loop;
+pub(crate) mod file_server;
 mod helpers;
 mod idle;
 mod memory;

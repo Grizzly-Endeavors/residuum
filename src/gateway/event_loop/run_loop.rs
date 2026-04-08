@@ -73,6 +73,7 @@ struct SpawnedHandles {
     tunnel_status_rx: tokio::sync::watch::Receiver<crate::tunnel::TunnelStatus>,
     tracing_service: Arc<crate::tracing_service::TracingService>,
     sigterm: tokio::signal::unix::Signal,
+    file_registry: crate::gateway::file_server::FileRegistry,
 }
 
 /// Spawn the HTTP server, chat adapters, cloud tunnel, and workspace watcher.
@@ -95,6 +96,8 @@ async fn spawn_server_and_adapters(
         tokio::sync::watch::channel(crate::tunnel::TunnelStatus::Disconnected);
     let tunnel_status_tx = Arc::new(tunnel_status_tx);
 
+    let file_registry = crate::gateway::file_server::FileRegistry::new();
+    file_registry.spawn_cleanup_task();
     let state = GatewayState {
         reload_tx: core.reload_tx.clone(),
         command_tx: core.command_tx.clone(),
@@ -103,6 +106,7 @@ async fn spawn_server_and_adapters(
         tunnel_status_rx: tunnel_status_rx.clone(),
         publisher: core.publisher.clone(),
         bus_handle: core.bus_handle.clone(),
+        file_registry: file_registry.clone(),
     };
     let config_api_state = web::ConfigApiState {
         config_dir: cfg.config_dir.clone(),
@@ -158,6 +162,7 @@ async fn spawn_server_and_adapters(
         tunnel_status_rx,
         tracing_service,
         sigterm,
+        file_registry,
     })
 }
 
@@ -312,6 +317,7 @@ async fn build_runtime(
         telegram_shutdown_tx: spawned.adapters.telegram_shutdown_tx,
         reload_tx: core.reload_tx,
         command_tx: core.command_tx,
+        file_registry: spawned.file_registry,
         path_policy: parts.path_policy,
         tracing_service: spawned.tracing_service,
         update_status: update.status,

@@ -94,13 +94,21 @@ pub fn build_gateway_app(
 
     let tracing_router = tracing_api_router(tracing_api_state);
 
+    let file_router = axum::Router::new()
+        .route(
+            "/api/files/{id}",
+            get(crate::gateway::file_server::serve_file),
+        )
+        .with_state(state.file_registry.clone());
+
     let mut app = axum::Router::new()
         .route("/ws", get(ws_handler))
         .with_state(state);
     if let Some(wh) = webhook_router {
         app = app.merge(wh);
     }
-    app.merge(cloud_router)
+    app.merge(file_router)
+        .merge(cloud_router)
         .merge(update_router)
         .merge(tracing_router)
         .merge(web::config_api_router(config_api_state))

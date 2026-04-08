@@ -109,6 +109,7 @@ pub(crate) struct GatewayState {
     pub tunnel_status_rx: tokio::sync::watch::Receiver<TunnelStatus>,
     pub publisher: Publisher,
     pub bus_handle: BusHandle,
+    pub file_registry: crate::gateway::file_server::FileRegistry,
 }
 
 /// All state needed by the main event loop.
@@ -179,6 +180,8 @@ pub(crate) struct GatewayRuntime {
     /// Cloned core senders for rebuilding adapters on reload.
     pub reload_tx: tokio::sync::watch::Sender<ReloadSignal>,
     pub command_tx: mpsc::Sender<ServerCommand>,
+    /// File registry for serving attachments to WebSocket clients.
+    pub file_registry: crate::gateway::file_server::FileRegistry,
     /// Shared path policy for updating blocked paths on reload.
     pub path_policy: crate::tools::SharedPathPolicy,
     /// Shared tracing service for observability API.
