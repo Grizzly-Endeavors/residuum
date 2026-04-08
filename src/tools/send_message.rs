@@ -102,8 +102,10 @@ impl Tool for SendMessageTool {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: self.name().to_string(),
-            description: "Send a message and/or file attachment to a notification or interactive \
-                endpoint. Use list_endpoints to see available targets."
+            description: "Send a message and/or file attachment to an endpoint. When sharing \
+                a file with the user, always use the file_path parameter — the file will be \
+                delivered natively (inline image, audio player, or download link) rather than \
+                as a text path. Use list_endpoints to see available targets."
                 .to_string(),
             parameters: serde_json::json!({
                 "type": "object",
@@ -118,7 +120,7 @@ impl Tool for SendMessageTool {
                     },
                     "file_path": {
                         "type": "string",
-                        "description": "Absolute path to a file to attach (optional if message is provided)"
+                        "description": "Absolute path to a file to send. Images render inline, audio gets a player, other files appear as downloads. Always use this instead of pasting file paths as text."
                     },
                     "title": {
                         "type": "string",

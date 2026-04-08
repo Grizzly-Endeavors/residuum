@@ -526,7 +526,7 @@ On total failure: error with failure details.
 **Source:** `send_message.rs` · `SendMessageTool`
 
 **Description sent to LLM:**
-> Send a message and/or file attachment to a notification or interactive endpoint. Use list_endpoints to see available targets.
+> Send a message and/or file attachment to an endpoint. When sharing a file with the user, always use the file_path parameter — the file will be delivered natively (inline image, audio player, or download link) rather than as a text path. Use list_endpoints to see available targets.
 
 ### Input
 
@@ -534,7 +534,7 @@ On total failure: error with failure details.
 |-------------|--------|-----------------|--------------------------------------------------------------------------------|
 | `endpoint`  | string | yes             | Target endpoint name (any interactive or notification endpoint)               |
 | `message`   | string | no†             | Message body or caption text                                                   |
-| `file_path` | string | no†             | Absolute path to a file to attach (interactive endpoints only)                |
+| `file_path` | string | no†             | Absolute path to a file to send. Images render inline, audio gets a player, other files appear as downloads. Always use this instead of pasting file paths as text. |
 | `title`     | string | no              | Optional title for notifications (defaults to first 60 chars of message)      |
 
 † At least one of `message` or `file_path` must be provided.
