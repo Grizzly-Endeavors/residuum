@@ -118,7 +118,8 @@ pub async fn serve_file(
         return StatusCode::NOT_FOUND.into_response();
     };
 
-    let disposition = format!("inline; filename=\"{filename}\"");
+    let safe_filename = filename.replace('"', "").replace('\\', "");
+    let disposition = format!("inline; filename=\"{safe_filename}\"");
     let mut response = bytes.into_response();
     let headers = response.headers_mut();
     if let Ok(v) = HeaderValue::from_str(&mime_type) {
