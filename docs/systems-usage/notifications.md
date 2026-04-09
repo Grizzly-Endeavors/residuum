@@ -29,6 +29,7 @@ The endpoint registry tracks all available I/O endpoints. The `list_endpoints` t
 Bidirectional channels (WebSocket, Discord, Telegram). The agent can:
 - `switch_endpoint` to redirect responses to a different interactive endpoint.
 - `send_message` to send a one-off message to any interactive endpoint.
+- `send_message` with `file_path` to deliver a file attachment. Images render inline, audio gets a native player, other files appear as downloads. Telegram allows up to 50 MB; Discord, WebSocket, and notification-only endpoints cap at 25 MB. File attachments require an interactive endpoint — notification-only endpoints reject them.
 
 ### Notification endpoints
 
@@ -66,7 +67,7 @@ Results delivered to `agent_wake` or `agent_feed` are not dropped if the agent i
 |------|---------|
 | `list_endpoints` | Show available interactive and notification endpoints. |
 | `switch_endpoint` | Redirect subsequent responses to a different interactive endpoint. Auto-clears when the user sends a message. |
-| `send_message` | One-off message to any interactive or notification endpoint. Does not change where turn responses go. |
+| `send_message` | One-off message and/or file attachment to any interactive or notification endpoint. Does not change where turn responses go. File attachments require an interactive endpoint. |
 
 ## HEARTBEAT_OK
 

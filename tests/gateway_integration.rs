@@ -114,10 +114,13 @@ mod gateway_integration {
         let ep = EndpointName::from("ws");
 
         let file_registry = residuum::gateway::file_server::FileRegistry::new();
-        let mut subs =
-            residuum::interfaces::websocket::subscriber::WsSubscribers::new(&bus, ep.clone(), file_registry)
-                .await
-                .unwrap();
+        let mut subs = residuum::interfaces::websocket::subscriber::WsSubscribers::new(
+            &bus,
+            ep.clone(),
+            file_registry,
+        )
+        .await
+        .unwrap();
         let sub_broadcast = broadcast_tx.clone();
         tokio::spawn(async move {
             while let Some(msg) = subs.recv().await {

@@ -59,9 +59,10 @@ impl FileAttachment {
             }
         })?;
 
-        let filename = path
-            .file_name()
-            .map_or_else(|| "unnamed".to_string(), |n| n.to_string_lossy().to_string());
+        let filename = path.file_name().map_or_else(
+            || "unnamed".to_string(),
+            |n| n.to_string_lossy().to_string(),
+        );
 
         let mime_type = detect_mime_type(path);
         let size = metadata.len();
@@ -378,7 +379,9 @@ mod tests {
     async fn file_attachment_from_path_success() {
         let dir = tempfile::tempdir().unwrap();
         let file_path = dir.path().join("report.pdf");
-        tokio::fs::write(&file_path, b"fake pdf content").await.unwrap();
+        tokio::fs::write(&file_path, b"fake pdf content")
+            .await
+            .unwrap();
 
         let attachment = FileAttachment::from_path(&file_path).await.unwrap();
         assert_eq!(attachment.filename, "report.pdf");
@@ -389,10 +392,14 @@ mod tests {
 
     #[tokio::test]
     async fn file_attachment_from_path_not_found() {
-        let result = FileAttachment::from_path(Path::new("/tmp/nonexistent_residuum_test.pdf")).await;
+        let result =
+            FileAttachment::from_path(Path::new("/tmp/nonexistent_residuum_test.pdf")).await;
         assert!(result.is_err());
         let err = result.unwrap_err();
-        assert!(err.contains("file not found"), "error should mention not found: {err}");
+        assert!(
+            err.contains("file not found"),
+            "error should mention not found: {err}"
+        );
     }
 
     #[test]

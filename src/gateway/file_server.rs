@@ -66,13 +66,14 @@ impl FileRegistry {
         ))
     }
 
-    /// Remove all expired entries.
-    pub async fn sweep_expired(&self) {
+    /// Remove all expired entries. Returns `(removed, remaining)`.
+    pub async fn sweep_expired(&self) -> (usize, usize) {
         let now = Instant::now();
-        self.entries
-            .write()
-            .await
-            .retain(|_, entry| entry.expires_at > now);
+        let mut entries = self.entries.write().await;
+        let before = entries.len();
+        entries.retain(|_, entry| entry.expires_at > now);
+        let remaining = entries.len();
+        (before - remaining, remaining)
     }
 
     /// Spawn a background task that periodically sweeps expired entries.
@@ -83,12 +84,9 @@ impl FileRegistry {
                 tokio::time::interval(std::time::Duration::from_secs(CLEANUP_INTERVAL_SECS));
             loop {
                 interval.tick().await;
-                let count_before = registry.entries.read().await.len();
-                registry.sweep_expired().await;
-                let count_after = registry.entries.read().await.len();
-                let removed = count_before - count_after;
+                let (removed, remaining) = registry.sweep_expired().await;
                 if removed > 0 {
-                    tracing::debug!(removed, remaining = count_after, "swept expired file entries");
+                    tracing::debug!(removed, remaining, "swept expired file entries");
                 }
             }
         });
@@ -106,7 +104,7 @@ pub async fn serve_file(
     axum::extract::Path(id): axum::extract::Path<String>,
     axum::extract::State(registry): axum::extract::State<FileRegistry>,
 ) -> axum::response::Response {
-    use axum::http::{header, HeaderValue, StatusCode};
+    use axum::http::{HeaderValue, StatusCode, header};
     use axum::response::IntoResponse;
 
     let Some((path, mime_type, filename)) = registry.get(&id).await else {
@@ -118,7 +116,10 @@ pub async fn serve_file(
         return StatusCode::NOT_FOUND.into_response();
     };
 
-    let safe_filename: String = filename.chars().filter(|c| *c != '"' && *c != '\\').collect();
+    let safe_filename: String = filename
+        .chars()
+        .filter(|c| *c != '"' && *c != '\\')
+        .collect();
     let disposition = format!("inline; filename=\"{safe_filename}\"");
     let mut response = bytes.into_response();
     let headers = response.headers_mut();
@@ -177,7 +178,26 @@ mod tests {
                 },
             );
         }
-        registry.sweep_expired().await;
+        let (removed, remaining) = registry.sweep_expired().await;
+        assert_eq!(removed, 1, "one expired entry should be removed");
+        assert_eq!(remaining, 0, "no entries should remain");
         assert!(registry.get("expired-id").await.is_none());
+    }
+
+    #[tokio::test]
+    async fn sweep_concurrent_register_does_not_underflow() {
+        // Regression: earlier implementation computed removed = before - after across
+        // separate lock acquisitions, which could underflow if a register raced in.
+        let registry = FileRegistry::new();
+        registry
+            .register(
+                PathBuf::from("/tmp/live.pdf"),
+                "application/pdf".to_string(),
+                "live.pdf".to_string(),
+            )
+            .await;
+        let (removed, remaining) = registry.sweep_expired().await;
+        assert_eq!(removed, 0, "no expired entries should be removed");
+        assert_eq!(remaining, 1, "live entry should remain");
     }
 }

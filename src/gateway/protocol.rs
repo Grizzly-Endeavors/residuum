@@ -89,6 +89,7 @@ pub enum ServerMessage {
         /// MIME type of the file.
         mime_type: String,
         /// File size in bytes.
+        #[ts(type = "number")]
         size: u64,
         /// URL to fetch the file (e.g. "/api/files/{id}").
         url: String,
@@ -381,9 +382,18 @@ mod tests {
             caption: Some("Here's the report".to_string()),
         };
         let json = serde_json::to_string(&msg).unwrap();
-        assert!(json.contains("\"type\":\"file_attachment\""), "should have type tag");
-        assert!(json.contains("\"filename\":\"report.pdf\""), "should have filename");
-        assert!(json.contains("\"url\":\"/api/files/abc-123\""), "should have url");
+        assert!(
+            json.contains("\"type\":\"file_attachment\""),
+            "should have type tag"
+        );
+        assert!(
+            json.contains("\"filename\":\"report.pdf\""),
+            "should have filename"
+        );
+        assert!(
+            json.contains("\"url\":\"/api/files/abc-123\""),
+            "should have url"
+        );
     }
 
     #[test]
@@ -397,6 +407,9 @@ mod tests {
             caption: None,
         };
         let json = serde_json::to_string(&msg).unwrap();
-        assert!(!json.contains("\"caption\""), "caption should be skipped when None");
+        assert!(
+            !json.contains("\"caption\""),
+            "caption should be skipped when None"
+        );
     }
 }

@@ -152,7 +152,10 @@ impl CliClient {
                 println!("\n{}\n", self.theme.format_notice(message));
             }
             ServerMessage::FileAttachment {
-                filename, url, caption, ..
+                filename,
+                url,
+                caption,
+                ..
             } => {
                 self.indicator.finish();
                 let caption_text = caption.as_deref().unwrap_or("");

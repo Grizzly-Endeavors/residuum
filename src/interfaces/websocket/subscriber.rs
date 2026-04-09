@@ -164,7 +164,13 @@ mod tests {
         let handle = crate::bus::spawn_broker();
         let pub_ = handle.publisher();
         let ep = EndpointName::from("ws");
-        let mut subs = WsSubscribers::new(&handle, ep.clone(), crate::gateway::file_server::FileRegistry::new()).await.unwrap();
+        let mut subs = WsSubscribers::new(
+            &handle,
+            ep.clone(),
+            crate::gateway::file_server::FileRegistry::new(),
+        )
+        .await
+        .unwrap();
 
         pub_.publish(
             topics::Endpoint(ep),
@@ -191,7 +197,13 @@ mod tests {
         let handle = crate::bus::spawn_broker();
         let pub_ = handle.publisher();
         let ep = EndpointName::from("ws");
-        let mut subs = WsSubscribers::new(&handle, ep.clone(), crate::gateway::file_server::FileRegistry::new()).await.unwrap();
+        let mut subs = WsSubscribers::new(
+            &handle,
+            ep.clone(),
+            crate::gateway::file_server::FileRegistry::new(),
+        )
+        .await
+        .unwrap();
 
         pub_.publish(
             topics::Endpoint(ep),
@@ -218,7 +230,13 @@ mod tests {
         let handle = crate::bus::spawn_broker();
         let pub_ = handle.publisher();
         let ep = EndpointName::from("ws");
-        let mut subs = WsSubscribers::new(&handle, ep.clone(), crate::gateway::file_server::FileRegistry::new()).await.unwrap();
+        let mut subs = WsSubscribers::new(
+            &handle,
+            ep.clone(),
+            crate::gateway::file_server::FileRegistry::new(),
+        )
+        .await
+        .unwrap();
 
         pub_.publish(
             topics::Endpoint(ep),
@@ -246,7 +264,13 @@ mod tests {
         let handle = crate::bus::spawn_broker();
         let pub_ = handle.publisher();
         let ep = EndpointName::from("ws");
-        let mut subs = WsSubscribers::new(&handle, ep.clone(), crate::gateway::file_server::FileRegistry::new()).await.unwrap();
+        let mut subs = WsSubscribers::new(
+            &handle,
+            ep.clone(),
+            crate::gateway::file_server::FileRegistry::new(),
+        )
+        .await
+        .unwrap();
 
         pub_.publish(
             topics::Endpoint(ep),
@@ -271,7 +295,13 @@ mod tests {
         let handle = crate::bus::spawn_broker();
         let pub_ = handle.publisher();
         let ep = EndpointName::from("ws");
-        let mut subs = WsSubscribers::new(&handle, ep, crate::gateway::file_server::FileRegistry::new()).await.unwrap();
+        let mut subs = WsSubscribers::new(
+            &handle,
+            ep,
+            crate::gateway::file_server::FileRegistry::new(),
+        )
+        .await
+        .unwrap();
 
         pub_.publish(
             topics::Notification(NotifyName::from(crate::bus::SYSTEM_CHANNEL)),
@@ -295,7 +325,13 @@ mod tests {
         let handle = crate::bus::spawn_broker();
         let pub_ = handle.publisher();
         let ep = EndpointName::from("ws");
-        let mut subs = WsSubscribers::new(&handle, ep.clone(), crate::gateway::file_server::FileRegistry::new()).await.unwrap();
+        let mut subs = WsSubscribers::new(
+            &handle,
+            ep.clone(),
+            crate::gateway::file_server::FileRegistry::new(),
+        )
+        .await
+        .unwrap();
 
         pub_.publish(
             topics::Endpoint(ep),
@@ -319,7 +355,13 @@ mod tests {
         let handle = crate::bus::spawn_broker();
         let pub_ = handle.publisher();
         let ep = EndpointName::from("ws");
-        let mut subs = WsSubscribers::new(&handle, ep.clone(), crate::gateway::file_server::FileRegistry::new()).await.unwrap();
+        let mut subs = WsSubscribers::new(
+            &handle,
+            ep.clone(),
+            crate::gateway::file_server::FileRegistry::new(),
+        )
+        .await
+        .unwrap();
 
         pub_.publish(
             topics::Endpoint(ep.clone()),
@@ -351,7 +393,13 @@ mod tests {
         let handle = crate::bus::spawn_broker();
         let pub_ = handle.publisher();
         let ep = EndpointName::from("ws");
-        let mut subs = WsSubscribers::new(&handle, ep, crate::gateway::file_server::FileRegistry::new()).await.unwrap();
+        let mut subs = WsSubscribers::new(
+            &handle,
+            ep,
+            crate::gateway::file_server::FileRegistry::new(),
+        )
+        .await
+        .unwrap();
 
         pub_.publish(
             topics::Notification(NotifyName::from(crate::bus::SYSTEM_CHANNEL)),

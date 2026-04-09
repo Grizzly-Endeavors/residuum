@@ -408,7 +408,11 @@ mod tests {
             .unwrap();
 
         assert!(!result.is_error, "should succeed: {}", result.output);
-        assert!(result.output.contains("test.pdf"), "should mention filename: {}", result.output);
+        assert!(
+            result.output.contains("test.pdf"),
+            "should mention filename: {}",
+            result.output
+        );
 
         let event: crate::bus::ResponseEvent = subscriber.recv().await.unwrap().unwrap();
         assert!(event.attachment.is_some(), "should have attachment");
@@ -509,7 +513,10 @@ mod tests {
             .await
             .unwrap();
 
-        assert!(result.is_error, "should error for notify endpoint with file");
+        assert!(
+            result.is_error,
+            "should error for notify endpoint with file"
+        );
         assert!(
             result.output.contains("does not support file attachments"),
             "should explain: {}",
