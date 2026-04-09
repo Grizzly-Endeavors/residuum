@@ -9,6 +9,7 @@ import type {
   ToolGroupFeedItem,
   ToolCallState,
   ImageAttachment,
+  FileAttachmentFeedItem,
 } from "./types";
 
 /** Manages the chat feed state and processes incoming server messages. */
@@ -78,6 +79,21 @@ export class FeedStore {
           content: "Gateway is reloading...",
         });
         break;
+
+      case "file_attachment": {
+        const item: FileAttachmentFeedItem = {
+          id: nextFeedId(),
+          kind: "file-attachment",
+          filename: msg.filename,
+          mimeType: msg.mime_type,
+          size: msg.size,
+          url: msg.url,
+          caption: msg.caption,
+        };
+        this.feed.push(item);
+        this.isProcessing = false;
+        break;
+      }
 
       case "pong":
         break;

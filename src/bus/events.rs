@@ -7,6 +7,7 @@ use chrono::NaiveDateTime;
 
 use crate::bus::types::PresetName;
 use crate::config::BackgroundModelTier;
+use crate::interfaces::attachment::FileAttachment;
 use crate::interfaces::types::MessageOrigin;
 use crate::models::ImageData;
 
@@ -118,6 +119,8 @@ pub struct ResponseEvent {
     pub content: String,
     /// Local timestamp.
     pub timestamp: NaiveDateTime,
+    /// Optional file attachment.
+    pub attachment: Option<FileAttachment>,
 }
 
 /// Push notification for notify channels.

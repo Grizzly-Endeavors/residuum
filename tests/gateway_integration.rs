@@ -113,10 +113,14 @@ mod gateway_integration {
         let publisher = bus.publisher();
         let ep = EndpointName::from("ws");
 
-        let mut subs =
-            residuum::interfaces::websocket::subscriber::WsSubscribers::new(&bus, ep.clone())
-                .await
-                .unwrap();
+        let file_registry = residuum::gateway::file_server::FileRegistry::new();
+        let mut subs = residuum::interfaces::websocket::subscriber::WsSubscribers::new(
+            &bus,
+            ep.clone(),
+            file_registry,
+        )
+        .await
+        .unwrap();
         let sub_broadcast = broadcast_tx.clone();
         tokio::spawn(async move {
             while let Some(msg) = subs.recv().await {
@@ -187,6 +191,7 @@ mod gateway_integration {
                                             correlation_id: reply_id.clone(),
                                             content: text.clone(),
                                             timestamp: chrono::NaiveDateTime::default(),
+                                            attachment: None,
                                         },
                                     )
                                     .await,

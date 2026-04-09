@@ -9,6 +9,7 @@
   import MessageDivider from "./MessageDivider.svelte";
   import ToolGroup from "./ToolGroup.svelte";
   import ThinkingIndicator from "./ThinkingIndicator.svelte";
+  import FileAttachment from "./FileAttachment.svelte";
 
   let {
     items,
@@ -56,6 +57,8 @@
         <ToolGroup calls={item.calls} {verbose} />
       {:else if item.kind === "command-output"}
         <MessageNotice content={item.content} />
+      {:else if item.kind === "file-attachment"}
+        <FileAttachment {item} />
       {/if}
     {/each}
     {#if isProcessing}

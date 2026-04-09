@@ -180,6 +180,15 @@ final class AgentStore {
             let msg = ChatMessage(role: .system, content: "Error: \(message)")
             tabs[tabIndex].messages.append(msg)
 
+        case .fileAttachment(_, let filename, let mimeType, let size, let urlPath, let caption):
+            // Pre-compute the absolute URL so views don't need host/port plumbed through them.
+            let port = tabs[tabIndex].port
+            let fullURL = "http://\(host):\(port)\(urlPath)"
+            let attachment = FileAttachmentData(filename: filename, mimeType: mimeType, size: size, url: fullURL)
+            let msg = ChatMessage(role: .assistant, content: caption ?? "", fileAttachment: attachment)
+            tabs[tabIndex].messages.append(msg)
+            tabs[tabIndex].isThinking = false
+
         case .reloading:
             let msg = ChatMessage(role: .system, content: "Reloading configuration…")
             tabs[tabIndex].messages.append(msg)

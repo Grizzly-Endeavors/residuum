@@ -526,29 +526,40 @@ On total failure: error with failure details.
 **Source:** `send_message.rs` · `SendMessageTool`
 
 **Description sent to LLM:**
-> Send a one-off message to a notification or interactive endpoint. Use list_endpoints to see available targets.
+> Send a message and/or file attachment to an endpoint. When sharing a file with the user, always use the file_path parameter — the file will be delivered natively (inline image, audio player, or download link) rather than as a text path. Use list_endpoints to see available targets.
 
 ### Input
 
-| Parameter  | Type   | Required | Description                                                                    |
-|------------|--------|----------|--------------------------------------------------------------------------------|
-| `endpoint` | string | yes      | Target endpoint name (any interactive or notification endpoint)               |
-| `message`  | string | yes      | The message body to send                                                       |
-| `title`    | string | no       | Optional title for notifications (defaults to first 60 chars of message)      |
+| Parameter   | Type   | Required        | Description                                                                    |
+|-------------|--------|-----------------|--------------------------------------------------------------------------------|
+| `endpoint`  | string | yes             | Target endpoint name (any interactive or notification endpoint)               |
+| `message`   | string | no†             | Message body or caption text                                                   |
+| `file_path` | string | no†             | Absolute path to a file to send. Images render inline, audio gets a player, other files appear as downloads. Always use this instead of pasting file paths as text. |
+| `title`     | string | no              | Optional title for notifications (defaults to first 60 chars of message)      |
+
+† At least one of `message` or `file_path` must be provided.
 
 ### Output
 
-On success: `"Message published to endpoint '{name}'"`
+On success:
+- Text only: `"Message published to endpoint '{name}'"`
+- File only: `"File '{filename}' published to endpoint '{name}'"`
+- Text + file: `"Message and file '{filename}' published to endpoint '{name}'"`
 
 On error:
+- Neither message nor file → `"at least one of 'message' or 'file_path' is required"`
 - Unknown endpoint → `"unknown endpoint '{name}'; available: {list}"`
 - Endpoint does not accept messages (e.g. inbox) → `"endpoint '{name}' does not accept messages; available: {list}"`
+- File with notify endpoint → `"endpoint '{name}' does not support file attachments"`
+- File not found → `"file not found: {path}"`
+- File exceeds size limit → `"file '{name}' is {N}MB, exceeds {limit}MB limit for {endpoint}"`
 - Bus publish failure → execution error with details
 
 **Side effects:**
 - Notify endpoints: publishes `NotificationEvent` to the endpoint's topic
-- Interactive endpoints: publishes `ResponseEvent` to the endpoint's topic
+- Interactive endpoints: publishes `ResponseEvent` to the endpoint's topic (with optional `FileAttachment`)
 - **Cannot send to inbox** — the agent has no write path to inbox
+- **File attachments require interactive endpoints** — Telegram allows up to 50MB, others 25MB
 
 ---
 

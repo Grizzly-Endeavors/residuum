@@ -44,7 +44,31 @@ reply_to: string,
 /**
  * The response content.
  */
-content: string, } | { "type": "broadcast_response", 
+content: string, } | { "type": "file_attachment", 
+/**
+ * Correlation ID of the original message.
+ */
+reply_to: string, 
+/**
+ * Original filename.
+ */
+filename: string, 
+/**
+ * MIME type of the file.
+ */
+mime_type: string, 
+/**
+ * File size in bytes.
+ */
+size: number, 
+/**
+ * URL to fetch the file (e.g. "/api/files/{id}").
+ */
+url: string, 
+/**
+ * Optional caption text.
+ */
+caption: string | null, } | { "type": "broadcast_response", 
 /**
  * The intermediate content.
  */

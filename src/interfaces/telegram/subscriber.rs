@@ -57,7 +57,13 @@ pub(crate) async fn run_telegram_subscriber(
             }
             event = subs.response.recv() => {
                 match event {
-                    Ok(Some(resp)) => send_chunks(&bot, chat_id, &resp.content).await,
+                    Ok(Some(resp)) => {
+                        if let Some(ref att) = resp.attachment {
+                            send_file(&bot, chat_id, att, &resp.content).await;
+                        } else if !resp.content.is_empty() {
+                            send_chunks(&bot, chat_id, &resp.content).await;
+                        }
+                    }
                     Ok(None) => break,
                     Err(_) => { clean_exit = false; break; }
                 }
@@ -104,5 +110,68 @@ async fn send_chunks(bot: &Bot, chat_id: ChatId, content: &str) {
         if let Err(e) = bot.send_message(chat_id, &chunk).await {
             tracing::warn!(chat_id = %chat_id, error = %e, "failed to send telegram message");
         }
+    }
+}
+
+async fn send_file(
+    bot: &Bot,
+    chat_id: ChatId,
+    attachment: &crate::interfaces::attachment::FileAttachment,
+    caption: &str,
+) {
+    use teloxide::payloads::{SendAudioSetters, SendDocumentSetters, SendPhotoSetters};
+    use teloxide::types::InputFile;
+
+    let file = InputFile::file(&attachment.path);
+    let cap = if caption.is_empty() {
+        None
+    } else if caption.len() > 1024 {
+        // Telegram caption limit is 1024 chars; send full text separately
+        Some(caption.chars().take(1024).collect::<String>())
+    } else {
+        Some(caption.to_string())
+    };
+
+    let result = if attachment.mime_type.starts_with("image/") {
+        let mut req = bot.send_photo(chat_id, file);
+        if let Some(ref c) = cap {
+            req = req.caption(c);
+        }
+        req.await.map(|_| ())
+    } else if attachment.mime_type.starts_with("audio/") {
+        let mut req = bot.send_audio(chat_id, file);
+        if let Some(ref c) = cap {
+            req = req.caption(c);
+        }
+        req.await.map(|_| ())
+    } else {
+        let mut req = bot.send_document(chat_id, file);
+        if let Some(ref c) = cap {
+            req = req.caption(c);
+        }
+        req.await.map(|_| ())
+    };
+
+    match result {
+        Ok(()) => {
+            tracing::debug!(
+                filename = %attachment.filename,
+                endpoint = "telegram",
+                "file delivered"
+            );
+        }
+        Err(e) => {
+            tracing::warn!(
+                filename = %attachment.filename,
+                endpoint = "telegram",
+                error = %e,
+                "file delivery failed"
+            );
+        }
+    }
+
+    // If caption was truncated, send the full text separately
+    if caption.len() > 1024 {
+        send_chunks(bot, chat_id, caption).await;
     }
 }

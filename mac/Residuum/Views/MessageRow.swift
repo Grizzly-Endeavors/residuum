@@ -68,6 +68,9 @@ private struct AssistantMessage: View {
                     .lineSpacing(3)
                     .textSelection(.enabled)
             }
+            if let attachment = message.fileAttachment {
+                FileAttachmentView(attachment: attachment)
+            }
         }
     }
 }

@@ -252,6 +252,15 @@ export interface CommandOutputFeedItem extends FeedItemBase {
   content: string;
 }
 
+export interface FileAttachmentFeedItem extends FeedItemBase {
+  kind: "file-attachment";
+  filename: string;
+  mimeType: string;
+  size: number;
+  url: string;
+  caption: string | null;
+}
+
 export type FeedItem =
   | UserFeedItem
   | AssistantFeedItem
@@ -260,4 +269,5 @@ export type FeedItem =
   | NoticeFeedItem
   | DividerFeedItem
   | ToolGroupFeedItem
-  | CommandOutputFeedItem;
+  | CommandOutputFeedItem
+  | FileAttachmentFeedItem;

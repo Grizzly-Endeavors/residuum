@@ -16,6 +16,7 @@
 		2D9DCB2A45A4B2173BEE24FF /* ThinkingIndicator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 12C6CDF2B2255A7CC1485305 /* ThinkingIndicator.swift */; };
 		471EB58B22FB29BA279AC03D /* SlashCommandTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F0081499F5E80C12012D8D4A /* SlashCommandTests.swift */; };
 		4E1C2554DD42B0D7BDA29A22 /* ChatView.swift in Sources */ = {isa = PBXBuildFile; fileRef = EBB5ACF50BA8D0E2905FBC98 /* ChatView.swift */; };
+		5C8E2F4A1B6D3907E4A2C8F1 /* FileAttachmentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3A7F1B2E8C4D6A9F0E5B7D12 /* FileAttachmentView.swift */; };
 		6B98649B887255D58E893763 /* AgentRegistry.swift in Sources */ = {isa = PBXBuildFile; fileRef = 198E5D123A71076F69BCC764 /* AgentRegistry.swift */; };
 		7BBD6868742F7CAD1F97E46C /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9491041429FFA0B66EA43DCE /* SettingsView.swift */; };
 		7BC6C4A223B7F3DE5C34A6CA /* TabBar.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9F7B942CB5709BCBE5D0B236 /* TabBar.swift */; };
@@ -54,6 +55,7 @@
 		243D33EC119ACFAC32918B28 /* SlashCommand.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SlashCommand.swift; sourceTree = "<group>"; };
 		259162ABC7570E1D53C98020 /* PopoverView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PopoverView.swift; sourceTree = "<group>"; };
 		2C3210127BCE6365B097B63B /* Message.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Message.swift; sourceTree = "<group>"; };
+		3A7F1B2E8C4D6A9F0E5B7D12 /* FileAttachmentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FileAttachmentView.swift; sourceTree = "<group>"; };
 		45C32C874812C49E181B02DC /* AgentRegistryTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentRegistryTests.swift; sourceTree = "<group>"; };
 		46D89E61521A713B0635C84F /* ToolGroup.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ToolGroup.swift; sourceTree = "<group>"; };
 		6B87D3031B744732F705ADC9 /* ResiduumChat.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = ResiduumChat.app; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -143,6 +145,7 @@
 			children = (
 				EBB5ACF50BA8D0E2905FBC98 /* ChatView.swift */,
 				9B8C191C717F516024D9D1C3 /* CommandMenu.swift */,
+				3A7F1B2E8C4D6A9F0E5B7D12 /* FileAttachmentView.swift */,
 				9C5670F08A1555FE5B88EDF6 /* InputBar.swift */,
 				8DE89DA040ED84063735BAF0 /* MessageRow.swift */,
 				259162ABC7570E1D53C98020 /* PopoverView.swift */,
@@ -288,6 +291,7 @@
 				A83257E5BE148B9DC3C888CE /* AppDelegate.swift in Sources */,
 				4E1C2554DD42B0D7BDA29A22 /* ChatView.swift in Sources */,
 				D639E7C0A771C5282B665EE0 /* CommandMenu.swift in Sources */,
+				5C8E2F4A1B6D3907E4A2C8F1 /* FileAttachmentView.swift in Sources */,
 				BD6B18A7E1F04D4EDBC3D963 /* InputBar.swift in Sources */,
 				01E1DAE0A41D52D6BF3F29CF /* Message.swift in Sources */,
 				997C87B27EDAD4D400486CE3 /* MessageRow.swift in Sources */,

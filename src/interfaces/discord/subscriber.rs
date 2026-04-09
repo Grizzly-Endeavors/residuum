@@ -63,7 +63,13 @@ pub(crate) async fn run_discord_subscriber(
             }
             event = subs.response.recv() => {
                 match event {
-                    Ok(Some(resp)) => send_chunks(&http, cid, &resp.content).await,
+                    Ok(Some(resp)) => {
+                        if let Some(ref att) = resp.attachment {
+                            send_file_attachment(&http, cid, att, &resp.content).await;
+                        } else if !resp.content.is_empty() {
+                            send_chunks(&http, cid, &resp.content).await;
+                        }
+                    }
                     Ok(None) => break,
                     Err(_) => { clean_exit = false; break; }
                 }
@@ -109,6 +115,51 @@ async fn send_chunks(http: &serenity::http::Http, channel_id: ChannelId, content
     for chunk in chunks {
         if let Err(e) = channel_id.say(http, &chunk).await {
             tracing::warn!(channel_id = %channel_id, error = %e, "failed to send discord message");
+        }
+    }
+}
+
+async fn send_file_attachment(
+    http: &serenity::http::Http,
+    channel_id: ChannelId,
+    attachment: &crate::interfaces::attachment::FileAttachment,
+    caption: &str,
+) {
+    use serenity::builder::{CreateAttachment, CreateMessage};
+
+    let file_attachment = match CreateAttachment::path(&attachment.path).await {
+        Ok(a) => a,
+        Err(e) => {
+            tracing::warn!(
+                filename = %attachment.filename,
+                endpoint = "discord",
+                error = %e,
+                "failed to read file for discord attachment"
+            );
+            return;
+        }
+    };
+
+    let mut message = CreateMessage::new().add_file(file_attachment);
+    if !caption.is_empty() {
+        message = message.content(caption);
+    }
+
+    match channel_id.send_message(http, message).await {
+        Ok(_) => {
+            tracing::debug!(
+                filename = %attachment.filename,
+                endpoint = "discord",
+                "file delivered"
+            );
+        }
+        Err(e) => {
+            tracing::warn!(
+                filename = %attachment.filename,
+                endpoint = "discord",
+                error = %e,
+                "file delivery failed"
+            );
         }
     }
 }
