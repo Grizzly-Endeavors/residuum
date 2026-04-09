@@ -11,3 +11,9 @@ web/dist/
 specs/
 audit-results/
 bindings/
+mac/*.xcodeproj/project.xcworkspace/
+mac/*.xcodeproj/xcuserdata/
+mac/*.xcworkspace/
+mac/DerivedData/
+mac/build/
+.superpowers/
