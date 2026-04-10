@@ -250,6 +250,12 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
       - name: Build and push
         uses: docker/build-push-action@v6
         with:
@@ -259,7 +265,9 @@ jobs:
           platforms: linux/amd64,linux/arm64
           tags: |
             ghcr.io/grizzly-endeavors/residuum:${{ needs.checks.outputs.version }}
+            bearflinn/residuum:${{ needs.checks.outputs.version }}
             ${{ !endsWith(needs.checks.outputs.tag, '-test') && 'ghcr.io/grizzly-endeavors/residuum:latest' || '' }}
+            ${{ !endsWith(needs.checks.outputs.tag, '-test') && 'bearflinn/residuum:latest' || '' }}
 
   release:
     name: Create Release
