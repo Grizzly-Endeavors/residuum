@@ -1,0 +1,19 @@
+FROM debian:trixie-slim
+
+ARG TARGETARCH
+
+WORKDIR /app
+
+ENV RESIDUUM_GATEWAY_BIND=0.0.0.0
+
+COPY residuum-${TARGETARCH} /app/residuum
+
+RUN chmod +x residuum && useradd -m residuum
+
+USER residuum
+
+VOLUME ["/home/residuum/.residuum"]
+
+EXPOSE 7700
+
+CMD ["./residuum", "serve", "--foreground", "--debug"]

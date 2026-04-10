@@ -1,0 +1,17 @@
+/target/
+web/node_modules/
+web/dist/
+.git/
+mac/
+.claude/
+.github/
+.vscode/
+reference-mats/
+audit-results/
+bindings/
+specs/
+docs/
+assets/
+*.md
+.env
+.DS_Store
