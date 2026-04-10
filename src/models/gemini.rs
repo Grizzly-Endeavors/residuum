@@ -135,7 +135,16 @@ impl GeminiClient {
         for msg in messages {
             match msg.role {
                 Role::System => {
-                    system_parts.push(&msg.content);
+                    if system_parts.is_empty() {
+                        system_parts.push(&msg.content);
+                    } else {
+                        contents.push(GeminiContent {
+                            role: "user".to_string(),
+                            parts: vec![GeminiPart::Text {
+                                text: format!("System: {}", msg.content),
+                            }],
+                        });
+                    }
                 }
                 Role::User => {
                     if msg.images.is_empty() {

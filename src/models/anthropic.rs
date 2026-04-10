@@ -88,7 +88,14 @@ impl AnthropicClient {
         for msg in messages {
             match msg.role {
                 Role::System => {
-                    system_parts.push(&msg.content);
+                    if system_parts.is_empty() {
+                        system_parts.push(&msg.content);
+                    } else {
+                        api_messages.push(AnthropicMessage {
+                            role: String::from("user"),
+                            content: AnthropicContent::Text(format!("System: {}", msg.content)),
+                        });
+                    }
                 }
                 Role::User => {
                     let content = if msg.images.is_empty() {
@@ -1639,7 +1646,7 @@ mod tests {
     }
 
     #[test]
-    fn multiple_system_messages_concatenated() {
+    fn second_system_message_becomes_user() {
         let messages = vec![
             Message::system("First instruction."),
             Message::system("Second instruction."),
@@ -1649,10 +1656,28 @@ mod tests {
         let (system, api_msgs) = AnthropicClient::convert_messages(&messages);
         assert_eq!(
             system.as_deref(),
-            Some("First instruction.\nSecond instruction."),
-            "multiple system messages should be joined with newline"
+            Some("First instruction."),
+            "only first system message goes to system field"
         );
-        assert_eq!(api_msgs.len(), 1, "only user message should be in api_msgs");
+        // The extra system-as-user message and the real user message are
+        // consecutive same-role messages, so merge_consecutive_messages
+        // combines them into one.
+        assert_eq!(api_msgs.len(), 1, "merged into single user message");
+        let merged = api_msgs.first().unwrap();
+        assert_eq!(merged.role, "user");
+        let content_json = serde_json::to_value(&merged.content).unwrap();
+        let blocks = content_json.as_array().unwrap();
+        assert_eq!(blocks.len(), 2, "should have two content blocks");
+        assert_eq!(
+            blocks.first().unwrap().get("text").unwrap(),
+            "System: Second instruction.",
+            "first block is the converted system message"
+        );
+        assert_eq!(
+            blocks.get(1).unwrap().get("text").unwrap(),
+            "Hello",
+            "second block is the original user message"
+        );
     }
 
     #[tokio::test]
