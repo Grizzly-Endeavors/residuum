@@ -24,8 +24,8 @@ jobs:
         id: version
         run: |
           TAG="${GITHUB_REF_NAME}"
-          if ! echo "$TAG" | grep -qE '^v[0-9]{4}\.[0-9]{2}\.[0-9]{2}(-[0-9]+)?$'; then
-            echo "::error::Tag '$TAG' does not match CalVer format vYYYY.0M.0D(-N)"
+          if ! echo "$TAG" | grep -qE '^v[0-9]{4}\.[0-9]{2}\.[0-9]{2}(-[0-9]+|-test)?$'; then
+            echo "::error::Tag '$TAG' does not match CalVer format vYYYY.0M.0D(-N|-test)"
             exit 1
           fi
           VERSION="${TAG#v}"
@@ -259,7 +259,7 @@ jobs:
           platforms: linux/amd64,linux/arm64
           tags: |
             ghcr.io/grizzly-endeavors/residuum:${{ needs.checks.outputs.version }}
-            ghcr.io/grizzly-endeavors/residuum:latest
+            ${{ !endsWith(needs.checks.outputs.tag, '-test') && 'ghcr.io/grizzly-endeavors/residuum:latest' || '' }}
 
   release:
     name: Create Release
@@ -286,6 +286,7 @@ jobs:
           path: release-artifacts/ResiduumChat-macos
 
       - name: Create GitHub Release
+        if: "!endsWith(needs.checks.outputs.tag, '-test')"
         run: |
           ASSETS=(
             release-artifacts/residuum-linux-x86_64/residuum-linux-x86_64
@@ -299,6 +300,13 @@ jobs:
           gh release create "${{ needs.checks.outputs.tag }}" \
             --generate-notes \
             "${ASSETS[@]}"
+
+      - name: Test tag summary
+        if: endsWith(needs.checks.outputs.tag, '-test')
+        run: |
+          echo "::notice::Test tag — skipping GitHub release creation"
+          echo "Artifacts that would have been released:"
+          ls -la release-artifacts/*/
 
       - name: Build summary
         if: always()
