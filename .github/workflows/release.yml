@@ -10,7 +10,7 @@ permissions:
 jobs:
   checks:
     name: CI Checks
-    runs-on: [self-hosted, kubernetes, lab]
+    runs-on: lab-runners
 
     outputs:
       tag: ${{ steps.version.outputs.tag }}
@@ -91,10 +91,10 @@ jobs:
       matrix:
         include:
           - target: x86_64-unknown-linux-gnu
-            runner: '["self-hosted","kubernetes","lab"]'
+            runner: '"lab-runners"'
             artifact: residuum-linux-x86_64
           - target: aarch64-unknown-linux-gnu
-            runner: '["self-hosted","kubernetes","lab"]'
+            runner: '"lab-runners"'
             artifact: residuum-linux-aarch64
             cross: true
           - target: aarch64-apple-darwin
@@ -141,7 +141,7 @@ jobs:
   release:
     name: Create Release
     needs: [checks, build]
-    runs-on: [self-hosted, kubernetes, lab]
+    runs-on: lab-runners
 
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
