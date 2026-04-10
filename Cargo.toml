@@ -34,14 +34,14 @@ shellexpand = "3"
 aes-gcm-siv = "0.11"
 chrono = { version = "0.4", features = ["serde"] }
 chrono-tz = "0.10"
-tantivy = "0.22"
+tantivy = "0.26"
 rusqlite = { version = "0.32", features = ["bundled"] }
 sqlite-vec = "0.1"
 zerocopy = { version = "0.8", features = ["derive"] }
 http = "1"
 regex = "1"
 rmcp = { version = "0.16", features = ["client", "transport-child-process", "transport-streamable-http-client-reqwest"] }
-serde_yml = "0.0"
+serde_yaml_ng = "0.10"
 tokio-util = { version = "0.7", features = ["rt"] }
 nix = { version = "0.29", default-features = false, features = ["signal", "process"] }
 fd-lock = "4"

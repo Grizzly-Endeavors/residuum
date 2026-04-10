@@ -31,7 +31,7 @@ pub fn parse_preset_md(content: &str) -> anyhow::Result<(SubagentPresetFrontmatt
         .ok_or_else(|| anyhow::anyhow!("failed to extract YAML content"))?;
 
     let frontmatter: SubagentPresetFrontmatter =
-        serde_yml::from_str(yaml_str).context("failed to parse preset frontmatter")?;
+        serde_yaml_ng::from_str(yaml_str).context("failed to parse preset frontmatter")?;
 
     validate_preset_name(&frontmatter.name)?;
 

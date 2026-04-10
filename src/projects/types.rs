@@ -166,8 +166,8 @@ mod tests {
             archived: None,
         };
 
-        let yaml = serde_yml::to_string(&fm).unwrap();
-        let parsed: ProjectFrontmatter = serde_yml::from_str(&yaml).unwrap();
+        let yaml = serde_yaml_ng::to_string(&fm).unwrap();
+        let parsed: ProjectFrontmatter = serde_yaml_ng::from_str(&yaml).unwrap();
 
         assert_eq!(parsed.name, "test-project", "name should round-trip");
         assert_eq!(
@@ -188,7 +188,7 @@ status: archived
 created: 2025-11-01
 archived: 2026-02-08
 "#;
-        let fm: ProjectFrontmatter = serde_yml::from_str(yaml).unwrap();
+        let fm: ProjectFrontmatter = serde_yaml_ng::from_str(yaml).unwrap();
         assert_eq!(fm.status, ProjectStatus::Archived, "should be archived");
         assert!(fm.archived.is_some(), "archived date should be present");
         assert_eq!(
@@ -206,7 +206,7 @@ description: "Minimal project"
 status: active
 created: 2026-02-20
 "#;
-        let fm: ProjectFrontmatter = serde_yml::from_str(yaml).unwrap();
+        let fm: ProjectFrontmatter = serde_yaml_ng::from_str(yaml).unwrap();
         assert!(fm.tools.is_empty(), "tools should default to empty");
         assert!(
             fm.mcp_servers.is_empty(),
@@ -226,7 +226,7 @@ mcp_servers:
   - filesystem
   - git
 "#;
-        let fm: ProjectFrontmatter = serde_yml::from_str(yaml).unwrap();
+        let fm: ProjectFrontmatter = serde_yaml_ng::from_str(yaml).unwrap();
         assert_eq!(fm.mcp_servers.len(), 2, "should have two MCP server refs");
         assert_eq!(fm.mcp_servers[0], "filesystem", "first ref should match");
         assert_eq!(fm.mcp_servers[1], "git", "second ref should match");
@@ -234,17 +234,17 @@ mcp_servers:
 
     #[test]
     fn mcp_transport_serde_round_trip_stdio() {
-        let yaml = serde_yml::to_string(&McpTransport::Stdio).unwrap();
+        let yaml = serde_yaml_ng::to_string(&McpTransport::Stdio).unwrap();
         assert!(yaml.contains("stdio"), "Stdio should serialize as 'stdio'");
-        let parsed: McpTransport = serde_yml::from_str(&yaml).unwrap();
+        let parsed: McpTransport = serde_yaml_ng::from_str(&yaml).unwrap();
         assert_eq!(parsed, McpTransport::Stdio, "should round-trip Stdio");
     }
 
     #[test]
     fn mcp_transport_serde_round_trip_http() {
-        let yaml = serde_yml::to_string(&McpTransport::Http).unwrap();
+        let yaml = serde_yaml_ng::to_string(&McpTransport::Http).unwrap();
         assert!(yaml.contains("http"), "Http should serialize as 'http'");
-        let parsed: McpTransport = serde_yml::from_str(&yaml).unwrap();
+        let parsed: McpTransport = serde_yaml_ng::from_str(&yaml).unwrap();
         assert_eq!(parsed, McpTransport::Http, "should round-trip Http");
     }
 
@@ -269,8 +269,8 @@ mcp_servers:
             archived: None,
         };
 
-        let yaml = serde_yml::to_string(&fm).unwrap();
-        let parsed: ProjectFrontmatter = serde_yml::from_str(&yaml).unwrap();
+        let yaml = serde_yaml_ng::to_string(&fm).unwrap();
+        let parsed: ProjectFrontmatter = serde_yaml_ng::from_str(&yaml).unwrap();
 
         assert_eq!(parsed.mcp_servers.len(), 2, "should round-trip two refs");
         assert_eq!(parsed.mcp_servers[0], "filesystem");
@@ -279,13 +279,13 @@ mcp_servers:
 
     #[test]
     fn status_serialization() {
-        let active_yaml = serde_yml::to_string(&ProjectStatus::Active).unwrap();
+        let active_yaml = serde_yaml_ng::to_string(&ProjectStatus::Active).unwrap();
         assert!(
             active_yaml.contains("active"),
             "Active should serialize as 'active'"
         );
 
-        let archived_yaml = serde_yml::to_string(&ProjectStatus::Archived).unwrap();
+        let archived_yaml = serde_yaml_ng::to_string(&ProjectStatus::Archived).unwrap();
         assert!(
             archived_yaml.contains("archived"),
             "Archived should serialize as 'archived'"
@@ -320,8 +320,8 @@ mcp_servers:
             headers: HashMap::new(),
         };
 
-        let yaml = serde_yml::to_string(&entry).unwrap();
-        let parsed: McpServerEntry = serde_yml::from_str(&yaml).unwrap();
+        let yaml = serde_yaml_ng::to_string(&entry).unwrap();
+        let parsed: McpServerEntry = serde_yaml_ng::from_str(&yaml).unwrap();
 
         assert_eq!(parsed.name, "my-server");
         assert_eq!(parsed.command, "my-command");
@@ -345,8 +345,8 @@ mcp_servers:
             headers,
         };
 
-        let yaml = serde_yml::to_string(&entry).unwrap();
-        let parsed: McpServerEntry = serde_yml::from_str(&yaml).unwrap();
+        let yaml = serde_yaml_ng::to_string(&entry).unwrap();
+        let parsed: McpServerEntry = serde_yaml_ng::from_str(&yaml).unwrap();
 
         assert_eq!(parsed.name, "http-server");
         assert_eq!(parsed.command, "https://example.com/mcp");

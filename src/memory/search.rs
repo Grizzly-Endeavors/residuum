@@ -8,7 +8,8 @@ use std::sync::Arc;
 use tantivy::collector::TopDocs;
 use tantivy::directory::MmapDirectory;
 use tantivy::query::{BooleanQuery, QueryParser};
-use tantivy::schema::{Field, OwnedValue, STORED, STRING, Schema, TEXT};
+use tantivy::schema::document::{ReferenceValue, ReferenceValueLeaf, Value};
+use tantivy::schema::{Field, STORED, STRING, Schema, TEXT};
 use tantivy::{Index, IndexReader, IndexWriter, ReloadPolicy, TantivyDocument, Term};
 
 use anyhow::Context;
@@ -350,7 +351,7 @@ impl MemoryIndex {
         };
 
         let top_docs = searcher
-            .search(&*query, &TopDocs::with_limit(fetch_limit))
+            .search(&*query, &TopDocs::with_limit(fetch_limit).order_by_score())
             .context("search failed")?;
 
         let mut results = Vec::with_capacity(limit);
@@ -494,7 +495,7 @@ impl MemoryIndex {
         let stale_keys: Vec<String> = manifest
             .files
             .keys()
-            .filter(|k| !disk_paths.contains(k.as_str()))
+            .filter(|k| !disk_paths.contains(String::as_str(k)))
             .cloned()
             .collect();
         for key in &stale_keys {
@@ -644,16 +645,18 @@ impl MemoryIndex {
 
 /// Extract a text field value from a tantivy document.
 fn get_text(doc: &TantivyDocument, field: Field) -> String {
-    match doc.get_first(field) {
-        Some(OwnedValue::Str(s)) => s.clone(),
+    match doc.get_first(field).map(|v| v.as_value()) {
+        Some(ReferenceValue::Leaf(ReferenceValueLeaf::Str(s))) => (*s).to_owned(),
         Some(_) | None => String::new(),
     }
 }
 
 /// Extract a snippet (first 200 chars of content) from a document.
 fn get_snippet(doc: &TantivyDocument, content_field: Field) -> String {
-    match doc.get_first(content_field) {
-        Some(OwnedValue::Str(s)) => crate::memory::truncate_at_char_boundary(s, 200),
+    match doc.get_first(content_field).map(|v| v.as_value()) {
+        Some(ReferenceValue::Leaf(ReferenceValueLeaf::Str(s))) => {
+            crate::memory::truncate_at_char_boundary(s, 200)
+        }
         Some(_) | None => String::new(),
     }
 }

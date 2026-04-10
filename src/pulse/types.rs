@@ -145,7 +145,7 @@ where
 /// Returns `None` if the file does not exist.
 #[must_use]
 pub(crate) fn load_heartbeat(path: &Path) -> Option<HeartbeatConfig> {
-    let cfg = read_and_parse(path, |s| serde_yml::from_str::<HeartbeatConfig>(s))?;
+    let cfg = read_and_parse(path, |s| serde_yaml_ng::from_str::<HeartbeatConfig>(s))?;
     tracing::trace!(path = %path.display(), pulses = cfg.pulses.len(), "loaded HEARTBEAT.yml");
     Some(cfg)
 }
@@ -360,14 +360,14 @@ mod tests {
     #[test]
     fn heartbeat_config_empty_pulses() {
         let yaml = "pulses: []";
-        let cfg: HeartbeatConfig = serde_yml::from_str(yaml).unwrap();
+        let cfg: HeartbeatConfig = serde_yaml_ng::from_str(yaml).unwrap();
         assert!(cfg.pulses.is_empty(), "empty pulses should parse");
     }
 
     #[test]
     fn heartbeat_config_missing_pulses_key() {
         let yaml = "{}";
-        let cfg: HeartbeatConfig = serde_yml::from_str(yaml).unwrap();
+        let cfg: HeartbeatConfig = serde_yaml_ng::from_str(yaml).unwrap();
         assert!(
             cfg.pulses.is_empty(),
             "missing pulses key should default to empty"
@@ -384,7 +384,7 @@ pulses:
       - name: check_inbox
         prompt: "Check email"
 "#;
-        let cfg: HeartbeatConfig = serde_yml::from_str(yaml).unwrap();
+        let cfg: HeartbeatConfig = serde_yaml_ng::from_str(yaml).unwrap();
         assert_eq!(cfg.pulses.len(), 1, "should parse one pulse");
         let pulse = cfg.pulses.first().unwrap();
         assert_eq!(pulse.name, "email_check", "pulse name should match");
@@ -403,7 +403,7 @@ pulses:
       - name: plan
         prompt: "Plan the day."
 "#;
-        let cfg: HeartbeatConfig = serde_yml::from_str(yaml).unwrap();
+        let cfg: HeartbeatConfig = serde_yaml_ng::from_str(yaml).unwrap();
         let pulse = cfg.pulses.first().unwrap();
         assert_eq!(
             pulse.agent.as_deref(),
@@ -423,7 +423,7 @@ pulses:
       - name: check
         prompt: "Check email."
 "#;
-        let cfg: HeartbeatConfig = serde_yml::from_str(yaml).unwrap();
+        let cfg: HeartbeatConfig = serde_yaml_ng::from_str(yaml).unwrap();
         let pulse = cfg.pulses.first().unwrap();
         assert_eq!(
             pulse.agent.as_deref(),
@@ -440,7 +440,7 @@ pulses:
     schedule: "1h"
     tasks: []
 "#;
-        let cfg: HeartbeatConfig = serde_yml::from_str(yaml).unwrap();
+        let cfg: HeartbeatConfig = serde_yaml_ng::from_str(yaml).unwrap();
         let pulse = cfg.pulses.first().unwrap();
         assert!(
             pulse.agent.is_none(),
@@ -458,7 +458,7 @@ pulses:
     trigger_count: 3
     tasks: []
 "#;
-        let cfg: HeartbeatConfig = serde_yml::from_str(yaml).unwrap();
+        let cfg: HeartbeatConfig = serde_yaml_ng::from_str(yaml).unwrap();
         let pulse = cfg.pulses.first().unwrap();
         assert_eq!(pulse.trigger_count, Some(3), "trigger_count should be 3");
     }
@@ -471,7 +471,7 @@ pulses:
     schedule: "1h"
     tasks: []
 "#;
-        let cfg: HeartbeatConfig = serde_yml::from_str(yaml).unwrap();
+        let cfg: HeartbeatConfig = serde_yaml_ng::from_str(yaml).unwrap();
         let pulse = cfg.pulses.first().unwrap();
         assert!(
             pulse.trigger_count.is_none(),
@@ -487,7 +487,7 @@ pulses:
     schedule: "1h"
     tasks: []
 "#;
-        let cfg: HeartbeatConfig = serde_yml::from_str(yaml).unwrap();
+        let cfg: HeartbeatConfig = serde_yaml_ng::from_str(yaml).unwrap();
         let pulse = cfg.pulses.first().unwrap();
         assert!(pulse.enabled, "enabled should default to true when absent");
     }

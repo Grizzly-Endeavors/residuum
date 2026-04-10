@@ -23,7 +23,7 @@ pub(super) fn parse_skill_md(content: &str) -> anyhow::Result<(SkillFrontmatter,
         .ok_or_else(|| anyhow::anyhow!("SKILL.md missing closing frontmatter delimiter '---'"))?;
 
     let frontmatter: SkillFrontmatter =
-        serde_yml::from_str(yaml_str).context("failed to parse SKILL.md frontmatter")?;
+        serde_yaml_ng::from_str(yaml_str).context("failed to parse SKILL.md frontmatter")?;
 
     validate_skill_name(&frontmatter.name)?;
 

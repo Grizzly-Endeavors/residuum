@@ -205,7 +205,7 @@ pub fn parse_project_md(content: &str) -> anyhow::Result<(ProjectFrontmatter, St
     let yaml_str = &after_open[..close_pos];
 
     let frontmatter: ProjectFrontmatter =
-        serde_yml::from_str(yaml_str).context("failed to parse PROJECT.md frontmatter")?;
+        serde_yaml_ng::from_str(yaml_str).context("failed to parse PROJECT.md frontmatter")?;
 
     let body_start = OPEN.len() + close_pos + CLOSE.len();
     let body = trimmed.get(body_start..).unwrap_or("").trim().to_string();
@@ -221,7 +221,7 @@ pub fn serialize_project_md(
     frontmatter: &ProjectFrontmatter,
     body: &str,
 ) -> anyhow::Result<String> {
-    let yaml = serde_yml::to_string(frontmatter).context("failed to serialize frontmatter")?;
+    let yaml = serde_yaml_ng::to_string(frontmatter).context("failed to serialize frontmatter")?;
 
     let mut output = format!("---\n{yaml}---\n");
 
