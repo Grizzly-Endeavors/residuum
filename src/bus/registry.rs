@@ -87,6 +87,7 @@ impl EndpointRegistry {
                 ExternalChannelKind::Ntfy { .. } => "Ntfy",
                 ExternalChannelKind::Webhook { .. } => "Webhook",
                 ExternalChannelKind::Macos { .. } => "macOS",
+                ExternalChannelKind::Windows { .. } => "Windows",
             };
             registry.register(EndpointEntry {
                 id: EndpointId::from(ch.name.as_str()),

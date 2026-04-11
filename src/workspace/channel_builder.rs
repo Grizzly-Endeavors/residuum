@@ -51,6 +51,11 @@ pub async fn build_external_channels(
                     channels.insert(cfg.name.clone(), ch);
                 }
             }
+            ExternalChannelKind::Windows { .. } => {
+                if let Some(ch) = build_windows_channel(&cfg.name, &cfg.kind).await {
+                    channels.insert(cfg.name.clone(), ch);
+                }
+            }
         }
     }
 
@@ -138,6 +143,92 @@ async fn build_macos_channel(
     tracing::warn!(
         channel = %name,
         "macOS notification channel configured but not available on this platform"
+    );
+    None
+}
+
+/// Build a Windows notification channel from raw config fields.
+///
+/// On non-Windows platforms, logs a warning and returns `None`.
+#[cfg(target_os = "windows")]
+async fn build_windows_channel(
+    name: &str,
+    kind: &ExternalChannelKind,
+) -> Option<Box<dyn NotificationChannel>> {
+    use crate::notify::windows::WindowsChannelConfig;
+    use crate::notify::windows::categories::{WindowsCategory, WindowsScenario};
+
+    let ExternalChannelKind::Windows {
+        default_category,
+        default_scenario,
+        throttle_window_secs,
+        sound,
+        app_name,
+        app_id,
+    } = kind
+    else {
+        return None;
+    };
+
+    let mut config = WindowsChannelConfig::default();
+
+    if let Some(cat) = default_category {
+        match cat.parse::<WindowsCategory>() {
+            Ok(c) => config.default_category = c,
+            Err(e) => {
+                tracing::warn!(channel = %name, error = %e, "invalid Windows channel config, skipping");
+                return None;
+            }
+        }
+    }
+
+    if let Some(scn) = default_scenario {
+        match scn.parse::<WindowsScenario>() {
+            Ok(s) => config.default_scenario = s,
+            Err(e) => {
+                tracing::warn!(channel = %name, error = %e, "invalid Windows channel config, skipping");
+                return None;
+            }
+        }
+    }
+
+    if let Some(secs) = throttle_window_secs {
+        config.throttle_window_secs = *secs;
+    }
+    if let Some(s) = sound {
+        config.sound = *s;
+    }
+    if let Some(n) = app_name {
+        config.app_name = n.clone();
+    }
+    if let Some(id) = app_id {
+        config.app_id = id.clone();
+    }
+
+    match crate::notify::windows::WindowsNativeChannel::new(name, config) {
+        Ok((channel, _handle)) => {
+            tracing::debug!(channel = %name, "Windows notification channel initialized");
+            Some(Box::new(channel))
+        }
+        Err(e) => {
+            tracing::warn!(channel = %name, error = %e, "failed to initialize Windows channel, skipping");
+            None
+        }
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+#[expect(
+    clippy::unused_async,
+    reason = "signature must match the async Windows variant"
+)]
+async fn build_windows_channel(
+    name: &str,
+    _kind: &ExternalChannelKind,
+) -> Option<Box<dyn NotificationChannel>> {
+    tracing::warn!(
+        channel = %name,
+        "Windows notification channel configured but not available on this platform"
     );
     None
 }

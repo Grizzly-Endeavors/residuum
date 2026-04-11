@@ -27,9 +27,11 @@ impl Tool for ExecTool {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: self.name().to_string(),
-            description: "Execute a shell command and return its output. Commands run via \
-                          `sh -c` with a configurable timeout (default 120 seconds)."
-                .to_string(),
+            description: format!(
+                "Execute a shell command and return its output. Commands run via \
+                 {} with a configurable timeout (default 120 seconds).",
+                if cfg!(windows) { "`cmd /C`" } else { "`sh -c`" }
+            ),
             parameters: serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -62,11 +64,12 @@ impl Tool for ExecTool {
 
         tracing::debug!(command = %command, timeout_secs = %timeout_secs, "exec");
 
-        let result = tokio::time::timeout(
-            Duration::from_secs(timeout_secs),
-            Command::new("sh").arg("-c").arg(command).output(),
-        )
-        .await;
+        #[cfg(unix)]
+        let child = Command::new("sh").arg("-c").arg(command).output();
+        #[cfg(windows)]
+        let child = Command::new("cmd").args(["/C", command]).output();
+
+        let result = tokio::time::timeout(Duration::from_secs(timeout_secs), child).await;
 
         match result {
             Err(_elapsed) => Ok(ToolResult::error(format!(

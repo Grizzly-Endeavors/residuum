@@ -110,7 +110,7 @@ On error:
 **Source:** `exec.rs` · `ExecTool`
 
 **Description sent to LLM:**
-> Execute a shell command and return its output. Commands run via `sh -c` with a configurable timeout (default 120 seconds).
+> Execute a shell command and return its output. Commands run via `sh -c` (Unix) or `cmd /C` (Windows) with a configurable timeout (default 120 seconds). The description sent to the LLM reflects the current platform.
 
 ### Input
 

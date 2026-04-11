@@ -13,6 +13,23 @@ use anyhow::{Context, bail};
 /// Build-time version injected by the release workflow.
 pub const CURRENT_VERSION: &str = env!("RESIDUUM_VERSION");
 
+/// Remove the `.exe.old` leftover from a previous Windows self-update.
+///
+/// Call this during startup. On non-Windows platforms this is a no-op.
+pub fn cleanup_old_binary() {
+    #[cfg(windows)]
+    {
+        if let Ok(exe) = std::env::current_exe() {
+            let old = exe.with_extension("exe.old");
+            if old.exists() {
+                if let Err(e) = std::fs::remove_file(&old) {
+                    tracing::debug!(path = %old.display(), error = %e, "could not remove old binary (may still be in use)");
+                }
+            }
+        }
+    }
+}
+
 /// Shared update status visible to the gateway event loop and web API.
 #[derive(Debug, Clone)]
 pub struct UpdateStatus {
@@ -207,11 +224,14 @@ pub async fn download_and_install(version: &str) -> anyhow::Result<()> {
 
     // On Linux, the kernel appends " (deleted)" to /proc/self/exe when the
     // binary has been atomically replaced. Strip it to get the real path.
+    #[cfg(target_os = "linux")]
     let exe_path = current_exe
         .to_string_lossy()
         .strip_suffix(" (deleted)")
         .map(std::path::PathBuf::from)
         .unwrap_or(current_exe);
+    #[cfg(not(target_os = "linux"))]
+    let exe_path = current_exe;
 
     let exe_dir = exe_path
         .parent()
@@ -243,8 +263,26 @@ pub async fn download_and_install(version: &str) -> anyhow::Result<()> {
             .context("failed to set executable permissions")?;
     }
 
-    // Atomic rename replaces the binary on disk while the running process
-    // keeps its handle to the old inode
+    // On Windows, the running exe can't be overwritten directly. Rename it
+    // out of the way first, then move the new binary into place. The old
+    // binary is cleaned up on next startup via `cleanup_old_binary`.
+    #[cfg(windows)]
+    {
+        let old_path = exe_path.with_extension("exe.old");
+        // Remove any leftover .old from a previous update
+        let _ = std::fs::remove_file(&old_path);
+        std::fs::rename(&exe_path, &old_path)
+            .inspect_err(|_| cleanup())
+            .with_context(|| {
+                format!(
+                    "failed to rename running binary at {} — an antivirus may be holding the file",
+                    exe_path.display()
+                )
+            })?;
+    }
+
+    // Atomic rename replaces the binary on disk (Unix: running process keeps
+    // its handle to the old inode; Windows: old binary already moved above)
     std::fs::rename(&tmp_path, &exe_path)
         .inspect_err(|_| cleanup())
         .with_context(|| {
@@ -267,6 +305,7 @@ fn detect_platform() -> anyhow::Result<String> {
     let os = match std::env::consts::OS {
         "linux" => "linux",
         "macos" => "darwin",
+        "windows" => "windows",
         other => {
             bail!("unsupported operating system for self-update: {other}");
         }
