@@ -43,7 +43,6 @@ regex = "1"
 rmcp = { version = "0.16", features = ["client", "transport-child-process", "transport-streamable-http-client-reqwest"] }
 serde_yaml_ng = "0.10"
 tokio-util = { version = "0.7", features = ["rt"] }
-nix = { version = "0.29", default-features = false, features = ["signal", "process"] }
 fd-lock = "4"
 
 # Logging
@@ -88,6 +87,15 @@ objc2 = "0.6"
 objc2-foundation = "0.3"
 objc2-user-notifications = "0.3"
 block2 = "0.6"
+
+# Unix process signals (Linux + macOS)
+[target.'cfg(unix)'.dependencies]
+nix = { version = "0.29", default-features = false, features = ["signal", "process"] }
+
+# Windows process management and notifications
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = ["Win32_System_Threading", "Win32_Foundation"] }
+winrt-notification = "0.5"
 
 [dev-dependencies]
 tempfile = "3"

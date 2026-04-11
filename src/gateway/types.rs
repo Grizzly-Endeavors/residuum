@@ -44,6 +44,51 @@ pub enum GatewayExit {
     Restart,
 }
 
+/// Platform-aware termination signal.
+///
+/// On Unix, wraps a SIGTERM listener. On Windows (and other platforms), `recv()`
+/// pends forever — graceful shutdown is handled via the HTTP `/api/shutdown` endpoint
+/// or the cross-platform Ctrl+C handler instead.
+pub struct TermSignal {
+    #[cfg(unix)]
+    inner: tokio::signal::unix::Signal,
+}
+
+impl TermSignal {
+    /// Register the platform termination signal.
+    ///
+    /// # Errors
+    ///
+    /// Returns an I/O error if the signal handler cannot be registered (Unix only).
+    #[cfg(unix)]
+    pub fn new() -> std::io::Result<Self> {
+        let inner = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
+        Ok(Self { inner })
+    }
+
+    /// Register the platform termination signal.
+    ///
+    /// # Errors
+    ///
+    /// Returns an I/O error if the signal handler cannot be registered (Unix only).
+    #[cfg(not(unix))]
+    pub fn new() -> std::io::Result<Self> {
+        Ok(Self {})
+    }
+
+    /// Wait for the termination signal. On non-Unix platforms this never resolves.
+    #[cfg(unix)]
+    pub async fn recv(&mut self) {
+        self.inner.recv().await;
+    }
+
+    /// Wait for the termination signal. On non-Unix platforms this never resolves.
+    #[cfg(not(unix))]
+    pub async fn recv(&mut self) {
+        std::future::pending::<()>().await;
+    }
+}
+
 /// A named command dispatched from any client channel to the server event loop.
 pub struct ServerCommand {
     /// Command name (e.g. "observe", "reflect", "context").
@@ -158,8 +203,8 @@ pub(crate) struct GatewayRuntime {
     /// Kept alive so the HTTP server task isn't dropped; shut down via `shutdown_tx`.
     pub server_handle: tokio::task::JoinHandle<()>,
     pub pulse_scheduler: PulseScheduler,
-    /// SIGTERM signal listener for daemon stop support.
-    pub sigterm: tokio::signal::unix::Signal,
+    /// Platform termination signal (SIGTERM on Unix, never-resolving on Windows).
+    pub sigterm: TermSignal,
     /// Dedicated shutdown signal for the HTTP server.
     pub http_shutdown_tx: tokio::sync::watch::Sender<bool>,
     /// Path to the config directory (for backup/rollback during reload).

@@ -61,8 +61,7 @@ pub(super) async fn run_stop_command(args: &StopArgs) -> Result<(), FatalError> 
         );
     }
 
-    // Layer 3: SIGTERM fallback (Unix-only)
-    // TODO(windows): use TerminateProcess on Windows
+    // Layer 3: terminate process (SIGTERM on Unix, TerminateProcess on Windows)
     send_sigterm(pid)?;
 
     if poll_for_exit(&pid_path, pid, &label).await? {

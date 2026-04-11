@@ -183,9 +183,41 @@ fn set_file_mode_600(path: &Path) -> Result<(), FatalError> {
     })
 }
 
-#[cfg(not(unix))]
+/// Restrict file access to the current user via `icacls` (Windows).
+#[cfg(windows)]
+fn set_file_mode_600(path: &Path) -> Result<(), FatalError> {
+    let username = std::env::var("USERNAME").unwrap_or_else(|_| "CURRENT_USER".to_string());
+    let grant_arg = format!("{username}:(F)");
+    let status = std::process::Command::new("icacls")
+        .arg(path.as_os_str())
+        .args(["/inheritance:r", "/grant:r", &grant_arg])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status();
+    match status {
+        Ok(s) if s.success() => Ok(()),
+        Ok(s) => {
+            tracing::warn!(
+                path = %path.display(),
+                exit_code = ?s.code(),
+                "icacls failed to restrict file permissions — secrets.key may be readable by other users"
+            );
+            Ok(())
+        }
+        Err(e) => {
+            tracing::warn!(
+                path = %path.display(),
+                error = %e,
+                "could not run icacls — secrets.key may be readable by other users"
+            );
+            Ok(())
+        }
+    }
+}
+
+#[cfg(not(any(unix, windows)))]
 fn set_file_mode_600(_path: &Path) -> Result<(), FatalError> {
-    // No-op on non-Unix platforms
+    // No-op on unsupported platforms
     Ok(())
 }
 

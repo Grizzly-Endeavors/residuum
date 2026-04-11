@@ -45,4 +45,19 @@ pub enum ExternalChannelKind {
         /// Base URL for "Open" action.
         web_url: Option<String>,
     },
+    /// Native Windows Toast notification channel.
+    Windows {
+        /// Default notification category.
+        default_category: Option<String>,
+        /// Default Toast scenario (default, reminder, alarm).
+        default_scenario: Option<String>,
+        /// Throttle window in seconds.
+        throttle_window_secs: Option<u64>,
+        /// Play notification sound.
+        sound: Option<bool>,
+        /// Display name in banners.
+        app_name: Option<String>,
+        /// `WinRT` App User Model ID.
+        app_id: Option<String>,
+    },
 }

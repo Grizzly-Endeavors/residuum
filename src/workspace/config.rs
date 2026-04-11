@@ -196,7 +196,7 @@ struct ChannelsFile {
 /// Raw TOML channel entry before conversion to `ExternalChannelConfig`.
 #[derive(Deserialize)]
 struct ChannelEntryRaw {
-    /// Channel type: `"ntfy"`, `"webhook"`, or `"macos"`.
+    /// Channel type: `"ntfy"`, `"webhook"`, `"macos"`, or `"windows"`.
     #[serde(rename = "type")]
     type_: String,
     url: Option<String>,
@@ -204,13 +204,16 @@ struct ChannelEntryRaw {
     priority: Option<String>,
     method: Option<String>,
     headers: Option<HashMap<String, String>>,
-    // macOS channel fields
+    // macOS / Windows channel fields
     default_category: Option<String>,
     default_priority: Option<String>,
     throttle_window_secs: Option<u64>,
     sound: Option<bool>,
     app_name: Option<String>,
     web_url: Option<String>,
+    // Windows-specific fields
+    default_scenario: Option<String>,
+    app_id: Option<String>,
 }
 
 /// Load external channel configs from a TOML file.
@@ -258,6 +261,14 @@ pub fn load_channel_configs(path: &Path) -> anyhow::Result<Vec<ExternalChannelCo
                     sound: raw.sound,
                     app_name: raw.app_name,
                     web_url: raw.web_url,
+                },
+                "windows" => ExternalChannelKind::Windows {
+                    default_category: raw.default_category,
+                    default_scenario: raw.default_scenario,
+                    throttle_window_secs: raw.throttle_window_secs,
+                    sound: raw.sound,
+                    app_name: raw.app_name,
+                    app_id: raw.app_id,
                 },
                 "webhook" => {
                     let Some(url) = raw.url.filter(|u| !u.is_empty()) else {

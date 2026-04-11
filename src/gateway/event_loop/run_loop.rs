@@ -72,7 +72,7 @@ struct SpawnedHandles {
     tunnel_status_tx: Arc<tokio::sync::watch::Sender<crate::tunnel::TunnelStatus>>,
     tunnel_status_rx: tokio::sync::watch::Receiver<crate::tunnel::TunnelStatus>,
     tracing_service: Arc<crate::tracing_service::TracingService>,
-    sigterm: tokio::signal::unix::Signal,
+    sigterm: crate::gateway::types::TermSignal,
     file_registry: crate::gateway::file_server::FileRegistry,
 }
 
@@ -145,8 +145,8 @@ async fn spawn_server_and_adapters(
     let server_handle = spawn_http_server(cfg, app, &core.http_shutdown_tx).await?;
     let adapters = spawn_adapters(cfg, discord_senders, telegram_senders, parts.tz);
     let (tunnel_handle, tunnel_shutdown_tx) = spawn_tunnel(cfg, Arc::clone(&tunnel_status_tx));
-    let sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
-        .map_err(|e| FatalError::Gateway(format!("failed to register SIGTERM handler: {e}")))?;
+    let sigterm = crate::gateway::types::TermSignal::new()
+        .map_err(|e| FatalError::Gateway(format!("failed to register termination handler: {e}")))?;
     let _watcher_handle = watcher::spawn_workspace_watcher(
         parts.layout.mcp_json(),
         parts.layout.channels_toml(),
@@ -623,7 +623,7 @@ async fn run_event_loop(mut rt: GatewayRuntime) -> GatewayExit {
 
     loop {
         tokio::select! {
-            _ = rt.sigterm.recv() => {
+            () = rt.sigterm.recv() => {
                 tracing::info!("received SIGTERM, shutting down");
                 graceful_shutdown(&mut rt).await;
                 break;

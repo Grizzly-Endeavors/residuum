@@ -220,9 +220,8 @@ pub fn remove_pid_file(path: &Path) -> Result<(), FatalError> {
 }
 
 /// Check whether a process with the given PID is currently running.
-///
-/// Uses POSIX signal 0 via `kill(pid, None)`, which works on both Linux and macOS.
 #[must_use]
+#[cfg(unix)]
 pub fn is_process_running(pid: u32) -> bool {
     use nix::sys::signal::kill;
     use nix::unistd::Pid;
@@ -249,11 +248,36 @@ pub fn is_process_running(pid: u32) -> bool {
     }
 }
 
-/// Send `SIGTERM` to the process with the given PID.
+/// Check whether a process with the given PID is currently running.
+#[must_use]
+#[cfg(windows)]
+#[expect(unsafe_code, reason = "Win32 FFI for process management")]
+pub fn is_process_running(pid: u32) -> bool {
+    use windows_sys::Win32::Foundation::{CloseHandle, STILL_ACTIVE};
+    use windows_sys::Win32::System::Threading::{
+        GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+    };
+
+    // SAFETY: OpenProcess returns a valid handle or null. We close it before returning.
+    let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
+    if handle.is_null() {
+        return false;
+    }
+    let mut exit_code: u32 = 0;
+    // SAFETY: handle is valid (non-null check above), exit_code is a valid pointer.
+    let ok = unsafe { GetExitCodeProcess(handle, &mut exit_code) };
+    unsafe { CloseHandle(handle) };
+    ok != 0 && exit_code == STILL_ACTIVE as u32
+}
+
+/// Send a termination signal to the process with the given PID.
+///
+/// On Unix this sends SIGTERM; on Windows this calls `TerminateProcess`.
 ///
 /// # Errors
 ///
-/// Returns `FatalError::Gateway` if the signal cannot be sent.
+/// Returns `FatalError::Gateway` if the signal/termination cannot be sent.
+#[cfg(unix)]
 pub fn send_sigterm(pid: u32) -> Result<(), FatalError> {
     use nix::sys::signal::{Signal, kill};
     use nix::unistd::Pid;
@@ -266,6 +290,38 @@ pub fn send_sigterm(pid: u32) -> Result<(), FatalError> {
     kill(nix_pid, Signal::SIGTERM)
         .map_err(|e| FatalError::Gateway(format!("failed to send SIGTERM to pid {pid}: {e}")))?;
     tracing::debug!(pid, "sent SIGTERM");
+    Ok(())
+}
+
+/// Send a termination signal to the process with the given PID.
+///
+/// On Unix this sends SIGTERM; on Windows this calls `TerminateProcess`.
+///
+/// # Errors
+///
+/// Returns `FatalError::Gateway` if the signal/termination cannot be sent.
+#[cfg(windows)]
+#[expect(unsafe_code, reason = "Win32 FFI for process management")]
+pub fn send_sigterm(pid: u32) -> Result<(), FatalError> {
+    use windows_sys::Win32::Foundation::CloseHandle;
+    use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_TERMINATE, TerminateProcess};
+
+    // SAFETY: OpenProcess returns a valid handle or null.
+    let handle = unsafe { OpenProcess(PROCESS_TERMINATE, 0, pid) };
+    if handle.is_null() {
+        return Err(FatalError::Gateway(format!(
+            "failed to open process {pid} for termination"
+        )));
+    }
+    // SAFETY: handle is valid (non-null check above).
+    let ok = unsafe { TerminateProcess(handle, 1) };
+    unsafe { CloseHandle(handle) };
+    if ok == 0 {
+        return Err(FatalError::Gateway(format!(
+            "failed to terminate process {pid}"
+        )));
+    }
+    tracing::debug!(pid, "terminated process");
     Ok(())
 }
 

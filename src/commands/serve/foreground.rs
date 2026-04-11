@@ -77,6 +77,9 @@ async fn run_setup_mode() -> Result<(), FatalError> {
 /// Inner implementation of foreground serve, wrapped by PID file lifecycle.
 #[tracing::instrument(skip_all, fields(agent = ?args.agent))]
 async fn run_serve_foreground_inner(args: &ServeArgs) -> Result<(), FatalError> {
+    // Clean up leftover .exe.old from a previous Windows self-update (no-op on Unix)
+    residuum::update::cleanup_old_binary();
+
     let agent_name = args.agent.as_deref();
 
     if args.setup {
@@ -164,6 +167,10 @@ async fn run_serve_foreground_inner(args: &ServeArgs) -> Result<(), FatalError> 
 ///
 /// Returns `FatalError::Gateway` if the current executable path cannot be
 /// determined. On Unix, `exec()` does not return on success.
+/// On Linux, atomically replacing the binary (via `mv`) unlinks the old inode
+/// while the process is still running. The kernel then appends " (deleted)" to
+/// `/proc/self/exe`. Strip the suffix to get the live path on disk.
+#[cfg(target_os = "linux")]
 fn resolve_exe_path(raw: &std::path::Path) -> std::path::PathBuf {
     let s = raw.to_string_lossy();
     if let Some(stripped) = s.strip_suffix(" (deleted)") {
@@ -173,6 +180,16 @@ fn resolve_exe_path(raw: &std::path::Path) -> std::path::PathBuf {
     }
 }
 
+#[cfg(not(target_os = "linux"))]
+fn resolve_exe_path(raw: &std::path::Path) -> std::path::PathBuf {
+    raw.to_path_buf()
+}
+
+/// Re-exec the serve foreground process with the (potentially updated) binary.
+///
+/// On Unix, uses `exec()` to replace the process image (PID stays the same).
+/// On Windows, spawns a new process and exits the current one.
+#[cfg(unix)]
 fn re_exec_serve_foreground() -> Result<(), FatalError> {
     use std::os::unix::process::CommandExt;
 
@@ -182,11 +199,6 @@ fn re_exec_serve_foreground() -> Result<(), FatalError> {
         ))
     })?;
 
-    // On Linux, atomically replacing the binary (via `mv`) unlinks the old
-    // inode while the process is still running. The kernel then appends
-    // " (deleted)" to /proc/self/exe, so current_exe() returns a path that
-    // no longer exists. Strip the suffix to get the live path on disk, which
-    // now points to the freshly-installed binary.
     let exe = resolve_exe_path(&raw_exe);
 
     tracing::info!(exe = %exe.display(), "re-execing with updated binary");
@@ -197,6 +209,32 @@ fn re_exec_serve_foreground() -> Result<(), FatalError> {
 
     // exec() only returns on error
     Err(FatalError::Gateway(format!("re-exec failed: {err}")))
+}
+
+/// Re-exec the serve foreground process with the (potentially updated) binary.
+///
+/// On Unix, uses `exec()` to replace the process image (PID stays the same).
+/// On Windows, spawns a new process and exits the current one.
+#[cfg(windows)]
+fn re_exec_serve_foreground() -> Result<(), FatalError> {
+    let raw_exe = std::env::current_exe().map_err(|e| {
+        FatalError::Gateway(format!(
+            "failed to determine current executable for re-exec: {e}"
+        ))
+    })?;
+
+    let exe = resolve_exe_path(&raw_exe);
+
+    tracing::info!(exe = %exe.display(), "spawning updated binary and exiting");
+
+    let original_args: Vec<String> = std::env::args().skip(1).collect();
+    std::process::Command::new(&exe)
+        .args(&original_args)
+        .spawn()
+        .map_err(|e| FatalError::Gateway(format!("failed to spawn updated binary: {e}")))?;
+
+    // New process will acquire its own PID lock; exit this one.
+    std::process::exit(0);
 }
 
 #[cfg(test)]
