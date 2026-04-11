@@ -249,7 +249,7 @@ impl Agent {
         clippy::too_many_arguments,
         reason = "publisher and topic params added during bus migration"
     )]
-    #[tracing::instrument(skip_all, fields(correlation_id = %correlation_id, origin = ?origin))]
+    #[tracing::instrument(skip_all)]
     pub async fn process_message(
         &mut self,
         user_input: &str,

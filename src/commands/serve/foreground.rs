@@ -75,7 +75,7 @@ async fn run_setup_mode() -> Result<(), FatalError> {
 }
 
 /// Inner implementation of foreground serve, wrapped by PID file lifecycle.
-#[tracing::instrument(skip_all, fields(agent = ?args.agent))]
+#[tracing::instrument(skip_all)]
 async fn run_serve_foreground_inner(args: &ServeArgs) -> Result<(), FatalError> {
     // Clean up leftover .exe.old from a previous Windows self-update (no-op on Unix)
     residuum::update::cleanup_old_binary();
