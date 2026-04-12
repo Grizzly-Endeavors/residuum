@@ -60,6 +60,10 @@
   border-radius: var(--radius);
 }
 
+.msg-user .msg-content {
+  white-space: pre-wrap;
+}
+
 .msg-assistant {
   background: var(--card-assistant);
   border: 1px solid rgba(59, 139, 219, 0.18);

@@ -1,14 +1,12 @@
 <script lang="ts">
-  import { escapeHtml } from "../lib/markdown";
   import type { ImageAttachment } from "../lib/types";
 
   let { content, images }: { content: string; images?: ImageAttachment[] } = $props();
 </script>
 
 <div class="msg msg-user">
-  <!-- eslint-disable svelte/no-at-html-tags -->
   {#if content}
-    <div class="msg-content">{@html escapeHtml(content)}</div>
+    <div class="msg-content">{content}</div>
   {/if}
   {#if images?.length}
     <div class="msg-user-images">
