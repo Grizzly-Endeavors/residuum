@@ -194,7 +194,7 @@
     if (settingsMode === "raw") {
       return `adv:${editConfig}|${editProviders}|${editMcp}`;
     }
-    return `form:${JSON.stringify(configFields)}|${JSON.stringify(providerEntries)}|${JSON.stringify(modelAssignments)}|${JSON.stringify(mcpServers)}`;
+    return `form:${JSON.stringify($state.snapshot(configFields))}|${JSON.stringify($state.snapshot(providerEntries))}|${JSON.stringify($state.snapshot(modelAssignments))}|${JSON.stringify($state.snapshot(mcpServers))}`;
   }
 
   function scheduleAutoSave() {
@@ -209,10 +209,10 @@
 
   // Form mode: watch all form state for changes
   $effect(() => {
-    JSON.stringify(configFields);
-    JSON.stringify(providerEntries);
-    JSON.stringify(modelAssignments);
-    JSON.stringify(mcpServers);
+    $state.snapshot(configFields);
+    $state.snapshot(providerEntries);
+    $state.snapshot(modelAssignments);
+    $state.snapshot(mcpServers);
     if (settingsMode !== "raw") scheduleAutoSave();
   });
 

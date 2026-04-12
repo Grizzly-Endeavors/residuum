@@ -43,7 +43,7 @@
   />
 {:else}
   <Header
-    status={ws.status}
+    status={ws.transport.status}
     {activeView}
     onOpenChat={() => {
       activeView = "chat";

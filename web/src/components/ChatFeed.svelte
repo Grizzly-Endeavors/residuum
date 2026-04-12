@@ -38,8 +38,8 @@
 
   async function loadOlder() {
     if (!feedEl) return;
-    if (!ws.hasMoreHistory || ws.isLoadingOlder) return;
-    const cursor = ws.oldestEpisodeCursor;
+    if (!ws.store.hasMoreHistory || ws.store.isLoadingOlder) return;
+    const cursor = ws.store.oldestEpisodeCursor;
     if (!cursor) return;
 
     // Anchor-element pattern: pick a stable, persistent DOM node from the
@@ -118,8 +118,8 @@
     <div class="feed-top-sentinel" bind:this={topSentinel}></div>
     <div
       class="feed-loading-slot"
-      class:is-active={ws.isLoadingOlder}
-      aria-hidden={!ws.isLoadingOlder}
+      class:is-active={ws.store.isLoadingOlder}
+      aria-hidden={!ws.store.isLoadingOlder}
     >
       <span class="feed-loading-older">loading earlier messages…</span>
     </div>

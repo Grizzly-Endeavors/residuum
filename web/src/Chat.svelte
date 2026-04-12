@@ -33,7 +33,7 @@
 
   function handleSend(text: string, images?: ImageAttachment[]) {
     const result = parseCommand(text, {
-      connectionStatus: ws.status,
+      connectionStatus: ws.transport.status,
       verbose: ws.verbose,
       nextId: nextFeedId,
       setVerbose: (enabled) => ws.setVerbose(enabled),
@@ -51,6 +51,6 @@
 </script>
 
 <div class="chat-view">
-  <ChatFeed items={ws.feed} isProcessing={ws.isProcessing} verbose={ws.verbose} />
-  <ChatInput onSend={handleSend} disabled={ws.status !== "connected"} />
+  <ChatFeed items={ws.store.feed} isProcessing={ws.store.isProcessing} verbose={ws.verbose} />
+  <ChatInput onSend={handleSend} disabled={ws.transport.status !== "connected"} />
 </div>

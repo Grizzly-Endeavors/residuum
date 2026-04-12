@@ -1,7 +1,6 @@
 // ── WebSocket coordinator (Svelte 5 runes) ──────────────────────────
 //
 // Thin glue layer that wires WsTransport and FeedStore together.
-// The external API (`ws.status`, `ws.feed`, `ws.send()`, etc.) is unchanged.
 
 import { WsTransport } from "./transport.svelte";
 import { FeedStore } from "./feed.svelte";
@@ -14,8 +13,8 @@ import type {
 } from "./types";
 
 class WsCoordinator {
-  private transport = new WsTransport();
-  private store = new FeedStore();
+  transport = new WsTransport();
+  store = new FeedStore();
   private msgCounter = 0;
 
   verbose = $state(false);
@@ -37,32 +36,6 @@ class WsCoordinator {
         this.transport.send({ type: "set_verbose", enabled: true });
       }
     };
-  }
-
-  // ── Delegated state (read-only from outside) ──────────────────────
-
-  get status() {
-    return this.transport.status;
-  }
-
-  get feed() {
-    return this.store.feed;
-  }
-
-  get isProcessing() {
-    return this.store.isProcessing;
-  }
-
-  get oldestEpisodeCursor() {
-    return this.store.oldestEpisodeCursor;
-  }
-
-  get hasMoreHistory() {
-    return this.store.hasMoreHistory;
-  }
-
-  get isLoadingOlder() {
-    return this.store.isLoadingOlder;
   }
 
   setLoadingOlder(value: boolean): void {

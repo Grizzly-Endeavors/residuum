@@ -29,23 +29,23 @@ export class ApiError extends Error {
   }
 }
 
-/** Fetch wrapper that throws `ApiError` on non-ok responses. */
-async function apiFetch<T>(input: RequestInfo | URL, init?: RequestInit): Promise<T> {
-  const resp = await fetch(input, init);
+async function checkOk(resp: Response): Promise<Response> {
   if (!resp.ok) {
     const body = await resp.text();
     throw new ApiError(resp.status, resp.statusText, body);
   }
+  return resp;
+}
+
+/** Fetch wrapper that throws `ApiError` on non-ok responses. */
+async function apiFetch<T>(input: RequestInfo | URL, init?: RequestInit): Promise<T> {
+  const resp = await checkOk(await fetch(input, init));
   return (await resp.json()) as T;
 }
 
 /** Fetch wrapper for plain text responses that throws `ApiError` on non-ok. */
 async function apiFetchText(input: RequestInfo | URL, init?: RequestInit): Promise<string> {
-  const resp = await fetch(input, init);
-  if (!resp.ok) {
-    const body = await resp.text();
-    throw new ApiError(resp.status, resp.statusText, body);
-  }
+  const resp = await checkOk(await fetch(input, init));
   return resp.text();
 }
 
