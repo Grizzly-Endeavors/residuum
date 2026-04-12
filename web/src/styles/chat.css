@@ -716,6 +716,34 @@
   box-shadow:
     0 4px 24px rgba(0, 0, 0, 0.4),
     0 0 0 1px rgba(255, 255, 255, 0.03);
+  /* Ambient breath at rest — 8s cycle, imperceptible motion, registers as alive. */
+  animation: input-breath 8s ease-in-out infinite;
+}
+
+.chat-input-wrap:hover,
+.chat-input-wrap:focus-within {
+  animation-play-state: paused;
+}
+
+@keyframes input-breath {
+  0%,
+  100% {
+    box-shadow:
+      0 4px 24px rgba(0, 0, 0, 0.4),
+      0 0 0 1px rgba(255, 255, 255, 0.03);
+  }
+  50% {
+    box-shadow:
+      0 4px 28px rgba(0, 0, 0, 0.46),
+      0 0 0 1px rgba(255, 255, 255, 0.04),
+      0 0 18px rgba(59, 139, 219, 0.06);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .chat-input-wrap {
+    animation: none;
+  }
 }
 
 .chat-input-row {

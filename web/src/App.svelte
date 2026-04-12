@@ -63,7 +63,7 @@
       }}
     />
   {:else}
-    <div class="app-main" class:with-workspace={activeView === "workspace"}>
+    <div class="app-main emerges" class:with-workspace={activeView === "workspace"}>
       {#if activeView === "workspace"}
         <Workspace
           onClose={() => {
