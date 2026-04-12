@@ -5,6 +5,7 @@
   import { parseProvidersToml, serializeProvidersToml } from "../lib/settings-toml";
   import { fetchModels, type ModelEntry } from "../lib/models";
   import { withConfigLock } from "../lib/config-lock";
+  import { clickOutside } from "../lib/actions/clickOutside";
 
   let { disabled = false }: { disabled?: boolean } = $props();
 
@@ -13,7 +14,6 @@
   let currentProvider = $state("");
   let models = $state<ModelEntry[]>([]);
   let saving = $state(false);
-  let menuEl: HTMLDivElement | undefined = $state();
 
   onMount(async () => {
     await loadCurrentModel();
@@ -71,21 +71,16 @@
     if (disabled) return;
     open = !open;
   }
-
-  // Click-outside handler
-  $effect(() => {
-    if (!open) return;
-    function handleClick(e: MouseEvent): void {
-      if (menuEl && !menuEl.contains(e.target as Node)) {
-        open = false;
-      }
-    }
-    document.addEventListener("mousedown", handleClick);
-    return () => document.removeEventListener("mousedown", handleClick);
-  });
 </script>
 
-<div class="model-selector-wrap" bind:this={menuEl}>
+<div
+  class="model-selector-wrap"
+  use:clickOutside={{
+    onOutside: () => {
+      open = false;
+    },
+  }}
+>
   <button class="model-chip" onclick={toggle} disabled={disabled || saving} title="Switch model">
     <span class="model-chip-name">{currentModel || "no model"}</span>
     <span class="model-chip-chevron">{open ? "\u25B4" : "\u25BE"}</span>

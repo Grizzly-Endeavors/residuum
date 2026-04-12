@@ -67,7 +67,7 @@ export const EMBEDDING_MODEL_LISTS: Record<string, ModelEntry[]> = {
 
 export const EMBEDDING_PROVIDERS = ["openai", "gemini", "ollama"];
 
-const cache: Record<string, FetchResult> = {};
+const cache = new Map<string, FetchResult>();
 
 function cacheKey(provider: string, apiKey?: string, url?: string): string {
   return `${provider}:${apiKey ?? ""}:${url ?? ""}`;
@@ -79,14 +79,14 @@ export async function fetchModels(
   url?: string,
 ): Promise<FetchResult> {
   const key = cacheKey(provider, apiKey, url);
-  const cached = cache[key];
+  const cached = cache.get(key);
   if (cached) return cached;
 
   try {
     const data = await fetchProviderModels(provider, apiKey, url);
     if (data.models.length > 0) {
       const result: FetchResult = { models: data.models, error: null };
-      cache[key] = result;
+      cache.set(key, result);
       return result;
     }
     return {
@@ -103,17 +103,15 @@ export async function fetchModels(
 }
 
 export function invalidateProvider(provider: string): void {
-  for (const key of Object.keys(cache)) {
+  for (const key of cache.keys()) {
     if (key.startsWith(provider + ":")) {
-      delete cache[key];
+      cache.delete(key);
     }
   }
 }
 
 export function invalidateAll(): void {
-  for (const key of Object.keys(cache)) {
-    delete cache[key];
-  }
+  cache.clear();
 }
 
 export function debounce<A extends unknown[]>(

@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import type { McpServerEntry, McpCatalogEntry } from "../../lib/types";
-  import { fetchMcpCatalog } from "../../lib/api";
+  import { loadCatalog } from "../../lib/mcp-catalog";
 
   let { servers = $bindable() }: { servers: McpServerEntry[] } = $props();
 
@@ -17,7 +17,7 @@
   let newEnvStr = $state("");
 
   onMount(async () => {
-    catalog = await fetchMcpCatalog();
+    catalog = await loadCatalog();
   });
 
   function removeServer(idx: number) {

@@ -1,6 +1,7 @@
 <script lang="ts">
   import { filterCommands, COMMAND_REGISTRY } from "../lib/commands";
   import type { ImageAttachment } from "../lib/types";
+  import { clickOutside } from "../lib/actions/clickOutside";
   import CommandMenu from "./CommandMenu.svelte";
   import ModelSelector from "./ModelSelector.svelte";
   import ThinkingSelector from "./ThinkingSelector.svelte";
@@ -204,21 +205,17 @@
     showMenu = false;
     if (textarea) textarea.style.height = "auto";
   }
-
-  // Click-outside to dismiss menu
-  $effect(() => {
-    if (!showMenu) return;
-    function handleClick(e: MouseEvent) {
-      if (containerEl && !containerEl.contains(e.target as Node)) {
-        showMenu = false;
-      }
-    }
-    document.addEventListener("mousedown", handleClick);
-    return () => document.removeEventListener("mousedown", handleClick);
-  });
 </script>
 
-<div class="chat-input-area" bind:this={containerEl}>
+<div
+  class="chat-input-area"
+  bind:this={containerEl}
+  use:clickOutside={{
+    onOutside: () => {
+      showMenu = false;
+    },
+  }}
+>
   <div class="chat-input-container">
     {#if showMenu && filtered.length > 0}
       <CommandMenu commands={filtered} selectedIndex={menuIndex} onSelect={handleCommandSelect} />

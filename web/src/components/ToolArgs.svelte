@@ -40,7 +40,7 @@
 {:else if name === "exec"}
   <div class="tool-args">
     <span class="tool-args-command">$ {str("command")}</span>
-    {#if hasKey("timeout_secs") && args["timeout_secs"] !== 120}
+    {#if hasKey("timeout_secs")}
       <span class="tool-args-meta">timeout: {args["timeout_secs"]}s</span>
     {/if}
   </div>

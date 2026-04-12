@@ -224,10 +224,7 @@ export class FeedStore {
           }
           if (msg.tool_calls?.length) {
             const calls: ToolCallState[] = msg.tool_calls.map((tc) => {
-              const args =
-                typeof tc.arguments === "string"
-                  ? (JSON.parse(tc.arguments) as Record<string, unknown>)
-                  : ((tc.arguments as Record<string, unknown>) ?? {});
+              const args = JSON.parse(tc.arguments) as Record<string, unknown>;
               const call: ToolCallState = {
                 id: tc.id,
                 name: tc.name,
