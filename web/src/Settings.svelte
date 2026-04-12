@@ -344,7 +344,7 @@
   }
 </script>
 
-<div class="settings-view">
+<div class="settings-view emerges">
   <div class="settings-header">
     <span class="settings-title">Settings</span>
     <div class="settings-header-actions">

@@ -31,16 +31,37 @@ samp,
 }
 
 /* ── Grain texture overlay ─────────────────────────────────────────────── */
+/* Slow drift (90s cycle) — imperceptible as motion at 2.5% alpha, but the */
+/* grain stops being statically frozen. Disabled by prefers-reduced-motion. */
 
 body::before {
   content: "";
   position: fixed;
-  inset: 0;
+  inset: -8px;
   pointer-events: none;
   z-index: 9999;
   opacity: 0.025;
   background: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
   background-size: 256px 256px;
+  animation: grain-drift 90s linear infinite;
+}
+
+@keyframes grain-drift {
+  0% {
+    transform: translate(0, 0);
+  }
+  25% {
+    transform: translate(2px, -1px);
+  }
+  50% {
+    transform: translate(0, 2px);
+  }
+  75% {
+    transform: translate(-2px, -1px);
+  }
+  100% {
+    transform: translate(0, 0);
+  }
 }
 
 /* ── Layout ────────────────────────────────────────────────────────────── */
@@ -71,16 +92,17 @@ body::before {
   color: inherit;
 }
 
-/* ── Emergence — view-mount reveal (used sparingly, PR 3) ────────────── */
+/* ── Emergence — view-mount reveal ──────────────────────────────────── */
+/* Opacity-only fade. The landing page hero uses translateY(12px) too, but */
+/* app surfaces are flex/overflow-constrained — translating them would clip */
+/* the bottom edge for the duration of the animation. Pure opacity is safe. */
 
 @keyframes emerge {
   from {
     opacity: 0;
-    transform: translateY(12px);
   }
   to {
     opacity: 1;
-    transform: translateY(0);
   }
 }
 

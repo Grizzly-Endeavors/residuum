@@ -62,7 +62,7 @@
   }
 </script>
 
-<div class="setup-view">
+<div class="setup-view emerges">
   <div class="setup-body">
     <div class="setup-card">
       <div class="setup-step-indicator">

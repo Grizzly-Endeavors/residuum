@@ -17,14 +17,19 @@
   --text-dim: #6a6a6f;
 
   /* ── Vein (blue energy, accents, focus) ────────────────────────────── */
+  /* --vein-intensity is set by main.ts based on local time of day. */
+  /* It modulates the alpha of vein tints by ±10% so the room feels awake at */
+  /* night and settled at midday. Defaults to 1 if JS hasn't run yet. */
+  --vein-intensity: 1;
+
   --vein: #3b8bdb;
   --vein-bright: #5aa3f0;
   --vein-dim: #2a6cb5;
   /* --vein-glow: surface tints (active states, pill fills). */
   /* --vein-subtle: gradient stops, border seams. Same alpha, different role. */
-  --vein-glow: rgba(59, 139, 219, 0.15);
-  --vein-subtle: rgba(59, 139, 219, 0.15);
-  --vein-faint: rgba(59, 139, 219, 0.08);
+  --vein-glow: rgba(59, 139, 219, calc(0.15 * var(--vein-intensity)));
+  --vein-subtle: rgba(59, 139, 219, calc(0.15 * var(--vein-intensity)));
+  --vein-faint: rgba(59, 139, 219, calc(0.08 * var(--vein-intensity)));
 
   /* ── Moss (organic growth, links, disabled) ────────────────────────── */
   --moss: #6b7a4a;
