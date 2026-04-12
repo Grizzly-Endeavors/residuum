@@ -250,15 +250,10 @@
   justify-content: center;
   flex: 1;
   color: var(--text-muted);
-  font-size: 14px;
-  gap: 8px;
+  font-family: var(--font-body);
+  font-size: var(--fs-base);
+  font-style: italic;
   position: relative;
-}
-
-.workspace-empty-icon {
-  font-size: 32px;
-  color: var(--vein-dim);
-  opacity: 0.4;
 }
 
 .workspace-close-empty {

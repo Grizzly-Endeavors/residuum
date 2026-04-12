@@ -25,13 +25,60 @@
   let feedEl: HTMLDivElement | undefined = $state();
   let topSentinel: HTMLDivElement | undefined = $state();
   let observer: IntersectionObserver | undefined;
+  let dividerObserver: MutationObserver | undefined;
+  let cachedDividers: HTMLElement[] = [];
   let lastTailId: number | undefined;
+
+  // Anchor pill: visible when the user has scrolled up from the bottom.
+  const ANCHOR_THRESHOLD_PX = 400;
+  let scrolledUp = $state(false);
+  let anchorLabel = $state("");
+
+  function refreshDividerCache() {
+    if (!feedEl) {
+      cachedDividers = [];
+      return;
+    }
+    cachedDividers = Array.from(
+      feedEl.querySelectorAll<HTMLElement>(".msg-divider .msg-divider-label"),
+    );
+  }
 
   function scrollToBottom() {
     if (!feedEl) return;
     window.requestAnimationFrame(() => {
       if (feedEl) feedEl.scrollTop = feedEl.scrollHeight;
     });
+  }
+
+  function jumpToLatest() {
+    if (!feedEl) return;
+    feedEl.scrollTo({ top: feedEl.scrollHeight, behavior: "smooth" });
+  }
+
+  function updateAnchor() {
+    if (!feedEl) return;
+    const distFromBottom = feedEl.scrollHeight - feedEl.scrollTop - feedEl.clientHeight;
+    scrolledUp = distFromBottom > ANCHOR_THRESHOLD_PX;
+    if (!scrolledUp) {
+      anchorLabel = "";
+      return;
+    }
+    // Topmost visible divider — its label becomes the anchor.
+    // Iterates over the cached divider list (refreshed on DOM mutations).
+    const feedTop = feedEl.getBoundingClientRect().top;
+    let label = "";
+    for (const div of cachedDividers) {
+      const top = div.getBoundingClientRect().top;
+      if (top >= feedTop) {
+        label = div.textContent?.trim() ?? "";
+        break;
+      }
+      // The last divider above the viewport is also a valid candidate
+      // until we find one inside it.
+      label = div.textContent?.trim() ?? "";
+    }
+    anchorLabel = label;
   }
 
   async function loadOlder() {
@@ -90,10 +137,23 @@
       },
     );
     observer.observe(topSentinel);
+
+    // Cache divider elements; refresh only when feed children change.
+    refreshDividerCache();
+    const inner = feedEl.querySelector(".chat-feed-inner");
+    if (inner) {
+      dividerObserver = new MutationObserver(refreshDividerCache);
+      dividerObserver.observe(inner, { childList: true, subtree: false });
+    }
+
+    feedEl.addEventListener("scroll", updateAnchor, { passive: true });
+    updateAnchor();
   });
 
   onDestroy(() => {
     observer?.disconnect();
+    dividerObserver?.disconnect();
+    feedEl?.removeEventListener("scroll", updateAnchor);
   });
 
   $effect(() => {
@@ -112,6 +172,17 @@
 </script>
 
 <div class="chat-feed" bind:this={feedEl}>
+  {#if scrolledUp}
+    <div class="anchor-pill">
+      {#if anchorLabel}
+        <span class="anchor-pill-label">{anchorLabel}</span>
+        <span class="anchor-pill-divider"></span>
+      {/if}
+      <button type="button" class="anchor-pill-jump" onclick={jumpToLatest}>
+        Jump to latest
+      </button>
+    </div>
+  {/if}
   <div class="chat-feed-inner">
     <div class="feed-top-sentinel" bind:this={topSentinel}></div>
     <div

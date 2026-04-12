@@ -32,7 +32,9 @@
   import Memory from "./components/settings/Memory.svelte";
   import Integrations from "./components/settings/Integrations.svelte";
   import MCP from "./components/settings/MCP.svelte";
+  import Modal from "./components/Modal.svelte";
   import { Icon } from "./lib/icons";
+  import { toast } from "./lib/toast.svelte";
 
   let { onClose }: { onClose: () => void } = $props();
 
@@ -144,6 +146,21 @@
 
   // ── Reload ─────────────────────────────────────────────────────────
 
+  let reloadConfirmOpen = $state(false);
+
+  function requestReload() {
+    if (currentSnapshot() !== lastSavedSnapshot) {
+      reloadConfirmOpen = true;
+    } else {
+      void handleReload();
+    }
+  }
+
+  function confirmReload() {
+    reloadConfirmOpen = false;
+    void handleReload();
+  }
+
   async function handleReload() {
     loading = true;
     statusMsg = "";
@@ -168,8 +185,7 @@
       lastSavedSnapshot = currentSnapshot();
       showStatus("Reloaded", "success");
     } catch (err: unknown) {
-      statusMsg = `Reload failed: ${String(err)}`;
-      statusKind = "error";
+      toast.error(`Reload failed. ${String(err)}`);
     } finally {
       loading = false;
     }
@@ -252,19 +268,25 @@
 
       const provResult = await putProvidersRaw(provToml);
       if (!provResult.valid) {
-        showStatus(`providers.toml: ${provResult.error ?? "unknown error"}`, "error");
+        statusMsg = "";
+        statusKind = "";
+        toast.error(`providers.toml: ${provResult.error ?? "unknown error"}`);
         return;
       }
 
       const cfgResult = await putConfigRaw(cfgToml);
       if (!cfgResult.valid) {
-        showStatus(`config.toml: ${cfgResult.error ?? "unknown error"}`, "error");
+        statusMsg = "";
+        statusKind = "";
+        toast.error(`config.toml: ${cfgResult.error ?? "unknown error"}`);
         return;
       }
 
       const mcpResult = await putMcpRaw(mcpJson);
       if (!mcpResult.valid) {
-        showStatus(`mcp.json: ${mcpResult.error ?? "unknown error"}`, "error");
+        statusMsg = "";
+        statusKind = "";
+        toast.error(`mcp.json: ${mcpResult.error ?? "unknown error"}`);
         return;
       }
 
@@ -276,7 +298,9 @@
       lastSavedSnapshot = currentSnapshot();
       showStatus("Saved", "success");
     } catch (err: unknown) {
-      showStatus(`Save failed: ${String(err)}`, "error");
+      statusMsg = "";
+      statusKind = "";
+      toast.error(`Save failed. ${String(err)}`);
     } finally {
       saving = false;
     }
@@ -355,7 +379,7 @@
         class="icon-btn"
         title="Reload from disk"
         aria-label="Reload from disk"
-        onclick={handleReload}
+        onclick={requestReload}
         disabled={saving}
       >
         <Icon name="reload" size={16} />
@@ -467,3 +491,23 @@
     </div>
   </div>
 </div>
+
+<Modal
+  open={reloadConfirmOpen}
+  title="Discard unsaved changes?"
+  onClose={() => {
+    reloadConfirmOpen = false;
+  }}
+>
+  Reloading from disk will discard any unsaved edits in this session.
+
+  {#snippet actions()}
+    <button
+      class="btn btn-secondary"
+      onclick={() => {
+        reloadConfirmOpen = false;
+      }}>Cancel</button
+    >
+    <button class="btn btn-danger" onclick={confirmReload}>Discard and reload</button>
+  {/snippet}
+</Modal>

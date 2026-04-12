@@ -3,6 +3,8 @@
   import { SvelteSet } from "svelte/reactivity";
   import type { WorkspaceEntry } from "../lib/types";
   import { fetchWorkspaceFiles, fetchWorkspaceFile, putWorkspaceFile } from "../lib/api";
+  import { toast } from "../lib/toast.svelte";
+  import { Icon } from "../lib/icons";
   import FileTree from "./FileTree.svelte";
 
   let { onClose }: { onClose: () => void } = $props();
@@ -93,8 +95,10 @@
     try {
       await putWorkspaceFile(selectedFile, editContent);
       fileContent = editContent;
+      toast.success("Saved.");
     } catch (e) {
-      error = e instanceof Error ? e.message : String(e);
+      const msg = e instanceof Error ? e.message : String(e);
+      toast.error(`Save failed. ${msg}`);
     } finally {
       saving = false;
     }
@@ -158,13 +162,15 @@
       {/if}
     {:else}
       <div class="workspace-empty">
-        <div class="workspace-empty-icon">&#9670;</div>
-        <div>Select a file to edit</div>
+        <div>No file selected.</div>
         <button
           class="workspace-close workspace-close-empty"
           onclick={onClose}
-          title="Close workspace">&#10005;</button
+          title="Close workspace"
+          aria-label="Close workspace"
         >
+          <Icon name="close" size={14} />
+        </button>
       </div>
     {/if}
   </div>
