@@ -44,14 +44,11 @@
   let manualTokenMode = $state(false);
   let manualToken = $state("");
 
-  const CLOUD_POLL_INTERVAL = 5000;
-  let cloudPollTimer: ReturnType<typeof setInterval> | null = null;
-
   async function pollCloudStatus() {
     try {
       cloudStatus = await fetchCloudStatus();
     } catch {
-      // Polling failures are non-critical
+      // fetch failures are non-critical
     } finally {
       cloudLoading = false;
     }
@@ -59,10 +56,6 @@
 
   onMount(() => {
     void pollCloudStatus();
-    cloudPollTimer = setInterval(() => void pollCloudStatus(), CLOUD_POLL_INTERVAL);
-    return () => {
-      if (cloudPollTimer) clearInterval(cloudPollTimer);
-    };
   });
 
   function handleCloudConnect() {
@@ -74,14 +67,9 @@
     cloudAction = true;
     try {
       await disconnectCloud();
-      cloudStatus = {
-        status: "disconnected" as const,
-        user_id: cloudStatus?.user_id ?? null,
-        has_token: cloudStatus?.has_token ?? false,
-        enabled: false,
-      };
+      await pollCloudStatus();
     } catch {
-      // disconnect failure handled by status poll
+      // disconnect failure visible via unchanged status
     } finally {
       cloudAction = false;
     }

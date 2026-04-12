@@ -10,15 +10,12 @@
   let restarting = $state(false);
   let errorMsg = $state("");
 
-  const POLL_INTERVAL = 30_000;
-  let pollTimer: ReturnType<typeof setInterval> | null = null;
-
   async function pollStatus() {
     try {
       status = await fetchUpdateStatus();
       errorMsg = "";
     } catch {
-      // polling failures are non-critical
+      // fetch failures are non-critical
     } finally {
       loading = false;
     }
@@ -26,10 +23,6 @@
 
   onMount(() => {
     void pollStatus();
-    pollTimer = setInterval(() => void pollStatus(), POLL_INTERVAL);
-    return () => {
-      if (pollTimer) clearInterval(pollTimer);
-    };
   });
 
   async function handleCheck() {
