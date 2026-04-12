@@ -40,14 +40,14 @@
     pulse: "Drives proactive behavior — daily briefings, check-ins, and ambient monitoring tasks.",
     embedding:
       "Generates vector embeddings for semantic memory search. Only some providers support this.",
-    "bg-small":
+    bgSmall:
       "Used for lightweight background tasks like formatting, simple lookups, and notifications.",
-    "bg-medium": "Used for moderate background tasks like summarization and analysis.",
-    "bg-large": "Used for complex background tasks that need strong reasoning ability.",
+    bgMedium: "Used for moderate background tasks like summarization and analysis.",
+    bgLarge: "Used for complex background tasks that need strong reasoning ability.",
   };
 
-  const allRoles = ["main", "observer", "reflector", "pulse"];
-  const bgTiers = ["bg-small", "bg-medium", "bg-large"];
+  const allRoles: ModelRoleKey[] = ["main", "observer", "reflector", "pulse"];
+  const bgTiers: ModelRoleKey[] = ["bgSmall", "bgMedium", "bgLarge"];
 
   const thinkingOptions = [
     { value: "", label: "Default" },
@@ -57,28 +57,15 @@
     { value: "high", label: "High" },
   ];
 
-  /** Ensure the overrides record has an entry for a given key. */
-  function ensureOverrides(key: string) {
-    models.overrides[key] ??= { temperature: "", thinking: "" };
-  }
-
   // Model lists and loading state per role
   let modelLists = $state<Record<string, ModelEntry[]>>({});
   let modelLoading = $state<Record<string, boolean>>({});
   let otherActive = $state<Record<string, boolean>>({});
   let otherValues = $state<Record<string, string>>({});
 
-  // Map role key to models field key
-  function modelsKey(role: string): ModelRoleKey {
-    if (role === "bg-small") return "bgSmall";
-    if (role === "bg-medium") return "bgMedium";
-    if (role === "bg-large") return "bgLarge";
-    return role as ModelRoleKey;
-  }
-
   // Extract provider from "provider/model" string
   function getProvider(role: string): string {
-    const val = models[modelsKey(role)];
+    const val = models[role as ModelRoleKey];
     if (!val) return providers[0]?.name ?? "";
     const slash = val.indexOf("/");
     return slash >= 0 ? val.slice(0, slash) : (providers[0]?.name ?? "");
@@ -86,15 +73,14 @@
 
   // Extract model from "provider/model" string
   function getModel(role: string): string {
-    const val = models[modelsKey(role)];
+    const val = models[role as ModelRoleKey];
     if (!val) return "";
     const slash = val.indexOf("/");
     return slash >= 0 ? val.slice(slash + 1) : val;
   }
 
   function setProvider(role: string, prov: string) {
-    const key = modelsKey(role);
-    models[key] = prov + "/";
+    models[role as ModelRoleKey] = prov + "/";
     otherActive[role] = false;
     otherValues[role] = "";
     void loadModels(role);
@@ -107,13 +93,13 @@
     }
     otherActive[role] = false;
     const prov = getProvider(role);
-    models[modelsKey(role)] = prov + "/" + value;
+    models[role as ModelRoleKey] = prov + "/" + value;
   }
 
   function setOtherModel(role: string, value: string) {
     otherValues[role] = value;
     const prov = getProvider(role);
-    models[modelsKey(role)] = prov + "/" + value;
+    models[role as ModelRoleKey] = prov + "/" + value;
   }
 
   // Find provider entry for a role's current provider name
@@ -178,15 +164,19 @@
       reflector: "Reflector",
       pulse: "Pulse",
       embedding: "Embedding",
-      "bg-small": "Small",
-      "bg-medium": "Medium",
-      "bg-large": "Large",
+      bgSmall: "Small",
+      bgMedium: "Medium",
+      bgLarge: "Large",
     };
     return labels[role] ?? role;
   }
 
   onMount(() => {
     if (providers.length === 0) return;
+    // Eager-initialize overrides for all roles so per-interaction self-assignment is unnecessary.
+    for (const role of [...allRoles, "embedding", ...bgTiers]) {
+      models.overrides[role] ??= { temperature: "", thinking: "" };
+    }
     for (const role of [...allRoles, "embedding", ...bgTiers]) {
       void loadModels(role);
     }
@@ -286,7 +276,6 @@
     <div class="roles-section">
       <div class="roles-section-label">Agent</div>
       {#each ["main"] as role (role)}
-        {@const ovKey = modelsKey(role)}
         <div class="role-row">
           <div class="role-row-label">
             {roleLabel(role)}
@@ -347,10 +336,9 @@
                 step="0.1"
                 min="0"
                 max="2"
-                value={models.overrides[ovKey]?.temperature ?? ""}
+                value={models.overrides[role]?.temperature ?? ""}
                 oninput={(e) => {
-                  ensureOverrides(ovKey);
-                  const ov = models.overrides[ovKey];
+                  const ov = models.overrides[role];
                   if (ov) ov.temperature = (e.target as HTMLInputElement).value;
                 }}
                 placeholder="Global default"
@@ -363,10 +351,9 @@
                   <button
                     type="button"
                     class="seg-btn"
-                    class:active={(models.overrides[ovKey]?.thinking ?? "") === opt.value}
+                    class:active={(models.overrides[role]?.thinking ?? "") === opt.value}
                     onclick={() => {
-                      ensureOverrides(ovKey);
-                      const ov = models.overrides[ovKey];
+                      const ov = models.overrides[role];
                       if (ov) ov.thinking = opt.value;
                     }}
                   >
@@ -376,10 +363,9 @@
               </div>
               <select
                 class="thinking-mobile-select"
-                value={models.overrides[ovKey]?.thinking ?? ""}
+                value={models.overrides[role]?.thinking ?? ""}
                 onchange={(e) => {
-                  ensureOverrides(ovKey);
-                  const ov = models.overrides[ovKey];
+                  const ov = models.overrides[role];
                   if (ov) ov.thinking = (e.target as HTMLSelectElement).value;
                 }}
               >
@@ -396,7 +382,6 @@
     <div class="roles-section">
       <div class="roles-section-label">Subsystems</div>
       {#each ["observer", "reflector", "pulse"] as role (role)}
-        {@const ovKey = modelsKey(role)}
         <div class="role-row">
           <div class="role-row-label">
             {roleLabel(role)}
@@ -457,10 +442,9 @@
                 step="0.1"
                 min="0"
                 max="2"
-                value={models.overrides[ovKey]?.temperature ?? ""}
+                value={models.overrides[role]?.temperature ?? ""}
                 oninput={(e) => {
-                  ensureOverrides(ovKey);
-                  const ov = models.overrides[ovKey];
+                  const ov = models.overrides[role];
                   if (ov) ov.temperature = (e.target as HTMLInputElement).value;
                 }}
                 placeholder="Global default"
@@ -473,10 +457,9 @@
                   <button
                     type="button"
                     class="seg-btn"
-                    class:active={(models.overrides[ovKey]?.thinking ?? "") === opt.value}
+                    class:active={(models.overrides[role]?.thinking ?? "") === opt.value}
                     onclick={() => {
-                      ensureOverrides(ovKey);
-                      const ov = models.overrides[ovKey];
+                      const ov = models.overrides[role];
                       if (ov) ov.thinking = opt.value;
                     }}
                   >
@@ -486,10 +469,9 @@
               </div>
               <select
                 class="thinking-mobile-select"
-                value={models.overrides[ovKey]?.thinking ?? ""}
+                value={models.overrides[role]?.thinking ?? ""}
                 onchange={(e) => {
-                  ensureOverrides(ovKey);
-                  const ov = models.overrides[ovKey];
+                  const ov = models.overrides[role];
                   if (ov) ov.thinking = (e.target as HTMLSelectElement).value;
                 }}
               >
@@ -565,7 +547,6 @@
     <div class="roles-section">
       <div class="roles-section-label">Background Tasks</div>
       {#each bgTiers as role (role)}
-        {@const ovKey = modelsKey(role)}
         <div class="role-row">
           <div class="role-row-label">
             {roleLabel(role)}
@@ -626,10 +607,9 @@
                 step="0.1"
                 min="0"
                 max="2"
-                value={models.overrides[ovKey]?.temperature ?? ""}
+                value={models.overrides[role]?.temperature ?? ""}
                 oninput={(e) => {
-                  ensureOverrides(ovKey);
-                  const ov = models.overrides[ovKey];
+                  const ov = models.overrides[role];
                   if (ov) ov.temperature = (e.target as HTMLInputElement).value;
                 }}
                 placeholder="Global default"
@@ -642,10 +622,9 @@
                   <button
                     type="button"
                     class="seg-btn"
-                    class:active={(models.overrides[ovKey]?.thinking ?? "") === opt.value}
+                    class:active={(models.overrides[role]?.thinking ?? "") === opt.value}
                     onclick={() => {
-                      ensureOverrides(ovKey);
-                      const ov = models.overrides[ovKey];
+                      const ov = models.overrides[role];
                       if (ov) ov.thinking = opt.value;
                     }}
                   >
@@ -655,10 +634,9 @@
               </div>
               <select
                 class="thinking-mobile-select"
-                value={models.overrides[ovKey]?.thinking ?? ""}
+                value={models.overrides[role]?.thinking ?? ""}
                 onchange={(e) => {
-                  ensureOverrides(ovKey);
-                  const ov = models.overrides[ovKey];
+                  const ov = models.overrides[role];
                   if (ov) ov.thinking = (e.target as HTMLSelectElement).value;
                 }}
               >
