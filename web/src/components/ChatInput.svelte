@@ -2,6 +2,7 @@
   import { filterCommands, COMMAND_REGISTRY } from "../lib/commands";
   import type { ImageAttachment } from "../lib/types";
   import { clickOutside } from "../lib/actions/clickOutside";
+  import { Icon } from "../lib/icons";
   import CommandMenu from "./CommandMenu.svelte";
   import ModelSelector from "./ModelSelector.svelte";
   import ThinkingSelector from "./ThinkingSelector.svelte";
@@ -280,24 +281,17 @@
             onclick={() => fileInput?.click()}
             {disabled}
             title="Attach image"
+            aria-label="Attach image"
           >
-            <svg
-              width="16"
-              height="16"
-              viewBox="0 0 16 16"
-              fill="none"
-              xmlns="http://www.w3.org/2000/svg"
-            >
-              <path
-                d="M13.5 7.5l-5.793 5.793a3.5 3.5 0 01-4.95-4.95L9.05 2.05a2.25 2.25 0 013.182 3.182L5.94 11.525a1 1 0 01-1.414-1.414L10.818 3.818"
-                stroke="currentColor"
-                stroke-width="1.3"
-                stroke-linecap="round"
-                stroke-linejoin="round"
-              />
-            </svg>
+            <Icon name="paperclip" size={16} />
           </button>
-          <button class="cmd-menu-btn" onclick={toggleCommandMenu} {disabled} title="Commands">
+          <button
+            class="cmd-menu-btn"
+            onclick={toggleCommandMenu}
+            {disabled}
+            title="Commands"
+            aria-label="Commands"
+          >
             /
           </button>
         </div>

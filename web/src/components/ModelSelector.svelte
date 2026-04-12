@@ -14,9 +14,17 @@
   let currentProvider = $state("");
   let models = $state<ModelEntry[]>([]);
   let saving = $state(false);
+  let settled = $state(false);
 
   onMount(async () => {
+    // Give config a short window to load before we show the "no model" fallback.
+    // Prevents a brief error-red flash on first paint while providers.toml is fetched.
+    const settleTimer = window.setTimeout(() => {
+      settled = true;
+    }, 300);
     await loadCurrentModel();
+    window.clearTimeout(settleTimer);
+    settled = true;
   });
 
   async function loadCurrentModel(): Promise<void> {
@@ -82,7 +90,13 @@
   }}
 >
   <button class="model-chip" onclick={toggle} disabled={disabled || saving} title="Switch model">
-    <span class="model-chip-name">{currentModel || "no model"}</span>
+    {#if currentModel}
+      <span class="model-chip-name">{currentModel}</span>
+    {:else if settled}
+      <span class="model-chip-name model-chip-empty">no model</span>
+    {:else}
+      <span class="model-chip-name model-chip-loading" aria-label="loading model">—</span>
+    {/if}
     <span class="model-chip-chevron">{open ? "\u25B4" : "\u25BE"}</span>
   </button>
 

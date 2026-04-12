@@ -751,11 +751,12 @@
 
 .send-btn {
   height: 44px;
-  padding: 0 20px;
+  padding: 0 var(--s-5);
   font-family: var(--font-display);
-  font-size: 13px;
-  font-weight: 600;
-  letter-spacing: 0.04em;
+  font-size: var(--fs-md);
+  font-weight: 500;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
   color: var(--text);
   background: var(--vein);
   border: none;
@@ -764,39 +765,42 @@
   box-shadow: 0 2px 6px rgba(59, 139, 219, 0.25);
   transition:
     background-color var(--dur-quick),
-    color var(--dur-quick),
-    border-color var(--dur-quick),
     box-shadow var(--dur-default) var(--ease-out-stone);
   white-space: nowrap;
 }
 
+/* Vein bloom on hover: the light moves, not the stone. */
 .send-btn:hover {
   background: var(--vein-bright);
-  box-shadow: 0 4px 12px rgba(59, 139, 219, 0.35);
-  transform: translateY(-1px);
+  box-shadow:
+    0 0 22px 2px rgba(90, 163, 240, 0.32),
+    0 2px 14px rgba(59, 139, 219, 0.45);
 }
 
 .send-btn:active {
-  transform: translateY(0);
-  box-shadow: 0 1px 3px rgba(59, 139, 219, 0.2);
+  transform: scale(0.98);
+  box-shadow:
+    inset 0 2px 4px rgba(0, 0, 0, 0.25),
+    0 1px 3px rgba(59, 139, 219, 0.2);
 }
 
 .send-btn:disabled {
-  opacity: 0.4;
-  cursor: not-allowed;
+  background: var(--disabled-bg);
+  color: var(--disabled-text);
   box-shadow: none;
-  transform: none;
+  cursor: not-allowed;
 }
 
 /* Mobile send button in toolbar */
 .send-btn-toolbar {
   display: none;
   height: 28px;
-  padding: 0 12px;
+  padding: 0 var(--s-3);
   font-family: var(--font-display);
-  font-size: 11px;
-  font-weight: 600;
-  letter-spacing: 0.04em;
+  font-size: var(--fs-xs);
+  font-weight: 500;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
   color: var(--text);
   background: var(--vein);
   border: none;
@@ -804,8 +808,6 @@
   cursor: pointer;
   transition:
     background-color var(--dur-quick),
-    color var(--dur-quick),
-    border-color var(--dur-quick),
     box-shadow var(--dur-default) var(--ease-out-stone);
   white-space: nowrap;
 }
@@ -814,8 +816,13 @@
   background: var(--vein-bright);
 }
 
+.send-btn-toolbar:active {
+  transform: scale(0.98);
+}
+
 .send-btn-toolbar:disabled {
-  opacity: 0.4;
+  background: var(--disabled-bg);
+  color: var(--disabled-text);
   cursor: not-allowed;
 }
 
@@ -844,29 +851,31 @@
 /* Command menu button */
 .cmd-menu-btn {
   height: 28px;
-  padding: 0 10px;
+  padding: 0 var(--s-3);
   font-family: var(--font-mono);
-  font-size: 14px;
-  font-weight: 600;
+  font-size: var(--fs-base);
+  font-weight: 500;
   color: var(--text-dim);
   background: transparent;
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: var(--radius);
   cursor: pointer;
   transition:
     background-color var(--dur-quick),
     color var(--dur-quick),
-    border-color var(--dur-quick),
-    box-shadow var(--dur-default) var(--ease-out-stone);
+    border-color var(--dur-quick);
 }
 
 .cmd-menu-btn:hover {
   color: var(--vein);
   border-color: var(--vein-dim);
+  background: var(--vein-faint);
 }
 
 .cmd-menu-btn:disabled {
-  opacity: 0.4;
+  background: var(--disabled-bg);
+  color: var(--disabled-text);
+  border-color: var(--disabled-border);
   cursor: not-allowed;
 }
 
@@ -881,22 +890,24 @@
   color: var(--text-dim);
   background: transparent;
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: var(--radius);
   cursor: pointer;
   transition:
     background-color var(--dur-quick),
     color var(--dur-quick),
-    border-color var(--dur-quick),
-    box-shadow var(--dur-default) var(--ease-out-stone);
+    border-color var(--dur-quick);
 }
 
 .attach-btn:hover {
   color: var(--vein);
   border-color: var(--vein-dim);
+  background: var(--vein-faint);
 }
 
 .attach-btn:disabled {
-  opacity: 0.4;
+  background: var(--disabled-bg);
+  color: var(--disabled-text);
+  border-color: var(--disabled-border);
   cursor: not-allowed;
 }
 
@@ -1070,8 +1081,16 @@
   border-color: var(--vein-dim);
 }
 
+.model-chip-empty,
+.model-chip-loading {
+  color: var(--text-dim);
+  font-style: italic;
+}
+
 .model-chip:disabled {
-  opacity: 0.4;
+  background: var(--disabled-bg);
+  color: var(--disabled-text);
+  border-color: var(--disabled-border);
   cursor: not-allowed;
 }
 

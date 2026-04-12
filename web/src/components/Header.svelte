@@ -1,5 +1,7 @@
 <script lang="ts">
   import type { ConnectionStatus } from "../lib/types";
+  import { Icon } from "../lib/icons";
+  import BrandMark from "./BrandMark.svelte";
 
   let {
     status,
@@ -38,7 +40,9 @@
 
 <div class="header">
   <div class="hamburger-wrap">
-    <button class="hamburger-btn" onclick={toggleMenu} title="Menu">&#9776;</button>
+    <button class="hamburger-btn" onclick={toggleMenu} title="Menu" aria-label="Menu">
+      <Icon name="menu" size={18} />
+    </button>
     {#if menuOpen}
       <div class="hamburger-menu">
         <button
@@ -60,7 +64,7 @@
     {/if}
   </div>
   <div class="header-brand">
-    <div class="header-icon">&#9670;</div>
+    <BrandMark size={26} />
     <span class="header-title">Residuum</span>
     <span class="header-status {status}">{status}</span>
   </div>
