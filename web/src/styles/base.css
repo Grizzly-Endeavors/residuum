@@ -19,6 +19,15 @@ body {
   color: var(--text);
   background: var(--bg-deep);
   -webkit-font-smoothing: antialiased;
+  font-feature-settings: "kern", "liga", "onum";
+}
+
+code,
+pre,
+kbd,
+samp,
+.mono {
+  font-feature-settings: "tnum", "zero";
 }
 
 /* ── Grain texture overlay ─────────────────────────────────────────────── */
@@ -40,4 +49,65 @@ body::before {
   display: flex;
   flex-direction: column;
   height: 100%;
+}
+
+/* ── Global focus ring — vein surfaces on keyboard focus ─────────────── */
+/* Mouse/touch users get no ring; keyboard users get a vein halo via box-shadow. */
+
+:focus {
+  outline: none;
+}
+
+:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+  transition: box-shadow var(--dur-quick) var(--ease-out-stone);
+}
+
+/* ── Selection — vein highlight ──────────────────────────────────────── */
+
+::selection {
+  background: rgba(59, 139, 219, 0.22);
+  color: inherit;
+}
+
+/* ── Emergence — view-mount reveal (used sparingly, PR 3) ────────────── */
+
+@keyframes emerge {
+  from {
+    opacity: 0;
+    transform: translateY(12px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.emerges {
+  opacity: 0;
+  animation: emerge var(--dur-slow) var(--ease-out-stone) forwards;
+  animation-delay: var(--emerge-delay, 0ms);
+}
+
+/* ── Reduced motion ──────────────────────────────────────────────────── */
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: var(--dur-quick) !important;
+    scroll-behavior: auto !important;
+  }
+
+  .emerges {
+    animation: none;
+    opacity: 1;
+  }
+
+  body::before {
+    animation: none !important;
+  }
 }
