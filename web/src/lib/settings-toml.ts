@@ -12,6 +12,10 @@ import type {
   RoleOverrides,
 } from "./types";
 
+function escapeTomlString(s: string): string {
+  return s.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+}
+
 // ── Config form fields (config.toml) ─────────────────────────────────
 
 export interface WebhookFormEntry {
@@ -439,23 +443,31 @@ export function parseMcpJson(raw: string): McpServerEntry[] {
 
 // ── Serializers ──────────────────────────────────────────────────────
 
+/** Split a comma-separated user input into a cleaned string list (no empties). */
+function commaList(raw: string): string[] {
+  return raw
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
+
 /** Serialize config fields back to config.toml. */
 export function serializeConfigToml(f: ConfigFields): string {
   const lines: string[] = [];
 
-  if (f.name) lines.push(`name = "${f.name}"`);
-  if (f.timezone) lines.push(`timezone = "${f.timezone}"`);
-  if (f.workspace_dir) lines.push(`workspace_dir = "${f.workspace_dir}"`);
+  if (f.name) lines.push(`name = "${escapeTomlString(f.name)}"`);
+  if (f.timezone) lines.push(`timezone = "${escapeTomlString(f.timezone)}"`);
+  if (f.workspace_dir) lines.push(`workspace_dir = "${escapeTomlString(f.workspace_dir)}"`);
   if (f.timeout_secs) lines.push(`timeout_secs = ${f.timeout_secs}`);
   if (f.max_tokens) lines.push(`max_tokens = ${f.max_tokens}`);
   if (f.temperature) lines.push(`temperature = ${f.temperature}`);
-  if (f.thinking) lines.push(`thinking = "${f.thinking}"`);
+  if (f.thinking) lines.push(`thinking = "${escapeTomlString(f.thinking)}"`);
 
   // gateway
   if (f.gateway_bind || f.gateway_port) {
     lines.push("");
     lines.push("[gateway]");
-    if (f.gateway_bind) lines.push(`bind = "${f.gateway_bind}"`);
+    if (f.gateway_bind) lines.push(`bind = "${escapeTomlString(f.gateway_bind)}"`);
     if (f.gateway_port) lines.push(`port = ${f.gateway_port}`);
   }
 
@@ -502,14 +514,14 @@ export function serializeConfigToml(f: ConfigFields): string {
   if (f.discord_token) {
     lines.push("");
     lines.push("[discord]");
-    lines.push(`token = "${f.discord_token}"`);
+    lines.push(`token = "${escapeTomlString(f.discord_token)}"`);
   }
 
   // telegram
   if (f.telegram_token) {
     lines.push("");
     lines.push("[telegram]");
-    lines.push(`token = "${f.telegram_token}"`);
+    lines.push(`token = "${escapeTomlString(f.telegram_token)}"`);
   }
 
   // webhooks
@@ -517,16 +529,20 @@ export function serializeConfigToml(f: ConfigFields): string {
     if (!wh.name.trim()) continue;
     lines.push("");
     lines.push(`[webhooks.${wh.name.trim()}]`);
-    if (wh.secret) lines.push(`secret = "${wh.secret}"`);
-    if (wh.routing && wh.routing !== "inbox") lines.push(`routing = "${wh.routing}"`);
-    if (wh.format && wh.format !== "parsed") lines.push(`format = "${wh.format}"`);
+    if (wh.secret) lines.push(`secret = "${escapeTomlString(wh.secret)}"`);
+    if (wh.routing && wh.routing !== "inbox")
+      lines.push(`routing = "${escapeTomlString(wh.routing)}"`);
+    if (wh.format && wh.format !== "parsed")
+      lines.push(`format = "${escapeTomlString(wh.format)}"`);
     if (wh.content_fields) {
       const cfParts = wh.content_fields
         .split(",")
         .map((s) => s.trim())
         .filter(Boolean);
       if (cfParts.length > 0) {
-        lines.push(`content_fields = [${cfParts.map((s) => `"${s}"`).join(", ")}]`);
+        lines.push(
+          `content_fields = [${cfParts.map((s) => `"${escapeTomlString(s)}"`).join(", ")}]`,
+        );
       }
     }
   }
@@ -538,8 +554,8 @@ export function serializeConfigToml(f: ConfigFields): string {
     if (!f.cloud_enabled) {
       lines.push("enabled = false");
     }
-    if (f.cloud_token) lines.push(`token = "${f.cloud_token}"`);
-    if (f.cloud_relay_url) lines.push(`relay_url = "${f.cloud_relay_url}"`);
+    if (f.cloud_token) lines.push(`token = "${escapeTomlString(f.cloud_token)}"`);
+    if (f.cloud_relay_url) lines.push(`relay_url = "${escapeTomlString(f.cloud_relay_url)}"`);
     if (f.cloud_local_port) lines.push(`local_port = ${f.cloud_local_port}`);
   }
 
@@ -547,7 +563,7 @@ export function serializeConfigToml(f: ConfigFields): string {
   if (f.skills_dirs.length > 0) {
     lines.push("");
     lines.push("[skills]");
-    const dirsStr = f.skills_dirs.map((d) => `"${d}"`).join(", ");
+    const dirsStr = f.skills_dirs.map((d) => `"${escapeTomlString(d)}"`).join(", ");
     lines.push(`dirs = [${dirsStr}]`);
   }
 
@@ -589,7 +605,7 @@ export function serializeConfigToml(f: ConfigFields): string {
     lines.push("");
     lines.push("[idle]");
     if (f.idle_timeout_minutes) lines.push(`timeout_minutes = ${f.idle_timeout_minutes}`);
-    if (f.idle_channel) lines.push(`idle_channel = "${f.idle_channel}"`);
+    if (f.idle_channel) lines.push(`idle_channel = "${escapeTomlString(f.idle_channel)}"`);
   }
 
   // web_search
@@ -604,23 +620,24 @@ export function serializeConfigToml(f: ConfigFields): string {
   if (hasWsBackend || hasWsNative) {
     lines.push("");
     lines.push("[web_search]");
-    if (f.ws_backend) lines.push(`backend = "${f.ws_backend}"`);
+    if (f.ws_backend) lines.push(`backend = "${escapeTomlString(f.ws_backend)}"`);
 
     if (f.ws_backend === "brave" && f.ws_brave_api_key) {
       lines.push("");
       lines.push("[web_search.brave]");
-      lines.push(`api_key = "${f.ws_brave_api_key}"`);
+      lines.push(`api_key = "${escapeTomlString(f.ws_brave_api_key)}"`);
     }
     if (f.ws_backend === "tavily" && f.ws_tavily_api_key) {
       lines.push("");
       lines.push("[web_search.tavily]");
-      lines.push(`api_key = "${f.ws_tavily_api_key}"`);
+      lines.push(`api_key = "${escapeTomlString(f.ws_tavily_api_key)}"`);
     }
     if (f.ws_backend === "ollama" && (f.ws_ollama_api_key || f.ws_ollama_base_url)) {
       lines.push("");
       lines.push("[web_search.ollama]");
-      if (f.ws_ollama_api_key) lines.push(`api_key = "${f.ws_ollama_api_key}"`);
-      if (f.ws_ollama_base_url) lines.push(`base_url = "${f.ws_ollama_base_url}"`);
+      if (f.ws_ollama_api_key) lines.push(`api_key = "${escapeTomlString(f.ws_ollama_api_key)}"`);
+      if (f.ws_ollama_base_url)
+        lines.push(`base_url = "${escapeTomlString(f.ws_ollama_base_url)}"`);
     }
     if (
       f.ws_anthropic_max_uses ||
@@ -631,33 +648,33 @@ export function serializeConfigToml(f: ConfigFields): string {
       lines.push("[web_search.anthropic]");
       if (f.ws_anthropic_max_uses) lines.push(`max_uses = ${f.ws_anthropic_max_uses}`);
       if (f.ws_anthropic_allowed_domains) {
-        const domains = f.ws_anthropic_allowed_domains
-          .split(",")
-          .map((d) => `"${d.trim()}"`)
-          .filter((d) => d !== '""');
-        if (domains.length > 0) lines.push(`allowed_domains = [${domains.join(", ")}]`);
+        const domains = commaList(f.ws_anthropic_allowed_domains);
+        if (domains.length > 0)
+          lines.push(
+            `allowed_domains = [${domains.map((d) => `"${escapeTomlString(d)}"`).join(", ")}]`,
+          );
       }
       if (f.ws_anthropic_blocked_domains) {
-        const domains = f.ws_anthropic_blocked_domains
-          .split(",")
-          .map((d) => `"${d.trim()}"`)
-          .filter((d) => d !== '""');
-        if (domains.length > 0) lines.push(`blocked_domains = [${domains.join(", ")}]`);
+        const domains = commaList(f.ws_anthropic_blocked_domains);
+        if (domains.length > 0)
+          lines.push(
+            `blocked_domains = [${domains.map((d) => `"${escapeTomlString(d)}"`).join(", ")}]`,
+          );
       }
     }
     if (f.ws_openai_search_context_size) {
       lines.push("");
       lines.push("[web_search.openai]");
-      lines.push(`search_context_size = "${f.ws_openai_search_context_size}"`);
+      lines.push(`search_context_size = "${escapeTomlString(f.ws_openai_search_context_size)}"`);
     }
     if (f.ws_gemini_exclude_domains) {
       lines.push("");
       lines.push("[web_search.gemini]");
-      const domains = f.ws_gemini_exclude_domains
-        .split(",")
-        .map((d) => `"${d.trim()}"`)
-        .filter((d) => d !== '""');
-      if (domains.length > 0) lines.push(`exclude_domains = [${domains.join(", ")}]`);
+      const domains = commaList(f.ws_gemini_exclude_domains);
+      if (domains.length > 0)
+        lines.push(
+          `exclude_domains = [${domains.map((d) => `"${escapeTomlString(d)}"`).join(", ")}]`,
+        );
     }
   }
 
@@ -674,11 +691,11 @@ function serializeModelLine(
   const hasTemp = ov?.temperature != null && ov.temperature !== "";
   const hasThinking = ov?.thinking != null && ov.thinking !== "";
   if (!hasTemp && !hasThinking) {
-    return `${tomlKey} = "${modelValue}"`;
+    return `${tomlKey} = "${escapeTomlString(modelValue)}"`;
   }
-  const parts = [`model = "${modelValue}"`];
+  const parts = [`model = "${escapeTomlString(modelValue)}"`];
   if (hasTemp) parts.push(`temperature = ${ov.temperature}`);
-  if (hasThinking) parts.push(`thinking = "${ov.thinking}"`);
+  if (hasThinking) parts.push(`thinking = "${escapeTomlString(ov.thinking)}"`);
   return `${tomlKey} = { ${parts.join(", ")} }`;
 }
 
@@ -691,10 +708,10 @@ export function serializeProvidersToml(
 
   for (const p of providers) {
     lines.push(`[providers.${p.name}]`);
-    lines.push(`type = "${p.type}"`);
-    if (p.apiKey) lines.push(`api_key = "${p.apiKey}"`);
-    if (p.url) lines.push(`url = "${p.url}"`);
-    if (p.keepAlive) lines.push(`keep_alive = "${p.keepAlive}"`);
+    lines.push(`type = "${escapeTomlString(p.type)}"`);
+    if (p.apiKey) lines.push(`api_key = "${escapeTomlString(p.apiKey)}"`);
+    if (p.url) lines.push(`url = "${escapeTomlString(p.url)}"`);
+    if (p.keepAlive) lines.push(`keep_alive = "${escapeTomlString(p.keepAlive)}"`);
     lines.push("");
   }
 
@@ -710,7 +727,7 @@ export function serializeProvidersToml(
     const val = models[formKey as ModelRoleKey];
     if (val) modelLines.push(serializeModelLine(tomlKey, val, models.overrides[formKey]));
   }
-  if (models.embedding) modelLines.push(`embedding = "${models.embedding}"`);
+  if (models.embedding) modelLines.push(`embedding = "${escapeTomlString(models.embedding)}"`);
 
   if (modelLines.length > 0) {
     lines.push("[models]");

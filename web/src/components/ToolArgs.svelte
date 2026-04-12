@@ -17,6 +17,15 @@
 
   const hasArgs = $derived(entries.length > 0);
 
+  const SIMPLE_TOOL_ARG: Record<string, string> = {
+    project_activate: "name",
+    project_create: "name",
+    project_archive: "name",
+    skill_activate: "name",
+    skill_deactivate: "name",
+    switch_endpoint: "endpoint",
+  };
+
   /** Build a metadata line from optional fields, joined with · */
   function metaLine(parts: [string, string | undefined][]): string {
     return parts
@@ -133,9 +142,9 @@
       >
     {/if}
   </div>
-{:else if name === "project_activate" || name === "project_create" || name === "project_archive" || name === "skill_activate" || name === "skill_deactivate" || name === "switch_endpoint"}
+{:else if SIMPLE_TOOL_ARG[name]}
   <div class="tool-args">
-    <span class="tool-args-label">{str("name") || str("endpoint")}</span>
+    <span class="tool-args-label">{str(SIMPLE_TOOL_ARG[name])}</span>
     {#if name === "project_create" && hasKey("description")}
       <span class="tool-args-meta">{str("description")}</span>
     {/if}

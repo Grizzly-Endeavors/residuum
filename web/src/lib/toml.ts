@@ -5,19 +5,23 @@
 import type { SetupWizardState } from "./types";
 import { DEFAULT_MODELS } from "./models";
 
+function escapeTomlString(s: string): string {
+  return s.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+}
+
 /** Generate config.toml content (timezone, integrations). */
 export function generateConfigToml(state: SetupWizardState): string {
   const lines: string[] = [];
 
-  if (state.userName) lines.push(`name = "${state.userName}"`);
-  lines.push(`timezone = "${state.timezone}"`);
+  if (state.userName) lines.push(`name = "${escapeTomlString(state.userName)}"`);
+  lines.push(`timezone = "${escapeTomlString(state.timezone)}"`);
 
   // Discord (top-level section)
   if (state.integrations.discordToken) {
     const ref = state.secretRefs["discord"] ?? state.integrations.discordToken;
     lines.push("");
     lines.push("[discord]");
-    lines.push(`token = "${ref}"`);
+    lines.push(`token = "${escapeTomlString(ref)}"`);
   }
 
   // Telegram (top-level section)
@@ -25,7 +29,7 @@ export function generateConfigToml(state: SetupWizardState): string {
     const ref = state.secretRefs["telegram"] ?? state.integrations.telegramToken;
     lines.push("");
     lines.push("[telegram]");
-    lines.push(`token = "${ref}"`);
+    lines.push(`token = "${escapeTomlString(ref)}"`);
   }
 
   lines.push("");
@@ -56,15 +60,15 @@ export function generateProvidersToml(state: SetupWizardState): string {
   for (const [name, cfg] of Object.entries(providerEntries)) {
     if (name === "ollama") {
       lines.push(`[providers.${name}]`);
-      lines.push(`type = "${cfg.type}"`);
+      lines.push(`type = "${escapeTomlString(cfg.type)}"`);
       lines.push("");
       continue;
     }
     lines.push(`[providers.${name}]`);
-    lines.push(`type = "${cfg.type}"`);
+    lines.push(`type = "${escapeTomlString(cfg.type)}"`);
     const keyRef = state.secretRefs[name] ?? cfg.api_key;
-    lines.push(`api_key = "${keyRef}"`);
-    if (cfg.url) lines.push(`url = "${cfg.url}"`);
+    lines.push(`api_key = "${escapeTomlString(keyRef)}"`);
+    if (cfg.url) lines.push(`url = "${escapeTomlString(cfg.url)}"`);
     lines.push("");
   }
 
@@ -72,20 +76,22 @@ export function generateProvidersToml(state: SetupWizardState): string {
   const mainCfg = state.providerConfigs[state.mainProvider];
   const mainModel = mainCfg.model || DEFAULT_MODELS[state.mainProvider] || "";
   lines.push("[models]");
-  lines.push(`main = "${state.mainProvider}/${mainModel}"`);
+  lines.push(`main = "${escapeTomlString(`${state.mainProvider}/${mainModel}`)}"`);
 
   for (const role of ["observer", "reflector", "pulse"]) {
     const r = state.roles[role];
     if (!r) continue;
     const prov = r.provider || state.mainProvider;
     if (r.model) {
-      lines.push(`${role} = "${prov}/${r.model}"`);
+      lines.push(`${role} = "${escapeTomlString(`${prov}/${r.model}`)}"`);
     }
   }
 
   // Embedding model
   if (state.embeddingModel.provider && state.embeddingModel.model) {
-    lines.push(`embedding = "${state.embeddingModel.provider}/${state.embeddingModel.model}"`);
+    lines.push(
+      `embedding = "${escapeTomlString(`${state.embeddingModel.provider}/${state.embeddingModel.model}`)}"`,
+    );
   }
 
   // Background model tiers (lives in providers.toml alongside other model config)
@@ -102,7 +108,7 @@ export function generateProvidersToml(state: SetupWizardState): string {
     lines.push("");
     lines.push("[background.models]");
     for (const { tier, prov, model } of bgEntries) {
-      lines.push(`${tier} = "${prov}/${model}"`);
+      lines.push(`${tier} = "${escapeTomlString(`${prov}/${model}`)}"`);
     }
   }
 
