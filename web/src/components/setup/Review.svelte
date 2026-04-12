@@ -31,23 +31,6 @@
       }
     }
 
-    // Role-specific API keys (if different from provider config)
-    for (const role of ["observer", "reflector", "pulse"]) {
-      const r = wizardState.roles[role];
-      if (!r) continue;
-      const prov = r.provider || wizardState.mainProvider;
-      const provKey =
-        wizardState.providerConfigs[prov as keyof typeof wizardState.providerConfigs]?.apiKey || "";
-      if (r.apiKey && r.apiKey !== provKey) {
-        const name = `${role}_${prov}`;
-        promises.push(
-          storeSecret(name, r.apiKey).then((res) => {
-            wizardState.secretRefs[name] = res.reference;
-          }),
-        );
-      }
-    }
-
     // Integration tokens
     if (wizardState.integrations.discordToken) {
       promises.push(

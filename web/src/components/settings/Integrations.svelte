@@ -65,12 +65,8 @@
     };
   });
 
-  function cloudGatewayPort(): string {
-    return fields.gateway_port ?? "7700";
-  }
-
   function handleCloudConnect() {
-    const port = cloudGatewayPort();
+    const port = fields.gateway_port ?? "7700";
     window.open(`https://agent-residuum.com/connect?port=${port}`, "_blank");
   }
 

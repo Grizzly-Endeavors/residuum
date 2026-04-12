@@ -61,7 +61,6 @@ export interface ProviderConfig {
 
 export interface RoleConfig {
   provider: string;
-  apiKey: string;
   url: string;
   model: string;
 }
@@ -271,11 +270,6 @@ export interface ToolGroupFeedItem extends FeedItemBase {
   calls: ToolCallState[];
 }
 
-export interface CommandOutputFeedItem extends FeedItemBase {
-  kind: "command-output";
-  content: string;
-}
-
 export interface FileAttachmentFeedItem extends FeedItemBase {
   kind: "file-attachment";
   filename: string;
@@ -294,5 +288,4 @@ export type FeedItem =
   | DividerFeedItem
   | CompressedMarkerFeedItem
   | ToolGroupFeedItem
-  | CommandOutputFeedItem
   | FileAttachmentFeedItem;

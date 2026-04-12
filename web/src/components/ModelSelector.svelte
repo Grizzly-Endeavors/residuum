@@ -12,7 +12,6 @@
   let currentModel = $state("");
   let currentProvider = $state("");
   let models = $state<ModelEntry[]>([]);
-  let _loading = $state(false);
   let saving = $state(false);
   let menuEl: HTMLDivElement | undefined = $state();
 
@@ -38,10 +37,8 @@
       // Find provider config to fetch model list
       const provEntry = parsed.providers.find((p) => p.name === currentProvider);
       if (provEntry) {
-        _loading = true;
         const result = await fetchModels(provEntry.type, provEntry.apiKey, provEntry.url);
         models = result.models;
-        _loading = false;
       }
     } catch {
       // config not available yet

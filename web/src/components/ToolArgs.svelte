@@ -152,13 +152,9 @@
   <!-- Generic fallback: key-value display -->
   <div class="tool-args">
     <div class="tool-args-kv">
-      {#each entries as [key, value] (key)}
+      {#each entries as [key] (key)}
         <span class="tool-args-kv-key">{key}</span>
-        <span class="tool-args-kv-val"
-          >{typeof value === "object"
-            ? JSON.stringify(value)
-            : String(value as string | number | boolean)}</span
-        >
+        <span class="tool-args-kv-val">{str(key)}</span>
       {/each}
     </div>
   </div>

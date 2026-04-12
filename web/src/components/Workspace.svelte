@@ -69,9 +69,6 @@
   }
 
   async function handleSelectFile(path: string) {
-    if (dirty && selectedFile) {
-      // Could add confirmation here, for now just switch
-    }
     selectedFile = path;
     loading = true;
     error = "";

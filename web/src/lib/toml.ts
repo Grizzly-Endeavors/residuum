@@ -52,20 +52,6 @@ export function generateProvidersToml(state: SetupWizardState): string {
     }
   }
 
-  // Role providers (if different from selected ones)
-  for (const role of ["observer", "reflector", "pulse"]) {
-    const r = state.roles[role];
-    if (!r) continue;
-    const prov = r.provider || state.mainProvider;
-    if (!providerEntries[prov] && prov !== "ollama" && r.apiKey) {
-      providerEntries[prov] = {
-        type: prov,
-        api_key: r.apiKey,
-        url: null,
-      };
-    }
-  }
-
   // Write provider entries
   for (const [name, cfg] of Object.entries(providerEntries)) {
     if (name === "ollama") {

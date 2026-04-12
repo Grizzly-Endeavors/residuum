@@ -140,8 +140,6 @@
         <CompressedHistoryMarker />
       {:else if item.kind === "tool-group"}
         <ToolGroup calls={item.calls} {verbose} />
-      {:else if item.kind === "command-output"}
-        <MessageNotice content={item.content} />
       {:else if item.kind === "file-attachment"}
         <FileAttachment {item} />
       {/if}

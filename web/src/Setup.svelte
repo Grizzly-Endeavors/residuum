@@ -16,6 +16,7 @@
   let { onComplete }: Props = $props();
 
   const TOTAL_STEPS = 6;
+  const stepIndices = Array.from({ length: TOTAL_STEPS }, (_, i) => i);
   let step = $state(0);
   let catalog = $state<McpCatalogEntry[]>([]);
 
@@ -31,9 +32,9 @@
     },
     mainProvider: "anthropic",
     roles: {
-      observer: { provider: "", apiKey: "", url: "", model: "" },
-      reflector: { provider: "", apiKey: "", url: "", model: "" },
-      pulse: { provider: "", apiKey: "", url: "", model: "" },
+      observer: { provider: "", url: "", model: "" },
+      reflector: { provider: "", url: "", model: "" },
+      pulse: { provider: "", url: "", model: "" },
     },
     embeddingModel: { provider: "", model: "" },
     backgroundModels: {
@@ -65,7 +66,7 @@
   <div class="setup-body">
     <div class="setup-card">
       <div class="setup-step-indicator">
-        {#each Array(TOTAL_STEPS) as _, i (i)}
+        {#each stepIndices as i (i)}
           <div class="step-dot" class:active={i === step} class:done={i < step}></div>
         {/each}
       </div>

@@ -7,7 +7,6 @@
     DEFAULT_EMBEDDING_MODELS,
     EMBEDDING_PROVIDERS,
     EMBEDDING_MODEL_LISTS,
-    debounce,
     type ModelEntry,
   } from "../../lib/models";
 
@@ -177,10 +176,6 @@
       setRoleModel(role, found ? defaultModel : (result.models[0]?.id ?? ""));
     }
   }
-
-  const _debouncedLoadModels = debounce((role: string) => {
-    void loadModels(role);
-  }, 500);
 
   const allRoles = ["main", "observer", "reflector", "pulse"];
   const bgTiers = ["small", "medium", "large"];

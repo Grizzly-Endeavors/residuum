@@ -22,7 +22,6 @@
 
   function removeServer(idx: number) {
     servers.splice(idx, 1);
-    servers = servers;
   }
 
   // ── Catalog handling ─────────────────────────────────────────────────
@@ -38,7 +37,6 @@
     if (isAdded(srv.name)) {
       const existsIdx = servers.findIndex((s) => s.name === srv.name);
       if (existsIdx >= 0) servers.splice(existsIdx, 1);
-      servers = servers;
       pendingIdx = null;
       return;
     }
@@ -54,7 +52,6 @@
         args: [...(srv.args || [])],
         env: { ...(srv.env || {}) },
       });
-      servers = servers;
     }
   }
 
@@ -84,7 +81,6 @@
       args: [...(srv.args || [])],
       env: env as Record<string, string>,
     });
-    servers = servers;
     pendingIdx = null;
   }
 
@@ -112,7 +108,6 @@
       args,
       env,
     });
-    servers = servers;
     newServer = { name: "", command: "", args: [], env: {} };
     newArgsStr = "";
     newEnvStr = "";

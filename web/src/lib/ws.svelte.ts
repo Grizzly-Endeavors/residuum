@@ -86,9 +86,12 @@ class WsCoordinator {
   sendChat(content: string, images?: ImageAttachment[]): void {
     this.msgCounter++;
     const id = `web-${this.msgCounter}`;
-    const msg: ClientMessage = images?.length
-      ? { type: "send_message", id, content, images }
-      : { type: "send_message", id, content };
+    const msg: ClientMessage = {
+      type: "send_message",
+      id,
+      content,
+      ...(images?.length ? { images } : {}),
+    };
     this.transport.send(msg);
     this.store.pushUserMessage(content, images);
   }

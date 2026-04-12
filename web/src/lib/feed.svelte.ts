@@ -173,7 +173,7 @@ export class FeedStore {
     // Live user messages carry an implicit "now" timestamp — inject a day
     // divider if the calendar day has rolled over since the last live entry.
     // eslint-disable-next-line svelte/prefer-svelte-reactivity
-    const nowIso = new Date(Date.now()).toISOString();
+    const nowIso = new Date().toISOString();
     this.maybePushDayDivider(nowIso);
     this.feed.push({ id: nextFeedId(), kind: "user", content, images });
     this.isProcessing = true;
@@ -213,7 +213,7 @@ export class FeedStore {
         this.lastLiveDayKey = key;
       }
 
-      const content = msg.content || "";
+      const content = msg.content;
       switch (msg.role) {
         case "user":
           out.push({ id: nextFeedId(), kind: "user", content });

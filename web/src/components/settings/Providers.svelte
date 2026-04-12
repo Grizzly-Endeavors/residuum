@@ -59,10 +59,7 @@
 
   /** Ensure the overrides record has an entry for a given key. */
   function ensureOverrides(key: string) {
-    if (!models.overrides[key]) {
-      models.overrides[key] = { temperature: "", thinking: "" };
-      models.overrides = models.overrides;
-    }
+    models.overrides[key] ??= { temperature: "", thinking: "" };
   }
 
   // Model lists and loading state per role
@@ -158,18 +155,16 @@
     }
   }
 
-  const _debouncedLoadModels = debounce((role: string) => {
+  const debouncedLoadModels = debounce((role: string) => {
     void loadModels(role);
   }, 500);
 
   function addProvider() {
     providers.push({ name: "", type: "anthropic", apiKey: "", url: "", keepAlive: "" });
-    providers = providers;
   }
 
   function removeProvider(idx: number) {
     providers.splice(idx, 1);
-    providers = providers;
   }
 
   function providerNameOptions(): string[] {
@@ -246,7 +241,7 @@
                 onblur={() => {
                   invalidateProvider(prov.type);
                   for (const role of [...allRoles, "embedding", ...bgTiers]) {
-                    if (getProvider(role) === prov.name) _debouncedLoadModels(role);
+                    if (getProvider(role) === prov.name) debouncedLoadModels(role);
                   }
                 }}
               />
@@ -373,7 +368,6 @@
                       ensureOverrides(ovKey);
                       const ov = models.overrides[ovKey];
                       if (ov) ov.thinking = opt.value;
-                      models.overrides = models.overrides;
                     }}
                   >
                     {opt.label}
@@ -387,7 +381,6 @@
                   ensureOverrides(ovKey);
                   const ov = models.overrides[ovKey];
                   if (ov) ov.thinking = (e.target as HTMLSelectElement).value;
-                  models.overrides = models.overrides;
                 }}
               >
                 {#each thinkingOptions as opt (opt.value)}
@@ -485,7 +478,6 @@
                       ensureOverrides(ovKey);
                       const ov = models.overrides[ovKey];
                       if (ov) ov.thinking = opt.value;
-                      models.overrides = models.overrides;
                     }}
                   >
                     {opt.label}
@@ -499,7 +491,6 @@
                   ensureOverrides(ovKey);
                   const ov = models.overrides[ovKey];
                   if (ov) ov.thinking = (e.target as HTMLSelectElement).value;
-                  models.overrides = models.overrides;
                 }}
               >
                 {#each thinkingOptions as opt (opt.value)}
@@ -656,7 +647,6 @@
                       ensureOverrides(ovKey);
                       const ov = models.overrides[ovKey];
                       if (ov) ov.thinking = opt.value;
-                      models.overrides = models.overrides;
                     }}
                   >
                     {opt.label}
@@ -670,7 +660,6 @@
                   ensureOverrides(ovKey);
                   const ov = models.overrides[ovKey];
                   if (ov) ov.thinking = (e.target as HTMLSelectElement).value;
-                  models.overrides = models.overrides;
                 }}
               >
                 {#each thinkingOptions as opt (opt.value)}

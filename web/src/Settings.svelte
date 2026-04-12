@@ -15,7 +15,6 @@
     putProvidersRaw,
     putMcpRaw,
     storeSecret,
-    listSecrets,
   } from "./lib/api";
   import {
     parseConfigToml,
@@ -65,9 +64,6 @@
   let modelAssignments = $state<SettingsModelAssignments>(defaultModels());
   let mcpServers = $state<McpServerEntry[]>([]);
 
-  // Secrets tracking
-  let _existingSecrets = $state<string[]>([]);
-
   // Auto-save debounce timer
   let autoSaveTimer: ReturnType<typeof setTimeout> | undefined;
   let statusClearTimer: ReturnType<typeof setTimeout> | undefined;
@@ -95,16 +91,14 @@
 
   onMount(async () => {
     try {
-      const [cfgRaw, provRaw, mcpRaw, secrets] = await Promise.all([
+      const [cfgRaw, provRaw, mcpRaw] = await Promise.all([
         fetchConfigRaw(),
         fetchProvidersRaw(),
         fetchMcpRaw(),
-        listSecrets(),
       ]);
       rawConfig = cfgRaw;
       rawProviders = provRaw;
       rawMcp = mcpRaw;
-      _existingSecrets = secrets;
 
       parseAllToForm();
     } catch (err: unknown) {

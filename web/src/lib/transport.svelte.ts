@@ -35,8 +35,9 @@ export class WsTransport {
       try {
         const msg: ServerMessage = JSON.parse(e.data);
         this.onMessage?.(msg);
-      } catch {
-        // ignore unparseable frames
+      } catch (err) {
+        // eslint-disable-next-line no-console -- transport-layer failure has no user-visible channel; project rule mandates failure visibility
+        console.warn("unparseable ws frame", err);
       }
     };
 
@@ -44,10 +45,6 @@ export class WsTransport {
       this.status = "disconnected";
       this.stopPing();
       this.scheduleReconnect();
-    };
-
-    this.ws.onerror = () => {
-      this.status = "disconnected";
     };
   }
 

@@ -142,7 +142,11 @@ export function defaultConfigFields(): ConfigFields {
 // Helper to safely read nested TOML values
 function str(v: unknown): string {
   if (v == null) return "";
-  if (typeof v === "object") return JSON.stringify(v);
+  if (typeof v === "object") {
+    // eslint-disable-next-line no-console -- parser-layer failure has no user-visible channel; surfaces config drift
+    console.warn("unexpected object in toml scalar field", v);
+    return "";
+  }
   return String(v as string | number | boolean);
 }
 

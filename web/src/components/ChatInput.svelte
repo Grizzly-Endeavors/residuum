@@ -15,7 +15,7 @@
   }: { onSend: (text: string, images?: ImageAttachment[]) => void; disabled?: boolean } = $props();
   let value = $state("");
   let textarea: HTMLTextAreaElement | undefined = $state();
-  let fileInput: HTMLInputElement | undefined = $state();
+  let fileInput: HTMLInputElement | undefined;
   let pendingImages = $state<ImageAttachment[]>([]);
   let rejectionMsg = $state("");
   let rejectionTimer: ReturnType<typeof setTimeout> | undefined;
@@ -204,12 +204,6 @@
     showMenu = false;
     if (textarea) textarea.style.height = "auto";
   }
-
-  $effect(() => {
-    // trigger resize when value changes
-    value;
-    autoResize();
-  });
 
   // Click-outside to dismiss menu
   $effect(() => {
