@@ -259,6 +259,53 @@ pub async fn next_episode_id(episodes_dir: &Path) -> anyhow::Result<String> {
     Ok(id)
 }
 
+/// Return the ID of the most recent episode on disk, or `None` if none exist.
+///
+/// Walks `episodes_dir` recursively for files named `ep-NNN.jsonl` and returns
+/// the highest `NNN` as a zero-padded `ep-NNN` string.
+///
+/// # Errors
+/// Returns an error if the directory cannot be read.
+pub async fn latest_episode_id(episodes_dir: &Path) -> anyhow::Result<Option<String>> {
+    let max_num = max_episode_num(episodes_dir)?;
+    if max_num == 0 {
+        Ok(None)
+    } else {
+        Ok(Some(format!("ep-{max_num:03}")))
+    }
+}
+
+/// Return the ID of the episode immediately older than `cursor`, skipping gaps.
+///
+/// Parses `NNN` from a cursor like `"ep-042"`, then walks backwards probing
+/// for `ep-(NNN-1)`, `ep-(NNN-2)`, ... until an existing JSONL file is found
+/// or `NNN` hits 0. Returns `None` if no older episode exists. Gaps from
+/// hand-deleted files don't break pagination.
+///
+/// # Errors
+/// Returns an error if the directory cannot be traversed.
+pub async fn previous_episode_id(
+    episodes_dir: &Path,
+    cursor: &str,
+) -> anyhow::Result<Option<String>> {
+    let Some(num) = cursor
+        .strip_prefix("ep-")
+        .and_then(|s| s.parse::<u32>().ok())
+    else {
+        return Ok(None);
+    };
+
+    let mut candidate = num;
+    while candidate > 1 {
+        candidate -= 1;
+        let id = format!("ep-{candidate:03}");
+        if find_episode_path(episodes_dir, &id)?.is_some() {
+            return Ok(Some(id));
+        }
+    }
+    Ok(None)
+}
+
 /// Recursively walk `dir` for `ep-NNN.jsonl` files and return the maximum `NNN` found.
 ///
 /// Returns `0` if the directory does not exist or contains no matching files.
@@ -668,5 +715,83 @@ mod tests {
         tokio::fs::write(&path, content).await.unwrap();
         let result = read_episode_jsonl(&path).await;
         assert!(result.is_err(), "malformed message line should return Err");
+    }
+
+    #[tokio::test]
+    async fn latest_episode_id_empty_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        let id = latest_episode_id(dir.path()).await.unwrap();
+        assert!(id.is_none(), "empty dir should return None");
+    }
+
+    #[tokio::test]
+    async fn latest_episode_id_scans_jsonl_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let episodes_dir = dir.path().join("episodes");
+        let month_dir = episodes_dir.join("2026-02/19");
+        tokio::fs::create_dir_all(&month_dir).await.unwrap();
+        tokio::fs::write(month_dir.join("ep-001.jsonl"), "")
+            .await
+            .unwrap();
+        tokio::fs::write(month_dir.join("ep-003.jsonl"), "")
+            .await
+            .unwrap();
+
+        let id = latest_episode_id(&episodes_dir).await.unwrap();
+        assert_eq!(id, Some("ep-003".to_string()));
+    }
+
+    #[tokio::test]
+    async fn previous_episode_id_returns_decrement_when_exists() {
+        let dir = tempfile::tempdir().unwrap();
+        let ep1 = sample_episode();
+        let mut ep2 = sample_episode();
+        ep2.id = "ep-002".to_string();
+        write_episode_transcript(dir.path(), &ep1, &[Message::user("a")])
+            .await
+            .unwrap();
+        write_episode_transcript(dir.path(), &ep2, &[Message::user("b")])
+            .await
+            .unwrap();
+
+        let prev = previous_episode_id(dir.path(), "ep-002").await.unwrap();
+        assert_eq!(prev, Some("ep-001".to_string()));
+    }
+
+    #[tokio::test]
+    async fn previous_episode_id_skips_gap() {
+        let dir = tempfile::tempdir().unwrap();
+        let ep1 = sample_episode();
+        let mut ep3 = sample_episode();
+        ep3.id = "ep-003".to_string();
+        // ep-002 is intentionally missing
+        write_episode_transcript(dir.path(), &ep1, &[Message::user("a")])
+            .await
+            .unwrap();
+        write_episode_transcript(dir.path(), &ep3, &[Message::user("c")])
+            .await
+            .unwrap();
+
+        let prev = previous_episode_id(dir.path(), "ep-003").await.unwrap();
+        assert_eq!(prev, Some("ep-001".to_string()), "should skip the gap");
+    }
+
+    #[tokio::test]
+    async fn previous_episode_id_none_when_at_first() {
+        let dir = tempfile::tempdir().unwrap();
+        let ep1 = sample_episode();
+        write_episode_transcript(dir.path(), &ep1, &[Message::user("a")])
+            .await
+            .unwrap();
+
+        let prev = previous_episode_id(dir.path(), "ep-001").await.unwrap();
+        assert!(prev.is_none());
+    }
+
+    #[tokio::test]
+    async fn previous_episode_id_malformed_cursor() {
+        let dir = tempfile::tempdir().unwrap();
+        let prev = previous_episode_id(dir.path(), "garbage").await.unwrap();
+        assert!(prev.is_none());
     }
 }

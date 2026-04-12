@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount, onDestroy } from "svelte";
   import { ws } from "./lib/ws.svelte";
-  import { fetchChatHistory } from "./lib/api";
+  import { fetchChatHistory, fetchChatSegment } from "./lib/api";
   import { parseCommand } from "./lib/commands";
   import { nextFeedId } from "./lib/feed-id";
   import ChatFeed from "./components/ChatFeed.svelte";
@@ -10,8 +10,17 @@
 
   onMount(async () => {
     try {
-      const history = await fetchChatHistory();
-      ws.loadHistory(history);
+      const recent = await fetchChatHistory();
+      ws.loadHistory(recent);
+      // Always prefetch the most recent episode so the chat is never
+      // empty after the observer compresses history, and the
+      // "compressed history" marker shows up from the start.
+      if (recent.next_cursor) {
+        const episode = await fetchChatSegment(recent.next_cursor);
+        if (episode?.kind === "episode") {
+          ws.prependEpisode(episode);
+        }
+      }
     } catch {
       // history unavailable — start with empty feed
     }

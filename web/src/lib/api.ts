@@ -2,7 +2,8 @@
 
 import type {
   StatusResponse,
-  RecentMessage,
+  ChatHistorySegment,
+  RecentHistorySegment,
   TimezoneResponse,
   ModelsResponse,
   McpCatalogEntry,
@@ -54,12 +55,27 @@ export async function fetchStatus(): Promise<StatusResponse> {
   return apiFetch<StatusResponse>("/api/status");
 }
 
-/** Graceful fallback: returns empty array on failure (history is optional at startup). */
-export async function fetchChatHistory(): Promise<RecentMessage[]> {
+/** Graceful fallback: returns an empty Recent segment on failure. */
+export async function fetchChatHistory(): Promise<RecentHistorySegment> {
   try {
-    return await apiFetch<RecentMessage[]>("/api/chat/history");
+    const segment = await apiFetch<ChatHistorySegment>("/api/chat/history");
+    if (segment.kind === "recent") return segment;
+    // Server should never return an Episode segment without an `episode` query
+    // param, but fall back defensively.
+    return { kind: "recent", messages: [], next_cursor: null };
   } catch {
-    return [];
+    return { kind: "recent", messages: [], next_cursor: null };
+  }
+}
+
+/** Fetch an episode segment by cursor. Returns null on 404 or error. */
+export async function fetchChatSegment(episodeId: string): Promise<ChatHistorySegment | null> {
+  try {
+    return await apiFetch<ChatHistorySegment>(
+      `/api/chat/history?episode=${encodeURIComponent(episodeId)}`,
+    );
+  } catch {
+    return null;
   }
 }
 

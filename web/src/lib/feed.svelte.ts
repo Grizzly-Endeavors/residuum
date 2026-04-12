@@ -6,18 +6,42 @@ import type {
   ServerMessage,
   RecentMessage,
   FeedItem,
+  DividerFeedItem,
   ToolGroupFeedItem,
   ToolCallState,
   ImageAttachment,
   FileAttachmentFeedItem,
+  RecentHistorySegment,
+  EpisodeHistorySegment,
 } from "./types";
+
+const DAY_DIVIDER_FORMATTER = new Intl.DateTimeFormat(undefined, {
+  month: "long",
+  day: "numeric",
+});
+
+function dayKey(iso: string): string {
+  // Timestamps are either "YYYY-MM-DD" or "YYYY-MM-DDTHH:MM". Slice to date.
+  return iso.slice(0, 10);
+}
+
+function dayLabel(iso: string): string {
+  const date = new Date(iso.length === 10 ? `${iso}T00:00` : iso);
+  if (Number.isNaN(date.getTime())) return iso.slice(0, 10);
+  return DAY_DIVIDER_FORMATTER.format(date);
+}
 
 /** Manages the chat feed state and processes incoming server messages. */
 export class FeedStore {
   feed = $state<FeedItem[]>([]);
   isProcessing = $state(false);
+  oldestEpisodeCursor = $state<string | null>(null);
+  hasMoreHistory = $state(false);
+  isLoadingOlder = $state(false);
 
   private pendingToolCalls = new SvelteMap<string, ToolCallState>();
+  private lastLiveDayKey: string | null = null;
+  private compressedMarkerInserted = false;
 
   /** Dispatch a server message into the feed. */
   handleMessage(msg: ServerMessage): void {
@@ -100,24 +124,103 @@ export class FeedStore {
     }
   }
 
-  /** Populate the feed from chat history. */
-  loadHistory(messages: RecentMessage[]): void {
+  /** Populate the feed from a Recent history segment. */
+  loadHistory(segment: RecentHistorySegment): void {
     this.feed.length = 0;
     this.pendingToolCalls.clear();
-    if (!messages.length) return;
+    this.lastLiveDayKey = null;
+    this.compressedMarkerInserted = false;
+    this.oldestEpisodeCursor = segment.next_cursor;
+    this.hasMoreHistory = segment.next_cursor !== null;
 
-    // eslint-disable-next-line svelte/prefer-svelte-reactivity -- local non-reactive scratch map
+    const items = this.convertMessages(segment.messages, {
+      withDayDividers: true,
+    });
+    for (const item of items) this.feed.push(item);
+  }
+
+  /**
+   * Prepend an episode segment to the top of the feed.
+   *
+   * Inserts an `ep-NNN · date` divider above the episode's messages. On the
+   * first prepend, also inserts a `compressed-marker` between the episode
+   * block and the already-present live messages so the user sees where
+   * the observer cut.
+   */
+  prependEpisode(segment: EpisodeHistorySegment): void {
+    const block: FeedItem[] = [
+      {
+        id: nextFeedId(),
+        kind: "divider",
+        variant: "episode",
+        label: `${segment.episode_id} · ${segment.date}`,
+      } satisfies DividerFeedItem,
+      ...this.convertMessages(segment.messages, { withDayDividers: false }),
+    ];
+
+    if (!this.compressedMarkerInserted) {
+      block.push({ id: nextFeedId(), kind: "compressed-marker" });
+      this.compressedMarkerInserted = true;
+    }
+
+    this.feed.splice(0, 0, ...block);
+    this.oldestEpisodeCursor = segment.next_cursor;
+    this.hasMoreHistory = segment.next_cursor !== null;
+  }
+
+  /** Add a user message to the feed. */
+  pushUserMessage(content: string, images?: ImageAttachment[]): void {
+    // Live user messages carry an implicit "now" timestamp — inject a day
+    // divider if the calendar day has rolled over since the last live entry.
+    // eslint-disable-next-line svelte/prefer-svelte-reactivity
+    const nowIso = new Date(Date.now()).toISOString();
+    this.maybePushDayDivider(nowIso);
+    this.feed.push({ id: nextFeedId(), kind: "user", content, images });
+    this.isProcessing = true;
+  }
+
+  /** Append an arbitrary feed item (e.g. from commands). */
+  appendFeedItem(item: FeedItem): void {
+    this.feed.push(item);
+  }
+
+  // ── Private ──────────────────────────────────────────────────────────
+
+  /**
+   * Convert a RecentMessage list into feed items using the same
+   * role-based logic as `loadHistory` used to inline. Optionally emit
+   * day dividers when the per-message timestamp crosses a day boundary.
+   */
+  private convertMessages(
+    messages: RecentMessage[],
+    opts: { withDayDividers: boolean },
+  ): FeedItem[] {
+    const out: FeedItem[] = [];
+    // eslint-disable-next-line svelte/prefer-svelte-reactivity -- non-reactive scratch
     const toolCallItems = new Map<string, ToolCallState>();
 
     for (const msg of messages.filter((m) => m.visibility !== "background")) {
+      if (opts.withDayDividers && msg.timestamp) {
+        const key = dayKey(msg.timestamp);
+        if (this.lastLiveDayKey !== null && key !== this.lastLiveDayKey) {
+          out.push({
+            id: nextFeedId(),
+            kind: "divider",
+            variant: "day",
+            label: dayLabel(msg.timestamp),
+          } satisfies DividerFeedItem);
+        }
+        this.lastLiveDayKey = key;
+      }
+
       const content = msg.content || "";
       switch (msg.role) {
         case "user":
-          this.feed.push({ id: nextFeedId(), kind: "user", content });
+          out.push({ id: nextFeedId(), kind: "user", content });
           break;
         case "assistant": {
           if (content.trim()) {
-            this.feed.push({ id: nextFeedId(), kind: "assistant", content });
+            out.push({ id: nextFeedId(), kind: "assistant", content });
           }
           if (msg.tool_calls?.length) {
             const calls: ToolCallState[] = msg.tool_calls.map((tc) => {
@@ -134,7 +237,7 @@ export class FeedStore {
               toolCallItems.set(tc.id, call);
               return call;
             });
-            this.feed.push({ id: nextFeedId(), kind: "tool-group", calls });
+            out.push({ id: nextFeedId(), kind: "tool-group", calls });
           }
           break;
         }
@@ -156,25 +259,21 @@ export class FeedStore {
       }
     }
 
-    this.feed.push({
-      id: nextFeedId(),
-      kind: "divider",
-      label: "\u2014 session resumed \u2014",
-    });
+    return out;
   }
 
-  /** Add a user message to the feed. */
-  pushUserMessage(content: string, images?: ImageAttachment[]): void {
-    this.feed.push({ id: nextFeedId(), kind: "user", content, images });
-    this.isProcessing = true;
+  private maybePushDayDivider(iso: string): void {
+    const key = dayKey(iso);
+    if (this.lastLiveDayKey !== null && key !== this.lastLiveDayKey) {
+      this.feed.push({
+        id: nextFeedId(),
+        kind: "divider",
+        variant: "day",
+        label: dayLabel(iso),
+      } satisfies DividerFeedItem);
+    }
+    this.lastLiveDayKey = key;
   }
-
-  /** Append an arbitrary feed item (e.g. from commands). */
-  appendFeedItem(item: FeedItem): void {
-    this.feed.push(item);
-  }
-
-  // ── Private ──────────────────────────────────────────────────────────
 
   private handleToolCall(msg: Extract<ServerMessage, { type: "tool_call" }>): void {
     const args =
