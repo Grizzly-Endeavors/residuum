@@ -32,6 +32,7 @@
   import Memory from "./components/settings/Memory.svelte";
   import Integrations from "./components/settings/Integrations.svelte";
   import MCP from "./components/settings/MCP.svelte";
+  import { Icon } from "./lib/icons";
 
   let { onClose }: { onClose: () => void } = $props();
 
@@ -350,9 +351,15 @@
       {#if statusMsg}
         <span class="settings-status {statusKind}">{statusMsg}</span>
       {/if}
-      <button class="icon-btn" title="Reload from disk" onclick={handleReload} disabled={saving}
-        >&#8635;</button
+      <button
+        class="icon-btn"
+        title="Reload from disk"
+        aria-label="Reload from disk"
+        onclick={handleReload}
+        disabled={saving}
       >
+        <Icon name="reload" size={16} />
+      </button>
       <div class="settings-mode-selector">
         <button
           class="settings-mode-btn"
@@ -376,7 +383,9 @@
           Raw
         </button>
       </div>
-      <button class="icon-btn" title="Close settings" onclick={onClose}>&#10005;</button>
+      <button class="icon-btn" title="Close settings" aria-label="Close settings" onclick={onClose}>
+        <Icon name="close" size={16} />
+      </button>
     </div>
   </div>
 

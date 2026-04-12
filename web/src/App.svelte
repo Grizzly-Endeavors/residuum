@@ -3,6 +3,7 @@
   import { fetchStatus } from "./lib/api";
   import { ws } from "./lib/ws.svelte";
   import Header from "./components/Header.svelte";
+  import BrandMark from "./components/BrandMark.svelte";
   import Chat from "./Chat.svelte";
   import Setup from "./Setup.svelte";
   import Settings from "./Settings.svelte";
@@ -24,7 +25,7 @@
 {#if mode === "loading"}
   <div class="header">
     <div class="header-brand">
-      <div class="header-icon">&#9670;</div>
+      <BrandMark size={26} />
       <span class="header-title">Residuum</span>
       <span class="header-status connecting">loading</span>
     </div>
@@ -32,7 +33,7 @@
 {:else if mode === "setup"}
   <div class="header">
     <div class="header-brand">
-      <div class="header-icon">&#9670;</div>
+      <BrandMark size={26} />
       <span class="header-title">Residuum</span>
     </div>
   </div>

@@ -53,9 +53,10 @@
   --input-inset: inset 0 1px 3px rgba(0, 0, 0, 0.3);
 
   /* ── Disabled state ("the forest grew over it") ────────────────────── */
-  --disabled-bg: rgba(90, 105, 58, 0.15);
-  --disabled-border: rgba(90, 105, 58, 0.3);
-  --disabled-text: rgba(90, 105, 58, 0.55);
+  /* Moss tones, faintly luminous so the surface still reads, just absent of vein energy. */
+  --disabled-bg: rgba(90, 105, 58, 0.18);
+  --disabled-border: rgba(107, 122, 74, 0.4);
+  --disabled-text: rgba(154, 165, 122, 0.7);
 
   /* ── Typography ────────────────────────────────────────────────────── */
   --font-display: "Cinzel", "Georgia", serif;

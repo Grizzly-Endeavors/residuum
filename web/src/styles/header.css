@@ -4,52 +4,68 @@
   display: flex;
   align-items: center;
   height: var(--header-height);
-  padding: 0 16px;
+  padding: 0 var(--s-4);
   border-bottom: 1px solid var(--border-subtle);
-  background: linear-gradient(180deg, #1a1a1e 0%, var(--bg-surface) 100%);
+  background: rgba(14, 14, 16, 0.72);
+  backdrop-filter: blur(14px) saturate(1.1);
+  -webkit-backdrop-filter: blur(14px) saturate(1.1);
   box-shadow:
-    0 1px 6px rgba(0, 0, 0, 0.3),
-    0 1px 0 rgba(59, 139, 219, 0.08);
+    0 1px 0 0 rgba(59, 139, 219, 0.08),
+    0 1px 12px rgba(0, 0, 0, 0.35);
   flex-shrink: 0;
-  gap: 10px;
+  gap: var(--s-3);
   position: relative;
   z-index: 10;
+}
+
+/* Hairline vein along the bottom — replaces plain border */
+.header::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: -1px;
+  height: 1px;
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    var(--vein-faint) 30%,
+    var(--vein-subtle) 50%,
+    var(--vein-faint) 70%,
+    transparent 100%
+  );
+  pointer-events: none;
 }
 
 .header-brand {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--s-2);
   flex: 1;
-}
-
-.header-icon {
-  width: 28px;
-  height: 28px;
-  border-radius: var(--radius-sm);
-  background: var(--vein-glow);
-  border: 1px solid var(--vein-dim);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 16px;
-  color: var(--vein);
 }
 
 .header-title {
   font-family: var(--font-display);
-  font-size: 16px;
-  font-weight: 700;
-  letter-spacing: 0.06em;
+  font-size: var(--fs-base);
+  font-weight: 500;
+  letter-spacing: 0.14em;
   color: var(--text);
+  text-transform: uppercase;
+  /* Inscribed: the stone has been pressed into, not glowed upon. */
+  text-shadow:
+    0 1px 0 rgba(0, 0, 0, 0.6),
+    0 -1px 0 rgba(255, 255, 255, 0.03);
 }
 
 .header-status {
-  font-size: 11px;
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
   color: var(--text-dim);
-  padding: 2px 8px;
+  padding: 2px var(--s-2);
   border-radius: var(--radius);
   border: 1px solid var(--border-subtle);
+  text-transform: lowercase;
+  letter-spacing: 0.06em;
 }
 
 .header-status.connected {
@@ -67,7 +83,7 @@
 
 .header-actions {
   display: flex;
-  gap: 6px;
+  gap: var(--s-2);
 }
 
 .icon-btn {
@@ -81,7 +97,7 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 16px;
+  position: relative;
   transition:
     background-color var(--dur-quick),
     color var(--dur-quick),
