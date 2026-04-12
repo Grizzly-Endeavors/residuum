@@ -24,6 +24,25 @@ export interface RecentMessage {
   visibility: "user" | "background";
 }
 
+// ── Chat history segments (paginated lazy-load) ──────────────────────
+
+export interface RecentHistorySegment {
+  kind: "recent";
+  messages: RecentMessage[];
+  next_cursor: string | null;
+}
+
+export interface EpisodeHistorySegment {
+  kind: "episode";
+  episode_id: string;
+  date: string; // YYYY-MM-DD
+  context: string;
+  messages: RecentMessage[];
+  next_cursor: string | null;
+}
+
+export type ChatHistorySegment = RecentHistorySegment | EpisodeHistorySegment;
+
 // ── Status API ───────────────────────────────────────────────────────
 
 export interface StatusResponse {
@@ -240,6 +259,11 @@ export interface NoticeFeedItem extends FeedItemBase {
 export interface DividerFeedItem extends FeedItemBase {
   kind: "divider";
   label: string;
+  variant?: "episode" | "day";
+}
+
+export interface CompressedMarkerFeedItem extends FeedItemBase {
+  kind: "compressed-marker";
 }
 
 export interface ToolGroupFeedItem extends FeedItemBase {
@@ -268,6 +292,7 @@ export type FeedItem =
   | ErrorFeedItem
   | NoticeFeedItem
   | DividerFeedItem
+  | CompressedMarkerFeedItem
   | ToolGroupFeedItem
   | CommandOutputFeedItem
   | FileAttachmentFeedItem;

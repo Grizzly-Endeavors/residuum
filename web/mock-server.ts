@@ -112,101 +112,68 @@ function createState(): MockState {
 
 // ─── Sample data ───────────────────────────────────────────────────────────────
 
-function sampleChatHistory() {
-  const now = new Date().toISOString();
+// Produce a Date a given number of calendar days before "now" at a specific
+// local hour, so the live recent messages span several days and exercise the
+// day-divider logic in the frontend feed store.
+function daysAgoAt(daysAgo: number, hour: number, minute = 0): string {
+  const d = new Date();
+  d.setDate(d.getDate() - daysAgo);
+  d.setHours(hour, minute, 0, 0);
+  return d.toISOString();
+}
+
+// Recent live messages — span today, yesterday, and the day before so the
+// frontend inserts a day divider between each run. These correspond to the
+// contents of recent_messages.json on the backend.
+function sampleRecentMessages() {
   return [
     {
-      role: "system",
-      content: "Session started. Loaded 42 memory observations.",
-      timestamp: new Date(Date.now() - 600_000).toISOString(),
-      project_context: "default",
-      visibility: "user",
-    },
-    {
       role: "user",
-      content: "What did we discuss yesterday about the notification system?",
-      timestamp: new Date(Date.now() - 300_000).toISOString(),
+      content: "Did the observer flag anything odd in last night's batch?",
+      timestamp: daysAgoAt(2, 9, 12),
       project_context: "default",
       visibility: "user",
     },
     {
       role: "assistant",
       content:
-        "Let me search my memory for our previous discussion about notifications.",
-      tool_calls: [
-        {
-          id: "tc_mock_1",
-          name: "memory_search",
-          arguments: JSON.stringify({
-            query: "notification system discussion",
-            limit: 5,
-          }),
-        },
-      ],
-      timestamp: new Date(Date.now() - 299_000).toISOString(),
-      project_context: "default",
-      visibility: "user",
-    },
-    {
-      role: "tool",
-      content: JSON.stringify([
-        {
-          text: "Discussed routing notifications to Discord for high-priority items and Telegram for daily summaries.",
-          score: 0.89,
-          timestamp: "2026-03-08T14:30:00Z",
-        },
-        {
-          text: "User wants notification channels configurable per-project context.",
-          score: 0.82,
-          timestamp: "2026-03-08T14:35:00Z",
-        },
-      ]),
-      tool_call_id: "tc_mock_1",
-      timestamp: new Date(Date.now() - 298_000).toISOString(),
-      project_context: "default",
-      visibility: "user",
-    },
-    {
-      role: "assistant",
-      content:
-        "Yesterday we discussed the **notification routing system**. Here's a summary:\n\n" +
-        "1. **Channel routing** — High-priority notifications go to Discord, daily summaries to Telegram\n" +
-        "2. **Per-project config** — Each project context can have its own notification preferences\n" +
-        "3. **Priority levels** — We defined three tiers: `urgent`, `normal`, and `low`\n\n" +
-        "We also talked about adding a webhook endpoint for external integrations. " +
-        "Would you like to continue working on any of these?",
-      timestamp: new Date(Date.now() - 295_000).toISOString(),
+        "Nothing unusual. The observer compressed 14 messages into `ep-003` " +
+        "around 02:00 local time and logged two fresh reflections. Memory " +
+        "utilization is holding at ~38% of the context window.",
+      timestamp: daysAgoAt(2, 9, 13),
       project_context: "default",
       visibility: "user",
     },
     {
       role: "user",
       content: "Can you check the current memory stats?",
-      timestamp: new Date(Date.now() - 120_000).toISOString(),
+      timestamp: daysAgoAt(1, 14, 20),
       project_context: "default",
       visibility: "user",
     },
     {
       role: "assistant",
-      content:
-        "Let me look at the memory subsystem status.",
+      content: "Let me look at the memory subsystem status.",
       tool_calls: [
         {
-          id: "tc_mock_2",
+          id: "tc_mock_stats",
           name: "server_command",
           arguments: JSON.stringify({ name: "context" }),
         },
       ],
-      timestamp: new Date(Date.now() - 119_000).toISOString(),
+      timestamp: daysAgoAt(1, 14, 20),
       project_context: "default",
       visibility: "user",
     },
     {
       role: "tool",
       content:
-        "Context window: 12,847 / 200,000 tokens (6.4%)\nMemory observations: 42\nReflections: 8\nLast observer run: 3 minutes ago",
-      tool_call_id: "tc_mock_2",
-      timestamp: new Date(Date.now() - 118_000).toISOString(),
+        "Context window: 12,847 / 200,000 tokens (6.4%)\n" +
+        "Memory observations: 42\n" +
+        "Reflections: 8\n" +
+        "Last observer run: 3 minutes ago",
+      tool_call_id: "tc_mock_stats",
+      timestamp: daysAgoAt(1, 14, 21),
       project_context: "default",
       visibility: "user",
     },
@@ -218,12 +185,174 @@ function sampleChatHistory() {
         "- **Observations**: 42 stored\n" +
         "- **Reflections**: 8 synthesized\n" +
         "- **Last observer run**: 3 minutes ago\n\n" +
-        "The context is well within limits. The observer will run again once we hit the 30k token threshold.",
-      timestamp: new Date(Date.now() - 117_000).toISOString(),
+        "The context is well within limits. The observer will run again " +
+        "once we cross the 30k token threshold.",
+      timestamp: daysAgoAt(1, 14, 22),
+      project_context: "default",
+      visibility: "user",
+    },
+    {
+      role: "user",
+      content: "Good. Let's keep iterating on the notification routing doc.",
+      timestamp: daysAgoAt(0, 10, 5),
+      project_context: "default",
+      visibility: "user",
+    },
+    {
+      role: "assistant",
+      content:
+        "Picking up where we left off. I've got the three-tier priority " +
+        "model (`urgent`, `normal`, `low`) and the per-context channel " +
+        "overrides drafted. Next up: the fallback behaviour when a channel " +
+        "is unreachable. Want me to start there?",
+      timestamp: daysAgoAt(0, 10, 6),
       project_context: "default",
       visibility: "user",
     },
   ];
+}
+
+// Sample episodes — older compressed history that the frontend fetches
+// lazily as the user scrolls to the top. The cursor chain is
+// ep-003 → ep-002 → ep-001 → null.
+interface SampleEpisode {
+  id: string;
+  date: string; // YYYY-MM-DD
+  context: string;
+  messages: Array<{
+    role: string;
+    content: string;
+    tool_calls?: Array<{ id: string; name: string; arguments: string }>;
+    tool_call_id?: string;
+    timestamp: string;
+    project_context: string;
+    visibility: string;
+  }>;
+}
+
+function isoDateDaysAgo(daysAgo: number): string {
+  const d = new Date();
+  d.setDate(d.getDate() - daysAgo);
+  return d.toISOString().slice(0, 10);
+}
+
+function sampleEpisodes(): SampleEpisode[] {
+  return [
+    {
+      id: "ep-003",
+      date: isoDateDaysAgo(3),
+      context: "default",
+      messages: [
+        {
+          role: "user",
+          content:
+            "Walk me through what the observer actually stores vs. what it drops.",
+          timestamp: `${isoDateDaysAgo(3)}T00:00:00.000Z`,
+          project_context: "default",
+          visibility: "user",
+        },
+        {
+          role: "assistant",
+          content:
+            "The observer keeps three things for each compression pass:\n\n" +
+            "1. **Observations** — atomic facts extracted from the chat, stored in the memory index.\n" +
+            "2. **Reflections** — higher-order patterns it synthesises across observations.\n" +
+            "3. **Episode transcript** — the raw JSONL of the messages it compressed, tagged with the episode id.\n\n" +
+            "What it drops is the _surface wording_ of the messages — it " +
+            "remembers the substance but won't be able to quote verbatim.",
+          timestamp: `${isoDateDaysAgo(3)}T00:00:00.000Z`,
+          project_context: "default",
+          visibility: "user",
+        },
+      ],
+    },
+    {
+      id: "ep-002",
+      date: isoDateDaysAgo(5),
+      context: "default",
+      messages: [
+        {
+          role: "user",
+          content: "How do I direct you at a specific episode when we talk?",
+          timestamp: `${isoDateDaysAgo(5)}T00:00:00.000Z`,
+          project_context: "default",
+          visibility: "user",
+        },
+        {
+          role: "assistant",
+          content:
+            "Reference the episode id directly — e.g. `ep-002` — and I'll " +
+            "pull the relevant observations from memory. You can also scope " +
+            "by date, which is often easier if you don't remember the id.",
+          timestamp: `${isoDateDaysAgo(5)}T00:00:00.000Z`,
+          project_context: "default",
+          visibility: "user",
+        },
+        {
+          role: "user",
+          content: "That's perfect. Let's make it visible in the UI too.",
+          timestamp: `${isoDateDaysAgo(5)}T00:00:00.000Z`,
+          project_context: "default",
+          visibility: "user",
+        },
+      ],
+    },
+    {
+      id: "ep-001",
+      date: isoDateDaysAgo(8),
+      context: "default",
+      messages: [
+        {
+          role: "user",
+          content: "First conversation of the week — let's set goals.",
+          timestamp: `${isoDateDaysAgo(8)}T00:00:00.000Z`,
+          project_context: "default",
+          visibility: "user",
+        },
+        {
+          role: "assistant",
+          content:
+            "Three things on the board:\n\n" +
+            "- Finish the lazy-loaded chat history feature.\n" +
+            "- Tighten the notification routing doc.\n" +
+            "- Revisit the observer thresholds once we have a week of data.\n\n" +
+            "Anything missing?",
+          timestamp: `${isoDateDaysAgo(8)}T00:00:00.000Z`,
+          project_context: "default",
+          visibility: "user",
+        },
+      ],
+    },
+  ];
+}
+
+// Build a ChatHistorySegment envelope matching the Rust backend's
+// `ChatHistorySegment` tagged union (see gateway/web/config.rs).
+function sampleChatHistorySegment(cursor: string | null) {
+  const episodes = sampleEpisodes();
+
+  if (cursor === null) {
+    return {
+      kind: "recent",
+      messages: sampleRecentMessages(),
+      next_cursor: episodes[0]?.id ?? null,
+    };
+  }
+
+  const idx = episodes.findIndex((ep) => ep.id === cursor);
+  if (idx === -1) {
+    return null;
+  }
+  const ep = episodes[idx];
+  const next = episodes[idx + 1]?.id ?? null;
+  return {
+    kind: "episode",
+    episode_id: ep.id,
+    date: ep.date,
+    context: ep.context,
+    messages: ep.messages,
+    next_cursor: next,
+  };
 }
 
 const cannedResponses = [
@@ -318,8 +447,9 @@ function setupRestMiddleware(server: ViteDevServer, state: MockState) {
       return;
     }
 
-    // Strip query string for matching
-    const path = url.split("?")[0];
+    // Strip query string for matching, but keep params for handlers that need them.
+    const [path, rawQuery = ""] = url.split("?");
+    const query = new URLSearchParams(rawQuery);
 
     try {
       // ── Status & system ────────────────────────────────────────────────
@@ -335,7 +465,13 @@ function setupRestMiddleware(server: ViteDevServer, state: MockState) {
 
       // ── Chat ───────────────────────────────────────────────────────────
       if (path === "/api/chat/history" && method === "GET") {
-        json(res, 200, sampleChatHistory());
+        const cursor = query.get("episode");
+        const segment = sampleChatHistorySegment(cursor);
+        if (segment === null) {
+          json(res, 404, { error: "episode not found" });
+          return;
+        }
+        json(res, 200, segment);
         return;
       }
 

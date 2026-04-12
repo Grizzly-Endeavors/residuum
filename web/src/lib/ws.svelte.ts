@@ -5,7 +5,13 @@
 
 import { WsTransport } from "./transport.svelte";
 import { FeedStore } from "./feed.svelte";
-import type { ClientMessage, FeedItem, RecentMessage, ImageAttachment } from "./types";
+import type {
+  ClientMessage,
+  FeedItem,
+  RecentHistorySegment,
+  EpisodeHistorySegment,
+  ImageAttachment,
+} from "./types";
 
 class WsCoordinator {
   private transport = new WsTransport();
@@ -47,6 +53,22 @@ class WsCoordinator {
     return this.store.isProcessing;
   }
 
+  get oldestEpisodeCursor() {
+    return this.store.oldestEpisodeCursor;
+  }
+
+  get hasMoreHistory() {
+    return this.store.hasMoreHistory;
+  }
+
+  get isLoadingOlder() {
+    return this.store.isLoadingOlder;
+  }
+
+  setLoadingOlder(value: boolean): void {
+    this.store.isLoadingOlder = value;
+  }
+
   // ── Delegated methods ─────────────────────────────────────────────
 
   connect(): void {
@@ -81,8 +103,12 @@ class WsCoordinator {
     this.transport.send({ type: "set_verbose", enabled });
   }
 
-  loadHistory(messages: RecentMessage[]): void {
-    this.store.loadHistory(messages);
+  loadHistory(segment: RecentHistorySegment): void {
+    this.store.loadHistory(segment);
+  }
+
+  prependEpisode(segment: EpisodeHistorySegment): void {
+    this.store.prependEpisode(segment);
   }
 
   appendFeedItem(item: FeedItem): void {

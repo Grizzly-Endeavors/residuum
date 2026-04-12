@@ -132,7 +132,12 @@ fn serve_embedded(path: &str) -> Option<Response> {
 }
 
 #[cfg(test)]
-#[expect(clippy::unwrap_used, reason = "test code uses unwrap for clarity")]
+#[expect(
+    clippy::unwrap_used,
+    clippy::panic,
+    clippy::indexing_slicing,
+    reason = "test code uses unwrap/panic/indexing for clarity"
+)]
 mod tests {
     use super::*;
 
@@ -181,7 +186,7 @@ mod tests {
     #[tokio::test]
     async fn chat_history_returns_empty_when_no_memory_dir() {
         use axum::Json;
-        use axum::extract::State;
+        use axum::extract::{Query, State};
 
         let state = ConfigApiState {
             config_dir: PathBuf::from("/tmp/residuum-test-nonexistent"),
@@ -191,17 +196,30 @@ mod tests {
             setup_done: None,
             secret_lock: Arc::new(tokio::sync::Mutex::new(())),
         };
-        let Json(messages) = config::api_chat_history(State(state)).await;
-        assert!(
-            messages.is_empty(),
-            "setup mode should return empty history"
-        );
+        let Json(segment) = config::api_chat_history(
+            State(state),
+            Query(config::ChatHistoryQuery { episode: None }),
+        )
+        .await
+        .unwrap();
+        match segment {
+            config::ChatHistorySegment::Recent {
+                messages,
+                next_cursor,
+            } => {
+                assert!(messages.is_empty(), "setup mode should have no messages");
+                assert!(next_cursor.is_none(), "setup mode should have no cursor");
+            }
+            config::ChatHistorySegment::Episode { .. } => {
+                panic!("expected Recent segment in setup mode");
+            }
+        }
     }
 
     #[tokio::test]
     async fn chat_history_returns_empty_when_file_missing() {
         use axum::Json;
-        use axum::extract::State;
+        use axum::extract::{Query, State};
 
         let state = ConfigApiState {
             config_dir: PathBuf::from("/tmp/residuum-test-nonexistent"),
@@ -211,11 +229,202 @@ mod tests {
             setup_done: None,
             secret_lock: Arc::new(tokio::sync::Mutex::new(())),
         };
-        let Json(messages) = config::api_chat_history(State(state)).await;
-        assert!(
-            messages.is_empty(),
-            "missing file should return empty history"
-        );
+        let Json(segment) = config::api_chat_history(
+            State(state),
+            Query(config::ChatHistoryQuery { episode: None }),
+        )
+        .await
+        .unwrap();
+        match segment {
+            config::ChatHistorySegment::Recent {
+                messages,
+                next_cursor,
+            } => {
+                assert!(messages.is_empty(), "missing file should have no messages");
+                assert!(next_cursor.is_none(), "no episodes yet");
+            }
+            config::ChatHistorySegment::Episode { .. } => {
+                panic!("expected Recent segment when recent_messages.json is missing");
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn chat_history_recent_exposes_latest_episode_cursor() {
+        use crate::memory::episode_store::{episode_jsonl_path, write_episode_transcript};
+        use crate::memory::types::Episode;
+        use axum::Json;
+        use axum::extract::{Query, State};
+
+        let tmp = tempfile::tempdir().unwrap();
+        let memory_dir = tmp.path().join("memory");
+        let episodes_dir = memory_dir.join("episodes");
+        tokio::fs::create_dir_all(&episodes_dir).await.unwrap();
+
+        // Write two episodes on disk so the cursor should point at ep-002.
+        for (id, date) in [
+            (
+                "ep-001",
+                chrono::NaiveDate::from_ymd_opt(2026, 2, 19).unwrap(),
+            ),
+            (
+                "ep-002",
+                chrono::NaiveDate::from_ymd_opt(2026, 2, 20).unwrap(),
+            ),
+        ] {
+            let episode = Episode {
+                id: id.to_string(),
+                date,
+                context: "general".to_string(),
+                observations: vec![],
+                source_episodes: vec![],
+            };
+            write_episode_transcript(
+                &episodes_dir,
+                &episode,
+                &[crate::models::Message::user("hi")],
+            )
+            .await
+            .unwrap();
+            // Sanity check the file lands where we expect.
+            assert!(episode_jsonl_path(&episodes_dir, &episode).exists());
+        }
+
+        let state = ConfigApiState {
+            config_dir: tmp.path().to_path_buf(),
+            workspace_dir: tmp.path().to_path_buf(),
+            memory_dir: Some(memory_dir),
+            reload_tx: None,
+            setup_done: None,
+            secret_lock: Arc::new(tokio::sync::Mutex::new(())),
+        };
+        let Json(segment) = config::api_chat_history(
+            State(state),
+            Query(config::ChatHistoryQuery { episode: None }),
+        )
+        .await
+        .unwrap();
+
+        match segment {
+            config::ChatHistorySegment::Recent { next_cursor, .. } => {
+                assert_eq!(next_cursor.as_deref(), Some("ep-002"));
+            }
+            config::ChatHistorySegment::Episode { .. } => panic!("expected Recent"),
+        }
+    }
+
+    #[tokio::test]
+    async fn chat_history_fetches_specific_episode_with_prev_cursor() {
+        use crate::memory::episode_store::write_episode_transcript;
+        use crate::memory::types::Episode;
+        use axum::Json;
+        use axum::extract::{Query, State};
+
+        let tmp = tempfile::tempdir().unwrap();
+        let memory_dir = tmp.path().join("memory");
+        let episodes_dir = memory_dir.join("episodes");
+        tokio::fs::create_dir_all(&episodes_dir).await.unwrap();
+
+        for (id, date, body) in [
+            (
+                "ep-001",
+                chrono::NaiveDate::from_ymd_opt(2026, 2, 19).unwrap(),
+                "oldest",
+            ),
+            (
+                "ep-002",
+                chrono::NaiveDate::from_ymd_opt(2026, 2, 20).unwrap(),
+                "middle",
+            ),
+            (
+                "ep-003",
+                chrono::NaiveDate::from_ymd_opt(2026, 2, 21).unwrap(),
+                "newest",
+            ),
+        ] {
+            let episode = Episode {
+                id: id.to_string(),
+                date,
+                context: "general".to_string(),
+                observations: vec![],
+                source_episodes: vec![],
+            };
+            write_episode_transcript(
+                &episodes_dir,
+                &episode,
+                &[crate::models::Message::user(body)],
+            )
+            .await
+            .unwrap();
+        }
+
+        let state = ConfigApiState {
+            config_dir: tmp.path().to_path_buf(),
+            workspace_dir: tmp.path().to_path_buf(),
+            memory_dir: Some(memory_dir),
+            reload_tx: None,
+            setup_done: None,
+            secret_lock: Arc::new(tokio::sync::Mutex::new(())),
+        };
+
+        let Json(segment) = config::api_chat_history(
+            State(state),
+            Query(config::ChatHistoryQuery {
+                episode: Some("ep-002".to_string()),
+            }),
+        )
+        .await
+        .unwrap();
+
+        match segment {
+            config::ChatHistorySegment::Episode {
+                episode_id,
+                context,
+                messages,
+                next_cursor,
+                ..
+            } => {
+                assert_eq!(episode_id, "ep-002");
+                assert_eq!(context, "general");
+                assert_eq!(messages.len(), 1);
+                assert_eq!(messages[0].message.content, "middle");
+                assert_eq!(
+                    next_cursor.as_deref(),
+                    Some("ep-001"),
+                    "cursor should walk backward"
+                );
+            }
+            config::ChatHistorySegment::Recent { .. } => panic!("expected Episode"),
+        }
+    }
+
+    #[tokio::test]
+    async fn chat_history_missing_episode_returns_404() {
+        use axum::extract::{Query, State};
+        use axum::http::StatusCode;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let memory_dir = tmp.path().join("memory");
+        tokio::fs::create_dir_all(&memory_dir).await.unwrap();
+
+        let state = ConfigApiState {
+            config_dir: tmp.path().to_path_buf(),
+            workspace_dir: tmp.path().to_path_buf(),
+            memory_dir: Some(memory_dir),
+            reload_tx: None,
+            setup_done: None,
+            secret_lock: Arc::new(tokio::sync::Mutex::new(())),
+        };
+
+        let err = config::api_chat_history(
+            State(state),
+            Query(config::ChatHistoryQuery {
+                episode: Some("ep-999".to_string()),
+            }),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err, StatusCode::NOT_FOUND);
     }
 
     #[tokio::test]
