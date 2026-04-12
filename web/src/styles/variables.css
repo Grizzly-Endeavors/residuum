@@ -3,7 +3,7 @@
 @import url("https://fonts.googleapis.com/css2?family=Cinzel:wght@400;500;600;700&family=JetBrains+Mono:wght@300;400;500&family=Literata:ital,opsz,wght@0,7..72,300..700;1,7..72,300..700&display=swap");
 
 :root {
-  /* Stone + Vein palette */
+  /* ── Stone palette ─────────────────────────────────────────────────── */
   --bg-deep: #0e0e10;
   --bg-surface: #161618;
   --bg-raised: #1c1c1f;
@@ -16,44 +16,84 @@
   --text-muted: #9a9a9f;
   --text-dim: #6a6a6f;
 
-  --ember: #3b8bdb;
-  --ember-bright: #5aa3f0;
-  --ember-glow: rgba(59, 139, 219, 0.15);
-  --ember-dim: #2a6cb5;
-  --vein-faint: rgba(59, 139, 219, 0.08);
+  /* ── Vein (blue energy, accents, focus) ────────────────────────────── */
+  --vein: #3b8bdb;
+  --vein-bright: #5aa3f0;
+  --vein-dim: #2a6cb5;
+  /* --vein-glow: surface tints (active states, pill fills). */
+  /* --vein-subtle: gradient stops, border seams. Same alpha, different role. */
+  --vein-glow: rgba(59, 139, 219, 0.15);
   --vein-subtle: rgba(59, 139, 219, 0.15);
+  --vein-faint: rgba(59, 139, 219, 0.08);
 
+  /* ── Moss (organic growth, links, disabled) ────────────────────────── */
   --moss: #6b7a4a;
   --moss-dust: #5a693a;
   --moss-faint: rgba(107, 122, 74, 0.25);
   --moss-hover: #8a9e62;
 
+  /* ── Status ────────────────────────────────────────────────────────── */
   --error: #c0392b;
   --error-bg: rgba(192, 57, 43, 0.1);
   --success: #2ecc71;
 
-  /* Card tints */
+  /* ── Card tints ────────────────────────────────────────────────────── */
   --card-user: rgba(107, 122, 74, 0.14);
   --card-assistant: rgba(59, 139, 219, 0.1);
-  --card-shadow: 0 1px 4px rgba(0, 0, 0, 0.25), 0 0 1px rgba(0, 0, 0, 0.15);
-  --card-shadow-hover: 0 2px 8px rgba(0, 0, 0, 0.35), 0 0 1px rgba(0, 0, 0, 0.2);
 
-  /* Glow effects */
-  --ember-ring: 0 0 0 1px rgba(59, 139, 219, 0.2), 0 0 0 3px rgba(59, 139, 219, 0.07);
+  /* ── Elevation (axis-aligned only) ─────────────────────────────────── */
+  --elev-1: 0 1px 4px rgba(0, 0, 0, 0.25), 0 0 1px rgba(0, 0, 0, 0.15);
+  --elev-2: 0 2px 8px rgba(0, 0, 0, 0.35), 0 0 1px rgba(0, 0, 0, 0.2);
+  --elev-3: 0 8px 32px rgba(0, 0, 0, 0.5);
+  --card-shadow: var(--elev-1);
+
+  /* ── Rings & insets ────────────────────────────────────────────────── */
+  --vein-ring: 0 0 0 1px rgba(59, 139, 219, 0.2), 0 0 0 3px rgba(59, 139, 219, 0.07);
+  --focus-ring: 0 0 0 1px rgba(59, 139, 219, 0.4), 0 0 0 4px rgba(59, 139, 219, 0.1);
   --input-inset: inset 0 1px 3px rgba(0, 0, 0, 0.3);
 
-  /* Typography */
+  /* ── Disabled state ("the forest grew over it") ────────────────────── */
+  --disabled-bg: rgba(90, 105, 58, 0.15);
+  --disabled-border: rgba(90, 105, 58, 0.3);
+  --disabled-text: rgba(90, 105, 58, 0.55);
+
+  /* ── Typography ────────────────────────────────────────────────────── */
   --font-display: "Cinzel", "Georgia", serif;
   --font-body: "Literata", "Georgia", serif;
   --font-mono: "JetBrains Mono", "Fira Code", "SF Mono", "Cascadia Code", "Consolas", monospace;
 
-  /* Sizing */
+  /* Type scale */
+  --fs-xs: 11px;
+  --fs-sm: 12px;
+  --fs-md: 13px;
+  --fs-base: 14px;
+  --fs-body: 17px;
+  --fs-lg: 19px;
+  --fs-xl: 22px;
+
+  /* ── Spacing scale ─────────────────────────────────────────────────── */
+  --s-1: 4px;
+  --s-2: 8px;
+  --s-3: 12px;
+  --s-4: 16px;
+  --s-5: 24px;
+  --s-6: 32px;
+  --s-7: 48px;
+  --s-8: 64px;
+
+  /* ── Sizing ────────────────────────────────────────────────────────── */
   --chat-max-width: 760px;
   --header-height: 52px;
   --input-height: 56px;
   --radius: 6px;
   --radius-sm: 4px;
 
-  /* Motion */
+  /* ── Motion ────────────────────────────────────────────────────────── */
+  --dur-quick: 160ms;
+  --dur-default: 320ms;
+  --dur-slow: 720ms;
+  --dur-geo: 2400ms;
+
   --ease-out-expo: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-out-stone: cubic-bezier(0.2, 0.8, 0.2, 1);
 }

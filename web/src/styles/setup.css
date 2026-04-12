@@ -49,14 +49,14 @@
   height: 8px;
   border-radius: 50%;
   background: var(--border);
-  transition: background 0.3s ease;
+  transition: background var(--dur-default) var(--ease-out-stone);
 }
 
 .step-dot.active {
-  background: var(--ember);
+  background: var(--vein);
 }
 .step-dot.done {
-  background: var(--ember-dim);
+  background: var(--vein-dim);
 }
 
 .setup-nav {
@@ -86,17 +86,21 @@
   border-radius: var(--radius-sm);
   cursor: pointer;
   margin-bottom: 8px;
-  transition: all 0.3s ease;
+  transition:
+    background-color var(--dur-quick),
+    color var(--dur-quick),
+    border-color var(--dur-quick),
+    box-shadow var(--dur-default) var(--ease-out-stone);
 }
 
 .provider-option:hover {
-  border-color: var(--ember-dim);
+  border-color: var(--vein-dim);
   background: var(--bg-raised);
 }
 
 .provider-option.selected {
-  border-color: var(--ember);
-  background: var(--ember-glow);
+  border-color: var(--vein);
+  background: var(--vein-glow);
 }
 
 .provider-option .provider-name {
@@ -118,14 +122,18 @@
   align-items: center;
   justify-content: center;
   font-size: 13px;
-  color: var(--ember);
+  color: var(--vein);
   flex-shrink: 0;
-  transition: all 0.3s ease;
+  transition:
+    background-color var(--dur-quick),
+    color var(--dur-quick),
+    border-color var(--dur-quick),
+    box-shadow var(--dur-default) var(--ease-out-stone);
 }
 
 .provider-option.selected .provider-check {
-  background: var(--ember-glow);
-  border-color: var(--ember);
+  background: var(--vein-glow);
+  border-color: var(--vein);
 }
 
 /* ── Provider config sections ─────────────────────────────────────────── */
@@ -164,7 +172,7 @@
   margin-top: 12px;
   font-size: 12px;
   line-height: 1.5;
-  color: var(--ember-bright);
+  color: var(--vein-bright);
   background: rgba(59, 139, 219, 0.06);
   border: 1px solid rgba(59, 139, 219, 0.2);
   border-radius: var(--radius-sm);
@@ -185,7 +193,7 @@
 .roles-section-label {
   font-size: 12px;
   font-weight: 600;
-  color: var(--ember);
+  color: var(--vein);
   text-transform: uppercase;
   letter-spacing: 0.05em;
   margin-bottom: 6px;
@@ -276,8 +284,8 @@
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
   z-index: 100;
   transition:
-    opacity 0.3s ease,
-    visibility 0.3s ease;
+    opacity var(--dur-default) var(--ease-out-stone),
+    visibility var(--dur-default) var(--ease-out-stone);
   pointer-events: none;
 }
 
@@ -328,8 +336,8 @@
   border-right: 1px solid var(--border);
   cursor: pointer;
   transition:
-    background 0.3s ease,
-    color 0.3s ease;
+    background var(--dur-default) var(--ease-out-stone),
+    color var(--dur-default) var(--ease-out-stone);
 }
 
 .seg-btn:last-child {
@@ -341,7 +349,7 @@
 }
 
 .seg-btn.active {
-  background: var(--ember);
+  background: var(--vein);
   color: var(--bg-deep);
 }
 
@@ -358,12 +366,12 @@
   border-radius: var(--radius-sm);
   outline: none;
   transition:
-    border-color 0.3s ease,
-    box-shadow 0.3s ease;
+    border-color var(--dur-default) var(--ease-out-stone),
+    box-shadow var(--dur-default) var(--ease-out-stone);
 }
 
 .thinking-mobile-select.setup-thinking-select:focus {
-  border-color: var(--ember-dim);
+  border-color: var(--vein-dim);
   box-shadow:
     0 0 0 1px rgba(59, 139, 219, 0.15),
     0 0 8px rgba(59, 139, 219, 0.06);
@@ -387,16 +395,16 @@
   font-size: 13px;
   color: var(--text);
   background: var(--bg-input);
-  border: 1px solid var(--ember-dim);
+  border: 1px solid var(--vein-dim);
   border-radius: var(--radius-sm);
   outline: none;
   transition:
-    border-color 0.3s ease,
-    box-shadow 0.3s ease;
+    border-color var(--dur-default) var(--ease-out-stone),
+    box-shadow var(--dur-default) var(--ease-out-stone);
 }
 
 .model-other-input:focus {
-  border-color: var(--ember);
+  border-color: var(--vein);
   box-shadow:
     0 0 0 1px rgba(59, 139, 219, 0.15),
     0 0 8px rgba(59, 139, 219, 0.06);
@@ -424,7 +432,11 @@
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
   margin-bottom: 8px;
-  transition: all 0.3s ease;
+  transition:
+    background-color var(--dur-quick),
+    color var(--dur-quick),
+    border-color var(--dur-quick),
+    box-shadow var(--dur-default) var(--ease-out-stone);
 }
 
 .mcp-item:hover {
@@ -432,11 +444,11 @@
   background: var(--bg-raised);
 }
 .mcp-item.added {
-  border-color: var(--ember-dim);
-  background: var(--ember-glow);
+  border-color: var(--vein-dim);
+  background: var(--vein-glow);
 }
 .mcp-item.pending {
-  border-color: var(--ember-dim);
+  border-color: var(--vein-dim);
 }
 
 .mcp-info {
@@ -462,7 +474,11 @@
   border: 1px solid var(--border);
   background: transparent;
   color: var(--text-muted);
-  transition: all 0.3s ease;
+  transition:
+    background-color var(--dur-quick),
+    color var(--dur-quick),
+    border-color var(--dur-quick),
+    box-shadow var(--dur-default) var(--ease-out-stone);
 }
 
 .mcp-add-btn:hover {
@@ -470,8 +486,8 @@
   color: var(--text);
 }
 .mcp-item.added .mcp-add-btn {
-  color: var(--ember);
-  border-color: var(--ember-dim);
+  color: var(--vein);
+  border-color: var(--vein-dim);
 }
 
 .mcp-inline-inputs {
@@ -526,7 +542,7 @@
 }
 
 .toml-editor:focus {
-  border-color: var(--ember-dim);
+  border-color: var(--vein-dim);
   box-shadow:
     var(--input-inset),
     0 0 0 1px rgba(59, 139, 219, 0.15),

@@ -7,7 +7,11 @@
   font-weight: 600;
   border-radius: var(--radius-sm);
   cursor: pointer;
-  transition: all 0.3s ease;
+  transition:
+    background-color var(--dur-quick),
+    color var(--dur-quick),
+    border-color var(--dur-quick),
+    box-shadow var(--dur-default) var(--ease-out-stone);
   border: 1px solid transparent;
 }
 
@@ -16,17 +20,12 @@
   transform: scale(0.98);
 }
 
-.btn:focus-visible {
-  outline: 2px solid var(--ember);
-  outline-offset: 2px;
-}
-
 .btn-primary {
-  background: var(--ember);
+  background: var(--vein);
   color: var(--text);
 }
 .btn-primary:hover {
-  background: var(--ember-bright);
+  background: var(--vein-bright);
 }
 
 .btn-secondary {
@@ -90,22 +89,16 @@
   border-radius: var(--radius-sm);
   outline: none;
   transition:
-    border-color 0.3s ease,
-    box-shadow 0.3s ease;
+    border-color var(--dur-default) var(--ease-out-stone),
+    box-shadow var(--dur-default) var(--ease-out-stone);
 }
 
 .settings-field input:focus,
 .settings-field select:focus {
-  border-color: var(--ember-dim);
+  border-color: var(--vein-dim);
   box-shadow:
     0 0 0 1px rgba(59, 139, 219, 0.15),
     0 0 8px rgba(59, 139, 219, 0.06);
-}
-
-.settings-field input:focus-visible,
-.settings-field select:focus-visible {
-  outline: 2px solid var(--ember);
-  outline-offset: 1px;
 }
 
 .settings-field input[type="password"] {

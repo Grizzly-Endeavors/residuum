@@ -27,13 +27,13 @@
   width: 28px;
   height: 28px;
   border-radius: var(--radius-sm);
-  background: var(--ember-glow);
-  border: 1px solid var(--ember-dim);
+  background: var(--vein-glow);
+  border: 1px solid var(--vein-dim);
   display: flex;
   align-items: center;
   justify-content: center;
   font-size: 16px;
-  color: var(--ember);
+  color: var(--vein);
 }
 
 .header-title {
@@ -61,7 +61,7 @@
   border-color: rgba(192, 57, 43, 0.3);
 }
 .header-status.connecting {
-  color: var(--ember);
+  color: var(--vein);
   border-color: rgba(59, 139, 219, 0.3);
 }
 
@@ -82,7 +82,11 @@
   align-items: center;
   justify-content: center;
   font-size: 16px;
-  transition: all 0.3s ease;
+  transition:
+    background-color var(--dur-quick),
+    color var(--dur-quick),
+    border-color var(--dur-quick),
+    box-shadow var(--dur-default) var(--ease-out-stone);
 }
 
 .icon-btn:hover {
@@ -92,9 +96,9 @@
 }
 
 .icon-btn.active {
-  background: var(--ember-glow);
-  color: var(--ember);
-  border-color: var(--ember-dim);
+  background: var(--vein-glow);
+  color: var(--vein);
+  border-color: var(--vein-dim);
 }
 
 @media (max-width: 600px) {

@@ -48,7 +48,11 @@
   background: transparent;
   border: none;
   cursor: pointer;
-  transition: all 0.3s ease;
+  transition:
+    background-color var(--dur-quick),
+    color var(--dur-quick),
+    border-color var(--dur-quick),
+    box-shadow var(--dur-default) var(--ease-out-stone);
 }
 
 .settings-mode-btn:not(:last-child) {
@@ -61,8 +65,8 @@
 }
 
 .settings-mode-btn.active {
-  color: var(--ember);
-  background: var(--ember-glow);
+  color: var(--vein);
+  background: var(--vein-glow);
 }
 
 .settings-body {
@@ -89,11 +93,11 @@
   font-family: var(--font-body);
   font-size: 13px;
   font-weight: 500;
-  color: var(--ember);
+  color: var(--vein);
   background: transparent;
   border: none;
   cursor: pointer;
-  transition: background 0.3s ease;
+  transition: background var(--dur-default) var(--ease-out-stone);
 }
 
 .settings-nav-toggle:hover {
@@ -102,7 +106,7 @@
 
 .settings-nav-toggle .nav-chevron {
   font-size: 10px;
-  transition: transform 0.3s var(--ease-out-expo);
+  transition: transform var(--dur-default) var(--ease-out-expo);
 }
 
 .settings-nav-toggle .nav-chevron.open {
@@ -121,7 +125,11 @@
   border: none;
   text-align: left;
   cursor: pointer;
-  transition: all 0.3s ease;
+  transition:
+    background-color var(--dur-quick),
+    color var(--dur-quick),
+    border-color var(--dur-quick),
+    box-shadow var(--dur-default) var(--ease-out-stone);
   border-left: 3px solid transparent;
 }
 
@@ -131,9 +139,9 @@
 }
 
 .settings-sidebar-btn.active {
-  color: var(--ember);
-  border-left-color: var(--ember);
-  background: var(--ember-glow);
+  color: var(--vein);
+  border-left-color: var(--vein);
+  background: var(--vein-glow);
 }
 
 .settings-content {
@@ -149,7 +157,7 @@
   padding: 2px 8px;
   border-radius: var(--radius);
   white-space: nowrap;
-  transition: opacity 0.3s;
+  transition: opacity var(--dur-default) var(--ease-out-stone);
 }
 
 .settings-status.success {
@@ -181,7 +189,7 @@
 .settings-group-label {
   font-size: 12px;
   font-weight: 600;
-  color: var(--ember);
+  color: var(--vein);
   text-transform: uppercase;
   letter-spacing: 0.05em;
   margin-bottom: 12px;
@@ -208,7 +216,11 @@
   border: none;
   border-bottom: 2px solid transparent;
   cursor: pointer;
-  transition: all 0.3s ease;
+  transition:
+    background-color var(--dur-quick),
+    color var(--dur-quick),
+    border-color var(--dur-quick),
+    box-shadow var(--dur-default) var(--ease-out-stone);
 }
 
 .advanced-tab:hover {
@@ -216,8 +228,8 @@
 }
 
 .advanced-tab.active {
-  color: var(--ember);
-  border-bottom-color: var(--ember);
+  color: var(--vein);
+  border-bottom-color: var(--vein);
 }
 
 /* ── Provider entry ──────────────────────────────────────────────────── */
@@ -248,8 +260,8 @@
   justify-content: center;
   opacity: 0.6;
   transition:
-    opacity 0.3s ease,
-    background 0.3s ease;
+    opacity var(--dur-default) var(--ease-out-stone),
+    background var(--dur-default) var(--ease-out-stone);
 }
 
 .provider-remove-btn:hover {
@@ -349,7 +361,7 @@
   bottom: 0;
   background: var(--border);
   border-radius: 9px;
-  transition: background 0.3s ease;
+  transition: background var(--dur-default) var(--ease-out-stone);
 }
 
 .toggle-slider::before {
@@ -362,17 +374,17 @@
   background: var(--text-muted);
   border-radius: 50%;
   transition:
-    transform 0.3s ease,
-    background 0.3s ease;
+    transform var(--dur-default) var(--ease-out-stone),
+    background var(--dur-default) var(--ease-out-stone);
 }
 
 .toggle-switch input:checked + .toggle-slider {
-  background: var(--ember-dim);
+  background: var(--vein-dim);
 }
 
 .toggle-switch input:checked + .toggle-slider::before {
   transform: translateX(14px);
-  background: var(--ember-bright);
+  background: var(--vein-bright);
 }
 
 /* ── Skills dir entries ──────────────────────────────────────────────── */
@@ -447,7 +459,7 @@
   }
   .settings-sidebar-btn.active {
     border-left: none;
-    background: var(--ember-glow);
+    background: var(--vein-glow);
   }
 
   .settings-content {
