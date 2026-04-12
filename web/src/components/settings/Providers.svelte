@@ -15,6 +15,7 @@
     invalidateProvider,
     type ModelEntry,
   } from "../../lib/models";
+  import ConfirmButton from "../ConfirmButton.svelte";
 
   let {
     providers = $bindable(),
@@ -258,11 +259,13 @@
             </div>
           {/if}
         </div>
-        <button
+        <ConfirmButton
           class="provider-remove-btn"
+          label="✕"
+          armedLabel="Remove?"
           title="Remove provider"
-          onclick={() => removeProvider(i)}>&#10005;</button
-        >
+          onConfirm={() => removeProvider(i)}
+        />
       </div>
     {/each}
 

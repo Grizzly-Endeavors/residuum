@@ -1,6 +1,12 @@
 <script lang="ts">
   let { name, args }: { name: string; args: Record<string, unknown> } = $props();
 
+  let expanded = $state(false);
+
+  function toggleQuote() {
+    expanded = !expanded;
+  }
+
   function str(key: string): string {
     const v = args[key];
     if (v == null) return "";
@@ -101,7 +107,13 @@
     {#if hasKey("title")}
       <span class="tool-args-label">{str("title")}</span>
     {/if}
-    <span class="tool-args-quote">"{str("message")}"</span>
+    <button
+      type="button"
+      class="tool-args-quote"
+      class:expanded
+      onclick={toggleQuote}
+      title={expanded ? "Collapse" : "Expand"}>"{str("message")}"</button
+    >
   </div>
 {:else if name === "subagent_spawn"}
   <div class="tool-args">
@@ -111,7 +123,13 @@
     {#if hasKey("model_override")}
       <span class="tool-args-meta">Model: {str("model_override")}</span>
     {/if}
-    <span class="tool-args-quote">"{str("task")}"</span>
+    <button
+      type="button"
+      class="tool-args-quote"
+      class:expanded
+      onclick={toggleQuote}
+      title={expanded ? "Collapse" : "Expand"}>"{str("task")}"</button
+    >
   </div>
 {:else if name === "schedule_action"}
   {@const meta = metaLine([
@@ -124,7 +142,13 @@
     {#if meta}
       <span class="tool-args-meta">{meta}</span>
     {/if}
-    <span class="tool-args-quote">"{str("prompt")}"</span>
+    <button
+      type="button"
+      class="tool-args-quote"
+      class:expanded
+      onclick={toggleQuote}
+      title={expanded ? "Collapse" : "Expand"}>"{str("prompt")}"</button
+    >
   </div>
 {:else if name === "inbox_list"}
   <div class="tool-args">

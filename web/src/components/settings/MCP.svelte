@@ -2,6 +2,7 @@
   import { onMount } from "svelte";
   import type { McpServerEntry, McpCatalogEntry } from "../../lib/types";
   import { loadCatalog } from "../../lib/mcp-catalog";
+  import ConfirmButton from "../ConfirmButton.svelte";
 
   let { servers = $bindable() }: { servers: McpServerEntry[] } = $props();
 
@@ -120,7 +121,7 @@
     <div class="settings-group-label">Configured Servers</div>
 
     {#if servers.length === 0}
-      <p style="color:var(--text-dim); font-size:13px;">No MCP servers configured.</p>
+      <p class="empty-state">No MCP servers configured.</p>
     {/if}
 
     {#each servers as srv, i (srv.name)}
@@ -129,7 +130,7 @@
           <span class="mcp-server-name">{srv.name}</span>
           <span class="mcp-server-cmd">{srv.command} {srv.args.join(" ")}</span>
         </div>
-        <button class="btn btn-sm btn-danger" onclick={() => removeServer(i)}>Remove</button>
+        <ConfirmButton onConfirm={() => removeServer(i)} />
       </div>
     {/each}
 
@@ -199,7 +200,7 @@
     <p class="roles-section-hint">Browse available MCP servers. Click to add or remove.</p>
 
     {#if catalog.length === 0}
-      <p style="color:var(--text-dim); font-size:13px;">Loading catalog...</p>
+      <p class="empty-state">Reading catalog.</p>
     {:else}
       {#each catalog as srv, i (srv.name)}
         {@const added = isAdded(srv.name)}

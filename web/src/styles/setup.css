@@ -244,6 +244,14 @@
   margin-bottom: 0;
 }
 
+/* Stack to single column at narrower-than-laptop widths so the */
+/* provider+model dropdowns don't get squeezed below readable size. */
+@media (max-width: 1100px) {
+  .role-row-fields {
+    grid-template-columns: 1fr;
+  }
+}
+
 /* ── Role tooltips (#19) ──────────────────────────────────────────────── */
 
 .role-tooltip {

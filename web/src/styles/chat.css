@@ -603,13 +603,48 @@
 }
 
 .tool-args-quote {
+  position: relative;
   color: var(--text);
+  font-family: inherit;
+  font-size: inherit;
   font-style: italic;
   opacity: 0.6;
+  background: transparent;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  text-align: left;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
   max-width: 300px;
+  transition: opacity var(--dur-quick);
+}
+
+.tool-args-quote:hover {
+  opacity: 0.85;
+}
+
+/* Faint right-edge fade — signals truncation as deliberate, not broken. */
+.tool-args-quote:not(.expanded)::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 24px;
+  background: linear-gradient(
+    to right,
+    transparent,
+    color-mix(in oklab, var(--bg-surface) 70%, transparent)
+  );
+  pointer-events: none;
+}
+
+.tool-args-quote.expanded {
+  white-space: normal;
+  max-width: none;
+  word-break: break-word;
 }
 
 .tool-args-meta {
@@ -704,6 +739,74 @@
   background: transparent;
   flex-shrink: 0;
   z-index: 20;
+}
+
+/* ── Anchor pill — floating timeline marker + jump-to-latest ─────────── */
+
+.anchor-pill {
+  position: absolute;
+  top: var(--s-3);
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  padding: var(--s-1) var(--s-3);
+  background: rgba(22, 22, 24, 0.85);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  border: 1px solid var(--vein-faint);
+  border-radius: 999px;
+  box-shadow: var(--elev-2);
+  z-index: 15;
+  animation: anchor-pill-in var(--dur-default) var(--ease-out-stone) forwards;
+}
+
+.anchor-pill-label {
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+  letter-spacing: 0.06em;
+}
+
+.anchor-pill-divider {
+  width: 1px;
+  height: 12px;
+  background: var(--border);
+}
+
+.anchor-pill-jump {
+  font-family: var(--font-body);
+  font-size: var(--fs-xs);
+  font-weight: 500;
+  color: var(--vein);
+  background: transparent;
+  border: none;
+  padding: 2px var(--s-2);
+  cursor: pointer;
+  border-radius: var(--radius-sm);
+  transition: color var(--dur-quick);
+}
+
+.anchor-pill-jump:hover {
+  color: var(--vein-bright);
+}
+
+@keyframes anchor-pill-in {
+  from {
+    opacity: 0;
+    transform: translate(-50%, -4px);
+  }
+  to {
+    opacity: 1;
+    transform: translate(-50%, 0);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .anchor-pill {
+    animation: none;
+  }
 }
 
 .chat-input-wrap {

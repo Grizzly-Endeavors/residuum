@@ -3,6 +3,7 @@
   import type { CloudStatusResponse } from "../../lib/types";
   import type { ConfigFields } from "../../lib/settings-toml";
   import { fetchCloudStatus, disconnectCloud, storeSecret } from "../../lib/api";
+  import ConfirmButton from "../ConfirmButton.svelte";
 
   let { fields = $bindable(), simple = false }: { fields: ConfigFields; simple?: boolean } =
     $props();
@@ -234,13 +235,12 @@
           >
             Reconnect
           </button>
-          <button
-            class="btn btn-sm btn-danger"
-            onclick={handleCloudRemoveAccount}
+          <ConfirmButton
+            label="Remove Account"
+            armedLabel="Remove Account?"
+            onConfirm={handleCloudRemoveAccount}
             disabled={cloudAction}
-          >
-            Remove Account
-          </button>
+          />
         </div>
         <p class="cloud-hint">Click Reconnect then Save to re-enable the tunnel.</p>
       {:else}
@@ -333,7 +333,7 @@
               <span class="webhook-entry-label">
                 {wh.name ? `/webhook/${wh.name}` : "New webhook"}
               </span>
-              <button class="btn btn-sm btn-danger" onclick={() => removeWebhook(i)}>Remove</button>
+              <ConfirmButton onConfirm={() => removeWebhook(i)} />
             </div>
 
             <div class="webhook-entry-fields">
@@ -416,7 +416,7 @@
         {#each fields.skills_dirs as dir, i (dir)}
           <div class="skill-dir-entry">
             <span class="skill-dir-path">{dir}</span>
-            <button class="btn btn-sm btn-danger" onclick={() => removeSkillDir(i)}>Remove</button>
+            <ConfirmButton onConfirm={() => removeSkillDir(i)} />
           </div>
         {/each}
         <div class="skill-dir-add">

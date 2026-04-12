@@ -4,6 +4,8 @@
   import { ws } from "./lib/ws.svelte";
   import Header from "./components/Header.svelte";
   import BrandMark from "./components/BrandMark.svelte";
+  import Toast from "./components/Toast.svelte";
+  import HelpOverlay from "./components/HelpOverlay.svelte";
   import Chat from "./Chat.svelte";
   import Setup from "./Setup.svelte";
   import Settings from "./Settings.svelte";
@@ -11,6 +13,7 @@
 
   let mode = $state<"loading" | "setup" | "running">("loading");
   let activeView = $state<"chat" | "workspace" | "settings">("chat");
+  let helpOpen = $state(false);
 
   onMount(async () => {
     try {
@@ -20,7 +23,20 @@
       mode = "running";
     }
   });
+
+  function handleKeydown(event: KeyboardEvent) {
+    // `?` opens help — but only when nothing else is taking text input.
+    if (event.key !== "?") return;
+    const target = event.target as HTMLElement | null;
+    const tag = target?.tagName;
+    if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || target?.isContentEditable)
+      return;
+    event.preventDefault();
+    helpOpen = true;
+  }
 </script>
+
+<svelte:window onkeydown={handleKeydown} />
 
 {#if mode === "loading"}
   <div class="header">
@@ -75,3 +91,11 @@
     </div>
   {/if}
 {/if}
+
+<Toast />
+<HelpOverlay
+  open={helpOpen}
+  onClose={() => {
+    helpOpen = false;
+  }}
+/>

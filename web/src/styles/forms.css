@@ -51,6 +51,14 @@
   background: var(--error-bg);
 }
 
+/* Inline confirm: armed state on a destructive button. The user clicked once; */
+/* a second click within 2s commits, otherwise it disarms silently. */
+.btn-danger.armed {
+  background: var(--error-bg);
+  font-weight: 600;
+  box-shadow: 0 0 0 1px rgba(192, 57, 43, 0.4);
+}
+
 .btn-sm {
   padding: 3px 10px;
   font-size: 11px;
@@ -126,6 +134,17 @@
   font-size: 11px;
   color: var(--text-dim);
   margin-top: 3px;
+}
+
+/* ── Empty states — quiet potential, no illustrations ───────────────── */
+
+.empty-state {
+  font-family: var(--font-body);
+  font-size: var(--fs-md);
+  color: var(--text-muted);
+  padding: var(--s-5) var(--s-3);
+  text-align: center;
+  font-style: italic;
 }
 
 /* ── Validation feedback ─────────────────────────────────────────────── */
