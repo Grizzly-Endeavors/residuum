@@ -1,10 +1,47 @@
 //! WebSocket bus subscriber — translates typed bus events to `ServerMessage` frames.
 
 use crate::bus::{
-    EndpointName, ErrorEvent, IntermediateEvent, NoticeEvent, NotifyName, ResponseEvent,
-    Subscriber, ToolActivityEvent, TurnLifecycleEvent, topics,
+    EndpointName, ErrorEvent, InlineOutputEvent, IntermediateEvent, NoticeEvent, NotifyName,
+    ResponseEvent, Subscriber, ToolActivityEvent, TurnLifecycleEvent, topics,
 };
+use crate::gateway::file_server::FileRegistry;
 use crate::gateway::protocol::ServerMessage;
+
+/// Convert a `ResponseEvent` into the appropriate `ServerMessage`.
+///
+/// If the response carries a file attachment, registers it with the file
+/// registry and returns a `FileAttachment` frame; otherwise returns a plain
+/// `Response` frame. Extracted from `WsSubscribers::recv` to keep the select
+/// loop within clippy's `too_many_lines` budget.
+async fn response_to_server_message(registry: &FileRegistry, resp: ResponseEvent) -> ServerMessage {
+    if let Some(att) = resp.attachment {
+        let id = registry
+            .register(
+                att.path.clone(),
+                att.mime_type.clone(),
+                att.filename.clone(),
+            )
+            .await;
+        let caption = if resp.content.is_empty() {
+            None
+        } else {
+            Some(resp.content.clone())
+        };
+        ServerMessage::FileAttachment {
+            reply_to: resp.correlation_id,
+            filename: att.filename,
+            mime_type: att.mime_type,
+            size: att.size,
+            url: format!("/api/files/{id}"),
+            caption,
+        }
+    } else {
+        ServerMessage::Response {
+            reply_to: resp.correlation_id,
+            content: resp.content,
+        }
+    }
+}
 
 /// Typed subscribers for a single WebSocket connection.
 pub struct WsSubscribers {
@@ -13,6 +50,7 @@ pub struct WsSubscribers {
     pub turn_lifecycle: Subscriber<TurnLifecycleEvent>,
     pub intermediate: Subscriber<IntermediateEvent>,
     pub notice: Subscriber<NoticeEvent>,
+    pub inline_output: Subscriber<InlineOutputEvent>,
     pub error: Subscriber<ErrorEvent>,
     pub file_registry: crate::gateway::file_server::FileRegistry,
 }
@@ -35,6 +73,7 @@ impl WsSubscribers {
             turn_lifecycle: bus_handle.subscribe(topics::Endpoint(ep.clone())).await?,
             intermediate: bus_handle.subscribe(topics::Endpoint(ep)).await?,
             notice: bus_handle.subscribe(system_topic()).await?,
+            inline_output: bus_handle.subscribe(system_topic()).await?,
             error: bus_handle.subscribe(system_topic()).await?,
             file_registry,
         })
@@ -48,33 +87,9 @@ impl WsSubscribers {
             let msg = tokio::select! {
                 event = self.response.recv() => {
                     match event {
-                        Ok(Some(resp)) => {
-                            if let Some(ref att) = resp.attachment {
-                                let id = self.file_registry.register(
-                                    att.path.clone(),
-                                    att.mime_type.clone(),
-                                    att.filename.clone(),
-                                ).await;
-                                let caption = if resp.content.is_empty() {
-                                    None
-                                } else {
-                                    Some(resp.content.clone())
-                                };
-                                Some(ServerMessage::FileAttachment {
-                                    reply_to: resp.correlation_id.clone(),
-                                    filename: att.filename.clone(),
-                                    mime_type: att.mime_type.clone(),
-                                    size: att.size,
-                                    url: format!("/api/files/{id}"),
-                                    caption,
-                                })
-                            } else {
-                                Some(ServerMessage::Response {
-                                    reply_to: resp.correlation_id,
-                                    content: resp.content,
-                                })
-                            }
-                        }
+                        Ok(Some(resp)) => Some(
+                            response_to_server_message(&self.file_registry, resp).await,
+                        ),
                         _ => return None,
                     }
                 }
@@ -118,6 +133,14 @@ impl WsSubscribers {
                     match event {
                         Ok(Some(NoticeEvent { message })) => {
                             Some(ServerMessage::Notice { message })
+                        }
+                        _ => return None,
+                    }
+                }
+                event = self.inline_output.recv() => {
+                    match event {
+                        Ok(Some(InlineOutputEvent { message })) => {
+                            Some(ServerMessage::InlineOutput { message })
                         }
                         _ => return None,
                     }
@@ -287,6 +310,36 @@ mod tests {
             msg,
             ServerMessage::BroadcastResponse { content }
                 if content == "thinking..."
+        ));
+    }
+
+    #[tokio::test]
+    async fn inline_output_maps_to_server_message() {
+        let handle = crate::bus::spawn_broker();
+        let pub_ = handle.publisher();
+        let ep = EndpointName::from("ws");
+        let mut subs = WsSubscribers::new(
+            &handle,
+            ep,
+            crate::gateway::file_server::FileRegistry::new(),
+        )
+        .await
+        .unwrap();
+
+        pub_.publish(
+            topics::Notification(NotifyName::from(crate::bus::SYSTEM_CHANNEL)),
+            crate::bus::InlineOutputEvent {
+                message: "[context]\n  identity: ~100 tokens".into(),
+            },
+        )
+        .await
+        .unwrap();
+
+        let msg = subs.recv().await.unwrap();
+        assert!(matches!(
+            msg,
+            ServerMessage::InlineOutput { message }
+                if message == "[context]\n  identity: ~100 tokens"
         ));
     }
 

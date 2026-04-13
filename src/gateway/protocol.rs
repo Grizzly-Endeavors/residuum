@@ -118,6 +118,12 @@ pub enum ServerMessage {
         /// Human-readable result message.
         message: String,
     },
+    /// Multi-line command output that should render inline in the chat
+    /// stream rather than as a transient toast.
+    InlineOutput {
+        /// Body to render inline.
+        message: String,
+    },
 }
 
 #[cfg(test)]

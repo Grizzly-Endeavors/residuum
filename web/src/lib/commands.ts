@@ -13,9 +13,6 @@ export interface CommandResult {
   /**
    * Output the user should see for this command. Routed through the
    * notification corner (toast + tray history) by the caller.
-   *
-   * TODO(#98): some commands (e.g. `/help`'s multi-line text) may belong
-   * inline rather than as a toast. Audit per command.
    */
   notification?: CommandNotification;
   wsMessage?: ClientMessage;
@@ -27,6 +24,12 @@ interface CommandContext {
   connectionStatus: ConnectionStatus;
   verbose: boolean;
   setVerbose: (enabled: boolean) => void;
+  /**
+   * Push a multi-line message into the chat feed for inline rendering.
+   * Used for commands whose output the user wants to read carefully
+   * (`/help`, `/status`) instead of seeing as a transient toast.
+   */
+  pushInline: (content: string) => void;
 }
 
 // ── Command registry ────────────────────────────────────────────────
@@ -66,7 +69,9 @@ export function parseCommand(input: string, ctx: CommandContext): CommandResult 
     case "/help":
       return {
         handled: true,
-        notification: { kind: "notice", message: HELP_TEXT },
+        action: () => {
+          ctx.pushInline(HELP_TEXT);
+        },
       };
 
     case "/verbose": {
@@ -83,14 +88,16 @@ export function parseCommand(input: string, ctx: CommandContext): CommandResult 
       };
     }
 
-    case "/status":
+    case "/status": {
+      const verboseLabel = ctx.verbose ? "on" : "off";
+      const snapshot = `connection: ${ctx.connectionStatus}\nverbose:    ${verboseLabel}`;
       return {
         handled: true,
-        notification: {
-          kind: "notice",
-          message: `connection: ${ctx.connectionStatus}\nverbose: ${ctx.verbose ? "on" : "off"}`,
+        action: () => {
+          ctx.pushInline(snapshot);
         },
       };
+    }
 
     case "/observe":
       return {
@@ -107,10 +114,11 @@ export function parseCommand(input: string, ctx: CommandContext): CommandResult 
       };
 
     case "/context":
+      // No ack toast: server replies with an inline_output that the
+      // FeedStore renders directly into the chat stream.
       return {
         handled: true,
         wsMessage: { type: "server_command", name: "context", args: args || null },
-        notification: { kind: "system", message: "Requesting context…" },
       };
 
     case "/reload":

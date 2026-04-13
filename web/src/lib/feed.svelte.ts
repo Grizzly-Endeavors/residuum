@@ -90,6 +90,10 @@ export class FeedStore {
         // Surfaced by WsCoordinator; no chat-state side effect.
         break;
 
+      case "inline_output":
+        this.pushLocalSystem(msg.message);
+        break;
+
       case "file_attachment": {
         const item: FileAttachmentFeedItem = {
           id: nextFeedId(),
@@ -152,6 +156,16 @@ export class FeedStore {
     this.feed.splice(0, 0, ...block);
     this.oldestEpisodeCursor = segment.next_cursor;
     this.hasMoreHistory = segment.next_cursor !== null;
+  }
+
+  /**
+   * Push a client-only system message into the feed for inline rendering.
+   * Used by slash commands like `/help` and `/status`, and by inbound
+   * `inline_output` server messages (e.g. `/context` results). These items
+   * never round-trip to history and vanish on reload.
+   */
+  pushLocalSystem(content: string): void {
+    this.feed.push({ id: nextFeedId(), kind: "local-system", content });
   }
 
   /** Add a user message to the feed. */

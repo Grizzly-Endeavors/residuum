@@ -264,10 +264,22 @@ export interface FileAttachmentFeedItem extends FeedItemBase {
   caption: string | null;
 }
 
+/**
+ * Client-originated, ephemeral system text rendered inline in the chat
+ * stream. Used for slash command output (`/help`, `/status`, `/context`)
+ * that the user wants to read carefully but should not persist across
+ * reloads or land in conversation history.
+ */
+export interface LocalSystemFeedItem extends FeedItemBase {
+  kind: "local-system";
+  content: string;
+}
+
 export type FeedItem =
   | UserFeedItem
   | AssistantFeedItem
   | DividerFeedItem
   | CompressedMarkerFeedItem
   | ToolGroupFeedItem
-  | FileAttachmentFeedItem;
+  | FileAttachmentFeedItem
+  | LocalSystemFeedItem;

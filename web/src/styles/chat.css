@@ -72,6 +72,31 @@
   border-radius: var(--radius);
 }
 
+/* Local-system: a single vein down the left margin marks where the
+   system speaks. No card, no avatar — instrument readout, not voice. */
+.msg-local-system {
+  align-self: center;
+  width: 100%;
+  max-width: 92%;
+  padding: 10px 16px 10px 18px;
+  background: linear-gradient(90deg, var(--vein-faint), transparent 70%);
+  border-left: 2px solid var(--vein);
+  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+  box-shadow: -1px 0 14px -4px rgba(59, 139, 219, calc(0.16 * var(--vein-intensity)));
+}
+
+.msg-local-system pre {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: var(--fs-sm);
+  font-weight: 300;
+  line-height: 1.55;
+  color: var(--text-muted);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  letter-spacing: 0.01em;
+}
+
 /* ── Dividers: geological strata for history ───────────────────────────── */
 
 .msg-divider {
