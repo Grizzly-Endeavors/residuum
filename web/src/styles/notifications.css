@@ -1,0 +1,257 @@
+/* ── Notification corner: bottom-left toast stack + recall icon ───────── */
+
+.notif-corner {
+  position: fixed;
+  bottom: var(--s-5);
+  left: var(--s-5);
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--s-2);
+  z-index: 100;
+  pointer-events: none;
+}
+
+.notif-corner > * {
+  pointer-events: auto;
+}
+
+/* ── Toast stack ──────────────────────────────────────────────────────── */
+
+.notif-toast-stack {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--s-2);
+  pointer-events: none;
+}
+
+.notif-toast {
+  pointer-events: auto;
+  max-width: min(440px, calc(100vw - 64px));
+  padding: var(--s-3) var(--s-4);
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text);
+  font-family: var(--font-body);
+  font-size: var(--fs-md);
+  line-height: 1.5;
+  text-align: left;
+  cursor: pointer;
+  box-shadow: var(--elev-3);
+  animation: notif-toast-emerge var(--dur-default) var(--ease-out-stone) forwards;
+}
+
+.notif-toast-success {
+  border-color: rgba(46, 204, 113, 0.32);
+}
+
+.notif-toast-error {
+  border-color: rgba(192, 57, 43, 0.5);
+  color: #e8a0a0;
+}
+
+.notif-toast-info {
+  border-color: var(--vein-dim);
+}
+
+@keyframes notif-toast-emerge {
+  from {
+    opacity: 0;
+    transform: translateX(-6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .notif-toast {
+    animation: none;
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* ── Recall row: icon button anchored to the corner ───────────────────── */
+
+.notif-recall {
+  position: relative;
+}
+
+.notif-recall-btn {
+  width: 34px;
+  height: 34px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-subtle);
+  background: rgba(14, 14, 16, 0.72);
+  backdrop-filter: blur(14px) saturate(1.1);
+  -webkit-backdrop-filter: blur(14px) saturate(1.1);
+  color: var(--text-muted);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition:
+    background-color var(--dur-quick),
+    color var(--dur-quick),
+    border-color var(--dur-quick);
+}
+
+.notif-recall-btn:hover {
+  background: var(--bg-raised);
+  color: var(--text);
+  border-color: var(--border);
+}
+
+.notif-recall-btn.is-open {
+  background: var(--vein-glow);
+  color: var(--vein);
+  border-color: var(--vein-dim);
+}
+
+/* ── Dropdown panel: opens upward from the icon ───────────────────────── */
+
+.notif-dropdown {
+  position: absolute;
+  bottom: calc(100% + var(--s-2));
+  left: 0;
+  width: min(320px, calc(100vw - 48px));
+  max-height: 60vh;
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--elev-3);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  animation: notif-dropdown-emerge var(--dur-default) var(--ease-out-stone) forwards;
+}
+
+/* Hairline vein along the top edge — echoes .header::after */
+.notif-dropdown::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 0;
+  height: 1px;
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    var(--vein-faint) 30%,
+    var(--vein-subtle) 50%,
+    var(--vein-faint) 70%,
+    transparent 100%
+  );
+  pointer-events: none;
+}
+
+@keyframes notif-dropdown-emerge {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .notif-dropdown {
+    animation: none;
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.notif-dropdown-list {
+  flex: 1;
+  overflow-y: auto;
+  display: flex;
+  /* Newest is at index 0; column-reverse puts it at the visual bottom and
+     keeps the scroll pinned there as new items arrive. */
+  flex-direction: column-reverse;
+}
+
+.notif-dropdown-item {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: var(--s-3) var(--s-4);
+  border-left: 2px solid transparent;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+/* :first-child is the newest item (visual bottom under column-reverse). */
+.notif-dropdown-item:first-child {
+  border-bottom: none;
+}
+
+.notif-dropdown-item.kind-error {
+  border-left-color: var(--error);
+}
+
+.notif-dropdown-item.kind-notice {
+  border-left-color: var(--vein-dim);
+}
+
+.notif-dropdown-item.kind-system {
+  border-left-color: var(--moss-dust);
+}
+
+.notif-dropdown-item-message {
+  font-family: var(--font-body);
+  font-weight: 300;
+  font-size: var(--fs-md);
+  color: var(--text);
+  line-height: 1.5;
+  word-break: break-word;
+}
+
+.notif-dropdown-item-time {
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  color: var(--text-dim);
+  letter-spacing: 0.04em;
+}
+
+.notif-dropdown-empty {
+  padding: var(--s-6) var(--s-4);
+  text-align: center;
+  font-family: var(--font-body);
+  font-style: italic;
+  color: var(--text-dim);
+  font-size: var(--fs-md);
+}
+
+.notif-dropdown-footer {
+  border-top: 1px solid var(--border-subtle);
+  padding: var(--s-2) var(--s-3);
+  display: flex;
+  justify-content: flex-end;
+}
+
+.notif-dropdown-clear {
+  background: transparent;
+  border: none;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  letter-spacing: 0.04em;
+  text-transform: lowercase;
+  cursor: pointer;
+  padding: var(--s-1) var(--s-2);
+  transition: color var(--dur-quick);
+}
+
+.notif-dropdown-clear:hover {
+  color: var(--text);
+}
+
+.notif-dropdown-clear.confirm {
+  color: var(--error);
+}

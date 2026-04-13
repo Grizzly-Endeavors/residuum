@@ -72,15 +72,6 @@
   border-radius: var(--radius);
 }
 
-.msg-system {
-  font-size: 12px;
-  color: var(--text-dim);
-  padding: 6px 14px;
-  margin-top: 8px;
-  font-style: italic;
-  border-left: 3px solid var(--border-subtle);
-}
-
 /* ── Dividers: geological strata for history ───────────────────────────── */
 
 .msg-divider {
@@ -357,23 +348,6 @@
   50% {
     opacity: 0.75;
   }
-}
-
-.msg-error {
-  background: var(--error-bg);
-  border-left: 3px solid var(--error);
-  color: #e8a0a0;
-  margin-top: 8px;
-}
-
-.msg-notice {
-  font-size: 12px;
-  font-family: var(--font-mono);
-  color: var(--text-muted);
-  padding: 6px 14px;
-  margin-top: 8px;
-  border-left: 3px solid var(--moss-dust);
-  white-space: pre-wrap;
 }
 
 .msg-content {

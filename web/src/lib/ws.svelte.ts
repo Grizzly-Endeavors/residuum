@@ -4,9 +4,9 @@
 
 import { WsTransport } from "./transport.svelte";
 import { FeedStore } from "./feed.svelte";
+import { notifications } from "./notifications.svelte";
 import type {
   ClientMessage,
-  FeedItem,
   RecentHistorySegment,
   EpisodeHistorySegment,
   ImageAttachment,
@@ -26,8 +26,17 @@ class WsCoordinator {
       // localStorage unavailable
     }
 
-    // Wire transport events to feed store
+    // Wire transport events: route system events to the notification
+    // surface, then hand the message to the feed store for any chat-state
+    // side effects (e.g. clearing the thinking indicator on errors).
     this.transport.onMessage = (msg) => {
+      if (msg.type === "error") {
+        notifications.surface("error", msg.message);
+      } else if (msg.type === "notice") {
+        notifications.surface("notice", msg.message);
+      } else if (msg.type === "reloading") {
+        notifications.surface("system", "Gateway is reloading…");
+      }
       this.store.handleMessage(msg);
     };
 
@@ -85,10 +94,6 @@ class WsCoordinator {
 
   prependEpisode(segment: EpisodeHistorySegment): void {
     this.store.prependEpisode(segment);
-  }
-
-  appendFeedItem(item: FeedItem): void {
-    this.store.appendFeedItem(item);
   }
 }
 

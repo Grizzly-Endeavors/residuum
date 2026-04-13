@@ -74,6 +74,17 @@
           menuIndex = menuIndex < filtered.length - 1 ? menuIndex + 1 : 0;
           return;
         case "Tab":
+          e.preventDefault();
+          {
+            const cmd = filtered[menuIndex];
+            if (cmd) {
+              // Complete inline so the user can review/edit before sending.
+              value = cmd.name + (cmd.hasArgs ? " " : "");
+              showMenu = false;
+              textarea?.focus();
+            }
+          }
+          return;
         case "Enter":
           e.preventDefault();
           {

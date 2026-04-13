@@ -3,7 +3,7 @@
   import { ws } from "./lib/ws.svelte";
   import { fetchChatHistory, fetchChatSegment } from "./lib/api";
   import { parseCommand } from "./lib/commands";
-  import { nextFeedId } from "./lib/feed-id";
+  import { notifications } from "./lib/notifications.svelte";
   import ChatFeed from "./components/ChatFeed.svelte";
   import ChatInput from "./components/ChatInput.svelte";
   import type { ImageAttachment } from "./lib/types";
@@ -35,12 +35,13 @@
     const result = parseCommand(text, {
       connectionStatus: ws.transport.status,
       verbose: ws.verbose,
-      nextId: nextFeedId,
       setVerbose: (enabled) => ws.setVerbose(enabled),
     });
 
     if (result) {
-      if (result.feedItem) ws.appendFeedItem(result.feedItem);
+      if (result.notification) {
+        notifications.surface(result.notification.kind, result.notification.message);
+      }
       if (result.wsMessage) ws.send(result.wsMessage);
       result.action?.();
       return;

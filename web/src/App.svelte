@@ -4,7 +4,7 @@
   import { ws } from "./lib/ws.svelte";
   import Header from "./components/Header.svelte";
   import BrandMark from "./components/BrandMark.svelte";
-  import Toast from "./components/Toast.svelte";
+  import NotificationCorner from "./components/NotificationCorner.svelte";
   import HelpOverlay from "./components/HelpOverlay.svelte";
   import Chat from "./Chat.svelte";
   import Setup from "./Setup.svelte";
@@ -92,7 +92,7 @@
   {/if}
 {/if}
 
-<Toast />
+<NotificationCorner />
 <HelpOverlay
   open={helpOpen}
   onClose={() => {

@@ -1,5 +1,5 @@
 <script lang="ts">
-  type IconName = "menu" | "close" | "chevron" | "paperclip" | "reload" | "warning";
+  type IconName = "menu" | "close" | "chevron" | "paperclip" | "reload" | "warning" | "pulse";
 
   interface Props {
     name: IconName;
@@ -37,6 +37,10 @@
       <path d="M8 2.5L14 12.5L2 12.5Z" />
       <path d="M8 6v3" />
       <path d="M8 10.6v0.01" />
+    {:else if name === "pulse"}
+      <path d="M3 9.5h2.5" />
+      <path d="M6.75 6.5h2.5" />
+      <path d="M10.5 9.5h2.5" />
     {/if}
   </g>
 </svg>

@@ -5,7 +5,6 @@
   import { fetchChatSegment } from "../lib/api";
   import MessageUser from "./MessageUser.svelte";
   import MessageAssistant from "./MessageAssistant.svelte";
-  import MessageBadge from "./MessageBadge.svelte";
   import MessageDivider from "./MessageDivider.svelte";
   import CompressedHistoryMarker from "./CompressedHistoryMarker.svelte";
   import ToolGroup from "./ToolGroup.svelte";
@@ -197,12 +196,6 @@
         <MessageUser content={item.content} images={item.images} />
       {:else if item.kind === "assistant"}
         <MessageAssistant content={item.content} />
-      {:else if item.kind === "system"}
-        <MessageBadge content={item.content} variant="system" />
-      {:else if item.kind === "error"}
-        <MessageBadge content={item.content} variant="error" />
-      {:else if item.kind === "notice"}
-        <MessageBadge content={item.content} variant="notice" />
       {:else if item.kind === "divider"}
         <MessageDivider label={item.label} variant={item.variant ?? "day"} />
       {:else if item.kind === "compressed-marker"}

@@ -80,28 +80,14 @@ export class FeedStore {
         break;
 
       case "error":
+        // Server error clears the thinking indicator. The notification
+        // surface itself is dispatched by WsCoordinator before this runs.
         this.isProcessing = false;
-        this.feed.push({
-          id: nextFeedId(),
-          kind: "error",
-          content: msg.message,
-        });
         break;
 
       case "notice":
-        this.feed.push({
-          id: nextFeedId(),
-          kind: "notice",
-          content: msg.message,
-        });
-        break;
-
       case "reloading":
-        this.feed.push({
-          id: nextFeedId(),
-          kind: "system",
-          content: "Gateway is reloading...",
-        });
+        // Surfaced by WsCoordinator; no chat-state side effect.
         break;
 
       case "file_attachment": {
@@ -177,11 +163,6 @@ export class FeedStore {
     this.maybePushDayDivider(nowIso);
     this.feed.push({ id: nextFeedId(), kind: "user", content, images });
     this.isProcessing = true;
-  }
-
-  /** Append an arbitrary feed item (e.g. from commands). */
-  appendFeedItem(item: FeedItem): void {
-    this.feed.push(item);
   }
 
   // ── Private ──────────────────────────────────────────────────────────

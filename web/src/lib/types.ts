@@ -240,21 +240,6 @@ export interface AssistantFeedItem extends FeedItemBase {
   content: string;
 }
 
-export interface SystemFeedItem extends FeedItemBase {
-  kind: "system";
-  content: string;
-}
-
-export interface ErrorFeedItem extends FeedItemBase {
-  kind: "error";
-  content: string;
-}
-
-export interface NoticeFeedItem extends FeedItemBase {
-  kind: "notice";
-  content: string;
-}
-
 export interface DividerFeedItem extends FeedItemBase {
   kind: "divider";
   label: string;
@@ -282,9 +267,6 @@ export interface FileAttachmentFeedItem extends FeedItemBase {
 export type FeedItem =
   | UserFeedItem
   | AssistantFeedItem
-  | SystemFeedItem
-  | ErrorFeedItem
-  | NoticeFeedItem
   | DividerFeedItem
   | CompressedMarkerFeedItem
   | ToolGroupFeedItem

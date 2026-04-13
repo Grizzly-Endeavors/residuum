@@ -1,19 +1,31 @@
 // ── Slash command parser ─────────────────────────────────────────────
 
-import type { ClientMessage, FeedItem, ConnectionStatus } from "./types";
+import type { ClientMessage, ConnectionStatus } from "./types";
+import type { NotificationKind } from "./notifications.svelte";
+
+export interface CommandNotification {
+  kind: NotificationKind;
+  message: string;
+}
 
 export interface CommandResult {
   handled: boolean;
-  feedItem?: FeedItem;
+  /**
+   * Output the user should see for this command. Routed through the
+   * notification corner (toast + tray history) by the caller.
+   *
+   * TODO(#98): some commands (e.g. `/help`'s multi-line text) may belong
+   * inline rather than as a toast. Audit per command.
+   */
+  notification?: CommandNotification;
   wsMessage?: ClientMessage;
-  /** Side effect to execute after feed/ws updates are applied. */
+  /** Side effect to execute after dispatch. */
   action?: () => void;
 }
 
 interface CommandContext {
   connectionStatus: ConnectionStatus;
   verbose: boolean;
-  nextId: () => number;
   setVerbose: (enabled: boolean) => void;
 }
 
@@ -54,21 +66,16 @@ export function parseCommand(input: string, ctx: CommandContext): CommandResult 
     case "/help":
       return {
         handled: true,
-        feedItem: {
-          id: ctx.nextId(),
-          kind: "notice",
-          content: HELP_TEXT,
-        },
+        notification: { kind: "notice", message: HELP_TEXT },
       };
 
     case "/verbose": {
       const newState = !ctx.verbose;
       return {
         handled: true,
-        feedItem: {
-          id: ctx.nextId(),
+        notification: {
           kind: "notice",
-          content: `verbose mode will be ${newState ? "enabled" : "disabled"}`,
+          message: `verbose mode will be ${newState ? "enabled" : "disabled"}`,
         },
         action: () => {
           ctx.setVerbose(newState);
@@ -79,10 +86,9 @@ export function parseCommand(input: string, ctx: CommandContext): CommandResult 
     case "/status":
       return {
         handled: true,
-        feedItem: {
-          id: ctx.nextId(),
+        notification: {
           kind: "notice",
-          content: `connection: ${ctx.connectionStatus}\nverbose: ${ctx.verbose ? "on" : "off"}`,
+          message: `connection: ${ctx.connectionStatus}\nverbose: ${ctx.verbose ? "on" : "off"}`,
         },
       };
 
@@ -90,76 +96,48 @@ export function parseCommand(input: string, ctx: CommandContext): CommandResult 
       return {
         handled: true,
         wsMessage: { type: "server_command", name: "observe", args: args || null },
-        feedItem: {
-          id: ctx.nextId(),
-          kind: "system",
-          content: "Requesting observation...",
-        },
+        notification: { kind: "system", message: "Requesting observation…" },
       };
 
     case "/reflect":
       return {
         handled: true,
         wsMessage: { type: "server_command", name: "reflect", args: args || null },
-        feedItem: {
-          id: ctx.nextId(),
-          kind: "system",
-          content: "Requesting reflection...",
-        },
+        notification: { kind: "system", message: "Requesting reflection…" },
       };
 
     case "/context":
       return {
         handled: true,
         wsMessage: { type: "server_command", name: "context", args: args || null },
-        feedItem: {
-          id: ctx.nextId(),
-          kind: "system",
-          content: "Requesting context...",
-        },
+        notification: { kind: "system", message: "Requesting context…" },
       };
 
     case "/reload":
       return {
         handled: true,
         wsMessage: { type: "reload" },
-        feedItem: {
-          id: ctx.nextId(),
-          kind: "system",
-          content: "Requesting gateway reload...",
-        },
+        notification: { kind: "system", message: "Requesting gateway reload…" },
       };
 
     case "/inbox": {
       if (!args.trim()) {
         return {
           handled: true,
-          feedItem: {
-            id: ctx.nextId(),
-            kind: "error",
-            content: "usage: /inbox <message>",
-          },
+          notification: { kind: "error", message: "usage: /inbox <message>" },
         };
       }
       return {
         handled: true,
         wsMessage: { type: "inbox_add", body: args },
-        feedItem: {
-          id: ctx.nextId(),
-          kind: "notice",
-          content: `Added to inbox: ${args}`,
-        },
+        notification: { kind: "notice", message: `Added to inbox: ${args}` },
       };
     }
 
     default:
       return {
         handled: true,
-        feedItem: {
-          id: ctx.nextId(),
-          kind: "error",
-          content: `unknown command: ${cmd} (try /help)`,
-        },
+        notification: { kind: "error", message: `unknown command: ${cmd} (try /help)` },
       };
   }
 }
