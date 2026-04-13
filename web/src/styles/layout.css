@@ -74,19 +74,46 @@
 /* ── App layout ───────────────────────────────────────────────────────── */
 
 .app-main {
-  display: flex;
+  display: grid;
+  grid-template-columns: minmax(0, 0fr) minmax(0, 1fr);
+  transition: grid-template-columns var(--dur-slow) var(--ease-out-stone);
   flex: 1;
   overflow: hidden;
 }
 
-.app-main .chat-view {
+.app-main.with-workspace {
+  grid-template-columns: minmax(0, 3fr) minmax(0, 2fr);
+}
+
+.workspace-slot {
+  min-width: 0;
+  overflow: hidden;
+  display: flex;
+}
+
+.workspace-slot > .workspace-view {
+  opacity: 0;
+  transition: opacity var(--dur-default) var(--ease-out-stone) var(--dur-quick);
   flex: 1;
   min-width: 0;
 }
 
-.app-main.with-workspace .chat-view {
-  flex: 0 0 40%;
-  min-width: 320px;
+.app-main.with-workspace .workspace-slot > .workspace-view {
+  opacity: 1;
+}
+
+.app-main .chat-view {
+  min-width: 0;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .app-main,
+  .workspace-slot > .workspace-view {
+    transition: none;
+  }
+  .app-main.with-workspace .workspace-slot > .workspace-view {
+    opacity: 1;
+  }
 }
 
 /* ── Workspace ────────────────────────────────────────────────────────── */
@@ -343,7 +370,19 @@
 }
 
 @media (max-width: 600px) {
-  /* Workspace mobile: full-screen with drill-down */
+  /* Workspace mobile: full-screen with drill-down — flex stack, no column animation */
+  .app-main {
+    display: flex;
+    grid-template-columns: none;
+    transition: none;
+  }
+  .workspace-slot {
+    display: contents;
+  }
+  .workspace-slot > .workspace-view {
+    opacity: 1;
+    transition: none;
+  }
   .app-main.with-workspace {
     flex-direction: column;
   }

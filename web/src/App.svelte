@@ -13,7 +13,12 @@
 
   let mode = $state<"loading" | "setup" | "running">("loading");
   let activeView = $state<"chat" | "workspace" | "settings">("chat");
+  let workspaceMounted = $state(false);
   let helpOpen = $state(false);
+
+  $effect(() => {
+    if (activeView === "workspace") workspaceMounted = true;
+  });
 
   onMount(async () => {
     try {
@@ -88,13 +93,15 @@
     />
   {:else}
     <div class="app-main emerges" class:with-workspace={activeView === "workspace"}>
-      {#if activeView === "workspace"}
-        <Workspace
-          onClose={() => {
-            activeView = "chat";
-          }}
-        />
-      {/if}
+      <div class="workspace-slot" aria-hidden={activeView !== "workspace"}>
+        {#if workspaceMounted}
+          <Workspace
+            onClose={() => {
+              activeView = "chat";
+            }}
+          />
+        {/if}
+      </div>
       <Chat />
     </div>
   {/if}
