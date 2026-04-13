@@ -14,6 +14,20 @@ import type {
   CloudStatusResponse,
   UpdateStatusResponse,
 } from "./types";
+import { cachedFetch, invalidate } from "./cache";
+
+// ── Cache keys ──────────────────────────────────────────────────────
+//
+// Exported so other modules (e.g. ws.svelte.ts) can clear them when
+// out-of-band signals (gateway reload, WS reconnect) tell us the
+// server's view may have changed.
+
+export const CACHE_KEY_STATUS = "GET /api/status";
+export const CACHE_KEY_TIMEZONE = "GET /api/system/timezone";
+export const CACHE_KEY_MCP_CATALOG = "GET /api/mcp-catalog";
+export const CACHE_KEY_CONFIG_RAW = "GET /api/config/raw";
+export const CACHE_KEY_PROVIDERS_RAW = "GET /api/providers/raw";
+export const CACHE_KEY_MCP_RAW = "GET /api/mcp/raw";
 
 // ── Error class + fetch helpers ─────────────────────────────────────
 
@@ -52,7 +66,7 @@ async function apiFetchText(input: RequestInfo | URL, init?: RequestInit): Promi
 // ── Core API wrappers ───────────────────────────────────────────────
 
 export async function fetchStatus(): Promise<StatusResponse> {
-  return apiFetch<StatusResponse>("/api/status");
+  return cachedFetch(CACHE_KEY_STATUS, () => apiFetch<StatusResponse>("/api/status"));
 }
 
 /** Graceful fallback: returns an empty Recent segment on failure. */
@@ -68,12 +82,14 @@ export async function fetchChatHistory(): Promise<RecentHistorySegment> {
   }
 }
 
-/** Fetch an episode segment by cursor. Returns null on 404 or error. */
+/** Fetch an episode segment by cursor. Returns null on 404 or error. Episodes are immutable, so the result is cached for the life of the browser session (and across reloads). */
 export async function fetchChatSegment(episodeId: string): Promise<ChatHistorySegment | null> {
+  // Built inline rather than as a CACHE_KEY_* constant because it's per-episode.
+  // The key string must match the url string exactly — if you change one, change
+  // the other, or cache lookups will miss.
+  const url = `/api/chat/history?episode=${encodeURIComponent(episodeId)}`;
   try {
-    return await apiFetch<ChatHistorySegment>(
-      `/api/chat/history?episode=${encodeURIComponent(episodeId)}`,
-    );
+    return await cachedFetch(`GET ${url}`, () => apiFetch<ChatHistorySegment>(url));
   } catch {
     return null;
   }
@@ -84,7 +100,9 @@ export async function fetchChatSegment(episodeId: string): Promise<ChatHistorySe
 /** Graceful fallback: uses browser timezone when server is unreachable during setup. */
 export async function fetchTimezone(): Promise<string> {
   try {
-    const data = await apiFetch<TimezoneResponse>("/api/system/timezone");
+    const data = await cachedFetch(CACHE_KEY_TIMEZONE, () =>
+      apiFetch<TimezoneResponse>("/api/system/timezone"),
+    );
     return data.timezone || Intl.DateTimeFormat().resolvedOptions().timeZone || "";
   } catch {
     return Intl.DateTimeFormat().resolvedOptions().timeZone || "";
@@ -110,7 +128,9 @@ export async function fetchProviderModels(
 /** Graceful fallback: catalog is optional — returns empty on failure. */
 export async function fetchMcpCatalog(): Promise<McpCatalogEntry[]> {
   try {
-    return await apiFetch<McpCatalogEntry[]>("/api/mcp-catalog");
+    return await cachedFetch(CACHE_KEY_MCP_CATALOG, () =>
+      apiFetch<McpCatalogEntry[]>("/api/mcp-catalog"),
+    );
   } catch {
     return [];
   }
@@ -141,15 +161,17 @@ export async function completeSetup(
 // ── Settings API wrappers ────────────────────────────────────────────
 
 export async function fetchConfigRaw(): Promise<string> {
-  return apiFetchText("/api/config/raw");
+  return cachedFetch(CACHE_KEY_CONFIG_RAW, () => apiFetchText("/api/config/raw"));
 }
 
 export async function putConfigRaw(toml: string): Promise<ValidateResponse> {
-  return apiFetch<ValidateResponse>("/api/config/raw", {
+  const result = await apiFetch<ValidateResponse>("/api/config/raw", {
     method: "PUT",
     headers: { "Content-Type": "text/plain" },
     body: toml,
   });
+  invalidate(CACHE_KEY_CONFIG_RAW);
+  return result;
 }
 
 export async function validateConfig(toml: string): Promise<ValidateResponse> {
@@ -161,15 +183,17 @@ export async function validateConfig(toml: string): Promise<ValidateResponse> {
 }
 
 export async function fetchProvidersRaw(): Promise<string> {
-  return apiFetchText("/api/providers/raw");
+  return cachedFetch(CACHE_KEY_PROVIDERS_RAW, () => apiFetchText("/api/providers/raw"));
 }
 
 export async function putProvidersRaw(toml: string): Promise<ValidateResponse> {
-  return apiFetch<ValidateResponse>("/api/providers/raw", {
+  const result = await apiFetch<ValidateResponse>("/api/providers/raw", {
     method: "PUT",
     headers: { "Content-Type": "text/plain" },
     body: toml,
   });
+  invalidate(CACHE_KEY_PROVIDERS_RAW);
+  return result;
 }
 
 export async function validateProviders(toml: string): Promise<ValidateResponse> {
@@ -181,15 +205,17 @@ export async function validateProviders(toml: string): Promise<ValidateResponse>
 }
 
 export async function fetchMcpRaw(): Promise<string> {
-  return apiFetchText("/api/mcp/raw");
+  return cachedFetch(CACHE_KEY_MCP_RAW, () => apiFetchText("/api/mcp/raw"));
 }
 
 export async function putMcpRaw(json: string): Promise<ValidateResponse> {
-  return apiFetch<ValidateResponse>("/api/mcp/raw", {
+  const result = await apiFetch<ValidateResponse>("/api/mcp/raw", {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
     body: json,
   });
+  invalidate(CACHE_KEY_MCP_RAW);
+  return result;
 }
 
 /** Graceful fallback: returns empty on failure (secrets list is non-critical). */

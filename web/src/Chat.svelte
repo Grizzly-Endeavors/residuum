@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount, onDestroy } from "svelte";
+  import { onMount } from "svelte";
   import { ws } from "./lib/ws.svelte";
   import { fetchChatHistory, fetchChatSegment } from "./lib/api";
   import { parseCommand } from "./lib/commands";
@@ -24,11 +24,6 @@
     } catch {
       // history unavailable — start with empty feed
     }
-    ws.connect();
-  });
-
-  onDestroy(() => {
-    ws.disconnect();
   });
 
   function handleSend(text: string, images?: ImageAttachment[]) {
