@@ -24,6 +24,14 @@
     }
   });
 
+  // WS lives as long as the page does — it is not tied to any single screen.
+  // Navigating to Settings / Workspace must not drop the connection.
+  $effect(() => {
+    if (mode !== "running") return;
+    ws.connect();
+    return () => ws.disconnect();
+  });
+
   function handleKeydown(event: KeyboardEvent) {
     // `?` opens help — but only when nothing else is taking text input.
     if (event.key !== "?") return;

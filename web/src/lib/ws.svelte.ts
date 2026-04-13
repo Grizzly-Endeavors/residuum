@@ -5,6 +5,15 @@
 import { WsTransport } from "./transport.svelte";
 import { FeedStore } from "./feed.svelte";
 import { notifications } from "./notifications.svelte";
+import { invalidate } from "./cache";
+import {
+  CACHE_KEY_STATUS,
+  CACHE_KEY_TIMEZONE,
+  CACHE_KEY_MCP_CATALOG,
+  CACHE_KEY_CONFIG_RAW,
+  CACHE_KEY_PROVIDERS_RAW,
+  CACHE_KEY_MCP_RAW,
+} from "./api";
 import type {
   ClientMessage,
   RecentHistorySegment,
@@ -36,6 +45,15 @@ class WsCoordinator {
         notifications.surface("notice", msg.message);
       } else if (msg.type === "reloading") {
         notifications.surface("system", "Gateway is reloading…");
+        // Gateway is reloading config from disk — anything we cached about
+        // server-side state may be stale. Episode history is immutable and
+        // intentionally stays cached.
+        invalidate(CACHE_KEY_STATUS);
+        invalidate(CACHE_KEY_TIMEZONE);
+        invalidate(CACHE_KEY_MCP_CATALOG);
+        invalidate(CACHE_KEY_CONFIG_RAW);
+        invalidate(CACHE_KEY_PROVIDERS_RAW);
+        invalidate(CACHE_KEY_MCP_RAW);
       }
       this.store.handleMessage(msg);
     };
