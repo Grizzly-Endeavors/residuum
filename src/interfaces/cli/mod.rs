@@ -147,7 +147,7 @@ impl CliClient {
                 let line = format!("error: {message}");
                 println!("{}", self.theme.format_error(&line));
             }
-            ServerMessage::Notice { message } => {
+            ServerMessage::Notice { message } | ServerMessage::InlineOutput { message } => {
                 self.indicator.finish();
                 println!("\n{}\n", self.theme.format_notice(message));
             }

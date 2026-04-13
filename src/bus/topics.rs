@@ -5,8 +5,8 @@
 //! topic, providing compile-time safety at publish/subscribe boundaries.
 
 use super::events::{
-    AgentResultEvent, ErrorEvent, IntermediateEvent, MessageEvent, NoticeEvent, NotificationEvent,
-    ResponseEvent, SpawnRequestEvent, ToolActivityEvent, TurnLifecycleEvent,
+    AgentResultEvent, ErrorEvent, InlineOutputEvent, IntermediateEvent, MessageEvent, NoticeEvent,
+    NotificationEvent, ResponseEvent, SpawnRequestEvent, ToolActivityEvent, TurnLifecycleEvent,
 };
 use super::types::{EndpointName, NotifyName, TopicId};
 
@@ -91,6 +91,7 @@ impl Topic for Notification {
 
 impl Carries<NotificationEvent> for Notification {}
 impl Carries<NoticeEvent> for Notification {}
+impl Carries<InlineOutputEvent> for Notification {}
 impl Carries<ErrorEvent> for Notification {}
 
 /// The user inbox for incoming notifications.

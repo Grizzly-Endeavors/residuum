@@ -84,4 +84,8 @@ message: string, } | { "type": "pong" } | { "type": "reloading" } | { "type": "n
 /**
  * Human-readable result message.
  */
+message: string, } | { "type": "inline_output", 
+/**
+ * Body to render inline.
+ */
 message: string, };

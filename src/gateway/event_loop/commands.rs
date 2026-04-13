@@ -1,6 +1,6 @@
 //! Server command handler in the event loop.
 
-use crate::bus::{NoticeEvent, NotifyName, SYSTEM_CHANNEL, topics};
+use crate::bus::{InlineOutputEvent, NoticeEvent, NotifyName, SYSTEM_CHANNEL, topics};
 use crate::gateway::types::GatewayRuntime;
 use crate::gateway::types::ServerCommand;
 
@@ -56,11 +56,11 @@ pub async fn handle_server_command(
                 .publisher
                 .publish(
                     topics::Notification(NotifyName::from(SYSTEM_CHANNEL)),
-                    NoticeEvent { message: msg },
+                    InlineOutputEvent { message: msg },
                 )
                 .await
             {
-                tracing::warn!(error = %e, "failed to publish context notice");
+                tracing::warn!(error = %e, "failed to publish context inline output");
             }
         }
         unknown => {

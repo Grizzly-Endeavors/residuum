@@ -36,6 +36,7 @@
       connectionStatus: ws.transport.status,
       verbose: ws.verbose,
       setVerbose: (enabled) => ws.setVerbose(enabled),
+      pushInline: (content) => ws.store.pushLocalSystem(content),
     });
 
     if (result) {

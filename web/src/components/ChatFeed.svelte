@@ -6,6 +6,7 @@
   import MessageUser from "./MessageUser.svelte";
   import MessageAssistant from "./MessageAssistant.svelte";
   import MessageDivider from "./MessageDivider.svelte";
+  import MessageLocalSystem from "./MessageLocalSystem.svelte";
   import CompressedHistoryMarker from "./CompressedHistoryMarker.svelte";
   import ToolGroup from "./ToolGroup.svelte";
   import ThinkingIndicator from "./ThinkingIndicator.svelte";
@@ -204,6 +205,8 @@
         <ToolGroup calls={item.calls} {verbose} />
       {:else if item.kind === "file-attachment"}
         <FileAttachment {item} />
+      {:else if item.kind === "local-system"}
+        <MessageLocalSystem content={item.content} />
       {/if}
     {/each}
     {#if isProcessing}

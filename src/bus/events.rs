@@ -247,6 +247,16 @@ pub struct NoticeEvent {
     pub message: String,
 }
 
+/// Multi-line command output meant for inline rendering in a chat surface.
+///
+/// Distinct from [`NoticeEvent`]: notices are transient toasts in the web UI,
+/// while inline output lands in the chat stream so the user can scan it.
+#[derive(Debug, Clone)]
+pub struct InlineOutputEvent {
+    /// Body to render inline.
+    pub message: String,
+}
+
 /// An error tied to a specific agent turn, broadcast to connected endpoints.
 #[derive(Debug, Clone)]
 pub struct ErrorEvent {
