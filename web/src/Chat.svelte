@@ -9,20 +9,30 @@
   import type { ImageAttachment } from "./lib/types";
 
   onMount(async () => {
+    let recent;
     try {
-      const recent = await fetchChatHistory();
-      ws.loadHistory(recent);
-      // Always prefetch the most recent episode so the chat is never
-      // empty after the observer compresses history, and the
-      // "compressed history" marker shows up from the start.
-      if (recent.next_cursor) {
+      recent = await fetchChatHistory();
+    } catch (err) {
+      notifications.surface(
+        "error",
+        `Couldn't load chat history: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      return;
+    }
+    ws.loadHistory(recent);
+    // Always prefetch the most recent episode so the chat is never
+    // empty after the observer compresses history, and the
+    // "compressed history" marker shows up from the start.
+    if (recent.next_cursor) {
+      try {
         const episode = await fetchChatSegment(recent.next_cursor);
-        if (episode?.kind === "episode") {
-          ws.prependEpisode(episode);
-        }
+        ws.prependEpisode(episode);
+      } catch (err) {
+        notifications.surface(
+          "error",
+          `Couldn't load episode ${recent.next_cursor}: ${err instanceof Error ? err.message : String(err)}`,
+        );
       }
-    } catch {
-      // history unavailable — start with empty feed
     }
   });
 
