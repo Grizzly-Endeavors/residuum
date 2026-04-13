@@ -378,20 +378,22 @@ pub(super) async fn api_chat_history(
     match params.episode {
         None => {
             let recent_path = memory_dir.join("recent_messages.json");
-            let messages = match load_recent_messages(&recent_path).await {
-                Ok(messages) => messages,
-                Err(err) => {
-                    tracing::debug!(error = %err, "no recent messages available");
-                    Vec::new()
-                }
-            };
-            let next_cursor = latest_episode_id(&episodes_dir)
-                .await
-                .inspect_err(|err| {
-                    tracing::warn!(error = %err, "failed to scan episodes directory");
-                })
-                .ok()
-                .flatten();
+            let messages = load_recent_messages(&recent_path).await.map_err(|err| {
+                tracing::warn!(
+                    error = %err,
+                    path = %recent_path.display(),
+                    "failed to load recent messages — refusing to silently return empty history",
+                );
+                StatusCode::INTERNAL_SERVER_ERROR
+            })?;
+            let next_cursor = latest_episode_id(&episodes_dir).await.map_err(|err| {
+                tracing::warn!(
+                    error = %err,
+                    path = %episodes_dir.display(),
+                    "failed to scan episodes directory",
+                );
+                StatusCode::INTERNAL_SERVER_ERROR
+            })?;
             Ok(Json(ChatHistorySegment::Recent {
                 messages,
                 next_cursor,
@@ -418,13 +420,18 @@ pub(super) async fn api_chat_history(
                 .map(|message| wrap_episode_message(message, timestamp, meta.context.clone()))
                 .collect();
 
-            let next_cursor = previous_episode_id(&episodes_dir, &meta.id)
-                .await
-                .inspect_err(|err| {
-                    tracing::warn!(error = %err, "failed to walk to previous episode");
-                })
-                .ok()
-                .flatten();
+            let next_cursor =
+                previous_episode_id(&episodes_dir, &meta.id)
+                    .await
+                    .map_err(|err| {
+                        tracing::warn!(
+                            error = %err,
+                            episode = %meta.id,
+                            path = %episodes_dir.display(),
+                            "failed to walk to previous episode",
+                        );
+                        StatusCode::INTERNAL_SERVER_ERROR
+                    })?;
 
             Ok(Json(ChatHistorySegment::Episode {
                 episode_id: meta.id,

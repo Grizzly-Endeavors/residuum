@@ -428,6 +428,49 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn chat_history_propagates_parse_errors_instead_of_silently_returning_empty() {
+        // Regression test: a malformed recent_messages.json used to be swallowed
+        // at debug! level and surfaced as an empty Recent segment, hiding real
+        // file corruption and making the chat feed look empty when it wasn't.
+        // The handler must now return a 5xx so the frontend can surface the
+        // failure to the user instead of silently dropping the history.
+        use axum::extract::{Query, State};
+        use axum::http::StatusCode;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let memory_dir = tmp.path().join("memory");
+        tokio::fs::create_dir_all(&memory_dir).await.unwrap();
+
+        // Timestamp uses ISO seconds-precision, which minute_format rejects.
+        // A single bad row here fails the whole file parse.
+        let malformed = r#"[{"role":"user","content":"hi","timestamp":"2026-04-12T15:00:30","project_context":"default","visibility":"user"}]"#;
+        tokio::fs::write(memory_dir.join("recent_messages.json"), malformed)
+            .await
+            .unwrap();
+
+        let state = ConfigApiState {
+            config_dir: tmp.path().to_path_buf(),
+            workspace_dir: tmp.path().to_path_buf(),
+            memory_dir: Some(memory_dir),
+            reload_tx: None,
+            setup_done: None,
+            secret_lock: Arc::new(tokio::sync::Mutex::new(())),
+        };
+
+        let err = config::api_chat_history(
+            State(state),
+            Query(config::ChatHistoryQuery { episode: None }),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(
+            err,
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "parse failures must not be silently converted to empty history",
+        );
+    }
+
+    #[tokio::test]
     async fn secrets_set_list_delete_roundtrip() {
         use axum::Json;
         use axum::extract::{Path, State};

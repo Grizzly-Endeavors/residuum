@@ -3,6 +3,7 @@
   import type { FeedItem } from "../lib/types";
   import { ws } from "../lib/ws.svelte";
   import { fetchChatSegment } from "../lib/api";
+  import { notifications } from "../lib/notifications.svelte";
   import MessageUser from "./MessageUser.svelte";
   import MessageAssistant from "./MessageAssistant.svelte";
   import MessageDivider from "./MessageDivider.svelte";
@@ -81,6 +82,20 @@
     anchorLabel = label;
   }
 
+  // Match the observer's 200px rootMargin so state-driven and scroll-driven
+  // triggers agree on "close enough to load more".
+  const LOAD_OLDER_SENTINEL_MARGIN_PX = 200;
+
+  function isSentinelNearView(): boolean {
+    if (!feedEl || !topSentinel) return false;
+    const sentinelRect = topSentinel.getBoundingClientRect();
+    const feedRect = feedEl.getBoundingClientRect();
+    return (
+      sentinelRect.bottom >= feedRect.top - LOAD_OLDER_SENTINEL_MARGIN_PX &&
+      sentinelRect.top <= feedRect.bottom
+    );
+  }
+
   async function loadOlder() {
     if (!feedEl) return;
     if (!ws.store.hasMoreHistory || ws.store.isLoadingOlder) return;
@@ -99,11 +114,16 @@
     const prevAnchorOffset = anchor ? anchor.getBoundingClientRect().top - feedTop : 0;
 
     ws.setLoadingOlder(true);
+    let prependFailed = false;
     try {
       const segment = await fetchChatSegment(cursor);
-      if (segment?.kind === "episode") {
-        ws.prependEpisode(segment);
-      }
+      ws.prependEpisode(segment);
+    } catch (err) {
+      prependFailed = true;
+      notifications.surface(
+        "error",
+        `Couldn't load episode ${cursor}: ${err instanceof Error ? err.message : String(err)}`,
+      );
     } finally {
       ws.setLoadingOlder(false);
     }
@@ -117,6 +137,17 @@
       // scrollTop assignment — which is exactly the "jerk" during prepend.
       // Force an instant jump for the anchor restoration.
       feedEl.scrollTo({ top: target, behavior: "instant" });
+    }
+
+    // When the feed is short enough to fit in the viewport, the sentinel
+    // stays visible after a prepend, so the IntersectionObserver's
+    // intersection state never *changes* and no further callback fires.
+    // Chain another load here so we keep pulling episodes until either
+    // the sentinel is pushed offscreen or hasMoreHistory is exhausted.
+    // The `!prependFailed` guard stops the chain on errors so we don't
+    // loop firing the same notification repeatedly.
+    if (!prependFailed && isSentinelNearView()) {
+      void loadOlder();
     }
   }
 
@@ -168,6 +199,23 @@
     if (tailChanged) {
       void tick().then(scrollToBottom);
     }
+  });
+
+  $effect(() => {
+    // The IntersectionObserver fires once when the sentinel first mounts
+    // — which is BEFORE Chat.svelte's async fetchChatHistory resolves, so
+    // `hasMoreHistory` is still false and loadOlder no-ops. Once the
+    // initial load flips hasMoreHistory to true, nothing retriggers the
+    // observer (the sentinel's intersection state hasn't changed), so the
+    // lazy chain silently stalls. React to the state transition directly
+    // and kick loadOlder whenever the guards would allow it and the
+    // sentinel is still near the viewport.
+    void ws.store.hasMoreHistory;
+    void ws.store.oldestEpisodeCursor;
+    void ws.store.isLoadingOlder;
+    void tick().then(() => {
+      if (isSentinelNearView()) void loadOlder();
+    });
   });
 </script>
 

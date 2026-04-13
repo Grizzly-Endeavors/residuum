@@ -4,6 +4,7 @@ import type {
   StatusResponse,
   ChatHistorySegment,
   RecentHistorySegment,
+  EpisodeHistorySegment,
   TimezoneResponse,
   ModelsResponse,
   McpCatalogEntry,
@@ -69,30 +70,38 @@ export async function fetchStatus(): Promise<StatusResponse> {
   return cachedFetch(CACHE_KEY_STATUS, () => apiFetch<StatusResponse>("/api/status"));
 }
 
-/** Graceful fallback: returns an empty Recent segment on failure. */
+/**
+ * Throws `ApiError` when the server fails to serve the recent segment — the
+ * caller is responsible for surfacing the failure to the user. Swallowing
+ * silently would hide real corruption (e.g. a malformed `recent_messages.json`)
+ * and make the chat feed look empty when it isn't.
+ */
 export async function fetchChatHistory(): Promise<RecentHistorySegment> {
-  try {
-    const segment = await apiFetch<ChatHistorySegment>("/api/chat/history");
-    if (segment.kind === "recent") return segment;
-    // Server should never return an Episode segment without an `episode` query
-    // param, but fall back defensively.
-    return { kind: "recent", messages: [], next_cursor: null };
-  } catch {
-    return { kind: "recent", messages: [], next_cursor: null };
-  }
+  const segment = await apiFetch<ChatHistorySegment>("/api/chat/history");
+  if (segment.kind === "recent") return segment;
+  throw new Error(
+    `unexpected chat history kind "${segment.kind}" — server must return Recent for the base call`,
+  );
 }
 
-/** Fetch an episode segment by cursor. Returns null on 404 or error. Episodes are immutable, so the result is cached for the life of the browser session (and across reloads). */
-export async function fetchChatSegment(episodeId: string): Promise<ChatHistorySegment | null> {
+/**
+ * Fetch an episode segment by cursor. Episodes are immutable, so the result
+ * is cached for the life of the browser session (and across reloads).
+ *
+ * Throws `ApiError` on failure — callers must decide how to surface the
+ * error. A 404 (episode not found) is surfaced the same as any other
+ * failure; the caller can inspect `ApiError.status` if it needs to branch.
+ */
+export async function fetchChatSegment(episodeId: string): Promise<EpisodeHistorySegment> {
   // Built inline rather than as a CACHE_KEY_* constant because it's per-episode.
   // The key string must match the url string exactly — if you change one, change
   // the other, or cache lookups will miss.
   const url = `/api/chat/history?episode=${encodeURIComponent(episodeId)}`;
-  try {
-    return await cachedFetch(`GET ${url}`, () => apiFetch<ChatHistorySegment>(url));
-  } catch {
-    return null;
-  }
+  const segment = await cachedFetch(`GET ${url}`, () => apiFetch<ChatHistorySegment>(url));
+  if (segment.kind === "episode") return segment;
+  throw new Error(
+    `unexpected chat history kind "${segment.kind}" — server must return Episode for ?episode=`,
+  );
 }
 
 // ── Setup API wrappers ──────────────────────────────────────────────
