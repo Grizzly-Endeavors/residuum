@@ -59,6 +59,12 @@ pub(crate) struct GatewayComponents {
     pub spawn_context: Arc<SpawnContext>,
     pub path_policy: crate::tools::SharedPathPolicy,
     pub output_topic_override_tx: tokio::sync::watch::Sender<Option<crate::bus::EndpointName>>,
+    /// Shared tracing service. Owned here so feedback tools can register
+    /// against it during agent construction; downstream consumers (web
+    /// API, sub-agents) clone the Arc.
+    pub tracing_service: Arc<crate::tracing_service::TracingService>,
+    /// Snapshot of the runtime client context for bug-report submissions.
+    pub tracing_client_context: Arc<crate::tracing_service::ClientContext>,
 }
 
 /// Bootstrap the workspace directory and return the layout and timezone.
@@ -311,6 +317,34 @@ pub(crate) async fn spawn_notify_subscribers(
     handles
 }
 
+/// Construct the shared `TracingService` and snapshot the runtime
+/// client context used by the bug-report tools and HTTP handlers.
+///
+/// Falls back to a fresh in-memory span buffer if no global one was
+/// installed (e.g. during tests where the tracing layer wasn't wired).
+fn init_tracing_service(
+    cfg: &Config,
+) -> (
+    Arc<crate::tracing_service::TracingService>,
+    Arc<crate::tracing_service::ClientContext>,
+) {
+    let buffer = crate::util::telemetry::global_span_buffer()
+        .cloned()
+        .unwrap_or_else(|| {
+            let (_, handle) = crate::util::telemetry::SpanBufferLayer::new(
+                &crate::util::telemetry::SpanBufferConfig::default(),
+            );
+            handle
+        });
+    let service = Arc::new(crate::tracing_service::TracingService::new(
+        cfg.tracing.clone(),
+        buffer,
+    ));
+    let client_context =
+        Arc::new(crate::tracing_service::client_context::gather_for_bug_report(cfg));
+    (service, client_context)
+}
+
 /// Initialize all gateway subsystems from config.
 ///
 /// Delegates to `init_workspace`, `init_identity_and_http`, `providers::init_providers`,
@@ -361,6 +395,8 @@ pub(crate) async fn initialize(
         hybrid_searcher: Arc::clone(&mem.hybrid_searcher),
     });
 
+    let (tracing_service, tracing_client_context) = init_tracing_service(cfg);
+
     let tool_deps = ToolRegistryDeps {
         action_store: &action_store,
         action_notify: &action_notify,
@@ -370,6 +406,8 @@ pub(crate) async fn initialize(
         background_spawner: &background_spawner,
         endpoint_registry: &endpoint_registry,
         publisher,
+        tracing_service: &tracing_service,
+        tracing_client_context: &tracing_client_context,
     };
     let (tools, tool_filter, path_policy_for_runtime, output_topic_override_tx) =
         tools::init_tool_registry(cfg, &layout, &mem, tz, &tool_deps);
@@ -412,5 +450,7 @@ pub(crate) async fn initialize(
         spawn_context,
         path_policy: path_policy_for_runtime,
         output_topic_override_tx,
+        tracing_service,
+        tracing_client_context,
     })
 }

@@ -8,12 +8,13 @@ use std::time::Duration;
 use crate::models::retry::RetryConfig;
 
 use super::constants::{
-    DEFAULT_AGENT_MODIFY_CHANNELS, DEFAULT_AGENT_MODIFY_MCP, DEFAULT_GATEWAY_BIND,
-    DEFAULT_GATEWAY_PORT, DEFAULT_IDLE_TIMEOUT_MINUTES, DEFAULT_MAX_CONCURRENT_BACKGROUND,
-    DEFAULT_OBSERVER_COOLDOWN_SECS, DEFAULT_OBSERVER_FORCE_THRESHOLD, DEFAULT_OBSERVER_THRESHOLD,
-    DEFAULT_REFLECTOR_THRESHOLD, DEFAULT_SEARCH_CANDIDATE_MULTIPLIER, DEFAULT_SEARCH_MIN_SCORE,
-    DEFAULT_SEARCH_TEMPORAL_DECAY, DEFAULT_SEARCH_TEMPORAL_DECAY_HALF_LIFE_DAYS,
-    DEFAULT_SEARCH_TEXT_WEIGHT, DEFAULT_SEARCH_VECTOR_WEIGHT, DEFAULT_TRANSCRIPT_RETENTION_DAYS,
+    DEFAULT_AGENT_MODIFY_CHANNELS, DEFAULT_AGENT_MODIFY_MCP, DEFAULT_FEEDBACK_ENDPOINT,
+    DEFAULT_GATEWAY_BIND, DEFAULT_GATEWAY_PORT, DEFAULT_IDLE_TIMEOUT_MINUTES,
+    DEFAULT_MAX_CONCURRENT_BACKGROUND, DEFAULT_OBSERVER_COOLDOWN_SECS,
+    DEFAULT_OBSERVER_FORCE_THRESHOLD, DEFAULT_OBSERVER_THRESHOLD, DEFAULT_REFLECTOR_THRESHOLD,
+    DEFAULT_SEARCH_CANDIDATE_MULTIPLIER, DEFAULT_SEARCH_MIN_SCORE, DEFAULT_SEARCH_TEMPORAL_DECAY,
+    DEFAULT_SEARCH_TEMPORAL_DECAY_HALF_LIFE_DAYS, DEFAULT_SEARCH_TEXT_WEIGHT,
+    DEFAULT_SEARCH_VECTOR_WEIGHT, DEFAULT_TRANSCRIPT_RETENTION_DAYS,
 };
 use super::provider::ProviderSpec;
 
@@ -437,6 +438,9 @@ pub struct TracingConfig {
     pub sanitize_content: bool,
     /// OTEL endpoints for trace export.
     pub otel_endpoints: Vec<OtelEndpoint>,
+    /// Upstream relay base URL for bug-report and feedback submissions.
+    /// Override in `config.toml` to point at a local mock during development.
+    pub feedback_endpoint: String,
 }
 
 impl Default for TracingConfig {
@@ -446,6 +450,7 @@ impl Default for TracingConfig {
             auto_error_reporting: false,
             sanitize_content: true,
             otel_endpoints: Vec::new(),
+            feedback_endpoint: DEFAULT_FEEDBACK_ENDPOINT.to_string(),
         }
     }
 }

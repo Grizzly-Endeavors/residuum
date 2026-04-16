@@ -121,19 +121,10 @@ async fn spawn_server_and_adapters(
         restart_tx: restart_tx.clone(),
         gateway_shutdown_tx: gateway_shutdown_tx.clone(),
     };
-    let tracing_service = Arc::new(crate::tracing_service::TracingService::new(
-        cfg.tracing.clone(),
-        crate::util::telemetry::global_span_buffer()
-            .cloned()
-            .unwrap_or_else(|| {
-                let (_, handle) = crate::util::telemetry::SpanBufferLayer::new(
-                    &crate::util::telemetry::SpanBufferConfig::default(),
-                );
-                handle
-            }),
-    ));
+    let tracing_service = Arc::clone(&parts.tracing_service);
     let tracing_api_state = web::tracing_api::TracingApiState {
         service: Arc::clone(&tracing_service),
+        client_context: Arc::clone(&parts.tracing_client_context),
     };
     let app = build_gateway_app(
         state,

@@ -2,6 +2,7 @@
 
 mod bug_report;
 mod connect;
+mod feedback;
 mod logs;
 mod secret;
 mod serve;
@@ -57,6 +58,8 @@ enum Command {
     },
     /// Send a bug report with trace dump to the developer
     BugReport(bug_report::BugReportArgs),
+    /// Send a short feedback message to the developer (no trace dump)
+    Feedback(feedback::FeedbackArgs),
     /// Check for and install updates
     Update(update::UpdateArgs),
     /// Manage named agent instances
@@ -129,6 +132,12 @@ pub async fn run() -> Result<(), FatalError> {
             let config_dir = residuum::config::Config::config_dir()?;
             let gateway_addr = resolve_gateway_addr(&config_dir);
             bug_report::run_bug_report_command(args, &gateway_addr).await
+        }
+        Command::Feedback(ref args) => {
+            residuum::util::tracing_init::init_default_tracing();
+            let config_dir = residuum::config::Config::config_dir()?;
+            let gateway_addr = resolve_gateway_addr(&config_dir);
+            feedback::run_feedback_command(args, &gateway_addr).await
         }
         Command::Serve(ref args) => {
             if args.foreground {

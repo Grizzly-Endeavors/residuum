@@ -621,6 +621,25 @@ function setupRestMiddleware(server: ViteDevServer, state: MockState) {
         return;
       }
 
+      if (path === "/api/tracing/bug-report" && method === "POST") {
+        // Drain the body so the dev server can inspect it if asked.
+        await readBody(req);
+        json(res, 200, {
+          public_id: "RR-MOCK-BUG-01",
+          submitted_at: new Date().toISOString(),
+        });
+        return;
+      }
+
+      if (path === "/api/tracing/feedback" && method === "POST") {
+        await readBody(req);
+        json(res, 200, {
+          public_id: "RR-MOCK-FBK-01",
+          submitted_at: new Date().toISOString(),
+        });
+        return;
+      }
+
       // ── Fallthrough ────────────────────────────────────────────────────
       json(res, 404, { error: `mock: unknown endpoint ${method} ${path}` });
     } catch (err) {

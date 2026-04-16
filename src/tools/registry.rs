@@ -15,8 +15,8 @@ use crate::skills::SharedSkillState;
 
 use super::{
     SharedFileTracker, SharedPathPolicy, SharedToolFilter, Tool, ToolError, ToolFilter, ToolResult,
-    actions, background, edit, exec, inbox, memory_get, memory_search, ollama_web_search, projects,
-    read, send_message, skills, web_fetch, write,
+    actions, background, edit, exec, file_bug_report, inbox, memory_get, memory_search,
+    ollama_web_search, projects, read, send_message, skills, submit_feedback, web_fetch, write,
 };
 
 /// Registry of available tools.
@@ -279,6 +279,23 @@ impl ToolRegistry {
     /// Register the `web_fetch` tool for fetching web page content.
     pub fn register_web_fetch_tool(&mut self) {
         self.register(Box::new(web_fetch::WebFetchTool::new()));
+    }
+
+    /// Register the `file_bug_report` and `submit_feedback` tools.
+    ///
+    /// Both go through the shared `TracingService`. The bug-report tool
+    /// also captures a snapshot of the runtime client context so each
+    /// submission carries version/model/OS metadata.
+    pub fn register_feedback_tools(
+        &mut self,
+        service: Arc<crate::tracing_service::TracingService>,
+        client_context: Arc<crate::tracing_service::ClientContext>,
+    ) {
+        self.register(Box::new(file_bug_report::FileBugReportTool::new(
+            Arc::clone(&service),
+            client_context,
+        )));
+        self.register(Box::new(submit_feedback::SubmitFeedbackTool::new(service)));
     }
 
     /// Register the `ollama_web_search` tool for Ollama Cloud web search.

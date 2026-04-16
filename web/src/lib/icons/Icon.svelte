@@ -1,5 +1,16 @@
 <script lang="ts">
-  type IconName = "menu" | "close" | "chevron" | "paperclip" | "reload" | "warning" | "pulse";
+  type IconName =
+    | "menu"
+    | "close"
+    | "chevron"
+    | "paperclip"
+    | "reload"
+    | "warning"
+    | "pulse"
+    | "bug"
+    | "spark"
+    | "copy"
+    | "check";
 
   interface Props {
     name: IconName;
@@ -41,6 +52,27 @@
       <path d="M3 9.5h2.5" />
       <path d="M6.75 6.5h2.5" />
       <path d="M10.5 9.5h2.5" />
+    {:else if name === "bug"}
+      <!-- antennae -->
+      <path d="M5.5 3.5l1.25 1.75M10.5 3.5l-1.25 1.75" />
+      <!-- body shell -->
+      <ellipse cx="8" cy="9" rx="3.25" ry="4.25" />
+      <!-- spine seam -->
+      <path d="M8 5.25v7.5" />
+      <!-- legs -->
+      <path d="M4.75 7.5l-2 -1M11.25 7.5l2 -1" />
+      <path d="M4.75 9.5h-2.25M11.25 9.5h2.25" />
+      <path d="M4.75 11.5l-2 1.25M11.25 11.5l2 1.25" />
+    {:else if name === "spark"}
+      <!-- four-pointed star (used by the integrated feedback button) -->
+      <path d="M8 2v4M8 10v4M2 8h4M10 8h4" />
+      <path d="M4.5 4.5l1.75 1.75M11.5 11.5l-1.75 -1.75" opacity="0.5" />
+      <path d="M11.5 4.5l-1.75 1.75M4.5 11.5l1.75 -1.75" opacity="0.5" />
+    {:else if name === "copy"}
+      <rect x="5" y="5" width="8" height="9" rx="1" />
+      <path d="M5 11H3.5a1 1 0 01-1-1V3.5a1 1 0 011-1H10a1 1 0 011 1V5" />
+    {:else if name === "check"}
+      <path d="M3 8.5l3 3 7-7" />
     {/if}
   </g>
 </svg>

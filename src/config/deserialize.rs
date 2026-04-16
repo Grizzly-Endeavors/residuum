@@ -417,6 +417,8 @@ pub(super) struct TracingConfigFile {
     pub(super) sanitize_content: Option<bool>,
     /// OTEL endpoints for trace export.
     pub(super) otel_endpoints: Option<Vec<OtelEndpointFile>>,
+    /// Upstream relay base URL for bug-report and feedback submissions.
+    pub(super) feedback_endpoint: Option<String>,
 }
 
 /// Raw TOML `[[tracing.otel_endpoints]]` entry.

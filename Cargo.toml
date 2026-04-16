@@ -25,6 +25,9 @@ dom_smoothie = "0.15"
 # Encoding
 base64 = "0.22"
 
+# Temp file management (used by bug-report editor mode)
+tempfile = "3"
+
 # Utilities
 async-trait = "0.1"
 rand = "0.8"
@@ -54,6 +57,8 @@ tracing-appender = "0.2"
 opentelemetry = "0.31"
 opentelemetry_sdk = "0.31"
 opentelemetry-otlp = { version = "0.31", features = ["trace", "http-proto"] }
+opentelemetry-proto = { version = "0.31", features = ["gen-tonic-messages", "trace"] }
+prost = "0.14"
 
 # CLI
 clap = { version = "4", features = ["derive"] }

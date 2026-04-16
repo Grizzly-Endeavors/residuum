@@ -4,8 +4,10 @@
 //! content sanitization, and error reporting. Called by both CLI (via HTTP to
 //! the daemon) and web API handlers.
 
+pub mod client_context;
 mod otel;
 mod sanitize;
+mod submit;
 
 pub use sanitize::sanitize_spans;
 
@@ -13,7 +15,7 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use opentelemetry_sdk::trace::SpanExporter;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
 
 use crate::config::{OtelEndpoint, TracingConfig};
@@ -80,10 +82,96 @@ pub struct EndpointExportResult {
 pub enum ExportTarget {
     /// Send to all user-configured OTEL endpoints.
     UserEndpoints,
-    /// Send to the built-in developer bug report endpoint.
-    BuiltinEndpoint,
     /// Send to a specific endpoint URL.
     Specific(String),
+}
+
+/// User-selected severity for a bug report. Wire values are locked to
+/// `broken | wrong | annoying` — anything else fails the ingest validator.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Severity {
+    /// Something is fundamentally non-functional.
+    Broken,
+    /// Behavior is wrong but not blocking.
+    Wrong,
+    /// Behavior is annoying but functional.
+    Annoying,
+}
+
+/// One entry in the active-subagent inventory attached to a bug report.
+#[derive(Debug, Clone, Serialize)]
+pub struct Subagent {
+    /// Subagent identifier.
+    pub name: String,
+    /// Free-form runtime status string.
+    pub status: String,
+}
+
+/// Runtime metadata gathered for a bug report submission.
+#[derive(Debug, Clone, Serialize)]
+pub struct ClientContext {
+    /// Build version (`git describe --tags --always`).
+    pub version: String,
+    /// Short git commit SHA, when built from a git checkout.
+    pub commit: Option<String>,
+    /// `std::env::consts::OS` value.
+    pub os: String,
+    /// `std::env::consts::ARCH` value.
+    pub arch: String,
+    /// Active main provider kind (e.g. `"anthropic"`), if resolved.
+    pub model_provider: Option<String>,
+    /// Active main model name, if resolved.
+    pub model_name: Option<String>,
+    /// Live subagent inventory at submission time. Currently always empty.
+    pub active_subagents: Vec<Subagent>,
+    /// Curated allowlist of safe config flags. Currently always empty.
+    pub config_flags: std::collections::BTreeMap<String, String>,
+}
+
+/// Reduced client context used for the feedback endpoint. The feedback
+/// wire contract accepts `version` only — using a distinct type keeps
+/// the over-attachment risk at zero.
+#[derive(Debug, Clone, Serialize)]
+pub struct FeedbackClient {
+    /// Build version.
+    pub version: String,
+}
+
+/// A complete bug report ready to submit.
+#[derive(Debug, Clone)]
+pub struct BugReport {
+    /// What actually happened.
+    pub what_happened: String,
+    /// What the user expected to happen.
+    pub what_expected: String,
+    /// What the user was doing when the issue occurred.
+    pub what_doing: String,
+    /// Severity selected by the user.
+    pub severity: Severity,
+    /// Runtime metadata gathered by [`client_context::gather_for_bug_report`].
+    pub client: ClientContext,
+}
+
+/// A feedback submission ready to send.
+#[derive(Debug, Clone)]
+pub struct Feedback {
+    /// Free-form feedback message.
+    pub message: String,
+    /// Optional user-supplied category tag.
+    pub category: Option<String>,
+    /// Version-only client metadata.
+    pub client: FeedbackClient,
+}
+
+/// Receipt returned by the upstream ingest service on successful
+/// submission. Contains the public reference ID and submission time.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SubmissionReceipt {
+    /// Public reference ID (e.g. `"RR-01HZKX2P7M"`).
+    pub public_id: String,
+    /// ISO-8601 submission timestamp.
+    pub submitted_at: String,
 }
 
 /// The tracing service — owns runtime state and the span buffer handle.
@@ -220,18 +308,6 @@ impl TracingService {
                 }
                 state.config.otel_endpoints.clone()
             }
-            ExportTarget::BuiltinEndpoint => {
-                // Built-in endpoint not yet deployed
-                tracing::warn!("bug report infrastructure not yet available");
-                return Ok(ExportResult {
-                    spans_sent: 0,
-                    endpoint_results: vec![EndpointExportResult {
-                        url: "built-in".to_string(),
-                        success: false,
-                        error: Some("bug report infrastructure not yet available".to_string()),
-                    }],
-                });
-            }
             ExportTarget::Specific(url) => {
                 vec![OtelEndpoint {
                     url: url.clone(),
@@ -347,26 +423,27 @@ impl TracingService {
         Ok(())
     }
 
-    /// Send a bug report with trace dump to the built-in developer endpoint.
+    /// Submit a bug report (with sanitized OTLP trace dump) to the
+    /// upstream relay.
     ///
     /// # Errors
-    /// Returns an error if the export fails.
-    #[expect(
-        clippy::unused_async,
-        reason = "will use await once built-in endpoint is deployed"
-    )]
-    pub async fn send_bug_report(&self, message: &str) -> Result<ExportResult> {
-        tracing::info!(message, "bug report requested");
-        // Currently a no-op — built-in endpoint infrastructure not yet deployed
-        tracing::warn!("bug report infrastructure not yet available — report not sent");
-        Ok(ExportResult {
-            spans_sent: 0,
-            endpoint_results: vec![EndpointExportResult {
-                url: "built-in".to_string(),
-                success: false,
-                error: Some("bug report infrastructure not yet available".to_string()),
-            }],
-        })
+    /// Returns an error if the upstream is unreachable, returns a
+    /// non-2xx response, or returns a body that doesn't match the
+    /// documented receipt shape.
+    pub async fn send_bug_report(&self, report: BugReport) -> Result<SubmissionReceipt> {
+        let endpoint = self.state.read().await.config.feedback_endpoint.clone();
+        let spans = self.span_buffer.snapshot();
+        submit::submit_bug_report(&endpoint, report, spans).await
+    }
+
+    /// Submit lightweight feedback (no trace dump) to the upstream relay.
+    ///
+    /// # Errors
+    /// Returns an error if the upstream is unreachable or returns a
+    /// non-2xx response.
+    pub async fn send_feedback(&self, feedback: Feedback) -> Result<SubmissionReceipt> {
+        let endpoint = self.state.read().await.config.feedback_endpoint.clone();
+        submit::submit_feedback(&endpoint, feedback).await
     }
 
     /// Called from error paths to auto-report if enabled.

@@ -408,6 +408,9 @@ async fn reload_gateway(rt: &mut GatewayRuntime, new_cfg: &Config) {
             };
             let tracing_api_state = crate::gateway::web::tracing_api::TracingApiState {
                 service: std::sync::Arc::clone(&rt.tracing_service),
+                client_context: std::sync::Arc::new(
+                    crate::tracing_service::client_context::gather_for_bug_report(new_cfg),
+                ),
             };
             let app = crate::gateway::event_loop::build_gateway_app(
                 state,

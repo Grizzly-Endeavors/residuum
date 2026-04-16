@@ -104,6 +104,43 @@ export async function fetchChatSegment(episodeId: string): Promise<EpisodeHistor
   );
 }
 
+// ── Feedback / bug-report API wrappers ──────────────────────────────
+
+/** Receipt returned by the developer ingest service after submission. */
+export interface FeedbackReceipt {
+  public_id: string;
+  submitted_at: string;
+}
+
+/** Severity values accepted by the bug-report endpoint. */
+export type BugSeverity = "broken" | "wrong" | "annoying";
+
+/** POST a structured bug report through the gateway to the developer endpoint. */
+export async function submitBugReport(body: {
+  what_happened: string;
+  what_expected: string;
+  what_doing: string;
+  severity: BugSeverity;
+}): Promise<FeedbackReceipt> {
+  return apiFetch<FeedbackReceipt>("/api/tracing/bug-report", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+}
+
+/** POST a free-form feedback message through the gateway. */
+export async function submitFeedback(body: {
+  message: string;
+  category?: string;
+}): Promise<FeedbackReceipt> {
+  return apiFetch<FeedbackReceipt>("/api/tracing/feedback", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+}
+
 // ── Setup API wrappers ──────────────────────────────────────────────
 
 /** Graceful fallback: uses browser timezone when server is unreachable during setup. */

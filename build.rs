@@ -18,4 +18,17 @@ fn main() {
             |o| String::from_utf8_lossy(&o.stdout).trim().to_string(),
         );
     println!("cargo:rustc-env=RESIDUUM_VERSION={version}");
+
+    // Capture short git commit hash for bug-report client context.
+    // Distinct from RESIDUUM_VERSION so reports can carry both a tag and a SHA.
+    // Unset (option_env! → None) when git is unavailable so the field serializes as null.
+    if let Some(commit) = std::process::Command::new("git")
+        .args(["rev-parse", "--short=12", "HEAD"])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+    {
+        println!("cargo:rustc-env=RESIDUUM_GIT_COMMIT={commit}");
+    }
 }

@@ -1041,6 +1041,36 @@
   cursor: not-allowed;
 }
 
+/* ── Feedback button (lives inside the input island, left toolbar) ──── */
+.feedback-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 28px;
+  padding: 0 10px 0 8px;
+  font-family: var(--font-display);
+  font-size: var(--fs-xs);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+  background: transparent;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius);
+  cursor: pointer;
+  transition:
+    background-color var(--dur-quick),
+    color var(--dur-quick),
+    border-color var(--dur-quick),
+    box-shadow var(--dur-default) var(--ease-out-stone);
+}
+
+.feedback-btn:hover {
+  color: var(--vein-bright);
+  border-color: var(--vein-dim);
+  background: var(--vein-faint);
+  box-shadow: 0 0 12px -4px rgba(59, 139, 219, 0.45);
+}
+
 .hidden-file-input {
   display: none;
 }

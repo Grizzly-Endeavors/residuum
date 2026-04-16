@@ -28,6 +28,8 @@ pub(super) struct ToolRegistryDeps<'a> {
     pub background_spawner: &'a Arc<BackgroundTaskSpawner>,
     pub endpoint_registry: &'a EndpointRegistry,
     pub publisher: &'a crate::bus::Publisher,
+    pub tracing_service: &'a Arc<crate::tracing_service::TracingService>,
+    pub tracing_client_context: &'a Arc<crate::tracing_service::ClientContext>,
 }
 
 /// Arguments for creating the agent, bundled to stay under the argument limit.
@@ -106,6 +108,11 @@ pub(super) fn init_tool_registry(
     );
 
     tools.register_web_fetch_tool();
+
+    tools.register_feedback_tools(
+        Arc::clone(deps.tracing_service),
+        Arc::clone(deps.tracing_client_context),
+    );
 
     // Register Ollama Cloud web search tool if configured
     if let Some(backend) = &cfg.web_search.standalone_backend
