@@ -21,6 +21,10 @@ pub(super) const DEFAULT_GATEWAY_BIND: &str = "127.0.0.1";
 /// Default gateway port.
 pub(super) const DEFAULT_GATEWAY_PORT: u16 = 7700;
 
+/// Default upstream endpoint for bug-report and feedback submissions.
+/// Points at the relay; the relay attaches the upstream auth header.
+pub(super) const DEFAULT_FEEDBACK_ENDPOINT: &str = "https://agent-residuum.com";
+
 /// Default max tokens for model responses.
 pub(super) const DEFAULT_MAX_TOKENS: u32 = 8192;
 

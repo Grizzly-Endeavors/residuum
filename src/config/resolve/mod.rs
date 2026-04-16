@@ -12,7 +12,8 @@ use crate::util::FatalError;
 use super::Config;
 use super::bootstrap::default_workspace_dir;
 use super::constants::{
-    DEFAULT_CLOUD_RELAY_URL, DEFAULT_IDLE_TIMEOUT_MINUTES, DEFAULT_MAX_TOKENS, DEFAULT_TIMEOUT_SECS,
+    DEFAULT_CLOUD_RELAY_URL, DEFAULT_FEEDBACK_ENDPOINT, DEFAULT_IDLE_TIMEOUT_MINUTES,
+    DEFAULT_MAX_TOKENS, DEFAULT_TIMEOUT_SECS,
 };
 use super::deserialize::{
     AgentConfigFile, BackgroundConfigFile, BackgroundModelsFile, CloudConfigFile, ConfigFile,
@@ -488,6 +489,10 @@ fn resolve_tracing_config(
         auto_error_reporting: section.auto_error_reporting.unwrap_or(false),
         sanitize_content: section.sanitize_content.unwrap_or(true),
         otel_endpoints,
+        feedback_endpoint: section
+            .feedback_endpoint
+            .clone()
+            .unwrap_or_else(|| DEFAULT_FEEDBACK_ENDPOINT.to_string()),
     })
 }
 

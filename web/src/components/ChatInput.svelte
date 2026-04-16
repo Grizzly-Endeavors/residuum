@@ -13,8 +13,13 @@
 
   let {
     onSend,
+    onOpenFeedback,
     disabled = false,
-  }: { onSend: (text: string, images?: ImageAttachment[]) => void; disabled?: boolean } = $props();
+  }: {
+    onSend: (text: string, images?: ImageAttachment[]) => void;
+    onOpenFeedback: () => void;
+    disabled?: boolean;
+  } = $props();
   let value = $state("");
   let textarea: HTMLTextAreaElement | undefined = $state();
   let fileInput: HTMLInputElement | undefined;
@@ -304,6 +309,15 @@
             aria-label="Commands"
           >
             /
+          </button>
+          <button
+            class="feedback-btn"
+            onclick={onOpenFeedback}
+            title="Send feedback to the maintainer"
+            aria-label="Send feedback"
+          >
+            <Icon name="spark" size={13} />
+            <span>feedback</span>
           </button>
         </div>
         <div class="chat-toolbar-right">

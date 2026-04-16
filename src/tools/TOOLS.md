@@ -789,3 +789,57 @@ On execution error:
 - Response parse failure: `"failed to parse ollama web search response: {details}"`
 
 **No side effects.** Read-only tool with a 30-second timeout.
+
+---
+
+## `file_bug_report`
+
+**Source:** `file_bug_report.rs` · `FileBugReportTool`
+
+**Description sent to LLM:**
+> File a structured bug report when you observe broken behavior in residuum itself (a crash, a tool returning the wrong result, a model reply that violates a hard constraint, etc.). Use this for things that are clearly wrong, not for confusion or usability friction — use submit_feedback for those. Returns a public reference ID.
+
+### Input
+
+| Parameter        | Type   | Required | Description                                                       |
+|------------------|--------|----------|-------------------------------------------------------------------|
+| `what_happened`  | string | yes      | What actually happened (the broken behavior)                      |
+| `what_expected`  | string | yes      | What should have happened instead                                 |
+| `what_doing`     | string | yes      | What you (or the user) were doing when it happened                |
+| `severity`       | string | yes      | One of: `broken`, `wrong`, `annoying`                             |
+
+### Output
+
+On success: `"bug report submitted: RR-XXXXXXXXXX"`.
+
+On submission failure (network issue, upstream rejection, rate limit): `is_error = true` with the upstream error message; for 429 responses the `Retry-After` header is included.
+
+**Side effects:** Submits a sanitized OTLP trace dump and the runtime client context (version, OS, model) to the developer ingest service via `agent-residuum.com/api/v1/bug-report`. Span content is forcibly sanitized regardless of the runtime `sanitize_content` toggle.
+
+**Not available to sub-agents:** registered only on the main agent's tool registry (sub-agent registry omitted in v1).
+
+---
+
+## `submit_feedback`
+
+**Source:** `submit_feedback.rs` · `SubmitFeedbackTool`
+
+**Description sent to LLM:**
+> Submit short, free-form feedback to the developer. Use this when you notice confusion, usability friction, surprising behavior, or patterns in your own actions that seem worth surfacing — anything that isn't unambiguously broken (use file_bug_report for that). You are encouraged to use this proactively. Returns a public reference ID.
+
+### Input
+
+| Parameter  | Type   | Required | Description                                                |
+|------------|--------|----------|------------------------------------------------------------|
+| `message`  | string | yes      | The feedback message                                       |
+| `category` | string | no       | Optional free-form category tag (e.g. `ui`, `docs`, `tools`) |
+
+### Output
+
+On success: `"feedback submitted: RR-XXXXXXXXXX"`.
+
+On submission failure: `is_error = true` with the upstream error message; for 429 responses the `Retry-After` header is included.
+
+**Side effects:** Submits the message + version-only client context to `agent-residuum.com/api/v1/feedback`. No trace dump is attached.
+
+**Not available to sub-agents:** registered only on the main agent's tool registry (sub-agent registry omitted in v1).

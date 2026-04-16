@@ -6,6 +6,7 @@
   import BrandMark from "./components/BrandMark.svelte";
   import NotificationCorner from "./components/NotificationCorner.svelte";
   import HelpOverlay from "./components/HelpOverlay.svelte";
+  import FeedbackModal from "./components/FeedbackModal.svelte";
   import Chat from "./Chat.svelte";
   import Setup from "./Setup.svelte";
   import Settings from "./Settings.svelte";
@@ -15,6 +16,13 @@
   let activeView = $state<"chat" | "workspace" | "settings">("chat");
   let workspaceMounted = $state(false);
   let helpOpen = $state(false);
+  let feedbackOpen = $state(false);
+  let feedbackTab = $state<"bug" | "feedback">("bug");
+
+  function openFeedback(tab: "bug" | "feedback") {
+    feedbackTab = tab;
+    feedbackOpen = true;
+  }
 
   $effect(() => {
     if (activeView === "workspace") workspaceMounted = true;
@@ -84,6 +92,7 @@
     onOpenSettings={() => {
       activeView = activeView === "settings" ? "chat" : "settings";
     }}
+    onOpenFeedback={() => openFeedback("bug")}
   />
   {#if activeView === "settings"}
     <Settings
@@ -102,10 +111,18 @@
           />
         {/if}
       </div>
-      <Chat />
+      <Chat onOpenFeedback={() => openFeedback("feedback")} />
     </div>
   {/if}
 {/if}
+
+<FeedbackModal
+  open={feedbackOpen}
+  initialTab={feedbackTab}
+  onClose={() => {
+    feedbackOpen = false;
+  }}
+/>
 
 <NotificationCorner />
 <HelpOverlay

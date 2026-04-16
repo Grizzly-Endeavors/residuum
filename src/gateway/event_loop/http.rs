@@ -157,6 +157,10 @@ fn tracing_api_router(state: web::tracing_api::TracingApiState) -> axum::Router 
             "/api/tracing/bug-report",
             post(web::tracing_api::api_tracing_bug_report),
         )
+        .route(
+            "/api/tracing/feedback",
+            post(web::tracing_api::api_tracing_feedback),
+        )
         .with_state(state)
 }
 

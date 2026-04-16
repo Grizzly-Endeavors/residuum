@@ -9,12 +9,19 @@ use axum::http::StatusCode;
 use serde::Deserialize;
 
 use crate::config::OtelEndpoint;
-use crate::tracing_service::{ExportResult, ExportTarget, TracingService, TracingStatus};
+use crate::tracing_service::{
+    BugReport, ClientContext, ExportResult, ExportTarget, Feedback, Severity, SubmissionReceipt,
+    TracingService, TracingStatus, client_context,
+};
 
 /// Shared state for the tracing API routes.
 #[derive(Clone)]
 pub(crate) struct TracingApiState {
     pub service: Arc<TracingService>,
+    /// Snapshot of the runtime client context, gathered at gateway
+    /// startup (or reload). Bug-report handlers attach this to every
+    /// submission so the user-facing forms only carry user-typed fields.
+    pub client_context: Arc<ClientContext>,
 }
 
 /// `GET /api/tracing/status`
@@ -164,21 +171,59 @@ pub(crate) async fn api_tracing_stream_stop(
     Ok(StatusCode::OK)
 }
 
-/// Request body for sending a bug report.
+/// Request body for the bug-report endpoint. Mirrors the user-supplied
+/// fields of the upstream wire contract; runtime metadata (`client`)
+/// is attached server-side from the snapshot on `TracingApiState`.
 #[derive(Deserialize)]
 pub(crate) struct BugReportRequest {
-    message: String,
+    what_happened: String,
+    what_expected: String,
+    what_doing: String,
+    severity: Severity,
 }
 
 /// `POST /api/tracing/bug-report`
 pub(crate) async fn api_tracing_bug_report(
     State(state): State<TracingApiState>,
     Json(body): Json<BugReportRequest>,
-) -> Result<Json<ExportResult>, (StatusCode, String)> {
+) -> Result<Json<SubmissionReceipt>, (StatusCode, String)> {
+    let report = BugReport {
+        what_happened: body.what_happened,
+        what_expected: body.what_expected,
+        what_doing: body.what_doing,
+        severity: body.severity,
+        client: (*state.client_context).clone(),
+    };
     state
         .service
-        .send_bug_report(&body.message)
+        .send_bug_report(report)
         .await
         .map(Json)
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e}")))
+        .map_err(|e| (StatusCode::BAD_GATEWAY, format!("{e}")))
+}
+
+/// Request body for the feedback endpoint.
+#[derive(Deserialize)]
+pub(crate) struct FeedbackRequest {
+    message: String,
+    #[serde(default)]
+    category: Option<String>,
+}
+
+/// `POST /api/tracing/feedback`
+pub(crate) async fn api_tracing_feedback(
+    State(state): State<TracingApiState>,
+    Json(body): Json<FeedbackRequest>,
+) -> Result<Json<SubmissionReceipt>, (StatusCode, String)> {
+    let feedback = Feedback {
+        message: body.message,
+        category: body.category,
+        client: client_context::gather_for_feedback(),
+    };
+    state
+        .service
+        .send_feedback(feedback)
+        .await
+        .map(Json)
+        .map_err(|e| (StatusCode::BAD_GATEWAY, format!("{e}")))
 }

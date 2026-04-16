@@ -8,6 +8,8 @@
   import ChatInput from "./components/ChatInput.svelte";
   import type { ImageAttachment } from "./lib/types";
 
+  let { onOpenFeedback }: { onOpenFeedback: () => void } = $props();
+
   onMount(async () => {
     let recent;
     try {
@@ -59,5 +61,5 @@
 
 <div class="chat-view">
   <ChatFeed items={ws.store.feed} isProcessing={ws.store.isProcessing} verbose={ws.verbose} />
-  <ChatInput onSend={handleSend} disabled={ws.transport.status !== "connected"} />
+  <ChatInput onSend={handleSend} {onOpenFeedback} disabled={ws.transport.status !== "connected"} />
 </div>

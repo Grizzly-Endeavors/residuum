@@ -40,6 +40,22 @@ pub(super) fn build_exporter(
         .build()
 }
 
+/// Encode a batch of OTEL `SpanData` into the OTLP protobuf wire format
+/// (`ExportTraceServiceRequest`) for embedding in a bug-report payload.
+pub(super) fn encode_otlp_protobuf(spans: Vec<SpanData>) -> Vec<u8> {
+    use opentelemetry_proto::tonic::collector::trace::v1::ExportTraceServiceRequest;
+    use opentelemetry_proto::transform::common::tonic::ResourceAttributesWithSchema;
+    use opentelemetry_proto::transform::trace::tonic::group_spans_by_resource_and_scope;
+    use opentelemetry_sdk::Resource;
+    use prost::Message;
+
+    let resource = Resource::builder().with_service_name(SERVICE_NAME).build();
+    let resource: ResourceAttributesWithSchema = (&resource).into();
+    let resource_spans = group_spans_by_resource_and_scope(spans, &resource);
+    let request = ExportTraceServiceRequest { resource_spans };
+    request.encode_to_vec()
+}
+
 /// Convert a batch of `CompletedSpan` into OTEL `SpanData`.
 pub(super) fn convert_spans(spans: &[CompletedSpan]) -> Vec<SpanData> {
     // Generate a single trace ID for the batch (all spans in one trace dump
