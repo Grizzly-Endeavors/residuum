@@ -1,0 +1,10 @@
+# PRESENCE.toml — Discord presence configuration
+#
+# The Discord adapter watches this file and updates the bot's status
+# when it changes (polled every 30s).
+#
+# All fields are optional. Defaults: online + listening to "DMs"
+
+# status = "online"           # online | idle | dnd | invisible
+# activity_type = "listening" # playing | watching | listening | competing
+# activity_text = "DMs"
