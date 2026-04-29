@@ -92,7 +92,12 @@ pub(super) fn init_tool_registry(
         tz,
     );
     tools.register_skill_tools(Arc::clone(deps.skill_state));
-    tools.register_inbox_tools(layout.inbox_dir(), layout.inbox_archive_dir());
+    tools.register_inbox_tools(
+        layout.agent_inbox_dir(),
+        layout.agent_inbox_archive_dir(),
+        layout.user_inbox_dir(),
+        tz,
+    );
     tools.register_background_tools(Arc::clone(deps.background_spawner));
     tools.register_spawn_tool(deps.publisher.clone(), layout.subagents_dir());
 
@@ -150,7 +155,6 @@ pub(super) async fn create_agent(
         AgentConfig {
             options: args.options,
             tz,
-            inbox_dir: layout.inbox_dir(),
         },
     );
     if let Err(err) = agent.reload_observations(layout).await {

@@ -339,6 +339,27 @@ pub async fn ensure_workspace(
         })?;
     }
 
+    // Migration: Dual Inbox
+    // Move any old flat `inbox/*.json` files to `inbox/agent/`
+    let old_inbox = layout.root().join("inbox");
+    if let Ok(mut entries) = tokio::fs::read_dir(&old_inbox).await {
+        let agent_inbox = layout.agent_inbox_dir();
+        while let Ok(Some(entry)) = entries.next_entry().await {
+            let path = entry.path();
+            if path.is_file()
+                && path.extension().is_some_and(|e| e == "json")
+                && let Some(name) = path.file_name()
+            {
+                let new_path = agent_inbox.join(name);
+                if let Err(e) = tokio::fs::rename(&path, &new_path).await {
+                    tracing::warn!(old = %path.display(), new = %new_path.display(), error = %e, "failed to migrate inbox item");
+                } else {
+                    tracing::info!(item = %name.to_string_lossy(), "migrated inbox item to agent inbox");
+                }
+            }
+        }
+    }
+
     // Create default identity files if they don't exist
     write_if_missing(&layout.soul_md(), DEFAULT_SOUL).await?;
     write_if_missing(&layout.agents_md(), DEFAULT_AGENTS).await?;
@@ -546,9 +567,9 @@ mod tests {
             layout.presence_toml().exists(),
             "PRESENCE.toml should exist"
         );
-        assert!(layout.inbox_dir().exists(), "inbox dir should exist");
+        assert!(layout.agent_inbox_dir().exists(), "inbox dir should exist");
         assert!(
-            layout.inbox_archive_dir().exists(),
+            layout.agent_inbox_archive_dir().exists(),
             "inbox archive dir should exist"
         );
 

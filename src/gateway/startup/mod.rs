@@ -302,7 +302,7 @@ pub(crate) async fn spawn_notify_subscribers(
     }
 
     // Spawn inbox subscriber
-    let inbox_channel = InboxChannel::new(layout.inbox_dir(), tz);
+    let inbox_channel = InboxChannel::new(layout.agent_inbox_dir(), tz);
     match bus_handle.subscribe(topics::Inbox).await {
         Ok(subscriber) => {
             let handle = tokio::spawn(run_notify_subscriber(subscriber, Box::new(inbox_channel)));

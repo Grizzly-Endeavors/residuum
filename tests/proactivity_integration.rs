@@ -73,7 +73,6 @@ mod proactivity_integration {
             residuum::agent::AgentConfig {
                 options: CompletionOptions::default(),
                 tz: chrono_tz::UTC,
-                inbox_dir: std::path::PathBuf::from("/tmp/residuum-test-inbox"),
             },
         )
     }

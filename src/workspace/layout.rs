@@ -147,16 +147,28 @@ impl WorkspaceLayout {
         self.root.join("PRESENCE.toml")
     }
 
-    /// Path to the inbox directory for downloaded attachments and inbox items.
+    /// Path to the agent inbox directory for background tasks and notifications.
     #[must_use]
-    pub fn inbox_dir(&self) -> PathBuf {
-        self.root.join("inbox")
+    pub fn agent_inbox_dir(&self) -> PathBuf {
+        self.root.join("inbox/agent")
     }
 
-    /// Path to the inbox archive directory for archived inbox items.
+    /// Path to the user inbox directory for user-facing items.
     #[must_use]
-    pub fn inbox_archive_dir(&self) -> PathBuf {
-        self.root.join("archive/inbox")
+    pub fn user_inbox_dir(&self) -> PathBuf {
+        self.root.join("inbox/user")
+    }
+
+    /// Path to the agent inbox archive directory.
+    #[must_use]
+    pub fn agent_inbox_archive_dir(&self) -> PathBuf {
+        self.root.join("archive/inbox/agent")
+    }
+
+    /// Path to the user inbox archive directory.
+    #[must_use]
+    pub fn user_inbox_archive_dir(&self) -> PathBuf {
+        self.root.join("archive/inbox/user")
     }
 
     /// Path to memory/OBSERVER.md -- observer extraction system prompt.
@@ -233,8 +245,10 @@ impl WorkspaceLayout {
             self.subagents_dir(),
             self.projects_dir(),
             self.archive_dir(),
-            self.inbox_dir(),
-            self.inbox_archive_dir(),
+            self.agent_inbox_dir(),
+            self.user_inbox_dir(),
+            self.agent_inbox_archive_dir(),
+            self.user_inbox_archive_dir(),
             self.config_dir(),
         ]
     }
@@ -245,6 +259,10 @@ mod tests {
     use super::*;
 
     #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "test verifying all paths is naturally long"
+    )]
     fn layout_paths() {
         let layout = WorkspaceLayout::new("/tmp/ws");
         assert_eq!(
@@ -288,14 +306,24 @@ mod tests {
             "presence_toml path"
         );
         assert_eq!(
-            layout.inbox_dir(),
-            PathBuf::from("/tmp/ws/inbox"),
-            "inbox_dir path"
+            layout.agent_inbox_dir(),
+            PathBuf::from("/tmp/ws/inbox/agent"),
+            "agent_inbox_dir path"
         );
         assert_eq!(
-            layout.inbox_archive_dir(),
-            PathBuf::from("/tmp/ws/archive/inbox"),
-            "inbox_archive_dir path"
+            layout.user_inbox_dir(),
+            PathBuf::from("/tmp/ws/inbox/user"),
+            "user_inbox_dir path"
+        );
+        assert_eq!(
+            layout.agent_inbox_archive_dir(),
+            PathBuf::from("/tmp/ws/archive/inbox/agent"),
+            "agent_inbox_archive_dir path"
+        );
+        assert_eq!(
+            layout.user_inbox_archive_dir(),
+            PathBuf::from("/tmp/ws/archive/inbox/user"),
+            "user_inbox_archive_dir path"
         );
         assert_eq!(
             layout.vectors_db(),
@@ -373,12 +401,20 @@ mod tests {
             "root should be included"
         );
         assert!(
-            dirs.contains(&PathBuf::from("/tmp/ws/inbox")),
-            "inbox should be included"
+            dirs.contains(&PathBuf::from("/tmp/ws/inbox/agent")),
+            "agent inbox should be included"
         );
         assert!(
-            dirs.contains(&PathBuf::from("/tmp/ws/archive/inbox")),
-            "inbox archive should be included"
+            dirs.contains(&PathBuf::from("/tmp/ws/inbox/user")),
+            "user inbox should be included"
+        );
+        assert!(
+            dirs.contains(&PathBuf::from("/tmp/ws/archive/inbox/agent")),
+            "agent inbox archive should be included"
+        );
+        assert!(
+            dirs.contains(&PathBuf::from("/tmp/ws/archive/inbox/user")),
+            "user inbox archive should be included"
         );
         assert!(
             dirs.contains(&PathBuf::from("/tmp/ws/config")),

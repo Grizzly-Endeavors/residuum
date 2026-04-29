@@ -220,7 +220,7 @@ async fn handle_client_message(
         }
         ClientMessage::InboxAdd { body } => {
             tracing::info!("inbox add requested by client");
-            let dir = state.inbox_dir.clone();
+            let dir = state.agent_inbox_dir.clone();
             let tz = state.tz;
             let tx = local_tx.clone();
             tokio::spawn(async move {

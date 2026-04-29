@@ -149,7 +149,7 @@ impl GatewayCore {
 pub(crate) struct GatewayState {
     pub reload_tx: tokio::sync::watch::Sender<ReloadSignal>,
     pub command_tx: mpsc::Sender<ServerCommand>,
-    pub inbox_dir: std::path::PathBuf,
+    pub agent_inbox_dir: std::path::PathBuf,
     pub tz: chrono_tz::Tz,
     pub tunnel_status_rx: tokio::sync::watch::Receiver<TunnelStatus>,
     pub publisher: Publisher,

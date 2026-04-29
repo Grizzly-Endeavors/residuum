@@ -6,9 +6,9 @@ db-path = "~/.cargo/advisory-db"
 db-urls = ["https://github.com/rustsec/advisory-db"]
 ignore = [
     "RUSTSEC-2026-0049", # rustls-webpki CRL matching — transitive via serenity/tokio-tungstenite/rustls 0.22; no patched 0.102.x available
-    "RUSTSEC-2026-0097", # rand 0.8 ThreadRng unsoundness — requires a custom log::Logger that reentrantly calls thread_rng; residuum uses tracing and does not expose this path
     "RUSTSEC-2026-0098", # rustls-webpki name-constraints (URI) — same transitive TLS-stack surface as 0049, affecting 0.102.8 and 0.103.10; no patched versions available
     "RUSTSEC-2026-0099", # rustls-webpki name-constraints (wildcards) — same transitive TLS-stack surface as 0049; no patched versions available
+    "RUSTSEC-2026-0104", # rustls-webpki reachable panic in CRL parsing — transitive via serenity/rustls 0.22; residuum does not use CRLs
 ]
 
 [licenses]
@@ -21,8 +21,6 @@ allow = [
     "ISC",
     "Zlib",
     "Unicode-3.0",
-    "Unicode-DFS-2016",
-    "OpenSSL",
     "BSL-1.0",
     "MPL-2.0",
     "CDLA-Permissive-2.0",

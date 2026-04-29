@@ -26,7 +26,6 @@ pub struct SystemTurnResult {
 pub struct AgentConfig {
     pub options: CompletionOptions,
     pub tz: chrono_tz::Tz,
-    pub inbox_dir: std::path::PathBuf,
 }
 
 /// The agent runtime that processes user messages through the model.
@@ -43,8 +42,6 @@ pub struct Agent {
     recent_context: Option<String>,
     tz: chrono_tz::Tz,
     last_user_message_at: Option<chrono::NaiveDateTime>,
-    /// Path to the inbox directory (for computing unread count per turn).
-    inbox_dir: std::path::PathBuf,
 }
 
 impl Agent {
@@ -70,7 +67,6 @@ impl Agent {
             recent_context: None,
             tz: config.tz,
             last_user_message_at: None,
-            inbox_dir: config.inbox_dir,
         }
     }
 
@@ -191,12 +187,10 @@ impl Agent {
     ) -> anyhow::Result<Vec<String>> {
         tracing::debug!("processing wake turn");
         let now = crate::time::now_local(self.tz);
-        let unread = crate::inbox::count_unread(&self.inbox_dir).await;
         let status_line = StatusLine {
             now,
             last_message_at: self.last_user_message_at,
             message_source: Some("background".to_string()),
-            unread_inbox_count: unread,
         };
 
         // User-role kickoff — models require the conversation to end with a
@@ -264,12 +258,10 @@ impl Agent {
     ) -> anyhow::Result<Vec<String>> {
         tracing::debug!("processing user message");
         let now = crate::time::now_local(self.tz);
-        let unread = crate::inbox::count_unread(&self.inbox_dir).await;
         let status_line = StatusLine {
             now,
             last_message_at: self.last_user_message_at,
             message_source: origin.map(|o| o.endpoint.clone()),
-            unread_inbox_count: unread,
         };
         self.last_user_message_at = Some(now);
 
@@ -516,7 +508,6 @@ mod tests {
             AgentConfig {
                 options: CompletionOptions::default(),
                 tz: chrono_tz::UTC,
-                inbox_dir: std::path::PathBuf::from("/tmp/residuum-test-inbox"),
             },
         );
 
@@ -568,7 +559,6 @@ mod tests {
             AgentConfig {
                 options: CompletionOptions::default(),
                 tz: chrono_tz::UTC,
-                inbox_dir: std::path::PathBuf::from("/tmp/residuum-test-inbox"),
             },
         );
 
@@ -625,7 +615,6 @@ mod tests {
             AgentConfig {
                 options: CompletionOptions::default(),
                 tz: chrono_tz::UTC,
-                inbox_dir: std::path::PathBuf::from("/tmp/residuum-test-inbox"),
             },
         );
 
@@ -683,7 +672,6 @@ mod tests {
             AgentConfig {
                 options: CompletionOptions::default(),
                 tz: chrono_tz::UTC,
-                inbox_dir: std::path::PathBuf::from("/tmp/residuum-test-inbox"),
             },
         );
 
@@ -719,7 +707,6 @@ mod tests {
             AgentConfig {
                 options: CompletionOptions::default(),
                 tz: chrono_tz::UTC,
-                inbox_dir: std::path::PathBuf::from("/tmp/residuum-test-inbox"),
             },
         );
 
@@ -758,7 +745,6 @@ mod tests {
             AgentConfig {
                 options: CompletionOptions::default(),
                 tz: chrono_tz::UTC,
-                inbox_dir: std::path::PathBuf::from("/tmp/residuum-test-inbox"),
             },
         );
 
@@ -793,7 +779,6 @@ mod tests {
             AgentConfig {
                 options: CompletionOptions::default(),
                 tz: chrono_tz::UTC,
-                inbox_dir: std::path::PathBuf::from("/tmp/residuum-test-inbox"),
             },
         );
 
@@ -853,7 +838,6 @@ mod tests {
             AgentConfig {
                 options: CompletionOptions::default(),
                 tz: chrono_tz::UTC,
-                inbox_dir: std::path::PathBuf::from("/tmp/residuum-test-inbox"),
             },
         );
 
@@ -883,7 +867,6 @@ mod tests {
             AgentConfig {
                 options: CompletionOptions::default(),
                 tz: chrono_tz::UTC,
-                inbox_dir: std::path::PathBuf::from("/tmp/residuum-test-inbox"),
             },
         );
 
@@ -922,7 +905,6 @@ mod tests {
             AgentConfig {
                 options: CompletionOptions::default(),
                 tz: chrono_tz::UTC,
-                inbox_dir: std::path::PathBuf::from("/tmp/residuum-test-inbox"),
             },
         );
 
@@ -972,7 +954,6 @@ mod tests {
             AgentConfig {
                 options: CompletionOptions::default(),
                 tz: chrono_tz::UTC,
-                inbox_dir: std::path::PathBuf::from("/tmp/residuum-test-inbox"),
             },
         );
         agent.inject_user_message("hello");
@@ -1114,7 +1095,6 @@ mod tests {
             AgentConfig {
                 options: CompletionOptions::default(),
                 tz: chrono_tz::UTC,
-                inbox_dir: std::path::PathBuf::from("/tmp/residuum-test-inbox"),
             },
         );
 
@@ -1189,7 +1169,6 @@ mod tests {
             AgentConfig {
                 options: CompletionOptions::default(),
                 tz: chrono_tz::UTC,
-                inbox_dir: std::path::PathBuf::from("/tmp/residuum-test-inbox"),
             },
         );
 
@@ -1252,7 +1231,6 @@ mod tests {
             AgentConfig {
                 options: CompletionOptions::default(),
                 tz: chrono_tz::UTC,
-                inbox_dir: std::path::PathBuf::from("/tmp/residuum-test-inbox"),
             },
         );
 
@@ -1298,7 +1276,6 @@ mod tests {
             AgentConfig {
                 options: CompletionOptions::default(),
                 tz: chrono_tz::UTC,
-                inbox_dir: std::path::PathBuf::from("/tmp/residuum-test-inbox"),
             },
         );
 
@@ -1337,7 +1314,6 @@ mod tests {
             AgentConfig {
                 options: CompletionOptions::default(),
                 tz: chrono_tz::UTC,
-                inbox_dir: std::path::PathBuf::from("/tmp/residuum-test-inbox"),
             },
         );
 
@@ -1372,7 +1348,6 @@ mod tests {
             AgentConfig {
                 options: CompletionOptions::default(),
                 tz: chrono_tz::UTC,
-                inbox_dir: std::path::PathBuf::from("/tmp/residuum-test-inbox"),
             },
         );
 
@@ -1427,7 +1402,6 @@ mod tests {
             AgentConfig {
                 options: CompletionOptions::default(),
                 tz: chrono_tz::UTC,
-                inbox_dir: std::path::PathBuf::from("/tmp/residuum-test-inbox"),
             },
         );
 
@@ -1452,7 +1426,6 @@ mod tests {
             AgentConfig {
                 options: CompletionOptions::default(),
                 tz: chrono_tz::UTC,
-                inbox_dir: std::path::PathBuf::from("/tmp/residuum-test-inbox"),
             },
         );
 

@@ -9,7 +9,7 @@ fn section(tag: &str, content: &str) -> String {
     format!("<{tag}>\n{content}\n</{tag}>")
 }
 
-/// Build the `[Current Time: ...][Last Message: ...][Message Source: ...][Unread Inbox: N]` tag string.
+/// Build the `[Current Time: ...][Last Message: ...][Message Source: ...]` tag string.
 pub(super) fn build_status_line(ctx: &StatusLine) -> String {
     use std::fmt::Write as _;
 
@@ -24,10 +24,6 @@ pub(super) fn build_status_line(ctx: &StatusLine) -> String {
 
     if let Some(source) = &ctx.message_source {
         _ = write!(tag, "[Message Source: {source}]");
-    }
-
-    if ctx.unread_inbox_count > 0 {
-        _ = write!(tag, "[Unread Inbox: {}]", ctx.unread_inbox_count);
     }
 
     tag
@@ -832,7 +828,6 @@ mod tests {
             now: dt(2026, 2, 22, 17, 0),
             last_message_at: None,
             message_source: None,
-            unread_inbox_count: 0,
         };
         let result = build_status_line(&ctx);
         assert!(
@@ -851,7 +846,6 @@ mod tests {
             now: dt(2026, 2, 22, 17, 0),
             last_message_at: Some(dt(2026, 2, 22, 16, 45)),
             message_source: None,
-            unread_inbox_count: 0,
         };
         let result = build_status_line(&ctx);
         assert!(
@@ -870,7 +864,6 @@ mod tests {
             now: dt(2026, 2, 22, 17, 0),
             last_message_at: None,
             message_source: Some("discord".to_string()),
-            unread_inbox_count: 0,
         };
         let result = build_status_line(&ctx);
         assert!(
@@ -880,27 +873,11 @@ mod tests {
     }
 
     #[test]
-    fn status_line_with_nonzero_unread() {
+    fn build_status_line_source_only() {
         let ctx = StatusLine {
-            now: dt(2026, 2, 22, 17, 0),
+            now: dt(2024, 1, 1, 12, 0),
             last_message_at: None,
-            message_source: None,
-            unread_inbox_count: 5,
-        };
-        let result = build_status_line(&ctx);
-        assert!(
-            result.contains("[Unread Inbox: 5]"),
-            "should have unread inbox tag with count"
-        );
-    }
-
-    #[test]
-    fn status_line_zero_unread_omitted() {
-        let ctx = StatusLine {
-            now: dt(2026, 2, 22, 17, 0),
-            last_message_at: None,
-            message_source: None,
-            unread_inbox_count: 0,
+            message_source: Some("cli".to_string()),
         };
         let result = build_status_line(&ctx);
         assert!(

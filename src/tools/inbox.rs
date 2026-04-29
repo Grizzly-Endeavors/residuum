@@ -251,6 +251,67 @@ impl Tool for InboxArchiveTool {
     }
 }
 
+// ─── user_inbox_add ─────────────────────────────────────────────────────────
+
+/// Tool for adding items to the user's inbox.
+pub struct UserInboxAddTool {
+    user_inbox_dir: PathBuf,
+    tz: chrono_tz::Tz,
+}
+
+impl UserInboxAddTool {
+    /// Create a new `UserInboxAddTool`.
+    #[must_use]
+    pub fn new(user_inbox_dir: PathBuf, tz: chrono_tz::Tz) -> Self {
+        Self { user_inbox_dir, tz }
+    }
+}
+
+#[async_trait]
+impl Tool for UserInboxAddTool {
+    fn name(&self) -> &'static str {
+        "user_inbox_add"
+    }
+
+    fn definition(&self) -> ToolDefinition {
+        ToolDefinition {
+            name: self.name().to_string(),
+            description: "Add a new item to the user's inbox. Use this to explicitly send notes, reminders, or items for the human user to review later.".to_string(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "title": {
+                        "type": "string",
+                        "description": "A short summary of the item"
+                    },
+                    "body": {
+                        "type": "string",
+                        "description": "The detailed content of the item"
+                    }
+                },
+                "required": ["title", "body"]
+            }),
+        }
+    }
+
+    async fn execute(&self, arguments: Value) -> Result<ToolResult, ToolError> {
+        let title = super::require_str(&arguments, "title")?;
+        let body = super::require_str(&arguments, "body")?;
+
+        let filename = inbox::quick_add(&self.user_inbox_dir, title, body, "agent", self.tz)
+            .await
+            .map_err(|e| {
+                tracing::error!(error = %e, "failed to add item to user inbox");
+                ToolError::Execution(format!("failed to add item to user inbox: {e}"))
+            })?;
+
+        Ok(ToolResult::success(format!(
+            "Added item to user inbox with ID: {}",
+            filename.trim_end_matches(".json")
+        )))
+    }
+}
+
 #[cfg(test)]
 #[expect(clippy::unwrap_used, reason = "test code uses unwrap for clarity")]
 mod tests {
@@ -263,7 +324,14 @@ mod tests {
 
         assert_eq!(InboxListTool::new(dir.clone()).name(), "inbox_list");
         assert_eq!(InboxReadTool::new(dir.clone()).name(), "inbox_read");
-        assert_eq!(InboxArchiveTool::new(dir, archive).name(), "inbox_archive");
+        assert_eq!(
+            InboxArchiveTool::new(dir.clone(), archive).name(),
+            "inbox_archive"
+        );
+        assert_eq!(
+            UserInboxAddTool::new(dir, chrono_tz::UTC).name(),
+            "user_inbox_add"
+        );
     }
 
     #[test]
@@ -277,8 +345,11 @@ mod tests {
         let read = InboxReadTool::new(dir.clone());
         assert_eq!(read.definition().name, read.name());
 
-        let archive_tool = InboxArchiveTool::new(dir, archive);
+        let archive_tool = InboxArchiveTool::new(dir.clone(), archive);
         assert_eq!(archive_tool.definition().name, archive_tool.name());
+
+        let user_add = UserInboxAddTool::new(dir, chrono_tz::UTC);
+        assert_eq!(user_add.definition().name, user_add.name());
     }
 
     #[tokio::test]

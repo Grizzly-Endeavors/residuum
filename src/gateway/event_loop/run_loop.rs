@@ -101,7 +101,7 @@ async fn spawn_server_and_adapters(
     let state = GatewayState {
         reload_tx: core.reload_tx.clone(),
         command_tx: core.command_tx.clone(),
-        inbox_dir: parts.layout.inbox_dir(),
+        agent_inbox_dir: parts.layout.agent_inbox_dir(),
         tz: parts.tz,
         tunnel_status_rx: tunnel_status_rx.clone(),
         publisher: core.publisher.clone(),

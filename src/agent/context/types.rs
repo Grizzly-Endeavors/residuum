@@ -10,8 +10,6 @@ pub struct StatusLine {
     pub last_message_at: Option<NaiveDateTime>,
     /// Which interface this message arrived from (e.g. `"websocket"`, `"discord"`).
     pub message_source: Option<String>,
-    /// Number of unread inbox items (0 → tag omitted).
-    pub unread_inbox_count: usize,
 }
 
 /// Memory-related context injected into the system prompt.

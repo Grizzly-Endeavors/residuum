@@ -145,14 +145,21 @@ impl ToolRegistry {
         self.register(Box::new(skills::SkillDeactivateTool::new(state)));
     }
 
-    /// Register inbox management tools (`inbox_list`, `inbox_read`, `inbox_archive`).
-    pub fn register_inbox_tools(&mut self, inbox_dir: PathBuf, archive_dir: PathBuf) {
-        self.register(Box::new(inbox::InboxListTool::new(inbox_dir.clone())));
-        self.register(Box::new(inbox::InboxReadTool::new(inbox_dir.clone())));
+    /// Register inbox management tools (`inbox_list`, `inbox_read`, `inbox_archive`, `user_inbox_add`).
+    pub fn register_inbox_tools(
+        &mut self,
+        agent_inbox_dir: PathBuf,
+        agent_archive_dir: PathBuf,
+        user_inbox_dir: PathBuf,
+        tz: chrono_tz::Tz,
+    ) {
+        self.register(Box::new(inbox::InboxListTool::new(agent_inbox_dir.clone())));
+        self.register(Box::new(inbox::InboxReadTool::new(agent_inbox_dir.clone())));
         self.register(Box::new(inbox::InboxArchiveTool::new(
-            inbox_dir,
-            archive_dir,
+            agent_inbox_dir,
+            agent_archive_dir,
         )));
+        self.register(Box::new(inbox::UserInboxAddTool::new(user_inbox_dir, tz)));
     }
 
     /// Register the `list_endpoints` tool for querying available endpoints.
@@ -227,8 +234,9 @@ impl ToolRegistry {
         tz: chrono_tz::Tz,
         hybrid_searcher: Arc<HybridSearcher>,
         episodes_dir: std::path::PathBuf,
-        inbox_dir: std::path::PathBuf,
-        inbox_archive_dir: std::path::PathBuf,
+        agent_inbox_dir: std::path::PathBuf,
+        agent_inbox_archive_dir: std::path::PathBuf,
+        user_inbox_dir: std::path::PathBuf,
         background_spawner: Arc<BackgroundTaskSpawner>,
         endpoint_registry: EndpointRegistry,
         publisher: crate::bus::Publisher,
@@ -258,7 +266,7 @@ impl ToolRegistry {
         registry.register_memory_get_tool(episodes_dir);
 
         // Inbox tools
-        registry.register_inbox_tools(inbox_dir, inbox_archive_dir);
+        registry.register_inbox_tools(agent_inbox_dir, agent_inbox_archive_dir, user_inbox_dir, tz);
 
         // Background task management (stop_agent, list_agents — NOT subagent_spawn)
         registry.register_background_tools(background_spawner);
