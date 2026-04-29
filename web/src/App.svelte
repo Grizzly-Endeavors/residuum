@@ -11,12 +11,15 @@
   import Setup from "./Setup.svelte";
   import Settings from "./Settings.svelte";
   import Workspace from "./components/Workspace.svelte";
+  import UserInboxDrawer from "./components/UserInboxDrawer.svelte";
+  import { userInbox } from "./lib/inbox.svelte";
 
   let mode = $state<"loading" | "setup" | "running">("loading");
   let activeView = $state<"chat" | "workspace" | "settings">("chat");
   let workspaceMounted = $state(false);
   let helpOpen = $state(false);
   let feedbackOpen = $state(false);
+  let inboxOpen = $state(false);
   let feedbackTab = $state<"bug" | "feedback">("bug");
 
   function openFeedback(tab: "bug" | "feedback") {
@@ -43,6 +46,13 @@
     if (mode !== "running") return;
     ws.connect();
     return () => ws.disconnect();
+  });
+
+  $effect(() => {
+    if (mode === "running") {
+      userInbox.startPolling();
+      return () => userInbox.stopPolling();
+    }
   });
 
   function handleKeydown(event: KeyboardEvent) {
@@ -93,6 +103,9 @@
       activeView = activeView === "settings" ? "chat" : "settings";
     }}
     onOpenFeedback={() => openFeedback("bug")}
+    onOpenInbox={() => {
+      inboxOpen = true;
+    }}
   />
   {#if activeView === "settings"}
     <Settings
@@ -129,5 +142,11 @@
   open={helpOpen}
   onClose={() => {
     helpOpen = false;
+  }}
+/>
+<UserInboxDrawer
+  open={inboxOpen}
+  onClose={() => {
+    inboxOpen = false;
   }}
 />

@@ -10,7 +10,8 @@
     | "bug"
     | "spark"
     | "copy"
-    | "check";
+    | "check"
+    | "inbox";
 
   interface Props {
     name: IconName;
@@ -73,6 +74,9 @@
       <path d="M5 11H3.5a1 1 0 01-1-1V3.5a1 1 0 011-1H10a1 1 0 011 1V5" />
     {:else if name === "check"}
       <path d="M3 8.5l3 3 7-7" />
+    {:else if name === "inbox"}
+      <rect x="2" y="4" width="12" height="8" rx="1" />
+      <path d="M2 5l6 4 6-4" />
     {/if}
   </g>
 </svg>

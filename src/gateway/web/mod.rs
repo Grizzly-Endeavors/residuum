@@ -16,6 +16,7 @@ use super::ReloadSignal;
 
 pub mod cloud;
 pub mod config;
+pub mod inbox;
 pub mod providers;
 pub mod secrets;
 pub mod tracing_api;
@@ -89,6 +90,9 @@ pub(super) fn config_api_router(state: ConfigApiState) -> axum::Router {
             "/api/workspace/file",
             get(workspace::api_workspace_file_read).put(workspace::api_workspace_file_write),
         )
+        .route("/api/inbox", get(inbox::api_inbox_list))
+        .route("/api/inbox/{id}/read", put(inbox::api_inbox_read))
+        .route("/api/inbox/{id}/archive", post(inbox::api_inbox_archive))
         .with_state(state)
 }
 

@@ -2,6 +2,7 @@
   import type { ConnectionStatus } from "../lib/types";
   import { Icon } from "../lib/icons";
   import BrandMark from "./BrandMark.svelte";
+  import { userInbox } from "../lib/inbox.svelte";
 
   let {
     status,
@@ -10,6 +11,7 @@
     onOpenWorkspace,
     onOpenSettings,
     onOpenFeedback,
+    onOpenInbox,
   }: {
     status: ConnectionStatus;
     activeView: "chat" | "workspace" | "settings";
@@ -17,6 +19,7 @@
     onOpenWorkspace: () => void;
     onOpenSettings: () => void;
     onOpenFeedback: () => void;
+    onOpenInbox: () => void;
   } = $props();
 
   let menuOpen = $state(false);
@@ -70,18 +73,38 @@
     <span class="header-title">Residuum</span>
     <span class="header-status {status}">{status}</span>
   </div>
-  <button
-    class="header-bug-btn"
-    onclick={onOpenFeedback}
-    title="Report a bug or send feedback"
-    aria-label="Report a bug or send feedback"
-  >
-    <Icon name="bug" size={16} />
-  </button>
+  <div class="header-right">
+    <button
+      class="header-action-btn"
+      onclick={onOpenInbox}
+      title="User Inbox"
+      aria-label="User Inbox"
+    >
+      <Icon name="inbox" size={16} />
+      {#if userInbox.unreadCount > 0}
+        <span class="badge">{userInbox.unreadCount}</span>
+      {/if}
+    </button>
+    <button
+      class="header-action-btn"
+      onclick={onOpenFeedback}
+      title="Report a bug or send feedback"
+      aria-label="Report a bug or send feedback"
+    >
+      <Icon name="bug" size={16} />
+    </button>
+  </div>
 </div>
 
 <style>
-  .header-bug-btn {
+  .header-right {
+    display: flex;
+    gap: 0.25rem;
+    align-items: center;
+  }
+
+  .header-action-btn {
+    position: relative;
     display: inline-flex;
     align-items: center;
     justify-content: center;
@@ -99,10 +122,28 @@
       box-shadow var(--dur-default) var(--ease-out-stone);
   }
 
-  .header-bug-btn:hover {
+  .header-action-btn:hover {
     color: var(--vein-bright);
     background: var(--vein-faint);
     border-color: var(--vein-dim);
     box-shadow: 0 0 12px -4px rgba(59, 139, 219, 0.45);
+  }
+
+  .badge {
+    position: absolute;
+    top: 2px;
+    right: 2px;
+    background: var(--error-bright);
+    color: #fff;
+    font-size: 0.6rem;
+    font-weight: bold;
+    min-width: 14px;
+    height: 14px;
+    border-radius: 7px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    line-height: 1;
+    padding: 0 3px;
   }
 </style>

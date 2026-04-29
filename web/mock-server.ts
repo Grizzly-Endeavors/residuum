@@ -22,6 +22,7 @@ interface MockState {
   mcpJson: string;
   workspaceFiles: Record<string, Array<{ name: string; entry_type: string; size: number | null }>>;
   workspaceFileContents: Record<string, string>;
+  inboxItems: Array<{ id: string; title: string; body: string; source: string; timestamp: string; read: boolean; attachments: string[] }>;
 }
 
 function loadAsset(filename: string): string {
@@ -107,6 +108,10 @@ function createState(): MockState {
       "memory/observations.jsonl": '{"text":"User prefers concise communication","timestamp":"2026-03-09T10:00:00Z","score":0.92}\n{"text":"Notification routing: Discord for urgent, Telegram for daily","timestamp":"2026-03-08T14:30:00Z","score":0.89}\n',
       "memory/reflections.jsonl": '{"text":"User is building a personal agent framework focused on genuine autonomy and persistent memory","timestamp":"2026-03-09T12:00:00Z","observations":5}\n',
     },
+    inboxItems: [
+      { id: "mock_1", title: "Deploy tomorrow", body: "Reminder to trigger the deployment pipeline tomorrow morning.", source: "agent:pulse", timestamp: new Date().toISOString(), read: false, attachments: [] },
+      { id: "mock_2", title: "Daily Digest", body: "Here is your daily summary.", source: "agent:digest", timestamp: new Date(Date.now() - 3600000).toISOString(), read: true, attachments: [] },
+    ],
   };
 }
 
@@ -586,6 +591,33 @@ function setupRestMiddleware(server: ViteDevServer, state: MockState) {
         const name = decodeURIComponent(deleteMatch[1]);
         state.secrets.delete(name);
         json(res, 200, { deleted: true });
+        return;
+      }
+
+      // ── Inbox ─────────────────────────────────────────────────────────
+      if (path === "/api/inbox" && method === "GET") {
+        json(res, 200, state.inboxItems);
+        return;
+      }
+
+      const readMatch = path.match(/^\/api\/inbox\/(.+)\/read$/);
+      if (readMatch && method === "PUT") {
+        const id = decodeURIComponent(readMatch[1]);
+        const item = state.inboxItems.find(i => i.id === id);
+        if (item) {
+          item.read = true;
+          json(res, 200, item);
+        } else {
+          json(res, 404, { error: "not found" });
+        }
+        return;
+      }
+
+      const archiveMatch = path.match(/^\/api\/inbox\/(.+)\/archive$/);
+      if (archiveMatch && method === "POST") {
+        const id = decodeURIComponent(archiveMatch[1]);
+        state.inboxItems = state.inboxItems.filter(i => i.id !== id);
+        json(res, 200, {});
         return;
       }
 

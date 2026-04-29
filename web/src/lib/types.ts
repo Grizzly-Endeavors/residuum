@@ -283,3 +283,15 @@ export type FeedItem =
   | ToolGroupFeedItem
   | FileAttachmentFeedItem
   | LocalSystemFeedItem;
+
+// ── User Inbox ───────────────────────────────────────────────────────
+
+export interface UserInboxItem {
+  id: string;
+  title: string;
+  body: string;
+  source: string;
+  timestamp: string;
+  read: boolean;
+  attachments: string[];
+}
