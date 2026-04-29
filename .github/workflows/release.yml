@@ -101,9 +101,10 @@ jobs:
           - target: aarch64-apple-darwin
             runner: '"macos-15"'
             artifact: residuum-macos-aarch64
-          - target: x86_64-pc-windows-msvc
-            runner: '"windows-latest"'
+          - target: x86_64-pc-windows-gnu
+            runner: '"lab-runners"'
             artifact: residuum-windows-x86_64.exe
+            cross: true
 
     runs-on: ${{ fromJSON(matrix.runner) }}
 
@@ -113,12 +114,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Rust toolchain (macOS/Windows)
-        if: runner.os == 'macOS' || runner.os == 'Windows'
+      - name: Install Rust toolchain (macOS)
+        if: runner.os == 'macOS'
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Setup Node.js (macOS/Windows)
-        if: runner.os == 'macOS' || runner.os == 'Windows'
+      - name: Setup Node.js (macOS)
+        if: runner.os == 'macOS'
         uses: actions/setup-node@v4
         with:
           node-version: lts/*
@@ -137,8 +138,7 @@ jobs:
         shell: bash
         run: |
           SRC="target/${{ matrix.target }}/release/residuum"
-          # Windows binaries have .exe extension
-          if [ "$RUNNER_OS" = "Windows" ]; then SRC="${SRC}.exe"; fi
+          if [[ "${{ matrix.target }}" == *-windows-* ]]; then SRC="${SRC}.exe"; fi
           cp "$SRC" "${{ matrix.artifact }}"
 
       - name: Upload artifact
