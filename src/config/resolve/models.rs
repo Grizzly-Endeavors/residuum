@@ -19,6 +19,7 @@ pub(super) struct ResolvedModels {
     pub(super) observer: Vec<ProviderSpec>,
     pub(super) reflector: Vec<ProviderSpec>,
     pub(super) pulse: Vec<ProviderSpec>,
+    pub(super) subconscious: Vec<ProviderSpec>,
     pub(super) embedding: Option<ProviderSpec>,
     pub(super) role_overrides: HashMap<String, RoleOverrides>,
 }
@@ -87,6 +88,15 @@ pub(super) fn resolve_all_model_specs(
         "pulse",
         &mut role_overrides,
     )?;
+    let subconscious = resolve_role_chain_from_assignment(
+        models.and_then(|m| m.subconscious.clone()),
+        default_assignment.as_ref(),
+        &main,
+        providers_map,
+        secrets,
+        "subconscious",
+        &mut role_overrides,
+    )?;
 
     // Resolve embedding: models.embedding only, no fallback to default or main
     let embedding = models
@@ -108,6 +118,7 @@ pub(super) fn resolve_all_model_specs(
         observer,
         reflector,
         pulse,
+        subconscious,
         embedding,
         role_overrides,
     })
@@ -387,6 +398,7 @@ default = "anthropic/claude-haiku-4-5"
         assert_eq!(cfg.observer[0].model.model, "claude-haiku-4-5");
         assert_eq!(cfg.reflector[0].model.model, "claude-haiku-4-5");
         assert_eq!(cfg.pulse[0].model.model, "claude-haiku-4-5");
+        assert_eq!(cfg.subconscious[0].model.model, "claude-haiku-4-5");
         // main is still the explicit main
         assert_eq!(cfg.main[0].model.model, "claude-sonnet-4-6");
     }
@@ -427,6 +439,29 @@ main = "anthropic/claude-sonnet-4-6"
         assert_eq!(cfg.observer[0].model.model, "claude-sonnet-4-6");
         assert_eq!(cfg.reflector[0].model.model, "claude-sonnet-4-6");
         assert_eq!(cfg.pulse[0].model.model, "claude-sonnet-4-6");
+        assert_eq!(cfg.subconscious[0].model.model, "claude-sonnet-4-6");
+    }
+
+    #[test]
+    fn subconscious_role_overrides_default() {
+        let cfg_file = parse_config("timezone = \"UTC\"\n");
+        let prov_file = parse_providers(
+            r#"
+[models]
+main = "anthropic/claude-sonnet-4-6"
+default = "anthropic/claude-haiku-4-5"
+subconscious = "gemini/gemini-3.0-flash"
+"#,
+        );
+        let cfg = from_file_and_env(Some(&cfg_file), Some(&prov_file), &test_config_dir()).unwrap();
+        assert_eq!(
+            cfg.subconscious[0].model.model, "gemini-3.0-flash",
+            "explicit subconscious should override default"
+        );
+        assert_eq!(
+            cfg.observer[0].model.model, "claude-haiku-4-5",
+            "unset observer should still use default"
+        );
     }
 
     // ── Failover chain resolution ──────────────────────────────────────────

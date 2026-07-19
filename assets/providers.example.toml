@@ -30,7 +30,7 @@
 # and the API key is read from the provider-specific env var or RESIDUUM_API_KEY.
 #
 # Roles: main (required), default (fallback for unset roles), observer,
-#        reflector, pulse
+#        reflector, pulse, subconscious
 #
 # Failover: use an array to specify fallback providers. If the primary fails
 # (after retries), the next provider in the list is tried:
@@ -41,6 +41,7 @@ main = "anthropic/claude-sonnet-4-6"
 # observer = "google-api/gemini-3.0-flash"
 # reflector = "google-api/gemini-3.0-flash"
 # pulse = "anthropic/claude-haiku-4-5"
+# subconscious = "anthropic/claude-haiku-4-5"
 # embedding = "openai/text-embedding-3-small"
 
 # ── Background task model tiers (optional) ──────────────────────────────────

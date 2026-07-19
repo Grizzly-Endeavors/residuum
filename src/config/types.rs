@@ -14,7 +14,9 @@ use super::constants::{
     DEFAULT_OBSERVER_FORCE_THRESHOLD, DEFAULT_OBSERVER_THRESHOLD, DEFAULT_REFLECTOR_THRESHOLD,
     DEFAULT_SEARCH_CANDIDATE_MULTIPLIER, DEFAULT_SEARCH_MIN_SCORE, DEFAULT_SEARCH_TEMPORAL_DECAY,
     DEFAULT_SEARCH_TEMPORAL_DECAY_HALF_LIFE_DAYS, DEFAULT_SEARCH_TEXT_WEIGHT,
-    DEFAULT_SEARCH_VECTOR_WEIGHT, DEFAULT_TRANSCRIPT_RETENTION_DAYS,
+    DEFAULT_SEARCH_VECTOR_WEIGHT, DEFAULT_SUBCONSCIOUS_EVERY_N_ITERATIONS,
+    DEFAULT_SUBCONSCIOUS_MAX_INTERVENTIONS, DEFAULT_SUBCONSCIOUS_MAX_TRANSCRIPT_TOKENS,
+    DEFAULT_TRANSCRIPT_RETENTION_DAYS,
 };
 use super::provider::ProviderSpec;
 
@@ -250,6 +252,36 @@ impl Default for IdleConfig {
         Self {
             timeout: Duration::from_secs(DEFAULT_IDLE_TIMEOUT_MINUTES * 60),
             idle_channel: None,
+        }
+    }
+}
+
+/// Validated subconscious classifier settings.
+///
+/// Opt-in: `enabled` defaults to `false` because the classifier adds latency
+/// and token cost to every evaluated turn.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SubconsciousSettings {
+    /// Whether the subconscious classifier is enabled.
+    pub enabled: bool,
+    /// Whether the mid-turn watch runs during the tool loop.
+    pub mid_turn: bool,
+    /// Evaluate every N tool-loop iterations.
+    pub every_n_iterations: usize,
+    /// Maximum mid-turn corrections injected per turn.
+    pub max_interventions_per_turn: usize,
+    /// Token cap for the transcript sent to the classifier.
+    pub max_transcript_tokens: usize,
+}
+
+impl Default for SubconsciousSettings {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            mid_turn: true,
+            every_n_iterations: DEFAULT_SUBCONSCIOUS_EVERY_N_ITERATIONS,
+            max_interventions_per_turn: DEFAULT_SUBCONSCIOUS_MAX_INTERVENTIONS,
+            max_transcript_tokens: DEFAULT_SUBCONSCIOUS_MAX_TRANSCRIPT_TOKENS,
         }
     }
 }
@@ -506,6 +538,8 @@ pub struct Config {
     pub reflector: Vec<ProviderSpec>,
     /// Fully resolved pulse provider chain (failover).
     pub pulse: Vec<ProviderSpec>,
+    /// Fully resolved subconscious provider chain (failover).
+    pub subconscious: Vec<ProviderSpec>,
     /// Fully resolved embedding provider (None if not configured).
     pub embedding: Option<ProviderSpec>,
     /// Path to the workspace root directory.
@@ -518,6 +552,8 @@ pub struct Config {
     pub memory: MemoryConfig,
     /// Whether the pulse system is enabled.
     pub pulse_enabled: bool,
+    /// Subconscious classifier settings.
+    pub subconscious_settings: SubconsciousSettings,
     /// WebSocket gateway configuration.
     pub gateway: GatewayConfig,
     /// IANA timezone for the agent (e.g. `America/New_York`).
@@ -562,12 +598,14 @@ impl fmt::Debug for Config {
             .field("observer", &self.observer)
             .field("reflector", &self.reflector)
             .field("pulse", &self.pulse)
+            .field("subconscious", &self.subconscious)
             .field("embedding", &self.embedding)
             .field("workspace_dir", &self.workspace_dir)
             .field("timeout_secs", &self.timeout_secs)
             .field("max_tokens", &self.max_tokens)
             .field("memory", &self.memory)
             .field("pulse_enabled", &self.pulse_enabled)
+            .field("subconscious_settings", &self.subconscious_settings)
             .field("gateway", &self.gateway)
             .field("timezone", &self.timezone)
             .field("cloud", &self.cloud.as_ref().map(|_| "[configured]"))

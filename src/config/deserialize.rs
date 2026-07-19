@@ -25,6 +25,8 @@ pub(crate) struct ConfigFile {
     pub(super) memory: Option<MemoryConfigFile>,
     /// Pulse subsystem configuration.
     pub(super) pulse: Option<PulseConfigFile>,
+    /// Subconscious classifier configuration.
+    pub(super) subconscious: Option<SubconsciousConfigFile>,
     /// Gateway configuration.
     pub(super) gateway: Option<GatewayConfigFile>,
     /// Discord bot configuration.
@@ -179,6 +181,8 @@ pub(super) struct ModelsConfigFile {
     pub(super) reflector: Option<ModelAssignment>,
     /// Pulse agent model. Supports failover arrays and overrides.
     pub(super) pulse: Option<ModelAssignment>,
+    /// Subconscious classifier model. Supports failover arrays and overrides.
+    pub(super) subconscious: Option<ModelAssignment>,
     /// Embedding model (no failover — single string only, no overrides).
     pub(super) embedding: Option<String>,
 }
@@ -223,6 +227,22 @@ pub(super) struct SearchConfigFile {
 pub(super) struct PulseConfigFile {
     /// Whether the pulse system is enabled.
     pub(super) enabled: Option<bool>,
+}
+
+/// Raw TOML `[subconscious]` section.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct SubconsciousConfigFile {
+    /// Whether the subconscious classifier is enabled (opt-in, default false).
+    pub(super) enabled: Option<bool>,
+    /// Whether the mid-turn watch runs during the tool loop.
+    pub(super) mid_turn: Option<bool>,
+    /// Evaluate every N tool-loop iterations.
+    pub(super) every_n_iterations: Option<usize>,
+    /// Maximum mid-turn corrections injected per turn.
+    pub(super) max_interventions_per_turn: Option<usize>,
+    /// Token cap for the transcript sent to the classifier.
+    pub(super) max_transcript_tokens: Option<usize>,
 }
 
 /// Raw TOML `[gateway]` section.
