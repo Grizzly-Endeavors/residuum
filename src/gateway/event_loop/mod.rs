@@ -4,6 +4,7 @@ mod commands;
 mod http;
 mod pulse;
 mod run_loop;
+mod subconscious_hook;
 mod turns;
 
 pub(crate) use http::AdapterSenders;

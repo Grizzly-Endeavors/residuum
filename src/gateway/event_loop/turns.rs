@@ -367,6 +367,12 @@ pub async fn handle_inbound_message(
     let new_messages: Vec<_> = rt.agent.messages_since(before).to_vec();
     persist_and_maybe_observe(rt, &new_messages, visibility, observe_deadline).await;
 
+    // Background turns (including subconscious correction turns) are never
+    // evaluated — this gate is what bounds the correction feedback loop.
+    if !is_background {
+        super::subconscious_hook::run_end_of_turn_subconscious(rt, &new_messages, &reply_id).await;
+    }
+
     process_leftover_interrupts(leftover_interrupts, rt);
 
     // Only update idle timer for user messages, not background turns.
