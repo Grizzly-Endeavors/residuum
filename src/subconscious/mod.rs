@@ -103,6 +103,49 @@ pub struct Subconscious {
 }
 
 impl Subconscious {
+    /// Build a subconscious from the resolved config, disabled when opted out.
+    ///
+    /// Provider construction failure logs an error and falls back to a
+    /// disabled instance rather than failing startup — the main agent must
+    /// keep working without its subconscious.
+    #[must_use]
+    pub fn build(
+        cfg: &crate::config::Config,
+        layout: &WorkspaceLayout,
+        http: crate::models::SharedHttpClient,
+    ) -> std::sync::Arc<Self> {
+        let settings = &cfg.subconscious_settings;
+        if !settings.enabled {
+            return std::sync::Arc::new(Self::disabled(layout.clone()));
+        }
+
+        let provider = match crate::models::build_provider_chain(
+            &cfg.subconscious,
+            cfg.max_tokens,
+            http,
+            cfg.retry.clone(),
+        ) {
+            Ok(p) => p,
+            Err(e) => {
+                tracing::error!(error = %e, "failed to build subconscious provider, subconscious disabled");
+                return std::sync::Arc::new(Self::disabled(layout.clone()));
+            }
+        };
+
+        std::sync::Arc::new(Self::new(
+            provider,
+            SubconsciousConfig {
+                enabled: true,
+                mid_turn: settings.mid_turn,
+                every_n_iterations: settings.every_n_iterations,
+                max_interventions_per_turn: settings.max_interventions_per_turn,
+                max_transcript_tokens: settings.max_transcript_tokens,
+                role_overrides: cfg.role_overrides.get("subconscious").cloned(),
+            },
+            layout.clone(),
+        ))
+    }
+
     /// Create a new subconscious with the given provider and config.
     #[must_use]
     pub fn new(
