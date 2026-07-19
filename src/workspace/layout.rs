@@ -195,6 +195,12 @@ impl WorkspaceLayout {
         self.root.join("ALERTS.md")
     }
 
+    /// Path to SUBCONSCIOUS.md -- check policy for the subconscious classifier.
+    #[must_use]
+    pub fn subconscious_md(&self) -> PathBuf {
+        self.root.join("SUBCONSCIOUS.md")
+    }
+
     /// Path to the workspace config directory (`root/config/`).
     #[must_use]
     pub fn config_dir(&self) -> PathBuf {
@@ -369,6 +375,11 @@ mod tests {
             layout.alerts_md(),
             PathBuf::from("/tmp/ws/ALERTS.md"),
             "alerts_md path"
+        );
+        assert_eq!(
+            layout.subconscious_md(),
+            PathBuf::from("/tmp/ws/SUBCONSCIOUS.md"),
+            "subconscious_md path"
         );
     }
 

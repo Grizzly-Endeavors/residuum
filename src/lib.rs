@@ -16,6 +16,7 @@ pub mod projects;
 pub mod pulse;
 pub mod skills;
 pub mod subagents;
+pub mod subconscious;
 pub mod time;
 pub mod tools;
 pub mod tracing_service;
