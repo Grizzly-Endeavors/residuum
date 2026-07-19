@@ -14,6 +14,15 @@ use crate::gateway::types::GatewayRuntime;
 use crate::models::Message;
 use crate::subconscious::{EvalPhase, Finding, Severity};
 
+/// A planned delivery for one finding, decided before touching the runtime.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Delivery {
+    /// Inject as a passive system note for the next turn.
+    Note(String),
+    /// Trigger an immediate correction turn.
+    Correction(String),
+}
+
 /// Evaluate a completed turn and deliver any findings to the agent.
 ///
 /// Never fails the turn: evaluation errors are logged and swallowed.
@@ -35,44 +44,64 @@ pub(super) async fn run_end_of_turn_subconscious(
         .evaluate(new_messages, EvalPhase::EndOfTurn)
         .await
     {
-        Ok(findings) => deliver_findings(rt, findings, correlation_id).await,
+        Ok(findings) => {
+            for delivery in plan_delivery(findings) {
+                match delivery {
+                    Delivery::Note(instruction) => {
+                        tracing::info!("subconscious note queued for next turn");
+                        rt.agent
+                            .inject_system_message(format!("[Subconscious note] {instruction}"));
+                    }
+                    Delivery::Correction(instruction) => {
+                        tracing::info!("subconscious act finding triggering correction turn");
+                        publish_correction_turn(rt, &instruction, correlation_id).await;
+                    }
+                }
+            }
+        }
         Err(e) => {
             tracing::warn!(error = %e, "subconscious end-of-turn evaluation failed");
         }
     }
 }
 
-/// Deliver findings: notes become passive context, the first `act` finding
-/// triggers a correction turn. Remaining `act` findings degrade to notes so a
-/// single turn never spawns more than one correction.
-async fn deliver_findings(rt: &mut GatewayRuntime, findings: Vec<Finding>, correlation_id: &str) {
-    let mut act_delivered = false;
+/// Decide how each finding is delivered.
+///
+/// The first `act` finding becomes a correction turn; every other finding
+/// (including later `act` findings) degrades to a note, so a single turn never
+/// spawns more than one correction.
+fn plan_delivery(findings: Vec<Finding>) -> Vec<Delivery> {
+    let mut plan = Vec::with_capacity(findings.len());
+    let mut correction_used = false;
     for finding in findings {
-        if finding.severity == Severity::Act && !act_delivered {
-            act_delivered = true;
-            publish_correction_turn(rt, &finding, correlation_id).await;
+        if finding.severity == Severity::Act && !correction_used {
+            correction_used = true;
+            plan.push(Delivery::Correction(finding.instruction));
         } else {
-            tracing::info!(
-                kind = ?finding.kind,
-                "subconscious note queued for next turn"
-            );
-            rt.agent
-                .inject_system_message(format!("[Subconscious note] {}", finding.instruction));
+            plan.push(Delivery::Note(finding.instruction));
         }
     }
+    plan
 }
 
-/// Publish a background-origin `MessageEvent` that starts a correction turn.
-async fn publish_correction_turn(rt: &GatewayRuntime, finding: &Finding, correlation_id: &str) {
+/// Build the background-origin `MessageEvent` that starts a correction turn.
+///
+/// The `background` origin endpoint is what keeps the correction turn from
+/// being re-evaluated by the subconscious (the end-of-turn hook skips
+/// background turns), bounding the feedback loop.
+fn build_correction_event(
+    instruction: &str,
+    correlation_id: &str,
+    timestamp: chrono::NaiveDateTime,
+) -> crate::bus::MessageEvent {
     let content = format!(
         "[Subconscious] A background check of your last turn found a problem to correct now:\n\
-         {}\n\
+         {instruction}\n\
          Take the corrective action (e.g. update MEMORY.md). Only message the user if they \
-         need to know something new.",
-        finding.instruction
+         need to know something new."
     );
 
-    let msg_event = crate::bus::MessageEvent {
+    crate::bus::MessageEvent {
         id: format!("subconscious-{correlation_id}"),
         content,
         origin: crate::interfaces::types::MessageOrigin {
@@ -80,15 +109,89 @@ async fn publish_correction_turn(rt: &GatewayRuntime, finding: &Finding, correla
             sender_name: "subconscious".to_string(),
             sender_id: correlation_id.to_string(),
         },
-        timestamp: crate::time::now_local(rt.tz),
+        timestamp,
         images: vec![],
-    };
+    }
+}
 
-    tracing::info!(
-        kind = ?finding.kind,
-        "subconscious act finding triggering correction turn"
-    );
+/// Publish a correction turn onto the user-message topic.
+async fn publish_correction_turn(rt: &GatewayRuntime, instruction: &str, correlation_id: &str) {
+    let msg_event =
+        build_correction_event(instruction, correlation_id, crate::time::now_local(rt.tz));
     if let Err(e) = rt.publisher.publish(topics::UserMessage, msg_event).await {
         tracing::warn!(error = %e, "failed to publish subconscious correction turn");
+    }
+}
+
+#[cfg(test)]
+#[expect(clippy::unwrap_used, reason = "test code uses unwrap for clarity")]
+mod tests {
+    use super::*;
+    use crate::subconscious::FindingKind;
+
+    fn finding(severity: Severity, instruction: &str) -> Finding {
+        Finding {
+            kind: FindingKind::Omission,
+            severity,
+            instruction: instruction.to_string(),
+        }
+    }
+
+    #[test]
+    fn only_first_act_becomes_a_correction() {
+        let plan = plan_delivery(vec![
+            finding(Severity::Note, "note one"),
+            finding(Severity::Act, "first act"),
+            finding(Severity::Act, "second act"),
+        ]);
+
+        assert_eq!(
+            plan,
+            vec![
+                Delivery::Note("note one".to_string()),
+                Delivery::Correction("first act".to_string()),
+                Delivery::Note("second act".to_string()),
+            ],
+            "exactly one correction per turn; later acts degrade to notes"
+        );
+    }
+
+    #[test]
+    fn all_notes_produce_no_correction() {
+        let plan = plan_delivery(vec![
+            finding(Severity::Note, "a"),
+            finding(Severity::Note, "b"),
+        ]);
+        assert!(
+            plan.iter().all(|d| matches!(d, Delivery::Note(_))),
+            "note-only findings never trigger a correction turn"
+        );
+    }
+
+    #[test]
+    fn empty_findings_produce_empty_plan() {
+        assert!(plan_delivery(vec![]).is_empty());
+    }
+
+    #[test]
+    fn correction_event_has_background_origin() {
+        let ts = chrono::NaiveDate::from_ymd_opt(2026, 2, 22)
+            .unwrap()
+            .and_hms_opt(12, 0, 0)
+            .unwrap();
+        let event = build_correction_event("save the preference", "corr-123", ts);
+
+        // The background origin is the loop-prevention guarantee: the end-of-turn
+        // hook skips background turns, so this correction is never re-evaluated.
+        assert_eq!(
+            event.origin.endpoint, "background",
+            "correction must use the background origin to avoid re-evaluation"
+        );
+        assert_eq!(event.origin.sender_name, "subconscious");
+        assert_eq!(event.id, "subconscious-corr-123");
+        assert!(
+            event.content.contains("save the preference"),
+            "instruction must reach the agent"
+        );
     }
 }

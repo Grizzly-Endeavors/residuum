@@ -685,7 +685,10 @@ mod tests {
         new.subconscious_settings.enabled = true;
 
         let diff = diff_config(&old, &new);
-        assert!(diff.subconscious_changed, "enabled toggle should be detected");
+        assert!(
+            diff.subconscious_changed,
+            "enabled toggle should be detected"
+        );
         assert!(
             !diff.providers_changed,
             "settings change alone should not flag providers"

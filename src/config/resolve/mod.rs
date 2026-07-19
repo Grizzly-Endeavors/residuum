@@ -459,9 +459,7 @@ fn resolve_memory_config(section: Option<&MemoryConfigFile>) -> MemoryConfig {
 }
 
 /// Resolve subconscious settings from TOML section (opt-in, default disabled).
-fn resolve_subconscious_settings(
-    section: Option<&SubconsciousConfigFile>,
-) -> SubconsciousSettings {
+fn resolve_subconscious_settings(section: Option<&SubconsciousConfigFile>) -> SubconsciousSettings {
     let mut settings = SubconsciousSettings::default();
     if let Some(s) = section {
         if let Some(v) = s.enabled {

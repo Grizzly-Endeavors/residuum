@@ -58,9 +58,7 @@ pub(super) fn parse_subconscious_response(
         .get("findings")
         .and_then(serde_json::Value::as_array)
         .ok_or_else(|| {
-            anyhow::anyhow!(
-                "subconscious response missing 'findings' array\nresponse: {content}"
-            )
+            anyhow::anyhow!("subconscious response missing 'findings' array\nresponse: {content}")
         })?;
 
     Ok(parse_finding_items(items))
@@ -172,10 +170,9 @@ mod tests {
 
     #[test]
     fn missing_kind_defaults_to_violation() {
-        let findings = parse(
-            r#"{"findings": [{"severity": "note", "instruction": "no kind given"}]}"#,
-        )
-        .unwrap();
+        let findings =
+            parse(r#"{"findings": [{"severity": "note", "instruction": "no kind given"}]}"#)
+                .unwrap();
         assert_eq!(
             findings.first().map(|f| f.kind),
             Some(FindingKind::Violation),

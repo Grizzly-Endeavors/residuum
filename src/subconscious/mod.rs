@@ -222,8 +222,7 @@ impl Subconscious {
 
         let policy = self.load_policy().await;
         let identity = self.load_identity_context().await;
-        let transcript_text =
-            format_turn_transcript(transcript, self.config.max_transcript_tokens);
+        let transcript_text = format_turn_transcript(transcript, self.config.max_transcript_tokens);
         let messages = build_eval_prompt(&policy, &identity, &transcript_text, phase);
 
         let ov = self.config.role_overrides.as_ref();
@@ -407,7 +406,9 @@ mod tests {
     async fn load_identity_context_skips_missing_files() {
         let dir = tempfile::tempdir().unwrap();
         let layout = WorkspaceLayout::new(dir.path());
-        tokio::fs::write(layout.soul_md(), "Be kind.").await.unwrap();
+        tokio::fs::write(layout.soul_md(), "Be kind.")
+            .await
+            .unwrap();
 
         let sub = Subconscious::disabled(layout);
         let identity = sub.load_identity_context().await;

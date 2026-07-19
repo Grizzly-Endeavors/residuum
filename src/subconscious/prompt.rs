@@ -85,7 +85,10 @@ fn format_message(msg: &Message) -> String {
     if let Some(tool_calls) = &msg.tool_calls {
         let mut tc_lines = vec!["  tool_calls:".to_string()];
         for tc in tool_calls {
-            tc_lines.push(format!("    - {}({}) [id: {}]", tc.name, tc.arguments, tc.id));
+            tc_lines.push(format!(
+                "    - {}({}) [id: {}]",
+                tc.name, tc.arguments, tc.id
+            ));
         }
         parts.push(tc_lines.join("\n"));
     }
@@ -106,9 +109,8 @@ pub(super) fn format_turn_transcript(transcript: &[Message], max_tokens: usize) 
         .map(|s| crate::memory::tokens::estimate_tokens(s))
         .sum();
     while start < formatted.len().saturating_sub(1) && total > max_tokens {
-        total -= crate::memory::tokens::estimate_tokens(
-            formatted.get(start).map_or("", String::as_str),
-        );
+        total -=
+            crate::memory::tokens::estimate_tokens(formatted.get(start).map_or("", String::as_str));
         start += 1;
     }
 
@@ -267,7 +269,10 @@ mod tests {
         let mid_user = mid.get(1).map_or("", |m| m.content.as_str());
         let end_user = end.get(1).map_or("", |m| m.content.as_str());
         assert!(mid_user.contains("still working"), "mid-turn question");
-        assert!(end_user.contains("finished this turn"), "end-of-turn question");
+        assert!(
+            end_user.contains("finished this turn"),
+            "end-of-turn question"
+        );
         assert_ne!(mid_user, end_user);
     }
 

@@ -72,9 +72,8 @@ impl SubconsciousWatch {
         crate::util::spawn_monitored("subconscious-mid-turn", async move {
             match subconscious.evaluate(&transcript, EvalPhase::MidTurn).await {
                 Ok(findings) => {
-                    if let Some(finding) = findings
-                        .into_iter()
-                        .find(|f| f.severity == Severity::Act)
+                    if let Some(finding) =
+                        findings.into_iter().find(|f| f.severity == Severity::Act)
                         && interventions.fetch_add(1, Ordering::AcqRel) < max_interventions
                     {
                         let content = format!(
@@ -83,7 +82,10 @@ impl SubconsciousWatch {
                         );
                         // A failed send means the turn already ended; the
                         // end-of-turn pass will catch anything persistent.
-                        if interrupt_tx.try_send(Interrupt::Subconscious(content)).is_err() {
+                        if interrupt_tx
+                            .try_send(Interrupt::Subconscious(content))
+                            .is_err()
+                        {
                             tracing::debug!(
                                 "turn ended before subconscious correction could be injected"
                             );
@@ -188,7 +190,10 @@ mod tests {
         watch.maybe_spawn(0, transcript());
         watch.maybe_spawn(1, transcript());
         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-        assert!(rx.try_recv().is_err(), "off-cadence iterations must not fire");
+        assert!(
+            rx.try_recv().is_err(),
+            "off-cadence iterations must not fire"
+        );
 
         watch.maybe_spawn(2, transcript());
         let interrupt = tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv())

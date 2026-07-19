@@ -178,8 +178,8 @@ async fn run_agent_turn_with_interrupts(
     subconscious: Option<Arc<crate::subconscious::Subconscious>>,
 ) -> (anyhow::Result<Vec<String>>, Vec<Interrupt>) {
     let (interrupt_tx, mut interrupt_rx) = mpsc::channel::<Interrupt>(32);
-    let watch = subconscious
-        .map(|s| crate::subconscious::SubconsciousWatch::new(s, interrupt_tx.clone()));
+    let watch =
+        subconscious.map(|s| crate::subconscious::SubconsciousWatch::new(s, interrupt_tx.clone()));
     let turn_result = {
         let mut turn = std::pin::pin!(agent.process_message(
             content,

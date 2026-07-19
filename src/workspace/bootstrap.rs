@@ -41,8 +41,7 @@ const DEFAULT_ALERTS: &str = include_str!("../../assets/workspace-bootstrap/ALER
 ///
 /// Contains only the customizable check guidance — the output format spec is
 /// always injected by the Rust code and cannot be lost by editing this file.
-const DEFAULT_SUBCONSCIOUS: &str =
-    include_str!("../../assets/workspace-bootstrap/SUBCONSCIOUS.md");
+const DEFAULT_SUBCONSCIOUS: &str = include_str!("../../assets/workspace-bootstrap/SUBCONSCIOUS.md");
 
 // ── Bundled skill content (embedded at compile time from assets/) ────────────
 

@@ -172,7 +172,10 @@ pub(crate) async fn execute_turn(
         // Classification runs concurrently with tool execution; a correction
         // lands at a later drain_interrupts poll.
         if let Some(watch) = subconscious {
-            watch.maybe_spawn(iteration, recent_messages.messages_since(turn_start).to_vec());
+            watch.maybe_spawn(
+                iteration,
+                recent_messages.messages_since(turn_start).to_vec(),
+            );
         }
 
         for tool_call in &response.tool_calls {
