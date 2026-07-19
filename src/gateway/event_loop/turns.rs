@@ -1,5 +1,7 @@
 //! Agent turn handling and message processing in the event loop.
 
+use std::sync::Arc;
+
 use tokio::sync::mpsc;
 
 use crate::agent::Agent;
@@ -82,6 +84,10 @@ pub fn process_leftover_interrupts(leftovers: Vec<Interrupt>, rt: &mut GatewayRu
             }
             Interrupt::BackgroundResult(result) => {
                 rt.agent.inject_system_message(result.format_for_agent());
+            }
+            Interrupt::Subconscious(content) => {
+                // A late mid-turn finding degrades to a note for the next turn.
+                rt.agent.inject_system_message(content);
             }
         }
     }
@@ -169,8 +175,11 @@ async fn run_agent_turn_with_interrupts(
     images: &[ImageData],
     agent_subscriber: &mut Subscriber<MessageEvent>,
     reload_rx: &mut tokio::sync::watch::Receiver<ReloadSignal>,
+    subconscious: Option<Arc<crate::subconscious::Subconscious>>,
 ) -> (anyhow::Result<Vec<String>>, Vec<Interrupt>) {
     let (interrupt_tx, mut interrupt_rx) = mpsc::channel::<Interrupt>(32);
+    let watch = subconscious
+        .map(|s| crate::subconscious::SubconsciousWatch::new(s, interrupt_tx.clone()));
     let turn_result = {
         let mut turn = std::pin::pin!(agent.process_message(
             content,
@@ -182,6 +191,7 @@ async fn run_agent_turn_with_interrupts(
             prompt_ctx,
             &mut interrupt_rx,
             images,
+            watch.as_ref(),
         ));
         loop {
             tokio::select! {
@@ -291,6 +301,8 @@ pub async fn handle_inbound_message(
         &message.images,
         &mut rt.agent_subscriber,
         &mut rt.reload_rx,
+        (!is_background && rt.subconscious.mid_turn_enabled())
+            .then(|| Arc::clone(&rt.subconscious)),
     )
     .await;
 

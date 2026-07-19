@@ -247,6 +247,7 @@ pub(crate) async fn execute_subagent(
         tool_activity_endpoint: None,
         correlation_id: "",
     };
+    // Sub-agent turns are not watched by the subconscious (main agent only).
     let mut texts: Vec<String> = execute_turn(
         &turn_resources,
         &memory_ctx,
@@ -255,6 +256,7 @@ pub(crate) async fn execute_subagent(
         &events,
         None,
         &mut interrupt_rx,
+        None,
     )
     .await?;
 
@@ -336,6 +338,7 @@ async fn ensure_project_deactivated(
         &deactivation_events,
         None,
         &mut deactivation_interrupt_rx,
+        None,
     )
     .await
     {

@@ -9,6 +9,9 @@
 
 mod parse;
 mod prompt;
+mod watch;
+
+pub use watch::SubconsciousWatch;
 
 use anyhow::Context;
 use serde::Deserialize;

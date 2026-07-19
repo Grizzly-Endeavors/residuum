@@ -64,6 +64,10 @@ pub(crate) struct TurnResources<'a> {
 /// emitted alongside tool calls are sent via `reply` in real-time but not
 /// included in the return value.
 #[tracing::instrument(skip_all, fields(operation = "execute_turn"))]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "turn execution context spans resources, contexts, and watchers"
+)]
 pub(crate) async fn execute_turn(
     resources: &TurnResources<'_>,
     memory_ctx: &MemoryContext<'_>,
@@ -72,9 +76,12 @@ pub(crate) async fn execute_turn(
     events: &EventContext<'_>,
     status_line: Option<&StatusLine>,
     interrupt_rx: &mut mpsc::Receiver<Interrupt>,
+    subconscious: Option<&crate::subconscious::SubconsciousWatch>,
 ) -> anyhow::Result<Vec<String>> {
     let mut texts: Vec<String> = Vec::new();
     let mut empty_retries: u32 = 0;
+    // Includes the triggering user message pushed just before this call.
+    let turn_start = recent_messages.len().saturating_sub(1);
 
     for iteration in 0..MAX_TOOL_ITERATIONS {
         drain_interrupts(interrupt_rx, recent_messages);
@@ -162,6 +169,12 @@ pub(crate) async fn execute_turn(
             Some(response.tool_calls.clone()),
         ));
 
+        // Classification runs concurrently with tool execution; a correction
+        // lands at a later drain_interrupts poll.
+        if let Some(watch) = subconscious {
+            watch.maybe_spawn(iteration, recent_messages.messages_since(turn_start).to_vec());
+        }
+
         for tool_call in &response.tool_calls {
             execute_tool(tool_call, resources, &filter, recent_messages, events).await;
         }
@@ -190,6 +203,10 @@ fn drain_interrupts(
                     "injecting background result mid-turn"
                 );
                 recent_messages.push(Message::user(result.format_for_agent()));
+            }
+            Interrupt::Subconscious(content) => {
+                tracing::info!("injecting subconscious correction mid-turn");
+                recent_messages.push(Message::system(content));
             }
         }
     }
@@ -285,5 +302,32 @@ fn log_usage(response: &ModelResponse) {
         );
     } else {
         tracing::debug!("token usage not available in response");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::models::Role;
+
+    #[test]
+    fn drain_injects_subconscious_correction_as_system_message() {
+        let (tx, mut rx) = mpsc::channel::<Interrupt>(4);
+        let mut recent = RecentMessages::new();
+
+        tx.try_send(Interrupt::Subconscious(
+            "[Subconscious] Save the preference.".to_string(),
+        ))
+        .ok();
+        drain_interrupts(&mut rx, &mut recent);
+
+        assert_eq!(recent.len(), 1, "one message should be injected");
+        let msg = recent.messages().first();
+        assert_eq!(msg.map(|m| m.role), Some(Role::System));
+        assert_eq!(
+            msg.map(|m| m.content.as_str()),
+            Some("[Subconscious] Save the preference."),
+            "correction content should be preserved"
+        );
     }
 }

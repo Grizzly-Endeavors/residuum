@@ -218,6 +218,7 @@ impl Agent {
             tool_activity_endpoint,
             correlation_id: "",
         };
+        // Wake turns are background-initiated and are not watched (loop prevention).
         execute_turn(
             &resources,
             &memory_ctx,
@@ -226,6 +227,7 @@ impl Agent {
             &events,
             Some(&status_line),
             interrupt_rx,
+            None,
         )
         .await
     }
@@ -255,6 +257,7 @@ impl Agent {
         prompt_ctx: &PromptContext<'_>,
         interrupt_rx: &mut tokio::sync::mpsc::Receiver<interrupt::Interrupt>,
         images: &[crate::models::ImageData],
+        subconscious: Option<&crate::subconscious::SubconsciousWatch>,
     ) -> anyhow::Result<Vec<String>> {
         tracing::debug!("processing user message");
         let now = crate::time::now_local(self.tz);
@@ -299,6 +302,7 @@ impl Agent {
             &events,
             Some(&status_line),
             interrupt_rx,
+            subconscious,
         )
         .await
     }
@@ -353,6 +357,7 @@ impl Agent {
             correlation_id: "",
         };
         // System turns don't inject time context (no user-facing timestamps)
+        // and are not watched by the subconscious (loop prevention).
         let mut texts = execute_turn(
             &resources,
             &memory_ctx,
@@ -361,6 +366,7 @@ impl Agent {
             &events,
             None,
             &mut sys_interrupt_rx,
+            None,
         )
         .await?;
 
@@ -524,6 +530,7 @@ mod tests {
                 &PromptContext::default(),
                 &mut irx,
                 &[],
+                None,
             )
             .await
             .unwrap();
@@ -575,6 +582,7 @@ mod tests {
                 &PromptContext::default(),
                 &mut irx,
                 &[],
+                None,
             )
             .await
             .unwrap();
@@ -631,6 +639,7 @@ mod tests {
                 &PromptContext::default(),
                 &mut irx,
                 &[],
+                None,
             )
             .await
             .unwrap();
@@ -688,6 +697,7 @@ mod tests {
                 &PromptContext::default(),
                 &mut irx,
                 &[],
+                None,
             )
             .await;
         assert!(result.is_err(), "should error after max iterations");
@@ -1110,6 +1120,7 @@ mod tests {
                 &PromptContext::default(),
                 &mut interrupt_rx,
                 &[],
+                None,
             )
             .await
             .unwrap();
@@ -1184,6 +1195,7 @@ mod tests {
                 &PromptContext::default(),
                 &mut interrupt_rx,
                 &[],
+                None,
             )
             .await
             .unwrap();
@@ -1246,6 +1258,7 @@ mod tests {
                 &PromptContext::default(),
                 &mut interrupt_rx,
                 &[],
+                None,
             )
             .await
             .unwrap();
@@ -1292,6 +1305,7 @@ mod tests {
                 &PromptContext::default(),
                 &mut irx,
                 &[],
+                None,
             )
             .await;
         assert!(result.is_err(), "empty response should return error");
