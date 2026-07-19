@@ -134,6 +134,65 @@
     </div>
 
     <div class="settings-group">
+      <div class="settings-group-label">Subconscious</div>
+      <div class="field-hint">
+        A small model that watches conversations and steers the agent when it drifts from its
+        instructions. Off by default — it adds a classifier call per evaluated turn. Assign a cheap
+        model to the <code>subconscious</code> role in the Providers panel.
+      </div>
+      <div class="settings-field">
+        <label>
+          <span class="toggle-switch">
+            <input type="checkbox" bind:checked={fields.subconscious_enabled} />
+            <span class="toggle-slider"></span>
+          </span>
+          Subconscious Enabled
+        </label>
+      </div>
+      {#if fields.subconscious_enabled}
+        <div class="settings-field">
+          <label>
+            <span class="toggle-switch">
+              <input type="checkbox" bind:checked={fields.subconscious_mid_turn} />
+              <span class="toggle-slider"></span>
+            </span>
+            Watch Mid-Turn
+          </label>
+          <div class="field-hint">
+            Also evaluate during the agent's tool loop, not just after the turn ends.
+          </div>
+        </div>
+        <div class="settings-field">
+          <label for="rt-sub-every-n">Mid-Turn Cadence (iterations)</label>
+          <input
+            id="rt-sub-every-n"
+            type="number"
+            bind:value={fields.subconscious_every_n_iterations}
+            placeholder="Default: 3"
+          />
+        </div>
+        <div class="settings-field">
+          <label for="rt-sub-max-interventions">Max Interventions Per Turn</label>
+          <input
+            id="rt-sub-max-interventions"
+            type="number"
+            bind:value={fields.subconscious_max_interventions_per_turn}
+            placeholder="Default: 1"
+          />
+        </div>
+        <div class="settings-field">
+          <label for="rt-sub-max-transcript">Max Transcript Tokens</label>
+          <input
+            id="rt-sub-max-transcript"
+            type="number"
+            bind:value={fields.subconscious_max_transcript_tokens}
+            placeholder="Default: 12000"
+          />
+        </div>
+      {/if}
+    </div>
+
+    <div class="settings-group">
       <div class="settings-group-label">Retry</div>
       <div class="settings-field">
         <label for="rt-retry-max-retries">Max Retries</label>

@@ -37,6 +37,12 @@ export interface ConfigFields {
   gateway_port: string;
   // pulse
   pulse_enabled: boolean;
+  // subconscious
+  subconscious_enabled: boolean;
+  subconscious_mid_turn: boolean;
+  subconscious_every_n_iterations: string;
+  subconscious_max_interventions_per_turn: string;
+  subconscious_max_transcript_tokens: string;
   // background
   bg_max_concurrent: string;
   bg_transcript_retention_days: string;
@@ -100,6 +106,11 @@ export function defaultConfigFields(): ConfigFields {
     gateway_bind: "",
     gateway_port: "",
     pulse_enabled: true,
+    subconscious_enabled: false,
+    subconscious_mid_turn: true,
+    subconscious_every_n_iterations: "",
+    subconscious_max_interventions_per_turn: "",
+    subconscious_max_transcript_tokens: "",
     bg_max_concurrent: "",
     bg_transcript_retention_days: "",
     retry_max_retries: "",
@@ -186,6 +197,15 @@ export function parseConfigToml(raw: string): ConfigFields {
   const pulse = doc.pulse as Record<string, unknown> | undefined;
   if (pulse) {
     fields.pulse_enabled = bool(pulse.enabled, true);
+  }
+
+  const subconscious = doc.subconscious as Record<string, unknown> | undefined;
+  if (subconscious) {
+    fields.subconscious_enabled = bool(subconscious.enabled, false);
+    fields.subconscious_mid_turn = bool(subconscious.mid_turn, true);
+    fields.subconscious_every_n_iterations = str(subconscious.every_n_iterations);
+    fields.subconscious_max_interventions_per_turn = str(subconscious.max_interventions_per_turn);
+    fields.subconscious_max_transcript_tokens = str(subconscious.max_transcript_tokens);
   }
 
   const bg = doc.background as Record<string, unknown> | undefined;
@@ -317,6 +337,7 @@ export function defaultModels(): SettingsModelAssignments {
     observer: "",
     reflector: "",
     pulse: "",
+    subconscious: "",
     embedding: "",
     bgSmall: "",
     bgMedium: "",
@@ -327,6 +348,7 @@ export function defaultModels(): SettingsModelAssignments {
       observer: defaultOverrides(),
       reflector: defaultOverrides(),
       pulse: defaultOverrides(),
+      subconscious: defaultOverrides(),
       bgSmall: defaultOverrides(),
       bgMedium: defaultOverrides(),
       bgLarge: defaultOverrides(),
@@ -366,6 +388,7 @@ export function parseProvidersToml(raw: string): ProvidersFormState {
       ["observer", "observer"],
       ["reflector", "reflector"],
       ["pulse", "pulse"],
+      ["subconscious", "subconscious"],
     ] as const) {
       const val = models[tomlKey];
       result.models[formKey as ModelRoleKey] = modelStr(val);
@@ -476,6 +499,22 @@ export function serializeConfigToml(f: ConfigFields): string {
     lines.push("");
     lines.push("[pulse]");
     lines.push("enabled = false");
+  }
+
+  // subconscious — opt-in, so only emit when enabled or a knob is non-default
+  const subLines: string[] = [];
+  if (f.subconscious_enabled) subLines.push("enabled = true");
+  if (!f.subconscious_mid_turn) subLines.push("mid_turn = false");
+  if (f.subconscious_every_n_iterations)
+    subLines.push(`every_n_iterations = ${f.subconscious_every_n_iterations}`);
+  if (f.subconscious_max_interventions_per_turn)
+    subLines.push(`max_interventions_per_turn = ${f.subconscious_max_interventions_per_turn}`);
+  if (f.subconscious_max_transcript_tokens)
+    subLines.push(`max_transcript_tokens = ${f.subconscious_max_transcript_tokens}`);
+  if (subLines.length > 0) {
+    lines.push("");
+    lines.push("[subconscious]");
+    lines.push(...subLines);
   }
 
   // memory
@@ -723,6 +762,7 @@ export function serializeProvidersToml(
     ["observer", "observer"],
     ["reflector", "reflector"],
     ["pulse", "pulse"],
+    ["subconscious", "subconscious"],
   ] as const) {
     const val = models[formKey as ModelRoleKey];
     if (val) modelLines.push(serializeModelLine(tomlKey, val, models.overrides[formKey]));
