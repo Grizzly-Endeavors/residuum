@@ -2,6 +2,19 @@
 
 Heartbeats are periodic background checks defined in `HEARTBEAT.yml`. The pulse scheduler evaluates them on a 60-second tick and fires due pulses as background tasks.
 
+## Built-in Pulses
+
+Two pulses ship enabled by default in every workspace's `HEARTBEAT.yml`:
+
+| Pulse | Schedule | Agent | What it does |
+|-------|----------|-------|---------------|
+| `reflection` | `7d` | `introspection` | Reviews recent episodes/observations for patterns (repeated manual tasks, recurring topics, unfinished requests, friction) and delivers findings via `user_inbox_add`. |
+| `memory_tending` | `24h`, active `02:00-06:00` | `introspection` | Reconciles `MEMORY.md`/`USER.md` against recent episode evidence — adds durable facts, corrects or removes stale entries. |
+
+Both route to the `introspection` subagent preset (see `subagents/introspection.md`), which runs at `model_tier: large` and includes full identity context (`include_identity: true`) so it has SOUL.md/AGENTS.md/MEMORY.md available when judging what to tend. It edits MEMORY.md/USER.md directly but only *proposes* SOUL.md/AGENTS.md changes in its inbox delivery — it cannot edit those files itself.
+
+To disable either, set `enabled: false` on the pulse (don't delete it — the block documents what it does). To tune frequency or scope, edit the `schedule`, `active_hours`, or task prompts directly. A commented-out block of additional starter pulses (`inbox_check`, `morning_briefing`, `nightly_review`) follows the built-ins in the default file — optional add-ons, not enabled by default.
+
 ## HEARTBEAT.yml Format
 
 ```yaml
@@ -27,7 +40,7 @@ pulses:
   - name: monitor-deploys
     enabled: true
     schedule: 1h
-    agent: deploy-watcher    # Any other string → SubAgent with named preset from subagents/
+    agent: deploy-watcher    # Any other string → SubAgent with named preset from subagents/, using the preset's own model_tier
     trigger_count: 5         # Max 5 firings per active period
     tasks:
       - name: check_status
@@ -45,6 +58,8 @@ Durations are a number followed by a unit suffix:
 | `h` | hours |
 | `d` | days |
 
+Multi-day intervals work the same way — `"7d"` for a weekly pulse, e.g.
+
 ## Active Hours
 
 - Format: `"HH:MM-HH:MM"` in the configured timezone.
@@ -59,7 +74,7 @@ The `agent` field controls how the pulse executes:
 |-------|-----------|------------|
 | `~` (null) | SubAgent | Small |
 | `"main"` | MainWakeTurn (main agent conversation) | Main model |
-| `"<preset-name>"` | SubAgent with preset from `subagents/` | Small (default) |
+| `"<preset-name>"` | SubAgent with preset from `subagents/` | Preset's own `model_tier` (from its frontmatter) |
 
 ## Behavior
 

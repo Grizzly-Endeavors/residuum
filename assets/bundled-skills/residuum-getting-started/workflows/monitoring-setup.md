@@ -1,12 +1,12 @@
 # Workflow: Monitoring Setup
 
-Walk the user through heartbeats and notification routing. Build on whatever was already configured during Quick Setup — the user may already have starter pulses (inbox_check, morning_briefing, nightly_review) enabled. Don't re-explain what's already running; acknowledge it and expand from there.
+Walk the user through heartbeats and notification routing. Build on whatever was already configured during Quick Setup — the built-in `reflection` and `memory_tending` pulses run by default, and the user may also have starter pulses (inbox_check, morning_briefing, nightly_review) enabled if they opted into more proactivity. Don't re-explain what's already running; acknowledge it and expand from there.
 
 **Remember**: Write to `USER.md` and `MEMORY.md` as you learn things throughout this workflow — don't save it all for the end.
 
 ## Step 1: Review What's Already Running and Ask What Else to Monitor
 
-Start by checking `HEARTBEAT.yml` to see what's already enabled. Briefly acknowledge it: "You've already got [X] running from our initial setup. Let's talk about what else you want me to keep an eye on."
+Start by checking `HEARTBEAT.yml` to see what's already enabled. Briefly acknowledge it: "You've already got [X] running — [built-in self-maintenance, plus whatever starter pulses from our initial setup]. Let's talk about what else you want me to keep an eye on."
 
 Ask the user what they would like monitored. Listen for:
 - Server or service health checks

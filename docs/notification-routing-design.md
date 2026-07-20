@@ -7,6 +7,15 @@
 > details below are outdated — see `reference-mats/io-routing-refactor-plan.md`
 > for the current design. This document is kept for historical context and
 > will be rewritten.
+>
+> **As-built correction (2026-07-20):** the single "inbox" described below is,
+> as implemented, the **agent** inbox (`inbox/agent/`) — the router's `inbox`
+> channel target writes there. There is a second, separate **user** inbox
+> (`inbox/user/`, written via the `user_inbox_add` tool, consumed through the
+> web UI) that this document does not describe. There is also no unread-count
+> surfaced in the agent's context/status line; the "You have 3 unread inbox
+> items" example below does not reflect current behavior. See
+> `docs/systems-usage/inbox.md` for the authoritative reference.
 
 ## Overview (outdated)
 

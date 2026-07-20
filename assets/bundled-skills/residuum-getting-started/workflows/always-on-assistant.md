@@ -4,7 +4,7 @@ This is the power-user path. Walk the user through a full setup that turns you i
 
 **Remember**: Write to `USER.md` and `MEMORY.md` as you learn things throughout this workflow — don't save it all for the end.
 
-**Build on Quick Setup**: The user already has starter pulses configured and you know their proactivity level and communication preferences. Don't re-cover ground — acknowledge what's running and expand from there.
+**Build on Quick Setup**: The built-in `reflection` and `memory_tending` pulses are already running, the user may have starter pulses configured on top depending on the proactivity level they chose, and you know their communication preferences. Don't re-cover ground — acknowledge what's running and expand from there.
 
 ## Step 1: MCP Server Setup for Integrations
 
@@ -40,7 +40,7 @@ Help the user install any MCP server binaries they need. Common ones are availab
 
 ## Step 2: Heartbeat Configuration
 
-Now that external services are connected, set up recurring checks for them. The user may already have starter pulses running from Quick Setup (inbox_check, morning_briefing, nightly_review). Build on those — don't overwrite them.
+Now that external services are connected, set up recurring checks for them. Besides the built-in `reflection` and `memory_tending` pulses, the user may already have starter pulses running from Quick Setup (inbox_check, morning_briefing, nightly_review). Build on those — don't overwrite them.
 
 For each MCP server the user configured, suggest a corresponding heartbeat pulse. Add new pulses to `HEARTBEAT.yml` alongside any existing ones:
 ```yaml
