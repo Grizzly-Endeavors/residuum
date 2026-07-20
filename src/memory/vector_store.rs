@@ -448,8 +448,7 @@ fn search_obs_table(
 
     let limit_i64 = i64::try_from(limit).unwrap_or(i64::MAX);
 
-    let conn_ref = conn;
-    let mut stmt = conn_ref
+    let mut stmt = conn
         .prepare_cached(&sql)
         .context("failed to prepare obs search")?;
 

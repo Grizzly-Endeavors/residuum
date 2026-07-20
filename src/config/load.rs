@@ -83,13 +83,9 @@ impl Config {
         };
 
         let loaded_providers_path = find_providers_path(config_dir)?;
-        let providers_config = Some(load_providers(&loaded_providers_path)?);
+        let providers = load_providers(&loaded_providers_path)?;
 
-        let cfg = resolve::from_file_and_env(
-            file_config.as_ref(),
-            providers_config.as_ref(),
-            config_dir,
-        )?;
+        let cfg = resolve::from_file_and_env(file_config.as_ref(), Some(&providers), config_dir)?;
         tracing::info!(
             config = %config_path.display(),
             providers = %loaded_providers_path.display(),
@@ -389,7 +385,7 @@ main = "invalid-format"
         write_providers(dir.path());
         std::fs::write(dir.path().join("config.toml"), VALID_CONFIG).unwrap();
         let cfg = Config::load_at(dir.path()).unwrap();
-        assert_eq!(cfg.idle.timeout, std::time::Duration::from_secs(30 * 60));
+        assert_eq!(cfg.idle.timeout, std::time::Duration::from_mins(30));
         assert!(cfg.idle.idle_channel.is_none());
     }
 
@@ -410,7 +406,7 @@ main = "invalid-format"
         let toml = "timezone = \"UTC\"\n\n[telegram]\ntoken = \"test-token\"\n\n[idle]\ntimeout_minutes = 15\nidle_channel = \"telegram\"\n";
         std::fs::write(dir.path().join("config.toml"), toml).unwrap();
         let cfg = Config::load_at(dir.path()).unwrap();
-        assert_eq!(cfg.idle.timeout, std::time::Duration::from_secs(15 * 60));
+        assert_eq!(cfg.idle.timeout, std::time::Duration::from_mins(15));
         assert_eq!(cfg.idle.idle_channel.as_deref(), Some("telegram"));
     }
 

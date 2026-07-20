@@ -179,7 +179,14 @@ impl PulseScheduler {
 
         let is_overnight = window_start > window_end;
         let crossed_boundary = if is_overnight {
-            !is_within_active_hours(*last, window_start, window_end)
+            let anchor = |dt: NaiveDateTime| {
+                if dt.time() >= window_start {
+                    dt.date()
+                } else {
+                    dt.date().pred_opt().unwrap_or(dt.date())
+                }
+            };
+            !is_within_active_hours(*last, window_start, window_end) || anchor(now) != anchor(*last)
         } else {
             !is_within_active_hours(*last, window_start, window_end) || now.date() != last.date()
         };
@@ -225,7 +232,7 @@ fn compute_effective_interval(
                 tracing::warn!(
                     pulse = %pulse.name,
                     trigger_count = tc,
-                    "trigger_count exceeds i32::MAX, spacing collapsed to near-zero; pulse will fire at schedule rate"
+                    "trigger_count exceeds i32::MAX, falling back to schedule interval"
                 );
                 return duration;
             };

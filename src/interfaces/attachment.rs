@@ -78,8 +78,8 @@ impl FileAttachment {
 
 /// Check if a content type is a supported image format for inline encoding.
 #[must_use]
-pub fn is_supported_image(content_type: Option<&str>) -> bool {
-    content_type.is_some_and(|ct| SUPPORTED_IMAGE_TYPES.contains(&ct))
+pub fn is_supported_image(content_type: &str) -> bool {
+    SUPPORTED_IMAGE_TYPES.contains(&content_type)
 }
 
 /// Base64-encode an image file from disk.
@@ -140,14 +140,14 @@ pub async fn download_attachment(
 
     let response = reqwest::get(url)
         .await
-        .map_err(|e| format!("failed to download attachment '{}': {e}", info.filename,))?
+        .map_err(|e| format!("failed to download attachment '{}': {e}", info.filename))?
         .error_for_status()
-        .map_err(|e| format!("failed to download attachment '{}': {e}", info.filename,))?;
+        .map_err(|e| format!("failed to download attachment '{}': {e}", info.filename))?;
 
     let bytes = response
         .bytes()
         .await
-        .map_err(|e| format!("failed to read attachment body '{}': {e}", info.filename,))?;
+        .map_err(|e| format!("failed to read attachment body '{}': {e}", info.filename))?;
 
     tokio::fs::write(&local_path, &bytes).await.map_err(|e| {
         format!(
@@ -201,7 +201,7 @@ pub async fn finalize_attachment(
     content.push_str(&line);
 
     let image = match info.content_type.as_deref() {
-        Some(ct) if is_supported_image(Some(ct)) => {
+        Some(ct) if is_supported_image(ct) => {
             if info.size <= MAX_IMAGE_INLINE_SIZE {
                 match encode_image_from_file(&saved.local_path, ct).await {
                     Ok(img) => Some(img),
@@ -404,29 +404,13 @@ mod tests {
 
     #[test]
     fn is_supported_image_types() {
+        assert!(is_supported_image("image/jpeg"), "jpeg should be supported");
+        assert!(is_supported_image("image/png"), "png should be supported");
+        assert!(is_supported_image("image/gif"), "gif should be supported");
+        assert!(is_supported_image("image/webp"), "webp should be supported");
         assert!(
-            is_supported_image(Some("image/jpeg")),
-            "jpeg should be supported"
-        );
-        assert!(
-            is_supported_image(Some("image/png")),
-            "png should be supported"
-        );
-        assert!(
-            is_supported_image(Some("image/gif")),
-            "gif should be supported"
-        );
-        assert!(
-            is_supported_image(Some("image/webp")),
-            "webp should be supported"
-        );
-        assert!(
-            !is_supported_image(Some("application/pdf")),
+            !is_supported_image("application/pdf"),
             "pdf should not be supported"
-        );
-        assert!(
-            !is_supported_image(None),
-            "None content type should not be supported"
         );
     }
 

@@ -78,15 +78,6 @@ fn validate_name(name: &str) -> Result<(), FatalError> {
     Ok(())
 }
 
-fn write_file(
-    path: &std::path::Path,
-    content: impl AsRef<[u8]>,
-    desc: &str,
-) -> Result<(), FatalError> {
-    std::fs::write(path, content)
-        .map_err(|e| FatalError::Config(format!("failed to write {desc}: {e}")))
-}
-
 fn bootstrap_agent_workspace(name: &str, agent_dir: &std::path::Path) -> Result<(), FatalError> {
     let ws_config_dir = agent_dir.join("workspace").join("config");
 
@@ -102,20 +93,19 @@ fn bootstrap_agent_workspace(name: &str, agent_dir: &std::path::Path) -> Result<
     // so that user edits to mcp.json and channels.toml survive re-creation.
     if !ws_config_dir.join("mcp.json").exists() {
         trace!(agent = name, "writing mcp.json");
-        write_file(
-            &ws_config_dir.join("mcp.json"),
-            "{ \"mcpServers\": {} }\n",
-            "mcp.json",
-        )?;
+        let path = ws_config_dir.join("mcp.json");
+        std::fs::write(&path, "{ \"mcpServers\": {} }\n")
+            .map_err(|e| FatalError::Config(format!("failed to write mcp.json: {e}")))?;
     }
 
     if !ws_config_dir.join("channels.toml").exists() {
         trace!(agent = name, "writing channels.toml");
-        write_file(
-            &ws_config_dir.join("channels.toml"),
+        let path = ws_config_dir.join("channels.toml");
+        std::fs::write(
+            &path,
             "# Notification channel configuration. See channels.example.toml for options.\n",
-            "channels.toml",
-        )?;
+        )
+        .map_err(|e| FatalError::Config(format!("failed to write channels.toml: {e}")))?;
     }
 
     Ok(())
@@ -163,11 +153,8 @@ fn run_agent_create(name: &str) -> Result<(), FatalError> {
          [gateway]\n\
          port = {port}\n",
     );
-    write_file(
-        &agent_dir.join("config.toml"),
-        config_content,
-        "agent config.toml",
-    )?;
+    std::fs::write(agent_dir.join("config.toml"), config_content)
+        .map_err(|e| FatalError::Config(format!("failed to write agent config.toml: {e}")))?;
 
     // Write example files for reference
     trace!(agent = name, "bootstrapping example files");

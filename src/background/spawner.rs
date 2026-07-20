@@ -11,7 +11,7 @@ use tokio_util::sync::CancellationToken;
 use super::subagent::{
     SubAgentOutput, SubAgentResources, execute_subagent, force_deactivate_project,
 };
-use super::types::{ActiveTaskInfo, BackgroundResult, BackgroundTask, execution_info};
+use super::types::{ActiveTaskInfo, BackgroundResult, BackgroundTask, truncate_prompt_preview};
 use crate::bus::AgentResultStatus;
 use crate::mcp::SharedMcpRegistry;
 use crate::models::Message;
@@ -73,7 +73,7 @@ impl BackgroundTaskSpawner {
         let child_token = token.clone();
         let spawn_task_id = task_id.clone();
 
-        let prompt_preview = execution_info(&task.subagent_config);
+        let prompt_preview = truncate_prompt_preview(&task.subagent_config.prompt);
         let active_info = ActiveTaskInfo {
             source_label: task.source_label.clone(),
             source: task.source.clone(),
@@ -212,37 +212,34 @@ async fn build_cancelled_result(
     }
 }
 
+enum CompletedOrFailed {
+    Completed(String),
+    Failed(String),
+}
+
 /// Build a `BackgroundResult` from a completed (or failed) task execution.
 async fn build_completed_result(
     task: &BackgroundTask,
     outcome: Result<SubAgentOutput, anyhow::Error>,
     background_dir: &std::path::Path,
 ) -> BackgroundResult {
-    let (status, summary, messages) = match outcome {
+    let (cf, messages) = match outcome {
         Ok(SubAgentOutput { summary, messages }) => {
-            (AgentResultStatus::Completed, summary, Some(messages))
+            (CompletedOrFailed::Completed(summary), Some(messages))
         }
         Err(e) => {
             let error_msg = e.to_string();
             tracing::warn!(task_id = %task.id, source_label = %task.source_label, error = %e, "background task failed");
-            (
-                AgentResultStatus::Failed { error: error_msg },
-                String::new(),
-                None,
-            )
+            (CompletedOrFailed::Failed(error_msg), None)
         }
     };
 
-    if matches!(status, AgentResultStatus::Completed) {
+    if matches!(cf, CompletedOrFailed::Completed(_)) {
         tracing::info!(task_id = %task.id, source_label = %task.source_label, "background task completed");
     }
 
-    let transcript_summary = match &status {
-        AgentResultStatus::Failed { error } => error.as_str(),
-        AgentResultStatus::Completed => &summary,
-        AgentResultStatus::Cancelled => {
-            unreachable!("Cancelled is only produced by build_cancelled_result")
-        }
+    let transcript_summary = match &cf {
+        CompletedOrFailed::Completed(s) | CompletedOrFailed::Failed(s) => s.as_str(),
     };
     let transcript_path = write_transcript(
         background_dir,
@@ -251,6 +248,11 @@ async fn build_completed_result(
         messages.as_deref(),
     )
     .await;
+
+    let (status, summary) = match cf {
+        CompletedOrFailed::Completed(s) => (AgentResultStatus::Completed, s),
+        CompletedOrFailed::Failed(e) => (AgentResultStatus::Failed { error: e }, String::new()),
+    };
 
     BackgroundResult {
         id: task.id.clone(),
@@ -478,7 +480,7 @@ mod tests {
                 _tools: &[ToolDefinition],
                 _options: &CompletionOptions,
             ) -> Result<ModelResponse, ModelError> {
-                tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+                tokio::time::sleep(std::time::Duration::from_mins(1)).await;
                 Err(ModelError::Api("cancelled".into()))
             }
 

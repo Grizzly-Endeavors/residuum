@@ -78,10 +78,10 @@ pub fn acquire_pid_lock(path: &Path) -> Result<PidFileLock, FatalError> {
     guard
         .set_len(0)
         .map_err(|e| FatalError::Gateway(format!("failed to truncate pid file: {e}")))?;
-    write!(guard, "{}", std::process::id())
+    let pid = std::process::id();
+    write!(guard, "{pid}")
         .map_err(|e| FatalError::Gateway(format!("failed to write pid to lock file: {e}")))?;
 
-    let pid = std::process::id();
     tracing::debug!(path = %path.display(), pid, "acquired pid file lock");
 
     Ok(PidFileLock { _guard: guard })
@@ -164,22 +164,6 @@ pub fn pid_file_path() -> Result<PathBuf, FatalError> {
     dirs::home_dir()
         .map(|h| h.join(".residuum").join("residuum.pid"))
         .ok_or_else(|| FatalError::Config("could not determine home directory".to_string()))
-}
-
-/// Write a PID to the given file path.
-///
-/// Creates parent directories if needed.
-///
-/// # Errors
-///
-/// Returns `FatalError::Gateway` if the file cannot be written.
-pub fn write_pid_file(path: &Path, pid: u32) -> Result<(), FatalError> {
-    ensure_parent_dir(path)?;
-    std::fs::write(path, pid.to_string()).map_err(|e| {
-        FatalError::Gateway(format!("failed to write pid file {}: {e}", path.display()))
-    })?;
-    tracing::debug!(path = %path.display(), pid, "wrote pid file");
-    Ok(())
 }
 
 /// Read a PID from the given file path.
@@ -384,7 +368,7 @@ mod tests {
         let pid_path = dir.path().join("test.pid");
 
         // Write a PID file without acquiring a lock
-        write_pid_file(&pid_path, 99999).unwrap();
+        std::fs::write(&pid_path, "99999").unwrap();
 
         assert!(
             !is_pid_locked(&pid_path).unwrap(),

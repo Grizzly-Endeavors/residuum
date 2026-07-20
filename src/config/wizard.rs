@@ -147,13 +147,10 @@ pub fn from_flags(
 
     // Validate web search backend if provided
     let web_search_backend = if let Some(backend) = web_search_backend {
-        match backend {
-            "brave" | "tavily" | "ollama" => {}
-            other => {
-                return Err(FatalError::Config(format!(
-                    "invalid web search backend '{other}': must be brave, tavily, or ollama"
-                )));
-            }
+        if !matches!(backend, "brave" | "tavily" | "ollama") {
+            return Err(FatalError::Config(format!(
+                "invalid web search backend '{backend}': must be brave, tavily, or ollama"
+            )));
         }
         if (backend == "brave" || backend == "tavily") && web_search_api_key.is_none() {
             tracing::warn!(

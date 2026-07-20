@@ -56,7 +56,7 @@ pub async fn append_observations(
 ) -> anyhow::Result<()> {
     let mut log = load_observation_log(path).await?;
     for obs in observations {
-        log.push(obs);
+        log.observations.push(obs);
     }
     save_observation_log(path, &log).await
 }
@@ -98,12 +98,12 @@ mod tests {
         let path = dir.path().join("observations.json");
 
         let mut log = ObservationLog::new();
-        log.push(sample_observation("ep-001"));
+        log.observations.push(sample_observation("ep-001"));
 
         save_observation_log(&path, &log).await.unwrap();
         let loaded = load_observation_log(&path).await.unwrap();
 
-        assert_eq!(loaded.len(), 1, "should load one observation");
+        assert_eq!(loaded.observations.len(), 1, "should load one observation");
         assert_eq!(
             loaded
                 .observations
@@ -120,7 +120,10 @@ mod tests {
         let path = dir.path().join("nonexistent.json");
 
         let log = load_observation_log(&path).await.unwrap();
-        assert!(log.is_empty(), "missing file should return empty log");
+        assert!(
+            log.observations.is_empty(),
+            "missing file should return empty log"
+        );
     }
 
     #[tokio::test]
@@ -133,7 +136,11 @@ mod tests {
             .unwrap();
 
         let log = load_observation_log(&path).await.unwrap();
-        assert_eq!(log.len(), 1, "should have one observation after append");
+        assert_eq!(
+            log.observations.len(),
+            1,
+            "should have one observation after append"
+        );
     }
 
     #[tokio::test]
@@ -150,7 +157,7 @@ mod tests {
 
         let log = load_observation_log(&path).await.unwrap();
         assert_eq!(
-            log.len(),
+            log.observations.len(),
             2,
             "should have two observations after two appends"
         );

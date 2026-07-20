@@ -68,10 +68,18 @@ pub(super) async fn api_provider_models(
         req.api_key
     };
 
-    let client = reqwest::Client::builder()
+    let client = match reqwest::Client::builder()
         .timeout(Duration::from_secs(10))
         .build()
-        .unwrap_or_default();
+    {
+        Ok(c) => c,
+        Err(e) => {
+            return Json(ModelsResponse {
+                models: Vec::new(),
+                error: Some(format!("failed to build HTTP client: {e}")),
+            });
+        }
+    };
 
     let result = match req.provider.as_str() {
         "anthropic" => {

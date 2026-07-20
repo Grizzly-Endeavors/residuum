@@ -329,16 +329,7 @@ pub(super) async fn api_workspace_file_write(
         ));
     }
 
-    // Determine write target: prefer validate_workspace_path for existing files
-    // (cheaper, no parent lookup), fall back to validate_workspace_path_for_write
-    // for new files.
-    let target_path = match validate_workspace_path(&state.workspace_dir, relative) {
-        Ok(p) => p,
-        Err((StatusCode::NOT_FOUND, _)) => {
-            validate_workspace_path_for_write(&state.workspace_dir, relative)?
-        }
-        Err(e) => return Err(e),
-    };
+    let target_path = validate_workspace_path_for_write(&state.workspace_dir, relative)?;
 
     std::fs::write(&target_path, &req.content).map_err(|e| {
         (

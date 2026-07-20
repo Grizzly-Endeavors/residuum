@@ -40,7 +40,7 @@ pub(super) fn parse_reflection_response(content: &str, tz: Tz) -> anyhow::Result
                 continue;
             }
             let timestamp = crate::memory::parse_minute_timestamp(&item.timestamp, tz);
-            log.push(Observation {
+            log.observations.push(Observation {
                 timestamp,
                 project_context: item.project_context.clone(),
                 source_episodes: vec![],
@@ -96,7 +96,7 @@ pub(super) fn parse_reflection_response(content: &str, tz: Tz) -> anyhow::Result
             .and_then(|v| serde_json::from_value::<Visibility>(v.clone()).ok())
             .unwrap_or_default();
 
-        log.push(Observation {
+        log.observations.push(Observation {
             timestamp,
             project_context,
             source_episodes: vec![],

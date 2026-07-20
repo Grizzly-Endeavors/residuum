@@ -3184,6 +3184,7 @@ dependencies = [
  "tracing-appender",
  "tracing-subscriber",
  "ts-rs",
+ "url",
  "uuid",
  "windows-sys 0.59.0",
  "winrt-notification",

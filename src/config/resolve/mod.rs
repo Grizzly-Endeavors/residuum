@@ -276,15 +276,7 @@ fn resolve_cloud_config(
         return None;
     }
 
-    let token = std::env::var("RESIDUUM_CLOUD_TOKEN")
-        .ok()
-        .or_else(|| {
-            section
-                .token
-                .as_ref()
-                .and_then(|t| resolve_secret_value(t, secrets))
-        })
-        .filter(|t| !t.is_empty());
+    let token = resolve_bot_token("RESIDUUM_CLOUD_TOKEN", section.token.as_deref(), secrets);
 
     if let Some(tok) = token {
         let relay_url = section

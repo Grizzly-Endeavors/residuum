@@ -156,10 +156,7 @@ impl EventHandler for DiscordHandler {
             .and_then(|opt| opt.value.as_str())
             .map(str::to_string);
 
-        let command_ctx = CommandContext {
-            url: "",
-            verbose: false,
-        };
+        let command_ctx = CommandContext::default();
 
         let result = execute_command(cmd.data.name.as_str(), cmd_args.as_deref(), &command_ctx);
         drop(_span);

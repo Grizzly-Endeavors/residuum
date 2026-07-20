@@ -49,13 +49,14 @@ fn plural(n: i64, one: &'static str, many: &'static str) -> &'static str {
 #[must_use]
 pub fn format_relative_time(delta: TimeDelta) -> String {
     let total_secs = delta.num_seconds();
+    if total_secs < 0 {
+        warn!(
+            delta_secs = total_secs,
+            "format_relative_time received negative delta; caller passed timestamps in wrong order"
+        );
+        return "just now".to_string();
+    }
     if total_secs < 60 {
-        if total_secs < 0 {
-            warn!(
-                delta_secs = total_secs,
-                "format_relative_time received negative delta; caller passed timestamps in wrong order"
-            );
-        }
         return "just now".to_string();
     }
 

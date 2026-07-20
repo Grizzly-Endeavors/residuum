@@ -12,7 +12,7 @@ use crate::bus::{
     Publisher, ResponseEvent, SYSTEM_CHANNEL, Subscriber, TurnLifecycleEvent, topics,
 };
 
-use crate::gateway::types::{GatewayExit, GatewayRuntime, ReloadSignal};
+use crate::gateway::types::{GatewayRuntime, ReloadSignal};
 use crate::interfaces::types::{InboundMessage, MessageOrigin};
 use crate::memory::types::Visibility;
 use crate::models::ImageData;
@@ -242,8 +242,6 @@ async fn run_agent_turn_with_interrupts(
 }
 
 /// Handle an inbound user message: run agent turn, persist, observe, and process leftovers.
-///
-/// Returns `Some(GatewayExit)` if a shutdown-worthy event occurs during processing.
 #[expect(
     clippy::too_many_lines,
     reason = "needs refactor — extract turn result publishing"
@@ -254,7 +252,7 @@ pub async fn handle_inbound_message(
     rt: &mut GatewayRuntime,
     observe_deadline: &mut Option<tokio::time::Instant>,
     idle_deadline: &mut Option<tokio::time::Instant>,
-) -> Option<GatewayExit> {
+) {
     let reply_id = message.id.clone();
     let origin = message.origin.clone();
     let is_background = origin.endpoint == "background";
@@ -409,5 +407,4 @@ pub async fn handle_inbound_message(
         rt.last_user_message_instant = Some(now);
         *idle_deadline = Some(now + rt.cfg.idle.timeout);
     }
-    None
 }

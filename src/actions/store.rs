@@ -114,8 +114,13 @@ impl ActionStore {
     /// Drain and return all actions whose `run_at` is at or before `now`.
     #[must_use]
     pub fn take_due(&mut self, now: DateTime<Utc>) -> Vec<ScheduledAction> {
-        let (due, remaining) = self.actions.drain(..).partition(|a| a.run_at <= now);
-        self.actions = remaining;
+        let due: Vec<_> = self
+            .actions
+            .iter()
+            .filter(|a| a.run_at <= now)
+            .cloned()
+            .collect();
+        self.actions.retain(|a| a.run_at > now);
         if !due.is_empty() {
             debug!(count = due.len(), "draining due actions");
         }
@@ -231,9 +236,17 @@ mod tests {
 
     #[test]
     fn take_due_exact_now_boundary() {
-        let mut store = ActionStore::new_empty(PathBuf::from("/tmp/test.json"));
-        store.add(make_action("exact", 0));
         let now = Utc::now();
+        let mut store = ActionStore::new_empty(PathBuf::from("/tmp/test.json"));
+        store.add(ScheduledAction {
+            id: "exact".to_string(),
+            name: "action exact".to_string(),
+            prompt: "do something".to_string(),
+            run_at: now,
+            agent: None,
+            model_tier: None,
+            created_at: now,
+        });
         let due = store.take_due(now);
         assert_eq!(due.len(), 1, "action at exactly now should be taken");
         assert!(

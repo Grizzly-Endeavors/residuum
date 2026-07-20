@@ -103,6 +103,11 @@ impl AgentRegistry {
 
     /// Add a new agent entry.
     pub fn add(&mut self, entry: AgentEntry) {
+        debug_assert!(
+            !self.agents.iter().any(|a| a.name == entry.name),
+            "duplicate agent name: {}",
+            entry.name
+        );
         self.agents.push(entry);
     }
 
@@ -253,14 +258,14 @@ mod tests {
     }
 
     #[test]
-    fn add_duplicate_name_produces_two_entries() {
+    fn add_unique_names_are_accepted() {
         let mut reg = AgentRegistry::default();
         reg.add(AgentEntry {
             name: "a".to_string(),
             port: 7701,
         });
         reg.add(AgentEntry {
-            name: "a".to_string(),
+            name: "b".to_string(),
             port: 7702,
         });
         assert_eq!(reg.list().len(), 2);

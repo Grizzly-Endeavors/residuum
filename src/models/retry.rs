@@ -296,7 +296,7 @@ mod tests {
             "elapsed {elapsed:?} should include backoff delays"
         );
         assert!(
-            elapsed <= Duration::from_millis(1000),
+            elapsed <= Duration::from_secs(1),
             "elapsed {elapsed:?} should not have excessive delays"
         );
     }

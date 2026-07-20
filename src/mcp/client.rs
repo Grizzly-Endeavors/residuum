@@ -23,7 +23,7 @@ use crate::projects::types::{McpServerEntry, McpTransport};
 use crate::tools::{ToolError, ToolResult};
 
 /// Default timeout for MCP tool calls (seconds).
-const TOOL_CALL_TIMEOUT: Duration = Duration::from_secs(60);
+const TOOL_CALL_TIMEOUT: Duration = Duration::from_mins(1);
 
 /// A live connection to a single MCP server process.
 pub struct McpClient {
@@ -240,11 +240,17 @@ fn expand_header_env_vars(
 
 /// Extract text from MCP content blocks, joining multiple blocks with newlines.
 fn extract_text_content(content: &[Content]) -> String {
-    let texts: Vec<&str> = content
+    content
         .iter()
         .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
-        .collect();
-    texts.join("\n")
+        .enumerate()
+        .fold(String::new(), |mut acc, (i, s)| {
+            if i > 0 {
+                acc.push('\n');
+            }
+            acc.push_str(s);
+            acc
+        })
 }
 
 impl std::fmt::Debug for McpClient {

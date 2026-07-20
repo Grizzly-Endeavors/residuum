@@ -49,15 +49,12 @@ pub struct PulseTask {
 /// Returns an error if the string is empty, has no unit suffix,
 /// or contains a non-numeric value before the suffix.
 pub fn parse_schedule_duration(s: &str) -> anyhow::Result<Duration> {
-    if s.is_empty() {
-        bail!("schedule duration cannot be empty");
-    }
     let Some(last_byte_idx) = s.char_indices().next_back().map(|(i, _)| i) else {
         bail!("schedule duration cannot be empty");
     };
     let (num_part, unit) = s.split_at(last_byte_idx);
     let value: i64 = num_part.parse().map_err(|_parse_err| {
-        anyhow::anyhow!("invalid schedule duration '{s}': expected number followed by s/m/h/d",)
+        anyhow::anyhow!("invalid schedule duration '{s}': expected number followed by s/m/h/d")
     })?;
     if value <= 0 {
         bail!("schedule duration must be positive, got '{s}'");
@@ -67,7 +64,7 @@ pub fn parse_schedule_duration(s: &str) -> anyhow::Result<Duration> {
         "m" => Ok(Duration::minutes(value)),
         "h" => Ok(Duration::hours(value)),
         "d" => Ok(Duration::days(value)),
-        other => bail!("unknown duration unit '{other}' in '{s}': expected s, m, h, or d",),
+        other => bail!("unknown duration unit '{other}' in '{s}': expected s, m, h, or d"),
     }
 }
 
@@ -82,7 +79,7 @@ pub fn parse_schedule_duration(s: &str) -> anyhow::Result<Duration> {
 pub fn parse_active_hours(s: &str) -> anyhow::Result<(NaiveTime, NaiveTime)> {
     let (start_str, end_str) = s
         .split_once('-')
-        .ok_or_else(|| anyhow::anyhow!("invalid active_hours '{s}': expected 'HH:MM-HH:MM'",))?;
+        .ok_or_else(|| anyhow::anyhow!("invalid active_hours '{s}': expected 'HH:MM-HH:MM'"))?;
     let start = parse_naive_time(start_str, s)?;
     let end = parse_naive_time(end_str, s)?;
     Ok((start, end))
@@ -90,16 +87,16 @@ pub fn parse_active_hours(s: &str) -> anyhow::Result<(NaiveTime, NaiveTime)> {
 
 fn parse_naive_time(t: &str, context: &str) -> anyhow::Result<NaiveTime> {
     let (hour_str, min_str) = t.split_once(':').ok_or_else(|| {
-        anyhow::anyhow!("invalid time '{t}' in active_hours '{context}': expected HH:MM",)
+        anyhow::anyhow!("invalid time '{t}' in active_hours '{context}': expected HH:MM")
     })?;
     let hour: u32 = hour_str.parse().map_err(|_parse_err| {
-        anyhow::anyhow!("invalid hour '{hour_str}' in active_hours '{context}'",)
+        anyhow::anyhow!("invalid hour '{hour_str}' in active_hours '{context}'")
     })?;
     let min: u32 = min_str.parse().map_err(|_parse_err| {
-        anyhow::anyhow!("invalid minute '{min_str}' in active_hours '{context}'",)
+        anyhow::anyhow!("invalid minute '{min_str}' in active_hours '{context}'")
     })?;
     NaiveTime::from_hms_opt(hour, min, 0)
-        .ok_or_else(|| anyhow::anyhow!("out-of-range time '{t}' in active_hours '{context}'",))
+        .ok_or_else(|| anyhow::anyhow!("out-of-range time '{t}' in active_hours '{context}'"))
 }
 
 /// Check whether `now` falls within the active hours window (inclusive of start, exclusive of end).

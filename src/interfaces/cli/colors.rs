@@ -84,7 +84,7 @@ impl Theme {
     #[must_use]
     pub fn format_user_prompt(&self) -> String {
         if self.color_enabled {
-            format!("{bold}You: {reset}", bold = "\x1b[1;36m", reset = "\x1b[0m",)
+            format!("{bold}You: {reset}", bold = "\x1b[1;36m", reset = "\x1b[0m")
         } else {
             "You: ".to_string()
         }

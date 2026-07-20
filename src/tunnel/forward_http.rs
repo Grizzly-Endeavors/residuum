@@ -42,7 +42,7 @@ pub(super) async fn forward(
         Ok(m) => m,
         Err(e) => {
             warn!(request_id, method = %method, "unsupported HTTP method");
-            return error_response(request_id, 502, &format!("unsupported method: {e}"));
+            return error_response(request_id, &format!("unsupported method: {e}"));
         }
     };
 
@@ -52,7 +52,7 @@ pub(super) async fn forward(
             Ok(bytes) => Some(bytes),
             Err(e) => {
                 warn!(request_id, error = %e, "failed to decode request body");
-                return error_response(request_id, 502, &format!("base64 decode error: {e}"));
+                return error_response(request_id, &format!("base64 decode error: {e}"));
             }
         },
         None => None,
@@ -77,7 +77,7 @@ pub(super) async fn forward(
         Ok(resp) => resp,
         Err(e) => {
             warn!(elapsed_ms = start.elapsed().as_millis(), error = %e, "failed to forward request to local");
-            return error_response(request_id, 502, &format!("upstream error: {e}"));
+            return error_response(request_id, &format!("upstream error: {e}"));
         }
     };
 
@@ -146,7 +146,6 @@ async fn collect_response_body(
                     );
                     return Err(error_response(
                         request_id.to_string(),
-                        502,
                         "response body too large",
                     ));
                 }
@@ -155,7 +154,6 @@ async fn collect_response_body(
                 warn!(request_id, error = %e, "failed to read response body");
                 return Err(error_response(
                     request_id.to_string(),
-                    502,
                     &format!("failed to read response: {e}"),
                 ));
             }
@@ -170,10 +168,10 @@ async fn collect_response_body(
 
 /// Build a 502-style error response frame.
 #[must_use]
-fn error_response(request_id: String, status: u16, message: &str) -> TunnelFrame {
+fn error_response(request_id: String, message: &str) -> TunnelFrame {
     TunnelFrame::HttpResponse {
         request_id,
-        status,
+        status: 502,
         headers: HashMap::new(),
         body: Some(STANDARD.encode(message.as_bytes())),
     }
@@ -228,7 +226,7 @@ mod tests {
 
     #[test]
     fn error_response_encodes_body() {
-        let frame = error_response("req-1".to_string(), 502, "test error");
+        let frame = error_response("req-1".to_string(), "test error");
         assert!(
             matches!(frame, TunnelFrame::HttpResponse { .. }),
             "expected HttpResponse variant"

@@ -253,7 +253,7 @@ async fn run_reflector_check(reflector: &Reflector, layout: &WorkspaceLayout) ->
         match reflector.reflect(layout).await {
             Ok(compressed) => {
                 tracing::info!(
-                    episodes = compressed.len(),
+                    episodes = compressed.observations.len(),
                     "reflector compressed observation log"
                 );
                 true
@@ -422,7 +422,10 @@ pub(super) async fn run_forced_reflect(
             }
             publish_notice(
                 publisher,
-                format!("[memory] reflected: {} observations", compressed.len()),
+                format!(
+                    "[memory] reflected: {} observations",
+                    compressed.observations.len()
+                ),
             )
             .await;
         }

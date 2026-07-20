@@ -64,7 +64,7 @@ impl SkillIndex {
     #[must_use]
     pub fn find_by_name(&self, name: &str) -> Option<&SkillIndexEntry> {
         let lower = name.to_lowercase();
-        self.entries.iter().find(|e| e.name.to_lowercase() == lower)
+        self.entries.iter().find(|e| e.name == lower)
     }
 
     /// Format the index as XML for the system prompt.

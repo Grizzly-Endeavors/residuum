@@ -133,28 +133,11 @@ fn sanitize_dir_name(name: &str) -> String {
         })
         .collect();
 
-    // Collapse multiple hyphens and trim leading/trailing hyphens
-    let mut result = String::with_capacity(sanitized.len());
-    let mut last_was_hyphen = true; // true to trim leading hyphens
-
-    for c in sanitized.chars() {
-        if c == '-' {
-            if !last_was_hyphen {
-                result.push(c);
-            }
-            last_was_hyphen = true;
-        } else {
-            result.push(c);
-            last_was_hyphen = false;
-        }
-    }
-
-    // Trim trailing hyphen
-    if result.ends_with('-') {
-        result.pop();
-    }
-
-    result
+    sanitized
+        .split('-')
+        .filter(|s| !s.is_empty())
+        .collect::<Vec<_>>()
+        .join("-")
 }
 
 #[cfg(test)]

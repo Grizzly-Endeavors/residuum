@@ -21,8 +21,7 @@ where
     tokio::spawn(
         async move {
             tracing::debug!("task started");
-            // SAFETY: The wrapped future is dropped on panic; no inconsistent
-            // state escapes. Callers receive only () from the JoinHandle.
+            // catch_unwind here so a panicking task doesn't silently vanish — the JoinHandle still resolves normally.
             match std::panic::AssertUnwindSafe(future).catch_unwind().await {
                 Ok(()) => {
                     tracing::debug!("task exited (returned normally)");
@@ -47,7 +46,7 @@ const MAX_BACKOFF: Duration = Duration::from_secs(30);
 /// Minimum runtime before resetting the consecutive failure counter.
 /// If a task runs for longer than this, the next exit is treated as a
 /// fresh first failure rather than a consecutive one.
-const HEALTHY_THRESHOLD: Duration = Duration::from_secs(60);
+const HEALTHY_THRESHOLD: Duration = Duration::from_mins(1);
 
 /// Spawn a supervised task that auto-restarts on exit with exponential backoff.
 ///
@@ -116,21 +115,12 @@ where
                 let backoff =
                     (base_backoff * 2_u32.saturating_pow(consecutive_failures)).min(MAX_BACKOFF);
 
-                if consecutive_failures == 1 {
-                    tracing::warn!(
-                        task = name,
-                        attempt = consecutive_failures,
-                        backoff_ms = backoff.as_millis(),
-                        "restarting supervised task after backoff"
-                    );
-                } else {
-                    tracing::debug!(
-                        task = name,
-                        attempt = consecutive_failures,
-                        backoff_ms = backoff.as_millis(),
-                        "restarting supervised task after backoff"
-                    );
-                }
+                tracing::warn!(
+                    task = name,
+                    attempt = consecutive_failures,
+                    backoff_ms = backoff.as_millis(),
+                    "restarting supervised task after backoff"
+                );
 
                 tokio::time::sleep(backoff).await;
             }
@@ -188,7 +178,7 @@ mod tests {
                         return;
                     }
                     n.notify_one();
-                    tokio::time::sleep(Duration::from_secs(60)).await;
+                    tokio::time::sleep(Duration::from_mins(1)).await;
                 }
             },
             5,
@@ -220,7 +210,7 @@ mod tests {
                     let prev = c.fetch_add(1, Ordering::SeqCst);
                     assert!(prev != 0, "intentional panic on first run");
                     n.notify_one();
-                    tokio::time::sleep(Duration::from_secs(60)).await;
+                    tokio::time::sleep(Duration::from_mins(1)).await;
                 }
             },
             5,
@@ -258,7 +248,7 @@ mod tests {
                         // Signal that the reset worked; stay alive so the supervisor doesn't
                         // immediately count another failure before we assert.
                         n.notify_one();
-                        tokio::time::sleep(Duration::from_secs(3600)).await;
+                        tokio::time::sleep(Duration::from_hours(1)).await;
                     }
                 }
             },

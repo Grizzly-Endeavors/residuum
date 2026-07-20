@@ -45,6 +45,7 @@ pub struct CommandInfo {
 }
 
 /// Context for executing a command from any interface.
+#[derive(Default)]
 pub struct CommandContext<'a> {
     /// Connection URL (for status display).
     pub url: &'a str,
@@ -249,7 +250,11 @@ fn effect_to_result(effect: CommandEffect) -> CommandResult {
 /// (not just server commands).
 pub fn all_commands() -> impl Iterator<Item = CommandInfo> {
     COMMANDS.iter().map(|def| CommandInfo {
-        name: def.names.first().copied().unwrap_or(""),
+        name: def
+            .names
+            .first()
+            .copied()
+            .unwrap_or_else(|| unreachable!("CommandDef must have at least one name")),
         help: def.help,
         takes_arg: def.takes_arg,
         cli_only: def.cli_only,

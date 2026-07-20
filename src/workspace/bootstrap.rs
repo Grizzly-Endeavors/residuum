@@ -207,7 +207,7 @@ fn build_user_content(user_name: Option<&str>, timezone: Option<&str>) -> String
 /// and files are only recreated if deleted.
 async fn write_bundled_skills(layout: &WorkspaceLayout) -> Result<(), FatalError> {
     // residuum-system skill
-    let system_dir = layout.residuum_system_skill_dir();
+    let system_dir = layout.skills_dir().join("residuum-system");
     let system_refs = system_dir.join("references");
     tokio::fs::create_dir_all(&system_refs).await.map_err(|e| {
         FatalError::Workspace(format!(
@@ -239,7 +239,7 @@ async fn write_bundled_skills(layout: &WorkspaceLayout) -> Result<(), FatalError
     .await?;
 
     // residuum-getting-started skill
-    let started_dir = layout.residuum_getting_started_skill_dir();
+    let started_dir = layout.skills_dir().join("residuum-getting-started");
     let started_workflows = started_dir.join("workflows");
     tokio::fs::create_dir_all(&started_workflows)
         .await
@@ -360,7 +360,7 @@ mod tests {
         ensure_workspace(&layout, None, None).await.unwrap();
 
         // residuum-system skill tree
-        let system_dir = layout.residuum_system_skill_dir();
+        let system_dir = layout.skills_dir().join("residuum-system");
         assert!(system_dir.join("SKILL.md").exists(), "system SKILL.md");
         assert!(
             system_dir.join("references/memory-system.md").exists(),
@@ -393,7 +393,7 @@ mod tests {
         );
 
         // residuum-getting-started skill tree
-        let started_dir = layout.residuum_getting_started_skill_dir();
+        let started_dir = layout.skills_dir().join("residuum-getting-started");
         assert!(
             started_dir.join("SKILL.md").exists(),
             "getting-started SKILL.md"
@@ -478,7 +478,7 @@ mod tests {
             .unwrap();
 
         // Modify a skill file
-        let system_skill = layout.residuum_system_skill_dir().join("SKILL.md");
+        let system_skill = layout.skills_dir().join("residuum-system").join("SKILL.md");
         tokio::fs::write(&system_skill, "user-edited skill")
             .await
             .unwrap();

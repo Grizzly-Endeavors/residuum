@@ -9,7 +9,7 @@ use tantivy::collector::TopDocs;
 use tantivy::directory::MmapDirectory;
 use tantivy::query::{BooleanQuery, QueryParser};
 use tantivy::schema::document::{ReferenceValue, ReferenceValueLeaf, Value};
-use tantivy::schema::{Field, STORED, STRING, Schema, TEXT};
+use tantivy::schema::{FAST, Field, STORED, STRING, Schema, TEXT};
 use tantivy::{Index, IndexReader, IndexWriter, ReloadPolicy, TantivyDocument, Term};
 
 use anyhow::Context;
@@ -100,8 +100,11 @@ pub struct MemoryIndex {
     line_end_field: Field,
 }
 
+#[expect(
+    clippy::struct_field_names,
+    reason = "field names intentionally carry _field suffix for clarity in tantivy schema context"
+)]
 struct SearchSchema {
-    schema: Schema,
     id_field: Field,
     source_type_field: Field,
     episode_id_field: Field,
@@ -113,7 +116,7 @@ struct SearchSchema {
 }
 
 /// Build the tantivy schema and return it with all field handles.
-fn build_schema() -> SearchSchema {
+fn build_schema() -> (Schema, SearchSchema) {
     let mut builder = Schema::builder();
     let id_field = builder.add_text_field("id", STRING | STORED);
     let source_type_field = builder.add_text_field("source_type", STRING | STORED);
@@ -121,23 +124,45 @@ fn build_schema() -> SearchSchema {
     let date_field = builder.add_text_field("date", STRING | STORED);
     let ctx_field = builder.add_text_field("context", STRING | STORED);
     let content_field = builder.add_text_field("content", TEXT | STORED);
-    let line_start_field = builder.add_text_field("line_start", STRING | STORED);
-    let line_end_field = builder.add_text_field("line_end", STRING | STORED);
+    let line_start_field = builder.add_u64_field("line_start", FAST | STORED);
+    let line_end_field = builder.add_u64_field("line_end", FAST | STORED);
     let schema = builder.build();
-    SearchSchema {
+    (
         schema,
-        id_field,
-        source_type_field,
-        episode_id_field,
-        date_field,
-        ctx_field,
-        content_field,
-        line_start_field,
-        line_end_field,
-    }
+        SearchSchema {
+            id_field,
+            source_type_field,
+            episode_id_field,
+            date_field,
+            ctx_field,
+            content_field,
+            line_start_field,
+            line_end_field,
+        },
+    )
 }
 
 impl MemoryIndex {
+    fn from_index(index: Index, s: &SearchSchema) -> anyhow::Result<Self> {
+        let reader: IndexReader = index
+            .reader_builder()
+            .reload_policy(ReloadPolicy::OnCommitWithDelay)
+            .try_into()
+            .context("failed to create index reader")?;
+        Ok(Self {
+            index,
+            reader,
+            id_field: s.id_field,
+            source_type_field: s.source_type_field,
+            episode_id_field: s.episode_id_field,
+            date_field: s.date_field,
+            ctx_field: s.ctx_field,
+            content_field: s.content_field,
+            line_start_field: s.line_start_field,
+            line_end_field: s.line_end_field,
+        })
+    }
+
     /// Open or create a tantivy index at the given directory.
     ///
     /// # Errors
@@ -150,42 +175,12 @@ impl MemoryIndex {
             )
         })?;
 
-        let SearchSchema {
-            schema,
-            id_field,
-            source_type_field,
-            episode_id_field,
-            date_field,
-            ctx_field,
-            content_field,
-            line_start_field,
-            line_end_field,
-        } = build_schema();
-
+        let (schema, fields) = build_schema();
         let mmap_dir = MmapDirectory::open(index_dir)
             .with_context(|| format!("failed to open mmap directory at {}", index_dir.display()))?;
-
         let index = Index::open_or_create(mmap_dir, schema)
             .with_context(|| format!("failed to open search index at {}", index_dir.display()))?;
-
-        let reader: IndexReader = index
-            .reader_builder()
-            .reload_policy(ReloadPolicy::OnCommitWithDelay)
-            .try_into()
-            .context("failed to create index reader")?;
-
-        Ok(Self {
-            index,
-            reader,
-            id_field,
-            source_type_field,
-            episode_id_field,
-            date_field,
-            ctx_field,
-            content_field,
-            line_start_field,
-            line_end_field,
-        })
+        Self::from_index(index, &fields)
     }
 
     /// Create an empty in-RAM search index (no disk directory).
@@ -196,38 +191,9 @@ impl MemoryIndex {
     /// # Errors
     /// Returns an error if the in-memory index cannot be created.
     pub fn empty() -> anyhow::Result<Self> {
-        let SearchSchema {
-            schema,
-            id_field,
-            source_type_field,
-            episode_id_field,
-            date_field,
-            ctx_field,
-            content_field,
-            line_start_field,
-            line_end_field,
-        } = build_schema();
-
+        let (schema, fields) = build_schema();
         let index = Index::create_in_ram(schema);
-
-        let reader: IndexReader = index
-            .reader_builder()
-            .reload_policy(ReloadPolicy::OnCommitWithDelay)
-            .try_into()
-            .context("failed to create in-ram index reader")?;
-
-        Ok(Self {
-            index,
-            reader,
-            id_field,
-            source_type_field,
-            episode_id_field,
-            date_field,
-            ctx_field,
-            content_field,
-            line_start_field,
-            line_end_field,
-        })
+        Self::from_index(index, &fields)
     }
 
     /// Index observations from an episode.
@@ -612,8 +578,8 @@ impl MemoryIndex {
         doc.add_text(self.date_field, date);
         doc.add_text(self.ctx_field, ctx);
         doc.add_text(self.content_field, content);
-        doc.add_text(self.line_start_field, "");
-        doc.add_text(self.line_end_field, "");
+        doc.add_u64(self.line_start_field, u64::MAX);
+        doc.add_u64(self.line_end_field, u64::MAX);
 
         writer
             .add_document(doc)
@@ -633,8 +599,8 @@ impl MemoryIndex {
         doc.add_text(self.date_field, &chunk.date);
         doc.add_text(self.ctx_field, &chunk.context);
         doc.add_text(self.content_field, &chunk.content);
-        doc.add_text(self.line_start_field, chunk.line_start.to_string());
-        doc.add_text(self.line_end_field, chunk.line_end.to_string());
+        doc.add_u64(self.line_start_field, chunk.line_start as u64);
+        doc.add_u64(self.line_end_field, chunk.line_end as u64);
 
         writer
             .add_document(doc)
@@ -661,17 +627,12 @@ fn get_snippet(doc: &TantivyDocument, content_field: Field) -> String {
     }
 }
 
-/// Parse a stored line number field, returning `None` for empty strings.
+/// Parse a stored line number field, returning `None` for the sentinel value.
 fn parse_line_num(doc: &TantivyDocument, field: Field) -> Option<usize> {
-    let text = get_text(doc, field);
-    if text.is_empty() {
-        None
-    } else {
-        text.parse()
-            .map_err(|e| {
-                tracing::warn!(value = %text, error = %e, "failed to parse stored line number");
-            })
-            .ok()
+    match doc.get_first(field).map(|v| v.as_value()) {
+        Some(ReferenceValue::Leaf(ReferenceValueLeaf::U64(v))) if v == u64::MAX => None,
+        Some(ReferenceValue::Leaf(ReferenceValueLeaf::U64(v))) => usize::try_from(v).ok(),
+        _ => None,
     }
 }
 
@@ -762,7 +723,7 @@ fn collect_indexable_files(
         if path.is_dir() {
             collect_indexable_files(&path, base, out)?;
         } else {
-            let name = path.to_string_lossy();
+            let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
             if name.ends_with(".obs.json") || name.ends_with(".idx.jsonl") {
                 let rel = make_relative(&path, base);
                 let mtime = file_mtime_str(&path);
@@ -901,10 +862,6 @@ fn normalize_scores(scores: &[f32]) -> Vec<f32> {
     if scores.is_empty() {
         return Vec::new();
     }
-    if scores.len() == 1 {
-        return vec![1.0];
-    }
-
     let min = scores.iter().copied().fold(f32::MAX, f32::min);
     let max = scores.iter().copied().fold(f32::MIN, f32::max);
     let range = max - min;

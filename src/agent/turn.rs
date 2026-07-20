@@ -237,27 +237,29 @@ async fn execute_tool(
         .await;
 
     // Try built-in tools first, fall back to MCP servers
-    let (result, source) = match resources
+    let mut used_mcp = false;
+    let result = match resources
         .tools
         .execute(&tool_call.name, tool_call.arguments.clone(), filter)
         .await
     {
         Err(ToolError::NotFound(_)) => {
             tracing::debug!(tool_name = %tool_call.name, "tool not found in built-in registry, falling back to MCP");
-            let r = resources
+            used_mcp = true;
+            resources
                 .mcp_registry
                 .read()
                 .await
                 .call_tool(&tool_call.name, tool_call.arguments.clone())
-                .await;
-            (r, "mcp")
+                .await
         }
-        other => (other, "built-in"),
+        other => other,
     };
 
     let (output, is_error, images) = match result {
         Ok(r) => (r.output, r.is_error, r.images),
         Err(e) => {
+            let source = if used_mcp { "mcp" } else { "built-in" };
             tracing::warn!(
                 error = %e,
                 tool_name = %tool_call.name,

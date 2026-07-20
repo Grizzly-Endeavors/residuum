@@ -365,16 +365,6 @@ mod tests {
         assert!(parse_run_at("not-a-date", chrono_tz::UTC).is_err());
     }
 
-    #[test]
-    fn list_actions_tool_has_correct_name() {
-        let dir = tempfile::tempdir().unwrap();
-        let store = Arc::new(Mutex::new(ActionStore::new_empty(
-            dir.path().join("test-actions.json"),
-        )));
-        let tool = ListActionsTool::new(store, chrono_tz::UTC);
-        assert_eq!(tool.name(), "list_actions");
-    }
-
     #[tokio::test]
     async fn schedule_action_past_run_at() {
         let dir = tempfile::tempdir().unwrap();

@@ -117,18 +117,6 @@ impl WorkspaceLayout {
         self.root.join("subagents")
     }
 
-    /// Path to the bundled `residuum-system` skill directory.
-    #[must_use]
-    pub fn residuum_system_skill_dir(&self) -> PathBuf {
-        self.root.join("skills/residuum-system")
-    }
-
-    /// Path to the bundled `residuum-getting-started` skill directory.
-    #[must_use]
-    pub fn residuum_getting_started_skill_dir(&self) -> PathBuf {
-        self.root.join("skills/residuum-getting-started")
-    }
-
     /// Path to the projects directory for active project contexts.
     #[must_use]
     pub fn projects_dir(&self) -> PathBuf {
@@ -345,16 +333,6 @@ mod tests {
             layout.bootstrap_md(),
             PathBuf::from("/tmp/ws/BOOTSTRAP.md"),
             "bootstrap_md path"
-        );
-        assert_eq!(
-            layout.residuum_system_skill_dir(),
-            PathBuf::from("/tmp/ws/skills/residuum-system"),
-            "residuum_system_skill_dir path"
-        );
-        assert_eq!(
-            layout.residuum_getting_started_skill_dir(),
-            PathBuf::from("/tmp/ws/skills/residuum-getting-started"),
-            "residuum_getting_started_skill_dir path"
         );
         assert_eq!(
             layout.config_dir(),

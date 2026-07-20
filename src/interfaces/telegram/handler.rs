@@ -57,7 +57,7 @@ pub(super) async fn run_telegram_polling(
     // pool_idle_timeout evicts stale connections before they poison the pool.
     // Without these, long-poll requests reuse dead connections indefinitely.
     let http_client = teloxide::net::default_reqwest_settings()
-        .tcp_keepalive(Duration::from_secs(60))
+        .tcp_keepalive(Duration::from_mins(1))
         .pool_idle_timeout(Duration::from_secs(90))
         .build()?;
     let bot = Bot::with_client(token, http_client);
@@ -291,10 +291,7 @@ async fn handle_command(
 ) {
     let result = {
         let _span = tracing::debug_span!("telegram_command", command = %cmd_name).entered();
-        let command_ctx = CommandContext {
-            url: "",
-            verbose: false,
-        };
+        let command_ctx = CommandContext::default();
         execute_command(cmd_name, cmd_args, &command_ctx)
     };
 

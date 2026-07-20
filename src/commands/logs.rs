@@ -5,8 +5,7 @@
 
 use residuum::util::FatalError;
 use residuum::util::log_format::{
-    LogLevel, expand_module_filter, format_entry, format_entry_colored, matches_module,
-    meets_level, parse_line,
+    LogLevel, expand_module_filter, format_entry, format_entry_colored, meets_level, parse_line,
 };
 
 #[derive(clap::Args)]
@@ -75,7 +74,7 @@ impl LogFilter {
         };
 
         if let Some(ref prefix) = self.module_prefix
-            && !matches_module(&entry.target, prefix)
+            && !entry.target.starts_with(prefix.as_str())
         {
             return false;
         }
@@ -159,11 +158,8 @@ pub(super) async fn run_logs_command(args: &LogsArgs) -> Result<(), FatalError> 
         let mut reader = tokio::io::BufReader::new(file);
 
         // Seek to current end
-        let metadata = std::fs::metadata(&latest)
-            .map_err(|e| FatalError::Config(format!("failed to stat log file: {e}")))?;
-        let file_len = metadata.len();
         reader
-            .seek(std::io::SeekFrom::Start(file_len))
+            .seek(std::io::SeekFrom::End(0))
             .await
             .map_err(|e| FatalError::Config(format!("failed to seek log file: {e}")))?;
 

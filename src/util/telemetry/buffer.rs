@@ -19,7 +19,7 @@ use tracing_subscriber::registry::LookupSpan;
 const DEFAULT_CAPACITY: usize = 4096;
 
 /// Default maximum age before a span is evicted on the next insertion.
-const DEFAULT_MAX_AGE: Duration = Duration::from_secs(600); // 10 minutes
+const DEFAULT_MAX_AGE: Duration = Duration::from_mins(10); // 10 minutes
 
 /// Configuration for the span ring buffer.
 #[derive(Debug, Clone)]
@@ -82,9 +82,9 @@ struct SpanBuilder {
 }
 
 impl SpanBuilder {
-    fn finish(self) -> CompletedSpan {
+    fn finish(self, span_id: u64) -> CompletedSpan {
         CompletedSpan {
-            span_id: 0, // filled by caller
+            span_id,
             parent_id: self.parent_id,
             name: self.name,
             target: self.target,
@@ -189,7 +189,7 @@ impl SpanBufferLayer {
     #[must_use]
     pub fn new(config: &SpanBufferConfig) -> (Self, SpanBufferHandle) {
         let inner = Arc::new(Mutex::new(SpanBufferInner {
-            buffer: VecDeque::with_capacity(config.capacity.min(4096)),
+            buffer: VecDeque::with_capacity(config.capacity),
             active: HashMap::new(),
             capacity: config.capacity,
             max_age: config.max_age,
@@ -331,8 +331,7 @@ where
         if let Ok(mut guard) = self.inner.lock()
             && let Some(builder) = guard.active.remove(&id.into_u64())
         {
-            let mut completed = builder.finish();
-            completed.span_id = id.into_u64();
+            let completed = builder.finish(id.into_u64());
             guard.push(completed);
         }
     }
