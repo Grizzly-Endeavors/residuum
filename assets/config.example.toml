@@ -65,6 +65,20 @@ enabled = true
 # every_n_iterations = 3           # mid-turn: evaluate every N tool iterations
 # max_interventions_per_turn = 1   # mid-turn: cap on injected corrections
 # max_transcript_tokens = 12000    # transcript budget sent to the classifier
+# learning = false                 # spawn the `learner` sub-agent when the
+#                                  #   end-of-turn triage detects a learnable
+#                                  #   signal (user preference or error recovery)
+# learning_cooldown_minutes = 240  # minimum minutes between learner spawns
+
+# ── Learning loop (activity-triggered) ────────────────────────────────────────
+# Fallback trigger for users running with the subconscious off. After N
+# completed foreground turns it spawns the `learner` sub-agent to review the
+# recent conversation. 0 disables it (the default). When the subconscious
+# learning path above is active, that path drives learning and this is ignored.
+# Shares [subconscious].learning_cooldown_minutes.
+#
+# [learning]
+# nudge_after_turns = 0
 
 # ── WebSocket gateway ─────────────────────────────────────────────────────────
 [gateway]

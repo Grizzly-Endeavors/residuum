@@ -103,13 +103,14 @@ impl SubconsciousWatch {
                 .evaluate(&transcript, EvalPhase::MidTurn, None)
                 .await
             {
-                Ok(findings) => {
+                Ok(outcome) => {
                     // Inject the first `act` finding (subject to the per-turn
                     // cap); record everything else — including that first
                     // correction — so the end-of-turn pass can triage against
-                    // what already happened this turn.
+                    // what already happened this turn. Learn signals are never
+                    // emitted mid-turn, so `outcome.learnings` is empty here.
                     let mut act_injected = false;
-                    for finding in findings {
+                    for finding in outcome.findings {
                         let deliver_now = finding.severity == Severity::Act
                             && !act_injected
                             && interventions.fetch_add(1, Ordering::AcqRel) < max_interventions;

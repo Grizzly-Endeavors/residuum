@@ -40,6 +40,8 @@ For shell commands and scripts, the agent uses its own `write_file` and `exec` t
 | `agent_name` | string | no | Preset name from `subagents/`. Default: `"general-purpose"`. `"main"` is rejected — you cannot spawn main as a sub-agent. |
 | `model_override` | string enum | no | `"small"`, `"medium"`, `"large"`. Overrides the preset's tier. |
 
+A sub-agent's final result is a **self-report** — it describes what the sub-agent believes it did, not a verified outcome. When the task involves something checkable (a file written, a command run, a deployment, an external change), the spawning agent should ask for concrete handles in the task prompt (file paths, commit SHAs, URLs, ticket IDs) and treat the result as unverified until those handles check out.
+
 ### `list_agents`
 
 No parameters. Lists all currently active background tasks.
@@ -92,7 +94,14 @@ allowed_tools:
 | `allowed_tools` | string[] | no | If set, only these tools are available (allowlist). |
 | `include_identity` | boolean | no | Default `false`. When `true`, adds `SOUL.md`, `AGENTS.md`, and `MEMORY.md` to the sub-agent's prompt in addition to the default `ENVIRONMENT.md`/`USER.md`. |
 
-Two built-in presets exist: `general-purpose` and `introspection` (backs the built-in `reflection`/`memory_tending` pulses). A user-created file with the same name overrides the built-in.
+Four built-in presets exist. A user-created file with the same name overrides the built-in.
+
+| Preset | Tier | `include_identity` | Spawned by |
+|--------|------|---------------------|------------|
+| `general-purpose` | — | `false` | Default for `subagent_spawn` when `agent_name` is omitted. |
+| `introspection` | `large` | `true` | The built-in `reflection`/`memory_tending` pulses. |
+| `learner` | `large` | `true` | A subconscious `learn` signal (subject to `learning_cooldown_minutes`), or the `[learning] nudge_after_turns` fallback. Corroborates the signal against episodic memory and, for `preference` signals, promotes it to `USER.md` once at least two supporting observations exist (annotating the evidence count); single sightings go to `MEMORY.md` as provisional. For `recovery` signals, it prefers queuing a durable fix via the user inbox over encoding the workaround into a skill — a skill is only warranted when the obstacle is an external constraint that can't be fixed. Reports via at most one user-inbox item. See [subconscious.md](subconscious.md#learning-trigger). |
+| `memory-analyst` | `medium` | `true` | The main agent, when it needs a synthesized answer about the user or past history rather than raw search results. Read-only (`write_file`/`edit_file` denied); uses multiple search phrasings for enumeration questions, surfaces contradictions with dates instead of silently picking one, abstains rather than fabricating when the record is silent, and cites episode IDs. |
 
 ## Concurrency
 

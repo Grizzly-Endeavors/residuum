@@ -21,6 +21,8 @@ Each finding the classifier reports has:
 - **kind** — `violation` (acted against an instruction) or `omission` (failed to do something it should have).
 - **severity** — `act` (needs correction now) or `note` (just worth knowing for next time).
 
+End-of-turn triage can also surface **learn signals** alongside findings — a separate, parallel output, not a third `kind`. See [Learning trigger](#learning-trigger) below.
+
 How a finding is delivered:
 
 | Phase | `act` | `note` |
@@ -29,6 +31,21 @@ How a finding is delivered:
 | End-of-turn | The **first** `act` becomes an immediate correction turn (the agent wakes and takes the corrective action). Later `act` findings degrade to notes. | Injected as passive `[Subconscious note]` context the agent sees on its next turn. |
 
 If the end-of-turn evaluation fails, any notes the mid-turn watch queued are delivered raw (as `[Subconscious note]` context) rather than being silently dropped.
+
+## Learning trigger
+
+The end-of-turn triage can also classify a **learn signal** — something worth the agent growing from, evaluated separately from the violation/omission findings above. This is opt-in and off by default even when the subconscious itself is enabled: set `[subconscious] learning = true` in `config.toml`. When off, the classifier isn't even asked to look for learn signals — `include_learnings` is only threaded into the prompt and response schema at end-of-turn, and only when learning is enabled.
+
+Each learn signal has a `signal_type`, not a severity:
+
+- **preference** — a user correction, a moment of frustration, a stated preference, or a working-style cue.
+- **recovery** — the agent hit an error or obstacle and had to work around it.
+
+A learn signal does not inject a correction or a passive note. Instead, subject to a cooldown (`learning_cooldown_minutes`, default `240`), it spawns the bundled `learner` sub-agent preset with the signal as its task. The cooldown bounds how often learning spawns fire — learnable moments can come up often, and the learner does its own corroboration work, so it doesn't need to run on every occurrence. See [background-tasks.md](background-tasks.md) for what the `learner` preset does with the signal once spawned.
+
+### Fallback for subconscious-off users
+
+The learning loop does not require the subconscious. If `[subconscious]` is disabled (or `learning` is off), a separate `[learning]` config section provides a periodic fallback: `nudge_after_turns = N` (default `0`, disabled) spawns the `learner` preset every N main-agent turns, as a general "look for something worth learning" nudge rather than a signal-triggered spawn.
 
 ## SUBCONSCIOUS.md
 
@@ -74,7 +91,15 @@ The end-of-turn evaluation runs **synchronously on the gateway event loop** (lik
 | `every_n_iterations` | `3` | Mid-turn: evaluate every N tool-loop iterations. |
 | `max_interventions_per_turn` | `1` | Mid-turn: cap on injected corrections per turn. |
 | `max_transcript_tokens` | `12000` | Transcript budget sent to the classifier (oldest messages dropped to fit). |
+| `learning` | `false` | Opt-in for `learn` signals (see [Learning trigger](#learning-trigger)). Independent of `enabled` — the subconscious can steer without learning enabled. |
+| `learning_cooldown_minutes` | `240` | Minimum time between `learner` spawns triggered by a `learn` signal. |
 
 The model is assigned via the `subconscious` role in `providers.toml`, following the standard `models.subconscious` → `models.default` → `main` precedence. All of these are also editable from the web Settings UI (Runtime and Providers panels).
+
+`[learning]` in `config.toml` is a separate, always-available section (not nested under `[subconscious]`) that covers the turn-count fallback:
+
+| Key | Default | Meaning |
+|-----|---------|---------|
+| `nudge_after_turns` | `0` | Spawn the `learner` preset every N main-agent turns. `0` disables the fallback. Intended for users who keep the subconscious off. |
 
 Provider or config changes are applied on config reload: the subconscious is rebuilt, in-flight evaluations keep the old instance, and new turns use the new one. If the provider fails to build, the subconscious falls back to disabled rather than failing startup — the main agent keeps working without it.

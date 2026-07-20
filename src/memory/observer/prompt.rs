@@ -17,8 +17,9 @@ For each observation, capture:
 - Corrections or mistakes that were fixed
 - Important technical details or patterns discovered
 - Action items or next steps identified
+- Interaction signals — how the user works and wants to be worked with: corrections and pushback, process preferences, frustration and its cause, praise and what earned it
 
-Each observation should be a complete sentence useful as future context. Be specific and concise.";
+Record observations as facts about what happened or what is true, never as instructions. Each observation should be a complete sentence useful as future context. Be specific and concise.";
 
 /// Output format spec — always appended by code, never stored in editable files.
 ///

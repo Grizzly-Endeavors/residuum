@@ -10,6 +10,7 @@ use crate::models::retry::RetryConfig;
 use super::constants::{
     DEFAULT_AGENT_MODIFY_CHANNELS, DEFAULT_AGENT_MODIFY_MCP, DEFAULT_FEEDBACK_ENDPOINT,
     DEFAULT_GATEWAY_BIND, DEFAULT_GATEWAY_PORT, DEFAULT_IDLE_TIMEOUT_MINUTES,
+    DEFAULT_LEARNING_COOLDOWN_MINUTES, DEFAULT_LEARNING_NUDGE_AFTER_TURNS,
     DEFAULT_MAX_CONCURRENT_BACKGROUND, DEFAULT_OBSERVER_COOLDOWN_SECS,
     DEFAULT_OBSERVER_FORCE_THRESHOLD, DEFAULT_OBSERVER_THRESHOLD, DEFAULT_REFLECTOR_THRESHOLD,
     DEFAULT_SEARCH_CANDIDATE_MULTIPLIER, DEFAULT_SEARCH_MIN_SCORE, DEFAULT_SEARCH_TEMPORAL_DECAY,
@@ -272,6 +273,12 @@ pub struct SubconsciousSettings {
     pub max_interventions_per_turn: usize,
     /// Token cap for the transcript sent to the classifier.
     pub max_transcript_tokens: usize,
+    /// Whether the activity-triggered learning loop is enabled (surfaces `learn`
+    /// findings and spawns the `learner` sub-agent). Opt-in, default false.
+    pub learning: bool,
+    /// Minimum minutes between learner sub-agent spawns (shared by both the
+    /// subconscious signal path and the turn-count fallback).
+    pub learning_cooldown_minutes: u64,
 }
 
 impl Default for SubconsciousSettings {
@@ -282,6 +289,36 @@ impl Default for SubconsciousSettings {
             every_n_iterations: DEFAULT_SUBCONSCIOUS_EVERY_N_ITERATIONS,
             max_interventions_per_turn: DEFAULT_SUBCONSCIOUS_MAX_INTERVENTIONS,
             max_transcript_tokens: DEFAULT_SUBCONSCIOUS_MAX_TRANSCRIPT_TOKENS,
+            learning: false,
+            learning_cooldown_minutes: DEFAULT_LEARNING_COOLDOWN_MINUTES,
+        }
+    }
+}
+
+impl SubconsciousSettings {
+    /// The learner spawn cooldown as a `Duration`.
+    #[must_use]
+    pub fn learning_cooldown(&self) -> Duration {
+        Duration::from_secs(self.learning_cooldown_minutes.saturating_mul(60))
+    }
+}
+
+/// Validated activity-triggered learning loop settings.
+///
+/// The subconscious signal path (spawning the `learner` when `learn` findings
+/// appear) is configured under `[subconscious]`. This section only carries the
+/// dumb turn-count fallback for users running with the subconscious off.
+#[derive(Debug, Clone, PartialEq)]
+pub struct LearningConfig {
+    /// Spawn the learner after this many foreground turns when the subconscious
+    /// learning path is inactive. `0` disables the fallback (the default).
+    pub nudge_after_turns: u32,
+}
+
+impl Default for LearningConfig {
+    fn default() -> Self {
+        Self {
+            nudge_after_turns: DEFAULT_LEARNING_NUDGE_AFTER_TURNS,
         }
     }
 }
@@ -554,6 +591,8 @@ pub struct Config {
     pub pulse_enabled: bool,
     /// Subconscious classifier settings.
     pub subconscious_settings: SubconsciousSettings,
+    /// Activity-triggered learning loop settings (turn-count fallback).
+    pub learning: LearningConfig,
     /// WebSocket gateway configuration.
     pub gateway: GatewayConfig,
     /// IANA timezone for the agent (e.g. `America/New_York`).
@@ -606,6 +645,7 @@ impl fmt::Debug for Config {
             .field("memory", &self.memory)
             .field("pulse_enabled", &self.pulse_enabled)
             .field("subconscious_settings", &self.subconscious_settings)
+            .field("learning", &self.learning)
             .field("gateway", &self.gateway)
             .field("timezone", &self.timezone)
             .field("cloud", &self.cloud.as_ref().map(|_| "[configured]"))

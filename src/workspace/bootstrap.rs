@@ -42,6 +42,18 @@ const DEFAULT_ALERTS: &str = include_str!("../../assets/workspace-bootstrap/ALER
 const DEFAULT_INTROSPECTION_PRESET: &str =
     include_str!("../../assets/workspace-bootstrap/subagents/introspection.md");
 
+/// Built-in `learner` subagent preset, spawned by the subconscious when a single
+/// learnable signal is detected in the live conversation. Corroborates the signal
+/// and makes it durable (preference promotion or a queued recovery fix).
+const DEFAULT_LEARNER_PRESET: &str =
+    include_str!("../../assets/workspace-bootstrap/subagents/learner.md");
+
+/// Built-in `memory-analyst` subagent preset, used to answer synthesized questions
+/// about the user or past history so the main agent gets grounded conclusions
+/// instead of raw search excerpts.
+const DEFAULT_MEMORY_ANALYST_PRESET: &str =
+    include_str!("../../assets/workspace-bootstrap/subagents/memory-analyst.md");
+
 /// Default subconscious check policy written to SUBCONSCIOUS.md.
 ///
 /// Contains only the customizable check guidance — the output format spec is
@@ -87,6 +99,12 @@ const GETTING_STARTED_UNDERSTANDING: &str = include_str!(
 const GETTING_STARTED_ALWAYS_ON: &str = include_str!(
     "../../assets/bundled-skills/residuum-getting-started/workflows/always-on-assistant.md"
 );
+
+// skill-authoring skill
+const SKILL_AUTHORING_SKILL_MD: &str =
+    include_str!("../../assets/bundled-skills/skill-authoring/SKILL.md");
+const SKILL_AUTHORING_REF_STANDARDS: &str =
+    include_str!("../../assets/bundled-skills/skill-authoring/references/authoring-standards.md");
 
 /// Ensure the workspace directory structure exists with default identity files.
 ///
@@ -177,6 +195,16 @@ pub async fn ensure_workspace(
         DEFAULT_INTROSPECTION_PRESET,
     )
     .await?;
+    write_if_missing(
+        &layout.subagents_dir().join("learner.md"),
+        DEFAULT_LEARNER_PRESET,
+    )
+    .await?;
+    write_if_missing(
+        &layout.subagents_dir().join("memory-analyst.md"),
+        DEFAULT_MEMORY_ANALYST_PRESET,
+    )
+    .await?;
 
     // Write bundled skills
     write_bundled_skills(layout).await?;
@@ -199,7 +227,10 @@ fn build_user_content(user_name: Option<&str>, timezone: Option<&str>) -> String
         return DEFAULT_USER.to_string();
     }
 
-    let mut out = String::from("# User Preferences\n");
+    let mut out = String::from("# User\n\n## Core Facts\n\n");
+    out.push_str("<!-- Durable identity and standing preferences only. Hard cap ~15 entries.\n");
+    out.push_str("     Replace, don't append: when full, an entry must be removed to add one.\n");
+    out.push_str("     Keep this tier short and current — it is the always-loaded summary. -->\n");
     if let Some(name) = name {
         out.push_str("\n**Name**: ");
         out.push_str(name);
@@ -208,7 +239,8 @@ fn build_user_content(user_name: Option<&str>, timezone: Option<&str>) -> String
         out.push_str("\n**Timezone**: ");
         out.push_str(tz);
     }
-    out.push_str("\n\nUpdate this file as you learn about the user — preferences, communication style, context about their work and life.\n");
+    out.push_str("\n\n## Profile\n\n");
+    out.push_str("Update this section as you learn about the user — communication style, context about their work and life, evolving preferences, and anything that doesn't yet belong in Core Facts. This is the longer-form, evolving model.\n");
     out
 }
 
@@ -285,6 +317,25 @@ async fn write_bundled_skills(layout: &WorkspaceLayout) -> Result<(), FatalError
     write_if_missing(
         &started_workflows.join("always-on-assistant.md"),
         GETTING_STARTED_ALWAYS_ON,
+    )
+    .await?;
+
+    // skill-authoring skill
+    let authoring_dir = layout.skills_dir().join("skill-authoring");
+    let authoring_refs = authoring_dir.join("references");
+    tokio::fs::create_dir_all(&authoring_refs)
+        .await
+        .map_err(|e| {
+            FatalError::Workspace(format!(
+                "failed to create skill directory {}: {e}",
+                authoring_refs.display()
+            ))
+        })?;
+
+    write_if_missing(&authoring_dir.join("SKILL.md"), SKILL_AUTHORING_SKILL_MD).await?;
+    write_if_missing(
+        &authoring_refs.join("authoring-standards.md"),
+        SKILL_AUTHORING_REF_STANDARDS,
     )
     .await?;
 
@@ -381,6 +432,30 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn bootstrap_creates_learner_and_memory_analyst_presets() {
+        let dir = tempfile::tempdir().unwrap();
+        let layout = WorkspaceLayout::new(dir.path().join("workspace"));
+
+        ensure_workspace(&layout, None, None).await.unwrap();
+
+        let learner_path = layout.subagents_dir().join("learner.md");
+        assert!(learner_path.exists(), "learner.md should be created");
+        let learner = tokio::fs::read_to_string(&learner_path).await.unwrap();
+        assert!(
+            learner.contains("name: learner"),
+            "learner.md should contain its preset frontmatter"
+        );
+
+        let analyst_path = layout.subagents_dir().join("memory-analyst.md");
+        assert!(analyst_path.exists(), "memory-analyst.md should be created");
+        let analyst = tokio::fs::read_to_string(&analyst_path).await.unwrap();
+        assert!(
+            analyst.contains("name: memory-analyst"),
+            "memory-analyst.md should contain its preset frontmatter"
+        );
+    }
+
+    #[tokio::test]
     async fn bootstrap_does_not_overwrite_existing_introspection_preset() {
         let dir = tempfile::tempdir().unwrap();
         let layout = WorkspaceLayout::new(dir.path().join("workspace"));
@@ -473,6 +548,19 @@ mod tests {
                 .join("workflows/always-on-assistant.md")
                 .exists(),
             "always-on-assistant.md"
+        );
+
+        // skill-authoring skill tree
+        let authoring_dir = layout.skills_dir().join("skill-authoring");
+        assert!(
+            authoring_dir.join("SKILL.md").exists(),
+            "skill-authoring SKILL.md"
+        );
+        assert!(
+            authoring_dir
+                .join("references/authoring-standards.md")
+                .exists(),
+            "authoring-standards.md"
         );
 
         let system_skill_content = tokio::fs::read_to_string(system_dir.join("SKILL.md"))

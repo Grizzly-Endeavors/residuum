@@ -1,6 +1,6 @@
 # Memory System
 
-The memory system gives the agent persistent recall across conversations. It has three distinct components that serve different purposes.
+The memory system gives the agent persistent recall across conversations. It has several distinct components that serve different purposes.
 
 ## Components
 
@@ -12,6 +12,17 @@ A markdown file the agent owns and writes to directly. This is the agent's worki
 - Always loaded into the agent's context window
 - Not touched by the observer or reflector — entirely agent-controlled
 - Think of it as the agent's handwritten notes
+
+### USER.md — Two-Tier User Model
+
+`USER.md` splits into two sections with different churn and different rules:
+
+- **Core Facts** — durable identity and standing preferences only. Hard-capped at roughly 15 entries and **replace, don't append**: once full, adding a new entry means removing one. This is the always-loaded summary, so it stays short and current by construction rather than growing without bound.
+- **Profile** — the longer-form, evolving model: communication style, context about the user's work and life, preferences that haven't earned a Core Facts slot yet. Normal append/update churn.
+
+**Promotion rule**: an observation is only durable enough for Core Facts (or for a new entry in Profile) once at least two supporting observations back it — the pattern must recur, not just be seen once. Promoted entries are annotated with the evidence count (e.g. "seen 3x"). A single, uncorroborated sighting is written to `MEMORY.md` as a provisional note instead, not into `USER.md`.
+
+This rule is enforced by whichever agent is doing the tending — the `introspection` preset (via the `memory_tending` pulse) and the `learner` preset (see below) both apply it the same way.
 
 ### Observer — Automatic Episode Extraction
 
@@ -33,6 +44,8 @@ Fires automatically after enough conversation accumulates (token threshold). The
 - If an embedding model is configured, .obs and .idx files are embedded for retrieval
 
 Episode IDs are zero-padded to 3 digits (`ep-001`, `ep-012`). Next ID determined by scanning for the highest existing.
+
+**Interaction signals**: the bundled `OBSERVER.md` also extracts a category of observations about how the user works and wants to be worked with — corrections and pushback, process preferences, frustration and its cause, praise and what earned it. These are recorded as contextualized, declarative facts about what happened ("the user prefers X"), never as instructions to the agent ("always do X"). This is the raw material the `learner` preset corroborates against when a `preference` signal fires — see [subconscious.md](subconscious.md#learning-trigger).
 
 ### Reflector — Observation Compression
 

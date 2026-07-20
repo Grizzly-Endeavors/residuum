@@ -17,17 +17,17 @@ use super::constants::{
 };
 use super::deserialize::{
     AgentConfigFile, BackgroundConfigFile, BackgroundModelsFile, CloudConfigFile, ConfigFile,
-    DiscordConfigFile, GatewayConfigFile, MemoryConfigFile, ProviderEntryFile, ProvidersFile,
-    SearchConfigFile, SkillsConfigFile, SubconsciousConfigFile, TelegramConfigFile,
+    DiscordConfigFile, GatewayConfigFile, LearningConfigFile, MemoryConfigFile, ProviderEntryFile,
+    ProvidersFile, SearchConfigFile, SkillsConfigFile, SubconsciousConfigFile, TelegramConfigFile,
     TracingConfigFile, WebSearchConfigFile, WebhookEntryFile,
 };
 use super::provider::ProviderKind;
 use super::secrets::SecretStore;
 use super::types::{
     AgentAbilitiesConfig, BackgroundConfig, CloudConfig, DiscordConfig, GatewayConfig, IdleConfig,
-    LogLevel, MemoryConfig, OtelEndpoint, ProviderNativeSearchConfig, SearchConfig, SkillsConfig,
-    StandaloneBackendConfig, SubconsciousSettings, TelegramConfig, TracingConfig, WebSearchConfig,
-    WebhookEntry, WebhookFormat, WebhookRouting,
+    LearningConfig, LogLevel, MemoryConfig, OtelEndpoint, ProviderNativeSearchConfig, SearchConfig,
+    SkillsConfig, StandaloneBackendConfig, SubconsciousSettings, TelegramConfig, TracingConfig,
+    WebSearchConfig, WebhookEntry, WebhookFormat, WebhookRouting,
 };
 
 /// Build a `Config` from an optional config file and environment variables.
@@ -77,6 +77,8 @@ pub(crate) fn from_file_and_env(
 
     let subconscious_settings =
         resolve_subconscious_settings(file.and_then(|f| f.subconscious.as_ref()));
+
+    let learning = resolve_learning_config(file.and_then(|f| f.learning.as_ref()));
 
     let gateway = resolve_gateway_config(file.and_then(|f| f.gateway.as_ref()));
     let cloud = resolve_cloud_config(file.and_then(|f| f.cloud.as_ref()), &secrets, &gateway);
@@ -132,6 +134,7 @@ pub(crate) fn from_file_and_env(
         memory,
         pulse_enabled,
         subconscious_settings,
+        learning,
         gateway,
         timezone,
         cloud,
@@ -469,8 +472,25 @@ fn resolve_subconscious_settings(section: Option<&SubconsciousConfigFile>) -> Su
         if let Some(v) = s.max_transcript_tokens {
             settings.max_transcript_tokens = v;
         }
+        if let Some(v) = s.learning {
+            settings.learning = v;
+        }
+        if let Some(v) = s.learning_cooldown_minutes {
+            settings.learning_cooldown_minutes = v;
+        }
     }
     settings
+}
+
+/// Resolve the activity-triggered learning fallback config (turn-count nudge).
+fn resolve_learning_config(section: Option<&LearningConfigFile>) -> LearningConfig {
+    let mut cfg = LearningConfig::default();
+    if let Some(s) = section
+        && let Some(v) = s.nudge_after_turns
+    {
+        cfg.nudge_after_turns = v;
+    }
+    cfg
 }
 
 /// Resolve tracing configuration from TOML section.
@@ -950,6 +970,8 @@ mid_turn = false
 every_n_iterations = 5
 max_interventions_per_turn = 2
 max_transcript_tokens = 8000
+learning = true
+learning_cooldown_minutes = 60
 "#,
         );
         let prov_file = parse_providers(
@@ -964,6 +986,52 @@ main = "anthropic/claude-sonnet-4-6"
         assert_eq!(cfg.subconscious_settings.every_n_iterations, 5);
         assert_eq!(cfg.subconscious_settings.max_interventions_per_turn, 2);
         assert_eq!(cfg.subconscious_settings.max_transcript_tokens, 8000);
+        assert!(cfg.subconscious_settings.learning, "learning parses");
+        assert_eq!(cfg.subconscious_settings.learning_cooldown_minutes, 60);
+    }
+
+    #[test]
+    fn learning_defaults_when_absent() {
+        let cfg_file = parse_config("timezone = \"UTC\"\n");
+        let prov_file = parse_providers(
+            r#"
+[models]
+main = "anthropic/claude-sonnet-4-6"
+"#,
+        );
+        let cfg = from_file_and_env(Some(&cfg_file), Some(&prov_file), &test_config_dir()).unwrap();
+        assert!(
+            !cfg.subconscious_settings.learning,
+            "learning is opt-in, defaults to disabled"
+        );
+        assert_eq!(
+            cfg.subconscious_settings.learning_cooldown_minutes, 240,
+            "cooldown defaults to 240 minutes"
+        );
+        assert_eq!(
+            cfg.learning.nudge_after_turns, 0,
+            "fallback nudge defaults to disabled (0)"
+        );
+    }
+
+    #[test]
+    fn learning_nudge_fallback_parses() {
+        let cfg_file = parse_config(
+            r#"
+timezone = "UTC"
+
+[learning]
+nudge_after_turns = 12
+"#,
+        );
+        let prov_file = parse_providers(
+            r#"
+[models]
+main = "anthropic/claude-sonnet-4-6"
+"#,
+        );
+        let cfg = from_file_and_env(Some(&cfg_file), Some(&prov_file), &test_config_dir()).unwrap();
+        assert_eq!(cfg.learning.nudge_after_turns, 12);
     }
 
     #[test]

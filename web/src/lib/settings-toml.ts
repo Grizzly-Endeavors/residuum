@@ -43,6 +43,10 @@ export interface ConfigFields {
   subconscious_every_n_iterations: string;
   subconscious_max_interventions_per_turn: string;
   subconscious_max_transcript_tokens: string;
+  subconscious_learning: boolean;
+  subconscious_learning_cooldown_minutes: string;
+  // learning fallback
+  learning_nudge_after_turns: string;
   // background
   bg_max_concurrent: string;
   bg_transcript_retention_days: string;
@@ -111,6 +115,9 @@ export function defaultConfigFields(): ConfigFields {
     subconscious_every_n_iterations: "",
     subconscious_max_interventions_per_turn: "",
     subconscious_max_transcript_tokens: "",
+    subconscious_learning: false,
+    subconscious_learning_cooldown_minutes: "",
+    learning_nudge_after_turns: "",
     bg_max_concurrent: "",
     bg_transcript_retention_days: "",
     retry_max_retries: "",
@@ -206,6 +213,13 @@ export function parseConfigToml(raw: string): ConfigFields {
     fields.subconscious_every_n_iterations = str(subconscious.every_n_iterations);
     fields.subconscious_max_interventions_per_turn = str(subconscious.max_interventions_per_turn);
     fields.subconscious_max_transcript_tokens = str(subconscious.max_transcript_tokens);
+    fields.subconscious_learning = bool(subconscious.learning, false);
+    fields.subconscious_learning_cooldown_minutes = str(subconscious.learning_cooldown_minutes);
+  }
+
+  const learning = doc.learning as Record<string, unknown> | undefined;
+  if (learning) {
+    fields.learning_nudge_after_turns = str(learning.nudge_after_turns);
   }
 
   const bg = doc.background as Record<string, unknown> | undefined;
@@ -511,10 +525,20 @@ export function serializeConfigToml(f: ConfigFields): string {
     subLines.push(`max_interventions_per_turn = ${f.subconscious_max_interventions_per_turn}`);
   if (f.subconscious_max_transcript_tokens)
     subLines.push(`max_transcript_tokens = ${f.subconscious_max_transcript_tokens}`);
+  if (f.subconscious_learning) subLines.push("learning = true");
+  if (f.subconscious_learning_cooldown_minutes)
+    subLines.push(`learning_cooldown_minutes = ${f.subconscious_learning_cooldown_minutes}`);
   if (subLines.length > 0) {
     lines.push("");
     lines.push("[subconscious]");
     lines.push(...subLines);
+  }
+
+  // learning fallback — only emit when the nudge is actually set
+  if (f.learning_nudge_after_turns) {
+    lines.push("");
+    lines.push("[learning]");
+    lines.push(`nudge_after_turns = ${f.learning_nudge_after_turns}`);
   }
 
   // memory

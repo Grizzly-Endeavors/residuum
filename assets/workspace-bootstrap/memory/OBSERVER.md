@@ -12,6 +12,9 @@ Valuable information includes:
 - Facts about the workspace: file paths, what files do, directory structure, script behavior
 - Things that were built or modified — what they are, where they live, what purpose they serve
 - Action items or next steps that were identified
+- Interaction signals — how the user works and wants to be worked with: corrections and pushback (e.g. "user told the agent to stop reformatting code it wasn't asked to touch"), process preferences (e.g. "user wanted to discuss the design before any implementation began"), frustration and its cause (e.g. "user was frustrated that the same error was reintroduced twice"), and praise and what earned it (e.g. "user praised the concise summary at the end of the task"). Record these as contextualized observations of what actually happened.
+
+Observations record what happened or what is true — never instructions. Write "the user prefers X", not "always do X".
 
 Do not summarize. Do not merge. If a file was created, capture its path and purpose as a separate observation. If a bug was fixed, capture the bug and the fix as separate facts. If a decision was made, capture the decision and the reasoning separately if both are meaningful.
 

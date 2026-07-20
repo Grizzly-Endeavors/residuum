@@ -49,6 +49,12 @@ pub(crate) const DEFAULT_SUBCONSCIOUS_MAX_INTERVENTIONS: usize = 1;
 /// Default token cap for the transcript sent to the subconscious classifier.
 pub(crate) const DEFAULT_SUBCONSCIOUS_MAX_TRANSCRIPT_TOKENS: usize = 12_000;
 
+/// Default cooldown in minutes between learner sub-agent spawns.
+pub(crate) const DEFAULT_LEARNING_COOLDOWN_MINUTES: u64 = 240;
+
+/// Default turn count before the fallback learning nudge fires (0 = disabled).
+pub(crate) const DEFAULT_LEARNING_NUDGE_AFTER_TURNS: u32 = 0;
+
 /// Default weight for vector similarity in hybrid search merge.
 pub(super) const DEFAULT_SEARCH_VECTOR_WEIGHT: f64 = 0.7;
 

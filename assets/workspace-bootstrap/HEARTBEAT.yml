@@ -33,7 +33,7 @@ pulses:
       - name: gate
         prompt: "Check whether meaningful new episodes or observations exist from the last 24 hours (this pulse runs nightly). If nothing new, stop here."
       - name: tend_memory
-        prompt: "Reconcile MEMORY.md and USER.md against recent episode evidence: add durable facts and preferences that surfaced, correct entries the evidence contradicts, remove stale ones."
+        prompt: "Reconcile MEMORY.md and USER.md against recent episode evidence: add durable facts and preferences that surfaced, correct entries the evidence contradicts, remove stale ones. Keep USER.md's Core Facts tier bounded and current — replace, don't append, when it is full. Promote a recurring pattern into USER.md only when at least two observations support it; a single sighting stays provisional in MEMORY.md."
 
 # ── Starter pulses ──────────────────────────────────────────────
 # Optional add-ons. Uncomment during first setup if the user wants

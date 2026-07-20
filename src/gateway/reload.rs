@@ -645,6 +645,7 @@ mod tests {
             memory: MemoryConfig::default(),
             pulse_enabled: false,
             subconscious_settings: crate::config::SubconsciousSettings::default(),
+            learning: crate::config::LearningConfig::default(),
             gateway: GatewayConfig::default(),
             timezone: chrono_tz::UTC,
             cloud: None,
