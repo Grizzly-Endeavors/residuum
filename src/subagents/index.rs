@@ -130,6 +130,7 @@ fn builtin_general_purpose_preset() -> (SubagentPresetFrontmatter, String) {
         model_tier: None,
         denied_tools: None,
         allowed_tools: None,
+        include_identity: false,
     };
     (fm, GENERAL_PURPOSE_BODY.to_string())
 }

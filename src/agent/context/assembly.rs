@@ -144,8 +144,12 @@ mod tests {
             "first message should be system"
         );
         assert!(
-            messages[0].content.is_empty(),
-            "system message content should be empty for default identity"
+            messages[0].content.contains("<HARNESS>"),
+            "default identity should still carry the code-owned HARNESS section"
+        );
+        assert!(
+            !messages[0].content.contains("<SOUL.md>"),
+            "no identity sections should render for default identity"
         );
     }
 

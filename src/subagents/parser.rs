@@ -128,7 +128,29 @@ You are a research specialist. Focus on gathering information.
         assert!(fm.model_tier.is_none());
         assert!(fm.denied_tools.is_none());
         assert!(fm.allowed_tools.is_none());
+        assert!(
+            !fm.include_identity,
+            "include_identity should default to false when omitted"
+        );
         assert!(body.is_empty());
+    }
+
+    #[test]
+    fn parse_include_identity_true_roundtrips() {
+        let content = r#"---
+name: introspective
+description: "Needs its own identity"
+include_identity: true
+---
+
+Reflect on your own SOUL.md and AGENTS.md.
+"#;
+        let (fm, _body) = parse_preset_md(content).unwrap();
+        assert_eq!(fm.name, "introspective");
+        assert!(
+            fm.include_identity,
+            "include_identity: true should round-trip through frontmatter parsing"
+        );
     }
 
     #[test]

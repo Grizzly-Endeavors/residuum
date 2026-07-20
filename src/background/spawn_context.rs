@@ -77,7 +77,7 @@ pub(crate) async fn build_spawn_resources(
     )
     .with_context(|| format!("failed to build provider chain for tier {tier:?}"))?;
 
-    let (preset_tool_restriction, preset_instructions) = match preset {
+    let (preset_tool_restriction, preset_instructions, include_identity) = match preset {
         Some((fm, body)) => {
             let restriction = match (&fm.allowed_tools, &fm.denied_tools) {
                 (Some(allowed), _) => Some(PresetToolRestriction::AllowedOnly(
@@ -89,9 +89,9 @@ pub(crate) async fn build_spawn_resources(
                 (None, None) => None,
             };
             let instructions = if body.is_empty() { None } else { Some(body) };
-            (restriction, instructions)
+            (restriction, instructions, fm.include_identity)
         }
-        None => (None, None),
+        None => (None, None, false),
     };
 
     // Apply per-tier overrides over global options
@@ -124,6 +124,7 @@ pub(crate) async fn build_spawn_resources(
         options,
         tz: ctx.tz,
         preset_instructions,
+        include_identity,
         background_spawner: Arc::clone(&ctx.background_spawner),
         endpoint_registry: ctx.endpoint_registry.clone(),
         publisher: ctx.publisher.clone(),
