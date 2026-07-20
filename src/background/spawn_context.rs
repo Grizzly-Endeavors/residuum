@@ -33,7 +33,6 @@ pub(crate) struct SpawnContext {
     pub(crate) http_client: SharedHttpClient,
     pub(crate) max_tokens: u32,
     pub(crate) retry_config: RetryConfig,
-    pub(crate) identity: IdentityFiles,
     pub(crate) options: CompletionOptions,
     pub(crate) layout: WorkspaceLayout,
     pub(crate) tz: chrono_tz::Tz,
@@ -111,11 +110,17 @@ pub(crate) async fn build_spawn_resources(
         ..CompletionOptions::default()
     };
 
+    // Load identity fresh per spawn so sub-agents see current SOUL.md/AGENTS.md/
+    // etc. A read failure fails the spawn — the caller logs it loudly.
+    let identity = IdentityFiles::load(&ctx.layout)
+        .await
+        .context("failed to load identity files for sub-agent spawn")?;
+
     let build_config = SubAgentBuildConfig {
         gated_tools: HashSet::new(),
         preset_tool_restriction,
         workspace_layout: ctx.layout.clone(),
-        identity: ctx.identity.clone(),
+        identity,
         options,
         tz: ctx.tz,
         preset_instructions,

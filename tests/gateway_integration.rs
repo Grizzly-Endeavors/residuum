@@ -85,6 +85,7 @@ mod gateway_integration {
             residuum::agent::AgentConfig {
                 options: CompletionOptions::default(),
                 tz: chrono_tz::UTC,
+                layout: None,
             },
         )
     }

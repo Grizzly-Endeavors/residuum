@@ -26,8 +26,9 @@ pub struct IdentityFiles {
 impl IdentityFiles {
     /// Load all identity files from the workspace.
     ///
-    /// Missing files are silently treated as `None` — required files log a
-    /// warning when absent.
+    /// Missing files are silently treated as `None`. This runs on every turn
+    /// (main agent and sub-agent spawn), so it stays quiet — call
+    /// [`Self::warn_missing`] once at startup to surface absent required files.
     ///
     /// # Errors
     /// Returns `FatalError::Workspace` if a file exists but cannot be read.
@@ -39,22 +40,6 @@ impl IdentityFiles {
         let memory_result = read_optional(&layout.memory_md()).await?;
         let environment_result = read_optional(&layout.environment_md()).await?;
 
-        if matches!(soul_result, ReadResult::Absent) {
-            tracing::warn!(path = %layout.soul_md().display(), "SOUL.md is missing or empty; expected after bootstrap");
-        }
-        if matches!(agents_result, ReadResult::Absent) {
-            tracing::warn!(path = %layout.agents_md().display(), "AGENTS.md is missing or empty; expected after bootstrap");
-        }
-        if matches!(user_result, ReadResult::Absent) {
-            tracing::warn!(path = %layout.user_md().display(), "USER.md is missing or empty; expected after bootstrap");
-        }
-        if matches!(memory_result, ReadResult::Absent) {
-            tracing::warn!(path = %layout.memory_md().display(), "MEMORY.md is missing or empty; expected after bootstrap");
-        }
-        if matches!(environment_result, ReadResult::Absent) {
-            tracing::warn!(path = %layout.environment_md().display(), "ENVIRONMENT.md is missing or empty; expected after bootstrap");
-        }
-
         let bootstrap = read_optional(&layout.bootstrap_md()).await?.into_option();
 
         Ok(Self {
@@ -65,6 +50,29 @@ impl IdentityFiles {
             environment: environment_result.into_option(),
             bootstrap,
         })
+    }
+
+    /// Log a warning for each absent required identity file.
+    ///
+    /// Called once at startup (not per turn) so the diagnostic is visible
+    /// without spamming the logs on every turn's reload. BOOTSTRAP.md is
+    /// excluded — it is expected to be absent after the first conversation.
+    pub fn warn_missing(&self, layout: &WorkspaceLayout) {
+        if self.soul.is_none() {
+            tracing::warn!(path = %layout.soul_md().display(), "SOUL.md is missing or empty; expected after bootstrap");
+        }
+        if self.agents.is_none() {
+            tracing::warn!(path = %layout.agents_md().display(), "AGENTS.md is missing or empty; expected after bootstrap");
+        }
+        if self.user.is_none() {
+            tracing::warn!(path = %layout.user_md().display(), "USER.md is missing or empty; expected after bootstrap");
+        }
+        if self.memory.is_none() {
+            tracing::warn!(path = %layout.memory_md().display(), "MEMORY.md is missing or empty; expected after bootstrap");
+        }
+        if self.environment.is_none() {
+            tracing::warn!(path = %layout.environment_md().display(), "ENVIRONMENT.md is missing or empty; expected after bootstrap");
+        }
     }
 }
 
@@ -88,7 +96,7 @@ async fn read_optional(path: &std::path::Path) -> Result<ReadResult, FatalError>
     match tokio::fs::read_to_string(path).await {
         Ok(content) => {
             if content.trim().is_empty() {
-                tracing::warn!(path = %path.display(), "identity file exists but is whitespace-only, treating as absent");
+                tracing::debug!(path = %path.display(), "identity file exists but is whitespace-only, treating as absent");
                 Ok(ReadResult::WhitespaceOnly)
             } else {
                 Ok(ReadResult::Present(content))

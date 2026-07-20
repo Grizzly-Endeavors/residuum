@@ -97,8 +97,9 @@ pub(crate) async fn execute_turn(
         tool_definitions.extend(mcp_guard.tool_definitions());
         drop(mcp_guard);
 
-        // System prompt is reassembled each iteration because tool execution
-        // can modify identity files (e.g. write_file updating MEMORY.md).
+        // System prompt is reassembled each iteration to pick up tool-filter and
+        // MCP changes. Identity is a snapshot taken at turn entry (reloaded from
+        // disk each turn), so mid-turn identity-file edits apply on the next turn.
         let messages = assemble_system_prompt(
             resources.identity,
             recent_messages,

@@ -26,6 +26,11 @@ pub struct SystemTurnResult {
 pub struct AgentConfig {
     pub options: CompletionOptions,
     pub tz: chrono_tz::Tz,
+    /// Workspace layout used to reload identity files from disk each turn.
+    ///
+    /// `None` pins the agent to the identity snapshot passed at construction
+    /// (used by tests that don't touch the filesystem).
+    pub layout: Option<crate::workspace::layout::WorkspaceLayout>,
 }
 
 /// The agent runtime that processes user messages through the model.
@@ -34,6 +39,9 @@ pub struct Agent {
     tools: ToolRegistry,
     tool_filter: SharedToolFilter,
     mcp_registry: SharedMcpRegistry,
+    /// Last-known-good identity snapshot. Refreshed from disk at each turn entry
+    /// via [`Agent::load_identity_snapshot`]; retained as the fallback when a
+    /// reload fails.
     identity: IdentityFiles,
     recent_messages: RecentMessages,
     options: CompletionOptions,
@@ -41,6 +49,9 @@ pub struct Agent {
     /// Narrative summary from the most recent observation cycle.
     recent_context: Option<String>,
     tz: chrono_tz::Tz,
+    /// Workspace layout for per-turn identity reloads. `None` pins identity to
+    /// the construction-time snapshot (test constructors).
+    layout: Option<crate::workspace::layout::WorkspaceLayout>,
     last_user_message_at: Option<chrono::NaiveDateTime>,
 }
 
@@ -66,7 +77,23 @@ impl Agent {
             observations: None,
             recent_context: None,
             tz: config.tz,
+            layout: config.layout,
             last_user_message_at: None,
+        }
+    }
+
+    /// Load a fresh identity snapshot from disk. On read failure, logs an
+    /// error and falls back to the last-known-good snapshot.
+    async fn load_identity_snapshot(&self) -> IdentityFiles {
+        let Some(layout) = &self.layout else {
+            return self.identity.clone();
+        };
+        match IdentityFiles::load(layout).await {
+            Ok(identity) => identity,
+            Err(e) => {
+                tracing::error!(error = %e, "identity reload failed; using last-known-good snapshot from previous turn");
+                self.identity.clone()
+            }
         }
     }
 
@@ -174,13 +201,17 @@ impl Agent {
         }
     }
 
-    fn turn_resources<'a>(&'a self, provider: &'a dyn ModelProvider) -> TurnResources<'a> {
+    fn turn_resources<'a>(
+        &'a self,
+        provider: &'a dyn ModelProvider,
+        identity: &'a IdentityFiles,
+    ) -> TurnResources<'a> {
         TurnResources {
             provider,
             tools: &self.tools,
             tool_filter: &self.tool_filter,
             mcp_registry: &self.mcp_registry,
-            identity: &self.identity,
+            identity,
             options: &self.options,
         }
     }
@@ -204,6 +235,7 @@ impl Agent {
         interrupt_rx: &mut tokio::sync::mpsc::Receiver<interrupt::Interrupt>,
     ) -> anyhow::Result<Vec<String>> {
         tracing::debug!("processing wake turn");
+        self.identity = self.load_identity_snapshot().await;
         let now = crate::time::now_local(self.tz);
         let status_line = StatusLine {
             now,
@@ -277,6 +309,7 @@ impl Agent {
         subconscious: Option<&crate::subconscious::SubconsciousWatch>,
     ) -> anyhow::Result<Vec<String>> {
         tracing::debug!("processing user message");
+        self.identity = self.load_identity_snapshot().await;
         let now = crate::time::now_local(self.tz);
         let status_line = StatusLine {
             now,
@@ -349,12 +382,16 @@ impl Agent {
 
         let provider: &dyn ModelProvider = provider_override.unwrap_or(&*self.provider);
 
+        // System turns take `&self` and can't cache the reload, so use a local
+        // snapshot for this turn only.
+        let identity = self.load_identity_snapshot().await;
+
         let memory_ctx = self.memory_ctx();
 
         // System turns don't participate in interrupts — use a dead-end channel
         let mut sys_interrupt_rx = interrupt::dead_interrupt_rx();
 
-        let resources = self.turn_resources(provider);
+        let resources = self.turn_resources(provider, &identity);
 
         let events = EventContext {
             publisher,
@@ -391,6 +428,9 @@ impl Agent {
         &self,
         prompt_ctx: &PromptContext<'_>,
     ) -> super::context::ContextBreakdown {
+        // Reload identity so `/context` reflects on-disk edits, not the snapshot
+        // from the last turn.
+        let identity = self.load_identity_snapshot().await;
         let memory_ctx = self.memory_ctx();
 
         let filter = self.tool_filter.read().await;
@@ -409,7 +449,7 @@ impl Agent {
         let mcp_tool_tokens: usize = mcp_defs.iter().map(token_count).sum();
 
         super::context::compute_context_breakdown(
-            &self.identity,
+            &identity,
             &memory_ctx,
             prompt_ctx,
             &self.recent_messages,
@@ -517,6 +557,7 @@ mod tests {
             AgentConfig {
                 options: CompletionOptions::default(),
                 tz: chrono_tz::UTC,
+                layout: None,
             },
         );
 
@@ -569,6 +610,7 @@ mod tests {
             AgentConfig {
                 options: CompletionOptions::default(),
                 tz: chrono_tz::UTC,
+                layout: None,
             },
         );
 
@@ -626,6 +668,7 @@ mod tests {
             AgentConfig {
                 options: CompletionOptions::default(),
                 tz: chrono_tz::UTC,
+                layout: None,
             },
         );
 
@@ -684,6 +727,7 @@ mod tests {
             AgentConfig {
                 options: CompletionOptions::default(),
                 tz: chrono_tz::UTC,
+                layout: None,
             },
         );
 
@@ -720,6 +764,7 @@ mod tests {
             AgentConfig {
                 options: CompletionOptions::default(),
                 tz: chrono_tz::UTC,
+                layout: None,
             },
         );
 
@@ -758,6 +803,7 @@ mod tests {
             AgentConfig {
                 options: CompletionOptions::default(),
                 tz: chrono_tz::UTC,
+                layout: None,
             },
         );
 
@@ -792,6 +838,7 @@ mod tests {
             AgentConfig {
                 options: CompletionOptions::default(),
                 tz: chrono_tz::UTC,
+                layout: None,
             },
         );
 
@@ -851,6 +898,7 @@ mod tests {
             AgentConfig {
                 options: CompletionOptions::default(),
                 tz: chrono_tz::UTC,
+                layout: None,
             },
         );
 
@@ -880,6 +928,7 @@ mod tests {
             AgentConfig {
                 options: CompletionOptions::default(),
                 tz: chrono_tz::UTC,
+                layout: None,
             },
         );
 
@@ -918,6 +967,7 @@ mod tests {
             AgentConfig {
                 options: CompletionOptions::default(),
                 tz: chrono_tz::UTC,
+                layout: None,
             },
         );
 
@@ -967,6 +1017,7 @@ mod tests {
             AgentConfig {
                 options: CompletionOptions::default(),
                 tz: chrono_tz::UTC,
+                layout: None,
             },
         );
         agent.inject_user_message("hello");
@@ -1108,6 +1159,7 @@ mod tests {
             AgentConfig {
                 options: CompletionOptions::default(),
                 tz: chrono_tz::UTC,
+                layout: None,
             },
         );
 
@@ -1183,6 +1235,7 @@ mod tests {
             AgentConfig {
                 options: CompletionOptions::default(),
                 tz: chrono_tz::UTC,
+                layout: None,
             },
         );
 
@@ -1246,6 +1299,7 @@ mod tests {
             AgentConfig {
                 options: CompletionOptions::default(),
                 tz: chrono_tz::UTC,
+                layout: None,
             },
         );
 
@@ -1292,6 +1346,7 @@ mod tests {
             AgentConfig {
                 options: CompletionOptions::default(),
                 tz: chrono_tz::UTC,
+                layout: None,
             },
         );
 
@@ -1331,6 +1386,7 @@ mod tests {
             AgentConfig {
                 options: CompletionOptions::default(),
                 tz: chrono_tz::UTC,
+                layout: None,
             },
         );
 
@@ -1365,6 +1421,7 @@ mod tests {
             AgentConfig {
                 options: CompletionOptions::default(),
                 tz: chrono_tz::UTC,
+                layout: None,
             },
         );
 
@@ -1419,6 +1476,7 @@ mod tests {
             AgentConfig {
                 options: CompletionOptions::default(),
                 tz: chrono_tz::UTC,
+                layout: None,
             },
         );
 
@@ -1443,6 +1501,7 @@ mod tests {
             AgentConfig {
                 options: CompletionOptions::default(),
                 tz: chrono_tz::UTC,
+                layout: None,
             },
         );
 
@@ -1465,5 +1524,229 @@ mod tests {
             "message count should not change after swap"
         );
         assert_eq!(agent.provider.model_name(), "model-b");
+    }
+
+    /// Editing SOUL.md between turns must be reflected in the next turn's system
+    /// prompt — the whole point of per-turn identity reloads (issue #103).
+    #[tokio::test]
+    async fn turn_picks_up_identity_edits_from_disk() {
+        let dir = tempfile::tempdir().unwrap();
+        let layout = crate::workspace::layout::WorkspaceLayout::new(dir.path());
+        tokio::fs::write(layout.soul_md(), "SOUL_MARKER_V1")
+            .await
+            .unwrap();
+
+        let (tx, mut rx) = tokio::sync::mpsc::channel(32);
+        let provider = CapturingProvider::new(
+            vec![
+                ModelResponse::new("turn one".to_string(), vec![]),
+                ModelResponse::new("turn two".to_string(), vec![]),
+            ],
+            tx,
+        );
+        let captured = Arc::clone(&provider.captured);
+
+        let mut agent = Agent::new(
+            Box::new(provider),
+            ToolRegistry::new(),
+            no_filter(),
+            empty_mcp(),
+            IdentityFiles::default(),
+            AgentConfig {
+                options: CompletionOptions::default(),
+                tz: chrono_tz::UTC,
+                layout: Some(layout.clone()),
+            },
+        );
+
+        let (publisher, ep) = test_bus();
+        agent
+            .process_message(
+                "hi",
+                &publisher,
+                Some(&ep),
+                None,
+                "",
+                None,
+                &PromptContext::default(),
+                &mut rx,
+                &[],
+                None,
+            )
+            .await
+            .unwrap();
+
+        tokio::fs::write(layout.soul_md(), "SOUL_MARKER_V2")
+            .await
+            .unwrap();
+
+        agent
+            .process_message(
+                "hi again",
+                &publisher,
+                Some(&ep),
+                None,
+                "",
+                None,
+                &PromptContext::default(),
+                &mut rx,
+                &[],
+                None,
+            )
+            .await
+            .unwrap();
+
+        let calls = captured.lock().await;
+        assert_eq!(calls.len(), 2, "provider should be called once per turn");
+        assert!(
+            calls[0][0].content.contains("SOUL_MARKER_V1"),
+            "turn 1 system prompt should contain the original soul"
+        );
+        assert!(
+            calls[1][0].content.contains("SOUL_MARKER_V2"),
+            "turn 2 system prompt should reflect the edited soul"
+        );
+        assert!(
+            !calls[1][0].content.contains("SOUL_MARKER_V1"),
+            "turn 2 must not carry the stale soul snapshot"
+        );
+    }
+
+    /// Deleting BOOTSTRAP.md (as happens after the first conversation) must make
+    /// it vanish from the next turn's prompt rather than lingering until restart.
+    #[tokio::test]
+    async fn bootstrap_disappears_after_deletion() {
+        let dir = tempfile::tempdir().unwrap();
+        let layout = crate::workspace::layout::WorkspaceLayout::new(dir.path());
+        tokio::fs::write(layout.bootstrap_md(), "BOOTSTRAP_MARKER")
+            .await
+            .unwrap();
+
+        let (tx, mut rx) = tokio::sync::mpsc::channel(32);
+        let provider = CapturingProvider::new(
+            vec![
+                ModelResponse::new("turn one".to_string(), vec![]),
+                ModelResponse::new("turn two".to_string(), vec![]),
+            ],
+            tx,
+        );
+        let captured = Arc::clone(&provider.captured);
+
+        let mut agent = Agent::new(
+            Box::new(provider),
+            ToolRegistry::new(),
+            no_filter(),
+            empty_mcp(),
+            IdentityFiles::default(),
+            AgentConfig {
+                options: CompletionOptions::default(),
+                tz: chrono_tz::UTC,
+                layout: Some(layout.clone()),
+            },
+        );
+
+        let (publisher, ep) = test_bus();
+        agent
+            .process_message(
+                "hi",
+                &publisher,
+                Some(&ep),
+                None,
+                "",
+                None,
+                &PromptContext::default(),
+                &mut rx,
+                &[],
+                None,
+            )
+            .await
+            .unwrap();
+
+        tokio::fs::remove_file(layout.bootstrap_md()).await.unwrap();
+
+        agent
+            .process_message(
+                "hi again",
+                &publisher,
+                Some(&ep),
+                None,
+                "",
+                None,
+                &PromptContext::default(),
+                &mut rx,
+                &[],
+                None,
+            )
+            .await
+            .unwrap();
+
+        let calls = captured.lock().await;
+        assert!(
+            calls[0][0].content.contains("BOOTSTRAP_MARKER"),
+            "turn 1 system prompt should include bootstrap guidance"
+        );
+        assert!(
+            !calls[1][0].content.contains("BOOTSTRAP_MARKER"),
+            "turn 2 system prompt should drop bootstrap after deletion"
+        );
+    }
+
+    /// A read failure during reload (here: SOUL.md is a directory, a
+    /// deterministic non-NotFound error on Linux) must fall back to the
+    /// last-known-good snapshot instead of failing the turn.
+    #[tokio::test]
+    async fn identity_read_failure_falls_back_to_cache() {
+        let dir = tempfile::tempdir().unwrap();
+        let layout = crate::workspace::layout::WorkspaceLayout::new(dir.path());
+        // A directory named SOUL.md makes read_to_string return a non-NotFound
+        // error, so IdentityFiles::load fails and the reload falls back.
+        tokio::fs::create_dir(layout.soul_md()).await.unwrap();
+
+        let (tx, mut rx) = tokio::sync::mpsc::channel(32);
+        let provider =
+            CapturingProvider::new(vec![ModelResponse::new("ok".to_string(), vec![])], tx);
+        let captured = Arc::clone(&provider.captured);
+
+        let cached = IdentityFiles {
+            soul: Some("cached soul".to_string()),
+            ..IdentityFiles::default()
+        };
+
+        let mut agent = Agent::new(
+            Box::new(provider),
+            ToolRegistry::new(),
+            no_filter(),
+            empty_mcp(),
+            cached,
+            AgentConfig {
+                options: CompletionOptions::default(),
+                tz: chrono_tz::UTC,
+                layout: Some(layout.clone()),
+            },
+        );
+
+        let (publisher, ep) = test_bus();
+        let result = agent
+            .process_message(
+                "hi",
+                &publisher,
+                Some(&ep),
+                None,
+                "",
+                None,
+                &PromptContext::default(),
+                &mut rx,
+                &[],
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(result, vec!["ok"], "turn should succeed despite read error");
+
+        let calls = captured.lock().await;
+        assert!(
+            calls[0][0].content.contains("cached soul"),
+            "system prompt should fall back to the cached soul snapshot"
+        );
     }
 }
