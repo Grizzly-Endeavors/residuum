@@ -18,16 +18,16 @@ use super::constants::{
 use super::deserialize::{
     AgentConfigFile, BackgroundConfigFile, BackgroundModelsFile, CloudConfigFile, ConfigFile,
     DiscordConfigFile, GatewayConfigFile, MemoryConfigFile, ProviderEntryFile, ProvidersFile,
-    SearchConfigFile, SkillsConfigFile, TelegramConfigFile, TracingConfigFile, WebSearchConfigFile,
-    WebhookEntryFile,
+    SearchConfigFile, SkillsConfigFile, SubconsciousConfigFile, TelegramConfigFile,
+    TracingConfigFile, WebSearchConfigFile, WebhookEntryFile,
 };
 use super::provider::ProviderKind;
 use super::secrets::SecretStore;
 use super::types::{
     AgentAbilitiesConfig, BackgroundConfig, CloudConfig, DiscordConfig, GatewayConfig, IdleConfig,
     LogLevel, MemoryConfig, OtelEndpoint, ProviderNativeSearchConfig, SearchConfig, SkillsConfig,
-    StandaloneBackendConfig, TelegramConfig, TracingConfig, WebSearchConfig, WebhookEntry,
-    WebhookFormat, WebhookRouting,
+    StandaloneBackendConfig, SubconsciousSettings, TelegramConfig, TracingConfig, WebSearchConfig,
+    WebhookEntry, WebhookFormat, WebhookRouting,
 };
 
 /// Build a `Config` from an optional config file and environment variables.
@@ -75,6 +75,9 @@ pub(crate) fn from_file_and_env(
         .and_then(|p| p.enabled)
         .unwrap_or(true);
 
+    let subconscious_settings =
+        resolve_subconscious_settings(file.and_then(|f| f.subconscious.as_ref()));
+
     let gateway = resolve_gateway_config(file.and_then(|f| f.gateway.as_ref()));
     let cloud = resolve_cloud_config(file.and_then(|f| f.cloud.as_ref()), &secrets, &gateway);
     let discord = resolve_discord_config(file.and_then(|f| f.discord.as_ref()), &secrets);
@@ -121,12 +124,14 @@ pub(crate) fn from_file_and_env(
         observer: resolved_models.observer,
         reflector: resolved_models.reflector,
         pulse: resolved_models.pulse,
+        subconscious: resolved_models.subconscious,
         embedding: resolved_models.embedding,
         workspace_dir,
         timeout_secs,
         max_tokens,
         memory,
         pulse_enabled,
+        subconscious_settings,
         gateway,
         timezone,
         cloud,
@@ -451,6 +456,29 @@ fn resolve_memory_config(section: Option<&MemoryConfigFile>) -> MemoryConfig {
     }
     mem.search = resolve_search_config(section.and_then(|m| m.search.as_ref()));
     mem
+}
+
+/// Resolve subconscious settings from TOML section (opt-in, default disabled).
+fn resolve_subconscious_settings(section: Option<&SubconsciousConfigFile>) -> SubconsciousSettings {
+    let mut settings = SubconsciousSettings::default();
+    if let Some(s) = section {
+        if let Some(v) = s.enabled {
+            settings.enabled = v;
+        }
+        if let Some(v) = s.mid_turn {
+            settings.mid_turn = v;
+        }
+        if let Some(v) = s.every_n_iterations {
+            settings.every_n_iterations = v;
+        }
+        if let Some(v) = s.max_interventions_per_turn {
+            settings.max_interventions_per_turn = v;
+        }
+        if let Some(v) = s.max_transcript_tokens {
+            settings.max_transcript_tokens = v;
+        }
+    }
+    settings
 }
 
 /// Resolve tracing configuration from TOML section.
@@ -895,6 +923,69 @@ observer_threshold_tokens = 30000
         assert!(
             result.is_err(),
             "unknown top-level section should be rejected"
+        );
+    }
+
+    #[test]
+    fn subconscious_defaults_to_disabled_when_absent() {
+        let cfg_file = parse_config("timezone = \"UTC\"\n");
+        let prov_file = parse_providers(
+            r#"
+[models]
+main = "anthropic/claude-sonnet-4-6"
+"#,
+        );
+        let cfg = from_file_and_env(Some(&cfg_file), Some(&prov_file), &test_config_dir()).unwrap();
+        assert!(
+            !cfg.subconscious_settings.enabled,
+            "subconscious is opt-in and must default to disabled"
+        );
+        assert!(
+            cfg.subconscious_settings.mid_turn,
+            "mid_turn defaults to true (gated by enabled)"
+        );
+    }
+
+    #[test]
+    fn subconscious_knobs_parse() {
+        let cfg_file = parse_config(
+            r#"
+timezone = "UTC"
+
+[subconscious]
+enabled = true
+mid_turn = false
+every_n_iterations = 5
+max_interventions_per_turn = 2
+max_transcript_tokens = 8000
+"#,
+        );
+        let prov_file = parse_providers(
+            r#"
+[models]
+main = "anthropic/claude-sonnet-4-6"
+"#,
+        );
+        let cfg = from_file_and_env(Some(&cfg_file), Some(&prov_file), &test_config_dir()).unwrap();
+        assert!(cfg.subconscious_settings.enabled);
+        assert!(!cfg.subconscious_settings.mid_turn);
+        assert_eq!(cfg.subconscious_settings.every_n_iterations, 5);
+        assert_eq!(cfg.subconscious_settings.max_interventions_per_turn, 2);
+        assert_eq!(cfg.subconscious_settings.max_transcript_tokens, 8000);
+    }
+
+    #[test]
+    fn subconscious_deny_unknown_fields() {
+        let toml_str = r#"
+timezone = "UTC"
+
+[subconscious]
+enalbed = true
+"#;
+        let result = toml::from_str::<ConfigFile>(toml_str);
+        assert!(
+            result.is_err(),
+            "typo in [subconscious] section should be rejected"
         );
     }
 

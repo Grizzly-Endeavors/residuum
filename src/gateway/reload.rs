@@ -43,6 +43,8 @@ pub(super) struct ConfigDiff {
     pub telegram_changed: bool,
     /// Pulse enabled/disabled toggle changed.
     pub pulse_changed: bool,
+    /// Subconscious settings or provider chain changed.
+    pub subconscious_changed: bool,
     /// Background task config changed (`max_concurrent`, models).
     pub background_changed: bool,
     /// Agent ability gates changed.
@@ -83,6 +85,9 @@ impl ConfigDiff {
         }
         if self.pulse_changed {
             parts.push("pulse");
+        }
+        if self.subconscious_changed {
+            parts.push("subconscious");
         }
         if self.background_changed {
             parts.push("background");
@@ -128,6 +133,8 @@ pub(super) fn diff_config(old: &Config, new: &Config) -> ConfigDiff {
         discord_changed: old.discord != new.discord,
         telegram_changed: old.telegram != new.telegram,
         pulse_changed: old.pulse_enabled != new.pulse_enabled,
+        subconscious_changed: old.subconscious != new.subconscious
+            || old.subconscious_settings != new.subconscious_settings,
         background_changed: old.background != new.background,
         agent_changed: old.agent != new.agent,
         skills_changed: old.skills != new.skills,
@@ -260,6 +267,17 @@ pub(super) async fn handle_root_reload(rt: &mut GatewayRuntime) -> IdleAction {
     if diff.pulse_changed {
         rt.pulse_enabled = new_cfg.pulse_enabled;
         tracing::info!(enabled = new_cfg.pulse_enabled, "pulse toggle updated");
+    }
+    if diff.subconscious_changed || diff.providers_changed {
+        // Full rebuild: in-flight evaluations keep the old Arc, new turns get
+        // the new instance. Provider changes are included because the
+        // subconscious chain may fall back to main.
+        rt.subconscious =
+            crate::subconscious::Subconscious::build(&new_cfg, &rt.layout, rt.http_client.clone());
+        tracing::info!(
+            enabled = rt.subconscious.enabled(),
+            "subconscious rebuilt from new config"
+        );
     }
     if diff.background_changed && !diff.providers_changed {
         reload_background_config(rt, &new_cfg);
@@ -632,12 +650,14 @@ mod tests {
             observer: vec![],
             reflector: vec![],
             pulse: vec![],
+            subconscious: vec![],
             embedding: None,
             workspace_dir: std::path::PathBuf::from("/tmp/test"),
             timeout_secs: 30,
             max_tokens: 4096,
             memory: MemoryConfig::default(),
             pulse_enabled: false,
+            subconscious_settings: crate::config::SubconsciousSettings::default(),
             gateway: GatewayConfig::default(),
             timezone: chrono_tz::UTC,
             cloud: None,
@@ -659,11 +679,29 @@ mod tests {
     }
 
     #[test]
+    fn diff_config_subconscious_settings_changed() {
+        let old = test_config();
+        let mut new = test_config();
+        new.subconscious_settings.enabled = true;
+
+        let diff = diff_config(&old, &new);
+        assert!(
+            diff.subconscious_changed,
+            "enabled toggle should be detected"
+        );
+        assert!(
+            !diff.providers_changed,
+            "settings change alone should not flag providers"
+        );
+    }
+
+    #[test]
     fn diff_config_no_changes() {
         let cfg = test_config();
         let diff = diff_config(&cfg, &cfg);
 
         assert!(!diff.providers_changed);
+        assert!(!diff.subconscious_changed);
         assert!(!diff.memory_changed);
         assert!(!diff.gateway_changed);
         assert!(!diff.discord_changed);

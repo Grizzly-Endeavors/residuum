@@ -167,6 +167,7 @@ pub(crate) struct GatewayRuntime {
     pub agent: Agent,
     pub observer: Observer,
     pub reflector: Reflector,
+    pub subconscious: Arc<crate::subconscious::Subconscious>,
     pub search_index: Arc<MemoryIndex>,
     pub vector_store: Option<Arc<VectorStore>>,
     pub embedding_provider: Option<Arc<dyn EmbeddingProvider>>,

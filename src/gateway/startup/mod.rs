@@ -41,6 +41,7 @@ pub(crate) struct GatewayComponents {
     pub agent: Agent,
     pub observer: Observer,
     pub reflector: Reflector,
+    pub subconscious: Arc<crate::subconscious::Subconscious>,
     pub search_index: Arc<MemoryIndex>,
     pub vector_store: Option<Arc<crate::memory::vector_store::VectorStore>>,
     pub action_store: Arc<tokio::sync::Mutex<ActionStore>>,
@@ -361,6 +362,7 @@ pub(crate) async fn initialize(
     let (identity, http) = init_identity_and_http(&layout, cfg).await?;
     let providers = providers::init_providers(cfg, tz, http.clone())?;
     let mem = memory::init_memory(cfg, &layout, providers.embedding_provider.as_ref()).await?;
+    let subconscious = crate::subconscious::Subconscious::build(cfg, &layout, http.clone());
 
     let (action_store, action_notify) = init_action_store(&layout).await;
     let (project_state, skill_state) = init_project_and_skills(cfg, &layout).await;
@@ -432,6 +434,7 @@ pub(crate) async fn initialize(
         agent,
         observer: providers.observer,
         reflector: providers.reflector,
+        subconscious,
         search_index: mem.search_index,
         vector_store: mem.vector_store,
         action_store,

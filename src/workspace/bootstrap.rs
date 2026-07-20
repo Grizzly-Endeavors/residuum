@@ -37,6 +37,12 @@ const DEFAULT_HEARTBEAT: &str = include_str!("../../assets/workspace-bootstrap/H
 const DEFAULT_PRESENCE: &str = include_str!("../../assets/workspace-bootstrap/PRESENCE.toml");
 const DEFAULT_ALERTS: &str = include_str!("../../assets/workspace-bootstrap/ALERTS.md");
 
+/// Default subconscious check policy written to SUBCONSCIOUS.md.
+///
+/// Contains only the customizable check guidance — the output format spec is
+/// always injected by the Rust code and cannot be lost by editing this file.
+const DEFAULT_SUBCONSCIOUS: &str = include_str!("../../assets/workspace-bootstrap/SUBCONSCIOUS.md");
+
 // ── Bundled skill content (embedded at compile time from assets/) ────────────
 
 // residuum-system skill
@@ -158,6 +164,7 @@ pub async fn ensure_workspace(
     write_if_missing(&layout.reflector_md(), DEFAULT_REFLECTOR_PROMPT).await?;
     write_if_missing(&layout.heartbeat_yml(), DEFAULT_HEARTBEAT).await?;
     write_if_missing(&layout.alerts_md(), DEFAULT_ALERTS).await?;
+    write_if_missing(&layout.subconscious_md(), DEFAULT_SUBCONSCIOUS).await?;
     write_if_missing(&layout.presence_toml(), DEFAULT_PRESENCE).await?;
 
     // Write bundled skills
@@ -325,6 +332,10 @@ mod tests {
             "HEARTBEAT.yml should exist"
         );
         assert!(layout.alerts_md().exists(), "ALERTS.md should exist");
+        assert!(
+            layout.subconscious_md().exists(),
+            "SUBCONSCIOUS.md should exist"
+        );
         assert!(
             layout.presence_toml().exists(),
             "PRESENCE.toml should exist"

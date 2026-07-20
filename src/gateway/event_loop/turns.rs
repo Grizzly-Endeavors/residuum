@@ -1,5 +1,7 @@
 //! Agent turn handling and message processing in the event loop.
 
+use std::sync::Arc;
+
 use tokio::sync::mpsc;
 
 use crate::agent::Agent;
@@ -82,6 +84,10 @@ pub fn process_leftover_interrupts(leftovers: Vec<Interrupt>, rt: &mut GatewayRu
             }
             Interrupt::BackgroundResult(result) => {
                 rt.agent.inject_system_message(result.format_for_agent());
+            }
+            Interrupt::Subconscious(content) => {
+                // A late mid-turn finding degrades to a note for the next turn.
+                rt.agent.inject_system_message(content);
             }
         }
     }
@@ -169,8 +175,15 @@ async fn run_agent_turn_with_interrupts(
     images: &[ImageData],
     agent_subscriber: &mut Subscriber<MessageEvent>,
     reload_rx: &mut tokio::sync::watch::Receiver<ReloadSignal>,
-) -> (anyhow::Result<Vec<String>>, Vec<Interrupt>) {
+    subconscious: Option<Arc<crate::subconscious::Subconscious>>,
+) -> (
+    anyhow::Result<Vec<String>>,
+    Vec<Interrupt>,
+    Option<Arc<std::sync::Mutex<crate::subconscious::TurnScratch>>>,
+) {
     let (interrupt_tx, mut interrupt_rx) = mpsc::channel::<Interrupt>(32);
+    let watch =
+        subconscious.map(|s| crate::subconscious::SubconsciousWatch::new(s, interrupt_tx.clone()));
     let turn_result = {
         let mut turn = std::pin::pin!(agent.process_message(
             content,
@@ -182,6 +195,7 @@ async fn run_agent_turn_with_interrupts(
             prompt_ctx,
             &mut interrupt_rx,
             images,
+            watch.as_ref(),
         ));
         loop {
             tokio::select! {
@@ -215,10 +229,16 @@ async fn run_agent_turn_with_interrupts(
         }
     };
 
+    // Capture the mid-turn scratch before the watch drops so the end-of-turn
+    // pass can triage against what already happened this turn.
+    let scratch = watch
+        .as_ref()
+        .map(crate::subconscious::SubconsciousWatch::scratch);
+
     drop(interrupt_tx);
     let leftover_interrupts = drain_interrupts(&mut interrupt_rx);
 
-    (turn_result, leftover_interrupts)
+    (turn_result, leftover_interrupts, scratch)
 }
 
 /// Handle an inbound user message: run agent turn, persist, observe, and process leftovers.
@@ -279,7 +299,7 @@ pub async fn handle_inbound_message(
         load_prompt_context_strings(&rt.project_state, &rt.skill_state, &rt.layout).await;
     let prompt_ctx = ctx_strings.as_prompt_context();
 
-    let (turn_result, leftover_interrupts) = run_agent_turn_with_interrupts(
+    let (turn_result, leftover_interrupts, subconscious_scratch) = run_agent_turn_with_interrupts(
         &mut rt.agent,
         &message.content,
         &rt.publisher,
@@ -291,6 +311,8 @@ pub async fn handle_inbound_message(
         &message.images,
         &mut rt.agent_subscriber,
         &mut rt.reload_rx,
+        (!is_background && rt.subconscious.mid_turn_enabled())
+            .then(|| Arc::clone(&rt.subconscious)),
     )
     .await;
 
@@ -366,6 +388,18 @@ pub async fn handle_inbound_message(
     };
     let new_messages: Vec<_> = rt.agent.messages_since(before).to_vec();
     persist_and_maybe_observe(rt, &new_messages, visibility, observe_deadline).await;
+
+    // Background turns (including subconscious correction turns) are never
+    // evaluated — this gate is what bounds the correction feedback loop.
+    if !is_background {
+        super::subconscious_hook::run_end_of_turn_subconscious(
+            rt,
+            &new_messages,
+            &reply_id,
+            subconscious_scratch.as_ref(),
+        )
+        .await;
+    }
 
     process_leftover_interrupts(leftover_interrupts, rt);
 

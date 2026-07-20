@@ -52,6 +52,20 @@ observer_force_threshold_tokens = 60000 # hard threshold: observe immediately, b
 [pulse]
 enabled = true
 
+# ── Subconscious (instruction-drift classifier, opt-in) ─────────────────────
+# A small model that watches conversations and steers the main agent when it
+# ignores an instruction or forgets something (like saving a user preference
+# to MEMORY.md). Off by default: it adds a classifier call per evaluated turn.
+# Checks are customizable in SUBCONSCIOUS.md in the workspace.
+# Assign a cheap model to `subconscious` in providers.toml under [models].
+#
+# [subconscious]
+# enabled = true
+# mid_turn = true                  # also watch while the agent is mid-turn
+# every_n_iterations = 3           # mid-turn: evaluate every N tool iterations
+# max_interventions_per_turn = 1   # mid-turn: cap on injected corrections
+# max_transcript_tokens = 12000    # transcript budget sent to the classifier
+
 # ── WebSocket gateway ─────────────────────────────────────────────────────────
 [gateway]
 bind = "127.0.0.1"

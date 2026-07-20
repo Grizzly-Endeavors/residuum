@@ -179,6 +179,7 @@ export type ModelRoleKey =
   | "observer"
   | "reflector"
   | "pulse"
+  | "subconscious"
   | "embedding"
   | "bgSmall"
   | "bgMedium"
@@ -190,6 +191,7 @@ export interface SettingsModelAssignments {
   observer: string;
   reflector: string;
   pulse: string;
+  subconscious: string;
   embedding: string;
   bgSmall: string;
   bgMedium: string;

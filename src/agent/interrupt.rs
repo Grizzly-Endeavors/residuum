@@ -12,6 +12,8 @@ pub enum Interrupt {
     UserMessage(InboundMessage),
     /// A background task completed and its result should be injected.
     BackgroundResult(AgentResultEvent),
+    /// The subconscious classifier found a course correction to inject.
+    Subconscious(String),
 }
 
 /// Create a dead-end receiver that will never receive any messages.

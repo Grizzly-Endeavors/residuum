@@ -266,6 +266,7 @@ async fn build_runtime(
         tz: parts.tz,
         agent: parts.agent,
         observer: parts.observer,
+        subconscious: parts.subconscious,
         reflector: parts.reflector,
         search_index: parts.search_index,
         vector_store: parts.vector_store,

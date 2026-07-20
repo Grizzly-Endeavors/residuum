@@ -40,6 +40,15 @@ pub(crate) const DEFAULT_OBSERVER_COOLDOWN_SECS: u64 = 120;
 /// Default force-observe token threshold (bypasses cooldown).
 pub(crate) const DEFAULT_OBSERVER_FORCE_THRESHOLD: usize = 60_000;
 
+/// Default subconscious mid-turn evaluation cadence (every N tool iterations).
+pub(crate) const DEFAULT_SUBCONSCIOUS_EVERY_N_ITERATIONS: usize = 3;
+
+/// Default maximum subconscious mid-turn interventions per turn.
+pub(crate) const DEFAULT_SUBCONSCIOUS_MAX_INTERVENTIONS: usize = 1;
+
+/// Default token cap for the transcript sent to the subconscious classifier.
+pub(crate) const DEFAULT_SUBCONSCIOUS_MAX_TRANSCRIPT_TOKENS: usize = 12_000;
+
 /// Default weight for vector similarity in hybrid search merge.
 pub(super) const DEFAULT_SEARCH_VECTOR_WEIGHT: f64 = 0.7;
 

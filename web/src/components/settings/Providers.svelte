@@ -39,6 +39,8 @@
     reflector:
       "Periodically reviews stored memories, consolidates duplicates, and resolves contradictions.",
     pulse: "Drives proactive behavior — daily briefings, check-ins, and ambient monitoring tasks.",
+    subconscious:
+      "Watches conversations and steers the agent when it drifts from its instructions or forgets an action. Enable it in the Runtime panel.",
     embedding:
       "Generates vector embeddings for semantic memory search. Only some providers support this.",
     bgSmall:
@@ -164,6 +166,7 @@
       observer: "Observer",
       reflector: "Reflector",
       pulse: "Pulse",
+      subconscious: "Subconscious",
       embedding: "Embedding",
       bgSmall: "Small",
       bgMedium: "Medium",
@@ -384,7 +387,7 @@
 
     <div class="roles-section">
       <div class="roles-section-label">Subsystems</div>
-      {#each ["observer", "reflector", "pulse"] as role (role)}
+      {#each ["observer", "reflector", "pulse", "subconscious"] as role (role)}
         <div class="role-row">
           <div class="role-row-label">
             {roleLabel(role)}
