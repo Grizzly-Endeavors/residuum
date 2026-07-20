@@ -260,6 +260,7 @@ async fn build_runtime(
     cloud_config: Option<crate::config::CloudConfig>,
 ) -> Result<GatewayRuntime, FatalError> {
     let infra = spawn_bus_infrastructure(&core, &mut parts).await?;
+    let pulse_state_path = parts.layout.pulse_state_json();
 
     Ok(GatewayRuntime {
         layout: parts.layout,
@@ -293,7 +294,7 @@ async fn build_runtime(
         reload_rx: receivers.reload,
         command_rx: receivers.command,
         server_handle: spawned.server_handle,
-        pulse_scheduler: PulseScheduler::new(),
+        pulse_scheduler: PulseScheduler::with_state_path(&pulse_state_path),
         sigterm: spawned.sigterm,
         http_shutdown_tx: core.http_shutdown_tx,
         config_dir: core.config_dir.clone(),
