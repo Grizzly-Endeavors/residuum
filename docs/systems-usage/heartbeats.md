@@ -2,6 +2,19 @@
 
 Heartbeats are ambient scheduled checks the agent performs in the background. The gateway handles all scheduling; the LLM is only invoked when a pulse is due.
 
+## Built-in Pulses
+
+Every bootstrapped workspace ships `HEARTBEAT.yml` with two pulses enabled by default:
+
+| Pulse | Schedule | Agent | Purpose |
+|-------|----------|-------|---------|
+| `reflection` | `"7d"` | `introspection` | Reviews recent episodes/observations for recurring patterns, unfinished requests, and friction; delivers suggestions to the user inbox via `user_inbox_add`. |
+| `memory_tending` | `"24h"`, active `02:00-06:00` | `introspection` | Reconciles `MEMORY.md`/`USER.md` against recent episode evidence — adds durable facts, corrects or removes stale entries. |
+
+Both name the bundled `introspection` subagent preset (`subagents/introspection.md`), which runs at `model_tier: large` with `include_identity: true` (SOUL.md/AGENTS.md/MEMORY.md included in its prompt, in addition to the usual ENVIRONMENT.md/USER.md). It may edit MEMORY.md/USER.md directly, but can only propose SOUL.md/AGENTS.md changes through its inbox delivery.
+
+Disabling either is a matter of setting `enabled: false` on the pulse — the user or agent can do this during onboarding if the user opts out of background self-maintenance. A commented-out block of additional starter pulses (`inbox_check`, `morning_briefing`, `nightly_review`) ships alongside the built-ins as optional, off-by-default add-ons.
+
 ## HEARTBEAT.yml
 
 The agent owns this file and evolves it over time — adding new pulses, adjusting schedules, disabling noisy ones, changing routing.
@@ -41,7 +54,7 @@ pulses:
 |-------|------|----------|-------|
 | `name` | string | yes | Identifies the pulse |
 | `enabled` | boolean | no | Default `true`. Set `false` to pause without deleting. |
-| `schedule` | string | yes | Duration: `"30s"`, `"5m"`, `"2h"`, `"1d"` |
+| `schedule` | string | yes | Duration: `"30s"`, `"5m"`, `"2h"`, `"1d"`, `"7d"` — any number plus `s`/`m`/`h`/`d` |
 | `active_hours` | string | no | `"HH:MM-HH:MM"` in configured timezone. Supports overnight windows (e.g. `"22:00-06:00"`). |
 | `agent` | string or null | no | See agent routing table below. |
 | `trigger_count` | integer or null | no | Max firings per active period. When set, firings are spaced evenly across the `active_hours` window. Omit for unlimited. |

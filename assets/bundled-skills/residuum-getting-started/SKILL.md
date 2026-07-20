@@ -24,27 +24,29 @@ Do this first. Every first conversation starts here. Three questions, each one f
 
 ### Question 1: Proactivity Level
 
-Ask the user how involved they want you to be when they're not actively talking to you. Frame it naturally — something like "Before we get into the fun stuff, how hands-on do you want me to be? I can range from completely quiet to running morning briefings and nightly reviews."
+Two pulses already run in the background before you ask anything: `reflection` (a weekly review that looks for patterns and sends you suggestions) and `memory_tending` (a nightly pass that keeps MEMORY.md and USER.md honest against what actually happened). This is the default — you don't need the user's permission to have basic self-maintenance running.
+
+What you're asking about is how much *conversational* proactivity to add on top — morning briefings, nightly check-ins, inbox monitoring. Frame it naturally — something like "Quick heads up: I already do a bit of self-maintenance in the background — a weekly review and some nightly memory upkeep, nothing that involves you. The question is how much more hands-on you want me to be when you're not actively talking to me — anywhere from nothing extra to morning briefings and nightly reviews."
 
 Present these options conversationally:
 
-- **None** — You only do things when asked. No background activity at all.
-- **Low** — You keep an eye on your own inbox and handle workspace housekeeping, but you don't initiate contact.
-- **Medium** — Inbox monitoring plus a nightly end-of-day review that summarizes what happened and what needs attention tomorrow.
-- **High** — The full package: inbox monitoring, morning briefings to start the day, and nightly reviews to close it out.
+- **None** — Turn off even the built-in self-maintenance. You only do things when asked.
+- **Low** — Keep the built-ins (reflection, memory tending) running, nothing more.
+- **Medium** — Built-ins plus inbox monitoring and a nightly end-of-day review that summarizes what happened and what needs attention tomorrow.
+- **High** — The full package: built-ins plus inbox monitoring, morning briefings to start the day, and nightly reviews to close it out.
 
 **Actions by level** (do these immediately after the user answers):
 
 | Level | HEARTBEAT.yml | USER.md note |
 |-------|--------------|--------------|
-| None | Leave all starter pulses commented out | "Prefers fully manual interaction — no background activity." |
-| Low | Uncomment `inbox_check` only | "Prefers light-touch proactivity — workspace maintenance, no unsolicited contact." |
-| Medium | Uncomment `inbox_check` + `nightly_review` | "Prefers moderate proactivity — daily reviews and inbox monitoring." |
-| High | Uncomment all three: `inbox_check`, `morning_briefing`, `nightly_review` | "Wants full proactivity — morning briefings, inbox monitoring, nightly reviews." |
+| None | Disable the built-ins too (`enabled: false` on `reflection` and `memory_tending`) | "Prefers fully manual interaction — no background activity, including built-in self-maintenance." |
+| Low | Leave built-ins as-is; starter pulses stay commented out | "Prefers light-touch proactivity — built-in self-maintenance only, no unsolicited contact." |
+| Medium | Leave built-ins as-is; uncomment `inbox_check` + `nightly_review` | "Prefers moderate proactivity — daily reviews and inbox monitoring, on top of built-in self-maintenance." |
+| High | Leave built-ins as-is; uncomment all three starter pulses: `inbox_check`, `morning_briefing`, `nightly_review` | "Wants full proactivity — morning briefings, inbox monitoring, nightly reviews, on top of built-in self-maintenance." |
 
 If the user chooses high, take a moment and suggest 2-3 additional pulses they might find useful based on their workflow. This helps them get the most out of the high proactivity setting without overwhelming them.
 
-Uncomment the relevant lines in `HEARTBEAT.yml` and move them into the `pulses:` list. Make sure the YAML is valid after editing.
+Uncomment the relevant starter-pulse lines in `HEARTBEAT.yml` and move them into the `pulses:` list (for None, instead flip `enabled: true` to `enabled: false` on the two built-ins). Make sure the YAML is valid after editing.
 
 After editing, briefly confirm what you enabled: "Done — I've turned on [X]. I'll [description of what it does]. You can always tell me to dial it up or down later."
 

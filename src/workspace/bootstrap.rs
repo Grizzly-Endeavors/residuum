@@ -37,6 +37,11 @@ const DEFAULT_HEARTBEAT: &str = include_str!("../../assets/workspace-bootstrap/H
 const DEFAULT_PRESENCE: &str = include_str!("../../assets/workspace-bootstrap/PRESENCE.toml");
 const DEFAULT_ALERTS: &str = include_str!("../../assets/workspace-bootstrap/ALERTS.md");
 
+/// Built-in `introspection` subagent preset, used by the reflection and
+/// `memory_tending` pulses to review episode memory and tend identity files.
+const DEFAULT_INTROSPECTION_PRESET: &str =
+    include_str!("../../assets/workspace-bootstrap/subagents/introspection.md");
+
 /// Default subconscious check policy written to SUBCONSCIOUS.md.
 ///
 /// Contains only the customizable check guidance — the output format spec is
@@ -166,6 +171,12 @@ pub async fn ensure_workspace(
     write_if_missing(&layout.alerts_md(), DEFAULT_ALERTS).await?;
     write_if_missing(&layout.subconscious_md(), DEFAULT_SUBCONSCIOUS).await?;
     write_if_missing(&layout.presence_toml(), DEFAULT_PRESENCE).await?;
+
+    write_if_missing(
+        &layout.subagents_dir().join("introspection.md"),
+        DEFAULT_INTROSPECTION_PRESET,
+    )
+    .await?;
 
     // Write bundled skills
     write_bundled_skills(layout).await?;
@@ -350,6 +361,45 @@ mod tests {
         assert!(!soul.is_empty(), "SOUL.md should have default content");
         let memory = tokio::fs::read_to_string(layout.memory_md()).await.unwrap();
         assert!(!memory.is_empty(), "MEMORY.md should have default content");
+    }
+
+    #[tokio::test]
+    async fn bootstrap_creates_introspection_preset() {
+        let dir = tempfile::tempdir().unwrap();
+        let layout = WorkspaceLayout::new(dir.path().join("workspace"));
+
+        ensure_workspace(&layout, None, None).await.unwrap();
+
+        let preset_path = layout.subagents_dir().join("introspection.md");
+        assert!(preset_path.exists(), "introspection.md should be created");
+
+        let content = tokio::fs::read_to_string(&preset_path).await.unwrap();
+        assert!(
+            content.contains("name: introspection"),
+            "introspection.md should contain its preset frontmatter"
+        );
+    }
+
+    #[tokio::test]
+    async fn bootstrap_does_not_overwrite_existing_introspection_preset() {
+        let dir = tempfile::tempdir().unwrap();
+        let layout = WorkspaceLayout::new(dir.path().join("workspace"));
+
+        ensure_workspace(&layout, None, None).await.unwrap();
+
+        let preset_path = layout.subagents_dir().join("introspection.md");
+        tokio::fs::write(&preset_path, "user-edited preset")
+            .await
+            .unwrap();
+
+        // Run bootstrap again; the user's edit should be preserved.
+        ensure_workspace(&layout, None, None).await.unwrap();
+
+        let content = tokio::fs::read_to_string(&preset_path).await.unwrap();
+        assert_eq!(
+            content, "user-edited preset",
+            "existing introspection.md should not be overwritten"
+        );
     }
 
     #[tokio::test]

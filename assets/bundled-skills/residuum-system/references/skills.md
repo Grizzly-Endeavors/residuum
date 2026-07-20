@@ -70,3 +70,5 @@ Detailed instructions, workflows, and reference material.
 - Project skills only appear in the index while that project is active. Deactivating the project removes them from the index and deactivates any that were active.
 - Bundled skills (like `residuum-system` and `residuum-getting-started`) are written to `skills/` during workspace creation and follow the same format.
 - Skill names must be unique across all sources. Project skills override workspace skills of the same name, workspace overrides user-global, and so on down the priority chain.
+
+When a pattern keeps recurring across conversations, the agent is expected to author a new workspace skill (or subagent preset) itself rather than re-explaining the same instructions every time.

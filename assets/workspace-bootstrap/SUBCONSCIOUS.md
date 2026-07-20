@@ -18,6 +18,9 @@ doubt, return nothing.
 - The agent ignoring an explicit user request from earlier in the same
   conversation segment
 - The agent claiming it did something the transcript shows it did not do
+- The user asking what the agent can do (or whether something is possible)
+  and the agent answering from guesswork without activating the
+  residuum-system skill first
 
 ## Do not flag
 

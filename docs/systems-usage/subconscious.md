@@ -36,6 +36,16 @@ If the end-of-turn evaluation fails, any notes the mid-turn watch queued are del
 
 The file controls the *checks* only. The output format (the JSON findings schema) and the "stay quiet unless there's a clear problem" guidance are always injected by code and cannot be broken by editing the file. The default policy biases heavily toward silence: returning no findings is the normal, correct outcome for most turns, and the classifier is instructed never to fabricate a finding to seem useful.
 
+The bundled default `SUBCONSCIOUS.md` watches for:
+
+- A stated user preference, fact, or standing instruction the agent acknowledged (or should have noticed) but did not persist to `MEMORY.md`
+- The agent directly contradicting a rule in `SOUL.md`, `AGENTS.md`, or `USER.md`
+- The agent ignoring an explicit user request from earlier in the same conversation segment
+- The agent claiming it did something the transcript shows it did not do
+- The user asking what the agent can do (or whether something is possible) and the agent answering from guesswork without activating the `residuum-system` skill first
+
+The user or agent can edit this list at any time — it's a plain workspace file, not baked into the binary.
+
 The agent's own instruction files — `SOUL.md`, `AGENTS.md`, `USER.md`, `MEMORY.md` — are supplied to the classifier as the rules to check against. Missing files are skipped.
 
 ## Guards against over-steering

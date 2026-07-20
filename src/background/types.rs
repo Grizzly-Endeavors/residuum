@@ -125,6 +125,9 @@ pub struct SubAgentBuildConfig {
     pub tz: chrono_tz::Tz,
     /// Preset-specific instructions to inject into the subagent system prompt.
     pub preset_instructions: Option<String>,
+    /// Opt-in (from preset frontmatter) to render SOUL.md, AGENTS.md, and
+    /// MEMORY.md in the subagent's system prompt.
+    pub include_identity: bool,
     // ── Sub-agent tool dependencies ────────────────────────────────────
     /// Background task spawner for `stop_agent` / `list_agents` tools.
     pub background_spawner: Arc<super::spawner::BackgroundTaskSpawner>,

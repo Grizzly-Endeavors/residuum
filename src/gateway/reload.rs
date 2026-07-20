@@ -328,7 +328,6 @@ fn build_spawn_context(rt: &GatewayRuntime, new_cfg: &Config) -> Arc<SpawnContex
         http_client: rt.http_client.clone(),
         max_tokens: new_cfg.max_tokens,
         retry_config: new_cfg.retry.clone(),
-        identity: rt.spawn_context.identity.clone(),
         options: CompletionOptions {
             max_tokens: Some(new_cfg.max_tokens),
             temperature: new_cfg.temperature,

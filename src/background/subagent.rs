@@ -50,6 +50,9 @@ pub struct SubAgentResources {
     pub(crate) skills_index: Option<String>,
     /// Preset-specific instructions to prepend to the subagent system prompt.
     pub(crate) preset_instructions: Option<String>,
+    /// Opt-in (from preset frontmatter) to render SOUL.md, AGENTS.md, and
+    /// MEMORY.md in the subagent's system prompt.
+    pub(crate) include_identity: bool,
 }
 
 /// Build isolated sub-agent resources from the main agent's shared state.
@@ -74,6 +77,7 @@ pub async fn build_subagent_resources(
         options,
         tz,
         preset_instructions,
+        include_identity,
         background_spawner,
         endpoint_registry,
         publisher,
@@ -157,6 +161,7 @@ pub async fn build_subagent_resources(
         projects_ctx_index,
         skills_index,
         preset_instructions,
+        include_identity,
     }
 }
 
@@ -198,6 +203,7 @@ pub(crate) async fn execute_subagent(
         &projects_ctx,
         &skills_ctx,
         resources.preset_instructions.as_deref(),
+        resources.include_identity,
     );
 
     // Build user message: system content + context files + prompt
@@ -440,6 +446,7 @@ mod tests {
             projects_ctx_index: None,
             skills_index: None,
             preset_instructions: None,
+            include_identity: false,
         }
     }
 
@@ -473,6 +480,7 @@ mod tests {
             &ProjectsContext::default(),
             &SkillsContext::default(),
             None,
+            false,
         );
         assert!(
             content.contains("You have access to exec tool."),
@@ -498,6 +506,7 @@ mod tests {
             &projects_ctx,
             &SkillsContext::default(),
             None,
+            false,
         );
 
         assert!(!content.contains("test soul"), "should not include SOUL.md");
@@ -526,7 +535,8 @@ mod tests {
             index: Some("<available_skills><skill>pdf</skill></available_skills>"),
             active_instructions: None,
         };
-        let content = build_subagent_system_content(&identity, &projects_ctx, &skills_ctx, None);
+        let content =
+            build_subagent_system_content(&identity, &projects_ctx, &skills_ctx, None, false);
         assert!(
             content.contains("<SKILLS_INDEX>"),
             "should include skills index section"
@@ -546,7 +556,8 @@ mod tests {
             index: None,
             active_instructions: Some("<active_skill name=\"pdf\">Do PDFs.</active_skill>"),
         };
-        let content = build_subagent_system_content(&identity, &projects_ctx, &skills_ctx, None);
+        let content =
+            build_subagent_system_content(&identity, &projects_ctx, &skills_ctx, None, false);
         assert!(
             content.contains("Do PDFs"),
             "active skill instructions should appear in subagent system prompt"

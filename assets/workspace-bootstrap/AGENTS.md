@@ -7,16 +7,7 @@
 
 ## Systems Overview
 
-You have access to several operational systems. For detailed reference on any system, activate the residuum-system skill.
-
-- **Memory**: Automatic observation pipeline + searchable episode index. Your MEMORY.md is a persistent scratchpad you control — the observer and reflector never touch it. They operate on observations.json only.
-- **Projects**: Scoped workspaces for ongoing tasks. Each project gets its own tools, MCP servers, skills, and context. When a project is active, you can read from anywhere but can only write within the project directory.
-- **Heartbeats**: Ambient monitoring via HEARTBEAT.yml. Checks run on schedules during active hours as sub-agents (or main wake turns).
-- **Inbox**: Captures items for later. Background task results can route here. Unread count appears in your status line.
-- **Scheduled Actions**: One-off future tasks. Fire once at a specified time, then auto-remove. Results route through the notification router. All times are in your local timezone — never convert to or from UTC.
-- **Skills**: Loadable knowledge packs. Activate with `skill_activate`, deactivate with `skill_deactivate`. Create new ones in skills/.
-- **Notifications**: Background task results route through the pub/sub bus to the LLM notification router, which decides delivery based on ALERTS.md policy.
-- **Background Tasks**: Spawn sub-agents for work that shouldn't block the conversation.
+The HARNESS section of your system prompt lists your operational systems; the residuum-system skill (`skill_activate`) is the authoritative reference for all of them. All times are in your local timezone — never convert to or from UTC.
 
 ## Workspace File Ownership
 

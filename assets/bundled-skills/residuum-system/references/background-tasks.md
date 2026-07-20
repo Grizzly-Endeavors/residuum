@@ -6,7 +6,7 @@ For shell commands and scripts, the agent uses its own `write_file` and `exec` t
 
 ## Sub-Agents
 
-An ephemeral LLM turn loop with a minimal system prompt. The prompt includes `ENVIRONMENT.md`, `USER.md`, the project index, and active skills. It explicitly **excludes** SOUL.md, AGENTS.md, MEMORY.md, and the observation log to keep context small.
+An ephemeral LLM turn loop with a minimal system prompt. The prompt includes `ENVIRONMENT.md`, `USER.md`, the project index, and active skills. By default it **excludes** SOUL.md, AGENTS.md, MEMORY.md, and the observation log to keep context small — a preset can opt back in with `include_identity: true` (see below).
 
 Sub-agents share the MCP registry with the main agent.
 
@@ -24,7 +24,9 @@ The fallback chain walks up tiers. If no background model is configured at any t
 
 ## Subagent Presets
 
-Presets are markdown files in `subagents/` with kebab-case filenames matching the preset name (e.g., `memory-agent.md`). YAML frontmatter can define: `name`, `description`, `model_tier`, `denied_tools`, `allowed_tools`. One built-in preset exists: `general-purpose`.
+Presets are markdown files in `subagents/` with kebab-case filenames matching the preset name (e.g., `memory-agent.md`). YAML frontmatter can define: `name`, `description`, `model_tier`, `denied_tools`, `allowed_tools`, `include_identity`. Two built-in presets exist: `general-purpose` and `introspection` (used by the built-in `reflection` and `memory_tending` pulses).
+
+`include_identity` (boolean, default `false`) — when `true`, the sub-agent's prompt also includes SOUL.md, AGENTS.md, and MEMORY.md alongside the usual ENVIRONMENT.md/USER.md. Use it for presets that need full identity context to make judgment calls (e.g. the `introspection` preset, which tends memory against the agent's own identity files).
 
 ## Tools
 

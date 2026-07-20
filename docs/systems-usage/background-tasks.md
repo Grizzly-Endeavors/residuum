@@ -15,12 +15,14 @@ An ephemeral LLM turn loop with its own context. Sub-agents are lightweight work
 - Full tool set (with exceptions below)
 - Optional inline context and file references
 
-**What's excluded:**
+**What's excluded by default:**
 - `SOUL.md` (no identity)
 - `AGENTS.md` (no behavioral rules)
 - Observation log
 - `MEMORY.md`
 - Recent conversation messages
+
+A preset can opt back into identity context with `include_identity: true` in its frontmatter — this adds `SOUL.md`, `AGENTS.md`, and `MEMORY.md` to the sub-agent's prompt alongside the usual `ENVIRONMENT.md`/`USER.md`. The bundled `introspection` preset (used by the built-in `reflection` and `memory_tending` pulses) sets this, since it needs full identity context to judge what belongs in memory.
 
 **Tools excluded from sub-agents:** `schedule_action`, `list_actions`, `cancel_action`, `subagent_spawn`, `stop_agent` (no sub-to-sub delegation, no action scheduling from background).
 
@@ -85,11 +87,12 @@ allowed_tools:
 |-------|------|----------|-------|
 | `name` | string | yes | Must match the filename (kebab-case) |
 | `description` | string | yes | Shown when listing available presets |
-| `model_tier` | string | no | `"small"`, `"medium"`, `"large"`. Default: inherited from spawn call or `"medium"`. |
+| `model_tier` | string | no | `"small"`, `"medium"`, `"large"`. Default: inherited from spawn call or `"medium"`. Also determines the effective model tier when a heartbeat pulse names this preset via `agent:`. |
 | `denied_tools` | string[] | no | Tools this preset cannot use. |
 | `allowed_tools` | string[] | no | If set, only these tools are available (allowlist). |
+| `include_identity` | boolean | no | Default `false`. When `true`, adds `SOUL.md`, `AGENTS.md`, and `MEMORY.md` to the sub-agent's prompt in addition to the default `ENVIRONMENT.md`/`USER.md`. |
 
-One built-in preset exists: `general-purpose`. A user-created file with `name: general-purpose` overrides the built-in.
+Two built-in presets exist: `general-purpose` and `introspection` (backs the built-in `reflection`/`memory_tending` pulses). A user-created file with the same name overrides the built-in.
 
 ## Concurrency
 

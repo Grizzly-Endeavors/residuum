@@ -33,7 +33,6 @@ pub(crate) struct SpawnContext {
     pub(crate) http_client: SharedHttpClient,
     pub(crate) max_tokens: u32,
     pub(crate) retry_config: RetryConfig,
-    pub(crate) identity: IdentityFiles,
     pub(crate) options: CompletionOptions,
     pub(crate) layout: WorkspaceLayout,
     pub(crate) tz: chrono_tz::Tz,
@@ -78,7 +77,7 @@ pub(crate) async fn build_spawn_resources(
     )
     .with_context(|| format!("failed to build provider chain for tier {tier:?}"))?;
 
-    let (preset_tool_restriction, preset_instructions) = match preset {
+    let (preset_tool_restriction, preset_instructions, include_identity) = match preset {
         Some((fm, body)) => {
             let restriction = match (&fm.allowed_tools, &fm.denied_tools) {
                 (Some(allowed), _) => Some(PresetToolRestriction::AllowedOnly(
@@ -90,9 +89,9 @@ pub(crate) async fn build_spawn_resources(
                 (None, None) => None,
             };
             let instructions = if body.is_empty() { None } else { Some(body) };
-            (restriction, instructions)
+            (restriction, instructions, fm.include_identity)
         }
-        None => (None, None),
+        None => (None, None, false),
     };
 
     // Apply per-tier overrides over global options
@@ -111,14 +110,21 @@ pub(crate) async fn build_spawn_resources(
         ..CompletionOptions::default()
     };
 
+    // Load identity fresh per spawn so sub-agents see current SOUL.md/AGENTS.md/
+    // etc. A read failure fails the spawn — the caller logs it loudly.
+    let identity = IdentityFiles::load(&ctx.layout)
+        .await
+        .context("failed to load identity files for sub-agent spawn")?;
+
     let build_config = SubAgentBuildConfig {
         gated_tools: HashSet::new(),
         preset_tool_restriction,
         workspace_layout: ctx.layout.clone(),
-        identity: ctx.identity.clone(),
+        identity,
         options,
         tz: ctx.tz,
         preset_instructions,
+        include_identity,
         background_spawner: Arc::clone(&ctx.background_spawner),
         endpoint_registry: ctx.endpoint_registry.clone(),
         publisher: ctx.publisher.clone(),

@@ -24,9 +24,11 @@ pub enum PulseExecution {
 
 /// Build a `PulseExecution` from a pulse definition.
 ///
-/// - `agent: None` → `SubAgent` with `general-purpose` preset
+/// - `agent: None` → `SubAgent` with `general-purpose` preset, forced to the `Small`
+///   model tier (anonymous pulses have no preset-declared tier to honor)
 /// - `agent: Some("main")` → `MainWakeTurn` with the combined prompt
-/// - `agent: Some(name)` → `SubAgent` with the named preset (tier resolved later)
+/// - `agent: Some(name)` → `SubAgent` with the named preset; no tier override is set,
+///   so the preset's own `model_tier` frontmatter resolves at spawn time
 #[must_use]
 pub fn build_pulse_execution(pulse: &PulseDef) -> PulseExecution {
     let prompt = build_pulse_prompt(pulse);
@@ -41,13 +43,20 @@ pub fn build_pulse_execution(pulse: &PulseDef) -> PulseExecution {
     } else {
         tracing::debug!(pulse = %pulse.name, preset = %preset, "routing pulse to sub-agent");
         let source_label = format!("pulse:{}", pulse.name);
+        // Anonymous pulses (no `agent` set) fall back to `general-purpose` with no
+        // preset-declared tier, so we force `Small`. Named presets carry their own
+        // `model_tier` frontmatter, which should win over any override here.
+        let model_tier_override = pulse
+            .agent
+            .is_none()
+            .then_some(crate::config::BackgroundModelTier::Small);
         let spawn_event = SpawnRequestEvent {
             preset: crate::bus::PresetName::from(preset),
             source_label,
             prompt,
             context: None,
             source: EventTrigger::Pulse,
-            model_tier_override: Some(crate::config::BackgroundModelTier::Small),
+            model_tier_override,
         };
         PulseExecution::SubAgent { spawn_event }
     }
@@ -147,10 +156,9 @@ mod tests {
                 assert_eq!(spawn_event.preset.as_ref(), "memory-agent");
                 assert_eq!(spawn_event.source_label, "pulse:email_check");
                 assert!(matches!(spawn_event.source, EventTrigger::Pulse));
-                assert!(matches!(
-                    spawn_event.model_tier_override,
-                    Some(crate::config::BackgroundModelTier::Small)
-                ));
+                // Named presets should NOT be forced to Small — the preset's own
+                // `model_tier` frontmatter must resolve at spawn time instead.
+                assert!(spawn_event.model_tier_override.is_none());
             }
             PulseExecution::MainWakeTurn { .. } => panic!("expected SubAgent"),
         }

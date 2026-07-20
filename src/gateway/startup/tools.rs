@@ -155,6 +155,7 @@ pub(super) async fn create_agent(
         AgentConfig {
             options: args.options,
             tz,
+            layout: Some(layout.clone()),
         },
     );
     if let Err(err) = agent.reload_observations(layout).await {

@@ -510,6 +510,7 @@ mod tests {
             projects_ctx_index: None,
             skills_index: None,
             preset_instructions: None,
+            include_identity: false,
         };
 
         let (tx, mut rx) = mpsc::channel(32);

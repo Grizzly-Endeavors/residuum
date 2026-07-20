@@ -17,6 +17,13 @@ pub struct SubagentPresetFrontmatter {
     pub denied_tools: Option<Vec<String>>,
     /// If present, ONLY these tools are available. Mutually exclusive with `denied_tools`.
     pub allowed_tools: Option<Vec<String>>,
+    /// Opt-in to render SOUL.md, AGENTS.md, and MEMORY.md in this subagent's system prompt.
+    ///
+    /// Sub-agents exclude identity content by default (see
+    /// `build_subagent_system_content`); presets that need the agent's own
+    /// identity (e.g. introspection) set this to `true`.
+    #[serde(default)]
+    pub include_identity: bool,
 }
 
 /// Lightweight index entry built from scanning a subagent preset's frontmatter.

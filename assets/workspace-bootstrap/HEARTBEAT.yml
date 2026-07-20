@@ -7,14 +7,38 @@
 #   schedule: duration string — "30m", "2h", "24h"
 #   active_hours: optional — "HH:MM-HH:MM" in configured timezone
 #                 supports overnight windows (e.g. "22:00-06:00")
-#   agent: ~ (sub-agent, small) | "main" (wake turn) | "preset-name"
+#   agent: ~ (sub-agent, small) | "main" (wake turn) | "preset-name" (sub-agent,
+#          uses the preset's own model tier)
 #   trigger_count: optional — max firings per active period
 
-pulses: []
+# ── Built-in pulses ─────────────────────────────────────────────
+# On by default. Comment out to disable; edit freely to tune.
+pulses:
+  - name: reflection
+    enabled: true
+    schedule: "7d"
+    agent: "introspection"
+    tasks:
+      - name: find_patterns
+        prompt: "Review the past few weeks of episodes and observations with memory_search and memory_get. Look for: tasks the user does repeatedly by hand, topics they keep returning to, requests mentioned but never finished, and friction they keep hitting. Keep only the few strongest findings."
+      - name: deliver_suggestions
+        prompt: "For each finding, write a concrete offer: what you noticed (with evidence) and what you could do about it — include ready-to-paste HEARTBEAT.yml pulse definitions where a scheduled check would help. Deliver everything in one user_inbox_add call."
+
+  - name: memory_tending
+    enabled: true
+    schedule: "24h"
+    active_hours: "02:00-06:00"
+    agent: "introspection"
+    tasks:
+      - name: gate
+        prompt: "Check whether meaningful new episodes or observations exist from the last 24 hours (this pulse runs nightly). If nothing new, stop here."
+      - name: tend_memory
+        prompt: "Reconcile MEMORY.md and USER.md against recent episode evidence: add durable facts and preferences that surfaced, correct entries the evidence contradicts, remove stale ones."
 
 # ── Starter pulses ──────────────────────────────────────────────
-# Uncomment these based on your user's proactivity preference
-# during first setup. They are generic and should be customized based on the user's preferences.
+# Optional add-ons. Uncomment during first setup if the user wants
+# more proactive check-ins. They are generic and should be customized
+# based on the user's preferences.
 #
 #  - name: inbox_check
 #    enabled: true

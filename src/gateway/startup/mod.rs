@@ -99,6 +99,7 @@ pub(super) async fn init_identity_and_http(
     cfg: &Config,
 ) -> Result<(IdentityFiles, SharedHttpClient), FatalError> {
     let identity = IdentityFiles::load(layout).await?;
+    identity.warn_missing(layout);
     let http = SharedHttpClient::new(&crate::models::HttpClientConfig::with_timeout(
         cfg.timeout_secs,
     ))
@@ -379,7 +380,6 @@ pub(crate) async fn initialize(
         http_client: http.clone(),
         max_tokens: cfg.max_tokens,
         retry_config: cfg.retry.clone(),
-        identity: identity.clone(),
         options: crate::models::CompletionOptions {
             max_tokens: Some(cfg.max_tokens),
             temperature: cfg.temperature,
