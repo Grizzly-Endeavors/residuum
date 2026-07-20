@@ -500,6 +500,24 @@ pulses:
     }
 
     #[test]
+    fn bundled_heartbeat_asset_parses_with_builtin_pulses() {
+        let cfg: HeartbeatConfig = serde_yaml_ng::from_str(include_str!(
+            "../../assets/workspace-bootstrap/HEARTBEAT.yml"
+        ))
+        .unwrap();
+        let names: Vec<&str> = cfg.pulses.iter().map(|p| p.name.as_str()).collect();
+        assert_eq!(names, ["reflection", "memory_tending"]);
+        for pulse in &cfg.pulses {
+            assert!(pulse.enabled, "built-in pulses ship enabled");
+            assert_eq!(pulse.agent.as_deref(), Some("introspection"));
+            parse_schedule_duration(&pulse.schedule).unwrap();
+            if let Some(hours) = &pulse.active_hours {
+                parse_active_hours(hours).unwrap();
+            }
+        }
+    }
+
+    #[test]
     fn load_heartbeat_invalid_yaml_returns_none() {
         let dir = tempdir().unwrap();
         let path = dir.path().join("HEARTBEAT.yml");
