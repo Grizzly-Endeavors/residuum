@@ -7,7 +7,8 @@
 #   schedule: duration string — "30m", "2h", "24h"
 #   active_hours: optional — "HH:MM-HH:MM" in configured timezone
 #                 supports overnight windows (e.g. "22:00-06:00")
-#   agent: ~ (sub-agent, small) | "main" (wake turn) | "preset-name"
+#   agent: ~ (sub-agent, small) | "main" (wake turn) | "preset-name" (sub-agent,
+#          uses the preset's own model tier)
 #   trigger_count: optional — max firings per active period
 
 pulses: []
