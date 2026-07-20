@@ -1,14 +1,28 @@
 //! Mid-turn subconscious watch: spawns concurrent evaluations during the
 //! agent's tool loop and injects corrections via the interrupt channel.
 
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 
 use tokio::sync::mpsc;
 
-use super::{EvalPhase, Severity, Subconscious};
+use super::{EvalPhase, Finding, Severity, Subconscious, TurnScratch};
 use crate::agent::interrupt::Interrupt;
 use crate::models::Message;
+
+/// Record a correction the watch actually delivered to the agent this turn.
+fn record_applied(scratch: &Mutex<TurnScratch>, instruction: String) {
+    if let Ok(mut s) = scratch.lock() {
+        s.applied_corrections.push(instruction);
+    }
+}
+
+/// Record a finding the watch observed but did not deliver as a live steer.
+fn record_note(scratch: &Mutex<TurnScratch>, finding: Finding) {
+    if let Ok(mut s) = scratch.lock() {
+        s.queued_notes.push(finding);
+    }
+}
 
 /// Per-turn handle that gates and spawns mid-turn evaluations.
 ///
@@ -16,11 +30,15 @@ use crate::models::Message;
 /// classifier; a correction lands at the next interrupt drain. At most one
 /// evaluation is in flight at a time and at most
 /// `max_interventions_per_turn` corrections are injected per turn.
+///
+/// As it runs it records what it did into `scratch`, which the end-of-turn
+/// pass reads to triage rather than re-classify the same turn.
 pub struct SubconsciousWatch {
     subconscious: Arc<Subconscious>,
     interrupt_tx: mpsc::Sender<Interrupt>,
     in_flight: Arc<AtomicBool>,
     interventions: Arc<AtomicUsize>,
+    scratch: Arc<Mutex<TurnScratch>>,
 }
 
 impl SubconsciousWatch {
@@ -33,7 +51,17 @@ impl SubconsciousWatch {
             interrupt_tx,
             in_flight: Arc::new(AtomicBool::new(false)),
             interventions: Arc::new(AtomicUsize::new(0)),
+            scratch: Arc::new(Mutex::new(TurnScratch::default())),
         }
+    }
+
+    /// Shared handle to the steering recorded so far this turn.
+    ///
+    /// The end-of-turn pass reads this after the tool loop exits. Best-effort:
+    /// an evaluation still in flight when the turn ends may not be reflected.
+    #[must_use]
+    pub fn scratch(&self) -> Arc<Mutex<TurnScratch>> {
+        Arc::clone(&self.scratch)
     }
 
     /// Spawn a mid-turn evaluation of `transcript` if the gates allow it.
@@ -67,28 +95,47 @@ impl SubconsciousWatch {
         let interrupt_tx = self.interrupt_tx.clone();
         let in_flight = Arc::clone(&self.in_flight);
         let interventions = Arc::clone(&self.interventions);
+        let scratch = Arc::clone(&self.scratch);
         let max_interventions = self.subconscious.max_interventions_per_turn();
 
         crate::util::spawn_monitored("subconscious-mid-turn", async move {
-            match subconscious.evaluate(&transcript, EvalPhase::MidTurn).await {
+            match subconscious
+                .evaluate(&transcript, EvalPhase::MidTurn, None)
+                .await
+            {
                 Ok(findings) => {
-                    if let Some(finding) =
-                        findings.into_iter().find(|f| f.severity == Severity::Act)
-                        && interventions.fetch_add(1, Ordering::AcqRel) < max_interventions
-                    {
-                        let content = format!(
-                            "[Subconscious] Course correction for the work in progress:\n{}",
-                            finding.instruction
-                        );
-                        // A failed send means the turn already ended; the
-                        // end-of-turn pass will catch anything persistent.
-                        if interrupt_tx
-                            .try_send(Interrupt::Subconscious(content))
-                            .is_err()
-                        {
-                            tracing::debug!(
-                                "turn ended before subconscious correction could be injected"
+                    // Inject the first `act` finding (subject to the per-turn
+                    // cap); record everything else — including that first
+                    // correction — so the end-of-turn pass can triage against
+                    // what already happened this turn.
+                    let mut act_injected = false;
+                    for finding in findings {
+                        let deliver_now = finding.severity == Severity::Act
+                            && !act_injected
+                            && interventions.fetch_add(1, Ordering::AcqRel) < max_interventions;
+
+                        if deliver_now {
+                            act_injected = true;
+                            let content = format!(
+                                "[Subconscious] Course correction for the work in progress:\n{}",
+                                finding.instruction
                             );
+                            if interrupt_tx
+                                .try_send(Interrupt::Subconscious(content))
+                                .is_ok()
+                            {
+                                record_applied(&scratch, finding.instruction);
+                            } else {
+                                // The turn already ended; the correction never
+                                // reached the agent. Hand it to the end-of-turn
+                                // pass as a queued note instead of losing it.
+                                tracing::debug!(
+                                    "turn ended before subconscious correction could be injected"
+                                );
+                                record_note(&scratch, finding);
+                            }
+                        } else {
+                            record_note(&scratch, finding);
                         }
                     }
                 }
@@ -240,6 +287,55 @@ mod tests {
             rx.try_recv().is_err(),
             "intervention cap should block the second correction"
         );
+    }
+
+    #[tokio::test]
+    async fn applied_correction_is_recorded_in_scratch() {
+        let (watch, mut rx) = make_watch(ACT_RESPONSE, enabled_config());
+        watch.maybe_spawn(0, transcript());
+        // Drain the interrupt so we know the eval task ran to completion.
+        tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv())
+            .await
+            .unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        let scratch = watch.scratch();
+        let s = scratch.lock().unwrap();
+        assert_eq!(s.applied_corrections.len(), 1, "delivered act recorded");
+        assert!(
+            s.applied_corrections
+                .first()
+                .is_some_and(|c| c.contains("re-read AGENTS.md"))
+        );
+        assert!(
+            s.queued_notes.is_empty(),
+            "the act was delivered, not queued"
+        );
+    }
+
+    #[tokio::test]
+    async fn note_findings_are_queued_not_injected() {
+        const NOTE_RESPONSE: &str = r#"{
+            "findings": [
+                {"kind": "omission", "severity": "note", "instruction": "Consider saving the preference."}
+            ]
+        }"#;
+        let (watch, mut rx) = make_watch(NOTE_RESPONSE, enabled_config());
+        watch.maybe_spawn(0, transcript());
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+        assert!(
+            rx.try_recv().is_err(),
+            "notes must not be injected mid-turn"
+        );
+        let scratch = watch.scratch();
+        let s = scratch.lock().unwrap();
+        assert_eq!(
+            s.queued_notes.len(),
+            1,
+            "note queued for end-of-turn triage"
+        );
+        assert!(s.applied_corrections.is_empty());
     }
 
     #[tokio::test]

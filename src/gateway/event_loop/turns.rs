@@ -176,7 +176,11 @@ async fn run_agent_turn_with_interrupts(
     agent_subscriber: &mut Subscriber<MessageEvent>,
     reload_rx: &mut tokio::sync::watch::Receiver<ReloadSignal>,
     subconscious: Option<Arc<crate::subconscious::Subconscious>>,
-) -> (anyhow::Result<Vec<String>>, Vec<Interrupt>) {
+) -> (
+    anyhow::Result<Vec<String>>,
+    Vec<Interrupt>,
+    Option<Arc<std::sync::Mutex<crate::subconscious::TurnScratch>>>,
+) {
     let (interrupt_tx, mut interrupt_rx) = mpsc::channel::<Interrupt>(32);
     let watch =
         subconscious.map(|s| crate::subconscious::SubconsciousWatch::new(s, interrupt_tx.clone()));
@@ -225,10 +229,16 @@ async fn run_agent_turn_with_interrupts(
         }
     };
 
+    // Capture the mid-turn scratch before the watch drops so the end-of-turn
+    // pass can triage against what already happened this turn.
+    let scratch = watch
+        .as_ref()
+        .map(crate::subconscious::SubconsciousWatch::scratch);
+
     drop(interrupt_tx);
     let leftover_interrupts = drain_interrupts(&mut interrupt_rx);
 
-    (turn_result, leftover_interrupts)
+    (turn_result, leftover_interrupts, scratch)
 }
 
 /// Handle an inbound user message: run agent turn, persist, observe, and process leftovers.
@@ -289,7 +299,7 @@ pub async fn handle_inbound_message(
         load_prompt_context_strings(&rt.project_state, &rt.skill_state, &rt.layout).await;
     let prompt_ctx = ctx_strings.as_prompt_context();
 
-    let (turn_result, leftover_interrupts) = run_agent_turn_with_interrupts(
+    let (turn_result, leftover_interrupts, subconscious_scratch) = run_agent_turn_with_interrupts(
         &mut rt.agent,
         &message.content,
         &rt.publisher,
@@ -382,7 +392,13 @@ pub async fn handle_inbound_message(
     // Background turns (including subconscious correction turns) are never
     // evaluated — this gate is what bounds the correction feedback loop.
     if !is_background {
-        super::subconscious_hook::run_end_of_turn_subconscious(rt, &new_messages, &reply_id).await;
+        super::subconscious_hook::run_end_of_turn_subconscious(
+            rt,
+            &new_messages,
+            &reply_id,
+            subconscious_scratch.as_ref(),
+        )
+        .await;
     }
 
     process_leftover_interrupts(leftover_interrupts, rt);

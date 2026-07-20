@@ -1,6 +1,6 @@
 //! Prompt construction for the subconscious classifier LLM call.
 
-use super::EvalPhase;
+use super::{EvalPhase, TurnScratch};
 use crate::models::{Message, Role};
 
 /// User-customizable check guidance — default when `SUBCONSCIOUS.md` is absent.
@@ -20,9 +20,12 @@ pub(super) const FORMAT_SPEC: &str = r#"Report findings using these fields:
 - "severity": "act" only when the problem needs correction right now (e.g. an unsaved user preference); "note" when the agent just needs to know for next time
 - "instruction": one or two sentences of corrective guidance addressed to the agent, specific enough to act on without re-reading the transcript
 
-Return an empty "findings" array whenever the agent's behavior is acceptable.
-That is the expected result for most turns — do not invent findings, and never
-report the same problem twice."#;
+Returning an empty "findings" array is the normal, correct outcome — most turns
+need no intervention at all, and staying silent is always an acceptable choice.
+Never fabricate a finding, pad the list, or manufacture a correction just to
+look useful: an empty array is a success, not a failure to find something. Only
+report a problem a reasonable reviewer would clearly flag, and never report the
+same problem twice."#;
 
 /// JSON schema for the subconscious response, used with structured output mode.
 #[must_use]
@@ -128,25 +131,73 @@ fn phase_question(phase: EvalPhase) -> &'static str {
         EvalPhase::MidTurn => {
             "The agent is still working on this turn. Is it currently violating one of its \
              instructions or heading in a direction an instruction forbids? Ignore work that is \
-             simply unfinished."
+             simply unfinished. If nothing is clearly wrong, return an empty list — that is the \
+             normal, expected result. Never invent a problem to seem useful."
         }
         EvalPhase::EndOfTurn => {
-            "The agent has finished this turn. Did it omit anything it should have done — for \
-             example, failing to persist a stated user preference to MEMORY.md — or violate one \
-             of its instructions?"
+            "The agent has finished this turn. Acting as a triage step, decide what still needs \
+             the agent's attention: did it omit something it should have done — for example, \
+             failing to persist a stated user preference to MEMORY.md — or violate one of its \
+             instructions? Do not repeat steering that was already applied this turn, and do not \
+             escalate a queued note unless it remains genuinely unaddressed. Returning no \
+             findings is the normal, correct outcome — most turns need nothing."
         }
     }
+}
+
+/// Render the steering already applied this turn as triage context.
+///
+/// Returned with a trailing blank line so it slots directly before the
+/// transcript; an empty scratch produces an empty string (no section).
+fn format_prior_steering(prior: &TurnScratch) -> String {
+    if prior.is_empty() {
+        return String::new();
+    }
+
+    let mut out = String::from("# Steering Already Applied This Turn\n\n");
+    if !prior.applied_corrections.is_empty() {
+        out.push_str(
+            "The mid-turn watch already sent these course corrections to the agent. Do not \
+             repeat a correction that is already covered here:\n",
+        );
+        for correction in &prior.applied_corrections {
+            out.push_str("- ");
+            out.push_str(correction);
+            out.push('\n');
+        }
+    }
+    if !prior.queued_notes.is_empty() {
+        if !prior.applied_corrections.is_empty() {
+            out.push('\n');
+        }
+        out.push_str(
+            "Lower-urgency notes the mid-turn watch observed but did not deliver. Fold in any \
+             that still matter and drop the ones the agent has since resolved:\n",
+        );
+        for note in &prior.queued_notes {
+            out.push_str("- [");
+            out.push_str(note.kind.as_str());
+            out.push_str("] ");
+            out.push_str(&note.instruction);
+            out.push('\n');
+        }
+    }
+    out.push('\n');
+    out
 }
 
 /// Build the evaluation prompt for the classifier model.
 ///
 /// Injects the format spec alongside the user-customizable policy so the
-/// format requirement cannot be lost by editing the disk file.
+/// format requirement cannot be lost by editing the disk file. `prior` carries
+/// the steering the mid-turn watch already applied, so the end-of-turn pass can
+/// triage rather than re-classify from scratch.
 pub(super) fn build_eval_prompt(
     policy: &str,
     identity: &str,
     transcript: &str,
     phase: EvalPhase,
+    prior: Option<&TurnScratch>,
 ) -> Vec<Message> {
     let identity_section = if identity.is_empty() {
         String::new()
@@ -155,10 +206,12 @@ pub(super) fn build_eval_prompt(
     };
     let system = format!("{policy}{identity_section}\n\n{FORMAT_SPEC}");
 
+    let prior_section = prior.map(format_prior_steering).unwrap_or_default();
+
     vec![
         Message::system(system),
         Message::user(format!(
-            "{}\n\n# Turn Transcript\n\n{transcript}",
+            "{}\n\n{prior_section}# Turn Transcript\n\n{transcript}",
             phase_question(phase)
         )),
     ]
@@ -245,7 +298,7 @@ mod tests {
 
     #[test]
     fn eval_prompt_always_includes_format_spec() {
-        let prompt = build_eval_prompt("policy text", "", "transcript", EvalPhase::MidTurn);
+        let prompt = build_eval_prompt("policy text", "", "transcript", EvalPhase::MidTurn, None);
         let system = prompt.first().map_or("", |m| m.content.as_str());
         assert!(system.contains(FORMAT_SPEC), "format spec must be present");
         assert!(system.contains("policy text"), "policy must be present");
@@ -253,7 +306,13 @@ mod tests {
 
     #[test]
     fn eval_prompt_includes_identity_when_present() {
-        let prompt = build_eval_prompt("p", "## SOUL.md\n\nBe kind.", "t", EvalPhase::EndOfTurn);
+        let prompt = build_eval_prompt(
+            "p",
+            "## SOUL.md\n\nBe kind.",
+            "t",
+            EvalPhase::EndOfTurn,
+            None,
+        );
         let system = prompt.first().map_or("", |m| m.content.as_str());
         assert!(system.contains("Be kind."), "identity content included");
         assert!(
@@ -264,8 +323,8 @@ mod tests {
 
     #[test]
     fn eval_prompt_phase_questions_differ() {
-        let mid = build_eval_prompt("p", "", "t", EvalPhase::MidTurn);
-        let end = build_eval_prompt("p", "", "t", EvalPhase::EndOfTurn);
+        let mid = build_eval_prompt("p", "", "t", EvalPhase::MidTurn, None);
+        let end = build_eval_prompt("p", "", "t", EvalPhase::EndOfTurn, None);
         let mid_user = mid.get(1).map_or("", |m| m.content.as_str());
         let end_user = end.get(1).map_or("", |m| m.content.as_str());
         assert!(mid_user.contains("still working"), "mid-turn question");
@@ -274,6 +333,47 @@ mod tests {
             "end-of-turn question"
         );
         assert_ne!(mid_user, end_user);
+    }
+
+    #[test]
+    fn eval_prompt_renders_prior_steering() {
+        use crate::subconscious::{Finding, FindingKind, Severity, TurnScratch};
+
+        let prior = TurnScratch {
+            applied_corrections: vec!["Re-read AGENTS.md before editing.".to_string()],
+            queued_notes: vec![Finding {
+                kind: FindingKind::Omission,
+                severity: Severity::Note,
+                instruction: "Consider saving the bullet-point preference.".to_string(),
+            }],
+        };
+        let prompt = build_eval_prompt("p", "", "t", EvalPhase::EndOfTurn, Some(&prior));
+        let user = prompt.get(1).map_or("", |m| m.content.as_str());
+        assert!(
+            user.contains("Steering Already Applied"),
+            "prior steering section should be present"
+        );
+        assert!(
+            user.contains("Re-read AGENTS.md"),
+            "applied correction shown"
+        );
+        assert!(
+            user.contains("bullet-point preference"),
+            "queued note shown for triage"
+        );
+    }
+
+    #[test]
+    fn eval_prompt_omits_prior_section_when_empty() {
+        use crate::subconscious::TurnScratch;
+
+        let empty = TurnScratch::default();
+        let prompt = build_eval_prompt("p", "", "t", EvalPhase::EndOfTurn, Some(&empty));
+        let user = prompt.get(1).map_or("", |m| m.content.as_str());
+        assert!(
+            !user.contains("Steering Already Applied"),
+            "empty scratch must not add a steering section"
+        );
     }
 
     #[test]

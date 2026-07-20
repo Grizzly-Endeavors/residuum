@@ -57,6 +57,17 @@ pub enum FindingKind {
     Omission,
 }
 
+impl FindingKind {
+    /// Lowercase wire name, matching the classifier's JSON output.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            FindingKind::Violation => "violation",
+            FindingKind::Omission => "omission",
+        }
+    }
+}
+
 /// A single problem the classifier found in the transcript.
 #[derive(Debug, Clone)]
 pub struct Finding {
@@ -66,6 +77,30 @@ pub struct Finding {
     pub severity: Severity,
     /// The corrective guidance to give the agent.
     pub instruction: String,
+}
+
+/// Steering the mid-turn watch already applied during a single turn.
+///
+/// Filled in by the mid-turn watch as it runs and handed to the end-of-turn
+/// pass, which uses it to act as a triage step — not repeating corrections it
+/// already delivered and folding in queued notes — rather than a blind
+/// re-classification of the same turn.
+#[derive(Debug, Default, Clone)]
+pub struct TurnScratch {
+    /// Corrections the mid-turn watch injected into the agent this turn.
+    pub applied_corrections: Vec<String>,
+    /// Findings the mid-turn watch observed but did not act on (extra `act`
+    /// findings beyond the cap, all `note` findings, and corrections that
+    /// could not be delivered because the turn had already ended).
+    pub queued_notes: Vec<Finding>,
+}
+
+impl TurnScratch {
+    /// Whether the watch recorded any steering or notes this turn.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.applied_corrections.is_empty() && self.queued_notes.is_empty()
+    }
 }
 
 /// Subconscious runtime configuration.
@@ -215,6 +250,7 @@ impl Subconscious {
         &self,
         transcript: &[Message],
         phase: EvalPhase,
+        prior: Option<&TurnScratch>,
     ) -> anyhow::Result<Vec<Finding>> {
         if transcript.is_empty() {
             return Ok(Vec::new());
@@ -223,7 +259,7 @@ impl Subconscious {
         let policy = self.load_policy().await;
         let identity = self.load_identity_context().await;
         let transcript_text = format_turn_transcript(transcript, self.config.max_transcript_tokens);
-        let messages = build_eval_prompt(&policy, &identity, &transcript_text, phase);
+        let messages = build_eval_prompt(&policy, &identity, &transcript_text, phase, prior);
 
         let ov = self.config.role_overrides.as_ref();
         let options = CompletionOptions {
@@ -330,7 +366,7 @@ mod tests {
         );
 
         let findings = sub
-            .evaluate(&make_transcript(), EvalPhase::EndOfTurn)
+            .evaluate(&make_transcript(), EvalPhase::EndOfTurn, None)
             .await
             .unwrap();
         assert_eq!(findings.len(), 1, "should have one finding");
@@ -357,7 +393,7 @@ mod tests {
         );
 
         let findings = sub
-            .evaluate(&make_transcript(), EvalPhase::MidTurn)
+            .evaluate(&make_transcript(), EvalPhase::MidTurn, None)
             .await
             .unwrap();
         assert!(findings.is_empty(), "empty findings should parse to empty");
@@ -370,7 +406,7 @@ mod tests {
         // NullProvider would error if called; the short-circuit must win.
         let sub = Subconscious::disabled(layout);
 
-        let findings = sub.evaluate(&[], EvalPhase::EndOfTurn).await.unwrap();
+        let findings = sub.evaluate(&[], EvalPhase::EndOfTurn, None).await.unwrap();
         assert!(findings.is_empty(), "empty transcript should return empty");
     }
 

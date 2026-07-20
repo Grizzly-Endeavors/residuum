@@ -130,7 +130,7 @@ subconscious = "ollama/llama3-mini"
             Message::assistant("Got it.".to_string(), None),
         ];
         let findings = sub
-            .evaluate(&transcript, EvalPhase::EndOfTurn)
+            .evaluate(&transcript, EvalPhase::EndOfTurn, None)
             .await
             .unwrap();
 

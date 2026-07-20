@@ -1,18 +1,25 @@
 //! End-of-turn subconscious evaluation and finding delivery.
 //!
-//! Runs after a user-visible turn completes. `note` findings are injected as
-//! passive context for the next turn; the first `act` finding triggers an
-//! immediate correction turn by publishing a background-origin `MessageEvent`
-//! — the same mechanism the notification router uses to wake the main agent.
-//! Background turns are never evaluated, which is what prevents a correction
-//! turn from triggering another evaluation.
+//! Runs after a user-visible turn completes. It is a triage step, not a blind
+//! re-classification: it receives the steering the mid-turn watch already
+//! applied (via `TurnScratch`) so it can avoid repeating corrections and fold
+//! in queued notes. `note` findings are injected as passive context for the
+//! next turn; the first `act` finding triggers an immediate correction turn by
+//! publishing a background-origin `MessageEvent` — the same mechanism the
+//! notification router uses to wake the main agent. Background turns are never
+//! evaluated, which is what prevents a correction turn from triggering another
+//! evaluation.
+//!
+//! This runs synchronously on the gateway event loop (mirroring the observer),
+//! so it adds one classifier round-trip before the next inbound message is
+//! handled. The user-visible reply has already been sent by this point.
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use crate::bus::topics;
 use crate::gateway::types::GatewayRuntime;
 use crate::models::Message;
-use crate::subconscious::{EvalPhase, Finding, Severity};
+use crate::subconscious::{EvalPhase, Finding, Severity, TurnScratch};
 
 /// A planned delivery for one finding, decided before touching the runtime.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -30,6 +37,7 @@ pub(super) async fn run_end_of_turn_subconscious(
     rt: &mut GatewayRuntime,
     new_messages: &[Message],
     correlation_id: &str,
+    scratch: Option<&Arc<Mutex<TurnScratch>>>,
 ) {
     if !rt.subconscious.enabled() {
         return;
@@ -39,9 +47,15 @@ pub(super) async fn run_end_of_turn_subconscious(
         return;
     }
 
+    // Snapshot the mid-turn scratch so the classifier can triage against what
+    // already happened this turn. A poisoned lock degrades to no prior context.
+    let prior = scratch
+        .and_then(|s| s.lock().ok().map(|guard| guard.clone()))
+        .unwrap_or_default();
+
     let subconscious = Arc::clone(&rt.subconscious);
     match subconscious
-        .evaluate(new_messages, EvalPhase::EndOfTurn)
+        .evaluate(new_messages, EvalPhase::EndOfTurn, Some(&prior))
         .await
     {
         Ok(findings) => {
@@ -61,7 +75,30 @@ pub(super) async fn run_end_of_turn_subconscious(
         }
         Err(e) => {
             tracing::warn!(error = %e, "subconscious end-of-turn evaluation failed");
+            // Triage is the only delivery path for queued mid-turn notes, so a
+            // failed evaluation would silently drop them. Surface them raw
+            // instead of losing them.
+            deliver_fallback_notes(rt, &prior);
         }
+    }
+}
+
+/// Deliver queued mid-turn notes directly when the triage evaluation failed.
+///
+/// These are the lower-urgency findings the mid-turn watch observed but did not
+/// steer on; without the triage pass to fold them in, they are injected as-is
+/// so the agent still sees them next turn.
+fn deliver_fallback_notes(rt: &mut GatewayRuntime, prior: &TurnScratch) {
+    if prior.queued_notes.is_empty() {
+        return;
+    }
+    tracing::info!(
+        count = prior.queued_notes.len(),
+        "delivering queued mid-turn notes after triage failure"
+    );
+    for note in &prior.queued_notes {
+        rt.agent
+            .inject_system_message(format!("[Subconscious note] {}", note.instruction));
     }
 }
 

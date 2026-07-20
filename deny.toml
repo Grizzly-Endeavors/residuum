@@ -9,6 +9,8 @@ ignore = [
     "RUSTSEC-2026-0098", # rustls-webpki name-constraints (URI) — same transitive TLS-stack surface as 0049, affecting 0.102.8 and 0.103.10; no patched versions available
     "RUSTSEC-2026-0099", # rustls-webpki name-constraints (wildcards) — same transitive TLS-stack surface as 0049; no patched versions available
     "RUSTSEC-2026-0104", # rustls-webpki reachable panic in CRL parsing — transitive via serenity/rustls 0.22; residuum does not use CRLs
+    "RUSTSEC-2026-0189", # rmcp DNS rebinding — affects the Streamable HTTP *server* transport; residuum only uses rmcp's client transports (transport-streamable-http-client-reqwest, transport-child-process), so it is not exposed. Fix requires rmcp 2.x (major bump).
+    "RUSTSEC-2026-0173", # proc-macro-error2 unmaintained — transitive, build-time-only proc-macro dependency; no patched version exists.
 ]
 
 [licenses]
