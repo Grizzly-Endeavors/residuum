@@ -69,6 +69,12 @@ fn build_pulse_prompt(pulse: &PulseDef) -> String {
         "You are running a scheduled pulse check: {}",
         pulse.name
     ));
+    parts.push(
+        "This run is autonomous — no user is present, so you cannot ask questions or request \
+         clarification; act on the tasks as written. Do not create or modify pulses \
+         (HEARTBEAT.yml) or schedule further background work from a pulse run."
+            .to_string(),
+    );
 
     parts.push("## Tasks".to_string());
 
@@ -184,6 +190,25 @@ mod tests {
         assert!(
             prompt.contains("check_alerts"),
             "prompt should contain second task"
+        );
+    }
+
+    #[test]
+    fn prompt_includes_autonomous_context_framing() {
+        let pulse = sample_pulse();
+        let prompt = build_pulse_prompt(&pulse);
+
+        assert!(
+            prompt.contains("autonomous"),
+            "prompt should flag the run as autonomous"
+        );
+        assert!(
+            prompt.contains("cannot ask questions"),
+            "prompt should tell the agent it cannot ask for clarification"
+        );
+        assert!(
+            prompt.contains("HEARTBEAT.yml"),
+            "prompt should forbid modifying pulses from a pulse run"
         );
     }
 

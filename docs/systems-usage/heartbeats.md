@@ -9,7 +9,7 @@ Every bootstrapped workspace ships `HEARTBEAT.yml` with two pulses enabled by de
 | Pulse | Schedule | Agent | Purpose |
 |-------|----------|-------|---------|
 | `reflection` | `"7d"` | `introspection` | Reviews recent episodes/observations for recurring patterns, unfinished requests, and friction; delivers suggestions to the user inbox via `user_inbox_add`. |
-| `memory_tending` | `"24h"`, active `02:00-06:00` | `introspection` | Reconciles `MEMORY.md`/`USER.md` against recent episode evidence — adds durable facts, corrects or removes stale entries. |
+| `memory_tending` | `"24h"`, active `02:00-06:00` | `introspection` | Reconciles `MEMORY.md`/`USER.md` against recent episode evidence — adds durable facts, corrects or removes stale entries, and maintains the `USER.md` Core Facts tier (capped ~15 entries, replace-don't-append). Promotion to Core Facts (or to a new Profile entry) requires at least two supporting observations, annotated with the evidence count; a single sighting stays provisional in `MEMORY.md`. See [memory.md](memory.md) for the full tier and promotion rule. |
 
 Both name the bundled `introspection` subagent preset (`subagents/introspection.md`), which runs at `model_tier: large` with `include_identity: true` (SOUL.md/AGENTS.md/MEMORY.md included in its prompt, in addition to the usual ENVIRONMENT.md/USER.md). It may edit MEMORY.md/USER.md directly, but can only propose SOUL.md/AGENTS.md changes through its inbox delivery.
 
@@ -73,6 +73,10 @@ pulses:
 ### HEARTBEAT_OK Convention
 
 Sub-agent pulses include an instruction: if nothing actionable was found, return the exact string `HEARTBEAT_OK`. Results containing this string are silently discarded before reaching the notification router.
+
+### Autonomous Framing
+
+Every pulse-triggered run — sub-agent or `agent: main` — is framed in its prompt as autonomous: no user is present to answer a question, so the run must not pause waiting on one. Pulse prompts also explicitly forbid the run from creating or modifying pulses, or scheduling further background work — a pulse that could spawn or edit other pulses risks a runaway self-scheduling loop with no user in the loop to notice. If a pulse run concludes that a new or different pulse is warranted, the correct move is to say so via the user inbox, not to write `HEARTBEAT.yml` itself.
 
 ## Scheduling Behavior
 

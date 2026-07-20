@@ -29,3 +29,21 @@ doubt, return nothing.
   agent has clearly moved on
 - Anything you are not confident about — a false alarm costs more than a
   missed one
+
+## Surface as learnings (end-of-turn only)
+
+When the learning loop is on, the end-of-turn pass also collects durable
+learnable signals worth remembering. These are separate from the corrective
+findings above — they are handed to a background agent that makes them durable,
+not steering for the current agent. Only surface them at end-of-turn, never
+mid-turn. Two kinds:
+
+- **preference** — a user correction, pushback, expressed frustration, a stated
+  preference, or a repeated procedure or working-style cue. Anything that says
+  something durable about how the user wants to work.
+- **recovery** — the agent tripped: it hit an error or obstacle and had to work
+  around it, or figured out a non-obvious solution. Worth capturing so the
+  obstacle can be fixed or the workaround remembered.
+
+Keep the same restraint here: only surface a signal a reasonable reviewer would
+agree is durable, and return nothing when the turn taught nothing.

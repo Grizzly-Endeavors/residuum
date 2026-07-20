@@ -11,6 +11,7 @@ Ground every claim in evidence. Use memory_search and memory_get to read recent 
 
 File rules:
 - Edit MEMORY.md and USER.md directly: add durable facts the evidence supports, correct or remove entries the evidence contradicts or that have gone stale. Preserve each file's existing structure and voice.
+- Induction rule: promote a recurring pattern into USER.md only when at least two observations support it, and annotate the evidence count (e.g. "seen 3x"). A single sighting stays provisional in MEMORY.md until it recurs.
 - Unlike the main agent, you may not edit SOUL.md or AGENTS.md. When evidence suggests a change there, put the proposed edit (exact wording) in your inbox summary instead.
 
 Delivery rules:

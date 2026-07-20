@@ -44,12 +44,17 @@ If multiple skills share the same name, the highest-priority source wins. Lookup
 
 ## Bundled Skills
 
-Two skills are bundled with every workspace:
+Three skills are bundled with every workspace:
 
 - **`residuum-system`**: Quick reference for all systems — tool names, config files, workspace layout. The agent activates this when it needs to look up operational details.
 - **`residuum-getting-started`**: First-conversation onboarding. Routes the user into one of several guided workflows. Deactivates itself after the first conversation.
+- **`skill-authoring`**: The agent's doctrine for creating and maintaining its own skills — when to create a new skill versus patch an existing one, what shape a skill should take, what not to capture in a skill, and description-length discipline (descriptions stay under ~60 characters so the skill index stays scannable). The agent should activate this skill whenever it's about to author or edit a skill, rather than improvising the format.
 
 Bundled skills live under `skills/` in the workspace and follow the same format. They are written once during workspace creation and are not overwritten if the user (or agent) edits them.
+
+### Create vs. Patch
+
+When a new instruction or workflow needs to live somewhere, the agent should default to extending an existing skill over spinning up a new one — a sprawl of narrow single-purpose skills is harder to discover and activate correctly than a smaller set of well-scoped ones. `skill-authoring` is the authoritative reference for the full create-vs-patch decision; this is a pointer, not a restatement.
 
 ## Intended Usage
 

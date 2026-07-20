@@ -24,9 +24,14 @@ The fallback chain walks up tiers. If no background model is configured at any t
 
 ## Subagent Presets
 
-Presets are markdown files in `subagents/` with kebab-case filenames matching the preset name (e.g., `memory-agent.md`). YAML frontmatter can define: `name`, `description`, `model_tier`, `denied_tools`, `allowed_tools`, `include_identity`. Two built-in presets exist: `general-purpose` and `introspection` (used by the built-in `reflection` and `memory_tending` pulses).
+Presets are markdown files in `subagents/` with kebab-case filenames matching the preset name (e.g., `memory-agent.md`). YAML frontmatter can define: `name`, `description`, `model_tier`, `denied_tools`, `allowed_tools`, `include_identity`. Four built-in presets exist:
 
-`include_identity` (boolean, default `false`) — when `true`, the sub-agent's prompt also includes SOUL.md, AGENTS.md, and MEMORY.md alongside the usual ENVIRONMENT.md/USER.md. Use it for presets that need full identity context to make judgment calls (e.g. the `introspection` preset, which tends memory against the agent's own identity files).
+- **`general-purpose`** — default when `agent_name` is omitted.
+- **`introspection`** — backs the built-in `reflection`/`memory_tending` pulses.
+- **`learner`** — spawned by a subconscious `learn` signal (opt-in, cooldown-limited) or by the `[learning] nudge_after_turns` fallback. Corroborates a `preference` signal against episodic memory before promoting it to USER.md (≥2 supporting observations, evidence count annotated; single sightings go to MEMORY.md as provisional). For a `recovery` signal, prefers queuing a durable fix via the user inbox over baking the workaround into a skill.
+- **`memory-analyst`** — read-only; the main agent spawns it for synthesized questions about the user/history instead of doing raw `memory_search` itself. Uses multiple search phrasings for enumeration questions, surfaces contradictions with dates, abstains rather than fabricates, cites episode IDs.
+
+`include_identity` (boolean, default `false`) — when `true`, the sub-agent's prompt also includes SOUL.md, AGENTS.md, and MEMORY.md alongside the usual ENVIRONMENT.md/USER.md. Use it for presets that need full identity context to make judgment calls (`introspection`, `learner`, `memory-analyst` all set it).
 
 ## Tools
 
@@ -41,6 +46,8 @@ Presets are markdown files in `subagents/` with kebab-case filenames matching th
 - **`task`**: The prompt/instructions for the sub-agent. Required.
 - **`agent_name`**: Preset name from `subagents/`. Default: `"general-purpose"`. `"main"` is rejected.
 - **`model_override`**: `"small"`, `"medium"`, or `"large"`. Overrides the preset's tier.
+
+A sub-agent's result is a **self-report**, not a verified outcome. When the task is checkable, ask for concrete handles in the prompt (file paths, commit SHAs, URLs) and don't take "done" at face value until they check out.
 
 ## Result Routing
 

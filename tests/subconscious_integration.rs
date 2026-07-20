@@ -129,17 +129,21 @@ subconscious = "ollama/llama3-mini"
             Message::user("Always answer me in bullet points."),
             Message::assistant("Got it.".to_string(), None),
         ];
-        let findings = sub
+        let outcome = sub
             .evaluate(&transcript, EvalPhase::EndOfTurn, None)
             .await
             .unwrap();
 
         assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
-        assert_eq!(findings.len(), 1);
-        let finding = findings.first().unwrap();
+        assert_eq!(outcome.findings.len(), 1);
+        let finding = outcome.findings.first().unwrap();
         assert_eq!(finding.kind, FindingKind::Omission);
         assert_eq!(finding.severity, Severity::Act);
         assert!(finding.instruction.contains("MEMORY.md"));
+        assert!(
+            outcome.learnings.is_empty(),
+            "learnings must be empty when learning is disabled (the default)"
+        );
     }
 
     #[tokio::test]

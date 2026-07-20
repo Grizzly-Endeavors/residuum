@@ -6,6 +6,15 @@ The memory pipeline converts conversation turns into searchable long-term memory
 
 A persistent scratchpad the agent owns and writes to directly. This is the agent's working notebook for cross-session context. The observer and reflector never touch it — it is entirely agent-controlled.
 
+## USER.md
+
+Two tiers, different rules:
+
+- **Core Facts** — durable identity/standing preferences, hard-capped at ~15 entries, replace-don't-append.
+- **Profile** — longer-form, evolving model of the user. Normal churn.
+
+**Promotion rule**: don't write to Core Facts (or add a new Profile entry) on a single sighting. Need ≥2 supporting observations, and annotate the evidence count ("seen 3x") when you do. One sighting alone goes to MEMORY.md as provisional. Both the `introspection` and `learner` presets apply this rule when tending USER.md.
+
 ## Observer
 
 Fires after agent turns when accumulated unobserved message tokens exceed a threshold. Two trigger modes:
@@ -22,6 +31,8 @@ The observer calls an LLM to extract a structured `Episode` from recent messages
 | `ep-NNN.idx.jsonl` | JSONL of IndexChunk objects | Interaction-pair chunks for search indexing |
 
 After extraction, observations are appended to `memory/observations.json` and recent messages are cleared from `memory/recent_messages.json`. The narrative context is saved to `memory/recent_context.json`. If an embedding provider is configured, `.obs` and `.idx` files are embedded for vector retrieval.
+
+The bundled `OBSERVER.md` also extracts **interaction signals** — corrections/pushback, process preferences, frustration and its cause, praise and what earned it — as declarative facts about what happened, never as instructions. This is the evidence the `learner` preset corroborates against for a `preference` signal.
 
 Customize extraction guidance by editing `memory/OBSERVER.md`.
 

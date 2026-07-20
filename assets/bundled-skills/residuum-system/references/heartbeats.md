@@ -9,7 +9,7 @@ Two pulses ship enabled by default in every workspace's `HEARTBEAT.yml`:
 | Pulse | Schedule | Agent | What it does |
 |-------|----------|-------|---------------|
 | `reflection` | `7d` | `introspection` | Reviews recent episodes/observations for patterns (repeated manual tasks, recurring topics, unfinished requests, friction) and delivers findings via `user_inbox_add`. |
-| `memory_tending` | `24h`, active `02:00-06:00` | `introspection` | Reconciles `MEMORY.md`/`USER.md` against recent episode evidence — adds durable facts, corrects or removes stale entries. |
+| `memory_tending` | `24h`, active `02:00-06:00` | `introspection` | Reconciles `MEMORY.md`/`USER.md` against recent episode evidence — adds durable facts, corrects or removes stale entries, and maintains the `USER.md` Core Facts tier (≤15 entries, replace-don't-append, ≥2 observations to promote). |
 
 Both route to the `introspection` subagent preset (see `subagents/introspection.md`), which runs at `model_tier: large` and includes full identity context (`include_identity: true`) so it has SOUL.md/AGENTS.md/MEMORY.md available when judging what to tend. It edits MEMORY.md/USER.md directly but only *proposes* SOUL.md/AGENTS.md changes in its inbox delivery — it cannot edit those files itself.
 
@@ -85,6 +85,7 @@ The `agent` field controls how the pulse executes:
 - Each task in `tasks` is an object with `name` (string) and `prompt` (string). Task prompts are joined into the SubAgent prompt.
 - SubAgent pulses include a `"HEARTBEAT_OK"` instruction: the agent should respond with just that phrase if there is nothing to report. These results are silently discarded before reaching the notification router.
 - `trigger_count` limits how many times a pulse fires within its `active_hours` window. When set, firings are spaced evenly across the active period. Omit for unlimited.
+- Every pulse run is framed as **autonomous** in its prompt: no user is present, so it must not wait on a question, and it must not create/modify pulses or schedule further background work itself. A pulse that concludes a new pulse is warranted should say so via the user inbox, not edit `HEARTBEAT.yml`.
 
 ## Gotchas
 

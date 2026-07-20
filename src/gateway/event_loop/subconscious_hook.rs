@@ -19,7 +19,7 @@ use std::sync::{Arc, Mutex};
 use crate::bus::topics;
 use crate::gateway::types::GatewayRuntime;
 use crate::models::Message;
-use crate::subconscious::{EvalPhase, Finding, Severity, TurnScratch};
+use crate::subconscious::{EvalPhase, Finding, LearnSignal, Severity, TurnScratch};
 
 /// A planned delivery for one finding, decided before touching the runtime.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -58,8 +58,8 @@ pub(super) async fn run_end_of_turn_subconscious(
         .evaluate(new_messages, EvalPhase::EndOfTurn, Some(&prior))
         .await
     {
-        Ok(findings) => {
-            for delivery in plan_delivery(findings) {
+        Ok(outcome) => {
+            for delivery in plan_delivery(outcome.findings) {
                 match delivery {
                     Delivery::Note(instruction) => {
                         tracing::info!("subconscious note queued for next turn");
@@ -72,6 +72,8 @@ pub(super) async fn run_end_of_turn_subconscious(
                     }
                 }
             }
+            // Learnable signals feed the learner sub-agent (cooldown-gated).
+            maybe_spawn_learner(rt, &outcome.learnings).await;
         }
         Err(e) => {
             tracing::warn!(error = %e, "subconscious end-of-turn evaluation failed");
@@ -80,6 +82,28 @@ pub(super) async fn run_end_of_turn_subconscious(
             // instead of losing them.
             deliver_fallback_notes(rt, &prior);
         }
+    }
+}
+
+/// Spawn the `learner` sub-agent when the triage surfaced learnable signals.
+///
+/// Cooldown-gated via the runtime's `LearningState`; an empty signal list or a
+/// live cooldown is a no-op. Decisions are logged inside `LearningState`.
+async fn maybe_spawn_learner(rt: &mut GatewayRuntime, learnings: &[LearnSignal]) {
+    let cooldown = rt.cfg.subconscious_settings.learning_cooldown();
+    let Some(spawn) =
+        rt.learning_state
+            .on_learn_signals(learnings, cooldown, std::time::Instant::now())
+    else {
+        return;
+    };
+    if let Err(e) = rt.publisher.publish(topics::Background, spawn).await {
+        tracing::warn!(error = %e, "failed to publish learner spawn request");
+    } else {
+        tracing::info!(
+            signals = learnings.len(),
+            "learner sub-agent spawn requested"
+        );
     }
 }
 

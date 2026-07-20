@@ -168,6 +168,9 @@ pub(crate) struct GatewayRuntime {
     pub observer: Observer,
     pub reflector: Reflector,
     pub subconscious: Arc<crate::subconscious::Subconscious>,
+    /// In-memory learning-loop state (cooldown + fallback turn counter). Resets
+    /// on restart.
+    pub learning_state: crate::subconscious::LearningState,
     pub search_index: Arc<MemoryIndex>,
     pub vector_store: Option<Arc<VectorStore>>,
     pub embedding_provider: Option<Arc<dyn EmbeddingProvider>>,

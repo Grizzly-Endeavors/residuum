@@ -241,6 +241,41 @@ async fn run_agent_turn_with_interrupts(
     (turn_result, leftover_interrupts, scratch)
 }
 
+/// Fallback learning trigger for users running without the subconscious
+/// learning path: after a configured number of foreground turns, spawn the
+/// `learner` sub-agent to review the recent conversation.
+///
+/// Skipped when the subconscious learning path is active (that path owns
+/// spawning, so this avoids double-spawns) or when `nudge_after_turns` is zero.
+/// Shares the subconscious learning cooldown.
+async fn maybe_nudge_learner(rt: &mut GatewayRuntime) {
+    // When the subconscious learning path is active it already spawns from
+    // detected signals; the dumb fallback must stay out of its way.
+    if rt.subconscious.learning_enabled() {
+        return;
+    }
+    let nudge_after = rt.cfg.learning.nudge_after_turns;
+    if nudge_after == 0 {
+        return;
+    }
+    let cooldown = rt.cfg.subconscious_settings.learning_cooldown();
+    let Some(spawn) =
+        rt.learning_state
+            .on_turn_completed(nudge_after, cooldown, std::time::Instant::now())
+    else {
+        return;
+    };
+    if let Err(e) = rt
+        .publisher
+        .publish(crate::bus::topics::Background, spawn)
+        .await
+    {
+        tracing::warn!(error = %e, "failed to publish learner nudge spawn request");
+    } else {
+        tracing::info!("learner sub-agent nudge spawn requested");
+    }
+}
+
 /// Handle an inbound user message: run agent turn, persist, observe, and process leftovers.
 #[expect(
     clippy::too_many_lines,
@@ -397,6 +432,7 @@ pub async fn handle_inbound_message(
             subconscious_scratch.as_ref(),
         )
         .await;
+        maybe_nudge_learner(rt).await;
     }
 
     process_leftover_interrupts(leftover_interrupts, rt);

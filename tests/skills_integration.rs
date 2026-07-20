@@ -45,7 +45,7 @@ mod skills_integration {
     // ── Scanning ─────────────────────────────────────────────────────────────
 
     /// Number of bundled skills created by `ensure_workspace`.
-    const BUNDLED_SKILL_COUNT: usize = 2;
+    const BUNDLED_SKILL_COUNT: usize = 3;
 
     #[tokio::test]
     async fn scan_empty_workspace() {

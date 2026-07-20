@@ -268,6 +268,7 @@ async fn build_runtime(
         agent: parts.agent,
         observer: parts.observer,
         subconscious: parts.subconscious,
+        learning_state: crate::subconscious::LearningState::default(),
         reflector: parts.reflector,
         search_index: parts.search_index,
         vector_store: parts.vector_store,

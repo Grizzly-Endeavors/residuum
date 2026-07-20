@@ -669,7 +669,7 @@ The `preview` line is omitted if the task has an empty prompt/command.
 **Source:** `background.rs` · `SubAgentSpawnTool`
 
 **Description sent to LLM:**
-> Spawn a background sub-agent to handle a task. The agent_name selects a preset that configures the sub-agent's instructions, model tier, and tool restrictions. Unknown preset names fail immediately with a list of available presets. Runs asynchronously; results are routed by the notification router based on content and ALERTS.md policy.
+> Spawn a background sub-agent to handle a task. The agent_name selects a preset that configures the sub-agent's instructions, model tier, and tool restrictions. Unknown preset names fail immediately with a list of available presets. Runs asynchronously; results are routed by the notification router based on content and ALERTS.md policy. A sub-agent's result is its own self-report, not verified fact — for verifiable work, ask the sub-agent to return concrete handles (file paths, IDs, URLs) and verify them yourself before relying on the result.
 
 ### Input
 

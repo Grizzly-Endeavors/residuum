@@ -27,6 +27,8 @@ pub(crate) struct ConfigFile {
     pub(super) pulse: Option<PulseConfigFile>,
     /// Subconscious classifier configuration.
     pub(super) subconscious: Option<SubconsciousConfigFile>,
+    /// Activity-triggered learning loop configuration.
+    pub(super) learning: Option<LearningConfigFile>,
     /// Gateway configuration.
     pub(super) gateway: Option<GatewayConfigFile>,
     /// Discord bot configuration.
@@ -243,6 +245,18 @@ pub(super) struct SubconsciousConfigFile {
     pub(super) max_interventions_per_turn: Option<usize>,
     /// Token cap for the transcript sent to the classifier.
     pub(super) max_transcript_tokens: Option<usize>,
+    /// Whether the activity-triggered learning loop is enabled (opt-in, default false).
+    pub(super) learning: Option<bool>,
+    /// Minimum minutes between learner sub-agent spawns.
+    pub(super) learning_cooldown_minutes: Option<u64>,
+}
+
+/// Raw TOML `[learning]` section.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct LearningConfigFile {
+    /// Fallback trigger: spawn the learner after N foreground turns (0 = disabled).
+    pub(super) nudge_after_turns: Option<u32>,
 }
 
 /// Raw TOML `[gateway]` section.

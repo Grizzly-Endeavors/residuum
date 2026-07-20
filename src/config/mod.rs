@@ -26,8 +26,8 @@ pub use provider::{ModelSpec, ProviderKind, ProviderSpec};
 pub use secrets::SecretStore;
 pub use types::{
     AgentAbilitiesConfig, BackgroundConfig, BackgroundModelTier, BackgroundModelsConfig,
-    CloudConfig, Config, DiscordConfig, GatewayConfig, IdleConfig, LogLevel, MemoryConfig,
-    OtelEndpoint, ProviderNativeSearchConfig, RoleOverrides, SearchConfig, SkillsConfig,
-    StandaloneBackendConfig, SubconsciousSettings, TelegramConfig, TracingConfig, WebSearchConfig,
-    WebhookEntry, WebhookFormat, WebhookRouting,
+    CloudConfig, Config, DiscordConfig, GatewayConfig, IdleConfig, LearningConfig, LogLevel,
+    MemoryConfig, OtelEndpoint, ProviderNativeSearchConfig, RoleOverrides, SearchConfig,
+    SkillsConfig, StandaloneBackendConfig, SubconsciousSettings, TelegramConfig, TracingConfig,
+    WebSearchConfig, WebhookEntry, WebhookFormat, WebhookRouting,
 };

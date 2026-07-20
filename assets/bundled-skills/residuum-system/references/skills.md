@@ -68,7 +68,7 @@ Detailed instructions, workflows, and reference material.
 
 - The skill body is injected verbatim — there is no templating or variable substitution.
 - Project skills only appear in the index while that project is active. Deactivating the project removes them from the index and deactivates any that were active.
-- Bundled skills (like `residuum-system` and `residuum-getting-started`) are written to `skills/` during workspace creation and follow the same format.
+- Bundled skills (`residuum-system`, `residuum-getting-started`, `skill-authoring`) are written to `skills/` during workspace creation and follow the same format.
 - Skill names must be unique across all sources. Project skills override workspace skills of the same name, workspace overrides user-global, and so on down the priority chain.
 
-When a pattern keeps recurring across conversations, the agent is expected to author a new workspace skill (or subagent preset) itself rather than re-explaining the same instructions every time.
+When a pattern keeps recurring across conversations, the agent is expected to author a new workspace skill (or subagent preset) itself rather than re-explaining the same instructions every time. Before authoring or editing a skill, activate the bundled **`skill-authoring`** skill — it holds the full doctrine (create-vs-patch decision, class-level shape, what not to capture, description-length limits) and is not repeated here.

@@ -189,7 +189,50 @@
             placeholder="Default: 12000"
           />
         </div>
+        <div class="settings-field">
+          <label>
+            <span class="toggle-switch">
+              <input type="checkbox" bind:checked={fields.subconscious_learning} />
+              <span class="toggle-slider"></span>
+            </span>
+            Learn From Conversations
+          </label>
+          <div class="field-hint">
+            When a turn reveals something durable — a correction, a preference, a hard-won fix —
+            spawn a background learner to verify it against memory and keep it. Adds occasional
+            sub-agent runs.
+          </div>
+        </div>
+        {#if fields.subconscious_learning}
+          <div class="settings-field">
+            <label for="rt-sub-learning-cooldown">Learning Cooldown (minutes)</label>
+            <input
+              id="rt-sub-learning-cooldown"
+              type="number"
+              bind:value={fields.subconscious_learning_cooldown_minutes}
+              placeholder="Default: 240"
+            />
+          </div>
+        {/if}
       {/if}
+    </div>
+
+    <div class="settings-group">
+      <div class="settings-group-label">Learning Fallback</div>
+      <div class="field-hint">
+        Without the subconscious, the agent can still review conversations for things worth keeping:
+        every N turns, a background learner checks recent history for preferences and fixes to
+        persist. Leave at 0 to disable.
+      </div>
+      <div class="settings-field">
+        <label for="rt-learning-nudge">Review Every N Turns</label>
+        <input
+          id="rt-learning-nudge"
+          type="number"
+          bind:value={fields.learning_nudge_after_turns}
+          placeholder="Default: 0 (off)"
+        />
+      </div>
     </div>
 
     <div class="settings-group">

@@ -27,27 +27,67 @@ look useful: an empty array is a success, not a failure to find something. Only
 report a problem a reasonable reviewer would clearly flag, and never report the
 same problem twice."#;
 
+/// Format guidance for the `learnings` array — appended only at end-of-turn
+/// triage when the learning loop is enabled.
+///
+/// Learn signals are durable observations worth remembering, distinct from the
+/// corrective findings above; they are handed to a background `learner` agent.
+pub(super) const LEARN_FORMAT_SPEC: &str = r#"Separately, use the "learnings" array to surface durable learnable signals from this turn — things worth remembering, distinct from the corrective findings above. Each learning has these fields:
+- "summary": one or two sentences capturing the signal, specific enough to act on without re-reading the transcript
+- "signal_type": "preference" for a user preference, correction, expressed frustration, or a working-style cue; "recovery" when the agent hit an error or obstacle and had to work around it or find a non-obvious solution
+
+Returning an empty "learnings" array is the normal, correct outcome — most turns
+teach nothing durable. Do not duplicate a corrective finding as a learning, and
+do not manufacture a signal just to fill the array."#;
+
 /// JSON schema for the subconscious response, used with structured output mode.
+///
+/// When `include_learnings` is set, the schema also requires a `learnings`
+/// array (end-of-turn triage with the learning loop enabled).
 #[must_use]
-pub(super) fn subconscious_response_schema() -> serde_json::Value {
+pub(super) fn subconscious_response_schema(include_learnings: bool) -> serde_json::Value {
+    let mut properties = serde_json::json!({
+        "findings": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "kind": { "type": "string", "enum": ["violation", "omission"] },
+                    "severity": { "type": "string", "enum": ["note", "act"] },
+                    "instruction": { "type": "string" }
+                },
+                "required": ["kind", "severity", "instruction"],
+                "additionalProperties": false
+            }
+        }
+    });
+    let mut required = vec!["findings"];
+
+    if include_learnings {
+        if let Some(map) = properties.as_object_mut() {
+            map.insert(
+                String::from("learnings"),
+                serde_json::json!({
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "summary": { "type": "string" },
+                            "signal_type": { "type": "string", "enum": ["preference", "recovery"] }
+                        },
+                        "required": ["summary", "signal_type"],
+                        "additionalProperties": false
+                    }
+                }),
+            );
+        }
+        required.push("learnings");
+    }
+
     serde_json::json!({
         "type": "object",
-        "properties": {
-            "findings": {
-                "type": "array",
-                "items": {
-                    "type": "object",
-                    "properties": {
-                        "kind": { "type": "string", "enum": ["violation", "omission"] },
-                        "severity": { "type": "string", "enum": ["note", "act"] },
-                        "instruction": { "type": "string" }
-                    },
-                    "required": ["kind", "severity", "instruction"],
-                    "additionalProperties": false
-                }
-            }
-        },
-        "required": ["findings"],
+        "properties": properties,
+        "required": required,
         "additionalProperties": false
     })
 }
@@ -198,13 +238,19 @@ pub(super) fn build_eval_prompt(
     transcript: &str,
     phase: EvalPhase,
     prior: Option<&TurnScratch>,
+    include_learnings: bool,
 ) -> Vec<Message> {
     let identity_section = if identity.is_empty() {
         String::new()
     } else {
         format!("\n\n# Agent Instructions (what the agent is supposed to follow)\n\n{identity}")
     };
-    let system = format!("{policy}{identity_section}\n\n{FORMAT_SPEC}");
+    let learn_section = if include_learnings {
+        format!("\n\n{LEARN_FORMAT_SPEC}")
+    } else {
+        String::new()
+    };
+    let system = format!("{policy}{identity_section}\n\n{FORMAT_SPEC}{learn_section}");
 
     let prior_section = prior.map(format_prior_steering).unwrap_or_default();
 
@@ -298,10 +344,53 @@ mod tests {
 
     #[test]
     fn eval_prompt_always_includes_format_spec() {
-        let prompt = build_eval_prompt("policy text", "", "transcript", EvalPhase::MidTurn, None);
+        let prompt = build_eval_prompt(
+            "policy text",
+            "",
+            "transcript",
+            EvalPhase::MidTurn,
+            None,
+            false,
+        );
         let system = prompt.first().map_or("", |m| m.content.as_str());
         assert!(system.contains(FORMAT_SPEC), "format spec must be present");
         assert!(system.contains("policy text"), "policy must be present");
+    }
+
+    #[test]
+    fn eval_prompt_includes_learn_spec_only_when_requested() {
+        let without = build_eval_prompt("p", "", "t", EvalPhase::EndOfTurn, None, false);
+        let without_system = without.first().map_or("", |m| m.content.as_str());
+        assert!(
+            !without_system.contains(LEARN_FORMAT_SPEC),
+            "learn spec must be absent when learnings not requested"
+        );
+
+        let with = build_eval_prompt("p", "", "t", EvalPhase::EndOfTurn, None, true);
+        let with_system = with.first().map_or("", |m| m.content.as_str());
+        assert!(
+            with_system.contains(LEARN_FORMAT_SPEC),
+            "learn spec must be present when learnings requested"
+        );
+    }
+
+    #[test]
+    fn schema_includes_learnings_only_when_requested() {
+        let plain = subconscious_response_schema(false);
+        assert!(
+            plain
+                .get("properties")
+                .and_then(|p| p.get("learnings"))
+                .is_none(),
+            "plain schema must not expose learnings"
+        );
+        let with = subconscious_response_schema(true);
+        assert!(
+            with.get("properties")
+                .and_then(|p| p.get("learnings"))
+                .is_some(),
+            "learning schema must expose learnings array"
+        );
     }
 
     #[test]
@@ -312,6 +401,7 @@ mod tests {
             "t",
             EvalPhase::EndOfTurn,
             None,
+            false,
         );
         let system = prompt.first().map_or("", |m| m.content.as_str());
         assert!(system.contains("Be kind."), "identity content included");
@@ -323,8 +413,8 @@ mod tests {
 
     #[test]
     fn eval_prompt_phase_questions_differ() {
-        let mid = build_eval_prompt("p", "", "t", EvalPhase::MidTurn, None);
-        let end = build_eval_prompt("p", "", "t", EvalPhase::EndOfTurn, None);
+        let mid = build_eval_prompt("p", "", "t", EvalPhase::MidTurn, None, false);
+        let end = build_eval_prompt("p", "", "t", EvalPhase::EndOfTurn, None, false);
         let mid_user = mid.get(1).map_or("", |m| m.content.as_str());
         let end_user = end.get(1).map_or("", |m| m.content.as_str());
         assert!(mid_user.contains("still working"), "mid-turn question");
@@ -347,7 +437,7 @@ mod tests {
                 instruction: "Consider saving the bullet-point preference.".to_string(),
             }],
         };
-        let prompt = build_eval_prompt("p", "", "t", EvalPhase::EndOfTurn, Some(&prior));
+        let prompt = build_eval_prompt("p", "", "t", EvalPhase::EndOfTurn, Some(&prior), false);
         let user = prompt.get(1).map_or("", |m| m.content.as_str());
         assert!(
             user.contains("Steering Already Applied"),
@@ -368,7 +458,7 @@ mod tests {
         use crate::subconscious::TurnScratch;
 
         let empty = TurnScratch::default();
-        let prompt = build_eval_prompt("p", "", "t", EvalPhase::EndOfTurn, Some(&empty));
+        let prompt = build_eval_prompt("p", "", "t", EvalPhase::EndOfTurn, Some(&empty), false);
         let user = prompt.get(1).map_or("", |m| m.content.as_str());
         assert!(
             !user.contains("Steering Already Applied"),
