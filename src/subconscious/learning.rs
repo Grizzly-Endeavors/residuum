@@ -170,7 +170,7 @@ mod tests {
         }
     }
 
-    const COOLDOWN: Duration = Duration::from_secs(240 * 60);
+    const COOLDOWN: Duration = Duration::from_hours(4);
 
     #[test]
     fn learn_signals_fire_then_cooldown_suppresses() {
