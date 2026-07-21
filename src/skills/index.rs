@@ -122,9 +122,10 @@ async fn scan_skill_directory(
         }
     };
 
+    let mut dir_entries = Vec::new();
     loop {
-        let entry = match read_dir.next_entry().await {
-            Ok(Some(e)) => e,
+        match read_dir.next_entry().await {
+            Ok(Some(e)) => dir_entries.push(e),
             Ok(None) => break,
             Err(e) => {
                 tracing::warn!(
@@ -132,10 +133,19 @@ async fn scan_skill_directory(
                     error = %e,
                     "failed to read skills directory entry"
                 );
-                continue;
             }
-        };
+        }
+    }
 
+    // `read_dir` order is filesystem/platform-dependent, not sorted. Two skill
+    // folders in this same directory sharing a `name` (e.g. a copy-pasted
+    // folder someone forgot to rename) would otherwise let the dedup winner
+    // below flip nondeterministically across restarts or machines. Sorting by
+    // folder name makes "first found" deterministic within a directory too,
+    // not just across the `dirs` entries passed to `scan`.
+    dir_entries.sort_by_key(tokio::fs::DirEntry::file_name);
+
+    for entry in dir_entries {
         let file_type = match entry.file_type().await {
             Ok(ft) => ft,
             Err(e) => {
@@ -402,6 +412,53 @@ mod tests {
             index.entries().first().unwrap().description,
             "First",
             "should keep first found"
+        );
+    }
+
+    #[tokio::test]
+    async fn scan_same_directory_duplicate_names_keeps_deterministic_first() {
+        let dir = tempfile::tempdir().unwrap();
+
+        // Two skill folders in the SAME directory sharing a `name` — e.g. a
+        // copy-pasted skill folder the author forgot to rename. `read_dir`
+        // order is filesystem/platform-dependent, so without sorting the
+        // winner could flip across restarts or machines. Folder names are
+        // chosen so alphabetical order differs from likely creation order.
+        let skill_z = dir.path().join("z-dupe");
+        tokio::fs::create_dir(&skill_z).await.unwrap();
+        tokio::fs::write(
+            skill_z.join("SKILL.md"),
+            "---\nname: dupe\ndescription: \"From z-dupe\"\n---\n",
+        )
+        .await
+        .unwrap();
+
+        let skill_a = dir.path().join("a-dupe");
+        tokio::fs::create_dir(&skill_a).await.unwrap();
+        tokio::fs::write(
+            skill_a.join("SKILL.md"),
+            "---\nname: dupe\ndescription: \"From a-dupe\"\n---\n",
+        )
+        .await
+        .unwrap();
+
+        let index = SkillIndex::scan(&[dir.path().to_path_buf()], None)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            index.entries().len(),
+            1,
+            "should deduplicate same-name skills within one directory"
+        );
+        let entry = index.entries().first().unwrap();
+        assert_eq!(
+            entry.description, "From a-dupe",
+            "winner should be the alphabetically-first folder name, regardless of readdir order"
+        );
+        assert_eq!(
+            entry.skill_dir, skill_a,
+            "winning skill_dir should be the alphabetically-first folder"
         );
     }
 
