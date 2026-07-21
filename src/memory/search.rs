@@ -681,7 +681,13 @@ fn extract_date_from_path(path: &Path) -> String {
         (Some(ym), Some(d)) if ym.len() == 7 && d.len() == 2 => {
             format!("{ym}-{d}")
         }
-        _ => String::new(),
+        _ => {
+            tracing::warn!(
+                path = %path.display(),
+                "failed to extract date from path, expected episodes/YYYY-MM/DD structure"
+            );
+            String::new()
+        }
     }
 }
 
@@ -801,6 +807,22 @@ impl HybridSearcher {
                         .unwrap_or(std::cmp::Ordering::Equal)
                 });
             }
+            // Apply min_score the same way merge_hybrid_results does (on normalized
+            // scores), so the setting has consistent meaning whether or not vector
+            // search ran.
+            let scores: Vec<f32> = results.iter().map(|r| r.score).collect();
+            let normalized = normalize_scores(&scores);
+            #[expect(
+                clippy::cast_possible_truncation,
+                reason = "min_score is in [0.0, 1.0], safe to truncate to f32"
+            )]
+            let min_score = self.cfg.min_score as f32;
+            results = results
+                .into_iter()
+                .zip(normalized)
+                .filter(|(_, norm)| *norm >= min_score)
+                .map(|(r, _)| r)
+                .collect();
             results.truncate(limit);
             return Ok(results);
         };
@@ -822,6 +844,7 @@ impl HybridSearcher {
             date_from: filters.date_from.clone(),
             date_to: filters.date_to.clone(),
             project_context: filters.project_context.clone(),
+            episode_ids: filters.episode_ids.clone(),
         };
         let vec_limit = candidates;
         let vec_results = tokio::task::spawn_blocking(move || {
