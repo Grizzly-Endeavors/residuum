@@ -7,7 +7,7 @@ use chrono::NaiveDate;
 
 use crate::workspace::layout::WorkspaceLayout;
 
-use super::scanner::serialize_project_md;
+use super::scanner::{ProjectIndex, serialize_project_md};
 use super::types::{ProjectFrontmatter, ProjectStatus};
 
 /// Create a new project with the standard directory structure.
@@ -16,7 +16,8 @@ use super::types::{ProjectFrontmatter, ProjectStatus};
 ///
 /// # Errors
 /// Returns an error if the name is invalid, a project with the same dir
-/// name already exists, or filesystem operations fail.
+/// name or the same human-readable `name` (active or archived) already
+/// exists, or filesystem operations fail.
 #[tracing::instrument(skip_all, fields(project = %name))]
 pub async fn create_project(
     layout: &WorkspaceLayout,
@@ -35,6 +36,24 @@ pub async fn create_project(
 
     if project_dir.exists() {
         anyhow::bail!("project directory '{dir_name}' already exists");
+    }
+
+    // `activate`/`archive` and the project_activate/project_archive tools resolve
+    // projects purely by this human-readable name, so a second project sharing it
+    // would make one of the two permanently unreachable (whichever the scan orders
+    // second). The directory-name check above only guards the sanitized slug, not
+    // the freely-editable frontmatter `name`, so it must be checked separately here.
+    let index = ProjectIndex::scan(layout)
+        .await
+        .context("failed to scan existing projects to check for a name collision")?;
+
+    if let Some(existing) = index.find_by_name(name) {
+        anyhow::bail!(
+            "a project named '{}' already exists ({}, dir '{}'); choose a different name",
+            existing.name,
+            existing.status,
+            existing.dir_name
+        );
     }
 
     // Create directory structure
@@ -241,6 +260,70 @@ mod tests {
 
         let result = create_project(&layout, "Test", "Second", vec![], today).await;
         assert!(result.is_err(), "duplicate should be rejected");
+    }
+
+    /// Regression test: `create_project` used to only check the sanitized
+    /// *directory* name for collisions, never the human-readable frontmatter
+    /// `name`. Since frontmatter is hand-editable and `activate`/`archive`
+    /// resolve purely by name, two projects could end up with the same
+    /// `name` but different directories, making one permanently unreachable.
+    /// Here the existing project's directory (`original-name`) does not match
+    /// the sanitized form of the colliding name (`duplicate-name`), so only a
+    /// name-based check — not a directory-based one — can catch this.
+    #[tokio::test]
+    async fn create_duplicate_name_different_dir_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        let layout = WorkspaceLayout::new(dir.path().join("workspace"));
+        ensure_workspace(&layout, None, None).await.unwrap();
+
+        let today = NaiveDate::from_ymd_opt(2026, 2, 23).unwrap();
+        create_project(&layout, "Original Name", "First", vec![], today)
+            .await
+            .unwrap();
+
+        // Simulate a hand-edit of the frontmatter `name` that leaves the
+        // directory name untouched, so it no longer matches sanitize_dir_name(name).
+        let project_md = layout.projects_dir().join("original-name/PROJECT.md");
+        let content = tokio::fs::read_to_string(&project_md).await.unwrap();
+        let (mut fm, body) = parse_project_md(&content).unwrap();
+        fm.name = "Duplicate Name".to_string();
+        let updated = serialize_project_md(&fm, &body).unwrap();
+        tokio::fs::write(&project_md, updated).await.unwrap();
+
+        let result = create_project(&layout, "Duplicate Name", "Second", vec![], today).await;
+        assert!(
+            result.is_err(),
+            "creating a project whose name collides with an existing frontmatter name \
+             (in a differently-named directory) should be rejected"
+        );
+        assert!(
+            !layout.projects_dir().join("duplicate-name").exists(),
+            "the rejected project's directory should not have been created"
+        );
+    }
+
+    /// Regression test: name uniqueness must be checked against archived
+    /// projects too, not just active ones, since `find_by_name` (used by
+    /// activate/archive tools) looks across both.
+    #[tokio::test]
+    async fn create_name_collides_with_archived_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        let layout = WorkspaceLayout::new(dir.path().join("workspace"));
+        ensure_workspace(&layout, None, None).await.unwrap();
+
+        let today = NaiveDate::from_ymd_opt(2026, 2, 23).unwrap();
+        create_project(&layout, "Retired Idea", "Old", vec![], today)
+            .await
+            .unwrap();
+        archive_project(&layout, "retired-idea", today)
+            .await
+            .unwrap();
+
+        let result = create_project(&layout, "Retired Idea", "New attempt", vec![], today).await;
+        assert!(
+            result.is_err(),
+            "a name matching an archived project should also be rejected"
+        );
     }
 
     #[tokio::test]

@@ -29,6 +29,8 @@ impl ProjectIndex {
         scan_directory(&layout.projects_dir(), &mut entries).await?;
         scan_directory(&layout.archive_dir(), &mut entries).await?;
 
+        warn_on_duplicate_names(&entries);
+
         tracing::debug!(total = entries.len(), "project index scan complete");
 
         Ok(Self { entries })
@@ -75,6 +77,29 @@ impl ProjectIndex {
     #[must_use]
     pub fn entries(&self) -> &[ProjectIndexEntry] {
         &self.entries
+    }
+}
+
+/// Warn if two or more scanned entries share the same `name` (case-insensitive).
+///
+/// `PROJECT.md` frontmatter is hand-editable and nothing revalidates the `name`
+/// field against the rest of the index. `find_by_name` resolves by name alone
+/// and returns only the first match, so a collision silently shadows one
+/// project — `activate`/`archive` would then be unable to reach it. This is
+/// the only place that can catch collisions introduced outside
+/// `create_project` (e.g. by hand-editing frontmatter), so it must run on
+/// every scan, not just at creation time.
+fn warn_on_duplicate_names(entries: &[ProjectIndexEntry]) {
+    let mut seen_names = std::collections::HashSet::with_capacity(entries.len());
+
+    for entry in entries {
+        if !seen_names.insert(entry.name.to_lowercase()) {
+            tracing::warn!(
+                name = %entry.name,
+                dir = %entry.dir_name,
+                "duplicate project name found during scan; name-based lookups are ambiguous and one project is unreachable by name"
+            );
+        }
     }
 }
 
@@ -428,6 +453,81 @@ Some overview body text here.
             index.entries().len(),
             1,
             "should only find valid project, skip invalid"
+        );
+    }
+
+    /// Regression test: two projects can end up sharing a frontmatter `name`
+    /// via hand-editing (`create_project` only guards its own creation path),
+    /// and `find_by_name` silently returns just the first match. `scan` must
+    /// surface that ambiguity via a warning so it isn't invisible to an
+    /// operator debugging why a project became unreachable by name.
+    #[tokio::test]
+    async fn scan_warns_on_duplicate_names() {
+        use std::sync::{Arc, Mutex};
+
+        #[derive(Clone, Default)]
+        struct CapturingWriter(Arc<Mutex<Vec<u8>>>);
+
+        impl std::io::Write for CapturingWriter {
+            fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+                self.0.lock().unwrap().extend_from_slice(buf);
+                Ok(buf.len())
+            }
+
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+
+        impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for CapturingWriter {
+            type Writer = Self;
+
+            fn make_writer(&'a self) -> Self::Writer {
+                self.clone()
+            }
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        let layout = WorkspaceLayout::new(dir.path().join("workspace"));
+        ensure_workspace(&layout, None, None).await.unwrap();
+
+        // Two projects sharing a name (case-insensitive) in different
+        // directories — only reachable today via a hand-edited PROJECT.md,
+        // since create_project itself now rejects the name collision.
+        for dir_name in ["proj-a", "proj-b"] {
+            let project_dir = layout.projects_dir().join(dir_name);
+            tokio::fs::create_dir(&project_dir).await.unwrap();
+            tokio::fs::write(
+                project_dir.join("PROJECT.md"),
+                "---\nname: Shared Name\ndescription: \"dup\"\nstatus: active\ncreated: 2026-02-20\n---\n",
+            )
+            .await
+            .unwrap();
+        }
+
+        let buf = Arc::new(Mutex::new(Vec::new()));
+        let subscriber = tracing_subscriber::fmt()
+            .with_writer(CapturingWriter(Arc::clone(&buf)))
+            .with_max_level(tracing::Level::WARN)
+            .without_time()
+            .with_target(false)
+            .finish();
+
+        let index = {
+            let _guard = tracing::subscriber::set_default(subscriber);
+            ProjectIndex::scan(&layout).await.unwrap()
+        };
+
+        assert_eq!(
+            index.entries().len(),
+            2,
+            "both duplicate entries should still be indexed, not deduplicated"
+        );
+
+        let logs = String::from_utf8(buf.lock().unwrap().clone()).unwrap();
+        assert!(
+            logs.contains("duplicate project name"),
+            "scan should warn about the duplicate name, got: {logs}"
         );
     }
 
