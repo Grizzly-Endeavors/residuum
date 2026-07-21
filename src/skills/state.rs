@@ -67,6 +67,7 @@ impl SkillState {
         self.active.push(ActiveSkill {
             name: entry.name.clone(),
             body,
+            skill_dir: entry.skill_dir.clone(),
         });
 
         tracing::info!("skill activated");
@@ -95,6 +96,10 @@ impl SkillState {
     /// Rescan skill directories to rebuild the index.
     ///
     /// Removes any active skills whose names no longer appear in the new index.
+    /// For an active skill whose name still resolves but whose backing source
+    /// directory changed (e.g. a project skill now shadows a workspace skill
+    /// of the same name), refreshes its body from the new source, or
+    /// deactivates it with a warning if the new source can't be loaded.
     ///
     /// # Errors
     /// Returns an error if scanning fails.
@@ -112,14 +117,60 @@ impl SkillState {
             "skill rescan complete"
         );
 
-        // Remove active skills that no longer exist in the index
-        self.active.retain(|a| {
-            let found = self.index.find_by_name(&a.name).is_some();
-            if !found {
-                tracing::warn!(name = %a.name, "deactivating skill: no longer found after rescan");
+        // Reconcile active skills against the new index. A name surviving the
+        // rescan is not enough on its own: the *same name* can now resolve to
+        // a different physical skill (e.g. a project's `skills/notes/` now
+        // shadows what used to be the workspace `notes` skill). An
+        // already-active skill's body was captured at activation time, so if
+        // we only checked the name we'd keep serving stale instructions under
+        // a name the index now attributes to a different source, with no
+        // signal to the agent that anything changed. Refresh from the new
+        // source when the backing directory changed; if the new source can't
+        // be loaded, deactivate rather than silently keep the stale copy.
+        let previously_active = std::mem::take(&mut self.active);
+        let mut still_active = Vec::with_capacity(previously_active.len());
+        for active_skill in previously_active {
+            let Some(entry) = self.index.find_by_name(&active_skill.name) else {
+                tracing::warn!(name = %active_skill.name, "deactivating skill: no longer found after rescan");
+                continue;
+            };
+
+            if entry.skill_dir == active_skill.skill_dir {
+                still_active.push(active_skill);
+                continue;
             }
-            found
-        });
+
+            let skill_md_path = entry.skill_dir.join("SKILL.md");
+            match tokio::fs::read_to_string(&skill_md_path)
+                .await
+                .with_context(|| format!("failed to read SKILL.md for '{}'", entry.name))
+                .and_then(|content| parse_skill_md(&content))
+            {
+                Ok((_fm, body)) => {
+                    tracing::warn!(
+                        name = %active_skill.name,
+                        old_source = %active_skill.skill_dir.display(),
+                        new_source = %entry.skill_dir.display(),
+                        "active skill's backing source changed after rescan; refreshed body from new source"
+                    );
+                    still_active.push(ActiveSkill {
+                        name: entry.name.clone(),
+                        body,
+                        skill_dir: entry.skill_dir.clone(),
+                    });
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        name = %active_skill.name,
+                        old_source = %active_skill.skill_dir.display(),
+                        new_source = %entry.skill_dir.display(),
+                        error = %e,
+                        "deactivating skill: backing source changed after rescan and new source failed to load"
+                    );
+                }
+            }
+        }
+        self.active = still_active;
 
         Ok(())
     }
@@ -174,6 +225,7 @@ impl SkillState {
 
 #[cfg(test)]
 #[expect(clippy::unwrap_used, reason = "test code uses unwrap for clarity")]
+#[expect(clippy::panic, reason = "test code panics on unexpected match arm")]
 mod tests {
     use super::super::index::SkillIndex;
     use super::SkillState;
@@ -308,6 +360,65 @@ mod tests {
             vec!["test-skill"],
             "active skill should remain after rescan when dir is unchanged"
         );
+    }
+
+    #[tokio::test]
+    async fn rescan_refreshes_active_skill_when_source_changes() {
+        let ws_dir = tempfile::tempdir().unwrap();
+        let proj_dir = tempfile::tempdir().unwrap();
+
+        // Workspace skill named "notes" is active.
+        let ws_skill = ws_dir.path().join("notes");
+        tokio::fs::create_dir(&ws_skill).await.unwrap();
+        tokio::fs::write(
+            ws_skill.join("SKILL.md"),
+            "---\nname: notes\ndescription: \"Workspace notes\"\n---\n\nWorkspace body.\n",
+        )
+        .await
+        .unwrap();
+
+        let index = SkillIndex::scan(&[ws_dir.path().to_path_buf()], None)
+            .await
+            .unwrap();
+        let mut state = SkillState::new(index, vec![ws_dir.path().to_path_buf()]);
+
+        let active = state.activate("notes").await.unwrap();
+        assert!(active.body.contains("Workspace body."));
+
+        // A project defining its own higher-priority "notes" skill becomes
+        // active (mirrors `project_activate` calling `rescan(Some(project_skills_dir))`).
+        let proj_skill = proj_dir.path().join("notes");
+        tokio::fs::create_dir(&proj_skill).await.unwrap();
+        tokio::fs::write(
+            proj_skill.join("SKILL.md"),
+            "---\nname: notes\ndescription: \"Project notes\"\n---\n\nProject body.\n",
+        )
+        .await
+        .unwrap();
+
+        state.rescan(Some(proj_dir.path())).await.unwrap();
+
+        // The index now attributes "notes" to the project skill. The
+        // already-active skill must not keep silently serving the old
+        // workspace body under that name: it must either be refreshed to
+        // reflect the new (project) source, or deactivated outright.
+        match state.active_skill_names().as_slice() {
+            [] => {
+                // Deactivating instead of refreshing is an acceptable, non-stale outcome.
+            }
+            ["notes"] => {
+                let prompt = state.format_active_for_prompt().unwrap();
+                assert!(
+                    prompt.contains("Project body."),
+                    "active skill should reflect the new higher-priority source"
+                );
+                assert!(
+                    !prompt.contains("Workspace body."),
+                    "must not keep silently serving the stale workspace body"
+                );
+            }
+            other => panic!("unexpected active skills after rescan: {other:?}"),
+        }
     }
 
     #[tokio::test]

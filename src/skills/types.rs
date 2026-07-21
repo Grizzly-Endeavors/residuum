@@ -53,4 +53,11 @@ pub struct ActiveSkill {
     pub name: String,
     /// Markdown body from `SKILL.md` (everything after frontmatter).
     pub body: String,
+    /// Absolute path to the skill directory this body was read from.
+    ///
+    /// Names alone aren't stable identity: a rescan can make the same name
+    /// resolve to a different physical skill (e.g. a project skill shadowing
+    /// a workspace one). This field lets `rescan` detect that the backing
+    /// source changed even though the name still matches.
+    pub skill_dir: PathBuf,
 }
