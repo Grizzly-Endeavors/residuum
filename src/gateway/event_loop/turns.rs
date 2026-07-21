@@ -276,11 +276,83 @@ async fn maybe_nudge_learner(rt: &mut GatewayRuntime) {
     }
 }
 
+/// Publish a `TurnLifecycleEvent::Ended` closing the turn on an endpoint.
+async fn publish_turn_ended(publisher: &Publisher, endpoint: &EndpointName, correlation_id: &str) {
+    if let Err(e) = publisher
+        .publish(
+            topics::Endpoint(endpoint.clone()),
+            TurnLifecycleEvent::Ended {
+                correlation_id: correlation_id.to_string(),
+            },
+        )
+        .await
+    {
+        tracing::warn!(error = %e, "failed to publish turn ended event");
+    }
+}
+
+/// Translate a completed turn's result into the bus events clients observe.
+///
+/// On success, emits one `ResponseEvent` per reply text to the output endpoint,
+/// then closes the turn with `TurnLifecycleEvent::Ended`. When there is no output
+/// endpoint (e.g. a background turn with no prior user endpoint), success publishes
+/// nothing.
+///
+/// On failure, logs the error, broadcasts an `ErrorEvent` on the system
+/// notification channel regardless of output endpoint, and — if there is an output
+/// endpoint — still closes the turn with `Ended`.
+async fn publish_turn_outcome(
+    turn_result: anyhow::Result<Vec<String>>,
+    publisher: &Publisher,
+    output_endpoint: Option<&EndpointName>,
+    correlation_id: &str,
+    tz: chrono_tz::Tz,
+) {
+    match turn_result {
+        Ok(texts) => {
+            let Some(ep) = output_endpoint else {
+                return;
+            };
+            for text in &texts {
+                if let Err(e) = publisher
+                    .publish(
+                        topics::Endpoint(ep.clone()),
+                        ResponseEvent {
+                            correlation_id: correlation_id.to_string(),
+                            content: text.clone(),
+                            timestamp: crate::time::now_local(tz),
+                            attachment: None,
+                        },
+                    )
+                    .await
+                {
+                    tracing::warn!(error = %e, "failed to publish response event");
+                }
+            }
+            publish_turn_ended(publisher, ep, correlation_id).await;
+        }
+        Err(e) => {
+            tracing::error!(error = %e, "agent processing error");
+            if let Err(pub_err) = publisher
+                .publish(
+                    topics::Notification(NotifyName::from(SYSTEM_CHANNEL)),
+                    ErrorEvent {
+                        correlation_id: correlation_id.to_string(),
+                        message: e.to_string(),
+                    },
+                )
+                .await
+            {
+                tracing::warn!(error = %pub_err, "failed to publish agent error event");
+            }
+            if let Some(ep) = output_endpoint {
+                publish_turn_ended(publisher, ep, correlation_id).await;
+            }
+        }
+    }
+}
+
 /// Handle an inbound user message: run agent turn, persist, observe, and process leftovers.
-#[expect(
-    clippy::too_many_lines,
-    reason = "needs refactor — extract turn result publishing"
-)]
 #[tracing::instrument(skip_all, fields(correlation_id = %message.id, origin = %message.origin.endpoint))]
 pub async fn handle_inbound_message(
     message: InboundMessage,
@@ -349,70 +421,14 @@ pub async fn handle_inbound_message(
     )
     .await;
 
-    match turn_result {
-        Ok(texts) => {
-            if let Some(ref ep) = output_endpoint {
-                for text in &texts {
-                    if let Err(e) = rt
-                        .publisher
-                        .publish(
-                            topics::Endpoint(ep.clone()),
-                            ResponseEvent {
-                                correlation_id: reply_id.clone(),
-                                content: text.clone(),
-                                timestamp: crate::time::now_local(rt.tz),
-                                attachment: None,
-                            },
-                        )
-                        .await
-                    {
-                        tracing::warn!(error = %e, "failed to publish response event");
-                    }
-                }
-                if let Err(e) = rt
-                    .publisher
-                    .publish(
-                        topics::Endpoint(ep.clone()),
-                        TurnLifecycleEvent::Ended {
-                            correlation_id: reply_id.clone(),
-                        },
-                    )
-                    .await
-                {
-                    tracing::warn!(error = %e, "failed to publish turn ended event");
-                }
-            }
-        }
-        Err(e) => {
-            tracing::error!(error = %e, "agent processing error");
-            if let Err(pub_err) = rt
-                .publisher
-                .publish(
-                    topics::Notification(NotifyName::from(SYSTEM_CHANNEL)),
-                    ErrorEvent {
-                        correlation_id: reply_id.clone(),
-                        message: e.to_string(),
-                    },
-                )
-                .await
-            {
-                tracing::warn!(error = %pub_err, "failed to publish agent error event");
-            }
-            if let Some(ref ep) = output_endpoint
-                && let Err(end_err) = rt
-                    .publisher
-                    .publish(
-                        topics::Endpoint(ep.clone()),
-                        TurnLifecycleEvent::Ended {
-                            correlation_id: reply_id.clone(),
-                        },
-                    )
-                    .await
-            {
-                tracing::warn!(error = %end_err, "failed to publish turn ended event");
-            }
-        }
-    }
+    publish_turn_outcome(
+        turn_result,
+        &rt.publisher,
+        output_endpoint.as_ref(),
+        &reply_id,
+        rt.tz,
+    )
+    .await;
 
     let visibility = if is_background {
         Visibility::Background
