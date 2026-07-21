@@ -256,6 +256,8 @@
       {:else if item.kind === "local-system"}
         <MessageLocalSystem content={item.content} />
       {/if}
+    {:else}
+      <div class="chat-feed-empty">Nothing here yet — send a message to begin.</div>
     {/each}
     {#if isProcessing}
       <ThinkingIndicator />

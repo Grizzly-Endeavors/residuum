@@ -27,6 +27,16 @@
   gap: 6px;
 }
 
+.chat-feed-empty {
+  padding: 48px 16px;
+  text-align: center;
+  font-family: var(--font-body);
+  font-style: italic;
+  font-weight: 300;
+  font-size: var(--fs-sm);
+  color: var(--text-dim);
+}
+
 /* ── Messages ──────────────────────────────────────────────────────────── */
 
 .msg {
