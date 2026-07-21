@@ -63,6 +63,7 @@
   // Model lists and loading state per role
   let modelLists = $state<Record<string, ModelEntry[]>>({});
   let modelLoading = $state<Record<string, boolean>>({});
+  let modelErrors = $state<Record<string, string | null>>({});
   let otherActive = $state<Record<string, boolean>>({});
   let otherValues = $state<Record<string, string>>({});
 
@@ -119,6 +120,7 @@
     if (role === "embedding") {
       const list = EMBEDDING_MODEL_LISTS[entry.type] ?? [];
       modelLists[role] = list;
+      modelErrors[role] = null;
       const current = getModel(role);
       if (!current && list.length > 0) {
         const def = DEFAULT_EMBEDDING_MODELS[entry.type] ?? "";
@@ -135,6 +137,7 @@
     const result = await fetchModels(entry.type, apiKey, url);
     modelLists[role] = result.models;
     modelLoading[role] = false;
+    modelErrors[role] = result.error;
 
     const current = getModel(role);
     if (!current && result.models.length > 0) {
@@ -333,6 +336,15 @@
               </div>
             </div>
           </div>
+          {#if modelErrors[role]}
+            <div class="provider-warning">
+              <span class="provider-warning-icon">&#9888;</span>
+              <span
+                >Couldn't load live models ({modelErrors[role]}) — showing a fallback list, not
+                the provider's real models. Check the API key or URL and try again.</span
+              >
+            </div>
+          {/if}
           <div class="role-overrides">
             <div class="settings-field override-field">
               <label for="srole-{role}-temp">Temperature</label>
@@ -439,6 +451,15 @@
               </div>
             </div>
           </div>
+          {#if modelErrors[role]}
+            <div class="provider-warning">
+              <span class="provider-warning-icon">&#9888;</span>
+              <span
+                >Couldn't load live models ({modelErrors[role]}) — showing a fallback list, not
+                the provider's real models. Check the API key or URL and try again.</span
+              >
+            </div>
+          {/if}
           <div class="role-overrides">
             <div class="settings-field override-field">
               <label for="srole-{role}-temp">Temperature</label>
@@ -604,6 +625,15 @@
               </div>
             </div>
           </div>
+          {#if modelErrors[role]}
+            <div class="provider-warning">
+              <span class="provider-warning-icon">&#9888;</span>
+              <span
+                >Couldn't load live models ({modelErrors[role]}) — showing a fallback list, not
+                the provider's real models. Check the API key or URL and try again.</span
+              >
+            </div>
+          {/if}
           <div class="role-overrides">
             <div class="settings-field override-field">
               <label for="srole-{role}-temp">Temperature</label>
