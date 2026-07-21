@@ -1,6 +1,8 @@
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
+use crate::util::xml_escape;
+
 use super::{
     parser::parse_skill_md,
     types::{SkillIndexEntry, SkillSource},
@@ -96,12 +98,6 @@ impl SkillIndex {
     pub fn entries(&self) -> &[SkillIndexEntry] {
         &self.entries
     }
-}
-
-fn xml_escape(s: &str) -> String {
-    s.replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
 }
 
 /// Scan a single directory for skill subfolders.

@@ -4,6 +4,8 @@ use std::path::Path;
 
 use anyhow::Context;
 
+use crate::util::xml_escape;
+
 use super::parser::parse_preset_md;
 use super::types::{SubagentPresetEntry, SubagentPresetFrontmatter};
 
@@ -94,7 +96,8 @@ impl SubagentPresetIndex {
         for entry in &self.entries {
             parts.push(format!(
                 "  <subagent>\n    <name>{}</name>\n    <description>{}</description>\n  </subagent>",
-                entry.name, entry.description,
+                xml_escape(&entry.name),
+                xml_escape(&entry.description),
             ));
         }
 
@@ -486,6 +489,35 @@ mod tests {
         assert!(
             output.contains("<description>Research specialist</description>"),
             "should contain description"
+        );
+    }
+
+    #[test]
+    fn format_for_prompt_escapes_xml_special_chars() {
+        let index = SubagentPresetIndex {
+            entries: vec![SubagentPresetEntry {
+                name: "researcher".to_string(),
+                description: "Handles <tags> & \"quotes\", even </available_subagents>".to_string(),
+                preset_path: Some(PathBuf::from("/tmp/researcher.md")),
+            }],
+        };
+
+        let output = index.format_for_prompt();
+        assert!(output.contains("&lt;tags&gt;"), "< and > should be escaped");
+        assert!(output.contains("&amp;"), "& should be escaped");
+        assert!(
+            !output.contains("<tags>"),
+            "raw < should not appear in output"
+        );
+        assert!(
+            output.contains("&lt;/available_subagents&gt;"),
+            "a closing-tag lookalike in the description must be escaped, not passed through raw"
+        );
+        assert_eq!(
+            output.matches("</available_subagents>").count(),
+            1,
+            "only the real closing tag should appear unescaped; a smuggled one \
+             from the description would close the list early"
         );
     }
 
