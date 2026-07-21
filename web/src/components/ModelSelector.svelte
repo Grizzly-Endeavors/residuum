@@ -5,6 +5,7 @@
   import { parseProvidersToml, serializeProvidersToml } from "../lib/settings-toml";
   import { fetchModels, type ModelEntry } from "../lib/models";
   import { withConfigLock } from "../lib/config-lock";
+  import { toast } from "../lib/toast.svelte";
   import { clickOutside } from "../lib/actions/clickOutside";
 
   let { disabled = false }: { disabled?: boolean } = $props();
@@ -67,8 +68,8 @@
         await putProvidersRaw(toml);
         ws.send({ type: "reload" });
         currentModel = modelId;
-      } catch {
-        // save failed — keep previous state
+      } catch (err: unknown) {
+        toast.error(`Save failed. ${String(err)}`);
       }
     });
 

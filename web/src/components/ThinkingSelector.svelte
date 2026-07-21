@@ -4,6 +4,7 @@
   import { fetchProvidersRaw, putProvidersRaw } from "../lib/api";
   import { parseProvidersToml, serializeProvidersToml } from "../lib/settings-toml";
   import { withConfigLock } from "../lib/config-lock";
+  import { toast } from "../lib/toast.svelte";
 
   let { disabled = false }: { disabled?: boolean } = $props();
 
@@ -45,8 +46,8 @@
         await putProvidersRaw(toml);
         ws.send({ type: "reload" });
         currentLevel = newLevel;
-      } catch {
-        // save failed
+      } catch (err: unknown) {
+        toast.error(`Save failed. ${String(err)}`);
       }
     });
 
