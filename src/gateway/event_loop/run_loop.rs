@@ -74,6 +74,7 @@ struct SpawnedHandles {
     tracing_service: Arc<crate::tracing_service::TracingService>,
     sigterm: crate::gateway::types::TermSignal,
     file_registry: crate::gateway::file_server::FileRegistry,
+    watcher_handle: Option<tokio::task::JoinHandle<()>>,
 }
 
 /// Spawn the HTTP server, chat adapters, cloud tunnel, and workspace watcher.
@@ -138,11 +139,11 @@ async fn spawn_server_and_adapters(
     let (tunnel_handle, tunnel_shutdown_tx) = spawn_tunnel(cfg, Arc::clone(&tunnel_status_tx));
     let sigterm = crate::gateway::types::TermSignal::new()
         .map_err(|e| FatalError::Gateway(format!("failed to register termination handler: {e}")))?;
-    let _watcher_handle = watcher::spawn_workspace_watcher(
+    let watcher_handle = Some(watcher::spawn_workspace_watcher(
         parts.layout.mcp_json(),
         parts.layout.channels_toml(),
         core.reload_tx.clone(),
-    );
+    ));
 
     Ok(SpawnedHandles {
         server_handle,
@@ -154,6 +155,7 @@ async fn spawn_server_and_adapters(
         tracing_service,
         sigterm,
         file_registry,
+        watcher_handle,
     })
 }
 
@@ -310,6 +312,7 @@ async fn build_runtime(
         telegram_handle: spawned.adapters.telegram_handle,
         discord_shutdown_tx: spawned.adapters.discord_shutdown_tx,
         telegram_shutdown_tx: spawned.adapters.telegram_shutdown_tx,
+        watcher_handle: spawned.watcher_handle,
         reload_tx: core.reload_tx,
         command_tx: core.command_tx,
         file_registry: spawned.file_registry,
@@ -497,6 +500,9 @@ async fn graceful_shutdown(rt: &mut GatewayRuntime) {
     if let Some(tx) = rt.telegram_shutdown_tx.take() {
         tx.send(true).ok();
     }
+    if let Some(h) = rt.watcher_handle.take() {
+        h.abort();
+    }
     rt.http_shutdown_tx.send(true).ok();
     tracing::info!("graceful shutdown complete");
 }
@@ -552,6 +558,18 @@ async fn poll_handle(
             result
         }
         None => std::future::pending().await,
+    }
+}
+
+/// Logs an unexpected exit or failure of a background adapter task.
+///
+/// Shared by the `discord_handle`/`telegram_handle`/`watcher_handle` arms of
+/// `run_event_loop`, which only log on exit (unlike `tunnel_handle`, which
+/// also respawns).
+fn log_adapter_task_exit(task_name: &str, result: &Result<(), tokio::task::JoinError>) {
+    match result {
+        Ok(()) => tracing::error!("{task_name} task exited unexpectedly"),
+        Err(e) => tracing::error!(error = %e, "{task_name} task failed"),
     }
 }
 
@@ -697,17 +715,15 @@ async fn run_event_loop(mut rt: GatewayRuntime) -> GatewayExit {
             }
 
             result = poll_handle(&mut rt.discord_handle) => {
-                match &result {
-                    Ok(()) => tracing::error!("discord adapter task exited unexpectedly"),
-                    Err(e) => tracing::error!(error = %e, "discord adapter task failed"),
-                }
+                log_adapter_task_exit("discord adapter", &result);
             }
 
             result = poll_handle(&mut rt.telegram_handle) => {
-                match &result {
-                    Ok(()) => tracing::error!("telegram adapter task exited unexpectedly"),
-                    Err(e) => tracing::error!(error = %e, "telegram adapter task failed"),
-                }
+                log_adapter_task_exit("telegram adapter", &result);
+            }
+
+            result = poll_handle(&mut rt.watcher_handle) => {
+                log_adapter_task_exit("workspace watcher", &result);
             }
         }
     }
