@@ -59,6 +59,8 @@ pub(super) struct ConfigDiff {
     pub cloud_changed: bool,
     /// Tracing config changed (log level, endpoints, sanitization, error reporting).
     pub tracing_changed: bool,
+    /// HTTP request timeout (`timeout_secs`) changed.
+    pub http_timeout_changed: bool,
 }
 
 impl ConfigDiff {
@@ -112,6 +114,9 @@ impl ConfigDiff {
         if self.tracing_changed {
             parts.push("tracing");
         }
+        if self.http_timeout_changed {
+            parts.push("http timeout");
+        }
         if parts.is_empty() {
             "no changes detected".to_string()
         } else {
@@ -147,6 +152,7 @@ pub(super) fn diff_config(old: &Config, new: &Config) -> ConfigDiff {
         idle_changed: old.idle != new.idle,
         cloud_changed: old.cloud != new.cloud,
         tracing_changed: old.tracing != new.tracing,
+        http_timeout_changed: old.timeout_secs != new.timeout_secs,
     }
 }
 
@@ -252,7 +258,17 @@ pub(super) async fn handle_root_reload(rt: &mut GatewayRuntime) -> IdleAction {
 
     let summary = diff.summary();
 
-    if diff.providers_changed {
+    // Rebuild the shared HTTP client first, before anything that clones it —
+    // `SharedHttpClient::clone` shares the old `Arc<reqwest::Client>`, so a
+    // provider chain, the subconscious classifier, or the spawn context built
+    // before this point would silently keep the stale timeout forever.
+    let http_client_rebuilt = if diff.http_timeout_changed {
+        reload_http_client(rt, &new_cfg).await
+    } else {
+        false
+    };
+
+    if diff.providers_changed || http_client_rebuilt {
         reload_providers(rt, &new_cfg).await;
     }
     if diff.memory_changed {
@@ -274,10 +290,12 @@ pub(super) async fn handle_root_reload(rt: &mut GatewayRuntime) -> IdleAction {
         rt.pulse_enabled = new_cfg.pulse_enabled;
         tracing::info!(enabled = new_cfg.pulse_enabled, "pulse toggle updated");
     }
-    if diff.subconscious_changed || diff.providers_changed {
+    if diff.subconscious_changed || diff.providers_changed || http_client_rebuilt {
         // Full rebuild: in-flight evaluations keep the old Arc, new turns get
         // the new instance. Provider changes are included because the
-        // subconscious chain may fall back to main.
+        // subconscious chain may fall back to main; an HTTP client rebuild is
+        // included so the subconscious classifier doesn't keep the stale
+        // timeout via its old client clone.
         rt.subconscious =
             crate::subconscious::Subconscious::build(&new_cfg, &rt.layout, rt.http_client.clone());
         tracing::info!(
@@ -285,7 +303,9 @@ pub(super) async fn handle_root_reload(rt: &mut GatewayRuntime) -> IdleAction {
             "subconscious rebuilt from new config"
         );
     }
-    if diff.background_changed && !diff.providers_changed {
+    if diff.background_changed && !diff.providers_changed && !http_client_rebuilt {
+        // Otherwise `reload_providers` above already rebuilt `spawn_context`
+        // with the current http client.
         reload_background_config(rt, &new_cfg);
     }
     if diff.skills_changed {
@@ -353,6 +373,38 @@ fn build_spawn_context(rt: &GatewayRuntime, new_cfg: &Config) -> Arc<SpawnContex
         action_notify: Arc::clone(&rt.action_notify),
         hybrid_searcher: Arc::clone(&rt.hybrid_searcher),
     })
+}
+
+/// Rebuild the shared HTTP client with the new `timeout_secs`.
+///
+/// Returns `true` if the client was rebuilt and swapped in, so callers can
+/// force-refresh anything holding a stale clone (providers, subconscious,
+/// spawn context). On failure the current client is kept and the timeout
+/// change silently does not take effect — this is surfaced to the user via
+/// `publish_notice` rather than failing loudly, matching how the neighboring
+/// reload steps in this module degrade (e.g. `reload_providers`,
+/// `reload_gateway`).
+async fn reload_http_client(rt: &mut GatewayRuntime, new_cfg: &Config) -> bool {
+    let client_config = crate::models::HttpClientConfig::with_timeout(new_cfg.timeout_secs);
+    match crate::models::SharedHttpClient::new(&client_config) {
+        Ok(client) => {
+            rt.http_client = client;
+            tracing::info!(
+                timeout_secs = new_cfg.timeout_secs,
+                "http client rebuilt with new timeout"
+            );
+            true
+        }
+        Err(err) => {
+            tracing::warn!(error = %err, "http client rebuild failed, keeping current timeout");
+            publish_notice(
+                &rt.publisher,
+                format!("timeout_secs change failed to apply (keeping current timeout): {err}"),
+            )
+            .await;
+            false
+        }
+    }
 }
 
 /// Rebuild providers and swap them into the runtime.
@@ -720,6 +772,7 @@ mod tests {
         assert!(!diff.agent_changed);
         assert!(!diff.skills_changed);
         assert!(!diff.idle_changed);
+        assert!(!diff.http_timeout_changed);
         assert!(diff.is_empty());
     }
 
@@ -874,6 +927,31 @@ mod tests {
         let cfg = test_config();
         let diff = diff_config(&cfg, &cfg);
         assert!(!diff.idle_changed);
+    }
+
+    #[test]
+    fn diff_config_detects_http_timeout_change() {
+        let old = test_config();
+        let mut new = old.clone();
+        new.timeout_secs = 90;
+
+        let diff = diff_config(&old, &new);
+        assert!(
+            diff.http_timeout_changed,
+            "timeout_secs change should be detected"
+        );
+        assert!(
+            !diff.providers_changed,
+            "timeout_secs alone should not flag providers"
+        );
+        assert!(diff.summary().contains("http timeout"));
+    }
+
+    #[test]
+    fn diff_config_no_http_timeout_change() {
+        let cfg = test_config();
+        let diff = diff_config(&cfg, &cfg);
+        assert!(!diff.http_timeout_changed);
     }
 
     #[test]
