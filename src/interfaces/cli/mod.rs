@@ -81,6 +81,7 @@ impl CliClient {
         println!("{}", self.theme.format_banner(&banner));
         let http_url = ws_url_to_http(&self.url);
         println!("  web UI: {http_url}");
+        println!("  Type /help to see available commands.");
     }
 
     /// Display a server message with appropriate formatting.
