@@ -73,7 +73,21 @@ tool `PATH` is applied first and the server's explicit `env` overrides it.
 
 - **Single-file static binaries only.** `gh`, `kubectl`, `flux`, `bao`, `uv`,
   and most Go/Rust CLIs work perfectly this way.
-- **Interpreter/runtime tools are out of scope.** `git`, `node`, and `python`
-  aren't single files and still need their runtime present in the base image
-  (or route around them — e.g. `gh api` instead of `git`, `uv` for
-  Python-based MCP servers).
+- **Interpreter/runtime tools are out of scope.** `node` and `python` aren't
+  single files and still need their runtime present in the base image (or route
+  around them — e.g. `uv`, itself a single static binary, for Python-based MCP
+  servers). `git` is the exception: the published image ships it (see below).
+
+## What the container image already ships
+
+The published image installs two things beyond the binary itself, because
+neither can be supplied through the tool `PATH`:
+
+- **`git`** — the common agent workflow (clone → edit → commit → push) needs a
+  real `git`, not a dropped-in static binary.
+- **`ca-certificates`** — the HTTP client verifies TLS against the *system*
+  trust store, so every HTTPS model provider is unreachable without a CA
+  bundle in the image.
+
+Everything else is expected to arrive via `~/.residuum/bin` or a mounted
+`[tools].path` dir.

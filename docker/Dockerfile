@@ -36,6 +36,13 @@ WORKDIR /app
 
 ENV RESIDUUM_GATEWAY_BIND=0.0.0.0
 
+# ca-certificates: rustls-platform-verifier reads the system trust store, so
+# HTTPS to model providers fails without it. git: the agent shells out and
+# needs a real runtime present in the image (the [tools] PATH only covers
+# single-file static binaries).
+# Kept ahead of the COPY so this layer stays cached across releases.
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates git && rm -rf /var/lib/apt/lists/*
+
 COPY --from=builder /app/target/release/residuum /app/residuum
 
 RUN chmod +x residuum
