@@ -528,6 +528,30 @@ On total failure: error with failure details.
 
 ---
 
+## `user_inbox_add`
+
+**Source:** `inbox.rs` · `UserInboxAddTool`
+
+**Description sent to LLM:**
+> Add a new item to the user's inbox. Use this to explicitly send notes, reminders, or items for the human user to review later.
+
+### Input
+
+| Parameter | Type   | Required | Description                          |
+|-----------|--------|----------|---------------------------------------|
+| `title`   | string | yes      | A short summary of the item          |
+| `body`    | string | yes      | The detailed content of the item     |
+
+### Output
+
+On success: `"Added item to user inbox with ID: {id}"`
+
+On error: failure to write the item message.
+
+**Side effect:** Writes a new `.json` item to the user's inbox directory via `inbox::quick_add`, tagged with source `"agent"`.
+
+---
+
 ## `send_message`
 
 **Source:** `send_message.rs` · `SendMessageTool`
@@ -796,6 +820,8 @@ On execution error:
 - Response parse failure: `"failed to parse ollama web search response: {details}"`
 
 **No side effects.** Read-only tool with a 30-second timeout.
+
+**Not available to sub-agents:** `build_subagent_registry()` never calls `register_ollama_web_search_tool`.
 
 ---
 
