@@ -10,6 +10,8 @@ use std::sync::Arc;
 use rand::Rng;
 use tokio::task::JoinHandle;
 
+use anyhow::Context as _;
+
 use crate::background::BackgroundTaskSpawner;
 use crate::background::spawn_context::{
     SpawnContext, build_spawn_resources, load_preset_for_spawn,
@@ -20,6 +22,7 @@ use crate::config::BackgroundModelTier;
 use crate::mcp::SharedMcpRegistry;
 use crate::projects::activation::SharedProjectState;
 use crate::skills::SharedSkillState;
+use crate::subagents::SubagentPresetIndex;
 
 /// Holds references needed to spawn sub-agents on behalf of bus callers.
 pub struct SubagentRegistry {
@@ -112,12 +115,21 @@ async fn handle_spawn_request(
 ) -> Result<(), anyhow::Error> {
     let preset_name = event.preset.as_ref().to_string();
 
-    let preset_result = load_preset_for_spawn(
-        &registry.subagents_dir,
-        &preset_name,
-        BackgroundModelTier::Medium,
-    )
-    .await;
+    // Scan once and reuse the index for both the primary lookup and the
+    // general-purpose fallback below — the directory doesn't change between
+    // the two lookups, so a second scan would just re-read and re-parse
+    // every preset file to fetch a built-in that needs no disk I/O.
+    let index = SubagentPresetIndex::scan(&registry.subagents_dir)
+        .await
+        .with_context(|| {
+            format!(
+                "failed to scan subagents directory {}",
+                registry.subagents_dir.display()
+            )
+        })?;
+
+    let preset_result =
+        load_preset_for_spawn(&index, &preset_name, BackgroundModelTier::Medium).await;
 
     let (preset_tier, preset_fm, preset_body, effective_preset_name) = match preset_result {
         Ok((tier, fm, body)) => (tier, fm, body, preset_name.clone()),
@@ -127,12 +139,9 @@ async fn handle_spawn_request(
                 error = %e,
                 "failed to load preset, falling back to general-purpose"
             );
-            let (tier, fm, body) = load_preset_for_spawn(
-                &registry.subagents_dir,
-                "general-purpose",
-                BackgroundModelTier::Medium,
-            )
-            .await?;
+            let (tier, fm, body) =
+                load_preset_for_spawn(&index, "general-purpose", BackgroundModelTier::Medium)
+                    .await?;
             (tier, fm, body, "general-purpose".to_string())
         }
     };
