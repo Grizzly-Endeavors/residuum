@@ -1,6 +1,6 @@
 ---
 name: residuum-system
-description: Reference documentation for all Residuum workspace systems — memory, projects, heartbeats, inbox, actions, skills, notifications, and background tasks.
+description: Reference documentation for all Residuum workspace systems — memory, projects, heartbeats, inbox, actions, skills, MCP, notifications, background tasks, and subconscious.
 ---
 
 # Residuum System Reference
@@ -18,8 +18,10 @@ This skill provides reference documentation for every major workspace system. Ac
 | Scheduled Actions | `schedule_action`, `list_actions`, `cancel_action` | `scheduled_actions.json` | [scheduled-actions](references/scheduled-actions.md) |
 | Skills | `skill_activate`, `skill_deactivate` | per-skill `SKILL.md` | [skills](references/skills.md) |
 | Tool PATH | `exec` (uses it) | `[tools]` in config.toml, `~/.residuum/bin` | [tools](references/tools.md) |
+| MCP | *(none — surfaced as regular tools)* | `config/mcp.json`, per-project `mcp_servers` | [mcp](references/mcp.md) |
 | Notifications | `list_endpoints`, `switch_endpoint`, `send_message` | `ALERTS.md`, `config/channels.toml` | [notifications](references/notifications.md) |
 | Background Tasks | `subagent_spawn`, `list_agents`, `stop_agent` | `[background]` in config.toml | [background-tasks](references/background-tasks.md) |
+| Subconscious | *(none — automatic)* | `SUBCONSCIOUS.md`, `[subconscious]` in config.toml | [subconscious](references/subconscious.md) |
 
 ## Workspace Directory Layout
 
