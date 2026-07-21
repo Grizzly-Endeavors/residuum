@@ -39,6 +39,8 @@ pub(crate) struct ConfigFile {
     pub(super) webhooks: Option<HashMap<String, WebhookEntryFile>>,
     /// Skills subsystem configuration.
     pub(super) skills: Option<SkillsConfigFile>,
+    /// Runtime tool PATH configuration.
+    pub(super) tools: Option<ToolsConfigFile>,
     /// Retry configuration.
     pub(super) retry: Option<RetryConfigFile>,
     /// Background task configuration.
@@ -305,6 +307,14 @@ pub(super) struct WebhookEntryFile {
 pub(super) struct SkillsConfigFile {
     /// Additional directories to scan for skills.
     pub(super) dirs: Option<Vec<String>>,
+}
+
+/// Raw TOML `[tools]` section.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct ToolsConfigFile {
+    /// Extra directories prepended to the PATH of spawned children.
+    pub(super) path: Option<Vec<String>>,
 }
 
 /// Raw TOML `[retry]` section.

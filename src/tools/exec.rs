@@ -6,7 +6,7 @@ use async_trait::async_trait;
 use serde_json::Value;
 use tokio::process::Command;
 
-use super::{Tool, ToolError, ToolResult};
+use super::{SharedToolsPath, Tool, ToolError, ToolResult};
 use crate::models::ToolDefinition;
 
 /// Maximum output size from a command (100KB).
@@ -16,7 +16,24 @@ const MAX_OUTPUT_BYTES: usize = 100 * 1024;
 const DEFAULT_TIMEOUT_SECS: u64 = 120;
 
 /// Tool that executes shell commands.
-pub struct ExecTool;
+pub struct ExecTool {
+    /// Effective `PATH` (tool dirs prepended) applied to spawned children.
+    /// `None` leaves the inherited process `PATH` untouched. Read per call so
+    /// config reloads take effect without rebuilding the tool.
+    tools_path: Option<SharedToolsPath>,
+}
+
+impl ExecTool {
+    /// Create an exec tool.
+    ///
+    /// Pass the shared tools-`PATH` handle to prepend the configured tool
+    /// directories to spawned commands' `PATH`; pass `None` to inherit the
+    /// process `PATH` unchanged.
+    #[must_use]
+    pub fn new(tools_path: Option<SharedToolsPath>) -> Self {
+        Self { tools_path }
+    }
+}
 
 #[async_trait]
 impl Tool for ExecTool {
@@ -65,11 +82,27 @@ impl Tool for ExecTool {
         tracing::debug!(command = %command, timeout_secs = %timeout_secs, "exec");
 
         #[cfg(unix)]
-        let child = Command::new("sh").arg("-c").arg(command).output();
+        let mut cmd = {
+            let mut c = Command::new("sh");
+            c.arg("-c").arg(command);
+            c
+        };
         #[cfg(windows)]
-        let child = Command::new("cmd").args(["/C", command]).output();
+        let mut cmd = {
+            let mut c = Command::new("cmd");
+            c.args(["/C", command]);
+            c
+        };
 
-        let result = tokio::time::timeout(Duration::from_secs(timeout_secs), child).await;
+        // Prepend configured tool dirs to the child's PATH (read live so config
+        // reloads apply). Leaves PATH inherited when no override is configured.
+        if let Some(handle) = &self.tools_path
+            && let Some(path) = handle.read().await.as_ref()
+        {
+            cmd.env("PATH", path);
+        }
+
+        let result = tokio::time::timeout(Duration::from_secs(timeout_secs), cmd.output()).await;
 
         match result {
             Err(_elapsed) => Ok(ToolResult::error(format!(
@@ -129,9 +162,67 @@ impl Tool for ExecTool {
 mod tests {
     use super::*;
 
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn exec_resolves_binary_from_tools_path() {
+        use std::os::unix::fs::PermissionsExt;
+
+        // A uniquely-named script in a temp dir that is NOT on the base PATH.
+        let dir = std::env::temp_dir().join(format!(
+            "residuum-exec-tools-{}-{}",
+            std::process::id(),
+            "toolbox"
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let script = dir.join("residuum_only_in_tools_dir");
+        std::fs::write(&script, "#!/bin/sh\necho tool-ran\n").unwrap();
+        let mut perms = std::fs::metadata(&script).unwrap().permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&script, perms).unwrap();
+
+        // Effective PATH = tools dir prepended to the inherited PATH.
+        let mut parts = vec![dir.clone()];
+        if let Some(inherited) = std::env::var_os("PATH") {
+            parts.extend(std::env::split_paths(&inherited));
+        }
+        let path = std::env::join_paths(parts).unwrap();
+        let handle: SharedToolsPath = std::sync::Arc::new(tokio::sync::RwLock::new(Some(path)));
+
+        // With the handle, the bare binary name resolves.
+        let tool = ExecTool::new(Some(handle));
+        let result = tool
+            .execute(serde_json::json!({ "command": "residuum_only_in_tools_dir" }))
+            .await
+            .unwrap();
+        assert!(
+            !result.is_error,
+            "binary in tools dir should resolve and run: {}",
+            result.output
+        );
+        assert!(
+            result.output.contains("tool-ran"),
+            "output should be from the tools-dir script: {}",
+            result.output
+        );
+
+        // Without the handle, the same bare name is not on PATH → fails.
+        let bare = ExecTool::new(None);
+        let missing = bare
+            .execute(serde_json::json!({ "command": "residuum_only_in_tools_dir" }))
+            .await
+            .unwrap();
+        assert!(
+            missing.is_error,
+            "binary should not resolve without the tools PATH: {}",
+            missing.output
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
     #[tokio::test]
     async fn exec_simple_command() {
-        let tool = ExecTool;
+        let tool = ExecTool::new(None);
         let result = tool
             .execute(serde_json::json!({ "command": "echo hello" }))
             .await
@@ -146,7 +237,7 @@ mod tests {
 
     #[tokio::test]
     async fn exec_failing_command() {
-        let tool = ExecTool;
+        let tool = ExecTool::new(None);
         let result = tool
             .execute(serde_json::json!({ "command": "false" }))
             .await
@@ -167,7 +258,7 @@ mod tests {
 
     #[tokio::test]
     async fn exec_timeout() {
-        let tool = ExecTool;
+        let tool = ExecTool::new(None);
         let result = tool
             .execute(serde_json::json!({
                 "command": "sleep 10",
@@ -185,14 +276,14 @@ mod tests {
 
     #[tokio::test]
     async fn exec_missing_command() {
-        let tool = ExecTool;
+        let tool = ExecTool::new(None);
         let result = tool.execute(serde_json::json!({})).await;
         assert!(result.is_err(), "missing command should return ToolError");
     }
 
     #[tokio::test]
     async fn exec_stderr_output() {
-        let tool = ExecTool;
+        let tool = ExecTool::new(None);
         let result = tool
             .execute(serde_json::json!({ "command": "echo error >&2" }))
             .await
@@ -208,7 +299,7 @@ mod tests {
 
     #[tokio::test]
     async fn exec_output_truncated() {
-        let tool = ExecTool;
+        let tool = ExecTool::new(None);
         // Generate more than 100KB of output
         let result = tool
             .execute(serde_json::json!({
@@ -231,7 +322,7 @@ mod tests {
 
     #[test]
     fn exec_tool_definition() {
-        let tool = ExecTool;
+        let tool = ExecTool::new(None);
         assert_eq!(tool.name(), "exec", "tool name should match");
     }
 }

@@ -124,6 +124,18 @@ pub(super) fn bootstrap_at(dir: &Path) -> Result<(), FatalError> {
         tracing::info!(path = %channels_path.display(), "wrote initial channels.toml");
     }
 
+    // Default persistent tools dir (~/.residuum/bin). Drop static binaries here
+    // to make them resolvable by spawned children without rebuilding the image.
+    let bin_dir = dir.join("bin");
+    if !bin_dir.exists() {
+        std::fs::create_dir_all(&bin_dir).map_err(|e| {
+            FatalError::Config(format!(
+                "failed to create tools directory {}: {e}",
+                bin_dir.display()
+            ))
+        })?;
+    }
+
     Ok(())
 }
 

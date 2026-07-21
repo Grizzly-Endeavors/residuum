@@ -129,6 +129,13 @@ On timeout: `"command timed out after {N} seconds"`.
 
 Output is capped at 100 KB; larger output is truncated with `\n... (output truncated)`.
 
+### Side effects
+
+Commands are resolved against the configured tool `PATH`: the directories in
+`[tools].path` and the default `~/.residuum/bin`, prepended to the inherited
+`PATH`. Binaries dropped into those dirs are runnable without a rebuild. See
+[Tool PATH](../../docs/systems-usage/tools.md).
+
 ---
 
 ## `memory_search`

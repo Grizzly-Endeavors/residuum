@@ -1,6 +1,7 @@
 //! Validated runtime configuration structs for each subsystem.
 
 use std::collections::HashMap;
+use std::ffi::OsString;
 use std::fmt;
 use std::path::PathBuf;
 use std::time::Duration;
@@ -217,6 +218,42 @@ pub struct WebhookEntry {
 pub struct SkillsConfig {
     /// Directories to scan for skills (resolved, expanded paths).
     pub dirs: Vec<PathBuf>,
+}
+
+/// Validated runtime tool PATH configuration.
+///
+/// These directories are prepended to the `PATH` of every child process
+/// Residuum spawns (MCP stdio servers and the `exec` tool), so tools become
+/// resolvable at runtime without rebuilding the image. Ordered highest
+/// precedence first: configured `[tools].path` entries, then the default
+/// persistent `~/.residuum/bin`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ToolsConfig {
+    /// Directories prepended to child `PATH` (resolved, expanded paths).
+    pub dirs: Vec<PathBuf>,
+}
+
+impl ToolsConfig {
+    /// The effective `PATH` for spawned children: the tool dirs prepended to
+    /// the inherited process `PATH`.
+    ///
+    /// Returns `None` when there are no tool dirs (no override needed).
+    /// Uses [`std::env::split_paths`]/[`std::env::join_paths`] so the platform
+    /// path separator is handled correctly; returns an `OsString` to avoid a
+    /// lossy conversion of non-UTF-8 paths.
+    #[must_use]
+    pub fn effective_path(&self) -> Option<OsString> {
+        if self.dirs.is_empty() {
+            return None;
+        }
+        let mut parts: Vec<PathBuf> = self.dirs.clone();
+        if let Some(inherited) = std::env::var_os("PATH") {
+            parts.extend(std::env::split_paths(&inherited));
+        }
+        // join_paths only fails if a path contains the separator char; in that
+        // case fall back to no override rather than a malformed PATH.
+        std::env::join_paths(parts).ok()
+    }
 }
 
 /// Validated agent ability gates.
@@ -607,6 +644,8 @@ pub struct Config {
     pub webhooks: HashMap<String, WebhookEntry>,
     /// Skills subsystem configuration.
     pub skills: SkillsConfig,
+    /// Runtime tool PATH configuration.
+    pub tools: ToolsConfig,
     /// Retry configuration for model provider calls.
     pub retry: RetryConfig,
     /// Background task configuration.
@@ -656,6 +695,7 @@ impl fmt::Debug for Config {
                 &format_args!("{} configured", self.webhooks.len()),
             )
             .field("skills", &self.skills)
+            .field("tools", &self.tools)
             .field("retry", &self.retry)
             .field("background", &self.background)
             .field("agent", &self.agent)
@@ -674,6 +714,48 @@ impl fmt::Debug for Config {
 #[expect(clippy::unwrap_used, reason = "test code uses unwrap for clarity")]
 mod tests {
     use super::*;
+
+    #[test]
+    fn effective_path_empty_dirs_is_none() {
+        let cfg = ToolsConfig { dirs: vec![] };
+        assert!(
+            cfg.effective_path().is_none(),
+            "no tool dirs means no PATH override"
+        );
+    }
+
+    #[test]
+    fn effective_path_prepends_dirs_in_order() {
+        let cfg = ToolsConfig {
+            dirs: vec![
+                PathBuf::from("/opt/tools"),
+                PathBuf::from("/home/x/.residuum/bin"),
+            ],
+        };
+        let path = cfg.effective_path().unwrap();
+        let entries: Vec<PathBuf> = std::env::split_paths(&path).collect();
+        assert_eq!(
+            entries.first(),
+            Some(&PathBuf::from("/opt/tools")),
+            "configured dir comes first"
+        );
+        assert_eq!(
+            entries.get(1),
+            Some(&PathBuf::from("/home/x/.residuum/bin")),
+            "default bin comes after configured dirs"
+        );
+        // The inherited PATH (if any) follows the tool dirs.
+        if let Some(inherited) = std::env::var_os("PATH") {
+            let inherited_first = std::env::split_paths(&inherited).next();
+            if let Some(first) = inherited_first {
+                assert_eq!(
+                    entries.get(2),
+                    Some(&first),
+                    "inherited PATH follows the tool dirs"
+                );
+            }
+        }
+    }
 
     #[test]
     fn from_str_valid_tiers() {

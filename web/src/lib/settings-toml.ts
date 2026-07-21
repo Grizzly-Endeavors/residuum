@@ -87,6 +87,8 @@ export interface ConfigFields {
   cloud_local_port: string;
   // skills
   skills_dirs: string[];
+  // tools
+  tools_path: string[];
   // web search
   ws_backend: string;
   ws_brave_api_key: string;
@@ -148,6 +150,7 @@ export function defaultConfigFields(): ConfigFields {
     cloud_relay_url: "",
     cloud_local_port: "",
     skills_dirs: [],
+    tools_path: [],
     ws_backend: "",
     ws_brave_api_key: "",
     ws_tavily_api_key: "",
@@ -301,6 +304,11 @@ export function parseConfigToml(raw: string): ConfigFields {
   const skills = doc.skills as Record<string, unknown> | undefined;
   if (skills && Array.isArray(skills.dirs)) {
     fields.skills_dirs = (skills.dirs as unknown[]).map(String);
+  }
+
+  const tools = doc.tools as Record<string, unknown> | undefined;
+  if (tools && Array.isArray(tools.path)) {
+    fields.tools_path = (tools.path as unknown[]).map(String);
   }
 
   const ws = doc.web_search as Record<string, unknown> | undefined;
@@ -628,6 +636,14 @@ export function serializeConfigToml(f: ConfigFields): string {
     lines.push("[skills]");
     const dirsStr = f.skills_dirs.map((d) => `"${escapeTomlString(d)}"`).join(", ");
     lines.push(`dirs = [${dirsStr}]`);
+  }
+
+  // tools
+  if (f.tools_path.length > 0) {
+    lines.push("");
+    lines.push("[tools]");
+    const pathStr = f.tools_path.map((d) => `"${escapeTomlString(d)}"`).join(", ");
+    lines.push(`path = [${pathStr}]`);
   }
 
   // retry

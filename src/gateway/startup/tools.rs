@@ -25,6 +25,7 @@ pub(super) struct ToolRegistryDeps<'a> {
     pub project_state: &'a SharedProjectState,
     pub skill_state: &'a SharedSkillState,
     pub mcp_registry: &'a SharedMcpRegistry,
+    pub tools_path: &'a crate::tools::SharedToolsPath,
     pub background_spawner: &'a Arc<BackgroundTaskSpawner>,
     pub endpoint_registry: &'a EndpointRegistry,
     pub publisher: &'a crate::bus::Publisher,
@@ -73,6 +74,7 @@ pub(super) fn init_tool_registry(
         crate::tools::PathPolicy::new_shared_with_blocked(layout.root().to_path_buf(), blocked);
     let tool_filter = crate::tools::ToolFilter::new_shared(std::collections::HashSet::new());
     let mut tools = ToolRegistry::new();
+    tools.set_tools_path(Arc::clone(deps.tools_path));
     let file_tracker = crate::tools::FileTracker::new_shared();
     tools.register_defaults(file_tracker, Arc::clone(&path_policy));
     tools.register_search_tool(Arc::clone(&mem.hybrid_searcher));

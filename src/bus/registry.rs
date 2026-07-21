@@ -211,7 +211,8 @@ mod tests {
 
     use super::*;
     use crate::config::{
-        BackgroundConfig, GatewayConfig, IdleConfig, MemoryConfig, SkillsConfig, WebSearchConfig,
+        BackgroundConfig, GatewayConfig, IdleConfig, MemoryConfig, SkillsConfig, ToolsConfig,
+        WebSearchConfig,
     };
     use crate::models::retry::RetryConfig;
 
@@ -239,6 +240,7 @@ mod tests {
             telegram: None,
             webhooks: HashMap::new(),
             skills: SkillsConfig { dirs: vec![] },
+            tools: ToolsConfig { dirs: vec![] },
             retry: RetryConfig::default(),
             background: BackgroundConfig::default(),
             agent: Default::default(),

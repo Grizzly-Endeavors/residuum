@@ -14,14 +14,17 @@ use crate::projects::activation::SharedProjectState;
 use crate::skills::SharedSkillState;
 
 use super::{
-    SharedFileTracker, SharedPathPolicy, SharedToolFilter, Tool, ToolError, ToolFilter, ToolResult,
-    actions, background, edit, exec, file_bug_report, inbox, memory_get, memory_search,
-    ollama_web_search, projects, read, send_message, skills, submit_feedback, web_fetch, write,
+    SharedFileTracker, SharedPathPolicy, SharedToolFilter, SharedToolsPath, Tool, ToolError,
+    ToolFilter, ToolResult, actions, background, edit, exec, file_bug_report, inbox, memory_get,
+    memory_search, ollama_web_search, projects, read, send_message, skills, submit_feedback,
+    web_fetch, write,
 };
 
 /// Registry of available tools.
 pub struct ToolRegistry {
     tools: Vec<Box<dyn Tool>>,
+    /// Effective `PATH` handle injected into the `exec` tool at registration.
+    tools_path: Option<SharedToolsPath>,
 }
 
 impl Default for ToolRegistry {
@@ -34,7 +37,18 @@ impl ToolRegistry {
     /// Create a new empty tool registry.
     #[must_use]
     pub fn new() -> Self {
-        Self { tools: Vec::new() }
+        Self {
+            tools: Vec::new(),
+            tools_path: None,
+        }
+    }
+
+    /// Set the effective `PATH` handle injected into the `exec` tool.
+    ///
+    /// Call before [`register_defaults`](Self::register_defaults) so the `exec`
+    /// tool prepends the configured tool directories to spawned commands.
+    pub fn set_tools_path(&mut self, tools_path: SharedToolsPath) {
+        self.tools_path = Some(tools_path);
     }
 
     /// Register a tool in the registry.
@@ -90,7 +104,7 @@ impl ToolRegistry {
             Arc::clone(&policy),
         )));
         self.register(Box::new(edit::EditTool::new(tracker, policy)));
-        self.register(Box::new(exec::ExecTool));
+        self.register(Box::new(exec::ExecTool::new(self.tools_path.clone())));
     }
 
     /// Register the `memory_search` tool with a shared hybrid searcher.

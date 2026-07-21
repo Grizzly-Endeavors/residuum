@@ -25,6 +25,7 @@ use crate::notify::channels::InboxChannel;
 use crate::projects::activation::{ProjectState, SharedProjectState};
 use crate::projects::scanner::ProjectIndex;
 use crate::skills::{SharedSkillState, SkillIndex, SkillState};
+use crate::tools::SharedToolsPath;
 use crate::util::FatalError;
 use crate::workspace::bootstrap::ensure_workspace;
 use crate::workspace::identity::IdentityFiles;
@@ -47,6 +48,7 @@ pub(crate) struct GatewayComponents {
     pub action_store: Arc<tokio::sync::Mutex<ActionStore>>,
     pub action_notify: Arc<tokio::sync::Notify>,
     pub mcp_registry: SharedMcpRegistry,
+    pub tools_path: SharedToolsPath,
     pub project_state: SharedProjectState,
     pub skill_state: SharedSkillState,
     pub embedding_provider: Option<Arc<dyn EmbeddingProvider>>,
@@ -171,8 +173,11 @@ fn init_background_spawner(
 }
 
 /// Load and connect workspace MCP servers.
-async fn init_mcp_servers(layout: &WorkspaceLayout) -> SharedMcpRegistry {
-    let mcp_registry = crate::mcp::McpRegistry::new_shared();
+async fn init_mcp_servers(
+    layout: &WorkspaceLayout,
+    tools_path: SharedToolsPath,
+) -> SharedMcpRegistry {
+    let mcp_registry = crate::mcp::McpRegistry::new_shared_with_tools_path(tools_path);
     match crate::workspace::config::load_mcp_servers(&layout.mcp_json()) {
         Ok(servers) => {
             if !servers.is_empty() {
@@ -370,7 +375,11 @@ pub(crate) async fn initialize(
 
     let (bg_result_rx, background_spawner) = init_background_spawner(cfg, &layout);
 
-    let mcp_registry = init_mcp_servers(&layout).await;
+    // Shared, reloadable effective PATH for spawned children (exec + MCP stdio).
+    let tools_path: SharedToolsPath =
+        Arc::new(tokio::sync::RwLock::new(cfg.tools.effective_path()));
+
+    let mcp_registry = init_mcp_servers(&layout, Arc::clone(&tools_path)).await;
     connect_web_search_mcp(cfg, &mcp_registry).await;
     let (channel_configs, endpoint_registry) = init_channels_and_registry(&layout, cfg);
 
@@ -405,6 +414,7 @@ pub(crate) async fn initialize(
         project_state: &project_state,
         skill_state: &skill_state,
         mcp_registry: &mcp_registry,
+        tools_path: &tools_path,
         background_spawner: &background_spawner,
         endpoint_registry: &endpoint_registry,
         publisher,
@@ -440,6 +450,7 @@ pub(crate) async fn initialize(
         action_store,
         action_notify,
         mcp_registry,
+        tools_path,
         project_state,
         skill_state,
         embedding_provider: providers.embedding_provider,
