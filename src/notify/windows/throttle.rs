@@ -162,7 +162,7 @@ fn build_summary_body(buffer: &[NotificationEvent]) -> String {
 }
 
 fn truncate_body(s: &str, max_len: usize) -> String {
-    if s.len() <= max_len {
+    if s.chars().count() <= max_len {
         s.to_string()
     } else {
         let mut result: String = s.chars().take(max_len - 1).collect();
@@ -223,6 +223,20 @@ mod tests {
         assert_eq!(
             result, s,
             "should not truncate -- char count is under limit"
+        );
+        assert!(!result.ends_with('\u{2026}'));
+    }
+
+    #[test]
+    fn truncate_body_unicode_over_byte_limit_but_within_char_limit() {
+        // 60 emoji (4 bytes each) = 240 bytes but only 60 chars -- exceeds the
+        // 200 byte-length guard but stays under the 200 char-count limit, so
+        // this only passes untruncated once the guard counts chars, not bytes.
+        let s = "\u{1F980}".repeat(60);
+        let result = truncate_body(&s, 200);
+        assert_eq!(
+            result, s,
+            "should not truncate -- char count is under limit even though byte count exceeds it"
         );
         assert!(!result.ends_with('\u{2026}'));
     }
