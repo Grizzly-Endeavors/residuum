@@ -16,7 +16,8 @@ use crate::config::{
 };
 use crate::memory::chunk_extractor::{extract_chunks, write_idx_jsonl};
 use crate::memory::episode_store::{
-    episode_idx_path, episode_obs_path, next_episode_id, write_episode_transcript,
+    episode_idx_path, episode_obs_path, next_episode_id, write_completion_marker,
+    write_episode_transcript,
 };
 use crate::memory::log_store::{append_observations, save_episode_observations};
 use crate::memory::recent_messages::RecentMessage;
@@ -326,6 +327,13 @@ async fn build_episode_and_persist(
     let idx_path = episode_idx_path(&layout.episodes_dir(), &episode);
     write_idx_jsonl(&idx_path, &chunks).await?;
     tracing::debug!(episode_id = %episode.id, chunks = chunks.len(), "interaction-pair chunks written");
+
+    // Completion marker — MUST stay the final persistence step. Its presence
+    // certifies that every artifact above was written durably; if any step
+    // above failed, the `?` returned before this line and the marker is absent,
+    // which is how startup reconciliation detects an interrupted write.
+    write_completion_marker(&layout.episodes_dir(), &episode).await?;
+    tracing::debug!(episode_id = %episode.id, "episode persistence completed");
 
     tracing::info!(
         episode_id = %episode.id,
@@ -669,6 +677,15 @@ mod tests {
         assert!(
             obs_archive.exists(),
             "per-episode obs archive should exist alongside transcript"
+        );
+
+        // The completion marker is written last; its presence certifies that
+        // persistence finished rather than being interrupted midway.
+        let marker =
+            crate::memory::episode_store::episode_marker_path(&layout.episodes_dir(), &episode);
+        assert!(
+            marker.exists(),
+            "completion marker should exist after a successful observe"
         );
     }
 

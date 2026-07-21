@@ -91,6 +91,52 @@ pub(crate) fn episode_idx_path(episodes_dir: &Path, episode: &Episode) -> PathBu
         .join(format!("{}.idx.jsonl", episode.id))
 }
 
+/// Filename extension for the per-episode completion marker.
+///
+/// The marker is written as the final step of episode persistence, so its
+/// presence certifies that every prior artifact (transcript, observation
+/// archive, global log, and search-chunk index) landed on disk. Its absence
+/// beside a transcript is what lets reconciliation detect an interrupted write.
+const COMPLETION_MARKER_EXT: &str = "done";
+
+/// Get the path for the per-episode completion marker file.
+#[must_use]
+pub(crate) fn episode_marker_path(episodes_dir: &Path, episode: &Episode) -> PathBuf {
+    episodes_dir
+        .join(episode.date.format("%Y-%m/%d").to_string())
+        .join(format!("{}.{COMPLETION_MARKER_EXT}", episode.id))
+}
+
+/// Write the per-episode completion marker.
+///
+/// This MUST be the final step of episode persistence: its presence certifies
+/// that the transcript, per-episode observation archive, global observation
+/// log, and search-chunk index were all written durably. Because every prior
+/// step is chained with `?`, a failure anywhere upstream returns before this
+/// line and leaves the marker absent — the signal reconciliation uses to detect
+/// an interrupted write.
+///
+/// Only the file's existence is load-bearing; its contents are a human-readable
+/// timestamp kept purely for post-mortem debugging.
+///
+/// # Errors
+/// Returns an error if the marker file cannot be written.
+pub(crate) async fn write_completion_marker(
+    episodes_dir: &Path,
+    episode: &Episode,
+) -> anyhow::Result<()> {
+    let path = episode_marker_path(episodes_dir, episode);
+    let body = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
+    crate::util::fs::atomic_write(&path, body)
+        .await
+        .with_context(|| {
+            format!(
+                "failed to write episode completion marker at {}",
+                path.display()
+            )
+        })
+}
+
 /// Read and parse a JSONL episode transcript file.
 ///
 /// Returns the episode metadata and the list of messages. The first line is
