@@ -8,6 +8,7 @@ use axum::response::Json;
 use serde::{Deserialize, Serialize};
 
 use crate::gateway::ReloadSignal;
+use crate::pulse::types::HeartbeatConfig;
 
 use super::ConfigApiState;
 
@@ -39,7 +40,7 @@ pub(super) struct WriteFileRequest {
 }
 
 /// Response from `PUT /api/workspace/file`.
-#[derive(Serialize)]
+#[derive(Debug, Serialize)]
 pub(super) struct WriteResponse {
     pub saved: bool,
 }
@@ -180,6 +181,17 @@ fn is_identity_file(relative: &str) -> bool {
     IDENTITY_FILES.contains(&file_name)
 }
 
+/// Returns true if the path refers to the pulse scheduler's `HEARTBEAT.yml`.
+///
+/// Checks the file name only (ignoring leading directory components), matching
+/// how `is_identity_file` recognises identity files.
+fn is_heartbeat_file(relative: &str) -> bool {
+    Path::new(relative)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .is_some_and(|name| name == "HEARTBEAT.yml")
+}
+
 /// `GET /api/workspace/files` — list directory contents inside the workspace.
 ///
 /// Defaults to the workspace root when no `path` query parameter is provided.
@@ -316,6 +328,11 @@ pub(super) async fn api_workspace_file_read(
 /// Creates the file if it does not exist. If the written file is a workspace
 /// identity file and a reload channel is available, sends a `Workspace` reload
 /// signal.
+///
+/// Writes to `HEARTBEAT.yml` are validated as parseable `HeartbeatConfig` YAML
+/// before being accepted: the pulse scheduler hot-reloads this file on every
+/// tick, so an unvalidated write that saves broken YAML would silently stop
+/// every scheduled pulse from firing while reporting success to the caller.
 pub(super) async fn api_workspace_file_write(
     State(state): State<ConfigApiState>,
     Json(req): Json<WriteFileRequest>,
@@ -326,6 +343,19 @@ pub(super) async fn api_workspace_file_write(
         return Err((
             StatusCode::FORBIDDEN,
             "access to this path is blocked".to_string(),
+        ));
+    }
+
+    if is_heartbeat_file(relative)
+        && let Err(e) = serde_yaml_ng::from_str::<HeartbeatConfig>(&req.content)
+    {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            format!(
+                "invalid HEARTBEAT.yml: {e}; fix the yaml before saving — this file is \
+                 hot-reloaded by the pulse scheduler, so invalid content would silently \
+                 stop all scheduled pulses from firing"
+            ),
         ));
     }
 
@@ -525,5 +555,71 @@ mod tests {
             traversal_result.is_err(),
             "path traversal should be rejected for new file write"
         );
+    }
+
+    #[test]
+    fn heartbeat_file_recognised() {
+        assert!(is_heartbeat_file("HEARTBEAT.yml"));
+        assert!(is_heartbeat_file("subdir/HEARTBEAT.yml"));
+        assert!(!is_heartbeat_file("SOUL.md"));
+        assert!(!is_heartbeat_file("not_HEARTBEAT.yml.txt"));
+    }
+
+    #[tokio::test]
+    async fn workspace_file_write_rejects_invalid_heartbeat_yaml() {
+        use axum::Json;
+        use axum::extract::State;
+
+        let dir = tempfile::tempdir().unwrap();
+        let ws_dir = dir.path().join("workspace");
+        std::fs::create_dir_all(&ws_dir).unwrap();
+        std::fs::write(ws_dir.join("HEARTBEAT.yml"), "pulses: []").unwrap();
+
+        let state = super::super::ConfigApiState {
+            config_dir: dir.path().to_path_buf(),
+            workspace_dir: ws_dir.clone(),
+            memory_dir: None,
+            reload_tx: None,
+            setup_done: None,
+            secret_lock: std::sync::Arc::new(tokio::sync::Mutex::new(())),
+        };
+
+        // Malformed YAML must be rejected, not silently accepted with `{"saved": true}` —
+        // the pulse scheduler hot-reloads this file every tick, so an unvalidated write
+        // that breaks the YAML would silently stop every scheduled pulse from firing.
+        let result = api_workspace_file_write(
+            State(state.clone()),
+            Json(WriteFileRequest {
+                path: "HEARTBEAT.yml".to_string(),
+                content: "not: valid: yaml: [[[".to_string(),
+            }),
+        )
+        .await;
+        assert!(
+            result.is_err(),
+            "invalid HEARTBEAT.yml content should be rejected"
+        );
+        let (status, _) = result.unwrap_err();
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+
+        // The on-disk file must be untouched by the rejected write.
+        let unchanged = std::fs::read_to_string(ws_dir.join("HEARTBEAT.yml")).unwrap();
+        assert_eq!(
+            unchanged, "pulses: []",
+            "rejected write should not modify the existing file"
+        );
+
+        // Valid YAML should still be accepted.
+        let ok_result = api_workspace_file_write(
+            State(state.clone()),
+            Json(WriteFileRequest {
+                path: "HEARTBEAT.yml".to_string(),
+                content: "pulses:\n  - name: test\n    schedule: \"1h\"\n    tasks: []\n"
+                    .to_string(),
+            }),
+        )
+        .await
+        .unwrap();
+        assert!(ok_result.0.saved);
     }
 }

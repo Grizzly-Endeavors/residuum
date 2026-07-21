@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::path::Path;
 
 use chrono::{Duration, NaiveDateTime, NaiveTime};
@@ -138,13 +139,71 @@ where
 
 /// Load HEARTBEAT.yml from the given path.
 ///
-/// On parse error, logs a warning and returns `None` so the caller keeps the last good config.
-/// Returns `None` if the file does not exist.
+/// `last_parse_error` carries the most recently logged parse-error message across
+/// calls (this is hot-reloaded on every scheduler tick). A parse failure is logged
+/// at `warn` only the first time it's seen or when the error text changes; an
+/// identical, still-broken file logs at `debug` instead so a typo in HEARTBEAT.yml
+/// doesn't repeat the same warning forever. Returns `None` on parse error (caller
+/// keeps the last good config) or if the file does not exist.
+///
+/// Duplicate pulse names are dropped, keeping the first occurrence: `PulseScheduler`
+/// keys its per-pulse state by name, so two pulses sharing a name would otherwise
+/// silently collapse into one scheduler-state entry.
 #[must_use]
-pub(crate) fn load_heartbeat(path: &Path) -> Option<HeartbeatConfig> {
-    let cfg = read_and_parse(path, |s| serde_yaml_ng::from_str::<HeartbeatConfig>(s))?;
+pub(crate) fn load_heartbeat(
+    path: &Path,
+    last_parse_error: &mut Option<String>,
+) -> Option<HeartbeatConfig> {
+    let mut cfg = match std::fs::read_to_string(path) {
+        Ok(contents) => match serde_yaml_ng::from_str::<HeartbeatConfig>(&contents) {
+            Ok(cfg) => {
+                if last_parse_error.take().is_some() {
+                    tracing::info!(path = %path.display(), "HEARTBEAT.yml parses again after previous errors");
+                }
+                cfg
+            }
+            Err(e) => {
+                let message = e.to_string();
+                if last_parse_error.as_deref() == Some(message.as_str()) {
+                    tracing::debug!(path = %path.display(), error = %message, "HEARTBEAT.yml still fails to parse");
+                } else {
+                    tracing::warn!(path = %path.display(), error = %message, "failed to parse HEARTBEAT.yml; pulses will not fire until this is fixed");
+                    *last_parse_error = Some(message);
+                }
+                return None;
+            }
+        },
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            *last_parse_error = None;
+            return None;
+        }
+        Err(e) => {
+            tracing::warn!(path = %path.display(), error = %e, "failed to read file");
+            return None;
+        }
+    };
+
+    dedupe_pulse_names(&mut cfg.pulses);
+
     tracing::trace!(path = %path.display(), pulses = cfg.pulses.len(), "loaded HEARTBEAT.yml");
     Some(cfg)
+}
+
+/// Drop pulses whose name duplicates an earlier one in the list, keeping the first.
+///
+/// Logs a warning per duplicate so a HEARTBEAT.yml typo (copy-pasted pulse block
+/// with an unchanged `name`) is visible rather than silently overwriting scheduler
+/// state for the earlier pulse of the same name.
+fn dedupe_pulse_names(pulses: &mut Vec<PulseDef>) {
+    let mut seen = HashSet::new();
+    pulses.retain(|pulse| {
+        if seen.insert(pulse.name.clone()) {
+            true
+        } else {
+            tracing::warn!(pulse = %pulse.name, "duplicate pulse name in HEARTBEAT.yml, skipping");
+            false
+        }
+    });
 }
 
 #[cfg(test)]
@@ -493,8 +552,9 @@ pulses:
     fn load_heartbeat_missing_file_returns_none() {
         let dir = tempdir().unwrap();
         let path = dir.path().join("HEARTBEAT.yml");
+        let mut last_error = None;
         assert!(
-            load_heartbeat(&path).is_none(),
+            load_heartbeat(&path, &mut last_error).is_none(),
             "missing file should return None"
         );
     }
@@ -522,9 +582,95 @@ pulses:
         let dir = tempdir().unwrap();
         let path = dir.path().join("HEARTBEAT.yml");
         std::fs::write(&path, "not: valid: yaml: [[[").unwrap();
+        let mut last_error = None;
         assert!(
-            load_heartbeat(&path).is_none(),
+            load_heartbeat(&path, &mut last_error).is_none(),
             "invalid YAML should return None"
+        );
+    }
+
+    #[test]
+    fn load_heartbeat_repeated_identical_error_not_rewarned() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("HEARTBEAT.yml");
+        std::fs::write(&path, "not: valid: yaml: [[[").unwrap();
+        let mut last_error = None;
+
+        assert!(load_heartbeat(&path, &mut last_error).is_none());
+        assert!(
+            last_error.is_some(),
+            "first parse failure should record the error text"
+        );
+        let recorded = last_error.clone();
+
+        // Same broken file parsed again on a later tick: the recorded error is
+        // unchanged, so the caller can tell this isn't a new failure worth a
+        // fresh warning (see load_heartbeat's dedup behavior).
+        assert!(load_heartbeat(&path, &mut last_error).is_none());
+        assert_eq!(
+            last_error, recorded,
+            "identical repeated parse error should not change the recorded message"
+        );
+    }
+
+    #[test]
+    fn load_heartbeat_recovering_clears_last_error() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("HEARTBEAT.yml");
+        std::fs::write(&path, "not: valid: yaml: [[[").unwrap();
+        let mut last_error = None;
+        assert!(load_heartbeat(&path, &mut last_error).is_none());
+        assert!(last_error.is_some(), "broken file should record an error");
+
+        std::fs::write(&path, SIMPLE_VALID_HEARTBEAT).unwrap();
+        let cfg = load_heartbeat(&path, &mut last_error);
+        assert!(cfg.is_some(), "fixed file should parse successfully");
+        assert!(
+            last_error.is_none(),
+            "successful parse should clear the recorded error"
+        );
+    }
+
+    const SIMPLE_VALID_HEARTBEAT: &str = r#"
+pulses:
+  - name: test_pulse
+    schedule: "1h"
+    tasks: []
+"#;
+
+    #[test]
+    fn load_heartbeat_dedupes_duplicate_pulse_names() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("HEARTBEAT.yml");
+        let yaml = r#"
+pulses:
+  - name: dup
+    schedule: "1h"
+    tasks:
+      - name: first
+        prompt: "first"
+  - name: unique
+    schedule: "2h"
+    tasks: []
+  - name: dup
+    schedule: "3h"
+    tasks:
+      - name: second
+        prompt: "second"
+"#;
+        std::fs::write(&path, yaml).unwrap();
+        let mut last_error = None;
+        let cfg = load_heartbeat(&path, &mut last_error).unwrap();
+        let names: Vec<&str> = cfg.pulses.iter().map(|p| p.name.as_str()).collect();
+        assert_eq!(
+            names,
+            ["dup", "unique"],
+            "second pulse named 'dup' should be dropped, keeping the first occurrence"
+        );
+        assert_eq!(
+            cfg.pulses.first().unwrap().schedule,
+            "1h",
+            "the surviving 'dup' pulse should be the first one in the file"
         );
     }
 }

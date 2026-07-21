@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use chrono::{Datelike, Duration, NaiveDateTime, NaiveTime};
@@ -22,6 +22,10 @@ pub struct PulseScheduler {
     run_counts: HashMap<String, u32>,
     #[serde(skip)]
     state_path: Option<PathBuf>,
+    /// Most recently logged HEARTBEAT.yml parse-error message, so `due_pulses`
+    /// doesn't re-warn on an identical error every tick (ticks run every 60s).
+    #[serde(skip)]
+    last_heartbeat_parse_error: Option<String>,
 }
 
 impl Default for PulseScheduler {
@@ -38,6 +42,7 @@ impl PulseScheduler {
             last_run: HashMap::new(),
             run_counts: HashMap::new(),
             state_path: None,
+            last_heartbeat_parse_error: None,
         }
     }
 
@@ -65,9 +70,14 @@ impl PulseScheduler {
     #[must_use]
     #[tracing::instrument(skip_all, fields(heartbeat_path = %heartbeat_path.display()))]
     pub fn due_pulses(&mut self, now: NaiveDateTime, heartbeat_path: &Path) -> Vec<PulseDef> {
-        let Some(heartbeat) = load_heartbeat(heartbeat_path) else {
+        let Some(heartbeat) = load_heartbeat(heartbeat_path, &mut self.last_heartbeat_parse_error)
+        else {
             return Vec::new();
         };
+
+        let current_pulse_names: HashSet<String> =
+            heartbeat.pulses.iter().map(|p| p.name.clone()).collect();
+        let pruned = self.prune_removed_pulses(&current_pulse_names);
 
         let mut due = Vec::new();
 
@@ -151,7 +161,7 @@ impl PulseScheduler {
             }
         }
 
-        if !due.is_empty()
+        if (pruned || !due.is_empty())
             && let Err(e) = self.save_state()
         {
             tracing::warn!(
@@ -162,6 +172,30 @@ impl PulseScheduler {
         }
 
         due
+    }
+
+    /// Remove `last_run`/`run_counts` entries for pulses no longer present in
+    /// `HEARTBEAT.yml` (deleted or renamed), so `pulse_state.json` doesn't grow
+    /// unboundedly with unexplainable stale keys. Returns whether anything was removed.
+    fn prune_removed_pulses(&mut self, current_pulse_names: &HashSet<String>) -> bool {
+        let last_run_before = self.last_run.len();
+        let run_counts_before = self.run_counts.len();
+
+        self.last_run
+            .retain(|name, _| current_pulse_names.contains(name));
+        self.run_counts
+            .retain(|name, _| current_pulse_names.contains(name));
+
+        let pruned =
+            self.last_run.len() != last_run_before || self.run_counts.len() != run_counts_before;
+        if pruned {
+            tracing::debug!(
+                removed_last_run = last_run_before - self.last_run.len(),
+                removed_run_counts = run_counts_before - self.run_counts.len(),
+                "pruned pulse state for pulses no longer in HEARTBEAT.yml"
+            );
+        }
+        pruned
     }
 
     /// Reset run count if the current active window start differs from
@@ -585,6 +619,78 @@ pulses:
         assert!(
             last_run.contains_key("test_pulse"),
             "should contain the pulse name"
+        );
+    }
+
+    #[test]
+    fn due_pulses_prunes_state_for_pulses_removed_from_heartbeat() {
+        let dir = tempdir().unwrap();
+        let hb_path = write_heartbeat(dir.path(), SIMPLE_HEARTBEAT); // only "test_pulse"
+        let state_path = dir.path().join("pulse_state.json");
+
+        let earlier = chrono::NaiveDate::from_ymd_opt(2026, 2, 19)
+            .unwrap()
+            .and_hms_opt(11, 0, 0)
+            .unwrap();
+
+        // Seed state (via the real persistence path) as if a pulse named
+        // "removed_pulse" used to exist in HEARTBEAT.yml and has since been
+        // deleted or renamed, plus a still-valid entry for "test_pulse".
+        {
+            let mut sched = PulseScheduler::new();
+            sched.last_run.insert("removed_pulse".to_string(), earlier);
+            sched.last_run.insert("test_pulse".to_string(), earlier);
+            sched.run_counts.insert("removed_pulse".to_string(), 5);
+            sched.state_path = Some(state_path.clone());
+            sched.save_state().unwrap();
+        }
+
+        let mut sched = PulseScheduler::with_state_path(&state_path);
+        assert!(
+            sched.last_run.contains_key("removed_pulse"),
+            "sanity check: stale entry should be loaded from disk"
+        );
+
+        let tick_time = chrono::NaiveDate::from_ymd_opt(2026, 2, 19)
+            .unwrap()
+            .and_hms_opt(12, 0, 0)
+            .unwrap();
+        let due = sched.due_pulses(tick_time, &hb_path);
+        assert_eq!(
+            due.len(),
+            1,
+            "test_pulse should still fire (1h since last run)"
+        );
+
+        assert!(
+            !sched.last_run.contains_key("removed_pulse"),
+            "stale last_run entry should be pruned in memory"
+        );
+        assert!(
+            !sched.run_counts.contains_key("removed_pulse"),
+            "stale run_counts entry should be pruned in memory"
+        );
+        assert!(
+            sched.last_run.contains_key("test_pulse"),
+            "state for pulses still in HEARTBEAT.yml should be preserved"
+        );
+
+        // Reload from disk to confirm the prune was persisted, not just in-memory.
+        let contents = std::fs::read_to_string(&state_path).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&contents).unwrap();
+        let last_run = parsed.get("last_run").unwrap().as_object().unwrap();
+        assert!(
+            !last_run.contains_key("removed_pulse"),
+            "stale entry should not survive save/reload"
+        );
+        assert!(
+            last_run.contains_key("test_pulse"),
+            "current pulse entry should survive save/reload"
+        );
+        let run_counts = parsed.get("run_counts").unwrap().as_object().unwrap();
+        assert!(
+            !run_counts.contains_key("removed_pulse"),
+            "stale run_counts entry should not survive save/reload"
         );
     }
 
