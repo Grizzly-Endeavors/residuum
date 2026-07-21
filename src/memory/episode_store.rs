@@ -137,6 +137,83 @@ pub(crate) async fn write_completion_marker(
         })
 }
 
+/// Return the paths of episode transcripts whose persistence was interrupted.
+///
+/// A fully persisted episode has a [`COMPLETION_MARKER_EXT`] marker written
+/// beside its `.jsonl` transcript as the final step. A transcript with neither
+/// a marker nor a legacy `.obs.json` archive means the write was cut short
+/// after the transcript landed but before its observations and search chunks
+/// were durably written — leaving the episode permanently invisible to search.
+/// Each such transcript is logged at `warn`; the returned paths let the caller
+/// report or act on them.
+///
+/// The `.obs.json` fallback exists purely for backward compatibility: episodes
+/// written before completion markers existed are complete but have no marker,
+/// and their `.obs.json` archive proves persistence reached at least the
+/// observations step, so they are not reported as interrupted.
+///
+/// # Errors
+/// Returns an error if the episodes directory cannot be traversed.
+pub(crate) fn find_interrupted_episodes(episodes_dir: &Path) -> anyhow::Result<Vec<PathBuf>> {
+    if !episodes_dir.exists() {
+        return Ok(Vec::new());
+    }
+
+    let mut transcripts = Vec::new();
+    collect_transcripts(episodes_dir, &mut transcripts)?;
+
+    let mut interrupted = Vec::new();
+    for transcript in transcripts {
+        let has_marker = transcript.with_extension(COMPLETION_MARKER_EXT).exists();
+        let has_obs_archive = transcript.with_extension("obs.json").exists();
+        if has_marker || has_obs_archive {
+            continue;
+        }
+
+        let episode_id = transcript
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("unknown");
+        tracing::warn!(
+            episode_id,
+            path = %transcript.display(),
+            "interrupted episode persistence: transcript has no completion marker or observation archive, so its observations and search chunks were never durably written and it is invisible to memory search; inspect the transcript and re-observe or delete it"
+        );
+        interrupted.push(transcript);
+    }
+
+    Ok(interrupted)
+}
+
+/// Recursively collect episode transcript (`ep-NNN.jsonl`) file paths.
+fn collect_transcripts(dir: &Path, out: &mut Vec<PathBuf>) -> anyhow::Result<()> {
+    let entries = std::fs::read_dir(dir)
+        .with_context(|| format!("failed to read episodes directory {}", dir.display()))?;
+
+    for entry in entries {
+        let path = entry.context("failed to read directory entry")?.path();
+        if path.is_dir() {
+            collect_transcripts(&path, out)?;
+        } else if is_episode_transcript(&path) {
+            out.push(path);
+        }
+    }
+
+    Ok(())
+}
+
+/// Whether `path` names an episode transcript (`ep-NNN.jsonl`).
+///
+/// Excludes `ep-NNN.idx.jsonl`, whose stem `ep-NNN.idx` is not a bare episode id.
+fn is_episode_transcript(path: &Path) -> bool {
+    path.extension().is_some_and(|ext| ext == "jsonl")
+        && path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .and_then(|s| s.strip_prefix("ep-"))
+            .is_some_and(|s| s.parse::<u32>().is_ok())
+}
+
 /// Read and parse a JSONL episode transcript file.
 ///
 /// Returns the episode metadata and the list of messages. The first line is
@@ -839,5 +916,126 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let prev = previous_episode_id(dir.path(), "garbage").await.unwrap();
         assert!(prev.is_none());
+    }
+
+    // --- completion marker & reconciliation tests ---
+
+    #[tokio::test]
+    async fn completion_marker_written_and_recognized() {
+        let dir = tempfile::tempdir().unwrap();
+        let episode = sample_episode();
+        write_episode_transcript(dir.path(), &episode, &[Message::user("hi")])
+            .await
+            .unwrap();
+        write_completion_marker(dir.path(), &episode).await.unwrap();
+
+        let marker = episode_marker_path(dir.path(), &episode);
+        assert!(marker.exists(), "completion marker file should be written");
+
+        let interrupted = find_interrupted_episodes(dir.path()).unwrap();
+        assert!(
+            interrupted.is_empty(),
+            "an episode with a completion marker is not interrupted"
+        );
+    }
+
+    #[tokio::test]
+    async fn interrupted_episode_detected_when_only_transcript_exists() {
+        let dir = tempfile::tempdir().unwrap();
+        let episode = sample_episode();
+        // Simulate a crash after the transcript landed but before any later
+        // artifact (obs archive, chunks, marker) was written.
+        write_episode_transcript(dir.path(), &episode, &[Message::user("hi")])
+            .await
+            .unwrap();
+
+        let interrupted = find_interrupted_episodes(dir.path()).unwrap();
+        assert_eq!(
+            interrupted.len(),
+            1,
+            "a transcript with no marker and no obs archive is interrupted"
+        );
+        assert!(
+            interrupted
+                .first()
+                .is_some_and(|p| p.ends_with("ep-001.jsonl")),
+            "the orphaned transcript path should be reported"
+        );
+    }
+
+    #[tokio::test]
+    async fn legacy_episode_with_obs_archive_not_flagged() {
+        let dir = tempfile::tempdir().unwrap();
+        let episode = sample_episode();
+        write_episode_transcript(dir.path(), &episode, &[Message::user("hi")])
+            .await
+            .unwrap();
+        // An episode written before completion markers existed has an obs
+        // archive but no marker; it must not be reported as interrupted.
+        let obs_path = episode_obs_path(dir.path(), &episode);
+        tokio::fs::write(&obs_path, "[]").await.unwrap();
+
+        let interrupted = find_interrupted_episodes(dir.path()).unwrap();
+        assert!(
+            interrupted.is_empty(),
+            "an episode with a legacy obs archive is treated as complete"
+        );
+    }
+
+    #[tokio::test]
+    async fn reconciliation_isolates_interrupted_from_healthy() {
+        let dir = tempfile::tempdir().unwrap();
+
+        // Healthy, fully-persisted episode.
+        let healthy = sample_episode();
+        write_episode_transcript(dir.path(), &healthy, &[Message::user("a")])
+            .await
+            .unwrap();
+        write_completion_marker(dir.path(), &healthy).await.unwrap();
+
+        // Interrupted episode: transcript only.
+        let mut interrupted_ep = sample_episode();
+        interrupted_ep.id = "ep-002".to_string();
+        write_episode_transcript(dir.path(), &interrupted_ep, &[Message::user("b")])
+            .await
+            .unwrap();
+
+        let interrupted = find_interrupted_episodes(dir.path()).unwrap();
+        assert_eq!(
+            interrupted.len(),
+            1,
+            "only the interrupted episode is flagged"
+        );
+        assert!(
+            interrupted
+                .first()
+                .is_some_and(|p| p.ends_with("ep-002.jsonl")),
+            "the healthy episode must not be flagged"
+        );
+    }
+
+    #[test]
+    fn find_interrupted_episodes_missing_dir_is_empty() {
+        let missing = Path::new("/tmp/nonexistent_reconcile_dir_test");
+        let interrupted = find_interrupted_episodes(missing).unwrap();
+        assert!(
+            interrupted.is_empty(),
+            "a missing episodes dir yields no interrupted episodes"
+        );
+    }
+
+    #[test]
+    fn idx_jsonl_is_not_mistaken_for_a_transcript() {
+        let dir = tempfile::tempdir().unwrap();
+        let sub = dir.path().join("2026-02/19");
+        std::fs::create_dir_all(&sub).unwrap();
+        // A stray chunk index with no transcript must not be scanned as one.
+        std::fs::write(sub.join("ep-001.idx.jsonl"), "{}\n").unwrap();
+
+        let interrupted = find_interrupted_episodes(dir.path()).unwrap();
+        assert!(
+            interrupted.is_empty(),
+            "an .idx.jsonl file is not an episode transcript"
+        );
     }
 }
