@@ -976,18 +976,4 @@ mod tests {
             "should have message source tag"
         );
     }
-
-    #[test]
-    fn build_status_line_source_only() {
-        let ctx = StatusLine {
-            now: dt(2024, 1, 1, 12, 0),
-            last_message_at: None,
-            message_source: Some("cli".to_string()),
-        };
-        let result = build_status_line(&ctx);
-        assert!(
-            !result.contains("[Unread Inbox:"),
-            "should not have unread inbox tag when count is 0"
-        );
-    }
 }

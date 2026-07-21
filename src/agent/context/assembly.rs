@@ -351,36 +351,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn status_line_omits_zero_unread() {
-        let identity = IdentityFiles::default();
-        let mut recent = RecentMessages::new();
-        recent.push(Message::user("check inbox"));
-
-        let ctx = StatusLine {
-            now: dt(2026, 2, 22, 17, 0),
-            last_message_at: None,
-            message_source: None,
-        };
-
-        let messages = assemble_system_prompt(
-            &identity,
-            &recent,
-            &no_memory(),
-            &PromptContext::default(),
-            Some(&ctx),
-        );
-
-        let tag = messages
-            .iter()
-            .find(|m| m.content.contains("[Current Time:"))
-            .map(|m| m.content.as_str());
-        assert!(
-            tag.is_some_and(|t| !t.contains("[Unread Inbox:")),
-            "should not include unread inbox tag when count is 0, got: {tag:?}"
-        );
-    }
-
     // ── compute_context_breakdown tests ──────────────────────────────────────
 
     #[test]
