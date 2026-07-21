@@ -127,16 +127,18 @@ async fn fallback_router_loop(mut subscriber: Subscriber<AgentResultEvent>, publ
 /// Route a single `AgentResultEvent` through the two-layer system.
 #[tracing::instrument(skip_all, fields(source_label = %event.source_label, task_id = %event.task_id))]
 async fn route_agent_result(event: &AgentResultEvent, router: &NotificationRouter) {
-    tracing::info!(
-        source = %event.source,
-        "notification router received result"
-    );
-
-    // Layer 1: Heartbeat-ok → silent discard
+    // Heartbeat-ok pulses are the majority of traffic through this path and are a
+    // silent discard by design, so check for them before logging anything at info —
+    // otherwise routine health-check pulses would spam the info log.
     if event.heartbeat_status == HeartbeatStatus::Ok {
         tracing::trace!("pulse check: HEARTBEAT_OK");
         return;
     }
+
+    tracing::info!(
+        source = %event.source,
+        "notification router received result"
+    );
 
     // Layer 1: Agent-spawned results → relay to main agent
     if matches!(event.source, EventTrigger::Agent) {
