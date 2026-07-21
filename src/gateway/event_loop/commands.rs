@@ -50,7 +50,7 @@ pub async fn handle_server_command(
                 bd.history_count,
             );
             if let Some(tx) = cmd.reply_tx {
-                tx.send(msg.clone()).ok();
+                tx.send(Ok(msg.clone())).ok();
             }
             if let Err(e) = rt
                 .publisher
@@ -65,13 +65,17 @@ pub async fn handle_server_command(
         }
         unknown => {
             tracing::debug!(command = %unknown, "received unknown server command");
-            if let Err(e) = rt
+            let reason = format!("unknown server command: {unknown}");
+            // Route the rejection back to whoever sent it, not to every
+            // connected client — an unknown command is specific to one
+            // sender's mistake, not system-wide news.
+            if let Some(tx) = cmd.reply_tx {
+                tx.send(Err(reason)).ok();
+            } else if let Err(e) = rt
                 .publisher
                 .publish(
                     topics::Notification(NotifyName::from(SYSTEM_CHANNEL)),
-                    NoticeEvent {
-                        message: format!("unknown server command: {unknown}"),
-                    },
+                    NoticeEvent { message: reason },
                 )
                 .await
             {

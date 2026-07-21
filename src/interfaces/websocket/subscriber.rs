@@ -114,9 +114,8 @@ impl WsSubscribers {
                         Ok(Some(TurnLifecycleEvent::Started { correlation_id })) => {
                             Some(ServerMessage::TurnStarted { reply_to: correlation_id })
                         }
-                        Ok(Some(TurnLifecycleEvent::Ended { .. })) => {
-                            // TurnEnded has no ServerMessage equivalent currently — skip
-                            continue;
+                        Ok(Some(TurnLifecycleEvent::Ended { correlation_id })) => {
+                            Some(ServerMessage::TurnEnded { reply_to: correlation_id })
                         }
                         _ => return None,
                     }
@@ -404,7 +403,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn turn_ended_is_skipped() {
+    async fn turn_ended_maps_to_server_message() {
         let handle = crate::bus::spawn_broker();
         let pub_ = handle.publisher();
         let ep = EndpointName::from("ws");
@@ -417,7 +416,7 @@ mod tests {
         .unwrap();
 
         pub_.publish(
-            topics::Endpoint(ep.clone()),
+            topics::Endpoint(ep),
             TurnLifecycleEvent::Ended {
                 correlation_id: "c1".into(),
             },
@@ -425,19 +424,10 @@ mod tests {
         .await
         .unwrap();
 
-        pub_.publish(
-            topics::Endpoint(ep),
-            TurnLifecycleEvent::Started {
-                correlation_id: "c2".into(),
-            },
-        )
-        .await
-        .unwrap();
-
         let msg = subs.recv().await.unwrap();
         assert!(
-            matches!(msg, ServerMessage::TurnStarted { reply_to } if reply_to == "c2"),
-            "TurnEnded should be skipped; next message should be TurnStarted"
+            matches!(msg, ServerMessage::TurnEnded { reply_to } if reply_to == "c1"),
+            "TurnEnded should map to ServerMessage::TurnEnded"
         );
     }
 

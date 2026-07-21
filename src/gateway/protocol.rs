@@ -53,6 +53,14 @@ pub enum ServerMessage {
         /// Correlation ID of the message being processed.
         reply_to: String,
     },
+    /// The agent turn has finished (success or error), whether or not any
+    /// response text was produced. Marks the end of a turn that a
+    /// `TurnStarted` opened, so clients can stop waiting even when the turn
+    /// yielded zero `Response` frames (e.g. an interrupted or tool-only turn).
+    TurnEnded {
+        /// Correlation ID of the message whose turn just completed.
+        reply_to: String,
+    },
     /// A tool was invoked during the agent turn (verbose only).
     ToolCall {
         /// Unique tool call ID for correlating with results.
@@ -214,6 +222,22 @@ mod tests {
         assert!(
             matches!(msg, ClientMessage::Reload),
             "should deserialize to Reload"
+        );
+    }
+
+    #[test]
+    fn server_message_serialize_turn_ended() {
+        let msg = ServerMessage::TurnEnded {
+            reply_to: "id-1".to_string(),
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(
+            json.contains("\"type\":\"turn_ended\""),
+            "should have type tag"
+        );
+        assert!(
+            json.contains("\"reply_to\":\"id-1\""),
+            "should have reply_to field"
         );
     }
 

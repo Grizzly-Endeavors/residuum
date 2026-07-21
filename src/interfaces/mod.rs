@@ -82,7 +82,8 @@ pub(crate) async fn dispatch_server_command(
         tracing::warn!(command = %name, error = %e, "failed to dispatch server command");
     }
     match tokio::time::timeout(Duration::from_secs(10), reply_rx).await {
-        Ok(Ok(msg)) => msg,
+        Ok(Ok(Ok(msg))) => msg,
+        Ok(Ok(Err(reason))) => reason,
         Ok(Err(_)) => {
             tracing::warn!(command = %name, "server command reply channel closed before response");
             fallback

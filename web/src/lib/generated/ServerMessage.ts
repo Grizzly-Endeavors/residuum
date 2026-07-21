@@ -8,6 +8,10 @@ export type ServerMessage = { "type": "turn_started",
 /**
  * Correlation ID of the message being processed.
  */
+reply_to: string, } | { "type": "turn_ended", 
+/**
+ * Correlation ID of the message whose turn just completed.
+ */
 reply_to: string, } | { "type": "tool_call", 
 /**
  * Unique tool call ID for correlating with results.

@@ -183,6 +183,13 @@ fn handle_ws_frame(
         Ok(ref server_msg @ ServerMessage::Error { .. }) if *turn_active => {
             end_turn(client, server_msg, turn_active, gate_tx);
         }
+        // Closes turns that produced zero Response frames (e.g. interrupted
+        // or tool-only turns), which would otherwise leave the prompt gated
+        // forever. Turns that already ended via Response/Error above have
+        // turn_active == false by the time this arrives, so it's a no-op then.
+        Ok(ref server_msg @ ServerMessage::TurnEnded { .. }) if *turn_active => {
+            end_turn(client, server_msg, turn_active, gate_tx);
+        }
         Ok(server_msg) => client.display(&server_msg),
         Err(e) => tracing::warn!(error = %e, "failed to parse server message"),
     }
@@ -479,6 +486,60 @@ mod tests {
         assert!(
             gate_rx.try_recv().is_ok(),
             "gate should be signaled when Error ends turn"
+        );
+    }
+
+    #[test]
+    fn handle_ws_frame_turn_ended_active_ends_turn() {
+        let mut client = make_client();
+        let mut turn_active = true;
+        let (gate_tx, gate_rx) = make_gate();
+        let json = r#"{"type":"turn_ended","reply_to":"cli-1"}"#;
+        let result = handle_ws_frame(
+            Ok(TungsteniteMessage::text(json)),
+            &mut client,
+            &mut turn_active,
+            &gate_tx,
+        );
+        assert_eq!(
+            result,
+            std::ops::ControlFlow::Continue(()),
+            "TurnEnded should return Continue"
+        );
+        assert!(
+            !turn_active,
+            "turn_active should be false after TurnEnded ends turn"
+        );
+        assert!(
+            gate_rx.try_recv().is_ok(),
+            "gate should be signaled when TurnEnded ends turn"
+        );
+    }
+
+    #[test]
+    fn handle_ws_frame_turn_ended_inactive_is_noop() {
+        let mut client = make_client();
+        let mut turn_active = false;
+        let (gate_tx, gate_rx) = make_gate();
+        let json = r#"{"type":"turn_ended","reply_to":"cli-1"}"#;
+        let result = handle_ws_frame(
+            Ok(TungsteniteMessage::text(json)),
+            &mut client,
+            &mut turn_active,
+            &gate_tx,
+        );
+        assert_eq!(
+            result,
+            std::ops::ControlFlow::Continue(()),
+            "TurnEnded should return Continue"
+        );
+        assert!(
+            !turn_active,
+            "turn_active should remain false when already inactive"
+        );
+        assert!(
+            gate_rx.try_recv().is_err(),
+            "gate should not be signaled when TurnEnded arrives after the turn already ended"
         );
     }
 

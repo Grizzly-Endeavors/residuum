@@ -78,6 +78,13 @@ export class FeedStore {
         this.isProcessing = true;
         break;
 
+      case "turn_ended":
+        // Closes out turns that produce no response/error (e.g. zero-text
+        // replies) — harmless no-op if isProcessing already cleared via
+        // one of those paths.
+        this.isProcessing = false;
+        break;
+
       case "tool_call":
         this.handleToolCall(msg);
         break;

@@ -196,11 +196,7 @@ async fn handle_client_message(
         }
         ClientMessage::Reload => {
             tracing::info!("reload requested by client");
-            local_tx
-                .send(ServerMessage::Notice {
-                    message: "reloading configuration...".to_string(),
-                })
-                .ok();
+            local_tx.send(ServerMessage::Reloading).ok();
             state
                 .reload_tx
                 .send(crate::gateway::types::ReloadSignal::Root)
@@ -208,15 +204,31 @@ async fn handle_client_message(
         }
         ClientMessage::ServerCommand { name, args } => {
             tracing::info!(command = %name, "server command from client");
+            let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
             state
                 .command_tx
                 .send(crate::gateway::types::ServerCommand {
                     name,
                     args,
-                    reply_tx: None,
+                    reply_tx: Some(reply_tx),
                 })
                 .await
                 .ok();
+
+            // Successful commands are already reflected via the normal bus
+            // broadcast (e.g. Notice/InlineOutput); only a rejection needs
+            // routing back here, scoped to this connection only.
+            let err_tx = local_tx.clone();
+            tokio::spawn(async move {
+                if let Ok(Err(reason)) = reply_rx.await {
+                    err_tx
+                        .send(ServerMessage::Error {
+                            reply_to: None,
+                            message: reason,
+                        })
+                        .ok();
+                }
+            });
         }
         ClientMessage::InboxAdd { body } => {
             tracing::info!("inbox add requested by client");

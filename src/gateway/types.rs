@@ -95,8 +95,14 @@ pub struct ServerCommand {
     pub name: String,
     /// Optional argument text.
     pub args: Option<String>,
-    /// Optional oneshot sender for commands that return a response (e.g. "context").
-    pub reply_tx: Option<tokio::sync::oneshot::Sender<String>>,
+    /// Optional oneshot sender for routing a response back to the sender only.
+    ///
+    /// `Ok` carries a successful command's reply text (e.g. "context"); the
+    /// WS layer intentionally ignores it since the outcome is already
+    /// reflected via the normal bus broadcast. `Err` carries a rejection
+    /// reason (e.g. an unknown command name) and is routed to the sender as
+    /// an error, never broadcast to other clients.
+    pub reply_tx: Option<tokio::sync::oneshot::Sender<Result<String, String>>>,
 }
 
 /// Long-lived core that owns shared communication channels.
