@@ -460,3 +460,172 @@ pub async fn handle_inbound_message(
         *idle_deadline = Some(now + rt.cfg.idle.timeout);
     }
 }
+
+#[cfg(test)]
+#[expect(clippy::unwrap_used, reason = "test code uses unwrap for clarity")]
+mod tests {
+    use super::*;
+    use crate::bus::Subscriber;
+    use std::time::Duration;
+
+    const TEST_TZ: chrono_tz::Tz = chrono_tz::Tz::UTC;
+
+    fn endpoint() -> EndpointName {
+        EndpointName::from("ws")
+    }
+
+    /// Assert a subscriber receives no event within a short window, proving the
+    /// unit published nothing on that topic/type.
+    async fn assert_no_event<E: Clone + Send + Sync + 'static>(sub: &mut Subscriber<E>) {
+        let recv = tokio::time::timeout(Duration::from_millis(50), sub.recv()).await;
+        assert!(recv.is_err(), "expected no event, but one was published");
+    }
+
+    #[tokio::test]
+    async fn ok_publishes_one_response_per_text_then_ends_turn() {
+        let handle = crate::bus::spawn_broker();
+        let publisher = handle.publisher();
+        let mut responses: Subscriber<ResponseEvent> = handle
+            .subscribe(topics::Endpoint(endpoint()))
+            .await
+            .unwrap();
+        let mut lifecycle: Subscriber<TurnLifecycleEvent> = handle
+            .subscribe(topics::Endpoint(endpoint()))
+            .await
+            .unwrap();
+
+        publish_turn_outcome(
+            Ok(vec!["first".into(), "second".into()]),
+            &publisher,
+            Some(&endpoint()),
+            "corr-1",
+            TEST_TZ,
+        )
+        .await;
+
+        let first = responses.recv().await.unwrap().unwrap();
+        assert_eq!(first.content, "first");
+        assert_eq!(first.correlation_id, "corr-1");
+        assert!(first.attachment.is_none());
+        let second = responses.recv().await.unwrap().unwrap();
+        assert_eq!(second.content, "second");
+
+        let ended = lifecycle.recv().await.unwrap().unwrap();
+        assert!(
+            matches!(ended, TurnLifecycleEvent::Ended { correlation_id } if correlation_id == "corr-1")
+        );
+    }
+
+    #[tokio::test]
+    async fn ok_with_no_texts_still_ends_turn() {
+        let handle = crate::bus::spawn_broker();
+        let publisher = handle.publisher();
+        let mut responses: Subscriber<ResponseEvent> = handle
+            .subscribe(topics::Endpoint(endpoint()))
+            .await
+            .unwrap();
+        let mut lifecycle: Subscriber<TurnLifecycleEvent> = handle
+            .subscribe(topics::Endpoint(endpoint()))
+            .await
+            .unwrap();
+
+        publish_turn_outcome(Ok(vec![]), &publisher, Some(&endpoint()), "corr-2", TEST_TZ).await;
+
+        let ended = lifecycle.recv().await.unwrap().unwrap();
+        assert!(
+            matches!(ended, TurnLifecycleEvent::Ended { correlation_id } if correlation_id == "corr-2")
+        );
+        assert_no_event(&mut responses).await;
+    }
+
+    #[tokio::test]
+    async fn ok_without_output_endpoint_publishes_nothing() {
+        let handle = crate::bus::spawn_broker();
+        let publisher = handle.publisher();
+        let mut responses: Subscriber<ResponseEvent> = handle
+            .subscribe(topics::Endpoint(endpoint()))
+            .await
+            .unwrap();
+        let mut lifecycle: Subscriber<TurnLifecycleEvent> = handle
+            .subscribe(topics::Endpoint(endpoint()))
+            .await
+            .unwrap();
+
+        publish_turn_outcome(
+            Ok(vec!["ignored".into()]),
+            &publisher,
+            None,
+            "corr-3",
+            TEST_TZ,
+        )
+        .await;
+
+        assert_no_event(&mut responses).await;
+        assert_no_event(&mut lifecycle).await;
+    }
+
+    #[tokio::test]
+    async fn err_broadcasts_error_event_and_ends_turn() {
+        let handle = crate::bus::spawn_broker();
+        let publisher = handle.publisher();
+        let mut errors: Subscriber<ErrorEvent> = handle
+            .subscribe(topics::Notification(NotifyName::from(SYSTEM_CHANNEL)))
+            .await
+            .unwrap();
+        let mut responses: Subscriber<ResponseEvent> = handle
+            .subscribe(topics::Endpoint(endpoint()))
+            .await
+            .unwrap();
+        let mut lifecycle: Subscriber<TurnLifecycleEvent> = handle
+            .subscribe(topics::Endpoint(endpoint()))
+            .await
+            .unwrap();
+
+        publish_turn_outcome(
+            Err(anyhow::anyhow!("boom")),
+            &publisher,
+            Some(&endpoint()),
+            "corr-4",
+            TEST_TZ,
+        )
+        .await;
+
+        let error = errors.recv().await.unwrap().unwrap();
+        assert_eq!(error.correlation_id, "corr-4");
+        assert_eq!(error.message, "boom");
+
+        let ended = lifecycle.recv().await.unwrap().unwrap();
+        assert!(
+            matches!(ended, TurnLifecycleEvent::Ended { correlation_id } if correlation_id == "corr-4")
+        );
+        assert_no_event(&mut responses).await;
+    }
+
+    #[tokio::test]
+    async fn err_without_output_endpoint_still_broadcasts_error_without_ending_turn() {
+        let handle = crate::bus::spawn_broker();
+        let publisher = handle.publisher();
+        let mut errors: Subscriber<ErrorEvent> = handle
+            .subscribe(topics::Notification(NotifyName::from(SYSTEM_CHANNEL)))
+            .await
+            .unwrap();
+        let mut lifecycle: Subscriber<TurnLifecycleEvent> = handle
+            .subscribe(topics::Endpoint(endpoint()))
+            .await
+            .unwrap();
+
+        publish_turn_outcome(
+            Err(anyhow::anyhow!("kaboom")),
+            &publisher,
+            None,
+            "corr-5",
+            TEST_TZ,
+        )
+        .await;
+
+        let error = errors.recv().await.unwrap().unwrap();
+        assert_eq!(error.correlation_id, "corr-5");
+        assert_eq!(error.message, "kaboom");
+        assert_no_event(&mut lifecycle).await;
+    }
+}
