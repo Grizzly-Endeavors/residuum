@@ -57,6 +57,7 @@ These are drawn from [design-philosophy.md](../design-philosophy.md) and inform 
 | [Scheduled Actions](scheduled-actions.md) | One-off future tasks | `schedule_action`, `list_actions`, `cancel_action` | `scheduled_actions.json` |
 | [Skills](skills.md) | Loadable instruction modules | `skill_activate`, `skill_deactivate` | per-skill `SKILL.md` |
 | [Tool PATH](tools.md) | Runtime-extensible PATH for spawned CLIs (exec + MCP stdio) | *(automatic — no tools)* | `[tools]` in `config.toml`, `~/.residuum/bin` |
+| [MCP](mcp.md) | External tool servers (stdio + HTTP), reconciled against desired state | *(automatic — surfaced as regular tools)* | `config/mcp.json`, per-project `mcp_servers` |
 | [Notifications](notifications.md) | Result routing from background tasks | `list_endpoints`, `switch_endpoint`, `send_message` | `ALERTS.md`, `config/channels.toml` |
 | [Background Tasks](background-tasks.md) | Sub-agents and scripts | `subagent_spawn`, `list_agents`, `stop_agent` | `[background]` in `config.toml`, `subagents/` presets |
 | [Subconscious](subconscious.md) | Instruction-drift classifier that steers the agent | *(automatic — no tools)* | `[subconscious]` in `config.toml`, `SUBCONSCIOUS.md` |
