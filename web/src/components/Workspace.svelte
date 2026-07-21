@@ -6,6 +6,7 @@
   import { toast } from "../lib/toast.svelte";
   import { Icon } from "../lib/icons";
   import FileTree from "./FileTree.svelte";
+  import Modal from "./Modal.svelte";
 
   let { onClose }: { onClose: () => void } = $props();
 
@@ -19,6 +20,8 @@
   let expandedDirs = new SvelteSet<string>();
   let treeCache = $state<Record<string, WorkspaceEntry[]>>({});
   let mobileEditorOpen = $state(false);
+  let pendingFile = $state("");
+  let discardConfirmOpen = $state(false);
 
   // Derived
   let dirty = $derived(editContent !== fileContent);
@@ -70,7 +73,27 @@
     }
   }
 
-  async function handleSelectFile(path: string) {
+  function handleSelectFile(path: string) {
+    if (dirty) {
+      pendingFile = path;
+      discardConfirmOpen = true;
+      return;
+    }
+    void loadFile(path);
+  }
+
+  function confirmDiscardAndSelect() {
+    discardConfirmOpen = false;
+    void loadFile(pendingFile);
+    pendingFile = "";
+  }
+
+  function cancelDiscard() {
+    discardConfirmOpen = false;
+    pendingFile = "";
+  }
+
+  async function loadFile(path: string) {
     selectedFile = path;
     loading = true;
     error = "";
@@ -175,3 +198,12 @@
     {/if}
   </div>
 </div>
+
+<Modal open={discardConfirmOpen} title="Discard unsaved changes?" onClose={cancelDiscard}>
+  Switching files will discard your unsaved edits to "{fileName(selectedFile)}".
+
+  {#snippet actions()}
+    <button class="btn btn-secondary" onclick={cancelDiscard}>Cancel</button>
+    <button class="btn btn-danger" onclick={confirmDiscardAndSelect}>Discard and switch</button>
+  {/snippet}
+</Modal>
