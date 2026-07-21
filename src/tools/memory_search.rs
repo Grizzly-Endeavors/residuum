@@ -101,15 +101,18 @@ impl Tool for MemorySearchTool {
         };
 
         // Map the tool-facing source names onto the internal DocSource vocabulary.
-        // Omitted → None (search both).
-        let source_filter = arguments
-            .get("source")
-            .and_then(Value::as_str)
-            .and_then(|s| match s {
-                "observations" => Some(DocSource::Observation),
-                "episodes" => Some(DocSource::Chunk),
-                _ => None,
-            });
+        // Omitted → None (search both); an unrecognized value is rejected rather
+        // than silently falling back to searching both.
+        let source_filter = match arguments.get("source").and_then(Value::as_str) {
+            Some("observations") => Some(DocSource::Observation),
+            Some("episodes") => Some(DocSource::Chunk),
+            None => None,
+            Some(other) => {
+                return Err(ToolError::InvalidArguments(format!(
+                    "unknown source '{other}': expected 'observations' or 'episodes'"
+                )));
+            }
+        };
 
         let filters = SearchFilters {
             source: source_filter,
@@ -281,6 +284,28 @@ mod tests {
         assert!(
             result.output.contains("[observation]"),
             "should return observations"
+        );
+    }
+
+    #[tokio::test]
+    async fn search_tool_rejects_unknown_source() {
+        let (_dir, tool) = create_test_tool();
+        // An unrecognized source value is a caller mistake — reject it clearly
+        // instead of silently searching both sources.
+        let result = tool
+            .execute(serde_json::json!({
+                "query": "rust memory",
+                "source": "observation"
+            }))
+            .await;
+
+        assert!(
+            matches!(
+                &result,
+                Err(ToolError::InvalidArguments(msg))
+                    if msg.contains("observation") && msg.contains("expected")
+            ),
+            "unknown source should be rejected with a clear InvalidArguments error naming the bad value, got {result:?}"
         );
     }
 
