@@ -11,7 +11,18 @@ type ImageAttachment = _ImageAttachment;
 export interface ToolCallRecord {
   id: string;
   name: string;
-  arguments: string;
+  /**
+   * Deliberately `unknown`: the wire shape depends on the source. History
+   * (`/api/chat/history`) serializes this from a Rust `serde_json::Value`, so
+   * it arrives as an **object**; other paths have carried it as a JSON
+   * **string**. Typing it as `string` previously invited a bare
+   * `JSON.parse(...)`, which throws `SyntaxError` on an object and took out
+   * the whole feed render.
+   *
+   * Keep this `unknown` so the compiler forces every reader through
+   * `normalizeToolArgs()` instead of assuming a shape.
+   */
+  arguments: unknown;
 }
 
 export interface RecentMessage {

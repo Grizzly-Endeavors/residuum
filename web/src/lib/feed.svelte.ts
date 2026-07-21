@@ -15,6 +15,34 @@ import type {
   EpisodeHistorySegment,
 } from "./types";
 
+/**
+ * Coerce tool-call arguments to an object, whatever shape they arrived in.
+ *
+ * Tool arguments reach the UI two ways and they do NOT agree: the history
+ * endpoint serializes a Rust `serde_json::Value` (an **object**), while the
+ * live socket has carried a JSON **string**. Every reader must go through
+ * here — a bare `JSON.parse()` throws `SyntaxError` on the object form
+ * (`JSON.parse` stringifies its argument first, yielding "[object Object]"),
+ * and because feed building is a single pass, one throw blanks the entire
+ * conversation rather than one message.
+ *
+ * Malformed input degrades to `{}` so a single bad record can't take the
+ * feed down with it.
+ */
+export function normalizeToolArgs(value: unknown): Record<string, unknown> {
+  if (typeof value === "string") {
+    try {
+      const parsed: unknown = JSON.parse(value);
+      return typeof parsed === "object" && parsed !== null
+        ? (parsed as Record<string, unknown>)
+        : {};
+    } catch {
+      return {};
+    }
+  }
+  return typeof value === "object" && value !== null ? (value as Record<string, unknown>) : {};
+}
+
 const DAY_DIVIDER_FORMATTER = new Intl.DateTimeFormat(undefined, {
   month: "long",
   day: "numeric",
@@ -219,7 +247,7 @@ export class FeedStore {
           }
           if (msg.tool_calls?.length) {
             const calls: ToolCallState[] = msg.tool_calls.map((tc) => {
-              const args = JSON.parse(tc.arguments) as Record<string, unknown>;
+              const args = normalizeToolArgs(tc.arguments);
               const call: ToolCallState = {
                 id: tc.id,
                 name: tc.name,
@@ -268,10 +296,7 @@ export class FeedStore {
   }
 
   private handleToolCall(msg: Extract<ServerMessage, { type: "tool_call" }>): void {
-    const args =
-      typeof msg.arguments === "string"
-        ? (JSON.parse(msg.arguments) as Record<string, unknown>)
-        : ((msg.arguments as Record<string, unknown>) ?? {});
+    const args = normalizeToolArgs(msg.arguments);
 
     const call: ToolCallState = {
       id: msg.id,
