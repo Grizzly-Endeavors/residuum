@@ -329,6 +329,41 @@
   transform: translateX(-50%) translateY(0);
 }
 
+/* ── Empty feed ────────────────────────────────────────────────────────── */
+
+.feed-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--s-2);
+  min-height: 200px;
+  text-align: center;
+  padding: var(--s-5);
+}
+
+.feed-empty-text {
+  font-family: var(--font-body);
+  font-weight: 300;
+  font-style: italic;
+  font-size: var(--fs-md);
+  color: var(--text-dim);
+  margin: 0;
+}
+
+.feed-empty-hint {
+  font-family: var(--font-body);
+  font-size: var(--fs-sm);
+  color: var(--text-muted);
+  margin: 0;
+}
+
+.feed-empty-key {
+  font-family: var(--font-mono);
+  color: var(--vein-bright);
+  padding: 0 var(--s-1);
+}
+
 /* ── Lazy-load sentinel + dust indicator ────────────────────────────────── */
 
 .feed-top-sentinel {

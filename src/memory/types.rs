@@ -39,6 +39,52 @@ pub enum Visibility {
     Background,
 }
 
+/// Which kind of document a memory search result came from.
+///
+/// The memory index holds two kinds of documents: distilled [`Observation`]s
+/// and raw interaction-pair [`IndexChunk`]s. `DocSource` is the single internal
+/// vocabulary for that distinction — it is the value stored in the index's
+/// `source_type` field, the value filtered on, and the value shown in results.
+/// The `memory_search` tool maps its user-facing names (`"observations"`/
+/// `"episodes"`) onto these variants at its boundary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DocSource {
+    /// A distilled observation document.
+    Observation,
+    /// A raw interaction-pair chunk document.
+    Chunk,
+}
+
+impl DocSource {
+    /// The stable string stored in the index and shown in search results.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Observation => "observation",
+            Self::Chunk => "chunk",
+        }
+    }
+
+    /// Parse the value stored in the index's `source_type` field.
+    ///
+    /// Returns `None` for any value the index should never contain — a signal
+    /// of index corruption rather than a normal input.
+    #[must_use]
+    pub fn from_index_value(value: &str) -> Option<Self> {
+        match value {
+            "observation" => Some(Self::Observation),
+            "chunk" => Some(Self::Chunk),
+            _ => None,
+        }
+    }
+}
+
+impl fmt::Display for DocSource {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
 /// A single extracted observation with full metadata.
 ///
 /// Each observation is self-describing: it carries when it was created,
@@ -260,6 +306,36 @@ mod tests {
             !json.contains("source_episodes"),
             "empty source_episodes should be skipped in serialization"
         );
+    }
+
+    #[test]
+    fn doc_source_as_str_round_trips_through_index_value() {
+        for source in [DocSource::Observation, DocSource::Chunk] {
+            assert_eq!(
+                DocSource::from_index_value(source.as_str()),
+                Some(source),
+                "as_str should round-trip through from_index_value"
+            );
+        }
+    }
+
+    #[test]
+    fn doc_source_index_values_are_stable() {
+        assert_eq!(DocSource::Observation.as_str(), "observation");
+        assert_eq!(DocSource::Chunk.as_str(), "chunk");
+    }
+
+    #[test]
+    fn doc_source_display_matches_index_value() {
+        assert_eq!(DocSource::Observation.to_string(), "observation");
+        assert_eq!(DocSource::Chunk.to_string(), "chunk");
+    }
+
+    #[test]
+    fn doc_source_rejects_unknown_index_value() {
+        assert_eq!(DocSource::from_index_value("episodes"), None);
+        assert_eq!(DocSource::from_index_value(""), None);
+        assert_eq!(DocSource::from_index_value("Observation"), None);
     }
 
     #[test]

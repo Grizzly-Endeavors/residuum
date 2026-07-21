@@ -11,15 +11,15 @@ use zerocopy::IntoBytes;
 
 use anyhow::Context;
 
-use crate::memory::types::{IndexChunk, Observation};
+use crate::memory::types::{DocSource, IndexChunk, Observation};
 
 /// A vector search result from either the observation or chunk table.
 #[derive(Debug, Clone)]
 pub struct VectorSearchResult {
     /// Document identifier (obs or chunk ID).
     pub id: String,
-    /// Source type: `"observation"` or `"chunk"`.
-    pub source_type: String,
+    /// Which kind of document this result came from.
+    pub source_type: DocSource,
     /// Parent episode identifier.
     pub episode_id: String,
     /// Date string (YYYY-MM-DD).
@@ -465,7 +465,7 @@ fn search_obs_table(
         .query_map(param_refs.as_slice(), |row| {
             Ok(VectorSearchResult {
                 id: row.get(0)?,
-                source_type: "observation".to_string(),
+                source_type: DocSource::Observation,
                 episode_id: row.get(1)?,
                 date: row.get(2)?,
                 context: row.get(3)?,
@@ -522,7 +522,7 @@ fn search_chunk_table(
             let line_end: Option<i64> = row.get(6)?;
             Ok(VectorSearchResult {
                 id: row.get(0)?,
-                source_type: "chunk".to_string(),
+                source_type: DocSource::Chunk,
                 episode_id: row.get(1)?,
                 date: row.get(2)?,
                 context: row.get(3)?,
@@ -631,7 +631,7 @@ mod tests {
             .search(&query, 5, &VectorSearchFilters::default())
             .unwrap();
         assert!(!results.is_empty(), "should find results");
-        assert_eq!(results[0].source_type, "observation");
+        assert_eq!(results[0].source_type, DocSource::Observation);
         assert_eq!(results[0].episode_id, "ep-001");
     }
 
@@ -659,7 +659,7 @@ mod tests {
             .search(&query, 5, &VectorSearchFilters::default())
             .unwrap();
         assert!(!results.is_empty(), "should find chunk");
-        assert_eq!(results[0].source_type, "chunk");
+        assert_eq!(results[0].source_type, DocSource::Chunk);
         assert_eq!(results[0].line_start, Some(2));
         assert_eq!(results[0].line_end, Some(3));
     }

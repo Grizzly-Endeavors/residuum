@@ -43,6 +43,7 @@
   // Track model lists per role
   let modelLists = $state<Record<string, ModelEntry[]>>({});
   let modelLoading = $state<Record<string, boolean>>({});
+  let modelErrors = $state<Record<string, string | null>>({});
   let otherActive = $state<Record<string, boolean>>({});
   let otherValues = $state<Record<string, string>>({});
 
@@ -150,6 +151,7 @@
     if (role === "embedding") {
       const models = EMBEDDING_MODEL_LISTS[prov] ?? [];
       modelLists[role] = models;
+      modelErrors[role] = null;
       const current = getRoleModel(role);
       if (!current && models.length > 0) {
         const defaultModel = DEFAULT_EMBEDDING_MODELS[prov] ?? "";
@@ -167,6 +169,7 @@
     const result = await fetchModels(prov, apiKey, url);
     modelLists[role] = result.models;
     modelLoading[role] = false;
+    modelErrors[role] = result.error;
 
     // Auto-select default if no model set
     const current = getRoleModel(role);
@@ -272,6 +275,15 @@
         </div>
       </div>
     </div>
+    {#if modelErrors["main"]}
+      <div class="provider-warning">
+        <span class="provider-warning-icon">&#9888;</span>
+        <span
+          >Couldn't load live models ({modelErrors["main"]}) — showing a fallback list, not the
+          provider's real models. Check the API key or URL and try again.</span
+        >
+      </div>
+    {/if}
   </div>
 </div>
 
@@ -334,6 +346,15 @@
           </div>
         </div>
       </div>
+      {#if modelErrors[role]}
+        <div class="provider-warning">
+          <span class="provider-warning-icon">&#9888;</span>
+          <span
+            >Couldn't load live models ({modelErrors[role]}) — showing a fallback list, not the
+            provider's real models. Check the API key or URL and try again.</span
+          >
+        </div>
+      {/if}
     </div>
   {/each}
 </div>
@@ -460,6 +481,15 @@
           </div>
         </div>
       </div>
+      {#if modelErrors[role]}
+        <div class="provider-warning">
+          <span class="provider-warning-icon">&#9888;</span>
+          <span
+            >Couldn't load live models ({modelErrors[role]}) — showing a fallback list, not the
+            provider's real models. Check the API key or URL and try again.</span
+          >
+        </div>
+      {/if}
     </div>
   {/each}
 </div>

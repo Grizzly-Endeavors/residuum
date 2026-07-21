@@ -240,6 +240,15 @@
     >
       <span class="feed-loading-older">loading earlier messages…</span>
     </div>
+    {#if items.length === 0}
+      <div class="feed-empty">
+        <p class="feed-empty-text">No messages yet.</p>
+        <p class="feed-empty-hint">
+          Type <span class="feed-empty-key">/help</span> to see available commands, or press
+          <span class="feed-empty-key">?</span> anytime for the shortcuts overlay.
+        </p>
+      </div>
+    {/if}
     {#each items as item (item.id)}
       {#if item.kind === "user"}
         <MessageUser content={item.content} images={item.images} />
