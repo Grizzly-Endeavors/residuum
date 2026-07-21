@@ -219,7 +219,7 @@ On error:
 
 ### Output
 
-On success: summary string like `"Activated project '{name}'. Manifest: {N} notes, {N} references, {N} workspace, {N} skills files."`
+On success: summary string like `"Activated project '{name}'. Manifest: {N} notes, {N} references, {N} workspace, {N} skills files."`, followed by one `warning: ...` line per non-fatal failure (MCP server reference resolution, MCP server start, or skill rescan) if any occurred.
 
 On error: project not found or activation failure message.
 
@@ -242,7 +242,7 @@ On error: project not found or activation failure message.
 
 ### Output
 
-On success: `"Deactivated project '{name}'. Log entry recorded."`
+On success: `"Deactivated project '{name}'. Log entry recorded."`, followed by a `warning: skill rescan failed: {error}` line if the post-deactivation skill rescan failed.
 
 On error: no active project, or empty `log`.
 

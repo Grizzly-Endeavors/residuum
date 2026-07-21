@@ -141,6 +141,7 @@ impl Tool for ProjectActivateTool {
                     .await
                 {
                     tracing::warn!(error = %e, "failed to rescan skills after project activation");
+                    warnings.push(format!("warning: skill rescan failed: {e}"));
                 }
                 tracing::info!(project = %project_name, tools = ?tools_list, "project activated");
                 let output = if warnings.is_empty() {
@@ -220,6 +221,7 @@ impl Tool for ProjectDeactivateTool {
 
         match state.deactivate(log, now).await {
             Ok(name) => {
+                let mut warnings: Vec<String> = Vec::new();
                 // Clear path policy — no project-scoped writes allowed
                 self.path_policy.write().await.set_active_project(None);
                 // Clear gated tool permissions
@@ -240,10 +242,15 @@ impl Tool for ProjectDeactivateTool {
                 // Rescan skills without project dir (removes project-scoped skills)
                 if let Err(e) = self.skill_state.lock().await.rescan(None).await {
                     tracing::warn!(error = %e, "failed to rescan skills after project deactivation");
+                    warnings.push(format!("warning: skill rescan failed: {e}"));
                 }
-                Ok(ToolResult::success(format!(
-                    "Deactivated project '{name}'. Log entry recorded."
-                )))
+                let summary = format!("Deactivated project '{name}'. Log entry recorded.");
+                let output = if warnings.is_empty() {
+                    summary
+                } else {
+                    format!("{summary}\n{}", warnings.join("\n"))
+                };
+                Ok(ToolResult::success(output))
             }
             Err(e) => Ok(ToolResult::error(e.to_string())),
         }
