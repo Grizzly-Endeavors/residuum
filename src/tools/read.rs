@@ -71,7 +71,7 @@ impl Tool for ReadTool {
         ToolDefinition {
             name: self.name().to_string(),
             description: "Read the contents of a file. Each output line is tagged with a \
-                          content hash (e.g. `1:f1\\thello`) for use with edit_file. \
+                          content hash (e.g. `1:f1a3\\thello`) for use with edit_file. \
                           By default returns the first 2000 lines; use offset/limit for larger files. \
                           Lines longer than 2000 characters are truncated. \
                           Image files (JPEG, PNG, GIF, WebP) are returned as inline images \

@@ -27,17 +27,17 @@ impl EditTool {
     }
 }
 
-/// Parsed line anchor: (1-indexed line number, 2-char hex hash).
+/// Parsed line anchor: (1-indexed line number, 4-char hex hash).
 struct LineAnchor {
     line_num: usize,
     hash: String,
 }
 
-/// Parse a `"line:hash"` string (e.g. `"5:a3"`) into its components.
+/// Parse a `"line:hash"` string (e.g. `"5:a3b2"`) into its components.
 fn parse_anchor(value: &str) -> Result<LineAnchor, ToolError> {
     let Some((num_str, hash_str)) = value.split_once(':') else {
         return Err(ToolError::InvalidArguments(format!(
-            "invalid line:hash format '{value}', expected 'N:xx' (e.g. '5:a3')"
+            "invalid line:hash format '{value}', expected 'N:xxxx' (e.g. '5:a3b2')"
         )));
     };
 
@@ -45,9 +45,9 @@ fn parse_anchor(value: &str) -> Result<LineAnchor, ToolError> {
         ToolError::InvalidArguments(format!("invalid line number '{num_str}' in '{value}'"))
     })?;
 
-    if hash_str.len() != 2 || !hash_str.chars().all(|c| c.is_ascii_hexdigit()) {
+    if hash_str.len() != 4 || !hash_str.chars().all(|c| c.is_ascii_hexdigit()) {
         return Err(ToolError::InvalidArguments(format!(
-            "invalid hash '{hash_str}' in '{value}', expected 2 hex characters"
+            "invalid hash '{hash_str}' in '{value}', expected 4 hex characters"
         )));
     }
 
@@ -278,7 +278,7 @@ impl Tool for EditTool {
                     },
                     "start_line": {
                         "type": "string",
-                        "description": "Line anchor as 'N:hash' (e.g. '5:a3'). Use '0' for insert_after at file start."
+                        "description": "Line anchor as 'N:hash' (e.g. '5:a3b2'). Use '0' for insert_after at file start."
                     },
                     "end_line": {
                         "type": "string",
@@ -613,8 +613,8 @@ mod tests {
             .execute(serde_json::json!({
                 "path": path,
                 "operation": "replace",
-                "start_line": "1:ff",
-                "end_line": "1:ff",
+                "start_line": "1:ffff",
+                "end_line": "1:ffff",
                 "content": "replaced"
             }))
             .await
@@ -636,8 +636,8 @@ mod tests {
             .execute(serde_json::json!({
                 "path": "/nonexistent/edit_target.txt",
                 "operation": "replace",
-                "start_line": "1:aa",
-                "end_line": "1:aa",
+                "start_line": "1:aaaa",
+                "end_line": "1:aaaa",
                 "content": "x"
             }))
             .await
@@ -661,8 +661,8 @@ mod tests {
             .execute(serde_json::json!({
                 "path": file_path.to_str().unwrap(),
                 "operation": "replace",
-                "start_line": "1:aa",
-                "end_line": "1:aa",
+                "start_line": "1:aaaa",
+                "end_line": "1:aaaa",
                 "content": "x"
             }))
             .await
@@ -737,19 +737,19 @@ mod tests {
         let long_hash = tool
             .execute(serde_json::json!({
                 "path": "/tmp/x", "operation": "replace",
-                "start_line": "1:aabb", "content": "x"
+                "start_line": "1:aabbcc", "content": "x"
             }))
             .await;
         assert!(long_hash.is_err(), "hash too long should error");
 
-        // Non-hex characters in hash (2-char but not valid hex)
+        // Non-hex characters in hash (4-char but not valid hex)
         let non_hex = tool
             .execute(serde_json::json!({
                 "path": "/tmp/x", "operation": "replace",
-                "start_line": "1:zz", "content": "x"
+                "start_line": "1:zzzz", "content": "x"
             }))
             .await;
-        assert!(non_hex.is_err(), "non-hex 2-char hash should error");
+        assert!(non_hex.is_err(), "non-hex 4-char hash should error");
     }
 
     #[tokio::test]
@@ -759,8 +759,8 @@ mod tests {
             .execute(serde_json::json!({
                 "path": "/tmp/x",
                 "operation": "replace",
-                "start_line": "5:aa",
-                "end_line": "2:bb",
+                "start_line": "5:aaaa",
+                "end_line": "2:bbbb",
                 "content": "x"
             }))
             .await;

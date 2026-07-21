@@ -9,7 +9,7 @@ This document is the source of truth for every tool exposed to the LLM. It must 
 **Source:** `read.rs` · `ReadTool`
 
 **Description sent to LLM:**
-> Read the contents of a file. Each output line is tagged with a content hash (e.g. `1:f1\thello`) for use with edit_file. By default returns the first 2000 lines; use offset/limit for larger files. Lines longer than 2000 characters are truncated. Image files (JPEG, PNG, GIF, WebP) are returned as inline images for visual inspection instead of raw bytes.
+> Read the contents of a file. Each output line is tagged with a content hash (e.g. `1:f1a3\thello`) for use with edit_file. By default returns the first 2000 lines; use offset/limit for larger files. Lines longer than 2000 characters are truncated. Image files (JPEG, PNG, GIF, WebP) are returned as inline images for visual inspection instead of raw bytes.
 
 ### Input
 
@@ -78,7 +78,7 @@ On error:
 |--------------|--------|----------|-----------------------------------------------------------------------------|
 | `path`       | string | yes      | Path to the file to edit                                                    |
 | `operation`  | string | yes      | One of: `"replace"`, `"insert_after"`, `"delete"`                          |
-| `start_line` | string | yes      | Line anchor as `"N:hash"` (e.g. `"5:a3"`). Use `"0"` for insert at file start |
+| `start_line` | string | yes      | Line anchor as `"N:hash"` (e.g. `"5:a3b2"`). Use `"0"` for insert at file start |
 | `end_line`   | string | no*      | End line anchor `"N:hash"`. Required for `replace` (use same anchor as `start_line` for single-line). Optional for `delete`. Not used by `insert_after`. |
 | `content`    | string | no**     | New content. Required for `replace` and `insert_after`; omitted for `delete` |
 
@@ -525,6 +525,32 @@ On partial failure: success message plus `"Failed to archive {N} item(s): {error
 On total failure: error with failure details.
 
 **Side effect:** Moves `.json` files from inbox to `archive/inbox/`.
+
+---
+
+## `user_inbox_add`
+
+**Source:** `inbox.rs` · `UserInboxAddTool`
+
+**Description sent to LLM:**
+> Add a new item to the user's inbox. Use this to explicitly send notes, reminders, or items for the human user to review later.
+
+### Input
+
+| Parameter | Type   | Required | Description                        |
+|-----------|--------|----------|-------------------------------------|
+| `title`   | string | yes      | A short summary of the item        |
+| `body`    | string | yes      | The detailed content of the item   |
+
+### Output
+
+On success: `"Added item to user inbox with ID: {filename stem}"`
+
+On error:
+- Missing `title` or `body`
+- Failed to write the item to disk
+
+**Side effect:** Writes a new `.json` file to `inbox/user/`, tagged with source `"agent"`. This is a separate inbox from the agent inbox (`inbox_list`/`inbox_read`/`inbox_archive`) — the agent has no tool to list, read, or archive items here; only the user reads and archives them via the web UI.
 
 ---
 
