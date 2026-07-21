@@ -278,6 +278,7 @@ async fn build_runtime(
         action_store: parts.action_store,
         action_notify: parts.action_notify,
         mcp_registry: parts.mcp_registry,
+        tools_path: parts.tools_path,
         project_state: parts.project_state,
         skill_state: parts.skill_state,
         pulse_enabled: parts.pulse_enabled,

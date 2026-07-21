@@ -24,6 +24,22 @@
     fields.skills_dirs = fields.skills_dirs.filter((_, i) => i !== idx);
   }
 
+  // ── Tools ──────────────────────────────────────────────────────────
+
+  let newToolDir = $state("");
+
+  function addToolDir() {
+    const dir = newToolDir.trim();
+    if (dir && !fields.tools_path.includes(dir)) {
+      fields.tools_path = [...fields.tools_path, dir];
+      newToolDir = "";
+    }
+  }
+
+  function removeToolDir(idx: number) {
+    fields.tools_path = fields.tools_path.filter((_, i) => i !== idx);
+  }
+
   // ── Webhooks ───────────────────────────────────────────────────────
 
   function addWebhook() {
@@ -429,6 +445,35 @@
             }}
           />
           <button class="btn btn-sm btn-secondary" onclick={addSkillDir}>Add</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Tools -->
+    <div class="settings-group">
+      <div class="settings-group-label">Tools</div>
+      <div class="integration-card">
+        <div class="integration-desc">
+          Extra directories prepended to the PATH of spawned commands (the exec tool and MCP stdio
+          servers). Drop static binaries in here to make them available without rebuilding.
+          <code>~/.residuum/bin</code> is always included.
+        </div>
+        {#each fields.tools_path as dir, i (dir)}
+          <div class="skill-dir-entry">
+            <span class="skill-dir-path">{dir}</span>
+            <ConfirmButton onConfirm={() => removeToolDir(i)} />
+          </div>
+        {/each}
+        <div class="skill-dir-add">
+          <input
+            type="text"
+            bind:value={newToolDir}
+            placeholder="Path to tools directory"
+            onkeydown={(e) => {
+              if (e.key === "Enter") addToolDir();
+            }}
+          />
+          <button class="btn btn-sm btn-secondary" onclick={addToolDir}>Add</button>
         </div>
       </div>
     </div>

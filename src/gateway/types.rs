@@ -179,6 +179,8 @@ pub(crate) struct GatewayRuntime {
     pub action_store: Arc<tokio::sync::Mutex<ActionStore>>,
     pub action_notify: Arc<tokio::sync::Notify>,
     pub mcp_registry: SharedMcpRegistry,
+    /// Shared, reloadable effective `PATH` for spawned children (exec + MCP stdio).
+    pub tools_path: crate::tools::SharedToolsPath,
     pub project_state: SharedProjectState,
     pub skill_state: SharedSkillState,
     pub pulse_enabled: bool,

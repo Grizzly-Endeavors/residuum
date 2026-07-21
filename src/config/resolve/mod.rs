@@ -19,15 +19,15 @@ use super::deserialize::{
     AgentConfigFile, BackgroundConfigFile, BackgroundModelsFile, CloudConfigFile, ConfigFile,
     DiscordConfigFile, GatewayConfigFile, LearningConfigFile, MemoryConfigFile, ProviderEntryFile,
     ProvidersFile, SearchConfigFile, SkillsConfigFile, SubconsciousConfigFile, TelegramConfigFile,
-    TracingConfigFile, WebSearchConfigFile, WebhookEntryFile,
+    ToolsConfigFile, TracingConfigFile, WebSearchConfigFile, WebhookEntryFile,
 };
 use super::provider::ProviderKind;
 use super::secrets::SecretStore;
 use super::types::{
     AgentAbilitiesConfig, BackgroundConfig, CloudConfig, DiscordConfig, GatewayConfig, IdleConfig,
     LearningConfig, LogLevel, MemoryConfig, OtelEndpoint, ProviderNativeSearchConfig, SearchConfig,
-    SkillsConfig, StandaloneBackendConfig, SubconsciousSettings, TelegramConfig, TracingConfig,
-    WebSearchConfig, WebhookEntry, WebhookFormat, WebhookRouting,
+    SkillsConfig, StandaloneBackendConfig, SubconsciousSettings, TelegramConfig, ToolsConfig,
+    TracingConfig, WebSearchConfig, WebhookEntry, WebhookFormat, WebhookRouting,
 };
 
 /// Build a `Config` from an optional config file and environment variables.
@@ -86,6 +86,7 @@ pub(crate) fn from_file_and_env(
     let telegram = resolve_telegram_config(file.and_then(|f| f.telegram.as_ref()), &secrets);
     let webhooks = resolve_webhooks_config(file.and_then(|f| f.webhooks.as_ref()), &secrets)?;
     let skills = resolve_skills_config(file.and_then(|f| f.skills.as_ref()), &workspace_dir);
+    let tools = resolve_tools_config(file.and_then(|f| f.tools.as_ref()), config_dir);
 
     let agent = resolve_agent_config(file.and_then(|f| f.agent.as_ref()));
 
@@ -142,6 +143,7 @@ pub(crate) fn from_file_and_env(
         telegram,
         webhooks,
         skills,
+        tools,
         retry,
         background,
         agent,
@@ -430,6 +432,28 @@ fn resolve_skills_config(section: Option<&SkillsConfigFile>, workspace_dir: &Pat
     }
 
     SkillsConfig { dirs }
+}
+
+/// Resolve runtime tool PATH configuration from TOML section.
+///
+/// Directories are ordered highest precedence first: configured `[tools].path`
+/// entries (expanded, in listed order) followed by the default persistent
+/// `<config_dir>/bin` (`~/.residuum/bin`). All are prepended to the inherited
+/// `PATH` of spawned children at spawn time.
+fn resolve_tools_config(section: Option<&ToolsConfigFile>, config_dir: &Path) -> ToolsConfig {
+    let mut dirs = Vec::new();
+
+    if let Some(extra) = section.and_then(|s| s.path.as_ref()) {
+        for raw in extra {
+            let expanded = shellexpand::tilde(raw);
+            dirs.push(PathBuf::from(expanded.as_ref()));
+        }
+    }
+
+    // Default persistent dir, lowest precedence of the tool dirs.
+    dirs.push(config_dir.join("bin"));
+
+    ToolsConfig { dirs }
 }
 
 /// Resolve memory subsystem configuration from TOML section with defaults.
@@ -922,6 +946,39 @@ mod tests {
     use super::*;
 
     // ── Section-specific resolution ───────────────────────────────────────────
+
+    #[test]
+    fn resolve_tools_config_defaults_to_bin_dir() {
+        let config_dir = Path::new("/home/x/.residuum");
+        let tools = resolve_tools_config(None, config_dir);
+        assert_eq!(
+            tools.dirs,
+            vec![PathBuf::from("/home/x/.residuum/bin")],
+            "with no section, only the default bin dir is present"
+        );
+    }
+
+    #[test]
+    fn resolve_tools_config_prepends_configured_dirs_before_bin() {
+        let config_dir = Path::new("/home/x/.residuum");
+        let section = ToolsConfigFile {
+            path: Some(vec![
+                "/opt/residuum-tools".to_string(),
+                "~/extra-bin".to_string(),
+            ]),
+        };
+        let tools = resolve_tools_config(Some(&section), config_dir);
+        let expected_extra = PathBuf::from(shellexpand::tilde("~/extra-bin").as_ref());
+        assert_eq!(
+            tools.dirs,
+            vec![
+                PathBuf::from("/opt/residuum-tools"),
+                expected_extra,
+                PathBuf::from("/home/x/.residuum/bin"),
+            ],
+            "configured dirs come first (in order), then the default bin dir"
+        );
+    }
 
     #[test]
     fn deny_unknown_fields_rejects_top_level_typos() {

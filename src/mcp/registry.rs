@@ -11,7 +11,7 @@ use tokio::sync::RwLock;
 
 use crate::models::ToolDefinition;
 use crate::projects::types::McpServerEntry;
-use crate::tools::{ToolError, ToolResult};
+use crate::tools::{SharedToolsPath, ToolError, ToolResult};
 
 use super::client::McpClient;
 
@@ -104,6 +104,12 @@ pub struct McpRegistry {
     /// same project simultaneously, servers are shared and only disconnected
     /// when the last agent deactivates.
     project_refs: HashMap<String, ProjectMcpState>,
+    /// Effective `PATH` handle prepended to stdio servers' `PATH` at spawn.
+    ///
+    /// `None` in bare registries (tests); the gateway injects the configured
+    /// handle so tool dirs become resolvable. An entry's own `PATH` in its
+    /// `env` still wins (applied after the injected value at spawn time).
+    tools_path: Option<SharedToolsPath>,
 }
 
 impl Default for McpRegistry {
@@ -119,6 +125,7 @@ impl McpRegistry {
         Self {
             servers: Vec::new(),
             project_refs: HashMap::new(),
+            tools_path: None,
         }
     }
 
@@ -126,6 +133,17 @@ impl McpRegistry {
     #[must_use]
     pub fn new_shared() -> SharedMcpRegistry {
         Arc::new(RwLock::new(Self::new()))
+    }
+
+    /// Create a new shared registry that prepends the configured tool
+    /// directories to the `PATH` of spawned stdio servers.
+    #[must_use]
+    pub fn new_shared_with_tools_path(tools_path: SharedToolsPath) -> SharedMcpRegistry {
+        Arc::new(RwLock::new(Self {
+            servers: Vec::new(),
+            project_refs: HashMap::new(),
+            tools_path: Some(tools_path),
+        }))
     }
 
     /// Reconcile desired servers against current state (pure diff, no connections).
@@ -188,7 +206,12 @@ impl McpRegistry {
     #[tracing::instrument(skip_all, fields(mcp.server = %entry.name))]
     pub async fn connect(&mut self, entry: &McpServerEntry) -> Result<(), anyhow::Error> {
         tracing::debug!("attempting mcp server connection");
-        let client = match McpClient::connect(entry).await {
+        // Snapshot the effective PATH (read live so config reloads apply).
+        let tools_path = match &self.tools_path {
+            Some(handle) => handle.read().await.clone(),
+            None => None,
+        };
+        let client = match McpClient::connect(entry, tools_path.as_deref()).await {
             Ok(c) => c,
             Err(e) => {
                 self.mark_failed_if_tracked(&entry.name, &e.to_string());

@@ -51,6 +51,8 @@ pub(super) struct ConfigDiff {
     pub agent_changed: bool,
     /// Skill directories changed.
     pub skills_changed: bool,
+    /// Tool PATH directories changed.
+    pub tools_changed: bool,
     /// Idle system config changed (timeout or `idle_channel`).
     pub idle_changed: bool,
     /// Cloud tunnel config changed (added/removed/changed).
@@ -98,6 +100,9 @@ impl ConfigDiff {
         if self.skills_changed {
             parts.push("skills");
         }
+        if self.tools_changed {
+            parts.push("tool path");
+        }
         if self.idle_changed {
             parts.push("idle");
         }
@@ -138,6 +143,7 @@ pub(super) fn diff_config(old: &Config, new: &Config) -> ConfigDiff {
         background_changed: old.background != new.background,
         agent_changed: old.agent != new.agent,
         skills_changed: old.skills != new.skills,
+        tools_changed: old.tools != new.tools,
         idle_changed: old.idle != new.idle,
         cloud_changed: old.cloud != new.cloud,
         tracing_changed: old.tracing != new.tracing,
@@ -284,6 +290,9 @@ pub(super) async fn handle_root_reload(rt: &mut GatewayRuntime) -> IdleAction {
     }
     if diff.skills_changed {
         reload_skills(rt).await;
+    }
+    if diff.tools_changed {
+        reload_tools_path(rt, &new_cfg).await;
     }
     if diff.agent_changed {
         reload_agent_abilities(rt, &new_cfg).await;
@@ -478,6 +487,17 @@ async fn reload_skills(rt: &mut GatewayRuntime) {
     }
 }
 
+/// Update the shared tools-`PATH` handle from the new config.
+///
+/// The `exec` tool and the MCP stdio spawner read this handle at spawn time, so
+/// the `exec` tool picks up the change on its next call. Already-running stdio
+/// MCP servers keep the `PATH` they were launched with until they next
+/// (re)connect — their environment is fixed at spawn.
+async fn reload_tools_path(rt: &GatewayRuntime, new_cfg: &Config) {
+    *rt.tools_path.write().await = new_cfg.tools.effective_path();
+    tracing::info!("tool PATH updated from new config");
+}
+
 /// Update path policy with new agent ability gates.
 async fn reload_agent_abilities(rt: &mut GatewayRuntime, new_cfg: &Config) {
     let mut blocked: Vec<std::path::PathBuf> = vec![
@@ -625,7 +645,7 @@ mod tests {
     use super::*;
     use crate::config::{
         AgentAbilitiesConfig, BackgroundConfig, CloudConfig, DiscordConfig, GatewayConfig,
-        MemoryConfig, SkillsConfig, TelegramConfig,
+        MemoryConfig, SkillsConfig, TelegramConfig, ToolsConfig,
     };
     use crate::models::retry::RetryConfig;
 
@@ -653,6 +673,7 @@ mod tests {
             telegram: None,
             webhooks: std::collections::HashMap::new(),
             skills: SkillsConfig { dirs: vec![] },
+            tools: ToolsConfig { dirs: vec![] },
             retry: RetryConfig::default(),
             background: BackgroundConfig::default(),
             agent: AgentAbilitiesConfig::default(),

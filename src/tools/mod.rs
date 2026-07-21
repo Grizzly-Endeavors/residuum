@@ -28,6 +28,7 @@ pub use path_policy::{PathPolicy, SharedPathPolicy};
 pub use registry::ToolRegistry;
 
 use std::collections::HashSet;
+use std::ffi::OsString;
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -36,6 +37,13 @@ use thiserror::Error;
 use tokio::sync::RwLock;
 
 use crate::models::{ImageData, ToolDefinition};
+
+/// Shared, reloadable effective `PATH` for spawned children.
+///
+/// Holds the tool-dir-prepended `PATH` (see [`crate::config::ToolsConfig::effective_path`]),
+/// or `None` when no override applies. Read at spawn time by the `exec` tool and
+/// MCP stdio spawner so config reloads take effect without rebuilding registries.
+pub type SharedToolsPath = Arc<RwLock<Option<OsString>>>;
 
 /// Errors from tool execution.
 #[derive(Error, Debug, PartialEq)]

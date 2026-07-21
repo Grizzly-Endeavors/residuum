@@ -5,6 +5,7 @@
 
 use std::borrow::Cow;
 use std::collections::HashMap;
+use std::ffi::OsStr;
 use std::sync::LazyLock;
 use std::time::Duration;
 
@@ -38,21 +39,36 @@ impl McpClient {
     /// - **Stdio**: spawns a child process and communicates over stdin/stdout
     /// - **Http**: connects to a remote server via Streamable HTTP
     ///
+    /// `tools_path`, when set, is the effective `PATH` (configured tool
+    /// directories prepended) applied to a spawned stdio server before its own
+    /// `env` — so a server that explicitly sets `PATH` still overrides it.
+    ///
     /// # Errors
     /// Returns an error if the connection cannot be established or the MCP
     /// handshake fails.
     #[tracing::instrument(skip_all, fields(mcp.server = %entry.name))]
-    pub async fn connect(entry: &McpServerEntry) -> Result<Self, anyhow::Error> {
+    pub async fn connect(
+        entry: &McpServerEntry,
+        tools_path: Option<&OsStr>,
+    ) -> Result<Self, anyhow::Error> {
         match entry.transport {
-            McpTransport::Stdio => Self::connect_stdio(entry).await,
+            McpTransport::Stdio => Self::connect_stdio(entry, tools_path).await,
             McpTransport::Http => Self::connect_http(entry).await,
         }
     }
 
-    async fn connect_stdio(entry: &McpServerEntry) -> Result<Self, anyhow::Error> {
+    async fn connect_stdio(
+        entry: &McpServerEntry,
+        tools_path: Option<&OsStr>,
+    ) -> Result<Self, anyhow::Error> {
         tracing::debug!(command = %entry.command, "connecting to mcp server (stdio)");
         let mut cmd = tokio::process::Command::new(&entry.command);
         cmd.args(&entry.args);
+        // Prepend the configured tool dirs to PATH first, then apply the entry's
+        // own env so an explicit `PATH` in the entry wins.
+        if let Some(path) = tools_path {
+            cmd.env("PATH", path);
+        }
         for (key, val) in &entry.env {
             cmd.env(key, val);
         }
@@ -271,6 +287,64 @@ mod tests {
     use super::*;
     use std::collections::HashMap;
 
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn connect_stdio_resolves_binary_from_tools_path() {
+        use std::os::unix::fs::PermissionsExt;
+
+        // An executable that exists only in a tools dir (not on the base PATH).
+        // It is not a real MCP server: spawning it succeeds, the handshake then
+        // fails — which lets us distinguish "PATH resolved" from "spawn failed".
+        let dir = std::env::temp_dir().join(format!("residuum-mcp-tools-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let script = dir.join("residuum_fake_mcp");
+        std::fs::write(&script, "#!/bin/sh\nexit 0\n").unwrap();
+        let mut perms = std::fs::metadata(&script).unwrap().permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&script, perms).unwrap();
+
+        let mut parts = vec![dir.clone()];
+        if let Some(inherited) = std::env::var_os("PATH") {
+            parts.extend(std::env::split_paths(&inherited));
+        }
+        let path = std::env::join_paths(parts).unwrap();
+
+        let entry = McpServerEntry {
+            name: "fake-mcp".to_string(),
+            command: "residuum_fake_mcp".to_string(),
+            args: vec![],
+            env: HashMap::new(),
+            transport: McpTransport::Stdio,
+            headers: HashMap::new(),
+        };
+
+        // Without the tools PATH the binary is not resolvable → spawn fails.
+        let missing_err = McpClient::connect(&entry, None)
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(
+            missing_err.contains("failed to spawn"),
+            "should fail to spawn without the tools PATH: {missing_err}"
+        );
+
+        // With the tools PATH the binary spawns; the handshake then fails,
+        // proving the command resolved against the injected PATH.
+        let connected = tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            McpClient::connect(&entry, Some(path.as_os_str())),
+        )
+        .await
+        .unwrap();
+        let err = connected.unwrap_err().to_string();
+        assert!(
+            err.contains("handshake failed"),
+            "spawn should succeed via the tools PATH (handshake then fails): {err}"
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
     #[tokio::test]
     async fn connect_http_invalid_url_returns_error() {
         let entry = McpServerEntry {
@@ -282,7 +356,7 @@ mod tests {
             headers: HashMap::new(),
         };
 
-        let result = McpClient::connect(&entry).await;
+        let result = McpClient::connect(&entry, None).await;
         assert!(result.is_err(), "http connect to invalid URL should fail");
         let err = result.unwrap_err().to_string();
         assert!(
@@ -302,7 +376,7 @@ mod tests {
             headers: HashMap::new(),
         };
 
-        let result = McpClient::connect(&entry).await;
+        let result = McpClient::connect(&entry, None).await;
         assert!(
             result.is_err(),
             "stdio connect to nonexistent binary should fail"

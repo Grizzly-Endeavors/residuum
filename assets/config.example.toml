@@ -118,6 +118,23 @@ port = 7700
 # [skills]
 # dirs = ["~/my-skills", "/opt/shared-skills"]
 
+# ── Tools (optional, runtime-extensible PATH) ────────────────────────────────
+# Directories prepended to the PATH of every child process Residuum spawns
+# (MCP stdio servers and the exec tool), so external CLIs become resolvable at
+# runtime with no rebuild. Drop a static single-file binary (gh, kubectl, uv,
+# most Go/Rust CLIs) into one of these dirs and the agent can use it.
+#
+# The default persistent dir ~/.residuum/bin is always included and is created
+# at first run. In containers it lives under the state volume, so tools placed
+# there survive restarts and image upgrades.
+#
+# Entries below take precedence over ~/.residuum/bin (both come before the
+# inherited system PATH). A dir can be mounted read-only to give the agent a
+# toolbox it can use but not modify.
+#
+# [tools]
+# path = ["/opt/residuum-tools"]
+
 # ── Named webhooks (optional) ────────────────────────────────────────────────
 # Each [webhooks.<name>] section creates a POST /webhook/<name> endpoint.
 # Presence in config = enabled; remove to disable.
