@@ -25,7 +25,7 @@ mod memory_integration {
     };
     use residuum::memory::reflector::{Reflector, ReflectorConfig};
     use residuum::memory::search::{MemoryIndex, SearchFilters};
-    use residuum::memory::types::{IndexManifest, Visibility};
+    use residuum::memory::types::{DocSource, IndexManifest, Visibility};
     use residuum::models::{
         CompletionOptions, Message, ModelError, ModelProvider, ModelResponse, ToolDefinition,
     };
@@ -290,7 +290,7 @@ mod memory_integration {
                 "workspace layout",
                 5,
                 &SearchFilters {
-                    source: Some("observation".to_string()),
+                    source: Some(DocSource::Observation),
                     ..Default::default()
                 },
             )
@@ -300,7 +300,9 @@ mod memory_integration {
             "should find observation results for workspace layout"
         );
         assert!(
-            obs_results.iter().all(|r| r.source_type == "observation"),
+            obs_results
+                .iter()
+                .all(|r| r.source_type == DocSource::Observation),
             "all should be observations"
         );
 
@@ -310,7 +312,7 @@ mod memory_integration {
                 "workspace layout",
                 5,
                 &SearchFilters {
-                    source: Some("chunk".to_string()),
+                    source: Some(DocSource::Chunk),
                     ..Default::default()
                 },
             )
@@ -320,7 +322,9 @@ mod memory_integration {
             "should find chunk results for workspace layout"
         );
         assert!(
-            chunk_results.iter().all(|r| r.source_type == "chunk"),
+            chunk_results
+                .iter()
+                .all(|r| r.source_type == DocSource::Chunk),
             "all should be chunks"
         );
 
@@ -453,7 +457,7 @@ mod memory_integration {
         );
         assert_eq!(
             results.first().unwrap().source_type,
-            "observation",
+            DocSource::Observation,
             "should be an observation"
         );
     }
@@ -786,13 +790,15 @@ mod memory_integration {
                 "search",
                 10,
                 &SearchFilters {
-                    source: Some("observation".to_string()),
+                    source: Some(DocSource::Observation),
                     ..Default::default()
                 },
             )
             .unwrap();
         assert!(
-            obs_only.iter().all(|r| r.source_type == "observation"),
+            obs_only
+                .iter()
+                .all(|r| r.source_type == DocSource::Observation),
             "should only return observations"
         );
 
