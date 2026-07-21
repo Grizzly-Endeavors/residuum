@@ -271,10 +271,26 @@ pub fn load_channel_configs(path: &Path) -> anyhow::Result<Vec<ExternalChannelCo
                     app_id: raw.app_id,
                 },
                 "webhook" => {
+                    // Keep in sync with the methods `WebhookChannel::deliver` actually
+                    // supports (src/notify/external.rs) — validate here, at config load,
+                    // so a typo surfaces at startup instead of at first delivery attempt.
+                    const SUPPORTED_METHODS: [&str; 2] = ["POST", "PUT"];
+
                     let Some(url) = raw.url.filter(|u| !u.is_empty()) else {
                         tracing::warn!(channel = %name, "webhook channel is missing required 'url' field");
                         return None;
                     };
+                    if let Some(method) = &raw.method
+                        && !SUPPORTED_METHODS.contains(&method.to_uppercase().as_str())
+                    {
+                        tracing::warn!(
+                            channel = %name,
+                            method = %method,
+                            supported = ?SUPPORTED_METHODS,
+                            "webhook channel has unsupported 'method' field, skipping channel"
+                        );
+                        return None;
+                    }
                     ExternalChannelKind::Webhook {
                         url,
                         method: raw.method,
@@ -794,6 +810,58 @@ url = "https://hooks.example.com/notify"
         let configs = load_channel_configs(&path).unwrap();
         assert_eq!(configs.len(), 1, "webhook without url should be excluded");
         assert_eq!(configs[0].name, "good-hook");
+    }
+
+    #[test]
+    fn load_channel_configs_webhook_unsupported_method_excluded() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("channels.toml");
+        std::fs::write(
+            &path,
+            r#"
+[channels.bad-hook]
+type = "webhook"
+url = "https://hooks.example.com/notify"
+method = "DELETE"
+
+[channels.good-hook]
+type = "webhook"
+url = "https://hooks.example.com/notify"
+method = "PUT"
+"#,
+        )
+        .unwrap();
+
+        let configs = load_channel_configs(&path).unwrap();
+        assert_eq!(
+            configs.len(),
+            1,
+            "webhook with unsupported method should be excluded at load time"
+        );
+        assert_eq!(configs[0].name, "good-hook");
+    }
+
+    #[test]
+    fn load_channel_configs_webhook_method_case_insensitive() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("channels.toml");
+        std::fs::write(
+            &path,
+            r#"
+[channels.lower-hook]
+type = "webhook"
+url = "https://hooks.example.com/notify"
+method = "put"
+"#,
+        )
+        .unwrap();
+
+        let configs = load_channel_configs(&path).unwrap();
+        assert_eq!(
+            configs.len(),
+            1,
+            "lowercase but otherwise-valid method should be accepted"
+        );
     }
 
     #[test]
