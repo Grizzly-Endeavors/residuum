@@ -2,15 +2,26 @@ use anyhow::Context;
 
 use super::types::SkillFrontmatter;
 
+/// Hard ceiling on `description` length.
+///
+/// `skill-authoring` doctrine (see `docs/systems-usage/skills.md`) asks
+/// authors to keep descriptions under ~60 characters so the skill index
+/// stays scannable. That's a style guideline, not a wire limit, so the
+/// enforced cap here is generous headroom above it — just enough to catch
+/// a runaway multi-paragraph description before it gets concatenated into
+/// every `<available_skills>` block sent on every turn.
+pub(super) const MAX_DESCRIPTION_LEN: usize = 280;
+
 /// Parse a `SKILL.md` file into frontmatter and body.
 ///
 /// Expects YAML frontmatter delimited by `---` at the start of the file.
 /// Validates the skill name: 1-64 chars, lowercase alphanumeric + hyphens,
-/// no leading/trailing/consecutive hyphens.
+/// no leading/trailing/consecutive hyphens. Validates the description is
+/// non-empty and no longer than `MAX_DESCRIPTION_LEN` chars.
 ///
 /// # Errors
 /// Returns an error if the frontmatter is missing, invalid YAML, or the
-/// name fails validation.
+/// name or description fails validation.
 pub(super) fn parse_skill_md(content: &str) -> anyhow::Result<(SkillFrontmatter, String)> {
     let trimmed = content.trim_start();
 
@@ -26,6 +37,7 @@ pub(super) fn parse_skill_md(content: &str) -> anyhow::Result<(SkillFrontmatter,
         serde_yaml_ng::from_str(yaml_str).context("failed to parse SKILL.md frontmatter")?;
 
     validate_skill_name(&frontmatter.name)?;
+    validate_skill_description(&frontmatter.description)?;
 
     let body = after_close.trim().to_string();
 
@@ -62,10 +74,31 @@ pub(super) fn validate_skill_name(name: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Validate a skill description: non-empty and no longer than
+/// `MAX_DESCRIPTION_LEN` chars.
+///
+/// Every activated skill's description is concatenated into the
+/// `<available_skills>` block sent on every turn, so an unbounded
+/// description silently bloats every subsequent prompt.
+pub(super) fn validate_skill_description(description: &str) -> anyhow::Result<()> {
+    if description.trim().is_empty() {
+        anyhow::bail!("skill description must not be empty");
+    }
+
+    let len = description.chars().count();
+    if len > MAX_DESCRIPTION_LEN {
+        anyhow::bail!(
+            "skill description must be at most {MAX_DESCRIPTION_LEN} characters, got {len}"
+        );
+    }
+
+    Ok(())
+}
+
 #[cfg(test)]
 #[expect(clippy::unwrap_used, reason = "test code uses unwrap for clarity")]
 mod tests {
-    use super::{parse_skill_md, validate_skill_name};
+    use super::{parse_skill_md, validate_skill_description, validate_skill_name};
 
     // ── parse_skill_md ───────────────────────────────────────────────────────
 
@@ -113,6 +146,25 @@ mod tests {
         assert!(
             parse_skill_md(content).is_err(),
             "invalid YAML should error"
+        );
+    }
+
+    #[test]
+    fn parse_skill_empty_description_rejected() {
+        let content = "---\nname: my-skill\ndescription: \"\"\n---\n";
+        assert!(
+            parse_skill_md(content).is_err(),
+            "empty description should error"
+        );
+    }
+
+    #[test]
+    fn parse_skill_description_too_long_rejected() {
+        let long_description = "a".repeat(281);
+        let content = format!("---\nname: my-skill\ndescription: \"{long_description}\"\n---\n");
+        assert!(
+            parse_skill_md(&content).is_err(),
+            "description over 280 chars should error"
         );
     }
 
@@ -194,6 +246,44 @@ mod tests {
         assert!(
             validate_skill_name("bad name").is_err(),
             "space should be rejected"
+        );
+    }
+
+    // ── validate_skill_description ──────────────────────────────────────────
+
+    #[test]
+    fn valid_description_accepted() {
+        assert!(validate_skill_description("Extracts text from PDFs").is_ok());
+    }
+
+    #[test]
+    fn description_empty_rejected() {
+        assert!(
+            validate_skill_description("").is_err(),
+            "empty description should be rejected"
+        );
+    }
+
+    #[test]
+    fn description_whitespace_only_rejected() {
+        assert!(
+            validate_skill_description("   \n\t  ").is_err(),
+            "whitespace-only description should be rejected"
+        );
+    }
+
+    #[test]
+    fn description_exactly_max_len_accepted() {
+        let description = "a".repeat(280);
+        assert!(validate_skill_description(&description).is_ok());
+    }
+
+    #[test]
+    fn description_too_long_rejected() {
+        let description = "a".repeat(281);
+        assert!(
+            validate_skill_description(&description).is_err(),
+            "description over 280 chars should be rejected"
         );
     }
 }
