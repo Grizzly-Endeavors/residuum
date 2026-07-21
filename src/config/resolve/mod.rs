@@ -635,7 +635,16 @@ fn resolve_search_config(section: Option<&SearchConfigFile>) -> SearchConfig {
             cfg.min_score = v;
         }
         if let Some(v) = s.candidate_multiplier {
-            cfg.candidate_multiplier = v;
+            if v == 0 {
+                tracing::warn!(
+                    section = "memory.search",
+                    value = v,
+                    default = cfg.candidate_multiplier,
+                    "candidate_multiplier must be positive; using default"
+                );
+            } else {
+                cfg.candidate_multiplier = v;
+            }
         }
         if let Some(v) = s.temporal_decay {
             cfg.temporal_decay = v;
