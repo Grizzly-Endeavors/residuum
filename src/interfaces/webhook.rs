@@ -38,7 +38,14 @@ pub struct WebhookState {
 ///
 /// Looks up the named webhook config, validates auth, extracts content per the
 /// webhook's format / content-fields settings, and publishes a `NotificationEvent`.
-/// Returns 404 for unknown names, 401 for bad auth, 202 on success.
+///
+/// Returns:
+/// - 202 on success
+/// - 404 if `name` doesn't match a configured webhook
+/// - 401 if the bearer token is missing or doesn't match the configured secret
+/// - 400 if the request body is empty, isn't valid JSON (when `content_fields` is
+///   configured), or matches none of the configured `content_fields`
+/// - 503 if the request was valid but publishing to the internal event bus failed
 #[tracing::instrument(skip_all, fields(webhook = %name, content_length = body.len()))]
 pub async fn webhook_handler(
     State(state): State<WebhookState>,
@@ -47,7 +54,7 @@ pub async fn webhook_handler(
     body: Bytes,
 ) -> impl IntoResponse {
     let Some(endpoint) = state.webhooks.get(&name) else {
-        return StatusCode::NOT_FOUND;
+        return (StatusCode::NOT_FOUND, format!("unknown webhook: {name}"));
     };
 
     tracing::debug!(webhook = %name, content_length = body.len(), "webhook request received");
@@ -62,7 +69,10 @@ pub async fn webhook_handler(
         let provided = auth.strip_prefix("Bearer ").unwrap_or("");
         if provided != expected.as_str() {
             tracing::warn!(webhook = %name, "webhook authentication failed");
-            return StatusCode::UNAUTHORIZED;
+            return (
+                StatusCode::UNAUTHORIZED,
+                "missing or invalid bearer token".to_string(),
+            );
         }
     }
 
@@ -70,12 +80,34 @@ pub async fn webhook_handler(
     let content = match endpoint.format {
         WebhookFormat::Raw => match String::from_utf8(body.to_vec()) {
             Ok(text) if !text.trim().is_empty() => text,
-            _ => return StatusCode::BAD_REQUEST,
+            _ => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    "request body must not be empty".to_string(),
+                );
+            }
         },
         WebhookFormat::Parsed => {
             match extract_parsed_content(&body, endpoint.content_fields.as_deref()) {
-                Some(text) => text,
-                None => return StatusCode::BAD_REQUEST,
+                Ok(text) => text,
+                Err(ContentExtractionError::EmptyBody) => {
+                    return (
+                        StatusCode::BAD_REQUEST,
+                        "request body must not be empty".to_string(),
+                    );
+                }
+                Err(ContentExtractionError::InvalidJson) => {
+                    return (
+                        StatusCode::BAD_REQUEST,
+                        "request body must be valid JSON".to_string(),
+                    );
+                }
+                Err(ContentExtractionError::NoContentFieldsMatched) => {
+                    return (
+                        StatusCode::BAD_REQUEST,
+                        "no configured content_fields matched the payload".to_string(),
+                    );
+                }
             }
         }
     };
@@ -95,7 +127,10 @@ pub async fn webhook_handler(
                 .await
             {
                 tracing::warn!(webhook = %name, error = %e, "bus publish failed, dropping webhook message");
-                return StatusCode::SERVICE_UNAVAILABLE;
+                return (
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "internal error: could not process request".to_string(),
+                );
             }
         }
         WebhookRouting::Agent(preset) => {
@@ -113,45 +148,69 @@ pub async fn webhook_handler(
                 .await
             {
                 tracing::warn!(webhook = %name, error = %e, "bus publish failed, dropping webhook message");
-                return StatusCode::SERVICE_UNAVAILABLE;
+                return (
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "internal error: could not process request".to_string(),
+                );
             }
         }
     }
 
     tracing::debug!(webhook = %name, "webhook message published");
-    StatusCode::ACCEPTED
+    (StatusCode::ACCEPTED, String::new())
+}
+
+/// Why parsed-content extraction failed, so the handler can report a precise cause.
+enum ContentExtractionError {
+    /// The body (or, without `content_fields`, the JSON `content` field and the plain-text
+    /// fallback) was empty.
+    EmptyBody,
+    /// `content_fields` were configured but the body was not valid JSON.
+    InvalidJson,
+    /// `content_fields` were configured and the body was valid JSON, but none of the
+    /// configured dot-paths matched.
+    NoContentFieldsMatched,
 }
 
 /// Extract content from the body using parsed format rules.
 ///
 /// - With `content_fields`: parse JSON, extract each dot-path, join with `\n\n`
 /// - Without `content_fields`: extract `"content"` field from JSON, fallback to plain text
-fn extract_parsed_content(body: &[u8], content_fields: Option<&[String]>) -> Option<String> {
+fn extract_parsed_content(
+    body: &[u8],
+    content_fields: Option<&[String]>,
+) -> Result<String, ContentExtractionError> {
     if let Some(fields) = content_fields {
         // Must be JSON when content_fields are specified
-        let json: serde_json::Value = serde_json::from_slice(body).ok()?;
+        let json: serde_json::Value = serde_json::from_slice(body).map_err(|e| {
+            tracing::debug!(error = %e, "webhook body is not valid JSON");
+            ContentExtractionError::InvalidJson
+        })?;
         let parts: Vec<String> = fields
             .iter()
             .filter_map(|path| extract_json_field(&json, path))
             .collect();
         if parts.is_empty() {
-            return None;
+            return Err(ContentExtractionError::NoContentFieldsMatched);
         }
-        Some(parts.join("\n\n"))
+        Ok(parts.join("\n\n"))
     } else {
         // Default: try JSON { "content": "..." }, fallback to plain text
         if let Ok(json) = serde_json::from_slice::<serde_json::Value>(body)
             && let Some(content) = json.get("content").and_then(|v| v.as_str())
             && !content.trim().is_empty()
         {
-            return Some(content.to_string());
+            return Ok(content.to_string());
         }
         // Fallback to plain text
-        let text = String::from_utf8(body.to_vec()).ok()?;
+        let text = String::from_utf8(body.to_vec()).map_err(|e| {
+            tracing::debug!(error = %e, "webhook body is not valid UTF-8");
+            ContentExtractionError::EmptyBody
+        })?;
         if text.trim().is_empty() {
-            return None;
+            return Err(ContentExtractionError::EmptyBody);
         }
-        Some(text)
+        Ok(text)
     }
 }
 
