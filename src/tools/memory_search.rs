@@ -7,6 +7,7 @@ use serde_json::Value;
 
 use super::{Tool, ToolError, ToolResult};
 use crate::memory::search::{HybridSearcher, SearchFilters};
+use crate::memory::types::DocSource;
 use crate::models::ToolDefinition;
 
 /// Tool that searches the memory index using hybrid BM25 + vector search.
@@ -99,14 +100,14 @@ impl Tool for MemorySearchTool {
             None => 5,
         };
 
-        // Map tool-facing values to internal index values:
-        // "observations" → "observation", "episodes" → "chunk", "both"/omitted → None
+        // Map the tool-facing source names onto the internal DocSource vocabulary.
+        // Omitted → None (search both).
         let source_filter = arguments
             .get("source")
             .and_then(Value::as_str)
             .and_then(|s| match s {
-                "observations" => Some("observation".to_string()),
-                "episodes" => Some("chunk".to_string()),
+                "observations" => Some(DocSource::Observation),
+                "episodes" => Some(DocSource::Chunk),
                 _ => None,
             });
 
