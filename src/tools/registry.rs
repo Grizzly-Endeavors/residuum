@@ -66,6 +66,17 @@ impl ToolRegistry {
             .collect()
     }
 
+    /// Names of all registered tools, unfiltered.
+    ///
+    /// Used to reserve the built-in tool namespace in the MCP registry so a
+    /// colliding MCP tool is shadowed visibly rather than silently. The set is
+    /// unfiltered because a gated built-in still wins dispatch (it returns an
+    /// "unavailable" result rather than falling through to MCP).
+    #[must_use]
+    pub fn tool_names(&self) -> Vec<String> {
+        self.tools.iter().map(|t| t.name().to_string()).collect()
+    }
+
     /// Execute a tool by name with the given arguments, respecting the tool filter.
     ///
     /// # Errors

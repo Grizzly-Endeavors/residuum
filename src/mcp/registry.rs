@@ -3,7 +3,7 @@
 //! Tracks which MCP servers are running, manages live `McpClient` handles,
 //! and exposes discovered tools to the agent's tool loop.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use serde_json::Value;
@@ -110,6 +110,15 @@ pub struct McpRegistry {
     /// handle so tool dirs become resolvable. An entry's own `PATH` in its
     /// `env` still wins (applied after the injected value at spawn time).
     tools_path: Option<SharedToolsPath>,
+    /// Names of built-in agent tools that reserve the shared tool namespace.
+    ///
+    /// A built-in always wins a name collision (it is dispatched first in the
+    /// turn loop), so an MCP tool that reuses one of these names is shadowed:
+    /// excluded from [`tool_definitions`](Self::tool_definitions) and never
+    /// reachable. Set once by the gateway after the tool registry is built via
+    /// [`set_reserved_tool_names`](Self::set_reserved_tool_names); empty in
+    /// bare registries (tests). See `src/mcp/CLAUDE.md` for the full policy.
+    reserved_tool_names: HashSet<String>,
 }
 
 impl Default for McpRegistry {
@@ -126,6 +135,7 @@ impl McpRegistry {
             servers: Vec::new(),
             project_refs: HashMap::new(),
             tools_path: None,
+            reserved_tool_names: HashSet::new(),
         }
     }
 
@@ -143,7 +153,34 @@ impl McpRegistry {
             servers: Vec::new(),
             project_refs: HashMap::new(),
             tools_path: Some(tools_path),
+            reserved_tool_names: HashSet::new(),
         }))
+    }
+
+    /// Reserve the built-in tool namespace so colliding MCP tools are shadowed
+    /// visibly rather than silently.
+    ///
+    /// Call once after the built-in tool registry is built. Servers that
+    /// connected earlier (e.g. workspace servers started before the tool
+    /// registry existed) are re-scanned here so their collisions are still
+    /// reported; servers that connect later are checked at connect time.
+    pub fn set_reserved_tool_names(&mut self, names: impl IntoIterator<Item = String>) {
+        self.reserved_tool_names = names.into_iter().collect();
+        for server in self
+            .servers
+            .iter()
+            .filter(|s| s.status == McpStatus::Running)
+        {
+            for tool in &server.tools {
+                if self.reserved_tool_names.contains(&tool.name) {
+                    tracing::warn!(
+                        tool = %tool.name,
+                        mcp.server = %server.name,
+                        "mcp tool name collides with a built-in tool; the built-in wins and the mcp tool is shadowed (unreachable)"
+                    );
+                }
+            }
+        }
     }
 
     /// Reconcile desired servers against current state (pure diff, no connections).
@@ -225,6 +262,11 @@ impl McpRegistry {
                 return Err(e);
             }
         };
+
+        // Detect name collisions before exposing this server's tools. The
+        // check runs against reserved built-in names and already-running
+        // servers, so it must happen before the new server is marked running.
+        self.warn_shadowed_tools(&entry.name, &tools);
 
         if let Some(server) = self.servers.iter_mut().find(|s| s.name == entry.name) {
             server.status = McpStatus::Running;
@@ -444,17 +486,83 @@ impl McpRegistry {
         stopped
     }
 
-    /// Get tool definitions from all running servers (flat union).
-    #[must_use]
-    pub fn tool_definitions(&self) -> Vec<ToolDefinition> {
+    /// Warn about tool-name collisions for a server that is about to expose
+    /// `tools`, without changing which tools win.
+    ///
+    /// Precedence is fixed so shadowing is deterministic: a built-in tool
+    /// always wins (it is dispatched first in the turn loop), and among MCP
+    /// servers the first-registered running server wins. This server's
+    /// colliding tools are therefore shadowed — excluded from
+    /// [`tool_definitions`](Self::tool_definitions) and never dispatched to.
+    /// The winner and this server's non-colliding tools keep working. See
+    /// `src/mcp/CLAUDE.md`.
+    fn warn_shadowed_tools(&self, server_name: &str, tools: &[ToolDefinition]) {
+        for tool in tools {
+            if self.reserved_tool_names.contains(&tool.name) {
+                tracing::warn!(
+                    tool = %tool.name,
+                    mcp.server = %server_name,
+                    "mcp tool name collides with a built-in tool; the built-in wins and the mcp tool is shadowed (unreachable)"
+                );
+            } else if let Some(owner) = self.running_owner_of_tool(&tool.name) {
+                tracing::warn!(
+                    tool = %tool.name,
+                    mcp.server = %server_name,
+                    winner = %owner,
+                    "mcp tool name collides with a tool from another mcp server; the first-registered server wins and this one is shadowed (unreachable)"
+                );
+            }
+        }
+    }
+
+    /// Name of the first running server that already exposes `tool_name`, if any.
+    fn running_owner_of_tool(&self, tool_name: &str) -> Option<&str> {
         self.servers
             .iter()
             .filter(|s| s.status == McpStatus::Running)
-            .flat_map(|s| s.tools.iter().cloned())
-            .collect()
+            .find(|s| s.tools.iter().any(|t| t.name == tool_name))
+            .map(|s| s.name.as_str())
+    }
+
+    /// Get tool definitions from all running servers.
+    ///
+    /// The result is de-duplicated so the model is offered each name exactly
+    /// once, matching what [`call_tool`](Self::call_tool) will dispatch to:
+    /// names reserved by a built-in tool are excluded (the built-in wins), and
+    /// when two MCP servers expose the same name only the first-registered
+    /// running server's definition is kept. See `src/mcp/CLAUDE.md`.
+    #[must_use]
+    pub fn tool_definitions(&self) -> Vec<ToolDefinition> {
+        let mut seen: HashSet<&str> = HashSet::new();
+        let mut defs: Vec<ToolDefinition> = Vec::new();
+        for server in self
+            .servers
+            .iter()
+            .filter(|s| s.status == McpStatus::Running)
+        {
+            for tool in &server.tools {
+                // A built-in tool of this name always wins; skip the shadowed
+                // MCP tool so the model is never offered an unreachable name.
+                if self.reserved_tool_names.contains(&tool.name) {
+                    continue;
+                }
+                // First running server to claim a name wins; later duplicates
+                // are shadowed.
+                if seen.insert(tool.name.as_str()) {
+                    defs.push(tool.clone());
+                }
+            }
+        }
+        defs
     }
 
     /// Call a tool by name, routing to the server that owns it.
+    ///
+    /// When two running servers expose the same name the first-registered one
+    /// wins, matching the de-duplication in
+    /// [`tool_definitions`](Self::tool_definitions). Names reserved by a
+    /// built-in tool never reach here: the turn loop dispatches built-ins
+    /// first and only falls back to MCP when no built-in matches.
     ///
     /// # Errors
     /// Returns `ToolError::NotFound` if no running server has the tool.
@@ -700,6 +808,89 @@ mod tests {
         assert!(
             registry.tool_definitions().is_empty(),
             "should be empty with no servers"
+        );
+    }
+
+    fn tool_def(name: &str) -> ToolDefinition {
+        ToolDefinition {
+            name: name.to_string(),
+            description: format!("desc for {name}"),
+            parameters: serde_json::json!({}),
+        }
+    }
+
+    /// Push a running server with the given tools directly (bypassing connect,
+    /// which needs a live client).
+    fn push_running_server(registry: &mut McpRegistry, name: &str, tools: &[&str]) {
+        registry.servers.push(TrackedServer {
+            name: name.to_string(),
+            command: "cmd".to_string(),
+            args: vec![],
+            status: McpStatus::Running,
+            client: None,
+            tools: tools.iter().map(|t| tool_def(t)).collect(),
+        });
+    }
+
+    #[test]
+    fn tool_definitions_dedupes_mcp_collisions_first_server_wins() {
+        let mut registry = McpRegistry::new();
+        push_running_server(&mut registry, "first", &["shared", "only_first"]);
+        push_running_server(&mut registry, "second", &["shared", "only_second"]);
+
+        let defs = registry.tool_definitions();
+        let names: Vec<&str> = defs.iter().map(|d| d.name.as_str()).collect();
+
+        assert_eq!(
+            names.iter().filter(|n| **n == "shared").count(),
+            1,
+            "colliding name should appear exactly once"
+        );
+        // The kept definition is the first server's (first-registered wins).
+        let shared = defs.iter().find(|d| d.name == "shared").unwrap();
+        assert_eq!(
+            shared.description, "desc for shared",
+            "definition is the winner's, not a merge"
+        );
+        assert!(names.contains(&"only_first"), "unique tools still exposed");
+        assert!(names.contains(&"only_second"), "unique tools still exposed");
+    }
+
+    #[test]
+    fn tool_definitions_excludes_names_reserved_by_builtins() {
+        let mut registry = McpRegistry::new();
+        push_running_server(&mut registry, "srv", &["exec", "mcp_only"]);
+        registry.set_reserved_tool_names(["exec".to_string(), "read_file".to_string()]);
+
+        let defs = registry.tool_definitions();
+        let names: Vec<&str> = defs.iter().map(|d| d.name.as_str()).collect();
+
+        assert!(
+            !names.contains(&"exec"),
+            "mcp tool colliding with a built-in must be shadowed (not offered)"
+        );
+        assert!(
+            names.contains(&"mcp_only"),
+            "non-colliding mcp tool stays available"
+        );
+    }
+
+    #[tokio::test]
+    async fn call_tool_routes_collision_to_first_registered_server() {
+        // Both servers claim "shared"; first-registered wins the routing.
+        // Neither has a live client, so the winner surfaces the "no client"
+        // execution error — proving the call was routed to it, not NotFound.
+        let mut registry = McpRegistry::new();
+        push_running_server(&mut registry, "first", &["shared"]);
+        push_running_server(&mut registry, "second", &["shared"]);
+
+        let err = registry
+            .call_tool("shared", serde_json::json!({}))
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(&err, ToolError::Execution(msg) if msg.contains("first")),
+            "call should route to the first-registered server, got: {err:?}"
         );
     }
 
