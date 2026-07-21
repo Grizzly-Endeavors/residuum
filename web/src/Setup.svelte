@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount } from "svelte";
+  import { onMount, onDestroy } from "svelte";
   import type { SetupWizardState, McpCatalogEntry, ProviderKey } from "./lib/types";
   import { fetchTimezone, fetchMcpCatalog } from "./lib/api";
   import Welcome from "./components/setup/Welcome.svelte";
@@ -19,6 +19,7 @@
   const stepIndices = Array.from({ length: TOTAL_STEPS }, (_, i) => i);
   let step = $state(0);
   let catalog = $state<McpCatalogEntry[]>([]);
+  let completed = false;
 
   let wizardState = $state<SetupWizardState>({
     userName: "",
@@ -47,10 +48,31 @@
     secretRefs: {},
   });
 
+  // Warn before an accidental reload/close discards in-progress setup input (provider
+  // selections, role assignments, MCP servers, integration tokens). Not persisted to
+  // storage on purpose: early steps hold raw API keys in memory before they're
+  // exchanged for `secret:` references in Review.svelte, and storage would leave
+  // plaintext keys sitting in the browser.
+  function handleBeforeUnload(event: BeforeUnloadEvent) {
+    if (step > 0 && !completed) {
+      event.preventDefault();
+    }
+  }
+
+  function handleComplete() {
+    completed = true;
+    onComplete();
+  }
+
   onMount(async () => {
+    window.addEventListener("beforeunload", handleBeforeUnload);
     const [tz, cat] = await Promise.all([fetchTimezone(), fetchMcpCatalog()]);
     wizardState.timezone = tz;
     catalog = cat;
+  });
+
+  onDestroy(() => {
+    window.removeEventListener("beforeunload", handleBeforeUnload);
   });
 
   function next() {
@@ -82,7 +104,7 @@
       {:else if step === 4}
         <Integrations {wizardState} onNext={next} onBack={back} />
       {:else if step === 5}
-        <Review {wizardState} onBack={back} {onComplete} />
+        <Review {wizardState} onBack={back} onComplete={handleComplete} />
       {/if}
     </div>
   </div>
