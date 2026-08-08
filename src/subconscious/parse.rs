@@ -190,7 +190,6 @@ fn parse_learn_items(items: &[serde_json::Value]) -> Vec<LearnSignal> {
 }
 
 #[cfg(test)]
-#[expect(clippy::unwrap_used, reason = "test code uses unwrap for clarity")]
 mod tests {
     use super::*;
 

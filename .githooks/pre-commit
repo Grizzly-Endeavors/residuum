@@ -35,7 +35,12 @@ if $HAS_RUST; then
     STEP=$((STEP + 1))
     echo -e "\n${YELLOW}[$STEP/$TOTAL_STEPS] Auto-formatting Rust code...${NC}"
     cargo fmt > /dev/null 2>&1
-    git add -u > /dev/null 2>&1
+    # cargo fmt rewrites the whole tree, so `git add -u` would also sweep in
+    # unrelated working-tree edits the author deliberately left unstaged.
+    # Restage only the files that were actually staged for this commit.
+    while IFS= read -r _staged; do
+        [ -n "$_staged" ] && git add -- "$_staged"
+    done <<< "$STAGED_RS_FILES"
     echo -e "${GREEN}✓ Formatting applied${NC}"
 
     STEP=$((STEP + 1))
@@ -95,7 +100,11 @@ if $HAS_WEB; then
     STEP=$((STEP + 1))
     echo -e "\n${YELLOW}[$STEP/$TOTAL_STEPS] Auto-formatting web code...${NC}"
     (cd web && npm run format > /dev/null 2>&1)
-    git add -u > /dev/null 2>&1
+    # Same reasoning as the Rust path above: `npm run format` rewrites the whole
+    # web tree, so `git add -u` would sweep in unrelated unstaged edits.
+    while IFS= read -r _staged; do
+        [ -n "$_staged" ] && git add -- "$_staged"
+    done <<< "$STAGED_WEB_FILES"
     echo -e "${GREEN}✓ Formatting applied${NC}"
 
     STEP=$((STEP + 1))

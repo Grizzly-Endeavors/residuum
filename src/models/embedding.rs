@@ -113,7 +113,6 @@ pub(crate) fn build_embedding_provider(
 }
 
 #[cfg(test)]
-#[expect(clippy::unwrap_used, reason = "test code uses unwrap for clarity")]
 mod tests {
     use super::*;
     use crate::config::{ModelSpec, ProviderKind, ProviderSpec};

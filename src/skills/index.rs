@@ -209,7 +209,6 @@ async fn scan_skill_directory(
 }
 
 #[cfg(test)]
-#[expect(clippy::unwrap_used, reason = "test code uses unwrap for clarity")]
 mod tests {
     use std::path::PathBuf;
 

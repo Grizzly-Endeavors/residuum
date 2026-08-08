@@ -58,7 +58,6 @@ pub async fn load_recent_context(path: &Path) -> anyhow::Result<Option<RecentCon
 }
 
 #[cfg(test)]
-#[expect(clippy::unwrap_used, reason = "test code uses unwrap for clarity")]
 mod tests {
     use super::*;
 

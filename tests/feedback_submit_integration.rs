@@ -4,8 +4,6 @@
 //! produce wire-compatible JSON, decode the documented receipt shape,
 //! and surface upstream errors (including 429 Retry-After) to the caller.
 
-#[expect(clippy::unwrap_used, reason = "test code uses unwrap for clarity")]
-#[expect(clippy::expect_used, reason = "test code uses expect for clarity")]
 #[expect(
     clippy::indexing_slicing,
     reason = "test code indexes serde_json::Value by known-present keys"

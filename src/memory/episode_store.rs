@@ -373,7 +373,6 @@ fn format_message_line(parts: &mut Vec<String>, line_num: usize, msg: &Message) 
 }
 
 #[cfg(test)]
-#[expect(clippy::unwrap_used, reason = "test code uses unwrap for clarity")]
 mod tests {
     use super::*;
     use chrono::NaiveDate;

@@ -414,7 +414,6 @@ mod tests {
             result.is_ok(),
             "detect_platform failed on current platform: {result:?}"
         );
-        #[expect(clippy::unwrap_used, reason = "test code uses unwrap for clarity")]
         let platform = result.unwrap();
         assert!(
             platform == "linux-x86_64"

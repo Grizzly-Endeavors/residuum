@@ -382,7 +382,6 @@ async fn publish_to_targets(event: &AgentResultEvent, targets: &[String], publis
 }
 
 #[cfg(test)]
-#[expect(clippy::unwrap_used, reason = "test code uses unwrap for clarity")]
 mod tests {
     use super::*;
     use crate::bus::{AgentResultStatus, PresetName};

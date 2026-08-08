@@ -224,7 +224,6 @@ fn load_providers(path: &std::path::Path) -> Result<deserialize::ProvidersFile, 
 }
 
 #[cfg(test)]
-#[expect(clippy::unwrap_used, reason = "test code uses unwrap for clarity")]
 mod tests {
     use super::*;
 

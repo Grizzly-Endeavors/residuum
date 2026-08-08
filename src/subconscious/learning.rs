@@ -158,7 +158,6 @@ fn spawn_event(source_label: &str, prompt: String) -> SpawnRequestEvent {
 }
 
 #[cfg(test)]
-#[expect(clippy::unwrap_used, reason = "test code uses unwrap for clarity")]
 mod tests {
     use super::*;
     use crate::subconscious::LearnSignalType;

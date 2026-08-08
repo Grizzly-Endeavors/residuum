@@ -640,7 +640,6 @@ async fn reload_telegram_adapter(rt: &mut GatewayRuntime, new_cfg: &Config) {
 }
 
 #[cfg(test)]
-#[expect(clippy::unwrap_used, reason = "test code uses unwrap for clarity")]
 mod tests {
     use super::*;
     use crate::config::{

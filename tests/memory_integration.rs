@@ -4,7 +4,6 @@
 //! observations.json updated → recent messages cleared → search indexes episode →
 //! reflector compresses.
 
-#[expect(clippy::unwrap_used, reason = "test code uses unwrap for clarity")]
 #[expect(
     clippy::tests_outside_test_module,
     reason = "integration tests live in tests/ directory, not inside #[cfg(test)] modules"

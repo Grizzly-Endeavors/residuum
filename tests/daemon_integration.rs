@@ -1,6 +1,5 @@
 //! Integration tests for daemon utilities (PID file management and process detection).
 
-#[expect(clippy::unwrap_used, reason = "test code uses unwrap for clarity")]
 #[expect(
     clippy::tests_outside_test_module,
     reason = "integration tests live in tests/ directory, not inside #[cfg(test)] modules"

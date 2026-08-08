@@ -85,7 +85,6 @@ pub fn validate_preset_name(name: &str) -> anyhow::Result<()> {
 }
 
 #[cfg(test)]
-#[expect(clippy::unwrap_used, reason = "test code uses unwrap for clarity")]
 mod tests {
     use super::{parse_preset_md, validate_preset_name};
 

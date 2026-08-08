@@ -277,7 +277,6 @@ async fn send_client_message(ws_tx: &mut WsTx, msg: &ClientMessage) -> Result<()
 }
 
 #[cfg(test)]
-#[expect(clippy::unwrap_used, reason = "test code uses unwrap for clarity")]
 mod tests {
     use residuum::interfaces::cli::CliClient;
     use tokio_tungstenite::tungstenite::Message as TungsteniteMessage;

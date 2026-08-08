@@ -137,10 +137,8 @@ fn serve_embedded(path: &str) -> Option<Response> {
 
 #[cfg(test)]
 #[expect(
-    clippy::unwrap_used,
-    clippy::panic,
     clippy::indexing_slicing,
-    reason = "test code uses unwrap/panic/indexing for clarity"
+    reason = "test code uses indexing for clarity"
 )]
 mod tests {
     use super::*;

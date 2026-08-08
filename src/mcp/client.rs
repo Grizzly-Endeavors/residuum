@@ -278,7 +278,6 @@ impl std::fmt::Debug for McpClient {
 }
 
 #[cfg(test)]
-#[expect(clippy::unwrap_used, reason = "test code uses unwrap for clarity")]
 #[expect(
     unsafe_code,
     reason = "tests use set_var/remove_var which are unsafe in edition 2024"

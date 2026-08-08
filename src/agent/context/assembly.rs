@@ -100,9 +100,8 @@ pub(in crate::agent) fn assemble_system_prompt(
 
 #[cfg(test)]
 #[expect(
-    clippy::unwrap_used,
     clippy::indexing_slicing,
-    reason = "test code uses unwrap and indexing for clarity"
+    reason = "test code uses indexing for clarity"
 )]
 mod tests {
     use chrono::NaiveDateTime;

@@ -36,7 +36,6 @@ pub async fn run_notify_subscriber(
 }
 
 #[cfg(test)]
-#[expect(clippy::unwrap_used, reason = "test code uses unwrap for clarity")]
 #[expect(
     clippy::indexing_slicing,
     reason = "test code uses indexing for clarity"

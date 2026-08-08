@@ -361,7 +361,6 @@ async fn write_if_missing(path: &std::path::Path, content: &str) -> Result<(), F
 }
 
 #[cfg(test)]
-#[expect(clippy::unwrap_used, reason = "test code uses unwrap for clarity")]
 mod tests {
     use super::*;
 

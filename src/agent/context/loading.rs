@@ -102,7 +102,6 @@ pub(crate) async fn build_subagents_context_string(subagents_dir: &Path) -> Opti
 }
 
 #[cfg(test)]
-#[expect(clippy::unwrap_used, reason = "test code uses unwrap for clarity")]
 mod tests {
     use super::*;
 

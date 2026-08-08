@@ -64,7 +64,6 @@ pub fn resolve_log_dir(agent_name: Option<&str>) -> Result<PathBuf, FatalError> 
 }
 
 #[cfg(test)]
-#[expect(clippy::unwrap_used, reason = "test code uses unwrap for clarity")]
 mod tests {
     use super::*;
 

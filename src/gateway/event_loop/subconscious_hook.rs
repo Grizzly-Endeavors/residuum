@@ -185,7 +185,6 @@ async fn publish_correction_turn(rt: &GatewayRuntime, instruction: &str, correla
 }
 
 #[cfg(test)]
-#[expect(clippy::unwrap_used, reason = "test code uses unwrap for clarity")]
 mod tests {
     use super::*;
     use crate::subconscious::FindingKind;

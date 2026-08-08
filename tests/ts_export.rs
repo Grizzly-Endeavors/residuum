@@ -3,7 +3,6 @@
 //! Running `cargo test` produces `.ts` files in `web/src/lib/generated/`.
 //! These files are committed to git so the frontend can import them directly.
 
-#[expect(clippy::unwrap_used, reason = "test code uses unwrap for clarity")]
 #[expect(
     clippy::tests_outside_test_module,
     reason = "integration tests live in tests/ directory, not inside #[cfg(test)] modules"

@@ -112,7 +112,6 @@ impl Tool for MemoryGetTool {
 }
 
 #[cfg(test)]
-#[expect(clippy::unwrap_used, reason = "test code uses unwrap for clarity")]
 mod tests {
     use super::*;
     use crate::memory::episode_store::write_episode_transcript;

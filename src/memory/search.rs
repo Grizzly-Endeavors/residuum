@@ -1033,7 +1033,6 @@ fn apply_temporal_decay(
 }
 
 #[cfg(test)]
-#[expect(clippy::unwrap_used, reason = "test code uses unwrap for clarity")]
 #[expect(
     clippy::indexing_slicing,
     reason = "test code indexes into known-length slices"

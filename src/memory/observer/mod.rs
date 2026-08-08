@@ -347,7 +347,6 @@ async fn build_episode_and_persist(
 }
 
 #[cfg(test)]
-#[expect(clippy::unwrap_used, reason = "test code uses unwrap for clarity")]
 mod tests {
     use super::*;
     use crate::memory::episode_store::episode_obs_path;

@@ -148,7 +148,6 @@ pub(crate) fn load_heartbeat(path: &Path) -> Option<HeartbeatConfig> {
 }
 
 #[cfg(test)]
-#[expect(clippy::unwrap_used, reason = "test code uses unwrap for clarity")]
 mod tests {
     use super::*;
     use tempfile::tempdir;

@@ -153,7 +153,6 @@ fn truncate_body(s: &str, max_len: usize) -> String {
 }
 
 #[cfg(test)]
-#[expect(clippy::unwrap_used, reason = "test code uses unwrap for clarity")]
 mod tests {
     use super::*;
 

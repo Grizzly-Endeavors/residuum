@@ -615,7 +615,6 @@ impl EmbeddingProvider for OpenAiEmbeddingClient {
 }
 
 #[cfg(test)]
-#[expect(clippy::unwrap_used, reason = "test code uses unwrap for clarity")]
 mod tests {
     use super::*;
     use crate::models::CompletionOptions;

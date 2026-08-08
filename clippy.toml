@@ -1,0 +1,17 @@
+# Test-code exemptions.
+#
+# The lint block denies unwrap/expect/panic/dbg as a hard floor, but test code
+# legitimately uses all four — a test that can't `.unwrap()` a fixture is a test
+# drowning in ceremony. Exempting them here keeps the regime usable instead of
+# forcing an #[expect] on every assertion.
+#
+# Because the exemption lives here, test files need NO suppression header.
+# Adding `#[expect(clippy::unwrap_used, ...)]` to a test file is an error, not
+# belt-and-braces: the lint is already exempt, so the expectation never fires
+# and becomes an unfulfilled-expectation hard error under `-D warnings`.
+#
+# These four match grizzly-gate exactly, so `just lint` and CI never disagree.
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true
+allow-panic-in-tests = true
+allow-dbg-in-tests = true

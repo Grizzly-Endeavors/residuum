@@ -175,7 +175,6 @@ fn extract_json_field(value: &serde_json::Value, path: &str) -> Option<String> {
 }
 
 #[cfg(test)]
-#[expect(clippy::unwrap_used, reason = "test code uses unwrap for clarity")]
 mod tests {
     use super::*;
     use axum::body::Body;

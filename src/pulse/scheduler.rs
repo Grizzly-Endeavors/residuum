@@ -304,7 +304,6 @@ fn apply_jitter(base: Duration, pulse_name: &str, now: NaiveDateTime) -> Duratio
 }
 
 #[cfg(test)]
-#[expect(clippy::unwrap_used, reason = "test code uses unwrap for clarity")]
 #[expect(
     clippy::shadow_unrelated,
     reason = "test code reuses 'due' across sequential assertions in the same test"

@@ -895,7 +895,6 @@ fn resolve_bg_tier(
 }
 
 #[cfg(test)]
-#[expect(clippy::unwrap_used, reason = "test code uses unwrap for clarity")]
 pub(super) mod test_helpers {
     pub(super) use super::super::deserialize::{ConfigFile, ProvidersFile};
     pub(super) use super::super::secrets::SecretStore;
@@ -940,7 +939,6 @@ fn warn_deprecated_env_vars() {
 }
 
 #[cfg(test)]
-#[expect(clippy::unwrap_used, reason = "test code uses unwrap for clarity")]
 #[expect(clippy::indexing_slicing, reason = "test assertions")]
 #[expect(
     unsafe_code,

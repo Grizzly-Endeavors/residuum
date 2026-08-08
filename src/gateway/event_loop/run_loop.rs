@@ -716,7 +716,6 @@ async fn run_event_loop(mut rt: GatewayRuntime) -> GatewayExit {
 }
 
 #[cfg(test)]
-#[expect(clippy::unwrap_used, reason = "test code uses unwrap for clarity")]
 mod tests {
     use crate::gateway::types::ReloadSignal;
 

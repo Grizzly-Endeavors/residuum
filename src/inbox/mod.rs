@@ -243,10 +243,9 @@ fn ensure_json_ext(name: &str) -> String {
 
 #[cfg(test)]
 #[expect(
-    clippy::unwrap_used,
     clippy::indexing_slicing,
     clippy::string_slice,
-    reason = "test code uses unwrap, indexing, and string slicing for clarity"
+    reason = "test code uses indexing and string slicing for clarity"
 )]
 mod tests {
     use super::*;

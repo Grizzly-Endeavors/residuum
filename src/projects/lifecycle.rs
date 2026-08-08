@@ -141,7 +141,6 @@ fn sanitize_dir_name(name: &str) -> String {
 }
 
 #[cfg(test)]
-#[expect(clippy::unwrap_used, reason = "test code uses unwrap for clarity")]
 mod tests {
     use super::*;
     use crate::projects::scanner::parse_project_md;

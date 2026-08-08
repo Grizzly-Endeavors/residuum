@@ -387,7 +387,6 @@ pub(crate) async fn force_deactivate_project(
 }
 
 #[cfg(test)]
-#[expect(clippy::unwrap_used, reason = "test code uses unwrap for clarity")]
 mod tests {
     use std::collections::HashSet;
     use std::path::PathBuf;
