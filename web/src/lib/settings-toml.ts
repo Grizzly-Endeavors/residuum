@@ -49,7 +49,6 @@ export interface ConfigFields {
   learning_nudge_after_turns: string;
   // background
   bg_max_concurrent: string;
-  bg_transcript_retention_days: string;
   // retry
   retry_max_retries: string;
   retry_initial_delay_ms: string;
@@ -121,7 +120,6 @@ export function defaultConfigFields(): ConfigFields {
     subconscious_learning_cooldown_minutes: "",
     learning_nudge_after_turns: "",
     bg_max_concurrent: "",
-    bg_transcript_retention_days: "",
     retry_max_retries: "",
     retry_initial_delay_ms: "",
     retry_max_delay_ms: "",
@@ -228,7 +226,6 @@ export function parseConfigToml(raw: string): ConfigFields {
   const bg = doc.background as Record<string, unknown> | undefined;
   if (bg) {
     fields.bg_max_concurrent = str(bg.max_concurrent);
-    fields.bg_transcript_retention_days = str(bg.transcript_retention_days);
   }
 
   const retry = doc.retry as Record<string, unknown> | undefined;
@@ -663,12 +660,10 @@ export function serializeConfigToml(f: ConfigFields): string {
   }
 
   // background
-  if (f.bg_max_concurrent || f.bg_transcript_retention_days) {
+  if (f.bg_max_concurrent) {
     lines.push("");
     lines.push("[background]");
-    if (f.bg_max_concurrent) lines.push(`max_concurrent = ${f.bg_max_concurrent}`);
-    if (f.bg_transcript_retention_days)
-      lines.push(`transcript_retention_days = ${f.bg_transcript_retention_days}`);
+    lines.push(`max_concurrent = ${f.bg_max_concurrent}`);
   }
 
   // agent

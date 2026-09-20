@@ -234,7 +234,7 @@ This isolation ensures:
 | File | Purpose |
 |------|---------|
 | `mod.rs` | Module exports: re-exports `BackgroundTaskSpawner`, `SubAgentResources`, `build_subagent_resources()`, and the public types from `types.rs`. Declares the public `bridge` submodule and the crate-internal `spawn_context` submodule. |
-| `types.rs` | Core types: `BackgroundTask`, `SubAgentConfig`, `BackgroundResult`, `ActiveTaskInfo`, `SubAgentBuildConfig`. Helper functions `truncate_prompt_preview()` and `format_background_result()`. |
+| `types.rs` | Core types: `BackgroundTask`, `SubAgentConfig`, `BackgroundResult`, `ActiveTaskInfo`, `SubAgentBuildConfig`. Helper function `truncate_prompt_preview()` for display. |
 | `spawner.rs` | `BackgroundTaskSpawner`: lifecycle management, semaphore concurrency control, cancellation, active task tracking, result channel sending, transcript writing. |
 | `subagent.rs` | SubAgent execution: `SubAgentResources` (isolated state bundle), `build_subagent_resources()` (construct resources from main agent state), `execute_subagent()` (run the isolated turn loop and return the final text plus the full transcript). |
 | `spawn_context.rs` | `SpawnContext` (gathered at gateway startup): config, provider specs, identity, options, workspace layout, and the tool dependencies isolated SubAgent tool instances need. `build_spawn_resources()` resolves the model tier, activates the requested skill, and constructs `SubAgentResources` for a specific task. |

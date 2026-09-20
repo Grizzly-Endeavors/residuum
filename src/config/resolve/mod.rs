@@ -824,9 +824,8 @@ fn resolve_agent_config(section: Option<&AgentConfigFile>) -> AgentAbilitiesConf
 
 /// Resolve background task configuration.
 ///
-/// Reads `max_concurrent` and `transcript_retention_days` from `config.toml`'s
-/// `[background]` section, and model tiers from `providers.toml`'s
-/// `[background.models]` section.
+/// Reads `max_concurrent` from `config.toml`'s `[background]` section, and
+/// model tiers from `providers.toml`'s `[background.models]` section.
 ///
 /// # Errors
 /// Returns `FatalError::Config` if a model tier string cannot be resolved.
@@ -839,13 +838,10 @@ fn resolve_background_config(
 ) -> Result<BackgroundConfig, FatalError> {
     let mut cfg = BackgroundConfig::default();
 
-    if let Some(section) = section {
-        if let Some(v) = section.max_concurrent {
-            cfg.max_concurrent = v;
-        }
-        if let Some(v) = section.transcript_retention_days {
-            cfg.transcript_retention_days = v;
-        }
+    if let Some(section) = section
+        && let Some(v) = section.max_concurrent
+    {
+        cfg.max_concurrent = v;
     }
 
     if let Some(models_section) = models_section {

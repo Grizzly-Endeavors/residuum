@@ -79,27 +79,6 @@ pub(crate) fn truncate_prompt_preview(prompt: &str) -> String {
     prompt.chars().take(120).collect()
 }
 
-/// Format a `BackgroundResult` for injection into the agent message stream.
-#[must_use]
-pub fn format_background_result(result: &BackgroundResult) -> String {
-    let source_kind = result.source.as_str();
-
-    let mut parts = vec![format!(
-        "[Background Task Result]\nTask: {} ({})\nSource: {}\nStatus: {}",
-        result.source_label, result.id, source_kind, result.status
-    )];
-
-    if !result.summary.is_empty() {
-        parts.push(format!("Output:\n{}", result.summary));
-    }
-
-    if let Some(path) = &result.transcript_path {
-        parts.push(format!("Transcript: {}", path.display()));
-    }
-
-    parts.join("\n")
-}
-
 /// Configuration passed to [`build_subagent_resources`] that groups constructor arguments.
 pub struct SubAgentBuildConfig {
     /// Workspace layout (used to set the path policy root).
@@ -140,93 +119,6 @@ mod tests {
             BackgroundModelTier::default(),
             BackgroundModelTier::Medium,
             "default tier should be medium"
-        );
-    }
-
-    #[test]
-    fn format_background_result_completed() {
-        let result = BackgroundResult {
-            id: "bg-001".to_string(),
-            source_label: "action:email_check".to_string(),
-            source: EventTrigger::Action,
-            summary: "3 new emails found".to_string(),
-            transcript_path: None,
-            status: AgentResultStatus::Completed,
-            timestamp: Utc::now(),
-
-            agent_skill: None,
-        };
-
-        let formatted = format_background_result(&result);
-        assert!(
-            formatted.contains("action:email_check"),
-            "should contain source label"
-        );
-        assert!(formatted.contains("bg-001"), "should contain task id");
-        assert!(formatted.contains("action"), "should contain source");
-        assert!(formatted.contains("completed"), "should contain status");
-        assert!(
-            formatted.contains("3 new emails found"),
-            "should contain summary"
-        );
-    }
-
-    #[test]
-    fn format_background_result_failed() {
-        let result = BackgroundResult {
-            id: "bg-002".to_string(),
-            source_label: "agent:deploy_check".to_string(),
-            source: EventTrigger::Agent,
-            summary: String::new(),
-            transcript_path: Some(PathBuf::from("/tmp/bg-002.log")),
-            status: AgentResultStatus::Failed {
-                error: "connection refused".to_string(),
-            },
-            timestamp: Utc::now(),
-
-            agent_skill: None,
-        };
-
-        let formatted = format_background_result(&result);
-        assert!(formatted.contains("failed"), "should contain status");
-        assert!(
-            formatted.contains("connection refused"),
-            "should contain error"
-        );
-        assert!(
-            formatted.contains("/tmp/bg-002.log"),
-            "should contain transcript path"
-        );
-        assert!(
-            !formatted.contains("Output:"),
-            "failed result with empty summary should omit Output section"
-        );
-    }
-
-    #[test]
-    fn format_background_result_cancelled() {
-        let result = BackgroundResult {
-            id: "bg-003".to_string(),
-            source_label: "pulse:long_task".to_string(),
-            source: EventTrigger::Pulse,
-            summary: "partial output".to_string(),
-            transcript_path: None,
-            status: AgentResultStatus::Cancelled,
-            timestamp: Utc::now(),
-
-            agent_skill: None,
-        };
-
-        let formatted = format_background_result(&result);
-        assert!(formatted.contains("cancelled"), "should contain status");
-        assert!(formatted.contains("pulse"), "should contain source");
-        assert!(
-            formatted.contains("partial output"),
-            "should include non-empty summary"
-        );
-        assert!(
-            !formatted.contains("Error:"),
-            "cancelled task should not include Error: line"
         );
     }
 

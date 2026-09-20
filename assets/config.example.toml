@@ -210,4 +210,3 @@ port = 7700
 #
 # [background]
 # max_concurrent = 3
-# transcript_retention_days = 30
