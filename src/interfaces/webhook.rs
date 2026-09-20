@@ -134,14 +134,15 @@ pub async fn webhook_handler(
                 );
             }
         }
-        WebhookRouting::Agent(preset) => {
+        WebhookRouting::Agent(skill) => {
             let spawn_event = crate::bus::SpawnRequestEvent {
-                preset: crate::bus::PresetName::from(preset.as_str()),
+                skill: Some(crate::bus::SkillName::from(skill.as_str())),
                 source_label: format!("webhook:{name}"),
                 prompt: notification.content,
                 context: None,
                 source: crate::bus::EventTrigger::Webhook(name.clone()),
-                model_tier_override: None,
+                model_tier: crate::config::BackgroundModelTier::Medium,
+                include_identity: false,
             };
             if let Err(e) = state
                 .publisher

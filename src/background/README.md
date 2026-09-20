@@ -32,7 +32,7 @@ The module does **not** handle:
 - `source_label`: Human-readable label for logging and display (e.g. `"pulse:email_check"`, `"action:deploy"`)
 - `source`: Where the task came from (`EventTrigger::Agent`, `::Pulse`, `::Action`, `::Webhook(name)`)
 - `subagent_config`: `SubAgentConfig` (prompt, context, model tier)
-- `agent_preset`: The subagent preset that runs the task (`PresetName`)
+- `agent_skill`: The subagent preset that runs the task (`SkillName`)
 
 **SubAgentConfig:** Drives a simplified agent turn loop with minimal context. The SubAgent gets an isolated clone of `SkillState` plus a fresh `ToolFilter` and `PathPolicy`, so it operates independently of the main agent and other SubAgents. Returns the LLM's final text response as the summary, along with the full message transcript.
 
@@ -59,7 +59,7 @@ SubagentRegistry (src/subagents/registry.rs)
          ├─ Acquire semaphore permit (waits if at capacity)
          └─ tokio::spawn(async move {
               race: token.cancelled() vs execute_subagent()
-              → BackgroundResult { id, source_label, source, summary, status, transcript_path, timestamp, agent_preset }
+              → BackgroundResult { id, source_label, source, summary, status, transcript_path, timestamp, agent_skill }
               → send to result_tx (mpsc channel)
             })
     ↓
@@ -105,7 +105,7 @@ When `execute_subagent()` runs:
 - `transcript_path`: Path to disk log
 - `status`: `Completed`, `Cancelled`, or `Failed { error: String }`
 - `timestamp`: When the task completed
-- `agent_preset`: The preset that ran it
+- `agent_skill`: The preset that ran it
 
 `background::bridge::spawn_result_bridge` reads each `BackgroundResult` off the spawner's result channel and converts it into an `AgentResultEvent`, computing a `ResultDisposition` from sentinel strings the SubAgent leaves in its own summary:
 - `HEARTBEAT_OK` on a pulse result → `Silent` (nothing worth surfacing)
@@ -198,7 +198,7 @@ This isolation ensures:
 
 - **`crate::workspace`** — `IdentityFiles` (`SOUL.md`, `AGENTS.md`, `USER.md`, `MEMORY.md`, `ENVIRONMENT.md`), `WorkspaceLayout` (paths to directories). Used for context assembly.
 
-- **`crate::bus`** — `EventTrigger`, `PresetName`, `AgentResultStatus`, `ResultDisposition`, `HEARTBEAT_OK`/`HEARTBEAT_URGENT`, `AgentResultEvent`, `SpawnRequestEvent`. Used for task provenance, result status/disposition, and the spawn-request event other modules publish to request a task.
+- **`crate::bus`** — `EventTrigger`, `SkillName`, `AgentResultStatus`, `ResultDisposition`, `HEARTBEAT_OK`/`HEARTBEAT_URGENT`, `AgentResultEvent`, `SpawnRequestEvent`. Used for task provenance, result status/disposition, and the spawn-request event other modules publish to request a task.
 
 - **`crate::subagents`** — `SubagentPresetFrontmatter` (tool restrictions, model tier, `include_identity`), `SubagentPresetIndex`. Optional preset metadata passed to `build_spawn_resources()`.
 

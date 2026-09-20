@@ -1,6 +1,5 @@
 //! Background task management tools: `stop_agent`, `list_agents`, and `subagent_spawn`.
 
-use std::path::PathBuf;
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -10,7 +9,7 @@ use serde_json::Value;
 use crate::background::BackgroundTaskSpawner;
 use crate::config::BackgroundModelTier;
 use crate::models::ToolDefinition;
-use crate::subagents::SubagentPresetIndex;
+use crate::skills::SharedSkillState;
 
 use super::{Tool, ToolError, ToolResult};
 
@@ -133,16 +132,17 @@ impl Tool for ListAgentsTool {
 /// Tool for spawning background sub-agents on demand.
 pub struct SubagentSpawnTool {
     publisher: crate::bus::Publisher,
-    subagents_dir: PathBuf,
+    /// Main agent skill state — read to validate a requested skill name.
+    skill_state: SharedSkillState,
 }
 
 impl SubagentSpawnTool {
     /// Create a new `SubagentSpawnTool`.
     #[must_use]
-    pub(crate) fn new(publisher: crate::bus::Publisher, subagents_dir: PathBuf) -> Self {
+    pub(crate) fn new(publisher: crate::bus::Publisher, skill_state: SharedSkillState) -> Self {
         Self {
             publisher,
-            subagents_dir,
+            skill_state,
         }
     }
 }
@@ -156,7 +156,7 @@ impl Tool for SubagentSpawnTool {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: self.name().to_string(),
-            description: "Spawn a background sub-agent to handle a task. The agent_name selects a preset that configures the sub-agent's instructions, model tier, and tool restrictions. Unknown preset names fail immediately with a list of available presets. Runs asynchronously; the result is relayed back to you when the sub-agent finishes. A sub-agent's result is its own self-report, not verified fact — for verifiable work, ask the sub-agent to return concrete handles (file paths, IDs, URLs) and verify them yourself before relying on the result.".to_string(),
+            description: "Spawn a background sub-agent to handle a task. Optionally name a skill to give the sub-agent a role — its instructions become the sub-agent's brief. Runs asynchronously; the result is relayed back to you when the sub-agent finishes. A sub-agent's result is its own self-report, not verified fact — for verifiable work, ask the sub-agent to return concrete handles (file paths, IDs, URLs) and verify them yourself before relying on the result.".to_string(),
             parameters: serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -164,14 +164,14 @@ impl Tool for SubagentSpawnTool {
                         "type": "string",
                         "description": "The prompt/instructions for the sub-agent"
                     },
-                    "agent_name": {
+                    "skill": {
                         "type": "string",
-                        "description": "Preset name to use (default: \"general-purpose\"). Must match a known preset or the call fails."
+                        "description": "Name of a skill to activate for the sub-agent, giving it a role. Omit to run a plain sub-agent on the task prompt alone."
                     },
-                    "model_override": {
+                    "model": {
                         "type": "string",
                         "enum": ["small", "medium", "large"],
-                        "description": "Override the preset's model tier. If omitted, the preset's tier is used (default: \"medium\")."
+                        "description": "Model tier for the sub-agent (default: \"medium\")."
                     }
                 },
                 "required": ["task"]
@@ -188,80 +188,61 @@ impl Tool for SubagentSpawnTool {
             ));
         }
 
-        let preset_name = arguments
-            .get("agent_name")
-            .and_then(Value::as_str)
-            .unwrap_or("general-purpose");
+        let skill_name = arguments.get("skill").and_then(Value::as_str);
 
-        if preset_name.eq_ignore_ascii_case("main") {
-            return Err(ToolError::InvalidArguments(
-                "\"main\" is reserved for scheduled tasks (pulse/actions). Use a named preset instead."
-                    .to_string(),
-            ));
+        if let Some(name) = skill_name {
+            if name.eq_ignore_ascii_case("main") {
+                return Err(ToolError::InvalidArguments(
+                    "\"main\" is reserved for scheduled tasks (pulse/actions). Name a skill instead."
+                        .to_string(),
+                ));
+            }
+
+            // Validate against the in-memory skill index so an unknown name fails
+            // here, rather than surfacing later as a failed background result.
+            let state = self.skill_state.lock().await;
+            if state.index().find_by_name(name).is_none() {
+                let available: Vec<&str> = state
+                    .index()
+                    .entries()
+                    .iter()
+                    .map(|e| e.name.as_str())
+                    .collect();
+                return Ok(ToolResult::error(format!(
+                    "unknown skill '{name}'. Available: {}",
+                    available.join(", ")
+                )));
+            }
         }
-        let explicit_model_override = arguments.get("model_override").and_then(Value::as_str);
 
-        let tier =
-            match resolve_spawn_params(&self.subagents_dir, preset_name, explicit_model_override)
-                .await
-            {
-                Ok(tier) => tier,
-                Err(e) => return Ok(ToolResult::error(e.to_string())),
-            };
+        let model_tier = match arguments.get("model").and_then(Value::as_str) {
+            Some(s) => parse_model_tier(s)?,
+            None => BackgroundModelTier::Medium,
+        };
 
         let spawn_event = crate::bus::SpawnRequestEvent {
-            preset: crate::bus::PresetName::from(preset_name),
-            source_label: format!("agent:{preset_name}"),
+            skill: skill_name.map(crate::bus::SkillName::from),
+            source_label: format!("agent:{}", skill_name.unwrap_or("subagent")),
             prompt: task_prompt.to_string(),
             context: None,
             source: crate::bus::EventTrigger::Agent,
-            model_tier_override: Some(tier),
+            model_tier,
+            include_identity: false,
         };
 
         self.publisher
             .publish(crate::bus::topics::Background, spawn_event)
             .await
             .map_err(|err| {
-                tracing::error!(error = %err, preset = %preset_name, "failed to publish spawn request");
+                tracing::error!(error = %err, skill = skill_name.unwrap_or("none"), "failed to publish spawn request");
                 ToolError::Execution(format!("failed to publish spawn request: {err}"))
             })?;
 
-        Ok(ToolResult::success(format!(
-            "Subagent '{preset_name}' spawned with task delegated to registry."
-        )))
+        Ok(ToolResult::success(match skill_name {
+            Some(name) => format!("Sub-agent spawned with skill '{name}'."),
+            None => "Sub-agent spawned.".to_string(),
+        }))
     }
-}
-
-/// Load a preset and resolve tier defaults from arguments + preset.
-async fn resolve_spawn_params(
-    subagents_dir: &std::path::Path,
-    preset_name: &str,
-    explicit_model_override: Option<&str>,
-) -> Result<BackgroundModelTier, ToolError> {
-    let index = SubagentPresetIndex::scan(subagents_dir)
-        .await
-        .map_err(|e| ToolError::Execution(format!("failed to load subagent presets: {e}")))?;
-
-    let (preset_fm, _preset_body) = index
-        .load_preset(preset_name)
-        .await
-        .map_err(|e| ToolError::Execution(e.to_string()))?;
-
-    let tier = if let Some(s) = explicit_model_override {
-        parse_model_tier(s)?
-    } else if let Some(tier_str) = preset_fm.model_tier.as_deref() {
-        match parse_model_tier(tier_str) {
-            Ok(t) => t,
-            Err(e) => {
-                tracing::warn!(preset = %preset_name, tier = %tier_str, error = %e, "invalid model_tier in preset, falling back to medium");
-                BackgroundModelTier::Medium
-            }
-        }
-    } else {
-        BackgroundModelTier::Medium
-    };
-
-    Ok(tier)
 }
 
 fn parse_model_tier(s: &str) -> Result<BackgroundModelTier, ToolError> {
@@ -271,14 +252,14 @@ fn parse_model_tier(s: &str) -> Result<BackgroundModelTier, ToolError> {
 
 #[cfg(test)]
 mod tests {
-    use std::path::PathBuf;
-
     use super::*;
+    use crate::skills::{SkillIndex, SkillState};
 
     fn make_tool() -> SubagentSpawnTool {
         let bus_handle = crate::bus::spawn_broker();
         let publisher = bus_handle.publisher();
-        SubagentSpawnTool::new(publisher, PathBuf::from("/tmp"))
+        let skill_state = SkillState::new_shared(SkillIndex::default(), vec![]);
+        SubagentSpawnTool::new(publisher, skill_state)
     }
 
     #[test]
@@ -317,17 +298,17 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn main_preset_name_rejected() {
+    async fn main_skill_name_rejected() {
         let tool = make_tool();
 
         let result = tool
             .execute(serde_json::json!({
                 "task": "do something",
-                "agent_name": "main"
+                "skill": "main"
             }))
             .await;
 
-        assert!(result.is_err(), "\"main\" preset should be rejected");
+        assert!(result.is_err(), "\"main\" should be rejected");
         let err_msg = result.unwrap_err().to_string();
         assert!(
             err_msg.contains("reserved"),
@@ -336,13 +317,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn main_preset_name_rejected_case_insensitive() {
+    async fn main_skill_name_rejected_case_insensitive() {
         let tool = make_tool();
 
         let result = tool
             .execute(serde_json::json!({
                 "task": "do something",
-                "agent_name": "MAIN"
+                "skill": "MAIN"
             }))
             .await;
 
@@ -350,31 +331,28 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn unknown_preset_name_returns_error() {
+    async fn unknown_skill_name_returns_error() {
         let tool = make_tool();
 
         let result = tool
             .execute(serde_json::json!({
                 "task": "do something",
-                "agent_name": "definitely-not-a-real-preset"
+                "skill": "definitely-not-a-real-skill"
             }))
             .await
             .unwrap();
 
-        assert!(result.is_error, "unknown preset should return a tool error");
+        assert!(result.is_error, "unknown skill should return a tool error");
         assert!(
-            result.output.contains("unknown preset"),
-            "error should mention unknown preset, got: {}",
+            result.output.contains("unknown skill"),
+            "error should mention unknown skill, got: {}",
             result.output
         );
     }
 
     #[tokio::test]
-    async fn default_preset_general_purpose_used_when_no_agent_name() {
-        // When no agent_name is provided, the tool defaults to "general-purpose".
-        // With /tmp as subagents_dir, scanning may fail with "failed to load subagent presets: ..."
-        // That error is acceptable — what must NOT appear is "unknown preset", which would mean
-        // the preset name itself was rejected rather than just the scan environment failing.
+    async fn spawns_without_a_skill() {
+        // Omitting `skill` spawns a plain sub-agent — no index lookup, no error.
         let tool = make_tool();
 
         let res = tool
@@ -385,8 +363,8 @@ mod tests {
             .unwrap();
 
         assert!(
-            !res.output.contains("unknown preset"),
-            "should not fail with unknown-preset error, got: {}",
+            !res.is_error,
+            "spawning without a skill should succeed, got: {}",
             res.output
         );
     }

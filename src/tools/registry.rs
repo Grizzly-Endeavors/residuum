@@ -190,11 +190,11 @@ impl ToolRegistry {
     pub(crate) fn register_spawn_tool(
         &mut self,
         publisher: crate::bus::Publisher,
-        subagents_dir: std::path::PathBuf,
+        skill_state: crate::skills::SharedSkillState,
     ) {
         self.register(Box::new(background::SubagentSpawnTool::new(
             publisher,
-            subagents_dir,
+            skill_state,
         )));
     }
 

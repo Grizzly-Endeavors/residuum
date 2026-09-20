@@ -26,36 +26,34 @@ pub enum PulseExecution {
 pub enum AgentRoute<'a> {
     /// `agent: "main"` — inject a full wake turn on the main agent.
     MainWakeTurn,
-    /// `agent: None` or `agent: Some(preset)` — spawn a sub-agent with `preset`.
+    /// Spawn a sub-agent, optionally with a skill activated as its role.
     SubAgent {
-        /// The resolved preset name (`"general-purpose"` when `agent` was unset).
-        preset: &'a str,
+        /// The named skill, or `None` to run on the prompt alone.
+        skill: Option<&'a str>,
     },
 }
 
 /// Resolve an `agent` field to its routing decision.
 ///
-/// - `None` → `SubAgent` with the default `general-purpose` preset
+/// - `None` → `SubAgent` with no skill
 /// - `Some("main")` → `MainWakeTurn`
-/// - `Some(name)` → `SubAgent` with the named preset
+/// - `Some(name)` → `SubAgent` with that skill
 #[must_use]
 pub fn route_agent(agent: Option<&str>) -> AgentRoute<'_> {
     match agent {
         Some("main") => AgentRoute::MainWakeTurn,
-        Some(preset) => AgentRoute::SubAgent { preset },
-        None => AgentRoute::SubAgent {
-            preset: "general-purpose",
-        },
+        Some(name) => AgentRoute::SubAgent { skill: Some(name) },
+        None => AgentRoute::SubAgent { skill: None },
     }
 }
 
 /// Build a `PulseExecution` from a pulse definition.
 ///
-/// - `agent: None` → `SubAgent` with `general-purpose` preset, forced to the `Small`
-///   model tier (anonymous pulses have no preset-declared tier to honor)
 /// - `agent: Some("main")` → `MainWakeTurn` with the combined prompt
-/// - `agent: Some(name)` → `SubAgent` with the named preset; no tier override is set,
-///   so the preset's own `model_tier` frontmatter resolves at spawn time
+/// - `agent: Some(name)` → `SubAgent` running with the named skill activated
+/// - `agent: None` → `SubAgent` with no skill, running on the pulse prompt alone
+///
+/// The model tier comes from the pulse's own `model_tier`, defaulting to `small`.
 #[must_use]
 pub fn build_pulse_execution(pulse: &PulseDef) -> PulseExecution {
     let prompt = build_pulse_prompt(pulse);
@@ -68,23 +66,26 @@ pub fn build_pulse_execution(pulse: &PulseDef) -> PulseExecution {
                 prompt,
             }
         }
-        AgentRoute::SubAgent { preset } => {
-            tracing::debug!(pulse = %pulse.name, preset = %preset, "routing pulse to sub-agent");
-            let source_label = format!("pulse:{}", pulse.name);
-            // Anonymous pulses (no `agent` set) fall back to `general-purpose` with no
-            // preset-declared tier, so we force `Small`. Named presets carry their own
-            // `model_tier` frontmatter, which should win over any override here.
-            let model_tier_override = pulse
-                .agent
-                .is_none()
-                .then_some(crate::config::BackgroundModelTier::Small);
+        AgentRoute::SubAgent { skill } => {
+            tracing::debug!(
+                pulse = %pulse.name,
+                skill = skill.unwrap_or("none"),
+                "routing pulse to sub-agent"
+            );
+            let model_tier = pulse
+                .model_tier
+                .as_deref()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(crate::config::BackgroundModelTier::Small);
+
             let spawn_event = SpawnRequestEvent {
-                preset: crate::bus::PresetName::from(preset),
-                source_label,
+                skill: skill.map(crate::bus::SkillName::from),
+                source_label: format!("pulse:{}", pulse.name),
                 prompt,
                 context: None,
                 source: EventTrigger::Pulse,
-                model_tier_override,
+                model_tier,
+                include_identity: pulse.include_identity,
             };
             PulseExecution::SubAgent { spawn_event }
         }
@@ -136,6 +137,8 @@ mod tests {
             schedule: "30m".to_string(),
             active_hours: None,
             agent: None,
+            model_tier: None,
+            include_identity: false,
             tasks: vec![
                 PulseTask {
                     name: "check_inbox".to_string(),
@@ -152,18 +155,18 @@ mod tests {
     // ── build_pulse_execution tests ─────────────────────────────────────
 
     #[test]
-    fn execution_no_agent_returns_subagent_general_purpose() {
+    fn execution_no_agent_returns_subagent_without_skill() {
         let pulse = sample_pulse();
         match build_pulse_execution(&pulse) {
             PulseExecution::SubAgent { spawn_event } => {
-                assert_eq!(spawn_event.preset.as_ref(), "general-purpose");
+                assert_eq!(spawn_event.skill, None);
                 assert_eq!(spawn_event.source_label, "pulse:email_check");
                 assert!(spawn_event.prompt.contains("email_check"));
                 assert!(spawn_event.prompt.contains("HEARTBEAT_OK"));
                 assert!(matches!(spawn_event.source, EventTrigger::Pulse));
                 assert!(matches!(
-                    spawn_event.model_tier_override,
-                    Some(crate::config::BackgroundModelTier::Small)
+                    spawn_event.model_tier,
+                    crate::config::BackgroundModelTier::Small
                 ));
             }
             PulseExecution::MainWakeTurn { .. } => panic!("expected SubAgent"),
@@ -185,17 +188,23 @@ mod tests {
     }
 
     #[test]
-    fn execution_agent_preset_returns_subagent_with_preset() {
+    fn execution_agent_name_returns_subagent_with_skill() {
         let mut pulse = sample_pulse();
         pulse.agent = Some("memory-agent".to_string());
         match build_pulse_execution(&pulse) {
             PulseExecution::SubAgent { spawn_event } => {
-                assert_eq!(spawn_event.preset.as_ref(), "memory-agent");
+                assert_eq!(
+                    spawn_event.skill.as_ref().map(AsRef::as_ref),
+                    Some("memory-agent")
+                );
                 assert_eq!(spawn_event.source_label, "pulse:email_check");
                 assert!(matches!(spawn_event.source, EventTrigger::Pulse));
-                // Named presets should NOT be forced to Small — the preset's own
-                // `model_tier` frontmatter must resolve at spawn time instead.
-                assert!(spawn_event.model_tier_override.is_none());
+                // A pulse that names no tier runs small, whether or not it
+                // names a skill — the tier is the pulse's own setting.
+                assert!(matches!(
+                    spawn_event.model_tier,
+                    crate::config::BackgroundModelTier::Small
+                ));
             }
             PulseExecution::MainWakeTurn { .. } => panic!("expected SubAgent"),
         }
@@ -275,6 +284,8 @@ mod tests {
             schedule: "1h".to_string(),
             active_hours: None,
             agent: None,
+            model_tier: None,
+            include_identity: false,
             tasks: vec![],
         };
         match build_pulse_execution(&pulse) {

@@ -5,7 +5,6 @@ use std::path::Path;
 use anyhow::Context;
 
 use crate::skills::SharedSkillState;
-use crate::subagents::SubagentPresetIndex;
 
 /// Load and format observations from the observation log JSON file.
 ///
@@ -67,24 +66,6 @@ pub(crate) async fn build_skill_context_strings(
     let index_text = (!formatted.is_empty()).then_some(formatted);
     let active_text = state.format_active_for_prompt();
     (index_text, active_text)
-}
-
-/// Scan the subagents directory and format the index for the system prompt.
-///
-/// Returns `None` if the formatted index is empty (the scan succeeded but produced no output),
-/// or if the scan itself fails (logged at `warn` level).
-#[tracing::instrument(skip_all, fields(dir = %subagents_dir.display()))]
-pub(crate) async fn build_subagents_context_string(subagents_dir: &Path) -> Option<String> {
-    match SubagentPresetIndex::scan(subagents_dir).await {
-        Ok(index) => {
-            let formatted = index.format_for_prompt();
-            (!formatted.is_empty()).then_some(formatted)
-        }
-        Err(e) => {
-            tracing::warn!(error = %e, "failed to scan subagent presets");
-            None
-        }
-    }
 }
 
 #[cfg(test)]

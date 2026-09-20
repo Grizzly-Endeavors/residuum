@@ -29,9 +29,9 @@ pub async fn handle_pulse_execution(
         }
         PulseExecution::SubAgent { spawn_event } => {
             let topic = topics::Background;
-            let preset_name = spawn_event.preset.as_ref().to_string();
+            let source_label = spawn_event.source_label.clone();
             if let Err(e) = rt.publisher.publish(topic, spawn_event).await {
-                tracing::warn!(pulse = %preset_name, error = %e, "failed to publish pulse spawn request");
+                tracing::warn!(pulse = %source_label, error = %e, "failed to publish pulse spawn request");
             }
         }
     }

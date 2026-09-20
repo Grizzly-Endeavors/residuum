@@ -377,6 +377,8 @@ fn build_spawn_context(
         action_store: Arc::clone(&rt.action_store),
         action_notify: Arc::clone(&rt.action_notify),
         hybrid_searcher: Arc::clone(&rt.hybrid_searcher),
+        skill_state: Arc::clone(&rt.skill_state),
+        mcp_registry: Arc::clone(&rt.mcp_registry),
     })
 }
 

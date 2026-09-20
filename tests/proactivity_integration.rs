@@ -83,6 +83,8 @@ mod proactivity_integration {
             schedule: "30m".to_string(),
             active_hours: None,
             agent: None,
+            model_tier: None,
+            include_identity: false,
             tasks: vec![PulseTask {
                 name: "check_inbox".to_string(),
                 prompt: "Check email.".to_string(),
@@ -97,7 +99,7 @@ mod proactivity_integration {
         let pulse = sample_pulse();
         match build_pulse_execution(&pulse) {
             PulseExecution::SubAgent { spawn_event } => {
-                assert_eq!(spawn_event.preset.as_ref(), "general-purpose");
+                assert_eq!(spawn_event.skill, None);
                 assert_eq!(spawn_event.source_label, "pulse:email_check");
                 assert!(matches!(spawn_event.source, EventTrigger::Pulse));
             }
@@ -139,6 +141,8 @@ mod proactivity_integration {
             schedule: "1h".to_string(),
             active_hours: None,
             agent: None,
+            model_tier: None,
+            include_identity: false,
             tasks: vec![],
         };
 
@@ -169,12 +173,15 @@ mod proactivity_integration {
     }
 
     #[test]
-    fn build_pulse_execution_agent_preset_returns_subagent_with_preset() {
+    fn build_pulse_execution_agent_name_returns_subagent_with_skill() {
         let mut pulse = sample_pulse();
         pulse.agent = Some("memory-agent".to_string());
         match build_pulse_execution(&pulse) {
             PulseExecution::SubAgent { spawn_event } => {
-                assert_eq!(spawn_event.preset.as_ref(), "memory-agent");
+                assert_eq!(
+                    spawn_event.skill.as_ref().map(AsRef::as_ref),
+                    Some("memory-agent")
+                );
                 assert_eq!(spawn_event.source_label, "pulse:email_check");
             }
             PulseExecution::MainWakeTurn { .. } => panic!("expected SubAgent"),

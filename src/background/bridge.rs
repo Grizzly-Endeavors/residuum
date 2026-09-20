@@ -77,7 +77,7 @@ fn convert_to_agent_result(result: &BackgroundResult, tz: chrono_tz::Tz) -> Agen
     AgentResultEvent {
         task_id: result.id.clone(),
         source_label: result.source_label.clone(),
-        agent_preset: result.agent_preset.clone(),
+        agent_skill: result.agent_skill.clone(),
         source: result.source.clone(),
         disposition,
         status: result.status.clone(),
@@ -98,7 +98,7 @@ mod tests {
     use chrono::Utc;
 
     use super::*;
-    use crate::bus::{AgentResultStatus, PresetName};
+    use crate::bus::AgentResultStatus;
 
     #[test]
     fn convert_completed_result() {
@@ -111,7 +111,7 @@ mod tests {
             status: AgentResultStatus::Completed,
             timestamp: Utc::now(),
 
-            agent_preset: PresetName::from("general-purpose"),
+            agent_skill: None,
         };
 
         let event = convert_to_agent_result(&result, chrono_tz::UTC);
@@ -132,7 +132,7 @@ mod tests {
             status: AgentResultStatus::Completed,
             timestamp: Utc::now(),
 
-            agent_preset: PresetName::from("general-purpose"),
+            agent_skill: None,
         };
 
         let event = convert_to_agent_result(&result, chrono_tz::UTC);
@@ -152,7 +152,7 @@ mod tests {
             },
             timestamp: Utc::now(),
 
-            agent_preset: PresetName::from("general-purpose"),
+            agent_skill: None,
         };
 
         let event = convert_to_agent_result(&result, chrono_tz::UTC);
@@ -181,7 +181,7 @@ mod tests {
             status: AgentResultStatus::Completed,
             timestamp: Utc::now(),
 
-            agent_preset: PresetName::from("general-purpose"),
+            agent_skill: None,
         };
 
         tx.send(result).await.unwrap();
@@ -214,7 +214,7 @@ mod tests {
             status: AgentResultStatus::Completed,
             timestamp: Utc::now(),
 
-            agent_preset: PresetName::from("general-purpose"),
+            agent_skill: None,
         };
 
         let event = convert_to_agent_result(&result, chrono_tz::UTC);
@@ -230,7 +230,7 @@ mod tests {
             transcript_path: None,
             status: AgentResultStatus::Completed,
             timestamp: Utc::now(),
-            agent_preset: PresetName::from("general-purpose"),
+            agent_skill: None,
         }
     }
 
@@ -284,7 +284,7 @@ mod tests {
             status: AgentResultStatus::Completed,
             timestamp: Utc::now(),
 
-            agent_preset: PresetName::from("general-purpose"),
+            agent_skill: None,
         };
 
         let event = convert_to_agent_result(&result, chrono_tz::UTC);

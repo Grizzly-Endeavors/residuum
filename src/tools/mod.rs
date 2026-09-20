@@ -108,14 +108,13 @@ pub type SharedToolFilter = Arc<RwLock<ToolFilter>>;
 
 /// Controls which tools are visible and executable.
 ///
-/// Supports subagent preset restrictions via `denied_tools` (permanently
-/// blocked) or `allowed_tools` (only listed tools are available, overrides
-/// all other logic).
+/// Supports a deny list (permanently blocked) or an allow list (only listed
+/// tools are available, overriding all other logic).
 #[derive(Clone, Default)]
 pub struct ToolFilter {
-    /// Tools permanently blocked by the subagent preset (`denied_tools`).
+    /// Tools permanently blocked for this agent.
     preset_blocked: HashSet<String>,
-    /// If set, ONLY these tools are available (`allowed_tools` preset restriction).
+    /// If set, ONLY these tools are available.
     preset_allowed_only: Option<HashSet<String>>,
 }
 
@@ -132,7 +131,7 @@ impl ToolFilter {
         Arc::new(RwLock::new(Self::new()))
     }
 
-    /// Create a new shared tool filter with preset-denied tools.
+    /// Create a new shared tool filter with a deny list.
     #[must_use]
     pub fn new_shared_with_denied(denied: HashSet<String>) -> SharedToolFilter {
         Arc::new(RwLock::new(Self {
@@ -152,8 +151,8 @@ impl ToolFilter {
 
     /// Check whether a tool is available.
     ///
-    /// If the preset set `allowed_only`, only listed tools are available.
-    /// Otherwise, preset-blocked tools are never available; all others are.
+    /// With an allow list set, only listed tools are available.
+    /// Otherwise, blocked tools are never available; all others are.
     #[must_use]
     pub fn is_available(&self, name: &str) -> bool {
         if let Some(allowed) = &self.preset_allowed_only {
