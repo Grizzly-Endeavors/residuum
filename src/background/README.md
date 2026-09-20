@@ -177,7 +177,7 @@ This isolation ensures:
 
 - **`crate::inference`** — `InferenceProvider`, `CompletionOptions`, `SharedHttpClient`, `Message`. Used to build and call LLM providers for SubAgent execution.
 
-- **`crate::models::retry`** — `RetryConfig`. Passed to provider construction; configures API call retry behavior.
+- **`crate::inference::retry`** — `RetryConfig`. Passed to provider construction; configures API call retry behavior.
 
 - **`crate::agent::context`** — Context building functions (`build_subagent_system_content`), `PromptContext`, `MemoryContext`, `SkillsContext`, `SubagentsContext`. Used to assemble the minimal system prompt for SubAgents.
 
