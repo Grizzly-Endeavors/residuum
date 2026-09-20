@@ -21,6 +21,34 @@ pub enum PulseExecution {
     },
 }
 
+/// The three-way agent routing decision shared by pulses and scheduled actions.
+#[derive(Debug, Clone, Copy)]
+pub enum AgentRoute<'a> {
+    /// `agent: "main"` — inject a full wake turn on the main agent.
+    MainWakeTurn,
+    /// `agent: None` or `agent: Some(preset)` — spawn a sub-agent with `preset`.
+    SubAgent {
+        /// The resolved preset name (`"general-purpose"` when `agent` was unset).
+        preset: &'a str,
+    },
+}
+
+/// Resolve an `agent` field to its routing decision.
+///
+/// - `None` → `SubAgent` with the default `general-purpose` preset
+/// - `Some("main")` → `MainWakeTurn`
+/// - `Some(name)` → `SubAgent` with the named preset
+#[must_use]
+pub fn route_agent(agent: Option<&str>) -> AgentRoute<'_> {
+    match agent {
+        Some("main") => AgentRoute::MainWakeTurn,
+        Some(preset) => AgentRoute::SubAgent { preset },
+        None => AgentRoute::SubAgent {
+            preset: "general-purpose",
+        },
+    }
+}
+
 /// Build a `PulseExecution` from a pulse definition.
 ///
 /// - `agent: None` → `SubAgent` with `general-purpose` preset, forced to the `Small`
@@ -31,33 +59,35 @@ pub enum PulseExecution {
 #[must_use]
 pub fn build_pulse_execution(pulse: &PulseDef) -> PulseExecution {
     let prompt = build_pulse_prompt(pulse);
-    let preset = pulse.agent.as_deref().unwrap_or("general-purpose");
 
-    if preset == "main" {
-        tracing::debug!(pulse = %pulse.name, "routing pulse to main wake turn");
-        PulseExecution::MainWakeTurn {
-            pulse_name: pulse.name.clone(),
-            prompt,
+    match route_agent(pulse.agent.as_deref()) {
+        AgentRoute::MainWakeTurn => {
+            tracing::debug!(pulse = %pulse.name, "routing pulse to main wake turn");
+            PulseExecution::MainWakeTurn {
+                pulse_name: pulse.name.clone(),
+                prompt,
+            }
         }
-    } else {
-        tracing::debug!(pulse = %pulse.name, preset = %preset, "routing pulse to sub-agent");
-        let source_label = format!("pulse:{}", pulse.name);
-        // Anonymous pulses (no `agent` set) fall back to `general-purpose` with no
-        // preset-declared tier, so we force `Small`. Named presets carry their own
-        // `model_tier` frontmatter, which should win over any override here.
-        let model_tier_override = pulse
-            .agent
-            .is_none()
-            .then_some(crate::config::BackgroundModelTier::Small);
-        let spawn_event = SpawnRequestEvent {
-            preset: crate::bus::PresetName::from(preset),
-            source_label,
-            prompt,
-            context: None,
-            source: EventTrigger::Pulse,
-            model_tier_override,
-        };
-        PulseExecution::SubAgent { spawn_event }
+        AgentRoute::SubAgent { preset } => {
+            tracing::debug!(pulse = %pulse.name, preset = %preset, "routing pulse to sub-agent");
+            let source_label = format!("pulse:{}", pulse.name);
+            // Anonymous pulses (no `agent` set) fall back to `general-purpose` with no
+            // preset-declared tier, so we force `Small`. Named presets carry their own
+            // `model_tier` frontmatter, which should win over any override here.
+            let model_tier_override = pulse
+                .agent
+                .is_none()
+                .then_some(crate::config::BackgroundModelTier::Small);
+            let spawn_event = SpawnRequestEvent {
+                preset: crate::bus::PresetName::from(preset),
+                source_label,
+                prompt,
+                context: None,
+                source: EventTrigger::Pulse,
+                model_tier_override,
+            };
+            PulseExecution::SubAgent { spawn_event }
+        }
     }
 }
 
