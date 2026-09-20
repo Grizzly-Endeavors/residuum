@@ -3,12 +3,11 @@
 ## Key References
 
 - [Design Philosophy](./docs/design-philosophy.md)
-- [Residuum Design](./docs/residuum-design.md)
-- [Personal Agent](./docs/personal-agent-design.md)
-- [Background Tasks](./docs/background-tasks-design.md)
-- [Memory Search](./docs/memory-search-design.md)
-- [Notification Routing](./docs/archive/notification-routing-design.md)
-- [Systems Usage](./docs/systems-usage/) (authoritative reference for how systems are intended to work)
+- [Systems Usage](./docs/systems-usage/) — authoritative reference for how systems work today
+- [Guides](./docs/guides/) — task-oriented walkthroughs
+- [Design](./docs/design/) — designs for work that is not built yet
+
+Superseded documents live in [`docs/archive/`](./docs/archive/); they record history and do not describe current behavior.
 
 **Web interface:** The Residuum web UI lives in `residuum/web/` (Svelte 5 SPA). See `web/AGENTS.md` for details. **Do not confuse with `relay/web/`**, which is only a marketing landing page.
 

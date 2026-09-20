@@ -81,7 +81,7 @@ Releases are automated — pushing a tag matching this format triggers the CI pi
 
 ## Architecture
 
-See [docs/residuum-design.md](docs/residuum-design.md) for system architecture and design decisions. The `docs/` directory covers individual subsystems in detail.
+See [docs/systems-usage/](docs/systems-usage/) for how each subsystem works — it is the authoritative reference, kept current with the code. [docs/design-philosophy.md](docs/design-philosophy.md) covers the principles behind those choices, and [docs/](docs/) describes the rest of the documentation layout.
 
 ## License
 
