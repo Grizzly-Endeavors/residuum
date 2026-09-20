@@ -1,7 +1,6 @@
 //! CLI subcommand dispatch using clap.
 
 mod bug_report;
-mod connect;
 mod feedback;
 mod logs;
 mod secret;
@@ -38,8 +37,6 @@ struct Cli {
 enum Command {
     /// Start the gateway (default when no subcommand is given)
     Serve(serve::ServeArgs),
-    /// Connect a CLI client to a running gateway
-    Connect(connect::ConnectArgs),
     /// Display and tail log files
     Logs(logs::LogsArgs),
     /// Interactive or flag-driven configuration wizard
@@ -99,11 +96,6 @@ pub async fn run() -> Result<(), FatalError> {
         Command::Secret { command } => secret::run_secret_command(&command),
         Command::Agent { command } => {
             residuum::agent_registry::commands::run_agent_command(&command)
-        }
-        Command::Connect(ref args) => {
-            residuum::util::tracing_init::init_cli_tracing();
-            let url = connect::resolve_url(args)?;
-            connect::run_connect_command(&url, args.verbose).await
         }
         Command::Logs(ref args) => {
             residuum::util::tracing_init::init_default_tracing();
