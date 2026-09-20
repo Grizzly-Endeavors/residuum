@@ -30,6 +30,8 @@ interface CommandContext {
    * (`/help`, `/status`) instead of seeing as a transient toast.
    */
   pushInline: (content: string) => void;
+  /** Correlation id of the turn in flight, or `null` when idle. */
+  activeTurnId: string | null;
 }
 
 // ── Command registry ────────────────────────────────────────────────
@@ -48,6 +50,7 @@ export const COMMAND_REGISTRY: CommandDef[] = [
   { name: "/reflect", description: "Trigger memory reflection", hasArgs: false },
   { name: "/context", description: "Show the context token breakdown", hasArgs: false },
   { name: "/reload", description: "Reload gateway configuration", hasArgs: false },
+  { name: "/stop", description: "Stop the current agent turn", hasArgs: false },
   { name: "/inbox", description: "Add a message to the inbox", hasArgs: true },
 ];
 
@@ -127,6 +130,20 @@ export function parseCommand(input: string, ctx: CommandContext): CommandResult 
         wsMessage: { type: "reload" },
         notification: { kind: "system", message: "Requesting gateway reload…" },
       };
+
+    case "/stop": {
+      if (!ctx.activeTurnId) {
+        return {
+          handled: true,
+          notification: { kind: "notice", message: "nothing is running right now" },
+        };
+      }
+      return {
+        handled: true,
+        wsMessage: { type: "cancel", reply_to: ctx.activeTurnId },
+        notification: { kind: "system", message: "Stopping…" },
+      };
+    }
 
     case "/inbox": {
       if (!args.trim()) {

@@ -446,6 +446,7 @@ async fn reload_gateway(rt: &mut GatewayRuntime, new_cfg: &Config) {
             let state = GatewayState {
                 reload_tx: rt.reload_tx.clone(),
                 command_tx: rt.command_tx.clone(),
+                stop_tx: rt.stop_tx.clone(),
                 agent_inbox_dir: rt.layout.agent_inbox_dir(),
                 tz: rt.tz,
                 tunnel_status_rx: rt.tunnel_status_rx.clone(),
@@ -598,6 +599,7 @@ async fn reload_discord_adapter(rt: &mut GatewayRuntime, new_cfg: &Config) {
         bus_handle: rt.bus_handle.clone(),
         reload: rt.reload_tx.clone(),
         command: rt.command_tx.clone(),
+        stop: rt.stop_tx.clone(),
     };
     reload_adapter(
         &mut rt.discord_shutdown_tx,
@@ -654,6 +656,7 @@ async fn reload_telegram_adapter(rt: &mut GatewayRuntime, new_cfg: &Config) {
         bus_handle: rt.bus_handle.clone(),
         reload: rt.reload_tx.clone(),
         command: rt.command_tx.clone(),
+        stop: rt.stop_tx.clone(),
     };
     reload_adapter(
         &mut rt.telegram_shutdown_tx,

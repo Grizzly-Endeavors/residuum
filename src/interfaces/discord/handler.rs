@@ -13,7 +13,7 @@ use serenity::model::gateway::Ready;
 use serenity::prelude::*;
 
 use crate::bus::{BusHandle, EndpointName, Publisher};
-use crate::gateway::types::{ReloadSignal, ServerCommand};
+use crate::gateway::types::{ReloadSignal, ServerCommand, StopRequest};
 use crate::interfaces::attachment::{
     AttachmentInfo, download_attachment, finalize_attachment, format_failed_attachment_line,
 };
@@ -32,6 +32,7 @@ pub(super) struct DiscordHandler {
     pub(super) inbox_dir: PathBuf,
     pub(super) reload_tx: tokio::sync::watch::Sender<ReloadSignal>,
     pub(super) command_tx: tokio::sync::mpsc::Sender<ServerCommand>,
+    pub(super) stop_tx: tokio::sync::mpsc::Sender<StopRequest>,
     pub(super) tz: chrono_tz::Tz,
 }
 
@@ -169,6 +170,10 @@ impl EventHandler for DiscordHandler {
                     result.response,
                 )
                 .await
+            }
+            Some(CommandSideEffect::Stop) => {
+                crate::interfaces::dispatch_stop_request(&self.stop_tx, "discord slash command")
+                    .await
             }
             None => result.response,
         };

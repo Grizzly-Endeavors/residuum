@@ -41,6 +41,14 @@ pub enum ClientMessage {
         /// The message body to add.
         body: String,
     },
+    /// Stop the currently running agent turn.
+    Cancel {
+        /// Correlation ID of the turn to stop (matches the `id` sent with
+        /// the original `SendMessage`, and the `reply_to` on its
+        /// `TurnStarted`/`TurnEnded`). A stop for a turn that has already
+        /// ended is silently ignored.
+        reply_to: String,
+    },
 }
 
 /// Messages sent from the server to WebSocket clients.
@@ -364,6 +372,34 @@ mod tests {
         assert!(
             json.contains("\"body\":\"hello world\""),
             "should have body field"
+        );
+    }
+
+    #[test]
+    fn client_message_deserialize_cancel() {
+        let json = r#"{"type":"cancel","reply_to":"abc-123"}"#;
+        let msg: ClientMessage = serde_json::from_str(json).unwrap();
+        assert!(
+            matches!(&msg, ClientMessage::Cancel { reply_to } if reply_to == "abc-123"),
+            "should deserialize to Cancel with correct reply_to"
+        );
+    }
+
+    #[test]
+    fn client_message_serialize_cancel_roundtrip() {
+        let msg = ClientMessage::Cancel {
+            reply_to: "turn-42".to_string(),
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(json.contains("\"type\":\"cancel\""), "should have type tag");
+        assert!(
+            json.contains("\"reply_to\":\"turn-42\""),
+            "should have reply_to field"
+        );
+        let deserialized: ClientMessage = serde_json::from_str(&json).unwrap();
+        assert!(
+            matches!(&deserialized, ClientMessage::Cancel { reply_to } if reply_to == "turn-42"),
+            "should survive a serialization round-trip"
         );
     }
 

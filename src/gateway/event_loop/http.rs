@@ -5,7 +5,7 @@ use std::sync::Arc;
 use tokio::sync::mpsc;
 
 use crate::config::Config;
-use crate::gateway::types::{GatewayState, ReloadSignal, ServerCommand};
+use crate::gateway::types::{GatewayState, ReloadSignal, ServerCommand, StopRequest};
 use crate::util::FatalError;
 
 use crate::gateway::web;
@@ -18,6 +18,7 @@ pub struct AdapterSenders {
     pub bus_handle: crate::bus::BusHandle,
     pub reload: tokio::sync::watch::Sender<ReloadSignal>,
     pub command: mpsc::Sender<ServerCommand>,
+    pub stop: mpsc::Sender<StopRequest>,
 }
 
 /// Lifecycle handles returned from spawning chat adapters.
