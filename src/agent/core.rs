@@ -3,9 +3,9 @@
 use tokio_util::sync::CancellationToken;
 
 use crate::bus::{EndpointName, Publisher};
+use crate::inference::{CompletionOptions, InferenceProvider, Message};
 use crate::interfaces::types::MessageOrigin;
 use crate::mcp::SharedMcpRegistry;
-use crate::models::{CompletionOptions, Message, ModelProvider};
 use crate::tools::ToolRegistry;
 use crate::workspace::identity::IdentityFiles;
 
@@ -37,7 +37,7 @@ pub struct AgentConfig {
 
 /// The agent runtime that processes user messages through the model.
 pub struct Agent {
-    provider: Box<dyn ModelProvider>,
+    provider: Box<dyn InferenceProvider>,
     tools: ToolRegistry,
     mcp_registry: SharedMcpRegistry,
     /// Last-known-good identity snapshot. Refreshed from disk at each turn entry
@@ -60,7 +60,7 @@ impl Agent {
     /// Create a new agent with the given components.
     #[must_use]
     pub fn new(
-        provider: Box<dyn ModelProvider>,
+        provider: Box<dyn InferenceProvider>,
         tools: ToolRegistry,
         mcp_registry: SharedMcpRegistry,
         identity: IdentityFiles,
@@ -103,7 +103,11 @@ impl Agent {
     }
 
     /// Replace the model provider and completion options in-place (e.g. after a config reload).
-    pub fn swap_provider(&mut self, provider: Box<dyn ModelProvider>, options: CompletionOptions) {
+    pub fn swap_provider(
+        &mut self,
+        provider: Box<dyn InferenceProvider>,
+        options: CompletionOptions,
+    ) {
         tracing::info!(
             old_model = self.provider.model_name(),
             new_model = provider.model_name(),
@@ -209,7 +213,7 @@ impl Agent {
     /// Takes explicit field references rather than `&self` for the same
     /// reason as [`Agent::memory_ctx`].
     fn turn_resources<'a>(
-        provider: &'a dyn ModelProvider,
+        provider: &'a dyn InferenceProvider,
         tools: &'a ToolRegistry,
         mcp_registry: &'a SharedMcpRegistry,
         identity: &'a IdentityFiles,
@@ -316,7 +320,7 @@ impl Agent {
         origin: Option<&MessageOrigin>,
         prompt_ctx: &PromptContext<'_>,
         interrupt_rx: &mut tokio::sync::mpsc::Receiver<interrupt::Interrupt>,
-        images: &[crate::models::ImageData],
+        images: &[crate::inference::ImageData],
         subconscious: Option<&crate::subconscious::SubconsciousWatch>,
         stop_token: &CancellationToken,
     ) -> anyhow::Result<Vec<String>> {
@@ -384,13 +388,13 @@ impl Agent {
         publisher: &Publisher,
         output_endpoint: Option<&EndpointName>,
         tool_activity_endpoint: Option<&EndpointName>,
-        provider_override: Option<&dyn ModelProvider>,
+        provider_override: Option<&dyn InferenceProvider>,
         prompt_ctx: &PromptContext<'_>,
     ) -> anyhow::Result<SystemTurnResult> {
         let mut thread_messages = RecentMessages::new();
         thread_messages.push(Message::user(prompt));
 
-        let provider: &dyn ModelProvider = provider_override.unwrap_or(&*self.provider);
+        let provider: &dyn InferenceProvider = provider_override.unwrap_or(&*self.provider);
 
         // System turns take `&self` and can't cache the reload, so use a local
         // snapshot for this turn only.
@@ -458,7 +462,7 @@ impl Agent {
 
         let mcp_defs = self.mcp_registry.read().await.tool_definitions();
 
-        let token_count = |def: &crate::models::ToolDefinition| {
+        let token_count = |def: &crate::inference::ToolDefinition| {
             let param_str = def.parameters.to_string();
             crate::memory::tokens::estimate_tokens(&def.name)
                 + crate::memory::tokens::estimate_tokens(&def.description)
@@ -499,8 +503,8 @@ mod tests {
     use super::super::turn::MAX_TOOL_ITERATIONS;
     use super::*;
     use crate::bus;
+    use crate::inference::{InferenceError, InferenceResponse, ToolCall, ToolDefinition};
     use crate::mcp::McpRegistry;
-    use crate::models::{ModelError, ModelResponse, ToolCall, ToolDefinition};
     use crate::tools::{FileTracker, PathPolicy};
     use async_trait::async_trait;
     use std::sync::Arc;
@@ -523,12 +527,12 @@ mod tests {
     /// Intentionally duplicated across agent, observer, and reflector tests — each mock
     /// has slightly different fields. Extract a shared mock when a 4th instance appears.
     struct MockProvider {
-        responses: Vec<ModelResponse>,
+        responses: Vec<InferenceResponse>,
         call_count: Arc<AtomicUsize>,
     }
 
     impl MockProvider {
-        fn new(responses: Vec<ModelResponse>) -> Self {
+        fn new(responses: Vec<InferenceResponse>) -> Self {
             Self {
                 responses,
                 call_count: Arc::new(AtomicUsize::new(0)),
@@ -537,18 +541,18 @@ mod tests {
     }
 
     #[async_trait]
-    impl ModelProvider for MockProvider {
+    impl InferenceProvider for MockProvider {
         async fn complete(
             &self,
             _messages: &[Message],
             _tools: &[ToolDefinition],
             _options: &CompletionOptions,
-        ) -> Result<ModelResponse, ModelError> {
+        ) -> Result<InferenceResponse, InferenceError> {
             let idx = self.call_count.fetch_add(1, Ordering::SeqCst);
             self.responses
                 .get(idx)
                 .cloned()
-                .ok_or_else(|| ModelError::Api("no more mock responses".to_string()))
+                .ok_or_else(|| InferenceError::Api("no more mock responses".to_string()))
         }
 
         fn model_name(&self) -> &'static str {
@@ -558,8 +562,10 @@ mod tests {
 
     #[tokio::test]
     async fn single_text_response() {
-        let provider =
-            MockProvider::new(vec![ModelResponse::new("hello there".to_string(), vec![])]);
+        let provider = MockProvider::new(vec![InferenceResponse::new(
+            "hello there".to_string(),
+            vec![],
+        )]);
 
         let mut agent = Agent::new(
             Box::new(provider),
@@ -600,7 +606,7 @@ mod tests {
         registry.register_defaults(FileTracker::new_shared(), PathPolicy::new_shared());
 
         let provider = MockProvider::new(vec![
-            ModelResponse::new(
+            InferenceResponse::new(
                 String::new(),
                 vec![ToolCall {
                     id: "call_1".to_string(),
@@ -608,7 +614,7 @@ mod tests {
                     arguments: serde_json::json!({"command": "echo test"}),
                 }],
             ),
-            ModelResponse::new("the result was: test".to_string(), vec![]),
+            InferenceResponse::new("the result was: test".to_string(), vec![]),
         ]);
 
         let mut agent = Agent::new(
@@ -655,7 +661,7 @@ mod tests {
 
         // First response has text alongside tool calls (intermediate), second is final.
         let provider = MockProvider::new(vec![
-            ModelResponse::new(
+            InferenceResponse::new(
                 "Let me check that for you...".to_string(),
                 vec![ToolCall {
                     id: "call_1".to_string(),
@@ -663,7 +669,7 @@ mod tests {
                     arguments: serde_json::json!({"command": "echo test"}),
                 }],
             ),
-            ModelResponse::new("Done! The output was: test".to_string(), vec![]),
+            InferenceResponse::new("Done! The output was: test".to_string(), vec![]),
         ]);
 
         let mut agent = Agent::new(
@@ -705,9 +711,9 @@ mod tests {
 
     #[tokio::test]
     async fn max_iterations_guard() {
-        let responses: Vec<ModelResponse> = (0..=MAX_TOOL_ITERATIONS)
+        let responses: Vec<InferenceResponse> = (0..=MAX_TOOL_ITERATIONS)
             .map(|i| {
-                ModelResponse::new(
+                InferenceResponse::new(
                     String::new(),
                     vec![ToolCall {
                         id: format!("call_{i}"),
@@ -756,8 +762,10 @@ mod tests {
 
     #[tokio::test]
     async fn run_system_turn_ephemeral() {
-        let provider =
-            MockProvider::new(vec![ModelResponse::new("HEARTBEAT_OK".to_string(), vec![])]);
+        let provider = MockProvider::new(vec![InferenceResponse::new(
+            "HEARTBEAT_OK".to_string(),
+            vec![],
+        )]);
 
         let agent = Agent::new(
             Box::new(provider),
@@ -785,7 +793,7 @@ mod tests {
             .unwrap();
         assert_eq!(result.response, "HEARTBEAT_OK", "response should match");
         assert_eq!(result.messages.len(), 2);
-        assert_eq!(result.messages[0].role, crate::models::Role::User);
+        assert_eq!(result.messages[0].role, crate::inference::Role::User);
         assert_eq!(result.messages[0].content, "check status");
         assert_eq!(result.messages[1].content, "HEARTBEAT_OK");
         assert_eq!(
@@ -819,14 +827,14 @@ mod tests {
         );
         assert_eq!(
             msgs[0].role,
-            crate::models::Role::User,
+            crate::inference::Role::User,
             "injected message should have User role"
         );
     }
 
     #[tokio::test]
     async fn wake_turn_pushes_user_kickoff_without_updating_timestamp() {
-        let provider = MockProvider::new(vec![ModelResponse::new(
+        let provider = MockProvider::new(vec![InferenceResponse::new(
             "I'll handle it".to_string(),
             vec![],
         )]);
@@ -883,7 +891,7 @@ mod tests {
         assert!(kickoff.is_some(), "wake turn should push kickoff message");
         assert_eq!(
             kickoff.unwrap().role,
-            crate::models::Role::User,
+            crate::inference::Role::User,
             "kickoff must be user-role for model compatibility"
         );
     }
@@ -912,7 +920,7 @@ mod tests {
         );
         assert_eq!(
             msgs[0].role,
-            crate::models::Role::System,
+            crate::inference::Role::System,
             "injected message should have System role"
         );
     }
@@ -1028,7 +1036,7 @@ mod tests {
 
     /// Provider that captures messages per call and sends interrupts after call N.
     struct CapturingProvider {
-        responses: Vec<ModelResponse>,
+        responses: Vec<InferenceResponse>,
         call_count: Arc<AtomicUsize>,
         /// Messages seen by the provider on each call (indexed by call number).
         captured: Arc<tokio::sync::Mutex<Vec<Vec<Message>>>>,
@@ -1039,7 +1047,7 @@ mod tests {
 
     impl CapturingProvider {
         fn new(
-            responses: Vec<ModelResponse>,
+            responses: Vec<InferenceResponse>,
             interrupt_tx: tokio::sync::mpsc::Sender<interrupt::Interrupt>,
         ) -> Self {
             Self {
@@ -1061,13 +1069,13 @@ mod tests {
     }
 
     #[async_trait]
-    impl ModelProvider for CapturingProvider {
+    impl InferenceProvider for CapturingProvider {
         async fn complete(
             &self,
             messages: &[Message],
             _tools: &[ToolDefinition],
             _options: &CompletionOptions,
-        ) -> Result<ModelResponse, ModelError> {
+        ) -> Result<InferenceResponse, InferenceError> {
             let idx = self.call_count.fetch_add(1, Ordering::SeqCst);
             self.captured.lock().await.push(messages.to_vec());
 
@@ -1075,7 +1083,7 @@ mod tests {
                 .responses
                 .get(idx)
                 .cloned()
-                .ok_or_else(|| ModelError::Api("no more mock responses".to_string()))?;
+                .ok_or_else(|| InferenceError::Api("no more mock responses".to_string()))?;
 
             // Inject scheduled interrupts after this call
             let scheduled: Vec<_> = {
@@ -1122,7 +1130,7 @@ mod tests {
         let provider = CapturingProvider::new(
             vec![
                 // Call 0: tool call — triggers tool loop iteration
-                ModelResponse::new(
+                InferenceResponse::new(
                     String::new(),
                     vec![ToolCall {
                         id: "call_1".to_string(),
@@ -1131,7 +1139,7 @@ mod tests {
                     }],
                 ),
                 // Call 1: final text
-                ModelResponse::new("done".to_string(), vec![]),
+                InferenceResponse::new("done".to_string(), vec![]),
             ],
             interrupt_tx,
         );
@@ -1196,7 +1204,7 @@ mod tests {
 
         let provider = CapturingProvider::new(
             vec![
-                ModelResponse::new(
+                InferenceResponse::new(
                     String::new(),
                     vec![ToolCall {
                         id: "call_1".to_string(),
@@ -1204,7 +1212,7 @@ mod tests {
                         arguments: serde_json::json!({"command": "echo test"}),
                     }],
                 ),
-                ModelResponse::new("done".to_string(), vec![]),
+                InferenceResponse::new("done".to_string(), vec![]),
             ],
             interrupt_tx,
         );
@@ -1268,7 +1276,7 @@ mod tests {
         let provider = CapturingProvider::new(
             vec![
                 // Single call: returns final text (no tool calls)
-                ModelResponse::new("final answer".to_string(), vec![]),
+                InferenceResponse::new("final answer".to_string(), vec![]),
             ],
             interrupt_tx.clone(),
         );
@@ -1327,8 +1335,10 @@ mod tests {
         // "abort the in-flight model call" path from the tool-loop
         // checkpoint path (covered by the drain_interrupts tests in turn.rs
         // and by `stopped_interrupt_ends_turn_after_tool_completes` below).
-        let provider =
-            MockProvider::new(vec![ModelResponse::new("never seen".to_string(), vec![])]);
+        let provider = MockProvider::new(vec![InferenceResponse::new(
+            "never seen".to_string(),
+            vec![],
+        )]);
         let call_count = Arc::clone(&provider.call_count);
 
         let mut agent = Agent::new(
@@ -1396,7 +1406,7 @@ mod tests {
         let (interrupt_tx, mut interrupt_rx) = tokio::sync::mpsc::channel(32);
         let provider = CapturingProvider::new(
             vec![
-                ModelResponse::new(
+                InferenceResponse::new(
                     String::new(),
                     vec![ToolCall {
                         id: "call_1".to_string(),
@@ -1406,7 +1416,7 @@ mod tests {
                 ),
                 // A second response exists only to fail the test loudly if
                 // the loop wrongly calls the model again after the stop.
-                ModelResponse::new("should never be reached".to_string(), vec![]),
+                InferenceResponse::new("should never be reached".to_string(), vec![]),
             ],
             interrupt_tx,
         );
@@ -1455,7 +1465,9 @@ mod tests {
         );
         let messages = agent.messages_since(0);
         assert!(
-            messages.iter().any(|m| m.role == crate::models::Role::Tool),
+            messages
+                .iter()
+                .any(|m| m.role == crate::inference::Role::Tool),
             "the in-flight tool call should still have run to completion"
         );
         assert!(
@@ -1467,9 +1479,9 @@ mod tests {
     #[tokio::test]
     async fn empty_response_returns_error() {
         let provider = MockProvider::new(vec![
-            ModelResponse::new(String::new(), vec![]),
-            ModelResponse::new(String::new(), vec![]),
-            ModelResponse::new(String::new(), vec![]),
+            InferenceResponse::new(String::new(), vec![]),
+            InferenceResponse::new(String::new(), vec![]),
+            InferenceResponse::new(String::new(), vec![]),
         ]);
 
         let mut agent = Agent::new(
@@ -1583,14 +1595,14 @@ mod tests {
     }
 
     #[async_trait]
-    impl ModelProvider for NamedMockProvider {
+    impl InferenceProvider for NamedMockProvider {
         async fn complete(
             &self,
             _messages: &[Message],
             _tools: &[ToolDefinition],
             _options: &CompletionOptions,
-        ) -> Result<ModelResponse, ModelError> {
-            Ok(ModelResponse::new("ok".to_string(), vec![]))
+        ) -> Result<InferenceResponse, InferenceError> {
+            Ok(InferenceResponse::new("ok".to_string(), vec![]))
         }
 
         fn model_name(&self) -> &'static str {
@@ -1670,8 +1682,8 @@ mod tests {
         let (tx, mut rx) = tokio::sync::mpsc::channel(32);
         let provider = CapturingProvider::new(
             vec![
-                ModelResponse::new("turn one".to_string(), vec![]),
-                ModelResponse::new("turn two".to_string(), vec![]),
+                InferenceResponse::new("turn one".to_string(), vec![]),
+                InferenceResponse::new("turn two".to_string(), vec![]),
             ],
             tx,
         );
@@ -1757,8 +1769,8 @@ mod tests {
         let (tx, mut rx) = tokio::sync::mpsc::channel(32);
         let provider = CapturingProvider::new(
             vec![
-                ModelResponse::new("turn one".to_string(), vec![]),
-                ModelResponse::new("turn two".to_string(), vec![]),
+                InferenceResponse::new("turn one".to_string(), vec![]),
+                InferenceResponse::new("turn two".to_string(), vec![]),
             ],
             tx,
         );
@@ -1837,7 +1849,7 @@ mod tests {
 
         let (tx, mut rx) = tokio::sync::mpsc::channel(32);
         let provider =
-            CapturingProvider::new(vec![ModelResponse::new("ok".to_string(), vec![])], tx);
+            CapturingProvider::new(vec![InferenceResponse::new("ok".to_string(), vec![])], tx);
         let captured = Arc::clone(&provider.captured);
 
         let cached = IdentityFiles {

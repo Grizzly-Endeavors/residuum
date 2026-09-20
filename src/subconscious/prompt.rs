@@ -1,7 +1,7 @@
 //! Prompt construction for the subconscious classifier LLM call.
 
 use super::{EvalPhase, TurnScratch};
-use crate::models::{Message, Role};
+use crate::inference::{Message, Role};
 
 /// User-customizable check guidance — default when `SUBCONSCIOUS.md` is absent.
 ///
@@ -266,7 +266,7 @@ pub(super) fn build_eval_prompt(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::models::ToolCall;
+    use crate::inference::ToolCall;
 
     #[test]
     fn format_message_includes_tool_calls() {

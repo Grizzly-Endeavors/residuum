@@ -11,11 +11,11 @@ use teloxide::types::{Audio, BotCommand, ChatId, Document, PhotoSize, UpdateKind
 use crate::bus::{BusHandle, EndpointName, Publisher};
 use crate::gateway::event_loop::AdapterSenders;
 use crate::gateway::types::{ReloadSignal, ServerCommand, StopRequest};
+use crate::inference::ImageData;
 use crate::interfaces::commands::{
     CommandContext, CommandSideEffect, all_commands, execute_command,
 };
 use crate::interfaces::types::MessageOrigin;
-use crate::models::ImageData;
 
 /// Shared gateway references threaded through telegram message dispatch.
 struct TelegramContext<'a> {

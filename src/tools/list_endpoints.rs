@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use serde_json::Value;
 
 use crate::bus::EndpointRegistry;
-use crate::models::ToolDefinition;
+use crate::inference::ToolDefinition;
 
 use super::{Tool, ToolError, ToolResult};
 

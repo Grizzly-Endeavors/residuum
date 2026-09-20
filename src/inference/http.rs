@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use reqwest::Client;
 
-use super::ModelError;
+use super::InferenceError;
 
 /// Configuration for HTTP client connection pooling.
 #[derive(Debug, Clone)]
@@ -53,8 +53,8 @@ impl SharedHttpClient {
     /// Create a new shared HTTP client with the specified configuration.
     ///
     /// # Errors
-    /// Returns `ModelError::Request` if the HTTP client cannot be built.
-    pub fn new(config: &HttpClientConfig) -> Result<Self, ModelError> {
+    /// Returns `InferenceError::Request` if the HTTP client cannot be built.
+    pub fn new(config: &HttpClientConfig) -> Result<Self, InferenceError> {
         let client = Client::builder()
             .timeout(Duration::from_secs(config.timeout_secs))
             .pool_max_idle_per_host(config.pool_max_idle_per_host)
@@ -99,12 +99,12 @@ pub fn warn_if_insecure_remote(url: &str) {
     }
 }
 
-/// Map a reqwest error to a [`ModelError`], detecting timeouts.
-pub fn map_request_error(e: reqwest::Error, timeout_secs: u64) -> ModelError {
+/// Map a reqwest error to a [`InferenceError`], detecting timeouts.
+pub fn map_request_error(e: reqwest::Error, timeout_secs: u64) -> InferenceError {
     if e.is_timeout() {
-        ModelError::Timeout(timeout_secs)
+        InferenceError::Timeout(timeout_secs)
     } else {
-        ModelError::Request(e)
+        InferenceError::Request(e)
     }
 }
 

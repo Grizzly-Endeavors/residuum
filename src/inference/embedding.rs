@@ -1,11 +1,11 @@
 //! Embedding provider trait and factory for vector embedding APIs.
 //!
-//! Separate from `ModelProvider` because embedding models use different
+//! Separate from `InferenceProvider` because embedding models use different
 //! endpoints, model names, and don't need `max_tokens` or chat semantics.
 
 use async_trait::async_trait;
 
-use super::ModelError;
+use super::InferenceError;
 use super::SharedHttpClient;
 use super::retry::RetryConfig;
 use crate::config::{ProviderKind, ProviderSpec};
@@ -19,8 +19,8 @@ pub trait EmbeddingProvider: Send + Sync {
     /// Returns one embedding per input text, in the same order as `texts`.
     ///
     /// # Errors
-    /// Returns `ModelError` if the request fails, times out, or the response is malformed.
-    async fn embed(&self, texts: &[&str]) -> Result<EmbeddingResponse, ModelError>;
+    /// Returns `InferenceError` if the request fails, times out, or the response is malformed.
+    async fn embed(&self, texts: &[&str]) -> Result<EmbeddingResponse, InferenceError>;
 
     /// Get the model identifier.
     fn model_name(&self) -> &str;
@@ -54,7 +54,7 @@ pub(crate) fn build_embedding_provider(
         )),
         ProviderKind::OpenAi => {
             let client = if let Some(ref key) = spec.api_key {
-                super::openai::OpenAiEmbeddingClient::with_http_client_and_api_key(
+                super::providers::openai::OpenAiEmbeddingClient::with_http_client_and_api_key(
                     http,
                     &spec.provider_url,
                     &spec.model.model,
@@ -62,7 +62,7 @@ pub(crate) fn build_embedding_provider(
                     retry,
                 )
             } else {
-                super::openai::OpenAiEmbeddingClient::with_http_client(
+                super::providers::openai::OpenAiEmbeddingClient::with_http_client(
                     http,
                     &spec.provider_url,
                     &spec.model.model,
@@ -73,7 +73,7 @@ pub(crate) fn build_embedding_provider(
         }
         ProviderKind::Ollama => {
             let client = if let Some(ref key) = spec.api_key {
-                super::ollama::OllamaEmbeddingClient::with_http_client_and_api_key(
+                super::providers::ollama::OllamaEmbeddingClient::with_http_client_and_api_key(
                     http,
                     &spec.provider_url,
                     &spec.model.model,
@@ -82,7 +82,7 @@ pub(crate) fn build_embedding_provider(
                     retry,
                 )
             } else {
-                super::ollama::OllamaEmbeddingClient::with_http_client(
+                super::providers::ollama::OllamaEmbeddingClient::with_http_client(
                     http,
                     &spec.provider_url,
                     &spec.model.model,
@@ -100,7 +100,7 @@ pub(crate) fn build_embedding_provider(
                         .to_string(),
                 )
             })?;
-            let client = super::gemini::GeminiEmbeddingClient::new(
+            let client = super::providers::gemini::GeminiEmbeddingClient::new(
                 http,
                 &spec.provider_url,
                 key,
@@ -116,7 +116,7 @@ pub(crate) fn build_embedding_provider(
 mod tests {
     use super::*;
     use crate::config::{ModelSpec, ProviderKind, ProviderSpec};
-    use crate::models::http::HttpClientConfig;
+    use crate::inference::http::HttpClientConfig;
 
     fn make_spec(kind: ProviderKind, model: &str, api_key: Option<&str>) -> ProviderSpec {
         ProviderSpec {

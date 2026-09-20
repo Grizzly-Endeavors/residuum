@@ -2,8 +2,8 @@
 
 use crate::bus::topics;
 use crate::gateway::types::GatewayRuntime;
+use crate::inference::Message;
 use crate::memory::types::Visibility;
-use crate::models::Message;
 use crate::pulse::executor::PulseExecution;
 
 /// Handle a single pulse execution entry (main-turn or sub-agent).

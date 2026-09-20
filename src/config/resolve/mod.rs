@@ -5,8 +5,8 @@ mod models;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use crate::models::retry::RetryConfig;
-use crate::models::{ThinkingConfig, ThinkingLevel};
+use crate::inference::retry::RetryConfig;
+use crate::inference::{ThinkingConfig, ThinkingLevel};
 use crate::util::FatalError;
 
 use super::Config;

@@ -8,7 +8,7 @@ use serde_json::Value;
 
 use crate::background::BackgroundTaskSpawner;
 use crate::config::BackgroundModelTier;
-use crate::models::ToolDefinition;
+use crate::inference::ToolDefinition;
 use crate::skills::SharedSkillState;
 
 use super::{Tool, ToolError, ToolResult};

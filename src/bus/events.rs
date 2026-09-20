@@ -7,9 +7,9 @@ use chrono::NaiveDateTime;
 
 use crate::bus::types::SkillName;
 use crate::config::BackgroundModelTier;
+use crate::inference::ImageData;
 use crate::interfaces::attachment::FileAttachment;
 use crate::interfaces::types::MessageOrigin;
-use crate::models::ImageData;
 
 // ---------------------------------------------------------------------------
 // EventTrigger

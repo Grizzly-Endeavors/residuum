@@ -286,7 +286,7 @@ mod tests {
             write_episode_transcript(
                 &episodes_dir,
                 &episode,
-                &[crate::models::Message::user("hi")],
+                &[crate::inference::Message::user("hi")],
             )
             .await
             .unwrap();
@@ -354,7 +354,7 @@ mod tests {
             write_episode_transcript(
                 &episodes_dir,
                 &episode,
-                &[crate::models::Message::user(body)],
+                &[crate::inference::Message::user(body)],
             )
             .await
             .unwrap();

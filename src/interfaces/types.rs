@@ -2,7 +2,7 @@
 
 use chrono::{DateTime, Utc};
 
-use crate::models::ImageData;
+use crate::inference::ImageData;
 
 /// Where a message originated from.
 #[derive(Debug, Clone)]

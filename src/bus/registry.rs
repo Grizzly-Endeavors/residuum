@@ -213,7 +213,7 @@ mod tests {
         BackgroundConfig, GatewayConfig, IdleConfig, MemoryConfig, SkillsConfig, ToolsConfig,
         WebSearchConfig,
     };
-    use crate::models::retry::RetryConfig;
+    use crate::inference::retry::RetryConfig;
 
     /// Minimal config for testing.
     fn minimal_config() -> Config {

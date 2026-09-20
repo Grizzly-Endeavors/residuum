@@ -8,7 +8,7 @@ use tokio::sync::mpsc;
 
 use super::{EvalPhase, Finding, Severity, Subconscious, TurnScratch};
 use crate::agent::interrupt::Interrupt;
-use crate::models::Message;
+use crate::inference::Message;
 
 /// Record a correction the watch actually delivered to the agent this turn.
 fn record_applied(scratch: &Mutex<TurnScratch>, instruction: String) {

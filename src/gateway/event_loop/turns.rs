@@ -14,9 +14,9 @@ use crate::bus::{
 };
 
 use crate::gateway::types::{GatewayRuntime, ReloadSignal, StopRequest};
+use crate::inference::ImageData;
 use crate::interfaces::types::{InboundMessage, MessageOrigin};
 use crate::memory::types::Visibility;
-use crate::models::ImageData;
 use crate::skills::SharedSkillState;
 
 use crate::agent::context::loading::build_skill_context_strings;
@@ -90,7 +90,7 @@ pub fn drain_interrupts(interrupt_rx: &mut mpsc::Receiver<Interrupt>) -> Vec<Int
 /// Persist new messages and run observation if thresholds are exceeded.
 pub async fn persist_and_maybe_observe(
     rt: &mut GatewayRuntime,
-    new_messages: &[crate::models::Message],
+    new_messages: &[crate::inference::Message],
     visibility: Visibility,
     observe_deadline: &mut Option<tokio::time::Instant>,
 ) {

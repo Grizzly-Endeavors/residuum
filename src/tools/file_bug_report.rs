@@ -6,7 +6,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use serde_json::Value;
 
-use crate::models::ToolDefinition;
+use crate::inference::ToolDefinition;
 use crate::tracing_service::{BugReport, ClientContext, Severity, TracingService};
 
 use super::{Tool, ToolError, ToolResult, require_str};

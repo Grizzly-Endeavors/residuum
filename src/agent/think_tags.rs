@@ -1,3 +1,5 @@
+//! Strip provider-emitted reasoning blocks from assistant output.
+
 /// Strip `<think>...</think>` blocks from model output.
 ///
 /// Handles multiple blocks, nested content, and unclosed tags (strips to end).

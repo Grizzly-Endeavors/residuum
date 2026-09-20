@@ -1,15 +1,15 @@
-//! Provider factory functions for constructing `ModelProvider` instances from config.
+//! Provider factory functions for constructing `InferenceProvider` instances from config.
 
 use crate::config::{ProviderKind, ProviderSpec};
 use crate::util::FatalError;
 
-use super::anthropic::AnthropicClient;
 use super::failover::FailoverProvider;
-use super::gemini::GeminiClient;
-use super::ollama::OllamaClient;
-use super::openai::OpenAiClient;
+use super::providers::anthropic::AnthropicClient;
+use super::providers::gemini::GeminiClient;
+use super::providers::ollama::OllamaClient;
+use super::providers::openai::OpenAiClient;
 use super::retry::RetryConfig;
-use super::{ModelProvider, SharedHttpClient};
+use super::{InferenceProvider, SharedHttpClient};
 
 /// Build a model provider from a resolved `ProviderSpec`.
 ///
@@ -21,7 +21,7 @@ pub(crate) fn build_provider_from_provider_spec(
     max_tokens: u32,
     http: SharedHttpClient,
     retry: RetryConfig,
-) -> Result<Box<dyn ModelProvider>, FatalError> {
+) -> Result<Box<dyn InferenceProvider>, FatalError> {
     match spec.model.kind {
         ProviderKind::Anthropic => {
             let key = spec.api_key.as_deref().ok_or_else(|| {
@@ -109,7 +109,7 @@ pub(crate) fn build_provider_chain(
     max_tokens: u32,
     http: SharedHttpClient,
     retry: RetryConfig,
-) -> Result<Box<dyn ModelProvider>, FatalError> {
+) -> Result<Box<dyn InferenceProvider>, FatalError> {
     if let [spec] = specs {
         return build_provider_from_provider_spec(spec, max_tokens, http, retry);
     }
@@ -131,7 +131,7 @@ pub(crate) fn build_provider_chain(
 mod tests {
     use super::*;
     use crate::config::{ModelSpec, ProviderKind, ProviderSpec};
-    use crate::models::http::HttpClientConfig;
+    use crate::inference::http::HttpClientConfig;
 
     fn make_spec(kind: ProviderKind, model: &str, api_key: Option<&str>) -> ProviderSpec {
         ProviderSpec {

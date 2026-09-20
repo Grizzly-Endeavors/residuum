@@ -11,7 +11,7 @@ mod ts_export {
     use ts_rs::TS;
 
     use residuum::gateway::protocol::{ClientMessage, ServerMessage};
-    use residuum::models::ImageData;
+    use residuum::inference::ImageData;
 
     #[test]
     fn export_protocol_types() {

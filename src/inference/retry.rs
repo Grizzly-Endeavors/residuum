@@ -5,7 +5,7 @@ use std::time::Duration;
 use tokio::time::sleep;
 use tracing::{debug, warn};
 
-use super::ModelError;
+use super::InferenceError;
 
 /// Configuration for retry behavior.
 #[derive(Debug, Clone, PartialEq)]
@@ -44,15 +44,15 @@ impl RetryConfig {
 
 /// Execute a fallible async operation with retry logic.
 ///
-/// Only retries if the error is marked as retryable via [`ModelError::is_retryable()`].
+/// Only retries if the error is marked as retryable via [`InferenceError::is_retryable()`].
 ///
 /// # Errors
 /// Returns the last error if all retries are exhausted or if a non-retryable error occurs.
 #[tracing::instrument(skip_all, fields(max_retries = config.max_retries))]
-pub async fn with_retry<F, Fut, T>(config: &RetryConfig, operation: F) -> Result<T, ModelError>
+pub async fn with_retry<F, Fut, T>(config: &RetryConfig, operation: F) -> Result<T, InferenceError>
 where
     F: Fn() -> Fut,
-    Fut: std::future::Future<Output = Result<T, ModelError>>,
+    Fut: std::future::Future<Output = Result<T, InferenceError>>,
 {
     let mut attempts = 0;
     let mut delay = config.initial_delay;
@@ -139,7 +139,7 @@ mod tests {
             let count = Arc::clone(&cc);
             async move {
                 count.fetch_add(1, Ordering::SeqCst);
-                Ok::<_, ModelError>("success".to_string())
+                Ok::<_, InferenceError>("success".to_string())
             }
         })
         .await;
@@ -170,9 +170,9 @@ mod tests {
             async move {
                 let current = count.fetch_add(1, Ordering::SeqCst);
                 if current < 2 {
-                    Err(ModelError::Api("rate limit exceeded".to_string()))
+                    Err(InferenceError::Api("rate limit exceeded".to_string()))
                 } else {
-                    Ok::<_, ModelError>("success".to_string())
+                    Ok::<_, InferenceError>("success".to_string())
                 }
             }
         })
@@ -202,7 +202,7 @@ mod tests {
             let count = Arc::clone(&cc);
             async move {
                 count.fetch_add(1, Ordering::SeqCst);
-                Err::<String, _>(ModelError::Parse("invalid json".to_string()))
+                Err::<String, _>(InferenceError::Parse("invalid json".to_string()))
             }
         })
         .await;
@@ -231,7 +231,7 @@ mod tests {
             let count = Arc::clone(&cc);
             async move {
                 count.fetch_add(1, Ordering::SeqCst);
-                Err::<String, _>(ModelError::Api("rate limit exceeded".to_string()))
+                Err::<String, _>(InferenceError::Api("rate limit exceeded".to_string()))
             }
         })
         .await;
@@ -254,7 +254,7 @@ mod tests {
             let count = Arc::clone(&cc);
             async move {
                 count.fetch_add(1, Ordering::SeqCst);
-                Err::<String, _>(ModelError::Api("rate limit exceeded".to_string()))
+                Err::<String, _>(InferenceError::Api("rate limit exceeded".to_string()))
             }
         })
         .await;
@@ -284,7 +284,7 @@ mod tests {
             let count = Arc::clone(&cc);
             async move {
                 count.fetch_add(1, Ordering::SeqCst);
-                Err::<String, _>(ModelError::Api("rate limit exceeded".to_string()))
+                Err::<String, _>(InferenceError::Api("rate limit exceeded".to_string()))
             }
         })
         .await;

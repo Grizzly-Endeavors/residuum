@@ -5,6 +5,7 @@ use std::sync::Arc;
 use super::helpers::{publish_error, publish_notice};
 use crate::agent::Agent;
 use crate::bus::Publisher;
+use crate::inference::EmbeddingProvider;
 use crate::memory::log_store::load_observation_log;
 use crate::memory::observer::{ObserveAction, ObserveResult, Observer};
 use crate::memory::recent_context::{RecentContext, save_recent_context};
@@ -15,7 +16,6 @@ use crate::memory::reflector::Reflector;
 use crate::memory::search::MemoryIndex;
 use crate::memory::types::{IndexManifest, ManifestFileEntry, Visibility};
 use crate::memory::vector_store::VectorStore;
-use crate::models::EmbeddingProvider;
 use crate::workspace::layout::WorkspaceLayout;
 
 /// Date format for episode file paths: `YYYY-MM/DD`.
@@ -31,7 +31,7 @@ fn episode_date_dir(date: &str) -> Option<String> {
 /// Appends messages to the recent messages file and returns the appropriate
 /// `ObserveAction` based on current token levels.
 pub(super) async fn persist_and_check_thresholds(
-    new_messages: &[crate::models::Message],
+    new_messages: &[crate::inference::Message],
     visibility: Visibility,
     observer: &Observer,
     layout: &WorkspaceLayout,

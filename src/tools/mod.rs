@@ -34,7 +34,7 @@ use serde_json::Value;
 use thiserror::Error;
 use tokio::sync::RwLock;
 
-use crate::models::{ImageData, ToolDefinition};
+use crate::inference::{ImageData, ToolDefinition};
 
 /// Shared, reloadable effective `PATH` for spawned children.
 ///

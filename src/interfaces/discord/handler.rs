@@ -14,6 +14,7 @@ use serenity::prelude::*;
 
 use crate::bus::{BusHandle, EndpointName, Publisher};
 use crate::gateway::types::{ReloadSignal, ServerCommand, StopRequest};
+use crate::inference::ImageData;
 use crate::interfaces::attachment::{
     AttachmentInfo, download_attachment, finalize_attachment, format_failed_attachment_line,
 };
@@ -21,7 +22,6 @@ use crate::interfaces::commands::{
     CommandContext, CommandSideEffect, all_commands, execute_command,
 };
 use crate::interfaces::types::MessageOrigin;
-use crate::models::ImageData;
 
 /// Serenity event handler that filters for DMs, registers slash commands,
 /// and handles attachments.

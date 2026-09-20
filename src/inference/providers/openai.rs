@@ -7,12 +7,14 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use tracing::{debug, info};
 
-use super::embedding::{EmbeddingProvider, EmbeddingResponse};
-use super::http::{SharedHttpClient, map_request_error, read_error_body, warn_if_insecure_remote};
-use super::retry::{RetryConfig, with_retry};
-use super::{
-    CompletionOptions, Message, ModelError, ModelProvider, ModelResponse, ResponseFormat,
-    ThinkingConfig, ThinkingLevel, ToolCall, ToolDefinition, Usage,
+use crate::inference::embedding::{EmbeddingProvider, EmbeddingResponse};
+use crate::inference::http::{
+    SharedHttpClient, map_request_error, read_error_body, warn_if_insecure_remote,
+};
+use crate::inference::retry::{RetryConfig, with_retry};
+use crate::inference::{
+    CompletionOptions, InferenceError, InferenceProvider, InferenceResponse, Message,
+    ResponseFormat, ThinkingConfig, ThinkingLevel, ToolCall, ToolDefinition, Usage,
 };
 
 /// OpenAI-compatible API client.
@@ -94,10 +96,10 @@ impl OpenAiClient {
         url: &str,
         api_key: Option<&str>,
         request: &ChatCompletionRequest<'_>,
-    ) -> Result<ModelResponse, ModelError> {
+    ) -> Result<InferenceResponse, InferenceError> {
         let timeout_secs = http.timeout_secs();
         let request_json = serde_json::to_string(request)
-            .map_err(|e| ModelError::Parse(format!("failed to serialize request: {e}")))?;
+            .map_err(|e| InferenceError::Parse(format!("failed to serialize request: {e}")))?;
 
         debug!(model = %request.model, "sending openai completion request");
 
@@ -127,7 +129,7 @@ impl OpenAiClient {
             );
             let error_body = serde_json::from_str::<OpenAiErrorResponse>(&raw_body)
                 .map_or_else(|_| raw_body, |e| e.error.message);
-            return Err(ModelError::Api(format!("{status}: {error_body}")));
+            return Err(InferenceError::Api(format!("{status}: {error_body}")));
         }
 
         let body = response
@@ -135,7 +137,7 @@ impl OpenAiClient {
             .await
             .map_err(|e| map_request_error(e, timeout_secs))?;
         let chat_response: ChatCompletionResponse = serde_json::from_str(&body)
-            .map_err(|e| ModelError::Parse(format!("failed to parse openai response: {e}")))?;
+            .map_err(|e| InferenceError::Parse(format!("failed to parse openai response: {e}")))?;
 
         let usage = chat_response.usage.map(|u| Usage {
             input_tokens: u.prompt_tokens.unwrap_or(0),
@@ -145,7 +147,9 @@ impl OpenAiClient {
         });
 
         let choice = chat_response.choices.into_iter().next().ok_or_else(|| {
-            ModelError::Parse("OpenAI API response contained no choices in response".to_string())
+            InferenceError::Parse(
+                "OpenAI API response contained no choices in response".to_string(),
+            )
         })?;
 
         // OpenAI uses null for content when tool_calls are present
@@ -160,7 +164,7 @@ impl OpenAiClient {
                 // OpenAI returns arguments as a JSON string, need to parse it
                 let arguments: serde_json::Value = serde_json::from_str(&tc.function.arguments)
                     .map_err(|e| {
-                        ModelError::Parse(format!(
+                        InferenceError::Parse(format!(
                             "failed to parse tool arguments for '{}': {e} (raw: {})",
                             tc.function.name, tc.function.arguments
                         ))
@@ -171,9 +175,9 @@ impl OpenAiClient {
                     arguments,
                 })
             })
-            .collect::<Result<Vec<_>, ModelError>>()?;
+            .collect::<Result<Vec<_>, InferenceError>>()?;
 
-        let mut resp = ModelResponse::new(content, tool_calls);
+        let mut resp = InferenceResponse::new(content, tool_calls);
         resp.usage = usage;
         info!(
             model = %request.model,
@@ -186,14 +190,14 @@ impl OpenAiClient {
 }
 
 #[async_trait]
-impl ModelProvider for OpenAiClient {
+impl InferenceProvider for OpenAiClient {
     #[tracing::instrument(skip_all, fields(model = %self.model, message_count = messages.len(), tool_count = tools.len()))]
     async fn complete(
         &self,
         messages: &[Message],
         tools: &[ToolDefinition],
         options: &CompletionOptions,
-    ) -> Result<ModelResponse, ModelError> {
+    ) -> Result<InferenceResponse, InferenceError> {
         let url = format!("{}/chat/completions", self.base_url);
         let openai_messages: Vec<OpenAiMessage> = messages.iter().map(Into::into).collect();
         let mut openai_tools: Vec<OpenAiToolEntry> = tools
@@ -536,7 +540,7 @@ impl OpenAiEmbeddingClient {
 #[async_trait]
 impl EmbeddingProvider for OpenAiEmbeddingClient {
     #[tracing::instrument(skip_all, fields(model = %self.model, count = texts.len()))]
-    async fn embed(&self, texts: &[&str]) -> Result<EmbeddingResponse, ModelError> {
+    async fn embed(&self, texts: &[&str]) -> Result<EmbeddingResponse, InferenceError> {
         let url = format!("{}/embeddings", self.base_url);
         let model = self.model.clone();
         let api_key = self.api_key.clone();
@@ -574,7 +578,7 @@ impl EmbeddingProvider for OpenAiEmbeddingClient {
                     tracing::warn!(status = %status, response_body = %raw_body, "openai embed API error");
                     let error_body = serde_json::from_str::<OpenAiErrorResponse>(&raw_body)
                         .map_or_else(|_| raw_body, |e| e.error.message);
-                    return Err(ModelError::Api(format!("{status}: {error_body}")));
+                    return Err(InferenceError::Api(format!("{status}: {error_body}")));
                 }
 
                 let body = response
@@ -583,11 +587,11 @@ impl EmbeddingProvider for OpenAiEmbeddingClient {
                     .map_err(|e| map_request_error(e, timeout_secs))?;
                 let mut api_response: EmbeddingApiResponse =
                     serde_json::from_str(&body).map_err(|e| {
-                        ModelError::Parse(format!("failed to parse openai embedding response: {e}"))
+                        InferenceError::Parse(format!("failed to parse openai embedding response: {e}"))
                     })?;
 
                 if api_response.data.is_empty() {
-                    return Err(ModelError::Parse(
+                    return Err(InferenceError::Parse(
                         "embeddings response contained no data".to_string(),
                     ));
                 }
@@ -617,9 +621,9 @@ impl EmbeddingProvider for OpenAiEmbeddingClient {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::models::CompletionOptions;
-    use crate::models::http::{HttpClientConfig, SharedHttpClient};
-    use crate::models::retry::RetryConfig;
+    use crate::inference::CompletionOptions;
+    use crate::inference::http::{HttpClientConfig, SharedHttpClient};
+    use crate::inference::retry::RetryConfig;
     use wiremock::matchers::{header, method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -721,7 +725,7 @@ mod tests {
 
     #[test]
     fn message_conversion_user_with_images() {
-        use crate::models::ImageData;
+        use crate::inference::ImageData;
         let images = vec![ImageData {
             media_type: "image/jpeg".to_string(),
             data: "base64abc123".to_string(),
@@ -900,7 +904,7 @@ mod tests {
         assert!(result.is_err(), "401 should return error");
         let err = result.unwrap_err();
         assert!(
-            matches!(err, ModelError::Api(_)),
+            matches!(err, InferenceError::Api(_)),
             "should be an Api error variant"
         );
         assert!(
@@ -936,7 +940,7 @@ mod tests {
         assert!(result.is_err(), "429 should return error");
         let err = result.unwrap_err();
         assert!(
-            matches!(err, ModelError::Api(_)),
+            matches!(err, InferenceError::Api(_)),
             "should be an Api error variant"
         );
         assert!(
@@ -967,7 +971,7 @@ mod tests {
 
         assert!(result.is_err(), "500 should return error");
         assert!(
-            matches!(result.unwrap_err(), ModelError::Api(_)),
+            matches!(result.unwrap_err(), InferenceError::Api(_)),
             "should be an Api error variant"
         );
     }
@@ -992,7 +996,7 @@ mod tests {
         assert!(result.is_err(), "empty choices should return error");
         let err = result.unwrap_err();
         assert!(
-            matches!(err, ModelError::Parse(_)),
+            matches!(err, InferenceError::Parse(_)),
             "should be a Parse error variant"
         );
         assert!(
@@ -1035,7 +1039,7 @@ mod tests {
         assert!(result.is_err(), "malformed tool arguments should error");
         let err = result.unwrap_err();
         assert!(
-            matches!(err, ModelError::Parse(_)),
+            matches!(err, InferenceError::Parse(_)),
             "should be a Parse error variant"
         );
         assert!(
@@ -1064,7 +1068,7 @@ mod tests {
         assert!(result.is_err(), "timeout should return error");
         let err = result.unwrap_err();
         assert!(
-            matches!(err, ModelError::Timeout(1)),
+            matches!(err, InferenceError::Timeout(1)),
             "should be a Timeout error with 1 second"
         );
         assert_eq!(
@@ -1108,7 +1112,7 @@ mod tests {
 
         let client = make_client(mock_server.uri(), "gpt-4");
         let options = CompletionOptions {
-            response_format: crate::models::ResponseFormat::JsonSchema {
+            response_format: crate::inference::ResponseFormat::JsonSchema {
                 name: "test_schema".to_string(),
                 schema: serde_json::json!({
                     "type": "object",
@@ -1304,7 +1308,7 @@ mod tests {
 
     #[tokio::test]
     async fn embed_success() {
-        use crate::models::embedding::EmbeddingProvider;
+        use crate::inference::embedding::EmbeddingProvider;
 
         let mock_server = MockServer::start().await;
 
@@ -1338,7 +1342,7 @@ mod tests {
 
     #[tokio::test]
     async fn embed_batch_ordering() {
-        use crate::models::embedding::EmbeddingProvider;
+        use crate::inference::embedding::EmbeddingProvider;
 
         let mock_server = MockServer::start().await;
 
@@ -1371,7 +1375,7 @@ mod tests {
 
     #[tokio::test]
     async fn embed_api_error_401() {
-        use crate::models::embedding::EmbeddingProvider;
+        use crate::inference::embedding::EmbeddingProvider;
 
         let mock_server = MockServer::start().await;
 
@@ -1393,7 +1397,7 @@ mod tests {
         assert!(result.is_err(), "401 should return error");
         let err = result.unwrap_err();
         assert!(
-            matches!(err, ModelError::Api(_)),
+            matches!(err, InferenceError::Api(_)),
             "should be an Api error variant"
         );
         assert!(
@@ -1408,7 +1412,7 @@ mod tests {
 
     #[tokio::test]
     async fn embed_empty_data() {
-        use crate::models::embedding::EmbeddingProvider;
+        use crate::inference::embedding::EmbeddingProvider;
 
         let mock_server = MockServer::start().await;
 
@@ -1426,7 +1430,7 @@ mod tests {
         assert!(result.is_err(), "empty data should return error");
         let err = result.unwrap_err();
         assert!(
-            matches!(err, ModelError::Parse(_)),
+            matches!(err, InferenceError::Parse(_)),
             "should be a Parse error variant"
         );
         assert!(

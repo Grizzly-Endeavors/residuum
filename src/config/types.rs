@@ -6,7 +6,7 @@ use std::fmt;
 use std::path::PathBuf;
 use std::time::Duration;
 
-use crate::models::retry::RetryConfig;
+use crate::inference::retry::RetryConfig;
 
 use super::constants::{
     DEFAULT_AGENT_MODIFY_CHANNELS, DEFAULT_AGENT_MODIFY_MCP, DEFAULT_FEEDBACK_ENDPOINT,
@@ -466,7 +466,7 @@ pub struct RoleOverrides {
     /// Sampling temperature override (0.0–2.0).
     pub temperature: Option<f32>,
     /// Thinking/reasoning configuration override.
-    pub thinking: Option<crate::models::ThinkingConfig>,
+    pub thinking: Option<crate::inference::ThinkingConfig>,
 }
 
 /// Log detail level for daemon file output.
@@ -653,7 +653,7 @@ pub struct Config {
     /// Sampling temperature for model completions.
     pub temperature: Option<f32>,
     /// Thinking/reasoning configuration for model completions.
-    pub thinking: Option<crate::models::ThinkingConfig>,
+    pub thinking: Option<crate::inference::ThinkingConfig>,
     /// Web search configuration.
     pub web_search: WebSearchConfig,
     /// Tracing and observability configuration.

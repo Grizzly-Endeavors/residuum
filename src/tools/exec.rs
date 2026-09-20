@@ -7,7 +7,7 @@ use serde_json::Value;
 use tokio::process::Command;
 
 use super::{SharedToolsPath, Tool, ToolError, ToolResult};
-use crate::models::ToolDefinition;
+use crate::inference::ToolDefinition;
 
 /// Maximum output size from a command (100KB).
 const MAX_OUTPUT_BYTES: usize = 100 * 1024;

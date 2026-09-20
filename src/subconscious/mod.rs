@@ -22,7 +22,7 @@ use crate::config::{
     DEFAULT_SUBCONSCIOUS_EVERY_N_ITERATIONS, DEFAULT_SUBCONSCIOUS_MAX_INTERVENTIONS,
     DEFAULT_SUBCONSCIOUS_MAX_TRANSCRIPT_TOKENS,
 };
-use crate::models::{CompletionOptions, Message, ModelProvider, ResponseFormat};
+use crate::inference::{CompletionOptions, InferenceProvider, Message, ResponseFormat};
 use crate::workspace::layout::WorkspaceLayout;
 use parse::parse_subconscious_response;
 use prompt::{
@@ -186,7 +186,7 @@ impl Default for SubconsciousConfig {
 
 /// The subconscious classifier: watches turn transcripts and reports drift.
 pub struct Subconscious {
-    provider: Box<dyn ModelProvider>,
+    provider: Box<dyn InferenceProvider>,
     config: SubconsciousConfig,
     layout: WorkspaceLayout,
 }
@@ -201,14 +201,14 @@ impl Subconscious {
     pub fn build(
         cfg: &crate::config::Config,
         layout: &WorkspaceLayout,
-        http: crate::models::SharedHttpClient,
+        http: crate::inference::SharedHttpClient,
     ) -> std::sync::Arc<Self> {
         let settings = &cfg.subconscious_settings;
         if !settings.enabled {
             return std::sync::Arc::new(Self::disabled(layout.clone()));
         }
 
-        let provider = match crate::models::build_provider_chain(
+        let provider = match crate::inference::build_provider_chain(
             &cfg.subconscious,
             cfg.max_tokens,
             http,
@@ -239,7 +239,7 @@ impl Subconscious {
     /// Create a new subconscious with the given provider and config.
     #[must_use]
     pub fn new(
-        provider: Box<dyn ModelProvider>,
+        provider: Box<dyn InferenceProvider>,
         config: SubconsciousConfig,
         layout: WorkspaceLayout,
     ) -> Self {
@@ -258,7 +258,7 @@ impl Subconscious {
     #[must_use]
     pub fn disabled(layout: WorkspaceLayout) -> Self {
         Self {
-            provider: Box::new(crate::models::null::NullProvider),
+            provider: Box::new(crate::inference::providers::null::NullProvider),
             config: SubconsciousConfig::default(),
             layout,
         }

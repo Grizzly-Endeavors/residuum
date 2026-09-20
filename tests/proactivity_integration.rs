@@ -15,8 +15,9 @@ mod proactivity_integration {
     use residuum::agent::Agent;
     use residuum::agent::context::PromptContext;
     use residuum::bus::{EndpointName, EventTrigger, spawn_broker};
-    use residuum::models::{
-        CompletionOptions, Message, ModelError, ModelProvider, ModelResponse, Role, ToolDefinition,
+    use residuum::inference::{
+        CompletionOptions, InferenceError, InferenceProvider, InferenceResponse, Message, Role,
+        ToolDefinition,
     };
     use residuum::pulse::executor::{PulseExecution, build_pulse_execution};
     use residuum::pulse::scheduler::PulseScheduler;
@@ -40,20 +41,20 @@ mod proactivity_integration {
     }
 
     #[async_trait]
-    impl ModelProvider for MockProvider {
+    impl InferenceProvider for MockProvider {
         async fn complete(
             &self,
             _messages: &[Message],
             _tools: &[ToolDefinition],
             _options: &CompletionOptions,
-        ) -> Result<ModelResponse, ModelError> {
+        ) -> Result<InferenceResponse, InferenceError> {
             let idx = self.call_idx.fetch_add(1, Ordering::SeqCst);
             let content = self
                 .responses
                 .get(idx)
                 .cloned()
                 .unwrap_or_else(|| self.responses.last().cloned().unwrap_or_default());
-            Ok(ModelResponse::new(content, vec![]))
+            Ok(InferenceResponse::new(content, vec![]))
         }
 
         fn model_name(&self) -> &'static str {

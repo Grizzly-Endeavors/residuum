@@ -3,7 +3,7 @@
 //! Uses character-based heuristic (~4 chars/token) rather than a
 //! tokenizer dependency. Sufficient for threshold comparisons, not billing.
 
-use crate::models::Message;
+use crate::inference::Message;
 
 /// Estimate the number of tokens in a string.
 ///
@@ -51,7 +51,7 @@ pub(crate) fn estimate_single_message(msg: &Message) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::models::ToolCall;
+    use crate::inference::ToolCall;
 
     #[test]
     fn estimate_tokens_empty() {

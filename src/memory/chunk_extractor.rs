@@ -8,9 +8,9 @@ use std::path::Path;
 
 use anyhow::Context;
 
+use crate::inference::Role;
 use crate::memory::recent_messages::RecentMessage;
 use crate::memory::types::IndexChunk;
-use crate::models::Role;
 
 /// Extract interaction-pair chunks from a sequence of recent messages.
 ///
@@ -133,8 +133,8 @@ pub(crate) fn read_idx_jsonl(path: &Path) -> Vec<IndexChunk> {
 )]
 mod tests {
     use super::*;
+    use crate::inference::{Message, ToolCall};
     use crate::memory::types::Visibility;
-    use crate::models::{Message, ToolCall};
 
     fn recent_user(text: &str) -> RecentMessage {
         RecentMessage {

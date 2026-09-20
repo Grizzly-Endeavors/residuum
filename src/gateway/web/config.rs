@@ -8,10 +8,10 @@ use chrono::NaiveDate;
 use serde::{Deserialize, Serialize};
 
 use crate::config::Config;
+use crate::inference::Message;
 use crate::memory::episode_store::{latest_episode_id, previous_episode_id, read_episode_jsonl};
 use crate::memory::recent_messages::{RecentMessage, load_recent_messages};
 use crate::memory::types::Visibility;
-use crate::models::Message;
 
 use super::ConfigApiState;
 

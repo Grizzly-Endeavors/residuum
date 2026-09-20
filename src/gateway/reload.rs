@@ -8,9 +8,9 @@ use super::helpers::publish_notice;
 use crate::background::spawn_context::SpawnContext;
 use crate::config::Config;
 use crate::gateway::startup;
-use crate::models::CompletionOptions;
-use crate::models::ModelError;
-use crate::models::SharedHttpClient;
+use crate::inference::CompletionOptions;
+use crate::inference::InferenceError;
+use crate::inference::SharedHttpClient;
 
 use crate::gateway::types::GatewayRuntime;
 use crate::gateway::types::GatewayState;
@@ -301,8 +301,8 @@ pub(super) async fn handle_root_reload(rt: &mut GatewayRuntime) -> IdleAction {
 /// Pure aside from the `reqwest::Client` construction: no `GatewayRuntime`
 /// access, so it can be tested directly and so its only output — the new
 /// client — is what callers thread into everything downstream.
-fn rebuild_http_client(timeout_secs: u64) -> Result<SharedHttpClient, ModelError> {
-    let client_config = crate::models::HttpClientConfig::with_timeout(timeout_secs);
+fn rebuild_http_client(timeout_secs: u64) -> Result<SharedHttpClient, InferenceError> {
+    let client_config = crate::inference::HttpClientConfig::with_timeout(timeout_secs);
     SharedHttpClient::new(&client_config)
 }
 
@@ -690,7 +690,7 @@ mod tests {
         AgentAbilitiesConfig, BackgroundConfig, CloudConfig, DiscordConfig, GatewayConfig,
         MemoryConfig, SkillsConfig, TelegramConfig, ToolsConfig,
     };
-    use crate::models::retry::RetryConfig;
+    use crate::inference::retry::RetryConfig;
 
     /// Build a minimal test config.
     fn test_config() -> Config {

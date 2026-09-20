@@ -18,7 +18,7 @@ use std::sync::{Arc, Mutex};
 
 use crate::bus::topics;
 use crate::gateway::types::GatewayRuntime;
-use crate::models::Message;
+use crate::inference::Message;
 use crate::subconscious::{EvalPhase, Finding, LearnSignal, Severity, TurnScratch};
 
 /// A planned delivery for one finding, decided before touching the runtime.

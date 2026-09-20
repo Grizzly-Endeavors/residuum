@@ -7,8 +7,8 @@ use tokio::sync::{Mutex, Notify};
 use crate::actions::store::ActionStore;
 use crate::background::BackgroundTaskSpawner;
 use crate::bus::EndpointRegistry;
+use crate::inference::ToolDefinition;
 use crate::memory::search::HybridSearcher;
-use crate::models::ToolDefinition;
 use crate::skills::SharedSkillState;
 
 use super::{

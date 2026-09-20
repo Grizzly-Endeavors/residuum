@@ -16,11 +16,11 @@ use crate::background::BackgroundTaskSpawner;
 use crate::background::types::BackgroundResult;
 use crate::bus::EndpointRegistry;
 use crate::config::Config;
+use crate::inference::{EmbeddingProvider, SharedHttpClient};
 use crate::mcp::SharedMcpRegistry;
 use crate::memory::observer::Observer;
 use crate::memory::reflector::Reflector;
 use crate::memory::search::{HybridSearcher, MemoryIndex};
-use crate::models::{EmbeddingProvider, SharedHttpClient};
 use crate::notify::channels::InboxChannel;
 use crate::skills::{SharedSkillState, SkillIndex, SkillState};
 use crate::tools::SharedToolsPath;
@@ -99,7 +99,7 @@ pub(super) async fn init_identity_and_http(
 ) -> Result<(IdentityFiles, SharedHttpClient), FatalError> {
     let identity = IdentityFiles::load(layout).await?;
     identity.warn_missing(layout);
-    let http = SharedHttpClient::new(&crate::models::HttpClientConfig::with_timeout(
+    let http = SharedHttpClient::new(&crate::inference::HttpClientConfig::with_timeout(
         cfg.timeout_secs,
     ))
     .map_err(|e| FatalError::Config(format!("failed to build HTTP client: {e}")))?;
@@ -370,11 +370,11 @@ pub(crate) async fn initialize(
         http_client: http.clone(),
         max_tokens: cfg.max_tokens,
         retry_config: cfg.retry.clone(),
-        options: crate::models::CompletionOptions {
+        options: crate::inference::CompletionOptions {
             max_tokens: Some(cfg.max_tokens),
             temperature: cfg.temperature,
             thinking: cfg.thinking.clone(),
-            ..crate::models::CompletionOptions::default()
+            ..crate::inference::CompletionOptions::default()
         },
         layout: layout.clone(),
         tz,

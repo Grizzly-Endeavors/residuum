@@ -9,7 +9,7 @@ use tokio::sync::{Mutex, Notify};
 
 use crate::actions::store::ActionStore;
 use crate::actions::types::ScheduledAction;
-use crate::models::ToolDefinition;
+use crate::inference::ToolDefinition;
 
 use super::{Tool, ToolError, ToolResult};
 

@@ -6,8 +6,10 @@ use tokio_util::sync::CancellationToken;
 use crate::bus::{
     EndpointName, Publisher, ToolActivityEvent, ToolCallEvent, ToolResultEvent, topics,
 };
+use crate::inference::{
+    CompletionOptions, InferenceProvider, InferenceResponse, Message, ToolCall,
+};
 use crate::mcp::SharedMcpRegistry;
-use crate::models::{CompletionOptions, Message, ModelProvider, ModelResponse, ToolCall};
 use crate::tools::{ToolError, ToolRegistry};
 use crate::workspace::identity::IdentityFiles;
 use anyhow::Context;
@@ -45,7 +47,7 @@ const MAX_EMPTY_RESPONSE_RETRIES: u32 = 2;
 
 /// Shared subsystem references needed for each turn iteration.
 pub(crate) struct TurnResources<'a> {
-    pub provider: &'a dyn ModelProvider,
+    pub provider: &'a dyn InferenceProvider,
     pub tools: &'a ToolRegistry,
     pub mcp_registry: &'a SharedMcpRegistry,
     pub identity: &'a IdentityFiles,
@@ -144,7 +146,7 @@ pub(crate) async fn execute_turn(
                 "structured thinking received"
             );
         }
-        response.content = crate::models::think_tags::strip_think_tags(&response.content);
+        response.content = super::think_tags::strip_think_tags(&response.content);
 
         if response.tool_calls.is_empty() {
             log_usage(&response);
@@ -336,7 +338,7 @@ async fn execute_tool(
 }
 
 /// Log token usage from a model response at debug level.
-fn log_usage(response: &ModelResponse) {
+fn log_usage(response: &InferenceResponse) {
     if let Some(usage) = response.usage {
         tracing::debug!(
             input_tokens = usage.input_tokens,
@@ -353,7 +355,7 @@ fn log_usage(response: &ModelResponse) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::models::Role;
+    use crate::inference::Role;
 
     #[test]
     fn drain_injects_subconscious_correction_as_system_message() {

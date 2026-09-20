@@ -11,8 +11,8 @@ use serde::{Deserialize, Serialize};
 
 use anyhow::Context;
 
+use crate::inference::Message;
 use crate::memory::types::Visibility;
-use crate::models::Message;
 
 /// A persisted message with observation metadata.
 ///
@@ -74,7 +74,7 @@ pub async fn load_messages_for_agent(path: &Path) -> anyhow::Result<AgentRestore
         .iter()
         .rev()
         .find(|rm| {
-            rm.message.role == crate::models::Role::User && rm.visibility == Visibility::User
+            rm.message.role == crate::inference::Role::User && rm.visibility == Visibility::User
         })
         .map(|rm| rm.timestamp);
 

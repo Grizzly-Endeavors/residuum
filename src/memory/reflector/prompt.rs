@@ -1,6 +1,6 @@
 //! Prompt construction for the reflector LLM call.
 
-use crate::models::Message;
+use crate::inference::Message;
 
 /// User-customizable content guidance — default when `memory/REFLECTOR.md` is absent.
 ///

@@ -9,8 +9,8 @@ use crate::agent::interrupt::dead_interrupt_rx;
 use crate::agent::recent_messages::RecentMessages;
 use crate::agent::turn::{EventContext, TurnResources, execute_turn};
 use crate::bus::Publisher;
+use crate::inference::{CompletionOptions, InferenceProvider, Message};
 use crate::mcp::SharedMcpRegistry;
-use crate::models::{CompletionOptions, Message, ModelProvider};
 use crate::skills::{SharedSkillState, SkillState};
 use crate::tools::path_policy::PathPolicy;
 use crate::tools::{FileTracker, ToolRegistry};
@@ -28,7 +28,7 @@ pub(crate) struct SubAgentOutput {
 
 /// Everything needed to run a sub-agent turn, gathered at spawn time.
 pub struct SubAgentResources {
-    pub(crate) provider: Box<dyn ModelProvider>,
+    pub(crate) provider: Box<dyn InferenceProvider>,
     pub(crate) tools: ToolRegistry,
     /// Shared MCP registry (ref-counted, not isolated).
     pub(crate) mcp_registry: SharedMcpRegistry,
@@ -59,7 +59,7 @@ pub struct SubAgentResources {
 /// running, so the spawn fails instead.
 #[tracing::instrument(skip_all)]
 pub async fn build_subagent_resources(
-    provider: Box<dyn ModelProvider>,
+    provider: Box<dyn InferenceProvider>,
     main_skill_state: &SharedSkillState,
     mcp_registry: SharedMcpRegistry,
     config: SubAgentBuildConfig,
@@ -240,8 +240,8 @@ pub(crate) async fn execute_subagent(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::inference::{InferenceError, InferenceResponse, ToolDefinition};
     use crate::mcp::McpRegistry;
-    use crate::models::{ModelError, ModelResponse, ToolDefinition};
     use crate::skills::{SkillIndex, SkillState};
     use async_trait::async_trait;
 
@@ -250,14 +250,14 @@ mod tests {
     }
 
     #[async_trait]
-    impl ModelProvider for MockSubAgentProvider {
+    impl InferenceProvider for MockSubAgentProvider {
         async fn complete(
             &self,
             _messages: &[Message],
             _tools: &[ToolDefinition],
             _options: &CompletionOptions,
-        ) -> Result<ModelResponse, ModelError> {
-            Ok(ModelResponse::new(self.response.clone(), vec![]))
+        ) -> Result<InferenceResponse, InferenceError> {
+            Ok(InferenceResponse::new(self.response.clone(), vec![]))
         }
 
         fn model_name(&self) -> &'static str {
@@ -396,13 +396,13 @@ mod tests {
             output.messages.len()
         );
         let first = output.messages.first().unwrap();
-        assert_eq!(first.role, crate::models::Role::User);
+        assert_eq!(first.role, crate::inference::Role::User);
         assert!(
             first.content.contains("do work"),
             "user message should contain the prompt"
         );
         let last = output.messages.last().unwrap();
-        assert_eq!(last.role, crate::models::Role::Assistant);
+        assert_eq!(last.role, crate::inference::Role::Assistant);
         assert_eq!(last.content, "done");
     }
 
@@ -420,7 +420,7 @@ mod tests {
             .await
             .unwrap();
         let first = output.messages.first().unwrap();
-        assert_eq!(first.role, crate::models::Role::User);
+        assert_eq!(first.role, crate::inference::Role::User);
         assert!(
             first.content.contains("extra context"),
             "user message should contain the context"

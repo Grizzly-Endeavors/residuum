@@ -3,13 +3,16 @@
 use async_trait::async_trait;
 use tracing::{info, warn};
 
-use super::{CompletionOptions, Message, ModelError, ModelProvider, ModelResponse, ToolDefinition};
+use super::{
+    CompletionOptions, InferenceError, InferenceProvider, InferenceResponse, Message,
+    ToolDefinition,
+};
 
 /// A provider that tries multiple underlying providers in order.
 ///
 /// On error (after retries exhaust within each provider), falls back to the next.
 pub(crate) struct FailoverProvider {
-    providers: Vec<Box<dyn ModelProvider>>,
+    providers: Vec<Box<dyn InferenceProvider>>,
 }
 
 impl FailoverProvider {
@@ -17,22 +20,22 @@ impl FailoverProvider {
     ///
     /// The first provider is the primary; subsequent providers are fallbacks.
     #[must_use]
-    pub(crate) fn new(providers: Vec<Box<dyn ModelProvider>>) -> Self {
+    pub(crate) fn new(providers: Vec<Box<dyn InferenceProvider>>) -> Self {
         Self { providers }
     }
 }
 
 #[async_trait]
-impl ModelProvider for FailoverProvider {
+impl InferenceProvider for FailoverProvider {
     #[tracing::instrument(skip_all, fields(provider_count = self.providers.len(), primary = self.providers.first().map_or("empty", |p| p.model_name())))]
     async fn complete(
         &self,
         messages: &[Message],
         tools: &[ToolDefinition],
         options: &CompletionOptions,
-    ) -> Result<ModelResponse, ModelError> {
+    ) -> Result<InferenceResponse, InferenceError> {
         let total = self.providers.len();
-        let mut last_error: Option<ModelError> = None;
+        let mut last_error: Option<InferenceError> = None;
 
         for (idx, provider) in self.providers.iter().enumerate() {
             match provider.complete(messages, tools, options).await {
@@ -64,7 +67,7 @@ impl ModelProvider for FailoverProvider {
 
         // All providers failed — return the last error
         Err(last_error.unwrap_or_else(|| {
-            ModelError::Api("no providers configured in failover chain".to_string())
+            InferenceError::Api("no providers configured in failover chain".to_string())
         }))
     }
 
@@ -86,14 +89,14 @@ mod tests {
     }
 
     #[async_trait]
-    impl ModelProvider for SuccessProvider {
+    impl InferenceProvider for SuccessProvider {
         async fn complete(
             &self,
             _messages: &[Message],
             _tools: &[ToolDefinition],
             _options: &CompletionOptions,
-        ) -> Result<ModelResponse, ModelError> {
-            Ok(ModelResponse::new(
+        ) -> Result<InferenceResponse, InferenceError> {
+            Ok(InferenceResponse::new(
                 format!("response from {}", self.name),
                 vec![],
             ))
@@ -110,14 +113,14 @@ mod tests {
     }
 
     #[async_trait]
-    impl ModelProvider for FailProvider {
+    impl InferenceProvider for FailProvider {
         async fn complete(
             &self,
             _messages: &[Message],
             _tools: &[ToolDefinition],
             _options: &CompletionOptions,
-        ) -> Result<ModelResponse, ModelError> {
-            Err(ModelError::Api(format!("{} unavailable", self.name)))
+        ) -> Result<InferenceResponse, InferenceError> {
+            Err(InferenceError::Api(format!("{} unavailable", self.name)))
         }
 
         fn model_name(&self) -> &str {

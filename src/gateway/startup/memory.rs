@@ -4,13 +4,13 @@ use std::path::Path;
 use std::sync::Arc;
 
 use crate::config::Config;
+use crate::inference::{EmbeddingProvider, SharedHttpClient, build_provider_chain};
 use crate::memory::chunk_extractor::read_idx_jsonl;
 use crate::memory::observer::{Observer, ObserverConfig};
 use crate::memory::reflector::{Reflector, ReflectorConfig};
 use crate::memory::search::{HybridSearcher, MemoryIndex, RebuildResult, parse_obs_file};
 use crate::memory::types::IndexManifest;
 use crate::memory::vector_store::VectorStore;
-use crate::models::{EmbeddingProvider, SharedHttpClient, build_provider_chain};
 use crate::util::FatalError;
 use crate::workspace::layout::WorkspaceLayout;
 use anyhow::Context;
@@ -457,8 +457,8 @@ async fn backfill_idx_file(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::inference::{EmbeddingResponse, InferenceError};
     use crate::memory::types::{Observation, Visibility};
-    use crate::models::{EmbeddingResponse, ModelError};
     use async_trait::async_trait;
 
     /// Embedding provider that returns a fixed-dimension vector for every text,
@@ -467,7 +467,7 @@ mod tests {
 
     #[async_trait]
     impl EmbeddingProvider for FakeEmbedder {
-        async fn embed(&self, texts: &[&str]) -> Result<EmbeddingResponse, ModelError> {
+        async fn embed(&self, texts: &[&str]) -> Result<EmbeddingResponse, InferenceError> {
             Ok(EmbeddingResponse {
                 embeddings: texts.iter().map(|_| vec![0.1, 0.2, 0.3, 0.4]).collect(),
                 dimensions: 4,

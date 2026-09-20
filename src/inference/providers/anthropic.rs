@@ -5,10 +5,12 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tracing::{debug, info};
 
-use super::http::{SharedHttpClient, map_request_error, read_error_body, warn_if_insecure_remote};
-use super::retry::{RetryConfig, with_retry};
-use super::{
-    CompletionOptions, ImageData, Message, ModelError, ModelProvider, ModelResponse,
+use crate::inference::http::{
+    SharedHttpClient, map_request_error, read_error_body, warn_if_insecure_remote,
+};
+use crate::inference::retry::{RetryConfig, with_retry};
+use crate::inference::{
+    CompletionOptions, ImageData, InferenceError, InferenceProvider, InferenceResponse, Message,
     ResponseFormat, Role, ThinkingConfig, ThinkingLevel, ToolCall, ToolDefinition, Usage,
 };
 
@@ -177,7 +179,7 @@ impl AnthropicClient {
     /// a server-side `web_search_20250305` entry is appended.
     fn convert_tools(
         tools: &[ToolDefinition],
-        web_search: Option<&super::WebSearchNativeConfig>,
+        web_search: Option<&crate::inference::WebSearchNativeConfig>,
     ) -> Vec<AnthropicToolEntry> {
         let mut entries: Vec<AnthropicToolEntry> = tools
             .iter()
@@ -235,7 +237,7 @@ impl AnthropicClient {
         endpoint: &str,
         api_key: &str,
         request: &AnthropicRequest,
-    ) -> Result<ModelResponse, ModelError> {
+    ) -> Result<InferenceResponse, InferenceError> {
         debug!(
             max_tokens = request.max_tokens,
             "sending anthropic completion request"
@@ -261,7 +263,7 @@ impl AnthropicClient {
         }
 
         let request_json = serde_json::to_string(request)
-            .map_err(|e| ModelError::Parse(format!("failed to serialize request: {e}")))?;
+            .map_err(|e| InferenceError::Parse(format!("failed to serialize request: {e}")))?;
 
         let response = req_builder
             .body(request_json.clone())
@@ -294,7 +296,7 @@ impl AnthropicClient {
                 },
             );
 
-            return Err(ModelError::Api(error_msg));
+            return Err(InferenceError::Api(error_msg));
         }
 
         let body = response
@@ -302,8 +304,9 @@ impl AnthropicClient {
             .await
             .map_err(|e| map_request_error(e, timeout_secs))?;
 
-        let api_response: AnthropicResponse = serde_json::from_str(&body)
-            .map_err(|e| ModelError::Parse(format!("failed to parse anthropic response: {e}")))?;
+        let api_response: AnthropicResponse = serde_json::from_str(&body).map_err(|e| {
+            InferenceError::Parse(format!("failed to parse anthropic response: {e}"))
+        })?;
 
         let result = Self::parse_response(api_response);
 
@@ -317,8 +320,8 @@ impl AnthropicClient {
         Ok(result)
     }
 
-    /// Parse the API response into our generic `ModelResponse`.
-    fn parse_response(response: AnthropicResponse) -> ModelResponse {
+    /// Parse the API response into our generic `InferenceResponse`.
+    fn parse_response(response: AnthropicResponse) -> InferenceResponse {
         let mut text_parts: Vec<String> = Vec::new();
         let mut thinking_parts: Vec<String> = Vec::new();
         let mut tool_calls: Vec<ToolCall> = Vec::new();
@@ -360,7 +363,7 @@ impl AnthropicClient {
             cache_read_tokens: u.cache_read_input_tokens,
         });
 
-        let mut resp = ModelResponse::new(content, tool_calls);
+        let mut resp = InferenceResponse::new(content, tool_calls);
         resp.usage = usage;
         resp.thinking = thinking_text;
         resp
@@ -368,20 +371,20 @@ impl AnthropicClient {
 }
 
 #[async_trait]
-impl ModelProvider for AnthropicClient {
+impl InferenceProvider for AnthropicClient {
     /// Send a completion request to the Anthropic Messages API.
     ///
     /// # Errors
-    /// Returns `ModelError::Timeout` if the request exceeds the configured timeout,
-    /// `ModelError::Api` if the API returns an error status, `ModelError::Parse` if
-    /// the response body is malformed, or `ModelError::Request` for network failures.
+    /// Returns `InferenceError::Timeout` if the request exceeds the configured timeout,
+    /// `InferenceError::Api` if the API returns an error status, `InferenceError::Parse` if
+    /// the response body is malformed, or `InferenceError::Request` for network failures.
     #[tracing::instrument(skip_all, fields(model = %self.model, message_count = messages.len(), tool_count = tools.len()))]
     async fn complete(
         &self,
         messages: &[Message],
         tools: &[ToolDefinition],
         options: &CompletionOptions,
-    ) -> Result<ModelResponse, ModelError> {
+    ) -> Result<InferenceResponse, InferenceError> {
         let (system, api_messages) = Self::convert_messages(messages);
         let max_tokens = options.max_tokens.unwrap_or(self.max_tokens);
         let has_web_search = options.web_search.is_some();
@@ -724,8 +727,8 @@ mod tests {
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     use super::*;
-    use crate::models::http::HttpClientConfig;
-    use crate::models::retry::RetryConfig;
+    use crate::inference::http::HttpClientConfig;
+    use crate::inference::retry::RetryConfig;
 
     /// Create a test client pointing at the given mock server URL.
     fn test_client(base_url: &str) -> AnthropicClient {
@@ -1065,7 +1068,7 @@ mod tests {
         assert!(result.is_err(), "request should time out");
         let err = result.unwrap_err();
         assert!(
-            matches!(err, ModelError::Timeout(_)),
+            matches!(err, InferenceError::Timeout(_)),
             "error should be Timeout variant, got: {err:?}"
         );
     }
@@ -1101,7 +1104,7 @@ mod tests {
 
         let client = test_client(&server.uri());
         let options = CompletionOptions {
-            response_format: crate::models::ResponseFormat::JsonSchema {
+            response_format: crate::inference::ResponseFormat::JsonSchema {
                 name: "test_schema".to_string(),
                 schema: json!({
                     "type": "object",
@@ -1292,7 +1295,7 @@ mod tests {
 
         let client = test_client(&server.uri());
         let options = CompletionOptions {
-            web_search: Some(crate::models::WebSearchNativeConfig {
+            web_search: Some(crate::inference::WebSearchNativeConfig {
                 max_uses: Some(3),
                 ..Default::default()
             }),
@@ -1380,7 +1383,7 @@ mod tests {
 
         let client = test_client(&server.uri());
         let options = CompletionOptions {
-            web_search: Some(crate::models::WebSearchNativeConfig::default()),
+            web_search: Some(crate::inference::WebSearchNativeConfig::default()),
             ..CompletionOptions::default()
         };
         let result = client.complete(&simple_user_message(), &[], &options).await;

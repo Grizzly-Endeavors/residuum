@@ -6,9 +6,9 @@ use async_trait::async_trait;
 use serde_json::Value;
 
 use super::{Tool, ToolError, ToolResult};
+use crate::inference::ToolDefinition;
 use crate::memory::search::{HybridSearcher, SearchFilters};
 use crate::memory::types::DocSource;
-use crate::models::ToolDefinition;
 
 /// Tool that searches the memory index using hybrid BM25 + vector search.
 pub struct MemorySearchTool {
