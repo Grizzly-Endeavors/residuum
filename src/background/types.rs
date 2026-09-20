@@ -90,8 +90,6 @@ pub enum PresetToolRestriction {
 
 /// Configuration passed to [`build_subagent_resources`] that groups constructor arguments.
 pub struct SubAgentBuildConfig {
-    /// Gated tool names — passed to the isolated `ToolFilter` (currently empty).
-    pub gated_tools: HashSet<&'static str>,
     /// Optional preset-level tool restriction (denied or allowed-only).
     pub preset_tool_restriction: Option<PresetToolRestriction>,
     /// Workspace layout (used to set the path policy root).

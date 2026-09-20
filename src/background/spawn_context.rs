@@ -1,7 +1,6 @@
 //! Spawn context: parameters needed to construct providers and `SubAgentResources`
 //! for background tasks (pulse, actions, and on-demand sub-agents).
 
-use std::collections::HashSet;
 use std::sync::Arc;
 
 use anyhow::Context as _;
@@ -117,7 +116,6 @@ pub(crate) async fn build_spawn_resources(
         .context("failed to load identity files for sub-agent spawn")?;
 
     let build_config = SubAgentBuildConfig {
-        gated_tools: HashSet::new(),
         preset_tool_restriction,
         workspace_layout: ctx.layout.clone(),
         identity,

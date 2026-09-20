@@ -1,5 +1,6 @@
 //! Sub-agent execution for background tasks.
 
+use std::collections::HashSet;
 use std::sync::Arc;
 
 use crate::agent::context::{
@@ -70,7 +71,6 @@ pub async fn build_subagent_resources(
     config: SubAgentBuildConfig,
 ) -> SubAgentResources {
     let SubAgentBuildConfig {
-        gated_tools,
         preset_tool_restriction,
         workspace_layout,
         identity,
@@ -108,9 +108,9 @@ pub async fn build_subagent_resources(
             ToolFilter::new_shared_allowed_only(allowed)
         }
         Some(PresetToolRestriction::Denied(denied)) => {
-            ToolFilter::new_shared_with_denied(gated_tools, denied)
+            ToolFilter::new_shared_with_denied(HashSet::new(), denied)
         }
-        None => ToolFilter::new_shared(gated_tools),
+        None => ToolFilter::new_shared(HashSet::new()),
     };
 
     // Fresh file tracker (tracks reads within this sub-agent turn only)
