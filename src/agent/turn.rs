@@ -90,8 +90,7 @@ pub(crate) async fn execute_turn(
         drain_interrupts(interrupt_rx, recent_messages);
 
         // Clone the filter each iteration so the guard is dropped before tool
-        // execution. Tools like project_activate need a write lock on the same
-        // RwLock, which would deadlock if we held a read guard across the call.
+        // execution, avoiding a held read guard across the call.
         let filter = resources.tool_filter.read().await.clone();
         let mut tool_definitions = resources.tools.definitions(&filter);
 

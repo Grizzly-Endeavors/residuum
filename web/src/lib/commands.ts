@@ -46,7 +46,7 @@ export const COMMAND_REGISTRY: CommandDef[] = [
   { name: "/status", description: "Show connection status", hasArgs: false },
   { name: "/observe", description: "Trigger memory observation", hasArgs: false },
   { name: "/reflect", description: "Trigger memory reflection", hasArgs: false },
-  { name: "/context", description: "Show current project context", hasArgs: false },
+  { name: "/context", description: "Show the context token breakdown", hasArgs: false },
   { name: "/reload", description: "Reload gateway configuration", hasArgs: false },
   { name: "/inbox", description: "Add a message to the inbox", hasArgs: true },
 ];

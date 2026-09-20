@@ -10,7 +10,6 @@
 #                 supports overnight windows (e.g. "22:00-06:00")
 #   agent: ~ (sub-agent, small) | "main" (wake turn) | "preset-name" (sub-agent,
 #          uses the preset's own model tier)
-#   trigger_count: optional — max firings per active period
 
 # ── Built-in pulses ─────────────────────────────────────────────
 # On by default. Comment out to disable; edit freely to tune.
@@ -57,7 +56,7 @@ pulses:
 #      - name: inbox_review
 #        prompt: "Check the inbox for anything that arrived overnight. Summarize items that need attention and archive anything purely informational."
 #      - name: todays_agenda
-#        prompt: "Check for any scheduled actions firing today. Review active projects for deadlines or pending items. Give the user a brief rundown of what is on the plate."
+#        prompt: "Check for any scheduled actions firing today. Give the user a brief rundown of what is on the plate."
 #      - name: greet
 #        prompt: "Send the user a short good-morning message with the highlights from the above tasks. Keep it conversational, not a report. If nothing needs attention, just say good morning."
 #
@@ -68,7 +67,7 @@ pulses:
 #    agent: "main"
 #    tasks:
 #      - name: progress_check
-#        prompt: "Review what the user worked on today based on conversation history and project activity. Note what got done and what is still open."
+#        prompt: "Review what the user worked on today based on conversation history. Note what got done and what is still open."
 #      - name: loose_ends
 #        prompt: "Check for unread inbox items, unfinished tasks, or anything that was mentioned but not resolved. Flag anything the user should know about before tomorrow."
 #      - name: wrap_up

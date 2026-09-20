@@ -19,8 +19,6 @@ pub(crate) struct Episode {
     pub(crate) id: String,
     /// Date of the episode.
     pub(crate) date: chrono::NaiveDate,
-    /// The project or topic context tag.
-    pub(crate) context: String,
     /// Concise single-sentence observations extracted from the conversation.
     pub(crate) observations: Vec<String>,
     /// IDs of episodes that were merged to create this one (for reflected episodes).
@@ -88,15 +86,13 @@ impl fmt::Display for DocSource {
 /// A single extracted observation with full metadata.
 ///
 /// Each observation is self-describing: it carries when it was created,
-/// what project it belongs to, which episode transcript(s) it came from,
-/// and whether it originated from a user-visible or background turn.
+/// which episode transcript(s) it came from, and whether it originated
+/// from a user-visible or background turn.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Observation {
     /// When this observation was created.
     #[serde(with = "crate::time::minute_format")]
     pub timestamp: NaiveDateTime,
-    /// Project or workspace context at the time of observation.
-    pub project_context: String,
     /// IDs of the episode transcript files that produced this observation.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub source_episodes: Vec<String>,
@@ -130,11 +126,7 @@ impl fmt::Display for Observation {
             write!(f, " | [{}]", self.source_episodes.join(", "))?;
         }
 
-        write!(
-            f,
-            " | {} | {}\n  {}",
-            self.project_context, self.visibility, self.content
-        )
+        write!(f, " | {}\n  {}", self.visibility, self.content)
     }
 }
 
@@ -157,8 +149,7 @@ impl ObservationLog {
         }
 
         let mut lines = Vec::with_capacity(self.observations.len() + 1);
-        lines
-            .push("Format: [timestamp] | [source episodes] | [project] | [visibility]".to_string());
+        lines.push("Format: [timestamp] | [source episodes] | [visibility]".to_string());
         for obs in &self.observations {
             lines.push(obs.to_string());
         }
@@ -175,8 +166,6 @@ pub struct IndexChunk {
     pub episode_id: String,
     /// Date string in `YYYY-MM-DD` format.
     pub date: String,
-    /// Project context tag.
-    pub context: String,
     /// Line number of the first message in this chunk (in the transcript).
     pub line_start: usize,
     /// Line number of the last message in this chunk (in the transcript).
@@ -261,7 +250,6 @@ mod tests {
                 .unwrap()
                 .and_hms_opt(0, 0, 0)
                 .unwrap(),
-            project_context: "residuum/memory".to_string(),
             source_episodes: vec!["ep-001".to_string()],
             visibility: Visibility::User,
             content: "tantivy provides BM25 search without C dependencies".to_string(),
@@ -277,10 +265,6 @@ mod tests {
         assert_eq!(
             deserialized.content, obs.content,
             "content should round-trip"
-        );
-        assert_eq!(
-            deserialized.project_context, "residuum/memory",
-            "project_context should round-trip"
         );
         assert_eq!(
             deserialized.source_episodes,
@@ -375,7 +359,7 @@ mod tests {
         let formatted = obs.to_string();
         assert_eq!(
             formatted,
-            "[2024-02-19T00:00] | [ep-001] | residuum/memory | user\n  tantivy provides BM25 search without C dependencies"
+            "[2024-02-19T00:00] | [ep-001] | user\n  tantivy provides BM25 search without C dependencies"
         );
     }
 
@@ -388,7 +372,7 @@ mod tests {
         let formatted = obs.to_string();
         assert_eq!(
             formatted,
-            "[2024-02-19T00:00] | residuum/memory | user\n  tantivy provides BM25 search without C dependencies"
+            "[2024-02-19T00:00] | user\n  tantivy provides BM25 search without C dependencies"
         );
     }
 
@@ -444,7 +428,6 @@ mod tests {
             chunk_id: "ep-001-c0".to_string(),
             episode_id: "ep-001".to_string(),
             date: "2026-02-19".to_string(),
-            context: "residuum".to_string(),
             line_start: 2,
             line_end: 3,
             content: "user: hello\nassistant: hi there".to_string(),

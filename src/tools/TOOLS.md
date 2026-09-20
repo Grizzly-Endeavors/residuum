@@ -56,7 +56,7 @@ On error (returned as `is_error = true`):
 On success: `"wrote {N} bytes to {path}"`
 
 On error:
-- `PathPolicy` rejects the write path (path is outside the active project root, or targets a protected config file)
+- `PathPolicy` rejects the write path (targets a protected config file)
 - File already exists but has not been read via `read_file` first
 - Directory creation fails
 - Write fails
@@ -95,7 +95,7 @@ On error:
 On success: `"edited {path}: {description}"` where description is e.g. `"replaced line(s) 5"` or `"deleted line(s) 2-4"`.
 
 On error:
-- `PathPolicy` rejects the path (outside active project root, or targets a protected config file)
+- `PathPolicy` rejects the path (targets a protected config file)
 - File does not exist
 - File has not been read via `read_file` first
 - Hash mismatch on `start_line` or `end_line` (file changed since last read)
@@ -143,10 +143,10 @@ Commands are resolved against the configured tool `PATH`: the directories in
 **Source:** `memory_search.rs` · `MemorySearchTool`
 
 **Description sent to LLM (vector enabled):**
-> Search past conversation observations and interaction chunks using hybrid BM25 + vector similarity search. Returns matching results with relevance scores and snippets. Supports filtering by source type, date range, project context, and episode IDs.
+> Search past conversation observations and interaction chunks using hybrid BM25 + vector similarity search. Returns matching results with relevance scores and snippets. Supports filtering by source type, date range, and episode IDs.
 
 **Description sent to LLM (BM25 only):**
-> Search past conversation observations and interaction chunks using BM25 full-text search. Returns matching results with relevance scores and snippets. Supports filtering by source type, date range, project context, and episode IDs.
+> Search past conversation observations and interaction chunks using BM25 full-text search. Returns matching results with relevance scores and snippets. Supports filtering by source type, date range, and episode IDs.
 
 ### Input
 
@@ -157,7 +157,6 @@ Commands are resolved against the configured tool `PATH`: the directories in
 | `source`          | string          | no       | Filter by source: `"observations"` or `"episodes"`. Omit to search both. |
 | `date_from`       | string          | no       | Filter on or after date (YYYY-MM-DD, inclusive)              |
 | `date_to`         | string          | no       | Filter on or before date (YYYY-MM-DD, inclusive)             |
-| `project_context` | string          | no       | Filter by project context (exact match)                      |
 | `episode_ids`     | array\<string\> | no       | Filter to results from these episode IDs                     |
 
 ### Output
@@ -166,7 +165,7 @@ On success with results:
 ```
 Found {N} result(s):
 
-1. [{source_type}] {id} | {date} | {context} | lines {s}-{e} (score: {score})
+1. [{source_type}] {id} | {date} | lines {s}-{e} (score: {score})
    {snippet}
 ```
 
@@ -201,128 +200,6 @@ On error:
 - Episode not found
 - `episode_id` is empty or contains invalid characters
 - Failed to read transcript file
-
----
-
-## `project_activate`
-
-**Source:** `projects.rs` · `ProjectActivateTool`
-
-**Description sent to LLM:**
-> Activate a project context. Loads the project's overview, manifest, and configuration into the agent's context.
-
-### Input
-
-| Parameter | Type   | Required | Description                                         |
-|-----------|--------|----------|-----------------------------------------------------|
-| `name`    | string | yes      | Name of the project to activate (case-insensitive)  |
-
-### Output
-
-On success: summary string like `"Activated project '{name}'. Manifest: {N} notes, {N} references, {N} workspace, {N} skills files."`, followed by one `warning: ...` line per non-fatal failure (MCP server reference resolution, MCP server start, or skill rescan) if any occurred.
-
-On error: project not found or activation failure message.
-
-**Side effects:** Updates `PathPolicy` to scope writes to the project root; resolves MCP server name references from `mcp.json` files (project-local `mcp.json` alongside `PROJECT.md` takes precedence over global `workspace/config/mcp.json`) and activates them with reference counting (servers are shared when multiple agents activate the same project simultaneously — they are only stopped when the last agent deactivates); rescans skills to include project-scoped skills.
-
----
-
-## `project_deactivate`
-
-**Source:** `projects.rs` · `ProjectDeactivateTool`
-
-**Description sent to LLM:**
-> Deactivate the current project context. Requires a non-empty session summary log entry.
-
-### Input
-
-| Parameter | Type   | Required | Description                                           |
-|-----------|--------|----------|-------------------------------------------------------|
-| `log`     | string | yes      | Session summary log entry (required, must not be empty) |
-
-### Output
-
-On success: `"Deactivated project '{name}'. Log entry recorded."`, followed by a `warning: skill rescan failed: {error}` line if the post-deactivation skill rescan failed.
-
-On error: no active project, or empty `log`.
-
-**Side effects:** Resets `PathPolicy` to no active project; decrements MCP server reference count (servers are only disconnected when the last agent deactivates — see `project_activate`); rescans skills without project dir.
-
----
-
-## `project_create`
-
-**Source:** `projects.rs` · `ProjectCreateTool`
-
-**Description sent to LLM:**
-> Create a new project with the standard directory structure and PROJECT.md.
-
-### Input
-
-| Parameter     | Type            | Required | Description                                               |
-|---------------|-----------------|----------|-----------------------------------------------------------|
-| `name`        | string          | yes      | Human-readable project name                               |
-| `description` | string          | yes      | Brief summary of what this project covers                 |
-| `tools`       | array\<string\> | no       | Optional list of tool names to associate with this project |
-
-### Output
-
-On success: `"Created project '{name}' at {path}"`
-
-On error: creation failure message (e.g. name conflict, filesystem error).
-
-**Side effect:** Triggers a project index rescan after successful creation.
-
----
-
-## `project_archive`
-
-**Source:** `projects.rs` · `ProjectArchiveTool`
-
-**Description sent to LLM:**
-> Archive a completed project. Updates frontmatter to archived status and moves it to the archive directory.
-
-### Input
-
-| Parameter | Type   | Required | Description                       |
-|-----------|--------|----------|-----------------------------------|
-| `name`    | string | yes      | Name of the project to archive    |
-
-### Output
-
-On success: `"Archived project '{name}'. Moved to archive/."`
-
-On error:
-- Project not found in index
-- Project is currently active (must deactivate first)
-- Filesystem error
-
-**Side effect:** Triggers a project index rescan after successful archival.
-
----
-
-## `project_list`
-
-**Source:** `projects.rs` · `ProjectListTool`
-
-**Description sent to LLM:**
-> List all projects and their status.
-
-### Input
-
-| Parameter          | Type    | Required | Description                                       |
-|--------------------|---------|----------|---------------------------------------------------|
-| `include_archived` | boolean | no       | Include archived projects in the list (default false) |
-
-### Output
-
-On success: count header followed by one line per project:
-```
-{N} project(s):
-  [{status}] {name}[ACTIVE] — {description}
-```
-
-When no projects exist: `"No projects found."`
 
 ---
 

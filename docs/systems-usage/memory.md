@@ -100,7 +100,6 @@ BM25 + vector results → normalize scores (min-max to [0,1]) → weighted merge
 | `source` | string enum | no | `"observations"`, `"episodes"`, or `"both"` |
 | `date_from` | string | no | `YYYY-MM-DD`, inclusive lower bound |
 | `date_to` | string | no | `YYYY-MM-DD`, inclusive upper bound |
-| `project_context` | string | no | Exact match on project context field |
 | `episode_ids` | string[] | no | Limit to specific episode IDs |
 
 ### `memory_get`

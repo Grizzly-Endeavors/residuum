@@ -11,4 +11,3 @@ You are a memory reorganization system. Given the following list of observations
 
 **You Should *NOT*:**
 - Summarize — always preserve specific details
-- Merge observations from different projects

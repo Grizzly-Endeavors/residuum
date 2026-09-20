@@ -24,9 +24,6 @@
   const hasArgs = $derived(entries.length > 0);
 
   const SIMPLE_TOOL_ARG: Record<string, string> = {
-    project_activate: "name",
-    project_create: "name",
-    project_archive: "name",
     skill_activate: "name",
     skill_deactivate: "name",
     switch_endpoint: "endpoint",
@@ -81,7 +78,6 @@
     ["Source", args["source"] as string | undefined],
     ["Since", args["date_from"] as string | undefined],
     ["Until", args["date_to"] as string | undefined],
-    ["Project", args["project_context"] as string | undefined],
     ["Limit", args["limit"] != null ? str("limit") : undefined],
   ])}
   <div class="tool-args">
@@ -169,9 +165,6 @@
 {:else if SIMPLE_TOOL_ARG[name]}
   <div class="tool-args">
     <span class="tool-args-label">{str(SIMPLE_TOOL_ARG[name])}</span>
-    {#if name === "project_create" && hasKey("description")}
-      <span class="tool-args-meta">{str("description")}</span>
-    {/if}
   </div>
 {:else if name === "memory_get"}
   <div class="tool-args">

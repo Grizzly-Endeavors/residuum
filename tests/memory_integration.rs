@@ -70,9 +70,9 @@ mod memory_integration {
     fn observer_response() -> String {
         r#"{
             "observations": [
-                {"content": "workspace uses a flat directory layout with identity files at root", "timestamp": "2026-02-21T14:30Z", "visibility": "user", "project_context": "residuum/workspace"},
-                {"content": "bootstrap creates 10 required directories on first run", "timestamp": "2026-02-21T14:31Z", "visibility": "user", "project_context": "residuum/workspace"},
-                {"content": "SOUL.md defines the agent personality and is loaded at startup", "timestamp": "2026-02-21T14:32Z", "visibility": "user", "project_context": "residuum/workspace"}
+                {"content": "workspace uses a flat directory layout with identity files at root", "timestamp": "2026-02-21T14:30Z", "visibility": "user"},
+                {"content": "bootstrap creates 10 required directories on first run", "timestamp": "2026-02-21T14:31Z", "visibility": "user"},
+                {"content": "SOUL.md defines the agent personality and is loaded at startup", "timestamp": "2026-02-21T14:32Z", "visibility": "user"}
             ],
             "narrative": "We were discussing the workspace layout and how identity files are organized. The bootstrap process creates the required directory structure."
         }"#
@@ -81,9 +81,9 @@ mod memory_integration {
 
     fn observer_response_legacy() -> String {
         r#"[
-            {"content": "workspace uses a flat directory layout with identity files at root", "timestamp": "2026-02-21T14:30Z", "visibility": "user", "project_context": "residuum/workspace"},
-            {"content": "bootstrap creates 10 required directories on first run", "timestamp": "2026-02-21T14:31Z", "visibility": "user", "project_context": "residuum/workspace"},
-            {"content": "SOUL.md defines the agent personality and is loaded at startup", "timestamp": "2026-02-21T14:32Z", "visibility": "user", "project_context": "residuum/workspace"}
+            {"content": "workspace uses a flat directory layout with identity files at root", "timestamp": "2026-02-21T14:30Z", "visibility": "user"},
+            {"content": "bootstrap creates 10 required directories on first run", "timestamp": "2026-02-21T14:31Z", "visibility": "user"},
+            {"content": "SOUL.md defines the agent personality and is loaded at startup", "timestamp": "2026-02-21T14:32Z", "visibility": "user"}
         ]"#
         .to_string()
     }
@@ -91,8 +91,8 @@ mod memory_integration {
     fn reflector_response() -> String {
         r#"{
             "observations": [
-                {"content": "workspace uses flat layout with identity files at root", "timestamp": "2026-02-21T14:32Z", "project_context": "residuum/workspace", "visibility": "user"},
-                {"content": "bootstrap creates required directories on first run", "timestamp": "2026-02-21T14:31Z", "project_context": "residuum/workspace", "visibility": "user"}
+                {"content": "workspace uses flat layout with identity files at root", "timestamp": "2026-02-21T14:32Z", "visibility": "user"},
+                {"content": "bootstrap creates required directories on first run", "timestamp": "2026-02-21T14:31Z", "visibility": "user"}
             ]
         }"#
         .to_string()
@@ -146,15 +146,9 @@ mod memory_integration {
         );
 
         let messages = make_messages(10);
-        append_recent_messages(
-            &recent_path,
-            &messages,
-            "residuum/workspace",
-            Visibility::User,
-            chrono_tz::UTC,
-        )
-        .await
-        .unwrap();
+        append_recent_messages(&recent_path, &messages, Visibility::User, chrono_tz::UTC)
+            .await
+            .unwrap();
 
         let recent = load_recent_messages(&recent_path).await.unwrap();
         assert!(
@@ -168,7 +162,6 @@ mod memory_integration {
             observations,
             chunks,
             date,
-            context,
             ..
         } = observer.observe(&recent, &layout).await.unwrap();
         clear_recent_messages(&recent_path).await.unwrap();
@@ -182,7 +175,6 @@ mod memory_integration {
             "observations vec should have 3 items"
         );
         assert!(!date.is_empty(), "date should not be empty");
-        assert_eq!(context, "residuum/workspace", "context should match");
 
         // Verify transcript file was created
         assert!(transcript_path.exists(), "transcript file should exist");
@@ -221,11 +213,6 @@ mod memory_integration {
             "observation log should have three observations (one per string)"
         );
         assert_eq!(
-            log.observations.first().map(|o| o.project_context.as_str()),
-            Some("residuum/workspace"),
-            "project_context should be preserved"
-        );
-        assert_eq!(
             log.observations.first().map(|o| &o.visibility),
             Some(&Visibility::User),
             "visibility should be User"
@@ -251,7 +238,6 @@ mod memory_integration {
         append_recent_messages(
             &recent_path,
             &more_messages,
-            "residuum/workspace",
             Visibility::User,
             chrono_tz::UTC,
         )
@@ -379,15 +365,9 @@ mod memory_integration {
 
         // "Run 1" — add some messages, exit without hitting threshold
         let run1_msgs = make_messages(3);
-        append_recent_messages(
-            &recent_path,
-            &run1_msgs,
-            "residuum",
-            Visibility::User,
-            chrono_tz::UTC,
-        )
-        .await
-        .unwrap();
+        append_recent_messages(&recent_path, &run1_msgs, Visibility::User, chrono_tz::UTC)
+            .await
+            .unwrap();
 
         // "Run 2" — load and verify messages survived
         let loaded = load_recent_messages(&recent_path).await.unwrap();
@@ -395,15 +375,9 @@ mod memory_integration {
 
         // Add more messages in run 2
         let run2_msgs = make_messages(3);
-        append_recent_messages(
-            &recent_path,
-            &run2_msgs,
-            "residuum",
-            Visibility::User,
-            chrono_tz::UTC,
-        )
-        .await
-        .unwrap();
+        append_recent_messages(&recent_path, &run2_msgs, Visibility::User, chrono_tz::UTC)
+            .await
+            .unwrap();
 
         let all = load_recent_messages(&recent_path).await.unwrap();
         assert_eq!(all.len(), 6, "should have messages from both runs");
@@ -438,7 +412,6 @@ mod memory_integration {
 
         let obs = vec![residuum::memory::types::Observation {
             timestamp: chrono::Utc::now().naive_utc(),
-            project_context: "residuum".to_string(),
             source_episodes: vec!["ep-001".to_string()],
             visibility: Visibility::User,
             content: "the agent uses SOUL.md for personality".to_string(),
@@ -474,7 +447,6 @@ mod memory_integration {
         let messages = vec![residuum::memory::recent_messages::RecentMessage {
             message: Message::user("hello"),
             timestamp: chrono::Utc::now().naive_utc(),
-            project_context: "test".to_string(),
             visibility: Visibility::User,
         }];
 
@@ -499,7 +471,6 @@ mod memory_integration {
         let few_recent = vec![residuum::memory::recent_messages::RecentMessage {
             message: Message::user("hello"),
             timestamp: chrono::Utc::now().naive_utc(),
-            project_context: "test".to_string(),
             visibility: Visibility::User,
         }];
 
@@ -516,7 +487,6 @@ mod memory_integration {
             .map(|m| residuum::memory::recent_messages::RecentMessage {
                 message: m,
                 timestamp: chrono::Utc::now().naive_utc(),
-                project_context: "test".to_string(),
                 visibility: Visibility::User,
             })
             .collect();
@@ -547,15 +517,9 @@ mod memory_integration {
 
         let messages = make_messages(5);
         let recent_path = layout.recent_messages_json();
-        append_recent_messages(
-            &recent_path,
-            &messages,
-            "test",
-            Visibility::User,
-            chrono_tz::UTC,
-        )
-        .await
-        .unwrap();
+        append_recent_messages(&recent_path, &messages, Visibility::User, chrono_tz::UTC)
+            .await
+            .unwrap();
 
         let recent = load_recent_messages(&recent_path).await.unwrap();
         let result = observer.observe(&recent, &layout).await.unwrap();
@@ -593,15 +557,9 @@ mod memory_integration {
 
         let messages = make_messages(5);
         let recent_path = layout.recent_messages_json();
-        append_recent_messages(
-            &recent_path,
-            &messages,
-            "test",
-            Visibility::User,
-            chrono_tz::UTC,
-        )
-        .await
-        .unwrap();
+        append_recent_messages(&recent_path, &messages, Visibility::User, chrono_tz::UTC)
+            .await
+            .unwrap();
 
         let recent = load_recent_messages(&recent_path).await.unwrap();
         let result = observer.observe(&recent, &layout).await.unwrap();
@@ -651,7 +609,6 @@ mod memory_integration {
 
         let obs1 = vec![residuum::memory::types::Observation {
             timestamp: chrono::Utc::now().naive_utc(),
-            project_context: "residuum".to_string(),
             source_episodes: vec!["ep-001".to_string()],
             visibility: Visibility::User,
             content: "first observation about workspace".to_string(),
@@ -667,7 +624,6 @@ mod memory_integration {
             chunk_id: "ep-001-c0".to_string(),
             episode_id: "ep-001".to_string(),
             date: "2026-02-19".to_string(),
-            context: "residuum".to_string(),
             line_start: 2,
             line_end: 3,
             content: "user: what about workspace?\nassistant: it uses flat layout".to_string(),
@@ -695,7 +651,6 @@ mod memory_integration {
         // Add a second episode
         let obs2 = vec![residuum::memory::types::Observation {
             timestamp: chrono::Utc::now().naive_utc(),
-            project_context: "residuum".to_string(),
             source_episodes: vec!["ep-002".to_string()],
             visibility: Visibility::User,
             content: "second observation about testing".to_string(),
@@ -738,7 +693,6 @@ mod memory_integration {
         // Early residuum observation
         let obs1 = vec![residuum::memory::types::Observation {
             timestamp: chrono::Utc::now().naive_utc(),
-            project_context: "residuum".to_string(),
             source_episodes: vec!["ep-001".to_string()],
             visibility: Visibility::User,
             content: "residuum uses tantivy for search".to_string(),
@@ -752,7 +706,6 @@ mod memory_integration {
         // Later devops observation
         let obs2 = vec![residuum::memory::types::Observation {
             timestamp: chrono::Utc::now().naive_utc(),
-            project_context: "devops".to_string(),
             source_episodes: vec!["ep-002".to_string()],
             visibility: Visibility::User,
             content: "devops uses kubernetes for search orchestration".to_string(),
@@ -768,7 +721,6 @@ mod memory_integration {
             chunk_id: "ep-001-c0".to_string(),
             episode_id: "ep-001".to_string(),
             date: "2026-02-15".to_string(),
-            context: "residuum".to_string(),
             line_start: 2,
             line_end: 3,
             content: "user: how does search work?\nassistant: we use tantivy BM25".to_string(),
@@ -817,22 +769,6 @@ mod memory_integration {
                 .iter()
                 .all(|r| r.date.as_str() >= "2026-02-18"),
             "should only return results from 2026-02-18 onwards"
-        );
-
-        // Filter: project context
-        let ctx_filtered = index
-            .search(
-                "search",
-                10,
-                &SearchFilters {
-                    project_context: Some("residuum".to_string()),
-                    ..Default::default()
-                },
-            )
-            .unwrap();
-        assert!(
-            ctx_filtered.iter().all(|r| r.context == "residuum"),
-            "should only return residuum results"
         );
     }
 }

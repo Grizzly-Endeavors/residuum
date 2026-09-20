@@ -19,8 +19,6 @@ pub enum SkillSource {
     Workspace,
     /// From an extra directory configured in `[skills].dirs`.
     UserGlobal,
-    /// From an active project's `skills/` subdirectory.
-    Project,
 }
 
 impl fmt::Display for SkillSource {
@@ -28,7 +26,6 @@ impl fmt::Display for SkillSource {
         match self {
             Self::Workspace => write!(f, "workspace"),
             Self::UserGlobal => write!(f, "user-global"),
-            Self::Project => write!(f, "project"),
         }
     }
 }
@@ -56,8 +53,9 @@ pub struct ActiveSkill {
     /// Absolute path to the skill directory this body was read from.
     ///
     /// Names alone aren't stable identity: a rescan can make the same name
-    /// resolve to a different physical skill (e.g. a project skill shadowing
-    /// a workspace one). This field lets `rescan` detect that the backing
-    /// source changed even though the name still matches.
+    /// resolve to a different physical skill (e.g. a user-global skill
+    /// shadowed by a workspace skill of the same name). This field lets
+    /// `rescan` detect that the backing source changed even though the name
+    /// still matches.
     pub skill_dir: PathBuf,
 }

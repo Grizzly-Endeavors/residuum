@@ -250,7 +250,7 @@ pub struct SpawnRequestEvent {
     pub source_label: String,
     /// The prompt/instructions for the sub-agent.
     pub prompt: String,
-    /// Additional context to prepend (e.g. project context).
+    /// Additional context to prepend to the sub-agent's prompt.
     pub context: Option<String>,
     /// What triggered this spawn request.
     pub source: EventTrigger,

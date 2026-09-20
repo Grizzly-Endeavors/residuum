@@ -117,18 +117,6 @@ impl WorkspaceLayout {
         self.root.join("subagents")
     }
 
-    /// Path to the projects directory for active project contexts.
-    #[must_use]
-    pub fn projects_dir(&self) -> PathBuf {
-        self.root.join("projects")
-    }
-
-    /// Path to the archive directory for completed project contexts.
-    #[must_use]
-    pub fn archive_dir(&self) -> PathBuf {
-        self.root.join("archive")
-    }
-
     /// Path to the agent inbox directory for background tasks and notifications.
     #[must_use]
     pub fn agent_inbox_dir(&self) -> PathBuf {
@@ -203,7 +191,7 @@ impl WorkspaceLayout {
         self.root.join("memory/background")
     }
 
-    /// Path to `pulse_state.json` -- persisted pulse scheduler state (`last_run`, `run_counts`).
+    /// Path to `pulse_state.json` -- persisted pulse scheduler state (`last_run`).
     #[must_use]
     pub fn pulse_state_json(&self) -> PathBuf {
         self.root.join("pulse_state.json")
@@ -225,8 +213,6 @@ impl WorkspaceLayout {
             self.search_index_dir(),
             self.skills_dir(),
             self.subagents_dir(),
-            self.projects_dir(),
-            self.archive_dir(),
             self.agent_inbox_dir(),
             self.user_inbox_dir(),
             self.agent_inbox_archive_dir(),

@@ -455,11 +455,9 @@ impl TracingService {
             return;
         }
         drop(state);
-        // Currently a no-op — built-in endpoint infrastructure not yet deployed
-        tracing::debug!(
-            context = error_context,
-            "auto error reporting triggered (infrastructure not yet available)"
-        );
+        // Logs the trigger and returns without submitting anything. Manual
+        // submission (`send_bug_report`/`send_feedback`) is the live path.
+        tracing::debug!(context = error_context, "auto error reporting triggered");
     }
 }
 

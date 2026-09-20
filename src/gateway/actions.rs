@@ -5,6 +5,7 @@ use std::sync::Arc;
 use crate::actions::store::ActionStore;
 use crate::bus::{EventTrigger, PresetName, Publisher, SpawnRequestEvent, topics};
 use crate::config::BackgroundModelTier;
+use crate::pulse::executor::{AgentRoute, route_agent};
 
 /// A scheduled action that should run as a main agent wake turn rather than a sub-agent.
 pub(super) struct ActionMainTurn {
@@ -36,18 +37,15 @@ pub(super) async fn spawn_due_actions(
     let mut main_turns = Vec::new();
 
     for action in &due {
-        match action.agent.as_deref() {
-            Some("main") => {
+        match route_agent(action.agent.as_deref()) {
+            AgentRoute::MainWakeTurn => {
                 main_turns.push(ActionMainTurn {
                     action_name: action.name.clone(),
                     prompt: action.prompt.clone(),
                 });
             }
-            Some(preset_name) => {
-                publish_action_spawn(action, preset_name, publisher).await;
-            }
-            None => {
-                publish_action_spawn(action, "general-purpose", publisher).await;
+            AgentRoute::SubAgent { preset } => {
+                publish_action_spawn(action, preset, publisher).await;
             }
         }
     }

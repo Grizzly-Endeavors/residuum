@@ -117,7 +117,7 @@ mod tests {
 
     /// Create a permissive policy rooted at `/tmp` (allows all test writes).
     fn permissive_policy() -> SharedPathPolicy {
-        PathPolicy::new_shared(std::path::PathBuf::from("/tmp"))
+        PathPolicy::new_shared()
     }
 
     fn make_tool() -> WriteTool {

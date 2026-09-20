@@ -19,8 +19,8 @@ use rmcp::transport::streamable_http_client::{
 };
 use serde_json::Value;
 
+use crate::mcp::types::{McpServerEntry, McpTransport};
 use crate::models::ToolDefinition;
-use crate::projects::types::{McpServerEntry, McpTransport};
 use crate::tools::{ToolError, ToolResult};
 
 /// Default timeout for MCP tool calls (seconds).

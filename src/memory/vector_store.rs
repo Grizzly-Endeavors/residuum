@@ -24,8 +24,6 @@ pub struct VectorSearchResult {
     pub episode_id: String,
     /// Date string (YYYY-MM-DD).
     pub date: String,
-    /// Project context tag.
-    pub context: String,
     /// Snippet of content.
     pub content: String,
     /// Line range start (chunks only).
@@ -43,8 +41,6 @@ pub struct VectorSearchFilters {
     pub date_from: Option<String>,
     /// Filter results on or before this date (YYYY-MM-DD, inclusive).
     pub date_to: Option<String>,
-    /// Filter by project context (exact match).
-    pub project_context: Option<String>,
     /// Filter to results from these episode IDs.
     pub episode_ids: Option<Vec<String>>,
 }
@@ -152,8 +148,8 @@ impl VectorStore {
         {
             let mut stmt = tx
                 .prepare_cached(
-                    "INSERT INTO obs_vectors(obs_id, episode_id, date, context, content, embedding)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                    "INSERT INTO obs_vectors(obs_id, episode_id, date, content, embedding)
+                     VALUES (?1, ?2, ?3, ?4, ?5)",
                 )
                 .context("failed to prepare obs insert")?;
 
@@ -164,7 +160,6 @@ impl VectorStore {
                     doc_id,
                     episode_id,
                     date,
-                    obs.project_context,
                     obs.content,
                     emb.as_bytes(),
                 ]) {
@@ -215,9 +210,9 @@ impl VectorStore {
         {
             let mut stmt = tx
                 .prepare_cached(
-                    "INSERT INTO chunk_vectors(chunk_id, episode_id, date, context, content,
+                    "INSERT INTO chunk_vectors(chunk_id, episode_id, date, content,
                      line_start, line_end, embedding)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
                 )
                 .context("failed to prepare chunk insert")?;
 
@@ -229,7 +224,6 @@ impl VectorStore {
                     chunk.chunk_id,
                     chunk.episode_id,
                     chunk.date,
-                    chunk.context,
                     chunk.content,
                     line_start_i64,
                     line_end_i64,
@@ -410,7 +404,6 @@ fn create_tables(conn: &Connection, dim: usize) -> anyhow::Result<()> {
             obs_id TEXT PRIMARY KEY,
             episode_id TEXT,
             date TEXT,
-            context TEXT,
             +content TEXT,
             embedding FLOAT[{dim}] DISTANCE_METRIC=cosine
         );
@@ -419,7 +412,6 @@ fn create_tables(conn: &Connection, dim: usize) -> anyhow::Result<()> {
             chunk_id TEXT PRIMARY KEY,
             episode_id TEXT,
             date TEXT,
-            context TEXT,
             +content TEXT,
             +line_start INTEGER,
             +line_end INTEGER,
@@ -440,7 +432,7 @@ fn search_obs_table(
     let (where_clause, params) = build_filter_clauses(filters);
 
     let sql = format!(
-        "SELECT obs_id, episode_id, date, context, content, distance
+        "SELECT obs_id, episode_id, date, content, distance
          FROM obs_vectors
          WHERE embedding MATCH ?1
            AND k = ?2
@@ -470,11 +462,10 @@ fn search_obs_table(
                 source_type: DocSource::Observation,
                 episode_id: row.get(1)?,
                 date: row.get(2)?,
-                context: row.get(3)?,
-                content: row.get(4)?,
+                content: row.get(3)?,
                 line_start: None,
                 line_end: None,
-                distance: row.get(5)?,
+                distance: row.get(4)?,
             })
         })
         .context("obs vector search failed")?;
@@ -496,7 +487,7 @@ fn search_chunk_table(
     let (where_clause, params) = build_filter_clauses(filters);
 
     let sql = format!(
-        "SELECT chunk_id, episode_id, date, context, content, line_start, line_end, distance
+        "SELECT chunk_id, episode_id, date, content, line_start, line_end, distance
          FROM chunk_vectors
          WHERE embedding MATCH ?1
            AND k = ?2
@@ -520,18 +511,17 @@ fn search_chunk_table(
 
     let rows = stmt
         .query_map(param_refs.as_slice(), |row| {
-            let line_start: Option<i64> = row.get(5)?;
-            let line_end: Option<i64> = row.get(6)?;
+            let line_start: Option<i64> = row.get(4)?;
+            let line_end: Option<i64> = row.get(5)?;
             Ok(VectorSearchResult {
                 id: row.get(0)?,
                 source_type: DocSource::Chunk,
                 episode_id: row.get(1)?,
                 date: row.get(2)?,
-                context: row.get(3)?,
-                content: row.get(4)?,
+                content: row.get(3)?,
                 line_start: line_start.and_then(|v| usize::try_from(v).ok()),
                 line_end: line_end.and_then(|v| usize::try_from(v).ok()),
-                distance: row.get(7)?,
+                distance: row.get(6)?,
             })
         })
         .context("chunk vector search failed")?;
@@ -561,11 +551,6 @@ fn build_filter_clauses(filters: &VectorSearchFilters) -> (String, Vec<String>) 
     if let Some(ref to) = filters.date_to {
         clauses.push(format!("AND date <= ?{idx}"));
         params.push(to.clone());
-        idx += 1;
-    }
-    if let Some(ref ctx) = filters.project_context {
-        clauses.push(format!("AND context = ?{idx}"));
-        params.push(ctx.clone());
         idx += 1;
     }
     if let Some(ref episode_ids) = filters.episode_ids
@@ -604,7 +589,6 @@ mod tests {
     fn sample_observation(text: &str) -> Observation {
         Observation {
             timestamp: chrono::Utc::now().naive_utc(),
-            project_context: "residuum".to_string(),
             source_episodes: vec!["ep-001".to_string()],
             visibility: Visibility::User,
             content: text.to_string(),
@@ -659,7 +643,6 @@ mod tests {
             chunk_id: "ep-001-c0".to_string(),
             episode_id: "ep-001".to_string(),
             date: "2026-02-19".to_string(),
-            context: "residuum".to_string(),
             line_start: 2,
             line_end: 3,
             content: "user: hello\nassistant: hi there".to_string(),
@@ -787,43 +770,6 @@ mod tests {
     }
 
     #[test]
-    fn search_with_context_filter() {
-        let (_dir, store) = create_test_store();
-
-        let obs1 = vec![sample_observation("residuum data")];
-        let emb1 = vec![sample_embedding(0.1)];
-        store
-            .insert_observations("ep-001", "2026-02-19", &obs1, &emb1)
-            .unwrap();
-
-        let obs2 = vec![Observation {
-            project_context: "devops".to_string(),
-            ..sample_observation("devops data")
-        }];
-        let emb2 = vec![sample_embedding(0.15)];
-        store
-            .insert_observations("ep-002", "2026-02-19", &obs2, &emb2)
-            .unwrap();
-
-        let query = sample_embedding(0.1);
-        let results = store
-            .search(
-                &query,
-                5,
-                &VectorSearchFilters {
-                    project_context: Some("residuum".to_string()),
-                    ..Default::default()
-                },
-            )
-            .unwrap();
-
-        assert!(
-            results.iter().all(|r| r.context == "residuum"),
-            "all results should have residuum context"
-        );
-    }
-
-    #[test]
     fn count_mismatch_rejected() {
         let (_dir, store) = create_test_store();
 
@@ -885,7 +831,6 @@ mod tests {
             chunk_id: "ep-001-c0".to_string(),
             episode_id: "ep-001".to_string(),
             date: "2026-02-19".to_string(),
-            context: "residuum".to_string(),
             line_start: 1,
             line_end: 2,
             content: "test content".to_string(),
@@ -930,7 +875,6 @@ mod tests {
             chunk_id: "ep-001-c0".to_string(),
             episode_id: "ep-001".to_string(),
             date: "2026-02-19".to_string(),
-            context: "residuum".to_string(),
             line_start: 1,
             line_end: 2,
             content: "test content".to_string(),
