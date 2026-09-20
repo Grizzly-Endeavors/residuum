@@ -256,14 +256,23 @@ impl Tool for InboxArchiveTool {
 /// Tool for adding items to the user's inbox.
 pub struct UserInboxAddTool {
     user_inbox_dir: PathBuf,
+    user_inbox_attachments_dir: PathBuf,
     tz: chrono_tz::Tz,
 }
 
 impl UserInboxAddTool {
     /// Create a new `UserInboxAddTool`.
     #[must_use]
-    pub fn new(user_inbox_dir: PathBuf, tz: chrono_tz::Tz) -> Self {
-        Self { user_inbox_dir, tz }
+    pub fn new(
+        user_inbox_dir: PathBuf,
+        user_inbox_attachments_dir: PathBuf,
+        tz: chrono_tz::Tz,
+    ) -> Self {
+        Self {
+            user_inbox_dir,
+            user_inbox_attachments_dir,
+            tz,
+        }
     }
 }
 
@@ -287,6 +296,11 @@ impl Tool for UserInboxAddTool {
                     "body": {
                         "type": "string",
                         "description": "The detailed content of the item"
+                    },
+                    "attachments": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Optional. Paths to files you have already written to disk that should be attached to this item — e.g. a report, screenshot, or export a background task produced. Each file is copied into the item's own storage, so it's safe even if the source file is later moved or deleted. Omit or leave empty if there's nothing to attach."
                     }
                 },
                 "required": ["title", "body"]
@@ -298,17 +312,43 @@ impl Tool for UserInboxAddTool {
         let title = super::require_str(&arguments, "title")?;
         let body = super::require_str(&arguments, "body")?;
 
-        let filename = inbox::quick_add(&self.user_inbox_dir, title, body, "agent", self.tz)
-            .await
-            .map_err(|e| {
-                tracing::error!(error = %e, "failed to add item to user inbox");
-                ToolError::Execution(format!("failed to add item to user inbox: {e}"))
-            })?;
+        let attachment_paths: Vec<PathBuf> = arguments
+            .get("attachments")
+            .and_then(Value::as_array)
+            .map(|values| {
+                values
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .map(PathBuf::from)
+                    .collect()
+            })
+            .unwrap_or_default();
 
-        Ok(ToolResult::success(format!(
-            "Added item to user inbox with ID: {}",
-            filename.trim_end_matches(".json")
-        )))
+        let filename = inbox::quick_add_with_attachments(
+            &self.user_inbox_dir,
+            &self.user_inbox_attachments_dir,
+            title,
+            body,
+            "agent",
+            self.tz,
+            &attachment_paths,
+        )
+        .await
+        .map_err(|e| {
+            tracing::error!(error = %e, attachment_count = attachment_paths.len(), "failed to add item to user inbox");
+            ToolError::Execution(format!("failed to add item to user inbox: {e}"))
+        })?;
+
+        let id = filename.trim_end_matches(".json");
+        let message = if attachment_paths.is_empty() {
+            format!("Added item to user inbox with ID: {id}")
+        } else {
+            format!(
+                "Added item to user inbox with ID: {id} ({} attachment(s) copied)",
+                attachment_paths.len()
+            )
+        };
+        Ok(ToolResult::success(message))
     }
 }
 
@@ -328,7 +368,7 @@ mod tests {
             "inbox_archive"
         );
         assert_eq!(
-            UserInboxAddTool::new(dir, chrono_tz::UTC).name(),
+            UserInboxAddTool::new(dir.clone(), dir.join("attachments"), chrono_tz::UTC).name(),
             "user_inbox_add"
         );
     }
@@ -347,7 +387,7 @@ mod tests {
         let archive_tool = InboxArchiveTool::new(dir.clone(), archive);
         assert_eq!(archive_tool.definition().name, archive_tool.name());
 
-        let user_add = UserInboxAddTool::new(dir, chrono_tz::UTC);
+        let user_add = UserInboxAddTool::new(dir.clone(), dir.join("attachments"), chrono_tz::UTC);
         assert_eq!(user_add.definition().name, user_add.name());
     }
 
@@ -487,6 +527,118 @@ mod tests {
         assert!(
             result.is_err(),
             "reading nonexistent item should return ToolError"
+        );
+    }
+
+    #[tokio::test]
+    async fn user_inbox_add_without_attachments_unchanged() {
+        let dir = tempfile::tempdir().unwrap();
+        let user_inbox_dir = dir.path().join("inbox/user");
+        let attachments_dir = dir.path().join("inbox/user/attachments");
+        tokio::fs::create_dir_all(&user_inbox_dir).await.unwrap();
+
+        let tool = UserInboxAddTool::new(
+            user_inbox_dir.clone(),
+            attachments_dir.clone(),
+            chrono_tz::UTC,
+        );
+        let result = tool
+            .execute(serde_json::json!({"title": "plain reminder", "body": "just text"}))
+            .await
+            .unwrap();
+
+        assert!(!result.is_error, "should succeed: {}", result.output);
+        assert!(
+            result
+                .output
+                .starts_with("Added item to user inbox with ID: "),
+            "confirmation message format should be unchanged: {}",
+            result.output
+        );
+        assert!(
+            !result.output.contains("attachment(s) copied"),
+            "confirmation message should not report a copy count when none were given: {}",
+            result.output
+        );
+        assert!(
+            !attachments_dir.exists(),
+            "no attachments directory should be created"
+        );
+    }
+
+    #[tokio::test]
+    async fn user_inbox_add_with_attachments_copies_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let user_inbox_dir = dir.path().join("inbox/user");
+        let attachments_dir = dir.path().join("inbox/user/attachments");
+        tokio::fs::create_dir_all(&user_inbox_dir).await.unwrap();
+
+        let source_file = dir.path().join("export.csv");
+        tokio::fs::write(&source_file, b"a,b,c").await.unwrap();
+
+        let tool = UserInboxAddTool::new(
+            user_inbox_dir.clone(),
+            attachments_dir.clone(),
+            chrono_tz::UTC,
+        );
+        let result = tool
+            .execute(serde_json::json!({
+                "title": "weekly export",
+                "body": "attached",
+                "attachments": [source_file.to_string_lossy()],
+            }))
+            .await
+            .unwrap();
+
+        assert!(!result.is_error, "should succeed: {}", result.output);
+        assert!(
+            result.output.contains("1 attachment(s) copied"),
+            "confirmation should report the attachment count: {}",
+            result.output
+        );
+
+        let mut entries = tokio::fs::read_dir(&user_inbox_dir).await.unwrap();
+        let mut found_copy = false;
+        while let Some(entry) = entries.next_entry().await.unwrap() {
+            if entry.path().extension().is_some_and(|e| e == "json") {
+                let item = crate::inbox::load_item(&entry.path()).await.unwrap();
+                if item.title == "weekly export" {
+                    assert_eq!(item.attachments.len(), 1);
+                    found_copy = true;
+                }
+            }
+        }
+        assert!(found_copy, "saved item should be found in the inbox dir");
+    }
+
+    #[tokio::test]
+    async fn user_inbox_add_missing_attachment_source_fails_visibly() {
+        let dir = tempfile::tempdir().unwrap();
+        let user_inbox_dir = dir.path().join("inbox/user");
+        let attachments_dir = dir.path().join("inbox/user/attachments");
+        tokio::fs::create_dir_all(&user_inbox_dir).await.unwrap();
+
+        let tool = UserInboxAddTool::new(user_inbox_dir.clone(), attachments_dir, chrono_tz::UTC);
+        let result = tool
+            .execute(serde_json::json!({
+                "title": "broken",
+                "body": "won't be saved",
+                "attachments": ["/tmp/residuum_test_does_not_exist.bin"],
+            }))
+            .await;
+
+        assert!(result.is_err(), "missing attachment source should error");
+
+        let mut entries = tokio::fs::read_dir(&user_inbox_dir).await.unwrap();
+        let mut json_files = Vec::new();
+        while let Some(entry) = entries.next_entry().await.unwrap() {
+            if entry.path().extension().is_some_and(|e| e == "json") {
+                json_files.push(entry.path());
+            }
+        }
+        assert!(
+            json_files.is_empty(),
+            "no item should be saved when an attachment can't be copied: {json_files:?}"
         );
     }
 }

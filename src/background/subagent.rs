@@ -120,6 +120,7 @@ pub async fn build_subagent_resources(
         workspace_layout.agent_inbox_dir(),
         workspace_layout.agent_inbox_archive_dir(),
         workspace_layout.user_inbox_dir(),
+        workspace_layout.user_inbox_attachments_dir(),
         background_spawner,
         endpoint_registry,
         publisher,

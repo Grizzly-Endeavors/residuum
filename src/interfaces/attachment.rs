@@ -12,7 +12,10 @@ use mime_guess;
 use crate::models::ImageData;
 
 /// Maximum attachment size in bytes (25 MB — Discord's own limit).
-const MAX_ATTACHMENT_SIZE: u32 = 25 * 1024 * 1024;
+///
+/// Shared with the user inbox's attachment cap (`crate::inbox::copy_attachments`)
+/// so the two features enforce one number, not two.
+pub(crate) const MAX_ATTACHMENT_SIZE: u32 = 25 * 1024 * 1024;
 
 /// Images larger than 20 MB are saved but not sent inline to the model.
 pub const MAX_IMAGE_INLINE_SIZE: u32 = 20 * 1024 * 1024;

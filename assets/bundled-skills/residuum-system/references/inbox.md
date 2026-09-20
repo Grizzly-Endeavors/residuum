@@ -48,6 +48,8 @@ There is no tool to read or manage the user inbox from the agent side — it's w
 
 Use `user_inbox_add` (title + body) when a background task — most often a sub-agent that only talks to the user asynchronously — has findings the user should see but that don't need to interrupt a conversation. Before adding a new item, it's worth checking prior items (including the archive) so you don't repeat a suggestion the user already saw.
 
+Pass `attachments` — an array of paths to files you've already written to disk — when the finding is easier to review as a file than as inline text (an export, a screenshot, a generated report). Each file is copied into the item's own storage, so the original can safely be moved or deleted afterward. If any attachment can't be copied, the whole call fails and no item is created — retry with valid paths rather than expecting a partial item.
+
 ## Integration with Notifications
 
 When a task's `channels` configuration includes `inbox`, the notification router creates an item in the **agent inbox** (`inbox/agent/`) with the task result as the body and the task name as the source. See [notifications](notifications.md). This is a separate path from `user_inbox_add`.
@@ -57,4 +59,5 @@ When a task's `channels` configuration includes `inbox`, the notification router
 - `inbox_read` marks the item as read immediately — there is no way to mark it unread again.
 - Archived items are moved (not copied) to the matching `archive/inbox/{agent,user}/` directory. The original file is removed from the source directory.
 - There is no unread-count surfaced anywhere in the agent's context or status line — check with `inbox_list unread_only: true` if you need to know.
-- Attachments are supported in the schema but currently unused by built-in systems.
+- `user_inbox_add`'s `attachments` parameter is all-or-nothing: if one file in the batch fails to copy, none of them are attached and no item is created.
+- There is no tool to list, read, or archive the user inbox's attachments from the agent side — same as the rest of the user inbox, they're write-only for you.
