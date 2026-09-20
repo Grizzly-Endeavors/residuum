@@ -238,7 +238,7 @@ This isolation ensures:
 | File | Purpose |
 |------|---------|
 | `mod.rs` | Module exports: re-exports public types and the `BackgroundTaskSpawner`. |
-| `types.rs` | Core types: `BackgroundTask`, `BackgroundResult`, `SubAgentConfig`, `ActiveTaskInfo`. Helper function `execution_info()` and `format_background_result()` for display. |
+| `types.rs` | Core types: `BackgroundTask`, `BackgroundResult`, `SubAgentConfig`, `ActiveTaskInfo`. Helper function `truncate_prompt_preview()` for display. |
 | `spawner.rs` | `BackgroundTaskSpawner`: lifecycle management, semaphore concurrency control, cancellation, active task tracking, result channel sending, transcript writing. |
 | `subagent.rs` | SubAgent execution: `SubAgentResources` (isolated state bundle), `build_resources()` (construct resources from main agent state), `execute_subagent()` (run turn loop), project deactivation enforcement. |
 | `spawn_context.rs` | `SpawnContext` (gathered at gateway startup): config, provider specs, identity, options, workspace layout. `build_spawn_resources()` resolves model tier and constructs SubAgentResources for a specific task. |

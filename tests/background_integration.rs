@@ -8,14 +8,13 @@
     reason = "integration tests live in tests/ directory, not inside #[cfg(test)] modules"
 )]
 mod background_integration {
-    use std::path::PathBuf;
     use std::sync::Arc;
 
     use tempfile::tempdir;
     use tokio::sync::mpsc;
 
     use residuum::background::BackgroundTaskSpawner;
-    use residuum::background::types::{BackgroundResult, format_background_result};
+    use residuum::background::types::BackgroundResult;
     use residuum::bus::AgentResultStatus;
     use residuum::bus::{EventTrigger, NotificationEvent, PresetName, spawn_broker, topics};
     use residuum::notify::channels::InboxChannel;
@@ -175,31 +174,6 @@ mod background_integration {
             !states_after_second.iter().any(|s| s.name == "shared-svc"),
             "server should be gone after full deactivation"
         );
-    }
-
-    // ── Format result ──────────────────────────────────────────────────
-
-    #[test]
-    fn format_result_contains_all_fields() {
-        let result = BackgroundResult {
-            id: "fmt-1".to_string(),
-            source_label: "action:my_task".to_string(),
-            source: EventTrigger::Action,
-            summary: "task completed successfully".to_string(),
-            transcript_path: Some(PathBuf::from("/tmp/bg-fmt-1.log")),
-            status: AgentResultStatus::Completed,
-            timestamp: chrono::Utc::now(),
-
-            agent_preset: PresetName::from("general-purpose"),
-        };
-
-        let formatted = format_background_result(&result);
-        assert!(formatted.contains("action:my_task"));
-        assert!(formatted.contains("fmt-1"));
-        assert!(formatted.contains("action"));
-        assert!(formatted.contains("completed"));
-        assert!(formatted.contains("task completed successfully"));
-        assert!(formatted.contains("/tmp/bg-fmt-1.log"));
     }
 
     // ── Phase 5: Pulse/actions via background spawner ───────────────────
