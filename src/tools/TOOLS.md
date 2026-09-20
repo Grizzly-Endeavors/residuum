@@ -414,20 +414,24 @@ On total failure: error with failure details.
 
 ### Input
 
-| Parameter | Type   | Required | Description                        |
-|-----------|--------|----------|-------------------------------------|
-| `title`   | string | yes      | A short summary of the item        |
-| `body`    | string | yes      | The detailed content of the item   |
+| Parameter     | Type             | Required | Description                        |
+|---------------|------------------|----------|-------------------------------------|
+| `title`       | string           | yes      | A short summary of the item        |
+| `body`        | string           | yes      | The detailed content of the item   |
+| `attachments` | array\<string\>  | no       | Paths to files already written to disk to attach to this item. Each file is copied into the item's own storage, so it's safe even if the source is later moved or deleted. |
 
 ### Output
 
-On success: `"Added item to user inbox with ID: {filename stem}"`
+On success, no `attachments` given: `"Added item to user inbox with ID: {filename stem}"`
+
+On success, with `attachments`: `"Added item to user inbox with ID: {filename stem} ({N} attachment(s) copied)"`
 
 On error:
 - Missing `title` or `body`
+- An attachment path doesn't exist, isn't readable, or exceeds the 25 MB size cap — the whole add fails and no item is created (see side effects below)
 - Failed to write the item to disk
 
-**Side effect:** Writes a new `.json` file to `inbox/user/`, tagged with source `"agent"`. This is a separate inbox from the agent inbox (`inbox_list`/`inbox_read`/`inbox_archive`) — the agent has no tool to list, read, or archive items here; only the user reads and archives them via the web UI.
+**Side effect:** Writes a new `.json` file to `inbox/user/`, tagged with source `"agent"`. When `attachments` is given, each file is validated, copied into `inbox/user/attachments/{item id}/` (traversal-style source names are reduced to their basename; same-name collisions within one call get a `_2`, `_3`, ... suffix rather than clobbering), and the item's `attachments` field records the copies. If any attachment in the batch fails, every file already copied for that item is removed and no item is saved — a partial attachment set is never left behind. This is a separate inbox from the agent inbox (`inbox_list`/`inbox_read`/`inbox_archive`) — the agent has no tool to list, read, or archive items here; only the user reads and archives them via the web UI, where attachments are downloadable from `GET /api/inbox/{id}/attachments/{index}`.
 
 ---
 

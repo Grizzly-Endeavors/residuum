@@ -83,6 +83,7 @@ pub(super) fn init_tool_registry(
         layout.agent_inbox_dir(),
         layout.agent_inbox_archive_dir(),
         layout.user_inbox_dir(),
+        layout.user_inbox_attachments_dir(),
         tz,
     );
     tools.register_background_tools(Arc::clone(deps.background_spawner));
