@@ -4,8 +4,8 @@ use chrono::NaiveDateTime;
 use chrono_tz::Tz;
 use serde::Deserialize;
 
+use crate::inference::ModelResponse;
 use crate::memory::types::Visibility;
-use crate::models::ModelResponse;
 use crate::time::now_local;
 
 /// Typed response from structured output mode.

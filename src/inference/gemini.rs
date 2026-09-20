@@ -778,8 +778,8 @@ async fn parse_gemini_embed_error(response: reqwest::Response) -> ModelError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::models::CompletionOptions;
-    use crate::models::retry::RetryConfig;
+    use crate::inference::CompletionOptions;
+    use crate::inference::retry::RetryConfig;
     use wiremock::matchers::{method, path_regex, query_param};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -1118,7 +1118,7 @@ mod tests {
 
         let client = make_client(&mock_server.uri());
         let options = CompletionOptions {
-            response_format: crate::models::ResponseFormat::JsonSchema {
+            response_format: crate::inference::ResponseFormat::JsonSchema {
                 name: "test_schema".to_string(),
                 schema: serde_json::json!({
                     "type": "object",
@@ -1268,7 +1268,7 @@ mod tests {
 
     // --- Embedding tests ---
 
-    use crate::models::embedding::EmbeddingProvider;
+    use crate::inference::embedding::EmbeddingProvider;
 
     fn make_embedding_client(base_url: &str) -> GeminiEmbeddingClient {
         let http =

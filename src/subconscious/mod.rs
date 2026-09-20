@@ -22,7 +22,7 @@ use crate::config::{
     DEFAULT_SUBCONSCIOUS_EVERY_N_ITERATIONS, DEFAULT_SUBCONSCIOUS_MAX_INTERVENTIONS,
     DEFAULT_SUBCONSCIOUS_MAX_TRANSCRIPT_TOKENS,
 };
-use crate::models::{CompletionOptions, Message, ModelProvider, ResponseFormat};
+use crate::inference::{CompletionOptions, Message, ModelProvider, ResponseFormat};
 use crate::workspace::layout::WorkspaceLayout;
 use parse::parse_subconscious_response;
 use prompt::{
@@ -201,14 +201,14 @@ impl Subconscious {
     pub fn build(
         cfg: &crate::config::Config,
         layout: &WorkspaceLayout,
-        http: crate::models::SharedHttpClient,
+        http: crate::inference::SharedHttpClient,
     ) -> std::sync::Arc<Self> {
         let settings = &cfg.subconscious_settings;
         if !settings.enabled {
             return std::sync::Arc::new(Self::disabled(layout.clone()));
         }
 
-        let provider = match crate::models::build_provider_chain(
+        let provider = match crate::inference::build_provider_chain(
             &cfg.subconscious,
             cfg.max_tokens,
             http,
@@ -258,7 +258,7 @@ impl Subconscious {
     #[must_use]
     pub fn disabled(layout: WorkspaceLayout) -> Self {
         Self {
-            provider: Box::new(crate::models::null::NullProvider),
+            provider: Box::new(crate::inference::null::NullProvider),
             config: SubconsciousConfig::default(),
             layout,
         }

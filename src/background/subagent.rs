@@ -9,8 +9,8 @@ use crate::agent::interrupt::dead_interrupt_rx;
 use crate::agent::recent_messages::RecentMessages;
 use crate::agent::turn::{EventContext, TurnResources, execute_turn};
 use crate::bus::Publisher;
+use crate::inference::{CompletionOptions, Message, ModelProvider};
 use crate::mcp::SharedMcpRegistry;
-use crate::models::{CompletionOptions, Message, ModelProvider};
 use crate::skills::{SharedSkillState, SkillState};
 use crate::tools::path_policy::PathPolicy;
 use crate::tools::{FileTracker, ToolRegistry};
@@ -240,8 +240,8 @@ pub(crate) async fn execute_subagent(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::inference::{ModelError, ModelResponse, ToolDefinition};
     use crate::mcp::McpRegistry;
-    use crate::models::{ModelError, ModelResponse, ToolDefinition};
     use crate::skills::{SkillIndex, SkillState};
     use async_trait::async_trait;
 
@@ -396,13 +396,13 @@ mod tests {
             output.messages.len()
         );
         let first = output.messages.first().unwrap();
-        assert_eq!(first.role, crate::models::Role::User);
+        assert_eq!(first.role, crate::inference::Role::User);
         assert!(
             first.content.contains("do work"),
             "user message should contain the prompt"
         );
         let last = output.messages.last().unwrap();
-        assert_eq!(last.role, crate::models::Role::Assistant);
+        assert_eq!(last.role, crate::inference::Role::Assistant);
         assert_eq!(last.content, "done");
     }
 
@@ -420,7 +420,7 @@ mod tests {
             .await
             .unwrap();
         let first = output.messages.first().unwrap();
-        assert_eq!(first.role, crate::models::Role::User);
+        assert_eq!(first.role, crate::inference::Role::User);
         assert!(
             first.content.contains("extra context"),
             "user message should contain the context"

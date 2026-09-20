@@ -617,9 +617,9 @@ impl EmbeddingProvider for OpenAiEmbeddingClient {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::models::CompletionOptions;
-    use crate::models::http::{HttpClientConfig, SharedHttpClient};
-    use crate::models::retry::RetryConfig;
+    use crate::inference::CompletionOptions;
+    use crate::inference::http::{HttpClientConfig, SharedHttpClient};
+    use crate::inference::retry::RetryConfig;
     use wiremock::matchers::{header, method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -721,7 +721,7 @@ mod tests {
 
     #[test]
     fn message_conversion_user_with_images() {
-        use crate::models::ImageData;
+        use crate::inference::ImageData;
         let images = vec![ImageData {
             media_type: "image/jpeg".to_string(),
             data: "base64abc123".to_string(),
@@ -1108,7 +1108,7 @@ mod tests {
 
         let client = make_client(mock_server.uri(), "gpt-4");
         let options = CompletionOptions {
-            response_format: crate::models::ResponseFormat::JsonSchema {
+            response_format: crate::inference::ResponseFormat::JsonSchema {
                 name: "test_schema".to_string(),
                 schema: serde_json::json!({
                     "type": "object",
@@ -1304,7 +1304,7 @@ mod tests {
 
     #[tokio::test]
     async fn embed_success() {
-        use crate::models::embedding::EmbeddingProvider;
+        use crate::inference::embedding::EmbeddingProvider;
 
         let mock_server = MockServer::start().await;
 
@@ -1338,7 +1338,7 @@ mod tests {
 
     #[tokio::test]
     async fn embed_batch_ordering() {
-        use crate::models::embedding::EmbeddingProvider;
+        use crate::inference::embedding::EmbeddingProvider;
 
         let mock_server = MockServer::start().await;
 
@@ -1371,7 +1371,7 @@ mod tests {
 
     #[tokio::test]
     async fn embed_api_error_401() {
-        use crate::models::embedding::EmbeddingProvider;
+        use crate::inference::embedding::EmbeddingProvider;
 
         let mock_server = MockServer::start().await;
 
@@ -1408,7 +1408,7 @@ mod tests {
 
     #[tokio::test]
     async fn embed_empty_data() {
-        use crate::models::embedding::EmbeddingProvider;
+        use crate::inference::embedding::EmbeddingProvider;
 
         let mock_server = MockServer::start().await;
 

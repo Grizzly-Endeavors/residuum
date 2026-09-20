@@ -1,19 +1,19 @@
 //! Model providers and memory pipeline initialization.
 
 use crate::config::Config;
-use crate::memory::observer::Observer;
-use crate::memory::reflector::Reflector;
-use crate::models::{
+use crate::inference::{
     CompletionOptions, EmbeddingProvider, SharedHttpClient, WebSearchNativeConfig,
     build_embedding_provider, build_provider_chain,
 };
+use crate::memory::observer::Observer;
+use crate::memory::reflector::Reflector;
 use crate::util::FatalError;
 
 use super::memory::build_memory_components;
 
 /// Model providers and memory pipeline observers built from config.
 pub struct ProviderComponents {
-    pub provider: Box<dyn crate::models::ModelProvider>,
+    pub provider: Box<dyn crate::inference::ModelProvider>,
     pub options: CompletionOptions,
     pub observer: Observer,
     pub reflector: Reflector,

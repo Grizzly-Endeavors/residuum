@@ -9,8 +9,8 @@ use serde::Deserialize;
 
 use anyhow::Context;
 
+use crate::inference::{Message, Role};
 use crate::memory::types::Episode;
-use crate::models::{Message, Role};
 
 /// Metadata from the first line of an episode JSONL file.
 #[derive(Debug, Deserialize)]
@@ -725,7 +725,7 @@ mod tests {
             Message::user("do something"),
             Message::assistant(
                 "",
-                Some(vec![crate::models::ToolCall {
+                Some(vec![crate::inference::ToolCall {
                     id: "c1".to_string(),
                     name: "exec".to_string(),
                     arguments: serde_json::json!({"command": "ls"}),

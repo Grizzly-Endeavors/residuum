@@ -6,8 +6,8 @@ use async_trait::async_trait;
 use serde_json::Value;
 
 use super::{Tool, ToolError, ToolResult};
+use crate::inference::ToolDefinition;
 use crate::memory::episode_store::{find_episode_path, read_episode_lines};
-use crate::models::ToolDefinition;
 
 /// Tool that retrieves a raw episode transcript by ID with optional line offset.
 pub struct MemoryGetTool {
@@ -114,9 +114,9 @@ impl Tool for MemoryGetTool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::inference::Message;
     use crate::memory::episode_store::write_episode_transcript;
     use crate::memory::types::Episode;
-    use crate::models::Message;
     use chrono::NaiveDate;
 
     fn sample_episode() -> Episode {

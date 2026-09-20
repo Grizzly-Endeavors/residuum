@@ -8,7 +8,7 @@ use crate::bus::{
     EndpointCapabilities, EndpointId, EndpointName, EndpointRegistry, NoticeEvent, NotifyName,
     Publisher, SYSTEM_CHANNEL, topics,
 };
-use crate::models::ToolDefinition;
+use crate::inference::ToolDefinition;
 
 use super::{Tool, ToolError, ToolResult};
 

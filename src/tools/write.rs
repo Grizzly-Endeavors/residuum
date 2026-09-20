@@ -6,7 +6,7 @@ use serde_json::Value;
 use super::file_tracker::SharedFileTracker;
 use super::path_policy::SharedPathPolicy;
 use super::{Tool, ToolError, ToolResult};
-use crate::models::ToolDefinition;
+use crate::inference::ToolDefinition;
 
 /// Tool that writes content to files, enforcing read-before-overwrite.
 pub struct WriteTool {

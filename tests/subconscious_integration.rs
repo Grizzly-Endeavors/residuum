@@ -12,7 +12,7 @@ mod subconscious_integration {
     use async_trait::async_trait;
 
     use residuum::config::Config;
-    use residuum::models::{
+    use residuum::inference::{
         CompletionOptions, HttpClientConfig, Message, ModelError, ModelProvider, ModelResponse,
         SharedHttpClient, ToolDefinition,
     };

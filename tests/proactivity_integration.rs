@@ -15,7 +15,7 @@ mod proactivity_integration {
     use residuum::agent::Agent;
     use residuum::agent::context::PromptContext;
     use residuum::bus::{EndpointName, EventTrigger, spawn_broker};
-    use residuum::models::{
+    use residuum::inference::{
         CompletionOptions, Message, ModelError, ModelProvider, ModelResponse, Role, ToolDefinition,
     };
     use residuum::pulse::executor::{PulseExecution, build_pulse_execution};

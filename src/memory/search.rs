@@ -15,10 +15,10 @@ use tantivy::{Index, IndexReader, IndexWriter, ReloadPolicy, TantivyDocument, Te
 use anyhow::Context;
 
 use crate::config::SearchConfig;
+use crate::inference::EmbeddingProvider;
 use crate::memory::chunk_extractor::read_idx_jsonl;
 use crate::memory::types::{DocSource, IndexChunk, IndexManifest, ManifestFileEntry, Observation};
 use crate::memory::vector_store::{VectorSearchFilters, VectorStore};
-use crate::models::EmbeddingProvider;
 
 /// Memory budget for the tantivy index writer (50 MB).
 const WRITER_MEMORY_BUDGET_BYTES: usize = 50_000_000;

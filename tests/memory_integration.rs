@@ -13,6 +13,9 @@ mod memory_integration {
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
+    use residuum::inference::{
+        CompletionOptions, Message, ModelError, ModelProvider, ModelResponse, ToolDefinition,
+    };
     use residuum::memory::episode_store::next_episode_id;
     use residuum::memory::log_store::load_observation_log;
     use residuum::memory::observer::{ObserveAction, ObserveResult, Observer, ObserverConfig};
@@ -25,9 +28,6 @@ mod memory_integration {
     use residuum::memory::reflector::{Reflector, ReflectorConfig};
     use residuum::memory::search::{MemoryIndex, SearchFilters};
     use residuum::memory::types::{DocSource, IndexManifest, Visibility};
-    use residuum::models::{
-        CompletionOptions, Message, ModelError, ModelProvider, ModelResponse, ToolDefinition,
-    };
     use residuum::workspace::layout::WorkspaceLayout;
 
     /// Mock provider that returns configurable JSON responses.

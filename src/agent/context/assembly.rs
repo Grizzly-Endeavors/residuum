@@ -1,7 +1,7 @@
 //! System prompt assembly: combines identity, memory, and context into messages.
 
+use crate::inference::Message;
 use crate::memory::tokens::{estimate_message_tokens, estimate_tokens};
-use crate::models::Message;
 use crate::workspace::identity::IdentityFiles;
 
 use super::super::recent_messages::RecentMessages;
@@ -77,7 +77,7 @@ pub(in crate::agent) fn assemble_system_prompt(
         // Insert before the last user message
         if let Some(pos) = messages
             .iter()
-            .rposition(|m| m.role == crate::models::Role::User)
+            .rposition(|m| m.role == crate::inference::Role::User)
         {
             messages.insert(pos, Message::system(tag));
         }
@@ -96,7 +96,7 @@ mod tests {
 
     use super::*;
     use crate::agent::context::types::SkillsContext;
-    use crate::models::Role;
+    use crate::inference::Role;
 
     fn no_memory() -> MemoryContext<'static> {
         MemoryContext {

@@ -470,7 +470,7 @@ async fn handle_action_main_turns(
         tracing::debug!(action = %turn.action_name, "injecting action main turn");
         let formatted = format!("[Scheduled action: {}]\n{}", turn.action_name, turn.prompt);
         rt.agent.inject_system_message(formatted.clone());
-        let msgs = [crate::models::Message::system(&formatted)];
+        let msgs = [crate::inference::Message::system(&formatted)];
         persist_and_maybe_observe(rt, &msgs, Visibility::Background, observe_deadline).await;
     }
 }

@@ -724,8 +724,8 @@ mod tests {
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     use super::*;
-    use crate::models::http::HttpClientConfig;
-    use crate::models::retry::RetryConfig;
+    use crate::inference::http::HttpClientConfig;
+    use crate::inference::retry::RetryConfig;
 
     /// Create a test client pointing at the given mock server URL.
     fn test_client(base_url: &str) -> AnthropicClient {
@@ -1101,7 +1101,7 @@ mod tests {
 
         let client = test_client(&server.uri());
         let options = CompletionOptions {
-            response_format: crate::models::ResponseFormat::JsonSchema {
+            response_format: crate::inference::ResponseFormat::JsonSchema {
                 name: "test_schema".to_string(),
                 schema: json!({
                     "type": "object",
@@ -1292,7 +1292,7 @@ mod tests {
 
         let client = test_client(&server.uri());
         let options = CompletionOptions {
-            web_search: Some(crate::models::WebSearchNativeConfig {
+            web_search: Some(crate::inference::WebSearchNativeConfig {
                 max_uses: Some(3),
                 ..Default::default()
             }),
@@ -1380,7 +1380,7 @@ mod tests {
 
         let client = test_client(&server.uri());
         let options = CompletionOptions {
-            web_search: Some(crate::models::WebSearchNativeConfig::default()),
+            web_search: Some(crate::inference::WebSearchNativeConfig::default()),
             ..CompletionOptions::default()
         };
         let result = client.complete(&simple_user_message(), &[], &options).await;

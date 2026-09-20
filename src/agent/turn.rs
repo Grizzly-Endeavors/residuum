@@ -6,8 +6,8 @@ use tokio_util::sync::CancellationToken;
 use crate::bus::{
     EndpointName, Publisher, ToolActivityEvent, ToolCallEvent, ToolResultEvent, topics,
 };
+use crate::inference::{CompletionOptions, Message, ModelProvider, ModelResponse, ToolCall};
 use crate::mcp::SharedMcpRegistry;
-use crate::models::{CompletionOptions, Message, ModelProvider, ModelResponse, ToolCall};
 use crate::tools::{ToolError, ToolRegistry};
 use crate::workspace::identity::IdentityFiles;
 use anyhow::Context;
@@ -144,7 +144,7 @@ pub(crate) async fn execute_turn(
                 "structured thinking received"
             );
         }
-        response.content = crate::models::think_tags::strip_think_tags(&response.content);
+        response.content = crate::inference::think_tags::strip_think_tags(&response.content);
 
         if response.tool_calls.is_empty() {
             log_usage(&response);
@@ -353,7 +353,7 @@ fn log_usage(response: &ModelResponse) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::models::Role;
+    use crate::inference::Role;
 
     #[test]
     fn drain_injects_subconscious_correction_as_system_message() {

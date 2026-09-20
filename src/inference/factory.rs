@@ -131,7 +131,7 @@ pub(crate) fn build_provider_chain(
 mod tests {
     use super::*;
     use crate::config::{ModelSpec, ProviderKind, ProviderSpec};
-    use crate::models::http::HttpClientConfig;
+    use crate::inference::http::HttpClientConfig;
 
     fn make_spec(kind: ProviderKind, model: &str, api_key: Option<&str>) -> ProviderSpec {
         ProviderSpec {

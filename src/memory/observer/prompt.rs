@@ -1,8 +1,8 @@
 //! Prompt construction for the observer LLM call.
 
+use crate::inference::Message;
 use crate::memory::recent_messages::RecentMessage;
 use crate::memory::types::Visibility;
-use crate::models::Message;
 
 /// User-customizable content guidance — default when `memory/OBSERVER.md` is absent.
 ///

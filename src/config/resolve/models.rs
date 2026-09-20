@@ -766,15 +766,15 @@ reflector = { model = "anthropic/claude-sonnet-4-6", thinking = "low" }
         assert_eq!(obs_ov.temperature, Some(0.2));
         assert_eq!(
             obs_ov.thinking,
-            Some(crate::models::ThinkingConfig::Toggle(false))
+            Some(crate::inference::ThinkingConfig::Toggle(false))
         );
 
         let ref_ov = &cfg.role_overrides["reflector"];
         assert_eq!(ref_ov.temperature, None);
         assert_eq!(
             ref_ov.thinking,
-            Some(crate::models::ThinkingConfig::Level(
-                crate::models::ThinkingLevel::Low
+            Some(crate::inference::ThinkingConfig::Level(
+                crate::inference::ThinkingLevel::Low
             ))
         );
     }
@@ -901,14 +901,14 @@ large = { model = "anthropic/claude-sonnet-4-6", thinking = "medium" }
         let bg_small_ov = &cfg.role_overrides["bg_small"];
         assert_eq!(
             bg_small_ov.thinking,
-            Some(crate::models::ThinkingConfig::Toggle(false))
+            Some(crate::inference::ThinkingConfig::Toggle(false))
         );
         assert!(!cfg.role_overrides.contains_key("bg_medium"));
         let bg_large_ov = &cfg.role_overrides["bg_large"];
         assert_eq!(
             bg_large_ov.thinking,
-            Some(crate::models::ThinkingConfig::Level(
-                crate::models::ThinkingLevel::Medium
+            Some(crate::inference::ThinkingConfig::Level(
+                crate::inference::ThinkingLevel::Medium
             ))
         );
     }
@@ -968,8 +968,8 @@ thinking = "medium"
         assert_eq!(opts.temperature, Some(0.5), "should fall back to global");
         assert_eq!(
             opts.thinking,
-            Some(crate::models::ThinkingConfig::Level(
-                crate::models::ThinkingLevel::Medium
+            Some(crate::inference::ThinkingConfig::Level(
+                crate::inference::ThinkingLevel::Medium
             )),
             "should fall back to global thinking"
         );

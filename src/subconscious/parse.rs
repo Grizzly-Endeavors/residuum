@@ -3,7 +3,7 @@
 use serde::Deserialize;
 
 use super::{EvalOutcome, Finding, FindingKind, LearnSignal, LearnSignalType, Severity};
-use crate::models::ModelResponse;
+use crate::inference::ModelResponse;
 
 /// Typed response from structured output mode.
 #[derive(Deserialize)]

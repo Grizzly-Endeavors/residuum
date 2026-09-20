@@ -9,7 +9,7 @@ use std::sync::Arc;
 use serde_json::Value;
 use tokio::sync::RwLock;
 
-use crate::models::ToolDefinition;
+use crate::inference::ToolDefinition;
 use crate::tools::{SharedToolsPath, ToolError, ToolResult};
 
 use super::client::McpClient;

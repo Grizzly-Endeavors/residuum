@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use base64::Engine;
 use mime_guess;
 
-use crate::models::ImageData;
+use crate::inference::ImageData;
 
 /// Maximum attachment size in bytes (25 MB — Discord's own limit).
 ///

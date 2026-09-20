@@ -9,8 +9,8 @@ use tokio::sync::{Mutex, Notify};
 use crate::actions::store::ActionStore;
 use crate::bus::{AgentResultStatus, EndpointRegistry, EventTrigger, Publisher, SkillName};
 use crate::config::BackgroundModelTier;
+use crate::inference::CompletionOptions;
 use crate::memory::search::HybridSearcher;
-use crate::models::CompletionOptions;
 use crate::workspace::identity::IdentityFiles;
 use crate::workspace::layout::WorkspaceLayout;
 

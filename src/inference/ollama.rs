@@ -483,9 +483,9 @@ struct OllamaEmbedResponse {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::models::CompletionOptions;
-    use crate::models::http::{HttpClientConfig, SharedHttpClient};
-    use crate::models::retry::RetryConfig;
+    use crate::inference::CompletionOptions;
+    use crate::inference::http::{HttpClientConfig, SharedHttpClient};
+    use crate::inference::retry::RetryConfig;
     use wiremock::matchers::{header, method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -561,7 +561,7 @@ mod tests {
 
     #[test]
     fn message_conversion_user_with_images() {
-        use crate::models::ImageData;
+        use crate::inference::ImageData;
         let images = vec![ImageData {
             media_type: "image/png".to_string(),
             data: "base64data".to_string(),
@@ -778,7 +778,7 @@ mod tests {
 
         let client = make_client(mock_server.uri(), "test-model");
         let options = CompletionOptions {
-            response_format: crate::models::ResponseFormat::JsonSchema {
+            response_format: crate::inference::ResponseFormat::JsonSchema {
                 name: "test_schema".to_string(),
                 schema: serde_json::json!({
                     "type": "object",
@@ -1017,7 +1017,7 @@ mod tests {
 
     // --- Embedding client tests ---
 
-    use crate::models::embedding::EmbeddingProvider;
+    use crate::inference::embedding::EmbeddingProvider;
 
     #[tokio::test]
     async fn keep_alive_included_in_request() {

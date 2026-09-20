@@ -2,7 +2,7 @@
 
 use async_trait::async_trait;
 
-use crate::models::{
+use crate::inference::{
     CompletionOptions, Message, ModelError, ModelProvider, ModelResponse, ToolDefinition,
 };
 

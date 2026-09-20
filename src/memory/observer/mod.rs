@@ -12,6 +12,7 @@ use chrono_tz::Tz;
 use crate::config::{
     DEFAULT_OBSERVER_COOLDOWN_SECS, DEFAULT_OBSERVER_FORCE_THRESHOLD, DEFAULT_OBSERVER_THRESHOLD,
 };
+use crate::inference::{CompletionOptions, Message, ModelProvider, ResponseFormat};
 use crate::memory::chunk_extractor::{extract_chunks, write_idx_jsonl};
 use crate::memory::episode_store::{
     episode_idx_path, episode_obs_path, next_episode_id, write_completion_marker,
@@ -20,7 +21,6 @@ use crate::memory::episode_store::{
 use crate::memory::log_store::{append_observations, save_episode_observations};
 use crate::memory::recent_messages::RecentMessage;
 use crate::memory::types::{Episode, IndexChunk, Observation};
-use crate::models::{CompletionOptions, Message, ModelProvider, ResponseFormat};
 use crate::time::now_local;
 use crate::workspace::layout::WorkspaceLayout;
 use parse::{ObserverParseResult, parse_observer_response};
@@ -100,7 +100,7 @@ impl Observer {
     #[must_use]
     pub fn disabled(tz: Tz) -> Self {
         Self {
-            provider: Box::new(crate::models::null::NullProvider),
+            provider: Box::new(crate::inference::null::NullProvider),
             config: ObserverConfig {
                 threshold_tokens: usize::MAX,
                 cooldown_secs: u64::MAX,
@@ -324,12 +324,12 @@ async fn build_episode_and_persist(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::inference::{ModelResponse, Role};
     use crate::memory::episode_store::episode_obs_path;
     use crate::memory::log_store::load_observation_log;
     use crate::memory::recent_messages::RecentMessage;
     use crate::memory::test_helpers::MockMemoryProvider;
     use crate::memory::types::Visibility;
-    use crate::models::{ModelResponse, Role};
     use parse::{parse_extraction_items, parse_observer_response};
     use prompt::{
         EXTRACTION_CONTENT_PROMPT, EXTRACTION_FORMAT_SPEC, build_extraction_prompt,
@@ -683,7 +683,7 @@ mod tests {
 
     #[test]
     fn format_recent_message_includes_tool_calls() {
-        use crate::models::ToolCall;
+        use crate::inference::ToolCall;
 
         let rm = RecentMessage {
             message: Message::assistant(

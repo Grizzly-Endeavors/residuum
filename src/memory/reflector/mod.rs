@@ -10,10 +10,10 @@ use anyhow::Context;
 use chrono_tz::Tz;
 
 use crate::config::DEFAULT_REFLECTOR_THRESHOLD;
+use crate::inference::{CompletionOptions, ModelProvider, ResponseFormat};
 use crate::memory::log_store::{load_observation_log, save_observation_log};
 use crate::memory::tokens::estimate_tokens;
 use crate::memory::types::ObservationLog;
-use crate::models::{CompletionOptions, ModelProvider, ResponseFormat};
 use crate::workspace::layout::WorkspaceLayout;
 use parse::parse_reflection_response;
 use prompt::{REFLECTION_CONTENT_PROMPT, build_reflection_prompt, reflector_response_schema};
@@ -59,7 +59,7 @@ impl Reflector {
     #[must_use]
     pub fn disabled(tz: Tz) -> Self {
         Self {
-            provider: Box::new(crate::models::null::NullProvider),
+            provider: Box::new(crate::inference::null::NullProvider),
             config: ReflectorConfig {
                 threshold_tokens: usize::MAX,
                 tz,

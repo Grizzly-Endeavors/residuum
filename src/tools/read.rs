@@ -9,7 +9,7 @@ use serde_json::Value;
 use super::file_tracker::SharedFileTracker;
 use super::line_hash::line_hash;
 use super::{Tool, ToolError, ToolResult};
-use crate::models::{ImageData, ToolDefinition};
+use crate::inference::{ImageData, ToolDefinition};
 
 /// Hard cap on file size (10 MB safety net).
 const MAX_READ_BYTES: u64 = 10 * 1024 * 1024;

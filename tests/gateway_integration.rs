@@ -33,7 +33,7 @@ mod gateway_integration {
     use residuum::agent::interrupt;
     use residuum::bus::{EndpointName, spawn_broker, topics};
     use residuum::gateway::protocol::{ClientMessage, ServerMessage};
-    use residuum::models::{
+    use residuum::inference::{
         CompletionOptions, Message, ModelError, ModelProvider, ModelResponse, ToolDefinition,
     };
     use residuum::tools::ToolRegistry;

@@ -11,7 +11,7 @@ use tokio_util::sync::CancellationToken;
 use super::subagent::{SubAgentOutput, SubAgentResources, execute_subagent};
 use super::types::{ActiveTaskInfo, BackgroundResult, BackgroundTask, truncate_prompt_preview};
 use crate::bus::AgentResultStatus;
-use crate::models::Message;
+use crate::inference::Message;
 
 /// Spawns and manages background tasks with bounded concurrency.
 pub struct BackgroundTaskSpawner {
@@ -412,10 +412,10 @@ mod tests {
 
     #[tokio::test]
     async fn cancelled_task_produces_cancelled_status() {
-        use crate::mcp::McpRegistry;
-        use crate::models::{
+        use crate::inference::{
             CompletionOptions, Message, ModelError, ModelResponse, ToolDefinition,
         };
+        use crate::mcp::McpRegistry;
         use crate::skills::{SkillIndex, SkillState};
         use crate::tools::ToolRegistry;
         use crate::workspace::identity::IdentityFiles;
@@ -424,7 +424,7 @@ mod tests {
         struct BlockingProvider;
 
         #[async_trait]
-        impl crate::models::ModelProvider for BlockingProvider {
+        impl crate::inference::ModelProvider for BlockingProvider {
             async fn complete(
                 &self,
                 _messages: &[Message],

@@ -11,7 +11,7 @@ use super::file_tracker::SharedFileTracker;
 use super::line_hash::line_hash;
 use super::path_policy::SharedPathPolicy;
 use super::{Tool, ToolError, ToolResult};
-use crate::models::ToolDefinition;
+use crate::inference::ToolDefinition;
 
 /// Tool that performs hash-validated line edits on files.
 pub struct EditTool {

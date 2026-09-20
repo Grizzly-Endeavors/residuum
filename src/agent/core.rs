@@ -3,9 +3,9 @@
 use tokio_util::sync::CancellationToken;
 
 use crate::bus::{EndpointName, Publisher};
+use crate::inference::{CompletionOptions, Message, ModelProvider};
 use crate::interfaces::types::MessageOrigin;
 use crate::mcp::SharedMcpRegistry;
-use crate::models::{CompletionOptions, Message, ModelProvider};
 use crate::tools::ToolRegistry;
 use crate::workspace::identity::IdentityFiles;
 
@@ -316,7 +316,7 @@ impl Agent {
         origin: Option<&MessageOrigin>,
         prompt_ctx: &PromptContext<'_>,
         interrupt_rx: &mut tokio::sync::mpsc::Receiver<interrupt::Interrupt>,
-        images: &[crate::models::ImageData],
+        images: &[crate::inference::ImageData],
         subconscious: Option<&crate::subconscious::SubconsciousWatch>,
         stop_token: &CancellationToken,
     ) -> anyhow::Result<Vec<String>> {
@@ -458,7 +458,7 @@ impl Agent {
 
         let mcp_defs = self.mcp_registry.read().await.tool_definitions();
 
-        let token_count = |def: &crate::models::ToolDefinition| {
+        let token_count = |def: &crate::inference::ToolDefinition| {
             let param_str = def.parameters.to_string();
             crate::memory::tokens::estimate_tokens(&def.name)
                 + crate::memory::tokens::estimate_tokens(&def.description)
@@ -499,8 +499,8 @@ mod tests {
     use super::super::turn::MAX_TOOL_ITERATIONS;
     use super::*;
     use crate::bus;
+    use crate::inference::{ModelError, ModelResponse, ToolCall, ToolDefinition};
     use crate::mcp::McpRegistry;
-    use crate::models::{ModelError, ModelResponse, ToolCall, ToolDefinition};
     use crate::tools::{FileTracker, PathPolicy};
     use async_trait::async_trait;
     use std::sync::Arc;
@@ -785,7 +785,7 @@ mod tests {
             .unwrap();
         assert_eq!(result.response, "HEARTBEAT_OK", "response should match");
         assert_eq!(result.messages.len(), 2);
-        assert_eq!(result.messages[0].role, crate::models::Role::User);
+        assert_eq!(result.messages[0].role, crate::inference::Role::User);
         assert_eq!(result.messages[0].content, "check status");
         assert_eq!(result.messages[1].content, "HEARTBEAT_OK");
         assert_eq!(
@@ -819,7 +819,7 @@ mod tests {
         );
         assert_eq!(
             msgs[0].role,
-            crate::models::Role::User,
+            crate::inference::Role::User,
             "injected message should have User role"
         );
     }
@@ -883,7 +883,7 @@ mod tests {
         assert!(kickoff.is_some(), "wake turn should push kickoff message");
         assert_eq!(
             kickoff.unwrap().role,
-            crate::models::Role::User,
+            crate::inference::Role::User,
             "kickoff must be user-role for model compatibility"
         );
     }
@@ -912,7 +912,7 @@ mod tests {
         );
         assert_eq!(
             msgs[0].role,
-            crate::models::Role::System,
+            crate::inference::Role::System,
             "injected message should have System role"
         );
     }
@@ -1455,7 +1455,9 @@ mod tests {
         );
         let messages = agent.messages_since(0);
         assert!(
-            messages.iter().any(|m| m.role == crate::models::Role::Tool),
+            messages
+                .iter()
+                .any(|m| m.role == crate::inference::Role::Tool),
             "the in-flight tool call should still have run to completion"
         );
         assert!(

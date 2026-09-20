@@ -12,9 +12,9 @@ use tokio::sync::mpsc;
 use crate::bus::EndpointName;
 use crate::gateway::protocol::{ClientMessage, ServerMessage};
 use crate::gateway::types::GatewayState;
+use crate::inference::ImageData;
 use crate::interfaces::types::MessageOrigin;
 use crate::interfaces::websocket::subscriber::WsSubscribers;
-use crate::models::ImageData;
 
 /// Axum handler that upgrades an HTTP request to a WebSocket connection.
 pub(super) async fn ws_handler(
