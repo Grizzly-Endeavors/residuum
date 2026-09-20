@@ -1,5 +1,6 @@
 //! Native Windows notification channel via Toast notifications.
 
+pub mod bridge;
 pub mod throttle;
 
 use async_trait::async_trait;
@@ -56,15 +57,15 @@ impl WindowsNativeChannel {
     /// Returns an error if config validation fails.
     pub fn new(
         name: impl Into<String>,
-        config: WindowsChannelConfig,
+        config: &WindowsChannelConfig,
     ) -> anyhow::Result<(Self, JoinHandle<()>)> {
         config.validate()?;
 
         let channel_name = name.into();
         let (tx, rx) = mpsc::channel(64);
 
-        let bridge = throttle::WindowsBridge::new(&config);
-        let aggregator_handle = throttle::spawn(rx, bridge, config);
+        let bridge = bridge::WindowsBridge::new(config);
+        let aggregator_handle = throttle::spawn(rx, bridge, config.throttle_window_secs);
 
         Ok((
             Self {

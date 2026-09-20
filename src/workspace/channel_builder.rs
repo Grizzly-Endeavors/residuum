@@ -108,7 +108,7 @@ async fn build_macos_channel(
     }
     config.web_url = web_url.clone();
 
-    match crate::notify::macos::MacosNativeChannel::new(name, config).await {
+    match crate::notify::macos::MacosNativeChannel::new(name, &config).await {
         Ok((channel, _handle)) => {
             tracing::debug!(channel = %name, "macOS notification channel initialized");
             Some(Box::new(channel))
@@ -171,7 +171,7 @@ async fn build_windows_channel(
         config.app_id = id.clone();
     }
 
-    match crate::notify::windows::WindowsNativeChannel::new(name, config) {
+    match crate::notify::windows::WindowsNativeChannel::new(name, &config) {
         Ok((channel, _handle)) => {
             tracing::debug!(channel = %name, "Windows notification channel initialized");
             Some(Box::new(channel))
