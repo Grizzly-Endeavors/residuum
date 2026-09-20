@@ -22,7 +22,7 @@ A markdown file the agent owns and writes to directly. This is the agent's worki
 
 **Promotion rule**: an observation is only durable enough for Core Facts (or for a new entry in Profile) once at least two supporting observations back it — the pattern must recur, not just be seen once. Promoted entries are annotated with the evidence count (e.g. "seen 3x"). A single, uncorroborated sighting is written to `MEMORY.md` as a provisional note instead, not into `USER.md`.
 
-This rule is enforced by whichever agent is doing the tending — the `introspection` preset (via the `memory_tending` pulse) and the `learner` preset (see below) both apply it the same way.
+This rule is enforced by whichever agent is doing the tending — the `introspection` skill (via the `memory_tending` pulse) and the `learner` skill (see below) both apply it the same way.
 
 ### Observer — Automatic Episode Extraction
 
@@ -45,7 +45,7 @@ Fires automatically after enough conversation accumulates (token threshold). The
 
 Episode IDs are zero-padded to 3 digits (`ep-001`, `ep-012`). Next ID determined by scanning for the highest existing.
 
-**Interaction signals**: the bundled `OBSERVER.md` also extracts a category of observations about how the user works and wants to be worked with — corrections and pushback, process preferences, frustration and its cause, praise and what earned it. These are recorded as contextualized, declarative facts about what happened ("the user prefers X"), never as instructions to the agent ("always do X"). This is the raw material the `learner` preset corroborates against when a `preference` signal fires — see [subconscious.md](subconscious.md#learning-trigger).
+**Interaction signals**: the bundled `OBSERVER.md` also extracts a category of observations about how the user works and wants to be worked with — corrections and pushback, process preferences, frustration and its cause, praise and what earned it. These are recorded as contextualized, declarative facts about what happened ("the user prefers X"), never as instructions to the agent ("always do X"). This is the raw material the `learner` skill corroborates against when a `preference` signal fires — see [subconscious.md](subconscious.md#learning-trigger).
 
 ### Reflector — Observation Compression
 

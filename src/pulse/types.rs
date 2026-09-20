@@ -471,7 +471,7 @@ pulses:
     }
 
     #[test]
-    fn pulse_def_agent_field_preset_name() {
+    fn pulse_def_agent_field_skill_name() {
         let yaml = r#"
 pulses:
   - name: email_triage

@@ -113,9 +113,9 @@ pub type SharedToolFilter = Arc<RwLock<ToolFilter>>;
 #[derive(Clone, Default)]
 pub struct ToolFilter {
     /// Tools permanently blocked for this agent.
-    preset_blocked: HashSet<String>,
+    blocked: HashSet<String>,
     /// If set, ONLY these tools are available.
-    preset_allowed_only: Option<HashSet<String>>,
+    allowed_only: Option<HashSet<String>>,
 }
 
 impl ToolFilter {
@@ -135,8 +135,8 @@ impl ToolFilter {
     #[must_use]
     pub fn new_shared_with_denied(denied: HashSet<String>) -> SharedToolFilter {
         Arc::new(RwLock::new(Self {
-            preset_blocked: denied,
-            preset_allowed_only: None,
+            blocked: denied,
+            allowed_only: None,
         }))
     }
 
@@ -144,8 +144,8 @@ impl ToolFilter {
     #[must_use]
     pub fn new_shared_allowed_only(allowed: HashSet<String>) -> SharedToolFilter {
         Arc::new(RwLock::new(Self {
-            preset_blocked: HashSet::new(),
-            preset_allowed_only: Some(allowed),
+            blocked: HashSet::new(),
+            allowed_only: Some(allowed),
         }))
     }
 
@@ -155,10 +155,10 @@ impl ToolFilter {
     /// Otherwise, blocked tools are never available; all others are.
     #[must_use]
     pub fn is_available(&self, name: &str) -> bool {
-        if let Some(allowed) = &self.preset_allowed_only {
+        if let Some(allowed) = &self.allowed_only {
             return allowed.contains(name);
         }
-        !self.preset_blocked.contains(name)
+        !self.blocked.contains(name)
     }
 }
 
@@ -234,7 +234,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn tool_filter_preset_allowed_only() {
+    async fn tool_filter_allowed_only() {
         let filter = ToolFilter::new_shared_allowed_only(HashSet::from([
             "read_file".to_string(),
             "write_file".to_string(),

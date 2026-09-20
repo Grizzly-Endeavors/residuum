@@ -41,11 +41,11 @@ Each learn signal has a `signal_type`, not a severity:
 - **preference** — a user correction, a moment of frustration, a stated preference, or a working-style cue.
 - **recovery** — the agent hit an error or obstacle and had to work around it.
 
-A learn signal does not inject a correction or a passive note. Instead, subject to a cooldown (`learning_cooldown_minutes`, default `240`), it spawns the bundled `learner` sub-agent preset with the signal as its task. The cooldown bounds how often learning spawns fire — learnable moments can come up often, and the learner does its own corroboration work, so it doesn't need to run on every occurrence. See [background-tasks.md](background-tasks.md) for what the `learner` preset does with the signal once spawned.
+A learn signal does not inject a correction or a passive note. Instead, subject to a cooldown (`learning_cooldown_minutes`, default `240`), it spawns a sub-agent with the bundled `learner` skill and the signal as its task. The cooldown bounds how often learning spawns fire — learnable moments can come up often, and the learner does its own corroboration work, so it doesn't need to run on every occurrence. See [background-tasks.md](background-tasks.md) for what the `learner` skill does with the signal once spawned.
 
 ### Fallback for subconscious-off users
 
-The learning loop does not require the subconscious. If `[subconscious]` is disabled (or `learning` is off), a separate `[learning]` config section provides a periodic fallback: `nudge_after_turns = N` (default `0`, disabled) spawns the `learner` preset every N main-agent turns, as a general "look for something worth learning" nudge rather than a signal-triggered spawn.
+The learning loop does not require the subconscious. If `[subconscious]` is disabled (or `learning` is off), a separate `[learning]` config section provides a periodic fallback: `nudge_after_turns = N` (default `0`, disabled) spawns the `learner` skill every N main-agent turns, as a general "look for something worth learning" nudge rather than a signal-triggered spawn.
 
 ## SUBCONSCIOUS.md
 
@@ -100,6 +100,6 @@ The model is assigned via the `subconscious` role in `providers.toml`, following
 
 | Key | Default | Meaning |
 |-----|---------|---------|
-| `nudge_after_turns` | `0` | Spawn the `learner` preset every N main-agent turns. `0` disables the fallback. Intended for users who keep the subconscious off. |
+| `nudge_after_turns` | `0` | Spawn the `learner` skill every N main-agent turns. `0` disables the fallback. Intended for users who keep the subconscious off. |
 
 Provider or config changes are applied on config reload: the subconscious is rebuilt, in-flight evaluations keep the old instance, and new turns use the new one. If the provider fails to build, the subconscious falls back to disabled rather than failing startup — the main agent keeps working without it.

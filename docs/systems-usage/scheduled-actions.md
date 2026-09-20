@@ -21,7 +21,7 @@ If the gateway was offline when an action was due, it fires on next startup.
 | `name` | string | yes | Human-readable label |
 | `prompt` | string | yes | The prompt to execute when the action fires |
 | `run_at` | string | yes | Local time without offset (e.g. `2026-03-01T09:00:00`). Interpreted in configured workspace timezone. Displayed times are also local. Must be in the future. |
-| `agent_name` | string | no | `"main"` = full wake turn with conversation context. `"<preset>"` = sub-agent with named preset. Omitted = default sub-agent. |
+| `agent_name` | string | no | `"main"` = full wake turn with conversation context. `"<skill>"` = sub-agent with that skill as its role. Omitted = sub-agent with no skill. |
 | `model_tier` | string enum | no | `"small"`, `"medium"`, `"large"`. Only applies to sub-agent actions. |
 
 ### `list_actions`

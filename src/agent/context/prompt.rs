@@ -28,7 +28,7 @@ const HARNESS: &str = "You run on Residuum, a personal-agent harness. These syst
 
 The residuum-system skill is the authoritative reference for all of the above. Activate it before answering any question about what you can do, and whenever you are unsure whether the harness supports something.
 
-Extend, don't just operate: authoring pulses, presets, and skills for the user's recurring needs is part of your job.";
+Extend, don't just operate: authoring pulses and skills for the user's recurring needs is part of your job.";
 
 /// Build the `[Current Time: ...][Last Message: ...][Message Source: ...]` tag string.
 pub(super) fn build_status_line(ctx: &StatusLine) -> String {
@@ -126,13 +126,12 @@ pub(crate) fn build_subagent_system_content(
 /// 7. `MEMORY.md`
 /// 8. `OBSERVATION_LOG` (if present)
 /// 9. `RECENT_CONTEXT` (if present)
-/// 10. `SUBAGENTS_INDEX` (available presets listing)
-/// 11. `SKILLS_INDEX` (available skills listing)
-/// 12. `ACTIVE_SKILLS` (when skills are loaded)
+/// 10. `SKILLS_INDEX` (available skills listing)
+/// 11. `ACTIVE_SKILLS` (when skills are loaded)
 ///
 /// Static sections (1-6) form a stable cache prefix shared across all conversations.
-/// Dynamic sections (7-9) update as memory changes. Indices (10-11) appear before
-/// the active section (12) to maximize cache reuse as skills change.
+/// Dynamic sections (7-9) update as memory changes. The index (10) appears before
+/// the active section (11) to maximize cache reuse as skills change.
 pub(super) fn build_system_content(
     identity: &IdentityFiles,
     memory_ctx: &MemoryContext<'_>,

@@ -1,7 +1,7 @@
 //! Shared parsing for `---`-delimited YAML frontmatter and kebab-case name validation.
 //!
-//! Used by both skill (`SKILL.md`) and subagent preset (`.md`) files, which
-//! share the same frontmatter-plus-body layout and the same name format.
+//! Used by skill (`SKILL.md`) files, which pair a frontmatter block with a
+//! body and use kebab-case names.
 
 use anyhow::Context;
 use serde::de::DeserializeOwned;
@@ -9,8 +9,8 @@ use serde::de::DeserializeOwned;
 /// Parse a file with `---`-delimited YAML frontmatter into the deserialized
 /// frontmatter and the trimmed body that follows it.
 ///
-/// `label` identifies the file kind in error messages (e.g. `"SKILL.md"` or
-/// `"preset file"`), producing messages like `"{label} missing frontmatter
+/// `label` identifies the file kind in error messages (e.g. `"SKILL.md"`),
+/// producing messages like `"{label} missing frontmatter
 /// delimiter '---'"` and `"failed to parse {label} frontmatter"`.
 ///
 /// # Errors
@@ -42,7 +42,7 @@ where
 /// no leading/trailing/consecutive hyphens.
 ///
 /// `kind` identifies what's being validated in error messages (e.g.
-/// `"skill name"` or `"preset name"`).
+/// `"skill name"`).
 ///
 /// # Errors
 /// Returns an error if the name violates any of the above rules.
@@ -142,7 +142,7 @@ mod tests {
 
     #[test]
     fn error_message_uses_kind_label() {
-        let err = validate_kebab_name("Bad", "preset name").unwrap_err();
-        assert!(err.to_string().contains("preset name"));
+        let err = validate_kebab_name("Bad", "skill name").unwrap_err();
+        assert!(err.to_string().contains("skill name"));
     }
 }

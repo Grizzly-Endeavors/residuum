@@ -27,7 +27,7 @@ Scheduled actions are one-off future tasks persisted in `scheduled_actions.json`
 ## `schedule_action` Details
 
 - **`run_at`**: Local time without offset (e.g. `2026-03-01T09:00:00`). Interpreted in the configured workspace timezone. All displayed times are also in local time — no UTC conversion needed.
-- **`agent_name`**: Routing control. `null` → SubAgent, `"main"` → main agent turn, `"<preset>"` → SubAgent with named preset.
+- **`agent_name`**: Routing control. `null` → SubAgent with no skill, `"main"` → main agent turn, `"<skill>"` → SubAgent with that skill as its role.
 - **`model_tier`**: `"small"`, `"medium"`, or `"large"`. Defaults to medium for SubAgent execution.
 Results are filed to the inbox by the notification router, and pushed to every configured notification channel as well when the summary contains `HEARTBEAT_URGENT`. Main-turn actions (`agent_name: "main"`) inject directly into the main agent conversation.
 

@@ -14,12 +14,12 @@ The module owns:
 - **Task lifecycle management:** spawning, concurrency control (semaphore), cancellation tokens, transcript persistence.
 - **SubAgent execution:** LLM-powered turn loop with isolated resources.
 - **Resource isolation:** each background task gets its own `SkillState`, `ToolFilter`, and `PathPolicy` so they don't interfere with each other or the main agent.
-- **Context assembly for SubAgents:** minimal system prompt (`ENVIRONMENT.md` + `USER.md` + preset instructions + skills index, plus `SOUL.md`/`AGENTS.md`/`MEMORY.md` when the preset opts in) followed by the task prompt, excluding observation logs.
+- **Context assembly for SubAgents:** minimal system prompt (`ENVIRONMENT.md` + `USER.md` + skills index + the activated skill's instructions, plus `SOUL.md`/`AGENTS.md`/`MEMORY.md` when the spawn caller sets `include_identity`) followed by the task prompt, excluding observation logs.
 - **Result-to-event conversion:** the `bridge` submodule turns a completed `BackgroundResult` into an `AgentResultEvent`, computing its `ResultDisposition` from sentinel strings in the SubAgent's summary, and publishes it on the bus.
 
 The module does **not** handle:
 - **Channel delivery.** This module publishes each result's `AgentResultEvent` to the bus; the `notify` module's router decides the concrete destinations (inbox, external notification channels, or the main agent) and delivers to them.
-- **Preset discovery or validation.** The `subagent_spawn` tool (in `tools/background.rs`) and the `SubagentRegistry` (`src/subagents/registry.rs`) load and validate presets via `SubagentPresetIndex`; this module just receives already-resolved preset frontmatter/body if provided.
+- **Skill discovery.** `crate::skills` owns the index; this module activates a named skill on the sub-agent's own `SkillState` and lets that failure fail the spawn.
 - **Interrupt channel mechanics.** The main agent owns its own mid-turn interrupt channel; a completed background result only reaches it indirectly, via the bus and the notification router.
 - **Model tier fallback logic.** The `SpawnContext` resolves tier → provider spec (with fallback: small → medium → large → main agent model).
 
@@ -32,7 +32,7 @@ The module does **not** handle:
 - `source_label`: Human-readable label for logging and display (e.g. `"pulse:email_check"`, `"action:deploy"`)
 - `source`: Where the task came from (`EventTrigger::Agent`, `::Pulse`, `::Action`, `::Webhook(name)`)
 - `subagent_config`: `SubAgentConfig` (prompt, context, model tier)
-- `agent_skill`: The subagent preset that runs the task (`SkillName`)
+- `agent_skill`: The skill the sub-agent runs with, if any (`Option<SkillName>`)
 
 **SubAgentConfig:** Drives a simplified agent turn loop with minimal context. The SubAgent gets an isolated clone of `SkillState` plus a fresh `ToolFilter` and `PathPolicy`, so it operates independently of the main agent and other SubAgents. Returns the LLM's final text response as the summary, along with the full message transcript.
 
@@ -48,11 +48,11 @@ The module does **not** handle:
 #### Task Spawning
 
 ```
-SpawnRequestEvent { preset, source_label, prompt, context, source, model_tier_override }
+SpawnRequestEvent { skill, source_label, prompt, context, source, model_tier, include_identity }
     ↓ published on the bus Background topic by the pulse executor,
       gateway action spawning, or the subagent_spawn tool
-SubagentRegistry (src/subagents/registry.rs)
-    ├─ Scan SubagentPresetIndex, load the named preset (falls back to general-purpose on error)
+spawn listener (src/background/listener.rs)
+    ├─ Build resources straight from the request — no resolution step
     ├─ build_spawn_resources() → provider + isolated SubAgentResources for the resolved tier
     └─ BackgroundTaskSpawner::spawn(BackgroundTask, Some(resources))
          ├─ Register in active_tasks (with CancellationToken)
@@ -73,8 +73,7 @@ A pulse or scheduled action with `agent = "main"` never enters this module at al
 When `execute_subagent()` runs:
 
 1. **Assemble minimal context:** `build_subagent_system_content()` builds, in order:
-   - `AGENT_INSTRUCTIONS` (preset instructions, if any)
-   - `SOUL.md` / `AGENTS.md` (only if the preset opts in via `include_identity`)
+   - `SOUL.md` / `AGENTS.md` (only when the spawn caller sets `include_identity`)
    - `ENVIRONMENT.md`
    - `USER.md`
    - `MEMORY.md` (only if `include_identity`)
@@ -86,7 +85,7 @@ When `execute_subagent()` runs:
 2. **Create isolated resources** (`build_subagent_resources()`): cloned from main agent state but independent:
    - `SkillState`: clone of the skill index, no active skills
    - `PathPolicy`: fresh, with no blocked paths
-   - `ToolFilter`: fresh; an allow-only or denied set is applied when the preset's frontmatter specifies one, otherwise unrestricted
+   - `ToolFilter`: fresh and unrestricted
    - `FileTracker`: fresh, tracks reads within this SubAgent turn only
    - `ToolRegistry`: built from the isolated state above
    - `McpRegistry`: shared with the main agent, not cloned
@@ -105,7 +104,7 @@ When `execute_subagent()` runs:
 - `transcript_path`: Path to disk log
 - `status`: `Completed`, `Cancelled`, or `Failed { error: String }`
 - `timestamp`: When the task completed
-- `agent_skill`: The preset that ran it
+- `agent_skill`: The skill it ran with, if any
 
 `background::bridge::spawn_result_bridge` reads each `BackgroundResult` off the spawner's result channel and converts it into an `AgentResultEvent`, computing a `ResultDisposition` from sentinel strings the SubAgent leaves in its own summary:
 - `HEARTBEAT_OK` on a pulse result → `Silent` (nothing worth surfacing)
@@ -150,7 +149,7 @@ This isolation ensures:
 
 **Decision: SubAgent isolation via resource cloning, not ref-counting locks.**
 
-**Why:** Each SubAgent gets its own clone of `SkillState`, plus a fresh `ToolFilter` and `PathPolicy`, because these represent mutable state (active skills, tool restrictions, blocked paths). Sharing them behind locks would serialize tool execution across SubAgents and the main agent. Cloning them is cheap (the indices are small) and eliminates contention. MCP servers are shared because they're expensive, long-lived processes — the registry is just a flat, shared list, so there's nothing to ref-count.
+**Why:** Each SubAgent gets its own clone of `SkillState`, plus a fresh `ToolFilter` and `PathPolicy`, because these represent mutable state (active skills, blocked paths). Sharing them behind locks would serialize tool execution across SubAgents and the main agent. Cloning them is cheap (the indices are small) and eliminates contention. MCP servers are shared because they're expensive, long-lived processes — the registry is just a flat, shared list, so there's nothing to ref-count.
 
 ---
 
@@ -200,7 +199,6 @@ This isolation ensures:
 
 - **`crate::bus`** — `EventTrigger`, `SkillName`, `AgentResultStatus`, `ResultDisposition`, `HEARTBEAT_OK`/`HEARTBEAT_URGENT`, `AgentResultEvent`, `SpawnRequestEvent`. Used for task provenance, result status/disposition, and the spawn-request event other modules publish to request a task.
 
-- **`crate::subagents`** — `SubagentPresetFrontmatter` (tool restrictions, model tier, `include_identity`), `SubagentPresetIndex`. Optional preset metadata passed to `build_spawn_resources()`.
 
 - **`tokio`** — `tokio::sync::{Mutex, Semaphore, mpsc}`, `tokio_util::sync::CancellationToken`. Core async primitives for task spawning, concurrency control, and cancellation.
 
@@ -214,9 +212,9 @@ This isolation ensures:
 
 - **`src/gateway/startup/mod.rs`** — Creates the `BackgroundTaskSpawner`, its result channel, and the `SpawnContext` during gateway startup.
 
-- **`src/gateway/event_loop/run_loop.rs`** — Wires the spawner's result channel into `background::bridge::spawn_result_bridge`, and spawns the notification router (`notify::router`) and the `SubagentRegistry` (`src/subagents/registry.rs`) that consumes `SpawnRequestEvent`s.
+- **`src/gateway/event_loop/run_loop.rs`** — Wires the spawner's result channel into `background::bridge::spawn_result_bridge`, and spawns the notification router (`notify::router`) and the spawn listener (`listener.rs`) that consumes `SpawnRequestEvent`s.
 
-- **`src/subagents/registry.rs`** — The sole caller of `BackgroundTaskSpawner::spawn()`: subscribes to `SpawnRequestEvent`s on the bus, loads the requested preset, calls `build_spawn_resources()`, and spawns the task.
+- **`listener.rs`** — The sole caller of `BackgroundTaskSpawner::spawn()`: subscribes to `SpawnRequestEvent`s on the bus, calls `build_spawn_resources()`, and spawns the task.
 
 - **`src/gateway/actions.rs`** — Publishes a `SpawnRequestEvent` for each due scheduled action (or returns a main-agent wake turn for `agent = "main"` actions, bypassing this module).
 
@@ -225,7 +223,7 @@ This isolation ensures:
 - **`src/tools/background.rs`** — Three tools:
   - `stop_agent`: cancels a running task via the spawner.
   - `list_agents`: lists active tasks via the spawner.
-  - `subagent_spawn`: resolves and validates the preset/tier, then publishes a `SpawnRequestEvent` — spawning always happens asynchronously through the `SubagentRegistry`, never inline.
+  - `subagent_spawn`: validates the skill name against the in-memory index, then publishes a `SpawnRequestEvent` — spawning always happens asynchronously through the listener, never inline.
 
 - **`src/agent/turn.rs`** — `execute_turn()` is what the SubAgent executor calls to run the isolated turn loop.
 
@@ -236,10 +234,10 @@ This isolation ensures:
 | File | Purpose |
 |------|---------|
 | `mod.rs` | Module exports: re-exports `BackgroundTaskSpawner`, `SubAgentResources`, `build_subagent_resources()`, and the public types from `types.rs`. Declares the public `bridge` submodule and the crate-internal `spawn_context` submodule. |
-| `types.rs` | Core types: `BackgroundTask`, `SubAgentConfig`, `BackgroundResult`, `ActiveTaskInfo`, `PresetToolRestriction`, `SubAgentBuildConfig`. Helper functions `truncate_prompt_preview()` and `format_background_result()`. |
+| `types.rs` | Core types: `BackgroundTask`, `SubAgentConfig`, `BackgroundResult`, `ActiveTaskInfo`, `SubAgentBuildConfig`. Helper functions `truncate_prompt_preview()` and `format_background_result()`. |
 | `spawner.rs` | `BackgroundTaskSpawner`: lifecycle management, semaphore concurrency control, cancellation, active task tracking, result channel sending, transcript writing. |
 | `subagent.rs` | SubAgent execution: `SubAgentResources` (isolated state bundle), `build_subagent_resources()` (construct resources from main agent state), `execute_subagent()` (run the isolated turn loop and return the final text plus the full transcript). |
-| `spawn_context.rs` | `SpawnContext` (gathered at gateway startup): config, provider specs, identity, options, workspace layout, and the tool dependencies isolated SubAgent tool instances need. `build_spawn_resources()` resolves the model tier, applies preset tool restrictions, and constructs `SubAgentResources` for a specific task. `load_preset_for_spawn()` resolves a named preset's frontmatter, body, and effective tier from a scanned `SubagentPresetIndex`. |
+| `spawn_context.rs` | `SpawnContext` (gathered at gateway startup): config, provider specs, identity, options, workspace layout, and the tool dependencies isolated SubAgent tool instances need. `build_spawn_resources()` resolves the model tier, activates the requested skill, and constructs `SubAgentResources` for a specific task. |
 | `bridge.rs` | Result bridge: reads `BackgroundResult`s off the spawner's mpsc channel, converts each into an `AgentResultEvent` (computing its `ResultDisposition` from `HEARTBEAT_OK`/`HEARTBEAT_URGENT` sentinels in the summary), and publishes it on the bus. Runs as a supervised task that restarts on panic. |
 
 ---
@@ -249,7 +247,7 @@ This isolation ensures:
 ```mermaid
 graph TD
     Q["SpawnRequestEvent published<br/>(pulse executor / gateway actions /<br/>subagent_spawn tool)"]
-    Q -->|Background topic| R["SubagentRegistry<br/>load preset, build_spawn_resources"]
+    Q -->|Background topic| R["spawn listener<br/>build_spawn_resources"]
     R -->|BackgroundTaskSpawner::spawn| B["Register in active_tasks<br/>with CancellationToken"]
     B --> C["Acquire semaphore permit<br/>(wait if at capacity)"]
     C --> D["tokio::spawn async block"]

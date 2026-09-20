@@ -7,7 +7,7 @@ use super::types::PulseDef;
 /// The execution strategy for a pulse.
 #[derive(Debug)]
 pub enum PulseExecution {
-    /// Spawn a sub-agent via the bus (default behavior, optionally with a preset).
+    /// Spawn a sub-agent via the bus, optionally with a skill as its role.
     SubAgent {
         /// The spawn request event to publish.
         spawn_event: SpawnRequestEvent,
