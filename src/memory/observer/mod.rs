@@ -262,7 +262,6 @@ async fn build_episode_and_persist(
             .iter()
             .map(|e| e.content.clone())
             .collect(),
-        source_episodes: vec![],
     };
 
     // Persist transcript
@@ -277,7 +276,7 @@ async fn build_episode_and_persist(
         .iter()
         .map(|e| Observation {
             timestamp: e.timestamp,
-            source_episodes: vec![episode.id.clone()],
+            source_episodes: Some(episode.id.clone()),
             visibility: e.visibility.clone(),
             content: e.content.clone(),
         })
@@ -636,7 +635,6 @@ mod tests {
             id: result.id.clone(),
             date: chrono::Utc::now().naive_utc().date(),
             observations: vec![],
-            source_episodes: vec![],
         };
         let obs_archive = episode_obs_path(&layout.episodes_dir(), &episode);
         assert!(

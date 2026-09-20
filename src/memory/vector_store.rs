@@ -109,12 +109,6 @@ impl VectorStore {
         })
     }
 
-    /// Embedding dimension this store was created with.
-    #[must_use]
-    pub fn dim(&self) -> usize {
-        self.dim
-    }
-
     /// Insert observation embeddings for a single episode.
     ///
     /// Each observation gets a doc ID of `"{episode_id}-o{index}"`.
@@ -351,18 +345,6 @@ impl VectorStore {
         Ok(exists)
     }
 
-    /// Drop and recreate both tables, clearing all vector data.
-    ///
-    /// # Errors
-    /// Returns an error if the tables cannot be recreated.
-    pub fn clear(&self) -> anyhow::Result<()> {
-        let conn = self.lock_conn()?;
-        conn.execute_batch("DROP TABLE IF EXISTS obs_vectors; DROP TABLE IF EXISTS chunk_vectors;")
-            .context("failed to drop vector tables")?;
-        create_tables(&conn, self.dim)?;
-        Ok(())
-    }
-
     /// Lock the connection mutex.
     fn lock_conn(&self) -> anyhow::Result<std::sync::MutexGuard<'_, Connection>> {
         self.conn
@@ -589,7 +571,7 @@ mod tests {
     fn sample_observation(text: &str) -> Observation {
         Observation {
             timestamp: chrono::Utc::now().naive_utc(),
-            source_episodes: vec!["ep-001".to_string()],
+            source_episodes: Some("ep-001".to_string()),
             visibility: Visibility::User,
             content: text.to_string(),
         }
@@ -600,12 +582,6 @@ mod tests {
         let db_path = dir.path().join("vectors.db");
         let store = VectorStore::open_or_create(&db_path, TEST_DIM).unwrap();
         (dir, store)
-    }
-
-    #[test]
-    fn open_or_create_succeeds() {
-        let (_dir, store) = create_test_store();
-        assert_eq!(store.dim(), TEST_DIM, "dimension should match");
     }
 
     #[test]
@@ -685,25 +661,6 @@ mod tests {
             .search(&query, 5, &VectorSearchFilters::default())
             .unwrap();
         assert!(after.is_empty(), "should be empty after delete");
-    }
-
-    #[test]
-    fn clear_removes_all() {
-        let (_dir, store) = create_test_store();
-
-        let obs = vec![sample_observation("test")];
-        let embeddings = vec![sample_embedding(0.1)];
-        store
-            .insert_observations("ep-001", "2026-02-19", &obs, &embeddings)
-            .unwrap();
-
-        store.clear().unwrap();
-
-        let query = sample_embedding(0.1);
-        let results = store
-            .search(&query, 5, &VectorSearchFilters::default())
-            .unwrap();
-        assert!(results.is_empty(), "should be empty after clear");
     }
 
     #[test]
